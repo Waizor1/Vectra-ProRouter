@@ -1,0 +1,102 @@
+{
+  "version": "2026-04-04",
+  "purpose": "Machine-readable navigation index for Codex work on PassWall2 and OpenWrt 24.xx",
+  "entry_docs": {
+    "root_agents": "AGENTS.md",
+    "runbook": "RTK.md",
+    "ops_cheatsheet": "ai_docs/develop/features/passwall2-ops-cheatsheet.md",
+    "deep_kb": "ai_docs/develop/features/passwall2-openwrt24-knowledge-base.md",
+    "router_intake_template": "ai_docs/develop/features/passwall2-router-intake-template.md",
+    "recovery_write_safety": "ai_docs/develop/features/openwrt24-console-knowledge-base/08-filogic-recovery-write-safety.md",
+    "live_router_kb": "ai_docs/develop/features/router-xiaomi-ax3000t-live-kb.md",
+    "scoped_upstream_agents": "passwall2/AGENTS.md"
+  },
+  "local_upstream": {
+    "repo_path": "passwall2",
+    "repo_name": "Openwrt-Passwall/openwrt-passwall2"
+  },
+  "key_files": {
+    "package_makefile": "passwall2/luci-app-passwall2/Makefile",
+    "init_client": "passwall2/luci-app-passwall2/root/etc/init.d/passwall2",
+    "init_server": "passwall2/luci-app-passwall2/root/etc/init.d/passwall2_server",
+    "runtime_main": "passwall2/luci-app-passwall2/root/usr/share/passwall2/app.sh",
+    "runtime_utils": "passwall2/luci-app-passwall2/root/usr/share/passwall2/utils.sh",
+    "rule_updater": "passwall2/luci-app-passwall2/root/usr/share/passwall2/rule_update.lua",
+    "subscription_updater": "passwall2/luci-app-passwall2/root/usr/share/passwall2/subscribe.lua",
+    "test_helper": "passwall2/luci-app-passwall2/root/usr/share/passwall2/test.sh",
+    "socks_failover": "passwall2/luci-app-passwall2/root/usr/share/passwall2/socks_auto_switch.sh",
+    "dnsmasq_helper": "passwall2/luci-app-passwall2/root/usr/share/passwall2/helper_dnsmasq.lua",
+    "iptables_helper": "passwall2/luci-app-passwall2/root/usr/share/passwall2/iptables.sh",
+    "nftables_helper": "passwall2/luci-app-passwall2/root/usr/share/passwall2/nftables.sh",
+    "server_app": "passwall2/luci-app-passwall2/luasrc/passwall2/server_app.lua",
+    "component_api": "passwall2/luci-app-passwall2/luasrc/passwall2/api.lua",
+    "component_catalog": "passwall2/luci-app-passwall2/luasrc/passwall2/com.lua",
+    "default_config": "passwall2/luci-app-passwall2/root/usr/share/passwall2/0_default_config"
+  },
+  "common_commands": {
+    "service_control": [
+      "/etc/init.d/passwall2 start",
+      "/etc/init.d/passwall2 stop",
+      "/etc/init.d/passwall2 restart",
+      "/etc/init.d/passwall2_server restart"
+    ],
+    "subscriptions": [
+      "lua /usr/share/passwall2/subscribe.lua start all",
+      "lua /usr/share/passwall2/subscribe.lua truncate"
+    ],
+    "geo_rules": [
+      "lua /usr/share/passwall2/rule_update.lua log",
+      "lua /usr/share/passwall2/rule_update.lua log geoip,geosite"
+    ],
+    "node_testing": [
+      "/usr/share/passwall2/test.sh url_test_node <node_id>"
+    ],
+    "router_detection": [
+      "ubus call system board",
+      "grep -E 'DISTRIB_(RELEASE|ARCH)' /etc/openwrt_release",
+      "opkg print-architecture",
+      "uname -m"
+    ]
+  },
+  "openwrt24_defaults": {
+    "package_manager": "opkg",
+    "package_format": "ipk",
+    "component_update_preference": "package-based",
+    "app_update_mode": "manual package install",
+    "notes": [
+      "Do not recommend apk for OpenWrt 24.xx",
+      "Do not treat built-in binary updater as default on 24.xx",
+      "Do not mix stock-layout AX3000T images with ubootmod artifacts"
+    ]
+  },
+  "router_shortcuts": {
+    "xiaomi_ax3000t": {
+      "expected_arch": "aarch64_cortex-a53",
+      "expected_bundle_opkg": "passwall_packages_ipk_aarch64_cortex-a53.zip",
+      "live_snapshot": "ai_docs/develop/features/snapshots/xiaomi-ax3000t-2026-04-04-inventory.txt",
+      "live_plan_json": "ai_docs/develop/features/snapshots/xiaomi-ax3000t-2026-04-04-passwall-plan.json",
+      "write_safety_doc": "ai_docs/develop/features/openwrt24-console-knowledge-base/08-filogic-recovery-write-safety.md"
+    }
+  },
+  "local_utilities": {
+    "release_asset_lookup": {
+      "script": "scripts/Get-Passwall2ReleaseAssets.ps1",
+      "example": "powershell -ExecutionPolicy Bypass -File .\\scripts\\Get-Passwall2ReleaseAssets.ps1 -App passwall2 -Arch aarch64_cortex-a53 -PackageManager opkg -AsJson"
+    },
+    "live_router_inventory": {
+      "script": "scripts/Get-OpenWrtRouterInventory.ps1",
+      "example": "powershell -ExecutionPolicy Bypass -File .\\scripts\\Get-OpenWrtRouterInventory.ps1 -RouterHost <ip> -RouterUser <user> -RouterPassword <password> -RouterHostKey <fingerprint> -IncludePasswallPlan",
+      "notes": [
+        "Read-only inventory collector",
+        "Do not persist credentials in repo files",
+        "Pin the SSH host key"
+      ]
+    },
+    "router_plan_resolver": {
+      "script": "scripts/Resolve-Passwall2RouterPlan.ps1",
+      "fixture": "scripts/fixtures/xiaomi-ax3000t-openwrt24.txt",
+      "example": "powershell -ExecutionPolicy Bypass -File .\\scripts\\Resolve-Passwall2RouterPlan.ps1 -InputFile .\\scripts\\fixtures\\xiaomi-ax3000t-openwrt24.txt -AsJson",
+      "stdin_example": "Get-Content .\\router-output.txt | powershell -ExecutionPolicy Bypass -File .\\scripts\\Resolve-Passwall2RouterPlan.ps1"
+    }
+  }
+}

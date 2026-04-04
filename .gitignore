@@ -1,0 +1,15 @@
+# Local upstream mirrors kept outside the root Git history
+passwall2/
+openwrt-24.10-src/
+procd-src/
+
+# Local editor and OS noise
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Local scratch files
+*.log
+*.tmp
+*.bak

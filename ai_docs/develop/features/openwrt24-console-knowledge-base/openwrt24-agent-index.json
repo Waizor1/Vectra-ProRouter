@@ -1,0 +1,129 @@
+{
+  "version": "2026-04-04",
+  "purpose": "Machine-readable navigation index for OpenWrt 24.xx console administration on Xiaomi AX3000T and similar Filogic routers",
+  "entry_docs": {
+    "root_agents": "AGENTS.md",
+    "runbook": "RTK.md",
+    "kb_index": "ai_docs/develop/features/openwrt24-console-knowledge-base/README.md",
+    "scope_and_model": "ai_docs/develop/features/openwrt24-console-knowledge-base/01-scope-and-command-model.md",
+    "system_services_uci_ubus": "ai_docs/develop/features/openwrt24-console-knowledge-base/02-system-services-uci-ubus.md",
+    "network_firewall_wifi": "ai_docs/develop/features/openwrt24-console-knowledge-base/03-network-firewall-wifi.md",
+    "storage_packages_upgrade_logs": "ai_docs/develop/features/openwrt24-console-knowledge-base/04-storage-packages-upgrade-logs.md",
+    "filogic_profile": "ai_docs/develop/features/openwrt24-console-knowledge-base/05-filogic-ax3000t.md",
+    "cheatsheet": "ai_docs/develop/features/openwrt24-console-knowledge-base/06-cheatsheet.md",
+    "router_intake_template": "ai_docs/develop/features/openwrt24-console-knowledge-base/07-router-intake-template.md",
+    "recovery_write_safety": "ai_docs/develop/features/openwrt24-console-knowledge-base/08-filogic-recovery-write-safety.md",
+    "live_router_kb": "ai_docs/develop/features/router-xiaomi-ax3000t-live-kb.md",
+    "safe_test_harness": "ai_docs/develop/features/router-ax3000t-safe-test-harness.md",
+    "sources": "ai_docs/develop/features/openwrt24-console-knowledge-base/sources.md"
+  },
+  "platform_defaults": {
+    "openwrt_family": "24.xx",
+    "baseline_release": "24.10.x",
+    "package_manager": "opkg",
+    "package_format": "ipk",
+    "firewall_stack": "fw4 + nftables",
+    "config_plane": "uci",
+    "runtime_rpc_plane": "ubus",
+    "service_plane": "rc.common + procd",
+    "network_plane": "netifd",
+    "wireless_plane": "wifi + iwinfo",
+    "storage_plane": "fstools/block",
+    "upgrade_plane": "sysupgrade"
+  },
+  "target_devices": {
+    "primary_example": "Xiaomi AX3000T",
+    "device_class": "MediaTek Filogic / MT798x",
+    "expected_arch_for_ax3000t": "aarch64_cortex-a53",
+    "switch_model": "DSA"
+  },
+  "command_families": {
+    "identity": [
+      "ubus call system board",
+      "ubus call system info",
+      "cat /etc/openwrt_release",
+      "opkg print-architecture",
+      "uname -m"
+    ],
+    "services": [
+      "service",
+      "/etc/init.d/<service> start",
+      "/etc/init.d/<service> stop",
+      "/etc/init.d/<service> restart",
+      "reload_config"
+    ],
+    "config": [
+      "uci show",
+      "uci get",
+      "uci set",
+      "uci add",
+      "uci add_list",
+      "uci delete",
+      "uci changes",
+      "uci commit",
+      "uci revert",
+      "uci batch"
+    ],
+    "runtime": [
+      "ubus list",
+      "ubus call",
+      "ubus listen",
+      "ubus monitor",
+      "ubus wait_for"
+    ],
+    "network": [
+      "ifup",
+      "ifdown",
+      "ifstatus",
+      "devstatus",
+      "ip link show",
+      "ip route show",
+      "bridge vlan show",
+      "ss -ltnup"
+    ],
+    "wireless": [
+      "wifi status",
+      "wifi reload",
+      "wifi reconf",
+      "iwinfo wlan0 info",
+      "iwinfo wlan0 assoclist",
+      "iwinfo wlan0 scan"
+    ],
+    "firewall": [
+      "fw4 print",
+      "fw4 check",
+      "fw4 reload",
+      "fw4 zone <zone>",
+      "nft list ruleset"
+    ],
+    "storage_packages_upgrade_logs": [
+      "block info",
+      "block detect",
+      "opkg update",
+      "opkg list-installed",
+      "opkg list-upgradable",
+      "sysupgrade -l",
+      "sysupgrade -b /tmp/backup.tar.gz",
+      "sysupgrade -T /tmp/openwrt.bin",
+      "logread -f"
+    ]
+  },
+  "safety_rules": [
+    "Do not recommend apk for OpenWrt 24.xx",
+    "Do not use swconfig assumptions on Filogic-class devices",
+    "Do not treat direct nft commands as persistent configuration",
+    "Do not run firstboot or sysupgrade -F without explicit high-confidence justification",
+    "Validate board and image compatibility before sysupgrade",
+    "Do not mix stock-layout AX3000T images with ubootmod artifacts",
+    "Treat sysupgrade -s as advanced and board-dependent until verified on the exact target",
+    "For live custom-program tests on AX3000T, prefer the tmp-based harness before package install or service registration"
+  ],
+  "local_utilities": {
+    "live_router_inventory": "scripts/Get-OpenWrtRouterInventory.ps1",
+    "tmp_test_harness": "scripts/Manage-OpenWrtTmpProgramSession.ps1"
+  },
+  "local_primary_sources": {
+    "openwrt_24_10_mirror": "openwrt-24.10-src",
+    "procd_mirror": "procd-src"
+  }
+}

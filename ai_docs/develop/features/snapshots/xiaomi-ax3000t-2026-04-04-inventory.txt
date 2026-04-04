@@ -1,0 +1,219 @@
+--- system board ---
+{
+	"kernel": "6.6.110",
+	"hostname": "1111111111",
+	"system": "ARMv8 Processor rev 4",
+	"model": "Xiaomi Mi Router AX3000T",
+	"board_name": "xiaomi,mi-router-ax3000t",
+	"rootfs_type": "squashfs",
+	"release": {
+		"distribution": "OpenWrt",
+		"version": "24.10.4",
+		"revision": "r28959-29397011cc",
+		"target": "mediatek/filogic",
+		"description": "OpenWrt 24.10.4 r28959-29397011cc",
+		"builddate": "1760891865"
+	}
+}
+--- openwrt_release ---
+DISTRIB_ID='OpenWrt'
+DISTRIB_RELEASE='24.10.4'
+DISTRIB_TARGET='mediatek/filogic'
+DISTRIB_ARCH='aarch64_cortex-a53'
+DISTRIB_DESCRIPTION='OpenWrt 24.10.4 r28959-29397011cc'
+--- os-release ---
+NAME="OpenWrt"
+VERSION="24.10.4"
+PRETTY_NAME="OpenWrt 24.10.4"
+VERSION_ID="24.10.4"
+OPENWRT_ARCH="aarch64_cortex-a53"
+--- package manager ---
+opkg version 38eccbb1fd694d4798ac1baf88f9ba83d1eac616 (2024-10-16)
+--- architectures ---
+arch all 1
+arch noarch 1
+arch aarch64_cortex-a53 10
+aarch64
+--- installed core packages ---
+dnsmasq-full - 2.90-r4
+dropbear - 2024.86-r1
+firewall4 - 2024.12.18~18fc0ead-r1
+geoview - 0.1.11-r1
+luci - 25.292.66247~75e41cb
+luci-app-firewall - 25.292.66247~75e41cb
+luci-app-openwisp - 26.088.70241~a7f416f
+luci-app-package-manager - 25.292.66247~75e41cb
+luci-app-passwall2 - 26.3.5-r1
+luci-app-ttyd - 25.333.84481~f8d85b4
+luci-base - 25.292.66247~75e41cb
+luci-compat - 25.333.84481~f8d85b4
+luci-lib-base - 25.333.84481~f8d85b4
+luci-lib-ip - 25.333.84481~f8d85b4
+luci-lib-jsonc - 25.333.84481~f8d85b4
+luci-lib-nixio - 25.333.84481~f8d85b4
+luci-light - 25.292.66247~75e41cb
+luci-lua-runtime - 25.333.84481~f8d85b4
+luci-mod-admin-full - 25.292.66247~75e41cb
+luci-mod-network - 25.292.66247~75e41cb
+luci-mod-status - 25.292.66247~75e41cb
+luci-mod-system - 25.292.66247~75e41cb
+luci-proto-ipv6 - 25.292.66247~75e41cb
+luci-proto-ppp - 25.292.66247~75e41cb
+luci-ssl - 25.292.66247~75e41cb
+luci-theme-bootstrap - 25.292.66247~75e41cb
+nftables-json - 1.1.1-r1
+openssh-sftp-server - 9.9_p2-r1
+v2ray-geoip - 202511270021.1
+v2ray-geosite - 20250916122507-r1
+xray-core - 25.12.1-r1
+--- passwall safe status ---
+1
+myshunt
+nodes_count=15
+subscriptions_count=1
+--- binary versions ---
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 linux/arm64)
+A unified platform for anti-censorship.
+
+--------------------------------------
+--------------------------------------
+Geoview 0.2.5
+--- processes ---
+ 9398 root       720 S    /tmp/etc/passwall2/bin/chinadns-ng -C /tmp/etc/passwall2/acl/default/dns_global_direct.conf -v
+ 9471 root     1232m S    /tmp/etc/passwall2/bin/xray run -c /tmp/etc/passwall2/acl/default/global.json
+ 9519 dnsmasq  16844 S    /tmp/etc/passwall2/bin/dnsmasq_default -C /tmp/etc/passwall2/acl/default/dnsmasq.conf -x /tmp/etc/passwal
+ 9520 root      1488 S    {lease2hosts.sh} /bin/sh /usr/share/passwall2/lease2hosts.sh
+10460 root      1480 S    {monitor.sh} /bin/sh /usr/share/passwall2/monitor.sh
+--- firewall dnsmasq ---
+Usage:
+
+  /sbin/fw4 [-v] [-q] start|stop|flush|restart|reload
+
+    Start, stop, flush, restart or reload the firewall respectively.
+
+
+  /sbin/fw4 [-v] [-q] reload-sets
+
+    Reload the contents of all declared sets but do not touch the
+    ruleset.
+
+
+  /sbin/fw4 [-q] print
+
+    Print the rendered ruleset.
+
+
+  /sbin/fw4 [-q] check
+
+    Test the rendered ruleset using nftables' check mode without
+    applying it to the running system.
+
+
+  /sbin/fw4 [-q] network {net}
+
+    Print the name of the firewall zone covering the given network.
+
+    Exits with code 1 if the network is not found or if no zone is
+    covering it.
+
+
+  /sbin/fw4 [-q] device {dev}
+
+    Print the name of the firewall zone covering the given device.
+
+    Exits with code 1 if the device is not found or if no zone is
+    covering it.
+
+
+  /sbin/fw4 [-q] zone {zone} [dev]
+
+    Print all covered devices of the given zone, optionally restricted
+    to only the given device name.
+
+    Exits with code 1 if zone is not found or if a device is specified
+    and not covered by the given zone.
+
+Dnsmasq version 2.90  Copyright (c) 2000-2024 Simon Kelley
+Compile time options: IPv6 GNU-getopt no-DBus UBus no-i18n no-IDN DHCP DHCPv6 no-Lua TFTP conntrack no-ipset nftset auth cryptohash DNSSEC no-ID loop-detect inotify dumpfile
+
+This software comes with ABSOLUTELY NO WARRANTY.
+Dnsmasq is free software, and you are welcome to redistribute it
+--- resources ---
+              total        used        free      shared  buff/cache   available
+Mem:         239720      116904       44508        2216       78308       71124
+Swap:        119804           0      119804
+Filesystem                Size      Used Available Use% Mounted on
+/dev/ubi0_1              60.9M     34.8M     23.0M  60% /overlay
+tmpfs                   117.1M      2.2M    114.9M   2% /tmp
+--- upgrade tools ---
+/sbin/sysupgrade
+Usage: /sbin/sysupgrade [<upgrade-option>...] <image file or URL>
+       /sbin/sysupgrade [-q] [-i] [-c] [-u] [-o] [-k] <backup-command> <file>
+
+upgrade-option:
+	-f <config>  restore configuration from .tar.gz (file or url)
+	-i           interactive mode
+	-c           attempt to preserve all changed files in /etc/
+	-o           attempt to preserve all changed files in /, except those
+	             from packages but including changed confs.
+	-u           skip from backup files that are equal to those in /rom
+	-n           do not save configuration over reflash
+	-p           do not attempt to restore the partition table after flash.
+	-k           include in backup a list of current installed packages at
+	             /etc/backup/installed_packages.txt
+	-s           stay on current partition (for dual firmware devices)
+--- backup scope ---
+/etc/config/firewall
+/etc/config/network
+/etc/config/passwall2
+/etc/config/passwall2_server
+/etc/config/uhttpd
+/etc/config/wireless
+/etc/dropbear/authorized_keys
+/etc/dropbear/dropbear_ed25519_host_key
+/etc/dropbear/dropbear_rsa_host_key
+--- boot partitions ---
+dev:    size   erasesize  name
+mtd0: 00100000 00020000 "BL2"
+mtd1: 00040000 00020000 "Nvram"
+mtd2: 00040000 00020000 "Bdata"
+mtd3: 00200000 00020000 "Factory"
+mtd4: 00200000 00020000 "FIP"
+mtd5: 00040000 00020000 "crash"
+mtd6: 00040000 00020000 "crash_log"
+mtd7: 00040000 00020000 "KF"
+mtd8: 02200000 00020000 "ubi_kernel"
+mtd9: 04e00000 00020000 "ubi"
+console=ttyS0,115200n1 loglevel=8 swiotlb=512 rootfstype=squashfs firmware=0 mtd=ubi uart_en=1
+/dev/root on /rom type squashfs (ro,relatime,errors=continue)
+tmpfs on /tmp type tmpfs (rw,nosuid,nodev,noatime)
+/dev/ubi0_1 on /overlay type ubifs (rw,noatime,assert=read-only,ubi=0,vol=1)
+overlayfs:/overlay on / type overlay (rw,noatime,lowerdir=/,upperdir=/overlay/upper,workdir=/overlay/work,xino=off)
+tmpfs on /dev type tmpfs (rw,nosuid,noexec,noatime,size=512k,mode=755)
+--- env tools ---
+/usr/sbin/fw_printenv
+boot_auto=bootxq
+boot_fw0=run boot_rd_img;bootm
+boot_fw1=run boot_rd_img2;bootm
+boot_rd_img=nand read ${loadaddr} 0x2C0000 2000;image_blks 2048;nand read ${loadaddr} 0x2C0000 ${img_align_size}
+boot_rd_img2=nand read ${loadaddr} 0x20C0000 2000;image_blks 2048;nand read ${loadaddr} 0x20C0000 ${img_align_size}
+boot_wait=on
+bootargs=console=ttyS0,115200n1 loglevel=8 swiotlb=512 rootfstype=squashfs firmware=0 mtd=ubi uart_en=1
+bootcmd=bootxq
+bootdelay=3
+bootmenu_0=Startup system (Default)=bootxq
+bootmenu_1=Startup firmware0=bootxq 0
+bootmenu_2=Startup firmware1=bootxq 1
+bootmenu_3=Upgrade firmware=mtkupgrade fw
+bootmenu_4=Upgrade ATF BL2=mtkupgrade bl2
+bootmenu_5=Upgrade ATF FIP=mtkupgrade fip
+bootmenu_6=Upgrade single image=mtkupgrade simg
+bootmenu_7=Load image=mtkload
+bootmenu_delay=5
+flag_boot_rootfs=0
+flag_boot_success=1
+flag_boot_type=2
+flag_last_success=0
+flag_ota_reboot=0
+flag_try_sys2_failed=0
+flag_try_sys1_failed=0

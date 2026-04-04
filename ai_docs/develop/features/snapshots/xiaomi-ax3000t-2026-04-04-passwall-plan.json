@@ -1,0 +1,76 @@
+{
+    "app":  "passwall2",
+    "router":  {
+                   "model":  "Xiaomi Mi Router AX3000T",
+                   "board_name":  "xiaomi,mi-router-ax3000t",
+                   "system":  "ARMv8 Processor rev 4",
+                   "target":  "mediatek/filogic",
+                   "openwrt_release":  "24.10.4",
+                   "openwrt_description":  "OpenWrt 24.10.4 r28959-29397011cc"
+               },
+    "detection":  {
+                      "package_managers_detected":  [
+                                                        "opkg"
+                                                    ],
+                      "recommended_package_manager":  "opkg",
+                      "recommended_package_format":  "ipk",
+                      "package_manager_basis":  "OpenWrt 24.10.4 policy: prefer opkg/.ipk before 25.12",
+                      "architecture":  "aarch64_cortex-a53",
+                      "architecture_source":  "DISTRIB_ARCH",
+                      "architecture_confidence":  "high",
+                      "candidates":  {
+                                         "distrib_arch":  "aarch64_cortex-a53",
+                                         "openwrt_arch":  "aarch64_cortex-a53",
+                                         "opkg_primary_arch":  "aarch64_cortex-a53",
+                                         "uname_machine":  "aarch64"
+                                     }
+                  },
+    "installed":  {
+                      "package_versions":  {
+                                               "passwall2":  "26.3.5-r1",
+                                               "xray":  "25.12.1-r1",
+                                               "sing_box":  null,
+                                               "hysteria":  null,
+                                               "geoview_or_geodata":  "0.1.11-r1"
+                                           },
+                      "runtime_versions":  {
+                                               "xray":  "26.2.6",
+                                               "sing_box":  null,
+                                               "hysteria":  null,
+                                               "geoview":  "0.2.5"
+                                           }
+                  },
+    "recommendation":  {
+                           "app_artifact_name":  "luci-app-passwall2_26.4.2-r1_all.ipk",
+                           "app_artifact_url":  "https://github.com/Openwrt-Passwall/openwrt-passwall2/releases/download/26.4.2-1/luci-app-passwall2_26.4.2-r1_all.ipk",
+                           "component_bundle_name":  "passwall_packages_ipk_aarch64_cortex-a53.zip",
+                           "component_bundle_url":  "https://github.com/Openwrt-Passwall/openwrt-passwall2/releases/download/26.4.2-1/passwall_packages_ipk_aarch64_cortex-a53.zip",
+                           "component_update_strategy":  "Prefer package-based component updates; use the built-in binary updater only as a fallback/manual override.",
+                           "built_in_component_updater":  "fallback-only"
+                       },
+    "commands":  [
+                     "opkg install ./luci-app-passwall2_26.4.2-r1_all.ipk",
+                     "# unzip passwall_packages_ipk_aarch64_cortex-a53.zip and install only the component packages you need with opkg",
+                     "/etc/init.d/passwall2 restart",
+                     "lua /usr/share/passwall2/rule_update.lua log geoip,geosite",
+                     "lua /usr/share/passwall2/subscribe.lua start all"
+                 ],
+    "checklist":  [
+                      "Back up /etc/config/passwall2 and /etc/config/passwall2_server before touching packages or binaries.",
+                      "Capture current installed package versions and binary versions before the change window.",
+                      "Use opkg and .ipk artifacts for the main PassWall2 application update.",
+                      "Install the app package that matches the current release: luci-app-passwall2_26.4.2-r1_all.ipk.",
+                      "Extract passwall_packages_ipk_aarch64_cortex-a53.zip and install only the component packages required on this router.",
+                      "Restart PassWall2 after package changes and verify service health before any subscription or rule refresh.",
+                      "Keep application update, component update, geo rules refresh, and subscription refresh as separate maintenance actions."
+                  ],
+    "notes":  [
+                  "Runtime drift detected for xray: package database says 25.12.1-r1, but the binary reports 26.2.6.",
+                  "Runtime drift detected for geoview: package database says 0.1.11-r1, but the binary reports 0.2.5."
+              ],
+    "release_lookup":  {
+                           "tag":  "26.4.2-1",
+                           "published_at":  "2026-04-02T16:43:24Z",
+                           "release_url":  "https://github.com/Openwrt-Passwall/openwrt-passwall2/releases/tag/26.4.2-1"
+                       }
+}

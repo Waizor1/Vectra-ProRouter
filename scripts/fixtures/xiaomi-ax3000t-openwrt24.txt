@@ -1,0 +1,43 @@
+{
+  "kernel": "6.6.73",
+  "hostname": "OpenWrt",
+  "system": "ARMv8 Processor rev 4",
+  "model": "Xiaomi AX3000T",
+  "board_name": "xiaomi,ax3000t",
+  "release": {
+    "distribution": "OpenWrt",
+    "version": "24.10.0",
+    "revision": "r28427-6df0e3d02a",
+    "target": "mediatek/filogic",
+    "description": "OpenWrt 24.10.0 r28427-6df0e3d02a"
+  }
+}
+--- openwrt_release ---
+DISTRIB_ID='OpenWrt'
+DISTRIB_RELEASE='24.10.0'
+DISTRIB_REVISION='r28427-6df0e3d02a'
+DISTRIB_TARGET='mediatek/filogic'
+DISTRIB_ARCH='aarch64_cortex-a53'
+DISTRIB_DESCRIPTION='OpenWrt 24.10.0 r28427-6df0e3d02a'
+--- os-release ---
+NAME="OpenWrt"
+VERSION="24.10.0"
+OPENWRT_ARCH='aarch64_cortex-a53'
+--- package manager ---
+opkg version 2024.02.15~6c4dc95e-r1
+--- architectures ---
+arch all 1
+arch noarch 1
+arch aarch64_cortex-a53 10
+aarch64
+--- passwall status ---
+1
+cfg06ab12
+--- installed packages ---
+luci-app-passwall2 - 26.4.2-r1
+xray-core - 1.8.24-r1
+sing-box - 1.11.6-r1
+hysteria - 2.6.1-r1
+geoview - 0.2.8-r1
+v2ray-geoip - 20260312-r1
+v2ray-geosite - 20260312-r1

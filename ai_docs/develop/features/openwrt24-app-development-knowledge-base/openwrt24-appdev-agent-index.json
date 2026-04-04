@@ -1,0 +1,79 @@
+{
+  "version": "2026-04-04",
+  "purpose": "Machine-readable navigation index for OpenWrt 24.xx application and package development lifecycle",
+  "entry_docs": {
+    "root_agents": "AGENTS.md",
+    "runbook": "RTK.md",
+    "kb_index": "ai_docs/develop/features/openwrt24-app-development-knowledge-base/README.md",
+    "lifecycle_and_toolchains": "ai_docs/develop/features/openwrt24-app-development-knowledge-base/01-lifecycle-and-toolchains.md",
+    "package_layout_and_makefile": "ai_docs/develop/features/openwrt24-app-development-knowledge-base/02-package-layout-and-makefile.md",
+    "service_config_and_luci": "ai_docs/develop/features/openwrt24-app-development-knowledge-base/03-service-config-and-luci.md",
+    "build_test_install_debug": "ai_docs/develop/features/openwrt24-app-development-knowledge-base/04-build-test-install-debug.md",
+    "release_feed_signing_updates": "ai_docs/develop/features/openwrt24-app-development-knowledge-base/05-release-feed-signing-and-updates.md",
+    "cheatsheet": "ai_docs/develop/features/openwrt24-app-development-knowledge-base/06-cheatsheet.md",
+    "package_skeleton": "ai_docs/develop/features/openwrt24-app-development-knowledge-base/07-package-skeleton.md",
+    "live_tmp_test_harness": "ai_docs/develop/features/router-ax3000t-safe-test-harness.md",
+    "recovery_write_safety": "ai_docs/develop/features/openwrt24-console-knowledge-base/08-filogic-recovery-write-safety.md",
+    "sources": "ai_docs/develop/features/openwrt24-app-development-knowledge-base/sources.md"
+  },
+  "platform_defaults": {
+    "openwrt_family": "24.xx",
+    "baseline_release": "24.10.x",
+    "package_manager": "opkg",
+    "package_format": "ipk",
+    "preferred_build_env_for_apps": "SDK",
+    "full_tree_when_needed": "buildroot",
+    "ui_packaging_pattern": "separate luci-app-* package"
+  },
+  "command_families": {
+    "feeds": [
+      "./scripts/feeds update -a",
+      "./scripts/feeds install -a",
+      "./scripts/feeds update <feed>",
+      "./scripts/feeds install -p <feed> <package>"
+    ],
+    "build": [
+      "make menuconfig",
+      "make package/<pkg>/clean",
+      "make package/<pkg>/compile V=s",
+      "make package/<pkg>/configure V=s"
+    ],
+    "router_install": [
+      "opkg install /tmp/<pkg>.ipk",
+      "opkg upgrade /tmp/<pkg>.ipk",
+      "service <name> status",
+      "logread -e <name>"
+    ],
+    "live_tmp_test": [
+      "powershell -ExecutionPolicy Bypass -File .\\scripts\\Manage-OpenWrtTmpProgramSession.ps1 -Action baseline ...",
+      "powershell -ExecutionPolicy Bypass -File .\\scripts\\Manage-OpenWrtTmpProgramSession.ps1 -Action start ...",
+      "powershell -ExecutionPolicy Bypass -File .\\scripts\\Manage-OpenWrtTmpProgramSession.ps1 -Action status -SessionId <id> ...",
+      "powershell -ExecutionPolicy Bypass -File .\\scripts\\Manage-OpenWrtTmpProgramSession.ps1 -Action cleanup -SessionId <id> ..."
+    ],
+    "feed_publish": [
+      "./scripts/ipkg-make-index.sh /path/to/repo > /path/to/repo/Packages",
+      "gzip -9c /path/to/repo/Packages > /path/to/repo/Packages.gz",
+      "usign -G -s key-build -p key-build.pub -c \"Local build key\"",
+      "usign -S -m /path/to/repo/Packages -s key-build -x /path/to/repo/Packages.sig"
+    ],
+    "feed_consume": [
+      "opkg-key add /tmp/key-build.pub",
+      "opkg update",
+      "opkg list-upgradable",
+      "opkg upgrade <pkg>"
+    ]
+  },
+  "lifecycle_rules": [
+    "Use PKG_VERSION for upstream application changes",
+    "Use PKG_RELEASE for packaging-only changes",
+    "Declare conffiles for persisted configuration",
+    "Use tmp-based live tests before package/service integration on the live AX3000T",
+    "Test fresh install, upgrade and remove before publishing",
+    "Read the Filogic recovery/write-safety runbook before live package or service integration",
+    "Treat manual file replacement on the router as an anti-pattern"
+  ],
+  "local_utilities": {
+    "live_router_inventory": "scripts/Get-OpenWrtRouterInventory.ps1",
+    "tmp_test_harness": "scripts/Manage-OpenWrtTmpProgramSession.ps1"
+  }
+}
