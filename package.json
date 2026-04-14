@@ -1,0 +1,12 @@
+{
+  "name": "vectra-prorouter",
+  "private": true,
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "dev": "pnpm --filter @vectra/web dev",
+    "build": "pnpm --filter @vectra/web build",
+    "lint": "pnpm --filter @vectra/web lint",
+    "typecheck": "pnpm --filter @vectra/web typecheck",
+    "test": "pnpm --filter @vectra/web test --run && cd router/vectra-controller-agent && go test ./..."
+  }
+}

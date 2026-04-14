@@ -1,0 +1,27 @@
+FROM public.ecr.aws/docker/library/node:20-bookworm-slim
+
+ENV PNPM_HOME=/pnpm
+ENV PATH=${PNPM_HOME}:${PATH}
+ENV NEXT_TELEMETRY_DISABLED=1
+
+RUN corepack enable
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY apps/web/package.json ./apps/web/package.json
+COPY packages/contracts/package.json ./packages/contracts/package.json
+COPY packages/db/package.json ./packages/db/package.json
+
+RUN pnpm install --frozen-lockfile
+
+COPY apps/web ./apps/web
+COPY packages/contracts ./packages/contracts
+COPY packages/db ./packages/db
+
+ENV SKIP_ENV_VALIDATION=1
+RUN pnpm --filter @vectra/web build
+
+EXPOSE 3000
+
+CMD ["pnpm", "--filter", "@vectra/web", "start", "--hostname", "0.0.0.0", "--port", "3000"]

@@ -1,0 +1,701 @@
+import type {
+  RouterTelegramReachability,
+  SupportState,
+} from "@vectra/contracts";
+
+import { getEffectiveRouterStatus, getRouterOfflineThresholdMs } from "./router-presence";
+
+type MonitoringOperationalState =
+  | "stable"
+  | "recovery"
+  | "offline"
+  | "review"
+  | "blocked";
+
+type MonitoringFreshnessState = "fresh" | "watch" | "offline" | "never";
+type MonitoringAlertSeverity = "critical" | "warning" | "info";
+type MonitoringAlertKind =
+  | "direct_mode"
+  | "incident"
+  | "offline"
+  | "import_review"
+  | "out_of_sync"
+  | "awaiting_import"
+  | "blocked_support";
+
+type MonitoringChartTone = "good" | "warning" | "critical" | "default";
+
+export type FleetMonitoringRouterInput = {
+  id: string;
+  name: string;
+  status: "pending" | "active" | "offline" | "direct" | "rescue" | "disabled";
+  importState: "awaiting_import" | "import_review" | "approved" | "out_of_sync";
+  supportState: SupportState;
+  lastSeenAt: Date | null;
+  selectedNode: string;
+  passwallEnabled: boolean;
+  nodeCount: number;
+  subscriptionCount: number;
+  controllerVersion: string;
+  passwallVersion: string;
+  components: Record<string, string>;
+  telegramReachability?: RouterTelegramReachability | null;
+  queuedJobCount: number;
+  lastRescueReason: string | null;
+  openIncident: {
+    type:
+      | "proxy_outage"
+      | "server_unreachable"
+      | "subscription_degraded"
+      | "entered_direct_mode"
+      | "recovered";
+    reason: string;
+    openedAt: Date | null;
+  } | null;
+};
+
+type FleetMonitoringChartFilter = {
+  kind: "operational" | "freshness";
+  value: string;
+};
+
+type FleetMonitoringChartSlice = {
+  key: string;
+  label: string;
+  count: number;
+  percent: number;
+  tone: MonitoringChartTone;
+  description: string;
+  filter: FleetMonitoringChartFilter;
+};
+
+type FleetMonitoringChart = {
+  id: "operational" | "freshness";
+  title: string;
+  description: string;
+  slices: FleetMonitoringChartSlice[];
+};
+
+type FleetMonitoringStat = {
+  label: string;
+  value: string;
+  tone: "default" | "good" | "warning";
+  hint: string;
+};
+
+type FleetMonitoringAlert = {
+  id: string;
+  kind: MonitoringAlertKind;
+  severity: MonitoringAlertSeverity;
+  routerId: string;
+  routerName: string;
+  href: string;
+  title: string;
+  description: string;
+  openedAt: string | null;
+  filters: {
+    operational: MonitoringOperationalState;
+    freshness: MonitoringFreshnessState;
+  };
+};
+
+type FleetMonitoringRouter = {
+  id: string;
+  name: string;
+  selectedNode: string;
+  passwallEnabled: boolean;
+  directMode: boolean;
+  offline: boolean;
+  reachable: boolean;
+  statusLabel: string;
+  nodeCount: number;
+  subscriptionCount: number;
+  controllerVersion: string;
+  passwallVersion: string;
+  components: Record<string, string>;
+  telegramReachability?: RouterTelegramReachability | null;
+  lastSeen: string;
+  pendingChanges: number;
+  lastRescue: string;
+  importState: string;
+  needsImportReview: boolean;
+  lastSeenAt: string | null;
+  operationalState: MonitoringOperationalState;
+  freshnessState: MonitoringFreshnessState;
+  supportState: SupportState;
+  alertKinds: MonitoringAlertKind[];
+};
+
+export type FleetMonitoringSnapshot = {
+  generatedAt: string;
+  notificationNote: string;
+  stats: FleetMonitoringStat[];
+  charts: FleetMonitoringChart[];
+  alerts: FleetMonitoringAlert[];
+  routers: FleetMonitoringRouter[];
+  totalAlerts: number;
+};
+
+function formatRelativeTime(value: Date | null | undefined, now = new Date()) {
+  if (!value) {
+    return "никогда";
+  }
+
+  const diffMs = Math.max(0, now.getTime() - value.getTime());
+  const diffMinutes = Math.round(diffMs / 60000);
+  if (diffMinutes < 1) {
+    return "только что";
+  }
+  if (diffMinutes < 60) {
+    return `${diffMinutes} мин назад`;
+  }
+
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `${diffHours} ч назад`;
+  }
+
+  const diffDays = Math.round(diffHours / 24);
+  return `${diffDays} дн назад`;
+}
+
+function formatIso(value: Date | null | undefined) {
+  return value ? value.toISOString() : null;
+}
+
+function getFreshnessState(
+  lastSeenAt: Date | null,
+  now: Date,
+  offlineThresholdMs: number,
+): MonitoringFreshnessState {
+  if (!lastSeenAt) {
+    return "never";
+  }
+
+  const diffMs = Math.max(0, now.getTime() - lastSeenAt.getTime());
+  if (diffMs > offlineThresholdMs) {
+    return "offline";
+  }
+
+  if (diffMs > offlineThresholdMs / 2) {
+    return "watch";
+  }
+
+  return "fresh";
+}
+
+function getOperationalState(
+  input: FleetMonitoringRouterInput,
+  reachable: boolean,
+): MonitoringOperationalState {
+  if (!reachable) {
+    return "offline";
+  }
+
+  if (input.supportState === "blocked") {
+    return "blocked";
+  }
+
+  if (
+    input.status === "direct" ||
+    input.status === "rescue" ||
+    (input.openIncident !== null && input.openIncident.type !== "recovered")
+  ) {
+    return "recovery";
+  }
+
+  if (input.importState !== "approved") {
+    return "review";
+  }
+
+  return "stable";
+}
+
+function getStatusLabel(input: FleetMonitoringRouterInput, reachable: boolean) {
+  if (!reachable) {
+    return "Нет связи";
+  }
+
+  if (input.status === "rescue") {
+    return "Rescue / восстановление";
+  }
+
+  if (input.status === "direct") {
+    return "Прямой режим";
+  }
+
+  if (input.status === "disabled") {
+    return "Отключён";
+  }
+
+  if (input.status === "pending") {
+    return "Ожидает первичный импорт";
+  }
+
+  return input.passwallEnabled ? "Прокси-режим" : "PassWall2 выключен";
+}
+
+function getIncidentSeverity(
+  type: FleetMonitoringRouterInput["openIncident"] extends infer T
+    ? T extends { type: infer U }
+      ? U
+      : never
+    : never,
+): MonitoringAlertSeverity {
+  switch (type) {
+    case "subscription_degraded":
+      return "warning";
+    case "recovered":
+      return "info";
+    default:
+      return "critical";
+  }
+}
+
+function getIncidentTitle(
+  type: FleetMonitoringRouterInput["openIncident"] extends infer T
+    ? T extends { type: infer U }
+      ? U
+      : never
+    : never,
+) {
+  switch (type) {
+    case "proxy_outage":
+      return "Прокси-маршрут деградировал";
+    case "server_unreachable":
+      return "Апстрим недоступен";
+    case "subscription_degraded":
+      return "Подписка деградировала";
+    case "entered_direct_mode":
+      return "Роутер ушёл в прямой режим";
+    case "recovered":
+      return "Роутер восстановился";
+    default:
+      return "Открыт rescue-инцидент";
+  }
+}
+
+function buildAlerts(
+  router: FleetMonitoringRouter,
+  incident: FleetMonitoringRouterInput["openIncident"],
+): FleetMonitoringAlert[] {
+  const alerts: FleetMonitoringAlert[] = [];
+  const href = `/routers/${router.id}`;
+  const routerFilters = {
+    operational: router.operationalState,
+    freshness: router.freshnessState,
+  } as const;
+
+  if (router.offline) {
+    alerts.push({
+      id: `offline:${router.id}`,
+      kind: "offline",
+      severity: "critical",
+      routerId: router.id,
+      routerName: router.name,
+      href,
+      title: "Нет свежей связи",
+      description:
+        router.lastSeenAt === null
+          ? "Контроллер ещё не сделал первый check-in."
+          : `Последний известный check-in: ${router.lastSeen}.`,
+      openedAt: router.lastSeenAt,
+      filters: routerFilters,
+    });
+  }
+
+  if (router.directMode) {
+    alerts.push({
+      id: `direct:${router.id}`,
+      kind: "direct_mode",
+      severity: "critical",
+      routerId: router.id,
+      routerName: router.name,
+      href,
+      title:
+        router.statusLabel === "Rescue / восстановление"
+          ? "Роутер в rescue-сценарии"
+          : "Роутер в прямом режиме",
+      description:
+        incident?.reason ??
+        router.lastRescue.replace(/^Последнее известное rescue:\s*/i, ""),
+      openedAt: incident?.openedAt ? formatIso(incident.openedAt) : router.lastSeenAt,
+      filters: routerFilters,
+    });
+  } else if (
+    incident &&
+    incident.type !== "recovered" &&
+    router.operationalState === "recovery"
+  ) {
+    alerts.push({
+      id: `incident:${router.id}:${incident.type}`,
+      kind: "incident",
+      severity: getIncidentSeverity(incident.type),
+      routerId: router.id,
+      routerName: router.name,
+      href,
+      title: getIncidentTitle(incident.type),
+      description: incident.reason,
+      openedAt: formatIso(incident.openedAt),
+      filters: routerFilters,
+    });
+  }
+
+  switch (router.importState) {
+    case "import_review":
+      alerts.push({
+        id: `import_review:${router.id}`,
+        kind: "import_review",
+        severity: "warning",
+        routerId: router.id,
+        routerName: router.name,
+        href,
+        title: "Нужна проверка импорта",
+        description:
+          "Панель ждёт, что оператор примет импортированную конфигурацию как эталон.",
+        openedAt: router.lastSeenAt,
+        filters: routerFilters,
+      });
+      break;
+    case "out_of_sync":
+      alerts.push({
+        id: `out_of_sync:${router.id}`,
+        kind: "out_of_sync",
+        severity: "warning",
+        routerId: router.id,
+        routerName: router.name,
+        href,
+        title: "Обнаружен дрейф конфигурации",
+        description:
+          "Нужно сравнить текущий импорт роутера с эталоном и решить, что делать дальше.",
+        openedAt: router.lastSeenAt,
+        filters: routerFilters,
+      });
+      break;
+    case "awaiting_import":
+      alerts.push({
+        id: `awaiting_import:${router.id}`,
+        kind: "awaiting_import",
+        severity: "info",
+        routerId: router.id,
+        routerName: router.name,
+        href,
+        title: "Ожидается первый импорт",
+        description:
+          "Контроллер зарегистрирован, но authoritative-конфигурация ещё не подтверждена.",
+        openedAt: router.lastSeenAt,
+        filters: routerFilters,
+      });
+      break;
+  }
+
+  if (router.supportState === "blocked" && !router.offline) {
+    alerts.push({
+      id: `blocked:${router.id}`,
+      kind: "blocked_support",
+      severity: "warning",
+      routerId: router.id,
+      routerName: router.name,
+      href,
+      title: "Операции заблокированы support-профилем",
+      description:
+        "Плата вне pilot/certified контура, поэтому destructive-действия из панели отключены.",
+      openedAt: router.lastSeenAt,
+      filters: routerFilters,
+    });
+  }
+
+  return alerts;
+}
+
+function compareAlerts(left: FleetMonitoringAlert, right: FleetMonitoringAlert) {
+  const severityScore: Record<MonitoringAlertSeverity, number> = {
+    critical: 3,
+    warning: 2,
+    info: 1,
+  };
+
+  const severityDiff = severityScore[right.severity] - severityScore[left.severity];
+  if (severityDiff !== 0) {
+    return severityDiff;
+  }
+
+  const leftTime = left.openedAt ? Date.parse(left.openedAt) : 0;
+  const rightTime = right.openedAt ? Date.parse(right.openedAt) : 0;
+  return rightTime - leftTime;
+}
+
+function compareRouters(left: FleetMonitoringRouter, right: FleetMonitoringRouter) {
+  const stateScore: Record<MonitoringOperationalState, number> = {
+    recovery: 5,
+    offline: 4,
+    blocked: 3,
+    review: 2,
+    stable: 1,
+  };
+
+  const stateDiff = stateScore[right.operationalState] - stateScore[left.operationalState];
+  if (stateDiff !== 0) {
+    return stateDiff;
+  }
+
+  const queueDiff = right.pendingChanges - left.pendingChanges;
+  if (queueDiff !== 0) {
+    return queueDiff;
+  }
+
+  const leftTime = left.lastSeenAt ? Date.parse(left.lastSeenAt) : 0;
+  const rightTime = right.lastSeenAt ? Date.parse(right.lastSeenAt) : 0;
+  return rightTime - leftTime;
+}
+
+function buildSlices<T extends string>(options: {
+  items: readonly {
+    key: T;
+    label: string;
+    tone: MonitoringChartTone;
+    description: string;
+  }[];
+  counts: Record<T, number>;
+  total: number;
+  filterKind: FleetMonitoringChartFilter["kind"];
+}) {
+  return options.items.map((item) => {
+    const count = options.counts[item.key] ?? 0;
+    const percent = options.total > 0 ? Math.round((count / options.total) * 100) : 0;
+
+    return {
+      key: item.key,
+      label: item.label,
+      count,
+      percent,
+      tone: item.tone,
+      description: item.description,
+      filter: {
+        kind: options.filterKind,
+        value: item.key,
+      },
+    };
+  });
+}
+
+export function buildFleetMonitoringSnapshot(args: {
+  routers: FleetMonitoringRouterInput[];
+  openIncidentCount: number;
+  queuedJobs: number;
+  now?: Date;
+  offlineThresholdMs?: number;
+}): FleetMonitoringSnapshot {
+  const now = args.now ?? new Date();
+  const offlineThresholdMs = args.offlineThresholdMs ?? getRouterOfflineThresholdMs();
+
+  const operationalCounts: Record<MonitoringOperationalState, number> = {
+    stable: 0,
+    recovery: 0,
+    offline: 0,
+    review: 0,
+    blocked: 0,
+  };
+  const freshnessCounts: Record<MonitoringFreshnessState, number> = {
+    fresh: 0,
+    watch: 0,
+    offline: 0,
+    never: 0,
+  };
+
+  const routers = args.routers.map((input) => {
+    const effectiveStatus = getEffectiveRouterStatus(input.status, input.lastSeenAt, now);
+    const reachable = effectiveStatus !== "offline";
+    const freshnessState = getFreshnessState(input.lastSeenAt, now, offlineThresholdMs);
+    const operationalState = getOperationalState(input, reachable);
+    const directMode =
+      reachable && (input.status === "direct" || input.status === "rescue");
+    const router: FleetMonitoringRouter = {
+      id: input.id,
+      name: input.name,
+      selectedNode: input.selectedNode,
+      passwallEnabled: reachable && input.passwallEnabled,
+      directMode,
+      offline: !reachable,
+      reachable,
+      statusLabel: getStatusLabel(input, reachable),
+      nodeCount: input.nodeCount,
+      subscriptionCount: input.subscriptionCount,
+      controllerVersion: input.controllerVersion,
+      passwallVersion: input.passwallVersion,
+      components: input.components,
+      telegramReachability: input.telegramReachability ?? null,
+      lastSeen: formatRelativeTime(input.lastSeenAt, now),
+      pendingChanges: input.queuedJobCount,
+      lastRescue:
+        input.lastRescueReason && input.lastRescueReason.length > 0
+          ? reachable
+            ? input.lastRescueReason
+            : `Последнее известное rescue: ${input.lastRescueReason}`
+          : "Нет недавних rescue-событий",
+      importState: input.importState,
+      needsImportReview: input.importState !== "approved",
+      lastSeenAt: formatIso(input.lastSeenAt),
+      operationalState,
+      freshnessState,
+      supportState: input.supportState,
+      alertKinds: [],
+    };
+
+    operationalCounts[operationalState] += 1;
+    freshnessCounts[freshnessState] += 1;
+
+    return {
+      router,
+      incident: input.openIncident,
+    };
+  });
+
+  const alerts = routers
+    .flatMap(({ router, incident }) => {
+      const nextAlerts = buildAlerts(router, incident);
+      router.alertKinds = nextAlerts.map((alert) => alert.kind);
+      return nextAlerts;
+    })
+    .sort(compareAlerts);
+
+  const sortedRouters = routers
+    .map(({ router }) => router)
+    .sort(compareRouters);
+
+  const problemRouters = sortedRouters.filter((router) =>
+    ["recovery", "offline", "blocked"].includes(router.operationalState),
+  ).length;
+  const reviewRouters = sortedRouters.filter(
+    (router) => router.operationalState === "review",
+  ).length;
+
+  return {
+    generatedAt: now.toISOString(),
+    notificationNote:
+      "Браузерные уведомления срабатывают, пока вкладка панели открыта. Это быстрый local alerting без отдельного push-сервиса.",
+    stats: [
+      {
+        label: "Всего устройств",
+        value: String(args.routers.length),
+        tone: "default",
+        hint: "Все роутеры, которые уже зарегистрированы в панели.",
+      },
+      {
+        label: "В строю",
+        value: String(operationalCounts.stable),
+        tone: operationalCounts.stable > 0 ? "good" : "default",
+        hint: "Связь свежая, import approved, pilot/certified контур без активных проблем.",
+      },
+      {
+        label: "Проблемные",
+        value: String(problemRouters),
+        tone: problemRouters > 0 ? "warning" : "default",
+        hint: "Офлайн, recovery/direct mode или blocked support-профиль.",
+      },
+      {
+        label: "Импорт / drift",
+        value: String(reviewRouters),
+        tone: reviewRouters > 0 ? "warning" : "default",
+        hint: "Нужно принять импорт или проверить конфигурационный дрейф.",
+      },
+      {
+        label: "Открытые инциденты",
+        value: String(args.openIncidentCount),
+        tone: args.openIncidentCount > 0 ? "warning" : "default",
+        hint: "Текущие rescue/health incident записи по парку.",
+      },
+      {
+        label: "Задания в очереди",
+        value: String(args.queuedJobs),
+        tone: args.queuedJobs > 0 ? "warning" : "default",
+        hint: "Jobs, которые ещё не завершились на роутерах.",
+      },
+    ],
+    charts: [
+      {
+        id: "operational",
+        title: "Операционный контур",
+        description:
+          "Клик по сегменту отфильтрует парк ниже и оставит только нужный operational lane.",
+        slices: buildSlices({
+          items: [
+            {
+              key: "stable",
+              label: "В строю",
+              tone: "good",
+              description: "Свежая связь, approved-эталон и без активных проблем.",
+            },
+            {
+              key: "recovery",
+              label: "Recovery",
+              tone: "critical",
+              description: "Direct/rescue mode или активный incident, где нужно реагировать быстро.",
+            },
+            {
+              key: "offline",
+              label: "Нет связи",
+              tone: "critical",
+              description: "Контроллер давно не делал check-in, состояние роутера уже stale.",
+            },
+            {
+              key: "review",
+              label: "Проверка",
+              tone: "warning",
+              description: "Импорт, drift или состояние вне approved authoritative-контура.",
+            },
+            {
+              key: "blocked",
+              label: "Заблокированы",
+              tone: "warning",
+              description: "Устройства вне pilot/certified контура, где destructive-действия запрещены.",
+            },
+          ],
+          counts: operationalCounts,
+          total: args.routers.length,
+          filterKind: "operational",
+        }),
+      },
+      {
+        id: "freshness",
+        title: "Свежесть связи",
+        description:
+          "Показывает, насколько свежий последний check-in по текущему heartbeat window панели.",
+        slices: buildSlices({
+          items: [
+            {
+              key: "fresh",
+              label: "Свежая",
+              tone: "good",
+              description: "Недавний check-in, роутер явно на связи прямо сейчас.",
+            },
+            {
+              key: "watch",
+              label: "На грани",
+              tone: "warning",
+              description: "Связь ещё считается живой, но уже близко к offline threshold.",
+            },
+            {
+              key: "offline",
+              label: "Офлайн",
+              tone: "critical",
+              description: "Heartbeat window уже пройден, текущие runtime-данные считаются stale.",
+            },
+            {
+              key: "never",
+              label: "Без check-in",
+              tone: "default",
+              description: "Устройство зарегистрировано, но ещё не прислало ни одного check-in.",
+            },
+          ],
+          counts: freshnessCounts,
+          total: args.routers.length,
+          filterKind: "freshness",
+        }),
+      },
+    ],
+    alerts,
+    routers: sortedRouters,
+    totalAlerts: alerts.length,
+  };
+}

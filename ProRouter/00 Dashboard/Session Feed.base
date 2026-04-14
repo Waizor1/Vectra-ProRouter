@@ -1,0 +1,16 @@
+filters:
+  and:
+    - file.inFolder("04 Sessions/Daily")
+    - 'file.ext == "md"'
+
+properties:
+  date:
+    displayName: Date
+
+views:
+  - type: table
+    name: "Daily Sessions"
+    order:
+      - file.name
+      - date
+      - file.mtime

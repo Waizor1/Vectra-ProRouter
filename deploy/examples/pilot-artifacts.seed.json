@@ -1,0 +1,38 @@
+{
+  "artifacts": [
+    {
+      "type": "firmware",
+      "channel": "stable",
+      "name": "ax3000t-stock-openwrt",
+      "version": "24.10.6-r1",
+      "architecture": "aarch64_cortex-a53",
+      "boardName": "xiaomi,mi-router-ax3000t",
+      "layoutFamily": "stock-layout",
+      "downloadPath": "firmware/stable/ax3000t-stock/openwrt-24.10.6.bin",
+      "file": "deploy/runtime/artifacts/firmware/stable/ax3000t-stock/openwrt-24.10.6.bin",
+      "metadata": {
+        "layoutFamily": "stock-layout",
+        "boardLabel": "Xiaomi AX3000T",
+        "notes": "Guarded stock-layout OpenWrt 24.10.6 candidate for validation and manual sysupgrade only."
+      }
+    }
+  ],
+  "firmwareManifests": [
+    {
+      "boardName": "xiaomi,mi-router-ax3000t",
+      "target": "mediatek/filogic",
+      "architecture": "aarch64_cortex-a53",
+      "layoutFamily": "stock-layout",
+      "channel": "stable",
+      "version": "24.10.6-r1",
+      "artifactName": "ax3000t-stock-openwrt",
+      "artifactVersion": "24.10.6-r1",
+      "validationCommand": "sysupgrade -T /tmp/firmware.bin",
+      "rolloutPolicy": {
+        "guarded": true,
+        "manualOnly": true,
+        "requiresOperatorPreview": true
+      }
+    }
+  ]
+}

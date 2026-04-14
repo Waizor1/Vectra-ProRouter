@@ -1,0 +1,21 @@
+filters:
+  and:
+    - file.inFolder("03 Decisions")
+    - 'file.ext == "md"'
+
+properties:
+  id:
+    displayName: ADR
+  status:
+    displayName: Status
+  date:
+    displayName: Date
+
+views:
+  - type: table
+    name: "Decisions"
+    order:
+      - id
+      - status
+      - date
+      - file.name

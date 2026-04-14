@@ -1,0 +1,56 @@
+#!/bin/sh
+
+set -eu
+
+changed=0
+
+set_if_empty() {
+	local option="$1"
+	local value="$2"
+	local current
+
+	[ -n "$value" ] || return 0
+	current="$(uci -q get "vectra-controller.main.$option" || true)"
+	[ -n "$current" ] && return 0
+	uci -q set "vectra-controller.main.$option=$value"
+	changed=1
+}
+
+delete_if_present() {
+	local option="$1"
+	local current
+
+	current="$(uci -q get "vectra-controller.main.$option" || true)"
+	[ -n "$current" ] || return 0
+	uci -q delete "vectra-controller.main.$option"
+	changed=1
+}
+
+[ -f /etc/openwrt_release ] && . /etc/openwrt_release
+
+# Keep only stable operator-managed settings in UCI. Live hardware/version facts are
+# derived at render time so package reinstalls do not keep producing -opkg shadows.
+set_if_empty control_url "https://api.vectra-pro.net"
+set_if_empty panel_url "https://router.vectra-pro.net"
+set_if_empty poll_interval "45s"
+set_if_empty request_timeout "10s"
+set_if_empty state_path "/etc/vectra-controller/state.json"
+set_if_empty status_path "/var/run/vectra-controller/status.json"
+set_if_empty config_render_path "/var/run/vectra-controller/config.json"
+
+delete_if_present controller_version
+delete_if_present device_display_name
+delete_if_present model
+delete_if_present board_name
+delete_if_present layout_family
+delete_if_present target
+delete_if_present architecture
+delete_if_present openwrt_release
+
+if [ "$changed" -eq 1 ]; then
+	uci commit vectra-controller
+fi
+
+rm -f /etc/config/vectra-controller-opkg
+
+exit 0

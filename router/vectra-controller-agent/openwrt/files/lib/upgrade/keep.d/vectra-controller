@@ -1,0 +1,3 @@
+# Preserve controller identity, issued credentials, revision state, rescue state,
+# and the retry-safe job journal across OpenWrt sysupgrade.
+/etc/vectra-controller

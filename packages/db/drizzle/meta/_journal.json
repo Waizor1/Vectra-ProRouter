@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1775335110703,
+      "tag": "0000_groovy_mentallo",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1775382664506,
+      "tag": "0001_flimsy_echo",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1775606880000,
+      "tag": "0002_mellow_watch_logs",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1775689783861,
+      "tag": "0003_parched_cassandra_nova",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1776067200000,
+      "tag": "0004_thin_global_template",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1776128400000,
+      "tag": "0005_spotty_terminal_command",
+      "breakpoints": true
+    }
+  ]
+}

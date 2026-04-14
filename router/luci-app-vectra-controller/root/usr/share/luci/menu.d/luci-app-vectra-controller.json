@@ -1,0 +1,18 @@
+{
+  "admin/services/vectra-controller": {
+    "title": "Контроллер Vectra",
+    "order": 92,
+    "action": {
+      "type": "view",
+      "path": "vectra-controller/status"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-vectra-controller"
+      ],
+      "uci": {
+        "vectra-controller": true
+      }
+    }
+  }
+}

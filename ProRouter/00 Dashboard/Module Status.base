@@ -1,0 +1,27 @@
+filters:
+  and:
+    - file.inFolder("02 Modules")
+    - 'file.ext == "md"'
+
+properties:
+  stage:
+    displayName: Stage
+  confidence:
+    displayName: Confidence
+  last-reviewed:
+    displayName: Reviewed
+  path:
+    displayName: Code Path
+
+views:
+  - type: table
+    name: "Modules"
+    order:
+      - file.name
+      - stage
+      - confidence
+      - last-reviewed
+      - path
+    groupBy:
+      property: stage
+      direction: ASC

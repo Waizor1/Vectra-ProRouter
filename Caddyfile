@@ -1,0 +1,81 @@
+{
+	email {$ACME_EMAIL}
+	log {
+		output stdout
+		format json
+	}
+}
+
+{$OPERATOR_DOMAIN} {
+	encode zstd gzip
+
+	log {
+		output stdout
+		format json
+	}
+
+	handle /artifacts {
+		root * /srv/artifacts
+		file_server browse
+	}
+
+	handle_path /artifacts/* {
+		root * /srv/artifacts
+		file_server
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	handle {
+		reverse_proxy web:3000 {
+			health_uri /api/health
+			health_interval 30s
+			health_timeout 5s
+		}
+	}
+}
+
+{$ROUTER_API_DOMAIN} {
+	encode zstd gzip
+
+	log {
+		output stdout
+		format json
+	}
+
+	handle /artifacts {
+		root * /srv/artifacts
+		file_server browse
+	}
+
+	handle_path /artifacts/* {
+		root * /srv/artifacts
+		file_server
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	handle /api/health {
+		reverse_proxy web:3000 {
+			health_uri /api/health
+			health_interval 30s
+			health_timeout 5s
+		}
+	}
+
+	handle /api/router/* {
+		reverse_proxy web:3000 {
+			health_uri /api/health
+			health_interval 30s
+			health_timeout 5s
+		}
+	}
+
+	handle {
+		redir https://{$OPERATOR_DOMAIN}{uri} 308
+	}
+}

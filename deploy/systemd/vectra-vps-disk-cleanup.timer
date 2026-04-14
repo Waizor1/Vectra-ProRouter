@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly Vectra VPS disk cleanup
+
+[Timer]
+Unit=vectra-vps-disk-cleanup.service
+OnCalendar=Sun 04:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

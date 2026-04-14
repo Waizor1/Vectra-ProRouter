@@ -18,22 +18,25 @@ Treat `passwall2/` as a source-of-truth code mirror for analysis unless the user
 ## 2. Fast Start Checklist
 
 1. Read `AGENTS.md`.
-2. Read `passwall2/AGENTS.md` if touching upstream code.
-3. For generic OpenWrt 24.xx platform work, read `ai_docs/develop/features/openwrt24-console-knowledge-base/06-cheatsheet.md` first, then `ai_docs/develop/features/openwrt24-console-knowledge-base/README.md`.
-4. For OpenWrt app/package development, read `ai_docs/develop/features/openwrt24-app-development-knowledge-base/06-cheatsheet.md` first, then `ai_docs/develop/features/openwrt24-app-development-knowledge-base/README.md`.
-5. For a real OpenWrt router, collect facts with `ai_docs/develop/features/openwrt24-console-knowledge-base/07-router-intake-template.md`.
-6. Read `ai_docs/develop/features/passwall2-ops-cheatsheet.md` for the shortest PassWall2 task path.
-7. Read `ai_docs/develop/features/passwall2-openwrt24-knowledge-base.md` if the task is PassWall2 operational, packaging, update-related, or router-specific.
-8. If the task is about the real Xiaomi AX3000T already analyzed in this workspace, read `ai_docs/develop/features/router-xiaomi-ax3000t-live-kb.md`.
-9. If the task is about testing a future custom program on the live AX3000T, read `ai_docs/develop/features/router-ax3000t-safe-test-harness.md`.
-10. If the task involves live writes, recovery, `sysupgrade`, or firmware safety on Filogic, read `ai_docs/develop/features/openwrt24-console-knowledge-base/08-filogic-recovery-write-safety.md`.
-11. Use `ai_docs/develop/features/passwall2-agent-index.json`, `ai_docs/develop/features/openwrt24-console-knowledge-base/openwrt24-agent-index.json`, or `ai_docs/develop/features/openwrt24-app-development-knowledge-base/openwrt24-appdev-agent-index.json` if you want structured lookup.
-12. If the user wants fresh live router facts, run `scripts/Get-OpenWrtRouterInventory.ps1` in read-only mode first.
-13. If the user wants bounded live tmp tests for a custom program, use `scripts/Manage-OpenWrtTmpProgramSession.ps1` before any package/service plan.
-14. If the user pasted PassWall2 router output, run `scripts/Resolve-Passwall2RouterPlan.ps1` first.
-15. For sysupgrade/recovery answers, prefer the local OpenWrt source mirrors in `openwrt-24.10-src/` and `procd-src/` over forum summaries.
-16. For version-sensitive questions, re-check current upstream releases before answering.
-17. When answering, separate:
+2. For any non-trivial task, read `ProRouter/Home.md`, `ProRouter/00 Dashboard/Agent Workflow.md`, `ProRouter/00 Dashboard/Stage Board.md`, and `ProRouter/00 Dashboard/Repo Map.md`.
+3. Read `passwall2/AGENTS.md` if touching upstream code.
+4. For generic OpenWrt 24.xx platform work, read `ai_docs/develop/features/openwrt24-console-knowledge-base/06-cheatsheet.md` first, then `ai_docs/develop/features/openwrt24-console-knowledge-base/README.md`.
+5. For OpenWrt app/package development, read `ai_docs/develop/features/openwrt24-app-development-knowledge-base/06-cheatsheet.md` first, then `ai_docs/develop/features/openwrt24-app-development-knowledge-base/README.md`.
+6. For a real OpenWrt router, collect facts with `ai_docs/develop/features/openwrt24-console-knowledge-base/07-router-intake-template.md`.
+7. Read `ai_docs/develop/features/passwall2-ops-cheatsheet.md` for the shortest PassWall2 task path.
+8. Read `ai_docs/develop/features/passwall2-openwrt24-knowledge-base.md` if the task is PassWall2 operational, packaging, update-related, or router-specific.
+9. If the task is about the real Xiaomi AX3000T already analyzed in this workspace, read `ai_docs/develop/features/router-xiaomi-ax3000t-live-kb.md`.
+10. If the task is about testing a future custom program on the live AX3000T, read `ai_docs/develop/features/router-ax3000t-safe-test-harness.md`.
+11. If the task involves live writes, recovery, `sysupgrade`, or firmware safety on Filogic, read `ai_docs/develop/features/openwrt24-console-knowledge-base/08-filogic-recovery-write-safety.md`.
+12. Use `ai_docs/develop/features/passwall2-agent-index.json`, `ai_docs/develop/features/openwrt24-console-knowledge-base/openwrt24-agent-index.json`, or `ai_docs/develop/features/openwrt24-app-development-knowledge-base/openwrt24-appdev-agent-index.json` if you want structured lookup.
+13. If the user wants fresh live router facts, run `scripts/Get-OpenWrtRouterInventory.ps1` in read-only mode first.
+14. If the user wants bounded live tmp tests for a custom program, use `scripts/Manage-OpenWrtTmpProgramSession.ps1` before any package/service plan.
+15. If the user pasted PassWall2 router output, run `scripts/Resolve-Passwall2RouterPlan.ps1` first.
+16. Before final response, append a completion update with `scripts/Add-ProRouterStatusEntry.ps1`.
+17. Run `scripts/Sync-ProRouterVault.ps1` after structural repo changes so the generated Obsidian repo map stays current.
+18. For sysupgrade/recovery answers, prefer the local OpenWrt source mirrors in `openwrt-24.10-src/` and `procd-src/` over forum summaries.
+19. For version-sensitive questions, re-check current upstream releases before answering.
+20. When answering, separate:
    - confirmed from code
    - confirmed from upstream release metadata
    - operational inference
@@ -75,6 +78,10 @@ Treat `passwall2/` as a source-of-truth code mirror for analysis unless the user
 
 ### Fast reference docs
 
+- `ProRouter/Home.md`
+- `ProRouter/00 Dashboard/Agent Workflow.md`
+- `ProRouter/00 Dashboard/Stage Board.md`
+- `ProRouter/00 Dashboard/Repo Map.md`
 - `ai_docs/develop/features/openwrt24-app-development-knowledge-base/README.md`
 - `ai_docs/develop/features/openwrt24-app-development-knowledge-base/06-cheatsheet.md`
 - `ai_docs/develop/features/openwrt24-app-development-knowledge-base/openwrt24-appdev-agent-index.json`
@@ -89,6 +96,8 @@ Treat `passwall2/` as a source-of-truth code mirror for analysis unless the user
 
 ### Local helper scripts
 
+- `scripts/Add-ProRouterStatusEntry.ps1`
+- `scripts/Sync-ProRouterVault.ps1`
 - `scripts/Get-Passwall2ReleaseAssets.ps1`
 - `scripts/Get-OpenWrtRouterInventory.ps1`
 - `scripts/Manage-OpenWrtTmpProgramSession.ps1`
@@ -268,6 +277,8 @@ If docs are stale, say so explicitly.
 - Distinguish "confirmed from source" from "recommended operationally".
 - When the user asks for current/latest versions, re-check upstream first.
 - If a task would change upstream source behavior, update the relevant docs after editing.
+- If a task materially changes repo structure or project status, update `ProRouter/` notes, append a completion entry, and refresh the generated repo map.
+- If forked or parallel agents are used, the main agent is responsible for consolidating their outputs into `ProRouter/`.
 
 ## 9. Preferred Documentation Targets
 
@@ -275,6 +286,14 @@ Use these files as the main documentation surfaces:
 
 - quick agent policy: `AGENTS.md`
 - deep runbook for agents: `RTK.md`
+- project memory hub: `ProRouter/Home.md`
+- project workflow: `ProRouter/00 Dashboard/Agent Workflow.md`
+- readiness view: `ProRouter/00 Dashboard/Stage Board.md`
+- generated repo structure: `ProRouter/00 Dashboard/Repo Map.md`
+- live Obsidian Bases views: `ProRouter/00 Dashboard/*.base`
+- per-module state: `ProRouter/02 Modules/`
+- decisions: `ProRouter/03 Decisions/`
+- dated session notes: `ProRouter/04 Sessions/Daily/`
 - generic OpenWrt appdev entry point: `ai_docs/develop/features/openwrt24-app-development-knowledge-base/README.md`
 - generic OpenWrt appdev cheatsheet: `ai_docs/develop/features/openwrt24-app-development-knowledge-base/06-cheatsheet.md`
 - generic OpenWrt appdev machine-readable lookup: `ai_docs/develop/features/openwrt24-app-development-knowledge-base/openwrt24-appdev-agent-index.json`
@@ -293,5 +312,7 @@ Use these files as the main documentation surfaces:
 - live inventory collector: `scripts/Get-OpenWrtRouterInventory.ps1`
 - tmp test harness: `scripts/Manage-OpenWrtTmpProgramSession.ps1`
 - router-facts planner: `scripts/Resolve-Passwall2RouterPlan.ps1`
+- completion status logger: `scripts/Add-ProRouterStatusEntry.ps1`
+- vault structure sync: `scripts/Sync-ProRouterVault.ps1`
 
 If you create new docs, keep them under `ai_docs/` unless the task is specifically about agent policy, in which case update `AGENTS.md`/`RTK.md`.

@@ -1,0 +1,23 @@
+{
+  "luci-app-vectra-controller": {
+    "description": "Grant access to the Vectra Controller LuCI app",
+    "read": {
+      "file": {
+        "/usr/libexec/vectra-controller/luci-bridge.sh *": [
+          "exec"
+        ]
+      },
+      "uci": [
+        "vectra-controller",
+        "passwall2",
+        "system"
+      ]
+    },
+    "write": {
+      "uci": [
+        "vectra-controller",
+        "passwall2"
+      ]
+    }
+  }
+}

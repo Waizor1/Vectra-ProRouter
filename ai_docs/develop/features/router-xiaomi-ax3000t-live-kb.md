@@ -4,7 +4,7 @@ Purpose: reusable live-router knowledge base for this exact device, collected in
 
 Scope: this document is about the real router reached at the usual LAN management address, not the generic upstream PassWall2 source mirror.
 
-Status: all router facts below were collected over SSH with read-only commands only. No package install, reboot, service restart, config write, or firmware action was executed for this KB.
+Status: the base profile below was collected read-only on `2026-04-04`. Additional live updates from `2026-04-07` are appended in section 14 after real package reinstall, approval recovery, and backup-surface verification.
 
 ## 1. Access Profile
 
@@ -272,3 +272,39 @@ External references:
 - OpenWrt `24.10.4` filogic target directory showing both stock-layout and `ubootmod` AX3000T artifacts: [downloads.openwrt.org 24.10.4 mediatek/filogic](https://downloads.openwrt.org/releases/24.10.4/targets/mediatek/filogic/)
 - Search-indexed OpenWrt forum thread pointing to firmware-selector use for AX3000T and distinguishing U-Boot layout images: [Go to release build AX3000T](https://forum.openwrt.org/t/go-to-release-build-ax3000t/197504)
 - Search-indexed OpenWrt forum thread referencing stock-bootloader TFTP recovery instructions for AX3000T: [Xiaomi AX3000T Bricked (no rapid blink)](https://forum.openwrt.org/t/xiaomi-ax3000t-bricked-no-rapid-blink/212425)
+
+## 14. Live Update: 2026-04-07
+
+Confirmed after a real manual sysupgrade and subsequent recovery work:
+
+- The router now runs OpenWrt `24.10.6`, revision `r29141-81be8a8869`, kernel `6.6.127`.
+- Board identity remains `xiaomi,mi-router-ax3000t`; layout family remains stock-layout.
+- Current management address in the LAN test contour is `192.168.1.1`.
+- Current controller packages on the router are:
+  - `vectra-controller-agent 0.1.10-r1`
+  - `luci-app-vectra-controller 0.1.10-r1`
+  - `luci-app-passwall2 26.4.5-r1`
+  - `xray-core 26.3.27-r1`
+  - `geoview 0.2.5-r1`
+- The current physical router identity in Vectra control plane is now `bdfdb919-5e06-4344-ad8b-67a16f3b6fcf`, and after approval recovery it is back in `active + approved`.
+- A new controller packaging fix was validated live:
+  - `vectra-controller-agent 0.1.9-r1` installs `/lib/upgrade/keep.d/vectra-controller`
+  - `sysupgrade -l` now includes `/etc/vectra-controller/state.json`
+  - backup-only proof via `sysupgrade -b /tmp/...tar.gz` confirmed that `etc/vectra-controller/state.json` really lands in the backup tar
+  - repeated real `sysupgrade` on the same `24.10.6` image proved that `/etc/vectra-controller/state.json` survives flash and keeps the same `router_id`
+- After the repeated recovery cycle, the live contour advanced again and the router is now running controller/LuCI `0.1.10-r1` while still preserving the same `router_id`.
+- Post-flash reinstall findings are now also confirmed on-device:
+  - `opkg update` succeeds after sysupgrade with the preserved Vectra feed/key config
+  - `opkg install vectra-controller-agent luci-app-vectra-controller` may still fail on the package download step via embedded `wget`
+  - direct `wget -> /tmp/*.ipk -> opkg install /tmp/*.ipk` works and restores the controller packages cleanly
+  - after reinstall, the router checked back in under the same `router_id`, remained `import_state=approved`, and did not create a new router record
+- A later attended PassWall2 repair on the same `24.10.6` runtime narrowed the remaining outage cause:
+  - the configured custom `geosite_url`/`geoip_url` had to be refreshed so that `geosite:russia-outside` existed again in `/usr/share/v2ray/geosite.dat`
+  - the router had fallen back to plain `dnsmasq` without `nftset`, so PassWall2 stayed broken until `dnsmasq-full`, `chinadns-ng`, `kmod-nft-socket`, and `kmod-nft-tproxy` were restored
+  - after those restores, live `xray`, `chinadns-ng`, PassWall-managed `dnsmasq_default`, and `monitor.sh` processes all came back
+
+Operational conclusion from the live update:
+
+- The previous identity-loss bug after sysupgrade was caused by missing backup coverage for `/etc/vectra-controller/state.json`.
+- That specific backup-surface gap is now closed for this router.
+- A separate firmware caveat still remains: controller/LuCI/PassWall2 packages still do not survive sysupgrade automatically and must be restored manually, and the attended proof now shows that PassWall2 recovery for this router also depends on restoring custom geodata plus `dnsmasq-full`/nft runtime dependencies, not just the top-level app package.

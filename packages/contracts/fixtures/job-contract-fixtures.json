@@ -1,0 +1,366 @@
+{
+  "routerJobs": {
+    "accepted": [
+      {
+        "name": "apply_passwall_config",
+        "value": {
+          "id": "11111111-1111-4111-8111-111111111111",
+          "type": "apply_passwall_config",
+          "state": "queued",
+          "createdAt": "2026-04-07T08:00:00.000Z",
+          "desiredRevisionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "payload": {}
+        }
+      },
+      {
+        "name": "update_passwall_packages",
+        "value": {
+          "id": "22222222-2222-4222-8222-222222222222",
+          "type": "update_passwall_packages",
+          "state": "queued",
+          "createdAt": "2026-04-07T08:01:00.000Z",
+          "payload": {
+            "channel": "stable",
+            "packageList": [
+              "luci-app-passwall2",
+              "xray-core",
+              "sing-box",
+              "hysteria",
+              "geoview",
+              "v2ray-geoip",
+              "v2ray-geosite",
+              "dnsmasq-full",
+              "chinadns-ng",
+              "kmod-nft-socket",
+              "kmod-nft-tproxy",
+              "kmod-nft-nat"
+            ],
+            "packageArtifacts": [],
+            "artifactUrl": "https://api.vectra-pro.net/artifacts/passwall/stable/luci-app-passwall2_26.4.5-r1_all.ipk",
+            "sha256": "a111",
+            "signatureUrl": "https://api.vectra-pro.net/artifacts/passwall/stable/Packages.sig",
+            "artifactVersion": "26.4.5-r1"
+          }
+        }
+      },
+      {
+        "name": "update_controller",
+        "value": {
+          "id": "33333333-3333-4333-8333-333333333333",
+          "type": "update_controller",
+          "state": "queued",
+          "createdAt": "2026-04-07T08:02:00.000Z",
+          "payload": {
+            "channel": "stable",
+            "packageList": [
+              "vectra-controller-agent",
+              "luci-app-vectra-controller"
+            ],
+            "packageArtifacts": [
+              {
+                "name": "vectra-controller-agent",
+                "artifactUrl": "https://api.vectra-pro.net/artifacts/openwrt/stable/aarch64_cortex-a53/vectra-controller-agent_0.1.11-r1_aarch64_cortex-a53.ipk",
+                "sha256": "d444",
+                "artifactVersion": "0.1.11-r1"
+              },
+              {
+                "name": "luci-app-vectra-controller",
+                "artifactUrl": "https://api.vectra-pro.net/artifacts/openwrt/stable/aarch64_cortex-a53/luci-app-vectra-controller_0.1.11-r1_all.ipk",
+                "sha256": "e555",
+                "artifactVersion": "0.1.11-r1"
+              }
+            ],
+            "artifactUrl": "https://api.vectra-pro.net/artifacts/openwrt/stable/aarch64_cortex-a53/vectra-controller-agent_0.1.11-r1_aarch64_cortex-a53.ipk",
+            "sha256": "d444",
+            "signatureUrl": "https://api.vectra-pro.net/artifacts/openwrt/stable/aarch64_cortex-a53/Packages.sig",
+            "artifactVersion": "0.1.11-r1"
+          }
+        }
+      },
+      {
+        "name": "collect_router_logs",
+        "value": {
+          "id": "3a3a3a3a-3a3a-4a3a-8a3a-3a3a3a3a3a3a",
+          "type": "collect_router_logs",
+          "state": "queued",
+          "createdAt": "2026-04-07T08:02:30.000Z",
+          "payload": {
+            "source": "all",
+            "lines": 160
+          }
+        }
+      },
+      {
+        "name": "run_terminal_command",
+        "value": {
+          "id": "3b3b3b3b-3b3b-4b3b-8b3b-3b3b3b3b3b3b",
+          "type": "run_terminal_command",
+          "state": "queued",
+          "createdAt": "2026-04-07T08:02:40.000Z",
+          "payload": {
+            "command": "ubus call system board",
+            "timeoutSeconds": 30
+          }
+        }
+      },
+      {
+        "name": "validate_firmware",
+        "value": {
+          "id": "44444444-4444-4444-8444-444444444444",
+          "type": "validate_firmware",
+          "state": "queued",
+          "createdAt": "2026-04-07T08:03:00.000Z",
+          "payload": {
+            "manifestId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "channel": "stable",
+            "boardName": "xiaomi,mi-router-ax3000t",
+            "target": "mediatek/filogic",
+            "architecture": "aarch64_cortex-a53",
+            "layoutFamily": "stock-layout",
+            "artifactUrl": "https://api.vectra-pro.net/artifacts/firmware/stable/ax3000t-stock/openwrt-24.10.6-stock-layout.bin",
+            "sha256": "f666",
+            "signatureUrl": "https://api.vectra-pro.net/artifacts/firmware/stable/ax3000t-stock/openwrt-24.10.6-stock-layout.bin.sig",
+            "artifactVersion": "24.10.6-r1",
+            "validationCommand": "sysupgrade -T /tmp/firmware.bin"
+          }
+        }
+      },
+      {
+        "name": "enter_direct_mode",
+        "value": {
+          "id": "55555555-5555-4555-8555-555555555555",
+          "type": "enter_direct_mode",
+          "state": "queued",
+          "createdAt": "2026-04-07T08:04:00.000Z",
+          "payload": {}
+        }
+      },
+      {
+        "name": "reconnect",
+        "value": {
+          "id": "66666666-6666-4666-8666-666666666666",
+          "type": "reconnect",
+          "state": "queued",
+          "createdAt": "2026-04-07T08:05:00.000Z",
+          "payload": {
+            "resumeProxy": true,
+            "clearRescue": true
+          }
+        }
+      }
+    ],
+    "rejected": [
+      {
+        "name": "payload_must_be_object",
+        "value": {
+          "id": "77777777-7777-4777-8777-777777777777",
+          "type": "update_passwall_packages",
+          "state": "queued",
+          "createdAt": "2026-04-07T08:06:00.000Z",
+          "payload": []
+        }
+      },
+      {
+        "name": "created_at_must_be_datetime",
+        "value": {
+          "id": "88888888-8888-4888-8888-888888888888",
+          "type": "update_controller",
+          "state": "queued",
+          "createdAt": "not-a-datetime",
+          "payload": {}
+        }
+      },
+      {
+        "name": "job_type_must_be_string",
+        "value": {
+          "id": "99999999-9999-4999-8999-999999999999",
+          "type": 42,
+          "state": "queued",
+          "createdAt": "2026-04-07T08:07:00.000Z",
+          "payload": {}
+        }
+      }
+    ]
+  },
+  "jobResults": {
+    "accepted": [
+      {
+        "name": "update_passwall_packages_success",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf",
+          "jobId": "22222222-2222-4222-8222-222222222222",
+          "status": "success",
+          "stdout": "opkg update ok",
+          "stderr": "",
+          "result": {
+            "packages": [
+              "luci-app-passwall2",
+              "xray-core",
+              "sing-box",
+              "hysteria",
+              "geoview",
+              "v2ray-geoip",
+              "v2ray-geosite",
+              "dnsmasq-full",
+              "chinadns-ng",
+              "kmod-nft-socket",
+              "kmod-nft-tproxy",
+              "kmod-nft-nat"
+            ],
+            "commands": [
+              "opkg update",
+              "opkg install luci-app-passwall2 xray-core sing-box hysteria geoview v2ray-geoip v2ray-geosite dnsmasq-full chinadns-ng kmod-nft-socket kmod-nft-tproxy kmod-nft-nat",
+              "lua /usr/share/passwall2/rule_update.lua log geoip,geosite",
+              "sh -c /etc/init.d/passwall2 running >/dev/null 2>&1 && /etc/init.d/passwall2 restart || /etc/init.d/passwall2 start"
+            ],
+            "postInstallRepair": true,
+            "ruleRefreshAssets": ["geoip", "geosite"],
+            "postInstallCommands": [
+              "lua /usr/share/passwall2/rule_update.lua log geoip,geosite",
+              "sh -c /etc/init.d/passwall2 running >/dev/null 2>&1 && /etc/init.d/passwall2 restart || /etc/init.d/passwall2 start"
+            ]
+          }
+        }
+      },
+      {
+        "name": "update_controller_success",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf",
+          "jobId": "33333333-3333-4333-8333-333333333333",
+          "status": "success",
+          "stdout": "restart scheduled",
+          "stderr": "",
+          "result": {
+            "confirmedControllerVersion": "0.1.11-r1"
+          }
+        }
+      },
+      {
+        "name": "collect_router_logs_success",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf",
+          "jobId": "3a3a3a3a-3a3a-4a3a-8a3a-3a3a3a3a3a3a",
+          "status": "success",
+          "result": {
+            "source": "all",
+            "requestedLines": 160,
+            "collectedAt": "2026-04-07T08:02:45.000Z",
+            "snapshots": [
+              {
+                "id": "controller",
+                "label": "Vectra Controller",
+                "command": "logread -e 'vectra-controller|vectra' | tail -n 40",
+                "content": "Wed Apr  7 08:02:00 2026 daemon.info vectra-controller-agent: check-in ok",
+                "truncated": false
+              },
+              {
+                "id": "passwall",
+                "label": "PassWall / Proxy",
+                "command": "logread -e 'passwall|xray|sing-box|hysteria|geoview|chinadns' | tail -n 40",
+                "content": "Wed Apr  7 08:02:01 2026 daemon.info passwall2: service started",
+                "truncated": false
+              }
+            ]
+          }
+        }
+      },
+      {
+        "name": "run_terminal_command_success",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf",
+          "jobId": "3b3b3b3b-3b3b-4b3b-8b3b-3b3b3b3b3b3b",
+          "status": "success",
+          "stdout": "{ \"kernel\": \"6.6.86\" }",
+          "stderr": "",
+          "result": {
+            "command": "ubus call system board",
+            "timeoutSeconds": 30,
+            "startedAt": "2026-04-07T08:02:41.000Z",
+            "completedAt": "2026-04-07T08:02:42.000Z",
+            "durationMs": 825,
+            "exitCode": 0,
+            "timedOut": false,
+            "stdout": "{ \"kernel\": \"6.6.86\" }",
+            "stderr": "",
+            "stdoutTruncated": false,
+            "stderrTruncated": false
+          }
+        }
+      },
+      {
+        "name": "enter_direct_mode_success",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf",
+          "jobId": "55555555-5555-4555-8555-555555555555",
+          "status": "success",
+          "incidentTransitions": [
+            {
+              "type": "entered_direct_mode",
+              "state": "open",
+              "reason": "Router entered direct mode via operator job."
+            }
+          ],
+          "result": {
+            "enteredDirectMode": true
+          }
+        }
+      },
+      {
+        "name": "reconnect_success",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf",
+          "jobId": "66666666-6666-4666-8666-666666666666",
+          "status": "success",
+          "incidentTransitions": [
+            {
+              "type": "recovered",
+              "state": "resolved",
+              "reason": "Proxy mode restored via operator job."
+            }
+          ],
+          "result": {
+            "recoveredProxy": true
+          }
+        }
+      }
+    ],
+    "rejected": [
+      {
+        "name": "router_id_must_be_uuid",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "not-a-uuid",
+          "jobId": "33333333-3333-4333-8333-333333333333",
+          "status": "success",
+          "result": {}
+        }
+      },
+      {
+        "name": "status_must_be_known",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf",
+          "jobId": "33333333-3333-4333-8333-333333333333",
+          "status": "done",
+          "result": {}
+        }
+      },
+      {
+        "name": "result_must_be_object",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf",
+          "jobId": "33333333-3333-4333-8333-333333333333",
+          "status": "success",
+          "result": []
+        }
+      }
+    ]
+  }
+}

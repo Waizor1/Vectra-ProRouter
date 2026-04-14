@@ -1,6 +1,20 @@
 # Vectra-ProRouter
 
-Knowledge base and operational runbooks for PassWall2 and OpenWrt `24.xx`, with a practical focus on:
+Operator-facing runbooks, helper scripts, and control-plane code for Vectra
+Stable V1 on the certified Xiaomi AX3000T stock-layout baseline.
+
+Current certified scope:
+
+- `xiaomi,mi-router-ax3000t`
+- `mediatek/filogic`
+- `aarch64_cortex-a53`
+- OpenWrt `24.10.x`
+- stock-layout only
+
+Everything outside that tuple must stay fail-closed for destructive actions.
+
+This repository also keeps the supporting knowledge base for PassWall2 and
+OpenWrt `24.xx`, with a practical focus on:
 
 - PassWall2 operations and update workflows
 - OpenWrt `24.xx` console administration
@@ -14,6 +28,14 @@ Knowledge base and operational runbooks for PassWall2 and OpenWrt `24.xx`, with 
 - `scripts/` contains helper utilities for router inventory, temporary `/tmp` test sessions, and PassWall2 planning
 
 ## Start Here
+
+Stable V1 quick links:
+
+- controller/feed build: `scripts/build-vectra-openwrt-feed.sh`
+- feed and restore runbook: `ai_docs/develop/features/vectra-openwrt-feed-publishing.md`
+- VPS deploy runbook: `deploy/README.md`
+- post-firmware package restore: `scripts/Invoke-VectraPostSysupgradeRestore.ps1`
+- historical snapshot sanitation: `apps/web/scripts/sanitize-historical-passwall-snapshots.mjs`
 
 - PassWall2 operational questions:
   - `ai_docs/develop/features/passwall2-ops-cheatsheet.md`

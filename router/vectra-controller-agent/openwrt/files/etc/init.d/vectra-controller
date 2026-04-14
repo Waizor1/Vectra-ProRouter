@@ -1,0 +1,40 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=20
+USE_PROCD=1
+
+CONF="vectra-controller"
+SECTION="main"
+RENDERER="/usr/libexec/vectra-controller/render-config.sh"
+CONFIG_JSON="/var/run/vectra-controller/config.json"
+AGENT_BIN="/usr/sbin/vectra-controller-agent"
+
+start_service() {
+	local enabled
+	[ "${VECTRA_SKIP_POSTINST_RESTART:-}" = "1" ] && return 0
+
+	config_load "$CONF"
+	config_get_bool enabled "$SECTION" enabled 1
+	[ "$enabled" -eq 1 ] || return 0
+
+	[ -x "$RENDERER" ] || return 1
+	[ -x "$AGENT_BIN" ] || return 1
+
+	mkdir -p /var/run/vectra-controller
+	"$RENDERER" "$CONFIG_JSON" || return 1
+
+	procd_open_instance
+	procd_set_param command "$AGENT_BIN" -config "$CONFIG_JSON" -once=false
+	procd_set_param respawn 15 5 20
+	procd_set_param stderr 1
+	procd_set_param stdout 1
+	procd_set_param file /etc/config/vectra-controller
+	procd_close_instance
+}
+
+reload_service() {
+	[ "${VECTRA_SKIP_POSTINST_RESTART:-}" = "1" ] && return 0
+	stop
+	start
+}

@@ -13,3 +13,21 @@ Thumbs.db
 *.log
 *.tmp
 *.bak
+.codex-runtime/
+.playwright-cli/
+.env
+.env.local
+.env.*.local
+
+# Workspace build artifacts
+node_modules/
+.next/
+coverage/
+dist/
+*.tsbuildinfo
+
+# Deployment runtime state
+deploy/runtime/
+
+# Local private memory. Do not commit credentials or DPAPI blobs.
+ProRouter/98 Local/

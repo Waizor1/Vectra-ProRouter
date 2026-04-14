@@ -7,13 +7,14 @@ Note: the root Git history tracks the KB and helper scripts. `passwall2/`, `open
 ## First Read
 
 1. Read `RTK.md` before doing any substantial work.
-2. If you work inside `passwall2/`, then also read `passwall2/AGENTS.md`.
-3. If the task is about generic OpenWrt 24.xx platform administration, start with `ai_docs/develop/features/openwrt24-console-knowledge-base/06-cheatsheet.md` and then `ai_docs/develop/features/openwrt24-console-knowledge-base/README.md`.
-4. If the task is about creating or packaging OpenWrt 24.xx applications, start with `ai_docs/develop/features/openwrt24-app-development-knowledge-base/06-cheatsheet.md` and then `ai_docs/develop/features/openwrt24-app-development-knowledge-base/README.md`.
-5. If the task is about a real OpenWrt router, collect facts with `ai_docs/develop/features/openwrt24-console-knowledge-base/07-router-intake-template.md`.
-6. Read `ai_docs/develop/features/passwall2-ops-cheatsheet.md` for the shortest PassWall2 operational path.
-7. Use `ai_docs/develop/features/passwall2-openwrt24-knowledge-base.md` as the deep PassWall2 reference, not as the first-stop file.
-8. If the task involves live writes, sysupgrade, recovery, or firmware safety on Filogic, read `ai_docs/develop/features/openwrt24-console-knowledge-base/08-filogic-recovery-write-safety.md`.
+2. For any non-trivial task, read `ProRouter/Home.md`, `ProRouter/00 Dashboard/Agent Workflow.md`, `ProRouter/00 Dashboard/Stage Board.md`, and `ProRouter/00 Dashboard/Repo Map.md` before implementation.
+3. If you work inside `passwall2/`, then also read `passwall2/AGENTS.md`.
+4. If the task is about generic OpenWrt 24.xx platform administration, start with `ai_docs/develop/features/openwrt24-console-knowledge-base/06-cheatsheet.md` and then `ai_docs/develop/features/openwrt24-console-knowledge-base/README.md`.
+5. If the task is about creating or packaging OpenWrt 24.xx applications, start with `ai_docs/develop/features/openwrt24-app-development-knowledge-base/06-cheatsheet.md` and then `ai_docs/develop/features/openwrt24-app-development-knowledge-base/README.md`.
+6. If the task is about a real OpenWrt router, collect facts with `ai_docs/develop/features/openwrt24-console-knowledge-base/07-router-intake-template.md`.
+7. Read `ai_docs/develop/features/passwall2-ops-cheatsheet.md` for the shortest PassWall2 operational path.
+8. Use `ai_docs/develop/features/passwall2-openwrt24-knowledge-base.md` as the deep PassWall2 reference, not as the first-stop file.
+9. If the task involves live writes, sysupgrade, recovery, or firmware safety on Filogic, read `ai_docs/develop/features/openwrt24-console-knowledge-base/08-filogic-recovery-write-safety.md`.
 
 ## Commands
 
@@ -21,6 +22,12 @@ Note: the root Git history tracks the KB and helper scripts. `passwall2/`, `open
 |------|---------|-------|
 | Repo overview | `Get-ChildItem -Force` | Root contains docs plus local upstream mirror |
 | Read runbook | `Get-Content RTK.md` | Mandatory before non-trivial work |
+| Read Obsidian vault hub | `Get-Content ProRouter\\Home.md` | Current project-memory entry point |
+| Read Obsidian workflow | `Get-Content ProRouter\\00 Dashboard\\Agent Workflow.md` | Start/finish rules for agent work |
+| Read stage board | `Get-Content ProRouter\\00 Dashboard\\Stage Board.md` | Current module/readiness picture |
+| Read generated repo map | `Get-Content ProRouter\\00 Dashboard\\Repo Map.md` | Current structure snapshot |
+| Refresh Obsidian repo map | `powershell -ExecutionPolicy Bypass -File .\\scripts\\Sync-ProRouterVault.ps1` | Regenerates the vault structure note after repo changes |
+| Append completion status to daily note | `powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\Add-ProRouterStatusEntry.ps1 -Summary "<what changed>" -Modules "<module note name>"` | Default completion-log path for agents |
 | Read OpenWrt cheatsheet | `Get-Content ai_docs\\develop\\features\\openwrt24-console-knowledge-base\\06-cheatsheet.md` | Fastest generic OpenWrt 24.xx path |
 | Read OpenWrt KB index | `Get-Content ai_docs\\develop\\features\\openwrt24-console-knowledge-base\\README.md` | Entry point for platform-level OpenWrt work |
 | Read OpenWrt appdev cheatsheet | `Get-Content ai_docs\\develop\\features\\openwrt24-app-development-knowledge-base\\06-cheatsheet.md` | Fastest path for OpenWrt app/package work |
@@ -53,6 +60,17 @@ Note: the root Git history tracks the KB and helper scripts. `passwall2/`, `open
 ./
 |- AGENTS.md                                      -> global agent rules for this workspace
 |- RTK.md                                         -> Codex runbook for PassWall2/OpenWrt work
+|- ProRouter/                                     -> local Obsidian vault for project memory, status and decisions
+|  |- Home.md                                     -> project hub for humans and agents
+|  |- 00 Dashboard/                               -> stage board and generated repo map
+|  |  |- Agent Workflow.md                        -> mandatory start/finish protocol for agents
+|  |  |- Module Status.base                       -> live module status table in Obsidian Bases
+|  |  |- Session Feed.base                        -> live daily-session table in Obsidian Bases
+|  |  \- Decision Register.base                   -> live ADR table in Obsidian Bases
+|  |- 02 Modules/                                 -> per-module notes and current boundaries
+|  |- 03 Decisions/                               -> ADR-style decisions
+|  |- 04 Sessions/                                -> dated session notes
+|  \- 05 Templates/                               -> note templates for future updates
 |- ai_docs/develop/features/                      -> curated internal docs
 |  |- openwrt24-app-development-knowledge-base/   -> OpenWrt 24.xx app/package development KB
 |  |- openwrt24-console-knowledge-base/           -> generic OpenWrt 24.xx platform KB for CLI work
@@ -69,6 +87,8 @@ Note: the root Git history tracks the KB and helper scripts. `passwall2/`, `open
    |- Get-OpenWrtRouterInventory.ps1              -> read-only live OpenWrt inventory collector
    |- Manage-OpenWrtTmpProgramSession.ps1         -> guarded tmp staging/start/status/stop/cleanup harness
    |- Resolve-Passwall2RouterPlan.ps1             -> parse router facts and build a safe PassWall2 update plan
+   |- Add-ProRouterStatusEntry.ps1                -> append a standardized completion entry to today's vault note
+   |- Sync-ProRouterVault.ps1                     -> regenerate the Obsidian repo map note
    \- fixtures/xiaomi-ax3000t-openwrt24.txt       -> realistic Filogic/Xiaomi AX3000T sample intake
 \- passwall2/                                     -> local upstream mirror of Openwrt-Passwall/openwrt-passwall2
    |- AGENTS.md                                   -> scoped rules for source-tree work
@@ -94,6 +114,11 @@ Note: the root Git history tracks the KB and helper scripts. `passwall2/`, `open
 
 | Need | Use | Location |
 |------|-----|----------|
+| Read project memory hub | `Home.md` | `ProRouter/Home.md` |
+| Read completion workflow | `Agent Workflow.md` | `ProRouter/00 Dashboard/Agent Workflow.md` |
+| Check current stage board | `Stage Board.md` | `ProRouter/00 Dashboard/Stage Board.md` |
+| Append standardized completion update | `Add-ProRouterStatusEntry.ps1` | `scripts/Add-ProRouterStatusEntry.ps1` |
+| Refresh generated repo structure note | `Sync-ProRouterVault.ps1` | `scripts/Sync-ProRouterVault.ps1` |
 | UCI reads/helpers | `config_n_get`, `config_t_get`, `first_type`, `get_new_port` | `passwall2/luci-app-passwall2/root/usr/share/passwall2/utils.sh` |
 | Collect live router facts safely | `Get-OpenWrtRouterInventory.ps1` | `scripts/Get-OpenWrtRouterInventory.ps1` |
 | Run bounded tmp app tests on the live router | `Manage-OpenWrtTmpProgramSession.ps1` | `scripts/Manage-OpenWrtTmpProgramSession.ps1` |
@@ -108,6 +133,8 @@ Note: the root Git history tracks the KB and helper scripts. `passwall2/`, `open
 
 | When | Do |
 |------|-----|
+| Any non-trivial implementation or investigation starts | Read `ProRouter/Home.md`, `ProRouter/00 Dashboard/Agent Workflow.md`, `ProRouter/00 Dashboard/Stage Board.md`, and `ProRouter/00 Dashboard/Repo Map.md` |
+| User asks about current project state, readiness, structure, progress, or roadmap | Start from `ProRouter/Home.md`, `ProRouter/00 Dashboard/Stage Board.md`, `ProRouter/00 Dashboard/Repo Map.md`, and relevant module notes, then verify against code |
 | User asks about generic OpenWrt console/platform behavior | Start from `openwrt24-console-knowledge-base` before narrowing into app-specific docs |
 | User asks how to create, package or update an OpenWrt app | Start from `openwrt24-app-development-knowledge-base` before proposing implementation details |
 | User asks "how to manage from console" | Verify in `init.d`, `app.sh`, `subscribe.lua`, `rule_update.lua`, `test.sh` |
@@ -130,6 +157,11 @@ Note: the root Git history tracks the KB and helper scripts. `passwall2/`, `open
 - Cite source files when answering repository-specific questions.
 - State clearly when something was verified in code versus not executed on a real router.
 - Keep the upstream mirror in `passwall2/` readable and intact unless the task explicitly asks for source edits there.
+- Treat `ProRouter/` as mandatory project memory, not optional notes.
+- Before final response, append a completion update with `scripts/Add-ProRouterStatusEntry.ps1`.
+- After substantial work, update the impacted module note, session note, and stage board.
+- Run `scripts/Sync-ProRouterVault.ps1` after structural repo changes so the generated repo map stays current.
+- If work is delegated to forked or parallel agents, the main agent must consolidate their results into `ProRouter/` before final response.
 
 ### Ask First
 
@@ -173,6 +205,16 @@ Note: the root Git history tracks the KB and helper scripts. `passwall2/`, `open
 
 ## Scoped Files
 
+- `ProRouter/Home.md` -> agent/human entry point for project memory
+- `ProRouter/00 Dashboard/Agent Workflow.md` -> mandatory start/finish workflow
+- `ProRouter/00 Dashboard/Stage Board.md` -> current readiness and stage summary
+- `ProRouter/00 Dashboard/Repo Map.md` -> generated structure snapshot
+- `ProRouter/00 Dashboard/*.base` -> live Obsidian Bases views for modules, sessions and decisions
+- `ProRouter/02 Modules/` -> per-module state and boundaries
+- `ProRouter/03 Decisions/` -> architectural and process decisions
+- `ProRouter/04 Sessions/Daily/` -> dated summaries of meaningful sessions
+- `scripts/Add-ProRouterStatusEntry.ps1` -> append a standardized completion entry
+- `scripts/Sync-ProRouterVault.ps1` -> refresh the generated repo map note
 - `passwall2/AGENTS.md` -> mandatory when reading or editing upstream source tree
 - `ai_docs/develop/features/openwrt24-app-development-knowledge-base/README.md` -> generic OpenWrt app/package development entry point
 - `ai_docs/develop/features/openwrt24-app-development-knowledge-base/openwrt24-appdev-agent-index.json` -> structured lookup for app/package development tasks

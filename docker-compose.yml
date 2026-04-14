@@ -1,0 +1,164 @@
+services:
+  postgres:
+    image: public.ecr.aws/docker/library/postgres:16-bookworm
+    container_name: vectra-postgres
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./deploy/runtime/postgres:/var/lib/postgresql/data
+    networks:
+      vectra_internal:
+        ipv4_address: 172.29.0.10
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: vectra-web
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      TZ: ${TZ:-UTC}
+      DATABASE_URL: ${DATABASE_URL}
+      VECTRA_OPERATOR_USER: ${VECTRA_OPERATOR_USER}
+      VECTRA_OPERATOR_PASSWORD: ${VECTRA_OPERATOR_PASSWORD}
+      VECTRA_DEFAULT_CONTROL_DOMAIN: ${VECTRA_DEFAULT_CONTROL_DOMAIN}
+      VECTRA_ROUTER_API_BASE_URL: ${VECTRA_ROUTER_API_BASE_URL}
+      VECTRA_POLLING_INTERVAL_SECONDS: ${VECTRA_POLLING_INTERVAL_SECONDS}
+      VECTRA_SECRETS_KEY: ${VECTRA_SECRETS_KEY}
+      VECTRA_ARTIFACT_BASE_URL: ${VECTRA_ARTIFACT_BASE_URL}
+      NEXT_TELEMETRY_DISABLED: ${NEXT_TELEMETRY_DISABLED:-1}
+      VECTRA_WEB_PUSH_PUBLIC_KEY: ${VECTRA_WEB_PUSH_PUBLIC_KEY:-}
+      VECTRA_WEB_PUSH_PRIVATE_KEY: ${VECTRA_WEB_PUSH_PRIVATE_KEY:-}
+      VECTRA_WEB_PUSH_SUBJECT: ${VECTRA_WEB_PUSH_SUBJECT:-mailto:admin@vectra-pro.net}
+      VECTRA_WEB_PUSH_MONITOR_INTERVAL_SECONDS: ${VECTRA_WEB_PUSH_MONITOR_INTERVAL_SECONDS:-60}
+    command:
+      - /bin/sh
+      - -lc
+      - pnpm --filter @vectra/web db:migrate && pnpm --filter @vectra/web start --hostname 0.0.0.0 --port 3000
+    volumes:
+      - ./deploy/runtime/artifacts:/app/deploy/runtime/artifacts
+    extra_hosts:
+      - "postgres:172.29.0.10"
+    networks:
+      vectra_internal:
+        ipv4_address: 172.29.0.11
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+  caddy:
+    image: public.ecr.aws/docker/library/caddy:2.8-alpine
+    container_name: vectra-caddy
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      OPERATOR_DOMAIN: ${OPERATOR_DOMAIN}
+      ROUTER_API_DOMAIN: ${ROUTER_API_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/runtime/caddy/data:/data
+      - ./deploy/runtime/caddy/config:/config
+      - ./deploy/runtime/artifacts:/srv/artifacts
+    extra_hosts:
+      - "web:172.29.0.11"
+    networks:
+      vectra_internal:
+        ipv4_address: 172.29.0.12
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://127.0.0.1:2019/config/
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+  db-backup:
+    image: public.ecr.aws/docker/library/postgres:16-bookworm
+    container_name: vectra-db-backup
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-UTC}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      BACKUP_DIR: /backups
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+    command:
+      - /bin/sh
+      - -lc
+      - while true; do sh /usr/local/bin/backup-postgres.sh; sleep "$${BACKUP_INTERVAL_SECONDS}"; done
+    volumes:
+      - ./deploy/runtime/backups:/backups
+      - ./deploy/scripts/backup-postgres.sh:/usr/local/bin/backup-postgres.sh:ro
+      - ./deploy/scripts/restore-postgres.sh:/usr/local/bin/restore-postgres.sh:ro
+    extra_hosts:
+      - "postgres:172.29.0.10"
+    networks:
+      vectra_internal:
+        ipv4_address: 172.29.0.13
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+networks:
+  vectra_internal:
+    name: vectra_internal
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24

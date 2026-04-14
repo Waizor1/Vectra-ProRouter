@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-plex-sans), ui-sans-serif, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+  --vectra-bg: #12161d;
+  --vectra-panel: rgba(27, 31, 38, 0.94);
+  --vectra-panel-soft: rgba(37, 42, 52, 0.84);
+  --vectra-accent: #63b9ff;
+  --vectra-accent-soft: rgba(99, 185, 255, 0.15);
+  --vectra-accent-warm: #ff8a45;
+  --vectra-line-strong: rgba(138, 170, 204, 0.35);
+}
+
+html {
+  background: var(--vectra-bg);
+}
+
+body {
+  background:
+    linear-gradient(180deg, rgba(18, 22, 29, 0.94), rgba(18, 22, 29, 1)),
+    var(--vectra-bg);
+  font-family: var(--font-sans);
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+  overflow-x: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  letter-spacing: inherit;
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-feature-settings: "kern" 1, "liga" 0, "calt" 0;
+}
+
+::selection {
+  background: rgba(68, 198, 217, 0.35);
+  color: white;
+}
+
+* {
+  scrollbar-color: rgba(160, 174, 192, 0.42) rgba(24, 28, 36, 0.9);
+}
+
+.vectra-scrollbarless {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.vectra-scrollbarless::-webkit-scrollbar {
+  display: none;
+}
+
+.vectra-kicker {
+  font-size: 0.7rem;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.vectra-chip {
+  font-size: 0.72rem;
+  line-height: 1.2;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+}
+
+.vectra-tech {
+  font-family: var(--font-mono);
+  letter-spacing: 0.01em;
+}

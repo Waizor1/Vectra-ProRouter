@@ -1,0 +1,17 @@
+chinadns-ng_2025.08.09-r1_aarch64_cortex-a53.ipk
+geoview_0.2.5-r1_aarch64_cortex-a53.ipk
+hysteria_2.8.1-r1_aarch64_cortex-a53.ipk
+naiveproxy_143.0.7499.109-r2_aarch64_cortex-a53.ipk
+shadowsocks-rust-sslocal_1.24.0-r1_aarch64_cortex-a53.ipk
+shadowsocks-rust-ssserver_1.24.0-r1_aarch64_cortex-a53.ipk
+shadowsocksr-libev-ssr-local_2.5.6-r11_aarch64_cortex-a53.ipk
+shadowsocksr-libev-ssr-redir_2.5.6-r11_aarch64_cortex-a53.ipk
+shadowsocksr-libev-ssr-server_2.5.6-r11_aarch64_cortex-a53.ipk
+simple-obfs-client_0.0.5-r3_aarch64_cortex-a53.ipk
+sing-box_1.13.5-r1_aarch64_cortex-a53.ipk
+tcping_0.3-r1_aarch64_cortex-a53.ipk
+tuic-client_1.7.2-r1_aarch64_cortex-a53.ipk
+v2ray-geoip_202603260032.1_all.ipk
+v2ray-geosite_202603292224.1_all.ipk
+v2ray-plugin_5.48.0-r1_aarch64_cortex-a53.ipk
+xray-core_26.3.27-r1_aarch64_cortex-a53.ipk
