@@ -4,6 +4,9 @@ import { skipToken } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { ActionStrip } from "~/components/action-strip";
+import { Panel } from "~/components/panel";
+import { StatusTile } from "~/components/status-tile";
 import { api, type RouterInputs } from "~/trpc/react";
 
 type DraftConfigInput = RouterInputs["draft"]["save"]["config"];
@@ -171,13 +174,12 @@ export function DraftWorkspace({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 lg:grid-cols-[0.95fr_1.05fr]">
-        <article className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
+      <div className="vectra-main-grid gap-4">
+        <Panel eyebrow="JSON workspace" title="Экспертный режим" tone="hero">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="vectra-kicker text-slate-500">Роутер</p>
-              <p className="mt-2 text-sm text-slate-300">
-                Выберите устройство для экспертной правки.
+              <p className="mt-1 text-sm leading-6 text-slate-400">
+                Точечная JSON-правка без изменения основного operator flow. Сначала выберите роутер, затем проверьте preview и только потом сохраняйте или ставьте apply.
               </p>
             </div>
           </div>
@@ -190,7 +192,7 @@ export function DraftWorkspace({
           <select
             id="draft-router-select"
             name="draft-router-select"
-            className="mt-3 w-full rounded-md border border-white/10 bg-[rgba(8,12,20,0.82)] px-3 py-2.5 text-sm text-white outline-none transition focus:border-[var(--vectra-accent)]/60"
+            className="vectra-field mt-3 px-3 py-2.5 text-sm text-white"
             value={selectedRouterId}
             onChange={(event) => setSelectedRouterId(event.target.value)}
           >
@@ -202,58 +204,39 @@ export function DraftWorkspace({
             ))}
           </select>
 
-          <div className="mt-5 flex flex-wrap gap-2">
-            <span className="vectra-chip rounded-full border border-white/10 bg-white/5 px-3 py-1 text-slate-300">
-              Статус {formatRouterStatus(selectedRouter?.status)}
-            </span>
-            <span className="vectra-chip rounded-full border border-white/10 bg-white/5 px-3 py-1 text-slate-300">
-              Импорт {formatImportState(selectedRouter?.importState)}
-            </span>
-            <span className="vectra-chip rounded-full border border-white/10 bg-white/5 px-3 py-1 text-slate-300">
-              Активная {workspace.data.activeRevision?.revisionNumber ?? "нет"}
-            </span>
-            <span className="vectra-chip rounded-full border border-white/10 bg-white/5 px-3 py-1 text-slate-300">
-              Рабочая {workspace.data.workspaceRevision?.revisionNumber ?? "нет"}
-            </span>
+          <div className="mt-4 vectra-stat-grid">
+            <StatusTile
+              label="Статус"
+              value={formatRouterStatus(selectedRouter?.status)}
+              compact
+            />
+            <StatusTile
+              label="Импорт"
+              value={formatImportState(selectedRouter?.importState)}
+              compact
+              emphasis={selectedRouter?.importState === "approved"}
+            />
+            <StatusTile
+              label="Импорт-ревизия"
+              value={workspace.data.importedRevision ? `#${workspace.data.importedRevision.revisionNumber}` : "нет"}
+              compact
+            />
+            <StatusTile
+              label="Черновик"
+              value={workspace.data.latestDraft ? `#${workspace.data.latestDraft.revisionNumber}` : "нет"}
+              compact
+            />
           </div>
+        </Panel>
 
-          <dl className="mt-5 grid gap-3 text-sm text-slate-300 sm:grid-cols-3">
-            <div className="rounded-md border border-white/10 bg-black/10 px-3 py-3">
-              <dt className="vectra-kicker text-slate-500">Импорт</dt>
-              <dd className="mt-2 text-sm text-slate-200">
-                {workspace.data.importedRevision
-                  ? `#${workspace.data.importedRevision.revisionNumber}`
-                  : "нет"}
-              </dd>
-            </div>
-            <div className="rounded-md border border-white/10 bg-black/10 px-3 py-3">
-              <dt className="vectra-kicker text-slate-500">Черновик</dt>
-              <dd className="mt-2 text-sm text-slate-200">
-                {workspace.data.latestDraft
-                  ? `#${workspace.data.latestDraft.revisionNumber}`
-                  : "нет"}
-              </dd>
-            </div>
-            <div className="rounded-md border border-white/10 bg-black/10 px-3 py-3">
-              <dt className="vectra-kicker text-slate-500">Источник</dt>
-              <dd className="mt-2 text-sm text-slate-200">
-                {selectedRouter?.importState === "approved"
-                  ? "эталон подтверждён"
-                  : "нужна проверка импорта"}
-              </dd>
-            </div>
-          </dl>
-        </article>
-
-        <article className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
-          <p className="vectra-kicker text-slate-500">Предпросмотр применения</p>
+        <Panel eyebrow="Preview" title="Что изменится" tone="muted">
           {parseError ? (
             <div className="mt-3 rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-3 text-sm leading-7 text-rose-200">
               Некорректный JSON: {parseError}
             </div>
           ) : (
             <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <div className="rounded-md border border-white/10 bg-black/10 px-3 py-3">
+              <div className="rounded-2xl border border-white/10 bg-black/10 px-3 py-3">
                 <p className="vectra-kicker text-slate-500">Изменённые секции</p>
                 <p className="mt-3 text-sm leading-7 text-slate-200">
                   {preview.data?.changedSections.length
@@ -261,7 +244,7 @@ export function DraftWorkspace({
                     : "изменений нет"}
                 </p>
               </div>
-              <div className="rounded-md border border-white/10 bg-black/10 px-3 py-3">
+              <div className="rounded-2xl border border-white/10 bg-black/10 px-3 py-3">
                 <p className="vectra-kicker text-slate-500">Выполнение</p>
                 <p className="mt-3 text-sm leading-7 text-slate-200">
                   Перезапуск{" "}
@@ -277,7 +260,7 @@ export function DraftWorkspace({
             </div>
           )}
 
-          <div className="mt-3 rounded-md border border-white/10 bg-black/10 px-3 py-3">
+          <div className="mt-3 rounded-2xl border border-white/10 bg-black/10 px-3 py-3">
             <label
               htmlFor="draft-note"
               className="vectra-kicker text-slate-500"
@@ -287,27 +270,26 @@ export function DraftWorkspace({
             <input
               id="draft-note"
               name="draft-note"
-              className="mt-2 w-full rounded-md border border-white/10 bg-[rgba(8,12,20,0.82)] px-3 py-2.5 text-sm text-white outline-none transition focus:border-[var(--vectra-accent)]/60"
+              className="vectra-field mt-2 px-3 py-2.5 text-sm text-white"
               placeholder="Что меняется в этой ревизии"
               value={note}
               onChange={(event) => setNote(event.target.value)}
             />
           </div>
-        </article>
+        </Panel>
       </div>
 
-      <div className="rounded-md border border-white/10 bg-[rgba(8,12,20,0.86)] px-4 py-4">
+      <Panel eyebrow="JSON editor" title="Desired config JSON" tone="muted">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="vectra-kicker text-slate-500">JSON-редактор</p>
-            <p className="mt-2 text-sm text-slate-300">
-              Прямая правка typed JSON. Секреты маскируются автоматически.
+            <p className="mt-1 text-sm text-slate-400">
+              Секреты маскируются автоматически.
             </p>
           </div>
-          <div className="flex flex-wrap gap-3">
+          <ActionStrip justify="start" dense>
             <button
               type="button"
-              className="rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-slate-200 transition hover:border-white/20 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+              className="vectra-button-secondary px-3 py-2 text-sm font-medium transition hover:border-white/20 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
               disabled={!canSave}
               onClick={() =>
                 parsedConfig && selectedRouterId
@@ -323,7 +305,7 @@ export function DraftWorkspace({
             </button>
             <button
               type="button"
-              className="rounded-md bg-[var(--vectra-accent)] px-3 py-2 text-sm font-medium text-slate-950 transition hover:bg-[color-mix(in_oklab,var(--vectra-accent)_85%,white)] disabled:cursor-not-allowed disabled:opacity-50"
+              className="vectra-button-primary px-3 py-2 text-sm font-medium transition hover:bg-[color-mix(in_oklab,var(--vectra-accent)_85%,white)] disabled:cursor-not-allowed disabled:opacity-50"
               disabled={!canQueue}
               onClick={() =>
                 latestDraftId && selectedRouterId
@@ -338,7 +320,7 @@ export function DraftWorkspace({
                 ? "Ставлю apply..."
                 : "Сохранить и отправить на роутер"}
             </button>
-          </div>
+          </ActionStrip>
         </div>
 
         <label
@@ -350,12 +332,12 @@ export function DraftWorkspace({
         <textarea
           id="draft-json-editor"
           name="draft-json-editor"
-          className="mt-4 h-[22rem] w-full rounded-md border border-white/10 bg-[rgba(6,10,18,0.94)] p-3 font-[family:var(--font-plex-mono)] text-[12px] leading-6 text-slate-100 outline-none transition focus:border-[var(--vectra-accent)]/60 sm:h-[28rem] sm:p-4 lg:h-[34rem]"
+          className="vectra-field mt-4 h-[22rem] border-white/10 bg-[rgba(6,10,18,0.94)] p-3 font-[family:var(--font-plex-mono)] text-[12px] leading-6 text-slate-100 sm:h-[28rem] sm:p-4 lg:h-[34rem]"
           spellCheck={false}
           value={editorText}
           onChange={(event) => setEditorText(event.target.value)}
         />
-      </div>
+      </Panel>
     </div>
   );
 }

@@ -1,5 +1,4 @@
 import { GlobalTemplateRolloutWorkspace } from "~/components/global-template-rollout-workspace";
-import { OperatorWorkflowMap } from "~/components/operator-workflow-map";
 import { Panel } from "~/components/panel";
 import { PageHeader } from "~/components/page-header";
 import { api } from "~/trpc/server";
@@ -91,75 +90,73 @@ export default async function UpdatesPage() {
   const releaseTracks = buildReleaseTracks(artifacts, manifests);
 
   return (
-    <section className="space-y-4">
+      <section className="space-y-4">
       <PageHeader
-        eyebrow="Центр обновлений"
-        title="Глобальный baseline и массовая рассылка по парку"
-        description="Если нужно менять сразу несколько роутеров, делайте это здесь: общий эталон, подготовка черновиков и массовый apply."
-        mobileDescription="Общий baseline и массовая рассылка."
+        eyebrow="Обновления"
+        title="Глобальный baseline и каналы выпусков"
+        description="Сначала редактируйте глобальный эталон и rollout-очередь, затем сверяйте опубликованные каналы и артефакты."
+        mobileDescription="Baseline, rollout и каналы."
+        compact
       />
-
-      <OperatorWorkflowMap current="updates" compact />
 
       <GlobalTemplateRolloutWorkspace
         initialWorkspace={globalTemplateWorkspace}
       />
 
-      <div className="grid gap-4 md:grid-cols-3">
-        {releaseTracks.map((track) => (
-          <Panel
-            key={track.lane}
-            eyebrow={formatChannelLabel(track.channel)}
-            title={track.lane}
-          >
-            <p className="text-2xl font-semibold text-white">{track.version}</p>
-            <p className="mt-2 text-sm leading-6 text-slate-300">
-              {track.scope}
-            </p>
-          </Panel>
-        ))}
-      </div>
-
-      <Panel eyebrow="Прошивки" title="Прошивки идут отдельно">
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] p-4 text-sm leading-7 text-slate-300">
-            Подбирать прошивку нужно по плате, архитектуре и типу разметки.
-            Stock-layout и ubootmod считаются разными устройствами.
-          </div>
-          <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] p-4 text-sm leading-7 text-slate-300">
-            Сначала всегда делайте проверку через <code>sysupgrade -T</code>{" "}
-            или <code>ubus validate_firmware_image</code>. Массового rollout
-            прошивок здесь пока нет.
-          </div>
-        </div>
-      </Panel>
-
-      <Panel eyebrow="Артефакты" title="Опубликованные артефакты">
-        <div className="space-y-3">
-          {artifacts.length > 0 ? (
-            artifacts.slice(0, 6).map((artifact) => (
+      <Panel eyebrow="Контур выпусков" title="Каналы и артефакты" tone="muted">
+        <div className="space-y-4">
+          <div className="vectra-stat-grid md:grid-cols-none">
+            {releaseTracks.map((track) => (
               <div
-                key={artifact.id}
-                className="flex flex-col gap-2 rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] p-4 text-sm text-slate-200 md:flex-row md:items-center md:justify-between"
+                key={track.lane}
+                className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
               >
-                <div>
-                  <p className="font-semibold text-white">{artifact.name}</p>
-                  <p className="mt-1 text-slate-400">
-                    Тип: {formatArtifactType(artifact.type)} · Канал:{" "}
-                    {formatChannelLabel(artifact.channel)}
-                  </p>
-                </div>
-                <div className="font-[family:var(--font-plex-mono)] text-slate-300">
-                  {artifact.version}
-                </div>
+                <p className="vectra-kicker text-slate-500">
+                  {formatChannelLabel(track.channel)}
+                </p>
+                <p className="mt-2 text-base font-semibold text-white sm:text-lg">
+                  {track.lane}
+                </p>
+                <p className="mt-1 text-sm text-slate-200">{track.version}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-400">
+                  {track.scope}
+                </p>
               </div>
-            ))
-          ) : (
-            <div className="rounded-md border border-dashed border-white/12 bg-white/[0.03] p-4 text-sm leading-7 text-slate-300">
-              Артефакты пока не опубликованы. После публикации они появятся
-              здесь.
-            </div>
-          )}
+            ))}
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 text-sm leading-6 text-slate-300">
+            Прошивки остаются отдельным guarded-путём: сначала проверка через{" "}
+            <code>sysupgrade -T</code> или <code>ubus validate_firmware_image</code>,
+            затем только точечное действие по совместимой плате и layout.
+          </div>
+
+          <div className="space-y-2">
+            {artifacts.length > 0 ? (
+              artifacts.slice(0, 6).map((artifact) => (
+                <div
+                  key={artifact.id}
+                  className="flex flex-col gap-2 rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm text-slate-200 md:flex-row md:items-center md:justify-between"
+                >
+                  <div>
+                    <p className="font-semibold text-white">{artifact.name}</p>
+                    <p className="mt-1 text-slate-400">
+                      Тип: {formatArtifactType(artifact.type)} · Канал:{" "}
+                      {formatChannelLabel(artifact.channel)}
+                    </p>
+                  </div>
+                  <div className="font-[family:var(--font-plex-mono)] text-slate-300">
+                    {artifact.version}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-md border border-dashed border-white/12 bg-white/[0.03] p-4 text-sm leading-7 text-slate-300">
+                Артефакты пока не опубликованы. После публикации они появятся
+                здесь.
+              </div>
+            )}
+          </div>
         </div>
       </Panel>
     </section>

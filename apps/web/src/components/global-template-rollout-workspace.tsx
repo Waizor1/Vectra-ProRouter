@@ -351,71 +351,50 @@ export function GlobalTemplateRolloutWorkspace({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="vectra-stat-grid">
         <StatusTile
-          label="Install baseline"
-          value={workspace.installBaselineIssues.length > 0 ? "требует правки" : "готов"}
-          tone={workspace.installBaselineIssues.length > 0 ? "warning" : "good"}
-          hint="Для новых роутеров."
-        />
-        <StatusTile
-          label="Fleet-template"
+          label="Эталон"
           value={
-            workspace.rolloutTemplateIssues.length > 0 ? "требует правки" : "готов"
+            workspace.installBaselineIssues.length > 0 ||
+            workspace.rolloutTemplateIssues.length > 0
+              ? "нужна правка"
+              : "готов"
           }
-          tone={workspace.rolloutTemplateIssues.length > 0 ? "warning" : "good"}
-          hint="Для массовой рассылки."
+          tone={
+            workspace.installBaselineIssues.length > 0 ||
+            workspace.rolloutTemplateIssues.length > 0
+              ? "warning"
+              : "good"
+          }
+          hint={`Новые роутеры: ${workspace.installBaselineIssues.length > 0 ? "есть замечания" : "готов"} · текущий парк: ${workspace.rolloutTemplateIssues.length > 0 ? "есть замечания" : "готов"}`}
+          compact
         />
         <StatusTile
           label="Подходят для рассылки"
           value={String(workspace.summary.eligibleRouterCount)}
           tone={workspace.summary.eligibleRouterCount > 0 ? "good" : "warning"}
           hint="Только approved роутеры на разрешённой pilot/certified платформе."
+          compact
         />
         <StatusTile
           label="Managed shunt rules"
           value={String(workspace.summary.shuntRuleCount)}
           hint={`Managed nodes: ${workspace.summary.managedNodeCount}`}
+          compact
         />
       </div>
 
       <Panel
-        eyebrow="Глобальный baseline"
-        title="Шаблоны парка"
+        eyebrow="Baseline"
+        title="Рабочая поверхность"
+        tone="hero"
+        aside={
+          <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300 sm:text-sm">
+            Обновлено {formatDateTime(workspace.template.updatedAt)}
+          </div>
+        }
       >
         <div className="space-y-4">
-          <div className="grid gap-3 lg:grid-cols-3">
-            <TaskChoiceCard
-              eyebrow="Новый роутер"
-              title="Править install baseline"
-              description="Этот шаблон получает роутер во время первичной установки."
-              actionLabel="Открыть эталон для новых роутеров"
-              onClick={() => {
-                setBaselineEditor("install");
-                setWorkspaceTab(router, pathname, searchParams, "baseline");
-              }}
-            />
-            <TaskChoiceCard
-              eyebrow="Текущий парк"
-              title="Править fleet-template"
-              description="Этот шаблон готовит settings-only merge для уже подключённых роутеров."
-              actionLabel="Открыть эталон для текущего парка"
-              onClick={() => {
-                setBaselineEditor("rollout");
-                setWorkspaceTab(router, pathname, searchParams, "baseline");
-              }}
-            />
-            <TaskChoiceCard
-              eyebrow="Массовое действие"
-              title="Разослать по выбранным роутерам"
-              description="Сначала можно подготовить черновики, затем поставить apply в очередь."
-              actionLabel="Перейти к рассылке"
-              onClick={() =>
-                setWorkspaceTab(router, pathname, searchParams, "rollout")
-              }
-            />
-          </div>
-
           <TabBar
             ariaLabel="Вкладки глобального baseline"
             items={[
@@ -467,7 +446,7 @@ export function GlobalTemplateRolloutWorkspace({
                   type="button"
                   onClick={handleSave}
                   disabled={saveMutation.isPending}
-                  className="rounded-md border border-[var(--vectra-line-strong)] bg-[var(--vectra-accent-soft)] px-3 py-2 text-sm font-medium text-white transition hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="vectra-button-primary px-3 py-2 text-sm font-medium transition hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {saveMutation.isPending
                     ? "Сохраняю эталон..."
@@ -487,7 +466,7 @@ export function GlobalTemplateRolloutWorkspace({
                     value={saveNote}
                     onChange={(event) => setSaveNote(event.target.value)}
                     placeholder="Комментарий к baseline или rollout template"
-                    className="w-full rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2 text-sm text-white outline-none transition focus:border-[var(--vectra-line-strong)]"
+                    className="vectra-field px-3 py-2 text-sm text-white"
                   />
                 </div>
               </ActionStrip>
@@ -524,26 +503,20 @@ export function GlobalTemplateRolloutWorkspace({
 
           {activeTab === "rollout" ? (
             <div className="space-y-4">
-              <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 text-sm leading-7 text-slate-300">
-                <strong>Подготовить черновики без apply</strong> только создаёт
-                локальные draft-ревизии. <strong>Разослать и поставить apply</strong>{" "}
-                создаёт уже реальные apply-задачи.
-              </div>
-
               <ActionStrip justify="start">
                 <button
                   type="button"
                   onClick={() =>
                     setSelectedRouterIds(eligibleTargets.map((target) => target.id))
                   }
-                  className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm font-medium text-slate-200 transition hover:border-white/20 hover:text-white"
+                  className="vectra-button-secondary px-3 py-2 text-sm font-medium transition hover:border-white/20 hover:text-white"
                 >
                   Выбрать все подходящие
                 </button>
                 <button
                   type="button"
                   onClick={() => setSelectedRouterIds([])}
-                  className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm font-medium text-slate-200 transition hover:border-white/20 hover:text-white"
+                  className="vectra-button-secondary px-3 py-2 text-sm font-medium transition hover:border-white/20 hover:text-white"
                 >
                   Очистить выбор
                 </button>
@@ -551,7 +524,7 @@ export function GlobalTemplateRolloutWorkspace({
                   type="button"
                   onClick={() => handleRollout("draft_only")}
                   disabled={rolloutMutation.isPending}
-                  className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm font-medium text-slate-100 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  className="vectra-button-secondary px-3 py-2 text-sm font-medium text-slate-100 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Подготовить черновики без apply
                 </button>
@@ -559,7 +532,7 @@ export function GlobalTemplateRolloutWorkspace({
                   type="button"
                   onClick={() => handleRollout("queue_apply")}
                   disabled={rolloutMutation.isPending}
-                  className="rounded-md border border-[var(--vectra-line-strong)] bg-[var(--vectra-accent-soft)] px-3 py-2 text-sm font-medium text-white transition hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="vectra-button-primary px-3 py-2 text-sm font-medium transition hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {rolloutMutation.isPending
                     ? "Готовлю массовую рассылку..."
@@ -570,7 +543,7 @@ export function GlobalTemplateRolloutWorkspace({
                 </span>
               </ActionStrip>
 
-              <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
+              <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
                 <label
                   htmlFor="global-rollout-note"
                   className="block text-sm text-slate-300"
@@ -585,12 +558,13 @@ export function GlobalTemplateRolloutWorkspace({
                     value={rolloutNote}
                     onChange={(event) => setRolloutNote(event.target.value)}
                     placeholder="Например: rollout нового DNS baseline"
-                    className="mt-2 w-full rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2 text-sm text-white outline-none transition focus:border-[var(--vectra-line-strong)]"
+                    className="vectra-field mt-2 px-3 py-2 text-sm text-white"
                   />
                 </label>
               </div>
 
               <DataTable
+                title="Цели для массовой рассылки"
                 columns={[
                   { key: "pick", label: "Выбор", className: "w-16" },
                   { key: "router", label: "Роутер" },
@@ -671,58 +645,58 @@ export function GlobalTemplateRolloutWorkspace({
               </DataTable>
 
               {lastRolloutResult ? (
-                <Panel
-                  eyebrow="Последний запуск"
-                  title="Результат последней массовой операции"
-                >
-                  <div className="space-y-4">
-                    {lastResultSummary ? (
-                      <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 text-sm text-slate-200">
-                        {lastResultSummary}
-                      </div>
-                    ) : null}
-                    <DataTable
-                      columns={[
-                        { key: "router", label: "Роутер" },
-                        { key: "status", label: "Результат" },
-                        { key: "revision", label: "Draft" },
-                        { key: "job", label: "Apply job" },
-                        { key: "reason", label: "Комментарий" },
-                      ]}
-                    >
-                      {lastRolloutResult.results.length > 0 ? (
-                        lastRolloutResult.results.map((result) => (
-                          <tr key={result.routerId} className="border-b border-white/6">
-                            <td className="px-3 py-3 align-top text-sm text-slate-100">
-                              <Link
-                                href={`/routers/${result.routerId}`}
-                                className="font-medium text-white underline decoration-white/10 underline-offset-4"
-                              >
-                                {result.displayName}
-                              </Link>
-                            </td>
-                            <td className="px-3 py-3 align-top text-sm text-slate-200">
-                              {result.status}
-                            </td>
-                            <td className="px-3 py-3 align-top font-[family:var(--font-plex-mono)] text-xs text-slate-300">
-                              {result.revisionId ?? "—"}
-                            </td>
-                            <td className="px-3 py-3 align-top font-[family:var(--font-plex-mono)] text-xs text-slate-300">
-                              {result.jobId ?? "—"}
-                            </td>
-                            <td className="px-3 py-3 align-top text-sm text-slate-400">
-                              {result.reason ?? "без ошибок"}
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <DataTableEmpty colSpan={5}>
-                          Результатов пока нет.
-                        </DataTableEmpty>
-                      )}
-                    </DataTable>
+                <div className="space-y-3 rounded-2xl border border-white/10 bg-[rgba(10,14,20,0.72)] px-3 py-3 sm:px-4">
+                  <div>
+                    <p className="text-sm font-medium text-white">Последняя массовая операция</p>
                   </div>
-                </Panel>
+
+                  {lastResultSummary ? (
+                    <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 text-sm text-slate-200">
+                      {lastResultSummary}
+                    </div>
+                  ) : null}
+
+                  <DataTable
+                    columns={[
+                      { key: "router", label: "Роутер" },
+                      { key: "status", label: "Результат" },
+                      { key: "revision", label: "Draft" },
+                      { key: "job", label: "Apply job" },
+                      { key: "reason", label: "Комментарий" },
+                    ]}
+                  >
+                    {lastRolloutResult.results.length > 0 ? (
+                      lastRolloutResult.results.map((result) => (
+                        <tr key={result.routerId} className="border-b border-white/6">
+                          <td className="px-3 py-3 align-top text-sm text-slate-100">
+                            <Link
+                              href={`/routers/${result.routerId}`}
+                              className="font-medium text-white underline decoration-white/10 underline-offset-4"
+                            >
+                              {result.displayName}
+                            </Link>
+                          </td>
+                          <td className="px-3 py-3 align-top text-sm text-slate-200">
+                            {result.status}
+                          </td>
+                          <td className="px-3 py-3 align-top font-[family:var(--font-plex-mono)] text-xs text-slate-300">
+                            {result.revisionId ?? "—"}
+                          </td>
+                          <td className="px-3 py-3 align-top font-[family:var(--font-plex-mono)] text-xs text-slate-300">
+                            {result.jobId ?? "—"}
+                          </td>
+                          <td className="px-3 py-3 align-top text-sm text-slate-400">
+                            {result.reason ?? "без ошибок"}
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <DataTableEmpty colSpan={5}>
+                        Результатов пока нет.
+                      </DataTableEmpty>
+                    )}
+                  </DataTable>
+                </div>
               ) : null}
             </div>
           ) : null}
@@ -797,9 +771,9 @@ function TemplateEditorPane({
 
   return (
     <div className="space-y-3">
-      <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
+      <div>
         <p className="vectra-kicker text-slate-500">{title}</p>
-        <p className="mt-2 text-sm leading-6 text-slate-300 sm:leading-7">
+        <p className="mt-1 text-sm leading-6 text-slate-400 sm:leading-6">
           {description}
         </p>
       </div>
@@ -812,37 +786,8 @@ function TemplateEditorPane({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         rows={rows}
-        className="min-h-[18rem] w-full rounded-md border border-white/10 bg-black/30 px-3 py-3 font-[family:var(--font-plex-mono)] text-[11.5px] leading-5 text-slate-100 outline-none transition focus:border-[var(--vectra-line-strong)] sm:min-h-[24rem] sm:text-[12px] sm:leading-6 xl:min-h-[28rem]"
+        className="vectra-field min-h-[18rem] border-white/10 bg-black/30 px-3 py-3 font-[family:var(--font-plex-mono)] text-[11.5px] leading-5 text-slate-100 sm:min-h-[24rem] sm:text-[12px] sm:leading-6 xl:min-h-[28rem]"
       />
-    </div>
-  );
-}
-
-function TaskChoiceCard({
-  eyebrow,
-  title,
-  description,
-  actionLabel,
-  onClick,
-}: {
-  eyebrow: string;
-  title: string;
-  description: string;
-  actionLabel: string;
-  onClick: () => void;
-}) {
-  return (
-    <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
-      <p className="vectra-kicker text-slate-500">{eyebrow}</p>
-      <p className="mt-2 text-sm font-medium text-white">{title}</p>
-      <p className="mt-2 text-sm leading-6 text-slate-300">{description}</p>
-      <button
-        type="button"
-        onClick={onClick}
-        className="mt-3 rounded-md border border-white/10 bg-black/10 px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
-      >
-        {actionLabel}
-      </button>
     </div>
   );
 }

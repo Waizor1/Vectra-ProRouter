@@ -1,5 +1,4 @@
 import { DraftWorkspace } from "~/components/draft-workspace";
-import { OperatorWorkflowMap } from "~/components/operator-workflow-map";
 import { Panel } from "~/components/panel";
 import { PageHeader } from "~/components/page-header";
 import { api } from "~/trpc/server";
@@ -32,34 +31,24 @@ export default async function DraftsPage({
   const drafts = await api.draft.list();
 
   return (
-    <section className="space-y-4">
+      <section className="space-y-4">
       <PageHeader
-        eyebrow="Экспертный режим"
-        title="Черновики и JSON-редактор"
-        description="Запасной JSON-режим для одного роутера, когда обычных вкладок недостаточно."
-        mobileDescription="Запасной JSON-режим для одного роутера."
+        eyebrow="Черновики"
+        title="Экспертные ревизии и JSON-редактор"
+        description="Резервный путь для нестандартных правок. Основной операторский поток остаётся на странице роутера, а этот экран нужен для точечной JSON-работы и истории ревизий."
+        mobileDescription="JSON-редактор и история ревизий."
+        compact
       />
 
-      <OperatorWorkflowMap current="drafts" compact />
+      <DraftWorkspace initialRouterId={routerId} />
 
-      <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 text-sm leading-6 text-slate-300">
-        Используйте этот экран только для нестандартных точечных правок. Если
-        задача относится к обычной настройке роутера, удобнее работать на его
-        странице. Если менять нужно сразу нескольким роутерам, ориентир остаётся
-        на `Обновления`.
-      </div>
-
-      <Panel eyebrow="Экспертный режим" title="JSON-редактор">
-        <DraftWorkspace initialRouterId={routerId} />
-      </Panel>
-
-      <Panel eyebrow="История" title="Последние ревизии">
+      <Panel eyebrow="История" title="Последние ревизии" tone="muted">
         <div className="space-y-3">
           {drafts.length > 0 ? (
             drafts.slice(0, 8).map((draft) => (
               <div
                 key={draft.id}
-                className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] p-4"
+                className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
               >
                 <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                   <div>
@@ -75,7 +64,7 @@ export default async function DraftsPage({
                     {draft.impact.changedSections.join(", ") || "изменений нет"}
                   </p>
                 </div>
-                <p className="mt-4 text-sm leading-7 text-slate-300">
+                <p className="mt-3 text-sm leading-6 text-slate-300">
                   Перезапуск: {draft.impact.requiresRestart ? "да" : "нет"} ·
                   Подписки:{" "}
                   {draft.impact.refreshSubscriptions

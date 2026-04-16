@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 
 import { env } from "~/env";
 import { CopyTextButton } from "~/components/copy-text-button";
-import { OperatorWorkflowMap } from "~/components/operator-workflow-map";
 import { Panel } from "~/components/panel";
 import { PageHeader } from "~/components/page-header";
 import {
@@ -21,26 +20,10 @@ import {
 } from "~/app/enrollment/install-presets";
 
 const installHighlights = [
-  {
-    label: "Режим",
-    value: "fresh / upgrade / repair",
-    hint: "Скрипт сам выбирает безопасный сценарий.",
-  },
-  {
-    label: "Место на диске",
-    value: "preflight",
-    hint: "Остановится до изменений, если стек не помещается.",
-  },
-  {
-    label: "Старый PassWall",
-    value: "merge",
-    hint: "Старается сохранить subscribe_list и приватные ноды.",
-  },
-  {
-    label: "Optional",
-    value: "не ставит",
-    hint: "sing-box и hysteria не идут по умолчанию.",
-  },
+  "fresh / upgrade / repair выбираются автоматически",
+  "preflight останавливает установку до изменений, если стек не помещается",
+  "существующие subscribe_list и приватные ноды старается сохранить",
+  "optional-компоненты вроде sing-box и hysteria не ставятся по умолчанию",
 ] as const;
 
 const nextActionSteps = [
@@ -84,17 +67,17 @@ export default function EnrollmentPage() {
     <section className="space-y-4">
       <PageHeader
         eyebrow="Установка"
-        title="Подключение нового роутера"
-        description="Готовый bootstrap для AX3000T и понятный порядок первого подключения без ручной сборки команд."
-        mobileDescription="Bootstrap для AX3000T и первый check-in."
+        title="Подключение роутера"
+        description="Bootstrap-команда и короткий путь до первого check-in."
+        mobileDescription="Bootstrap и check-in."
+        compact
       />
-
-      <OperatorWorkflowMap current="enrollment" compact />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
         <Panel
-          eyebrow="Шаг 1"
+          eyebrow="Bootstrap"
           title="Команда для роутера"
+          tone="hero"
           aside={
             <CopyTextButton text={quickCommand} label="Копировать команду" />
           }
@@ -116,33 +99,16 @@ export default function EnrollmentPage() {
               <code>{quickCommand}</code>
             </pre>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              {installHighlights.map((item) => (
-                <div
-                  key={item.label}
-                  className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3"
-                >
-                  <p className="vectra-kicker text-slate-500">{item.label}</p>
-                  <p className="mt-2 text-sm font-medium text-white">
-                    {item.value}
-                  </p>
-                  <p className="mt-2 text-sm leading-6 text-slate-300">
-                    {item.hint}
-                  </p>
-                </div>
-              ))}
-            </div>
-
             <div className="flex flex-wrap gap-2">
               <Link
                 href="/fleet"
-                className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
+                className="vectra-button-secondary px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
               >
                 Открыть Парк
               </Link>
               <a
                 href={bootstrapScriptUrl}
-                className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
+                className="vectra-button-secondary px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
               >
                 Открыть shell-скрипт
               </a>
@@ -150,7 +116,7 @@ export default function EnrollmentPage() {
           </div>
         </Panel>
 
-        <Panel eyebrow="Шаги после команды" title="Что делать дальше">
+        <Panel eyebrow="После bootstrap" title="Следующие шаги" tone="muted">
           <div className="space-y-3">
             {nextActionSteps.map((item) => (
               <div
@@ -173,7 +139,7 @@ export default function EnrollmentPage() {
               </div>
             ))}
 
-            <div className="rounded-md border border-amber-400/20 bg-amber-500/10 px-4 py-4 text-sm leading-7 text-amber-100">
+            <div className="rounded-md border border-amber-400/20 bg-amber-500/10 px-3 py-3 text-sm leading-6 text-amber-100">
               <strong className="text-white">Когда нажимать «Принять import как эталон»:</strong>{" "}
               только если текущая конфигурация вас устраивает, подписки и приватные
               ноды на месте, и именно это состояние вы хотите считать стартовой базой.
@@ -182,13 +148,13 @@ export default function EnrollmentPage() {
             <div className="flex flex-wrap gap-2">
               <Link
                 href="/fleet"
-                className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
+                className="vectra-button-secondary px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
               >
                 Перейти в Парк
               </Link>
               <Link
                 href="/updates"
-                className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
+                className="vectra-button-secondary px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
               >
                 Где массовая рассылка
               </Link>
@@ -197,60 +163,74 @@ export default function EnrollmentPage() {
         </Panel>
       </div>
 
-      <Panel
-        eyebrow="После своей подписки"
-        title="Восстановить привязки myshunt"
-        aside={
-          <CopyTextButton
-            text={shuntRebindCommand}
-            label="Копировать команду"
-          />
-        }
-      >
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,0.8fr)]">
-          <div className="space-y-4 text-sm leading-7 text-slate-300">
-            <p>
-              В baseline нет ваших реальных proxy nodes, поэтому после импорта
-              своей подписки нужно один раз вернуть target-привязки для
-              <code> myshunt</code>.
-            </p>
+      <Panel eyebrow="Утилиты" title="Технические материалы" tone="muted">
+        <div className="space-y-3">
+          <DisclosureSection
+            title="Что именно делает bootstrap"
+            summary="Коротко про режимы, preflight и то, что не ставится по умолчанию."
+          >
+            <ul className="space-y-2 text-sm leading-7 text-slate-300">
+              {installHighlights.map((item) => (
+                <li key={item} className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </DisclosureSection>
 
-            <pre className="overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
-              <code>{shuntRebindCommand}</code>
-            </pre>
+          <DisclosureSection
+            title="После своей подписки: вернуть привязки myshunt"
+            summary="Команда и helper для возврата shunt-target привязок после импорта своей подписки."
+          >
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,0.8fr)]">
+              <div className="space-y-4 text-sm leading-7 text-slate-300">
+                <div className="flex flex-wrap gap-2">
+                  <CopyTextButton
+                    text={shuntRebindCommand}
+                    label="Копировать команду"
+                  />
+                </div>
 
-            <p>
-              Helper ищет ноды по <code>remark</code> и восстанавливает нужные
-              назначения. Скрипт доступен по адресу{" "}
-              <a
-                href={shuntRebindScriptUrl}
-                className="font-[family:var(--font-plex-mono)] text-[var(--vectra-accent)] underline decoration-white/20 underline-offset-4"
-              >
-                {shuntRebindScriptUrl}
-              </a>
-              .
-            </p>
-          </div>
+                <p>
+                  В baseline нет ваших реальных proxy nodes, поэтому после импорта
+                  своей подписки нужно один раз вернуть target-привязки для
+                  <code> myshunt</code>.
+                </p>
 
-          <div className="space-y-2 rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] p-4">
-            <p className="vectra-kicker text-slate-500">Какие targets вернутся</p>
-            {ax3000tEnrollmentPreset.sourceShuntTargets.map((target) => (
-              <div
-                key={target.slot}
-                className="rounded-md border border-white/10 bg-black/10 px-3 py-2"
-              >
-                <p className="text-sm font-medium text-white">{target.slot}</p>
-                <p className="mt-1 text-xs font-[family:var(--font-plex-mono)] text-slate-300">
-                  {target.remark}
+                <pre className="overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
+                  <code>{shuntRebindCommand}</code>
+                </pre>
+
+                <p>
+                  Helper ищет ноды по <code>remark</code> и восстанавливает нужные
+                  назначения. Скрипт доступен по адресу{" "}
+                  <a
+                    href={shuntRebindScriptUrl}
+                    className="font-[family:var(--font-plex-mono)] text-[var(--vectra-accent)] underline decoration-white/20 underline-offset-4"
+                  >
+                    {shuntRebindScriptUrl}
+                  </a>
+                  .
                 </p>
               </div>
-            ))}
-          </div>
-        </div>
-      </Panel>
 
-      <Panel eyebrow="Технические детали" title="Дополнительные материалы">
-        <div className="space-y-3">
+              <div className="space-y-2 rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] p-4">
+                <p className="vectra-kicker text-slate-500">Какие targets вернутся</p>
+                {ax3000tEnrollmentPreset.sourceShuntTargets.map((target) => (
+                  <div
+                    key={target.slot}
+                    className="rounded-md border border-white/10 bg-black/10 px-3 py-2"
+                  >
+                    <p className="text-sm font-medium text-white">{target.slot}</p>
+                    <p className="mt-1 text-xs font-[family:var(--font-plex-mono)] text-slate-300">
+                      {target.remark}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </DisclosureSection>
+
           <DisclosureSection
             title="Что установится на роутер"
             summary="Контроллер, обязательный mirrored set PassWall2 и требуемые OpenWrt runtime-пакеты."
@@ -405,7 +385,7 @@ function DisclosureSection({
   return (
     <details
       open={defaultOpen}
-      className="rounded-md border border-white/10 bg-[rgba(10,14,20,0.74)]"
+      className="rounded-2xl border border-white/10 bg-[rgba(10,14,20,0.74)]"
     >
       <summary className="cursor-pointer list-none px-4 py-3">
         <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
