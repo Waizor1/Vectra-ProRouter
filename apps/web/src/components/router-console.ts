@@ -5,6 +5,16 @@ export type OperatorShellTab =
   | "rescue"
   | "enrollment";
 
+export type OperatorShellSection = {
+  id: OperatorShellTab;
+  label: string;
+  href: string;
+  badge: string;
+  description: string;
+  commandHint: string;
+  keywords: readonly string[];
+};
+
 export type RouterPrimaryTab =
   | "basic-settings"
   | "node-list"
@@ -29,16 +39,52 @@ export type RouterSecondaryTab =
   | "maintain";
 
 export const operatorShellTabs = [
-  { id: "fleet", label: "Парк", href: "/fleet" },
-  { id: "drafts", label: "Черновики", href: "/drafts" },
-  { id: "updates", label: "Обновления", href: "/updates" },
-  { id: "rescue", label: "Восстановление", href: "/rescue" },
-  { id: "enrollment", label: "Установка", href: "/enrollment" },
-] as const satisfies ReadonlyArray<{
-  id: OperatorShellTab;
-  label: string;
-  href: string;
-}>;
+  {
+    id: "fleet",
+    label: "Парк",
+    href: "/fleet",
+    badge: "парк",
+    description: "Операционный обзор парка, алерты и вход в нужный роутер.",
+    commandHint: "/fleet · парк · роутер",
+    keywords: ["fleet", "парк", "роутеры", "router", "monitor"],
+  },
+  {
+    id: "drafts",
+    label: "Черновики",
+    href: "/drafts",
+    badge: "эксперт",
+    description: "Экспертный JSON-режим для нестандартных точечных правок.",
+    commandHint: "/drafts · черновики · json",
+    keywords: ["drafts", "черновики", "json", "expert"],
+  },
+  {
+    id: "updates",
+    label: "Обновления",
+    href: "/updates",
+    badge: "массово",
+    description: "Глобальный baseline и массовые действия по уже подключённому парку.",
+    commandHint: "/updates · обновления · rollout",
+    keywords: ["updates", "обновления", "rollout", "baseline"],
+  },
+  {
+    id: "rescue",
+    label: "Восстановление",
+    href: "/rescue",
+    badge: "recovery",
+    description: "Direct mode, rescue-сигналы и возврат роутеров в proxy.",
+    commandHint: "/rescue · direct · incident",
+    keywords: ["rescue", "восстановление", "direct", "incident"],
+  },
+  {
+    id: "enrollment",
+    label: "Установка",
+    href: "/enrollment",
+    badge: "bootstrap",
+    description: "Bootstrap нового роутера, controller-agent и первого baseline.",
+    commandHint: "/enrollment · установка · bootstrap",
+    keywords: ["enrollment", "установка", "bootstrap", "install"],
+  },
+] as const satisfies ReadonlyArray<OperatorShellSection>;
 
 export const routerPrimaryTabs = [
   { id: "basic-settings", label: "Basic Settings" },
@@ -94,6 +140,67 @@ export function normalizeOperatorShellTab(value: string | null | undefined) {
   return operatorShellTabs.some((tab) => tab.id === value)
     ? (value as OperatorShellTab)
     : "fleet";
+}
+
+export function getOperatorShellSectionForPath(
+  pathname: string | null | undefined,
+): OperatorShellSection {
+  if (!pathname) {
+    return operatorShellTabs[0];
+  }
+
+  if (pathname.startsWith("/routers/")) {
+    return operatorShellTabs[0];
+  }
+
+  return (
+    operatorShellTabs.find(
+      (tab) => pathname === tab.href || pathname.startsWith(`${tab.href}/`),
+    ) ?? operatorShellTabs[0]
+  );
+}
+
+export function buildFleetSearchHref(query: string) {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return "/fleet";
+  }
+
+  const params = new URLSearchParams({ q: trimmed });
+  return `/fleet?${params.toString()}`;
+}
+
+export function resolveOperatorCommand(query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return "/fleet";
+  }
+
+  const directHref = operatorShellTabs.find(
+    (tab) =>
+      normalized === tab.href ||
+      normalized === tab.label.toLowerCase() ||
+      normalized === tab.id ||
+      tab.keywords.some((keyword) => keyword === normalized),
+  );
+
+  if (directHref) {
+    return directHref.href;
+  }
+
+  if (normalized.startsWith("/")) {
+    const withoutSlash = normalized.slice(1);
+    const slashMatch = operatorShellTabs.find(
+      (tab) =>
+        tab.id === withoutSlash ||
+        tab.keywords.some((keyword) => keyword === withoutSlash),
+    );
+    if (slashMatch) {
+      return slashMatch.href;
+    }
+  }
+
+  return null;
 }
 
 export function normalizeRouterPrimaryTab(
