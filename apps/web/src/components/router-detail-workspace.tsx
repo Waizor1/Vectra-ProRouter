@@ -50,7 +50,6 @@ import {
   isRouterOnboardingPending,
 } from "~/lib/router-onboarding";
 import {
-  describeTelegramReachability,
   formatTelegramReachabilityLabel,
   getTelegramReachabilityChecks,
 } from "~/lib/telegram-reachability";
@@ -739,10 +738,20 @@ export function RouterDetailWorkspace({
   );
 
   return (
-    <div className="space-y-4">
-      <Panel eyebrow="Router Console" title={editor.routerRuntimeSummary.name}>
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
-          <div className="grid gap-2 sm:gap-3 md:grid-cols-2">
+    <div className="space-y-4 xl:space-y-5">
+      <div className="vectra-main-grid gap-4 xl:gap-5">
+        <section className="vectra-hero-panel rounded-[1.6rem] px-4 py-4 sm:px-5 sm:py-5">
+          <div className="space-y-3">
+            <div>
+              <p className="vectra-kicker text-[var(--vectra-accent)]">Router Console</p>
+              <h2 className="mt-1 text-xl font-semibold tracking-[-0.03em] text-white sm:text-2xl">
+                {editor.routerRuntimeSummary.name}
+              </h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+                Сначала оценивайте текущее состояние и import-контекст, затем сохраняйте черновик или отправляйте apply. Вкладки ниже сохраняют текущую query-навигацию и рабочие действия.
+              </p>
+            </div>
+            <div className="vectra-summary-grid">
             <SummaryCell
               label="Платформа"
               value={editor.routerRuntimeSummary.name}
@@ -774,33 +783,6 @@ export function RouterDetailWorkspace({
               meta={editor.routerRuntimeSummary.supportReason}
             />
             <SummaryCell
-              label="Telegram"
-              value={formatTelegramReachabilityLabel(
-                inventory.telegramReachability,
-              )}
-              meta={
-                inventory.telegramReachability
-                  ? `${describeTelegramReachability(
-                      inventory.telegramReachability,
-                    )} · проверка ${formatDateTime(
-                      inventory.telegramReachability.checkedAt,
-                    )}`
-                  : "Агент ещё не присылал эту проверку."
-              }
-            />
-            <SummaryCell
-              label="Recovery"
-              value={
-                editor.routerRuntimeSummary.lastRescueReason ??
-                "активных причин нет"
-              }
-              meta={
-                directModeActive
-                  ? "прямой режим активен"
-                  : "последний известный снимок"
-              }
-            />
-            <SummaryCell
               label="Выбранная нода"
               value={
                 editor.routerRuntimeSummary.selectedNodeLabel ??
@@ -810,412 +792,382 @@ export function RouterDetailWorkspace({
               meta={`${currentModeLabel} · задач в очереди: ${editor.routerRuntimeSummary.pendingChanges}`}
             />
             {telegramChecks.length > 0 ? (
-              <>
-                <details className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 md:hidden">
-                  <summary className="cursor-pointer list-none">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="vectra-kicker text-slate-500">
-                          Проверки Telegram
-                        </p>
-                        <p className="mt-2 text-sm font-medium text-white">
-                          {formatTelegramReachabilityLabel(
-                            inventory.telegramReachability,
-                          )}
-                        </p>
-                      </div>
-                      <span className="text-xs text-slate-400">
-                        {telegramChecks.length} цели
-                      </span>
+              <details className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 xl:col-span-3">
+                <summary className="cursor-pointer list-none">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="vectra-kicker text-slate-500">Проверки Telegram</p>
+                      <p className="mt-2 text-sm font-medium text-white">
+                        {formatTelegramReachabilityLabel(inventory.telegramReachability)}
+                      </p>
                     </div>
-                  </summary>
-                  <div className="mt-3 grid gap-2">
-                    {telegramChecks.map((check) => (
-                      <div
-                        key={`${check.label}-${check.checkedAt ?? "na"}`}
-                        className="rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2"
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="text-sm font-medium text-white">
-                            {check.label}
-                          </p>
-                          <span
-                            className={`text-xs ${
-                              check.reachable
-                                ? "text-emerald-100"
-                                : "text-rose-200"
-                            }`}
-                          >
-                            {check.reachable ? "доступно" : "недоступно"}
-                          </span>
-                        </div>
-                        <p className="mt-2 text-xs leading-5 text-slate-400">
-                          {check.detail}
-                        </p>
-                        <p className="mt-1 text-[11px] leading-5 text-slate-500">
-                          Проверка {formatDateTime(check.checkedAt)}
-                        </p>
-                      </div>
-                    ))}
+                    <span className="text-xs text-slate-400">{telegramChecks.length} цели</span>
                   </div>
-                </details>
-
-                <div className="hidden rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 md:col-span-2 md:block">
-                  <p className="vectra-kicker text-slate-500">
-                    Проверки Telegram
-                  </p>
-                  <div className="mt-3 grid gap-2 md:grid-cols-2">
-                    {telegramChecks.map((check) => (
-                      <div
-                        key={`${check.label}-${check.checkedAt ?? "na"}`}
-                        className="rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2"
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="text-sm font-medium text-white">
-                            {check.label}
-                          </p>
-                          <span
-                            className={`text-xs ${
-                              check.reachable
-                                ? "text-emerald-100"
-                                : "text-rose-200"
-                            }`}
-                          >
-                            {check.reachable ? "доступно" : "недоступно"}
-                          </span>
-                        </div>
-                        <p className="mt-2 text-xs leading-6 text-slate-400">
-                          {check.detail}
-                        </p>
-                        <p className="mt-1 text-[11px] leading-5 text-slate-500">
-                          Проверка {formatDateTime(check.checkedAt)}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </>
-            ) : null}
-          </div>
-
-          <div className="space-y-3">
-            <ImportReviewActions
-              routerId={routerId}
-              revisionId={editor.importedRevisionId}
-              importState={editor.routerRuntimeSummary.importState}
-            />
-
-            <ActionGroup
-              eyebrow="Локальные правки"
-              title="Сохранение и применение"
-              description="Черновик и apply только для этого роутера."
-            >
-              <ActionStrip justify="start">
-                <button
-                  type="button"
-                  disabled={!validDraft || saveMutation.isPending}
-                  onClick={() => {
-                    void handleSaveDraft();
-                  }}
-                  className="rounded-md bg-[var(--vectra-accent)] px-3 py-2 text-sm font-medium text-slate-950 transition hover:bg-[color-mix(in_oklab,var(--vectra-accent)_85%,white)] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {saveMutation.isPending
-                    ? "Сохраняю..."
-                    : "Сохранить только в панели"}
-                </button>
-                <button
-                  type="button"
-                  disabled={
-                    !canApplyCurrentDraft ||
-                    queueMutation.isPending ||
-                    saveMutation.isPending
-                  }
-                  onClick={() => {
-                    void handleSaveAndApply();
-                  }}
-                  className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm font-medium text-slate-200 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {queueMutation.isPending
-                    ? "Отправляю на роутер..."
-                    : saveMutation.isPending
-                      ? "Сохраняю..."
-                      : "Сохранить и применить на роутере"}
-                </button>
-                <Link
-                  href={`/drafts?routerId=${routerId}`}
-                  className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm font-medium text-slate-200 transition hover:border-white/20 hover:text-white"
-                >
-                  Экспертный JSON
-                </Link>
-              </ActionStrip>
-              <details className="rounded-md border border-white/10 bg-black/10 px-3 py-3 sm:hidden">
-                <summary className="cursor-pointer list-none text-sm font-medium text-white">
-                  Что делают кнопки
                 </summary>
-                <div className="mt-3 space-y-2">
-                  <p className="text-sm leading-6 text-slate-300">
-                    <strong>Сохранить только в панели</strong>: обновляет
-                    черновик без отправки на роутер.
-                  </p>
-                  <p className="text-sm leading-6 text-slate-300">
-                    <strong>Сохранить и применить на роутере</strong>: сначала
-                    сохраняет, потом ставит apply-задачу в очередь.
-                  </p>
-                  <p className="text-sm leading-6 text-slate-400">
-                    {canQueueApply && !hasUnsavedChanges
-                      ? "Если ничего не менялось, на роутер уйдёт уже сохранённый черновик."
-                      : applyDisabledReason}
-                  </p>
+                <div className="mt-3 grid gap-2 md:grid-cols-2">
+                  {telegramChecks.map((check) => (
+                    <div
+                      key={`${check.label}-${check.checkedAt ?? "na"}`}
+                      className="rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-medium text-white">{check.label}</p>
+                        <span
+                          className={`text-xs ${
+                            check.reachable ? "text-emerald-100" : "text-rose-200"
+                          }`}
+                        >
+                          {check.reachable ? "доступно" : "недоступно"}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-slate-400">{check.detail}</p>
+                      <p className="mt-1 text-[11px] leading-5 text-slate-500">
+                        Проверка {formatDateTime(check.checkedAt)}
+                      </p>
+                    </div>
+                  ))}
                 </div>
               </details>
-              <p className="hidden text-sm leading-6 text-slate-400 sm:block">
-                <strong>Сохранить только в панели</strong> сохраняет черновик.{" "}
-                <strong>Сохранить и применить на роутере</strong> сохраняет и
-                ставит apply в очередь.
-              </p>
-              <p className="hidden text-sm leading-6 text-slate-500 sm:block">
-                {canQueueApply && !hasUnsavedChanges
-                  ? "Если ничего не менялось, на роутер уйдёт уже сохранённый черновик."
-                  : applyDisabledReason}
-              </p>
-            </ActionGroup>
-
-            <ActionGroup
-              eyebrow="Диагностика"
-              title="Recovery и журналы"
-              description="Rescue, reconnect и журналы этого роутера."
-            >
-              <ActionStrip justify="start">
-                <RescueActions
-                  routerId={routerId}
-                  needsRecoveryAction={needsRecoveryAction}
-                  directModeActive={directModeActive}
-                  routerReachable={routerReachable}
-                />
-                {watchLogsSupported ? (
-                  <Link
-                    href={watchLogsHref}
-                    className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm font-medium text-slate-200 transition hover:border-white/20 hover:text-white"
-                  >
-                    Открыть Watch Logs
-                  </Link>
-                ) : (
-                  <span className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm text-slate-400">
-                    Watch Logs включится после controller{" "}
-                    {minimumWatchLogsControllerVersion}
-                  </span>
-                )}
-              </ActionStrip>
-            </ActionGroup>
-
-            <ActionGroup
-              eyebrow="Опасная зона"
-              title="Удаление роутера"
-              description="Удаляет записи Vectra. Сам роутер не очищается."
-              tone="warning"
-            >
-              <ActionStrip justify="start">
-                <button
-                  type="button"
-                  disabled={deleteRouterMutation.isPending}
-                  onClick={handleDeleteRouter}
-                  className="rounded-md border border-rose-400/25 bg-rose-500/10 px-3 py-2 text-sm font-medium text-rose-100 transition hover:border-rose-300/40 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {deleteRouterMutation.isPending
-                    ? "Удаляю роутер..."
-                    : "Удалить роутер из системы"}
-                </button>
-              </ActionStrip>
-              <p className="hidden text-sm leading-6 text-slate-400 sm:block">
-                Удаляются черновики, задачи и снапшоты панели. Если
-                контроллер зарегистрируется снова, роутер появится заново.
-              </p>
-            </ActionGroup>
-          </div>
-        </div>
-
-        <div className="mt-4 grid gap-2 sm:grid-cols-2 sm:gap-3 xl:grid-cols-4">
-          <StatusTile
-            label="Состояние PassWall2"
-            value={
-              editor.routerRuntimeSummary.passwallEnabled
-                ? "PassWall2 включён"
-                : "PassWall2 выключен"
-            }
-            tone={
-              !routerReachable
-                ? "warning"
-                : editor.routerRuntimeSummary.passwallEnabled
-                  ? "good"
-                  : "default"
-            }
-            hint={`Сервис: ${formatServiceState(inventory.serviceHealth?.passwall)}`}
-          />
-          <StatusTile
-            label="Связь контроллера"
-            value={routerReachable ? "свежая" : "устарела"}
-            tone={routerReachable ? "good" : "warning"}
-            hint={`Последний check-in: ${formatDateTime(editor.routerRuntimeSummary.lastSeenAt)}`}
-          />
-          <StatusTile
-            label="Нода и режим"
-            value={
-              editor.routerRuntimeSummary.selectedNodeLabel
-                ? `${editor.routerRuntimeSummary.selectedNodeLabel} / ${currentModeLabel}`
-                : currentModeLabel
-            }
-            tone={directModeActive ? "warning" : "default"}
-            hint={`Черновик: ${draft.basicSettings.main.selectedNodeId ?? "не задана"}`}
-          />
-          <StatusTile
-            label="Подключение"
-            value={formatRouterImportStateLabel(
-              editor.routerRuntimeSummary.importState,
-            )}
-            tone={
-              editor.approvalRequired || directModeActive
-                ? "warning"
-                : "default"
-            }
-            hint={
-              directModeActive
-                ? (editor.routerRuntimeSummary.lastRescueReason ??
-                  "прямой режим активен")
-                : onboarding.cardHint
-            }
-          />
-        </div>
-
-        <details className="mt-4 rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] sm:hidden">
-          <summary className="cursor-pointer list-none px-3 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="vectra-kicker text-slate-500">
-                  Черновик и проверка
-                </p>
-                <p className="mt-1 text-sm font-medium text-white">
-                  Комментарий и служебные подсказки
-                </p>
-              </div>
-              <span className="text-xs text-slate-400">
-                {validationMessage ? "нужна проверка" : "опционально"}
-              </span>
+            ) : null}
             </div>
-          </summary>
-          <div className="space-y-3 border-t border-white/10 px-3 py-3">
-            <label className="block">
-              <span className="vectra-kicker text-slate-500">
-                Комментарий к черновику
-              </span>
-              <input
-                name="draft-note"
-                className="mt-2 w-full rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2 text-sm text-white transition outline-none focus:border-[var(--vectra-line-strong)]"
-                value={note}
-                onChange={(event) => setNote(event.target.value)}
-                placeholder="Что меняется в этой ревизии"
+
+            <div className="vectra-stat-grid">
+              <StatusTile
+                label="Состояние PassWall2"
+                value={
+                  editor.routerRuntimeSummary.passwallEnabled
+                    ? "PassWall2 включён"
+                    : "PassWall2 выключен"
+                }
+                tone={
+                  !routerReachable
+                    ? "warning"
+                    : editor.routerRuntimeSummary.passwallEnabled
+                      ? "good"
+                      : "default"
+                }
+                hint={`Сервис: ${formatServiceState(inventory.serviceHealth?.passwall)}`}
+                compact
+                emphasis={editor.routerRuntimeSummary.passwallEnabled}
               />
-            </label>
-            <div className="rounded-md border border-white/10 bg-black/10 px-3 py-2 text-sm leading-6 text-slate-300">
-              {validationMessage ? (
-                <span className="text-rose-200">{validationMessage}</span>
-              ) : (
-                <>
-                  Плейсхолдер <code>{MASKED_SECRET_PLACEHOLDER}</code>{" "}
-                  означает сохранённый секрет. Заблокированные роутеры
-                  сохраняют черновики, но операции на устройство не ставятся в
-                  очередь.
-                </>
-              )}
+              <StatusTile
+                label="Связь контроллера"
+                value={routerReachable ? "свежая" : "устарела"}
+                tone={routerReachable ? "good" : "warning"}
+                hint={`Последний check-in: ${formatDateTime(editor.routerRuntimeSummary.lastSeenAt)}`}
+                compact
+                emphasis={routerReachable}
+              />
+              <StatusTile
+                label="Нода и режим"
+                value={
+                  editor.routerRuntimeSummary.selectedNodeLabel
+                    ? `${editor.routerRuntimeSummary.selectedNodeLabel} / ${currentModeLabel}`
+                    : currentModeLabel
+                }
+                tone={directModeActive ? "warning" : "default"}
+                hint={`Черновик: ${draft.basicSettings.main.selectedNodeId ?? "не задана"}`}
+                compact
+              />
+              <StatusTile
+                label="Подключение"
+                value={formatRouterImportStateLabel(
+                  editor.routerRuntimeSummary.importState,
+                )}
+                tone={
+                  editor.approvalRequired || directModeActive
+                    ? "warning"
+                    : "default"
+                }
+                hint={
+                  directModeActive
+                    ? (editor.routerRuntimeSummary.lastRescueReason ??
+                      "прямой режим активен")
+                    : onboarding.cardHint
+                }
+                compact
+              />
             </div>
-          </div>
-        </details>
 
-        <div className="mt-4 hidden gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)] sm:grid">
-          <label className="block">
-            <span className="vectra-kicker text-slate-500">
-              Комментарий к черновику
-            </span>
-            <input
-              name="draft-note"
-              className="mt-2 w-full rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2 text-sm text-white transition outline-none focus:border-[var(--vectra-line-strong)]"
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-              placeholder="Что меняется в этой ревизии"
-            />
-          </label>
-          <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm leading-6 text-slate-300">
-            {validationMessage ? (
-              <span className="text-rose-200">{validationMessage}</span>
-            ) : (
-              <>
-                Плейсхолдер <code>{MASKED_SECRET_PLACEHOLDER}</code> означает
-                сохранённый секрет. Заблокированные роутеры сохраняют черновики,
-                но операции на устройство не ставятся в очередь.
-              </>
-            )}
+              <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] px-3 py-3 sm:px-4 sm:py-4">
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
+                  <label className="block">
+                    <span className="vectra-kicker text-slate-500">
+                      Комментарий к черновику
+                    </span>
+                    <input
+                      name="draft-note"
+                      className="vectra-field mt-2 px-3 py-2 text-sm text-white"
+                        value={note}
+                        onChange={(event) => setNote(event.target.value)}
+                        placeholder="Что меняется в этой ревизии"
+                      />
+                  </label>
+                  <div className="rounded-md border border-white/10 bg-black/10 px-3 py-2 text-sm leading-6 text-slate-300">
+                    {validationMessage ? (
+                      <span className="text-rose-200">{validationMessage}</span>
+                    ) : (
+                      <>
+                        <strong className="text-white">Проверка черновика.</strong>{" "}
+                        <code>{MASKED_SECRET_PLACEHOLDER}</code> = сохранённый секрет. Заблокированные роутеры сохраняют черновики без apply.
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
           </div>
-        </div>
-      </Panel>
+        </section>
 
-      <Panel
-        eyebrow="Рабочая область PassWall"
-        title="Операторская рабочая поверхность"
-      >
-        <TabBar items={primaryItems} ariaLabel="Основные вкладки PassWall" />
-        <div className="mt-2">
-          <DisabledFeatureNotice
-            text={
-              watchLogsSupported
-                ? disabledTabsExplanation
-                : `${disabledTabsExplanation} Watch Logs включится после обновления controller-agent до ${minimumWatchLogsControllerVersion} или новее.`
-            }
+        <div className="xl:sticky xl:top-4 xl:self-start">
+          <RouterActionRail
+            routerId={routerId}
+            importedRevisionId={editor.importedRevisionId}
+            importState={editor.routerRuntimeSummary.importState}
+            validDraft={Boolean(validDraft)}
+            savePending={saveMutation.isPending}
+            queuePending={queueMutation.isPending}
+            deletePending={deleteRouterMutation.isPending}
+            canApplyCurrentDraft={canApplyCurrentDraft}
+            canQueueApply={canQueueApply}
+            hasUnsavedChanges={hasUnsavedChanges}
+            applyDisabledReason={applyDisabledReason}
+            handleSaveDraft={handleSaveDraft}
+            handleSaveAndApply={handleSaveAndApply}
+            watchLogsSupported={watchLogsSupported}
+            watchLogsHref={watchLogsHref}
+            minimumWatchLogsControllerVersion={minimumWatchLogsControllerVersion}
+            needsRecoveryAction={needsRecoveryAction}
+            directModeActive={directModeActive}
+            routerReachable={routerReachable}
+            handleDeleteRouter={handleDeleteRouter}
           />
         </div>
-        {effectivePrimaryTab === "basic-settings" ? (
-          <div className="mt-3">
-            <TabBar
-              items={secondaryItems}
-              ariaLabel="Подразделы Basic Settings"
-              variant="secondary"
+      </div>
+
+      <div className="vectra-main-grid gap-4 xl:gap-5">
+        <Panel
+          eyebrow="PassWall workspace"
+          title="Вкладки и редакторы"
+          tone="muted"
+        >
+          <TabBar items={primaryItems} ariaLabel="Основные вкладки PassWall" />
+          <div className="mt-2">
+            <DisabledFeatureNotice
+              text={
+                watchLogsSupported
+                  ? disabledTabsExplanation
+                  : `${disabledTabsExplanation} Watch Logs включится после обновления controller-agent до ${minimumWatchLogsControllerVersion} или новее.`
+              }
             />
           </div>
-        ) : null}
+          {effectivePrimaryTab === "basic-settings" ? (
+            <div className="mt-3">
+              <TabBar
+                items={secondaryItems}
+                ariaLabel="Подразделы Basic Settings"
+                variant="secondary"
+              />
+            </div>
+          ) : null}
 
-        <div className="mt-4">{tabContent}</div>
-      </Panel>
+          <div className="mt-4">{tabContent}</div>
+        </Panel>
 
-      <Panel eyebrow="Предпросмотр применения" title="Что уйдёт на роутер">
-        <div className="grid gap-2 sm:grid-cols-2 sm:gap-3 xl:grid-cols-4">
+        <Panel eyebrow="Предпросмотр применения" title="Что уйдёт на роутер" tone="muted">
+          <div className="vectra-stat-grid">
           <StatusTile
             label="Перезапуск"
             value={preview?.requiresRestart ? "нужен" : "нет"}
+            compact
           />
           <StatusTile
             label="Подписки"
             value={preview?.refreshSubscriptions ? "обновить" : "без изменений"}
+            compact
           />
           <StatusTile
             label="Правила"
             value={preview?.refreshRules ? "обновить" : "без изменений"}
+            compact
           />
           <StatusTile
             label="Пакеты"
             value={preview?.packageInstall ? "затронуты" : "нет"}
+            compact
           />
+          </div>
+          <div className="mt-4 space-y-2">
+            {preview?.operationPreview.length ? (
+              preview.operationPreview.map((operation) => (
+                <OperationRow
+                  key={`${operation.kind}-${operation.section}-${operation.description}`}
+                  operation={operation}
+                />
+              ))
+            ) : (
+              <EmptyState text="Точный предпросмотр появится после валидного черновика." />
+            )}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function RouterActionRail({
+  routerId,
+  importedRevisionId,
+  importState,
+  validDraft,
+  savePending,
+  queuePending,
+  deletePending,
+  canApplyCurrentDraft,
+  canQueueApply,
+  hasUnsavedChanges,
+  applyDisabledReason,
+  handleSaveDraft,
+  handleSaveAndApply,
+  watchLogsSupported,
+  watchLogsHref,
+  minimumWatchLogsControllerVersion,
+  needsRecoveryAction,
+  directModeActive,
+  routerReachable,
+  handleDeleteRouter,
+}: {
+  routerId: string;
+  importedRevisionId: string | null;
+  importState: string;
+  validDraft: boolean;
+  savePending: boolean;
+  queuePending: boolean;
+  deletePending: boolean;
+  canApplyCurrentDraft: boolean;
+  canQueueApply: boolean;
+  hasUnsavedChanges: boolean;
+  applyDisabledReason: string;
+  handleSaveDraft: () => Promise<void>;
+  handleSaveAndApply: () => Promise<void>;
+  watchLogsSupported: boolean;
+  watchLogsHref: string;
+  minimumWatchLogsControllerVersion: string;
+  needsRecoveryAction: boolean;
+  directModeActive: boolean;
+  routerReachable: boolean;
+  handleDeleteRouter: () => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <ImportReviewActions
+        routerId={routerId}
+        revisionId={importedRevisionId}
+        importState={importState}
+      />
+
+      <section className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] px-4 py-4">
+        <p className="vectra-kicker text-[var(--vectra-accent)]">Операторский поток</p>
+        <div className="mt-3 space-y-3 text-sm leading-6 text-slate-300">
+          <p>
+            1. Проверьте import и текущее состояние роутера.
+          </p>
+          <p>
+            2. Сохраните правки в панели, если хотите сначала зафиксировать ревизию.
+          </p>
+          <p>
+            3. Отправляйте apply только когда черновик валиден и роутер разрешён для действий.
+          </p>
         </div>
-        <div className="mt-4 space-y-2">
-          {preview?.operationPreview.length ? (
-            preview.operationPreview.map((operation, index) => (
-              <OperationRow
-                key={`${operation.kind}-${operation.section}-${index}`}
-                operation={operation}
-              />
-            ))
+      </section>
+
+      <ActionGroup
+        eyebrow="Локальные правки"
+        title="Сохранение и применение"
+      >
+        <ActionStrip justify="start" dense>
+          <button
+            type="button"
+            disabled={!validDraft || savePending}
+            onClick={() => {
+              void handleSaveDraft();
+            }}
+            className="vectra-button-primary px-3 py-2 text-sm font-medium transition hover:bg-[color-mix(in_oklab,var(--vectra-accent)_85%,white)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {savePending ? "Сохраняю..." : "Сохранить только в панели"}
+          </button>
+          <button
+            type="button"
+            disabled={!canApplyCurrentDraft || queuePending || savePending}
+            onClick={() => {
+              void handleSaveAndApply();
+            }}
+            className="vectra-button-secondary px-3 py-2 text-sm font-medium transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {queuePending
+              ? "Отправляю на роутер..."
+              : savePending
+                ? "Сохраняю..."
+                : "Сохранить и применить на роутере"}
+          </button>
+          <Link
+            href={`/drafts?routerId=${routerId}`}
+            className="vectra-button-secondary px-3 py-2 text-sm font-medium transition hover:border-white/20 hover:text-white"
+          >
+            Экспертный JSON
+          </Link>
+        </ActionStrip>
+        <p className="text-sm leading-6 text-slate-500">
+          {canQueueApply && !hasUnsavedChanges
+            ? "Если ничего не менялось, на роутер уйдёт уже сохранённый черновик."
+            : applyDisabledReason}
+        </p>
+      </ActionGroup>
+
+      <ActionGroup
+        eyebrow="Диагностика"
+        title="Recovery и журналы"
+      >
+        <ActionStrip justify="start" dense>
+          <RescueActions
+            routerId={routerId}
+            needsRecoveryAction={needsRecoveryAction}
+            directModeActive={directModeActive}
+            routerReachable={routerReachable}
+          />
+          {watchLogsSupported ? (
+            <Link
+              href={watchLogsHref}
+              className="vectra-button-secondary px-3 py-2 text-sm font-medium transition hover:border-white/20 hover:text-white"
+            >
+              Открыть Watch Logs
+            </Link>
           ) : (
-            <EmptyState text="Точный предпросмотр появится после валидного черновика." />
+            <span className="rounded-xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm text-slate-400">
+              Watch Logs включится после controller {minimumWatchLogsControllerVersion}
+            </span>
           )}
-        </div>
-      </Panel>
+        </ActionStrip>
+      </ActionGroup>
+
+      <ActionGroup
+        eyebrow="Опасная зона"
+        title="Удаление роутера"
+        tone="warning"
+      >
+        <ActionStrip justify="start" dense>
+          <button
+            type="button"
+            disabled={deletePending}
+            onClick={handleDeleteRouter}
+            className="vectra-button-danger px-3 py-2 text-sm font-medium transition hover:border-rose-300/40 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {deletePending ? "Удаляю роутер..." : "Удалить роутер из системы"}
+          </button>
+        </ActionStrip>
+        <p className="text-sm leading-6 text-slate-500">
+          Удаляются черновики, задачи и снапшоты панели. Если контроллер зарегистрируется снова, роутер появится заново.
+        </p>
+      </ActionGroup>
     </div>
   );
 }
@@ -1375,11 +1327,22 @@ function MainTabSection({
             <tr
               key={item.id}
               className={`cursor-pointer border-t border-white/10 text-slate-200 transition hover:bg-white/[0.04] ${
-                item.id === selectedSocksId ? "bg-white/[0.06]" : ""
+                item.id === selectedSocksId
+                  ? "bg-[var(--vectra-accent-soft)] ring-1 ring-inset ring-[var(--vectra-line-strong)]"
+                  : ""
               }`}
               onClick={() => setSelectedSocksId(item.id)}
             >
-              <td className="px-3 py-2 font-medium text-white">{item.id}</td>
+              <td className="px-3 py-2 font-medium text-white">
+                <div className="flex items-center gap-2">
+                  <span>{item.id}</span>
+                  {item.id === selectedSocksId ? (
+                    <span className="rounded-full border border-[var(--vectra-line-strong)] bg-[var(--vectra-accent-soft)] px-2 py-0.5 text-[11px] font-medium text-sky-100">
+                      выбрано
+                    </span>
+                  ) : null}
+                </div>
+              </td>
               <td className="px-3 py-2">
                 {resolveNodeLabel(draft, item.nodeId)}
               </td>
@@ -1787,12 +1750,21 @@ function NodeListSection({
             <tr
               key={node.id}
               className={`cursor-pointer border-t border-white/10 text-slate-200 transition hover:bg-white/[0.04] ${
-                node.id === selectedNodeId ? "bg-white/[0.06]" : ""
+                node.id === selectedNodeId
+                  ? "bg-[var(--vectra-accent-soft)] ring-1 ring-inset ring-[var(--vectra-line-strong)]"
+                  : ""
               }`}
               onClick={() => setSelectedNodeId(node.id)}
             >
               <td className="px-3 py-2">
-                <div className="font-medium text-white">{node.label}</div>
+                <div className="flex items-center gap-2 font-medium text-white">
+                  <span>{node.label}</span>
+                  {node.id === selectedNodeId ? (
+                    <span className="rounded-full border border-[var(--vectra-line-strong)] bg-[var(--vectra-accent-soft)] px-2 py-0.5 text-[11px] font-medium text-sky-100">
+                      выбрано
+                    </span>
+                  ) : null}
+                </div>
                 <div className="text-xs text-slate-500">{node.id}</div>
               </td>
               <td className="px-3 py-2">{node.protocol}</td>
@@ -2135,12 +2107,21 @@ function SubscriptionSection({
             <tr
               key={item.id}
               className={`cursor-pointer border-t border-white/10 text-slate-200 transition hover:bg-white/[0.04] ${
-                item.id === selectedSubscriptionId ? "bg-white/[0.06]" : ""
+                item.id === selectedSubscriptionId
+                  ? "bg-[var(--vectra-accent-soft)] ring-1 ring-inset ring-[var(--vectra-line-strong)]"
+                  : ""
               }`}
               onClick={() => setSelectedSubscriptionId(item.id)}
             >
               <td className="px-3 py-2">
-                <div className="font-medium text-white">{item.remark}</div>
+                <div className="flex items-center gap-2 font-medium text-white">
+                  <span>{item.remark}</span>
+                  {item.id === selectedSubscriptionId ? (
+                    <span className="rounded-full border border-[var(--vectra-line-strong)] bg-[var(--vectra-accent-soft)] px-2 py-0.5 text-[11px] font-medium text-sky-100">
+                      выбрано
+                    </span>
+                  ) : null}
+                </div>
                 <div className="text-xs text-slate-500">{item.id}</div>
               </td>
               <td className="px-3 py-2">{item.url}</td>
@@ -2620,7 +2601,7 @@ function ShuntRulesSection({
   setSelectedRuleId: (value: string | null) => void;
   setDraft: Dispatch<SetStateAction<DraftConfigInput | null>>;
   title: string;
-  description: string;
+  description?: string;
 }) {
   const selectedShuntNode = getSelectedShuntNode(draft);
   const ruleTargetOptions = buildShuntTargetOptions(draft, true);
@@ -2803,12 +2784,21 @@ function ShuntRulesSection({
             <tr
               key={rule.id}
               className={`cursor-pointer border-t border-white/10 text-slate-200 transition hover:bg-white/[0.04] ${
-                rule.id === selectedRuleId ? "bg-white/[0.06]" : ""
+                rule.id === selectedRuleId
+                  ? "bg-[var(--vectra-accent-soft)] ring-1 ring-inset ring-[var(--vectra-line-strong)]"
+                  : ""
               }`}
               onClick={() => setSelectedRuleId(rule.id)}
             >
               <td className="px-3 py-2">
-                <div className="font-medium text-white">{rule.label}</div>
+                <div className="flex items-center gap-2 font-medium text-white">
+                  <span>{rule.label}</span>
+                  {rule.id === selectedRuleId ? (
+                    <span className="rounded-full border border-[var(--vectra-line-strong)] bg-[var(--vectra-accent-soft)] px-2 py-0.5 text-[11px] font-medium text-sky-100">
+                      выбрано
+                    </span>
+                  ) : null}
+                </div>
                 <div className="text-xs text-slate-500">{rule.id}</div>
               </td>
               <td className="px-3 py-2">
@@ -3517,11 +3507,22 @@ function RuleManageShuntRulesSection({
             <tr
               key={rule.id}
               className={`cursor-pointer border-t border-white/10 text-slate-200 transition hover:bg-white/[0.04] ${
-                rule.id === selectedRuleId ? "bg-white/[0.06]" : ""
+                rule.id === selectedRuleId
+                  ? "bg-[var(--vectra-accent-soft)] ring-1 ring-inset ring-[var(--vectra-line-strong)]"
+                  : ""
               }`}
               onClick={() => setSelectedRuleId(rule.id)}
             >
-              <td className="px-3 py-2 font-medium text-white">{rule.id}</td>
+              <td className="px-3 py-2 font-medium text-white">
+                <div className="flex items-center gap-2">
+                  <span>{rule.id}</span>
+                  {rule.id === selectedRuleId ? (
+                    <span className="rounded-full border border-[var(--vectra-line-strong)] bg-[var(--vectra-accent-soft)] px-2 py-0.5 text-[11px] font-medium text-sky-100">
+                      выбрано
+                    </span>
+                  ) : null}
+                </div>
+              </td>
               <td className="px-3 py-2">{rule.label}</td>
               <td className="px-3 py-2">
                 {formatExtraSelection(
@@ -3752,7 +3753,7 @@ function SectionBox({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
+    <section className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
       <h3 className="text-base font-semibold text-white">{title}</h3>
       <div className="mt-4">{children}</div>
     </section>
@@ -3769,7 +3770,7 @@ function SummaryCell({
   meta?: string | null;
 }) {
   return (
-    <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
+    <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
       <p className="vectra-kicker text-slate-500">{label}</p>
       <p className="mt-2 text-sm font-semibold tracking-[-0.01em] text-white sm:text-base">
         {value}
@@ -3792,7 +3793,7 @@ function ActionGroup({
 }: {
   eyebrow: string;
   title: string;
-  description: string;
+  description?: string;
   tone?: "default" | "warning" | "good";
   children: ReactNode;
 }) {
@@ -3811,12 +3812,12 @@ function ActionGroup({
       : "text-slate-500";
 
   return (
-    <section className={`rounded-md border px-3 py-3 ${toneClassName}`}>
+    <section className={`rounded-2xl border px-4 py-4 ${toneClassName}`}>
       <p className={`vectra-kicker ${eyebrowClassName}`}>{eyebrow}</p>
       <h3 className="mt-2 text-sm font-semibold tracking-[-0.01em] text-white sm:text-base">
         {title}
       </h3>
-      <p className="mt-2 hidden text-sm leading-6 text-slate-300 sm:block">
+      <p className="mt-1 hidden text-sm leading-6 text-slate-400 sm:block">
         {description}
       </p>
       <div className="mt-3 space-y-3">{children}</div>
@@ -4032,7 +4033,7 @@ function FieldShell({
   diff?: EditorSurface["fieldDiffs"][number];
 }) {
   return (
-    <label className="block rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
+    <div className="block rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
       <span className="vectra-kicker text-slate-500">{label}</span>
       <div className="mt-2">{children}</div>
       {diff ? (
@@ -4040,7 +4041,7 @@ function FieldShell({
           сейчас {diff.currentDisplay} | черновик {diff.draftDisplay}
         </p>
       ) : null}
-    </label>
+    </div>
   );
 }
 

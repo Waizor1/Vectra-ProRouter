@@ -39,7 +39,7 @@ export function RescueActions({
   const disabled = reconnectMutation.isPending || !routerReachable;
 
   return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+    <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
       <button
         type="button"
         className="w-full rounded-md bg-emerald-400 px-3 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
@@ -61,12 +61,12 @@ export function RescueActions({
               ? "Отключить аварийный режим"
               : "Сбросить аварийный флаг"}
       </button>
-      <p className="text-sm leading-6 text-slate-400 sm:self-center">
+      <p className="text-sm leading-6 text-slate-400 sm:max-w-md sm:self-center">
         {routerReachable
           ? directModeActive
-            ? "Кнопка принудительно включает PassWall2 обратно и запрашивает выход из локального аварийного или прямого режима."
-            : "Кнопка очищает застрявший аварийный флаг и просит контроллер повторно подтвердить нормальный прокси-режим."
-          : "Последний прямой режим был зафиксирован ранее, но сейчас роутер давно не выходил на связь. Сначала восстановите контроллер или дождитесь нового check-in."}
+            ? "Запрашивает выход из локального direct/rescue режима и возврат к прокси-контуру."
+            : "Очищает застрявший аварийный флаг и просит контроллер заново подтвердить нормальный режим."
+          : "Роутер давно не выходил на связь. Сначала дождитесь нового check-in или восстановите контроллер."}
       </p>
     </div>
   );

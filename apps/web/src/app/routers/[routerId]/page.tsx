@@ -1,7 +1,5 @@
 import { notFound } from "next/navigation";
 
-import { OperatorWorkflowMap } from "~/components/operator-workflow-map";
-import { PageHeader } from "~/components/page-header";
 import { RouterDetailWorkspace } from "~/components/router-detail-workspace";
 import {
   hasActiveDirectMode,
@@ -16,19 +14,11 @@ export default async function RouterDetailPage({
 }) {
   const { routerId } = await params;
 
-  let router;
-  try {
-    router = await api.fleet.byId({ routerId });
-  } catch {
+  const router = await api.fleet.byId({ routerId }).catch(() => {
     notFound();
-  }
+  });
 
   const payload = router.latestSnapshot?.payload;
-  const displayName =
-    router.router.displayName ??
-    payload?.hostname ??
-    router.router.hostname ??
-    router.router.deviceIdentifier;
   const routerReachable = isRouterReachable(router.router.lastSeenAt);
   const directModeActive = hasActiveDirectMode(
     router.router.status,
@@ -41,16 +31,7 @@ export default async function RouterDetailPage({
     Boolean(payload?.lastRescue?.reason);
 
   return (
-    <section className="space-y-4">
-      <PageHeader
-        eyebrow="Роутер"
-        title={displayName}
-        description="Все действия на этой странице касаются только этого роутера: import, apply, recovery, Watch Logs и терминал."
-        mobileDescription="Все действия здесь касаются только этого роутера."
-      />
-
-      <OperatorWorkflowMap current="router" compact />
-
+    <section>
       <RouterDetailWorkspace
         routerId={router.router.id}
         routerReachable={routerReachable}

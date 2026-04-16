@@ -115,14 +115,13 @@ export function RouterWatchLogsSection({
         </button>
       </ActionStrip>
 
-      <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-7 text-slate-300">
-        Вкладка работает как диагностический snapshot, а не как live tail. Если
-        роутер сейчас офлайн, запрос останется в очереди до следующего check-in.
+      <div className="rounded-lg border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
+        Snapshot, не live tail. Если роутер сейчас офлайн, запрос останется в очереди до следующего check-in.
         {!routerReachable ? " Сейчас устройство не на связи." : ""}
       </div>
 
       {activeRequest ? (
-        <section className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
+        <section className="rounded-lg border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
           <h3 className="text-base font-semibold text-white">
             Активный запрос
           </h3>
@@ -142,7 +141,7 @@ export function RouterWatchLogsSection({
           Загружаю историю Watch Logs...
         </div>
       ) : latestSnapshot ? (
-        <section className="space-y-4 rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
+        <section className="space-y-4 rounded-lg border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-base font-semibold text-white">
@@ -178,7 +177,7 @@ export function RouterWatchLogsSection({
             latestSnapshot.snapshots.map((snapshot) => (
               <section
                 key={`${latestSnapshot.jobId}-${snapshot.id}`}
-                className="rounded-md border border-white/10 bg-[rgba(11,14,20,0.78)] px-3 py-3"
+                className="rounded-lg border border-white/10 bg-[rgba(11,14,20,0.78)] px-3 py-3"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
@@ -212,39 +211,46 @@ export function RouterWatchLogsSection({
         </div>
       )}
 
-      <DataTable
-        columns={[
-          { key: "request", label: "Запрос" },
-          { key: "state", label: "Статус" },
-          { key: "created", label: "Создан" },
-          { key: "result", label: "Результат" },
-        ]}
-      >
-        {history.data?.history.length ? (
-          history.data.history.map((item) => (
-            <tr
-              key={item.jobId}
-              className="border-t border-white/10 text-slate-200"
-            >
-              <td className="px-3 py-2">
-                <div className="font-medium text-white">
-                  {formatSource(item.request.source)}
-                </div>
-                <div className="text-xs text-slate-500">
-                  {item.request.lines} строк
-                </div>
-              </td>
-              <td className="px-3 py-2">{formatLogState(item.state)}</td>
-              <td className="px-3 py-2">{formatDateTime(item.createdAt)}</td>
-              <td className="px-3 py-2">{formatResult(item)}</td>
-            </tr>
-          ))
-        ) : (
-          <DataTableEmpty colSpan={4}>
-            История запросов пока пустая.
-          </DataTableEmpty>
-        )}
-      </DataTable>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <p className="vectra-kicker text-slate-500">История snapshot-запросов</p>
+          <span className="text-[11px] text-slate-500">последние команды и результаты</span>
+        </div>
+
+        <DataTable
+          columns={[
+            { key: "request", label: "Запрос" },
+            { key: "state", label: "Статус" },
+            { key: "created", label: "Создан" },
+            { key: "result", label: "Результат" },
+          ]}
+        >
+          {history.data?.history.length ? (
+            history.data.history.map((item) => (
+              <tr
+                key={item.jobId}
+                className="border-t border-white/10 text-slate-200"
+              >
+                <td className="px-3 py-2">
+                  <div className="font-medium text-white">
+                    {formatSource(item.request.source)}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    {item.request.lines} строк
+                  </div>
+                </td>
+                <td className="px-3 py-2">{formatLogState(item.state)}</td>
+                <td className="px-3 py-2">{formatDateTime(item.createdAt)}</td>
+                <td className="px-3 py-2">{formatResult(item)}</td>
+              </tr>
+            ))
+          ) : (
+            <DataTableEmpty colSpan={4}>
+              История запросов пока пустая.
+            </DataTableEmpty>
+          )}
+        </DataTable>
+      </div>
     </div>
   );
 }

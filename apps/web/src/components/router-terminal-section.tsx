@@ -56,7 +56,7 @@ export function RouterTerminalSection({
 
   if (!terminalSupported) {
     return (
-      <section className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
+      <section className="rounded-lg border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
         <h3 className="text-base font-semibold text-white">Терминал роутера</h3>
         <p className="mt-2 text-sm leading-7 text-slate-300">
           One-shot shell-команды появятся после обновления controller-agent до{" "}
@@ -68,7 +68,7 @@ export function RouterTerminalSection({
   }
 
   return (
-    <section className="space-y-4 rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
+    <section className="space-y-4 rounded-lg border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-base font-semibold text-white">
@@ -84,10 +84,8 @@ export function RouterTerminalSection({
         </span>
       </div>
 
-      <div className="rounded-md border border-amber-400/20 bg-amber-500/10 px-4 py-3 text-sm leading-7 text-amber-50">
-        Команда и вывод сохраняются в истории панели. Не запускайте здесь
-        команды с секретами, которые вы не хотите хранить в БД. Если роутер
-        офлайн, запрос останется в очереди до следующего check-in.
+      <div className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-4 py-3 text-sm leading-6 text-amber-50">
+        Команда и вывод сохраняются в истории панели. Не запускайте здесь команды с секретами. Если роутер офлайн, запрос дождётся следующего check-in.
         {!routerReachable ? " Сейчас устройство не на связи." : ""}
       </div>
 
@@ -160,7 +158,7 @@ export function RouterTerminalSection({
       ) : null}
 
       {activeRequest ? (
-        <section className="rounded-md border border-white/10 bg-[rgba(11,14,20,0.78)] px-4 py-4">
+        <section className="rounded-lg border border-white/10 bg-[rgba(11,14,20,0.78)] px-4 py-4">
           <h4 className="text-sm font-semibold text-white">Активная команда</h4>
           <pre className="mt-3 overflow-x-auto rounded-md border border-white/10 bg-[rgba(6,8,12,0.92)] px-3 py-3 text-xs leading-6 font-[var(--font-vectra-mono)] text-slate-200">
             {activeRequest.request.command || "команда не указана"}
@@ -178,7 +176,7 @@ export function RouterTerminalSection({
           Загружаю историю terminal-команд...
         </div>
       ) : latestResult ? (
-        <section className="space-y-4 rounded-md border border-white/10 bg-[rgba(11,14,20,0.78)] px-4 py-4">
+        <section className="space-y-4 rounded-lg border border-white/10 bg-[rgba(11,14,20,0.78)] px-4 py-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h4 className="text-sm font-semibold text-white">
@@ -229,39 +227,46 @@ export function RouterTerminalSection({
         </div>
       )}
 
-      <DataTable
-        columns={[
-          { key: "command", label: "Команда" },
-          { key: "state", label: "Статус" },
-          { key: "created", label: "Создана" },
-          { key: "result", label: "Результат" },
-        ]}
-      >
-        {history.data?.history.length ? (
-          history.data.history.map((item) => (
-            <tr
-              key={item.jobId}
-              className="border-t border-white/10 text-slate-200"
-            >
-              <td className="px-3 py-2">
-                <div className="max-w-[26rem] overflow-hidden text-xs font-[var(--font-vectra-mono)] text-ellipsis whitespace-nowrap text-white">
-                  {item.request.command || "команда не указана"}
-                </div>
-                <div className="text-xs text-slate-500">
-                  таймаут {item.request.timeoutSeconds} сек
-                </div>
-              </td>
-              <td className="px-3 py-2">{formatTerminalState(item.state)}</td>
-              <td className="px-3 py-2">{formatDateTime(item.createdAt)}</td>
-              <td className="px-3 py-2">{formatTerminalResult(item)}</td>
-            </tr>
-          ))
-        ) : (
-          <DataTableEmpty colSpan={4}>
-            История terminal-команд пока пустая.
-          </DataTableEmpty>
-        )}
-      </DataTable>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <p className="vectra-kicker text-slate-500">История terminal-команд</p>
+          <span className="text-[11px] text-slate-500">последние one-shot запросы</span>
+        </div>
+
+        <DataTable
+          columns={[
+            { key: "command", label: "Команда" },
+            { key: "state", label: "Статус" },
+            { key: "created", label: "Создана" },
+            { key: "result", label: "Результат" },
+          ]}
+        >
+          {history.data?.history.length ? (
+            history.data.history.map((item) => (
+              <tr
+                key={item.jobId}
+                className="border-t border-white/10 text-slate-200"
+              >
+                <td className="px-3 py-2">
+                  <div className="max-w-[26rem] overflow-hidden text-xs font-[var(--font-vectra-mono)] text-ellipsis whitespace-nowrap text-white">
+                    {item.request.command || "команда не указана"}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    таймаут {item.request.timeoutSeconds} сек
+                  </div>
+                </td>
+                <td className="px-3 py-2">{formatTerminalState(item.state)}</td>
+                <td className="px-3 py-2">{formatDateTime(item.createdAt)}</td>
+                <td className="px-3 py-2">{formatTerminalResult(item)}</td>
+              </tr>
+            ))
+          ) : (
+            <DataTableEmpty colSpan={4}>
+              История terminal-команд пока пустая.
+            </DataTableEmpty>
+          )}
+        </DataTable>
+      </div>
     </section>
   );
 }
@@ -276,7 +281,7 @@ function TerminalOutput({
   truncated: boolean;
 }) {
   return (
-    <section className="rounded-md border border-white/10 bg-[rgba(6,8,12,0.92)] px-3 py-3">
+    <section className="rounded-lg border border-white/10 bg-[rgba(6,8,12,0.92)] px-3 py-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs font-semibold tracking-[0.14em] text-slate-300 uppercase">
           {label}
