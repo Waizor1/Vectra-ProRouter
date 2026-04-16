@@ -38,6 +38,52 @@ export type RouterSummary = {
   needsImportReview: boolean;
 };
 
+function describeRouterTrustState(router: RouterSummary) {
+  if (router.offline || !router.reachable) {
+    return {
+      badge: "last known",
+      badgeClassName: "border-rose-400/30 bg-rose-500/12 text-rose-100",
+      title: "Связи сейчас нет",
+      detail:
+        "Карточка показывает последний известный снимок. Статус, версии и выбранная нода могут уже отличаться от реального состояния роутера.",
+    };
+  }
+
+  if (router.directMode) {
+    return {
+      badge: "watch",
+      badgeClassName: "border-amber-400/30 bg-amber-500/12 text-amber-100",
+      title: "Связь жива, но нужен разбор",
+      detail:
+        "Панель получает live check-in, но роутер сейчас не в штатном прокси-режиме и требует внимания оператора.",
+    };
+  }
+
+  return {
+    badge: "live",
+    badgeClassName: "border-emerald-400/30 bg-emerald-500/12 text-emerald-100",
+    title: "Живой рабочий снимок",
+    detail:
+      "Карточка отражает недавний check-in и подходит для быстрого triage без перехода в детальный экран.",
+  };
+}
+
+function describePrimaryStatus(router: RouterSummary) {
+  if (router.offline || !router.reachable) {
+    return "Нет связи";
+  }
+
+  if (router.directMode) {
+    return "Live, но нештатный контур";
+  }
+
+  if (router.passwallEnabled) {
+    return "Live proxy-mode";
+  }
+
+  return router.statusLabel;
+}
+
 export function RouterCard({ router }: { router: RouterSummary }) {
   const onboarding = describeRouterOnboarding(router.importState);
   const onboardingPending = isRouterOnboardingPending(router.importState);
@@ -48,12 +94,14 @@ export function RouterCard({ router }: { router: RouterSummary }) {
   const telegramProblem = hasTelegramReachabilityProblem(
     router.telegramReachability,
   );
+  const trustState = describeRouterTrustState(router);
+  const primaryStatus = describePrimaryStatus(router);
 
   return (
     <article className="group overflow-hidden rounded-2xl border border-white/10 bg-[var(--vectra-panel)] shadow-[var(--vectra-shadow-md)]">
       <Link
         href={`/routers/${router.id}`}
-        className="block p-3 transition hover:border-[var(--vectra-line-strong)] hover:bg-[rgba(22,28,41,0.98)] sm:p-4"
+          className="block p-3 transition hover:border-[var(--vectra-line-strong)] hover:bg-[rgba(22,28,41,0.98)] sm:p-4"
       >
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -62,22 +110,29 @@ export function RouterCard({ router }: { router: RouterSummary }) {
               {router.name}
             </p>
             <p className="mt-1 text-sm leading-6 text-slate-400">
-              {router.selectedNode} · очередь {router.pendingChanges}
+              {primaryStatus} · очередь {router.pendingChanges}
             </p>
           </div>
-          <span
-            className={`vectra-chip inline-flex self-start rounded-full px-3 py-1 ${
-              router.offline
-                ? "bg-rose-500/15 text-rose-200"
-                : router.directMode
-                  ? "bg-amber-500/15 text-amber-200"
-                  : router.passwallEnabled
-                    ? "bg-emerald-500/15 text-emerald-200"
-                    : "bg-slate-500/15 text-slate-300"
-            }`}
-          >
-            {router.statusLabel}
-          </span>
+          <div className="flex flex-wrap gap-2 sm:max-w-[13rem] sm:justify-end">
+            <span
+              className={`vectra-chip inline-flex self-start rounded-full border px-3 py-1 ${trustState.badgeClassName}`}
+            >
+              {trustState.badge}
+            </span>
+            <span
+              className={`vectra-chip inline-flex self-start rounded-full px-3 py-1 ${
+                router.offline
+                  ? "bg-rose-500/15 text-rose-200"
+                  : router.directMode
+                    ? "bg-amber-500/15 text-amber-200"
+                    : router.passwallEnabled
+                      ? "bg-emerald-500/15 text-emerald-200"
+                      : "bg-slate-500/15 text-slate-300"
+              }`}
+            >
+              {router.statusLabel}
+            </span>
+          </div>
         </div>
         <div className="mt-3 flex flex-wrap gap-1.5 sm:gap-2">
           <span
@@ -95,9 +150,22 @@ export function RouterCard({ router }: { router: RouterSummary }) {
           <span className="vectra-chip rounded-full border border-white/10 bg-white/5 px-3 py-1 text-slate-200">
             {router.subscriptionCount} подписок
           </span>
-          <span className="vectra-chip rounded-full border border-white/10 bg-white/5 px-3 py-1 text-slate-200">
+          <span className={`vectra-chip rounded-full border px-3 py-1 ${trustState.badgeClassName}`}>
             {router.lastSeen}
           </span>
+        </div>
+
+        <div className={`mt-3 rounded-2xl border px-3 py-3 ${trustState.badgeClassName}`}>
+          <div className="flex items-center justify-between gap-3">
+            <p className="vectra-kicker text-current/80">Доверие к снимку</p>
+            <span className="vectra-chip rounded-full border border-white/10 bg-white/8 px-2.5 py-1 text-current">
+              {trustState.badge}
+            </span>
+          </div>
+          <p className="mt-2 text-sm font-medium text-white">{trustState.title}</p>
+          <p className="mt-1 text-sm leading-6 text-current/85">
+            {trustState.detail}
+          </p>
         </div>
 
         <div
@@ -122,7 +190,7 @@ export function RouterCard({ router }: { router: RouterSummary }) {
             emphasis
             clamp
           />
-          <CompactRouterFact label="Статус" value={router.statusLabel} />
+          <CompactRouterFact label="Контур" value={primaryStatus} />
           <CompactRouterFact
             label="Telegram"
             value={formatTelegramReachabilityLabel(router.telegramReachability)}

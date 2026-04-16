@@ -518,6 +518,16 @@ export function RouterDetailWorkspace({
     Boolean(validDraft) &&
     !editor.approvalRequired &&
     editor.routerRuntimeSummary.destructiveActionsAllowed;
+  const savedDraftExists = Boolean(savedRevisionId ?? editor.latestDraftId);
+  const saveDisabledReason = !validDraft
+    ? "Сохранение недоступно, пока не исправлены ошибки в форме."
+    : saveMutation.isPending
+      ? "Черновик сохраняется в панели."
+      : hasUnsavedChanges
+        ? "Несохранённые изменения останутся только в текущей форме, пока вы не сохраните черновик."
+        : savedDraftExists
+          ? "Форма уже совпадает с последним сохранённым черновиком в панели."
+          : "Можно сохранить текущую конфигурацию как черновик в панели без apply на роутер.";
   const applyDisabledReason = !validDraft
     ? "Исправьте ошибки в форме."
     : editor.approvalRequired
@@ -748,7 +758,7 @@ export function RouterDetailWorkspace({
                 {editor.routerRuntimeSummary.name}
               </h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-                Текущее состояние и import-контекст собраны наверху, рабочие вкладки и apply-сценарий — ниже.
+                Сначала сверьте текущее состояние и import-контекст, затем выберите безопасное действие справа: сохранить, применить, открыть диагностику или перейти в опасную зону.
               </p>
             </div>
             <div className="vectra-summary-grid">
@@ -890,7 +900,63 @@ export function RouterDetailWorkspace({
             </div>
 
               <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] px-3 py-3 sm:px-4 sm:py-4">
-                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <InlineStateCard
+                    eyebrow="Черновик"
+                    title={
+                      validationMessage
+                        ? "Нужно исправить форму"
+                        : hasUnsavedChanges
+                          ? "Есть несохранённые изменения"
+                          : savedDraftExists
+                            ? "Черновик синхронизирован с панелью"
+                            : "Форма готова к сохранению"
+                    }
+                    tone={
+                      validationMessage
+                        ? "danger"
+                        : hasUnsavedChanges
+                          ? "warning"
+                          : "good"
+                    }
+                    description={
+                      validationMessage ??
+                      (hasUnsavedChanges
+                          ? "Панель и apply используют только сохранённую ревизию. Пока вы не сохраните форму, эти изменения видны только в текущем окне."
+                          : savedDraftExists
+                            ? "Можно безопасно перейти к apply или оставить текущую сохранённую ревизию как есть."
+                            : "Текущая форма валидна, но ещё не записана в панель как отдельная ревизия.")
+                    }
+                  />
+                  <InlineStateCard
+                    eyebrow="Следующий шаг"
+                    title={
+                      editor.approvalRequired
+                        ? "Сначала подтвердите import"
+                        : !editor.routerRuntimeSummary.destructiveActionsAllowed
+                          ? "Apply сейчас заблокирован"
+                          : hasUnsavedChanges
+                            ? "Сохраните и примените на роутере"
+                            : "Можно применять сохранённый черновик"
+                    }
+                    tone={
+                      editor.approvalRequired ||
+                      !editor.routerRuntimeSummary.destructiveActionsAllowed
+                        ? "warning"
+                        : "good"
+                    }
+                    description={
+                      editor.approvalRequired
+                        ? "Пока import не принят как эталон, Vectra не отправляет apply на роутер."
+                        : !editor.routerRuntimeSummary.destructiveActionsAllowed
+                          ? "Для этого роутера destructive/apply-действия сейчас отключены политикой поддержки."
+                          : hasUnsavedChanges
+                            ? "Основной безопасный путь для новых правок — сначала сохранить текущие поля в ревизию, затем сразу поставить apply в очередь."
+                            : "Если правки уже сохранены, apply использует последнюю ревизию из панели без скрытых изменений из формы."
+                    }
+                  />
+                </div>
+                <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
                   <label className="block">
                     <span className="vectra-kicker text-slate-500">
                       Комментарий к черновику
@@ -909,7 +975,7 @@ export function RouterDetailWorkspace({
                     ) : (
                       <>
                         <strong className="text-white">Проверка черновика.</strong>{" "}
-                        <code>{MASKED_SECRET_PLACEHOLDER}</code> = сохранённый секрет. Заблокированные роутеры сохраняют черновики без apply.
+                        <code>{MASKED_SECRET_PLACEHOLDER}</code> = сохранённый секрет. Сохранение пишет ревизию только в панель, apply всегда идёт из уже сохранённого черновика. Заблокированные роутеры всё равно позволяют сохранить ревизию без apply.
                       </>
                     )}
                   </div>
@@ -930,6 +996,7 @@ export function RouterDetailWorkspace({
             canApplyCurrentDraft={canApplyCurrentDraft}
             canQueueApply={canQueueApply}
             hasUnsavedChanges={hasUnsavedChanges}
+            saveDisabledReason={saveDisabledReason}
             applyDisabledReason={applyDisabledReason}
             handleSaveDraft={handleSaveDraft}
             handleSaveAndApply={handleSaveAndApply}
@@ -1025,6 +1092,7 @@ function RouterActionRail({
   canApplyCurrentDraft,
   canQueueApply,
   hasUnsavedChanges,
+  saveDisabledReason,
   applyDisabledReason,
   handleSaveDraft,
   handleSaveAndApply,
@@ -1046,6 +1114,7 @@ function RouterActionRail({
   canApplyCurrentDraft: boolean;
   canQueueApply: boolean;
   hasUnsavedChanges: boolean;
+  saveDisabledReason: string;
   applyDisabledReason: string;
   handleSaveDraft: () => Promise<void>;
   handleSaveAndApply: () => Promise<void>;
@@ -1068,22 +1137,68 @@ function RouterActionRail({
       <section className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] px-4 py-4">
         <p className="vectra-kicker text-[var(--vectra-accent)]">Операторский поток</p>
         <p className="mt-3 text-sm leading-6 text-slate-300">
-          Сначала сверьте состояние и import, затем либо сохраните ревизию в панели, либо сразу отправьте apply на роутер.
+          Сначала сверьте состояние и import, затем выполните ближайшее безопасное действие. Apply никогда не берёт скрытые правки из формы — он работает только с уже сохранённой ревизией.
         </p>
       </section>
 
       <ActionGroup
-        eyebrow="Локальные правки"
+        eyebrow="Следующее безопасное действие"
         title="Сохранение и применение"
+        tone={canApplyCurrentDraft || hasUnsavedChanges ? "good" : "default"}
+        description={
+          hasUnsavedChanges
+            ? "Сначала зафиксируйте текущие поля как ревизию, затем при необходимости сразу отправьте apply на роутер."
+            : canQueueApply
+              ? "Форма уже совпадает с сохранённой ревизией. Можно сразу ставить apply в очередь."
+              : "Проверьте причину блокировки ниже: она показывает, почему apply сейчас недоступен."
+        }
       >
+        <div className="grid gap-2">
+          <InlineStateCard
+            eyebrow="Сохранение в панели"
+            title={
+              hasUnsavedChanges
+                ? "Новые правки есть только в форме"
+                : validDraft
+                  ? "Сохранённая ревизия актуальна"
+                  : "Сначала исправьте форму"
+            }
+            tone={
+              !validDraft ? "danger" : hasUnsavedChanges ? "warning" : "good"
+            }
+            description={saveDisabledReason}
+          />
+          <InlineStateCard
+            eyebrow="Применение на роутере"
+            title={
+              !canApplyCurrentDraft
+                ? "Apply сейчас недоступен"
+                : hasUnsavedChanges
+                  ? "Сохранить и применить текущие правки"
+                  : "Применить последнюю сохранённую ревизию"
+            }
+            tone={
+              !canApplyCurrentDraft
+                ? "warning"
+                : hasUnsavedChanges
+                  ? "good"
+                  : "default"
+            }
+            description={
+              canQueueApply && !hasUnsavedChanges
+                ? "Если ничего не менялось, на роутер уйдёт уже сохранённый черновик из панели."
+                : applyDisabledReason
+            }
+          />
+        </div>
         <ActionStrip justify="start" dense>
           <button
             type="button"
-            disabled={!validDraft || savePending}
+            disabled={!validDraft || savePending || (!hasUnsavedChanges && canQueueApply)}
             onClick={() => {
               void handleSaveDraft();
             }}
-            className="vectra-button-primary px-3 py-2 text-sm font-medium transition hover:bg-[color-mix(in_oklab,var(--vectra-accent)_85%,white)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="vectra-button-secondary px-3 py-2 text-sm font-medium transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
             {savePending ? "Сохраняю..." : "Сохранить только в панели"}
           </button>
@@ -1093,7 +1208,7 @@ function RouterActionRail({
             onClick={() => {
               void handleSaveAndApply();
             }}
-            className="vectra-button-secondary px-3 py-2 text-sm font-medium transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            className="vectra-button-primary px-3 py-2 text-sm font-medium transition hover:bg-[color-mix(in_oklab,var(--vectra-accent)_85%,white)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {queuePending
               ? "Отправляю на роутер..."
@@ -1108,16 +1223,12 @@ function RouterActionRail({
             Экспертный JSON
           </Link>
         </ActionStrip>
-        <p className="text-sm leading-6 text-slate-500">
-          {canQueueApply && !hasUnsavedChanges
-            ? "Если ничего не менялось, на роутер уйдёт уже сохранённый черновик."
-            : applyDisabledReason}
-        </p>
       </ActionGroup>
 
       <ActionGroup
         eyebrow="Диагностика"
         title="Recovery и журналы"
+        description="Сначала безопасные read-only или recovery-действия, без удаления данных из панели."
       >
         <ActionStrip justify="start" dense>
           <RescueActions
@@ -1156,9 +1267,12 @@ function RouterActionRail({
             {deletePending ? "Удаляю роутер..." : "Удалить роутер из системы"}
           </button>
         </ActionStrip>
-        <p className="text-sm leading-6 text-slate-500">
-          Удаляются черновики, задачи и снапшоты панели. Если контроллер зарегистрируется снова, роутер появится заново.
-        </p>
+        <InlineStateCard
+          eyebrow="Что именно удалится"
+          title="Панель забудет этот роутер, но не удалит пакеты на устройстве"
+          tone="danger"
+          description="Удаляются черновики, задачи, снапшоты и связанные записи панели. На самом роутере PassWall2 и controller не трогаются. Если контроллер снова зарегистрируется, устройство появится как новый или повторно импортированный роутер."
+        />
       </ActionGroup>
     </div>
   );
@@ -3813,6 +3927,44 @@ function ActionGroup({
         {description}
       </p>
       <div className="mt-3 space-y-3">{children}</div>
+    </section>
+  );
+}
+
+function InlineStateCard({
+  eyebrow,
+  title,
+  description,
+  tone = "default",
+}: {
+  eyebrow: string;
+  title: string;
+  description: string;
+  tone?: "default" | "good" | "warning" | "danger";
+}) {
+  const toneClassName =
+    tone === "good"
+      ? "border-emerald-400/20 bg-emerald-500/10"
+      : tone === "warning"
+        ? "border-amber-400/20 bg-amber-500/10"
+        : tone === "danger"
+          ? "border-rose-400/20 bg-rose-500/10"
+          : "border-white/10 bg-[var(--vectra-panel-soft)]";
+
+  const eyebrowClassName =
+    tone === "good"
+      ? "text-emerald-200"
+      : tone === "warning"
+        ? "text-amber-200"
+        : tone === "danger"
+          ? "text-rose-200"
+          : "text-slate-500";
+
+  return (
+    <section className={`rounded-2xl border px-3 py-3 ${toneClassName}`}>
+      <p className={`vectra-kicker ${eyebrowClassName}`}>{eyebrow}</p>
+      <p className="mt-2 text-sm font-medium text-white sm:text-[15px]">{title}</p>
+      <p className="mt-1 text-sm leading-6 text-slate-300">{description}</p>
     </section>
   );
 }

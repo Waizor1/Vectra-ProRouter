@@ -77,10 +77,10 @@ const alertBadgeMap = {
 
 const routerStateLabelMap = {
   stable: "в строю",
-  recovery: "recovery",
-  offline: "offline",
-  review: "import/drift",
-  blocked: "blocked",
+  recovery: "recovery / direct",
+  offline: "нет связи",
+  review: "нужна сверка",
+  blocked: "ограничен",
 } as const;
 
 const routerStateToneMap = {
@@ -92,10 +92,17 @@ const routerStateToneMap = {
 } as const;
 
 const freshnessLabelMap = {
-  fresh: "fresh",
-  watch: "watch",
-  offline: "offline",
-  never: "no check-in",
+  fresh: "live",
+  watch: "устаревает",
+  offline: "last known",
+  never: "нет check-in",
+} as const;
+
+const freshnessToneMap = {
+  fresh: "border-emerald-400/25 bg-emerald-500/10 text-emerald-100",
+  watch: "border-amber-400/25 bg-amber-500/10 text-amber-100",
+  offline: "border-rose-400/25 bg-rose-500/10 text-rose-100",
+  never: "border-white/12 bg-white/5 text-slate-200",
 } as const;
 
 function normalizeSearchQuery(value: string) {
@@ -155,6 +162,97 @@ function formatRelativeTime(value: string | null | undefined) {
 
   const diffDays = Math.round(diffHours / 24);
   return `${diffDays} дн назад`;
+}
+
+function describeFreshnessState(
+  state: FleetMonitoringRouter["freshnessState"],
+  lastSeen: string,
+) {
+  switch (state) {
+    case "fresh":
+      return {
+        label: freshnessLabelMap[state],
+        toneClassName: freshnessToneMap[state],
+        summary: `Живой снимок · ${lastSeen}`,
+        detail: "Панель показывает текущее состояние из недавнего check-in.",
+      };
+    case "watch":
+      return {
+        label: freshnessLabelMap[state],
+        toneClassName: freshnessToneMap[state],
+        summary: `Связь стареет · ${lastSeen}`,
+        detail:
+          "Данные ещё пригодны для triage, но это уже не совсем live-состояние.",
+      };
+    case "offline":
+      return {
+        label: freshnessLabelMap[state],
+        toneClassName: freshnessToneMap[state],
+        summary: `Последний известный снимок · ${lastSeen}`,
+        detail:
+          "Роутер сейчас вне связи; статус и версии ниже могут быть уже неактуальны.",
+      };
+    case "never":
+      return {
+        label: freshnessLabelMap[state],
+        toneClassName: freshnessToneMap[state],
+        summary: "Живого снимка ещё не было",
+        detail:
+          "Панель ещё не получала рабочий check-in, поэтому ниже нет подтверждённого live-состояния.",
+      };
+  }
+}
+
+function getNotificationStatusCopy({
+  mode,
+  enabled,
+  permission,
+}: {
+  mode: NotificationMode;
+  enabled: boolean;
+  permission: NotificationPermission | "unsupported";
+}) {
+  if (permission === "unsupported") {
+    return {
+      title: "Системные уведомления недоступны",
+      detail:
+        "Этот браузер не поддерживает уведомления. Парк остаётся только экраном triage внутри панели.",
+    };
+  }
+
+  if (permission === "denied") {
+    return {
+      title: "Уведомления заблокированы браузером",
+      detail:
+        "Разрешите уведомления в настройках браузера, иначе новые инциденты будут видны только внутри страницы `Парк`.",
+    };
+  }
+
+  if (mode === "push") {
+    return enabled
+      ? {
+          title: "Фоновые push-уведомления активны",
+          detail:
+            "Поддерживаемые браузеры смогут показать новый критичный инцидент даже после ухода со страницы.",
+        }
+      : {
+          title: "Push поддерживается, но сейчас выключен",
+          detail:
+            "Если включить, браузер сможет присылать фоновые уведомления о новых проблемах по парку.",
+        };
+  }
+
+  return enabled
+    ? {
+        title: "Уведомления только пока вкладка жива",
+        detail:
+          "Сейчас работает in-tab режим: браузер покажет новые проблемы, пока панель открыта в фоне, но не после закрытия вкладки.",
+      }
+    : {
+        title: "Уведомления во вкладке выключены",
+        detail:
+          "Можно включить только локальные браузерные уведомления без фонового push. Они работают, пока вкладка панели не закрыта.",
+      };
 }
 
 function filtersMatch(
@@ -531,6 +629,11 @@ export function FleetMonitoringWorkspace({
 
     return slice ? slice.label : "Фильтр";
   })();
+  const notificationStatusCopy = getNotificationStatusCopy({
+    mode: notificationMode,
+    enabled: notificationsEnabled,
+    permission: notificationPermission,
+  });
 
   return (
     <div className="flex flex-col gap-4 xl:gap-5">
@@ -543,7 +646,7 @@ export function FleetMonitoringWorkspace({
             <div className="flex flex-col gap-2 text-left text-sm leading-6 text-slate-400 md:items-end md:text-right">
               <p>Показано {filteredRouters.length} из {snapshot.routers.length}</p>
               <p>Алертов: {filteredAlerts.length}</p>
-              <p>Снимок {formatRelativeTime(snapshot.generatedAt)}</p>
+              <p>Снимок обновлён {formatRelativeTime(snapshot.generatedAt)}</p>
               <div className="flex flex-wrap gap-2 md:justify-end">
                 {activeFilter ? (
                   <button
@@ -562,15 +665,43 @@ export function FleetMonitoringWorkspace({
                 >
                   {subscribePushMutation.isPending || unsubscribePushMutation.isPending
                     ? "Сохраняю..."
-                    : notificationsEnabled
-                      ? "Уведомления: вкл"
-                      : "Уведомления: выкл"}
+                    : notificationMode === "push"
+                      ? notificationsEnabled
+                        ? "Push: вкл"
+                        : "Push: выкл"
+                      : notificationMode === "polling"
+                        ? notificationsEnabled
+                          ? "Во вкладке: вкл"
+                          : "Во вкладке: выкл"
+                        : "Уведомления недоступны"}
                 </button>
               </div>
             </div>
           }
         >
           <div className="space-y-4">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)]">
+              <div className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.04)] px-3 py-3">
+                <p className="vectra-kicker text-[var(--vectra-accent)]">Triage-режим</p>
+                <p className="mt-2 text-sm font-medium text-white">
+                  Сначала смотрите на live vs last-known, затем на alert rail и только потом открывайте детали роутера.
+                </p>
+                <p className="mt-1 text-sm leading-6 text-slate-400">
+                  Таблица ниже теперь отделяет живой снимок от устаревшего и offline-состояния, чтобы парк читался как рабочая поверхность для разбора инцидентов, а не как описательный dashboard.
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.04)] px-3 py-3">
+                <p className="vectra-kicker text-[var(--vectra-accent-warm)]">Уведомления</p>
+                <p className="mt-2 text-sm font-medium text-white">
+                  {notificationStatusCopy.title}
+                </p>
+                <p className="mt-1 text-sm leading-6 text-slate-400">
+                  {notificationStatusCopy.detail}
+                </p>
+              </div>
+            </div>
+
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
               <label className="block lg:min-w-[24rem] lg:flex-1">
                 <span className="vectra-kicker text-slate-500">
@@ -608,11 +739,14 @@ export function FleetMonitoringWorkspace({
                 <h3 className="text-base font-semibold text-white sm:text-lg">
                   Плотная таблица парка
                 </h3>
+                <p className="mt-1 text-sm leading-6 text-slate-400">
+                  Для каждого роутера отдельно показано, где у нас live-снимок, а где панель опирается только на последний известный check-in.
+                </p>
 
                 <div className="mt-4">
                   <DataTable
                     title="Операционная таблица"
-                    hint="Свайп/скролл по горизонтали сохраняется →"
+                    hint="Свайп/скролл по горизонтали сохраняется; live и last-known вынесены в отдельные cues →"
                     columns={[
                       { key: "router", label: "Роутер" },
                       { key: "state", label: "Состояние" },
@@ -879,6 +1013,7 @@ function FleetOperationsRow({
   const controllerVersion = formatControllerVersion(router.controllerVersion);
   const telegramStatus = getTelegramReachabilityStatus(router.telegramReachability);
   const telegramProblem = hasTelegramReachabilityProblem(router.telegramReachability);
+  const freshness = describeFreshnessState(router.freshnessState, router.lastSeen);
 
   const telegramToneClassName =
     telegramStatus === "reachable"
@@ -913,19 +1048,25 @@ function FleetOperationsRow({
       </td>
       <td className="px-3 py-3">
         <div className="min-w-[11rem] space-y-2 text-xs leading-5">
-          <span
-            className={`inline-flex rounded-full border px-2.5 py-1 font-semibold tracking-[0.08em] uppercase ${routerStateToneMap[router.operationalState]}`}
-          >
-            {routerStateLabelMap[router.operationalState]}
-          </span>
+          <div className="flex flex-wrap gap-2">
+            <span
+              className={`inline-flex rounded-full border px-2.5 py-1 font-semibold tracking-[0.08em] uppercase ${routerStateToneMap[router.operationalState]}`}
+            >
+              {routerStateLabelMap[router.operationalState]}
+            </span>
+            <span
+              className={`inline-flex rounded-full border px-2.5 py-1 font-semibold tracking-[0.08em] uppercase ${freshness.toneClassName}`}
+            >
+              {freshness.label}
+            </span>
+          </div>
           <div>
             <p className="text-sm font-medium text-white">{router.statusLabel}</p>
-            <p className="text-slate-400">
-              Freshness: {freshnessLabelMap[router.freshnessState]} · {router.lastSeen}
-            </p>
+            <p className="text-slate-300">{freshness.summary}</p>
+            <p className="text-slate-500">{freshness.detail}</p>
           </div>
           {router.lastRescue !== "никогда" ? (
-            <p className="text-slate-500">Recovery: {router.lastRescue}</p>
+            <p className="text-slate-500">Последний recovery-сигнал: {router.lastRescue}</p>
           ) : null}
         </div>
       </td>
