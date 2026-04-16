@@ -28,21 +28,55 @@ export default async function DraftsPage({
   searchParams: Promise<{ routerId?: string }>;
 }) {
   const { routerId } = await searchParams;
-  const drafts = await api.draft.list();
+  const [drafts, initialWorkspace] = await Promise.all([
+    api.draft.list(),
+    api.draft.workspace({ routerId }),
+  ]);
+  const initialPreviewTarget =
+    initialWorkspace.workspaceRevision?.config ??
+    initialWorkspace.activeRevision?.config ??
+    null;
+  const initialPreview = initialPreviewTarget
+    ? await api.draft.preview({
+        previous: initialWorkspace.activeRevision?.config ?? null,
+        next: initialPreviewTarget,
+      })
+    : null;
 
   return (
-      <section className="space-y-4">
+    <section className="space-y-4">
       <PageHeader
         eyebrow="Черновики"
-        title="Экспертные ревизии и JSON-редактор"
-        description="Резервный путь для нестандартных правок. Основной операторский поток остаётся на странице роутера, а этот экран нужен для точечной JSON-работы и истории ревизий."
-        mobileDescription="JSON-редактор и история ревизий."
+        title="Экспертные ревизии"
+        description="Это резервный экран для точечной JSON-правки и быстрой работы с ревизиями. Обычный операторский поток по-прежнему начинается со страницы конкретного роутера."
+        mobileDescription="Резервный JSON-режим и история ревизий."
         compact
       />
 
-      <DraftWorkspace initialRouterId={routerId} />
+      <Panel eyebrow="Когда идти сюда" title="Не основной путь" tone="muted" compact>
+        <div className="grid gap-3 md:grid-cols-3">
+          {[
+            "Если обычной формы на странице роутера уже не хватает.",
+            "Если нужно быстро сравнить preview и сохранить ревизию как JSON.",
+            "Если apply должен идти только из уже сохранённого черновика.",
+          ].map((item) => (
+            <div
+              key={item}
+              className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300"
+            >
+              {item}
+            </div>
+          ))}
+        </div>
+      </Panel>
 
-      <Panel eyebrow="История" title="Последние ревизии" tone="muted">
+      <DraftWorkspace
+        initialRouterId={routerId}
+        initialWorkspace={initialWorkspace}
+        initialPreview={initialPreview}
+      />
+
+      <Panel eyebrow="История" title="Последние ревизии" tone="muted" compact>
         <div className="space-y-3">
           {drafts.length > 0 ? (
             drafts.slice(0, 8).map((draft) => (

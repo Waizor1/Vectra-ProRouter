@@ -90,45 +90,84 @@ export default async function UpdatesPage() {
   const releaseTracks = buildReleaseTracks(artifacts, manifests);
 
   return (
-      <section className="space-y-4">
+    <section className="space-y-4">
       <PageHeader
         eyebrow="Обновления"
-        title="Глобальный baseline и каналы выпусков"
-        description="Сначала редактируйте глобальный эталон и rollout-очередь, затем сверяйте опубликованные каналы и артефакты."
-        mobileDescription="Baseline, rollout и каналы."
+        title="Глобальный baseline и массовая рассылка"
+        description="Сначала правите общий эталон, затем выбираете роутеры для рассылки. Каналы и артефакты ниже остаются справочным контуром, а не главным рабочим местом."
+        mobileDescription="Эталон, рассылка и справка по каналам."
         compact
       />
 
-      <GlobalTemplateRolloutWorkspace
-        initialWorkspace={globalTemplateWorkspace}
-      />
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+        <Panel eyebrow="Как работать" title="Быстрый путь по странице" tone="hero" compact>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {[
+              {
+                step: "1",
+                title: "Правите эталон",
+                body: "Install baseline для новых роутеров и fleet-template для уже подключённого парка.",
+              },
+              {
+                step: "2",
+                title: "Готовите рассылку",
+                body: "Сначала можно выпустить только черновики, а применение оставить на отдельное окно.",
+              },
+              {
+                step: "3",
+                title: "Сверяете публикации",
+                body: "Каналы и артефакты ниже помогают проверить, что уже опубликовано для контроллера, PassWall2 и прошивок.",
+              },
+            ].map((item) => (
+              <div
+                key={item.step}
+                className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
+              >
+                <p className="vectra-kicker text-[var(--vectra-accent)]">Шаг {item.step}</p>
+                <p className="mt-2 text-sm font-semibold text-white">{item.title}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-300">{item.body}</p>
+              </div>
+            ))}
+          </div>
+        </Panel>
 
-      <Panel eyebrow="Контур выпусков" title="Каналы и артефакты" tone="muted">
-        <div className="space-y-4">
-          <div className="vectra-stat-grid md:grid-cols-none">
+        <Panel eyebrow="Контур выпусков" title="Что сейчас опубликовано" tone="muted" compact>
+          <div className="space-y-3">
             {releaseTracks.map((track) => (
               <div
                 key={track.lane}
                 className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
               >
-                <p className="vectra-kicker text-slate-500">
-                  {formatChannelLabel(track.channel)}
-                </p>
-                <p className="mt-2 text-base font-semibold text-white sm:text-lg">
-                  {track.lane}
-                </p>
-                <p className="mt-1 text-sm text-slate-200">{track.version}</p>
-                <p className="mt-2 text-sm leading-6 text-slate-400">
-                  {track.scope}
-                </p>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="vectra-kicker text-slate-500">
+                      {formatChannelLabel(track.channel)}
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-white sm:text-base">
+                      {track.lane}
+                    </p>
+                  </div>
+                  <p className="font-[family:var(--font-plex-mono)] text-sm text-slate-200">
+                    {track.version}
+                  </p>
+                </div>
+                <p className="mt-2 text-sm leading-6 text-slate-400">{track.scope}</p>
               </div>
             ))}
           </div>
+        </Panel>
+      </div>
 
+      <GlobalTemplateRolloutWorkspace
+        initialWorkspace={globalTemplateWorkspace}
+      />
+
+      <Panel eyebrow="Справка" title="Последние артефакты и guarded-контур" tone="muted">
+        <div className="space-y-4">
           <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 text-sm leading-6 text-slate-300">
             Прошивки остаются отдельным guarded-путём: сначала проверка через{" "}
             <code>sysupgrade -T</code> или <code>ubus validate_firmware_image</code>,
-            затем только точечное действие по совместимой плате и layout.
+            затем точечное действие по совместимой плате и layout. Это справочный блок, а не место для массовой рассылки прошивок.
           </div>
 
           <div className="space-y-2">
@@ -152,8 +191,7 @@ export default async function UpdatesPage() {
               ))
             ) : (
               <div className="rounded-md border border-dashed border-white/12 bg-white/[0.03] p-4 text-sm leading-7 text-slate-300">
-                Артефакты пока не опубликованы. После публикации они появятся
-                здесь.
+                Артефакты пока не опубликованы. После первой публикации они появятся здесь как короткий справочный список.
               </div>
             )}
           </div>

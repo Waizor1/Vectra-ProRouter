@@ -68,8 +68,8 @@ export default function EnrollmentPage() {
       <PageHeader
         eyebrow="Установка"
         title="Подключение роутера"
-        description="Bootstrap-команда и короткий путь до первого check-in."
-        mobileDescription="Bootstrap и check-in."
+        description="Быстрый вход для нового устройства: bootstrap-команда, короткие шаги до первого check-in и технические материалы ниже, когда они действительно нужны."
+        mobileDescription="Bootstrap, первый check-in и технические материалы ниже."
         compact
       />
 
@@ -83,6 +83,10 @@ export default function EnrollmentPage() {
           }
         >
           <div className="space-y-4">
+            <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
+              Сначала выполняете bootstrap на роутере, потом проверяете появление устройства в <strong className="text-white">Парке</strong>, и только после этого решаете, принимать ли импорт как эталон.
+            </div>
+
             <div className="flex flex-wrap gap-2 text-slate-400">
               <span className="vectra-chip rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-2 py-1">
                 {ax3000tEnrollmentPreset.architecture}
@@ -102,7 +106,7 @@ export default function EnrollmentPage() {
             <div className="flex flex-wrap gap-2">
               <Link
                 href="/fleet"
-                className="vectra-button-secondary px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
+                className="vectra-button-primary px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
               >
                 Открыть Парк
               </Link>
@@ -110,13 +114,13 @@ export default function EnrollmentPage() {
                 href={bootstrapScriptUrl}
                 className="vectra-button-secondary px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
               >
-                Открыть shell-скрипт
+                Открыть bootstrap-скрипт
               </a>
             </div>
           </div>
         </Panel>
 
-        <Panel eyebrow="После bootstrap" title="Следующие шаги" tone="muted">
+        <Panel eyebrow="После bootstrap" title="Следующие действия" tone="muted">
           <div className="space-y-3">
             {nextActionSteps.map((item) => (
               <div
@@ -156,7 +160,7 @@ export default function EnrollmentPage() {
                 href="/updates"
                 className="vectra-button-secondary px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
               >
-                Где массовая рассылка
+                Открыть массовую рассылку
               </Link>
             </div>
           </div>
@@ -168,6 +172,7 @@ export default function EnrollmentPage() {
           <DisclosureSection
             title="Что именно делает bootstrap"
             summary="Коротко про режимы, preflight и то, что не ставится по умолчанию."
+            defaultOpen
           >
             <ul className="space-y-2 text-sm leading-7 text-slate-300">
               {installHighlights.map((item) => (
@@ -180,7 +185,7 @@ export default function EnrollmentPage() {
 
           <DisclosureSection
             title="После своей подписки: вернуть привязки myshunt"
-            summary="Команда и helper для возврата shunt-target привязок после импорта своей подписки."
+            summary="Команда и вспомогательный скрипт для возврата shunt-target привязок после импорта своей подписки."
           >
             <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,0.8fr)]">
               <div className="space-y-4 text-sm leading-7 text-slate-300">
@@ -202,7 +207,7 @@ export default function EnrollmentPage() {
                 </pre>
 
                 <p>
-                  Helper ищет ноды по <code>remark</code> и восстанавливает нужные
+                  Скрипт ищет ноды по <code>remark</code> и восстанавливает нужные
                   назначения. Скрипт доступен по адресу{" "}
                   <a
                     href={shuntRebindScriptUrl}
@@ -324,10 +329,10 @@ export default function EnrollmentPage() {
 
           <DisclosureSection
             title="Полный bootstrap shell"
-            summary="Полный текст генерируемого shell-скрипта для ручной проверки."
+            summary="Полный текст генерируемого bootstrap-скрипта для ручной проверки."
           >
             <div className="space-y-3">
-              <CopyTextButton text={bootstrapScript} label="Копировать shell" />
+              <CopyTextButton text={bootstrapScript} label="Копировать скрипт" />
               <pre className="max-h-[36rem] overflow-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
                 <code>{bootstrapScript}</code>
               </pre>

@@ -14,41 +14,75 @@ export default async function RescuePage() {
     <section className="mx-auto max-w-6xl space-y-4">
       <PageHeader
         eyebrow="Восстановление"
-        title="Rescue policy и direct-mode контур"
-        description="Экран для текущих direct-mode случаев и открытых rescue-инцидентов. Политика остаётся компактной, а живой список устройств и инцидентов вынесен ниже."
-        mobileDescription="Direct mode, policy и инциденты."
+        title="Direct mode и rescue-инциденты"
+        description="Сначала смотрите, есть ли сейчас роутеры в direct mode и открытые инциденты. Политика ниже остаётся справкой, а не основной рабочей зоной."
+        mobileDescription="Direct mode, инциденты и политика ниже."
         compact
       />
+
+      <div className="vectra-stat-grid">
+        <StatusTile
+          label="Роутеры в direct mode"
+          value={String(directRouters.length)}
+          tone={directRouters.length > 0 ? "warning" : "good"}
+          hint={directRouters.length > 0 ? "нужна проверка" : "активных direct-mode случаев нет"}
+          compact
+          emphasis={directRouters.length > 0}
+        />
+        <StatusTile
+          label="Открытые инциденты"
+          value={String(incidents.length)}
+          tone={incidents.length > 0 ? "warning" : "good"}
+          hint={incidents.length > 0 ? "проверьте причины и затронутые роутеры" : "парк сейчас стабилен"}
+          compact
+          emphasis={incidents.length > 0}
+        />
+        <StatusTile
+          label="Триггер direct mode"
+          value={String(policy.triggerFailureCount)}
+          hint="неудачных проверок до переключения"
+          compact
+        />
+        <StatusTile
+          label="Возврат в proxy"
+          value={String(policy.recoverySuccessCount)}
+          hint="успешных проверок до выхода"
+          compact
+        />
+      </div>
 
       <section className="vectra-hero-panel space-y-4 rounded-[1.6rem] px-4 py-4 sm:px-5 sm:py-5">
         <div>
           <p className="vectra-kicker text-[var(--vectra-accent)]">Политика rescue</p>
           <h2 className="mt-1 text-xl font-semibold tracking-[-0.03em] text-white sm:text-2xl">
-            Порог, возврат и сообщение direct mode
+            Порог, возврат и причина direct mode
           </h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
+            Этот блок нужен для сверки текущего порога и операторского текста. Сами рабочие списки устройств и инцидентов остаются отдельными ниже.
+          </p>
         </div>
         <div className="space-y-4">
           <div className="vectra-stat-grid">
             <StatusTile
               label="Триггер"
               value={String(policy.triggerFailureCount)}
-              hint="провала до direct mode"
+              hint="неудачных проверок до direct mode"
               compact
             />
             <StatusTile
               label="Возврат"
               value={String(policy.recoverySuccessCount)}
-              hint="успешных проверок до proxy"
+              hint="успешных проверок до возврата в proxy"
               compact
             />
             <StatusTile
-              label="Cooldown"
+              label="Пауза между циклами"
               value={String(Math.round(policy.cooldownSeconds / 60))}
-              hint="минут между циклами"
+              hint="минут до следующей проверки"
               compact
             />
             <StatusTile
-              label="Direct path"
+              label="Проверка direct path"
               value={policy.requireDirectPathSuccess ? "нужен" : "не обязателен"}
               hint="для выхода из аварийного режима"
               compact
@@ -61,8 +95,7 @@ export default async function RescuePage() {
               {policy.directModeReason}
             </p>
             <p className="mt-2 text-sm leading-6 text-slate-200">
-              Причина должна оставаться короткой и однозначной — без лишней
-              операторской расшифровки на уровне shell.
+              Сообщение должно оставаться коротким и однозначным, чтобы оператор сразу понимал, почему роутер ушёл в direct mode.
             </p>
           </div>
         </div>

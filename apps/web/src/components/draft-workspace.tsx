@@ -7,9 +7,11 @@ import { useRouter } from "next/navigation";
 import { ActionStrip } from "~/components/action-strip";
 import { Panel } from "~/components/panel";
 import { StatusTile } from "~/components/status-tile";
-import { api, type RouterInputs } from "~/trpc/react";
+import { api, type RouterInputs, type RouterOutputs } from "~/trpc/react";
 
 type DraftConfigInput = RouterInputs["draft"]["save"]["config"];
+type DraftWorkspaceData = RouterOutputs["draft"]["workspace"];
+type DraftPreviewData = RouterOutputs["draft"]["preview"];
 
 function formatRouterStatus(value?: string | null) {
   switch (value) {
@@ -45,21 +47,38 @@ function formatImportState(value?: string | null) {
 
 export function DraftWorkspace({
   initialRouterId,
+  initialWorkspace,
+  initialPreview,
 }: {
   initialRouterId?: string;
+  initialWorkspace: DraftWorkspaceData;
+  initialPreview: DraftPreviewData | null;
 }) {
   const router = useRouter();
   const utils = api.useUtils();
 
-  const [selectedRouterId, setSelectedRouterId] = useState(initialRouterId ?? "");
-  const [editorText, setEditorText] = useState("");
+  const [selectedRouterId, setSelectedRouterId] = useState(
+    initialRouterId ?? initialWorkspace.selectedRouter?.id ?? "",
+  );
+  const [editorText, setEditorText] = useState(() =>
+    initialWorkspace.workspaceRevision
+      ? JSON.stringify(initialWorkspace.workspaceRevision.config, null, 2)
+      : "",
+  );
   const [note, setNote] = useState("");
-  const [loadedRevisionId, setLoadedRevisionId] = useState<string | null>(null);
+  const [loadedRevisionId, setLoadedRevisionId] = useState<string | null>(
+    initialWorkspace.workspaceRevision?.id ?? null,
+  );
   const [savedRevisionId, setSavedRevisionId] = useState<string | null>(null);
 
-  const workspace = api.draft.workspace.useQuery({
-    routerId: selectedRouterId || undefined,
-  });
+  const workspace = api.draft.workspace.useQuery(
+    {
+      routerId: selectedRouterId || undefined,
+    },
+    {
+      initialData: initialWorkspace,
+    },
+  );
 
   useEffect(() => {
     if (!selectedRouterId && workspace.data?.selectedRouter?.id) {
@@ -99,13 +118,25 @@ export function DraftWorkspace({
     workspace.data?.activeRevision?.config ??
     null;
 
+  const initialPreviewTarget =
+    initialWorkspace.workspaceRevision?.config ??
+    initialWorkspace.activeRevision?.config ??
+    null;
+
   const preview = api.draft.preview.useQuery(
     previewTarget
       ? {
           previous: workspace.data?.activeRevision?.config ?? null,
           next: previewTarget,
         }
-      : skipToken
+      : skipToken,
+    {
+      initialData:
+        selectedRouterId === initialWorkspace.selectedRouter?.id &&
+        previewTarget === initialPreviewTarget
+          ? initialPreview ?? undefined
+          : undefined,
+    },
   );
 
   const saveMutation = api.draft.save.useMutation({
@@ -158,7 +189,7 @@ export function DraftWorkspace({
   if (workspace.isLoading) {
     return (
       <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4 text-sm text-slate-300">
-        Загружаю экспертный рабочий режим...
+        Загружаю резервный JSON-режим...
       </div>
     );
   }
@@ -175,14 +206,10 @@ export function DraftWorkspace({
   return (
     <div className="space-y-4">
       <div className="vectra-main-grid gap-4">
-        <Panel eyebrow="JSON workspace" title="Экспертный режим" tone="hero">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="mt-1 text-sm leading-6 text-slate-400">
-                Точечная JSON-правка без изменения основного operator flow. Сначала выберите роутер, затем проверьте preview и только потом сохраняйте или ставьте apply.
-              </p>
-            </div>
-          </div>
+        <Panel eyebrow="JSON workspace" title="Выбор роутера и контекст" tone="hero">
+          <p className="text-sm leading-6 text-slate-400">
+            Сначала выберите роутер, затем проверьте preview. Применение по-прежнему идёт только из сохранённого черновика.
+          </p>
           <label
             htmlFor="draft-router-select"
             className="mt-3 block text-xs font-medium uppercase tracking-[0.08em] text-slate-400"
@@ -226,6 +253,31 @@ export function DraftWorkspace({
               value={workspace.data.latestDraft ? `#${workspace.data.latestDraft.revisionNumber}` : "нет"}
               compact
             />
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            {[
+              {
+                title: "1. Проверяете JSON",
+                body: "Редактор ниже не меняет поведение сервера, но позволяет точечно описать desired config.",
+              },
+              {
+                title: "2. Сохраняете ревизию",
+                body: "Сначала создаётся или обновляется черновик внутри панели.",
+              },
+              {
+                title: "3. Потом применяете",
+                body: "Отправка на роутер доступна только для approved-роутера и только из сохранённой ревизии.",
+              },
+            ].map((item) => (
+              <div
+                key={item.title}
+                className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
+              >
+                <p className="text-sm font-semibold text-white">{item.title}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-300">{item.body}</p>
+              </div>
+            ))}
           </div>
         </Panel>
 
@@ -280,47 +332,52 @@ export function DraftWorkspace({
       </div>
 
       <Panel eyebrow="JSON editor" title="Desired config JSON" tone="muted">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="mt-1 text-sm text-slate-400">
-              Секреты маскируются автоматически.
-            </p>
+        <div className="space-y-3">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+            <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
+              <p className="vectra-kicker text-slate-500">Режим работы</p>
+              <p className="mt-2 text-sm text-white">Секреты маскируются автоматически.</p>
+              <p className="mt-1 text-sm text-slate-400">
+                Если JSON валиден, сначала сохраните ревизию в панели. Применение остаётся вторым шагом и использует только уже записанный черновик.
+              </p>
+            </div>
+
+            <ActionStrip justify="start" dense>
+              <button
+                type="button"
+                className="vectra-button-secondary px-3 py-2 text-sm font-medium transition hover:border-white/20 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!canSave}
+                onClick={() =>
+                  parsedConfig && selectedRouterId
+                    ? saveMutation.mutate({
+                        routerId: selectedRouterId,
+                        note: note.trim().length > 0 ? note.trim() : undefined,
+                        config: parsedConfig,
+                      })
+                    : undefined
+                }
+              >
+                {saveMutation.isPending ? "Сохраняю..." : "Сохранить черновик"}
+              </button>
+              <button
+                type="button"
+                className="vectra-button-primary px-3 py-2 text-sm font-medium transition hover:bg-[color-mix(in_oklab,var(--vectra-accent)_85%,white)] disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!canQueue}
+                onClick={() =>
+                  latestDraftId && selectedRouterId
+                    ? queueMutation.mutate({
+                        routerId: selectedRouterId,
+                        desiredRevisionId: latestDraftId,
+                      })
+                    : undefined
+                }
+              >
+                {queueMutation.isPending
+                  ? "Ставлю применение в очередь..."
+                  : "Сохранить и отправить на роутер"}
+              </button>
+            </ActionStrip>
           </div>
-          <ActionStrip justify="start" dense>
-            <button
-              type="button"
-              className="vectra-button-secondary px-3 py-2 text-sm font-medium transition hover:border-white/20 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!canSave}
-              onClick={() =>
-                parsedConfig && selectedRouterId
-                  ? saveMutation.mutate({
-                      routerId: selectedRouterId,
-                      note: note.trim().length > 0 ? note.trim() : undefined,
-                      config: parsedConfig,
-                    })
-                  : undefined
-              }
-            >
-              {saveMutation.isPending ? "Сохраняю..." : "Сохранить черновик"}
-            </button>
-            <button
-              type="button"
-              className="vectra-button-primary px-3 py-2 text-sm font-medium transition hover:bg-[color-mix(in_oklab,var(--vectra-accent)_85%,white)] disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!canQueue}
-              onClick={() =>
-                latestDraftId && selectedRouterId
-                  ? queueMutation.mutate({
-                      routerId: selectedRouterId,
-                      desiredRevisionId: latestDraftId,
-                    })
-                  : undefined
-              }
-            >
-              {queueMutation.isPending
-                ? "Ставлю apply..."
-                : "Сохранить и отправить на роутер"}
-            </button>
-          </ActionStrip>
         </div>
 
         <label

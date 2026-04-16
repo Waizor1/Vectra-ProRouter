@@ -384,6 +384,61 @@ export function GlobalTemplateRolloutWorkspace({
         />
       </div>
 
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+        <Panel eyebrow="Операторский порядок" title="Сначала эталон, потом rollout" tone="muted" compact>
+          <div className="grid gap-3 md:grid-cols-3">
+            {[
+              {
+                title: "Правите эталон",
+                body: "Install baseline остаётся для новых роутеров, fleet-template — для уже подключённого парка.",
+              },
+              {
+                title: "Проверяете замечания",
+                body: "Если локальная проверка видит подписки, реальные ноды или ошибки JSON/UCI, сначала правьте шаблон.",
+              },
+              {
+                title: "Потом выбираете окна",
+                body: "Можно выпустить только drafts без apply, чтобы не превращать подготовку в немедленное массовое действие.",
+              },
+            ].map((item) => (
+              <div
+                key={item.title}
+                className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
+              >
+                <p className="text-sm font-semibold text-white">{item.title}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-300">{item.body}</p>
+              </div>
+            ))}
+          </div>
+        </Panel>
+
+        <Panel eyebrow="Текущий снимок" title="Что важно перед действием" tone="muted" compact>
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3">
+              <p className="vectra-kicker text-slate-500">Эталон</p>
+              <p className="mt-2 text-sm font-semibold text-white">
+                {workspace.installBaselineIssues.length > 0 ||
+                workspace.rolloutTemplateIssues.length > 0
+                  ? "Есть замечания перед сохранением"
+                  : "Можно сохранять и готовить rollout"}
+              </p>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                Обновлено {formatDateTime(workspace.template.updatedAt)}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3">
+              <p className="vectra-kicker text-slate-500">Подходящие роутеры</p>
+              <p className="mt-2 text-sm font-semibold text-white">
+                {workspace.summary.eligibleRouterCount} готовы к массовой операции
+              </p>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                Только approved роутеры на разрешённой pilot/certified платформе.
+              </p>
+            </div>
+          </div>
+        </Panel>
+      </div>
+
       <Panel
         eyebrow="Baseline"
         title="Рабочая поверхность"
@@ -441,6 +496,10 @@ export function GlobalTemplateRolloutWorkspace({
 
           {activeTab === "baseline" ? (
             <div className="space-y-4">
+              <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
+                Здесь два связанных, но разных слоя: <strong className="text-white">Install baseline</strong> для новых роутеров и <strong className="text-white">Fleet-template</strong> для уже подключённого парка.
+              </div>
+
               <ActionStrip justify="start">
                 <button
                   type="button"
@@ -503,6 +562,10 @@ export function GlobalTemplateRolloutWorkspace({
 
           {activeTab === "rollout" ? (
             <div className="space-y-4">
+              <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
+                Сначала выберите подходящие роутеры. Для безопасного окна можно подготовить только drafts без apply; очередь применения остаётся отдельным, более рискованным действием.
+              </div>
+
               <ActionStrip justify="start">
                 <button
                   type="button"

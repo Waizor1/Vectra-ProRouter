@@ -1,5 +1,7 @@
 import { notFound } from "next/navigation";
 
+import { TRPCError } from "@trpc/server";
+
 import { RouterDetailWorkspace } from "~/components/router-detail-workspace";
 import {
   hasActiveDirectMode,
@@ -14,8 +16,12 @@ export default async function RouterDetailPage({
 }) {
   const { routerId } = await params;
 
-  const router = await api.fleet.byId({ routerId }).catch(() => {
-    notFound();
+  const router = await api.fleet.byId({ routerId }).catch((error: unknown) => {
+    if (error instanceof TRPCError && error.code === "NOT_FOUND") {
+      notFound();
+    }
+
+    throw error;
   });
 
   const payload = router.latestSnapshot?.payload;
