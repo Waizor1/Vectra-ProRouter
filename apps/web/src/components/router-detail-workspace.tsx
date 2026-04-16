@@ -748,7 +748,7 @@ export function RouterDetailWorkspace({
                 {editor.routerRuntimeSummary.name}
               </h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-                Сначала оценивайте текущее состояние и import-контекст, затем сохраняйте черновик или отправляйте apply. Вкладки ниже сохраняют текущую query-навигацию и рабочие действия.
+                Текущее состояние и import-контекст собраны наверху, рабочие вкладки и apply-сценарий — ниже.
               </p>
             </div>
             <div className="vectra-summary-grid">
@@ -1067,17 +1067,9 @@ function RouterActionRail({
 
       <section className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] px-4 py-4">
         <p className="vectra-kicker text-[var(--vectra-accent)]">Операторский поток</p>
-        <div className="mt-3 space-y-3 text-sm leading-6 text-slate-300">
-          <p>
-            1. Проверьте import и текущее состояние роутера.
-          </p>
-          <p>
-            2. Сохраните правки в панели, если хотите сначала зафиксировать ревизию.
-          </p>
-          <p>
-            3. Отправляйте apply только когда черновик валиден и роутер разрешён для действий.
-          </p>
-        </div>
+        <p className="mt-3 text-sm leading-6 text-slate-300">
+          Сначала сверьте состояние и import, затем либо сохраните ревизию в панели, либо сразу отправьте apply на роутер.
+        </p>
       </section>
 
       <ActionGroup

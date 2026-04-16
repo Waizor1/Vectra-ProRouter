@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -237,11 +238,14 @@ export function FleetMonitoringWorkspace({
   initialMonitoring: FleetMonitoringSnapshot;
   initialSearchQuery?: string;
 }) {
+  const pathname = usePathname();
+  const utils = api.useUtils();
+  const fleetPageActive = pathname === "/fleet";
   const monitoringQuery = api.fleet.monitoring.useQuery(undefined, {
     initialData: initialMonitoring,
-    refetchInterval: 20_000,
-    refetchIntervalInBackground: true,
-    refetchOnWindowFocus: true,
+    refetchInterval: fleetPageActive ? 20_000 : false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: fleetPageActive,
   });
   const notificationsStatusQuery = api.notifications.status.useQuery();
   const subscribePushMutation = api.notifications.subscribe.useMutation();
@@ -267,6 +271,12 @@ export function FleetMonitoringWorkspace({
   useEffect(() => {
     setSearchInput(initialSearchQuery);
   }, [initialSearchQuery]);
+
+  useEffect(() => {
+    return () => {
+      void utils.fleet.monitoring.cancel();
+    };
+  }, [utils]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
