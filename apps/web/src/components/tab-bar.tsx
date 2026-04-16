@@ -26,14 +26,14 @@ export function TabBar({
       <nav
         aria-label={ariaLabel}
         className={`flex min-w-max snap-x snap-mandatory items-center gap-1 pr-1 ${
-          variant === "primary" ? "border-b border-white/12 pb-2" : "pb-1"
+          variant === "primary" ? "border-b border-white/12 pb-2" : "rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] p-1"
         }`}
       >
         {items.map((item) => {
           const baseClassName =
             variant === "primary"
-              ? "inline-flex min-h-9 snap-start items-center gap-2 rounded-md border px-2.5 py-2 text-[12px] font-medium whitespace-nowrap tracking-[0.01em] transition sm:rounded-t-md sm:border-b-0 sm:px-3 sm:text-[13px]"
-              : "inline-flex min-h-8 snap-start items-center gap-2 rounded-md border px-2.5 py-1.5 text-[12px] font-medium whitespace-nowrap tracking-[0.01em] transition sm:px-3 sm:text-[13px]";
+              ? "inline-flex min-h-10 snap-start items-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-medium whitespace-nowrap tracking-[0.01em] transition sm:rounded-t-xl sm:border-b-0 sm:px-3.5 sm:text-[13px]"
+              : "inline-flex min-h-9 snap-start items-center gap-2 rounded-xl border px-3 py-1.5 text-[12px] font-medium whitespace-nowrap tracking-[0.01em] transition sm:px-3.5 sm:text-[13px]";
 
           const stateClassName = item.disabled
             ? "cursor-not-allowed border-white/8 bg-white/[0.03] text-slate-500"

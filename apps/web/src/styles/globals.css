@@ -4,12 +4,22 @@
   --font-sans: var(--font-plex-sans), ui-sans-serif, sans-serif;
   --font-mono: var(--font-plex-mono), ui-monospace, monospace;
   --vectra-bg: #12161d;
+  --vectra-bg-elevated: #161c25;
   --vectra-panel: rgba(27, 31, 38, 0.94);
   --vectra-panel-soft: rgba(37, 42, 52, 0.84);
+  --vectra-panel-strong: rgba(13, 17, 24, 0.94);
+  --vectra-panel-muted: rgba(8, 11, 17, 0.76);
   --vectra-accent: #63b9ff;
   --vectra-accent-soft: rgba(99, 185, 255, 0.15);
   --vectra-accent-warm: #ff8a45;
   --vectra-line-strong: rgba(138, 170, 204, 0.35);
+  --vectra-line-soft: rgba(255, 255, 255, 0.08);
+  --vectra-success: #65d6a3;
+  --vectra-warning: #ffc36d;
+  --vectra-danger: #ff8f8f;
+  --vectra-shadow-lg: 0 18px 42px rgba(0, 0, 0, 0.28);
+  --vectra-shadow-md: 0 10px 24px rgba(0, 0, 0, 0.2);
+  --vectra-shell-max: 1880px;
 }
 
 html {
@@ -18,12 +28,23 @@ html {
 
 body {
   background:
+    radial-gradient(circle at top left, rgba(82, 132, 176, 0.12), transparent 22%),
+    radial-gradient(circle at bottom right, rgba(196, 114, 58, 0.1), transparent 18%),
     linear-gradient(180deg, rgba(18, 22, 29, 0.94), rgba(18, 22, 29, 1)),
     var(--vectra-bg);
   font-family: var(--font-sans);
   text-rendering: optimizeLegibility;
   font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
   overflow-x: hidden;
+  color: rgb(241 245 249);
+}
+
+a,
+button,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
 }
 
 button,
@@ -77,4 +98,137 @@ samp {
 .vectra-tech {
   font-family: var(--font-mono);
   letter-spacing: 0.01em;
+}
+
+.vectra-surface-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.vectra-shell {
+  position: relative;
+  min-height: 100vh;
+}
+
+.vectra-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.02)) top / 100% 1px no-repeat,
+    linear-gradient(90deg, rgba(255, 255, 255, 0.015), transparent 12%, transparent 88%, rgba(255, 255, 255, 0.015));
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.7), transparent 75%);
+}
+
+.vectra-shell-frame {
+  position: relative;
+  margin: 0 auto;
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+  max-width: var(--vectra-shell-max);
+  flex-direction: column;
+  gap: 1rem;
+  padding: 0.6rem;
+}
+
+.vectra-page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.vectra-main-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.vectra-hero-panel {
+  border: 1px solid var(--vectra-line-soft);
+  background: linear-gradient(180deg, rgba(18, 24, 33, 0.96), rgba(14, 18, 25, 0.92));
+  box-shadow: var(--vectra-shadow-lg);
+}
+
+.vectra-subtle-panel {
+  border: 1px solid var(--vectra-line-soft);
+  background: var(--vectra-panel-muted);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.vectra-stat-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.vectra-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.vectra-field {
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(7, 10, 16, 0.9);
+  color: white;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.vectra-field:focus {
+  border-color: var(--vectra-line-strong);
+  box-shadow: 0 0 0 1px rgba(138, 170, 204, 0.16);
+  outline: none;
+}
+
+.vectra-button-primary {
+  border-radius: 0.8rem;
+  border: 1px solid var(--vectra-line-strong);
+  background: linear-gradient(180deg, rgba(99, 185, 255, 0.28), rgba(99, 185, 255, 0.18));
+  color: white;
+}
+
+.vectra-button-secondary {
+  border-radius: 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgb(226 232 240);
+}
+
+.vectra-button-danger {
+  border-radius: 0.8rem;
+  border: 1px solid rgba(255, 143, 143, 0.28);
+  background: rgba(127, 29, 29, 0.24);
+  color: rgb(254 226 226);
+}
+
+.vectra-summary-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+@media (min-width: 1280px) {
+  .vectra-surface-grid {
+    grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.8fr);
+    align-items: start;
+  }
+
+  .vectra-main-grid {
+    grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.8fr);
+    align-items: start;
+  }
+}
+
+@media (min-width: 640px) {
+  .vectra-shell-frame {
+    gap: 1.1rem;
+    padding: 0.95rem;
+  }
 }
