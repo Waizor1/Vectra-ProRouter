@@ -39,10 +39,33 @@ sudo chown "$USER":"$USER" /opt/vectra-prorouter
 cd /opt/vectra-prorouter
 ```
 
-From the workstation, sync the release bundle into that deploy root. Example:
+From the workstation, sync the release bundle into that deploy root. Do **not**
+rsync the whole repository root into `/opt/vectra-prorouter` with `--delete`.
+This deploy root contains live mutable runtime state under `deploy/runtime/*`,
+including PostgreSQL data and published artifacts.
+
+For web releases, the supported path is: create a release slice, upload it to a
+staging directory such as `/tmp`, then run the repo-owned deploy script on the
+VPS so only allowlisted release files are synced and `deploy/runtime` remains
+untouched.
+
+Unsafe example (forbidden):
 
 ```bash
 rsync -av --delete ./ root@<vps-host>:/opt/vectra-prorouter/
+```
+
+Safe example:
+
+```bash
+scp ./release-slice.tar.gz root@<vps-host>:/tmp/
+ssh root@<vps-host> '
+  set -eu
+  STAGE="/tmp/vectra-web-stage-$(date -u +%Y%m%d-%H%M%S)"
+  mkdir -p "$STAGE"
+  tar -xzf /tmp/release-slice.tar.gz -C "$STAGE"
+  bash /opt/vectra-prorouter/deploy/scripts/deploy-web-release.sh --source "$STAGE"
+'
 ```
 
 ## 2. Environment
@@ -117,12 +140,12 @@ Recommended sequence:
 1. Build the signed OpenWrt feed and any firmware/controller artifacts on the build host.
 2. Refresh the AX3000T PassWall bootstrap mirror from the upstream PassWall2 release into a local staging directory:
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Sync-PasswallBootstrapMirror.ps1 `
-  -Tag 26.4.5-1 `
-  -Arch aarch64_cortex-a53 `
-  -OutputDir .\dist\bootstrap\passwall2\26.4.5-1\aarch64_cortex-a53 `
-  -IncludeOptional
+```bash
+python3 ./scripts/Sync-PasswallBootstrapMirror.py \
+  --tag 26.4.5-1 \
+  --arch aarch64_cortex-a53 \
+  --output-dir ./dist/bootstrap/passwall2/26.4.5-1/aarch64_cortex-a53 \
+  --include-optional
 ```
 
 This script downloads the upstream `luci-app-passwall2` package plus the
@@ -131,24 +154,44 @@ matching `passwall_packages_ipk_<arch>.zip`, validates that
 expected OpenWrt feeds, publishes the exact `.ipk` files needed by the AX3000T
 bootstrap lane, and writes `manifest.json` next to them.
 
-3. Sync the updated repository runtime files into the VPS deploy root:
+3. Upload a prepared release slice into a temporary staging directory on the VPS.
+Do **not** sync the repository root directly into `/opt/vectra-prorouter`.
 
 ```bash
-rsync -av --delete ./ root@<vps-host>:/opt/vectra-prorouter/
+scp ./release-slice.tar.gz root@<vps-host>:/tmp/
+ssh root@<vps-host> '
+  set -eu
+  STAGE="/tmp/vectra-web-stage-$(date -u +%Y%m%d-%H%M%S)"
+  mkdir -p "$STAGE"
+  tar -xzf /tmp/release-slice.tar.gz -C "$STAGE"
+  bash /opt/vectra-prorouter/deploy/scripts/deploy-web-release.sh --source "$STAGE"
+'
 ```
 
-4. Sync the published artifact directories into the mounted runtime path:
+The deploy script hard-fails if the release payload contains `deploy/runtime`,
+`.env`, or `apps/web/.env`, and it refuses to proceed if protected runtime
+paths such as `deploy/runtime/postgres/PG_VERSION` are missing from the target.
+
+4. Sync the published artifact directories into the mounted runtime path.
+Use the dedicated artifact-only script so artifact publishing never has access
+to the rest of `deploy/runtime`:
 
 ```bash
-rsync -av dist/openwrt-feed/stable/aarch64_cortex-a53/ \
-  /opt/vectra-prorouter/deploy/runtime/artifacts/openwrt/stable/aarch64_cortex-a53/
+bash deploy/scripts/sync-runtime-artifacts.sh \
+  --source ./dist/openwrt-feed/stable/aarch64_cortex-a53 \
+  --channel openwrt/stable/aarch64_cortex-a53
 ```
 
 ```bash
-mkdir -p /opt/vectra-prorouter/deploy/runtime/artifacts/bootstrap/passwall2/26.4.5-1/aarch64_cortex-a53
-rsync -av dist/bootstrap/passwall2/26.4.5-1/aarch64_cortex-a53/ \
-  /opt/vectra-prorouter/deploy/runtime/artifacts/bootstrap/passwall2/26.4.5-1/aarch64_cortex-a53/
+bash deploy/scripts/sync-runtime-artifacts.sh \
+  --source ./dist/bootstrap/passwall2/26.4.5-1/aarch64_cortex-a53 \
+  --channel bootstrap/passwall2/26.4.5-1/aarch64_cortex-a53
 ```
+
+This script only allows writes under `deploy/runtime/artifacts/*` and rejects
+path traversal or broader runtime targets. Do not repurpose the web release
+sync script for artifact publishing, and do not hand-roll `rsync --delete`
+against `deploy/runtime`.
 
 5. Sync artifact metadata in PostgreSQL before redeploy if package versions changed:
 
@@ -341,7 +384,7 @@ What this sync does:
 - upserts extra artifacts such as guarded firmware images
 - upserts `firmware_manifests` and links them to the correct firmware artifact
 - does not publish the AX3000T bootstrap mirror automatically; refresh it
-  separately with `scripts/Sync-PasswallBootstrapMirror.ps1` and copy the
+  separately with `scripts/Sync-PasswallBootstrapMirror.py` and copy the
   result under `deploy/runtime/artifacts/bootstrap/passwall2/<tag>/<arch>/`
 
 Pilot note:
