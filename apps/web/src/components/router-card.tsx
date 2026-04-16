@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 
 import type { RouterTelegramReachability } from "@vectra/contracts";
 
@@ -16,7 +15,6 @@ import {
   getTelegramReachabilityStatus,
   hasTelegramReachabilityProblem,
 } from "~/lib/telegram-reachability";
-import { api } from "~/trpc/react";
 
 export type RouterSummary = {
   id: string;
@@ -41,8 +39,6 @@ export type RouterSummary = {
 };
 
 export function RouterCard({ router }: { router: RouterSummary }) {
-  const nextRouter = useRouter();
-  const utils = api.useUtils();
   const onboarding = describeRouterOnboarding(router.importState);
   const onboardingPending = isRouterOnboardingPending(router.importState);
   const controllerVersion = formatControllerVersion(router.controllerVersion);
@@ -53,34 +49,8 @@ export function RouterCard({ router }: { router: RouterSummary }) {
     router.telegramReachability,
   );
 
-  const deleteMutation = api.fleet.deleteRouter.useMutation({
-    onSuccess: async () => {
-      await Promise.all([
-        utils.fleet.list.invalidate(),
-        utils.fleet.monitoring.invalidate(),
-        utils.fleet.overview.invalidate(),
-        utils.fleet.pendingImportReviews.invalidate(),
-      ]);
-      nextRouter.refresh();
-    },
-  });
-
-  const handleDelete = () => {
-    const confirmed = window.confirm(
-      `Удалить роутер "${router.name}" из системы?\n\n` +
-        "Будут удалены черновики, задания, снапшоты и связанные записи из панели. " +
-        "На самом роутере пакеты не удаляются. Если контроллер снова зарегистрируется, устройство может появиться заново.",
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
-    deleteMutation.mutate({ routerId: router.id });
-  };
-
   return (
-    <article className="group overflow-hidden rounded-md border border-white/10 bg-[var(--vectra-panel)]">
+    <article className="group overflow-hidden rounded-2xl border border-white/10 bg-[var(--vectra-panel)] shadow-[var(--vectra-shadow-md)]">
       <Link
         href={`/routers/${router.id}`}
         className="block p-3 transition hover:border-[var(--vectra-line-strong)] hover:bg-[rgba(22,28,41,0.98)] sm:p-4"
@@ -90,6 +60,9 @@ export function RouterCard({ router }: { router: RouterSummary }) {
             <p className="vectra-kicker text-slate-500">Роутер</p>
             <p className="mt-1 text-lg font-semibold tracking-[-0.01em] text-white sm:text-xl">
               {router.name}
+            </p>
+            <p className="mt-1 text-sm leading-6 text-slate-400">
+              {router.selectedNode} · очередь {router.pendingChanges}
             </p>
           </div>
           <span
@@ -123,12 +96,12 @@ export function RouterCard({ router }: { router: RouterSummary }) {
             {router.subscriptionCount} подписок
           </span>
           <span className="vectra-chip rounded-full border border-white/10 bg-white/5 px-3 py-1 text-slate-200">
-            {router.reachable ? "Связь свежая" : "Офлайн с"} {router.lastSeen}
+            {router.lastSeen}
           </span>
         </div>
 
         <div
-          className={`mt-3 rounded-md border px-3 py-3 ${
+          className={`mt-3 rounded-2xl border px-3 py-3 ${
             onboardingPending
               ? "border-amber-400/20 bg-amber-500/10"
               : "border-emerald-400/20 bg-emerald-500/10"
@@ -136,15 +109,9 @@ export function RouterCard({ router }: { router: RouterSummary }) {
         >
           <div className="flex items-center justify-between gap-3">
             <p className="vectra-kicker text-slate-300">{onboarding.badge}</p>
-            <span className="text-xs text-slate-300">
-              {onboardingPending ? "нужно действие" : "локальная работа"}
-            </span>
           </div>
           <p className="mt-2 text-sm font-medium text-white">
             {onboardingPending ? onboarding.cardActionLabel : "Открыть роутер"}
-          </p>
-          <p className="mt-2 text-sm leading-6 text-slate-200">
-            {onboarding.cardHint}
           </p>
         </div>
 
@@ -155,7 +122,7 @@ export function RouterCard({ router }: { router: RouterSummary }) {
             emphasis
             clamp
           />
-          <CompactRouterFact label="Очередь" value={`${router.pendingChanges}`} />
+          <CompactRouterFact label="Статус" value={router.statusLabel} />
           <CompactRouterFact
             label="Telegram"
             value={formatTelegramReachabilityLabel(router.telegramReachability)}
@@ -178,21 +145,13 @@ export function RouterCard({ router }: { router: RouterSummary }) {
         </div>
       </Link>
 
-      <div className="flex flex-col gap-2 border-t border-white/10 px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4">
+      <div className="border-t border-white/10 px-3 py-3 sm:px-4">
         <Link
           href={`/routers/${router.id}`}
-          className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-center text-sm font-medium text-slate-200 transition hover:border-white/20 hover:text-white sm:border-transparent sm:bg-transparent sm:px-0 sm:py-0 sm:text-left"
+          className="rounded-xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-center text-sm font-medium text-slate-200 transition hover:border-white/20 hover:text-white sm:border-transparent sm:bg-transparent sm:px-0 sm:py-0 sm:text-left"
         >
           {onboarding.cardActionLabel}
         </Link>
-        <button
-          type="button"
-          disabled={deleteMutation.isPending}
-          onClick={handleDelete}
-          className="w-full rounded-md border border-rose-400/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-100 transition hover:border-rose-300/40 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-        >
-          {deleteMutation.isPending ? "Удаляю..." : "Удалить из системы"}
-        </button>
       </div>
     </article>
   );
@@ -221,7 +180,7 @@ function CompactRouterFact({
           : "text-slate-100";
 
   return (
-    <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
+    <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
       <p className="vectra-kicker text-slate-500">{label}</p>
       <p
         className={`mt-2 text-sm ${toneClassName} ${emphasis ? "font-medium" : ""} ${

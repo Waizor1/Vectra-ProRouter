@@ -1,18 +1,25 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   browserSupportsServiceWorkerPush,
   getVectraPushSubscription,
   subscribeToVectraPush,
 } from "~/lib/browser-push";
+import { formatControllerVersion } from "~/lib/controller-version";
 import { pickFreshAlertsForBrowser } from "~/lib/fleet-browser-alerts";
 import {
   describeRouterOnboarding,
   formatRouterImportStateLabel,
 } from "~/lib/router-onboarding";
+import {
+  formatTelegramReachabilityLabel,
+  getTelegramReachabilityStatus,
+  hasTelegramReachabilityProblem,
+} from "~/lib/telegram-reachability";
+import { DataTable, DataTableEmpty } from "~/components/data-table";
 import { Panel } from "~/components/panel";
 import { RouterCard } from "~/components/router-card";
 import { api, type RouterOutputs } from "~/trpc/react";
@@ -66,6 +73,60 @@ const alertBadgeMap = {
   warning: "нужно проверить",
   info: "для сведения",
 } as const;
+
+const routerStateLabelMap = {
+  stable: "в строю",
+  recovery: "recovery",
+  offline: "offline",
+  review: "import/drift",
+  blocked: "blocked",
+} as const;
+
+const routerStateToneMap = {
+  stable: "border-emerald-400/30 bg-emerald-500/10 text-emerald-100",
+  recovery: "border-amber-400/30 bg-amber-500/10 text-amber-100",
+  offline: "border-rose-400/30 bg-rose-500/10 text-rose-100",
+  review: "border-sky-400/30 bg-sky-500/10 text-sky-100",
+  blocked: "border-white/15 bg-white/5 text-slate-200",
+} as const;
+
+const freshnessLabelMap = {
+  fresh: "fresh",
+  watch: "watch",
+  offline: "offline",
+  never: "no check-in",
+} as const;
+
+function normalizeSearchQuery(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function matchesSearch(router: FleetMonitoringRouter, searchQuery: string) {
+  if (!searchQuery) {
+    return true;
+  }
+
+  const telegramState = router.telegramReachability?.status ?? "нет данных";
+  const haystack = [
+    router.name,
+    router.id,
+    router.selectedNode,
+    router.statusLabel,
+    router.operationalState,
+    router.freshnessState,
+    router.importState,
+    router.lastRescue,
+    router.controllerVersion,
+    router.passwallVersion,
+    telegramState,
+    ...router.alertKinds,
+    ...Object.values(router.components),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  return haystack.includes(searchQuery);
+}
 
 function formatRelativeTime(value: string | null | undefined) {
   if (!value) {
@@ -171,8 +232,10 @@ function isSerializedPushSubscription(
 
 export function FleetMonitoringWorkspace({
   initialMonitoring,
+  initialSearchQuery = "",
 }: {
   initialMonitoring: FleetMonitoringSnapshot;
+  initialSearchQuery?: string;
 }) {
   const monitoringQuery = api.fleet.monitoring.useQuery(undefined, {
     initialData: initialMonitoring,
@@ -186,6 +249,7 @@ export function FleetMonitoringWorkspace({
 
   const snapshot = monitoringQuery.data ?? initialMonitoring;
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>(null);
+  const [searchInput, setSearchInput] = useState(initialSearchQuery);
   const [notificationMode, setNotificationMode] =
     useState<NotificationMode>("unsupported");
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
@@ -195,6 +259,14 @@ export function FleetMonitoringWorkspace({
   const seededAlertsRef = useRef(false);
   const seenAlertIdsRef = useRef<Set<string>>(new Set());
   const syncedSubscriptionEndpointRef = useRef<string | null>(null);
+  const normalizedSearchQuery = useMemo(
+    () => normalizeSearchQuery(searchInput),
+    [searchInput],
+  );
+
+  useEffect(() => {
+    setSearchInput(initialSearchQuery);
+  }, [initialSearchQuery]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -325,8 +397,10 @@ export function FleetMonitoringWorkspace({
     snapshot.alerts,
   ]);
 
-  const filteredRouters = snapshot.routers.filter((router) =>
-    filtersMatch(activeFilter, router),
+  const filteredRouters = snapshot.routers.filter(
+    (router) =>
+      filtersMatch(activeFilter, router) &&
+      matchesSearch(router, normalizedSearchQuery),
   );
   const filteredAlerts = snapshot.alerts.filter((alert) =>
     alertMatchesFilter(activeFilter, alert),
@@ -429,32 +503,6 @@ export function FleetMonitoringWorkspace({
     setNotificationsEnabled(false);
   };
 
-  const notificationLabel =
-    notificationPermission === "unsupported"
-      ? "Этот браузер не поддерживает системные уведомления."
-      : notificationMode === "push"
-        ? notificationPermission === "denied"
-          ? "Push-уведомления заблокированы браузером. Разрешение нужно менять в настройках сайта."
-          : notificationsEnabled
-            ? "Фоновые push-уведомления включены для этого браузера."
-            : "Фоновые push-уведомления выключены."
-        : notificationPermission === "denied"
-          ? "Уведомления заблокированы браузером. Разрешение нужно менять в настройках сайта."
-          : notificationsStatusQuery.data?.configured
-            ? notificationsEnabled
-              ? "Этот браузер не тянет background push, поэтому включён локальный alerting при открытой вкладке."
-              : "Background push здесь недоступен, можно включить только локальный alerting при открытой вкладке."
-            : notificationsEnabled
-              ? "Серверный push ещё не настроен, поэтому работает только локальный alerting при открытой вкладке."
-              : "Серверный push ещё не настроен, можно включить только локальный alerting при открытой вкладке.";
-
-  const notificationFootnote =
-    notificationMode === "push"
-      ? "После включения критичные offline/direct/rescue события будут приходить даже с закрытой панелью."
-      : notificationsStatusQuery.data?.configured
-        ? "На сервере push уже включён, но этот браузер не умеет service worker push. Здесь останется только локальный alerting при открытой вкладке."
-        : snapshot.notificationNote;
-
   const notificationToggleDisabled =
     notificationPermission === "unsupported" ||
     (notificationPermission === "denied" && !notificationsEnabled) ||
@@ -475,295 +523,263 @@ export function FleetMonitoringWorkspace({
   })();
 
   return (
-    <div className="space-y-4">
-      <section className="rounded-md border border-white/10 bg-[linear-gradient(160deg,rgba(24,30,39,0.98),rgba(18,22,29,0.96),rgba(28,39,54,0.94))] px-3 py-3 shadow-[0_20px_60px_rgba(0,0,0,0.28)] sm:px-4 sm:py-4">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-          <div>
-            <p className="vectra-kicker text-[var(--vectra-accent)]">
-              Обзор парка
-            </p>
-            <h2 className="mt-1 text-lg font-semibold tracking-[-0.01em] text-white sm:text-xl">
-              Сводка, алерты и быстрый вход в проблему
-            </h2>
-            <p className="mt-2 text-[13px] leading-6 text-slate-300 sm:hidden">
-              Что сломалось и куда зайти прямо сейчас.
-            </p>
-            <p className="mt-3 hidden max-w-3xl text-sm leading-7 text-slate-300 sm:block">
-              Здесь видно, что сломалось, что ждёт import и какой роутер открыть.
-            </p>
-          </div>
-
-          <div className="rounded-md border border-white/10 bg-[rgba(10,14,20,0.74)] px-3 py-3 xl:max-w-sm">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className="vectra-kicker text-slate-500">
-                  Браузерные уведомления
-                </p>
-                <p className="mt-2 text-sm leading-6 text-slate-200">
-                  {notificationLabel}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={handleNotificationToggle}
-                disabled={notificationToggleDisabled}
-                className="w-full rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm font-medium text-white transition hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-              >
-                {subscribePushMutation.isPending ||
-                unsubscribePushMutation.isPending
-                  ? "Сохраняю..."
-                  : notificationsEnabled
-                    ? "Выключить"
-                    : "Включить"}
-              </button>
-            </div>
-            <p className="mt-3 text-xs leading-6 text-slate-400">
-              {notificationFootnote}
-            </p>
-            <p className="mt-2 text-xs leading-6 text-slate-500">
-              Снимок обновлён {formatRelativeTime(snapshot.generatedAt)}.
-              {monitoringQuery.isError
-                ? " Последнее обновление с сервера сейчас не прошло, показываю предыдущий снимок."
-                : ""}
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.95fr)]">
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-2 2xl:grid-cols-3">
-              {snapshot.stats.map((item) => (
-                <article
-                  key={item.label}
-                  className="rounded-md border border-white/10 bg-[rgba(255,255,255,0.03)] px-3 py-3"
+    <div className="flex flex-col gap-4 xl:gap-5">
+      <div className="order-1 lg:order-1">
+        <Panel
+          eyebrow="Парк"
+          title={`Роутеры · ${activeFilterLabel}`}
+          tone="hero"
+          aside={
+            <div className="flex flex-col gap-2 text-left text-sm leading-6 text-slate-400 md:items-end md:text-right">
+              <p>Показано {filteredRouters.length} из {snapshot.routers.length}</p>
+              <p>Алертов: {filteredAlerts.length}</p>
+              <p>Снимок {formatRelativeTime(snapshot.generatedAt)}</p>
+              <div className="flex flex-wrap gap-2 md:justify-end">
+                {activeFilter ? (
+                  <button
+                    type="button"
+                    onClick={() => setActiveFilter(null)}
+                    className="vectra-button-secondary px-3 py-2 text-sm text-white transition hover:border-white/20"
+                  >
+                    Сбросить фильтр
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={handleNotificationToggle}
+                  disabled={notificationToggleDisabled}
+                  className="vectra-button-secondary px-3 py-2 text-sm text-white transition hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <p className="vectra-kicker text-slate-500">
-                    {item.label}
-                  </p>
-                  <p
-                    className={`mt-2 text-2xl font-semibold tracking-[-0.03em] sm:text-3xl ${statToneMap[item.tone]}`}
-                  >
-                    {item.value}
-                  </p>
-                  <p className="mt-2 text-xs leading-5 text-slate-400 sm:text-sm sm:leading-6">
-                    {item.hint}
-                  </p>
-                </article>
-              ))}
-            </div>
-
-            <div className="grid gap-3 lg:grid-cols-2">
-              {snapshot.charts.map((chart) => (
-                <MonitoringChartCard
-                  key={chart.id}
-                  chart={chart}
-                  activeFilter={activeFilter}
-                  onFilterChange={(nextFilter) =>
-                    setActiveFilter((previous) =>
-                      sameFilter(previous, nextFilter) ? null : nextFilter,
-                    )
-                  }
-                />
-              ))}
-            </div>
-          </div>
-
-          <section className="rounded-md border border-white/10 bg-[rgba(8,11,17,0.76)] px-3 py-3">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className="vectra-kicker text-[var(--vectra-accent-warm)]">
-                  Актуальные алерты
-                </p>
-                <h3 className="mt-1 text-lg font-semibold tracking-[-0.01em] text-white">
-                  Что требует внимания прямо сейчас
-                </h3>
+                  {subscribePushMutation.isPending || unsubscribePushMutation.isPending
+                    ? "Сохраняю..."
+                    : notificationsEnabled
+                      ? "Уведомления: вкл"
+                      : "Уведомления: выкл"}
+                </button>
               </div>
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-slate-200">
-                {snapshot.totalAlerts} всего
-              </span>
             </div>
+          }
+        >
+          <div className="space-y-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+              <label className="block lg:min-w-[24rem] lg:flex-1">
+                <span className="vectra-kicker text-slate-500">
+                  Фильтр по имени, ID, версии, статусу или ноде
+                </span>
+                <input
+                  name="fleet-operations-search"
+                  value={searchInput}
+                  onChange={(event) => setSearchInput(event.target.value)}
+                  placeholder="AX3000T, direct, import review, 0.1.12-r10, WorldProxy..."
+                  className="vectra-field mt-2 min-h-11 px-3 py-2 text-sm text-white placeholder:text-slate-500"
+                />
+              </label>
 
-            {filteredAlerts.length > 0 ? (
-              <div className="mt-4 space-y-3">
-                {filteredAlerts.slice(0, 8).map((alert) => (
-                  <Link
-                    key={alert.id}
-                    href={alert.href}
-                    className={`block rounded-md border px-3 py-3 transition hover:border-white/25 ${alertToneMap[alert.severity]}`}
+              <div className="flex flex-wrap gap-2">
+                {normalizedSearchQuery ? (
+                  <button
+                    type="button"
+                    onClick={() => setSearchInput("")}
+                    className="vectra-button-secondary px-3 py-2 text-sm text-white transition hover:border-white/20"
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-base font-semibold tracking-[-0.01em] text-white">
-                          {alert.title}
-                        </p>
-                        <p className="mt-1 text-sm leading-6 text-slate-200">
-                          {alert.routerName}
-                        </p>
-                      </div>
-                      <span className="rounded-full border border-white/12 bg-white/8 px-2.5 py-1 text-[11px] font-semibold tracking-[0.08em] text-white uppercase">
-                        {alertBadgeMap[alert.severity]}
-                      </span>
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-slate-200">
-                      {alert.description}
-                    </p>
-                    <p className="mt-2 text-xs leading-6 text-slate-300/80">
-                      Открыть роутер · {formatRelativeTime(alert.openedAt)}
-                    </p>
-                  </Link>
-                ))}
-                {filteredAlerts.length > 8 ? (
-                  <div className="rounded-md border border-dashed border-white/12 bg-white/[0.03] px-3 py-3 text-sm leading-6 text-slate-400">
-                    Ещё алертов: {filteredAlerts.length - 8}. Сузьте срез
-                    графиком или откройте нужный роутер ниже.
-                  </div>
+                    Сбросить поиск
+                  </button>
+                ) : null}
+                {activeFilter ? (
+                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300">
+                    Срез: {activeFilterLabel}
+                  </span>
                 ) : null}
               </div>
-            ) : (
-              <div className="mt-4 rounded-md border border-emerald-400/20 bg-emerald-500/10 px-3 py-6 text-sm leading-7 text-emerald-100">
-                В этом срезе сейчас нет активных проблем.
-              </div>
-            )}
-          </section>
-        </div>
-      </section>
-
-      <Panel
-        eyebrow="Анбординг"
-        title={
-          onboardingRouters.length > 0
-            ? `Новые роутеры и import-задачи · ${onboardingRouters.length}`
-            : "Подключение новых роутеров"
-        }
-        aside={
-          <div className="flex flex-wrap gap-2">
-            <Link
-              href="/enrollment"
-              className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
-            >
-              Установка
-            </Link>
-            <Link
-              href="/updates"
-              className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
-            >
-              Глобальный baseline
-            </Link>
-          </div>
-        }
-      >
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-          <div className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 text-sm leading-6 text-slate-300">
-                <strong className="text-white">1. Установка</strong>
-                <br />
-                Запустите bootstrap на роутере.
-              </div>
-              <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 text-sm leading-6 text-slate-300">
-                <strong className="text-white">2. Парк</strong>
-                <br />
-                Найдите новый router ID после check-in.
-              </div>
-              <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 text-sm leading-6 text-slate-300">
-                <strong className="text-white">3. Import</strong>
-                <br />
-                Если состояние правильное, примите import как эталон.
-              </div>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm text-slate-200">
-                Ждут первый import: {awaitingImportCount}
-              </span>
-              <span className="rounded-full border border-amber-400/25 bg-amber-500/10 px-3 py-1 text-sm text-amber-100">
-                На проверке: {reviewCount}
-              </span>
-              <span className="rounded-full border border-rose-400/25 bg-rose-500/10 px-3 py-1 text-sm text-rose-100">
-                Есть расхождение: {driftCount}
-              </span>
-            </div>
-          </div>
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,0.7fr)] xl:items-start">
+              <section className="rounded-[1.4rem] border border-white/10 bg-[rgba(8,11,17,0.76)] px-4 py-4">
+                <h3 className="text-base font-semibold text-white sm:text-lg">
+                  Плотная таблица парка
+                </h3>
 
-          <div className="space-y-3">
-            {nextOnboardingRouters.length > 0 ? (
-              nextOnboardingRouters.map((router) => {
-                const onboarding = describeRouterOnboarding(router.importState);
-
-                return (
-                  <Link
-                    key={router.id}
-                    href={`/routers/${router.id}`}
-                    className="block rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 transition hover:border-white/20"
+                <div className="mt-4">
+                  <DataTable
+                    title="Операционная таблица"
+                    hint="Свайп/скролл по горизонтали сохраняется →"
+                    columns={[
+                      { key: "router", label: "Роутер" },
+                      { key: "state", label: "Состояние" },
+                      { key: "control", label: "Контур" },
+                      { key: "versions", label: "Версии" },
+                      { key: "actions", label: "Действие", className: "text-right" },
+                    ]}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold text-white">
-                          {router.name}
-                        </p>
-                        <p className="mt-1 text-xs text-slate-400">
-                          {formatRouterImportStateLabel(router.importState)} ·{" "}
-                          {router.lastSeen}
-                        </p>
-                      </div>
-                      <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-200">
-                        {onboarding.badge}
+                    {filteredRouters.length > 0 ? (
+                      filteredRouters.map((router) => (
+                        <FleetOperationsRow key={router.id} router={router} />
+                      ))
+                    ) : (
+                      <DataTableEmpty colSpan={5}>
+                        В этом срезе роутеров нет. Смените сегмент сверху,
+                        уточните поиск или сбросьте фильтр.
+                      </DataTableEmpty>
+                    )}
+                  </DataTable>
+                </div>
+              </section>
+
+              <section className="space-y-3 rounded-[1.4rem] border border-white/10 bg-[rgba(8,11,17,0.76)] px-4 py-4 xl:sticky xl:top-4">
+                <div>
+                  <p className="vectra-kicker text-[var(--vectra-accent-warm)]">Алерты</p>
+                  <h3 className="mt-1 text-base font-semibold text-white sm:text-lg">
+                    Что требует внимания
+                  </h3>
+                </div>
+
+                <div className="space-y-2">
+                  {filteredAlerts.length > 0 ? (
+                    filteredAlerts.slice(0, 6).map((alert) => (
+                      <Link
+                        key={alert.id}
+                        href={alert.href}
+                        className={`block rounded-2xl border px-3 py-3 transition hover:border-white/20 ${alertToneMap[alert.severity]}`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-white">{alert.title}</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-300">
+                              {alert.routerName} · {formatRelativeTime(alert.openedAt)}
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-white/12 bg-white/8 px-2 py-1 text-[10px] font-semibold tracking-[0.08em] text-white uppercase">
+                            {alertBadgeMap[alert.severity]}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm leading-6 text-slate-300">{alert.description}</p>
+                      </Link>
+                    ))
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-white/12 bg-white/[0.03] px-3 py-6 text-sm leading-7 text-slate-400">
+                      В этом срезе сейчас нет активных проблем.
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+
+            <details className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.02)] px-3 py-3">
+              <summary className="cursor-pointer list-none">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="vectra-kicker text-slate-500">Контекст парка</p>
+                    <p className="mt-1 text-sm text-slate-400">Вторичный слой: обзор, срезы и onboarding.</p>
+                  </div>
+                  <span className="text-xs text-slate-400">раскрыть</span>
+                </div>
+              </summary>
+
+              <div className="mt-4 space-y-4">
+                <div className="vectra-stat-grid lg:grid-cols-none 2xl:grid-cols-none">
+                  {snapshot.stats.map((item) => (
+                    <article
+                      key={item.label}
+                      className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.03)] px-3 py-3"
+                    >
+                      <p className="vectra-kicker text-slate-500">{item.label}</p>
+                      <p className={`mt-2 text-xl font-semibold tracking-[-0.03em] sm:text-2xl ${statToneMap[item.tone]}`}>
+                        {item.value}
+                      </p>
+                    </article>
+                  ))}
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-2">
+                  {snapshot.charts.map((chart) => (
+                    <MonitoringChartCard
+                      key={chart.id}
+                      chart={chart}
+                      activeFilter={activeFilter}
+                      onFilterChange={(nextFilter) =>
+                        setActiveFilter((previous) =>
+                          sameFilter(previous, nextFilter) ? null : nextFilter,
+                        )
+                      }
+                    />
+                  ))}
+                </div>
+
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(340px,0.75fr)]">
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap gap-2">
+                      <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm text-slate-200">
+                        Ждут первый import: {awaitingImportCount}
+                      </span>
+                      <span className="rounded-full border border-amber-400/25 bg-amber-500/10 px-3 py-1 text-sm text-amber-100">
+                        На проверке: {reviewCount}
+                      </span>
+                      <span className="rounded-full border border-rose-400/25 bg-rose-500/10 px-3 py-1 text-sm text-rose-100">
+                        Есть расхождение: {driftCount}
                       </span>
                     </div>
-                    <p className="mt-3 text-sm font-medium text-white">
-                      {onboarding.cardActionLabel}
-                    </p>
-                    <p className="mt-2 text-sm leading-6 text-slate-300">
-                      {onboarding.cardHint}
-                    </p>
-                  </Link>
-                );
-              })
-            ) : (
-              <div className="rounded-md border border-emerald-400/20 bg-emerald-500/10 px-3 py-6 text-sm leading-7 text-emerald-100">
-                Сейчас новых onboarding-задач нет.
-              </div>
-            )}
-          </div>
-        </div>
-      </Panel>
+                  </div>
 
-      <Panel
-        eyebrow="Парк"
-        title={`Роутеры · ${activeFilterLabel}`}
-        aside={
-          <div className="text-left text-sm leading-6 text-slate-400 md:text-right">
-            <p>
-              Показано {filteredRouters.length} из {snapshot.routers.length}
-            </p>
-            <p>
-              Алертов в срезе: {filteredAlerts.length}
-            </p>
-            {activeFilter ? (
-              <button
-                type="button"
-                onClick={() => setActiveFilter(null)}
-                className="mt-2 rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm text-white transition hover:border-white/20"
-              >
-                Сбросить фильтр
-              </button>
-            ) : null}
+                  <div className="space-y-3">
+                    {nextOnboardingRouters.length > 0 ? (
+                      nextOnboardingRouters.map((router) => {
+                        const onboarding = describeRouterOnboarding(router.importState);
+
+                        return (
+                          <Link
+                            key={router.id}
+                            href={`/routers/${router.id}`}
+                            className="block rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 transition hover:border-white/20"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-semibold text-white">{router.name}</p>
+                                <p className="mt-1 text-xs text-slate-400">
+                                  {formatRouterImportStateLabel(router.importState)} · {router.lastSeen}
+                                </p>
+                              </div>
+                              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-200">
+                                {onboarding.badge}
+                              </span>
+                            </div>
+                            <p className="mt-3 text-sm font-medium text-white">
+                              {onboarding.cardActionLabel}
+                            </p>
+                          </Link>
+                        );
+                      })
+                    ) : (
+                      <div className="rounded-md border border-emerald-400/20 bg-emerald-500/10 px-3 py-6 text-sm leading-7 text-emerald-100">
+                        Новых onboarding-задач нет.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </details>
+
+            <section className="space-y-3 lg:hidden">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm text-slate-400">Карточки.</p>
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-2">
+                {filteredRouters.length > 0 ? (
+                  filteredRouters.map((router) => (
+                    <RouterCard key={router.id} router={router} />
+                  ))
+                ) : (
+                  <div className="rounded-md border border-dashed border-white/12 bg-white/[0.03] p-4 text-sm leading-7 text-slate-300 lg:col-span-2">
+                    В этом фильтре роутеров нет. Смените сегмент сверху или
+                    сбросьте фильтр.
+                  </div>
+                )}
+              </div>
+            </section>
           </div>
-        }
-      >
-        <div className="grid gap-3 lg:grid-cols-2">
-          {filteredRouters.length > 0 ? (
-            filteredRouters.map((router) => (
-              <RouterCard key={router.id} router={router} />
-            ))
-          ) : (
-            <div className="rounded-md border border-dashed border-white/12 bg-white/[0.03] p-4 text-sm leading-7 text-slate-300 lg:col-span-2">
-              В этом фильтре роутеров нет. Смените сегмент сверху или сбросьте
-              фильтр.
-            </div>
-          )}
-        </div>
-      </Panel>
+        </Panel>
+      </div>
+
     </div>
   );
 }
@@ -841,5 +857,98 @@ function MonitoringChartCard({
         })}
       </div>
     </section>
+  );
+}
+
+function FleetOperationsRow({
+  router,
+}: {
+  router: FleetMonitoringRouter;
+}) {
+  const onboarding = describeRouterOnboarding(router.importState);
+  const controllerVersion = formatControllerVersion(router.controllerVersion);
+  const telegramStatus = getTelegramReachabilityStatus(router.telegramReachability);
+  const telegramProblem = hasTelegramReachabilityProblem(router.telegramReachability);
+
+  const telegramToneClassName =
+    telegramStatus === "reachable"
+      ? "text-emerald-100"
+      : telegramStatus === "partial"
+        ? "text-amber-100"
+        : telegramProblem
+          ? "text-rose-100"
+          : "text-slate-300";
+
+  return (
+    <tr className="border-t border-white/10 align-top text-slate-200">
+      <td className="px-3 py-3">
+          <div className="min-w-[15rem]">
+            <div className="flex flex-wrap items-center gap-2">
+              <Link
+                href={`/routers/${router.id}`}
+              className="text-sm font-semibold text-white transition hover:text-[var(--vectra-accent)]"
+            >
+              {router.name}
+            </Link>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2 text-xs leading-5 text-slate-400">
+              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
+                ID {router.id.slice(0, 8)}
+              </span>
+              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
+                Очередь {router.pendingChanges}
+              </span>
+            </div>
+          </div>
+      </td>
+      <td className="px-3 py-3">
+        <div className="min-w-[11rem] space-y-2 text-xs leading-5">
+          <span
+            className={`inline-flex rounded-full border px-2.5 py-1 font-semibold tracking-[0.08em] uppercase ${routerStateToneMap[router.operationalState]}`}
+          >
+            {routerStateLabelMap[router.operationalState]}
+          </span>
+          <div>
+            <p className="text-sm font-medium text-white">{router.statusLabel}</p>
+            <p className="text-slate-400">
+              Freshness: {freshnessLabelMap[router.freshnessState]} · {router.lastSeen}
+            </p>
+          </div>
+          {router.lastRescue !== "никогда" ? (
+            <p className="text-slate-500">Recovery: {router.lastRescue}</p>
+          ) : null}
+        </div>
+      </td>
+      <td className="px-3 py-3">
+        <div className="min-w-[10rem] space-y-2 text-xs leading-5 text-slate-400">
+          <p>
+            Импорт <span className="font-medium text-white">{formatRouterImportStateLabel(router.importState)}</span>
+          </p>
+          <p>
+            Telegram <span className={telegramToneClassName}>{formatTelegramReachabilityLabel(router.telegramReachability)}</span>
+          </p>
+        </div>
+      </td>
+      <td className="px-3 py-3">
+        <div className="min-w-[11rem] space-y-2 text-xs leading-5 text-slate-400">
+          <p>
+            Controller <span className="font-medium text-white">{controllerVersion}</span>
+          </p>
+          <p>
+            PassWall2 <span className="font-medium text-white">{router.passwallVersion}</span>
+          </p>
+        </div>
+      </td>
+      <td className="px-3 py-3 text-right">
+        <div className="flex min-w-[11rem] flex-col items-stretch gap-2 sm:items-end">
+          <Link
+            href={`/routers/${router.id}`}
+            className="rounded-md border border-[var(--vectra-line-strong)] bg-[var(--vectra-accent-soft)] px-3 py-2 text-center text-sm font-medium text-white transition hover:bg-[rgba(99,185,255,0.22)]"
+          >
+            {onboarding.cardActionLabel}
+          </Link>
+        </div>
+      </td>
+    </tr>
   );
 }
