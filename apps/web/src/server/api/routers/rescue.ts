@@ -5,6 +5,7 @@ import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
+import type { db as webDb } from "~/server/db";
 import { hasActiveDirectMode } from "~/server/vectra/router-presence";
 import {
   canRunDestructiveAction,
@@ -12,7 +13,7 @@ import {
 } from "~/server/vectra/support";
 
 async function assertCertifiedRouterForRescue(
-  ctx: { db: typeof import("~/server/db").db },
+  ctx: { db: typeof webDb },
   routerId: string,
 ) {
   const [router] = await ctx.db
