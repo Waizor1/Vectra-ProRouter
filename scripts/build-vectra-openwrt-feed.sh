@@ -14,7 +14,7 @@ Required:
 
 Optional:
   --version VERSION          Package version for both packages (default: 0.1.12)
-  --release N                OpenWrt PKG_RELEASE for both packages (default: 10)
+  --release N                OpenWrt PKG_RELEASE for both packages (default: 11)
   --channel NAME             Feed channel name (default: stable)
   --output-root PATH         Feed output root (default: <repo>/dist/openwrt-feed)
   --key-dir PATH             Directory with usign keys (default: <repo>/.keys/openwrt-feed)
@@ -316,7 +316,7 @@ rm -rf /tmp/luci-modulecache/
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SDK_ROOT=""
 VERSION="0.1.12"
-RELEASE="10"
+RELEASE="11"
 CHANNEL="stable"
 OUTPUT_ROOT="$REPO_ROOT/dist/openwrt-feed"
 KEY_DIR="$REPO_ROOT/.keys/openwrt-feed"

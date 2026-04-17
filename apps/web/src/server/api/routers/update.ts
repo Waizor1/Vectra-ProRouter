@@ -17,10 +17,32 @@ import { z } from "zod";
 
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
 import {
+  PASSWALL_MANAGED_STACK_REQUIRED_PACKAGES,
+  buildFallbackPasswallBundleMetadata,
+  buildPasswallBundleMetadataFromArtifact,
+  resolveInstalledOptionalPasswallPackages,
+  resolvePasswallPackageArtifactsFromRows,
+  sortPasswallPackageList,
+  type PasswallArtifactOrigin,
+  type PasswallBundleMetadata,
+  type PasswallPackageArtifactDescriptor,
+  type PasswallUpdateScope,
+} from "~/lib/passwall-artifacts";
+import {
   executeGlobalTemplateRollout,
   loadGlobalTemplateWorkspace,
   saveGlobalTemplate,
 } from "~/server/vectra/global-template";
+import {
+  assignRoutersToGroup,
+  deleteRolloutProfile,
+  deleteRouterGroup,
+  loadProfilesAndGroupsWorkspace,
+  loadVersionDriftWorkspace,
+  queueGroupProfileRollout,
+  saveRolloutProfile,
+  saveRouterGroup,
+} from "~/server/vectra/rollout-control";
 import type { db as DatabaseClientValue } from "~/server/db";
 import {
   canRunDestructiveAction,
@@ -29,18 +51,7 @@ import {
 } from "~/server/vectra/support";
 
 const DEFAULT_PASSWALL_PACKAGE_LIST = [
-  "luci-app-passwall2",
-  "xray-core",
-  "sing-box",
-  "hysteria",
-  "geoview",
-  "v2ray-geoip",
-  "v2ray-geosite",
-  "dnsmasq-full",
-  "chinadns-ng",
-  "kmod-nft-socket",
-  "kmod-nft-tproxy",
-  "kmod-nft-nat",
+  ...PASSWALL_MANAGED_STACK_REQUIRED_PACKAGES,
 ];
 const SELECTABLE_PASSWALL_PACKAGE_NAMES = [
   "luci-app-passwall2",
@@ -55,6 +66,9 @@ const CONTROLLER_PACKAGE_LIST = [
 ];
 const passwallUpdatePackageSchema = z.enum(SELECTABLE_PASSWALL_PACKAGE_NAMES);
 type DatabaseClient = typeof DatabaseClientValue;
+type ArtifactRow = typeof artifacts.$inferSelect;
+
+type RouterMutationContext = { db: DatabaseClient };
 
 async function getRouterForMutation(
   ctx: { db: DatabaseClient },
@@ -110,7 +124,7 @@ async function assertCertifiedRouter(
 }
 
 async function assertUpdateCapableRouter(
-  ctx: { db: DatabaseClient },
+  ctx: RouterMutationContext,
   routerId: string,
 ) {
   const { router, snapshot } = await getRouterForMutation(ctx, routerId);
@@ -135,6 +149,249 @@ async function assertUpdateCapableRouter(
   return { router, snapshot, support };
 }
 
+async function enqueuePasswallPackageUpdate(args: {
+  ctx: RouterMutationContext;
+  routerId: string;
+  artifactChannel: "stable" | "beta";
+  packages?: readonly z.infer<typeof passwallUpdatePackageSchema>[];
+}) {
+  const { router, snapshot } = await assertUpdateCapableRouter(
+    args.ctx,
+    args.routerId,
+  );
+
+  const passwallArtifacts = await args.ctx.db
+    .select()
+    .from(artifacts)
+    .where(
+      and(
+        inArray(artifacts.type, ["passwall_package", "passwall_bundle"]),
+        eq(artifacts.channel, args.artifactChannel),
+      ),
+    )
+    .orderBy(desc(artifacts.publishedAt), desc(artifacts.version))
+    .limit(96);
+
+  const resolved = resolvePasswallTargetMetadata({
+    routerArchitecture: router.architecture ?? snapshot?.payload.architecture,
+    snapshotPayload: snapshot?.payload ?? null,
+    channel: args.artifactChannel,
+    scopedPackages: args.packages ? [...args.packages] : undefined,
+    passwallArtifacts,
+  });
+
+  const payload = updatePasswallPackagesJobPayloadSchema.parse({
+    channel: args.artifactChannel,
+    packageList: resolved.packageList,
+    packageArtifacts: resolved.packageArtifacts.map((artifact) => ({
+      name: artifact.name,
+      artifactUrl: artifact.artifactUrl,
+      sha256: artifact.sha256,
+      signatureUrl: artifact.signatureUrl,
+      artifactVersion: artifact.artifactVersion,
+      source: artifact.source,
+      required: artifact.required,
+      downloadSizeBytes: artifact.downloadSizeBytes,
+      installedSizeBytes: artifact.installedSizeBytes,
+    })),
+    targetVersion: resolved.targetVersion,
+    strategy: resolved.strategy,
+    packageTargetVersion: resolved.packageTargetVersion,
+    runtimeTargetVersion: resolved.runtimeTargetVersion,
+    targetReleaseTag: resolved.targetReleaseTag,
+    originSource: resolved.originSource,
+    fallbackPolicy: resolved.fallbackPolicy,
+    updateScope: resolved.updateScope,
+    artifactUrl: resolved.artifactUrl,
+    sha256: resolved.sha256,
+    signatureUrl: resolved.signatureUrl,
+    artifactVersion: resolved.artifactVersion,
+  });
+
+  const dedupeKey = `update_passwall_packages:${args.routerId}:${args.artifactChannel}:${payload.updateScope}:${payload.strategy}:${payload.packageList.join(",")}:${payload.targetVersion}:${payload.packageTargetVersion ?? "none"}:${payload.runtimeTargetVersion ?? "none"}:${payload.originSource}`;
+  const [existingJob] = await args.ctx.db
+    .select()
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.routerId, args.routerId),
+        eq(jobs.dedupeKey, dedupeKey),
+        inArray(jobs.state, ["queued", "delivered", "running"]),
+      ),
+    )
+    .limit(1);
+
+  if (existingJob) {
+    return existingJob;
+  }
+
+  const [job] = await args.ctx.db
+    .insert(jobs)
+    .values({
+      routerId: args.routerId,
+      type: "update_passwall_packages",
+      state: "queued",
+      dedupeKey,
+      payload,
+    })
+    .returning();
+
+  return job;
+}
+
+function artifactMatchesRouterArchitecture(
+  artifact: ArtifactRow,
+  architecture: string | null | undefined,
+) {
+  if (!architecture) {
+    return true;
+  }
+
+  return artifact.architecture === null || artifact.architecture === architecture;
+}
+
+function resolveManagedPasswallPackageList(snapshotPayload: unknown) {
+  return sortPasswallPackageList([
+    ...DEFAULT_PASSWALL_PACKAGE_LIST,
+    ...resolveInstalledOptionalPasswallPackages(snapshotPayload),
+  ]);
+}
+
+function buildPasswallArtifactDescriptorMap(
+  passwallArtifacts: ArtifactRow[],
+  bundleMetadata: PasswallBundleMetadata,
+) {
+  return new Map<string, PasswallPackageArtifactDescriptor>(
+    [
+      ...bundleMetadata.packageArtifacts,
+      ...resolvePasswallPackageArtifactsFromRows(passwallArtifacts),
+    ].map((artifact) => [artifact.name, artifact]),
+  );
+}
+
+function latestPasswallBundleArtifactForRouter(args: {
+  artifacts: ArtifactRow[];
+  channel: "stable" | "beta";
+  architecture: string | null | undefined;
+}) {
+  return (
+    args.artifacts.find(
+      (artifact) =>
+        artifact.type === "passwall_bundle" &&
+        artifact.channel === args.channel &&
+        artifactMatchesRouterArchitecture(artifact, args.architecture),
+    ) ?? null
+  );
+}
+
+function resolvePasswallTargetMetadata(args: {
+  routerArchitecture: string | null | undefined;
+  snapshotPayload: unknown;
+  channel: "stable" | "beta";
+  scopedPackages: string[] | undefined;
+  passwallArtifacts: ArtifactRow[];
+}) {
+  const updateScope: PasswallUpdateScope =
+    args.scopedPackages && args.scopedPackages.length > 0
+      ? "scoped-package"
+      : "managed-stack";
+  const packageList =
+    updateScope === "managed-stack"
+      ? resolveManagedPasswallPackageList(args.snapshotPayload)
+      : sortPasswallPackageList(args.scopedPackages ?? []);
+
+  const latestBundleArtifact = latestPasswallBundleArtifactForRouter({
+    artifacts: args.passwallArtifacts,
+    channel: args.channel,
+    architecture: args.routerArchitecture,
+  });
+  const latestPackageArtifacts = args.passwallArtifacts.filter(
+    (artifact) =>
+      artifact.type === "passwall_package" &&
+      artifact.channel === args.channel &&
+      artifactMatchesRouterArchitecture(artifact, args.routerArchitecture),
+  );
+  const bundleMetadata =
+    buildPasswallBundleMetadataFromArtifact(latestBundleArtifact) ??
+    buildFallbackPasswallBundleMetadata();
+  const packageArtifactMap = buildPasswallArtifactDescriptorMap(
+    latestPackageArtifacts,
+    bundleMetadata,
+  );
+
+  const packageArtifacts = packageList
+    .map((packageName) => packageArtifactMap.get(packageName) ?? null)
+    .filter(
+      (artifact): artifact is PasswallPackageArtifactDescriptor =>
+        artifact !== null,
+    );
+
+  if (packageArtifacts.length === 0) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Для выбранного PassWall update не удалось собрать ни одного pinned package artifact. Сначала синхронизируйте mirrored metadata.",
+    });
+  }
+
+  const targetVersion =
+    updateScope === "managed-stack"
+      ? bundleMetadata.releaseTag
+      : packageArtifacts[0]?.artifactVersion ?? bundleMetadata.releaseTag;
+  const originSource: PasswallArtifactOrigin = packageArtifacts.every(
+    (artifact) => artifact.source === "upstream",
+  )
+    ? "upstream"
+    : "vectra";
+  const primaryArtifact = packageArtifacts[0] ?? null;
+  const passwallAppArtifact =
+    packageArtifacts.find((artifact) => artifact.name === "luci-app-passwall2") ??
+    primaryArtifact;
+  const scopedPackageName =
+    updateScope === "scoped-package" && packageList.length === 1
+      ? packageList[0]
+      : null;
+  const strategy =
+    scopedPackageName === "xray-core"
+      ? ("xray-built-in-first" as const)
+      : ("managed-stack-package-first" as const);
+  const packageTargetVersion =
+    updateScope === "managed-stack"
+      ? passwallAppArtifact?.artifactVersion ??
+        primaryArtifact?.artifactVersion ??
+        bundleMetadata.releaseTag
+      : primaryArtifact?.artifactVersion ?? bundleMetadata.releaseTag;
+  const runtimeTargetVersion =
+    strategy === "xray-built-in-first"
+      ? null
+      : scopedPackageName && primaryArtifact?.artifactVersion
+        ? primaryArtifact.artifactVersion
+        : null;
+
+  return {
+    packageList,
+    packageArtifacts,
+    strategy,
+    updateScope,
+    targetVersion,
+    packageTargetVersion,
+    runtimeTargetVersion,
+    targetReleaseTag: bundleMetadata.releaseTag,
+    originSource,
+    fallbackPolicy: "adaptive-component-fallback" as const,
+    artifactUrl: latestBundleArtifact?.downloadUrl ?? primaryArtifact?.artifactUrl ?? null,
+    sha256:
+      latestBundleArtifact?.checksumSha256 ??
+      primaryArtifact?.sha256 ??
+      null,
+    signatureUrl:
+      latestBundleArtifact?.signatureUrl ??
+      primaryArtifact?.signatureUrl ??
+      null,
+    artifactVersion: latestBundleArtifact?.version ?? targetVersion,
+  };
+}
+
 export const updateRouter = createTRPCRouter({
   artifacts: protectedProcedure.query(async ({ ctx }) => {
     return ctx.db
@@ -154,6 +411,18 @@ export const updateRouter = createTRPCRouter({
     return loadGlobalTemplateWorkspace(ctx.db);
   }),
 
+  profilesAndGroupsWorkspace: protectedProcedure.query(async ({ ctx }) => {
+    const template = await loadGlobalTemplateWorkspace(ctx.db);
+    return loadProfilesAndGroupsWorkspace({
+      templateConfig: passwallDesiredConfigSchema.parse(template.template.rolloutConfig),
+      client: ctx.db,
+    });
+  }),
+
+  versionDriftWorkspace: protectedProcedure.query(async ({ ctx }) => {
+    return loadVersionDriftWorkspace(ctx.db);
+  }),
+
   saveGlobalTemplate: protectedProcedure
     .input(
       z.object({
@@ -166,6 +435,74 @@ export const updateRouter = createTRPCRouter({
       return saveGlobalTemplate(input, ctx.db);
     }),
 
+  saveRolloutProfile: protectedProcedure
+    .input(
+      z.object({
+        profileId: z.string().uuid().optional(),
+        name: z.string().trim().min(1).max(120),
+        description: z.string().trim().max(400).optional(),
+        note: z.string().trim().max(500).optional(),
+        rolloutConfig: passwallDesiredConfigSchema,
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return saveRolloutProfile({
+        ...input,
+        client: ctx.db,
+      });
+    }),
+
+  deleteRolloutProfile: protectedProcedure
+    .input(
+      z.object({
+        profileId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return deleteRolloutProfile(input.profileId, ctx.db);
+    }),
+
+  saveRouterGroup: protectedProcedure
+    .input(
+      z.object({
+        groupId: z.string().uuid().optional(),
+        name: z.string().trim().min(1).max(120),
+        description: z.string().trim().max(400).optional(),
+        rolloutProfileId: z.string().uuid().nullable().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return saveRouterGroup({
+        ...input,
+        client: ctx.db,
+      });
+    }),
+
+  deleteRouterGroup: protectedProcedure
+    .input(
+      z.object({
+        groupId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return deleteRouterGroup(input.groupId, ctx.db);
+    }),
+
+  assignRoutersToGroup: protectedProcedure
+    .input(
+      z.object({
+        routerIds: z.array(z.string().uuid()).min(1),
+        groupId: z.string().uuid().nullable(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return assignRoutersToGroup({
+        routerIds: input.routerIds,
+        groupId: input.groupId,
+        client: ctx.db,
+      });
+    }),
+
   queueGlobalTemplateRollout: protectedProcedure
     .input(
       z.object({
@@ -176,6 +513,234 @@ export const updateRouter = createTRPCRouter({
     )
     .mutation(async ({ ctx, input }) => {
       return executeGlobalTemplateRollout(input, ctx.db);
+    }),
+
+  queueGroupProfileRollout: protectedProcedure
+    .input(
+      z.object({
+        groupId: z.string().uuid(),
+        mode: z.enum(["draft_only", "queue_apply"]).default("draft_only"),
+        note: z.string().trim().max(500).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return queueGroupProfileRollout({
+        ...input,
+        client: ctx.db,
+      });
+    }),
+
+  queueBulkPasswallPackageUpdate: protectedProcedure
+    .input(
+      z.object({
+        routerIds: z.array(z.string().uuid()).min(1),
+        artifactChannel: z.enum(["stable", "beta"]).default("stable"),
+        packages: z.array(passwallUpdatePackageSchema).min(1).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const results = [] as Array<{
+        routerId: string;
+        status: "queued" | "failed";
+        reason: string | null;
+        jobId: string | null;
+      }>;
+
+        for (const routerId of [...new Set(input.routerIds)]) {
+          try {
+          const job = await enqueuePasswallPackageUpdate({
+            ctx,
+            routerId,
+            artifactChannel: input.artifactChannel,
+            packages: input.packages,
+          });
+
+          results.push({
+            routerId,
+            status: "queued",
+            reason: null,
+            jobId: job?.id ?? null,
+          });
+        } catch (error) {
+          results.push({
+            routerId,
+            status: "failed",
+            reason: error instanceof Error ? error.message : "Не удалось поставить update job.",
+            jobId: null,
+          });
+        }
+      }
+
+      return {
+        ok: true as const,
+        results,
+      };
+    }),
+
+  queueBulkXrayUpdate: protectedProcedure
+    .input(
+      z.object({
+        routerIds: z.array(z.string().uuid()).min(1),
+        artifactChannel: z.enum(["stable", "beta"]).default("stable"),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const uniqueRouterIds = [...new Set(input.routerIds)];
+      return {
+        ok: true as const,
+        results: await Promise.all(
+          uniqueRouterIds.map(async (routerId) => {
+            try {
+              const job = await enqueuePasswallPackageUpdate({
+                ctx,
+                routerId,
+                artifactChannel: input.artifactChannel,
+                packages: ["xray-core"],
+              });
+
+              return {
+                routerId,
+                status: "queued" as const,
+                reason: null,
+                jobId: job?.id ?? null,
+              };
+            } catch (error) {
+              return {
+                routerId,
+                status: "failed" as const,
+                reason:
+                  error instanceof Error
+                    ? error.message
+                    : "Не удалось поставить update job.",
+                jobId: null,
+              };
+            }
+          }),
+        ),
+      };
+    }),
+
+  queueBulkControllerUpdate: protectedProcedure
+    .input(
+      z.object({
+        routerIds: z.array(z.string().uuid()).min(1),
+        channel: z.enum(["stable", "beta"]).default("stable"),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const results = [] as Array<{
+        routerId: string;
+        status: "queued" | "failed";
+        reason: string | null;
+        jobId: string | null;
+      }>;
+
+      for (const routerId of [...new Set(input.routerIds)]) {
+        try {
+          await assertUpdateCapableRouter(ctx, routerId);
+          const controllerArtifacts = await ctx.db
+            .select()
+            .from(artifacts)
+            .where(
+              and(
+                eq(artifacts.type, "controller"),
+                eq(artifacts.channel, input.channel),
+                inArray(artifacts.name, CONTROLLER_PACKAGE_LIST),
+              ),
+            )
+            .orderBy(desc(artifacts.publishedAt), desc(artifacts.version))
+            .limit(12);
+
+          const latestByName = new Map<string, (typeof controllerArtifacts)[number]>();
+          for (const artifact of controllerArtifacts) {
+            if (!latestByName.has(artifact.name)) {
+              latestByName.set(artifact.name, artifact);
+            }
+          }
+
+          const packageArtifacts = CONTROLLER_PACKAGE_LIST.flatMap((name) => {
+            const artifact = latestByName.get(name);
+            return artifact
+              ? [
+                  {
+                    name: artifact.name,
+                    artifactUrl: artifact.downloadUrl,
+                    sha256: artifact.checksumSha256,
+                    signatureUrl: artifact.signatureUrl,
+                    artifactVersion: artifact.version,
+                  },
+                ]
+              : [];
+          });
+          const primaryArtifact = latestByName.get("vectra-controller-agent") ?? null;
+          const primaryPackageArtifact = packageArtifacts[0] ?? null;
+          const payload = updateControllerJobPayloadSchema.parse({
+            channel: input.channel,
+            packageList: CONTROLLER_PACKAGE_LIST,
+            packageArtifacts,
+            artifactUrl:
+              primaryArtifact?.downloadUrl ?? primaryPackageArtifact?.artifactUrl ?? null,
+            sha256:
+              primaryArtifact?.checksumSha256 ?? primaryPackageArtifact?.sha256 ?? null,
+            signatureUrl:
+              primaryArtifact?.signatureUrl ?? primaryPackageArtifact?.signatureUrl ?? null,
+            artifactVersion:
+              primaryArtifact?.version ?? primaryPackageArtifact?.artifactVersion ?? null,
+          });
+          const dedupeKey = `update_controller:${routerId}:${input.channel}:${payload.artifactVersion ?? "latest"}`;
+          const [existingJob] = await ctx.db
+            .select()
+            .from(jobs)
+            .where(
+              and(
+                eq(jobs.routerId, routerId),
+                eq(jobs.dedupeKey, dedupeKey),
+                inArray(jobs.state, ["queued", "delivered", "running"]),
+              ),
+            )
+            .limit(1);
+
+          if (existingJob) {
+            results.push({
+              routerId,
+              status: "queued",
+              reason: null,
+              jobId: existingJob.id,
+            });
+            continue;
+          }
+
+          const [job] = await ctx.db
+            .insert(jobs)
+            .values({
+              routerId,
+              type: "update_controller",
+              state: "queued",
+              dedupeKey,
+              payload,
+            })
+            .returning();
+
+          results.push({
+            routerId,
+            status: "queued",
+            reason: null,
+            jobId: job?.id ?? null,
+          });
+        } catch (error) {
+          results.push({
+            routerId,
+            status: "failed",
+            reason: error instanceof Error ? error.message : "Не удалось поставить update job.",
+            jobId: null,
+          });
+        }
+      }
+
+      return {
+        ok: true as const,
+        results,
+      };
     }),
 
   queueControllerUpdate: protectedProcedure
@@ -375,72 +940,12 @@ export const updateRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertUpdateCapableRouter(ctx, input.routerId);
-
-      const isScopedPackageUpdate = input.packages !== undefined;
-      const packageList = input.packages
-        ? [...input.packages]
-        : DEFAULT_PASSWALL_PACKAGE_LIST;
-
-      const [latestPasswall] = isScopedPackageUpdate
-        ? [undefined]
-        : await ctx.db
-            .select()
-            .from(artifacts)
-            .where(
-              and(
-                inArray(artifacts.type, ["passwall_package", "passwall_bundle"]),
-                eq(artifacts.channel, input.artifactChannel),
-              ),
-            )
-            .orderBy(desc(artifacts.publishedAt), desc(artifacts.version))
-            .limit(1);
-
-      const payload = updatePasswallPackagesJobPayloadSchema.parse({
-        channel: input.artifactChannel,
-        packageList:
-          isScopedPackageUpdate
-            ? packageList
-            : (latestPasswall?.metadata.packageList as string[] | undefined) ??
-              packageList,
-        packageArtifacts: [],
-        artifactUrl: isScopedPackageUpdate ? null : latestPasswall?.downloadUrl ?? null,
-        sha256: isScopedPackageUpdate ? null : latestPasswall?.checksumSha256 ?? null,
-        signatureUrl: isScopedPackageUpdate ? null : latestPasswall?.signatureUrl ?? null,
-        artifactVersion: isScopedPackageUpdate ? null : latestPasswall?.version ?? null,
+      return enqueuePasswallPackageUpdate({
+        ctx,
+        routerId: input.routerId,
+        artifactChannel: input.artifactChannel,
+        packages: input.packages,
       });
-
-      const dedupeKey = `update_passwall_packages:${input.routerId}:${
-        input.artifactChannel
-      }:${payload.packageList.join(",")}:${payload.artifactVersion ?? "opkg"}`;
-      const [existingJob] = await ctx.db
-        .select()
-        .from(jobs)
-        .where(
-          and(
-            eq(jobs.routerId, input.routerId),
-            eq(jobs.dedupeKey, dedupeKey),
-            inArray(jobs.state, ["queued", "delivered", "running"]),
-          ),
-        )
-        .limit(1);
-
-      if (existingJob) {
-        return existingJob;
-      }
-
-      const [job] = await ctx.db
-        .insert(jobs)
-        .values({
-          routerId: input.routerId,
-          type: "update_passwall_packages",
-          state: "queued",
-          dedupeKey,
-          payload,
-        })
-        .returning();
-
-      return job;
     }),
 
   queueFirmwareValidation: protectedProcedure

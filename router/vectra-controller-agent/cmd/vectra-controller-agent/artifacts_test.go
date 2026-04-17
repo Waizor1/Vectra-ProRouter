@@ -48,10 +48,14 @@ func TestParseArtifactJobReadsExplicitPackageArtifacts(t *testing.T) {
 		},
 		"packageArtifacts": []interface{}{
 			map[string]interface{}{
-				"name":            "vectra-controller-agent",
-				"artifactUrl":     "https://api.vectra-pro.net/artifacts/openwrt/stable/aarch64_cortex-a53/vectra-controller-agent_0.1.3-r1_aarch64_cortex-a53.ipk",
-				"sha256":          "deadbeef",
-				"artifactVersion": "0.1.3-r1",
+				"name":               "vectra-controller-agent",
+				"artifactUrl":        "https://api.vectra-pro.net/artifacts/openwrt/stable/aarch64_cortex-a53/vectra-controller-agent_0.1.3-r1_aarch64_cortex-a53.ipk",
+				"sha256":             "deadbeef",
+				"artifactVersion":    "0.1.3-r1",
+				"source":             "vectra",
+				"required":           true,
+				"downloadSizeBytes":  1024,
+				"installedSizeBytes": 4096,
 			},
 			map[string]interface{}{
 				"name":            "luci-app-vectra-controller",
@@ -70,6 +74,61 @@ func TestParseArtifactJobReadsExplicitPackageArtifacts(t *testing.T) {
 	}
 	if got, want := job.PackageArtifacts[1].SHA256, "feedface"; got != want {
 		t.Fatalf("second package artifact sha256 = %q, want %q", got, want)
+	}
+	if got, want := job.PackageArtifacts[0].DownloadSize, int64(1024); got != want {
+		t.Fatalf("first package artifact download size = %d, want %d", got, want)
+	}
+	if got, want := job.PackageArtifacts[0].InstalledSize, int64(4096); got != want {
+		t.Fatalf("first package artifact installed size = %d, want %d", got, want)
+	}
+}
+
+func TestParseArtifactJobReadsPasswallTargetMetadata(t *testing.T) {
+	job := parseArtifactJob(map[string]interface{}{
+		"packageList": []interface{}{
+			"xray-core",
+		},
+		"packageArtifacts": []interface{}{
+			map[string]interface{}{
+				"name":            "xray-core",
+				"artifactUrl":     "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/xray-core_26.3.27-r1_aarch64_cortex-a53.ipk",
+				"sha256":          "deadbeef",
+				"artifactVersion": "26.3.27-r1",
+			},
+		},
+		"strategy":             "xray-built-in-first",
+		"targetVersion":        "26.3.27-r1",
+		"packageTargetVersion": "26.3.27-r1",
+		"runtimeTargetVersion": "26.4.15",
+		"targetReleaseTag":     "26.4.10-1",
+		"originSource":         "vectra",
+		"fallbackPolicy":       "adaptive-component-fallback",
+		"updateScope":          "scoped-package",
+	}, nil)
+
+	if got, want := job.TargetVersion, "26.3.27-r1"; got != want {
+		t.Fatalf("target version = %q, want %q", got, want)
+	}
+	if got, want := job.Strategy, "xray-built-in-first"; got != want {
+		t.Fatalf("strategy = %q, want %q", got, want)
+	}
+	if got, want := job.PackageTargetVersion, "26.3.27-r1"; got != want {
+		t.Fatalf("package target version = %q, want %q", got, want)
+	}
+	if got, want := job.RuntimeTargetVersion, "26.4.15"; got != want {
+		t.Fatalf("runtime target version = %q, want %q", got, want)
+	}
+	if got, want := job.TargetReleaseTag, "26.4.10-1"; got != want {
+		t.Fatalf("target release tag = %q, want %q", got, want)
+	}
+	if got, want := job.OriginSource, "vectra"; got != want {
+		t.Fatalf("origin source = %q, want %q", got, want)
+	}
+	if got, want := job.FallbackPolicy, "adaptive-component-fallback"; got != want {
+		t.Fatalf("fallback policy = %q, want %q", got, want)
+	}
+	if got, want := job.UpdateScope, "scoped-package"; got != want {
+		t.Fatalf("update scope = %q, want %q", got, want)
 	}
 }
 

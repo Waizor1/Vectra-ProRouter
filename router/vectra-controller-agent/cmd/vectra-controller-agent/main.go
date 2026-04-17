@@ -34,18 +34,17 @@ var defaultControllerPackageList = []string{
 }
 
 var defaultPasswallPackageList = []string{
-	"luci-app-passwall2",
+	"tcping",
 	"xray-core",
-	"sing-box",
-	"hysteria",
-	"geoview",
 	"v2ray-geoip",
 	"v2ray-geosite",
-	"dnsmasq-full",
+	"geoview",
 	"chinadns-ng",
+	"dnsmasq-full",
 	"kmod-nft-socket",
 	"kmod-nft-tproxy",
 	"kmod-nft-nat",
+	"luci-app-passwall2",
 }
 
 var passwallRuleRefreshAssets = []string{"geoip", "geosite"}
@@ -917,34 +916,14 @@ func executeJobs(
 			}
 		case "update_passwall_packages":
 			artifactJob := parseArtifactJob(job.Payload, defaultPasswallPackageList)
-			if len(artifactJob.PackageArtifacts) > 0 || artifactJob.ArtifactURL != "" {
-				if err := runStagedPackageInstallJob(
-					ctx,
-					client,
-					cfg,
-					persisted,
-					job.ID,
-					backend,
-					artifactJob,
-					false,
-					false,
-					true,
-				); err != nil {
-					return err
-				}
-				continue
-			}
-			if err := runPackageInstallJob(
+			if err := runPasswallPackageUpdateJob(
 				ctx,
 				client,
 				cfg,
 				persisted,
 				job.ID,
 				backend,
-				artifactJob.PackageList,
-				false,
-				false,
-				true,
+				artifactJob,
 			); err != nil {
 				return err
 			}
@@ -1449,6 +1428,28 @@ func payloadStringSlice(payload map[string]interface{}, key string) []string {
 		return items
 	default:
 		return nil
+	}
+}
+
+func payloadInt64(payload map[string]interface{}, key string) int64 {
+	if payload == nil {
+		return 0
+	}
+
+	raw, ok := payload[key]
+	if !ok {
+		return 0
+	}
+
+	switch value := raw.(type) {
+	case float64:
+		return int64(value)
+	case int:
+		return int64(value)
+	case int64:
+		return value
+	default:
+		return 0
 	}
 }
 

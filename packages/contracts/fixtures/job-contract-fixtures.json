@@ -22,24 +22,101 @@
           "payload": {
             "channel": "stable",
             "packageList": [
-              "luci-app-passwall2",
+              "tcping",
               "xray-core",
-              "sing-box",
-              "hysteria",
-              "geoview",
               "v2ray-geoip",
               "v2ray-geosite",
-              "dnsmasq-full",
+              "geoview",
               "chinadns-ng",
+              "dnsmasq-full",
               "kmod-nft-socket",
               "kmod-nft-tproxy",
-              "kmod-nft-nat"
+              "kmod-nft-nat",
+              "luci-app-passwall2",
+              "sing-box"
             ],
-            "packageArtifacts": [],
-            "artifactUrl": "https://api.vectra-pro.net/artifacts/passwall/stable/luci-app-passwall2_26.4.5-r1_all.ipk",
+            "packageArtifacts": [
+              {
+                "name": "tcping",
+                "artifactUrl": "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/tcping_0.3-r1_aarch64_cortex-a53.ipk",
+                "sha256": "p111",
+                "artifactVersion": "0.3-r1",
+                "source": "vectra",
+                "required": true,
+                "downloadSizeBytes": 4339,
+                "installedSizeBytes": 71680
+              },
+              {
+                "name": "xray-core",
+                "artifactUrl": "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/xray-core_26.3.27-r1_aarch64_cortex-a53.ipk",
+                "sha256": "p112",
+                "artifactVersion": "26.3.27-r1",
+                "source": "vectra",
+                "required": true,
+                "downloadSizeBytes": 10777362,
+                "installedSizeBytes": 30320640
+              },
+              {
+                "name": "v2ray-geoip",
+                "artifactUrl": "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/v2ray-geoip_202603260032.1_all.ipk",
+                "sha256": "p113",
+                "artifactVersion": "202603260032.1",
+                "source": "vectra",
+                "required": true
+              },
+              {
+                "name": "v2ray-geosite",
+                "artifactUrl": "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/v2ray-geosite_202603292224.1_all.ipk",
+                "sha256": "p114",
+                "artifactVersion": "202603292224.1",
+                "source": "vectra",
+                "required": true
+              },
+              {
+                "name": "geoview",
+                "artifactUrl": "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/geoview_0.2.5-r1_aarch64_cortex-a53.ipk",
+                "sha256": "p115",
+                "artifactVersion": "0.2.5-r1",
+                "source": "vectra",
+                "required": true
+              },
+              {
+                "name": "chinadns-ng",
+                "artifactUrl": "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/chinadns-ng_2025.08.09-r1_aarch64_cortex-a53.ipk",
+                "sha256": "p116",
+                "artifactVersion": "2025.08.09-r1",
+                "source": "vectra",
+                "required": true
+              },
+              {
+                "name": "luci-app-passwall2",
+                "artifactUrl": "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/luci-app-passwall2_26.4.10-r1_all.ipk",
+                "sha256": "p117",
+                "artifactVersion": "26.4.10-r1",
+                "source": "vectra",
+                "required": true
+              },
+              {
+                "name": "sing-box",
+                "artifactUrl": "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/sing-box_1.13.6-r1_aarch64_cortex-a53.ipk",
+                "sha256": "p118",
+                "artifactVersion": "1.13.6-r1",
+                "source": "vectra",
+                "required": false
+              }
+            ],
+            "targetVersion": "26.4.10-1",
+            "strategy": "managed-stack-package-first",
+            "packageTargetVersion": "26.4.10-r1",
+            "runtimeTargetVersion": null,
+            "targetReleaseTag": "26.4.10-1",
+            "originSource": "vectra",
+            "fallbackPolicy": "adaptive-component-fallback",
+            "updateScope": "managed-stack",
+            "artifactUrl": "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/manifest.json",
             "sha256": "a111",
-            "signatureUrl": "https://api.vectra-pro.net/artifacts/passwall/stable/Packages.sig",
-            "artifactVersion": "26.4.5-r1"
+            "signatureUrl": null,
+            "artifactVersion": "26.4.10-1"
           }
         }
       },
@@ -195,22 +272,73 @@
           "stderr": "",
           "result": {
             "packages": [
-              "luci-app-passwall2",
+              "tcping",
               "xray-core",
-              "sing-box",
-              "hysteria",
-              "geoview",
               "v2ray-geoip",
               "v2ray-geosite",
-              "dnsmasq-full",
+              "geoview",
               "chinadns-ng",
+              "dnsmasq-full",
               "kmod-nft-socket",
               "kmod-nft-tproxy",
-              "kmod-nft-nat"
+              "kmod-nft-nat",
+              "luci-app-passwall2",
+              "sing-box"
+            ],
+            "packageList": [
+              "tcping",
+              "xray-core",
+              "v2ray-geoip",
+              "v2ray-geosite",
+              "geoview",
+              "chinadns-ng",
+              "dnsmasq-full",
+              "kmod-nft-socket",
+              "kmod-nft-tproxy",
+              "kmod-nft-nat",
+              "luci-app-passwall2",
+              "sing-box"
+            ],
+            "targetVersion": "26.4.10-1",
+            "strategy": "managed-stack-package-first",
+            "packageTargetVersion": "26.4.10-r1",
+            "runtimeTargetVersion": null,
+            "targetReleaseTag": "26.4.10-1",
+            "originSource": "vectra",
+            "fallbackPolicy": "adaptive-component-fallback",
+            "updateScope": "managed-stack",
+            "driftDetected": true,
+            "packageResults": [
+              {
+                "package": "xray-core",
+                "targetVersion": "26.3.27-r1",
+                "packageTargetVersion": "26.3.27-r1",
+                "runtimeTargetVersion": "26.4.15",
+                "status": "runtime-only-converged",
+                "pathUsed": "built-in-updater",
+                "packageVersionBefore": "25.10.15-r1",
+                "packageVersionAfter": "25.10.15-r1",
+                "runtimeVersionBefore": "Xray 26.2.6",
+                "runtimeVersionAfter": "Xray 26.4.15",
+                "driftDetected": true
+              },
+              {
+                "package": "luci-app-passwall2",
+                "targetVersion": "26.4.10-r1",
+                "packageTargetVersion": "26.4.10-r1",
+                "runtimeTargetVersion": null,
+                "status": "package-updated",
+                "pathUsed": "package",
+                "packageVersionBefore": "26.4.5-r1",
+                "packageVersionAfter": "26.4.10-r1",
+                "runtimeVersionBefore": null,
+                "runtimeVersionAfter": null,
+                "driftDetected": false
+              }
             ],
             "commands": [
               "opkg update",
-              "opkg install luci-app-passwall2 xray-core sing-box hysteria geoview v2ray-geoip v2ray-geosite dnsmasq-full chinadns-ng kmod-nft-socket kmod-nft-tproxy kmod-nft-nat",
+              "opkg install tcping xray-core v2ray-geoip v2ray-geosite geoview chinadns-ng dnsmasq-full kmod-nft-socket kmod-nft-tproxy kmod-nft-nat luci-app-passwall2 sing-box",
               "lua /usr/share/passwall2/rule_update.lua log geoip,geosite",
               "sh -c /etc/init.d/passwall2 running >/dev/null 2>&1 && /etc/init.d/passwall2 restart || /etc/init.d/passwall2 start"
             ],

@@ -6,14 +6,36 @@ import { startBrowserPushMonitor } from "~/server/vectra/browser-push-monitor";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  const checkedAt = new Date().toISOString();
+  const checks = {
+    browserPushMonitor: false,
+    dbRead: false,
+    dbWriteProbe: false,
+  };
+
   try {
     startBrowserPushMonitor();
+    checks.browserPushMonitor = true;
     await db.execute(sql`select 1`);
+    checks.dbRead = true;
+    const probeId = crypto.randomUUID();
+    await db.execute(sql`
+      with inserted as (
+        insert into vectra_event_log (id, type, severity, message)
+        values (${probeId}, 'health.db_write_probe', 'info', 'health route db write probe')
+        returning id
+      )
+      delete from vectra_event_log
+      where id in (select id from inserted)
+    `);
+    checks.dbWriteProbe = true;
+
     return Response.json(
       {
         ok: true,
         service: "vectra-web",
-        checkedAt: new Date().toISOString(),
+        checkedAt,
+        checks,
       },
       { status: 200 }
     );
@@ -23,7 +45,9 @@ export async function GET() {
       {
         ok: false,
         service: "vectra-web",
-        checkedAt: new Date().toISOString(),
+        checkedAt,
+        checks,
+        error: error instanceof Error ? error.message : "health check failed",
       },
       { status: 503 }
     );

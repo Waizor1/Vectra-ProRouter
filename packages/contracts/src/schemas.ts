@@ -131,6 +131,35 @@ export const passwallUpdateStrategySchema = z.enum([
   "package-preferred",
   "expert-fallback",
 ]);
+export const passwallArtifactOriginSchema = z.enum(["vectra", "upstream"]);
+export const passwallFallbackPolicySchema = z.enum([
+  "package-only",
+  "adaptive-component-fallback",
+]);
+export const passwallJobStrategySchema = z.enum([
+  "managed-stack-package-first",
+  "xray-built-in-first",
+]);
+export const passwallUpdateScopeSchema = z.enum([
+  "managed-stack",
+  "scoped-package",
+]);
+export const passwallPackageUpdateStatusSchema = z.enum([
+  "updated",
+  "package-updated",
+  "already-current",
+  "runtime-updated",
+  "runtime-only-converged",
+  "storage-blocked",
+  "delivery-blocked",
+  "failed",
+]);
+export const passwallPackagePathUsedSchema = z.enum([
+  "package",
+  "built-in-updater",
+  "xray-binary-payload",
+  "not-needed",
+]);
 export const ruleScheduleModeSchema = z.enum(["daily", "weekly", "interval"]);
 
 export const passwallSocksConfigSchema = z.object({
@@ -442,6 +471,10 @@ export const packageArtifactPayloadSchema = z.object({
   sha256: z.string().min(1),
   signatureUrl: z.string().url().nullable().optional(),
   artifactVersion: z.string().min(1),
+  source: passwallArtifactOriginSchema.default("vectra"),
+  required: z.boolean().default(true),
+  downloadSizeBytes: z.number().int().nonnegative().nullable().optional(),
+  installedSizeBytes: z.number().int().nonnegative().nullable().optional(),
 });
 
 export const updateControllerJobPayloadSchema = z.object({
@@ -470,12 +503,56 @@ export const runTerminalCommandJobPayloadSchema = z.object({
 export const updatePasswallPackagesJobPayloadSchema = z.object({
   channel: controllerChannelSchema.default("stable"),
   packageList: z.array(z.string().min(1)).min(1),
-  packageArtifacts: z.array(packageArtifactPayloadSchema).default([]),
+  packageArtifacts: z.array(packageArtifactPayloadSchema).min(1),
+  targetVersion: z.string().min(1),
+  strategy: passwallJobStrategySchema.default("managed-stack-package-first"),
+  packageTargetVersion: z.string().min(1).nullable().optional(),
+  runtimeTargetVersion: z.string().min(1).nullable().optional(),
+  targetReleaseTag: z.string().min(1).nullable().optional(),
+  originSource: passwallArtifactOriginSchema.default("vectra"),
+  fallbackPolicy: passwallFallbackPolicySchema.default(
+    "adaptive-component-fallback",
+  ),
+  updateScope: passwallUpdateScopeSchema.default("managed-stack"),
   artifactUrl: z.string().url().nullable().optional(),
   sha256: z.string().min(1).nullable().optional(),
   signatureUrl: z.string().url().nullable().optional(),
   artifactVersion: z.string().nullable().optional(),
 });
+
+export const passwallPackageUpdateResultEntrySchema = z.object({
+  package: z.string().min(1),
+  targetVersion: z.string().min(1),
+  packageTargetVersion: z.string().min(1).nullable().optional(),
+  runtimeTargetVersion: z.string().min(1).nullable().optional(),
+  status: passwallPackageUpdateStatusSchema,
+  pathUsed: passwallPackagePathUsedSchema,
+  packageVersionBefore: z.string().nullable().optional(),
+  packageVersionAfter: z.string().nullable().optional(),
+  runtimeVersionBefore: z.string().nullable().optional(),
+  runtimeVersionAfter: z.string().nullable().optional(),
+  driftDetected: z.boolean().default(false),
+  error: z.string().nullable().optional(),
+});
+
+export const passwallPackageUpdateResultPayloadSchema = z
+  .object({
+    packageList: z.array(z.string().min(1)).min(1),
+    targetVersion: z.string().min(1),
+    strategy: passwallJobStrategySchema.default("managed-stack-package-first"),
+    packageTargetVersion: z.string().min(1).nullable().optional(),
+    runtimeTargetVersion: z.string().min(1).nullable().optional(),
+    targetReleaseTag: z.string().nullable().optional(),
+    originSource: passwallArtifactOriginSchema,
+    fallbackPolicy: passwallFallbackPolicySchema,
+    updateScope: passwallUpdateScopeSchema,
+    packageResults: z.array(passwallPackageUpdateResultEntrySchema).default([]),
+    driftDetected: z.boolean().default(false),
+    deliveryBlocked: z.boolean().default(false),
+    deliveryBlockedReason: z.string().nullable().optional(),
+    error: z.string().nullable().optional(),
+  })
+  .passthrough();
 
 export const validateFirmwareJobPayloadSchema = z.object({
   manifestId: z.string().uuid().nullable().optional(),

@@ -4,6 +4,7 @@ import { passwallDesiredConfigSchema } from "@vectra/contracts";
 
 import {
   buildLastControllerUpdateAttempt,
+  buildLastPasswallUpdateAttempt,
   mergeCurrentLiveRouterDataIntoDraftConfig,
 } from "./editor-surface";
 
@@ -200,6 +201,160 @@ describe("buildLastControllerUpdateAttempt", () => {
     expect(stdoutAttempt?.summary).toBe("Downloading Packages.gz");
     expect(runningAttempt?.summary).toBe("обновление ещё выполняется");
     expect(runningAttempt?.resultStatus).toBeNull();
+  });
+});
+
+describe("buildLastPasswallUpdateAttempt", () => {
+  it("returns null when passwall update history is absent", () => {
+    expect(
+      buildLastPasswallUpdateAttempt({
+        jobs: [],
+        results: [],
+      }),
+    ).toBeNull();
+  });
+
+  it("summarizes runtime-only convergence and drift from per-package results", () => {
+    const attempt = buildLastPasswallUpdateAttempt({
+      jobs: [
+        createJob({
+          id: "pw-job-1",
+          type: "update_passwall_packages",
+          state: "succeeded",
+          payload: {
+            targetVersion: "26.4.10-1",
+            originSource: "vectra",
+            updateScope: "managed-stack",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          id: "pw-result-1",
+          jobId: "pw-job-1",
+          status: "success",
+          payload: {
+            targetVersion: "26.4.10-1",
+            driftDetected: true,
+            packageResults: [
+              {
+                package: "xray-core",
+                targetVersion: "26.3.27-r1",
+                status: "runtime-only-converged",
+                pathUsed: "built-in-updater",
+                packageVersionAfter: "25.10.15-r1",
+                runtimeVersionAfter: "Xray 26.4.15",
+                driftDetected: true,
+              },
+            ],
+          },
+        }),
+      ],
+    });
+
+    expect(attempt).toMatchObject({
+      jobState: "succeeded",
+      resultStatus: "success",
+      strategy: null,
+      targetVersion: "26.4.10-1",
+      packageTargetVersion: null,
+      runtimeTargetVersion: null,
+      originSource: "vectra",
+      updateScope: "managed-stack",
+      driftDetected: true,
+      deliveryBlocked: false,
+      deliveryBlockedReason: null,
+      fallbackSummary:
+        "xray-core: built-in updater уже держал runtime Xray 26.4.15; запись пакета осталась 25.10.15-r1",
+      summary:
+        "xray-core: built-in updater уже держал runtime Xray 26.4.15; запись пакета осталась 25.10.15-r1",
+    });
+  });
+
+  it("surfaces the first failed package when update payload contains per-package errors", () => {
+    const attempt = buildLastPasswallUpdateAttempt({
+      jobs: [
+        createJob({
+          id: "pw-job-2",
+          type: "update_passwall_packages",
+          state: "failed",
+          payload: {
+            targetVersion: "26.3.27-r1",
+            originSource: "vectra",
+            updateScope: "scoped-package",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          id: "pw-result-2",
+          jobId: "pw-job-2",
+          status: "failure",
+          payload: {
+            packageResults: [
+              {
+                package: "xray-core",
+                targetVersion: "26.3.27-r1",
+                status: "failed",
+                pathUsed: "package",
+                error: "artifact checksum mismatch",
+                driftDetected: false,
+              },
+            ],
+          },
+        }),
+      ],
+    });
+
+    expect(attempt?.summary).toBe("xray-core: artifact checksum mismatch");
+    expect(attempt?.driftDetected).toBe(false);
+  });
+
+  it("surfaces storage-blocked package paths honestly", () => {
+    const attempt = buildLastPasswallUpdateAttempt({
+      jobs: [
+        createJob({
+          id: "pw-job-3",
+          type: "update_passwall_packages",
+          state: "failed",
+          payload: {
+            strategy: "managed-stack-package-first",
+            targetVersion: "26.4.10-1",
+            packageTargetVersion: "26.4.10-r1",
+            originSource: "vectra",
+            updateScope: "managed-stack",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          id: "pw-result-3",
+          jobId: "pw-job-3",
+          status: "failure",
+          payload: {
+            packageResults: [
+              {
+                package: "xray-core",
+                targetVersion: "26.3.27-r1",
+                packageTargetVersion: "26.3.27-r1",
+                status: "storage-blocked",
+                pathUsed: "package",
+                packageVersionBefore: "25.10.15-r1",
+                packageVersionAfter: "25.10.15-r1",
+                runtimeVersionBefore: "Xray 26.4.15",
+                runtimeVersionAfter: "Xray 26.4.15",
+                driftDetected: false,
+                error: "xray-core package path skipped: not enough overlay space",
+              },
+            ],
+          },
+        }),
+      ],
+    });
+
+    expect(attempt?.summary).toBe(
+      "xray-core: package path пропущен из-за места (xray-core package path skipped: not enough overlay space)",
+    );
   });
 });
 

@@ -18,14 +18,22 @@ import (
 )
 
 type artifactJob struct {
-	ArtifactURL       string
-	SHA256            string
-	SignatureURL      string
-	ArtifactVersion   string
-	PackageList       []string
-	PackageArtifacts  []packageArtifact
-	Channel           string
-	ValidationCommand string
+	ArtifactURL          string
+	SHA256               string
+	SignatureURL         string
+	ArtifactVersion      string
+	Strategy             string
+	TargetVersion        string
+	PackageTargetVersion string
+	RuntimeTargetVersion string
+	TargetReleaseTag     string
+	OriginSource         string
+	FallbackPolicy       string
+	UpdateScope          string
+	PackageList          []string
+	PackageArtifacts     []packageArtifact
+	Channel              string
+	ValidationCommand    string
 }
 
 type packageArtifact struct {
@@ -34,6 +42,10 @@ type packageArtifact struct {
 	SHA256          string
 	SignatureURL    string
 	ArtifactVersion string
+	Source          string
+	Required        bool
+	DownloadSize    int64
+	InstalledSize   int64
 }
 
 type stagedArtifact struct {
@@ -65,14 +77,25 @@ func parseArtifactJob(payload map[string]interface{}, defaultPackages []string) 
 	}
 
 	return artifactJob{
-		ArtifactURL:       payloadString(payload, "artifactUrl"),
-		SHA256:            payloadString(payload, "sha256"),
-		SignatureURL:      payloadString(payload, "signatureUrl"),
-		ArtifactVersion:   artifactVersion,
-		PackageList:       fallbackStrings(firstNonEmptyStrings(payloadStringSlice(payload, "packageList"), payloadStringSlice(payload, "packages")), defaultPackages),
-		PackageArtifacts:  packageArtifacts,
-		Channel:           payloadString(payload, "channel"),
-		ValidationCommand: payloadString(payload, "validationCommand"),
+		ArtifactURL:     payloadString(payload, "artifactUrl"),
+		SHA256:          payloadString(payload, "sha256"),
+		SignatureURL:    payloadString(payload, "signatureUrl"),
+		ArtifactVersion: artifactVersion,
+		Strategy:        firstNonEmptyString(payloadString(payload, "strategy"), "managed-stack-package-first"),
+		TargetVersion:   firstNonEmptyString(payloadString(payload, "targetVersion"), artifactVersion),
+		PackageTargetVersion: firstNonEmptyString(
+			payloadString(payload, "packageTargetVersion"),
+			firstNonEmptyString(payloadString(payload, "targetVersion"), artifactVersion),
+		),
+		RuntimeTargetVersion: payloadString(payload, "runtimeTargetVersion"),
+		TargetReleaseTag:     payloadString(payload, "targetReleaseTag"),
+		OriginSource:         payloadString(payload, "originSource"),
+		FallbackPolicy:       payloadString(payload, "fallbackPolicy"),
+		UpdateScope:          payloadString(payload, "updateScope"),
+		PackageList:          fallbackStrings(firstNonEmptyStrings(payloadStringSlice(payload, "packageList"), payloadStringSlice(payload, "packages")), defaultPackages),
+		PackageArtifacts:     packageArtifacts,
+		Channel:              payloadString(payload, "channel"),
+		ValidationCommand:    payloadString(payload, "validationCommand"),
 	}
 }
 
@@ -110,6 +133,10 @@ func parsePackageArtifacts(payload map[string]interface{}) []packageArtifact {
 			SHA256:          payloadString(entry, "sha256"),
 			SignatureURL:    payloadString(entry, "signatureUrl"),
 			ArtifactVersion: payloadString(entry, "artifactVersion"),
+			Source:          payloadString(entry, "source"),
+			Required:        payloadBool(entry, "required"),
+			DownloadSize:    payloadInt64(entry, "downloadSizeBytes"),
+			InstalledSize:   payloadInt64(entry, "installedSizeBytes"),
 		})
 	}
 
@@ -479,4 +506,13 @@ func firstNonEmptyStrings(values ...[]string) []string {
 		}
 	}
 	return nil
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

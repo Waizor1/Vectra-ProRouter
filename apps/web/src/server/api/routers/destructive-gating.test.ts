@@ -91,7 +91,206 @@ function createPilotLayoutSnapshot(layoutFamily = "ubootmod") {
       target: "mediatek/filogic",
       architecture: "aarch64_cortex-a53",
       openwrtRelease: "24.10.6",
+      packageVersions: {
+        "sing-box": "1.13.5-r1",
+      },
     },
+  };
+}
+
+function createPasswallPackageArtifact(
+  name: string,
+  version: string,
+  options?: { required?: boolean },
+) {
+  return {
+    id: `artifact-${name}`,
+    type: "passwall_package",
+    channel: "stable",
+    name,
+    version,
+    architecture: name === "luci-app-passwall2" ? null : "aarch64_cortex-a53",
+    boardName: null,
+    layoutFamily: null,
+    downloadUrl: `https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/${name}_${version}.ipk`,
+    checksumSha256: `sha-${name}`,
+    signatureUrl: null,
+    metadata: {
+      source: "vectra",
+      required: options?.required ?? true,
+      downloadSizeBytes: 1024,
+      installedSizeBytes: 2048,
+    },
+    publishedAt: new Date("2026-04-17T09:00:00.000Z"),
+  };
+}
+
+function createPasswallBundleArtifact() {
+  return {
+    id: "bundle-passwall",
+    type: "passwall_bundle",
+    channel: "stable",
+    name: "passwall2-managed-stack",
+    version: "26.4.10-1",
+    architecture: "aarch64_cortex-a53",
+    boardName: null,
+    layoutFamily: null,
+    downloadUrl:
+      "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/manifest.json",
+    checksumSha256: "sha-bundle",
+    signatureUrl: null,
+    metadata: {
+      source: "vectra",
+      releaseTag: "26.4.10-1",
+      requiredPackages: [
+        {
+          name: "tcping",
+          filename: "tcping_0.3-r1_aarch64_cortex-a53.ipk",
+          version: "0.3-r1",
+          downloadSizeBytes: 4339,
+          installedSizeBytes: 71680,
+        },
+        {
+          name: "xray-core",
+          filename: "xray-core_26.3.27-r1_aarch64_cortex-a53.ipk",
+          version: "26.3.27-r1",
+          downloadSizeBytes: 10777362,
+          installedSizeBytes: 30320640,
+        },
+        {
+          name: "geoview",
+          filename: "geoview_0.2.5-r1_aarch64_cortex-a53.ipk",
+          version: "0.2.5-r1",
+          downloadSizeBytes: 2740538,
+          installedSizeBytes: 7208960,
+        },
+        {
+          name: "v2ray-geoip",
+          filename: "v2ray-geoip_202603260032.1_all.ipk",
+          version: "202603260032.1",
+          downloadSizeBytes: 4040459,
+          installedSizeBytes: 19773440,
+        },
+        {
+          name: "v2ray-geosite",
+          filename: "v2ray-geosite_202603292224.1_all.ipk",
+          version: "202603292224.1",
+          downloadSizeBytes: 3456591,
+          installedSizeBytes: 10536960,
+        },
+        {
+          name: "chinadns-ng",
+          filename: "chinadns-ng_2025.08.09-r1_aarch64_cortex-a53.ipk",
+          version: "2025.08.09-r1",
+          downloadSizeBytes: 269754,
+          installedSizeBytes: 522240,
+        },
+        {
+          name: "luci-app-passwall2",
+          filename: "luci-app-passwall2_26.4.10-r1_all.ipk",
+          version: "26.4.10-r1",
+          downloadSizeBytes: 325772,
+          installedSizeBytes: 1300480,
+        },
+      ],
+      optionalPackages: [
+        {
+          name: "sing-box",
+          filename: "sing-box_1.13.6-r1_aarch64_cortex-a53.ipk",
+          version: "1.13.6-r1",
+          downloadSizeBytes: 15947069,
+          installedSizeBytes: 45209600,
+        },
+        {
+          name: "hysteria",
+          filename: "hysteria_2.8.1-r1_aarch64_cortex-a53.ipk",
+          version: "2.8.1-r1",
+          downloadSizeBytes: 7012046,
+          installedSizeBytes: 19077120,
+        },
+      ],
+      packageArtifacts: [
+        {
+          name: "tcping",
+          artifactUrl:
+            "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/tcping_0.3-r1_aarch64_cortex-a53.ipk",
+          artifactVersion: "0.3-r1",
+          sha256: "sha-tcping",
+          required: true,
+          source: "vectra",
+          downloadSizeBytes: 4339,
+          installedSizeBytes: 71680,
+        },
+        {
+          name: "xray-core",
+          artifactUrl:
+            "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/xray-core_26.3.27-r1_aarch64_cortex-a53.ipk",
+          artifactVersion: "26.3.27-r1",
+          sha256: "sha-xray",
+          required: true,
+          source: "vectra",
+          downloadSizeBytes: 10777362,
+          installedSizeBytes: 30320640,
+        },
+        {
+          name: "sing-box",
+          artifactUrl:
+            "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/sing-box_1.13.6-r1_aarch64_cortex-a53.ipk",
+          artifactVersion: "1.13.6-r1",
+          sha256: "sha-sing-box",
+          required: false,
+          source: "vectra",
+          downloadSizeBytes: 15947069,
+          installedSizeBytes: 45209600,
+        },
+        {
+          name: "luci-app-passwall2",
+          artifactUrl:
+            "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/luci-app-passwall2_26.4.10-r1_all.ipk",
+          artifactVersion: "26.4.10-r1",
+          sha256: "sha-passwall2",
+          required: true,
+          source: "vectra",
+          downloadSizeBytes: 325772,
+          installedSizeBytes: 1300480,
+        },
+      ],
+      managedPackageList: [
+        "tcping",
+        "xray-core",
+        "v2ray-geoip",
+        "v2ray-geosite",
+        "geoview",
+        "chinadns-ng",
+        "dnsmasq-full",
+        "kmod-nft-socket",
+        "kmod-nft-tproxy",
+        "kmod-nft-nat",
+        "luci-app-passwall2",
+      ],
+      recoveryDependencies: [
+        "dnsmasq-full",
+        "kmod-nft-socket",
+        "kmod-nft-tproxy",
+        "kmod-nft-nat",
+      ],
+      installOrder: [
+        "xray-core",
+        "v2ray-geoip",
+        "v2ray-geosite",
+        "geoview",
+        "sing-box",
+        "hysteria",
+        "chinadns-ng",
+        "tcping",
+        "dnsmasq-full",
+        "kmod-nft-socket",
+        "kmod-nft-tproxy",
+        "kmod-nft-nat",
+        "luci-app-passwall2",
+      ],
+    },
+    publishedAt: new Date("2026-04-17T09:00:00.000Z"),
   };
 }
 
@@ -195,6 +394,10 @@ describe("destructive route gating", () => {
     const mock = createMockDb([
       [createCertifiedLikeRouter()],
       [createPilotLayoutSnapshot("stock-layout")],
+      [
+        createPasswallBundleArtifact(),
+        createPasswallPackageArtifact("xray-core", "26.3.27-r1"),
+      ],
       [],
     ]);
     const caller = createProtectedCaller(updateRouter, mock.db) as {
@@ -215,8 +418,16 @@ describe("destructive route gating", () => {
       dedupeKey?: string;
       payload?: {
         packageList?: string[];
-        artifactUrl?: string | null;
-        artifactVersion?: string | null;
+        packageArtifacts?: Array<{
+          name?: string;
+          artifactVersion?: string;
+        }>;
+        strategy?: string | null;
+        targetVersion?: string | null;
+        packageTargetVersion?: string | null;
+        runtimeTargetVersion?: string | null;
+        originSource?: string | null;
+        updateScope?: string | null;
       };
     }>;
 
@@ -226,8 +437,22 @@ describe("destructive route gating", () => {
     }
 
     expect(inserted.payload?.packageList).toEqual(["xray-core"]);
-    expect(inserted.payload?.artifactUrl).toBeNull();
-    expect(inserted.payload?.artifactVersion).toBeNull();
+    expect(inserted.payload?.strategy).toBe("xray-built-in-first");
+    expect(inserted.payload?.targetVersion).toBe("26.3.27-r1");
+    expect(inserted.payload?.packageTargetVersion).toBe("26.3.27-r1");
+    expect(inserted.payload?.runtimeTargetVersion).toBeNull();
+    expect(inserted.payload?.originSource).toBe("vectra");
+    expect(inserted.payload?.updateScope).toBe("scoped-package");
+    expect(inserted.payload?.packageArtifacts).toHaveLength(1);
+    expect(inserted.payload?.packageArtifacts?.[0]).toMatchObject({
+      name: "xray-core",
+      artifactVersion: "26.3.27-r1",
+      artifactUrl:
+        "https://api.vectra-pro.net/artifacts/bootstrap/passwall2/26.4.10-1/aarch64_cortex-a53/xray-core_26.3.27-r1.ipk",
+      sha256: "sha-xray-core",
+      required: true,
+      source: "vectra",
+    });
     expect(inserted.dedupeKey).toContain("xray-core");
   });
 
@@ -235,6 +460,10 @@ describe("destructive route gating", () => {
     const mock = createMockDb([
       [createCertifiedLikeRouter()],
       [createPilotLayoutSnapshot()],
+      [
+        createPasswallBundleArtifact(),
+        createPasswallPackageArtifact("xray-core", "26.3.27-r1"),
+      ],
       [],
     ]);
     const caller = createProtectedCaller(updateRouter, mock.db) as {
@@ -252,6 +481,74 @@ describe("destructive route gating", () => {
     });
 
     expect(mock.counts().insertCalls).toBe(1);
+  });
+
+  it("queues managed PassWall stack updates with tcping and installed optional components", async () => {
+    const mock = createMockDb([
+      [createCertifiedLikeRouter()],
+      [createPilotLayoutSnapshot("stock-layout")],
+      [
+        createPasswallBundleArtifact(),
+        createPasswallPackageArtifact("tcping", "0.3-r1"),
+        createPasswallPackageArtifact("xray-core", "26.3.27-r1"),
+        createPasswallPackageArtifact("v2ray-geoip", "202603260032.1"),
+        createPasswallPackageArtifact("v2ray-geosite", "202603292224.1"),
+        createPasswallPackageArtifact("geoview", "0.2.5-r1"),
+        createPasswallPackageArtifact("chinadns-ng", "2025.08.09-r1"),
+        createPasswallPackageArtifact("luci-app-passwall2", "26.4.10-r1"),
+        createPasswallPackageArtifact("sing-box", "1.13.6-r1", {
+          required: false,
+        }),
+      ],
+      [],
+    ]);
+    const caller = createProtectedCaller(updateRouter, mock.db) as {
+      queuePasswallPackageUpdate: (input: {
+        routerId: string;
+        artifactChannel: "stable" | "beta";
+      }) => Promise<unknown>;
+    };
+
+    await caller.queuePasswallPackageUpdate({
+      routerId: CERTIFIED_LIKE_ROUTER_ID,
+      artifactChannel: "stable",
+    });
+
+    const [inserted] = mock.insertedValues() as Array<{
+      payload?: {
+        packageList?: string[];
+        strategy?: string | null;
+        targetVersion?: string | null;
+        packageTargetVersion?: string | null;
+        runtimeTargetVersion?: string | null;
+        updateScope?: string | null;
+      };
+    }>;
+
+    expect(inserted).toBeDefined();
+    if (!inserted) {
+      throw new Error("Expected managed stack update job insert.");
+    }
+
+    expect(inserted.payload?.packageList).toEqual([
+      "xray-core",
+      "v2ray-geoip",
+      "v2ray-geosite",
+      "geoview",
+      "sing-box",
+      "chinadns-ng",
+      "tcping",
+      "dnsmasq-full",
+      "kmod-nft-socket",
+      "kmod-nft-tproxy",
+      "kmod-nft-nat",
+      "luci-app-passwall2",
+    ]);
+    expect(inserted.payload?.strategy).toBe("managed-stack-package-first");
+    expect(inserted.payload?.targetVersion).toBe("26.4.10-1");
+    expect(inserted.payload?.packageTargetVersion).toBe("26.4.10-r1");
+    expect(inserted.payload?.runtimeTargetVersion).toBeNull();
+    expect(inserted.payload?.updateScope).toBe("managed-stack");
   });
 
   it("allows subscription refresh for pilot Filogic layouts", async () => {

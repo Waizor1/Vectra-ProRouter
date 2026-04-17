@@ -114,9 +114,19 @@ copy_if_present() {
   fi
 }
 
+copy_dir_without_runtime_if_present() {
+  rel="$1"
+  if [ -d "$TARGET_DIR/$rel" ]; then
+    mkdir -p "$BACKUP_DIR/$rel"
+    rsync -a \
+      --exclude 'runtime' \
+      "$TARGET_DIR/$rel/" "$BACKUP_DIR/$rel/"
+  fi
+}
+
 copy_if_present apps
 copy_if_present packages
-copy_if_present deploy
+copy_dir_without_runtime_if_present deploy
 copy_if_present docker-compose.yml
 copy_if_present Caddyfile
 copy_if_present Dockerfile.web
@@ -124,6 +134,11 @@ copy_if_present package.json
 copy_if_present pnpm-lock.yaml
 copy_if_present pnpm-workspace.yaml
 copy_if_present tsconfig.base.json
+
+if [ -e "$BACKUP_DIR/deploy/runtime" ]; then
+  echo "Backup guard failed: deploy/runtime leaked into the backup payload." >&2
+  exit 1
+fi
 
 sync_dir_if_present() {
   rel="$1"

@@ -3,7 +3,7 @@ type: module
 path: router/vectra-controller-agent
 stage: pilot
 confidence: high
-last-reviewed: 2026-04-14
+last-reviewed: 2026-04-17
 tags:
   - module
   - go
@@ -150,3 +150,16 @@ tags:
 - Publish the new controller package with the `safeID()` subscription fix, install it on `AndreyVK_Sochi`, then re-apply the preserved draft revision so the stored subscription URL is restored on the live router without re-entering the secret manually.
 - Extend live terminal proof beyond `1111111111`: run one bounded stderr or non-zero command and one longer read-only command, then verify that the resulting `run_terminal_command` payload still renders cleanly in production `Watch Logs`.
 - Upgrade at least one additional safe router to the Telegram-capable controller/LuCI release and verify that its snapshot carries both the aggregate status and the per-domain Telegram checks, then decide whether any extra retry/help copy is needed for persistent `partial` cases.
+
+2026-04-17 addendum:
+- The local source tree now carries a dedicated PassWall update executor in `cmd/vectra-controller-agent/passwall_update.go` instead of routing these jobs through the older generic staged/feed install path. The new lane sorts managed-stack packages deterministically, keeps `luci-app-passwall2` last, evaluates tmp/overlay headroom from artifact metadata before the first mutating step, and returns per-package result objects rather than one flat command summary.
+- Scoped runtime component jobs (`xray-core`, `geoview`, `sing-box`, `hysteria`) now share the same artifact-driven payload format as managed-stack updates. The executor keeps package-path as the preferred route, then falls back adaptively to the built-in PassWall component updater and, for `xray-core`, a direct binary refresh extracted from the target `.ipk` when package convergence is blocked by storage or package-state drift.
+- Post-update convergence now matches the approved plan more closely: runtime components are judged by `runtimeVersion`, package-managed pieces by `packageVersion`, `rule_update.lua log geoip,geosite` plus PassWall restart/recovery always run after the stack update, and the result payload now reports `pathUsed`, `driftDetected`, and per-package failure text honestly instead of claiming a clean package upgrade when only runtime drift was resolved.
+- This controller-agent slice has only static review in the current workspace. `go` is not installed locally, so `go test ./...` and compile validation were not runnable here; the next required proof is a published artifact plus attended `Update Xray` / `Update PassWall2` on a safe `pilot/certified` Filogic router, including a low-overlay fallback case.
+
+2026-04-18 update-delivery addendum:
+- The PassWall executor in `cmd/vectra-controller-agent/passwall_update.go` now follows the approved split semantics instead of one generic package-first path: standalone `xray-core` updates honor `strategy = xray-built-in-first`, try the built-in PassWall updater before package install, and only then fall back to the direct Xray binary payload when runtime convergence is still blocked.
+- Per-package result modeling is now stronger and compile-verified: the agent emits package/runtime before/after fields, separate package/runtime targets, explicit `package-updated` / `runtime-updated` / `runtime-only-converged` / `storage-blocked` states, and treats `storage-blocked` as a terminal unsuccessful package result rather than a silent success path.
+- The earlier note that `go` was unavailable in this workspace is now stale. On `2026-04-18`, local `go test ./...` passed for the full `router/vectra-controller-agent` module after the update-delivery refactor and test refresh.
+- A later same-session production publish now moves this lane beyond local compile proof: controller/LuCI `0.1.12-r11` were built in an isolated VPS temp workspace against the OpenWrt `24.10.6` Filogic SDK, copied into the public direct-artifact path under `api.vectra-pro.net/artifacts/openwrt/stable/aarch64_cortex-a53/`, and inserted into PostgreSQL `vectra_artifact` metadata through an explicit spec-based sync so the stale signed feed index did not block operator-visible availability.
+- Read-only validation on the live test router `192.168.99.1` still shows controller runtime `0.1.11-r1`, so the new PassWall executor is published but not yet installed on that device. The same read-only check now also shows `last_check_in_at = 2026-04-17T23:26:01Z`, which is enough to prove server delivery recovered before any attended update job is queued to this router.

@@ -19,7 +19,6 @@ import {
   summarizePasswallRevisionDiff,
   type PasswallDesiredConfig,
   type PasswallOperationPreview,
-  type RouterTelegramReachability,
 } from "@vectra/contracts";
 
 import { ActionStrip } from "~/components/action-strip";
@@ -45,6 +44,17 @@ import {
   normalizeControllerVersion,
 } from "~/lib/controller-version";
 import {
+  PASSWALL_PACKAGE_TARGET_ROWS,
+  buildFallbackPasswallBundleMetadata,
+  buildPasswallBundleMetadataFromArtifact,
+  packageNameToRuntimeKey,
+} from "~/lib/passwall-artifacts";
+import {
+  formatPasswallAvailableVersion,
+  formatPasswallManagedStackAvailableVersion,
+  summarizePasswallAttempt,
+} from "~/lib/passwall-update-summary";
+import {
   describeRouterOnboarding,
   formatRouterImportStateLabel,
   isRouterOnboardingPending,
@@ -53,6 +63,7 @@ import {
   formatTelegramReachabilityLabel,
   getTelegramReachabilityChecks,
 } from "~/lib/telegram-reachability";
+import type { RouterWorkspaceInventory } from "~/server/vectra/editor-surface";
 import {
   addNode,
   addShuntRule,
@@ -72,30 +83,20 @@ import { api, type RouterOutputs } from "~/trpc/react";
 
 type DraftConfigInput = PasswallDesiredConfig;
 type EditorSurface = RouterOutputs["draft"]["editorSurface"];
-
-type RouterWorkspaceInventory = {
-  controllerVersion?: string | null;
-  passwallVersion?: string | null;
-  packageVersions: Record<string, string | null | undefined>;
-  binaryVersions: Record<string, string | null | undefined>;
-  rulesAssets?: {
-    assetDirectory?: string | null;
-    geoipVersion?: string | null;
-    geositeVersion?: string | null;
-    geoipUpdatedAt?: string | null;
-    geositeUpdatedAt?: string | null;
-  } | null;
-  serviceHealth?: {
-    controller?: string | null;
-    passwall?: string | null;
-    dnsmasq?: string | null;
-  } | null;
-  telegramReachability?: RouterTelegramReachability | null;
+type ControlPlaneHealthResponse = {
+  ok: boolean;
+  checkedAt?: string;
+  checks?: {
+    dbRead?: boolean;
+    dbWriteProbe?: boolean;
+    browserPushMonitor?: boolean;
+  };
+  error?: string | null;
 };
 
 type RouterDetailWorkspaceProps = {
   routerId: string;
-  inventory: RouterWorkspaceInventory;
+  initialSurface: EditorSurface;
   routerReachable: boolean;
   directModeActive: boolean;
   needsRecoveryAction: boolean;
@@ -265,14 +266,6 @@ const hysteriaTypeOptions = [
   { value: "hysteria2", label: "hysteria2" },
 ] as const satisfies ReadonlyArray<Option>;
 
-const passwallUpdateTargets = [
-  { key: "passwall2", label: "PassWall2", packages: ["luci-app-passwall2"] },
-  { key: "xray", label: "Xray", packages: ["xray-core"] },
-  { key: "sing-box", label: "sing-box", packages: ["sing-box"] },
-  { key: "hysteria", label: "Hysteria", packages: ["hysteria"] },
-  { key: "geoview", label: "Geoview", packages: ["geoview"] },
-] as const;
-
 const shuntTargetBaseOptions = [
   { value: "", label: "Close (Not use)" },
   { value: "_default", label: "Use default node" },
@@ -302,7 +295,7 @@ const minimumTerminalControllerVersion = "0.1.12-r9";
 
 export function RouterDetailWorkspace({
   routerId,
-  inventory,
+  initialSurface,
   routerReachable,
   directModeActive,
   needsRecoveryAction,
@@ -311,7 +304,10 @@ export function RouterDetailWorkspace({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const surface = api.draft.editorSurface.useQuery({ routerId });
+  const surface = api.draft.editorSurface.useQuery(
+    { routerId },
+    { initialData: initialSurface },
+  );
   const [draft, setDraft] = useState<DraftConfigInput | null>(null);
   const [note, setNote] = useState("");
   const [loadedRevisionId, setLoadedRevisionId] = useState<string | null>(null);
@@ -350,6 +346,8 @@ export function RouterDetailWorkspace({
     setSelectedRuleId(nextDraft.basicSettings.shuntRules[0]?.id ?? null);
     setSelectedSocksId(nextDraft.basicSettings.socks[0]?.id ?? null);
   }, [loadedRevisionId, surface.data]);
+
+  const inventory = surface.data?.inventory ?? initialSurface.inventory;
 
   const primaryTab = normalizeRouterPrimaryTab(searchParams.get("tab"));
   const secondaryTab = normalizeRouterSecondaryTab(
@@ -443,7 +441,9 @@ export function RouterDetailWorkspace({
         utils.draft.editorSurface.invalidate({ routerId }),
         utils.draft.list.invalidate(),
         utils.fleet.byId.invalidate({ routerId }),
+        utils.fleet.monitoring.invalidate(),
       ]);
+      router.refresh();
     },
   });
 
@@ -453,7 +453,9 @@ export function RouterDetailWorkspace({
         utils.draft.editorSurface.invalidate({ routerId }),
         utils.draft.list.invalidate(),
         utils.fleet.byId.invalidate({ routerId }),
+        utils.fleet.monitoring.invalidate(),
       ]);
+      router.refresh();
     },
   });
 
@@ -462,6 +464,7 @@ export function RouterDetailWorkspace({
       await Promise.all([
         utils.fleet.byId.invalidate({ routerId }),
         utils.fleet.list.invalidate(),
+        utils.fleet.monitoring.invalidate(),
         utils.fleet.overview.invalidate(),
         utils.fleet.pendingImportReviews.invalidate(),
         utils.draft.editorSurface.invalidate({ routerId }),
@@ -525,16 +528,16 @@ export function RouterDetailWorkspace({
       ? "Черновик сохраняется в панели."
       : hasUnsavedChanges
         ? "Несохранённые изменения останутся только в текущей форме, пока вы не сохраните черновик."
-        : savedDraftExists
-          ? "Форма уже совпадает с последним сохранённым черновиком в панели."
-          : "Можно сохранить текущую конфигурацию как черновик в панели без apply на роутер.";
+          : savedDraftExists
+            ? "Форма уже совпадает с последним сохранённым черновиком в панели."
+          : "Можно сохранить текущую конфигурацию как черновик в панели без применения на роутер.";
   const applyDisabledReason = !validDraft
     ? "Исправьте ошибки в форме."
     : editor.approvalRequired
-      ? "Сначала завершите import."
+      ? "Сначала завершите импорт и подтвердите эталон."
       : !editor.routerRuntimeSummary.destructiveActionsAllowed
-        ? "Для этого роутера apply отключён."
-        : "Сохранит текущие поля и поставит apply в очередь.";
+        ? "Для этого роутера применение отключено."
+        : "Сохранит текущие поля и поставит применение в очередь.";
 
   const handleSaveDraft = async () => {
     if (!validDraft) {
@@ -696,6 +699,7 @@ export function RouterDetailWorkspace({
         inventory={inventory}
         setDraft={setDraft}
         canRunJobs={editor.routerRuntimeSummary.updateActionsAllowed ?? false}
+        routerReachable={routerReachable}
       />
     );
   } else if (effectivePrimaryTab === "rule-manage") {
@@ -750,7 +754,7 @@ export function RouterDetailWorkspace({
   return (
     <div className="space-y-4 xl:space-y-5">
       <div className="vectra-main-grid gap-4 xl:gap-5">
-        <section className="vectra-hero-panel rounded-[1.6rem] px-4 py-4 sm:px-5 sm:py-5">
+        <section className="vectra-hero-panel min-w-0 rounded-[1.6rem] px-4 py-4 sm:px-5 sm:py-5">
           <div className="space-y-3">
             <div>
               <p className="vectra-kicker text-[var(--vectra-accent)]">Router Console</p>
@@ -758,10 +762,10 @@ export function RouterDetailWorkspace({
                 {editor.routerRuntimeSummary.name}
               </h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-                Сначала сверьте текущее состояние и import-контекст, затем выберите безопасное действие справа: сохранить, применить, открыть диагностику или перейти в опасную зону.
+                Сначала сверьте текущее состояние и контекст импорта, затем выберите безопасное действие справа: сохранить, применить, открыть диагностику или перейти в опасную зону.
               </p>
             </div>
-            <div className="vectra-summary-grid">
+            <div className="vectra-summary-grid min-w-0">
             <SummaryCell
               label="Платформа"
               value={editor.routerRuntimeSummary.name}
@@ -899,7 +903,7 @@ export function RouterDetailWorkspace({
               />
             </div>
 
-              <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] px-3 py-3 sm:px-4 sm:py-4">
+              <div className="min-w-0 rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] px-3 py-3 sm:px-4 sm:py-4">
                 <div className="grid gap-3 md:grid-cols-2">
                   <InlineStateCard
                     eyebrow="Черновик"
@@ -957,7 +961,7 @@ export function RouterDetailWorkspace({
                   />
                 </div>
                 <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
-                  <label className="block">
+                  <label className="block min-w-0">
                     <span className="vectra-kicker text-slate-500">
                       Комментарий к черновику
                     </span>
@@ -969,7 +973,7 @@ export function RouterDetailWorkspace({
                         placeholder="Что меняется в этой ревизии"
                       />
                   </label>
-                  <div className="rounded-md border border-white/10 bg-black/10 px-3 py-2 text-sm leading-6 text-slate-300">
+                  <div className="min-w-0 rounded-md border border-white/10 bg-black/10 px-3 py-2 text-sm leading-6 text-slate-300">
                     {validationMessage ? (
                       <span className="text-rose-200">{validationMessage}</span>
                     ) : (
@@ -984,7 +988,7 @@ export function RouterDetailWorkspace({
           </div>
         </section>
 
-        <div className="xl:sticky xl:top-4 xl:self-start">
+        <div className="min-w-0 xl:sticky xl:top-4 xl:self-start">
           <RouterActionRail
             routerId={routerId}
             importedRevisionId={editor.importedRevisionId}
@@ -1012,70 +1016,74 @@ export function RouterDetailWorkspace({
       </div>
 
       <div className="vectra-main-grid gap-4 xl:gap-5">
-        <Panel
-          eyebrow="PassWall workspace"
-          title="Вкладки и редакторы"
-          tone="muted"
-        >
-          <TabBar items={primaryItems} ariaLabel="Основные вкладки PassWall" />
-          <div className="mt-2">
-            <DisabledFeatureNotice
-              text={
-                watchLogsSupported
-                  ? disabledTabsExplanation
-                  : `${disabledTabsExplanation} Watch Logs включится после обновления controller-agent до ${minimumWatchLogsControllerVersion} или новее.`
-              }
-            />
-          </div>
-          {effectivePrimaryTab === "basic-settings" ? (
-            <div className="mt-3">
-              <TabBar
-                items={secondaryItems}
-                ariaLabel="Подразделы Basic Settings"
-                variant="secondary"
+        <div className="min-w-0">
+          <Panel
+            eyebrow="PassWall workspace"
+            title="Вкладки и редакторы"
+            tone="muted"
+          >
+            <TabBar items={primaryItems} ariaLabel="Основные вкладки PassWall" />
+            <div className="mt-2">
+              <DisabledFeatureNotice
+                text={
+                  watchLogsSupported
+                    ? disabledTabsExplanation
+                    : `${disabledTabsExplanation} Watch Logs включится после обновления controller-agent до ${minimumWatchLogsControllerVersion} или новее.`
+                }
               />
             </div>
-          ) : null}
-
-          <div className="mt-4">{tabContent}</div>
-        </Panel>
-
-        <Panel eyebrow="Предпросмотр применения" title="Что уйдёт на роутер" tone="muted">
-          <div className="vectra-stat-grid">
-          <StatusTile
-            label="Перезапуск"
-            value={preview?.requiresRestart ? "нужен" : "нет"}
-            compact
-          />
-          <StatusTile
-            label="Подписки"
-            value={preview?.refreshSubscriptions ? "обновить" : "без изменений"}
-            compact
-          />
-          <StatusTile
-            label="Правила"
-            value={preview?.refreshRules ? "обновить" : "без изменений"}
-            compact
-          />
-          <StatusTile
-            label="Пакеты"
-            value={preview?.packageInstall ? "затронуты" : "нет"}
-            compact
-          />
-          </div>
-          <div className="mt-4 space-y-2">
-            {preview?.operationPreview.length ? (
-              preview.operationPreview.map((operation) => (
-                <OperationRow
-                  key={`${operation.kind}-${operation.section}-${operation.description}`}
-                  operation={operation}
+            {effectivePrimaryTab === "basic-settings" ? (
+              <div className="mt-3">
+                <TabBar
+                  items={secondaryItems}
+                  ariaLabel="Подразделы Basic Settings"
+                  variant="secondary"
                 />
-              ))
-            ) : (
-              <EmptyState text="Точный предпросмотр появится после валидного черновика." />
-            )}
-          </div>
-        </Panel>
+              </div>
+            ) : null}
+
+            <div className="mt-4 min-w-0">{tabContent}</div>
+          </Panel>
+        </div>
+
+        <div className="min-w-0">
+          <Panel eyebrow="Предпросмотр применения" title="Что уйдёт на роутер" tone="muted">
+            <div className="vectra-stat-grid">
+              <StatusTile
+                label="Перезапуск"
+                value={preview?.requiresRestart ? "нужен" : "нет"}
+                compact
+              />
+              <StatusTile
+                label="Подписки"
+                value={preview?.refreshSubscriptions ? "обновить" : "без изменений"}
+                compact
+              />
+              <StatusTile
+                label="Правила"
+                value={preview?.refreshRules ? "обновить" : "без изменений"}
+                compact
+              />
+              <StatusTile
+                label="Пакеты"
+                value={preview?.packageInstall ? "затронуты" : "нет"}
+                compact
+              />
+            </div>
+            <div className="mt-4 space-y-2">
+              {preview?.operationPreview.length ? (
+                preview.operationPreview.map((operation) => (
+                  <OperationRow
+                    key={`${operation.kind}-${operation.section}-${operation.description}`}
+                    operation={operation}
+                  />
+                ))
+              ) : (
+                <EmptyState text="Точный предпросмотр появится после валидного черновика." />
+              )}
+            </div>
+          </Panel>
+        </div>
       </div>
     </div>
   );
@@ -2032,6 +2040,7 @@ function SubscriptionSection({
       await Promise.all([
         utils.draft.editorSurface.invalidate({ routerId }),
         utils.fleet.byId.invalidate({ routerId }),
+        utils.fleet.monitoring.invalidate(),
       ]);
       router.refresh();
     },
@@ -3058,6 +3067,7 @@ function AppUpdateSection({
   inventory,
   setDraft,
   canRunJobs,
+  routerReachable,
 }: {
   routerId: string;
   draft: DraftConfigInput;
@@ -3065,18 +3075,24 @@ function AppUpdateSection({
   inventory: RouterWorkspaceInventory;
   setDraft: Dispatch<SetStateAction<DraftConfigInput | null>>;
   canRunJobs: boolean;
+  routerReachable: boolean;
 }) {
   const router = useRouter();
   const utils = api.useUtils();
   const [pendingPasswallTarget, setPendingPasswallTarget] = useState<
     string | null
   >(null);
+  const [controlPlaneHealth, setControlPlaneHealth] =
+    useState<ControlPlaneHealthResponse | null>(null);
+  const [controlPlaneHealthLoading, setControlPlaneHealthLoading] =
+    useState(true);
   const passwallUpdateMutation =
     api.update.queuePasswallPackageUpdate.useMutation({
       onSuccess: async () => {
         await Promise.all([
           utils.draft.editorSurface.invalidate({ routerId }),
           utils.fleet.byId.invalidate({ routerId }),
+          utils.fleet.monitoring.invalidate(),
         ]);
         router.refresh();
       },
@@ -3090,6 +3106,7 @@ function AppUpdateSection({
         await Promise.all([
           utils.draft.editorSurface.invalidate({ routerId }),
           utils.fleet.byId.invalidate({ routerId }),
+          utils.fleet.monitoring.invalidate(),
         ]);
         router.refresh();
       },
@@ -3101,6 +3118,20 @@ function AppUpdateSection({
       (artifact) =>
         artifact.type === "controller" &&
         artifact.name === "vectra-controller-agent",
+    ) ?? null;
+  const latestPasswallBundleArtifact =
+    artifactsQuery.data?.find((artifact) => artifact.type === "passwall_bundle") ??
+    null;
+  const passwallBundleMetadata =
+    buildPasswallBundleMetadataFromArtifact(latestPasswallBundleArtifact) ??
+    buildFallbackPasswallBundleMetadata();
+  const passwallAppArtifact =
+    passwallBundleMetadata.packageArtifacts.find(
+      (artifact) => artifact.name === "luci-app-passwall2",
+    ) ?? null;
+  const xrayArtifact =
+    passwallBundleMetadata.packageArtifacts.find(
+      (artifact) => artifact.name === "xray-core",
     ) ?? null;
   const installedControllerVersion =
     normalizeControllerVersion(inventory.controllerVersion) ?? null;
@@ -3135,11 +3166,84 @@ function AppUpdateSection({
         : installedControllerVersion === null && controllerAttempt === null
           ? "Роутер не прислал установленную версию controller-agent в последнем check-in."
           : null;
+  const passwallAttempt = surface.lastPasswallUpdateAttempt ?? null;
+  const passwallHint = summarizePasswallAttempt(passwallAttempt);
+  const overlayFreeMb = inventory.resources?.overlayFreeMb ?? null;
+  const tmpFreeMb = inventory.resources?.tmpFreeMb ?? null;
+  const backendDeliveryBlocked =
+    controlPlaneHealth !== null &&
+    (!controlPlaneHealth.ok || controlPlaneHealth.checks?.dbWriteProbe === false);
+  const deliveryWarnings = [
+    !routerReachable
+      ? `Роутер давно не присылал свежий check-in. Последняя известная связь: ${formatDateTime(
+          surface.routerRuntimeSummary.lastSeenAt,
+        )}. Job можно поставить в очередь, но он не дойдёт до роутера, пока controller снова не начнёт check-in.`
+      : null,
+    backendDeliveryBlocked
+      ? `Backend write-probe сейчас не подтверждает сохранение router check-in${
+          controlPlaneHealth?.error ? `: ${controlPlaneHealth.error}` : ""
+        }. Панель может поставить job, но delivery/result path сейчас ненадёжен.`
+      : null,
+  ].filter((entry): entry is string => entry !== null);
 
-  const componentVersion = (key: string) =>
-    inventory.binaryVersions[key] ??
-    inventory.packageVersions[key] ??
-    "неизвестно";
+  useEffect(() => {
+    const abort = new AbortController();
+
+    async function loadHealth() {
+      setControlPlaneHealthLoading(true);
+      try {
+        const response = await fetch("/api/health", {
+          cache: "no-store",
+          signal: abort.signal,
+        });
+        const payload = (await response.json()) as ControlPlaneHealthResponse;
+        if (!abort.signal.aborted) {
+          setControlPlaneHealth(payload);
+        }
+      } catch (error) {
+        if (abort.signal.aborted) {
+          return;
+        }
+        setControlPlaneHealth({
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "health probe request failed",
+        });
+      } finally {
+        if (!abort.signal.aborted) {
+          setControlPlaneHealthLoading(false);
+        }
+      }
+    }
+
+    void loadHealth();
+
+    return () => {
+      abort.abort();
+    };
+  }, []);
+
+  const formatComponentInstalledVersion = (packageName: string) => {
+    const runtimeKey = packageNameToRuntimeKey(packageName);
+    const runtimeVersion = inventory.binaryVersions[runtimeKey] ?? null;
+    const packageVersion = inventory.packageVersions[packageName] ?? null;
+
+    if (runtimeVersion && packageVersion && runtimeVersion !== packageVersion) {
+      return `runtime ${runtimeVersion} / package ${packageVersion}`;
+    }
+    if (runtimeVersion && packageVersion) {
+      return `runtime ${runtimeVersion} / package ${packageVersion}`;
+    }
+    if (runtimeVersion) {
+      return `runtime ${runtimeVersion}`;
+    }
+    if (packageVersion) {
+      return `package ${packageVersion}`;
+    }
+    return "неизвестно";
+  };
   const versionRows = [
     {
       key: "controller",
@@ -3148,16 +3252,24 @@ function AppUpdateSection({
       available: controllerAvailableLabel,
       action: "controller" as const,
     },
-    ...passwallUpdateTargets.map((target) => ({
+    ...PASSWALL_PACKAGE_TARGET_ROWS.map((target) => ({
       key: target.key,
       name: target.label,
       installed:
         target.key === "passwall2"
-          ? (inventory.passwallVersion ?? "неизвестно")
-          : componentVersion(target.key),
-      available: "через package job",
+          ? inventory.passwallVersion
+            ? `app ${inventory.passwallVersion}`
+            : "неизвестно"
+          : formatComponentInstalledVersion(target.packages[0]),
+      available: target.managedStack
+        ? formatPasswallManagedStackAvailableVersion(passwallBundleMetadata)
+        : formatPasswallAvailableVersion(
+            passwallBundleMetadata,
+            target.packages[0],
+          ),
       action: "passwall" as const,
       packages: [...target.packages],
+      managedStack: target.managedStack,
     })),
   ];
 
@@ -3165,10 +3277,40 @@ function AppUpdateSection({
     <div className="space-y-4">
       <ActionStrip justify="start">
         <span className="text-sm text-slate-300">
-          Каждая кнопка обновляет только один компонент. `Установлено` берётся
-          из check-in роутера, `Доступно` для controller из реестра артефактов.
+          Кнопка `PassWall2` обновляет не только LuCI-приложение, а весь managed
+          stack: bundle `{passwallBundleMetadata.releaseTag}`, app-package
+          `{passwallAppArtifact?.artifactVersion ?? "unknown"}`, recovery deps и
+          post-update repair.
+        </span>
+        <span className="text-sm text-slate-400">
+          Сам `luci-app-passwall2`
+          {passwallAppArtifact
+            ? ` небольшой: ${formatCompactSize(passwallAppArtifact.downloadSizeBytes)} download / ${formatCompactSize(passwallAppArtifact.installedSizeBytes)} installed.`
+            : " небольшой по сравнению со stack-компонентами."}{" "}
+          Тяжёлое место занимают `xray-core`
+          {xrayArtifact
+            ? ` (${formatCompactSize(xrayArtifact.downloadSizeBytes)} download / ${formatCompactSize(xrayArtifact.installedSizeBytes)} installed)`
+            : ""}{" "}
+          и recovery-пакеты.
+          {overlayFreeMb !== null || tmpFreeMb !== null
+            ? ` Сейчас свободно: overlay ${formatMaybeMegabytes(overlayFreeMb)}, /tmp ${formatMaybeMegabytes(tmpFreeMb)}.`
+            : ""}
         </span>
       </ActionStrip>
+
+      {deliveryWarnings.length > 0 ? (
+        <div className="space-y-2 rounded-2xl border border-amber-400/20 bg-[rgba(110,74,18,0.22)] px-4 py-3">
+          {deliveryWarnings.map((warning) => (
+            <p key={warning} className="text-sm text-amber-100">
+              {warning}
+            </p>
+          ))}
+        </div>
+      ) : controlPlaneHealthLoading ? (
+        <p className="text-sm text-slate-500">
+          Проверяю backend write-probe перед обновлением.
+        </p>
+      ) : null}
 
       <DataTable
         columns={[
@@ -3211,18 +3353,27 @@ function AppUpdateSection({
                   disabled={!canRunJobs || passwallUpdateMutation.isPending}
                   onClick={() => {
                     setPendingPasswallTarget(row.key);
-                    passwallUpdateMutation.mutate({
-                      routerId,
-                      artifactChannel: "stable",
-                      packages: row.packages,
-                    });
+                    passwallUpdateMutation.mutate(
+                      row.managedStack
+                        ? {
+                            routerId,
+                            artifactChannel: "stable",
+                          }
+                        : {
+                            routerId,
+                            artifactChannel: "stable",
+                            packages: row.packages,
+                          },
+                    );
                   }}
                   className="rounded-md bg-[var(--vectra-accent-soft)] px-3 py-2 text-sm font-medium text-white transition hover:bg-[rgba(99,185,255,0.22)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {passwallUpdateMutation.isPending &&
                   pendingPasswallTarget === row.key
                     ? "Ставлю job..."
-                    : `Обновить ${row.name}`}
+                    : row.managedStack
+                      ? `Обновить stack ${row.name}`
+                      : `Обновить ${row.name}`}
                 </button>
               )}
             </td>
@@ -3232,6 +3383,14 @@ function AppUpdateSection({
 
       {controllerHint ? (
         <p className="text-sm text-slate-400">{controllerHint}</p>
+      ) : null}
+      {passwallHint ? (
+        <p className="text-sm text-slate-400">{passwallHint}</p>
+      ) : null}
+      {!backendDeliveryBlocked && controlPlaneHealth?.checkedAt ? (
+        <p className="text-sm text-slate-500">
+          Backend write-probe ok: {formatDateTime(controlPlaneHealth.checkedAt)}.
+        </p>
       ) : null}
 
       <FieldGrid>
@@ -3372,6 +3531,7 @@ function RuleManageSection({
       await Promise.all([
         utils.draft.editorSurface.invalidate({ routerId }),
         utils.fleet.byId.invalidate({ routerId }),
+        utils.fleet.monitoring.invalidate(),
       ]);
       router.refresh();
     },
@@ -4825,6 +4985,26 @@ function formatDateTime(value: Date | string | null | undefined) {
   }
 
   return date.toLocaleString("ru-RU", { hour12: false });
+}
+
+function formatCompactSize(bytes: number | null | undefined) {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) {
+    return "неизвестно";
+  }
+
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  return `${Math.round(bytes / 1024)} KB`;
+}
+
+function formatMaybeMegabytes(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return "неизвестно";
+  }
+
+  return `${value} MB`;
 }
 
 function formatProxyMode({

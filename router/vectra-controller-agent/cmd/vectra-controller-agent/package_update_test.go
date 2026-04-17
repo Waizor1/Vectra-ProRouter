@@ -122,18 +122,17 @@ func TestRunStagedPackageInstallJobUpdatesOpkgIndexBeforeInstall(t *testing.T) {
 
 func TestDefaultPasswallPackageListIncludesRecoveryDependencies(t *testing.T) {
 	want := []string{
-		"luci-app-passwall2",
+		"tcping",
 		"xray-core",
-		"sing-box",
-		"hysteria",
-		"geoview",
 		"v2ray-geoip",
 		"v2ray-geosite",
-		"dnsmasq-full",
+		"geoview",
 		"chinadns-ng",
+		"dnsmasq-full",
 		"kmod-nft-socket",
 		"kmod-nft-tproxy",
 		"kmod-nft-nat",
+		"luci-app-passwall2",
 	}
 
 	if !reflect.DeepEqual(defaultPasswallPackageList, want) {
@@ -203,5 +202,98 @@ func TestRunOpkgInstallCreatesAndClearsSelfUpdateSentinel(t *testing.T) {
 	}
 	if _, err := os.Stat(sentinelPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected sentinel cleanup after install, stat err = %v", err)
+	}
+}
+
+func TestSortPasswallPackagesKeepsManagedStackDeterministic(t *testing.T) {
+	got := sortPasswallPackages([]string{
+		"luci-app-passwall2",
+		"kmod-nft-tproxy",
+		"xray-core",
+		"tcping",
+		"dnsmasq-full",
+	})
+
+	want := []string{
+		"xray-core",
+		"tcping",
+		"dnsmasq-full",
+		"kmod-nft-tproxy",
+		"luci-app-passwall2",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sortPasswallPackages() = %#v, want %#v", got, want)
+	}
+}
+
+func TestVersionAtLeastSupportsRuntimeDriftComparison(t *testing.T) {
+	if !versionAtLeast("Xray 26.4.15", "26.3.27-r1") {
+		t.Fatalf("expected runtime version to satisfy target package version")
+	}
+	if versionAtLeast("sing-box 1.12.0", "1.13.6-r1") {
+		t.Fatalf("expected older runtime version to fail target comparison")
+	}
+}
+
+func TestAssessPasswallPackageStatusRequiresRuntimeConvergenceForRuntimePackages(t *testing.T) {
+	status, drift := assessPasswallPackageStatus(
+		"xray-core",
+		"26.3.27-r1",
+		"26.3.27-r1",
+		"Xray 26.3.26",
+	)
+	if status != "" || drift {
+		t.Fatalf("expected package version alone to be insufficient, got status=%q drift=%v", status, drift)
+	}
+
+	status, drift = assessPasswallPackageStatus(
+		"xray-core",
+		"26.3.27-r1",
+		"26.3.20-r1",
+		"Xray 26.3.27",
+	)
+	if status != "runtime-only-converged" || !drift {
+		t.Fatalf("expected runtime-only convergence drift, got status=%q drift=%v", status, drift)
+	}
+}
+
+func TestClassifySuccessfulPasswallStatusDistinguishesRuntimeFallback(t *testing.T) {
+	status, drift := classifySuccessfulPasswallStatus(
+		"xray-core",
+		"built-in-updater",
+		"26.3.27-r1",
+		"26.3.27",
+		"25.10.15-r1",
+		"25.10.15-r1",
+		"Xray 26.2.6",
+		"Xray 26.4.15",
+	)
+	if status != "runtime-updated" || !drift {
+		t.Fatalf("expected runtime-updated drift, got status=%q drift=%v", status, drift)
+	}
+}
+
+func TestClassifySuccessfulPasswallStatusKeepsRuntimeOnlyConvergenceWhenRuntimeAlreadyAhead(t *testing.T) {
+	status, drift := classifySuccessfulPasswallStatus(
+		"xray-core",
+		"built-in-updater",
+		"26.3.27-r1",
+		"26.3.27",
+		"25.10.15-r1",
+		"25.10.15-r1",
+		"Xray 26.4.15",
+		"Xray 26.4.15",
+	)
+	if status != "runtime-only-converged" || !drift {
+		t.Fatalf("expected runtime-only-converged drift, got status=%q drift=%v", status, drift)
+	}
+}
+
+func TestFailedPasswallStatusesTreatStorageBlockAsTerminal(t *testing.T) {
+	if !isFailedPasswallStatus("storage-blocked") {
+		t.Fatalf("expected storage-blocked to stop the overall job")
+	}
+	if isFailedPasswallStatus("runtime-updated") {
+		t.Fatalf("did not expect runtime-updated to stop the overall job")
 	}
 }

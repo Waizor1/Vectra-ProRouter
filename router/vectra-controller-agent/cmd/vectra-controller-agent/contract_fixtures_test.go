@@ -148,10 +148,23 @@ func validateFixtureJob(job controlplane.Job) error {
 		return validateFixtureArtifactJob(artifactJob)
 	case "update_passwall_packages":
 		artifactJob := parseArtifactJob(job.Payload, []string{
-			"luci-app-passwall2",
+			"tcping",
 			"xray-core",
+			"v2ray-geoip",
+			"v2ray-geosite",
 			"geoview",
+			"chinadns-ng",
+			"luci-app-passwall2",
 		})
+		if artifactJob.TargetVersion == "" {
+			return errFixture("passwall update fixture requires targetVersion")
+		}
+		if artifactJob.OriginSource == "" {
+			return errFixture("passwall update fixture requires originSource")
+		}
+		if artifactJob.FallbackPolicy == "" {
+			return errFixture("passwall update fixture requires fallbackPolicy")
+		}
 		return validateFixtureArtifactJob(artifactJob)
 	case "validate_firmware":
 		artifactJob := parseArtifactJob(job.Payload, nil)
@@ -174,8 +187,17 @@ func validateFixtureArtifactJob(job artifactJob) error {
 	if len(job.PackageList) == 0 {
 		return errFixture("artifact job package list is empty")
 	}
-	if len(job.PackageArtifacts) > 0 && len(job.PackageArtifacts) != len(job.PackageList) {
-		return errFixture("explicit packageArtifacts must cover the package list")
+	if len(job.PackageArtifacts) > 0 {
+		coveredPackages := make(map[string]struct{}, len(job.PackageArtifacts))
+		for _, artifact := range job.PackageArtifacts {
+			if artifact.Name == "" || artifact.ArtifactURL == "" {
+				return errFixture("explicit packageArtifacts must include name and artifactUrl")
+			}
+			coveredPackages[artifact.Name] = struct{}{}
+		}
+		if len(coveredPackages) != len(job.PackageArtifacts) {
+			return errFixture("explicit packageArtifacts must not duplicate package names")
+		}
 	}
 	if len(job.PackageArtifacts) == 0 && job.ArtifactURL == "" {
 		return errFixture("artifact job requires explicit artifacts or feed artifactUrl")
