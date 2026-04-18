@@ -13,8 +13,8 @@ Examples:
     --channel openwrt/stable/aarch64_cortex-a53
 
   bash deploy/scripts/sync-runtime-artifacts.sh \
-    --source ./dist/bootstrap/passwall2/26.4.5-1/aarch64_cortex-a53 \
-    --channel bootstrap/passwall2/26.4.5-1/aarch64_cortex-a53
+    --source ./dist/bootstrap/passwall2/<tag>/aarch64_cortex-a53 \
+    --channel bootstrap/passwall2/<tag>/aarch64_cortex-a53
 
 This script refuses to touch deploy/runtime itself and only permits syncs into
 subpaths under deploy/runtime/artifacts.

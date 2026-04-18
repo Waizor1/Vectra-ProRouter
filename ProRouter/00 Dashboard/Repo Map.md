@@ -1,6 +1,6 @@
 ---
 type: generated
-updated: '2026-04-18 11:40:23 +03:00'
+updated: '2026-04-18 22:01:21 +03:00'
 generated-by: scripts/Sync-ProRouterVault.py
 tags:
   - generated
@@ -13,7 +13,7 @@ Generated from the current workspace root `Vectra-ProRouter`.
 
 ## Snapshot
 
-- Generated at: `2026-04-18 11:40:23 +03:00`
+- Generated at: `2026-04-18 22:01:21 +03:00`
 - Top-level directories: `8`
 - Top-level files: `13`
 - Tree depth: `3`
@@ -75,13 +75,19 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |  |- backup-postgres.sh
 |  |  |- deploy-web-release.sh
 |  |  |- prepare-runtime.sh
+|  |  |- refresh-passwall-mirror.py
 |  |  |- restore-postgres.sh
 |  |  |- smoke-check.sh
 |  |  |- sync-runtime-artifacts.sh
-|  |  \- vps-disk-cleanup.sh
+|  |  |- vps-disk-cleanup.sh
+|  |  \- vps-disk-guard.sh
 |  |- systemd/
+|  |  |- vectra-passwall-mirror-refresh.service
+|  |  |- vectra-passwall-mirror-refresh.timer
 |  |  |- vectra-vps-disk-cleanup.service
-|  |  \- vectra-vps-disk-cleanup.timer
+|  |  |- vectra-vps-disk-cleanup.timer
+|  |  |- vectra-vps-disk-guard.service
+|  |  \- vectra-vps-disk-guard.timer
 |  \- README.md
 |- logs/
 |  \- errors/

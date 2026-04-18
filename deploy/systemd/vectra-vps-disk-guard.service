@@ -1,0 +1,14 @@
+[Unit]
+Description=Vectra VPS disk guard and threshold cleanup
+Wants=docker.service
+After=docker.service
+ConditionPathExists=/opt/vectra-prorouter/deploy/scripts/vps-disk-guard.sh
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/bin/bash /opt/vectra-prorouter/deploy/scripts/vps-disk-guard.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=yes

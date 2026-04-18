@@ -1,0 +1,15 @@
+[Unit]
+Description=Refresh Vectra PassWall mirror from the latest upstream release
+Wants=docker.service
+After=docker.service
+ConditionPathExists=/opt/vectra-prorouter/deploy/scripts/refresh-passwall-mirror.py
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/vectra-prorouter
+ExecStart=/usr/bin/python3 /opt/vectra-prorouter/deploy/scripts/refresh-passwall-mirror.py --deploy-root /opt/vectra-prorouter --arch aarch64_cortex-a53
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=yes

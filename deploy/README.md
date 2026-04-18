@@ -141,10 +141,12 @@ Recommended sequence:
 2. Refresh the AX3000T PassWall bootstrap mirror from the upstream PassWall2 release into a local staging directory:
 
 ```bash
+PASSWALL_TAG=26.4.10-1   # replace with the current upstream tag if you are pinning manually
+
 python3 ./scripts/Sync-PasswallBootstrapMirror.py \
-  --tag 26.4.5-1 \
+  --tag "$PASSWALL_TAG" \
   --arch aarch64_cortex-a53 \
-  --output-dir ./dist/bootstrap/passwall2/26.4.5-1/aarch64_cortex-a53 \
+  --output-dir "./dist/bootstrap/passwall2/$PASSWALL_TAG/aarch64_cortex-a53" \
   --include-optional
 ```
 
@@ -184,8 +186,8 @@ bash deploy/scripts/sync-runtime-artifacts.sh \
 
 ```bash
 bash deploy/scripts/sync-runtime-artifacts.sh \
-  --source ./dist/bootstrap/passwall2/26.4.5-1/aarch64_cortex-a53 \
-  --channel bootstrap/passwall2/26.4.5-1/aarch64_cortex-a53
+  --source "./dist/bootstrap/passwall2/$PASSWALL_TAG/aarch64_cortex-a53" \
+  --channel "bootstrap/passwall2/$PASSWALL_TAG/aarch64_cortex-a53"
 ```
 
 This script only allows writes under `deploy/runtime/artifacts/*` and rejects
@@ -209,6 +211,15 @@ docker compose --env-file .env exec web \
   --apply
 ```
 
+If only the PassWall mirror changed, sync just that artifact set:
+
+```bash
+docker compose --env-file .env exec -T web \
+  node ./apps/web/scripts/sync-artifact-metadata.mjs \
+  --passwall-mirror-dir "./deploy/runtime/artifacts/bootstrap/passwall2/$PASSWALL_TAG/aarch64_cortex-a53" \
+  --apply
+```
+
 6. Rebuild and restart the web stack:
 
 ```bash
@@ -224,7 +235,106 @@ docker compose --env-file .env logs -f caddy
 docker compose --env-file .env logs -f postgres
 ```
 
-## 5.1. Optional VPS disk cleanup timer
+## 5.1. Optional VPS PassWall mirror refresh timer
+
+The repository now includes a production-side refresh script at
+`deploy/scripts/refresh-passwall-mirror.py`. It is intended to run directly on
+the VPS and keeps the published PassWall mirror current without requiring a
+full web redeploy:
+
+- fetches `Openwrt-Passwall/openwrt-passwall2/releases/latest`
+- downloads the matching `luci-app-passwall2` `.ipk` and
+  `passwall_packages_ipk_<arch>.zip`
+- republishes the exact mirrored `.ipk` set under
+  `deploy/runtime/artifacts/bootstrap/passwall2/<tag>/<arch>/`
+  with `sing-box` / `hysteria` included only when the upstream bundle
+  actually ships them
+- runs `sync-artifact-metadata.mjs --passwall-mirror-dir ... --apply` inside
+  the live `web` container so production PostgreSQL points at the new tag
+
+Manual run on the VPS:
+
+```bash
+cd /opt/vectra-prorouter
+python3 ./deploy/scripts/refresh-passwall-mirror.py --deploy-root /opt/vectra-prorouter --arch aarch64_cortex-a53
+```
+
+Preview only:
+
+```bash
+cd /opt/vectra-prorouter
+python3 ./deploy/scripts/refresh-passwall-mirror.py --deploy-root /opt/vectra-prorouter --arch aarch64_cortex-a53 --dry-run
+```
+
+Install the bundled `systemd` timer on the VPS:
+
+```bash
+sudo install -m 0644 deploy/systemd/vectra-passwall-mirror-refresh.service /etc/systemd/system/vectra-passwall-mirror-refresh.service
+sudo install -m 0644 deploy/systemd/vectra-passwall-mirror-refresh.timer /etc/systemd/system/vectra-passwall-mirror-refresh.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now vectra-passwall-mirror-refresh.timer
+```
+
+Verify:
+
+```bash
+systemctl status vectra-passwall-mirror-refresh.timer --no-pager
+journalctl -u vectra-passwall-mirror-refresh.service -n 100 --no-pager
+```
+
+## 5.2. VPS disk guard and cleanup timers
+
+The existing cleanup helper at `deploy/scripts/vps-disk-cleanup.sh` is still
+the conservative one-shot broom: it prunes Docker builder cache, unused images,
+`apt` cache, and stale `/tmp` artifacts, but it does not explain why the disk
+filled or react to large rollback backups.
+
+For ongoing production hygiene, the repo now also includes
+`deploy/scripts/vps-disk-guard.sh`. This guard is meant to run every few hours
+on the VPS and adds the missing analysis + threshold logic:
+
+- always logs a compact disk report (`df`, hot paths, recent rollback backups,
+  Docker summary)
+- if root usage is above the warn threshold, runs the existing conservative
+  cleanup helper
+- if usage is still very high afterwards, prunes old deploy rollback backups
+  matching `web-release-*` and `web-deploy-ready-*`
+- keeps the newest rollback backups and only deletes older ones past the
+  retention window
+- exits non-zero only if root usage remains above the critical threshold after
+  all guard actions
+
+Default thresholds:
+
+- `warn-use-percent = 75` for conservative cleanup
+- `backup-prune-use-percent = 82` before any rollback backups may be deleted
+- `critical-use-percent = 85` for a failing service result
+
+Manual report-only preview:
+
+```bash
+cd /opt/vectra-prorouter
+bash ./deploy/scripts/vps-disk-guard.sh --dry-run
+```
+
+Install the bundled disk-guard timer on the VPS:
+
+```bash
+sudo install -m 0644 deploy/systemd/vectra-vps-disk-guard.service /etc/systemd/system/vectra-vps-disk-guard.service
+sudo install -m 0644 deploy/systemd/vectra-vps-disk-guard.timer /etc/systemd/system/vectra-vps-disk-guard.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now vectra-vps-disk-guard.timer
+```
+
+Verify:
+
+```bash
+systemctl status vectra-vps-disk-guard.timer --no-pager
+journalctl -u vectra-vps-disk-guard.service -n 100 --no-pager
+```
+
+The older weekly cleanup timer can stay enabled as a low-noise fallback; the
+new guard is the primary “watch disk and react before it fills” path.
 
 The repository now includes a conservative maintenance script at
 `deploy/scripts/vps-disk-cleanup.sh`. It is intentionally limited to reclaiming
@@ -384,8 +494,9 @@ What this sync does:
 - upserts extra artifacts such as guarded firmware images
 - upserts `firmware_manifests` and links them to the correct firmware artifact
 - does not publish the AX3000T bootstrap mirror automatically; refresh it
-  separately with `scripts/Sync-PasswallBootstrapMirror.py` and copy the
-  result under `deploy/runtime/artifacts/bootstrap/passwall2/<tag>/<arch>/`
+  separately with `scripts/Sync-PasswallBootstrapMirror.py` plus
+  `deploy/scripts/sync-runtime-artifacts.sh`, or use the VPS-side
+  `deploy/scripts/refresh-passwall-mirror.py` timer path
 
 Pilot note:
 

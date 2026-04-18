@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Vectra VPS disk guard every 6 hours
+
+[Timer]
+Unit=vectra-vps-disk-guard.service
+OnBootSec=10m
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
