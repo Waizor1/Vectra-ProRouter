@@ -235,7 +235,13 @@ export function buildLastPasswallUpdateAttempt(args: {
 }): LastPasswallUpdateAttempt | null {
   const latestJob =
     [...args.jobs]
-      .filter((job) => job.type === "update_passwall_packages")
+      .filter((job) => {
+        if (job.type !== "update_passwall_packages") {
+          return false;
+        }
+        const updateScope = readStringField(job.payload, "updateScope");
+        return updateScope === null || updateScope === "managed-stack";
+      })
       .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0] ??
     null;
 

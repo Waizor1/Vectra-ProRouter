@@ -297,7 +297,7 @@ describe("buildLastPasswallUpdateAttempt", () => {
     });
   });
 
-  it("surfaces the first failed package when update payload contains per-package errors", () => {
+  it("surfaces the first failed package when managed-stack payload contains per-package errors", () => {
     const attempt = buildLastPasswallUpdateAttempt({
       jobs: [
         createJob({
@@ -307,7 +307,7 @@ describe("buildLastPasswallUpdateAttempt", () => {
           payload: {
             targetVersion: "26.3.27-r1",
             originSource: "vectra",
-            updateScope: "scoped-package",
+            updateScope: "managed-stack",
           },
         }),
       ],
@@ -334,6 +334,81 @@ describe("buildLastPasswallUpdateAttempt", () => {
 
     expect(attempt?.summary).toBe("xray-core: artifact checksum mismatch");
     expect(attempt?.driftDetected).toBe(false);
+  });
+
+  it("ignores newer scoped-package jobs when resolving the last stack attempt", () => {
+    const attempt = buildLastPasswallUpdateAttempt({
+      jobs: [
+        createJob({
+          id: "pw-managed",
+          type: "update_passwall_packages",
+          state: "failed",
+          createdAt: new Date("2026-04-18T09:34:00Z"),
+          payload: {
+            targetVersion: "26.4.10-1",
+            originSource: "vectra",
+            updateScope: "managed-stack",
+          },
+        }),
+        createJob({
+          id: "pw-scoped",
+          type: "update_passwall_packages",
+          state: "succeeded",
+          createdAt: new Date("2026-04-18T09:36:00Z"),
+          payload: {
+            targetVersion: "26.3.27-r1",
+            originSource: "vectra",
+            updateScope: "scoped-package",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          id: "pw-managed-result",
+          jobId: "pw-managed",
+          status: "failure",
+          reportedAt: new Date("2026-04-18T09:35:00Z"),
+          payload: {
+            packageResults: [
+              {
+                package: "v2ray-geoip",
+                targetVersion: "202603260032.1",
+                status: "storage-blocked",
+                pathUsed: "package",
+                error:
+                  "v2ray-geoip package path skipped: not enough overlay space",
+                driftDetected: false,
+              },
+            ],
+          },
+        }),
+        createJobResult({
+          id: "pw-scoped-result",
+          jobId: "pw-scoped",
+          status: "success",
+          reportedAt: new Date("2026-04-18T09:37:00Z"),
+          payload: {
+            packageResults: [
+              {
+                package: "xray-core",
+                targetVersion: "26.3.27-r1",
+                status: "runtime-only-converged",
+                pathUsed: "not-needed",
+                driftDetected: true,
+              },
+            ],
+          },
+        }),
+      ],
+    });
+
+    expect(attempt).toMatchObject({
+      jobState: "failed",
+      resultStatus: "failure",
+      updateScope: "managed-stack",
+      summary:
+        "v2ray-geoip: package path пропущен из-за места (v2ray-geoip package path skipped: not enough overlay space)",
+    });
   });
 
   it("surfaces storage-blocked package paths honestly", () => {
