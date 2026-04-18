@@ -16,6 +16,11 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
+import { resolveInstalledControllerVersion } from "~/lib/controller-version";
+import {
+  buildTerminalControllerSelfUpdatePayload,
+  shouldUseTerminalControllerSelfUpdate,
+} from "~/lib/controller-update-jobs";
 import {
   PASSWALL_MANAGED_STACK_REQUIRED_PACKAGES,
   buildFallbackPasswallBundleMetadata,
@@ -233,6 +238,109 @@ async function enqueuePasswallPackageUpdate(args: {
       state: "queued",
       dedupeKey,
       payload,
+    })
+    .returning();
+
+  return job;
+}
+
+async function enqueueControllerUpdateJob(args: {
+  ctx: RouterMutationContext;
+  routerId: string;
+  channel: "stable" | "beta";
+}) {
+  const { snapshot } = await assertUpdateCapableRouter(args.ctx, args.routerId);
+
+  const controllerArtifacts = await args.ctx.db
+    .select()
+    .from(artifacts)
+    .where(
+      and(
+        eq(artifacts.type, "controller"),
+        eq(artifacts.channel, args.channel),
+        inArray(artifacts.name, CONTROLLER_PACKAGE_LIST),
+      ),
+    )
+    .orderBy(desc(artifacts.publishedAt), desc(artifacts.version))
+    .limit(12);
+
+  const latestByName = new Map<string, (typeof controllerArtifacts)[number]>();
+  for (const artifact of controllerArtifacts) {
+    if (!latestByName.has(artifact.name)) {
+      latestByName.set(artifact.name, artifact);
+    }
+  }
+
+  const packageArtifacts = CONTROLLER_PACKAGE_LIST.flatMap((name) => {
+    const artifact = latestByName.get(name);
+    return artifact
+      ? [
+          {
+            name: artifact.name,
+            artifactUrl: artifact.downloadUrl,
+            sha256: artifact.checksumSha256,
+            signatureUrl: artifact.signatureUrl,
+            artifactVersion: artifact.version,
+          },
+        ]
+      : [];
+  });
+
+  const primaryArtifact = latestByName.get("vectra-controller-agent") ?? null;
+  const primaryPackageArtifact = packageArtifacts[0] ?? null;
+  const payload = updateControllerJobPayloadSchema.parse({
+    channel: args.channel,
+    packageList: CONTROLLER_PACKAGE_LIST,
+    packageArtifacts,
+    artifactUrl:
+      primaryArtifact?.downloadUrl ?? primaryPackageArtifact?.artifactUrl ?? null,
+    sha256:
+      primaryArtifact?.checksumSha256 ?? primaryPackageArtifact?.sha256 ?? null,
+    signatureUrl:
+      primaryArtifact?.signatureUrl ?? primaryPackageArtifact?.signatureUrl ?? null,
+    artifactVersion:
+      primaryArtifact?.version ?? primaryPackageArtifact?.artifactVersion ?? null,
+  });
+
+  const installedControllerVersion = resolveInstalledControllerVersion({
+    controllerVersion: snapshot?.controllerVersion ?? null,
+    payload: snapshot?.payload ?? null,
+  });
+  const useTerminalSelfUpdate =
+    shouldUseTerminalControllerSelfUpdate(installedControllerVersion);
+  const terminalPayload = useTerminalSelfUpdate
+    ? buildTerminalControllerSelfUpdatePayload({
+        artifactVersion: payload.artifactVersion,
+        packageArtifacts,
+      })
+    : null;
+  const dedupeKey = `update_controller:${args.routerId}:${args.channel}:${
+    payload.artifactVersion ?? "latest"
+  }`;
+  const [existingJob] = await args.ctx.db
+    .select()
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.routerId, args.routerId),
+        eq(jobs.dedupeKey, dedupeKey),
+        inArray(jobs.state, ["queued", "delivered", "running"]),
+      ),
+    )
+    .limit(1);
+
+  if (existingJob) {
+    return existingJob;
+  }
+
+  const [job] = await args.ctx.db
+    .insert(jobs)
+    .values({
+      routerId: args.routerId,
+      type: terminalPayload ? "run_terminal_command" : "update_controller",
+      state: "queued",
+      dedupeKey,
+      payload: terminalPayload ?? payload,
     })
     .returning();
 
@@ -660,89 +768,11 @@ export const updateRouter = createTRPCRouter({
 
       for (const routerId of [...new Set(input.routerIds)]) {
         try {
-          await assertUpdateCapableRouter(ctx, routerId);
-          const controllerArtifacts = await ctx.db
-            .select()
-            .from(artifacts)
-            .where(
-              and(
-                eq(artifacts.type, "controller"),
-                eq(artifacts.channel, input.channel),
-                inArray(artifacts.name, CONTROLLER_PACKAGE_LIST),
-              ),
-            )
-            .orderBy(desc(artifacts.publishedAt), desc(artifacts.version))
-            .limit(12);
-
-          const latestByName = new Map<string, (typeof controllerArtifacts)[number]>();
-          for (const artifact of controllerArtifacts) {
-            if (!latestByName.has(artifact.name)) {
-              latestByName.set(artifact.name, artifact);
-            }
-          }
-
-          const packageArtifacts = CONTROLLER_PACKAGE_LIST.flatMap((name) => {
-            const artifact = latestByName.get(name);
-            return artifact
-              ? [
-                  {
-                    name: artifact.name,
-                    artifactUrl: artifact.downloadUrl,
-                    sha256: artifact.checksumSha256,
-                    signatureUrl: artifact.signatureUrl,
-                    artifactVersion: artifact.version,
-                  },
-                ]
-              : [];
-          });
-          const primaryArtifact = latestByName.get("vectra-controller-agent") ?? null;
-          const primaryPackageArtifact = packageArtifacts[0] ?? null;
-          const payload = updateControllerJobPayloadSchema.parse({
+          const job = await enqueueControllerUpdateJob({
+            ctx,
+            routerId,
             channel: input.channel,
-            packageList: CONTROLLER_PACKAGE_LIST,
-            packageArtifacts,
-            artifactUrl:
-              primaryArtifact?.downloadUrl ?? primaryPackageArtifact?.artifactUrl ?? null,
-            sha256:
-              primaryArtifact?.checksumSha256 ?? primaryPackageArtifact?.sha256 ?? null,
-            signatureUrl:
-              primaryArtifact?.signatureUrl ?? primaryPackageArtifact?.signatureUrl ?? null,
-            artifactVersion:
-              primaryArtifact?.version ?? primaryPackageArtifact?.artifactVersion ?? null,
           });
-          const dedupeKey = `update_controller:${routerId}:${input.channel}:${payload.artifactVersion ?? "latest"}`;
-          const [existingJob] = await ctx.db
-            .select()
-            .from(jobs)
-            .where(
-              and(
-                eq(jobs.routerId, routerId),
-                eq(jobs.dedupeKey, dedupeKey),
-                inArray(jobs.state, ["queued", "delivered", "running"]),
-              ),
-            )
-            .limit(1);
-
-          if (existingJob) {
-            results.push({
-              routerId,
-              status: "queued",
-              reason: null,
-              jobId: existingJob.id,
-            });
-            continue;
-          }
-
-          const [job] = await ctx.db
-            .insert(jobs)
-            .values({
-              routerId,
-              type: "update_controller",
-              state: "queued",
-              dedupeKey,
-              payload,
-            })
-            .returning();
 
           results.push({
             routerId,
@@ -774,104 +804,11 @@ export const updateRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertUpdateCapableRouter(ctx, input.routerId);
-
-      const controllerArtifacts = await ctx.db
-        .select()
-        .from(artifacts)
-        .where(
-          and(
-            eq(artifacts.type, "controller"),
-            eq(artifacts.channel, input.channel),
-            inArray(artifacts.name, CONTROLLER_PACKAGE_LIST),
-          ),
-        )
-        .orderBy(desc(artifacts.publishedAt), desc(artifacts.version))
-        .limit(12);
-
-      const latestByName = new Map<
-        string,
-        (typeof controllerArtifacts)[number]
-      >();
-      for (const artifact of controllerArtifacts) {
-        if (!latestByName.has(artifact.name)) {
-          latestByName.set(artifact.name, artifact);
-        }
-      }
-
-      const packageArtifacts = CONTROLLER_PACKAGE_LIST.flatMap((name) => {
-        const artifact = latestByName.get(name);
-        return artifact
-          ? [
-              {
-                name: artifact.name,
-                artifactUrl: artifact.downloadUrl,
-                sha256: artifact.checksumSha256,
-                signatureUrl: artifact.signatureUrl,
-                artifactVersion: artifact.version,
-              },
-            ]
-          : [];
-      });
-
-      const primaryArtifact =
-        latestByName.get("vectra-controller-agent") ?? null;
-      const primaryPackageArtifact = packageArtifacts[0] ?? null;
-
-      const payload = updateControllerJobPayloadSchema.parse({
+      return enqueueControllerUpdateJob({
+        ctx,
+        routerId: input.routerId,
         channel: input.channel,
-        packageList: CONTROLLER_PACKAGE_LIST,
-        packageArtifacts,
-        artifactUrl:
-          primaryArtifact?.downloadUrl ??
-          primaryPackageArtifact?.artifactUrl ??
-          null,
-        sha256:
-          primaryArtifact?.checksumSha256 ??
-          primaryPackageArtifact?.sha256 ??
-          null,
-        signatureUrl:
-          primaryArtifact?.signatureUrl ??
-          primaryPackageArtifact?.signatureUrl ??
-          null,
-        artifactVersion:
-          primaryArtifact?.version ??
-          primaryPackageArtifact?.artifactVersion ??
-          null,
       });
-
-      const dedupeKey = `update_controller:${input.routerId}:${input.channel}:${
-        payload.artifactVersion ?? "latest"
-      }`;
-
-      const [existingJob] = await ctx.db
-        .select()
-        .from(jobs)
-        .where(
-          and(
-            eq(jobs.routerId, input.routerId),
-            eq(jobs.dedupeKey, dedupeKey),
-            inArray(jobs.state, ["queued", "delivered", "running"]),
-          ),
-        )
-        .limit(1);
-
-      if (existingJob) {
-        return existingJob;
-      }
-
-      const [job] = await ctx.db
-        .insert(jobs)
-        .values({
-          routerId: input.routerId,
-          type: "update_controller",
-          state: "queued",
-          dedupeKey,
-          payload,
-        })
-        .returning();
-
-      return job;
     }),
 
   queueSubscriptionsRefresh: protectedProcedure

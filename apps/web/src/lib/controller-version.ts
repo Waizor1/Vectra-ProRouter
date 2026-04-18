@@ -67,6 +67,39 @@ export function compareControllerVersions(
   return leftParts.release - rightParts.release;
 }
 
+export function resolveInstalledControllerVersion(args: {
+  controllerVersion?: string | null;
+  payload?: unknown;
+}): string | null {
+  const payload =
+    args.payload && typeof args.payload === "object" && !Array.isArray(args.payload)
+      ? (args.payload as Record<string, unknown>)
+      : null;
+  const packageVersions =
+    payload?.packageVersions &&
+    typeof payload.packageVersions === "object" &&
+    !Array.isArray(payload.packageVersions)
+      ? (payload.packageVersions as Record<string, unknown>)
+      : null;
+  const payloadControllerVersion =
+    typeof payload?.controllerVersion === "string" ? payload.controllerVersion : null;
+  const agentPackageVersion =
+    typeof packageVersions?.["vectra-controller-agent"] === "string"
+      ? packageVersions["vectra-controller-agent"]
+      : null;
+  const luciPackageVersion =
+    typeof packageVersions?.["luci-app-vectra-controller"] === "string"
+      ? packageVersions["luci-app-vectra-controller"]
+      : null;
+
+  return (
+    normalizeControllerVersion(payloadControllerVersion) ??
+    normalizeControllerVersion(args.controllerVersion) ??
+    normalizeControllerVersion(agentPackageVersion) ??
+    normalizeControllerVersion(luciPackageVersion)
+  );
+}
+
 function parseControllerVersion(value: string) {
   const match = /^(\d+)\.(\d+)\.(\d+)-r(\d+)$/i.exec(value);
   if (!match) {

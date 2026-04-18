@@ -16,7 +16,9 @@ import { desc, eq } from "drizzle-orm";
 import {
   compareControllerVersions,
   normalizeControllerVersion,
+  resolveInstalledControllerVersion,
 } from "~/lib/controller-version";
+import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
 import { db } from "~/server/db";
 import { buildEditorSurface } from "~/server/vectra/editor";
 import { isRouterReachable } from "~/server/vectra/router-presence";
@@ -179,7 +181,7 @@ export function buildLastControllerUpdateAttempt(args: {
 }): LastControllerUpdateAttempt | null {
   const latestJob =
     [...args.jobs]
-      .filter((job) => job.type === "update_controller")
+      .filter((job) => isControllerUpdateJob(job))
       .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0] ??
     null;
 
@@ -645,6 +647,10 @@ export async function getDraftEditorSurface(routerId: string) {
 
   const latestSnapshot = snapshots[0] ?? null;
   const payload = latestSnapshot?.payload;
+  const installedControllerVersion = resolveInstalledControllerVersion({
+    controllerVersion: latestSnapshot?.controllerVersion ?? null,
+    payload: payload ?? null,
+  });
   const layoutFamily =
     typeof payload?.layoutFamily === "string" ? payload.layoutFamily : null;
   const support = describeEffectiveRouterSupport({
@@ -704,7 +710,7 @@ export async function getDraftEditorSurface(routerId: string) {
     authoritativeConfig?.nodes.find((node) => node.id === selectedNodeId)?.label ??
     selectedNodeId;
   const inventory: RouterWorkspaceInventory = {
-    controllerVersion: latestSnapshot?.controllerVersion ?? null,
+    controllerVersion: installedControllerVersion,
     passwallVersion:
       latestSnapshot?.passwallAppVersion ??
       payload?.packageVersions["luci-app-passwall2"] ??
@@ -733,7 +739,7 @@ export async function getDraftEditorSurface(routerId: string) {
   const lastControllerUpdateAttempt = buildLastControllerUpdateAttempt({
     jobs: recentJobs,
     results: resultRows,
-    installedControllerVersion: latestSnapshot?.controllerVersion ?? null,
+    installedControllerVersion,
   });
   const lastPasswallUpdateAttempt = buildLastPasswallUpdateAttempt({
     jobs: recentJobs,

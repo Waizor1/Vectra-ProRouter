@@ -228,6 +228,41 @@ describe("buildLastControllerUpdateAttempt", () => {
         "controller уже на 0.1.12-r11; старый failure-result после self-update больше не актуален",
     });
   });
+
+  it("accepts terminal compatibility jobs for controller self-update history", () => {
+    const attempt = buildLastControllerUpdateAttempt({
+      jobs: [
+        createJob({
+          id: "controller-terminal-job",
+          type: "run_terminal_command",
+          state: "succeeded",
+          payload: {
+            purpose: "controller-self-update",
+            artifactVersion: "0.1.12-r13",
+            command: "opkg install --force-reinstall ...",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          id: "controller-terminal-result",
+          jobId: "controller-terminal-job",
+          status: "success",
+          payload: {
+            stdout: "controller self-update to 0.1.12-r13 queued",
+          },
+        }),
+      ],
+      installedControllerVersion: "0.1.12-r11",
+    });
+
+    expect(attempt).toMatchObject({
+      jobState: "succeeded",
+      resultStatus: "success",
+      artifactVersion: "0.1.12-r13",
+      summary: "controller self-update to 0.1.12-r13 queued",
+    });
+  });
 });
 
 describe("buildLastPasswallUpdateAttempt", () => {

@@ -94,6 +94,7 @@ function createPilotLayoutSnapshot(
       target: "mediatek/filogic",
       architecture: "aarch64_cortex-a53",
       openwrtRelease: "24.10.6",
+      controllerVersion: packageVersions?.["vectra-controller-agent"] ?? null,
       packageVersions: {
         "sing-box": "1.13.5-r1",
         ...packageVersions,
@@ -126,6 +127,30 @@ function createPasswallPackageArtifact(
       installedSizeBytes: 2048,
     },
     publishedAt: new Date("2026-04-17T09:00:00.000Z"),
+  };
+}
+
+function createControllerArtifact(
+  name: string,
+  version: string,
+  options?: { architecture?: string | null },
+) {
+  return {
+    id: `artifact-${name}`,
+    type: "controller",
+    channel: "stable",
+    name,
+    version,
+    architecture:
+      options?.architecture ??
+      (name === "luci-app-vectra-controller" ? null : "aarch64_cortex-a53"),
+    boardName: null,
+    layoutFamily: null,
+    downloadUrl: `https://api.vectra-pro.net/artifacts/openwrt/stable/aarch64_cortex-a53/${name}_${version}.ipk`,
+    checksumSha256: `sha-${name}`,
+    signatureUrl: null,
+    metadata: null,
+    publishedAt: new Date("2026-04-18T09:00:00.000Z"),
   };
 }
 
@@ -372,6 +397,111 @@ describe("destructive route gating", () => {
     });
 
     expect(mock.counts().insertCalls).toBe(1);
+  });
+
+  it("uses terminal self-update as the primary lane for terminal-capable controllers", async () => {
+    const mock = createMockDb([
+      [createCertifiedLikeRouter()],
+      [
+        createPilotLayoutSnapshot("ubootmod", {
+          "vectra-controller-agent": "0.1.12-r11",
+          "luci-app-vectra-controller": "0.1.12-r11",
+        }),
+      ],
+      [
+        createControllerArtifact("vectra-controller-agent", "0.1.12-r13"),
+        createControllerArtifact("luci-app-vectra-controller", "0.1.12-r13"),
+      ],
+      [],
+    ]);
+    const caller = createProtectedCaller(updateRouter, mock.db) as {
+      queueControllerUpdate: (input: {
+        routerId: string;
+        channel: "stable" | "beta";
+      }) => Promise<unknown>;
+    };
+
+    await caller.queueControllerUpdate({
+      routerId: CERTIFIED_LIKE_ROUTER_ID,
+      channel: "stable",
+    });
+
+    const [inserted] = mock.insertedValues() as Array<{
+      type?: string;
+      dedupeKey?: string;
+      payload?: {
+        purpose?: string | null;
+        artifactVersion?: string | null;
+        timeoutSeconds?: number;
+        command?: string;
+      };
+    }>;
+
+    expect(inserted).toBeDefined();
+    if (!inserted) {
+      throw new Error("Expected controller update job insert.");
+    }
+
+    expect(inserted.type).toBe("run_terminal_command");
+    expect(inserted.dedupeKey).toContain("0.1.12-r13");
+    expect(inserted.payload?.purpose).toBe("controller-self-update");
+    expect(inserted.payload?.artifactVersion).toBe("0.1.12-r13");
+    expect(inserted.payload?.timeoutSeconds).toBe(120);
+    expect(inserted.payload?.command).toContain(
+      "VECTRA_SKIP_POSTINST_RESTART=1 opkg install --force-reinstall",
+    );
+    expect(inserted.payload?.command).toContain(
+      "/tmp/vectra-skip-postinst-restart",
+    );
+    expect(inserted.payload?.command).toContain(
+      "actual_sha=\"$(sha256sum \"$1\" | awk '{print $1}')\"",
+    );
+    expect(inserted.payload?.command).toContain(
+      "controller core updated to 0.1.12-r13, but LuCI reinstall failed",
+    );
+  });
+
+  it("falls back to legacy update_controller for too-old controller versions", async () => {
+    const mock = createMockDb([
+      [createCertifiedLikeRouter()],
+      [
+        createPilotLayoutSnapshot("ubootmod", {
+          "vectra-controller-agent": "0.1.11-r1",
+          "luci-app-vectra-controller": "0.1.11-r1",
+        }),
+      ],
+      [
+        createControllerArtifact("vectra-controller-agent", "0.1.12-r13"),
+        createControllerArtifact("luci-app-vectra-controller", "0.1.12-r13"),
+      ],
+      [],
+    ]);
+    const caller = createProtectedCaller(updateRouter, mock.db) as {
+      queueControllerUpdate: (input: {
+        routerId: string;
+        channel: "stable" | "beta";
+      }) => Promise<unknown>;
+    };
+
+    await caller.queueControllerUpdate({
+      routerId: CERTIFIED_LIKE_ROUTER_ID,
+      channel: "stable",
+    });
+
+    const [inserted] = mock.insertedValues() as Array<{
+      type?: string;
+      payload?: {
+        artifactVersion?: string | null;
+      };
+    }>;
+
+    expect(inserted).toBeDefined();
+    if (!inserted) {
+      throw new Error("Expected controller update job insert.");
+    }
+
+    expect(inserted.type).toBe("update_controller");
+    expect(inserted.payload?.artifactVersion).toBe("0.1.12-r13");
   });
 
   it("allows rescue jobs for pilot Filogic layouts", async () => {

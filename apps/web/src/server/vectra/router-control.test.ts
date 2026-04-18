@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   resolveRescueReason,
+  selectDeliverableJobsForCheckIn,
   shouldPromotePostApplyImport,
 } from "./router-control";
 
@@ -72,5 +73,32 @@ describe("shouldPromotePostApplyImport", () => {
         lastAppliedRevisionId: "revision-applied",
       }),
     ).toBe(false);
+  });
+});
+
+describe("selectDeliverableJobsForCheckIn", () => {
+  it("treats controller self-update terminal jobs as exclusive", () => {
+    const deliverable = selectDeliverableJobsForCheckIn("approved", [
+      {
+        id: "apply-job",
+        type: "apply_passwall_config",
+        state: "queued",
+        payload: {},
+      },
+      {
+        id: "controller-legacy-job",
+        type: "run_terminal_command",
+        state: "queued",
+        payload: {
+          purpose: "controller-self-update",
+          artifactVersion: "0.1.12-r13",
+          command: "opkg install --force-reinstall ...",
+          timeoutSeconds: 120,
+        },
+      },
+    ] as never);
+
+    expect(deliverable).toHaveLength(1);
+    expect(deliverable[0]?.id).toBe("controller-legacy-job");
   });
 });

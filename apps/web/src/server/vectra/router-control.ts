@@ -32,6 +32,7 @@ import {
 import { and, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
 
 import { env } from "~/env";
+import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
 import { db } from "~/server/db";
 import { issueRouterCredential } from "~/server/vectra/auth";
 import {
@@ -146,7 +147,7 @@ export function selectDeliverableJobsForCheckIn(
       : queuedCandidates.filter((job) => job.type !== "apply_passwall_config");
 
   const exclusiveJob = allowedJobs.find((job) =>
-    ["update_controller", "validate_firmware"].includes(job.type),
+    isControllerUpdateJob(job) || job.type === "validate_firmware",
   );
 
   if (exclusiveJob) {

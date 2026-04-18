@@ -17,6 +17,7 @@ import {
   packageNameToRuntimeKey,
 } from "~/lib/passwall-artifacts";
 import { compareControllerVersions, formatControllerVersion } from "~/lib/controller-version";
+import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
 import { db as defaultDb } from "~/server/db";
 import {
   createOperatorDraftRevisionWithDb,
@@ -391,7 +392,7 @@ export async function loadVersionDriftWorkspace(client: DatabaseClient = default
       (job) =>
         job.routerId === router.id &&
         ["queued", "delivered", "running"].includes(job.state) &&
-        ["update_controller", "update_passwall_packages"].includes(job.type),
+        (isControllerUpdateJob(job) || job.type === "update_passwall_packages"),
     );
 
     const xrayOutdated = compareLooseVersions(xrayInstalled, xrayAvailable) === -1;
