@@ -4,6 +4,7 @@ import {
   basicSettingsSecondaryTabs,
   buildRouterConsoleQuery,
   describeDisabledTabs,
+  normalizeRouterConsoleSelection,
   normalizeRouterPrimaryTab,
   normalizeRouterSecondaryTab,
   routerPrimaryTabs,
@@ -21,6 +22,22 @@ describe("router console tab helpers", () => {
   it("keeps DNS section only for basic settings", () => {
     expect(normalizeRouterSecondaryTab("basic-settings", "dns")).toBe("dns");
     expect(normalizeRouterSecondaryTab("geo-view", "dns")).toBeNull();
+  });
+
+  it("normalizes router console selection as a single unit", () => {
+    expect(
+      normalizeRouterConsoleSelection("app-update", "dns"),
+    ).toStrictEqual({
+      primaryTab: "app-update",
+      secondaryTab: null,
+    });
+
+    expect(
+      normalizeRouterConsoleSelection("basic-settings", "dns"),
+    ).toStrictEqual({
+      primaryTab: "basic-settings",
+      secondaryTab: "dns",
+    });
   });
 
   it("allows Watch Logs as a real primary tab", () => {

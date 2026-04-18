@@ -3,8 +3,11 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
+  useCallback,
   useDeferredValue,
   useEffect,
+  useMemo,
+  useRef,
   useState,
   type Dispatch,
   type ReactNode,
@@ -31,9 +34,9 @@ import { RouterWatchLogsSection } from "~/components/router-watch-logs-section";
 import {
   basicSettingsSecondaryTabs,
   buildRouterConsoleQuery,
-  normalizeRouterPrimaryTab,
-  normalizeRouterSecondaryTab,
+  normalizeRouterConsoleSelection,
   routerPrimaryTabs,
+  type RouterConsoleSelection,
   type RouterPrimaryTab,
 } from "~/components/router-console";
 import { StatusTile } from "~/components/status-tile";
@@ -348,12 +351,53 @@ export function RouterDetailWorkspace({
   }, [loadedRevisionId, surface.data]);
 
   const inventory = surface.data?.inventory ?? initialSurface.inventory;
-
-  const primaryTab = normalizeRouterPrimaryTab(searchParams.get("tab"));
-  const secondaryTab = normalizeRouterSecondaryTab(
-    primaryTab,
-    searchParams.get("section"),
+  const currentSearchParams = useMemo(
+    () => new URLSearchParams(searchParams.toString()),
+    [searchParams],
   );
+  const normalizedConsoleSelection = useMemo(
+    () =>
+      normalizeRouterConsoleSelection(
+        searchParams.get("tab"),
+        searchParams.get("section"),
+      ),
+    [searchParams],
+  );
+  const [consoleSelection, setConsoleSelection] = useState<RouterConsoleSelection>(
+    normalizedConsoleSelection,
+  );
+  const pendingTabScrollYRef = useRef<number | null>(null);
+
+  const replaceRouterDetailUrl = useCallback(
+    (query: URLSearchParams) => {
+      const nextQuery = query.toString();
+      const nextUrl = nextQuery ? `${pathname}?${nextQuery}` : pathname;
+      window.history.replaceState(window.history.state, "", nextUrl);
+    },
+    [pathname],
+  );
+  const updateConsoleSelection = useCallback(
+    (nextSelection: RouterConsoleSelection) => {
+      pendingTabScrollYRef.current = window.scrollY;
+      setConsoleSelection((currentSelection) =>
+        currentSelection.primaryTab === nextSelection.primaryTab &&
+        currentSelection.secondaryTab === nextSelection.secondaryTab
+          ? currentSelection
+          : nextSelection,
+      );
+
+      const query = buildRouterConsoleQuery({
+        existing: new URLSearchParams(window.location.search),
+        primaryTab: nextSelection.primaryTab,
+        secondaryTab: nextSelection.secondaryTab,
+      });
+      replaceRouterDetailUrl(query);
+    },
+    [replaceRouterDetailUrl],
+  );
+
+  const primaryTab = consoleSelection.primaryTab;
+  const secondaryTab = consoleSelection.secondaryTab;
   const watchLogsSupported = supportsControllerFeature(
     inventory.controllerVersion,
     minimumWatchLogsControllerVersion,
@@ -366,11 +410,8 @@ export function RouterDetailWorkspace({
   useEffect(() => {
     const currentTab = searchParams.get("tab");
     const currentSection = searchParams.get("section");
-    const nextPrimary = normalizeRouterPrimaryTab(currentTab);
-    const nextSecondary = normalizeRouterSecondaryTab(
-      nextPrimary,
-      currentSection,
-    );
+    const nextPrimary = normalizedConsoleSelection.primaryTab;
+    const nextSecondary = normalizedConsoleSelection.secondaryTab;
     const shouldReplace =
       currentTab !== nextPrimary ||
       (nextPrimary === "basic-settings"
@@ -382,15 +423,42 @@ export function RouterDetailWorkspace({
     }
 
     const query = buildRouterConsoleQuery({
-      existing: new URLSearchParams(searchParams.toString()),
+      existing: new URLSearchParams(currentSearchParams),
       primaryTab: nextPrimary,
       secondaryTab: nextSecondary,
     });
-    const nextUrl = query.toString()
-      ? `${pathname}?${query.toString()}`
-      : pathname;
-    router.replace(nextUrl, { scroll: false });
-  }, [pathname, router, searchParams]);
+    replaceRouterDetailUrl(query);
+  }, [
+    currentSearchParams,
+    normalizedConsoleSelection.primaryTab,
+    normalizedConsoleSelection.secondaryTab,
+    replaceRouterDetailUrl,
+    searchParams,
+  ]);
+  useEffect(() => {
+    setConsoleSelection((currentSelection) =>
+      currentSelection.primaryTab === normalizedConsoleSelection.primaryTab &&
+      currentSelection.secondaryTab === normalizedConsoleSelection.secondaryTab
+        ? currentSelection
+        : normalizedConsoleSelection,
+    );
+  }, [normalizedConsoleSelection]);
+  useEffect(() => {
+    const preservedScrollY = pendingTabScrollYRef.current;
+
+    if (preservedScrollY === null) {
+      return;
+    }
+
+    pendingTabScrollYRef.current = null;
+    window.scrollTo({ top: preservedScrollY });
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: preservedScrollY });
+      window.requestAnimationFrame(() => {
+        window.scrollTo({ top: preservedScrollY });
+      });
+    });
+  }, [consoleSelection.primaryTab, consoleSelection.secondaryTab]);
 
   useSelectionSync(
     draft?.nodes.map((node) => node.id),
@@ -591,12 +659,10 @@ export function RouterDetailWorkspace({
           return;
         }
 
-        const query = buildRouterConsoleQuery({
-          existing: new URLSearchParams(searchParams.toString()),
+        updateConsoleSelection({
           primaryTab: tab.id as RouterPrimaryTab,
           secondaryTab: tab.id === "basic-settings" ? "main" : null,
         });
-        router.replace(`${pathname}?${query.toString()}`, { scroll: false });
       },
     };
   });
@@ -606,12 +672,10 @@ export function RouterDetailWorkspace({
     label: tab.label,
     active: secondaryTab === tab.id,
     onSelect: () => {
-      const query = buildRouterConsoleQuery({
-        existing: new URLSearchParams(searchParams.toString()),
+      updateConsoleSelection({
         primaryTab: "basic-settings",
         secondaryTab: tab.id,
       });
-      router.replace(`${pathname}?${query.toString()}`, { scroll: false });
     },
   }));
 
@@ -741,7 +805,7 @@ export function RouterDetailWorkspace({
   );
   const watchLogsHref = (() => {
     const query = buildRouterConsoleQuery({
-      existing: new URLSearchParams(searchParams.toString()),
+      existing: new URLSearchParams(currentSearchParams),
       primaryTab: "watch-logs",
     });
 

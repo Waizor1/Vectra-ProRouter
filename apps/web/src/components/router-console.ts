@@ -38,6 +38,11 @@ export type RouterSecondaryTab =
   | "log"
   | "maintain";
 
+export type RouterConsoleSelection = {
+  primaryTab: RouterPrimaryTab;
+  secondaryTab: RouterSecondaryTab | null;
+};
+
 export const operatorShellTabs = [
   {
     id: "fleet",
@@ -222,6 +227,18 @@ export function normalizeRouterSecondaryTab(
   return allowedSecondaryTabs.has(value as RouterSecondaryTab)
     ? (value as RouterSecondaryTab)
     : "main";
+}
+
+export function normalizeRouterConsoleSelection(
+  primaryValue: string | null | undefined,
+  secondaryValue: string | null | undefined,
+): RouterConsoleSelection {
+  const primaryTab = normalizeRouterPrimaryTab(primaryValue);
+
+  return {
+    primaryTab,
+    secondaryTab: normalizeRouterSecondaryTab(primaryTab, secondaryValue),
+  };
 }
 
 export function buildRouterConsoleQuery({
