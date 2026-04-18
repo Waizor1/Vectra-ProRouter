@@ -4,7 +4,7 @@ import {
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
-import { desc, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
 import type { db as appDb } from "~/server/db";
 import { formatControllerVersion } from "~/lib/controller-version";
@@ -13,28 +13,60 @@ import { buildFleetMonitoringSnapshot } from "./fleet-monitoring";
 import { describeRouterSupport } from "./support";
 
 type DatabaseClient = typeof appDb;
+type SnapshotSelectClient = Pick<DatabaseClient, "select">;
+type SnapshotExecuteClient = Pick<DatabaseClient, "execute">;
+type FleetMonitoringDatabaseClient = SnapshotSelectClient &
+  Partial<SnapshotExecuteClient>;
+
+function supportsSnapshotExecute(
+  database: FleetMonitoringDatabaseClient,
+): database is SnapshotSelectClient & SnapshotExecuteClient {
+  return typeof database.execute === "function";
+}
 
 async function getLatestSnapshots(
-  database: DatabaseClient,
+  database: FleetMonitoringDatabaseClient,
   routerIds: string[],
 ) {
   if (routerIds.length === 0) {
     return new Map<string, typeof routerInventorySnapshots.$inferSelect>();
   }
 
-  const rows = await database
-    .select()
-    .from(routerInventorySnapshots)
-    .where(inArray(routerInventorySnapshots.routerId, routerIds))
-    .orderBy(desc(routerInventorySnapshots.createdAt));
+  const rows =
+    supportsSnapshotExecute(database)
+      ? await database.execute(sql`
+          select distinct on (router_id)
+            id,
+            router_id,
+            source,
+            payload,
+            passwall_enabled,
+            selected_node_id,
+            node_count,
+            subscription_count,
+            controller_version,
+            passwall_app_version,
+            created_at
+          from vectra_router_inventory_snapshot
+          where router_id in (
+            ${sql.join(routerIds.map((routerId) => sql`${routerId}`), sql`, `)}
+          )
+          order by router_id, created_at desc
+        `)
+      : await database
+          .select()
+          .from(routerInventorySnapshots)
+          .where(inArray(routerInventorySnapshots.routerId, routerIds))
+          .orderBy(desc(routerInventorySnapshots.createdAt));
 
   const latest = new Map<
     string,
     typeof routerInventorySnapshots.$inferSelect
   >();
   for (const row of rows) {
-    if (!latest.has(row.routerId)) {
-      latest.set(row.routerId, row);
+    const snapshot = row as typeof routerInventorySnapshots.$inferSelect;
+    if (!latest.has(snapshot.routerId)) {
+      latest.set(snapshot.routerId, snapshot);
     }
   }
 
@@ -61,7 +93,7 @@ function pickComponentVersions(
 }
 
 export async function loadFleetMonitoringSnapshot(
-  database: DatabaseClient,
+  database: FleetMonitoringDatabaseClient,
   now = new Date(),
 ) {
   const routerRows = await database
@@ -76,39 +108,34 @@ export async function loadFleetMonitoringSnapshot(
       ? database
           .select()
           .from(healthIncidents)
-          .where(inArray(healthIncidents.routerId, routerIds))
+          .where(and(inArray(healthIncidents.routerId, routerIds), eq(healthIncidents.state, "open")))
           .orderBy(desc(healthIncidents.openedAt))
       : Promise.resolve([]),
     routerIds.length
       ? database
           .select()
           .from(jobs)
-          .where(inArray(jobs.routerId, routerIds))
+          .where(
+            and(
+              inArray(jobs.routerId, routerIds),
+              inArray(jobs.state, ["queued", "delivered", "running"]),
+            ),
+          )
           .orderBy(desc(jobs.createdAt))
       : Promise.resolve([]),
   ]);
 
   const incidentMap = new Map<string, typeof healthIncidents.$inferSelect>();
-  let openIncidentCount = 0;
+  const openIncidentCount = incidentRows.length;
   for (const incident of incidentRows) {
-    if (incident.state !== "open") {
-      continue;
-    }
-
-    openIncidentCount += 1;
     if (!incidentMap.has(incident.routerId)) {
       incidentMap.set(incident.routerId, incident);
     }
   }
 
   const jobCountMap = new Map<string, number>();
-  let queuedJobs = 0;
+  const queuedJobs = queuedJobRows.length;
   for (const job of queuedJobRows) {
-    if (!["queued", "delivered", "running"].includes(job.state)) {
-      continue;
-    }
-
-    queuedJobs += 1;
     jobCountMap.set(job.routerId, (jobCountMap.get(job.routerId) ?? 0) + 1);
   }
 

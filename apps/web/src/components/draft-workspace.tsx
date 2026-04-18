@@ -153,6 +153,7 @@ export function DraftWorkspace({
         utils.fleet.byId.invalidate({
           routerId: selectedRouterId,
         }),
+        utils.fleet.monitoring.invalidate(),
       ]);
       router.refresh();
     },
@@ -168,6 +169,7 @@ export function DraftWorkspace({
         utils.fleet.byId.invalidate({
           routerId: selectedRouterId,
         }),
+        utils.fleet.monitoring.invalidate(),
       ]);
       router.refresh();
     },

@@ -41,7 +41,7 @@ export type RouterSummary = {
 function describeRouterTrustState(router: RouterSummary) {
   if (router.offline || !router.reachable) {
     return {
-      badge: "last known",
+      badge: "последний снимок",
       badgeClassName: "border-rose-400/30 bg-rose-500/12 text-rose-100",
       title: "Связи сейчас нет",
       detail:
@@ -51,20 +51,20 @@ function describeRouterTrustState(router: RouterSummary) {
 
   if (router.directMode) {
     return {
-      badge: "watch",
+      badge: "нужен разбор",
       badgeClassName: "border-amber-400/30 bg-amber-500/12 text-amber-100",
       title: "Связь жива, но нужен разбор",
       detail:
-        "Панель получает live check-in, но роутер сейчас не в штатном прокси-режиме и требует внимания оператора.",
+        "Панель получает свежие check-in, но роутер сейчас не в штатном прокси-режиме и требует внимания оператора.",
     };
   }
 
   return {
-    badge: "live",
+    badge: "свежий снимок",
     badgeClassName: "border-emerald-400/30 bg-emerald-500/12 text-emerald-100",
     title: "Живой рабочий снимок",
-    detail:
-      "Карточка отражает недавний check-in и подходит для быстрого triage без перехода в детальный экран.",
+      detail:
+        "Карточка отражает недавний check-in и подходит для быстрой оценки состояния без перехода в детальный экран.",
   };
 }
 
@@ -74,11 +74,11 @@ function describePrimaryStatus(router: RouterSummary) {
   }
 
   if (router.directMode) {
-    return "Live, но нештатный контур";
+    return "Связь есть, но контур нештатный";
   }
 
   if (router.passwallEnabled) {
-    return "Live proxy-mode";
+    return "Свежий proxy-mode";
   }
 
   return router.statusLabel;

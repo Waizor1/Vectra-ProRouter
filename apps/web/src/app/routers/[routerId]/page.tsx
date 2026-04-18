@@ -16,7 +16,7 @@ export default async function RouterDetailPage({
 }) {
   const { routerId } = await params;
 
-  const router = await api.fleet.byId({ routerId }).catch((error: unknown) => {
+  const surface = await api.draft.editorSurface({ routerId }).catch((error: unknown) => {
     if (error instanceof TRPCError && error.code === "NOT_FOUND") {
       notFound();
     }
@@ -24,40 +24,30 @@ export default async function RouterDetailPage({
     throw error;
   });
 
-  const payload = router.latestSnapshot?.payload;
-  const routerReachable = isRouterReachable(router.router.lastSeenAt);
+  const routerReachable = isRouterReachable(surface.routerRuntimeSummary.lastSeenAt);
   const directModeActive = hasActiveDirectMode(
-    router.router.status,
-    router.router.lastSeenAt,
+    (surface.routerRuntimeSummary.status ?? "offline") as
+      | "pending"
+      | "active"
+      | "offline"
+      | "direct"
+      | "rescue"
+      | "disabled",
+    surface.routerRuntimeSummary.lastSeenAt,
   );
   const needsRecoveryAction =
-    router.router.status === "direct" ||
-    router.latestSnapshot?.passwallEnabled === false ||
-    Boolean(router.router.lastRescueReason) ||
-    Boolean(payload?.lastRescue?.reason);
+    surface.routerRuntimeSummary.status === "direct" ||
+    surface.routerRuntimeSummary.passwallEnabled === false ||
+    Boolean(surface.routerRuntimeSummary.lastRescueReason);
 
   return (
     <section>
       <RouterDetailWorkspace
-        routerId={router.router.id}
+        routerId={surface.routerRuntimeSummary.id}
+        initialSurface={surface}
         routerReachable={routerReachable}
         directModeActive={directModeActive}
         needsRecoveryAction={needsRecoveryAction}
-        inventory={{
-          controllerVersion:
-            payload?.controllerVersion ??
-            router.latestSnapshot?.controllerVersion ??
-            null,
-          passwallVersion:
-            router.latestSnapshot?.passwallAppVersion ??
-            payload?.packageVersions["luci-app-passwall2"] ??
-            null,
-          packageVersions: payload?.packageVersions ?? {},
-          binaryVersions: payload?.binaryVersions ?? {},
-          rulesAssets: payload?.rulesAssets ?? null,
-          serviceHealth: payload?.serviceHealth ?? null,
-          telegramReachability: payload?.telegramReachability ?? null,
-        }}
       />
     </section>
   );

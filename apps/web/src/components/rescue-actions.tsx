@@ -25,6 +25,7 @@ export function RescueActions({
       await Promise.all([
         utils.fleet.byId.invalidate({ routerId }),
         utils.fleet.list.invalidate(),
+        utils.fleet.monitoring.invalidate(),
         utils.rescue.directRouters.invalidate(),
         utils.rescue.openIncidents.invalidate(),
       ]);

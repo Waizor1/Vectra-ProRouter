@@ -24,7 +24,7 @@ export function Panel({
 
   return (
     <section
-      className={`rounded-2xl px-4 py-4 sm:px-5 ${compact ? "sm:py-4" : "sm:py-5"} ${toneClassName}`}
+      className={`min-w-0 rounded-2xl px-4 py-4 sm:px-5 ${compact ? "sm:py-4" : "sm:py-5"} ${toneClassName}`}
     >
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">

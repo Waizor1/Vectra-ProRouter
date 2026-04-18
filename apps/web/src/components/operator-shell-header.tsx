@@ -21,6 +21,7 @@ export function OperatorShellHeader() {
     [pathname],
   );
   const isLoginPage = pathname === "/login";
+
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 

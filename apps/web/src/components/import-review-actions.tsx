@@ -34,6 +34,7 @@ export function ImportReviewActions({
       await Promise.all([
         utils.fleet.byId.invalidate({ routerId }),
         utils.fleet.list.invalidate(),
+        utils.fleet.monitoring.invalidate(),
         utils.fleet.pendingImportReviews.invalidate(),
         utils.draft.workspace.invalidate({ routerId }),
         utils.draft.editorSurface.invalidate({ routerId }),
@@ -47,6 +48,7 @@ export function ImportReviewActions({
       await Promise.all([
         utils.fleet.byId.invalidate({ routerId }),
         utils.fleet.list.invalidate(),
+        utils.fleet.monitoring.invalidate(),
         utils.fleet.pendingImportReviews.invalidate(),
         utils.draft.workspace.invalidate({ routerId }),
         utils.draft.editorSurface.invalidate({ routerId }),

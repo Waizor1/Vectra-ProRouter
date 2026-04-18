@@ -3,7 +3,7 @@ import "~/styles/globals.css";
 import { type Metadata } from "next";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 
-import { OperatorShellHeader } from "~/components/operator-shell-header";
+import { AppShellFrame } from "~/components/app-shell-frame";
 import { TRPCReactProvider } from "~/trpc/react";
 
 export const metadata: Metadata = {
@@ -37,13 +37,7 @@ export default function RootLayout({
     >
       <body className="min-h-screen bg-[var(--vectra-bg)] font-sans text-slate-100 antialiased">
         <TRPCReactProvider>
-          <div className="vectra-shell overflow-hidden">
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(60,112,156,0.12),transparent_22%),radial-gradient(circle_at_bottom_right,rgba(174,95,42,0.12),transparent_20%)]" />
-            <div className="vectra-shell-frame">
-              <OperatorShellHeader />
-              <main className="vectra-page-stack flex-1">{children}</main>
-            </div>
-          </div>
+          <AppShellFrame>{children}</AppShellFrame>
         </TRPCReactProvider>
       </body>
     </html>

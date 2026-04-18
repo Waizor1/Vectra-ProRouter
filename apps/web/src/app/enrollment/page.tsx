@@ -64,7 +64,7 @@ export default function EnrollmentPage() {
   });
 
   return (
-    <section className="space-y-4">
+    <section className="min-w-0 space-y-4">
       <PageHeader
         eyebrow="Установка"
         title="Подключение роутера"
@@ -73,16 +73,17 @@ export default function EnrollmentPage() {
         compact
       />
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-        <Panel
-          eyebrow="Bootstrap"
-          title="Команда для роутера"
-          tone="hero"
-          aside={
-            <CopyTextButton text={quickCommand} label="Копировать команду" />
-          }
-        >
-          <div className="space-y-4">
+      <div className="min-w-0 grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+        <div className="min-w-0 overflow-hidden">
+          <Panel
+            eyebrow="Bootstrap"
+            title="Команда для роутера"
+            tone="hero"
+            aside={
+              <CopyTextButton text={quickCommand} label="Копировать команду" />
+            }
+          >
+            <div className="space-y-4 min-w-0">
             <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
               Сначала выполняете bootstrap на роутере, потом проверяете появление устройства в <strong className="text-white">Парке</strong>, и только после этого решаете, принимать ли импорт как эталон.
             </div>
@@ -99,7 +100,7 @@ export default function EnrollmentPage() {
               </span>
             </div>
 
-            <pre className="overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
+            <pre className="w-full max-w-full overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
               <code>{quickCommand}</code>
             </pre>
 
@@ -117,11 +118,13 @@ export default function EnrollmentPage() {
                 Открыть bootstrap-скрипт
               </a>
             </div>
-          </div>
-        </Panel>
+            </div>
+          </Panel>
+        </div>
 
-        <Panel eyebrow="После bootstrap" title="Следующие действия" tone="muted">
-          <div className="space-y-3">
+        <div className="min-w-0 overflow-hidden">
+          <Panel eyebrow="После bootstrap" title="Следующие действия" tone="muted">
+            <div className="space-y-3 min-w-0">
             {nextActionSteps.map((item) => (
               <div
                 key={item.step}
@@ -163,8 +166,9 @@ export default function EnrollmentPage() {
                 Открыть массовую рассылку
               </Link>
             </div>
-          </div>
-        </Panel>
+            </div>
+          </Panel>
+        </div>
       </div>
 
       <Panel eyebrow="Утилиты" title="Технические материалы" tone="muted">
@@ -187,8 +191,8 @@ export default function EnrollmentPage() {
             title="После своей подписки: вернуть привязки myshunt"
             summary="Команда и вспомогательный скрипт для возврата shunt-target привязок после импорта своей подписки."
           >
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,0.8fr)]">
-              <div className="space-y-4 text-sm leading-7 text-slate-300">
+            <div className="min-w-0 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,0.8fr)]">
+              <div className="min-w-0 space-y-4 text-sm leading-7 text-slate-300">
                 <div className="flex flex-wrap gap-2">
                   <CopyTextButton
                     text={shuntRebindCommand}
@@ -202,7 +206,7 @@ export default function EnrollmentPage() {
                   <code> myshunt</code>.
                 </p>
 
-                <pre className="overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
+                <pre className="w-full max-w-full overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
                   <code>{shuntRebindCommand}</code>
                 </pre>
 
@@ -211,7 +215,7 @@ export default function EnrollmentPage() {
                   назначения. Скрипт доступен по адресу{" "}
                   <a
                     href={shuntRebindScriptUrl}
-                    className="font-[family:var(--font-plex-mono)] text-[var(--vectra-accent)] underline decoration-white/20 underline-offset-4"
+                    className="break-all font-[family:var(--font-plex-mono)] text-[var(--vectra-accent)] underline decoration-white/20 underline-offset-4"
                   >
                     {shuntRebindScriptUrl}
                   </a>
@@ -219,7 +223,7 @@ export default function EnrollmentPage() {
                 </p>
               </div>
 
-              <div className="space-y-2 rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] p-4">
+              <div className="min-w-0 space-y-2 rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] p-4">
                 <p className="vectra-kicker text-slate-500">Какие targets вернутся</p>
                 {ax3000tEnrollmentPreset.sourceShuntTargets.map((target) => (
                   <div
@@ -269,7 +273,7 @@ export default function EnrollmentPage() {
                 <p className="vectra-kicker text-slate-500">
                   OpenWrt feeds и runtime-пакеты
                 </p>
-                <p className="mt-2 text-xs font-[family:var(--font-plex-mono)] text-slate-100">
+                <p className="mt-2 break-all text-xs font-[family:var(--font-plex-mono)] text-slate-100">
                   {[
                     ...ax3000tEnrollmentPreset.openWrtFeedProvidedDependencies,
                     ...ax3000tEnrollmentPreset.requiredOpenWrtPackages,
@@ -281,7 +285,7 @@ export default function EnrollmentPage() {
                 <p className="vectra-kicker text-slate-500">
                   Не ставятся по умолчанию
                 </p>
-                <p className="mt-2 text-xs font-[family:var(--font-plex-mono)] text-slate-100">
+                <p className="mt-2 break-all text-xs font-[family:var(--font-plex-mono)] text-slate-100">
                   {[
                     ...ax3000tEnrollmentPreset.optionalMirroredPackages,
                     ...ax3000tEnrollmentPreset.optionalOpenWrtPackages,
@@ -318,7 +322,7 @@ export default function EnrollmentPage() {
                 Сам baseline-файл доступен по адресу{" "}
                 <a
                   href={baselineUrl}
-                  className="font-[family:var(--font-plex-mono)] text-[var(--vectra-accent)] underline decoration-white/20 underline-offset-4"
+                    className="break-all font-[family:var(--font-plex-mono)] text-[var(--vectra-accent)] underline decoration-white/20 underline-offset-4"
                 >
                   {baselineUrl}
                 </a>
@@ -331,9 +335,9 @@ export default function EnrollmentPage() {
             title="Полный bootstrap shell"
             summary="Полный текст генерируемого bootstrap-скрипта для ручной проверки."
           >
-            <div className="space-y-3">
-              <CopyTextButton text={bootstrapScript} label="Копировать скрипт" />
-              <pre className="max-h-[36rem] overflow-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
+              <div className="min-w-0 space-y-3">
+                <CopyTextButton text={bootstrapScript} label="Копировать скрипт" />
+              <pre className="max-h-[36rem] w-full max-w-full overflow-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
                 <code>{bootstrapScript}</code>
               </pre>
             </div>
@@ -343,28 +347,28 @@ export default function EnrollmentPage() {
             title="Рабочие адреса"
             summary="Куда смотрит операторская панель, router API и artifact storage."
           >
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="min-w-0 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] p-4 text-sm leading-7 text-slate-200">
                 <p className="vectra-kicker text-slate-500">Панель оператора</p>
-                <p className="mt-3 text-sm font-[family:var(--font-plex-mono)] text-white">
+                <p className="mt-3 break-all text-sm font-[family:var(--font-plex-mono)] text-white">
                   {controlDomain}
                 </p>
               </div>
               <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] p-4 text-sm leading-7 text-slate-200">
                 <p className="vectra-kicker text-slate-500">API для роутеров</p>
-                <p className="mt-3 text-sm font-[family:var(--font-plex-mono)] text-white">
+                <p className="mt-3 break-all text-sm font-[family:var(--font-plex-mono)] text-white">
                   {routerApiBase}
                 </p>
               </div>
               <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] p-4 text-sm leading-7 text-slate-200">
                 <p className="vectra-kicker text-slate-500">Адрес артефактов</p>
-                <p className="mt-3 text-sm font-[family:var(--font-plex-mono)] text-white">
+                <p className="mt-3 break-all text-sm font-[family:var(--font-plex-mono)] text-white">
                   {artifactBase}
                 </p>
               </div>
               <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] p-4 text-sm leading-7 text-slate-200">
                 <p className="vectra-kicker text-slate-500">AX3000T feed</p>
-                <p className="mt-3 text-sm font-[family:var(--font-plex-mono)] text-white">
+                <p className="mt-3 break-all text-sm font-[family:var(--font-plex-mono)] text-white">
                   {feedUrl}
                 </p>
               </div>
@@ -388,10 +392,10 @@ function DisclosureSection({
   children: ReactNode;
 }) {
   return (
-    <details
-      open={defaultOpen}
-      className="rounded-2xl border border-white/10 bg-[rgba(10,14,20,0.74)]"
-    >
+      <details
+        open={defaultOpen}
+        className="min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-[rgba(10,14,20,0.74)]"
+      >
       <summary className="cursor-pointer list-none px-4 py-3">
         <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
           <div>
@@ -401,7 +405,7 @@ function DisclosureSection({
           <span className="text-xs text-slate-500">показать / скрыть</span>
         </div>
       </summary>
-      <div className="border-t border-white/10 px-4 py-4">{children}</div>
+      <div className="min-w-0 border-t border-white/10 px-4 py-4">{children}</div>
     </details>
   );
 }

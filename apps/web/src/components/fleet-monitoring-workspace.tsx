@@ -77,7 +77,7 @@ const alertBadgeMap = {
 
 const routerStateLabelMap = {
   stable: "в строю",
-  recovery: "recovery / direct",
+  recovery: "rescue / direct",
   offline: "нет связи",
   review: "нужна сверка",
   blocked: "ограничен",
@@ -92,9 +92,9 @@ const routerStateToneMap = {
 } as const;
 
 const freshnessLabelMap = {
-  fresh: "live",
+  fresh: "свежий снимок",
   watch: "устаревает",
-  offline: "last known",
+  offline: "последний снимок",
   never: "нет check-in",
 } as const;
 
@@ -182,7 +182,7 @@ function describeFreshnessState(
         toneClassName: freshnessToneMap[state],
         summary: `Связь стареет · ${lastSeen}`,
         detail:
-          "Данные ещё пригодны для triage, но это уже не совсем live-состояние.",
+          "Данные ещё пригодны для оценки, но это уже не полностью актуальное live-состояние.",
       };
     case "offline":
       return {
@@ -198,7 +198,7 @@ function describeFreshnessState(
         toneClassName: freshnessToneMap[state],
         summary: "Живого снимка ещё не было",
         detail:
-          "Панель ещё не получала рабочий check-in, поэтому ниже нет подтверждённого live-состояния.",
+          "Панель ещё не получала рабочий check-in, поэтому ниже нет подтверждённого текущего состояния.",
       };
   }
 }
@@ -213,11 +213,11 @@ function getNotificationStatusCopy({
   permission: NotificationPermission | "unsupported";
 }) {
   if (permission === "unsupported") {
-    return {
-      title: "Системные уведомления недоступны",
-      detail:
-        "Этот браузер не поддерживает уведомления. Парк остаётся только экраном triage внутри панели.",
-    };
+      return {
+        title: "Системные уведомления недоступны",
+        detail:
+          "Этот браузер не поддерживает уведомления. В этом режиме `Парк` остаётся только экраном наблюдения внутри панели.",
+      };
   }
 
   if (permission === "denied") {
@@ -233,7 +233,7 @@ function getNotificationStatusCopy({
       ? {
           title: "Фоновые push-уведомления активны",
           detail:
-            "Поддерживаемые браузеры смогут показать новый критичный инцидент даже после ухода со страницы.",
+            "Поддерживаемые браузеры смогут показать новый критичный инцидент даже после ухода со страницы `Парк`.",
         }
       : {
           title: "Push поддерживается, но сейчас выключен",
@@ -246,7 +246,7 @@ function getNotificationStatusCopy({
     ? {
         title: "Уведомления только пока вкладка жива",
         detail:
-          "Сейчас работает in-tab режим: браузер покажет новые проблемы, пока панель открыта в фоне, но не после закрытия вкладки.",
+          "Сейчас работает режим только во вкладке: браузер покажет новые проблемы, пока панель открыта в фоне, но не после закрытия вкладки.",
       }
     : {
         title: "Уведомления во вкладке выключены",
@@ -642,12 +642,22 @@ export function FleetMonitoringWorkspace({
           eyebrow="Парк"
           title={`Роутеры · ${activeFilterLabel}`}
           tone="hero"
-          aside={
-            <div className="flex flex-col gap-2 text-left text-sm leading-6 text-slate-400 md:items-end md:text-right">
-              <p>Показано {filteredRouters.length} из {snapshot.routers.length}</p>
-              <p>Алертов: {filteredAlerts.length}</p>
-              <p>Снимок обновлён {formatRelativeTime(snapshot.generatedAt)}</p>
-              <div className="flex flex-wrap gap-2 md:justify-end">
+        >
+          <div className="space-y-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="flex flex-wrap gap-2 text-xs text-slate-300 sm:text-sm">
+                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2">
+                  Показано {filteredRouters.length} из {snapshot.routers.length}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2">
+                  Алертов: {filteredAlerts.length}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2">
+                  Снимок обновлён {formatRelativeTime(snapshot.generatedAt)}
+                </span>
+              </div>
+
+              <div className="flex flex-wrap gap-2 lg:justify-end">
                 {activeFilter ? (
                   <button
                     type="button"
@@ -677,9 +687,7 @@ export function FleetMonitoringWorkspace({
                 </button>
               </div>
             </div>
-          }
-        >
-          <div className="space-y-4">
+
             <div className="grid gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)]">
               <div className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.04)] px-3 py-3">
                 <p className="vectra-kicker text-[var(--vectra-accent)]">Triage-режим</p>
@@ -734,8 +742,27 @@ export function FleetMonitoringWorkspace({
               </div>
             </div>
 
+            <section className="space-y-3 lg:hidden">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm text-slate-400">Карточки.</p>
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-2">
+                {filteredRouters.length > 0 ? (
+                  filteredRouters.map((router) => (
+                    <RouterCard key={router.id} router={router} />
+                  ))
+                ) : (
+                  <div className="rounded-md border border-dashed border-white/12 bg-white/[0.03] p-4 text-sm leading-7 text-slate-300 lg:col-span-2">
+                    В этом фильтре роутеров нет. Смените сегмент сверху или
+                    сбросьте фильтр.
+                  </div>
+                )}
+              </div>
+            </section>
+
             <div className="grid gap-4 xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,0.7fr)] xl:items-start">
-              <section className="rounded-[1.4rem] border border-white/10 bg-[rgba(8,11,17,0.76)] px-4 py-4">
+              <section className="hidden rounded-[1.4rem] border border-white/10 bg-[rgba(8,11,17,0.76)] px-4 py-4 lg:block">
                 <h3 className="text-base font-semibold text-white sm:text-lg">
                   Плотная таблица парка
                 </h3>
@@ -1027,27 +1054,27 @@ function FleetOperationsRow({
   return (
     <tr className="border-t border-white/10 align-top text-slate-200">
       <td className="px-3 py-3">
-          <div className="min-w-[15rem]">
-            <div className="flex flex-wrap items-center gap-2">
-              <Link
-                href={`/routers/${router.id}`}
+        <div className="min-w-0 lg:min-w-[15rem]">
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href={`/routers/${router.id}`}
               className="text-sm font-semibold text-white transition hover:text-[var(--vectra-accent)]"
             >
               {router.name}
             </Link>
-            </div>
-            <div className="mt-2 flex flex-wrap gap-2 text-xs leading-5 text-slate-400">
-              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
-                ID {router.id.slice(0, 8)}
-              </span>
-              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
-                Очередь {router.pendingChanges}
-              </span>
-            </div>
           </div>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs leading-5 text-slate-400">
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
+              ID {router.id.slice(0, 8)}
+            </span>
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
+              Очередь {router.pendingChanges}
+            </span>
+          </div>
+        </div>
       </td>
       <td className="px-3 py-3">
-        <div className="min-w-[11rem] space-y-2 text-xs leading-5">
+        <div className="min-w-0 space-y-2 text-xs leading-5 lg:min-w-[11rem]">
           <div className="flex flex-wrap gap-2">
             <span
               className={`inline-flex rounded-full border px-2.5 py-1 font-semibold tracking-[0.08em] uppercase ${routerStateToneMap[router.operationalState]}`}
@@ -1071,7 +1098,7 @@ function FleetOperationsRow({
         </div>
       </td>
       <td className="px-3 py-3">
-        <div className="min-w-[10rem] space-y-2 text-xs leading-5 text-slate-400">
+        <div className="min-w-0 space-y-2 text-xs leading-5 text-slate-400 lg:min-w-[10rem]">
           <p>
             Импорт <span className="font-medium text-white">{formatRouterImportStateLabel(router.importState)}</span>
           </p>
@@ -1081,7 +1108,7 @@ function FleetOperationsRow({
         </div>
       </td>
       <td className="px-3 py-3">
-        <div className="min-w-[11rem] space-y-2 text-xs leading-5 text-slate-400">
+        <div className="min-w-0 space-y-2 text-xs leading-5 text-slate-400 lg:min-w-[11rem]">
           <p>
             Controller <span className="font-medium text-white">{controllerVersion}</span>
           </p>
@@ -1091,7 +1118,7 @@ function FleetOperationsRow({
         </div>
       </td>
       <td className="px-3 py-3 text-right">
-        <div className="flex min-w-[11rem] flex-col items-stretch gap-2 sm:items-end">
+        <div className="flex min-w-0 flex-col items-stretch gap-2 lg:min-w-[11rem] sm:items-end">
           <Link
             href={`/routers/${router.id}`}
             className="rounded-md border border-[var(--vectra-line-strong)] bg-[var(--vectra-accent-soft)] px-3 py-2 text-center text-sm font-medium text-white transition hover:bg-[rgba(99,185,255,0.22)]"
