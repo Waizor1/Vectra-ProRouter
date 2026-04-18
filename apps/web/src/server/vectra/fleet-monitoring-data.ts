@@ -17,11 +17,156 @@ type SnapshotSelectClient = Pick<DatabaseClient, "select">;
 type SnapshotExecuteClient = Pick<DatabaseClient, "execute">;
 type FleetMonitoringDatabaseClient = SnapshotSelectClient &
   Partial<SnapshotExecuteClient>;
+type RouterInventorySnapshotRow = typeof routerInventorySnapshots.$inferSelect;
 
 function supportsSnapshotExecute(
   database: FleetMonitoringDatabaseClient,
 ): database is SnapshotSelectClient & SnapshotExecuteClient {
   return typeof database.execute === "function";
+}
+
+function readStringField(
+  record: Record<string, unknown>,
+  ...keys: string[]
+): string | null {
+  for (const key of keys) {
+    if (typeof record[key] === "string") {
+      return record[key];
+    }
+  }
+
+  return null;
+}
+
+function readNullableStringField(
+  record: Record<string, unknown>,
+  ...keys: string[]
+) {
+  for (const key of keys) {
+    const value = record[key];
+    if (value === null) {
+      return null;
+    }
+    if (typeof value === "string") {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function readNumberField(
+  record: Record<string, unknown>,
+  ...keys: string[]
+): number {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return 0;
+}
+
+function readBooleanField(
+  record: Record<string, unknown>,
+  ...keys: string[]
+): boolean {
+  for (const key of keys) {
+    if (typeof record[key] === "boolean") {
+      return record[key];
+    }
+  }
+
+  return false;
+}
+
+function readDateField(
+  record: Record<string, unknown>,
+  ...keys: string[]
+): Date {
+  for (const key of keys) {
+    const value = record[key];
+    if (value instanceof Date) {
+      return value;
+    }
+    if (typeof value === "string") {
+      const parsed = new Date(value);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+  }
+
+  return new Date(0);
+}
+
+function normalizeSnapshotPayload(
+  payload: unknown,
+): RouterInventorySnapshotRow["payload"] {
+  if (payload && typeof payload === "object") {
+    return payload as RouterInventorySnapshotRow["payload"];
+  }
+
+  if (typeof payload === "string") {
+    try {
+      const parsed = JSON.parse(payload) as unknown;
+      if (parsed && typeof parsed === "object") {
+        return parsed as RouterInventorySnapshotRow["payload"];
+      }
+    } catch {
+      return {} as RouterInventorySnapshotRow["payload"];
+    }
+  }
+
+  return {} as RouterInventorySnapshotRow["payload"];
+}
+
+function normalizeSnapshotRow(row: unknown): RouterInventorySnapshotRow | null {
+  if (!row || typeof row !== "object") {
+    return null;
+  }
+
+  const record = row as Record<string, unknown>;
+  const routerId = readStringField(record, "routerId", "router_id");
+  if (!routerId) {
+    return null;
+  }
+
+  return {
+    id: readStringField(record, "id") ?? "",
+    routerId,
+    source: readStringField(record, "source") ?? "check_in",
+    payload: normalizeSnapshotPayload(record.payload),
+    passwallEnabled: readBooleanField(
+      record,
+      "passwallEnabled",
+      "passwall_enabled",
+    ),
+    selectedNodeId: readNullableStringField(
+      record,
+      "selectedNodeId",
+      "selected_node_id",
+    ),
+    nodeCount: readNumberField(record, "nodeCount", "node_count"),
+    subscriptionCount: readNumberField(
+      record,
+      "subscriptionCount",
+      "subscription_count",
+    ),
+    controllerVersion: readNullableStringField(
+      record,
+      "controllerVersion",
+      "controller_version",
+    ),
+    passwallAppVersion: readNullableStringField(
+      record,
+      "passwallAppVersion",
+      "passwall_app_version",
+    ),
+    createdAt: readDateField(record, "createdAt", "created_at"),
+  };
 }
 
 async function getLatestSnapshots(
@@ -37,16 +182,16 @@ async function getLatestSnapshots(
       ? await database.execute(sql`
           select distinct on (router_id)
             id,
-            router_id,
+            router_id as "routerId",
             source,
             payload,
-            passwall_enabled,
-            selected_node_id,
-            node_count,
-            subscription_count,
-            controller_version,
-            passwall_app_version,
-            created_at
+            passwall_enabled as "passwallEnabled",
+            selected_node_id as "selectedNodeId",
+            node_count as "nodeCount",
+            subscription_count as "subscriptionCount",
+            controller_version as "controllerVersion",
+            passwall_app_version as "passwallAppVersion",
+            created_at as "createdAt"
           from vectra_router_inventory_snapshot
           where router_id in (
             ${sql.join(routerIds.map((routerId) => sql`${routerId}`), sql`, `)}
@@ -64,8 +209,8 @@ async function getLatestSnapshots(
     typeof routerInventorySnapshots.$inferSelect
   >();
   for (const row of rows) {
-    const snapshot = row as typeof routerInventorySnapshots.$inferSelect;
-    if (!latest.has(snapshot.routerId)) {
+    const snapshot = normalizeSnapshotRow(row);
+    if (snapshot && !latest.has(snapshot.routerId)) {
       latest.set(snapshot.routerId, snapshot);
     }
   }
