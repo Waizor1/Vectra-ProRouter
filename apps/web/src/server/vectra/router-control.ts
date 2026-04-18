@@ -490,11 +490,11 @@ async function resolveDesiredRevision(router: RouterRow, queuedJobs: JobRow[]) {
 
 function buildRegisterMessage(router: RouterRow) {
   if (router.importState === "import_review") {
-    return "Роутер зарегистрирован. Импортированный baseline PassWall2 ожидает проверки оператора.";
+    return "Роутер зарегистрирован. Новый импортированный baseline PassWall2 ожидает проверки оператора.";
   }
 
   if (!router.approvedAt) {
-    return "Роутер зарегистрирован и ожидает подтверждения оператора.";
+    return "Роутер зарегистрирован и ожидает review оператора.";
   }
 
   return "Учётные данные роутера обновлены.";
@@ -724,6 +724,8 @@ export async function registerRouter(input: unknown) {
     metadata: {
       architecture: parsed.inventory.architecture,
       boardName: parsed.inventory.boardName,
+      enrollmentMode: "open_global_install",
+      pendingReview: !router.approvedAt || router.importState !== "approved",
     },
   });
 

@@ -1,5 +1,5 @@
 {
-  "tag": "26.4.5-1",
+  "tag": "26.4.10-1",
   "arch": "aarch64_cortex-a53",
   "requiredPackages": [
     {
@@ -46,8 +46,8 @@
     },
     {
       "name": "luci-app-passwall2",
-      "filename": "luci-app-passwall2_26.4.5-r1_all.ipk",
-      "version": "26.4.5-r1",
+      "filename": "luci-app-passwall2_26.4.10-r1_all.ipk",
+      "version": "26.4.10-r1",
       "downloadSizeBytes": 325772,
       "installedSizeBytes": 1300480
     }
@@ -55,8 +55,8 @@
   "optionalPackages": [
     {
       "name": "sing-box",
-      "filename": "sing-box_1.13.5-r1_aarch64_cortex-a53.ipk",
-      "version": "1.13.5-r1",
+      "filename": "sing-box_1.13.6-r1_aarch64_cortex-a53.ipk",
+      "version": "1.13.6-r1",
       "downloadSizeBytes": 15947069,
       "installedSizeBytes": 45209600
     },
@@ -69,8 +69,8 @@
     }
   ],
   "sourceUrls": {
-    "release": "https://github.com/Openwrt-Passwall/openwrt-passwall2/releases/tag/26.4.5-1",
-    "luciAppPackage": "https://github.com/Openwrt-Passwall/openwrt-passwall2/releases/download/26.4.5-1/luci-app-passwall2_26.4.5-r1_all.ipk",
-    "packageBundle": "https://github.com/Openwrt-Passwall/openwrt-passwall2/releases/download/26.4.5-1/passwall_packages_ipk_aarch64_cortex-a53.zip"
+    "release": "https://github.com/Openwrt-Passwall/openwrt-passwall2/releases/tag/26.4.10-1",
+    "luciAppPackage": "https://github.com/Openwrt-Passwall/openwrt-passwall2/releases/download/26.4.10-1/luci-app-passwall2_26.4.10-r1_all.ipk",
+    "packageBundle": "https://github.com/Openwrt-Passwall/openwrt-passwall2/releases/download/26.4.10-1/passwall_packages_ipk_aarch64_cortex-a53.zip"
   }
 }

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Tag = '26.4.5-1',
+    [string]$Tag = '26.4.10-1',
 
     [string]$Arch = 'aarch64_cortex-a53',
 

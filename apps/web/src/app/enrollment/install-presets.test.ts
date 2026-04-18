@@ -21,6 +21,7 @@ import {
   buildAx3000tShuntRebindCommand,
   buildAx3000tShuntRebindScript,
   buildAx3000tShuntRebindScriptUrl,
+  classifyFilogicPasswallInstallState,
   DEFAULT_PASSWALL2_RELEASE_TAG,
   planAx3000tManagedPackageOperations,
 } from "~/app/enrollment/install-presets";
@@ -115,8 +116,12 @@ describe("enrollment install preset", () => {
     });
 
     expect(script).toContain(`EXPECTED_ARCH='${ax3000tEnrollmentPreset.architecture}'`);
+    expect(script).toContain("EXPECTED_TARGET='mediatek/filogic'");
     expect(script).toContain(
       `ARCH="$(awk -F"'" '/^DISTRIB_ARCH=/{print $2; exit}' /etc/openwrt_release 2>/dev/null || true)"`,
+    );
+    expect(script).toContain(
+      `TARGET="$(awk -F"'" '/^DISTRIB_TARGET=/{print $2; exit}' /etc/openwrt_release 2>/dev/null || true)"`,
     );
     expect(script).toContain(`CONTROL_URL='${routerApiBase}'`);
     expect(script).toContain(`PASSWALL_RELEASE_TAG='${DEFAULT_PASSWALL2_RELEASE_TAG}'`);
@@ -141,14 +146,58 @@ describe("enrollment install preset", () => {
       `OPENWRT_FEED_PREREQS='${AX3000T_OPENWRT_FEED_PROVIDED_DEPENDENCIES.join(" ")}'`,
     );
     expect(script).toContain("require_feed_packages $OPENWRT_FEED_PREREQS");
-    expect(script).toContain("require_feed_packages $REQUIRED_RUNTIME_PACKAGES");
+    expect(script).toContain(
+      "require_feed_packages_with_storage $REQUIRED_RUNTIME_PACKAGES",
+    );
+    expect(script).toContain('if package_installed "$pkg"; then');
+    expect(script).toContain('return 0');
     expect(script).toContain("require_vectra_package vectra-controller-agent");
+    expect(script).not.toContain(
+      'Не удалось определить Installed-Size для пакета Vectra $pkg. Storage-aware preflight остановлен.',
+    );
+    expect(script).toContain("whatdepends_packages() {");
+    expect(script).toContain(
+      "awk '/^[[:space:]]+[[:alnum:]_.+-]+([[:space:]]|$)/ { print $1 }'",
+    );
+    expect(script).toContain('whatdepends_packages "$pkg" | grep -qx \'luci-app-passwall2\'');
+    expect(script).not.toContain(
+      `opkg whatdepends "$pkg" 2>/dev/null | awk '/^[[:alnum:]_.+-]+[[:space:]]/ { print $1 }'`,
+    );
+    expect(script).toContain('value="$(feed_package_field "$1" "$2" || true)"');
+    expect(script).toContain('package_index_field "$1" "$2"');
+    expect(script).toContain("feed_package_storage_budget_bytes() {");
+    expect(script).toContain('feed_package_download_size_bytes "$pkg"');
+    expect(script).toContain("require_feed_package_storage_metadata() {");
+    expect(script).toContain("vectra_package_storage_budget_bytes() {");
+    expect(script).toContain('vectra_package_download_size_bytes "$pkg"');
     expect(script).toContain("download_and_install_managed_ipk() {");
     expect(script).toContain("append_preserved_passwall_sections() {");
     expect(script).toContain("apply_passwall_baseline() {");
     expect(script).toContain("refresh_passwall_managed_stack() {");
     expect(script).toContain("install_controller_packages() {");
     expect(script).toContain("install_dnsmasq_full()");
+    expect(script).toContain("passwall_runtime_ready_for_reuse() {");
+    expect(script).toContain("passwall_config_exists() {");
+    expect(script).toContain("REUSE_EXISTING_PASSWALL_STACK='0'");
+    expect(script).toContain("Reuse lane: существующий PassWall2 уже выглядит рабочим");
+    expect(script).toContain("install_missing_managed_ipk() {");
+    expect(script).toContain("refresh_managed_package_package_based() {");
+    expect(script).toContain("сначала пробую in-place package install");
+    expect(script).toContain("passwall_component_updater_available() {");
+    expect(script).toContain("refresh_passwall_component_via_builtin_updater() {");
+    expect(script).toContain("refresh_reuse_lane_heavy_component() {");
+    expect(script).toContain("refresh_bootstrap_xray_runtime_via_builtin_updater() {");
+    expect(script).toContain("package_upgrade_impossible_for_overlay() {");
+    expect(script).toContain("extract_xray_binary_from_ipk() {");
+    expect(script).toContain("refresh_xray_binary_from_ipk_payload() {");
+    expect(script).toContain("refresh_reuse_lane_passwall_state() {");
+    expect(script).toContain("luci.passwall2.api");
+    expect(script).toContain("local download_size_kb = tonumber(data.size or 0)");
+    expect(script).toContain("download_size_kb = download_size_kb / 1024");
+    expect(script).toContain(
+      "local download = api.to_download(component, data.browser_download_url, download_size_kb)",
+    );
+    expect(script).toContain("отсутствует, доустанавливаю");
     expect(script).toContain('cp /etc/config/dhcp "$BACKUP_DIR/dhcp"');
     expect(script).toContain('rm -f /etc/config/dhcp /etc/config/dhcp-opkg');
     expect(script).toContain('/etc/init.d/dnsmasq restart >/dev/null 2>&1 || true');
@@ -168,6 +217,24 @@ describe("enrollment install preset", () => {
     expect(script).toContain(
       'append_preserved_passwall_sections "$BACKUP_DIR/passwall2" "$WORKDIR/uci/passwall2"',
     );
+    expect(script).toContain("refresh_existing_subscriptions");
+    expect(script).toContain("rebind_myshunt_from_remarks");
+    expect(script).toContain("normalize_remark() {");
+    expect(script).toContain("repair broken PassWall config");
+    expect(script).toContain("пытаюсь salvage подписки и ноды из raw backup");
+    expect(script).toContain('cp "$WORKDIR/uci/passwall2" "$WORKDIR/uci/passwall2.pristine"');
+    expect(script).toContain('пытаюсь salvage подписки и ноды из raw backup');
+    expect(script).toContain('Raw salvage из повреждённого passwall2 успешно добавил recoverable подписки и ноды.');
+    expect(script).toContain('Raw salvage из повреждённого passwall2 не прошёл валидацию; продолжаю с чистым baseline.');
+    expect(script).toContain("Shunt-автопривязка неполная; сохраняю прежний рабочий узел");
+    expect(script).toContain("install_missing_managed_ipk \"$pkg\"");
+    expect(script).toContain("Reuse lane: довожу PassWall app и тяжёлые компоненты до результата адаптивным update-path...");
+    expect(script).toContain("встроенный PassWall App Update");
+    expect(script).toContain("Проверяю, нужен ли runtime-апдейт Xray через встроенный PassWall App Update");
+    expect(script).toContain("runtime доведён через встроенный PassWall App Update");
+    expect(script).toContain("переключаюсь на package-refresh fallback");
+    expect(script).toContain("package-refresh физически не помещается в overlay; сохраняю low-storage runtime-convergence как допустимый результат.");
+    expect(script).toContain("runtime binary обновлён напрямую из target IPK payload");
     expect(script).toContain(
       "Сохраняю существующие подписки и ноды PassWall2 из текущего конфига...",
     );
@@ -214,7 +281,8 @@ describe("enrollment install preset", () => {
 
     expect(script).toContain("SHUNT_ID='myshunt'");
     expect(script).toContain(`PANEL_URL='${controlDomain}'`);
-    expect(script).toContain("find_node_by_remark()");
+    expect(script).toContain("find_unique_node_by_remark()");
+    expect(script).toContain("count_nodes_by_remark()");
     expect(script).toContain(
       "for id in $(uci show passwall2 2>/dev/null | awk -F'[.=]' '/=nodes$/{print $2}')",
     );
@@ -223,6 +291,7 @@ describe("enrollment install preset", () => {
     expect(script).toContain("apply_slot 'Special' '🇫🇮 ⚡⚡ Финляндия Xhttp Gaming'");
     expect(script).toContain("apply_slot 'Tiktok' '🇧🇾 Беларусь'");
     expect(script).toContain('uci set "passwall2.$SHUNT_ID.$slot=$node_id"');
+    expect(script).toContain("найдено несколько нод с remark");
     expect(script).toContain("Привязки myshunt обновлены и PassWall2 перезапущен.");
   });
 
@@ -357,6 +426,42 @@ describe("enrollment install preset", () => {
     expect(plan.storageCheck.blockingPackageName).toBe("xray-core");
     expect(plan.storageCheck.message).toContain("/overlay");
     expect(plan.storageCheck.message).toContain("xray-core");
+  });
+
+  it("classifies broken parseable state as repair-broken-config before other lanes", () => {
+    expect(
+      classifyFilogicPasswallInstallState({
+        hasAnyManagedPackagesInstalled: true,
+        hasOutdatedManagedPackages: false,
+        hasMissingManagedPackages: false,
+        hasPasswallConfigFile: true,
+        passwallConfigParseable: false,
+      }),
+    ).toBe("repair broken PassWall config");
+  });
+
+  it("classifies empty Filogic state as fresh install", () => {
+    expect(
+      classifyFilogicPasswallInstallState({
+        hasAnyManagedPackagesInstalled: false,
+        hasOutdatedManagedPackages: false,
+        hasMissingManagedPackages: true,
+        hasPasswallConfigFile: false,
+        passwallConfigParseable: false,
+      }),
+    ).toBe("fresh install");
+  });
+
+  it("classifies partially missing managed stack as repair drifted packages", () => {
+    expect(
+      classifyFilogicPasswallInstallState({
+        hasAnyManagedPackagesInstalled: true,
+        hasOutdatedManagedPackages: false,
+        hasMissingManagedPackages: true,
+        hasPasswallConfigFile: true,
+        passwallConfigParseable: true,
+      }),
+    ).toBe("repair drifted managed packages");
   });
 
   it("blocks destructive reclaim when an external package depends on xray-core", () => {

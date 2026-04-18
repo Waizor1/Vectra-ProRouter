@@ -8,7 +8,7 @@ shadowsocksr-libev-ssr-local_2.5.6-r11_aarch64_cortex-a53.ipk
 shadowsocksr-libev-ssr-redir_2.5.6-r11_aarch64_cortex-a53.ipk
 shadowsocksr-libev-ssr-server_2.5.6-r11_aarch64_cortex-a53.ipk
 simple-obfs-client_0.0.5-r3_aarch64_cortex-a53.ipk
-sing-box_1.13.5-r1_aarch64_cortex-a53.ipk
+sing-box_1.13.6-r1_aarch64_cortex-a53.ipk
 tcping_0.3-r1_aarch64_cortex-a53.ipk
 tuic-client_1.7.2-r1_aarch64_cortex-a53.ipk
 v2ray-geoip_202603260032.1_all.ipk
