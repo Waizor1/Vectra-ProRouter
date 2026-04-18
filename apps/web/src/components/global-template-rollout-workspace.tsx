@@ -265,6 +265,7 @@ export function GlobalTemplateRolloutWorkspace({
         utils.update.globalTemplateWorkspace.invalidate(),
         utils.draft.list.invalidate(),
         utils.fleet.list.invalidate(),
+        utils.fleet.monitoring.invalidate(),
         utils.fleet.overview.invalidate(),
         utils.fleet.pendingImportReviews.invalidate(),
       ]);
@@ -513,7 +514,7 @@ export function GlobalTemplateRolloutWorkspace({
                     ? "Сохраняю эталон..."
                     : "Сохранить эталон"}
                 </button>
-                <div className="min-w-[260px] flex-1">
+                <div className="min-w-0 flex-1 sm:min-w-[260px]">
                   <label
                     htmlFor="global-template-save-note"
                     className="sr-only"

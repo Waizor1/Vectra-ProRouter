@@ -102,6 +102,7 @@ export const routers = createTable(
       .notNull()
       .default("awaiting_import"),
     controllerChannel: channelEnum("controller_channel").notNull().default("stable"),
+    rolloutGroupId: text("rollout_group_id"),
     pendingImportRevisionId: text("pending_import_revision_id"),
     activeRevisionId: text("active_revision_id"),
     lastAppliedRevisionId: text("last_applied_revision_id"),
@@ -117,6 +118,7 @@ export const routers = createTable(
     uniqueIndex("vectra_router_device_identifier_idx").on(table.deviceIdentifier),
     index("vectra_router_status_idx").on(table.status),
     index("vectra_router_last_seen_idx").on(table.lastSeenAt),
+    index("vectra_router_rollout_group_idx").on(table.rolloutGroupId),
   ]
 );
 
@@ -438,6 +440,45 @@ export const operatorGlobalTemplates = createTable(
   },
   (table) => [
     uniqueIndex("vectra_operator_global_template_key_idx").on(table.templateKey),
+  ]
+);
+
+export const operatorRolloutProfiles = createTable(
+  "operator_rollout_profile",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    profileKey: text("profile_key").notNull(),
+    name: text("name").notNull(),
+    description: text("description"),
+    rolloutConfig: jsonb("rollout_config").$type<PasswallDesiredConfig>().notNull(),
+    note: text("note"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("vectra_operator_rollout_profile_key_idx").on(table.profileKey),
+  ]
+);
+
+export const operatorRouterGroups = createTable(
+  "operator_router_group",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    groupKey: text("group_key").notNull(),
+    name: text("name").notNull(),
+    description: text("description"),
+    rolloutProfileId: text("rollout_profile_id").references(
+      () => operatorRolloutProfiles.id,
+      { onDelete: "set null" }
+    ),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("vectra_operator_router_group_key_idx").on(table.groupKey),
+    index("vectra_operator_router_group_profile_idx").on(table.rolloutProfileId),
   ]
 );
 

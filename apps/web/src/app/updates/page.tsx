@@ -1,4 +1,4 @@
-import { GlobalTemplateRolloutWorkspace } from "~/components/global-template-rollout-workspace";
+import { UpdatesWorkspaceClientBoundary } from "~/components/updates-workspace-client-boundary";
 import { Panel } from "~/components/panel";
 import { PageHeader } from "~/components/page-header";
 import { api } from "~/trpc/server";
@@ -48,9 +48,9 @@ function buildReleaseTracks(
   const latestController = artifacts.find(
     (artifact) => artifact.type === "controller",
   );
-  const latestPasswall = artifacts.find((artifact) =>
-    ["passwall_package", "passwall_bundle"].includes(artifact.type),
-  );
+  const latestPasswall =
+    artifacts.find((artifact) => artifact.type === "passwall_bundle") ??
+    artifacts.find((artifact) => artifact.type === "passwall_package");
   const latestFirmware = manifests[0];
 
   return [
@@ -82,10 +82,18 @@ function buildReleaseTracks(
 }
 
 export default async function UpdatesPage() {
-  const [artifacts, manifests, globalTemplateWorkspace] = await Promise.all([
+  const [
+    artifacts,
+    manifests,
+    globalTemplateWorkspace,
+    profilesAndGroupsWorkspace,
+    versionDriftWorkspace,
+  ] = await Promise.all([
     api.update.artifacts(),
     api.update.firmwareMatrix(),
     api.update.globalTemplateWorkspace(),
+    api.update.profilesAndGroupsWorkspace(),
+    api.update.versionDriftWorkspace(),
   ]);
   const releaseTracks = buildReleaseTracks(artifacts, manifests);
 
@@ -93,9 +101,9 @@ export default async function UpdatesPage() {
     <section className="space-y-4">
       <PageHeader
         eyebrow="Обновления"
-        title="Глобальный baseline и массовая рассылка"
-        description="Сначала правите общий эталон, затем выбираете роутеры для рассылки. Каналы и артефакты ниже остаются справочным контуром, а не главным рабочим местом."
-        mobileDescription="Эталон, рассылка и справка по каналам."
+        title="Профили, группы и контроль обновлений"
+        description="Здесь вы ведёте reusable rollout-профили, раскладываете парк по группам и управляете массовыми обновлениями Xray / PassWall / controller без перегруженного интерфейса. Глобальный baseline остаётся рядом как отдельный рабочий контур."
+        mobileDescription="Профили, группы, baseline и update-контроль."
         compact
       />
 
@@ -158,8 +166,10 @@ export default async function UpdatesPage() {
         </Panel>
       </div>
 
-      <GlobalTemplateRolloutWorkspace
-        initialWorkspace={globalTemplateWorkspace}
+      <UpdatesWorkspaceClientBoundary
+        initialGlobalTemplateWorkspace={globalTemplateWorkspace}
+        initialProfilesAndGroupsWorkspace={profilesAndGroupsWorkspace}
+        initialVersionDriftWorkspace={versionDriftWorkspace}
       />
 
       <Panel eyebrow="Справка" title="Последние артефакты и guarded-контур" tone="muted">

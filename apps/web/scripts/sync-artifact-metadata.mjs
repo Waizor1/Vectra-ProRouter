@@ -19,6 +19,12 @@ const artifactTypeSchema = z.enum([
   "firmware",
 ]);
 const channelSchema = z.enum(["stable", "beta"]);
+const passwallRecoveryDependencySchema = z.enum([
+  "dnsmasq-full",
+  "kmod-nft-socket",
+  "kmod-nft-tproxy",
+  "kmod-nft-nat",
+]);
 
 const feedIndexSchema = z.object({
   feedName: z.string().min(1),
@@ -89,6 +95,48 @@ const seedFileSchema = z.object({
   firmwareManifests: z.array(firmwareManifestSeedSchema).default([]),
 });
 
+const passwallMirrorPackageEntrySchema = z.object({
+  name: z.string().min(1),
+  filename: z.string().min(1),
+  version: z.string().min(1),
+  downloadSizeBytes: z.number().int().nonnegative(),
+  installedSizeBytes: z.number().int().nonnegative(),
+});
+
+const passwallMirrorManifestSchema = z.object({
+  tag: z.string().min(1),
+  arch: z.string().min(1),
+  requiredPackages: z.array(passwallMirrorPackageEntrySchema).min(1),
+  optionalPackages: z.array(passwallMirrorPackageEntrySchema).default([]),
+  sourceUrls: z.object({
+    release: z.string().url().nullable().optional(),
+    luciAppPackage: z.string().url().nullable().optional(),
+    packageBundle: z.string().url().nullable().optional(),
+  }),
+});
+
+const passwallRecoveryDependencies = [
+  "dnsmasq-full",
+  "kmod-nft-socket",
+  "kmod-nft-tproxy",
+  "kmod-nft-nat",
+];
+const passwallManagedInstallOrder = [
+  "xray-core",
+  "v2ray-geoip",
+  "v2ray-geosite",
+  "geoview",
+  "sing-box",
+  "hysteria",
+  "chinadns-ng",
+  "tcping",
+  "dnsmasq-full",
+  "kmod-nft-socket",
+  "kmod-nft-tproxy",
+  "kmod-nft-nat",
+  "luci-app-passwall2",
+];
+
 function printUsage() {
   console.log(`Usage:
   node apps/web/scripts/sync-artifact-metadata.mjs [options]
@@ -96,6 +144,9 @@ function printUsage() {
 Options:
   --feed-dir PATH              Parse OpenWrt feed metadata from index.json in this directory
   --feed-subpath NAME          Public subpath prefix for feed URLs (default: openwrt)
+  --passwall-mirror-dir PATH   Parse mirrored PassWall manifest + packages from this directory
+  --passwall-mirror-subpath    Public subpath prefix for PassWall mirror URLs
+                               (default: bootstrap/passwall2)
   --spec PATH                  JSON file with extra artifact and firmware manifest definitions
   --artifact-base-url URL      Base URL for hosted artifacts
                                (default: VECTRA_ARTIFACT_BASE_URL or https://api.vectra-pro.net/artifacts)
@@ -118,6 +169,8 @@ function parseArgs(argv) {
   const options = {
     feedDir: null,
     feedSubpath: "openwrt",
+    passwallMirrorDir: null,
+    passwallMirrorSubpath: "bootstrap/passwall2",
     spec: null,
     artifactBaseUrl:
       process.env.VECTRA_ARTIFACT_BASE_URL ??
@@ -133,6 +186,13 @@ function parseArgs(argv) {
         break;
       case "--feed-subpath":
         options.feedSubpath = argv[++index] ?? options.feedSubpath;
+        break;
+      case "--passwall-mirror-dir":
+        options.passwallMirrorDir = argv[++index] ?? null;
+        break;
+      case "--passwall-mirror-subpath":
+        options.passwallMirrorSubpath =
+          argv[++index] ?? options.passwallMirrorSubpath;
         break;
       case "--spec":
         options.spec = argv[++index] ?? null;
@@ -155,8 +215,10 @@ function parseArgs(argv) {
     }
   }
 
-  if (!options.feedDir && !options.spec) {
-    throw new Error("Provide at least one of --feed-dir or --spec.");
+  if (!options.feedDir && !options.passwallMirrorDir && !options.spec) {
+    throw new Error(
+      "Provide at least one of --feed-dir, --passwall-mirror-dir, or --spec.",
+    );
   }
 
   return options;
@@ -280,6 +342,144 @@ async function buildFeedArtifacts(options) {
   }
 
   return artifacts;
+}
+
+function parsePasswallPackageArchitecture(fileName, fallbackArchitecture) {
+  try {
+    return parseOpenWrtPackageFileName(fileName, fallbackArchitecture)
+      .architecture;
+  } catch {
+    return fallbackArchitecture;
+  }
+}
+
+function buildPasswallPackageNaturalMetadata(args) {
+  return {
+    source: "vectra-passwall-mirror",
+    releaseTag: args.manifest.tag,
+    manifestUrl: args.manifestUrl,
+    releaseUrl: args.manifest.sourceUrls.release ?? null,
+    packageBundleUrl: args.manifest.sourceUrls.packageBundle ?? null,
+    required: args.required,
+    fileName: args.entry.filename,
+    mirrorBaseUrl: args.mirrorBaseUrl,
+    downloadSizeBytes: args.entry.downloadSizeBytes,
+    installedSizeBytes: args.entry.installedSizeBytes,
+  };
+}
+
+async function buildPasswallMirrorArtifacts(options) {
+  if (!options.passwallMirrorDir) {
+    return [];
+  }
+
+  const mirrorDir = resolveWithinWorkspace(options.passwallMirrorDir);
+  const manifestPath = path.join(mirrorDir, "manifest.json");
+  const manifest = await readJson(manifestPath, passwallMirrorManifestSchema);
+  const publicBase = trimTrailingSlash(options.artifactBaseUrl);
+  const mirrorBaseUrl = `${publicBase}/${options.passwallMirrorSubpath}/${manifest.tag}/${manifest.arch}`;
+  const manifestUrl = `${mirrorBaseUrl}/manifest.json`;
+
+  const packageArtifacts = await Promise.all(
+    [...manifest.requiredPackages, ...manifest.optionalPackages].map(
+      async (entry) => {
+        const filePath = path.join(mirrorDir, entry.filename);
+        const required = manifest.requiredPackages.some(
+          (candidate) => candidate.name === entry.name,
+        );
+
+        return artifactSeedSchema.parse({
+          type: "passwall_package",
+          channel: "stable",
+          name: entry.name,
+          version: entry.version,
+          architecture: parsePasswallPackageArchitecture(
+            entry.filename,
+            manifest.arch,
+          ),
+          boardName: null,
+          layoutFamily: null,
+          downloadUrl: `${mirrorBaseUrl}/${entry.filename}`,
+          checksumSha256: await hashFileSha256(filePath),
+          signatureUrl: null,
+          metadata: buildPasswallPackageNaturalMetadata({
+            manifest,
+            manifestUrl,
+            mirrorBaseUrl,
+            entry,
+            required,
+          }),
+          publishedAt: new Date().toISOString(),
+        });
+      },
+    ),
+  );
+
+  const bundlePackageArtifacts = packageArtifacts.map((artifact) => ({
+    name: artifact.name,
+    artifactUrl: artifact.downloadUrl,
+    artifactVersion: artifact.version,
+    sha256: artifact.checksumSha256,
+    signatureUrl: artifact.signatureUrl ?? null,
+    source: "vectra",
+    required: artifact.metadata.required !== false,
+    downloadSizeBytes:
+      typeof artifact.metadata.downloadSizeBytes === "number"
+        ? artifact.metadata.downloadSizeBytes
+        : null,
+    installedSizeBytes:
+      typeof artifact.metadata.installedSizeBytes === "number"
+        ? artifact.metadata.installedSizeBytes
+        : null,
+  }));
+  const managedPackageList = Array.from(
+    new Set([
+      ...manifest.requiredPackages.map((entry) => entry.name),
+      ...passwallRecoveryDependencies,
+    ]),
+  ).sort((left, right) => {
+    const leftIndex = passwallManagedInstallOrder.indexOf(left);
+    const rightIndex = passwallManagedInstallOrder.indexOf(right);
+    if (leftIndex === -1 && rightIndex === -1) {
+      return left.localeCompare(right);
+    }
+    if (leftIndex === -1) {
+      return 1;
+    }
+    if (rightIndex === -1) {
+      return -1;
+    }
+    return leftIndex - rightIndex;
+  });
+
+  const bundleArtifact = artifactSeedSchema.parse({
+    type: "passwall_bundle",
+    channel: "stable",
+    name: "passwall2-managed-stack",
+    version: manifest.tag,
+    architecture: manifest.arch,
+    boardName: null,
+    layoutFamily: null,
+    downloadUrl: manifestUrl,
+    checksumSha256: await hashFileSha256(manifestPath),
+    signatureUrl: null,
+    metadata: {
+      source: "vectra",
+      releaseTag: manifest.tag,
+      manifestUrl,
+      releaseUrl: manifest.sourceUrls.release ?? null,
+      packageBundleUrl: manifest.sourceUrls.packageBundle ?? null,
+      requiredPackages: manifest.requiredPackages,
+      optionalPackages: manifest.optionalPackages,
+      packageArtifacts: bundlePackageArtifacts,
+      managedPackageList,
+      recoveryDependencies: passwallRecoveryDependencies,
+      installOrder: passwallManagedInstallOrder,
+    },
+    publishedAt: new Date().toISOString(),
+  });
+
+  return [...packageArtifacts, bundleArtifact];
 }
 
 async function buildSpecArtifacts(options) {
@@ -463,12 +663,18 @@ async function upsertFirmwareManifest(sql, manifest, artifactId) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const [feedArtifacts, specPayload] = await Promise.all([
+  const [feedArtifacts, passwallMirrorArtifacts, specPayload] =
+    await Promise.all([
     buildFeedArtifacts(options),
+    buildPasswallMirrorArtifacts(options),
     buildSpecArtifacts(options),
   ]);
 
-  const allArtifacts = [...feedArtifacts, ...specPayload.artifacts];
+  const allArtifacts = [
+    ...feedArtifacts,
+    ...passwallMirrorArtifacts,
+    ...specPayload.artifacts,
+  ];
   const dedupedArtifacts = Array.from(
     new Map(allArtifacts.map((artifact) => [toNaturalKey(artifact), artifact])).values()
   );
@@ -477,6 +683,7 @@ async function main() {
     mode: options.apply ? "apply" : "dry-run",
     artifactBaseUrl: trimTrailingSlash(options.artifactBaseUrl),
     feedDir: options.feedDir,
+    passwallMirrorDir: options.passwallMirrorDir,
     spec: options.spec,
     artifacts: dedupedArtifacts.map((artifact) => ({
       type: artifact.type,

@@ -43,6 +43,13 @@
       "when": 1776128400000,
       "tag": "0005_spotty_terminal_command",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1776433500000,
+      "tag": "0006_sturdy_rollout_groups",
+      "breakpoints": true
     }
   ]
 }
