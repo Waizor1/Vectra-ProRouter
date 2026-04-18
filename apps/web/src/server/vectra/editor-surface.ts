@@ -13,6 +13,10 @@ import {
 } from "@vectra/db";
 import { desc, eq } from "drizzle-orm";
 
+import {
+  compareControllerVersions,
+  normalizeControllerVersion,
+} from "~/lib/controller-version";
 import { db } from "~/server/db";
 import { buildEditorSurface } from "~/server/vectra/editor";
 import { isRouterReachable } from "~/server/vectra/router-presence";
@@ -171,6 +175,7 @@ async function hydrateRevision(
 export function buildLastControllerUpdateAttempt(args: {
   jobs: Array<typeof jobs.$inferSelect>;
   results: Array<typeof jobResults.$inferSelect>;
+  installedControllerVersion?: string | null;
 }): LastControllerUpdateAttempt | null {
   const latestJob =
     [...args.jobs]
@@ -198,16 +203,28 @@ export function buildLastControllerUpdateAttempt(args: {
   const artifactVersion =
     readStringField(latestJob.payload, "artifactVersion") ??
     readStringField(preferredResult?.payload ?? null, "artifactVersion");
+  const installedControllerVersion = normalizeControllerVersion(
+    args.installedControllerVersion,
+  );
+  const convergedAfterFailure =
+    resultStatus === "failure" &&
+    installedControllerVersion !== null &&
+    normalizeControllerVersion(artifactVersion) !== null &&
+    (compareControllerVersions(installedControllerVersion, artifactVersion) ?? -1) >=
+      0;
+  const effectiveResultStatus = convergedAfterFailure ? "success" : resultStatus;
 
   return {
     jobState: latestJob.state,
-    resultStatus,
+    resultStatus: effectiveResultStatus,
     artifactVersion,
     reportedAt: preferredResult?.reportedAt ?? null,
     summary: summarizeControllerUpdateAttempt({
       jobState: latestJob.state,
-      resultStatus,
+      resultStatus: effectiveResultStatus,
       payload: preferredResult?.payload ?? null,
+      installedControllerVersion,
+      convergedAfterFailure,
     }),
   };
 }
@@ -302,7 +319,13 @@ function summarizeControllerUpdateAttempt(args: {
   jobState: string;
   resultStatus: ControllerUpdateAttemptStatus;
   payload: Record<string, unknown> | null;
+  installedControllerVersion: string | null;
+  convergedAfterFailure: boolean;
 }) {
+  if (args.convergedAfterFailure && args.installedControllerVersion) {
+    return `controller уже на ${args.installedControllerVersion}; старый failure-result после self-update больше не актуален`;
+  }
+
   const errorLine = firstMeaningfulLine(readStringField(args.payload, "error"));
   if (errorLine) {
     return errorLine;
@@ -704,6 +727,7 @@ export async function getDraftEditorSurface(routerId: string) {
   const lastControllerUpdateAttempt = buildLastControllerUpdateAttempt({
     jobs: recentJobs,
     results: resultRows,
+    installedControllerVersion: latestSnapshot?.controllerVersion ?? null,
   });
   const lastPasswallUpdateAttempt = buildLastPasswallUpdateAttempt({
     jobs: recentJobs,

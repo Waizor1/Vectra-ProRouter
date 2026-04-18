@@ -35,7 +35,7 @@ func (f *fakeCommandRunner) Run(_ context.Context, name string, args ...string) 
 	}, nil
 }
 
-func TestRunStagedPackageInstallJobUpdatesOpkgIndexBeforeInstall(t *testing.T) {
+func TestRunStagedPackageInstallJobInstallsPinnedArtifactsWithoutOpkgUpdate(t *testing.T) {
 	payloads := map[string][]byte{
 		"/agent.ipk": []byte("agent-package"),
 		"/luci.ipk":  []byte("luci-package"),
@@ -99,21 +99,24 @@ func TestRunStagedPackageInstallJobUpdatesOpkgIndexBeforeInstall(t *testing.T) {
 		t.Fatalf("expected controller restart request, got %v", err)
 	}
 
-	if len(backend.calls) < 2 {
-		t.Fatalf("expected at least opkg update and opkg install, got %v", backend.calls)
+	if len(backend.calls) != 2 {
+		t.Fatalf("expected wrapped opkg install plus delayed restart scheduling, got %v", backend.calls)
 	}
-	if got, want := backend.calls[0], "opkg update"; got != want {
-		t.Fatalf("first package command = %q, want %q", got, want)
-	}
-	if got := backend.calls[1]; !strings.HasPrefix(
+	if got := backend.calls[0]; !strings.HasPrefix(
 		got,
 		"sh -c VECTRA_SKIP_POSTINST_RESTART='1' 'opkg' 'install' '--force-reinstall' ",
 	) {
 		t.Fatalf(
-			"second package command = %q, want forced opkg install wrapped with %s",
+			"package command = %q, want forced opkg install wrapped with %s",
 			got,
 			skipControllerPostinstRestartEnv,
 		)
+	}
+	if got := backend.calls[1]; !strings.HasPrefix(
+		got,
+		"sh -c (sleep 2; /etc/init.d/vectra-controller restart >/tmp/vectra-controller-self-update.log 2>&1) &",
+	) {
+		t.Fatalf("restart scheduling command = %q, want delayed controller restart", got)
 	}
 	if persisted.PendingJobResult == nil || persisted.PendingJobResult.Status != "success" {
 		t.Fatalf("expected pending success result to survive controller restart, got %#v", persisted.PendingJobResult)
@@ -148,6 +151,7 @@ func TestExecutePackageInstallSequenceRepairsPasswallAfterInstall(t *testing.T) 
 		backend,
 		[]string{"install", "luci-app-passwall2", "dnsmasq-full"},
 		false,
+		true,
 		true,
 	)
 	if err != nil {
@@ -295,5 +299,37 @@ func TestFailedPasswallStatusesTreatStorageBlockAsTerminal(t *testing.T) {
 	}
 	if isFailedPasswallStatus("runtime-updated") {
 		t.Fatalf("did not expect runtime-updated to stop the overall job")
+	}
+}
+
+func TestPasswallPackageUpdateNeedsFeedRefresh(t *testing.T) {
+	jobWithPinnedArtifacts := artifactJob{
+		PackageList: []string{"xray-core", "luci-app-passwall2"},
+		PackageArtifacts: []packageArtifact{
+			{
+				Name:        "xray-core",
+				ArtifactURL: "https://example.com/xray-core.ipk",
+			},
+			{
+				Name:        "luci-app-passwall2",
+				ArtifactURL: "https://example.com/luci-app-passwall2.ipk",
+			},
+		},
+	}
+	if passwallPackageUpdateNeedsFeedRefresh(jobWithPinnedArtifacts) {
+		t.Fatalf("expected pinned PassWall artifacts to skip opkg feed refresh")
+	}
+
+	jobWithFeedGap := artifactJob{
+		PackageList: []string{"xray-core", "luci-app-passwall2"},
+		PackageArtifacts: []packageArtifact{
+			{
+				Name:        "xray-core",
+				ArtifactURL: "https://example.com/xray-core.ipk",
+			},
+		},
+	}
+	if !passwallPackageUpdateNeedsFeedRefresh(jobWithFeedGap) {
+		t.Fatalf("expected missing package artifact to require opkg feed refresh")
 	}
 }

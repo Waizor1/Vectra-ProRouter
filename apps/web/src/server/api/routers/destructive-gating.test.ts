@@ -80,7 +80,10 @@ function createProtectedCaller<T>(router: T, db: unknown) {
   });
 }
 
-function createPilotLayoutSnapshot(layoutFamily = "ubootmod") {
+function createPilotLayoutSnapshot(
+  layoutFamily = "ubootmod",
+  packageVersions?: Record<string, string>,
+) {
   return {
     id: "snapshot-1",
     routerId: CERTIFIED_LIKE_ROUTER_ID,
@@ -93,6 +96,7 @@ function createPilotLayoutSnapshot(layoutFamily = "ubootmod") {
       openwrtRelease: "24.10.6",
       packageVersions: {
         "sing-box": "1.13.5-r1",
+        ...packageVersions,
       },
     },
   };
@@ -454,6 +458,69 @@ describe("destructive route gating", () => {
       source: "vectra",
     });
     expect(inserted.dedupeKey).toContain("xray-core");
+  });
+
+  it("skips unpinned recovery deps when the router already has them installed", async () => {
+    const mock = createMockDb([
+      [
+        createCertifiedLikeRouter(),
+      ],
+      [
+        createPilotLayoutSnapshot("stock-layout", {
+          "dnsmasq-full": "2.90-r4",
+          "kmod-nft-socket": "6.6.119-r1",
+          "kmod-nft-tproxy": "6.6.119-r1",
+          "kmod-nft-nat": "6.6.119-r1",
+        }),
+      ],
+      [
+        createPasswallBundleArtifact(),
+        createPasswallPackageArtifact("tcping", "0.3-r1"),
+        createPasswallPackageArtifact("xray-core", "26.3.27-r1"),
+        createPasswallPackageArtifact("v2ray-geoip", "202603260032.1"),
+        createPasswallPackageArtifact("v2ray-geosite", "202603292224.1"),
+        createPasswallPackageArtifact("geoview", "0.2.5-r1"),
+        createPasswallPackageArtifact("chinadns-ng", "2025.08.09-r1"),
+        createPasswallPackageArtifact("sing-box", "1.13.6-r1", {
+          required: false,
+        }),
+        createPasswallPackageArtifact("luci-app-passwall2", "26.4.10-r1"),
+      ],
+      [],
+    ]);
+    const caller = createProtectedCaller(updateRouter, mock.db) as {
+      queuePasswallPackageUpdate: (input: {
+        routerId: string;
+        artifactChannel: "stable" | "beta";
+      }) => Promise<unknown>;
+    };
+
+    await caller.queuePasswallPackageUpdate({
+      routerId: CERTIFIED_LIKE_ROUTER_ID,
+      artifactChannel: "stable",
+    });
+
+    const [inserted] = mock.insertedValues() as Array<{
+      payload?: {
+        packageList?: string[];
+      };
+    }>;
+
+    expect(inserted).toBeDefined();
+    if (!inserted) {
+      throw new Error("Expected managed stack update job insert.");
+    }
+
+    expect(inserted.payload?.packageList).toEqual([
+      "xray-core",
+      "v2ray-geoip",
+      "v2ray-geosite",
+      "geoview",
+      "sing-box",
+      "chinadns-ng",
+      "tcping",
+      "luci-app-passwall2",
+    ]);
   });
 
   it("allows scoped PassWall package updates for pilot Filogic layouts", async () => {

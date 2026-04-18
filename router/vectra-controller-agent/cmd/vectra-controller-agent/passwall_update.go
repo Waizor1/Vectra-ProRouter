@@ -83,30 +83,32 @@ func runPasswallPackageUpdateJob(
 	storageSnapshotBefore := currentInventory.Resources
 
 	results := make([]passwall.CommandResult, 0, len(orderedPackages)+3)
-	updateResult, err := backend.Run(ctx, "opkg", "update")
-	results = append(results, updateResult)
-	if err != nil {
-		return submitFailure(
-			ctx,
-			client,
-			cfg,
-			persisted,
-			jobID,
-			updateResult.Stdout,
-			updateResult.Stderr,
-			err.Error(),
-			map[string]interface{}{
-				"packageList":          orderedPackages,
-				"strategy":             emptyStringToNil(job.Strategy),
-				"targetVersion":        job.TargetVersion,
-				"packageTargetVersion": emptyStringToNil(job.PackageTargetVersion),
-				"runtimeTargetVersion": emptyStringToNil(job.RuntimeTargetVersion),
-				"targetReleaseTag":     job.TargetReleaseTag,
-				"originSource":         job.OriginSource,
-				"fallbackPolicy":       job.FallbackPolicy,
-				"updateScope":          job.UpdateScope,
-			},
-		)
+	if passwallPackageUpdateNeedsFeedRefresh(job) {
+		updateResult, err := backend.Run(ctx, "opkg", "update")
+		results = append(results, updateResult)
+		if err != nil {
+			return submitFailure(
+				ctx,
+				client,
+				cfg,
+				persisted,
+				jobID,
+				updateResult.Stdout,
+				updateResult.Stderr,
+				err.Error(),
+				map[string]interface{}{
+					"packageList":          orderedPackages,
+					"strategy":             emptyStringToNil(job.Strategy),
+					"targetVersion":        job.TargetVersion,
+					"packageTargetVersion": emptyStringToNil(job.PackageTargetVersion),
+					"runtimeTargetVersion": emptyStringToNil(job.RuntimeTargetVersion),
+					"targetReleaseTag":     job.TargetReleaseTag,
+					"originSource":         job.OriginSource,
+					"fallbackPolicy":       job.FallbackPolicy,
+					"updateScope":          job.UpdateScope,
+				},
+			)
+		}
 	}
 
 	packageResults := make([]map[string]interface{}, 0, len(orderedPackages))
@@ -962,6 +964,15 @@ func findPasswallPackageArtifact(job artifactJob, packageName string) *packageAr
 		}
 	}
 	return nil
+}
+
+func passwallPackageUpdateNeedsFeedRefresh(job artifactJob) bool {
+	for _, packageName := range job.PackageList {
+		if findPasswallPackageArtifact(job, packageName) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func anyPasswallResultDrift(results []map[string]interface{}) bool {

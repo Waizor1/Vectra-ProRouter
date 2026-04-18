@@ -257,6 +257,25 @@ function resolveManagedPasswallPackageList(snapshotPayload: unknown) {
   ]);
 }
 
+function snapshotHasInstalledPackage(
+  snapshotPayload: unknown,
+  packageName: string,
+) {
+  if (!snapshotPayload || typeof snapshotPayload !== "object") {
+    return false;
+  }
+
+  const packageVersions =
+    "packageVersions" in snapshotPayload &&
+    snapshotPayload.packageVersions &&
+    typeof snapshotPayload.packageVersions === "object"
+      ? (snapshotPayload.packageVersions as Record<string, unknown>)
+      : null;
+
+  const version = packageVersions?.[packageName];
+  return typeof version === "string" && version.trim().length > 0;
+}
+
 function buildPasswallArtifactDescriptorMap(
   passwallArtifacts: ArtifactRow[],
   bundleMetadata: PasswallBundleMetadata,
@@ -295,11 +314,6 @@ function resolvePasswallTargetMetadata(args: {
     args.scopedPackages && args.scopedPackages.length > 0
       ? "scoped-package"
       : "managed-stack";
-  const packageList =
-    updateScope === "managed-stack"
-      ? resolveManagedPasswallPackageList(args.snapshotPayload)
-      : sortPasswallPackageList(args.scopedPackages ?? []);
-
   const latestBundleArtifact = latestPasswallBundleArtifactForRouter({
     artifacts: args.passwallArtifacts,
     channel: args.channel,
@@ -318,6 +332,15 @@ function resolvePasswallTargetMetadata(args: {
     latestPackageArtifacts,
     bundleMetadata,
   );
+  const packageList =
+    updateScope === "managed-stack"
+      ? resolveManagedPasswallPackageList(args.snapshotPayload).filter(
+          (packageName) =>
+            !bundleMetadata.recoveryDependencies.includes(packageName) ||
+            packageArtifactMap.has(packageName) ||
+            !snapshotHasInstalledPackage(args.snapshotPayload, packageName),
+        )
+      : sortPasswallPackageList(args.scopedPackages ?? []);
 
   const packageArtifacts = packageList
     .map((packageName) => packageArtifactMap.get(packageName) ?? null)

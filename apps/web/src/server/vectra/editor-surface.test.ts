@@ -202,6 +202,32 @@ describe("buildLastControllerUpdateAttempt", () => {
     expect(runningAttempt?.summary).toBe("обновление ещё выполняется");
     expect(runningAttempt?.resultStatus).toBeNull();
   });
+
+  it("suppresses stale failure when installed controller already converged", () => {
+    const attempt = buildLastControllerUpdateAttempt({
+      jobs: [
+        createJob({
+          payload: { artifactVersion: "0.1.12-r11" },
+        }),
+      ],
+      results: [
+        createJobResult({
+          payload: {
+            error: "opkg install vectra-controller-agent: signal: killed",
+          },
+        }),
+      ],
+      installedControllerVersion: "0.1.12-r11",
+    });
+
+    expect(attempt).toMatchObject({
+      jobState: "failed",
+      resultStatus: "success",
+      artifactVersion: "0.1.12-r11",
+      summary:
+        "controller уже на 0.1.12-r11; старый failure-result после self-update больше не актуален",
+    });
+  });
 });
 
 describe("buildLastPasswallUpdateAttempt", () => {

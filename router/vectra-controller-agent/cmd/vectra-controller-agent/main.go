@@ -1068,6 +1068,7 @@ func runPackageInstallJob(
 		args,
 		restartController,
 		repairPasswall,
+		true,
 	)
 	stdout, stderr := collectCommandOutputs(results)
 
@@ -1145,6 +1146,7 @@ func runStagedPackageInstallJob(
 		args,
 		restartController,
 		repairPasswall,
+		false,
 	)
 	stdout, stderr := collectCommandOutputs(results)
 
@@ -1196,13 +1198,16 @@ func executePackageInstallSequence(
 	installArgs []string,
 	suppressControllerPostinstRestart bool,
 	repairPasswall bool,
+	refreshPackageIndex bool,
 ) ([]passwall.CommandResult, error) {
 	results := make([]passwall.CommandResult, 0, 4)
 
-	updateResult, err := backend.Run(ctx, "opkg", "update")
-	results = append(results, updateResult)
-	if err != nil {
-		return results, err
+	if refreshPackageIndex {
+		updateResult, err := backend.Run(ctx, "opkg", "update")
+		results = append(results, updateResult)
+		if err != nil {
+			return results, err
+		}
 	}
 
 	installResult, err := runOpkgInstall(
