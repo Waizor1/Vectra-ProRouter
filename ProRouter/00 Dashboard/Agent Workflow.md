@@ -17,7 +17,7 @@ tags:
 1. Прочитать [[Home]], [[00 Dashboard/Stage Board|Stage Board]] и [[00 Dashboard/Repo Map|Repo Map]].
 2. Открыть заметки затронутых модулей из `02 Modules/`.
 3. Открыть актуальную дневную заметку в `04 Sessions/Daily/`.
-4. Если структура репозитория недавно менялась, запустить `scripts/Sync-ProRouterVault.ps1`.
+4. Если структура репозитория недавно менялась, запустить `python3 ./scripts/Sync-ProRouterVault.py`.
 
 ## During Work
 
@@ -28,8 +28,8 @@ tags:
 ## Finish Protocol
 
 1. Обновить затронутые заметки модуля.
-2. Если изменилась структура репозитория, запустить `scripts/Sync-ProRouterVault.ps1`.
-3. Добавить status entry в дневную заметку через `scripts/Add-ProRouterStatusEntry.ps1`.
+2. Если изменилась структура репозитория, запустить `python3 ./scripts/Sync-ProRouterVault.py`.
+3. Добавить status entry в дневную заметку через `python3 ./scripts/Add-ProRouterStatusEntry.py`.
 4. Только после этого отдавать финальный ответ пользователю.
 
 ## Delegation Rule
@@ -40,10 +40,10 @@ tags:
 
 ## Commands
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Sync-ProRouterVault.ps1
+```bash
+python3 ./scripts/Sync-ProRouterVault.py
 ```
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Add-ProRouterStatusEntry.ps1 -Summary "Implemented X" -Modules "Web Control Plane","Router Agent" -NextSteps "Verify deploy flow"
+```bash
+python3 ./scripts/Add-ProRouterStatusEntry.py --summary "Implemented X" --modules "Web Control Plane" "Router Agent" --next-steps "Verify deploy flow"
 ```

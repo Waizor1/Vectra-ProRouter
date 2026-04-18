@@ -12,6 +12,13 @@ param(
 
     [string]$RouterHostKey = $env:OPENWRT_ROUTER_HOSTKEY,
 
+    [ValidateSet('Auto', 'PuTTY', 'OpenSSH')]
+    [string]$Transport = $(if ($env:OPENWRT_ROUTER_TRANSPORT) { $env:OPENWRT_ROUTER_TRANSPORT } else { 'Auto' }),
+
+    [string]$OpenSshKnownHostsFile = $env:OPENWRT_ROUTER_KNOWN_HOSTS_FILE,
+
+    [string]$OpenSshIdentityFile = $env:OPENWRT_ROUTER_IDENTITY_FILE,
+
     [string]$SessionId,
 
     [string]$LocalPath,
@@ -40,6 +47,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'OpenWrtSshTransport.ps1')
 
 $SessionRoot = '/tmp/codex-test'
 $ReservedPorts = @(22, 53, 67, 68, 80, 123, 443, 7681, 1070, 11400)
@@ -71,28 +80,11 @@ function Get-RequiredValue {
     return $Value
 }
 
-function Get-PlinkPath {
-    $command = Get-Command plink.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $command) {
-        throw 'plink.exe was not found. Install PuTTY or add plink.exe to PATH.'
-    }
-
-    return $command.Source
-}
-
-function Get-PscpPath {
-    $command = Get-Command pscp.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $command) {
-        throw 'pscp.exe was not found. Install PuTTY or add pscp.exe to PATH.'
-    }
-
-    return $command.Source
-}
-
 function New-PasswordFile {
     param([string]$Password)
 
-    $tempFile = Join-Path $env:TEMP ("putty-password-{0}.txt" -f ([guid]::NewGuid().ToString('N')))
+    $tempRoot = [System.IO.Path]::GetTempPath()
+    $tempFile = Join-Path $tempRoot ("putty-password-{0}.txt" -f ([guid]::NewGuid().ToString('N')))
     Set-Content -LiteralPath $tempFile -Value $Password -NoNewline
     return $tempFile
 }
@@ -137,8 +129,6 @@ function Test-IsReservedPort {
 function Assert-CommonRouterInputs {
     $script:RouterHost = Get-RequiredValue -Value $script:RouterHost -Name 'RouterHost'
     $script:RouterUser = Get-RequiredValue -Value $script:RouterUser -Name 'RouterUser'
-    $script:RouterPassword = Get-RequiredValue -Value $script:RouterPassword -Name 'RouterPassword'
-    $script:RouterHostKey = Get-RequiredValue -Value $script:RouterHostKey -Name 'RouterHostKey'
 }
 
 function Assert-StartSafety {
@@ -179,60 +169,28 @@ function Assert-StartSafety {
     }
 }
 
-function Invoke-PlinkCommand {
+function Invoke-RemoteCommand {
     param(
-        [string]$PlinkPath,
+        [psobject]$TransportSpec,
         [string]$CommandText
     )
 
-    $args = @(
-        '-ssh',
-        '-batch',
-        '-no-antispoof',
-        '-hostkey', $RouterHostKey,
-        '-l', $RouterUser,
-        '-pw', $RouterPassword,
-        $RouterHost,
-        $CommandText
-    )
+    $response = Invoke-OpenWrtRemoteCommand -TransportSpec $TransportSpec -RouterHost $RouterHost -RouterUser $RouterUser -RouterPassword $RouterPassword -RouterHostKey $RouterHostKey -CommandText $CommandText -ViaStdinSh
+    if ($response.exitCode -ne 0) {
+        throw ($response.text + [Environment]::NewLine + "Remote command failed with exit code $($response.exitCode).")
+    }
 
-    return & $PlinkPath @args
+    return $response.output
 }
 
-function Invoke-PscpUpload {
+function Invoke-RemoteUpload {
     param(
-        [string]$PscpPath,
+        [psobject]$TransportSpec,
         [string]$SourcePath,
         [string]$TargetPath
     )
 
-    $passwordFile = New-PasswordFile -Password $RouterPassword
-    try {
-        $args = @(
-            '-batch',
-            '-scp',
-            '-q',
-            '-pwfile', $passwordFile,
-            '-hostkey', $RouterHostKey,
-            '-l', $RouterUser
-        )
-
-        if ((Get-Item -LiteralPath $SourcePath).PSIsContainer) {
-            $args += '-r'
-        }
-
-        $args += @(
-            $SourcePath,
-            ("{0}:{1}" -f $RouterHost, $TargetPath)
-        )
-
-        & $PscpPath @args
-    }
-    finally {
-        if (Test-Path -LiteralPath $passwordFile) {
-            Remove-Item -LiteralPath $passwordFile -Force
-        }
-    }
+    Copy-OpenWrtUpload -TransportSpec $TransportSpec -RouterHost $RouterHost -RouterUser $RouterUser -RouterPassword $RouterPassword -RouterHostKey $RouterHostKey -SourcePath $SourcePath -TargetPath $TargetPath
 }
 
 function Convert-MarkerOutput {
@@ -512,10 +470,16 @@ echo '__STATE__=cleaned'
 
 Assert-CommonRouterInputs
 
-$plinkPath = Get-PlinkPath
+$transportSpec = Resolve-OpenWrtTransportSpec -Transport $Transport -RouterPassword $RouterPassword -RouterHostKey $RouterHostKey -OpenSshKnownHostsFile $OpenSshKnownHostsFile -OpenSshIdentityFile $OpenSshIdentityFile -NeedsUpload:($Action -eq 'start')
+if ($transportSpec.mode -eq 'PuTTY') {
+    $script:RouterPassword = Get-RequiredValue -Value $script:RouterPassword -Name 'RouterPassword'
+    $script:RouterHostKey = Get-RequiredValue -Value $script:RouterHostKey -Name 'RouterHostKey'
+}
+
 $result = [ordered]@{
     action = $Action
     router_host = $RouterHost
+    transport = $transportSpec.mode
     inventory_profile = 'tmp-test-harness'
     session_id = $null
     remote_session_dir = $null
@@ -531,7 +495,7 @@ $result = [ordered]@{
 switch ($Action) {
     'baseline' {
         $remoteCommand = New-BaselineRemoteCommand -ProbePort $Port -ProbePattern $ProcessPattern
-        $lines = Invoke-PlinkCommand -PlinkPath $plinkPath -CommandText $remoteCommand
+        $lines = Invoke-RemoteCommand -TransportSpec $transportSpec -CommandText $remoteCommand
         $result.port = if ($PSBoundParameters.ContainsKey('Port')) { $Port } else { $null }
         $result.raw_text = ($lines -join [Environment]::NewLine)
         $result.state = 'read-only'
@@ -541,7 +505,6 @@ switch ($Action) {
         Assert-StartSafety
         $session = New-SafeSessionId
         $artifactInfo = Get-LocalArtifactInfo -Path $LocalPath
-        $pscpPath = Get-PscpPath
         $sessionDir = Get-SessionDir -Id $session
         $payloadDir = "$sessionDir/payload"
 
@@ -573,16 +536,16 @@ echo "__SESSION_ID__=$session"
 echo '__STATE__=ok'
 "@
 
-        $preflightLines = Invoke-PlinkCommand -PlinkPath $plinkPath -CommandText $preflightCommand
+        $preflightLines = Invoke-RemoteCommand -TransportSpec $transportSpec -CommandText $preflightCommand
         $preflightParsed = Convert-MarkerOutput -Lines $preflightLines
         if ($preflightParsed.markers.state -ne 'ok') {
             throw ($preflightParsed.plain_text + [Environment]::NewLine + 'Preflight failed.')
         }
 
-        Invoke-PscpUpload -PscpPath $pscpPath -SourcePath $artifactInfo.source_path -TargetPath $payloadDir
+        Invoke-RemoteUpload -TransportSpec $transportSpec -SourcePath $artifactInfo.source_path -TargetPath $payloadDir
 
         $startCommand = New-SessionStartCommand -Id $session -CommandLine $RemoteCommand -BindAddress $ListenAddress -BindPort $Port -LifetimeSeconds $DurationSeconds
-        $startLines = Invoke-PlinkCommand -PlinkPath $plinkPath -CommandText $startCommand
+        $startLines = Invoke-RemoteCommand -TransportSpec $transportSpec -CommandText $startCommand
         $startParsed = Convert-MarkerOutput -Lines $startLines
 
         $remoteUploadedEntry = "$payloadDir/$($artifactInfo.source_name)"
@@ -598,7 +561,7 @@ echo '__STATE__=ok'
             $hashCommand = @"
 sha256sum $(ConvertTo-PosixSingleQuoted $remoteUploadedEntry) 2>/dev/null | awk '{print $1}'
 "@
-            $remoteHash = (Invoke-PlinkCommand -PlinkPath $plinkPath -CommandText $hashCommand | Select-Object -First 1)
+            $remoteHash = (Invoke-RemoteCommand -TransportSpec $transportSpec -CommandText $hashCommand | Select-Object -First 1)
             $artifactResult.remote_sha256 = if ($remoteHash) { $remoteHash.Trim().ToLowerInvariant() } else { $null }
         }
 
@@ -614,7 +577,7 @@ sha256sum $(ConvertTo-PosixSingleQuoted $remoteUploadedEntry) 2>/dev/null | awk 
 
     'status' {
         $session = New-SafeSessionId -RequireExisting
-        $lines = Invoke-PlinkCommand -PlinkPath $plinkPath -CommandText (New-SessionStatusCommand -Id $session -TailLines $LogLines)
+        $lines = Invoke-RemoteCommand -TransportSpec $transportSpec -CommandText (New-SessionStatusCommand -Id $session -TailLines $LogLines)
         $parsed = Convert-MarkerOutput -Lines $lines
         $result.session_id = $session
         $result.remote_session_dir = Get-SessionDir -Id $session
@@ -627,7 +590,7 @@ sha256sum $(ConvertTo-PosixSingleQuoted $remoteUploadedEntry) 2>/dev/null | awk 
 
     'stop' {
         $session = New-SafeSessionId -RequireExisting
-        $lines = Invoke-PlinkCommand -PlinkPath $plinkPath -CommandText (New-SessionStopCommand -Id $session)
+        $lines = Invoke-RemoteCommand -TransportSpec $transportSpec -CommandText (New-SessionStopCommand -Id $session)
         $parsed = Convert-MarkerOutput -Lines $lines
         $result.session_id = $session
         $result.remote_session_dir = Get-SessionDir -Id $session
@@ -637,7 +600,7 @@ sha256sum $(ConvertTo-PosixSingleQuoted $remoteUploadedEntry) 2>/dev/null | awk 
 
     'cleanup' {
         $session = New-SafeSessionId -RequireExisting
-        $lines = Invoke-PlinkCommand -PlinkPath $plinkPath -CommandText (New-SessionCleanupCommand -Id $session)
+        $lines = Invoke-RemoteCommand -TransportSpec $transportSpec -CommandText (New-SessionCleanupCommand -Id $session)
         $parsed = Convert-MarkerOutput -Lines $lines
         $result.session_id = $session
         $result.remote_session_dir = Get-SessionDir -Id $session
@@ -655,6 +618,7 @@ Write-Output 'OpenWrt Tmp Program Session'
 Write-Output '==========================='
 Write-Output ("Action: {0}" -f $result.action)
 Write-Output ("Router: {0}" -f $result.router_host)
+Write-Output ("Transport: {0}" -f $result.transport)
 if ($result.session_id) {
     Write-Output ("Session: {0}" -f $result.session_id)
 }

@@ -80,23 +80,24 @@
   },
   "local_utilities": {
     "release_asset_lookup": {
-      "script": "scripts/Get-Passwall2ReleaseAssets.ps1",
-      "example": "powershell -ExecutionPolicy Bypass -File .\\scripts\\Get-Passwall2ReleaseAssets.ps1 -App passwall2 -Arch aarch64_cortex-a53 -PackageManager opkg -AsJson"
+      "script": "scripts/Get-Passwall2ReleaseAssets.py",
+      "example": "python3 ./scripts/Get-Passwall2ReleaseAssets.py --app passwall2 --arch aarch64_cortex-a53 --package-manager opkg --as-json"
     },
     "live_router_inventory": {
-      "script": "scripts/Get-OpenWrtRouterInventory.ps1",
-      "example": "powershell -ExecutionPolicy Bypass -File .\\scripts\\Get-OpenWrtRouterInventory.ps1 -RouterHost <ip> -RouterUser <user> -RouterPassword <password> -RouterHostKey <fingerprint> -IncludePasswallPlan",
+      "script": "scripts/Get-OpenWrtRouterInventory.py",
+      "example": "python3 ./scripts/Get-OpenWrtRouterInventory.py --router-host <ip> --router-user <user> --transport OpenSSH --openssh-known-hosts-file ./router-known_hosts --include-passwall-plan",
       "notes": [
         "Read-only inventory collector",
+        "Prefer OpenSSH with OpenSshKnownHostsFile on macOS/Linux; PuTTY password lane still works with RouterPassword + RouterHostKey",
         "Do not persist credentials in repo files",
         "Pin the SSH host key"
       ]
     },
     "router_plan_resolver": {
-      "script": "scripts/Resolve-Passwall2RouterPlan.ps1",
+      "script": "scripts/Resolve-Passwall2RouterPlan.py",
       "fixture": "scripts/fixtures/xiaomi-ax3000t-openwrt24.txt",
-      "example": "powershell -ExecutionPolicy Bypass -File .\\scripts\\Resolve-Passwall2RouterPlan.ps1 -InputFile .\\scripts\\fixtures\\xiaomi-ax3000t-openwrt24.txt -AsJson",
-      "stdin_example": "Get-Content .\\router-output.txt | powershell -ExecutionPolicy Bypass -File .\\scripts\\Resolve-Passwall2RouterPlan.ps1"
+      "example": "python3 ./scripts/Resolve-Passwall2RouterPlan.py --input-file ./scripts/fixtures/xiaomi-ax3000t-openwrt24.txt --as-json",
+      "stdin_example": "python3 ./scripts/Resolve-Passwall2RouterPlan.py --input-file ./router-output.txt"
     }
   }
 }

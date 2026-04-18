@@ -233,12 +233,12 @@ Live findings from the repeated AX3000T stock-layout firmware tests:
 
 Post-sysupgrade restore helper:
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-VectraPostSysupgradeRestore.ps1
+```bash
+python3 ./scripts/Invoke-VectraPostSysupgradeRestore.py
 ```
 
 Default mode is dry-run/read-only. It reads live access only from
-`ProRouter/98 Local/`, connects through `plink.exe` with the pinned host key,
+`ProRouter/98 Local/`, connects through either native OpenSSH or PuTTY depending on transport parameters,
 verifies the certified AX3000T stock-layout tuple, verifies the public Vectra
 feed index, and reads the currently installed baseline package versions. It does
 not run `opkg update`, firmware writes, `sysupgrade`, reset, clean, or blind
@@ -246,8 +246,17 @@ reinstall in dry-run mode.
 
 Use apply mode only during a short LAN-attended maintenance window:
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-VectraPostSysupgradeRestore.ps1 -Apply
+```bash
+python3 ./scripts/Invoke-VectraPostSysupgradeRestore.py --apply
+```
+
+OpenSSH example:
+
+```bash
+python3 ./scripts/Invoke-VectraPostSysupgradeRestore.py \
+  --transport OpenSSH \
+  --openssh-known-hosts-file ./router-known_hosts \
+  --openssh-identity-file ~/.ssh/id_ed25519
 ```
 
 In `-Apply` mode only, the helper writes the Vectra feed file/key, runs

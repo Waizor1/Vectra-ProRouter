@@ -8,6 +8,13 @@ param(
 
     [string]$RouterHostKey = $env:OPENWRT_ROUTER_HOSTKEY,
 
+    [ValidateSet('Auto', 'PuTTY', 'OpenSSH')]
+    [string]$Transport = $(if ($env:OPENWRT_ROUTER_TRANSPORT) { $env:OPENWRT_ROUTER_TRANSPORT } else { 'Auto' }),
+
+    [string]$OpenSshKnownHostsFile = $env:OPENWRT_ROUTER_KNOWN_HOSTS_FILE,
+
+    [string]$OpenSshIdentityFile = $env:OPENWRT_ROUTER_IDENTITY_FILE,
+
     [string]$OutputFile,
 
     [switch]$IncludePasswallPlan,
@@ -16,6 +23,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'OpenWrtSshTransport.ps1')
 
 function Get-RequiredValue {
     param(
@@ -28,15 +37,6 @@ function Get-RequiredValue {
     }
 
     return $Value
-}
-
-function Get-PlinkPath {
-    $command = Get-Command plink.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $command) {
-        throw 'plink.exe was not found. Install PuTTY or add plink.exe to PATH.'
-    }
-
-    return $command.Source
 }
 
 function Get-RemoteInventoryCommand {
@@ -91,7 +91,7 @@ fw_printenv 2>/dev/null | grep -E 'boot|flag|rootfs|slot' || true
 
 function Invoke-ReadOnlyInventory {
     param(
-        [string]$PlinkPath,
+        [psobject]$TransportSpec,
         [string]$RouterHost,
         [string]$RouterUser,
         [string]$RouterPassword,
@@ -99,18 +99,12 @@ function Invoke-ReadOnlyInventory {
         [string]$RemoteCommand
     )
 
-    $plinkArgs = @(
-        '-ssh',
-        '-batch',
-        '-no-antispoof',
-        '-hostkey', $RouterHostKey,
-        '-l', $RouterUser,
-        '-pw', $RouterPassword,
-        $RouterHost,
-        $RemoteCommand
-    )
+    $response = Invoke-OpenWrtRemoteCommand -TransportSpec $TransportSpec -RouterHost $RouterHost -RouterUser $RouterUser -RouterPassword $RouterPassword -RouterHostKey $RouterHostKey -CommandText $RemoteCommand -ViaStdinSh
+    if ($response.exitCode -ne 0) {
+        throw ($response.text + [Environment]::NewLine + "Remote inventory command failed with exit code $($response.exitCode).")
+    }
 
-    return & $PlinkPath @plinkArgs
+    return $response.output
 }
 
 function Get-PasswallPlan {
@@ -131,12 +125,14 @@ function Get-PasswallPlan {
 
 $RouterHost = Get-RequiredValue -Value $RouterHost -Name 'RouterHost'
 $RouterUser = Get-RequiredValue -Value $RouterUser -Name 'RouterUser'
-$RouterPassword = Get-RequiredValue -Value $RouterPassword -Name 'RouterPassword'
-$RouterHostKey = Get-RequiredValue -Value $RouterHostKey -Name 'RouterHostKey'
+$transportSpec = Resolve-OpenWrtTransportSpec -Transport $Transport -RouterPassword $RouterPassword -RouterHostKey $RouterHostKey -OpenSshKnownHostsFile $OpenSshKnownHostsFile -OpenSshIdentityFile $OpenSshIdentityFile
+if ($transportSpec.mode -eq 'PuTTY') {
+    $RouterPassword = Get-RequiredValue -Value $RouterPassword -Name 'RouterPassword'
+    $RouterHostKey = Get-RequiredValue -Value $RouterHostKey -Name 'RouterHostKey'
+}
 
-$plinkPath = Get-PlinkPath
 $remoteCommand = Get-RemoteInventoryCommand
-$inventoryText = Invoke-ReadOnlyInventory -PlinkPath $plinkPath -RouterHost $RouterHost -RouterUser $RouterUser -RouterPassword $RouterPassword -RouterHostKey $RouterHostKey -RemoteCommand $remoteCommand
+$inventoryText = Invoke-ReadOnlyInventory -TransportSpec $transportSpec -RouterHost $RouterHost -RouterUser $RouterUser -RouterPassword $RouterPassword -RouterHostKey $RouterHostKey -RemoteCommand $remoteCommand
 $collectedAt = (Get-Date).ToString('s')
 
 $savedFile = $null
@@ -154,7 +150,7 @@ $plan = $null
 if ($IncludePasswallPlan) {
     $planInput = $savedFile
     if (-not $planInput) {
-        $tempFile = Join-Path $env:TEMP ("openwrt-router-inventory-{0}.txt" -f ([guid]::NewGuid().ToString('N')))
+        $tempFile = Join-Path ([System.IO.Path]::GetTempPath()) ("openwrt-router-inventory-{0}.txt" -f ([guid]::NewGuid().ToString('N')))
         Set-Content -LiteralPath $tempFile -Value $inventoryText
         $planInput = $tempFile
     }
@@ -173,7 +169,9 @@ $result = [pscustomobject]@{
     collected_at = $collectedAt
     host = $RouterHost
     user = $RouterUser
-    host_key = $RouterHostKey
+    host_key = if ($transportSpec.mode -eq 'PuTTY') { $RouterHostKey } else { $null }
+    transport = $transportSpec.mode
+    openssh_known_hosts_file = if ($transportSpec.mode -eq 'OpenSSH') { $transportSpec.knownHostsFile } else { $null }
     inventory_profile = 'read-only'
     output_file = $savedFile
     raw_text = $inventoryText

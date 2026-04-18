@@ -119,8 +119,8 @@
     "For live custom-program tests on AX3000T, prefer the tmp-based harness before package install or service registration"
   ],
   "local_utilities": {
-    "live_router_inventory": "scripts/Get-OpenWrtRouterInventory.ps1",
-    "tmp_test_harness": "scripts/Manage-OpenWrtTmpProgramSession.ps1"
+    "live_router_inventory": "scripts/Get-OpenWrtRouterInventory.py",
+    "tmp_test_harness": "scripts/Manage-OpenWrtTmpProgramSession.py"
   },
   "local_primary_sources": {
     "openwrt_24_10_mirror": "openwrt-24.10-src",

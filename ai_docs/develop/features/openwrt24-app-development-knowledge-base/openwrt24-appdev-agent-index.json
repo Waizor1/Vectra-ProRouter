@@ -45,10 +45,10 @@
       "logread -e <name>"
     ],
     "live_tmp_test": [
-      "powershell -ExecutionPolicy Bypass -File .\\scripts\\Manage-OpenWrtTmpProgramSession.ps1 -Action baseline ...",
-      "powershell -ExecutionPolicy Bypass -File .\\scripts\\Manage-OpenWrtTmpProgramSession.ps1 -Action start ...",
-      "powershell -ExecutionPolicy Bypass -File .\\scripts\\Manage-OpenWrtTmpProgramSession.ps1 -Action status -SessionId <id> ...",
-      "powershell -ExecutionPolicy Bypass -File .\\scripts\\Manage-OpenWrtTmpProgramSession.ps1 -Action cleanup -SessionId <id> ..."
+      "python3 ./scripts/Manage-OpenWrtTmpProgramSession.py --action baseline --transport OpenSSH --openssh-known-hosts-file ./router-known_hosts ...",
+      "python3 ./scripts/Manage-OpenWrtTmpProgramSession.py --action start --transport OpenSSH --openssh-known-hosts-file ./router-known_hosts ...",
+      "python3 ./scripts/Manage-OpenWrtTmpProgramSession.py --action status --session-id <id> --transport OpenSSH --openssh-known-hosts-file ./router-known_hosts ...",
+      "python3 ./scripts/Manage-OpenWrtTmpProgramSession.py --action cleanup --session-id <id> --transport OpenSSH --openssh-known-hosts-file ./router-known_hosts ..."
     ],
     "feed_publish": [
       "./scripts/ipkg-make-index.sh /path/to/repo > /path/to/repo/Packages",
@@ -73,7 +73,7 @@
     "Treat manual file replacement on the router as an anti-pattern"
   ],
   "local_utilities": {
-    "live_router_inventory": "scripts/Get-OpenWrtRouterInventory.ps1",
-    "tmp_test_harness": "scripts/Manage-OpenWrtTmpProgramSession.ps1"
+    "live_router_inventory": "scripts/Get-OpenWrtRouterInventory.py",
+    "tmp_test_harness": "scripts/Manage-OpenWrtTmpProgramSession.py"
   }
 }

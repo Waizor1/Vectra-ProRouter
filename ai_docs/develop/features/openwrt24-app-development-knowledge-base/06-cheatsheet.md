@@ -78,19 +78,22 @@ ssh root@router opkg install /tmp/myapp_*.ipk
 
 ## 6a. Safe tmp test on live AX3000T before package install
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Manage-OpenWrtTmpProgramSession.ps1 `
-  -Action start `
-  -RouterHost <ip> `
-  -RouterUser <user> `
-  -RouterPassword <password> `
-  -RouterHostKey <fingerprint> `
-  -LocalPath .\dist\myapp `
-  -RemoteCommand './myapp --listen 127.0.0.1:18080' `
-  -ListenAddress 127.0.0.1 `
-  -Port 18080 `
-  -DurationSeconds 600
+```bash
+python3 ./scripts/Manage-OpenWrtTmpProgramSession.py \
+  --action start \
+  --router-host <ip> \
+  --router-user <user> \
+  --transport OpenSSH \
+  --openssh-known-hosts-file ./router-known_hosts \
+  --openssh-identity-file ~/.ssh/id_ed25519 \
+  --local-path ./dist/myapp \
+  --remote-command './myapp --listen 127.0.0.1:18080' \
+  --listen-address 127.0.0.1 \
+  --port 18080 \
+  --duration-seconds 600
 ```
+
+Native OpenSSH is now supported for macOS/Linux with `-Transport OpenSSH` plus `-OpenSshKnownHostsFile` and optional `-OpenSshIdentityFile`. The older PuTTY password lane remains available with `-RouterPassword` and `-RouterHostKey`.
 
 Принцип:
 

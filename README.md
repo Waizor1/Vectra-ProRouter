@@ -34,7 +34,7 @@ Stable V1 quick links:
 - controller/feed build: `scripts/build-vectra-openwrt-feed.sh`
 - feed and restore runbook: `ai_docs/develop/features/vectra-openwrt-feed-publishing.md`
 - VPS deploy runbook: `deploy/README.md`
-- post-firmware package restore: `scripts/Invoke-VectraPostSysupgradeRestore.ps1`
+- post-firmware package restore: `scripts/Invoke-VectraPostSysupgradeRestore.py`
 - historical snapshot sanitation: `apps/web/scripts/sanitize-historical-passwall-snapshots.mjs`
 
 - PassWall2 operational questions:
@@ -61,11 +61,18 @@ The top-level Git repository intentionally tracks the knowledge base and helper 
 
 If you want the full source-backed workflow locally, hydrate the mirrors into those exact paths:
 
-```powershell
+```bash
 git clone https://github.com/openwrt-passwall/openwrt-passwall2.git passwall2
 git clone --branch openwrt-24.10 https://github.com/openwrt/openwrt.git openwrt-24.10-src
 git clone https://github.com/openwrt/procd.git procd-src
 ```
+
+Cross-platform helper invocation:
+
+- Native macOS/Linux entrypoints now live directly under `scripts/` as tracked `*.py` or `*.sh` files. Prefer `python3 ./scripts/<name>.py ...` or `bash ./scripts/<name>.sh ...`.
+- Existing `*.ps1` helpers are preserved as legacy fallback only when PowerShell is available.
+- `bash ./scripts/run-ps1.sh ./scripts/<name>.ps1 ...` remains available only for legacy PowerShell-based workflows.
+- The new Sugar runtime note lives at `ai_docs/develop/features/sugar-memory-local-runtime.md`.
 
 Notes:
 

@@ -29,11 +29,11 @@ Treat `passwall2/` as a source-of-truth code mirror for analysis unless the user
 10. If the task is about testing a future custom program on the live AX3000T, read `ai_docs/develop/features/router-ax3000t-safe-test-harness.md`.
 11. If the task involves live writes, recovery, `sysupgrade`, or firmware safety on Filogic, read `ai_docs/develop/features/openwrt24-console-knowledge-base/08-filogic-recovery-write-safety.md`.
 12. Use `ai_docs/develop/features/passwall2-agent-index.json`, `ai_docs/develop/features/openwrt24-console-knowledge-base/openwrt24-agent-index.json`, or `ai_docs/develop/features/openwrt24-app-development-knowledge-base/openwrt24-appdev-agent-index.json` if you want structured lookup.
-13. If the user wants fresh live router facts, run `scripts/Get-OpenWrtRouterInventory.ps1` in read-only mode first.
-14. If the user wants bounded live tmp tests for a custom program, use `scripts/Manage-OpenWrtTmpProgramSession.ps1` before any package/service plan.
-15. If the user pasted PassWall2 router output, run `scripts/Resolve-Passwall2RouterPlan.ps1` first.
-16. Before final response, append a completion update with `scripts/Add-ProRouterStatusEntry.ps1`.
-17. Run `scripts/Sync-ProRouterVault.ps1` after structural repo changes so the generated Obsidian repo map stays current.
+13. If the user wants fresh live router facts, run `scripts/Get-OpenWrtRouterInventory.py` in read-only mode first.
+14. If the user wants bounded live tmp tests for a custom program, use `scripts/Manage-OpenWrtTmpProgramSession.py` before any package/service plan.
+15. If the user pasted PassWall2 router output, run `scripts/Resolve-Passwall2RouterPlan.py` first.
+16. Before final response, append a completion update with `scripts/Add-ProRouterStatusEntry.py`.
+17. Run `scripts/Sync-ProRouterVault.py` after structural repo changes so the generated Obsidian repo map stays current.
 18. For sysupgrade/recovery answers, prefer the local OpenWrt source mirrors in `openwrt-24.10-src/` and `procd-src/` over forum summaries.
 19. For version-sensitive questions, re-check current upstream releases before answering.
 20. When answering, separate:
@@ -96,12 +96,12 @@ Treat `passwall2/` as a source-of-truth code mirror for analysis unless the user
 
 ### Local helper scripts
 
-- `scripts/Add-ProRouterStatusEntry.ps1`
-- `scripts/Sync-ProRouterVault.ps1`
-- `scripts/Get-Passwall2ReleaseAssets.ps1`
-- `scripts/Get-OpenWrtRouterInventory.ps1`
-- `scripts/Manage-OpenWrtTmpProgramSession.ps1`
-- `scripts/Resolve-Passwall2RouterPlan.ps1`
+- `scripts/Add-ProRouterStatusEntry.py`
+- `scripts/Sync-ProRouterVault.py`
+- `scripts/Get-Passwall2ReleaseAssets.py`
+- `scripts/Get-OpenWrtRouterInventory.py`
+- `scripts/Manage-OpenWrtTmpProgramSession.py`
+- `scripts/Resolve-Passwall2RouterPlan.py`
 - `openwrt-24.10-src/`
 - `procd-src/`
 
@@ -157,14 +157,14 @@ For OpenWrt 24.xx, default recommendation is:
 
 Use the local script instead of redoing ad hoc GitHub release filtering:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Get-Passwall2ReleaseAssets.ps1 -App passwall2 -Arch aarch64_cortex-a53 -PackageManager opkg
+```bash
+python3 ./scripts/Get-Passwall2ReleaseAssets.py --app passwall2 --arch aarch64_cortex-a53 --package-manager opkg
 ```
 
 For end-to-end router planning, use:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Resolve-Passwall2RouterPlan.ps1 -InputFile .\scripts\fixtures\xiaomi-ax3000t-openwrt24.txt -AsJson
+```bash
+python3 ./scripts/Resolve-Passwall2RouterPlan.py --input-file ./scripts/fixtures/xiaomi-ax3000t-openwrt24.txt --as-json
 ```
 
 ## 5. Router Compatibility Rule
@@ -188,14 +188,14 @@ For Xiaomi AX3000T, the relevant architecture is `aarch64_cortex-a53`.
 
 When the user gives you pasted router facts instead of a live shell, prefer:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Resolve-Passwall2RouterPlan.ps1 -InputFile .\scripts\fixtures\xiaomi-ax3000t-openwrt24.txt
+```bash
+python3 ./scripts/Resolve-Passwall2RouterPlan.py --input-file ./scripts/fixtures/xiaomi-ax3000t-openwrt24.txt
 ```
 
-The planner can also read stdin:
+The planner can also read pasted raw text:
 
-```powershell
-Get-Content .\router-output.txt | powershell -ExecutionPolicy Bypass -File .\scripts\Resolve-Passwall2RouterPlan.ps1
+```bash
+cat ./router-output.txt | python3 ./scripts/Resolve-Passwall2RouterPlan.py --raw-text "$(cat)"
 ```
 
 ## 6. How to Answer Common Tasks
@@ -309,10 +309,10 @@ Use these files as the main documentation surfaces:
 - live router KB: `ai_docs/develop/features/router-xiaomi-ax3000t-live-kb.md`
 - dated live snapshot: `ai_docs/develop/features/snapshots/xiaomi-ax3000t-2026-04-04-inventory.txt`
 - dated live PassWall2 plan: `ai_docs/develop/features/snapshots/xiaomi-ax3000t-2026-04-04-passwall-plan.json`
-- live inventory collector: `scripts/Get-OpenWrtRouterInventory.ps1`
-- tmp test harness: `scripts/Manage-OpenWrtTmpProgramSession.ps1`
-- router-facts planner: `scripts/Resolve-Passwall2RouterPlan.ps1`
-- completion status logger: `scripts/Add-ProRouterStatusEntry.ps1`
-- vault structure sync: `scripts/Sync-ProRouterVault.ps1`
+- live inventory collector: `scripts/Get-OpenWrtRouterInventory.py`
+- tmp test harness: `scripts/Manage-OpenWrtTmpProgramSession.py`
+- router-facts planner: `scripts/Resolve-Passwall2RouterPlan.py`
+- completion status logger: `scripts/Add-ProRouterStatusEntry.py`
+- vault structure sync: `scripts/Sync-ProRouterVault.py`
 
 If you create new docs, keep them under `ai_docs/` unless the task is specifically about agent policy, in which case update `AGENTS.md`/`RTK.md`.

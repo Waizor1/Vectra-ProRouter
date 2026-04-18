@@ -25,13 +25,13 @@ This is the correct safety posture for the current AX3000T because:
 
 ### Live inventory
 
-- Script: [Get-OpenWrtRouterInventory.ps1](../../../scripts/Get-OpenWrtRouterInventory.ps1)
+- Script: [Get-OpenWrtRouterInventory.py](../../../scripts/Get-OpenWrtRouterInventory.py)
 - Role: read-only live inventory and optional PassWall2 plan
 - Safe because: no writes, no restarts, pinned host key
 
 ### Tmp session harness
 
-- Script: [Manage-OpenWrtTmpProgramSession.ps1](../../../scripts/Manage-OpenWrtTmpProgramSession.ps1)
+- Script: [Manage-OpenWrtTmpProgramSession.py](../../../scripts/Manage-OpenWrtTmpProgramSession.py)
 - Actions:
   - `baseline`
   - `start`
@@ -102,15 +102,16 @@ Use the read-only baseline action or full inventory first.
 
 Example:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Manage-OpenWrtTmpProgramSession.ps1 `
-  -Action baseline `
-  -RouterHost <ip> `
-  -RouterUser <user> `
-  -RouterPassword <password> `
-  -RouterHostKey <fingerprint> `
-  -Port 18080 `
-  -ProcessPattern myapp
+```bash
+python3 ./scripts/Manage-OpenWrtTmpProgramSession.py \
+  --action baseline \
+  --router-host <ip> \
+  --router-user <user> \
+  --transport OpenSSH \
+  --openssh-known-hosts-file ./router-known_hosts \
+  --openssh-identity-file ~/.ssh/id_ed25519 \
+  --port 18080 \
+  --process-pattern myapp
 ```
 
 ### Step 2: stage and start under `/tmp`
@@ -119,43 +120,48 @@ Use a high unprivileged port and loopback bind first.
 
 Example:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Manage-OpenWrtTmpProgramSession.ps1 `
-  -Action start `
-  -RouterHost <ip> `
-  -RouterUser <user> `
-  -RouterPassword <password> `
-  -RouterHostKey <fingerprint> `
-  -LocalPath .\dist\myapp `
-  -RemoteCommand './myapp --listen 127.0.0.1:18080' `
-  -ListenAddress 127.0.0.1 `
-  -Port 18080 `
-  -DurationSeconds 600
+```bash
+python3 ./scripts/Manage-OpenWrtTmpProgramSession.py \
+  --action start \
+  --router-host <ip> \
+  --router-user <user> \
+  --transport OpenSSH \
+  --openssh-known-hosts-file ./router-known_hosts \
+  --openssh-identity-file ~/.ssh/id_ed25519 \
+  --local-path ./dist/myapp \
+  --remote-command './myapp --listen 127.0.0.1:18080' \
+  --listen-address 127.0.0.1 \
+  --port 18080 \
+  --duration-seconds 600
 ```
 
 ### Step 3: inspect status
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Manage-OpenWrtTmpProgramSession.ps1 `
-  -Action status `
-  -SessionId <session-id> `
-  -RouterHost <ip> `
-  -RouterUser <user> `
-  -RouterPassword <password> `
-  -RouterHostKey <fingerprint>
+```bash
+python3 ./scripts/Manage-OpenWrtTmpProgramSession.py \
+  --action status \
+  --session-id <session-id> \
+  --router-host <ip> \
+  --router-user <user> \
+  --transport OpenSSH \
+  --openssh-known-hosts-file ./router-known_hosts \
+  --openssh-identity-file ~/.ssh/id_ed25519
 ```
 
 ### Step 4: stop and cleanup
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Manage-OpenWrtTmpProgramSession.ps1 `
-  -Action cleanup `
-  -SessionId <session-id> `
-  -RouterHost <ip> `
-  -RouterUser <user> `
-  -RouterPassword <password> `
-  -RouterHostKey <fingerprint>
+```bash
+python3 ./scripts/Manage-OpenWrtTmpProgramSession.py \
+  --action cleanup \
+  --session-id <session-id> \
+  --router-host <ip> \
+  --router-user <user> \
+  --transport OpenSSH \
+  --openssh-known-hosts-file ./router-known_hosts \
+  --openssh-identity-file ~/.ssh/id_ed25519
 ```
+
+PuTTY password-based fallback remains supported with `--router-password` and `--router-host-key`.
 
 ## 6. Testing Rules For Future Programs
 

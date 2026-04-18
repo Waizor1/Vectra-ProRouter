@@ -14,12 +14,12 @@ Purpose: shortest operational path for future agents. Use this when you need com
 
 ### If the question is about repository behavior
 
-```powershell
-Get-Content passwall2\luci-app-passwall2\root\etc\init.d\passwall2
-Get-Content passwall2\luci-app-passwall2\root\usr\share\passwall2\app.sh
-Get-Content passwall2\luci-app-passwall2\root\usr\share\passwall2\rule_update.lua
-Get-Content passwall2\luci-app-passwall2\root\usr\share\passwall2\subscribe.lua
-Get-Content passwall2\luci-app-passwall2\luasrc\passwall2\api.lua
+```text
+passwall2/luci-app-passwall2/root/etc/init.d/passwall2
+passwall2/luci-app-passwall2/root/usr/share/passwall2/app.sh
+passwall2/luci-app-passwall2/root/usr/share/passwall2/rule_update.lua
+passwall2/luci-app-passwall2/root/usr/share/passwall2/subscribe.lua
+passwall2/luci-app-passwall2/luasrc/passwall2/api.lua
 ```
 
 ### If the question is about a real router
@@ -35,23 +35,29 @@ uci get passwall2.@global[0].node
 
 ### If the user pasted router command output into the workspace
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Resolve-Passwall2RouterPlan.ps1 -InputFile .\scripts\fixtures\xiaomi-ax3000t-openwrt24.txt
+```bash
+python3 ./scripts/Resolve-Passwall2RouterPlan.py --input-file ./scripts/fixtures/xiaomi-ax3000t-openwrt24.txt
 ```
 
 JSON output for automation:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Resolve-Passwall2RouterPlan.ps1 -InputFile .\scripts\fixtures\xiaomi-ax3000t-openwrt24.txt -AsJson
+```bash
+python3 ./scripts/Resolve-Passwall2RouterPlan.py --input-file ./scripts/fixtures/xiaomi-ax3000t-openwrt24.txt --as-json
 ```
 
 ### If the agent can reach the real router from this workstation
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Get-OpenWrtRouterInventory.ps1 -RouterHost <ip> -RouterUser <user> -RouterPassword <password> -RouterHostKey <fingerprint> -IncludePasswallPlan
+```bash
+python3 ./scripts/Get-OpenWrtRouterInventory.py --router-host <ip> --router-user <user> --transport OpenSSH --openssh-known-hosts-file ./router-known_hosts --include-passwall-plan
 ```
 
 Use this before any live-router recommendation. It is designed for read-only collection only.
+
+Password-based PuTTY fallback remains available:
+
+```bash
+python3 ./scripts/Get-OpenWrtRouterInventory.py --router-host <ip> --router-user <user> --router-password <password> --router-host-key <fingerprint> --include-passwall-plan
+```
 
 ## 3. Common Tasks
 
@@ -134,20 +140,20 @@ Do not select `ipk`/`apk` or architecture bundles before collecting:
 
 Use the local helper script for current release assets:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Get-Passwall2ReleaseAssets.ps1 -App passwall2 -Arch aarch64_cortex-a53 -PackageManager opkg
+```bash
+python3 ./scripts/Get-Passwall2ReleaseAssets.py --app passwall2 --arch aarch64_cortex-a53 --package-manager opkg
 ```
 
 JSON output mode:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Get-Passwall2ReleaseAssets.ps1 -App passwall2 -Arch aarch64_cortex-a53 -PackageManager opkg -AsJson
+```bash
+python3 ./scripts/Get-Passwall2ReleaseAssets.py --app passwall2 --arch aarch64_cortex-a53 --package-manager opkg --as-json
 ```
 
 For a full decision from pasted router facts, prefer the planner:
 
-```powershell
-Get-Content .\router-output.txt | powershell -ExecutionPolicy Bypass -File .\scripts\Resolve-Passwall2RouterPlan.ps1
+```bash
+python3 ./scripts/Resolve-Passwall2RouterPlan.py --input-file ./router-output.txt
 ```
 
 ## 7. Xiaomi AX3000T Shortcut
@@ -180,5 +186,5 @@ Hard defaults for this router class:
 - Deep reference: [passwall2-openwrt24-knowledge-base.md](passwall2-openwrt24-knowledge-base.md)
 - Recovery/write-safety: [08-filogic-recovery-write-safety.md](openwrt24-console-knowledge-base/08-filogic-recovery-write-safety.md)
 - Live router KB: [router-xiaomi-ax3000t-live-kb.md](router-xiaomi-ax3000t-live-kb.md)
-- Live inventory collector: [Get-OpenWrtRouterInventory.ps1](../../../scripts/Get-OpenWrtRouterInventory.ps1)
-- Router planner: [Resolve-Passwall2RouterPlan.ps1](../../../scripts/Resolve-Passwall2RouterPlan.ps1)
+- Live inventory collector: [Get-OpenWrtRouterInventory.py](../../../scripts/Get-OpenWrtRouterInventory.py)
+- Router planner: [Resolve-Passwall2RouterPlan.py](../../../scripts/Resolve-Passwall2RouterPlan.py)

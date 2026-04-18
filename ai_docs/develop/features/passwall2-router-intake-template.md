@@ -6,8 +6,8 @@ Status: fill this before selecting PassWall2 release artifacts.
 
 After collecting output, feed the pasted text to:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Resolve-Passwall2RouterPlan.ps1 -InputFile .\router-output.txt
+```bash
+python3 ./scripts/Resolve-Passwall2RouterPlan.py --input-file ./router-output.txt
 ```
 
 ## 1. Target Router

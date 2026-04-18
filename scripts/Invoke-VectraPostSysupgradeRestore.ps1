@@ -8,6 +8,13 @@ param(
 
     [string]$RouterHostKey,
 
+    [ValidateSet('Auto', 'PuTTY', 'OpenSSH')]
+    [string]$Transport = $(if ($env:OPENWRT_ROUTER_TRANSPORT) { $env:OPENWRT_ROUTER_TRANSPORT } else { 'Auto' }),
+
+    [string]$OpenSshKnownHostsFile = $env:OPENWRT_ROUTER_KNOWN_HOSTS_FILE,
+
+    [string]$OpenSshIdentityFile = $env:OPENWRT_ROUTER_IDENTITY_FILE,
+
     [string]$FeedChannel = 'stable',
 
     [switch]$Apply,
@@ -17,6 +24,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'OpenWrtSshTransport.ps1')
 
 $MandatoryBaselinePackages = @(
     'vectra-controller-agent',
@@ -44,15 +53,6 @@ function Get-RequiredValue {
     }
 
     return $Value
-}
-
-function Get-PlinkPath {
-    $command = Get-Command plink.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $command) {
-        throw 'plink.exe was not found. Install PuTTY or add plink.exe to PATH.'
-    }
-
-    return $command.Source
 }
 
 function Read-LocalRegistry {
@@ -271,27 +271,28 @@ echo "CUSTOM_FEED_DIR=$(if [ -d /etc/opkg/customfeeds.conf.d ]; then echo presen
 
 function Invoke-RemoteCommand {
     param(
-        [string]$PlinkPath,
+        [psobject]$TransportSpec,
         [psobject]$RouterAccess,
         [string]$RemoteCommand
     )
 
-    $plinkArgs = @(
-        '-ssh',
-        '-batch',
-        '-no-antispoof',
-        '-hostkey', $RouterAccess.hostKey,
-        '-l', $RouterAccess.user,
-        '-pw', $RouterAccess.password,
-        $RouterAccess.host,
-        'sh -s'
-    )
+    return Invoke-OpenWrtRemoteCommand -TransportSpec $TransportSpec -RouterHost $RouterAccess.host -RouterUser $RouterAccess.user -RouterPassword $RouterAccess.password -RouterHostKey $RouterAccess.hostKey -CommandText $RemoteCommand -ViaStdinSh
+}
 
-    $output = $RemoteCommand | & $PlinkPath @plinkArgs 2>&1
+function Resolve-TransportedRouterAccess {
+    param([psobject]$Registry)
+
+    $routerAccess = Resolve-RouterAccess -Registry $Registry
+    $transportSpec = Resolve-OpenWrtTransportSpec -Transport $Transport -RouterPassword $routerAccess.password -RouterHostKey $routerAccess.hostKey -OpenSshKnownHostsFile $OpenSshKnownHostsFile -OpenSshIdentityFile $OpenSshIdentityFile
+
+    if ($transportSpec.mode -eq 'PuTTY') {
+        $routerAccess.password = Get-RequiredValue -Value $routerAccess.password -Name 'RouterPassword'
+        $routerAccess.hostKey = Get-RequiredValue -Value $routerAccess.hostKey -Name 'RouterHostKey'
+    }
+
     return [pscustomobject]@{
-        exitCode = $LASTEXITCODE
-        output = @($output)
-        text = (@($output) -join "`n").Trim()
+        transport = $transportSpec
+        routerAccess = $routerAccess
     }
 }
 
@@ -453,18 +454,17 @@ function Sanitize-CommandOutput {
 }
 
 $registry = Read-LocalRegistry
-$routerAccess = Resolve-RouterAccess -Registry $registry
+$resolvedTransportedAccess = Resolve-TransportedRouterAccess -Registry $registry
+$transportSpec = $resolvedTransportedAccess.transport
+$routerAccess = $resolvedTransportedAccess.routerAccess
 $routerAccess.host = Get-RequiredValue -Value $routerAccess.host -Name 'RouterHost'
 $routerAccess.user = Get-RequiredValue -Value $routerAccess.user -Name 'RouterUser'
-$routerAccess.password = Get-RequiredValue -Value $routerAccess.password -Name 'RouterPassword'
-$routerAccess.hostKey = Get-RequiredValue -Value $routerAccess.hostKey -Name 'RouterHostKey'
 
 $expectedBaseline = Get-ExpectedBaseline -Registry $registry
 $feedInfo = Get-VectraFeedUrls -Registry $registry -ExpectedBaseline $expectedBaseline -Channel $FeedChannel
 $feedIndex = Test-RemoteOpenWrtFeed -FeedInfo $feedInfo -ExpectedBaseline $expectedBaseline
-$plinkPath = Get-PlinkPath
 
-$preflight = Invoke-RemoteCommand -PlinkPath $plinkPath -RouterAccess $routerAccess -RemoteCommand (Get-RemotePreflightCommand)
+$preflight = Invoke-RemoteCommand -TransportSpec $transportSpec -RouterAccess $routerAccess -RemoteCommand (Get-RemotePreflightCommand)
 if ($preflight.exitCode -ne 0) {
     throw "Router preflight collection failed with exit code $($preflight.exitCode): $(Sanitize-CommandOutput -Text $preflight.text)"
 }
@@ -479,7 +479,7 @@ $writePreview = [ordered]@{
     restore_packages = ($expectedBaseline.packages | ForEach-Object { '{0}={1}' -f $_.name, $_.version }) -join ', '
 }
 
-$installedState = Invoke-RemoteCommand -PlinkPath $plinkPath -RouterAccess $routerAccess -RemoteCommand (New-InstalledBaselineStatusCommand -Packages $expectedBaseline.packages)
+$installedState = Invoke-RemoteCommand -TransportSpec $transportSpec -RouterAccess $routerAccess -RemoteCommand (New-InstalledBaselineStatusCommand -Packages $expectedBaseline.packages)
 if ($installedState.exitCode -ne 0) {
     throw "Baseline package status collection failed with exit code $($installedState.exitCode): $(Sanitize-CommandOutput -Text $installedState.text)"
 }
@@ -499,7 +499,7 @@ $steps = New-Object System.Collections.Generic.List[object]
 })
 
 if ($Apply) {
-    $feedWrite = Invoke-RemoteCommand -PlinkPath $plinkPath -RouterAccess $routerAccess -RemoteCommand (New-FeedEnsureCommand -FeedInfo $feedInfo)
+    $feedWrite = Invoke-RemoteCommand -TransportSpec $transportSpec -RouterAccess $routerAccess -RemoteCommand (New-FeedEnsureCommand -FeedInfo $feedInfo)
     if ($feedWrite.exitCode -ne 0) {
         throw "Feed/key restore failed with exit code $($feedWrite.exitCode): $(Sanitize-CommandOutput -Text $feedWrite.text)"
     }
@@ -510,7 +510,7 @@ if ($Apply) {
         output = Sanitize-CommandOutput -Text $feedWrite.text
     })
 
-    $availability = Invoke-RemoteCommand -PlinkPath $plinkPath -RouterAccess $routerAccess -RemoteCommand (New-OpkgAvailabilityCommand -Packages $expectedBaseline.packages)
+    $availability = Invoke-RemoteCommand -TransportSpec $transportSpec -RouterAccess $routerAccess -RemoteCommand (New-OpkgAvailabilityCommand -Packages $expectedBaseline.packages)
     if ($availability.exitCode -ne 0) {
         throw "Baseline package availability check failed with exit code $($availability.exitCode): $(Sanitize-CommandOutput -Text $availability.text)"
     }
@@ -521,7 +521,7 @@ if ($Apply) {
         output = Sanitize-CommandOutput -Text $availability.text
     })
 
-    $install = Invoke-RemoteCommand -PlinkPath $plinkPath -RouterAccess $routerAccess -RemoteCommand (New-OpkgInstallCommand -Packages $expectedBaseline.packages)
+    $install = Invoke-RemoteCommand -TransportSpec $transportSpec -RouterAccess $routerAccess -RemoteCommand (New-OpkgInstallCommand -Packages $expectedBaseline.packages)
     if ($install.exitCode -ne 0) {
         throw "Package restore failed with exit code $($install.exitCode): $(Sanitize-CommandOutput -Text $install.text)"
     }
@@ -538,6 +538,7 @@ $result = [pscustomobject]@{
     router = [pscustomobject]@{
         host = $routerAccess.host
         user = $routerAccess.user
+        transport = $transportSpec.mode
         board = $remoteFacts.BOARD_NAME
         target = $remoteFacts.TARGET
         architecture = $remoteFacts.ARCHITECTURE

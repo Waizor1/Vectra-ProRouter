@@ -34,8 +34,8 @@ tags:
 ## Как этим пользоваться
 
 1. В начале работы открывай [[00 Dashboard/Agent Workflow|Agent Workflow]] и заметки нужных модулей.
-2. После заметного изменения структуры запускай `scripts/Sync-ProRouterVault.ps1`.
-3. После существенной работы обновляй заметку модуля, [[00 Dashboard/Stage Board]] и дневную заметку через `scripts/Add-ProRouterStatusEntry.ps1`.
+2. После заметного изменения структуры запускай `python3 ./scripts/Sync-ProRouterVault.py`.
+3. После существенной работы обновляй заметку модуля, [[00 Dashboard/Stage Board]] и дневную заметку через `python3 ./scripts/Add-ProRouterStatusEntry.py`.
 4. Архитектурные или процессные решения фиксируй в `03 Decisions/`.
 
 ## Live Views

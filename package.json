@@ -3,6 +3,9 @@
   "private": true,
   "packageManager": "pnpm@10.28.0",
   "scripts": {
+    "ast:rebuild": "bash ./scripts/ast-index.sh rebuild",
+    "ast:update": "bash ./scripts/ast-index.sh update",
+    "ast:stats": "bash ./scripts/ast-index.sh stats",
     "dev": "pnpm --filter @vectra/web dev",
     "build": "pnpm --filter @vectra/web build",
     "lint": "pnpm --filter @vectra/web lint",

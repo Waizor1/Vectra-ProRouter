@@ -18,7 +18,7 @@ tags:
 
 - Использовать `ProRouter/` как локальный Obsidian vault проекта.
 - Держать в vault не копии исходников, а сжатые знания о структуре, статусах и решениях.
-- Генерировать карту репозитория через `scripts/Sync-ProRouterVault.ps1`.
+- Генерировать карту репозитория через `scripts/Sync-ProRouterVault.py`.
 - Обновлять агентные инструкции так, чтобы будущие сессии Codex читали и вели этот vault.
 - Подключить vault к Codex через MCP filesystem server.
 

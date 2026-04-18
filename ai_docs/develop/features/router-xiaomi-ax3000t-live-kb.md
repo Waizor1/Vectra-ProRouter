@@ -210,22 +210,25 @@ Conservative rule for this router:
 
 ### Local read-only inventory from this workstation
 
-Use the local helper script and pass secrets at runtime only:
+Use the local helper script. Prefer native OpenSSH on macOS/Linux and keep secrets out of tracked files:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Get-OpenWrtRouterInventory.ps1 `
-  -RouterHost '<router-ip>' `
-  -RouterUser '<ssh-user>' `
-  -RouterPassword '<ssh-password>' `
-  -RouterHostKey '<pinned-hostkey>' `
-  -IncludePasswallPlan
+```bash
+python3 ./scripts/Get-OpenWrtRouterInventory.py \
+  --router-host '<router-ip>' \
+  --router-user '<ssh-user>' \
+  --transport OpenSSH \
+  --openssh-known-hosts-file ./router-known_hosts \
+  --openssh-identity-file ~/.ssh/id_ed25519 \
+  --include-passwall-plan
 ```
+
+PuTTY password fallback remains supported with `--router-password` and `--router-host-key`.
 
 ### Planning PassWall2 updates from saved inventory
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Resolve-Passwall2RouterPlan.ps1 `
-  -InputFile .\path\to\saved-router-inventory.txt
+```bash
+python3 ./scripts/Resolve-Passwall2RouterPlan.py \
+  --input-file ./path/to/saved-router-inventory.txt
 ```
 
 ### Local tmp-based custom-program test lane
@@ -236,13 +239,14 @@ Read first:
 
 Then use:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Manage-OpenWrtTmpProgramSession.ps1 `
-  -Action baseline `
-  -RouterHost <ip> `
-  -RouterUser <user> `
-  -RouterPassword <password> `
-  -RouterHostKey <fingerprint>
+```bash
+python3 ./scripts/Manage-OpenWrtTmpProgramSession.py \
+  --action baseline \
+  --router-host <ip> \
+  --router-user <user> \
+  --transport OpenSSH \
+  --openssh-known-hosts-file ./router-known_hosts \
+  --openssh-identity-file ~/.ssh/id_ed25519
 ```
 
 ## 12. Current PassWall2 Upgrade Posture
