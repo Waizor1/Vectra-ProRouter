@@ -28,6 +28,9 @@ Note: the root Git history tracks the KB and helper scripts. `passwall2/`, `open
 | Read generated repo map | `read ProRouter/00 Dashboard/Repo Map.md` | Current structure snapshot |
 | Refresh Obsidian repo map | `python3 ./scripts/Sync-ProRouterVault.py` | Regenerates the vault structure note after repo changes |
 | Append completion status to daily note | `python3 ./scripts/Add-ProRouterStatusEntry.py --summary "<what changed>" --modules "<module note name>"` | Default completion-log path for agents |
+| Check live panel/API access | `bash ./scripts/VectraPanelCli.sh status` | Verifies operator panel reachability and cached local session state |
+| Enumerate panel API coverage | `bash ./scripts/VectraPanelCli.sh catalog` | Lists operator tRPC procedures plus router-facing endpoints and auth split |
+| Query live panel/API | `bash ./scripts/VectraPanelCli.sh fleet overview` | Uses operator login, protected tRPC, and a gitignored local session cookie |
 | Read OpenWrt cheatsheet | `read ai_docs/develop/features/openwrt24-console-knowledge-base/06-cheatsheet.md` | Fastest generic OpenWrt 24.xx path |
 | Read OpenWrt KB index | `read ai_docs/develop/features/openwrt24-console-knowledge-base/README.md` | Entry point for platform-level OpenWrt work |
 | Read OpenWrt appdev cheatsheet | `read ai_docs/develop/features/openwrt24-app-development-knowledge-base/06-cheatsheet.md` | Fastest path for OpenWrt app/package work |
@@ -119,6 +122,7 @@ Note: the root Git history tracks the KB and helper scripts. `passwall2/`, `open
 | Check current stage board | `Stage Board.md` | `ProRouter/00 Dashboard/Stage Board.md` |
 | Append standardized completion update | `Add-ProRouterStatusEntry.py` | `scripts/Add-ProRouterStatusEntry.py` |
 | Refresh generated repo structure note | `Sync-ProRouterVault.py` | `scripts/Sync-ProRouterVault.py` |
+| Reach the live Vectra panel API | `VectraPanelCli.sh` | `scripts/VectraPanelCli.sh` |
 | UCI reads/helpers | `config_n_get`, `config_t_get`, `first_type`, `get_new_port` | `passwall2/luci-app-passwall2/root/usr/share/passwall2/utils.sh` |
 | Collect live router facts safely | `Get-OpenWrtRouterInventory.py` | `scripts/Get-OpenWrtRouterInventory.py` |
 | Run bounded tmp app tests on the live router | `Manage-OpenWrtTmpProgramSession.py` | `scripts/Manage-OpenWrtTmpProgramSession.py` |
@@ -215,6 +219,7 @@ Note: the root Git history tracks the KB and helper scripts. `passwall2/`, `open
 - `ProRouter/04 Sessions/Daily/` -> dated summaries of meaningful sessions
 - `scripts/Add-ProRouterStatusEntry.py` -> append a standardized completion entry
 - `scripts/Sync-ProRouterVault.py` -> refresh the generated repo map note
+- `scripts/VectraPanelCli.sh` -> local operator wrapper for live panel tRPC access
 - `passwall2/AGENTS.md` -> mandatory when reading or editing upstream source tree
 - `ai_docs/develop/features/openwrt24-app-development-knowledge-base/README.md` -> generic OpenWrt app/package development entry point
 - `ai_docs/develop/features/openwrt24-app-development-knowledge-base/openwrt24-appdev-agent-index.json` -> structured lookup for app/package development tasks

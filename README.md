@@ -74,6 +74,33 @@ Cross-platform helper invocation:
 - `bash ./scripts/run-ps1.sh ./scripts/<name>.ps1 ...` remains available only for legacy PowerShell-based workflows.
 - The new Sugar runtime note lives at `ai_docs/develop/features/sugar-memory-local-runtime.md`.
 
+## Panel API CLI
+
+For fast operator-side reads and actions against the live Vectra panel, use:
+
+```bash
+bash ./scripts/VectraPanelCli.sh status
+bash ./scripts/VectraPanelCli.sh catalog
+bash ./scripts/VectraPanelCli.sh fleet overview
+bash ./scripts/VectraPanelCli.sh fleet list
+bash ./scripts/VectraPanelCli.sh router show OpenWrt
+bash ./scripts/VectraPanelCli.sh draft workspace OpenWrt
+bash ./scripts/VectraPanelCli.sh notifications status
+bash ./scripts/VectraPanelCli.sh router-api health
+bash ./scripts/VectraPanelCli.sh logs snapshot OpenWrt --source system --lines 100
+bash ./scripts/VectraPanelCli.sh terminal run OpenWrt --command 'ubus call system board'
+bash ./scripts/VectraPanelCli.sh call fleet.monitoring
+```
+
+Notes:
+
+- The CLI logs in through the real operator flow at `/api/operator/login` and then talks to protected `tRPC` procedures under `/api/trpc`.
+- Credentials are resolved from CLI flags or env vars first; if they are absent, the helper can read `VECTRA_OPERATOR_USER`, `VECTRA_OPERATOR_PASSWORD`, and `VECTRA_DEFAULT_CONTROL_DOMAIN` from the production VPS via `ssh vectra-prod`.
+- Only the operator session cookie is cached locally in `.codex-runtime/vectra-panel/session.json`; no credentials are written into tracked files.
+- `catalog` prints the current operator `tRPC` surface plus router-facing endpoints so you can see what is covered without reopening the source tree.
+- `call <trpc.path>` is the generic fallback when you need a procedure that does not yet have a dedicated wrapper command.
+- Operator auth and router auth are intentionally different domains: the panel cookie covers protected `tRPC`, while `/api/router/*` requires explicit `x-vectra-router-id` and `x-vectra-router-token` headers.
+
 Notes:
 
 - `passwall2/` is used as the local upstream mirror for PassWall2 source inspection
