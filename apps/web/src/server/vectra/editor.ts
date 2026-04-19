@@ -5,6 +5,8 @@ import {
   type SupportState,
 } from "@vectra/contracts";
 
+import type { ConfigSourceMode } from "./config-trust";
+
 type FieldKind =
   | "boolean"
   | "string"
@@ -31,7 +33,12 @@ export type EditorFieldDiff = {
   currentValue: unknown;
   authoritativeValue: unknown;
   draftValue: unknown;
-  source: "live" | "authoritative" | "stale" | "masked";
+  source:
+    | "live-import"
+    | "authoritative"
+    | "stale-authoritative"
+    | "inventory-only"
+    | "masked";
   currentMatchesAuthoritative: boolean;
   draftChanged: boolean;
 };
@@ -82,6 +89,7 @@ type BuildEditorSurfaceArgs = {
   authoritativeConfig: PasswallDesiredConfig | null;
   draftConfig: PasswallDesiredConfig;
   currentConfigFreshness: "live" | "stale";
+  configSourceMode: ConfigSourceMode;
 };
 
 type FieldRegistration = {
@@ -132,7 +140,7 @@ export function buildEditorSurface(
 
   const fieldMeta = fields.map((field) => field.meta);
   const fieldDiffs = fields
-    .map((field) => toFieldDiff(field, args.currentConfigFreshness))
+    .map((field) => toFieldDiff(field, args.configSourceMode))
     .filter((field) => field.currentValue !== undefined || field.draftChanged);
 
   const coarse = summarizePasswallRevisionDiff(
@@ -174,6 +182,7 @@ export function buildDraftPreview(
     authoritativeConfig: previous,
     draftConfig: next,
     currentConfigFreshness: previous ? "live" : "stale",
+    configSourceMode: previous ? "authoritative" : "inventory-only",
   });
 
   return {
@@ -629,7 +638,7 @@ function registerArrayFields<T extends { id: string }>(args: {
 
 function toFieldDiff(
   field: FieldRegistration,
-  freshness: "live" | "stale"
+  configSourceMode: ConfigSourceMode
 ): EditorFieldDiff {
   const currentMatchesAuthoritative = isEqual(
     field.currentValue,
@@ -643,11 +652,13 @@ function toFieldDiff(
       field.authoritativeValue === MASKED_SECRET_PLACEHOLDER ||
       field.draftValue === MASKED_SECRET_PLACEHOLDER)
       ? "masked"
-      : freshness === "live"
-        ? "live"
-        : field.authoritativeValue !== undefined
-          ? "stale"
-          : "authoritative";
+      : configSourceMode === "inventory-only"
+        ? "inventory-only"
+        : configSourceMode === "live-import"
+          ? "live-import"
+          : configSourceMode === "stale-authoritative"
+            ? "stale-authoritative"
+            : "authoritative";
 
   return {
     path: field.meta.path,

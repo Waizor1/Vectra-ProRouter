@@ -138,6 +138,7 @@ describe("editor surface", () => {
       authoritativeConfig: baseConfig,
       draftConfig,
       currentConfigFreshness: "live",
+      configSourceMode: "live-import",
     });
 
     expect(
@@ -158,5 +159,33 @@ describe("editor surface", () => {
         (operation) => operation.key === "Управление правилами",
       ),
     ).toBe(true);
+  });
+
+  it("marks deep config as stale-authoritative when live import was not confirmed", () => {
+    const surface = buildEditorSurface({
+      routerRuntimeSummary: {
+        status: "active",
+        importState: "approved",
+        lastSeenAt: null,
+        passwallEnabled: true,
+        selectedNodeId: "shunt-main",
+        selectedNodeLabel: "Shunt",
+        pendingChanges: 0,
+        supportState: "certified",
+        supportTitle: "Сертифицировано",
+        supportReason: "test",
+      },
+      currentLiveConfig: baseConfig,
+      authoritativeConfig: baseConfig,
+      draftConfig: baseConfig,
+      currentConfigFreshness: "live",
+      configSourceMode: "stale-authoritative",
+    });
+
+    expect(
+      surface.fieldDiffs.find(
+        (diff) => diff.path === "basicSettings.main.selectedNodeId",
+      )?.source,
+    ).toBe("stale-authoritative");
   });
 });

@@ -21,6 +21,7 @@ import {
 import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
 import { db } from "~/server/db";
 import { buildEditorSurface } from "~/server/vectra/editor";
+import { buildConfigTrustState } from "~/server/vectra/config-trust";
 import { isRouterReachable } from "~/server/vectra/router-presence";
 import {
   canRunDestructiveAction,
@@ -673,13 +674,14 @@ export async function getDraftEditorSurface(routerId: string) {
     revisions.find((revision) => revision.id === router.activeRevisionId) ?? null;
   const latestDraft =
     revisions.find((revision) => revision.origin === "operator_draft") ?? null;
+  const liveImportRevisions = revisions.filter((revision) =>
+    ["router_import", "operator_reimport"].includes(revision.origin),
+  );
 
   const currentLiveRevision =
     (latestSnapshot?.payload.configDigest
-      ? revisions.find(
-          (revision) =>
-            ["router_import", "operator_reimport"].includes(revision.origin) &&
-            revision.configDigest === latestSnapshot.payload.configDigest
+      ? liveImportRevisions.find(
+          (revision) => revision.configDigest === latestSnapshot.payload.configDigest,
         )
       : null) ?? null;
 
@@ -690,8 +692,16 @@ export async function getDraftEditorSurface(routerId: string) {
   ]);
 
   const routerReachable = isRouterReachable(router.lastSeenAt);
+  const configTrust = buildConfigTrustState({
+    routerReachable,
+    lastCheckInAt: router.lastCheckInAt ?? router.lastSeenAt,
+    authoritativeDigest: router.lastConfigDigest,
+    snapshotDigest: latestSnapshot?.payload.configDigest ?? null,
+    revisions: liveImportRevisions,
+    hasAuthoritativeConfig: Boolean(activeRevision),
+  });
   const currentConfigFreshness =
-    currentLiveConfig && routerReachable
+    routerReachable
       ? "live"
       : currentLiveConfig || authoritativeConfig
         ? "stale"
@@ -798,6 +808,7 @@ export async function getDraftEditorSurface(routerId: string) {
     draftConfig: effectiveDraft,
     currentConfigFreshness:
       currentConfigFreshness === "live" ? "live" : "stale",
+    configSourceMode: configTrust.configSourceMode,
   });
 
   return {
@@ -820,6 +831,7 @@ export async function getDraftEditorSurface(routerId: string) {
       ...editorSurface.routerRuntimeSummary,
     },
     inventory,
+    configTrust,
     fieldDiffs: editorSurface.fieldDiffs.map((diff) => ({
       ...diff,
       currentDisplay: formatValue(diff.currentValue),

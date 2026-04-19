@@ -4,6 +4,13 @@ export type RouterImportState =
   | "approved"
   | "out_of_sync";
 
+export type RouterOnboardingTrust = {
+  liveConfigAvailable?: boolean | null;
+  requiresReimport?: boolean | null;
+  digestMismatch?: boolean | null;
+  configSourceMode?: string | null;
+};
+
 export type RouterOnboardingDescriptor = {
   badge: string;
   title: string;
@@ -32,24 +39,52 @@ export function formatRouterImportStateLabel(importState: string) {
   }
 }
 
-export function isRouterOnboardingPending(importState: string) {
+export function isRouterOnboardingPending(
+  importState: string,
+  trust?: RouterOnboardingTrust | null,
+) {
   return (
     importState === "awaiting_import" ||
     importState === "import_review" ||
-    importState === "out_of_sync"
+    importState === "out_of_sync" ||
+    Boolean(trust?.requiresReimport)
   );
 }
 
 export function describeRouterOnboarding(
   importState: string,
+  trust?: RouterOnboardingTrust | null,
 ): RouterOnboardingDescriptor {
+  if (importState === "approved" && trust?.requiresReimport) {
+    return {
+      badge: trust.digestMismatch ? "Нужен re-import" : "Live config не подтверждён",
+      title: trust.digestMismatch
+        ? "Роутер и панель уже разошлись"
+        : "Панель видит snapshot, но не deep config",
+      summary:
+        "Свежий check-in уже пришёл, но полный live PassWall state ещё не перечитан в панель. Selected node, версии и сервисы могут быть свежими, а ShuntRules и другие глубокие секции пока остаются от эталона панели.",
+      steps: [
+        "Перечитайте конфигурацию с роутера.",
+        "Сравните новый import с эталоном панели.",
+        "Только после этого решайте, принимать новый import или применять нужный черновик.",
+      ],
+      approveLabel: "Принять новый import",
+      approveUnavailableLabel: "Сначала получить свежий import",
+      reimportLabel: "Перечитать конфигурацию",
+      cardActionLabel: "Проверить live-state",
+      cardHint:
+        "Approved-статус сохранён, но глубокая PassWall-конфигурация ещё не подтверждена live import-ом.",
+      tone: "warning",
+    };
+  }
+
   switch (importState) {
     case "awaiting_import":
       return {
         badge: "Первый import",
         title: "Считать живую конфигурацию",
         summary:
-          "Нужен первый import, чтобы панель увидела текущую конфигурацию роутера.",
+          "Нужен первый import, чтобы панель увидела текущую конфигурацию роутера. Пока его нет, локальные LuCI-правки и реальные ShuntRules вообще не отражаются в панели.",
         steps: [
           "Считайте конфигурацию с роутера.",
           "Дождитесь статуса «на проверке».",
@@ -87,7 +122,7 @@ export function describeRouterOnboarding(
         badge: "Есть drift",
         title: "Роутер и панель разошлись",
         summary:
-          "Новый import расходится с текущим эталоном. Нужно решить, какая база правильная.",
+          "Новый import уже расходится с текущим эталоном. Это означает, что live-конфигурация роутера ушла вперёд панели и нужно решить, какая база правильная.",
         steps: [
           "Сравните новое состояние с ожидаемым.",
           "Если import правильный, примите его как новый эталон.",
@@ -106,7 +141,7 @@ export function describeRouterOnboarding(
         badge: "Готов",
         title: "Роутер подключён",
         summary:
-          "Эталон подтверждён. Дальше это обычная локальная работа с роутером.",
+          "Эталон подтверждён. Дальше это обычная локальная работа с роутером, но локальные LuCI-правки всё равно нужно перечитывать через re-import, если хотите увидеть их в панели.",
         steps: [
           "Правки и apply делайте на странице этого роутера.",
           "Если конфигурацию меняли прямо на роутере, перечитайте import.",

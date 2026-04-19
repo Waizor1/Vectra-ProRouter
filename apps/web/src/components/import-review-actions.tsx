@@ -12,18 +12,25 @@ type ImportReviewActionsProps = {
   routerId: string;
   revisionId?: string | null;
   importState: string;
+  configTrust?: {
+    liveConfigAvailable?: boolean | null;
+    requiresReimport?: boolean | null;
+    digestMismatch?: boolean | null;
+    configSourceMode?: string | null;
+  } | null;
 };
 
 export function ImportReviewActions({
   routerId,
   revisionId,
   importState,
+  configTrust,
 }: ImportReviewActionsProps) {
   const router = useRouter();
   const utils = api.useUtils();
-  const onboarding = describeRouterOnboarding(importState);
+  const onboarding = describeRouterOnboarding(importState, configTrust);
   const canApprove = Boolean(revisionId) && importState !== "approved";
-  const approved = importState === "approved";
+  const approved = importState === "approved" && !configTrust?.requiresReimport;
   const heading = approved ? "Роутер уже готов к обычной работе" : onboarding.title;
   const summary = approved
     ? "Эталон подтверждён. Дальше здесь обычные локальные правки и apply."
@@ -150,7 +157,9 @@ export function ImportReviewActions({
       </div>
 
       <p className="mt-3 text-sm leading-6 text-slate-400">
-        После подтверждения все черновики и apply считаются уже от этой базы.
+        {configTrust?.requiresReimport
+          ? "Свежий snapshot уже есть, но глубокая PassWall-конфигурация ещё не подтверждена live import-ом. До re-import панель продолжает опираться на эталон."
+          : "После подтверждения все черновики и apply считаются уже от этой базы."}
       </p>
     </section>
   );
