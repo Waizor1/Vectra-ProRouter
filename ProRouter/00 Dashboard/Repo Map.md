@@ -1,6 +1,6 @@
 ---
 type: generated
-updated: '2026-04-18 22:01:21 +03:00'
+updated: '2026-04-19 15:37:12 +03:00'
 generated-by: scripts/Sync-ProRouterVault.py
 tags:
   - generated
@@ -13,7 +13,7 @@ Generated from the current workspace root `Vectra-ProRouter`.
 
 ## Snapshot
 
-- Generated at: `2026-04-18 22:01:21 +03:00`
+- Generated at: `2026-04-19 15:37:12 +03:00`
 - Top-level directories: `8`
 - Top-level files: `13`
 - Tree depth: `3`
@@ -168,7 +168,8 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |- Sync-ProRouterVault.ps1
 |  |- Sync-ProRouterVault.py
 |  |- Test-VectraDbUpgradePath.ps1
-|  \- Test-VectraDbUpgradePath.py
+|  |- Test-VectraDbUpgradePath.py
+|  \- VectraPanelCli.sh
 |- .dockerignore
 |- .env.example
 |- .gitignore
