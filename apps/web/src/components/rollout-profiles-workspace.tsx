@@ -1,16 +1,41 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { passwallDesiredConfigSchema, type PasswallDesiredConfig } from "@vectra/contracts";
+import {
+  passwallDesiredConfigSchema,
+  type PasswallDesiredConfig,
+} from "@vectra/contracts";
 
 import { ActionStrip } from "~/components/action-strip";
-import { DataTable, DataTableEmpty } from "~/components/data-table";
 import { Panel } from "~/components/panel";
+import { StatusTile } from "~/components/status-tile";
 import { TabBar } from "~/components/tab-bar";
 import { api, type RouterOutputs } from "~/trpc/react";
 
-type ProfilesAndGroupsWorkspace = RouterOutputs["update"]["profilesAndGroupsWorkspace"];
+type ProfilesAndGroupsWorkspace =
+  RouterOutputs["update"]["profilesAndGroupsWorkspace"];
+type VersionDriftWorkspace = RouterOutputs["update"]["versionDriftWorkspace"];
+type WorkspaceTab = "profiles" | "groups";
+type RemoteDnsProtocol = "tcp" | "udp" | "doh" | "tls" | "quic" | "http3";
+type QueryStrategy = "UseIP" | "UseIPv4" | "UseIPv6";
+type LogLevel = "debug" | "info" | "warning" | "error";
+
+type SimpleProfileForm = {
+  enabled: boolean;
+  selectedNodeId: string;
+  localhostProxy: boolean;
+  clientProxy: boolean;
+  socksEnabled: boolean;
+  socksPort: string;
+  remoteDns: string;
+  remoteDnsProtocol: RemoteDnsProtocol;
+  directDnsQueryStrategy: QueryStrategy;
+  logLevel: LogLevel;
+  autoUpdateGeoAssets: boolean;
+  dayOfWeek: string;
+  updateTime: string;
+};
 
 function formatDateTime(value: Date | string | null | undefined) {
   if (!value) {
@@ -26,9 +51,123 @@ function formatDateTime(value: Date | string | null | undefined) {
   return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()}, ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function parseConfigInput(value: string):
-  | { ok: true; config: PasswallDesiredConfig }
-  | { ok: false; message: string } {
+function createEmptyProfileConfig(): PasswallDesiredConfig {
+  return passwallDesiredConfigSchema.parse({
+    schemaVersion: 1,
+    basicSettings: {
+      main: {
+        mainSwitch: true,
+        selectedNodeId: undefined,
+        localhostProxy: true,
+        clientProxy: true,
+        nodeSocksPort: 1070,
+        nodeSocksBindLocal: true,
+        socksMainSwitch: false,
+        extras: {},
+      },
+      socks: [],
+      dns: {
+        remoteDns: "1.1.1.1",
+        remoteDnsProtocol: "doh",
+        directQueryStrategy: "UseIP",
+        remoteDnsDoh: "https://1.1.1.1/dns-query",
+        remoteDnsDetour: "remote",
+        remoteDnsQueryStrategy: "UseIPv4",
+        remoteFakeDns: false,
+        dnsRedirect: true,
+        dnsHosts: [],
+        extras: {},
+      },
+      log: {
+        enableNodeLog: true,
+        level: "error",
+        extras: {},
+      },
+      maintenance: {
+        backupPaths: [
+          "/etc/config/passwall2",
+          "/etc/config/passwall2_server",
+          "/usr/share/passwall2/domains_excluded",
+        ],
+        extras: {},
+      },
+      shuntRules: [],
+    },
+    nodes: [],
+    subscriptions: {
+      filterKeywordMode: "0",
+      discardList: [],
+      keepList: [],
+      typePreferences: {},
+      domainStrategy: "auto",
+      items: [],
+    },
+    appUpdate: {
+      binaryPaths: {
+        xray: "/usr/bin/xray",
+        singBox: "/usr/bin/sing-box",
+        hysteria: "/usr/bin/hysteria",
+        geoview: "/usr/bin/geoview",
+      },
+      updateStrategy: "package-preferred",
+      targetVersions: {},
+      extras: {},
+    },
+    ruleManage: {
+      geoipUrl:
+        "https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat",
+      geositeUrl:
+        "https://github.com/itdoginfo/allow-domains/releases/latest/download/geosite.dat",
+      assetDirectory: "/usr/share/v2ray/",
+      autoUpdate: true,
+      scheduleMode: "daily",
+      scheduleHour: 5,
+      enabledAssets: ["geoip", "geosite"],
+      shuntRules: [],
+      extras: {},
+    },
+  });
+}
+
+function stringifyConfig(config: PasswallDesiredConfig) {
+  return JSON.stringify(config, null, 2);
+}
+
+function parseConfigObject(config: PasswallDesiredConfig): Record<string, unknown> {
+  const parsed = JSON.parse(stringifyConfig(config)) as unknown;
+  return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+}
+
+function readObject(
+  source: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> {
+  const value = source[key];
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function readString(source: Record<string, unknown>, key: string, fallback: string) {
+  const value = source[key];
+  return typeof value === "string" ? value : fallback;
+}
+
+function readNullableString(
+  source: Record<string, unknown>,
+  key: string,
+  fallback: string,
+) {
+  const value = source[key];
+  return typeof value === "string" ? value : fallback;
+}
+
+function readBoolean(source: Record<string, unknown>, key: string, fallback: boolean) {
+  const value = source[key];
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function parseConfigInput(
+  value: string,
+): { ok: true; config: PasswallDesiredConfig } | { ok: false; message: string } {
   try {
     const parsed = passwallDesiredConfigSchema.parse(JSON.parse(value) as unknown);
     return { ok: true, config: parsed };
@@ -43,95 +182,196 @@ function parseConfigInput(value: string):
   }
 }
 
+function buildSimpleProfileForm(config: PasswallDesiredConfig): SimpleProfileForm {
+  const root = parseConfigObject(config);
+  const basicSettings = readObject(root, "basicSettings");
+  const main = readObject(basicSettings, "main");
+  const dns = readObject(basicSettings, "dns");
+  const log = readObject(basicSettings, "log");
+  const ruleManage = readObject(root, "ruleManage");
+  const scheduleMode = readString(ruleManage, "scheduleMode", "daily");
+  const scheduleDayValue = ruleManage.scheduleDay;
+  const scheduleHourValue = ruleManage.scheduleHour;
+
+  return {
+    enabled: readBoolean(main, "mainSwitch", true),
+    selectedNodeId: readNullableString(main, "selectedNodeId", ""),
+    localhostProxy: readBoolean(main, "localhostProxy", true),
+    clientProxy: readBoolean(main, "clientProxy", true),
+    socksEnabled: readBoolean(main, "socksMainSwitch", false),
+    socksPort: String(
+      typeof main.nodeSocksPort === "number" ? main.nodeSocksPort : 1070,
+    ),
+    remoteDns: readString(dns, "remoteDns", "1.1.1.1"),
+    remoteDnsProtocol: readString(dns, "remoteDnsProtocol", "doh") as RemoteDnsProtocol,
+    directDnsQueryStrategy: readString(dns, "directQueryStrategy", "UseIP") as QueryStrategy,
+    logLevel: readString(log, "level", "error") as LogLevel,
+    autoUpdateGeoAssets: readBoolean(ruleManage, "autoUpdate", true),
+    dayOfWeek:
+      scheduleMode === "weekly" && typeof scheduleDayValue === "number"
+        ? String(scheduleDayValue)
+        : "7",
+    updateTime: String(typeof scheduleHourValue === "number" ? scheduleHourValue : 5),
+  };
+}
+
+function applySimpleProfileForm(
+  baseConfig: PasswallDesiredConfig,
+  form: SimpleProfileForm,
+): PasswallDesiredConfig {
+  const draft = parseConfigObject(baseConfig);
+  const basicSettings = readObject(draft, "basicSettings");
+  const main = readObject(basicSettings, "main");
+  const dns = readObject(basicSettings, "dns");
+  const log = readObject(basicSettings, "log");
+  const maintenance = readObject(basicSettings, "maintenance");
+  const ruleManage = readObject(draft, "ruleManage");
+
+  main.mainSwitch = form.enabled;
+  main.selectedNodeId = form.selectedNodeId.trim() || undefined;
+  main.localhostProxy = form.localhostProxy;
+  main.clientProxy = form.clientProxy;
+  main.nodeSocksPort = Number(form.socksPort) > 0 ? Number(form.socksPort) : 1070;
+  main.nodeSocksBindLocal = true;
+  main.socksMainSwitch = form.socksEnabled;
+
+  dns.remoteDns = form.remoteDns.trim() || readString(dns, "remoteDns", "1.1.1.1");
+  dns.remoteDnsProtocol = form.remoteDnsProtocol;
+  dns.directQueryStrategy = form.directDnsQueryStrategy;
+  dns.remoteDnsDoh = readString(dns, "remoteDnsDoh", "https://1.1.1.1/dns-query");
+  dns.remoteDnsDetour = readString(dns, "remoteDnsDetour", "remote");
+  dns.remoteDnsQueryStrategy = readString(dns, "remoteDnsQueryStrategy", "UseIPv4");
+  dns.remoteFakeDns = readBoolean(dns, "remoteFakeDns", false);
+  dns.dnsRedirect = readBoolean(dns, "dnsRedirect", true);
+
+  log.enableNodeLog = readBoolean(log, "enableNodeLog", true);
+  log.level = form.logLevel;
+
+  maintenance.backupPaths = Array.isArray(maintenance.backupPaths)
+    ? maintenance.backupPaths
+    : [
+        "/etc/config/passwall2",
+        "/etc/config/passwall2_server",
+        "/usr/share/passwall2/domains_excluded",
+      ];
+
+  ruleManage.geoipUrl = readString(
+    ruleManage,
+    "geoipUrl",
+    "https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat",
+  );
+  ruleManage.geositeUrl = readString(
+    ruleManage,
+    "geositeUrl",
+    "https://github.com/itdoginfo/allow-domains/releases/latest/download/geosite.dat",
+  );
+  ruleManage.assetDirectory = readString(ruleManage, "assetDirectory", "/usr/share/v2ray/");
+  ruleManage.autoUpdate = form.autoUpdateGeoAssets;
+  ruleManage.scheduleMode = form.dayOfWeek === "7" ? "daily" : "weekly";
+  ruleManage.scheduleDay = form.dayOfWeek === "7" ? undefined : Number(form.dayOfWeek);
+  ruleManage.scheduleHour = Number(form.updateTime) >= 0 ? Number(form.updateTime) : 5;
+  ruleManage.enabledAssets = Array.isArray(ruleManage.enabledAssets)
+    ? ruleManage.enabledAssets
+    : ["geoip", "geosite"];
+
+  basicSettings.main = main;
+  basicSettings.socks = Array.isArray(basicSettings.socks)
+    ? basicSettings.socks
+    : [];
+  basicSettings.dns = dns;
+  basicSettings.log = log;
+  basicSettings.maintenance = maintenance;
+  draft.basicSettings = basicSettings;
+  draft.ruleManage = ruleManage;
+
+  return passwallDesiredConfigSchema.parse(draft);
+}
+
+function buildGroupReadiness(args: {
+  routerCount: number;
+  blockedCount: number;
+  outdatedCount: number;
+}) {
+  if (args.routerCount === 0) {
+    return {
+      label: "Пустая группа",
+      className: "border-white/10 bg-white/5 text-slate-300",
+    };
+  }
+
+  if (args.blockedCount > 0) {
+    return {
+      label: "Нужно внимание",
+      className: "border-amber-400/30 bg-amber-500/10 text-amber-200",
+    };
+  }
+
+  if (args.outdatedCount > 0) {
+    return {
+      label: "Есть старые версии",
+      className: "border-sky-400/30 bg-sky-500/10 text-sky-100",
+    };
+  }
+
+  return {
+    label: "Готова к rollout",
+    className: "border-emerald-400/30 bg-emerald-500/10 text-emerald-100",
+  };
+}
+
 export function RolloutProfilesWorkspace({
   initialWorkspace,
+  initialVersionDriftWorkspace,
+  onOpenVersionControl,
 }: {
   initialWorkspace: ProfilesAndGroupsWorkspace;
+  initialVersionDriftWorkspace: VersionDriftWorkspace;
+  onOpenVersionControl?: () => void;
 }) {
   const utils = api.useUtils();
+  const emptyProfileConfig = useMemo(() => createEmptyProfileConfig(), []);
+
   const workspaceQuery = api.update.profilesAndGroupsWorkspace.useQuery(undefined, {
     initialData: initialWorkspace,
     refetchOnWindowFocus: false,
   });
-  const workspace = workspaceQuery.data ?? initialWorkspace;
+  const versionDriftQuery = api.update.versionDriftWorkspace.useQuery(undefined, {
+    initialData: initialVersionDriftWorkspace,
+    refetchOnWindowFocus: false,
+  });
 
-  const [activeTab, setActiveTab] = useState<"profiles" | "groups">("profiles");
+  const workspace = workspaceQuery.data ?? initialWorkspace;
+  const versionWorkspace = versionDriftQuery.data ?? initialVersionDriftWorkspace;
+
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("profiles");
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(
     workspace.profiles[0]?.id ?? null,
   );
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(
     workspace.groups[0]?.id ?? null,
   );
-  const [profileName, setProfileName] = useState(workspace.profiles[0]?.name ?? "");
-  const [profileDescription, setProfileDescription] = useState(
-    workspace.profiles[0]?.description ?? "",
+
+  const [profileName, setProfileName] = useState("");
+  const [profileDescription, setProfileDescription] = useState("");
+  const [profileNote, setProfileNote] = useState("");
+  const [profileJson, setProfileJson] = useState(stringifyConfig(emptyProfileConfig));
+  const [simpleProfileForm, setSimpleProfileForm] = useState<SimpleProfileForm>(
+    buildSimpleProfileForm(emptyProfileConfig),
   );
-  const [profileNote, setProfileNote] = useState(workspace.profiles[0]?.note ?? "");
-  const [profileJson, setProfileJson] = useState(
-    workspace.profiles[0]
-      ? JSON.stringify(workspace.profiles[0].rolloutConfig, null, 2)
-      : JSON.stringify(passwallDesiredConfigSchema.parse({
-          schemaVersion: 1,
-          basicSettings: {
-            main: {
-              enabled: true,
-              selectedNodeId: null,
-              localhostProxy: true,
-              clientProxy: true,
-            },
-            socks: {
-              enabled: false,
-              bindLocal: true,
-              port: 1070,
-            },
-            dns: {
-              remoteDns: "1.1.1.1",
-              remoteDnsProtocol: "doh",
-              remoteDnsQueryStrategy: "UseIPv4",
-              remoteDnsDetour: "direct",
-              directDnsQueryStrategy: "UseIP",
-              remoteFakeDns: false,
-              dnsRedirect: true,
-              dnsHosts: [],
-            },
-            logging: {
-              level: "error",
-              logNodeTraffic: false,
-            },
-            shuntRules: [],
-          },
-          nodes: [],
-          subscriptions: { items: [] },
-          appUpdate: {
-            binaryPaths: {
-              xray: "/usr/bin/xray",
-              singBox: "/usr/bin/sing-box",
-              hysteria: "/usr/bin/hysteria",
-              geoview: "/usr/bin/geoview",
-            },
-            updateStrategy: "package-first",
-            targetVersions: {},
-          },
-          ruleManage: {
-            autoUpdateGeoAssets: true,
-            dayOfWeek: "7",
-            updateTime: "5",
-          },
-        }), null, 2),
-  );
-  const [groupName, setGroupName] = useState(workspace.groups[0]?.name ?? "");
-  const [groupDescription, setGroupDescription] = useState(
-    workspace.groups[0]?.description ?? "",
-  );
-  const [groupProfileId, setGroupProfileId] = useState<string | null>(
-    workspace.groups[0]?.rolloutProfileId ?? null,
-  );
+  const [advancedEditorOpen, setAdvancedEditorOpen] = useState(false);
+
+  const [groupName, setGroupName] = useState("");
+  const [groupDescription, setGroupDescription] = useState("");
+  const [groupProfileId, setGroupProfileId] = useState<string | null>(null);
   const [selectedRouterIds, setSelectedRouterIds] = useState<string[]>([]);
   const [groupNote, setGroupNote] = useState("");
 
   const saveProfileMutation = api.update.saveRolloutProfile.useMutation({
     onSuccess: async () => {
-      await utils.update.profilesAndGroupsWorkspace.invalidate();
+      await Promise.all([
+        utils.update.profilesAndGroupsWorkspace.invalidate(),
+        utils.update.versionDriftWorkspace.invalidate(),
+      ]);
     },
   });
   const deleteProfileMutation = api.update.deleteRolloutProfile.useMutation({
@@ -142,12 +382,18 @@ export function RolloutProfilesWorkspace({
   });
   const saveGroupMutation = api.update.saveRouterGroup.useMutation({
     onSuccess: async () => {
-      await utils.update.profilesAndGroupsWorkspace.invalidate();
+      await Promise.all([
+        utils.update.profilesAndGroupsWorkspace.invalidate(),
+        utils.update.versionDriftWorkspace.invalidate(),
+      ]);
     },
   });
   const deleteGroupMutation = api.update.deleteRouterGroup.useMutation({
     onSuccess: async () => {
-      await utils.update.profilesAndGroupsWorkspace.invalidate();
+      await Promise.all([
+        utils.update.profilesAndGroupsWorkspace.invalidate(),
+        utils.update.versionDriftWorkspace.invalidate(),
+      ]);
       setSelectedGroupId(null);
       setSelectedRouterIds([]);
     },
@@ -156,6 +402,7 @@ export function RolloutProfilesWorkspace({
     onSuccess: async () => {
       await Promise.all([
         utils.update.profilesAndGroupsWorkspace.invalidate(),
+        utils.update.versionDriftWorkspace.invalidate(),
         utils.fleet.monitoring.invalidate(),
       ]);
       setSelectedRouterIds([]);
@@ -165,6 +412,7 @@ export function RolloutProfilesWorkspace({
     onSuccess: async () => {
       await Promise.all([
         utils.update.profilesAndGroupsWorkspace.invalidate(),
+        utils.update.versionDriftWorkspace.invalidate(),
         utils.update.globalTemplateWorkspace.invalidate(),
         utils.fleet.monitoring.invalidate(),
       ]);
@@ -176,6 +424,10 @@ export function RolloutProfilesWorkspace({
     workspace.profiles.find((profile) => profile.id === selectedProfileId) ?? null;
   const selectedGroup =
     workspace.groups.find((group) => group.id === selectedGroupId) ?? null;
+
+  const parsedProfile = parseConfigInput(profileJson);
+  const baseProfileConfig = selectedProfile?.rolloutConfig ?? emptyProfileConfig;
+
   const groupRouters = useMemo(
     () =>
       selectedGroupId
@@ -183,8 +435,164 @@ export function RolloutProfilesWorkspace({
         : [],
     [selectedGroupId, workspace.routers],
   );
+
   const availableRoutersForAdd = workspace.unassignedRouters;
-  const parsedProfile = parseConfigInput(profileJson);
+
+  useEffect(() => {
+    if (workspace.profiles.length === 0) {
+      setSelectedProfileId(null);
+      return;
+    }
+
+    if (!selectedProfileId) {
+      setSelectedProfileId(workspace.profiles[0]?.id ?? null);
+      return;
+    }
+
+    if (!workspace.profiles.some((profile) => profile.id === selectedProfileId)) {
+      setSelectedProfileId(workspace.profiles[0]?.id ?? null);
+    }
+  }, [selectedProfileId, workspace.profiles]);
+
+  useEffect(() => {
+    if (workspace.groups.length === 0) {
+      setSelectedGroupId(null);
+      return;
+    }
+
+    if (!selectedGroupId) {
+      setSelectedGroupId(workspace.groups[0]?.id ?? null);
+      return;
+    }
+
+    if (!workspace.groups.some((group) => group.id === selectedGroupId)) {
+      setSelectedGroupId(workspace.groups[0]?.id ?? null);
+    }
+  }, [selectedGroupId, workspace.groups]);
+
+  useEffect(() => {
+    const config = selectedProfile?.rolloutConfig ?? emptyProfileConfig;
+    setProfileName(selectedProfile?.name ?? "");
+    setProfileDescription(selectedProfile?.description ?? "");
+    setProfileNote(selectedProfile?.note ?? "");
+    setProfileJson(stringifyConfig(config));
+    setSimpleProfileForm(buildSimpleProfileForm(config));
+  }, [emptyProfileConfig, selectedProfile]);
+
+  useEffect(() => {
+    setGroupName(selectedGroup?.name ?? "");
+    setGroupDescription(selectedGroup?.description ?? "");
+    setGroupProfileId(selectedGroup?.rolloutProfileId ?? null);
+  }, [selectedGroup]);
+
+  useEffect(() => {
+    setSelectedRouterIds((current) =>
+      current.filter((routerId) =>
+        availableRoutersForAdd.some((router) => router.id === routerId),
+      ),
+    );
+  }, [availableRoutersForAdd]);
+
+  const versionRowsByRouterId = useMemo(
+    () => new Map(versionWorkspace.rows.map((row) => [row.id, row])),
+    [versionWorkspace.rows],
+  );
+
+  const groupStatusById = useMemo(() => {
+    const stats = new Map<
+      string,
+      {
+        routerCount: number;
+        controllerOutdated: number;
+        passwallOutdated: number;
+        xrayOutdated: number;
+        blocked: number;
+        queued: number;
+      }
+    >();
+
+    for (const group of workspace.groups) {
+      stats.set(group.id, {
+        routerCount: 0,
+        controllerOutdated: 0,
+        passwallOutdated: 0,
+        xrayOutdated: 0,
+        blocked: 0,
+        queued: 0,
+      });
+    }
+
+    for (const row of versionWorkspace.rows) {
+      if (!row.rolloutGroupId) {
+        continue;
+      }
+
+      const current = stats.get(row.rolloutGroupId);
+      if (!current) {
+        continue;
+      }
+
+      current.routerCount += 1;
+      if (row.controllerNeedsUpdate) current.controllerOutdated += 1;
+      if (row.passwallNeedsUpdate) current.passwallOutdated += 1;
+      if (row.xrayNeedsUpdate) current.xrayOutdated += 1;
+      if (row.blocked) current.blocked += 1;
+      if (row.hasQueuedUpdate) current.queued += 1;
+    }
+
+    return stats;
+  }, [versionWorkspace.rows, workspace.groups]);
+
+  const selectedGroupStatus = selectedGroupId
+    ? groupStatusById.get(selectedGroupId) ?? {
+        routerCount: 0,
+        controllerOutdated: 0,
+        passwallOutdated: 0,
+        xrayOutdated: 0,
+        blocked: 0,
+        queued: 0,
+      }
+    : null;
+
+  const profileDirty =
+    profileName !== (selectedProfile?.name ?? "") ||
+    profileDescription !== (selectedProfile?.description ?? "") ||
+    profileNote !== (selectedProfile?.note ?? "") ||
+    profileJson !== stringifyConfig(baseProfileConfig);
+
+  const groupDirty =
+    groupName !== (selectedGroup?.name ?? "") ||
+    groupDescription !== (selectedGroup?.description ?? "") ||
+    groupProfileId !== (selectedGroup?.rolloutProfileId ?? null);
+
+  function resetProfileEditor() {
+    const config = selectedProfile?.rolloutConfig ?? emptyProfileConfig;
+    setProfileName(selectedProfile?.name ?? "");
+    setProfileDescription(selectedProfile?.description ?? "");
+    setProfileNote(selectedProfile?.note ?? "");
+    setProfileJson(stringifyConfig(config));
+    setSimpleProfileForm(buildSimpleProfileForm(config));
+  }
+
+  function resetGroupEditor() {
+    setGroupName(selectedGroup?.name ?? "");
+    setGroupDescription(selectedGroup?.description ?? "");
+    setGroupProfileId(selectedGroup?.rolloutProfileId ?? null);
+  }
+
+  function updateSimpleProfileForm(patch: Partial<SimpleProfileForm>) {
+    const nextForm = { ...simpleProfileForm, ...patch };
+    const currentConfig = parsedProfile.ok ? parsedProfile.config : baseProfileConfig;
+    const nextConfig = applySimpleProfileForm(currentConfig, nextForm);
+
+    setSimpleProfileForm(nextForm);
+    setProfileJson(stringifyConfig(nextConfig));
+  }
+
+  const totalOutdatedSignals =
+    versionWorkspace.summary.outdatedPasswallCount +
+    versionWorkspace.summary.outdatedXrayCount +
+    versionWorkspace.summary.queuedCount;
 
   return (
     <div className="space-y-4">
@@ -195,7 +603,36 @@ export function RolloutProfilesWorkspace({
       >
         <div className="space-y-4">
           <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
-            Здесь вы ведёте reusable профили для подключённого парка и раскладываете роутеры по рабочим группам. Один профиль можно назначать нескольким группам, а у каждого роутера в группе остаётся быстрый перенос без ручной текстовой рутины.
+            Здесь вы ведёте reusable профили для подключённого парка и раскладываете роутеры по рабочим группам. По умолчанию это короткая операторская форма, а raw JSON остаётся только как резервный экспертный путь.
+          </div>
+
+          <div className="vectra-stat-grid">
+            <StatusTile
+              label="Профилей"
+              value={String(workspace.profiles.length)}
+              hint="Reusable шаблоны rollout"
+              compact
+            />
+            <StatusTile
+              label="Групп"
+              value={String(workspace.groups.length)}
+              hint="Сегменты парка"
+              compact
+            />
+            <StatusTile
+              label="Без группы"
+              value={String(workspace.unassignedRouters.length)}
+              tone={workspace.unassignedRouters.length > 0 ? "warning" : "good"}
+              hint="Роутеры, которые ещё не распределены"
+              compact
+            />
+            <StatusTile
+              label="Нужен version-control"
+              value={String(totalOutdatedSignals)}
+              tone={totalOutdatedSignals > 0 ? "warning" : "good"}
+              hint="Сигналы о старых версиях или очереди update"
+              compact
+            />
           </div>
 
           <TabBar
@@ -231,10 +668,7 @@ export function RolloutProfilesWorkspace({
                           type="button"
                           onClick={() => {
                             setSelectedProfileId(profile.id);
-                            setProfileName(profile.name);
-                            setProfileDescription(profile.description ?? "");
-                            setProfileNote(profile.note ?? "");
-                            setProfileJson(JSON.stringify(profile.rolloutConfig, null, 2));
+                            setAdvancedEditorOpen(false);
                           }}
                           className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
                             selected
@@ -273,6 +707,44 @@ export function RolloutProfilesWorkspace({
                 tone="muted"
               >
                 <div className="space-y-4">
+                  <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
+                    Сначала заполните понятные поля ниже. Если нужен точный контроль над нодами, shunt rules или редкими настройками, откройте advanced JSON fallback.
+                  </div>
+
+                  <div className="vectra-stat-grid">
+                    <StatusTile
+                      label="Групп на профиле"
+                      value={String(selectedProfile?.groupCount ?? 0)}
+                      compact
+                    />
+                    <StatusTile
+                      label="Нод внутри"
+                      value={String(
+                        parsedProfile.ok
+                          ? parsedProfile.config.nodes.length
+                          : baseProfileConfig.nodes.length,
+                      )}
+                      hint="Точный состав нод остаётся в advanced JSON"
+                      compact
+                    />
+                    <StatusTile
+                      label="Shunt rules"
+                      value={String(
+                        parsedProfile.ok
+                          ? parsedProfile.config.basicSettings.shuntRules.length
+                          : baseProfileConfig.basicSettings.shuntRules.length,
+                      )}
+                      hint="Сложная маршрутизация не навязывается по умолчанию"
+                      compact
+                    />
+                    <StatusTile
+                      label="Локальный статус"
+                      value={profileDirty ? "Есть несохранённые правки" : "Всё сохранено"}
+                      tone={profileDirty ? "warning" : "good"}
+                      compact
+                    />
+                  </div>
+
                   <div className="grid gap-4 md:grid-cols-2">
                     <label className="space-y-2 text-sm text-slate-300">
                       <span className="vectra-kicker text-slate-500">Название профиля</span>
@@ -294,6 +766,192 @@ export function RolloutProfilesWorkspace({
                     </label>
                   </div>
 
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label className="space-y-2 text-sm text-slate-300">
+                      <span className="vectra-kicker text-slate-500">Основной режим</span>
+                      <select
+                        value={simpleProfileForm.enabled ? "enabled" : "disabled"}
+                        onChange={(event) =>
+                          updateSimpleProfileForm({
+                            enabled: event.target.value === "enabled",
+                          })
+                        }
+                        className="vectra-field px-3 py-2 text-sm text-white"
+                      >
+                        <option value="enabled">PassWall включён</option>
+                        <option value="disabled">PassWall выключен</option>
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm text-slate-300">
+                      <span className="vectra-kicker text-slate-500">Нода по умолчанию</span>
+                      <input
+                        value={simpleProfileForm.selectedNodeId}
+                        onChange={(event) =>
+                          updateSimpleProfileForm({ selectedNodeId: event.target.value })
+                        }
+                        className="vectra-field px-3 py-2 text-sm text-white"
+                        placeholder="Оставьте пустым, если профиль не должен менять ноду"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm text-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={simpleProfileForm.localhostProxy}
+                        onChange={(event) =>
+                          updateSimpleProfileForm({ localhostProxy: event.target.checked })
+                        }
+                      />
+                      <span>Proxy для самого роутера</span>
+                    </label>
+                    <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm text-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={simpleProfileForm.clientProxy}
+                        onChange={(event) =>
+                          updateSimpleProfileForm({ clientProxy: event.target.checked })
+                        }
+                      />
+                      <span>Proxy для клиентов LAN</span>
+                    </label>
+                    <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm text-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={simpleProfileForm.socksEnabled}
+                        onChange={(event) =>
+                          updateSimpleProfileForm({ socksEnabled: event.target.checked })
+                        }
+                      />
+                      <span>SOCKS-порт</span>
+                    </label>
+                    <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm text-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={simpleProfileForm.autoUpdateGeoAssets}
+                        onChange={(event) =>
+                          updateSimpleProfileForm({
+                            autoUpdateGeoAssets: event.target.checked,
+                          })
+                        }
+                      />
+                      <span>Автообновление геобаз</span>
+                    </label>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    <label className="space-y-2 text-sm text-slate-300">
+                      <span className="vectra-kicker text-slate-500">Порт SOCKS</span>
+                      <input
+                        value={simpleProfileForm.socksPort}
+                        onChange={(event) =>
+                          updateSimpleProfileForm({ socksPort: event.target.value })
+                        }
+                        className="vectra-field px-3 py-2 text-sm text-white"
+                        inputMode="numeric"
+                      />
+                    </label>
+                    <label className="space-y-2 text-sm text-slate-300">
+                      <span className="vectra-kicker text-slate-500">Remote DNS</span>
+                      <input
+                        value={simpleProfileForm.remoteDns}
+                        onChange={(event) =>
+                          updateSimpleProfileForm({ remoteDns: event.target.value })
+                        }
+                        className="vectra-field px-3 py-2 text-sm text-white"
+                        placeholder="1.1.1.1"
+                      />
+                    </label>
+                    <label className="space-y-2 text-sm text-slate-300">
+                      <span className="vectra-kicker text-slate-500">Протокол DNS</span>
+                      <select
+                        value={simpleProfileForm.remoteDnsProtocol}
+                        onChange={(event) =>
+                          updateSimpleProfileForm({
+                            remoteDnsProtocol: event.target.value as RemoteDnsProtocol,
+                          })
+                        }
+                        className="vectra-field px-3 py-2 text-sm text-white"
+                      >
+                        <option value="doh">DoH</option>
+                        <option value="tls">TLS</option>
+                        <option value="tcp">TCP</option>
+                        <option value="udp">UDP</option>
+                        <option value="quic">QUIC</option>
+                        <option value="http3">HTTP/3</option>
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm text-slate-300">
+                      <span className="vectra-kicker text-slate-500">Стратегия direct DNS</span>
+                      <select
+                        value={simpleProfileForm.directDnsQueryStrategy}
+                        onChange={(event) =>
+                          updateSimpleProfileForm({
+                            directDnsQueryStrategy: event.target.value as QueryStrategy,
+                          })
+                        }
+                        className="vectra-field px-3 py-2 text-sm text-white"
+                      >
+                        <option value="UseIP">UseIP</option>
+                        <option value="UseIPv4">UseIPv4</option>
+                        <option value="UseIPv6">UseIPv6</option>
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm text-slate-300">
+                      <span className="vectra-kicker text-slate-500">Логи</span>
+                      <select
+                        value={simpleProfileForm.logLevel}
+                        onChange={(event) =>
+                          updateSimpleProfileForm({
+                            logLevel: event.target.value as LogLevel,
+                          })
+                        }
+                        className="vectra-field px-3 py-2 text-sm text-white"
+                      >
+                        <option value="error">error</option>
+                        <option value="warning">warning</option>
+                        <option value="info">info</option>
+                        <option value="debug">debug</option>
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm text-slate-300">
+                      <span className="vectra-kicker text-slate-500">День геообновления</span>
+                      <select
+                        value={simpleProfileForm.dayOfWeek}
+                        onChange={(event) =>
+                          updateSimpleProfileForm({ dayOfWeek: event.target.value })
+                        }
+                        className="vectra-field px-3 py-2 text-sm text-white"
+                      >
+                        <option value="7">Каждый день</option>
+                        <option value="1">Понедельник</option>
+                        <option value="2">Вторник</option>
+                        <option value="3">Среда</option>
+                        <option value="4">Четверг</option>
+                        <option value="5">Пятница</option>
+                        <option value="6">Суббота</option>
+                        <option value="0">Воскресенье</option>
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm text-slate-300">
+                      <span className="vectra-kicker text-slate-500">Час геообновления</span>
+                      <select
+                        value={simpleProfileForm.updateTime}
+                        onChange={(event) =>
+                          updateSimpleProfileForm({ updateTime: event.target.value })
+                        }
+                        className="vectra-field px-3 py-2 text-sm text-white"
+                      >
+                        {Array.from({ length: 24 }, (_, hour) => (
+                          <option key={hour} value={String(hour)}>
+                            {String(hour).padStart(2, "0")}:00
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
                   <label className="space-y-2 text-sm text-slate-300">
                     <span className="vectra-kicker text-slate-500">Комментарий</span>
                     <input
@@ -310,15 +968,27 @@ export function RolloutProfilesWorkspace({
                     </div>
                   )}
 
-                  <label className="space-y-2 text-sm text-slate-300">
-                    <span className="vectra-kicker text-slate-500">Rollout config профиля</span>
-                    <textarea
-                      value={profileJson}
-                      onChange={(event) => setProfileJson(event.target.value)}
-                      rows={22}
-                      className="vectra-field min-h-[26rem] border-white/10 bg-black/30 px-3 py-3 font-[family:var(--font-plex-mono)] text-[12px] leading-6 text-slate-100"
-                    />
-                  </label>
+                  <details
+                    open={advancedEditorOpen}
+                    onToggle={(event) => setAdvancedEditorOpen(event.currentTarget.open)}
+                    className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
+                  >
+                    <summary className="cursor-pointer list-none text-sm font-medium text-white">
+                      Advanced JSON fallback
+                    </summary>
+                    <p className="mt-2 text-sm leading-6 text-slate-400">
+                      Используйте только если нужно править ноды, shunt rules, subscriptions или редкие поля, которые не вынесены в простой режим.
+                    </p>
+                    <label className="mt-3 block space-y-2 text-sm text-slate-300">
+                      <span className="vectra-kicker text-slate-500">Rollout config профиля</span>
+                      <textarea
+                        value={profileJson}
+                        onChange={(event) => setProfileJson(event.target.value)}
+                        rows={18}
+                        className="vectra-field min-h-[22rem] border-white/10 bg-black/30 px-3 py-3 font-[family:var(--font-plex-mono)] text-[12px] leading-6 text-slate-100"
+                      />
+                    </label>
+                  </details>
 
                   <ActionStrip justify="start">
                     <button
@@ -337,7 +1007,19 @@ export function RolloutProfilesWorkspace({
                       }
                       className="vectra-button-primary px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {saveProfileMutation.isPending ? "Сохраняю профиль..." : selectedProfile ? "Сохранить профиль" : "Создать профиль"}
+                      {saveProfileMutation.isPending
+                        ? "Сохраняю профиль..."
+                        : selectedProfile
+                          ? "Сохранить профиль"
+                          : "Создать профиль"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetProfileEditor}
+                      disabled={!profileDirty}
+                      className="vectra-button-secondary px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Сбросить локальные правки
                     </button>
                     {selectedProfile ? (
                       <button
@@ -356,10 +1038,7 @@ export function RolloutProfilesWorkspace({
                       type="button"
                       onClick={() => {
                         setSelectedProfileId(null);
-                        setProfileName("");
-                        setProfileDescription("");
-                        setProfileNote("");
-                        setProfileJson(selectedProfile ? JSON.stringify(selectedProfile.rolloutConfig, null, 2) : profileJson);
+                        setAdvancedEditorOpen(false);
                       }}
                       className="vectra-button-secondary px-3 py-2 text-sm font-medium transition"
                     >
@@ -377,16 +1056,28 @@ export function RolloutProfilesWorkspace({
                 <div className="space-y-3">
                   {workspace.groups.map((group) => {
                     const selected = group.id === selectedGroupId;
+                    const status = groupStatusById.get(group.id) ?? {
+                      routerCount: 0,
+                      controllerOutdated: 0,
+                      passwallOutdated: 0,
+                      xrayOutdated: 0,
+                      blocked: 0,
+                      queued: 0,
+                    };
+                    const readiness = buildGroupReadiness({
+                      routerCount: status.routerCount,
+                      blockedCount: status.blocked,
+                      outdatedCount:
+                        status.controllerOutdated +
+                        status.passwallOutdated +
+                        status.xrayOutdated,
+                    });
+
                     return (
                       <button
                         key={group.id}
                         type="button"
-                        onClick={() => {
-                          setSelectedGroupId(group.id);
-                          setGroupName(group.name);
-                          setGroupDescription(group.description ?? "");
-                          setGroupProfileId(group.rolloutProfileId ?? null);
-                        }}
+                        onClick={() => setSelectedGroupId(group.id)}
                         className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
                           selected
                             ? "border-sky-400/30 bg-sky-500/10"
@@ -400,12 +1091,19 @@ export function RolloutProfilesWorkspace({
                               {group.description ?? "Без описания."}
                             </p>
                           </div>
-                          <span className="rounded-full border border-white/10 bg-black/10 px-2 py-1 text-[11px] text-slate-300">
-                            {group.routerCount} роутеров
+                          <span className={`rounded-full border px-2 py-1 text-[11px] ${readiness.className}`}>
+                            {readiness.label}
                           </span>
                         </div>
-                        <p className="mt-3 text-xs leading-5 text-slate-500">
-                          Профиль: {group.rolloutProfileName ?? "не выбран"} · обновлено {formatDateTime(group.updatedAt)}
+                        <div className="mt-3 flex flex-wrap gap-2 text-xs leading-5 text-slate-400">
+                          <span>{group.routerCount} роутеров</span>
+                          <span>· профиль: {group.rolloutProfileName ?? "не выбран"}</span>
+                          <span>· controller: {status.controllerOutdated}</span>
+                          <span>· PassWall: {status.passwallOutdated}</span>
+                          <span>· Xray: {status.xrayOutdated}</span>
+                        </div>
+                        <p className="mt-2 text-xs leading-5 text-slate-500">
+                          Обновлено {formatDateTime(group.updatedAt)}
                         </p>
                       </button>
                     );
@@ -419,6 +1117,10 @@ export function RolloutProfilesWorkspace({
                 tone="muted"
               >
                 <div className="space-y-4">
+                  <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
+                    Здесь одно главное действие за раз: выбираете профиль для группы, видите здоровье группы и только потом готовите draft-only rollout или queue apply.
+                  </div>
+
                   <div className="grid gap-4 md:grid-cols-2">
                     <label className="space-y-2 text-sm text-slate-300">
                       <span className="vectra-kicker text-slate-500">Название группы</span>
@@ -456,6 +1158,53 @@ export function RolloutProfilesWorkspace({
                     />
                   </label>
 
+                  {selectedGroup && selectedGroupStatus ? (
+                    <div className="space-y-4 rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div>
+                          <p className="vectra-kicker text-slate-500">Версионное состояние группы</p>
+                          <p className="mt-2 text-sm leading-6 text-slate-300">
+                            Отсюда видно, есть ли в группе старые controller, PassWall или Xray. Bulk updates остаются в отдельном контроллере версий, чтобы не дублировать backend-логику и не перегружать экран.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={onOpenVersionControl}
+                          className="vectra-button-secondary px-3 py-2 text-sm font-medium transition"
+                        >
+                          Открыть контроллер версий
+                        </button>
+                      </div>
+
+                      <div className="vectra-stat-grid">
+                        <StatusTile
+                          label="Controller устарел"
+                          value={String(selectedGroupStatus.controllerOutdated)}
+                          tone={selectedGroupStatus.controllerOutdated > 0 ? "warning" : "good"}
+                          compact
+                        />
+                        <StatusTile
+                          label="PassWall устарел"
+                          value={String(selectedGroupStatus.passwallOutdated)}
+                          tone={selectedGroupStatus.passwallOutdated > 0 ? "warning" : "good"}
+                          compact
+                        />
+                        <StatusTile
+                          label="Xray устарел"
+                          value={String(selectedGroupStatus.xrayOutdated)}
+                          tone={selectedGroupStatus.xrayOutdated > 0 ? "warning" : "good"}
+                          compact
+                        />
+                        <StatusTile
+                          label="Blocked / queued"
+                          value={`${selectedGroupStatus.blocked} / ${selectedGroupStatus.queued}`}
+                          tone={selectedGroupStatus.blocked > 0 ? "warning" : "default"}
+                          compact
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+
                   <ActionStrip justify="start">
                     <button
                       type="button"
@@ -470,7 +1219,19 @@ export function RolloutProfilesWorkspace({
                       }
                       className="vectra-button-primary px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {saveGroupMutation.isPending ? "Сохраняю группу..." : selectedGroup ? "Сохранить группу" : "Создать группу"}
+                      {saveGroupMutation.isPending
+                        ? "Сохраняю группу..."
+                        : selectedGroup
+                          ? "Сохранить группу"
+                          : "Создать группу"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetGroupEditor}
+                      disabled={!groupDirty}
+                      className="vectra-button-secondary px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Сбросить локальные правки
                     </button>
                     {selectedGroup ? (
                       <button
@@ -487,12 +1248,7 @@ export function RolloutProfilesWorkspace({
                     ) : null}
                     <button
                       type="button"
-                      onClick={() => {
-                        setSelectedGroupId(null);
-                        setGroupName("");
-                        setGroupDescription("");
-                        setGroupProfileId(null);
-                      }}
+                      onClick={() => setSelectedGroupId(null)}
                       className="vectra-button-secondary px-3 py-2 text-sm font-medium transition"
                     >
                       Новая группа
@@ -504,113 +1260,165 @@ export function RolloutProfilesWorkspace({
                       <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3">
                         <p className="vectra-kicker text-slate-500">Роутеры в группе</p>
                         <p className="mt-2 text-sm leading-6 text-slate-300">
-                          Уже добавленные роутеры не появляются ниже в секции добавления. Для быстрого переноса можно выбрать устройства и переназначить их в другую группу одним действием.
+                          Для каждого роутера видно import/support статус и наличие старых controller, PassWall или Xray прямо в карточке группы.
                         </p>
                       </div>
 
-                      <DataTable
-                        title="Состав группы"
-                        columns={[
-                          { key: "router", label: "Роутер" },
-                          { key: "state", label: "Состояние" },
-                          { key: "support", label: "Поддержка" },
-                          { key: "move", label: "Группа" },
-                        ]}
-                      >
+                      <div className="space-y-3">
                         {groupRouters.length > 0 ? (
-                          groupRouters.map((router) => (
-                            <tr key={router.id} className="border-b border-white/6">
-                              <td className="px-3 py-3 align-top text-sm text-slate-100">
-                                {router.displayName}
-                                <p className="mt-1 text-xs leading-6 text-slate-500">
-                                  {router.hostname ?? router.deviceIdentifier}
+                          groupRouters.map((router) => {
+                            const versionRow = versionRowsByRouterId.get(router.id);
+                            const outdatedLabels = [
+                              versionRow?.controllerNeedsUpdate ? "controller" : null,
+                              versionRow?.passwallNeedsUpdate ? "PassWall" : null,
+                              versionRow?.xrayNeedsUpdate ? "Xray" : null,
+                            ].filter(Boolean);
+
+                            return (
+                              <div
+                                key={router.id}
+                                className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4"
+                              >
+                                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                  <div className="min-w-0">
+                                    <p className="text-sm font-semibold text-white">{router.displayName}</p>
+                                    <p className="mt-1 text-sm leading-6 text-slate-400">
+                                      {router.hostname ?? router.deviceIdentifier}
+                                    </p>
+                                    <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-300">
+                                      <span className="rounded-full border border-white/10 bg-black/10 px-2 py-1">
+                                        {router.importState} · {router.status}
+                                      </span>
+                                      <span className="rounded-full border border-white/10 bg-black/10 px-2 py-1">
+                                        {router.supportTitle}
+                                      </span>
+                                      {versionRow?.blockedReason ? (
+                                        <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-1 text-amber-200">
+                                          {versionRow.blockedReason}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+
+                                  <div className="w-full lg:w-[15rem]">
+                                    <label className="space-y-2 text-sm text-slate-300">
+                                      <span className="vectra-kicker text-slate-500">Перенести в группу</span>
+                                      <select
+                                        value={router.rolloutGroupId ?? ""}
+                                        onChange={(event) =>
+                                          assignMutation.mutate({
+                                            routerIds: [router.id],
+                                            groupId: event.target.value || null,
+                                          })
+                                        }
+                                        className="vectra-field px-3 py-2 text-sm text-white"
+                                      >
+                                        <option value="">Без группы</option>
+                                        {workspace.groups.map((group) => (
+                                          <option key={group.id} value={group.id}>
+                                            {group.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                  </div>
+                                </div>
+
+                                <div className="mt-3 grid gap-2 md:grid-cols-3">
+                                  <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-3 text-sm text-slate-200">
+                                    <p className="vectra-kicker text-slate-500">Controller</p>
+                                    <p className="mt-1">{versionRow?.controllerInstalled ?? "нет данных"}</p>
+                                    <p className="mt-1 text-xs text-slate-500">
+                                      {versionRow?.controllerAvailable ?? "не опубликовано"}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-3 text-sm text-slate-200">
+                                    <p className="vectra-kicker text-slate-500">PassWall</p>
+                                    <p className="mt-1">{versionRow?.passwallInstalled ?? "нет данных"}</p>
+                                    <p className="mt-1 text-xs text-slate-500">
+                                      {versionRow?.passwallAvailableLabel ?? "не опубликовано"}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-3 text-sm text-slate-200">
+                                    <p className="vectra-kicker text-slate-500">Xray</p>
+                                    <p className="mt-1">{versionRow?.xrayInstalled ?? "нет данных"}</p>
+                                    <p className="mt-1 text-xs text-slate-500">
+                                      {versionRow?.xrayAvailable ?? "не опубликовано"}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <p className="mt-3 text-sm leading-6 text-slate-300">
+                                  {outdatedLabels.length > 0
+                                    ? `Нужно обновить: ${outdatedLabels.join(", ")}.`
+                                    : "По stable-контуру здесь нет сигнала о старых версиях."}
                                 </p>
-                              </td>
-                              <td className="px-3 py-3 align-top text-sm text-slate-300">
-                                {router.importState} · {router.status}
-                              </td>
-                              <td className="px-3 py-3 align-top text-sm text-slate-400">
-                                {router.supportTitle}
-                              </td>
-                              <td className="px-3 py-3 align-top">
-                                <select
-                                  value={router.rolloutGroupId ?? ""}
-                                  onChange={(event) =>
-                                    assignMutation.mutate({
-                                      routerIds: [router.id],
-                                      groupId: event.target.value || null,
-                                    })
-                                  }
-                                  className="vectra-field px-3 py-2 text-sm text-white"
-                                >
-                                  <option value="">Без группы</option>
-                                  {workspace.groups.map((group) => (
-                                    <option key={group.id} value={group.id}>
-                                      {group.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              </td>
-                            </tr>
-                          ))
+                              </div>
+                            );
+                          })
                         ) : (
-                          <DataTableEmpty colSpan={4}>В этой группе пока нет роутеров.</DataTableEmpty>
+                          <div className="rounded-2xl border border-dashed border-white/12 bg-white/[0.03] px-4 py-6 text-sm leading-7 text-slate-400">
+                            В этой группе пока нет роутеров.
+                          </div>
                         )}
-                      </DataTable>
+                      </div>
 
                       <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3">
                         <p className="vectra-kicker text-slate-500">Добавить роутеры</p>
                         <p className="mt-2 text-sm leading-6 text-slate-300">
-                          Список ниже показывает только ещё не назначенные роутеры, чтобы вы не перебирали уже разложенный парк вручную.
+                          Здесь показываются только ещё не назначенные роутеры, чтобы массовое распределение по группам было коротким и понятным.
                         </p>
                       </div>
 
-                      <DataTable
-                        title="Свободные роутеры"
-                        columns={[
-                          { key: "pick", label: "Выбор", className: "w-16" },
-                          { key: "router", label: "Роутер" },
-                          { key: "state", label: "Состояние" },
-                          { key: "support", label: "Поддержка" },
-                        ]}
-                      >
+                      <div className="space-y-3">
                         {availableRoutersForAdd.length > 0 ? (
                           availableRoutersForAdd.map((router) => {
                             const selected = selectedRouterIds.includes(router.id);
+
                             return (
-                              <tr key={router.id} className={`border-b border-white/6 ${selected ? "bg-white/[0.04]" : ""}`}>
-                                <td className="px-3 py-3 align-top">
-                                  <input
-                                    type="checkbox"
-                                    checked={selected}
-                                    onChange={(event) =>
-                                      setSelectedRouterIds((current) =>
-                                        event.target.checked
-                                          ? [...new Set([...current, router.id])]
-                                          : current.filter((id) => id !== router.id),
-                                      )
-                                    }
-                                  />
-                                </td>
-                                <td className="px-3 py-3 align-top text-sm text-slate-100">
-                                  {router.displayName}
-                                  <p className="mt-1 text-xs leading-6 text-slate-500">
+                              <label
+                                key={router.id}
+                                className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-4 transition ${
+                                  selected
+                                    ? "border-sky-400/30 bg-sky-500/10"
+                                    : "border-white/10 bg-[var(--vectra-panel-soft)] hover:border-white/20"
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selected}
+                                  onChange={(event) =>
+                                    setSelectedRouterIds((current) =>
+                                      event.target.checked
+                                        ? [...new Set([...current, router.id])]
+                                        : current.filter((id) => id !== router.id),
+                                    )
+                                  }
+                                  className="mt-1"
+                                />
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-white">{router.displayName}</p>
+                                  <p className="mt-1 text-sm leading-6 text-slate-400">
                                     {router.hostname ?? router.deviceIdentifier}
                                   </p>
-                                </td>
-                                <td className="px-3 py-3 align-top text-sm text-slate-300">
-                                  {router.importState} · {router.status}
-                                </td>
-                                <td className="px-3 py-3 align-top text-sm text-slate-400">
-                                  {router.supportTitle}
-                                </td>
-                              </tr>
+                                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-300">
+                                    <span className="rounded-full border border-white/10 bg-black/10 px-2 py-1">
+                                      {router.importState} · {router.status}
+                                    </span>
+                                    <span className="rounded-full border border-white/10 bg-black/10 px-2 py-1">
+                                      {router.supportTitle}
+                                    </span>
+                                  </div>
+                                </div>
+                              </label>
                             );
                           })
                         ) : (
-                          <DataTableEmpty colSpan={4}>Свободных роутеров сейчас нет.</DataTableEmpty>
+                          <div className="rounded-2xl border border-dashed border-white/12 bg-white/[0.03] px-4 py-6 text-sm leading-7 text-slate-400">
+                            Свободных роутеров сейчас нет.
+                          </div>
                         )}
-                      </DataTable>
+                      </div>
 
                       <ActionStrip justify="start">
                         <button
@@ -626,6 +1434,9 @@ export function RolloutProfilesWorkspace({
                         >
                           Добавить выбранные в группу
                         </button>
+                        <span className="text-sm text-slate-400">
+                          Выбрано {selectedRouterIds.length}
+                        </span>
                         <button
                           type="button"
                           disabled={!selectedGroup.rolloutProfileId || rolloutMutation.isPending}

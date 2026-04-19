@@ -82,18 +82,10 @@ function buildReleaseTracks(
 }
 
 export default async function UpdatesPage() {
-  const [
-    artifacts,
-    manifests,
-    globalTemplateWorkspace,
-    profilesAndGroupsWorkspace,
-    versionDriftWorkspace,
-  ] = await Promise.all([
+  const [artifacts, manifests, globalTemplateWorkspace] = await Promise.all([
     api.update.artifacts(),
     api.update.firmwareMatrix(),
     api.update.globalTemplateWorkspace(),
-    api.update.profilesAndGroupsWorkspace(),
-    api.update.versionDriftWorkspace(),
   ]);
   const releaseTracks = buildReleaseTracks(artifacts, manifests);
 
@@ -168,8 +160,6 @@ export default async function UpdatesPage() {
 
       <UpdatesWorkspaceClientBoundary
         initialGlobalTemplateWorkspace={globalTemplateWorkspace}
-        initialProfilesAndGroupsWorkspace={profilesAndGroupsWorkspace}
-        initialVersionDriftWorkspace={versionDriftWorkspace}
       />
 
       <Panel eyebrow="Справка" title="Последние артефакты и guarded-контур" tone="muted">

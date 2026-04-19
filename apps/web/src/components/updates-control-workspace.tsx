@@ -7,24 +7,26 @@ import { TabBar } from "~/components/tab-bar";
 import { GlobalTemplateRolloutWorkspace } from "~/components/global-template-rollout-workspace";
 import { RolloutProfilesWorkspace } from "~/components/rollout-profiles-workspace";
 import { UpdateVersionDriftWorkspace } from "~/components/update-version-drift-workspace";
-import type { RouterOutputs } from "~/trpc/react";
+import { api, type RouterOutputs } from "~/trpc/react";
 
 type GlobalTemplateWorkspaceData = RouterOutputs["update"]["globalTemplateWorkspace"];
-type ProfilesAndGroupsWorkspace = RouterOutputs["update"]["profilesAndGroupsWorkspace"];
-type VersionDriftWorkspace = RouterOutputs["update"]["versionDriftWorkspace"];
 
 type UpdatesControlTab = "baseline" | "groups" | "controller";
 
 export function UpdatesControlWorkspace({
   initialGlobalTemplateWorkspace,
-  initialProfilesAndGroupsWorkspace,
-  initialVersionDriftWorkspace,
 }: {
   initialGlobalTemplateWorkspace: GlobalTemplateWorkspaceData;
-  initialProfilesAndGroupsWorkspace: ProfilesAndGroupsWorkspace;
-  initialVersionDriftWorkspace: VersionDriftWorkspace;
 }) {
   const [activeTab, setActiveTab] = useState<UpdatesControlTab>("baseline");
+  const profilesAndGroupsQuery = api.update.profilesAndGroupsWorkspace.useQuery(undefined, {
+    enabled: activeTab === "groups",
+    refetchOnWindowFocus: false,
+  });
+  const versionDriftQuery = api.update.versionDriftWorkspace.useQuery(undefined, {
+    enabled: activeTab === "controller" || activeTab === "groups",
+    refetchOnWindowFocus: false,
+  });
 
   return (
     <div className="space-y-4">
@@ -66,11 +68,31 @@ export function UpdatesControlWorkspace({
       ) : null}
 
       {activeTab === "groups" ? (
-        <RolloutProfilesWorkspace initialWorkspace={initialProfilesAndGroupsWorkspace} />
+        profilesAndGroupsQuery.data && versionDriftQuery.data ? (
+          <RolloutProfilesWorkspace
+            initialWorkspace={profilesAndGroupsQuery.data}
+            initialVersionDriftWorkspace={versionDriftQuery.data}
+            onOpenVersionControl={() => setActiveTab("controller")}
+          />
+        ) : (
+          <Panel eyebrow="Группы и профили" title="Загрузка рабочих поверхностей" tone="muted">
+            <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
+              Загружаю reusable профили, группы и их version-control сводку.
+            </div>
+          </Panel>
+        )
       ) : null}
 
       {activeTab === "controller" ? (
-        <UpdateVersionDriftWorkspace initialWorkspace={initialVersionDriftWorkspace} />
+        versionDriftQuery.data ? (
+          <UpdateVersionDriftWorkspace initialWorkspace={versionDriftQuery.data} />
+        ) : (
+          <Panel eyebrow="Контроллер версий" title="Загрузка version-control" tone="muted">
+            <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
+              Загружаю сводку по controller, PassWall и Xray.
+            </div>
+          </Panel>
+        )
       ) : null}
     </div>
   );

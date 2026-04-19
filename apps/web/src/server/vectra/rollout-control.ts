@@ -4,11 +4,11 @@ import {
   jobs,
   operatorRolloutProfiles,
   operatorRouterGroups,
-  routerInventorySnapshots,
   routers,
 } from "@vectra/db";
+import type { routerInventorySnapshots } from "@vectra/db";
 import { passwallDesiredConfigSchema, type PasswallDesiredConfig } from "@vectra/contracts";
-import { desc, eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 
 import {
   buildFallbackPasswallBundleMetadata,
@@ -88,16 +88,31 @@ async function getLatestSnapshotsByRouter(
     return new Map<string, SnapshotRow>();
   }
 
-  const rows = await client
-    .select()
-    .from(routerInventorySnapshots)
-    .where(inArray(routerInventorySnapshots.routerId, routerIds))
-    .orderBy(desc(routerInventorySnapshots.createdAt));
+  const rows = await client.execute(sql`
+    select distinct on (router_id)
+      id,
+      router_id as "routerId",
+      source,
+      payload,
+      passwall_enabled as "passwallEnabled",
+      selected_node_id as "selectedNodeId",
+      node_count as "nodeCount",
+      subscription_count as "subscriptionCount",
+      controller_version as "controllerVersion",
+      passwall_app_version as "passwallAppVersion",
+      created_at as "createdAt"
+    from vectra_router_inventory_snapshot
+    where router_id in (
+      ${sql.join(routerIds.map((routerId) => sql`${routerId}`), sql`, `)}
+    )
+    order by router_id, created_at desc
+  `);
 
   const latest = new Map<string, SnapshotRow>();
   for (const row of rows) {
-    if (!latest.has(row.routerId)) {
-      latest.set(row.routerId, row);
+    const snapshot = row as typeof routerInventorySnapshots.$inferSelect;
+    if (!latest.has(snapshot.routerId)) {
+      latest.set(snapshot.routerId, snapshot);
     }
   }
 

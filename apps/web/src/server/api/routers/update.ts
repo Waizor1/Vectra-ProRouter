@@ -35,6 +35,7 @@ import {
 } from "~/lib/passwall-artifacts";
 import {
   executeGlobalTemplateRollout,
+  getOrCreateGlobalTemplate,
   loadGlobalTemplateWorkspace,
   saveGlobalTemplate,
 } from "~/server/vectra/global-template";
@@ -543,9 +544,9 @@ export const updateRouter = createTRPCRouter({
   }),
 
   profilesAndGroupsWorkspace: protectedProcedure.query(async ({ ctx }) => {
-    const template = await loadGlobalTemplateWorkspace(ctx.db);
+    const globalTemplate = await getOrCreateGlobalTemplate(ctx.db);
     return loadProfilesAndGroupsWorkspace({
-      templateConfig: passwallDesiredConfigSchema.parse(template.template.rolloutConfig),
+      templateConfig: passwallDesiredConfigSchema.parse(globalTemplate.rolloutConfig),
       client: ctx.db,
     });
   }),

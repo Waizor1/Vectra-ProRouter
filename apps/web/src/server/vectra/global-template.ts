@@ -10,9 +10,9 @@ import {
   operatorGlobalTemplates,
   passwallDesiredRevisions,
   passwallSecretBlobs,
-  routerInventorySnapshots,
   routers,
 } from "@vectra/db";
+import type { routerInventorySnapshots } from "@vectra/db";
 import { and, desc, eq, inArray, isNull, like } from "drizzle-orm";
 
 import { db as defaultDb } from "~/server/db";
@@ -26,6 +26,7 @@ import {
   canRunDestructiveAction,
   describeEffectiveRouterSupport,
 } from "~/server/vectra/support";
+import { sql } from "drizzle-orm";
 
 export const AX3000T_GLOBAL_TEMPLATE_KEY = "ax3000t-global-baseline";
 
@@ -299,18 +300,33 @@ async function getLatestSnapshotsByRouter(
     return new Map<string, typeof routerInventorySnapshots.$inferSelect>();
   }
 
-  const rows = await client
-    .select()
-    .from(routerInventorySnapshots)
-    .where(inArray(routerInventorySnapshots.routerId, routerIds))
-    .orderBy(desc(routerInventorySnapshots.createdAt));
+  const rows = await client.execute(sql`
+    select distinct on (router_id)
+      id,
+      router_id as "routerId",
+      source,
+      payload,
+      passwall_enabled as "passwallEnabled",
+      selected_node_id as "selectedNodeId",
+      node_count as "nodeCount",
+      subscription_count as "subscriptionCount",
+      controller_version as "controllerVersion",
+      passwall_app_version as "passwallAppVersion",
+      created_at as "createdAt"
+    from vectra_router_inventory_snapshot
+    where router_id in (
+      ${sql.join(routerIds.map((routerId) => sql`${routerId}`), sql`, `)}
+    )
+    order by router_id, created_at desc
+  `);
 
   const latest = new Map<string, typeof routerInventorySnapshots.$inferSelect>();
   for (const row of rows) {
-    if (!routerIds.includes(row.routerId) || latest.has(row.routerId)) {
+    const snapshot = row as typeof routerInventorySnapshots.$inferSelect;
+    if (!routerIds.includes(snapshot.routerId) || latest.has(snapshot.routerId)) {
       continue;
     }
-    latest.set(row.routerId, row);
+    latest.set(snapshot.routerId, snapshot);
   }
 
   return latest;
