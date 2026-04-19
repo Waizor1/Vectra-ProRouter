@@ -3,6 +3,7 @@ import type {
   SupportState,
 } from "@vectra/contracts";
 
+import type { ConfigSourceMode } from "./config-trust";
 import { getEffectiveRouterStatus, getRouterOfflineThresholdMs } from "./router-presence";
 
 type MonitoringOperationalState =
@@ -20,8 +21,18 @@ type MonitoringAlertKind =
   | "offline"
   | "import_review"
   | "out_of_sync"
+  | "reimport_needed"
   | "awaiting_import"
   | "blocked_support";
+
+type FleetMonitoringConfigTrust = {
+  liveConfigAvailable: boolean;
+  requiresReimport: boolean;
+  digestMismatch: boolean;
+  configSourceMode: ConfigSourceMode;
+  lastLiveImportAt: string | null;
+  lastCheckInAt: string | null;
+};
 
 type MonitoringChartTone = "good" | "warning" | "critical" | "default";
 
@@ -42,6 +53,7 @@ export type FleetMonitoringRouterInput = {
   telegramReachability?: RouterTelegramReachability | null;
   queuedJobCount: number;
   lastRescueReason: string | null;
+  configTrust?: Partial<FleetMonitoringConfigTrust> | null;
   openIncident: {
     type:
       | "proxy_outage"
@@ -119,6 +131,7 @@ type FleetMonitoringRouter = {
   lastRescue: string;
   importState: string;
   needsImportReview: boolean;
+  configTrust: FleetMonitoringConfigTrust;
   lastSeenAt: string | null;
   operationalState: MonitoringOperationalState;
   freshnessState: MonitoringFreshnessState;
@@ -135,6 +148,25 @@ export type FleetMonitoringSnapshot = {
   routers: FleetMonitoringRouter[];
   totalAlerts: number;
 };
+
+function normalizeConfigTrust(
+  trust: FleetMonitoringRouterInput["configTrust"],
+): FleetMonitoringConfigTrust {
+  return {
+    liveConfigAvailable: Boolean(trust?.liveConfigAvailable),
+    requiresReimport: Boolean(trust?.requiresReimport),
+    digestMismatch: Boolean(trust?.digestMismatch),
+    configSourceMode:
+      trust?.configSourceMode === "live-import" ||
+      trust?.configSourceMode === "authoritative" ||
+      trust?.configSourceMode === "stale-authoritative" ||
+      trust?.configSourceMode === "inventory-only"
+        ? trust.configSourceMode
+        : "inventory-only",
+    lastLiveImportAt: trust?.lastLiveImportAt ?? null,
+    lastCheckInAt: trust?.lastCheckInAt ?? null,
+  };
+}
 
 function formatRelativeTime(value: Date | null | undefined, now = new Date()) {
   if (!value) {
@@ -204,7 +236,11 @@ function getOperationalState(
     return "recovery";
   }
 
-  if (input.importState !== "approved") {
+  if (
+    input.importState !== "approved" ||
+    input.configTrust?.requiresReimport ||
+    input.configTrust?.digestMismatch
+  ) {
     return "review";
   }
 
@@ -389,6 +425,24 @@ function buildAlerts(
       break;
   }
 
+  if (router.importState === "approved" && router.configTrust.requiresReimport) {
+    alerts.push({
+      id: `reimport_needed:${router.id}`,
+      kind: "reimport_needed",
+      severity: "warning",
+      routerId: router.id,
+      routerName: router.name,
+      href,
+      title: router.configTrust.digestMismatch
+        ? "Нужен re-import: live config уже ушёл вперёд"
+        : "Нужен re-import: deep config не подтверждён",
+      description:
+        "Свежий snapshot уже есть, но matching full import для глубокой PassWall-конфигурации пока отсутствует.",
+      openedAt: router.configTrust.lastCheckInAt ?? router.lastSeenAt,
+      filters: routerFilters,
+    });
+  }
+
   if (router.supportState === "blocked" && !router.offline) {
     alerts.push({
       id: `blocked:${router.id}`,
@@ -510,6 +564,7 @@ export function buildFleetMonitoringSnapshot(args: {
     const operationalState = getOperationalState(input, reachable);
     const directMode =
       reachable && (input.status === "direct" || input.status === "rescue");
+    const configTrust = normalizeConfigTrust(input.configTrust);
     const router: FleetMonitoringRouter = {
       id: input.id,
       name: input.name,
@@ -534,7 +589,8 @@ export function buildFleetMonitoringSnapshot(args: {
             : `Последнее известное rescue: ${input.lastRescueReason}`
           : "Нет недавних rescue-событий",
       importState: input.importState,
-      needsImportReview: input.importState !== "approved",
+      needsImportReview: input.importState !== "approved" || configTrust.requiresReimport,
+      configTrust,
       lastSeenAt: formatIso(input.lastSeenAt),
       operationalState,
       freshnessState,
@@ -585,7 +641,7 @@ export function buildFleetMonitoringSnapshot(args: {
         label: "В строю",
         value: String(operationalCounts.stable),
         tone: operationalCounts.stable > 0 ? "good" : "default",
-        hint: "Связь свежая, import approved, pilot/certified контур без активных проблем.",
+        hint: "Связь свежая, approved-эталон подтверждён и matching import для deep config не вызывает сомнений.",
       },
       {
         label: "Проблемные",
@@ -597,7 +653,7 @@ export function buildFleetMonitoringSnapshot(args: {
         label: "Импорт / drift",
         value: String(reviewRouters),
         tone: reviewRouters > 0 ? "warning" : "default",
-        hint: "Нужно принять импорт или проверить конфигурационный дрейф.",
+        hint: "Нужно принять import, проверить конфигурационный drift или перечитать live-конфиг с роутера.",
       },
       {
         label: "Открытые инциденты",
@@ -642,7 +698,7 @@ export function buildFleetMonitoringSnapshot(args: {
               key: "review",
               label: "Проверка",
               tone: "warning",
-              description: "Импорт, drift или состояние вне approved authoritative-контура.",
+              description: "Импорт, drift или состояние вне confirmed live-import контура.",
             },
             {
               key: "blocked",

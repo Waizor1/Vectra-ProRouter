@@ -45,6 +45,14 @@ describe("buildFleetMonitoringSnapshot", () => {
           },
           queuedJobCount: 1,
           lastRescueReason: null,
+          configTrust: {
+            liveConfigAvailable: true,
+            requiresReimport: false,
+            digestMismatch: false,
+            configSourceMode: "live-import",
+            lastLiveImportAt: "2026-04-09T08:59:00.000Z",
+            lastCheckInAt: "2026-04-09T08:59:20.000Z",
+          },
           openIncident: null,
         },
         {
@@ -63,6 +71,14 @@ describe("buildFleetMonitoringSnapshot", () => {
           components: {},
           queuedJobCount: 0,
           lastRescueReason: "Proxy health failed repeatedly.",
+          configTrust: {
+            liveConfigAvailable: true,
+            requiresReimport: false,
+            digestMismatch: false,
+            configSourceMode: "live-import",
+            lastLiveImportAt: "2026-04-09T08:58:00.000Z",
+            lastCheckInAt: "2026-04-09T08:58:40.000Z",
+          },
           openIncident: {
             type: "entered_direct_mode",
             reason: "Proxy health failed repeatedly.",
@@ -85,6 +101,14 @@ describe("buildFleetMonitoringSnapshot", () => {
           components: {},
           queuedJobCount: 3,
           lastRescueReason: "Route unstable",
+          configTrust: {
+            liveConfigAvailable: true,
+            requiresReimport: false,
+            digestMismatch: false,
+            configSourceMode: "live-import",
+            lastLiveImportAt: "2026-04-09T08:49:00.000Z",
+            lastCheckInAt: "2026-04-09T08:50:00.000Z",
+          },
           openIncident: null,
         },
         {
@@ -103,6 +127,14 @@ describe("buildFleetMonitoringSnapshot", () => {
           components: {},
           queuedJobCount: 2,
           lastRescueReason: null,
+          configTrust: {
+            liveConfigAvailable: false,
+            requiresReimport: false,
+            digestMismatch: false,
+            configSourceMode: "authoritative",
+            lastLiveImportAt: "2026-04-09T08:57:00.000Z",
+            lastCheckInAt: "2026-04-09T08:57:20.000Z",
+          },
           openIncident: null,
         },
         {
@@ -121,6 +153,14 @@ describe("buildFleetMonitoringSnapshot", () => {
           components: {},
           queuedJobCount: 0,
           lastRescueReason: null,
+          configTrust: {
+            liveConfigAvailable: true,
+            requiresReimport: false,
+            digestMismatch: false,
+            configSourceMode: "live-import",
+            lastLiveImportAt: "2026-04-09T08:58:00.000Z",
+            lastCheckInAt: "2026-04-09T08:59:00.000Z",
+          },
           openIncident: null,
         },
       ],
@@ -192,5 +232,46 @@ describe("pickFreshAlertsForBrowser", () => {
         severity: "warning",
       },
     ]);
+  });
+
+  it("treats approved routers with digest mismatch as review and emits reimport alert", () => {
+    const snapshot = buildFleetMonitoringSnapshot({
+      now: new Date("2026-04-09T09:00:00.000Z"),
+      offlineThresholdMs: 3 * 60 * 1000,
+      openIncidentCount: 0,
+      queuedJobs: 0,
+      routers: [
+        {
+          id: "approved-drift",
+          name: "Approved Drift",
+          status: "active",
+          importState: "approved",
+          supportState: "pilot",
+          lastSeenAt: new Date("2026-04-09T08:59:20.000Z"),
+          selectedNode: "WorldProxy",
+          passwallEnabled: true,
+          nodeCount: 3,
+          subscriptionCount: 1,
+          controllerVersion: "0.1.12-r2",
+          passwallVersion: "26.4.10-r1",
+          components: {},
+          queuedJobCount: 0,
+          lastRescueReason: null,
+          configTrust: {
+            liveConfigAvailable: false,
+            requiresReimport: true,
+            digestMismatch: true,
+            configSourceMode: "stale-authoritative",
+            lastLiveImportAt: "2026-04-09T08:50:00.000Z",
+            lastCheckInAt: "2026-04-09T08:59:20.000Z",
+          },
+          openIncident: null,
+        },
+      ],
+    });
+
+    expect(snapshot.routers[0]?.operationalState).toBe("review");
+    expect(snapshot.routers[0]?.configTrust.requiresReimport).toBe(true);
+    expect(snapshot.alerts[0]?.kind).toBe("reimport_needed");
   });
 });

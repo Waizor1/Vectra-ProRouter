@@ -6,6 +6,10 @@ import type { RouterTelegramReachability } from "@vectra/contracts";
 
 import { formatControllerVersion } from "~/lib/controller-version";
 import {
+  describeConfigTrustState,
+  type ConfigTrustDescription,
+} from "~/lib/router-config-trust";
+import {
   describeRouterOnboarding,
   formatRouterImportStateLabel,
   isRouterOnboardingPending,
@@ -36,36 +40,22 @@ export type RouterSummary = {
   telegramReachability?: RouterTelegramReachability | null;
   importState: string;
   needsImportReview: boolean;
+  configTrust: {
+    liveConfigAvailable: boolean;
+    requiresReimport: boolean;
+    digestMismatch: boolean;
+    configSourceMode: string;
+    lastLiveImportAt: string | null;
+    lastCheckInAt: string | null;
+  };
 };
 
-function describeRouterTrustState(router: RouterSummary) {
-  if (router.offline || !router.reachable) {
-    return {
-      badge: "последний снимок",
-      badgeClassName: "border-rose-400/30 bg-rose-500/12 text-rose-100",
-      title: "Связи сейчас нет",
-      detail:
-        "Карточка показывает последний известный снимок. Статус, версии и выбранная нода могут уже отличаться от реального состояния роутера.",
-    };
-  }
-
-  if (router.directMode) {
-    return {
-      badge: "нужен разбор",
-      badgeClassName: "border-amber-400/30 bg-amber-500/12 text-amber-100",
-      title: "Связь жива, но нужен разбор",
-      detail:
-        "Панель получает свежие check-in, но роутер сейчас не в штатном прокси-режиме и требует внимания оператора.",
-    };
-  }
-
-  return {
-    badge: "свежий снимок",
-    badgeClassName: "border-emerald-400/30 bg-emerald-500/12 text-emerald-100",
-    title: "Живой рабочий снимок",
-      detail:
-        "Карточка отражает недавний check-in и подходит для быстрой оценки состояния без перехода в детальный экран.",
-  };
+function describeRouterTrustState(router: RouterSummary): ConfigTrustDescription {
+  return describeConfigTrustState({
+    trust: router.configTrust,
+    offline: router.offline || !router.reachable,
+    directMode: router.directMode,
+  });
 }
 
 function describePrimaryStatus(router: RouterSummary) {
@@ -85,8 +75,14 @@ function describePrimaryStatus(router: RouterSummary) {
 }
 
 export function RouterCard({ router }: { router: RouterSummary }) {
-  const onboarding = describeRouterOnboarding(router.importState);
-  const onboardingPending = isRouterOnboardingPending(router.importState);
+  const onboarding = describeRouterOnboarding(
+    router.importState,
+    router.configTrust,
+  );
+  const onboardingPending = isRouterOnboardingPending(
+    router.importState,
+    router.configTrust,
+  );
   const controllerVersion = formatControllerVersion(router.controllerVersion);
   const telegramStatus = getTelegramReachabilityStatus(
     router.telegramReachability,
@@ -101,7 +97,7 @@ export function RouterCard({ router }: { router: RouterSummary }) {
     <article className="group overflow-hidden rounded-2xl border border-white/10 bg-[var(--vectra-panel)] shadow-[var(--vectra-shadow-md)]">
       <Link
         href={`/routers/${router.id}`}
-          className="block p-3 transition hover:border-[var(--vectra-line-strong)] hover:bg-[rgba(22,28,41,0.98)] sm:p-4"
+        className="block p-3 transition hover:border-[var(--vectra-line-strong)] hover:bg-[rgba(22,28,41,0.98)] sm:p-4"
       >
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -142,7 +138,9 @@ export function RouterCard({ router }: { router: RouterSummary }) {
                 : "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
             }`}
           >
-            {formatRouterImportStateLabel(router.importState)}
+            {router.configTrust.requiresReimport
+              ? onboarding.badge
+              : formatRouterImportStateLabel(router.importState)}
           </span>
           <span className="vectra-chip rounded-full border border-white/10 bg-white/5 px-3 py-1 text-slate-200">
             {router.nodeCount} нод

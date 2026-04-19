@@ -125,6 +125,14 @@ describe("buildRouterSummary", () => {
         resolvedAt: null,
       },
       queuedJobCount: 2,
+      configTrust: {
+        liveConfigAvailable: false,
+        requiresReimport: true,
+        digestMismatch: true,
+        configSourceMode: "stale-authoritative",
+        lastLiveImportAt: null,
+        lastCheckInAt: new Date(),
+      },
       support: {
         state: "certified",
         title: "Сертифицировано",
@@ -218,6 +226,14 @@ describe("buildRouterSummary", () => {
       latestDesiredRevision: null,
       openIncident: null,
       queuedJobCount: 0,
+      configTrust: {
+        liveConfigAvailable: true,
+        requiresReimport: false,
+        digestMismatch: false,
+        configSourceMode: "live-import",
+        lastLiveImportAt: new Date(),
+        lastCheckInAt: new Date(),
+      },
       support: {
         state: "certified",
         title: "Сертифицировано",
@@ -308,6 +324,14 @@ describe("buildRouterSummary", () => {
       latestDesiredRevision: null,
       openIncident: null,
       queuedJobCount: 0,
+      configTrust: {
+        liveConfigAvailable: true,
+        requiresReimport: false,
+        digestMismatch: false,
+        configSourceMode: "live-import",
+        lastLiveImportAt: new Date(),
+        lastCheckInAt: new Date(),
+      },
       support: {
         state: "certified",
         title: "Сертифицировано",
@@ -501,6 +525,14 @@ describe("router detail helpers", () => {
     ],
     recentJobs: [],
     incidents: [],
+    configTrust: {
+      liveConfigAvailable: true,
+      requiresReimport: false,
+      digestMismatch: false,
+      configSourceMode: "live-import",
+      lastLiveImportAt: new Date(),
+      lastCheckInAt: new Date(),
+    },
     support: {
       state: "certified",
       title: "Сертифицировано",

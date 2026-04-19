@@ -30,7 +30,16 @@ type NotificationsStatus = RouterOutputs["notifications"]["status"];
 type FleetMonitoringChart = FleetMonitoringSnapshot["charts"][number];
 type FleetMonitoringSlice = FleetMonitoringChart["slices"][number];
 type FleetMonitoringAlert = FleetMonitoringSnapshot["alerts"][number];
-type FleetMonitoringRouter = FleetMonitoringSnapshot["routers"][number];
+type FleetMonitoringRouter = FleetMonitoringSnapshot["routers"][number] & {
+  configTrust: {
+    liveConfigAvailable: boolean;
+    requiresReimport: boolean;
+    digestMismatch: boolean;
+    configSourceMode: string;
+    lastLiveImportAt: string | null;
+    lastCheckInAt: string | null;
+  };
+};
 type ActiveFilter = FleetMonitoringSlice["filter"] | null;
 type NotificationMode = "push" | "polling" | "unsupported";
 
@@ -123,6 +132,9 @@ function matchesSearch(router: FleetMonitoringRouter, searchQuery: string) {
     router.operationalState,
     router.freshnessState,
     router.importState,
+    router.configTrust.configSourceMode,
+    router.configTrust.requiresReimport ? "needs re-import" : "",
+    router.configTrust.digestMismatch ? "digest mismatch" : "",
     router.lastRescue,
     router.controllerVersion,
     router.passwallVersion,
@@ -284,16 +296,21 @@ function sameFilter(left: ActiveFilter, right: ActiveFilter) {
   return left?.kind === right?.kind && left?.value === right?.value;
 }
 
-function getOnboardingPriority(importState: string) {
+function getOnboardingPriority(router: FleetMonitoringRouter) {
+  if (router.configTrust.requiresReimport) {
+    return router.configTrust.digestMismatch ? 1 : 2;
+  }
+
+  const importState = router.importState;
   switch (importState) {
     case "import_review":
       return 0;
     case "awaiting_import":
-      return 1;
-    case "out_of_sync":
-      return 2;
-    default:
       return 3;
+    case "out_of_sync":
+      return 4;
+    default:
+      return 5;
   }
 }
 
@@ -514,13 +531,13 @@ export function FleetMonitoringWorkspace({
     alertMatchesFilter(activeFilter, alert),
   );
   const onboardingRouters = snapshot.routers.filter(
-    (router) => router.importState !== "approved",
+    (router) =>
+      router.importState !== "approved" || router.configTrust.requiresReimport,
   );
   const nextOnboardingRouters = [...onboardingRouters]
     .sort(
       (left, right) =>
-        getOnboardingPriority(left.importState) -
-        getOnboardingPriority(right.importState),
+        getOnboardingPriority(left) - getOnboardingPriority(right),
     )
     .slice(0, 3);
   const awaitingImportCount = onboardingRouters.filter(
@@ -531,6 +548,9 @@ export function FleetMonitoringWorkspace({
   ).length;
   const driftCount = onboardingRouters.filter(
     (router) => router.importState === "out_of_sync",
+  ).length;
+  const reimportCount = onboardingRouters.filter(
+    (router) => router.configTrust.requiresReimport,
   ).length;
 
   const handleNotificationToggle = async () => {
@@ -888,13 +908,19 @@ export function FleetMonitoringWorkspace({
                       <span className="rounded-full border border-rose-400/25 bg-rose-500/10 px-3 py-1 text-sm text-rose-100">
                         Есть расхождение: {driftCount}
                       </span>
+                      <span className="rounded-full border border-sky-400/25 bg-sky-500/10 px-3 py-1 text-sm text-sky-100">
+                        Нужен re-import: {reimportCount}
+                      </span>
                     </div>
                   </div>
 
                   <div className="space-y-3">
                     {nextOnboardingRouters.length > 0 ? (
                       nextOnboardingRouters.map((router) => {
-                        const onboarding = describeRouterOnboarding(router.importState);
+                        const onboarding = describeRouterOnboarding(
+                          router.importState,
+                          router.configTrust,
+                        );
 
                         return (
                           <Link
@@ -906,7 +932,10 @@ export function FleetMonitoringWorkspace({
                               <div>
                                 <p className="text-sm font-semibold text-white">{router.name}</p>
                                 <p className="mt-1 text-xs text-slate-400">
-                                  {formatRouterImportStateLabel(router.importState)} · {router.lastSeen}
+                                  {router.configTrust.requiresReimport
+                                    ? onboarding.badge
+                                    : formatRouterImportStateLabel(router.importState)}{" "}
+                                  · {router.lastSeen}
                                 </p>
                               </div>
                               <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-200">
@@ -1036,7 +1065,10 @@ function FleetOperationsRow({
 }: {
   router: FleetMonitoringRouter;
 }) {
-  const onboarding = describeRouterOnboarding(router.importState);
+  const onboarding = describeRouterOnboarding(
+    router.importState,
+    router.configTrust,
+  );
   const controllerVersion = formatControllerVersion(router.controllerVersion);
   const telegramStatus = getTelegramReachabilityStatus(router.telegramReachability);
   const telegramProblem = hasTelegramReachabilityProblem(router.telegramReachability);
@@ -1100,7 +1132,12 @@ function FleetOperationsRow({
       <td className="px-3 py-3">
         <div className="min-w-0 space-y-2 text-xs leading-5 text-slate-400 lg:min-w-[10rem]">
           <p>
-            Импорт <span className="font-medium text-white">{formatRouterImportStateLabel(router.importState)}</span>
+            Импорт{" "}
+            <span className="font-medium text-white">
+              {router.configTrust.requiresReimport
+                ? onboarding.badge
+                : formatRouterImportStateLabel(router.importState)}
+            </span>
           </p>
           <p>
             Telegram <span className={telegramToneClassName}>{formatTelegramReachabilityLabel(router.telegramReachability)}</span>

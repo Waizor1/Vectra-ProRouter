@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   healthIncidents,
   jobs,
+  passwallDesiredRevisions,
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
@@ -14,6 +15,7 @@ function createMockDatabase(data: {
   snapshots: unknown[];
   incidents: unknown[];
   jobs: unknown[];
+  revisions?: unknown[];
   executeSnapshots?: unknown[];
 }) {
   return {
@@ -40,6 +42,9 @@ function createMockDatabase(data: {
           }
           if (currentTable === jobs) {
             return Promise.resolve(data.jobs);
+          }
+          if (currentTable === passwallDesiredRevisions) {
+            return Promise.resolve(data.revisions ?? []);
           }
           return Promise.resolve([]);
         },
@@ -247,5 +252,88 @@ describe("loadFleetMonitoringSnapshot", () => {
     expect(snapshot.routers[0]?.controllerVersion).toBe("0.1.12-r13");
     expect(snapshot.routers[0]?.passwallVersion).toBe("26.4.10-r1");
     expect(snapshot.routers[0]?.telegramReachability?.status).toBe("ok");
+  });
+
+  it("marks approved routers with unmatched snapshot digests as re-import-needed", async () => {
+    const database = createMockDatabase({
+      routers: [
+        {
+          id: "router-1",
+          deviceIdentifier: "device-1",
+          displayName: "1111111111",
+          hostname: "1111111111",
+          panelDomain: null,
+          model: "Xiaomi Mi Router AX3000T",
+          boardName: "xiaomi,mi-router-ax3000t",
+          target: "mediatek/filogic",
+          architecture: "aarch64_cortex-a53",
+          openwrtRelease: "24.10.6",
+          status: "active",
+          importState: "approved",
+          controllerChannel: "stable",
+          pendingImportRevisionId: null,
+          activeRevisionId: "active-1",
+          lastAppliedRevisionId: null,
+          lastConfigDigest: "digest-authoritative",
+          approvedAt: new Date("2026-04-14T10:00:00.000Z"),
+          lastSeenAt: new Date("2026-04-14T11:30:16.000Z"),
+          lastCheckInAt: new Date("2026-04-14T11:30:16.000Z"),
+          lastDirectModeAt: null,
+          lastRescueReason: null,
+          createdAt: new Date("2026-04-14T09:00:00.000Z"),
+          updatedAt: new Date("2026-04-14T11:30:16.000Z"),
+        },
+      ],
+      snapshots: [
+        {
+          id: "snapshot-new",
+          routerId: "router-1",
+          source: "check_in",
+          payload: {
+            hostname: "1111111111",
+            boardName: "xiaomi,mi-router-ax3000t",
+            layoutFamily: "stock-layout",
+            target: "mediatek/filogic",
+            architecture: "aarch64_cortex-a53",
+            openwrtRelease: "24.10.6",
+            configDigest: "digest-live",
+            packageVersions: {
+              "luci-app-passwall2": "26.4.10-r1",
+            },
+            binaryVersions: {},
+          },
+          passwallEnabled: true,
+          selectedNodeId: "myshunt",
+          nodeCount: 16,
+          subscriptionCount: 1,
+          controllerVersion: "0.1.12-r13",
+          passwallAppVersion: "26.4.10-r1",
+          createdAt: new Date("2026-04-14T11:30:16.731Z"),
+        },
+      ],
+      incidents: [],
+      jobs: [],
+      revisions: [
+        {
+          id: "import-old",
+          routerId: "router-1",
+          configDigest: "digest-old",
+          origin: "router_import",
+          createdAt: new Date("2026-04-13T11:30:16.731Z"),
+        },
+      ],
+    });
+
+    const snapshot = await loadFleetMonitoringSnapshot(
+      database as never,
+      new Date("2026-04-14T11:31:00.000Z"),
+    );
+
+    expect(snapshot.routers[0]?.configTrust).toMatchObject({
+      liveConfigAvailable: false,
+      requiresReimport: true,
+      digestMismatch: true,
+      configSourceMode: "stale-authoritative",
+    });
   });
 });

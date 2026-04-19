@@ -1,6 +1,7 @@
 import {
   healthIncidents,
   jobs,
+  passwallDesiredRevisions,
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
@@ -9,7 +10,9 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { db as appDb } from "~/server/db";
 import { formatControllerVersion } from "~/lib/controller-version";
 
+import { buildConfigTrustState } from "./config-trust";
 import { buildFleetMonitoringSnapshot } from "./fleet-monitoring";
+import { isRouterReachable } from "./router-presence";
 import { describeRouterSupport } from "./support";
 
 type DatabaseClient = typeof appDb;
@@ -247,7 +250,7 @@ export async function loadFleetMonitoringSnapshot(
     .orderBy(desc(routers.lastSeenAt), desc(routers.createdAt));
 
   const routerIds = routerRows.map((router) => router.id);
-  const [snapshots, incidentRows, queuedJobRows] = await Promise.all([
+  const [snapshots, incidentRows, queuedJobRows, revisionRows] = await Promise.all([
     getLatestSnapshots(database, routerIds),
     routerIds.length
       ? database
@@ -268,6 +271,21 @@ export async function loadFleetMonitoringSnapshot(
           )
           .orderBy(desc(jobs.createdAt))
       : Promise.resolve([]),
+    routerIds.length
+      ? database
+          .select()
+          .from(passwallDesiredRevisions)
+          .where(
+            and(
+              inArray(passwallDesiredRevisions.routerId, routerIds),
+              inArray(passwallDesiredRevisions.origin, [
+                "router_import",
+                "operator_reimport",
+              ]),
+            ),
+          )
+          .orderBy(desc(passwallDesiredRevisions.createdAt))
+      : Promise.resolve([]),
   ]);
 
   const incidentMap = new Map<string, typeof healthIncidents.$inferSelect>();
@@ -282,6 +300,14 @@ export async function loadFleetMonitoringSnapshot(
   const queuedJobs = queuedJobRows.length;
   for (const job of queuedJobRows) {
     jobCountMap.set(job.routerId, (jobCountMap.get(job.routerId) ?? 0) + 1);
+  }
+
+  const revisionsByRouter = new Map<string, typeof revisionRows>();
+  for (const revision of revisionRows) {
+    revisionsByRouter.set(revision.routerId, [
+      ...(revisionsByRouter.get(revision.routerId) ?? []),
+      revision,
+    ]);
   }
 
   return buildFleetMonitoringSnapshot({
@@ -302,6 +328,14 @@ export async function loadFleetMonitoringSnapshot(
         openwrtRelease: payload?.openwrtRelease ?? router.openwrtRelease,
       });
       const incident = incidentMap.get(router.id) ?? null;
+      const configTrust = buildConfigTrustState({
+        routerReachable: isRouterReachable(router.lastSeenAt, now),
+        lastCheckInAt: router.lastCheckInAt ?? router.lastSeenAt,
+        authoritativeDigest: router.lastConfigDigest,
+        snapshotDigest: payload?.configDigest ?? null,
+        revisions: revisionsByRouter.get(router.id) ?? [],
+        hasAuthoritativeConfig: Boolean(router.activeRevisionId),
+      });
 
       return {
         id: router.id,
@@ -328,6 +362,11 @@ export async function loadFleetMonitoringSnapshot(
         telegramReachability: payload?.telegramReachability ?? null,
         queuedJobCount: jobCountMap.get(router.id) ?? 0,
         lastRescueReason: incident?.reason ?? router.lastRescueReason ?? null,
+        configTrust: {
+          ...configTrust,
+          lastLiveImportAt: configTrust.lastLiveImportAt?.toISOString() ?? null,
+          lastCheckInAt: configTrust.lastCheckInAt?.toISOString() ?? null,
+        },
         openIncident: incident
           ? {
               type: incident.type,

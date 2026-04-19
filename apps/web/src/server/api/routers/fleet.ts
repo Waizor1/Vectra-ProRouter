@@ -15,7 +15,11 @@ import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { loadFleetMonitoringSnapshot } from "~/server/vectra/fleet-monitoring-data";
-import { getEffectiveRouterStatus } from "~/server/vectra/router-presence";
+import { buildConfigTrustState } from "~/server/vectra/config-trust";
+import {
+  getEffectiveRouterStatus,
+  isRouterReachable,
+} from "~/server/vectra/router-presence";
 import { sanitizeRevisionForClient } from "~/server/vectra/router-control";
 import { describeRouterSupport } from "~/server/vectra/support";
 
@@ -115,6 +119,10 @@ export const fleetRouter = createTRPCRouter({
       string,
       typeof passwallDesiredRevisions.$inferSelect
     >();
+    const revisionsByRouter = new Map<
+      string,
+      Array<typeof passwallDesiredRevisions.$inferSelect>
+    >();
     const jobCountMap = new Map<string, number>();
 
     for (const incident of incidentRows) {
@@ -127,6 +135,10 @@ export const fleetRouter = createTRPCRouter({
       if (!revisionMap.has(revision.routerId)) {
         revisionMap.set(revision.routerId, revision);
       }
+      revisionsByRouter.set(revision.routerId, [
+        ...(revisionsByRouter.get(revision.routerId) ?? []),
+        revision,
+      ]);
     }
 
     for (const job of queuedJobRows) {
@@ -150,6 +162,14 @@ export const fleetRouter = createTRPCRouter({
         openwrtRelease:
           snapshot?.payload.openwrtRelease ?? router.openwrtRelease,
       });
+      const configTrust = buildConfigTrustState({
+        routerReachable: isRouterReachable(router.lastSeenAt),
+        lastCheckInAt: router.lastCheckInAt ?? router.lastSeenAt,
+        authoritativeDigest: router.lastConfigDigest,
+        snapshotDigest: snapshot?.payload.configDigest ?? null,
+        revisions: revisionsByRouter.get(router.id) ?? [],
+        hasAuthoritativeConfig: Boolean(router.activeRevisionId),
+      });
 
       return {
         ...router,
@@ -157,6 +177,7 @@ export const fleetRouter = createTRPCRouter({
         openIncident: incident ?? null,
         latestDesiredRevision: sanitizeRevisionForClient(revision),
         queuedJobCount: jobCountMap.get(router.id) ?? 0,
+        configTrust,
         support,
       };
     });
@@ -281,6 +302,14 @@ export const fleetRouter = createTRPCRouter({
         openwrtRelease:
           snapshots[0]?.payload.openwrtRelease ?? router.openwrtRelease,
       });
+      const configTrust = buildConfigTrustState({
+        routerReachable: isRouterReachable(router.lastSeenAt),
+        lastCheckInAt: router.lastCheckInAt ?? router.lastSeenAt,
+        authoritativeDigest: router.lastConfigDigest,
+        snapshotDigest: snapshots[0]?.payload.configDigest ?? null,
+        revisions,
+        hasAuthoritativeConfig: Boolean(router.activeRevisionId),
+      });
 
       return {
         router,
@@ -291,6 +320,7 @@ export const fleetRouter = createTRPCRouter({
         ),
         recentJobs,
         incidents,
+        configTrust,
         support,
         applyReceipts: appliedRevisions.map((receipt) => ({
           ...receipt,

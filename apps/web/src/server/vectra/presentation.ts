@@ -55,6 +55,19 @@ function pickComponentVersions(router: FleetRouter) {
   );
 }
 
+function normalizeRouterSummaryConfigTrust(
+  trust: FleetRouter["configTrust"] | null | undefined,
+): RouterSummary["configTrust"] {
+  return {
+    liveConfigAvailable: Boolean(trust?.liveConfigAvailable),
+    requiresReimport: Boolean(trust?.requiresReimport),
+    digestMismatch: Boolean(trust?.digestMismatch),
+    configSourceMode: trust?.configSourceMode ?? "inventory-only",
+    lastLiveImportAt: trust?.lastLiveImportAt?.toISOString() ?? null,
+    lastCheckInAt: trust?.lastCheckInAt?.toISOString() ?? null,
+  };
+}
+
 export function buildFleetStats(overview: FleetOverview): StatItem[] {
   return [
     {
@@ -136,7 +149,9 @@ export function buildRouterSummary(router: FleetRouter): RouterSummary {
       : lastRescue,
     telegramReachability: payload?.telegramReachability ?? null,
     importState: router.importState,
-    needsImportReview: router.importState !== "approved",
+    needsImportReview:
+      router.importState !== "approved" || router.configTrust.requiresReimport,
+    configTrust: normalizeRouterSummaryConfigTrust(router.configTrust),
   };
 }
 
