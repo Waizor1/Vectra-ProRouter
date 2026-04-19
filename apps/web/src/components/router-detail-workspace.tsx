@@ -47,6 +47,10 @@ import {
   normalizeControllerVersion,
 } from "~/lib/controller-version";
 import {
+  describeConfigTrustState,
+  formatConfigSourceModeLabel,
+} from "~/lib/router-config-trust";
+import {
   PASSWALL_PACKAGE_TARGET_ROWS,
   buildFallbackPasswallBundleMetadata,
   buildPasswallBundleMetadataFromArtifact,
@@ -798,11 +802,18 @@ export function RouterDetailWorkspace({
     directModeActive,
     passwallEnabled: editor.routerRuntimeSummary.passwallEnabled,
   });
+  const configTrust = describeConfigTrustState({
+    trust: editor.configTrust,
+    offline: !routerReachable,
+    directMode: directModeActive,
+  });
   const onboarding = describeRouterOnboarding(
     editor.routerRuntimeSummary.importState,
+    editor.configTrust,
   );
   const onboardingPending = isRouterOnboardingPending(
     editor.routerRuntimeSummary.importState,
+    editor.configTrust,
   );
   const watchLogsHref = (() => {
     const query = buildRouterConsoleQuery({
@@ -968,6 +979,32 @@ export function RouterDetailWorkspace({
               />
             </div>
 
+            <section className={`rounded-2xl border px-4 py-4 ${configTrust.badgeClassName}`}>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <p className="vectra-kicker text-current/80">Источник deep config</p>
+                  <h3 className="mt-2 text-sm font-semibold text-white sm:text-base">
+                    {editor.configTrust.requiresReimport
+                      ? "Роутер на связи, но полный live PassWall state не считан"
+                      : configTrust.title}
+                  </h3>
+                  <p className="mt-2 max-w-3xl text-sm leading-6 text-current/90">
+                    {editor.configTrust.requiresReimport
+                      ? "Selected node, версии, сервисы и reachability выше уже пришли со свежего snapshot. Но ShuntRules, Nodes, Subscriptions и Rule Manage ниже не подтверждены live import-ом и пока показываются от панели."
+                      : configTrust.detail}
+                  </p>
+                  <p className="mt-2 text-xs leading-6 text-current/80">
+                    Источник: {formatConfigSourceModeLabel(editor.configTrust.configSourceMode)} ·
+                    последний import {formatDateTime(editor.configTrust.lastLiveImportAt)} ·
+                    последний check-in {formatDateTime(editor.configTrust.lastCheckInAt)}
+                  </p>
+                </div>
+                <span className="rounded-full border border-white/10 bg-white/8 px-3 py-1 text-xs font-medium text-current">
+                  {configTrust.badge}
+                </span>
+              </div>
+            </section>
+
               <div className="min-w-0 rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] px-3 py-3 sm:px-4 sm:py-4">
                 <div className="grid gap-3 md:grid-cols-2">
                   <InlineStateCard
@@ -1002,6 +1039,8 @@ export function RouterDetailWorkspace({
                     title={
                       editor.approvalRequired
                         ? "Сначала подтвердите import"
+                        : editor.configTrust.requiresReimport
+                          ? "Сначала перечитайте live-конфиг"
                         : !editor.routerRuntimeSummary.destructiveActionsAllowed
                           ? "Apply сейчас заблокирован"
                           : hasUnsavedChanges
@@ -1010,6 +1049,7 @@ export function RouterDetailWorkspace({
                     }
                     tone={
                       editor.approvalRequired ||
+                      editor.configTrust.requiresReimport ||
                       !editor.routerRuntimeSummary.destructiveActionsAllowed
                         ? "warning"
                         : "good"
@@ -1017,6 +1057,8 @@ export function RouterDetailWorkspace({
                     description={
                       editor.approvalRequired
                         ? "Пока import не принят как эталон, Vectra не отправляет apply на роутер."
+                        : editor.configTrust.requiresReimport
+                          ? "Apply не заблокирован, но сейчас форма опирается на authoritative baseline панели. Если на роутере были ручные LuCI-правки, сначала сделайте re-import, чтобы не принимать решение по устаревшему deep config."
                         : !editor.routerRuntimeSummary.destructiveActionsAllowed
                           ? "Для этого роутера destructive/apply-действия сейчас отключены политикой поддержки."
                           : hasUnsavedChanges
@@ -1045,6 +1087,9 @@ export function RouterDetailWorkspace({
                       <>
                         <strong className="text-white">Проверка черновика.</strong>{" "}
                         <code>{MASKED_SECRET_PLACEHOLDER}</code> = сохранённый секрет. Сохранение пишет ревизию только в панель, apply всегда идёт из уже сохранённого черновика. Заблокированные роутеры всё равно позволяют сохранить ревизию без apply.
+                        {editor.configTrust.requiresReimport ? (
+                          <> Сейчас форма идёт от эталона панели, а не от подтверждённого live import.</>
+                        ) : null}
                       </>
                     )}
                   </div>
@@ -1058,6 +1103,7 @@ export function RouterDetailWorkspace({
             routerId={routerId}
             importedRevisionId={editor.importedRevisionId}
             importState={editor.routerRuntimeSummary.importState}
+            configTrust={editor.configTrust}
             validDraft={Boolean(validDraft)}
             savePending={saveMutation.isPending}
             queuePending={queueMutation.isPending}
@@ -1158,6 +1204,7 @@ function RouterActionRail({
   routerId,
   importedRevisionId,
   importState,
+  configTrust,
   validDraft,
   savePending,
   queuePending,
@@ -1180,6 +1227,7 @@ function RouterActionRail({
   routerId: string;
   importedRevisionId: string | null;
   importState: string;
+  configTrust: EditorSurface["configTrust"];
   validDraft: boolean;
   savePending: boolean;
   queuePending: boolean;
@@ -1205,6 +1253,7 @@ function RouterActionRail({
         routerId={routerId}
         revisionId={importedRevisionId}
         importState={importState}
+        configTrust={configTrust}
       />
 
       <section className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] px-4 py-4">
@@ -4411,9 +4460,29 @@ function FieldShell({
   children: ReactNode;
   diff?: EditorSurface["fieldDiffs"][number];
 }) {
+  const sourceLabel =
+    diff?.source === "masked"
+      ? "скрыто"
+      : diff?.source === "live-import"
+        ? "live import"
+        : diff?.source === "stale-authoritative"
+          ? "эталон панели (stale)"
+          : diff?.source === "inventory-only"
+            ? "только snapshot"
+            : diff?.source === "authoritative"
+              ? "эталон панели"
+              : null;
+
   return (
     <div className="block rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
-      <span className="vectra-kicker text-slate-500">{label}</span>
+      <div className="flex items-center justify-between gap-3">
+        <span className="vectra-kicker text-slate-500">{label}</span>
+        {sourceLabel ? (
+          <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-slate-300">
+            {sourceLabel}
+          </span>
+        ) : null}
+      </div>
       <div className="mt-2">{children}</div>
       {diff ? (
         <p className="mt-2 text-xs leading-6 text-slate-400">
