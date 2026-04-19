@@ -55,6 +55,7 @@ import {
 import {
   formatPasswallAvailableVersion,
   formatPasswallManagedStackAvailableVersion,
+  runtimeMeetsOrExceedsPackageTarget,
   summarizePasswallAttempt,
 } from "~/lib/passwall-update-summary";
 import {
@@ -3197,6 +3198,10 @@ function AppUpdateSection({
     passwallBundleMetadata.packageArtifacts.find(
       (artifact) => artifact.name === "xray-core",
     ) ?? null;
+  const xrayRuntimeCurrent = runtimeMeetsOrExceedsPackageTarget(
+    inventory.binaryVersions.xray ?? null,
+    xrayArtifact?.artifactVersion ?? null,
+  );
   const installedControllerVersion =
     normalizeControllerVersion(inventory.controllerVersion) ?? null;
   const availableControllerVersion = latestControllerArtifact?.version ?? null;
@@ -3334,6 +3339,8 @@ function AppUpdateSection({
       action: "passwall" as const,
       packages: [...target.packages],
       managedStack: target.managedStack,
+      runtimeCurrent:
+        target.packages[0] === "xray-core" ? xrayRuntimeCurrent : false,
     })),
   ];
 
@@ -3414,7 +3421,9 @@ function AppUpdateSection({
               ) : (
                 <button
                   type="button"
-                  disabled={!canRunJobs || passwallUpdateMutation.isPending}
+                  disabled={
+                    !canRunJobs || passwallUpdateMutation.isPending || row.runtimeCurrent
+                  }
                   onClick={() => {
                     setPendingPasswallTarget(row.key);
                     passwallUpdateMutation.mutate(
@@ -3437,7 +3446,9 @@ function AppUpdateSection({
                     ? "Ставлю job..."
                     : row.managedStack
                       ? `Обновить stack ${row.name}`
-                      : `Обновить ${row.name}`}
+                      : row.runtimeCurrent
+                        ? `${row.name} актуален по runtime`
+                        : `Обновить ${row.name}`}
                 </button>
               )}
             </td>

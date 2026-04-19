@@ -81,3 +81,45 @@ export function summarizePasswallAttempt(
 
   return null;
 }
+
+function extractLooseSemverParts(value: string | null | undefined) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const semverPattern = /(\d+)\.(\d+)\.(\d+)/;
+  const match = semverPattern.exec(value);
+  if (!match) {
+    return null;
+  }
+
+  return [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+}
+
+export function runtimeMeetsOrExceedsPackageTarget(
+  runtimeVersion: string | null | undefined,
+  packageVersion: string | null | undefined,
+) {
+  const runtimeParts = extractLooseSemverParts(runtimeVersion);
+  const packageParts = extractLooseSemverParts(packageVersion);
+
+  if (!runtimeParts || !packageParts) {
+    return false;
+  }
+
+  const [runtimeMajor, runtimeMinor, runtimePatch] = runtimeParts;
+  const [packageMajor, packageMinor, packagePatch] = packageParts;
+  const diffs = [
+    runtimeMajor - packageMajor,
+    runtimeMinor - packageMinor,
+    runtimePatch - packagePatch,
+  ];
+
+  for (const diff of diffs) {
+    if (diff !== 0) {
+      return diff > 0;
+    }
+  }
+
+  return true;
+}

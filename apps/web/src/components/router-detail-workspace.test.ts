@@ -4,6 +4,7 @@ import { buildFallbackPasswallBundleMetadata } from "~/lib/passwall-artifacts";
 import {
   formatPasswallAvailableVersion,
   formatPasswallManagedStackAvailableVersion,
+  runtimeMeetsOrExceedsPackageTarget,
   summarizePasswallAttempt,
 } from "~/lib/passwall-update-summary";
 
@@ -34,6 +35,24 @@ describe("router detail app update helpers", () => {
     expect(formatPasswallAvailableVersion(bundleMetadata, "xray-core")).toBe(
       "runtime: built-in PassWall updater / package: через upstream",
     );
+  });
+
+  it("treats Xray runtime ahead of package target as already current", () => {
+    expect(
+      runtimeMeetsOrExceedsPackageTarget(
+        "Xray 26.4.15 (Xray, Penetrates Everything.) c5edc12 (go1.26.2 linux/arm64)",
+        "26.3.27-r1",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not treat older Xray runtime as current", () => {
+    expect(
+      runtimeMeetsOrExceedsPackageTarget(
+        "Xray 26.3.20 (Xray, Penetrates Everything.) abc123 (go1.26.1 linux/arm64)",
+        "26.3.27-r1",
+      ),
+    ).toBe(false);
   });
 
   it("surfaces drift and fallback summary for the latest managed stack update", () => {
