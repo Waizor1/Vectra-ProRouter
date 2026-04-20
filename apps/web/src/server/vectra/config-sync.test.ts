@@ -72,6 +72,28 @@ describe("shouldRequestImportOnCheckIn", () => {
       })
     ).toBe(false);
   });
+
+  it("requests import when the operator explicitly moved the router into awaiting_import", () => {
+    expect(
+      shouldRequestImportOnCheckIn({
+        importState: "awaiting_import",
+        hasPasswallImport: false,
+        reportedDigest: "digest-authoritative",
+        authoritativeDigest: "digest-authoritative",
+      })
+    ).toBe(true);
+  });
+
+  it("stops requesting import in awaiting_import once the router already attached the import payload", () => {
+    expect(
+      shouldRequestImportOnCheckIn({
+        importState: "awaiting_import",
+        hasPasswallImport: true,
+        reportedDigest: "digest-live",
+        authoritativeDigest: "digest-authoritative",
+      })
+    ).toBe(false);
+  });
 });
 
 describe("resolveImportedConfigDigest", () => {

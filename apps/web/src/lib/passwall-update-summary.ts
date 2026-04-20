@@ -75,6 +75,10 @@ export function summarizePasswallAttempt(
     return `Последняя попытка обновить PassWall-стек завершилась ошибкой: ${attempt.summary}.`;
   }
 
+  if (attempt.deliveryBlocked) {
+    return `Последняя попытка обновить PassWall-стек упёрлась в delivery path: ${attempt.summary}.`;
+  }
+
   if (attempt.summary.trim().length > 0) {
     return `Последняя попытка обновить PassWall-стек: ${attempt.summary}.`;
   }

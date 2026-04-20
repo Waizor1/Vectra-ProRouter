@@ -16,6 +16,12 @@ import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
 import { buildDraftPreview } from "~/server/vectra/editor";
 import { getDraftEditorSurface } from "~/server/vectra/editor-surface";
 import {
+  pickActiveRevision,
+  pickImportedRevision,
+  pickLatestEditableDraft,
+  pickWorkspaceRevision,
+} from "~/server/vectra/draft-selection";
+import {
   createOperatorDraftRevision,
   sanitizeRevisionForClient,
 } from "~/server/vectra/router-control";
@@ -87,35 +93,22 @@ export const draftRouter = createTRPCRouter({
         .orderBy(desc(passwallDesiredRevisions.revisionNumber))
         .limit(12);
 
-      const importedRevision =
-        (selectedRouter.pendingImportRevisionId
-          ? revisionRows.find(
-              (revision) =>
-                revision.id === selectedRouter.pendingImportRevisionId,
-            )
-          : undefined) ??
-        revisionRows.find((revision) =>
-          ["router_import", "operator_reimport"].includes(revision.origin),
-        ) ??
-        null;
-
-      const activeRevision =
-        (selectedRouter.activeRevisionId
-          ? revisionRows.find(
-              (revision) => revision.id === selectedRouter.activeRevisionId,
-            )
-          : undefined) ?? null;
-
-      const latestDraft =
-        revisionRows.find((revision) => revision.origin === "operator_draft") ??
-        null;
-
-      const workspaceRevision =
-        latestDraft ??
-        importedRevision ??
-        activeRevision ??
-        revisionRows[0] ??
-        null;
+      const importedRevision = pickImportedRevision({
+        pendingImportRevisionId: selectedRouter.pendingImportRevisionId,
+        revisions: revisionRows,
+      });
+      const activeRevision = pickActiveRevision({
+        activeRevisionId: selectedRouter.activeRevisionId,
+        revisions: revisionRows,
+      });
+      const latestDraft = pickLatestEditableDraft(revisionRows);
+      const workspaceRevision = pickWorkspaceRevision({
+        latestEditableDraft: latestDraft,
+        currentLiveRevision: null,
+        importedRevision,
+        activeRevision,
+        revisions: revisionRows,
+      });
 
       return {
         routers: routerRows.map((router) => ({

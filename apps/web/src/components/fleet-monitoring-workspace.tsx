@@ -12,6 +12,10 @@ import {
 import { formatControllerVersion } from "~/lib/controller-version";
 import { pickFreshAlertsForBrowser } from "~/lib/fleet-browser-alerts";
 import {
+  describeConfigTrustState,
+  formatConfigSourceModeLabel,
+} from "~/lib/router-config-trust";
+import {
   describeRouterOnboarding,
   formatRouterImportStateLabel,
 } from "~/lib/router-onboarding";
@@ -712,10 +716,10 @@ export function FleetMonitoringWorkspace({
               <div className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.04)] px-3 py-3">
                 <p className="vectra-kicker text-[var(--vectra-accent)]">Triage-режим</p>
                 <p className="mt-2 text-sm font-medium text-white">
-                  Сначала смотрите на live vs last-known, затем на alert rail и только потом открывайте детали роутера.
+                  Сначала смотрите, что происходит на роутере сейчас. Затем — что сохранено в панели. И только после этого — почему панели можно верить именно настолько.
                 </p>
                 <p className="mt-1 text-sm leading-6 text-slate-400">
-                  Таблица ниже теперь отделяет живой снимок от устаревшего и offline-состояния, чтобы парк читался как рабочая поверхность для разбора инцидентов, а не как описательный dashboard.
+                  Таблица ниже специально раскладывает эти три слоя по отдельным колонкам, чтобы парк читался как рабочая поверхность для разбора, а не как набор смешанных технических статусов.
                 </p>
               </div>
 
@@ -787,7 +791,7 @@ export function FleetMonitoringWorkspace({
                   Плотная таблица парка
                 </h3>
                 <p className="mt-1 text-sm leading-6 text-slate-400">
-                  Для каждого роутера отдельно показано, где у нас live-снимок, а где панель опирается только на последний известный check-in.
+                  Для каждого роутера отдельно показано: что видно сейчас, что сохранено в панели, и почему этой картине можно доверять именно в такой степени.
                 </p>
 
                 <div className="mt-4">
@@ -796,8 +800,9 @@ export function FleetMonitoringWorkspace({
                     hint="Свайп/скролл по горизонтали сохраняется; live и last-known вынесены в отдельные cues →"
                     columns={[
                       { key: "router", label: "Роутер" },
-                      { key: "state", label: "Состояние" },
-                      { key: "control", label: "Контур" },
+                      { key: "state", label: "Что сейчас" },
+                      { key: "control", label: "Что сохранено в панели" },
+                      { key: "trust", label: "Почему панель уверена" },
                       { key: "versions", label: "Версии" },
                       { key: "actions", label: "Действие", className: "text-right" },
                     ]}
@@ -807,7 +812,7 @@ export function FleetMonitoringWorkspace({
                         <FleetOperationsRow key={router.id} router={router} />
                       ))
                     ) : (
-                      <DataTableEmpty colSpan={5}>
+                      <DataTableEmpty colSpan={6}>
                         В этом срезе роутеров нет. Смените сегмент сверху,
                         уточните поиск или сбросьте фильтр.
                       </DataTableEmpty>
@@ -1073,6 +1078,11 @@ function FleetOperationsRow({
   const telegramStatus = getTelegramReachabilityStatus(router.telegramReachability);
   const telegramProblem = hasTelegramReachabilityProblem(router.telegramReachability);
   const freshness = describeFreshnessState(router.freshnessState, router.lastSeen);
+  const trustState = describeConfigTrustState({
+    trust: router.configTrust,
+    offline: router.operationalState === "offline",
+    directMode: router.operationalState === "recovery",
+  });
 
   const telegramToneClassName =
     telegramStatus === "reachable"
@@ -1132,13 +1142,29 @@ function FleetOperationsRow({
       <td className="px-3 py-3">
         <div className="min-w-0 space-y-2 text-xs leading-5 text-slate-400 lg:min-w-[10rem]">
           <p>
-            Импорт{" "}
+            Статус в панели{" "}
             <span className="font-medium text-white">
               {router.configTrust.requiresReimport
                 ? onboarding.badge
                 : formatRouterImportStateLabel(router.importState)}
             </span>
           </p>
+          <p>
+            База сравнения{" "}
+            <span className="font-medium text-white">
+              {router.configTrust.requiresReimport
+                ? "нужно перечитать роутер"
+                : formatConfigSourceModeLabel(router.configTrust.configSourceMode)}
+            </span>
+          </p>
+        </div>
+      </td>
+      <td className="px-3 py-3">
+        <div className="min-w-0 space-y-2 text-xs leading-5 text-slate-400 lg:min-w-[11rem]">
+          <p>
+            Уверенность панели <span className="font-medium text-white">{trustState.badge}</span>
+          </p>
+          <p>{trustState.detail}</p>
           <p>
             Telegram <span className={telegramToneClassName}>{formatTelegramReachabilityLabel(router.telegramReachability)}</span>
           </p>

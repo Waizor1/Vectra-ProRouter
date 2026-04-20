@@ -20,8 +20,13 @@ function formatDateTime(value: Date | string | null | undefined) {
     return "неизвестно";
   }
 
-  const pad = (part: number) => String(part).padStart(2, "0");
-  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()}, ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const year = String(date.getUTCFullYear());
+  const hours = String(date.getUTCHours()).padStart(2, "0");
+  const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+
+  return `${day}.${month}.${year}, ${hours}:${minutes}`;
 }
 
 export function UpdateVersionDriftWorkspace({
@@ -66,6 +71,15 @@ export function UpdateVersionDriftWorkspace({
       setSelectedRouterIds([]);
     },
   });
+  const bulkRebootMutation = api.update.queueBulkRouterReboot.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.update.versionDriftWorkspace.invalidate(),
+        utils.fleet.monitoring.invalidate(),
+      ]);
+      setSelectedRouterIds([]);
+    },
+  });
   const singlePasswallMutation = api.update.queuePasswallPackageUpdate.useMutation({
     onSuccess: async () => {
       await Promise.all([
@@ -102,7 +116,28 @@ export function UpdateVersionDriftWorkspace({
     });
   }, [groupFilter, statusFilter, workspace.rows]);
 
+  const filteredRouterIds = useMemo(
+    () => filteredRows.map((row) => row.id),
+    [filteredRows],
+  );
   const selectedRows = filteredRows.filter((row) => selectedRouterIds.includes(row.id));
+  const allFilteredSelected =
+    filteredRouterIds.length > 0 &&
+    filteredRouterIds.every((routerId) => selectedRouterIds.includes(routerId));
+
+  function selectAllFilteredRows() {
+    setSelectedRouterIds((current) => {
+      const next = new Set(current);
+      for (const routerId of filteredRouterIds) {
+        next.add(routerId);
+      }
+      return [...next];
+    });
+  }
+
+  function clearSelection() {
+    setSelectedRouterIds([]);
+  }
 
   return (
     <div className="space-y-4">
@@ -179,6 +214,22 @@ export function UpdateVersionDriftWorkspace({
           <ActionStrip justify="start">
             <button
               type="button"
+              disabled={filteredRouterIds.length === 0 || allFilteredSelected}
+              onClick={selectAllFilteredRows}
+              className="vectra-button-secondary px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Выбрать все по фильтру
+            </button>
+            <button
+              type="button"
+              disabled={selectedRouterIds.length === 0}
+              onClick={clearSelection}
+              className="vectra-button-secondary px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Снять выбор
+            </button>
+            <button
+              type="button"
               disabled={selectedRows.length === 0 || bulkPasswallMutation.isPending}
               onClick={() =>
                 bulkPasswallMutation.mutate({
@@ -213,7 +264,28 @@ export function UpdateVersionDriftWorkspace({
             >
               Обновить controller у выбранных
             </button>
-            <span className="text-sm text-slate-400">Выбрано {selectedRows.length}</span>
+            <button
+              type="button"
+              disabled={selectedRows.length === 0 || bulkRebootMutation.isPending}
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    `Поставить перезагрузку в очередь для ${selectedRows.length} роутеров?`,
+                  )
+                ) {
+                  return;
+                }
+                bulkRebootMutation.mutate({
+                  routerIds: selectedRows.map((row) => row.id),
+                });
+              }}
+              className="vectra-button-danger px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Перезагрузить выбранные роутеры
+            </button>
+            <span className="text-sm text-slate-400">
+              Выбрано {selectedRows.length} / {filteredRows.length} по фильтру
+            </span>
           </ActionStrip>
 
           <DataTable

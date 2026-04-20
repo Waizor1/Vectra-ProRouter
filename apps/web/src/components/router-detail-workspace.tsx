@@ -30,6 +30,7 @@ import { DisabledFeatureNotice } from "~/components/disabled-feature-notice";
 import { ImportReviewActions } from "~/components/import-review-actions";
 import { Panel } from "~/components/panel";
 import { RescueActions } from "~/components/rescue-actions";
+import { RouterManagementTaskLog } from "~/components/router-management-task-log";
 import { RouterWatchLogsSection } from "~/components/router-watch-logs-section";
 import {
   basicSettingsSecondaryTabs,
@@ -109,6 +110,8 @@ type RouterDetailWorkspaceProps = {
   directModeActive: boolean;
   needsRecoveryAction: boolean;
 };
+
+type UnconfirmedChangeGroup = EditorSurface["unconfirmedChanges"]["router"];
 
 type Option = {
   value: string;
@@ -334,6 +337,7 @@ export function RouterDetailWorkspace({
     }
 
     const revisionId =
+      surface.data.workspaceRevisionId ??
       surface.data.latestDraftId ??
       surface.data.activeRevisionId ??
       surface.data.importedRevisionId ??
@@ -346,11 +350,17 @@ export function RouterDetailWorkspace({
     const nextDraft = passwallDesiredConfigSchema.parse(
       surface.data.draftConfig,
     );
+    const nextEditableNodeIds =
+      surface.data.subscriptionRuntime?.editableNodeIds ??
+      nextDraft.nodes.map((node) => node.id);
+    const nextEditableSubscriptionIds =
+      surface.data.subscriptionRuntime?.editableSubscriptionIds ??
+      nextDraft.subscriptions.items.map((item) => item.id);
     setDraft(nextDraft);
     setLoadedRevisionId(revisionId);
     setSavedRevisionId(surface.data.latestDraftId ?? null);
-    setSelectedNodeId(nextDraft.nodes[0]?.id ?? null);
-    setSelectedSubscriptionId(nextDraft.subscriptions.items[0]?.id ?? null);
+    setSelectedNodeId(nextEditableNodeIds[0] ?? null);
+    setSelectedSubscriptionId(nextEditableSubscriptionIds[0] ?? null);
     setSelectedRuleId(nextDraft.basicSettings.shuntRules[0]?.id ?? null);
     setSelectedSocksId(nextDraft.basicSettings.socks[0]?.id ?? null);
   }, [loadedRevisionId, surface.data]);
@@ -466,12 +476,13 @@ export function RouterDetailWorkspace({
   }, [consoleSelection.primaryTab, consoleSelection.secondaryTab]);
 
   useSelectionSync(
-    draft?.nodes.map((node) => node.id),
+    surface.data?.subscriptionRuntime?.editableNodeIds ?? draft?.nodes.map((node) => node.id),
     selectedNodeId,
     setSelectedNodeId,
   );
   useSelectionSync(
-    draft?.subscriptions.items.map((item) => item.id),
+    surface.data?.subscriptionRuntime?.editableSubscriptionIds ??
+      draft?.subscriptions.items.map((item) => item.id),
     selectedSubscriptionId,
     setSelectedSubscriptionId,
   );
@@ -571,14 +582,22 @@ export function RouterDetailWorkspace({
   }
 
   const editor = surface.data;
+  const editableNodeIds = new Set(editor.subscriptionRuntime.editableNodeIds);
+  const editableSubscriptionIds = new Set(
+    editor.subscriptionRuntime.editableSubscriptionIds,
+  );
   const currentDraftFingerprint = JSON.stringify(draft);
   const loadedDraftFingerprint = JSON.stringify(editor.draftConfig);
   const hasUnsavedChanges = currentDraftFingerprint !== loadedDraftFingerprint;
   const selectedNode =
-    draft.nodes.find((node) => node.id === selectedNodeId) ?? null;
+    draft.nodes.find(
+      (node) => node.id === selectedNodeId && editableNodeIds.has(node.id),
+    ) ?? null;
   const selectedSubscription =
     draft.subscriptions.items.find(
-      (item) => item.id === selectedSubscriptionId,
+      (item) =>
+        item.id === selectedSubscriptionId &&
+        editableSubscriptionIds.has(item.id),
     ) ?? null;
   const selectedRule =
     draft.basicSettings.shuntRules.find((rule) => rule.id === selectedRuleId) ??
@@ -740,6 +759,7 @@ export function RouterDetailWorkspace({
     tabContent = (
       <NodeListSection
         draft={draft}
+        surface={editor}
         selectedNode={selectedNode}
         selectedNodeId={selectedNodeId}
         setSelectedNodeId={setSelectedNodeId}
@@ -838,7 +858,7 @@ export function RouterDetailWorkspace({
                 {editor.routerRuntimeSummary.name}
               </h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-                Сначала сверьте текущее состояние и контекст импорта, затем выберите безопасное действие справа: сохранить, применить, открыть диагностику или перейти в опасную зону.
+                Сначала посмотрите, что реально происходит на роутере сейчас. Затем — что уже сохранено в панели. После этого справа будет видно, насколько панель уверена в сравнении и какое действие безопаснее следующим.
               </p>
             </div>
             <div className="vectra-summary-grid min-w-0">
@@ -979,31 +999,24 @@ export function RouterDetailWorkspace({
               />
             </div>
 
-            <section className={`rounded-2xl border px-4 py-4 ${configTrust.badgeClassName}`}>
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0">
-                  <p className="vectra-kicker text-current/80">Источник deep config</p>
+            <section className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] px-4 py-4">
+              <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p className="vectra-kicker text-[var(--vectra-accent)]">Что сохранено в панели</p>
                   <h3 className="mt-2 text-sm font-semibold text-white sm:text-base">
-                    {editor.configTrust.requiresReimport
-                      ? "Роутер на связи, но полный live PassWall state не считан"
-                      : configTrust.title}
+                    Панельная база для сравнения и apply
                   </h3>
-                  <p className="mt-2 max-w-3xl text-sm leading-6 text-current/90">
-                    {editor.configTrust.requiresReimport
-                      ? "Selected node, версии, сервисы и reachability выше уже пришли со свежего snapshot. Но ShuntRules, Nodes, Subscriptions и Rule Manage ниже не подтверждены live import-ом и пока показываются от панели."
-                      : configTrust.detail}
-                  </p>
-                  <p className="mt-2 text-xs leading-6 text-current/80">
-                    Источник: {formatConfigSourceModeLabel(editor.configTrust.configSourceMode)} ·
-                    последний import {formatDateTime(editor.configTrust.lastLiveImportAt)} ·
-                    последний check-in {formatDateTime(editor.configTrust.lastCheckInAt)}
+                  <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
+                    Ниже отдельно видно, что панель уже держит у себя как рабочую базу, что ещё не подтверждено роутером и какая ревизия реально уйдёт в apply после сохранения.
                   </p>
                 </div>
-                <span className="rounded-full border border-white/10 bg-white/8 px-3 py-1 text-xs font-medium text-current">
-                  {configTrust.badge}
-                </span>
               </div>
             </section>
+
+            <UnconfirmedChangesPanel
+              routerChanges={editor.unconfirmedChanges.router}
+              panelChanges={editor.unconfirmedChanges.panel}
+            />
 
               <div className="min-w-0 rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] px-3 py-3 sm:px-4 sm:py-4">
                 <div className="grid gap-3 md:grid-cols-2">
@@ -1040,7 +1053,7 @@ export function RouterDetailWorkspace({
                       editor.approvalRequired
                         ? "Сначала подтвердите import"
                         : editor.configTrust.requiresReimport
-                          ? "Сначала перечитайте live-конфиг"
+                          ? "Сначала перечитайте настройки с роутера"
                         : !editor.routerRuntimeSummary.destructiveActionsAllowed
                           ? "Apply сейчас заблокирован"
                           : hasUnsavedChanges
@@ -1057,8 +1070,8 @@ export function RouterDetailWorkspace({
                     description={
                       editor.approvalRequired
                         ? "Пока import не принят как эталон, Vectra не отправляет apply на роутер."
-                        : editor.configTrust.requiresReimport
-                          ? "Apply не заблокирован, но сейчас форма опирается на authoritative baseline панели. Если на роутере были ручные LuCI-правки, сначала сделайте re-import, чтобы не принимать решение по устаревшему deep config."
+                          : editor.configTrust.requiresReimport
+                            ? "Apply не заблокирован, но сейчас форма опирается на сохранённую базу панели. Если на роутере были ручные правки, сначала перечитайте настройки заново, чтобы не принимать решение по устаревшей картине."
                         : !editor.routerRuntimeSummary.destructiveActionsAllowed
                           ? "Для этого роутера destructive/apply-действия сейчас отключены политикой поддержки."
                           : hasUnsavedChanges
@@ -1085,16 +1098,42 @@ export function RouterDetailWorkspace({
                       <span className="text-rose-200">{validationMessage}</span>
                     ) : (
                       <>
-                        <strong className="text-white">Проверка черновика.</strong>{" "}
-                        <code>{MASKED_SECRET_PLACEHOLDER}</code> = сохранённый секрет. Сохранение пишет ревизию только в панель, apply всегда идёт из уже сохранённого черновика. Заблокированные роутеры всё равно позволяют сохранить ревизию без apply.
+                        <strong className="text-white">Как это работает.</strong>{" "}
+                        <code>{MASKED_SECRET_PLACEHOLDER}</code> = сохранённый секрет. Сохранение записывает новую ревизию только в панель, а apply всегда берёт уже сохранённую ревизию, а не скрытые правки из формы. Даже если apply сейчас запрещён, саму ревизию можно сохранить в панели.
                         {editor.configTrust.requiresReimport ? (
-                          <> Сейчас форма идёт от эталона панели, а не от подтверждённого live import.</>
+                          <> Сейчас форма опирается на то, что было сохранено в панели, а не на заново перечитанную конфигурацию с роутера.</>
                         ) : null}
                       </>
                     )}
                   </div>
                 </div>
               </div>
+
+            <section className={`rounded-2xl border px-4 py-4 ${configTrust.badgeClassName}`}>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <p className="vectra-kicker text-current/80">Насколько панель уверена в сравнении</p>
+                  <h3 className="mt-2 text-sm font-semibold text-white sm:text-base">
+                    {editor.configTrust.requiresReimport
+                      ? "Текущее состояние уже видно, но подробные настройки ещё нужно перечитать"
+                      : configTrust.title}
+                  </h3>
+                  <p className="mt-2 max-w-3xl text-sm leading-6 text-current/90">
+                    {editor.configTrust.requiresReimport
+                      ? "Сервис, выбранная нода, версии и доступность уже пришли со свежего check-in. Но подробные разделы PassWall2 ниже пока сравниваются с тем, что было сохранено в панели, а не с новым полным чтением конфигурации с роутера."
+                      : configTrust.detail}
+                  </p>
+                  <p className="mt-2 text-xs leading-6 text-current/80">
+                    Основа сравнения: {formatConfigSourceModeLabel(editor.configTrust.configSourceMode)} ·
+                    последнее чтение конфигурации {formatDateTime(editor.configTrust.lastLiveImportAt)} ·
+                    последний check-in {formatDateTime(editor.configTrust.lastCheckInAt)}
+                  </p>
+                </div>
+                <span className="rounded-full border border-white/10 bg-white/8 px-3 py-1 text-xs font-medium text-current">
+                  {configTrust.badge}
+                </span>
+              </div>
+            </section>
           </div>
         </section>
 
@@ -1872,19 +1911,56 @@ function MaintainTabSection({
 
 function NodeListSection({
   draft,
+  surface,
   selectedNode,
   selectedNodeId,
   setSelectedNodeId,
   setDraft,
 }: {
   draft: DraftConfigInput;
+  surface: EditorSurface;
   selectedNode: DraftConfigInput["nodes"][number] | null;
   selectedNodeId: string | null;
   setSelectedNodeId: (value: string | null) => void;
   setDraft: Dispatch<SetStateAction<DraftConfigInput | null>>;
 }) {
+  const editableNodeIds = new Set(surface.subscriptionRuntime.editableNodeIds);
+  const editableNodes = draft.nodes.filter((node) => editableNodeIds.has(node.id));
+
   return (
     <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-3">
+        <InlineStateCard
+          eyebrow="Ручные"
+          title={`${surface.subscriptionRuntime.manualNodes.length}`}
+          description="Отдельные manual nodes. Их можно редактировать и сохранять из панели."
+        />
+        <InlineStateCard
+          eyebrow="Подписочные"
+          title={`${surface.subscriptionRuntime.managedNodes.length}`}
+          description="Ноды, которые сейчас реально живут в подписочных группах и управляются subscribe link."
+        />
+        <InlineStateCard
+          eyebrow="Orphan"
+          title={`${surface.subscriptionRuntime.orphanNodes.length}`}
+          description="Ноды в подписочных группах, которые не совпали с текущим runtime/payload и требуют внимания."
+        />
+      </div>
+
+      <RuntimeNodeTable
+        title="Live подписочные ноды"
+        description="Это read-only runtime-слой. Он приходит не из ручного редактора, а из текущего live import / runtime state роутера."
+        nodes={surface.subscriptionRuntime.managedNodes}
+        emptyText="Сейчас подписочных runtime-нод не найдено."
+      />
+
+      <RuntimeNodeTable
+        title="Orphan ноды"
+        description="Эти ноды остались в подписочных группах, но не считаются актуальной частью текущего subscribe runtime."
+        nodes={surface.subscriptionRuntime.orphanNodes}
+        emptyText="Orphan-нод сейчас нет."
+      />
+
       <ActionStrip justify="start">
         <button
           type="button"
@@ -1973,8 +2049,8 @@ function NodeListSection({
           { key: "state", label: "Состояние" },
         ]}
       >
-        {draft.nodes.length > 0 ? (
-          draft.nodes.map((node) => (
+        {editableNodes.length > 0 ? (
+          editableNodes.map((node) => (
             <tr
               key={node.id}
               className={`cursor-pointer border-t border-white/10 text-slate-200 transition hover:bg-white/[0.04] ${
@@ -2010,7 +2086,7 @@ function NodeListSection({
             </tr>
           ))
         ) : (
-          <DataTableEmpty colSpan={4}>Ноды пока не добавлены.</DataTableEmpty>
+          <DataTableEmpty colSpan={4}>Ручных нод пока нет.</DataTableEmpty>
         )}
       </DataTable>
 
@@ -2160,8 +2236,41 @@ function SubscriptionSection({
     },
   });
 
+  const editableSubscriptionIds = new Set(
+    surface.subscriptionRuntime.editableSubscriptionIds,
+  );
+  const editableSubscriptions = draft.subscriptions.items.filter((item) =>
+    editableSubscriptionIds.has(item.id),
+  );
+
   return (
     <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-3">
+        <InlineStateCard
+          eyebrow="Payload"
+          title={`${surface.subscriptionRuntime.audits.reduce(
+            (sum, audit) => sum + (audit.payloadNodeCount ?? 0),
+            0,
+          )}`}
+          description="Сколько нод сейчас реально отдаёт текущая subscribe link по безопасному серверному аудиту."
+        />
+        <InlineStateCard
+          eyebrow="Live runtime"
+          title={`${surface.subscriptionRuntime.managedNodes.length}`}
+          description="Сколько подписочных нод сейчас реально видно на роутере."
+        />
+        <InlineStateCard
+          eyebrow="Panel draft"
+          title={`${surface.subscriptionRuntime.audits.reduce(
+            (sum, audit) => sum + audit.panelDraftManagedNodeCount,
+            0,
+          )}`}
+          description="Сколько managed subscription nodes лежит в последнем panel draft / panel revision."
+        />
+      </div>
+
+      <SubscriptionAuditTable audits={surface.subscriptionRuntime.audits} />
+
       <FieldGrid>
         <SelectControl
           label="Режим фильтрации"
@@ -2331,8 +2440,8 @@ function SubscriptionSection({
           { key: "state", label: "Состояние" },
         ]}
       >
-        {draft.subscriptions.items.length > 0 ? (
-          draft.subscriptions.items.map((item) => (
+        {editableSubscriptions.length > 0 ? (
+          editableSubscriptions.map((item) => (
             <tr
               key={item.id}
               className={`cursor-pointer border-t border-white/10 text-slate-200 transition hover:bg-white/[0.04] ${
@@ -3174,6 +3283,177 @@ function ShuntRulesSection({
   );
 }
 
+function RuntimeNodeTable({
+  title,
+  description,
+  nodes,
+  emptyText,
+}: {
+  title: string;
+  description: string;
+  nodes: EditorSurface["subscriptionRuntime"]["managedNodes"];
+  emptyText: string;
+}) {
+  return (
+    <SectionBox title={title}>
+      <p className="mb-4 text-sm leading-6 text-slate-300">{description}</p>
+      <DataTable
+        columns={[
+          { key: "label", label: "Нода" },
+          { key: "protocol", label: "Протокол" },
+          { key: "group", label: "Группа" },
+          { key: "endpoint", label: "Endpoint" },
+          { key: "state", label: "Статус" },
+        ]}
+      >
+        {nodes.length > 0 ? (
+          nodes.map((node) => (
+            <tr
+              key={node.id}
+              className="border-t border-white/10 text-slate-200"
+            >
+              <td className="px-3 py-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium text-white">{node.label}</span>
+                  {node.selected ? (
+                    <span className="rounded-full border border-emerald-400/30 bg-emerald-500/12 px-2 py-0.5 text-[11px] font-medium text-emerald-100">
+                      выбрана сейчас
+                    </span>
+                  ) : null}
+                  {node.orphanReason ? (
+                    <span className="rounded-full border border-amber-400/25 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-100">
+                      {node.orphanReason === "payload-mismatch"
+                        ? "не совпала с payload"
+                        : "осталась в группе"}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="text-xs text-slate-500">{node.id}</div>
+              </td>
+              <td className="px-3 py-2">{node.protocol}</td>
+              <td className="px-3 py-2">{node.group}</td>
+              <td className="px-3 py-2">{node.endpoint}</td>
+              <td className="px-3 py-2">{node.enabled ? "enabled" : "disabled"}</td>
+            </tr>
+          ))
+        ) : (
+          <DataTableEmpty colSpan={5}>{emptyText}</DataTableEmpty>
+        )}
+      </DataTable>
+    </SectionBox>
+  );
+}
+
+function SubscriptionAuditTable({
+  audits,
+}: {
+  audits: EditorSurface["subscriptionRuntime"]["audits"];
+}) {
+  return (
+    <SectionBox title="Subscription audit">
+      <p className="mb-4 text-sm leading-6 text-slate-300">
+        Сервер сам запрашивает текущую subscribe link, считает payload и сравнивает
+        его с live router state и последним panel draft. URL в этом блоке не
+        показывается.
+      </p>
+      <DataTable
+        columns={[
+          { key: "subscription", label: "Подписка" },
+          { key: "payload", label: "Payload" },
+          { key: "live", label: "Live" },
+          { key: "panel", label: "Panel draft" },
+          { key: "status", label: "Статус" },
+        ]}
+      >
+        {audits.length > 0 ? (
+          audits.map((audit) => (
+            <tr
+              key={audit.subscriptionKey}
+              className="border-t border-white/10 text-slate-200"
+            >
+              <td className="px-3 py-2">
+                <div className="font-medium text-white">{audit.remark}</div>
+                <div className="text-xs text-slate-500">
+                  hash {audit.urlHash.slice(0, 12)} · {audit.payloadMode}
+                </div>
+              </td>
+              <td className="px-3 py-2">
+                <div>{audit.payloadNodeCount ?? "не удалось посчитать"}</div>
+                <div className="text-xs text-slate-500">
+                  fetch {formatSubscriptionFetchState(audit.fetchState)}
+                  {audit.httpStatus ? ` · HTTP ${audit.httpStatus}` : ""}
+                </div>
+              </td>
+              <td className="px-3 py-2">
+                <div>{audit.liveManagedNodeCount}</div>
+                <div className="text-xs text-slate-500">
+                  orphan {audit.orphanNodeCount}
+                </div>
+              </td>
+              <td className="px-3 py-2">
+                <div>{audit.panelDraftManagedNodeCount}</div>
+                <div className="text-xs text-slate-500">
+                  {audit.unmatchedPayloadNodeCount === null
+                    ? "payload не сопоставлен"
+                    : `не сопоставлено ${audit.unmatchedPayloadNodeCount}`}
+                </div>
+              </td>
+              <td className="px-3 py-2">
+                <div className="font-medium text-white">
+                  {formatSubscriptionAuditStatus(audit.status)}
+                </div>
+                <div className="text-xs text-slate-500">
+                  audit {formatDateTime(audit.checkedAt)}
+                </div>
+              </td>
+            </tr>
+          ))
+        ) : (
+          <DataTableEmpty colSpan={5}>
+            Подписок для аудита сейчас нет.
+          </DataTableEmpty>
+        )}
+      </DataTable>
+    </SectionBox>
+  );
+}
+
+function formatSubscriptionFetchState(
+  value: EditorSurface["subscriptionRuntime"]["audits"][number]["fetchState"],
+) {
+  switch (value) {
+    case "ok":
+      return "ok";
+    case "disabled":
+      return "disabled";
+    case "http_error":
+      return "HTTP error";
+    case "network_error":
+      return "network error";
+    case "parse_error":
+      return "parse error";
+    default:
+      return value;
+  }
+}
+
+function formatSubscriptionAuditStatus(
+  value: EditorSurface["subscriptionRuntime"]["audits"][number]["status"],
+) {
+  switch (value) {
+    case "in_sync":
+      return "в синхроне";
+    case "drift":
+      return "есть drift";
+    case "disabled":
+      return "выключена";
+    case "unverifiable":
+      return "не удалось проверить";
+    default:
+      return value;
+  }
+}
+
 function AppUpdateSection({
   routerId,
   draft,
@@ -3511,6 +3791,15 @@ function AppUpdateSection({
       {passwallHint ? (
         <p className="text-sm text-slate-400">{passwallHint}</p>
       ) : null}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <p className="vectra-kicker text-slate-500">Задачи от панели</p>
+          <span className="text-[11px] text-slate-500">
+            последние update-задачи и ответ роутера
+          </span>
+        </div>
+        <RouterManagementTaskLog items={surface.managementTaskLog} />
+      </div>
       {!backendDeliveryBlocked && controlPlaneHealth?.checkedAt ? (
         <p className="text-sm text-slate-500">
           Backend write-probe ok: {formatDateTime(controlPlaneHealth.checkedAt)}.
@@ -4215,6 +4504,130 @@ function ActionGroup({
   );
 }
 
+function UnconfirmedChangesPanel({
+  routerChanges,
+  panelChanges,
+}: {
+  routerChanges: UnconfirmedChangeGroup;
+  panelChanges: UnconfirmedChangeGroup;
+}) {
+  return (
+    <section className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] px-4 py-4">
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <p className="vectra-kicker text-[var(--vectra-accent)]">Что именно изменилось</p>
+          <h3 className="mt-2 text-sm font-semibold text-white sm:text-base">
+            Неподтверждённые изменения
+          </h3>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
+            Здесь отдельно показано, что уже пришло с роутера, но вы ещё не подтвердили, и что уже сохранено в панели, но роутер это ещё не подтвердил как текущее live-состояние.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        <UnconfirmedChangeCard
+          eyebrow="Изменилось на роутере"
+          badge={formatUnconfirmedStatusBadge(routerChanges)}
+          group={routerChanges}
+          emptyText="Новых неподтверждённых изменений в подробных настройках со стороны роутера сейчас не видно."
+        />
+        <UnconfirmedChangeCard
+          eyebrow="Сохранено в панели"
+          badge={formatUnconfirmedStatusBadge(panelChanges)}
+          group={panelChanges}
+          emptyText="Сохранённый черновик не расходится с текущим подтверждённым состоянием панели."
+        />
+      </div>
+    </section>
+  );
+}
+
+function UnconfirmedChangeCard({
+  eyebrow,
+  badge,
+  group,
+  emptyText,
+}: {
+  eyebrow: string;
+  badge: string;
+  group: UnconfirmedChangeGroup;
+  emptyText: string;
+}) {
+  const hasChanges = group.status !== "none";
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-black/10 px-4 py-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <p className="vectra-kicker text-slate-500">{eyebrow}</p>
+          <h4 className="mt-2 text-sm font-semibold text-white">{group.title}</h4>
+        </div>
+        <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-slate-200">
+          {badge}
+        </span>
+      </div>
+
+      <p className="mt-2 text-sm leading-6 text-slate-300">
+        {hasChanges ? group.summary : emptyText}
+      </p>
+
+      {hasChanges ? (
+        <div className="mt-3 space-y-3">
+          <div className="flex flex-wrap gap-2 text-xs text-slate-400">
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1">
+              изменений: {group.changeCount}
+            </span>
+            {group.revisionId ? (
+              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1">
+                ревизия: {group.revisionId}
+              </span>
+            ) : null}
+            {group.changedSections.length ? (
+              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1">
+                секции: {group.changedSections.join(", ")}
+              </span>
+            ) : null}
+          </div>
+
+          {group.items.length ? (
+            <div className="space-y-2">
+              {group.items.map((item) => (
+                <div
+                  key={`${group.status}-${item.path}`}
+                  className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3"
+                >
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-white">{item.label}</p>
+                      <p className="mt-1 text-xs text-slate-500">{item.section}</p>
+                    </div>
+                    <code className="text-[11px] text-slate-500">{item.path}</code>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <div className="rounded-md border border-white/10 bg-black/10 px-3 py-2">
+                      <p className="vectra-kicker text-slate-500">Было подтверждено</p>
+                      <p className="mt-1 text-sm text-slate-200">{item.before}</p>
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/10 px-3 py-2">
+                      <p className="vectra-kicker text-slate-500">Сейчас</p>
+                      <p className="mt-1 text-sm text-slate-200">{item.after}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : group.status === "reimport-needed" ? (
+            <div className="rounded-md border border-amber-400/20 bg-amber-500/10 px-3 py-3 text-sm leading-6 text-amber-100">
+              Пока видно только расхождение по digest: панель понимает, что подробные настройки на роутере изменились, но не знает точные поля до нового чтения конфигурации.
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function InlineStateCard({
   eyebrow,
   title,
@@ -4464,11 +4877,11 @@ function FieldShell({
     diff?.source === "masked"
       ? "скрыто"
       : diff?.source === "live-import"
-        ? "live import"
+        ? "считано с роутера"
         : diff?.source === "stale-authoritative"
           ? "эталон панели (stale)"
           : diff?.source === "inventory-only"
-            ? "только snapshot"
+            ? "только краткий check-in"
             : diff?.source === "authoritative"
               ? "эталон панели"
               : null;
@@ -4527,6 +4940,19 @@ function OperationRow({ operation }: { operation: PasswallOperationPreview }) {
       )}
     </div>
   );
+}
+
+function formatUnconfirmedStatusBadge(group: UnconfirmedChangeGroup) {
+  switch (group.status) {
+    case "pending-import-review":
+      return "нужна проверка import";
+    case "reimport-needed":
+      return "нужен re-import";
+    case "saved-draft-pending-apply":
+      return "ждёт apply";
+    default:
+      return "чисто";
+  }
 }
 
 function EmptyState({ text }: { text: string }) {

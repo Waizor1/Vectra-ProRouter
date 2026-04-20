@@ -74,6 +74,18 @@ function describePrimaryStatus(router: RouterSummary) {
   return router.statusLabel;
 }
 
+function describeSavedPanelState(router: RouterSummary, onboardingPending: boolean) {
+  if (router.configTrust.requiresReimport) {
+    return "Панель ждёт повторное чтение конфигурации";
+  }
+
+  if (onboardingPending) {
+    return formatRouterImportStateLabel(router.importState);
+  }
+
+  return "Эталон сохранён в панели";
+}
+
 export function RouterCard({ router }: { router: RouterSummary }) {
   const onboarding = describeRouterOnboarding(
     router.importState,
@@ -92,6 +104,7 @@ export function RouterCard({ router }: { router: RouterSummary }) {
   );
   const trustState = describeRouterTrustState(router);
   const primaryStatus = describePrimaryStatus(router);
+  const savedPanelState = describeSavedPanelState(router, onboardingPending);
 
   return (
     <article className="group overflow-hidden rounded-2xl border border-white/10 bg-[var(--vectra-panel)] shadow-[var(--vectra-shadow-md)]">
@@ -106,7 +119,7 @@ export function RouterCard({ router }: { router: RouterSummary }) {
               {router.name}
             </p>
             <p className="mt-1 text-sm leading-6 text-slate-400">
-              {primaryStatus} · очередь {router.pendingChanges}
+              Сейчас: {primaryStatus.toLowerCase()} · очередь {router.pendingChanges}
             </p>
           </div>
           <div className="flex flex-wrap gap-2 sm:max-w-[13rem] sm:justify-end">
@@ -153,32 +166,44 @@ export function RouterCard({ router }: { router: RouterSummary }) {
           </span>
         </div>
 
+        <div
+          className={`mt-3 rounded-2xl border px-3 py-3 ${
+            onboardingPending || router.configTrust.requiresReimport
+              ? "border-amber-400/20 bg-amber-500/10"
+              : "border-sky-400/20 bg-sky-500/10"
+          }`}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <p className="vectra-kicker text-slate-300">Что сохранено в панели</p>
+            <span className="vectra-chip rounded-full border border-white/10 bg-white/8 px-2.5 py-1 text-white/90">
+              {savedPanelState}
+            </span>
+          </div>
+          <p className="mt-2 text-sm font-medium text-white">
+            {router.configTrust.requiresReimport
+              ? "Подробные разделы пока опираются на прежнюю базу панели"
+              : onboardingPending
+                ? onboarding.cardActionLabel
+                : "Панель уже может опираться на сохранённый эталон"}
+          </p>
+          <p className="mt-1 text-sm leading-6 text-slate-200/85">
+            {router.configTrust.requiresReimport
+              ? "Текущее состояние сервиса уже видно по check-in, но подробные PassWall2-настройки ещё нужно перечитать с роутера."
+              : onboardingPending
+                ? onboarding.cardHint
+                : "Если правки уже были сохранены, именно эта база будет использована для сравнения и следующих действий из панели."}
+          </p>
+        </div>
+
         <div className={`mt-3 rounded-2xl border px-3 py-3 ${trustState.badgeClassName}`}>
           <div className="flex items-center justify-between gap-3">
-            <p className="vectra-kicker text-current/80">Доверие к снимку</p>
+            <p className="vectra-kicker text-current/80">Насколько панель уверена</p>
             <span className="vectra-chip rounded-full border border-white/10 bg-white/8 px-2.5 py-1 text-current">
               {trustState.badge}
             </span>
           </div>
           <p className="mt-2 text-sm font-medium text-white">{trustState.title}</p>
-          <p className="mt-1 text-sm leading-6 text-current/85">
-            {trustState.detail}
-          </p>
-        </div>
-
-        <div
-          className={`mt-3 rounded-2xl border px-3 py-3 ${
-            onboardingPending
-              ? "border-amber-400/20 bg-amber-500/10"
-              : "border-emerald-400/20 bg-emerald-500/10"
-          }`}
-        >
-          <div className="flex items-center justify-between gap-3">
-            <p className="vectra-kicker text-slate-300">{onboarding.badge}</p>
-          </div>
-          <p className="mt-2 text-sm font-medium text-white">
-            {onboardingPending ? onboarding.cardActionLabel : "Открыть роутер"}
-          </p>
+          <p className="mt-1 text-sm leading-6 text-current/85">{trustState.detail}</p>
         </div>
 
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">

@@ -1,7 +1,6 @@
 import {
   healthIncidents,
   jobs,
-  passwallDesiredRevisions,
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
@@ -12,6 +11,7 @@ import { formatControllerVersion } from "~/lib/controller-version";
 
 import { buildConfigTrustState } from "./config-trust";
 import { buildFleetMonitoringSnapshot } from "./fleet-monitoring";
+import { loadRevisionMetadata } from "./revision-metadata";
 import { isRouterReachable } from "./router-presence";
 import { describeRouterSupport } from "./support";
 
@@ -172,7 +172,7 @@ function normalizeSnapshotRow(row: unknown): RouterInventorySnapshotRow | null {
   };
 }
 
-async function getLatestSnapshots(
+export async function loadLatestSnapshots(
   database: FleetMonitoringDatabaseClient,
   routerIds: string[],
 ) {
@@ -251,7 +251,7 @@ export async function loadFleetMonitoringSnapshot(
 
   const routerIds = routerRows.map((router) => router.id);
   const [snapshots, incidentRows, queuedJobRows, revisionRows] = await Promise.all([
-    getLatestSnapshots(database, routerIds),
+    loadLatestSnapshots(database, routerIds),
     routerIds.length
       ? database
           .select()
@@ -272,19 +272,9 @@ export async function loadFleetMonitoringSnapshot(
           .orderBy(desc(jobs.createdAt))
       : Promise.resolve([]),
     routerIds.length
-      ? database
-          .select()
-          .from(passwallDesiredRevisions)
-          .where(
-            and(
-              inArray(passwallDesiredRevisions.routerId, routerIds),
-              inArray(passwallDesiredRevisions.origin, [
-                "router_import",
-                "operator_reimport",
-              ]),
-            ),
-          )
-          .orderBy(desc(passwallDesiredRevisions.createdAt))
+      ? loadRevisionMetadata(database, routerIds, {
+          origins: ["router_import", "operator_reimport"],
+        })
       : Promise.resolve([]),
   ]);
 

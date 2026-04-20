@@ -143,7 +143,7 @@ describe("buildRouterSummary", () => {
     expect(summary.name).toBe("Branch AX3000T");
     expect(summary.directMode).toBe(true);
     expect(summary.offline).toBe(false);
-    expect(summary.statusLabel).toBe("Прямой режим");
+    expect(summary.statusLabel).toBe("Сейчас в прямом режиме");
     expect(summary.components).toEqual({ xray: "26.2.6" });
     expect(summary.pendingChanges).toBe(2);
     expect(summary.lastRescue).toBe("Proxy health failed repeatedly.");
@@ -244,7 +244,7 @@ describe("buildRouterSummary", () => {
     expect(summary.directMode).toBe(false);
     expect(summary.offline).toBe(true);
     expect(summary.statusLabel).toBe("Нет связи");
-    expect(summary.lastRescue).toContain("Последнее известное rescue");
+    expect(summary.lastRescue).toContain("Последний известный recovery-сигнал");
   });
 
   it("replaces raw unknown controller version in router summary", () => {

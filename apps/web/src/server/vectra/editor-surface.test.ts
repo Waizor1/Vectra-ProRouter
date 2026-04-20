@@ -3,10 +3,13 @@ import { describe, expect, it } from "vitest";
 import { passwallDesiredConfigSchema } from "@vectra/contracts";
 
 import {
+  buildUnconfirmedChangesSummary,
   buildLastControllerUpdateAttempt,
   buildLastPasswallUpdateAttempt,
+  buildRouterManagementTaskLog,
   mergeCurrentLiveRouterDataIntoDraftConfig,
 } from "./editor-surface";
+import { buildConfigTrustState } from "./config-trust";
 
 type BuildArgs = Parameters<typeof buildLastControllerUpdateAttempt>[0];
 type JobRow = BuildArgs["jobs"][number];
@@ -491,6 +494,458 @@ describe("buildLastPasswallUpdateAttempt", () => {
     expect(attempt?.summary).toBe(
       "xray-core: package path пропущен из-за места (xray-core package path skipped: not enough overlay space)",
     );
+  });
+});
+
+describe("buildUnconfirmedChangesSummary", () => {
+  it("shows exact router-side changes for pending imported revisions", () => {
+    const importedConfig = structuredClone(baseConfig);
+    importedConfig.basicSettings.log.level = "warning";
+    importedConfig.ruleManage.autoUpdate = false;
+
+    const summary = buildUnconfirmedChangesSummary({
+      importState: "out_of_sync",
+      configTrust: buildConfigTrustState({
+        routerReachable: true,
+        lastCheckInAt: new Date("2026-04-19T12:00:00Z"),
+        authoritativeDigest: "digest-a",
+        snapshotDigest: "digest-b",
+        revisions: [
+          {
+            configDigest: "digest-b",
+            createdAt: new Date("2026-04-19T11:59:00Z"),
+            origin: "router_import",
+          },
+        ],
+        hasAuthoritativeConfig: true,
+      }),
+      activeRevisionId: "rev-active",
+      importedRevisionId: "rev-imported",
+      latestDraftId: "rev-active",
+      authoritativeConfig: baseConfig,
+      importedConfig,
+      draftConfig: baseConfig,
+    });
+
+    expect(summary.router).toMatchObject({
+      status: "pending-import-review",
+      exact: true,
+      revisionId: "rev-imported",
+    });
+    expect(summary.router.changeCount).toBeGreaterThan(0);
+    expect(summary.router.changedSections).toEqual(
+      expect.arrayContaining(["Журнал", "Управление правилами"]),
+    );
+    expect(summary.router.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "basicSettings.log.level",
+          before: "error",
+          after: "warning",
+        }),
+      ]),
+    );
+  });
+
+  it("shows exact router-side changes for first import review without authoritative baseline", () => {
+    const importedConfig = structuredClone(baseConfig);
+    importedConfig.basicSettings.log.level = "warning";
+
+    const summary = buildUnconfirmedChangesSummary({
+      importState: "import_review",
+      configTrust: buildConfigTrustState({
+        routerReachable: true,
+        lastCheckInAt: new Date("2026-04-19T12:00:00Z"),
+        authoritativeDigest: null,
+        snapshotDigest: "digest-b",
+        revisions: [
+          {
+            configDigest: "digest-b",
+            createdAt: new Date("2026-04-19T11:59:00Z"),
+            origin: "router_import",
+          },
+        ],
+        hasAuthoritativeConfig: false,
+      }),
+      activeRevisionId: null,
+      importedRevisionId: "rev-imported",
+      latestDraftId: null,
+      authoritativeConfig: null,
+      importedConfig,
+      draftConfig: importedConfig,
+    });
+
+    expect(summary.router).toMatchObject({
+      status: "pending-import-review",
+      exact: true,
+      revisionId: "rev-imported",
+    });
+    expect(summary.router.changeCount).toBeGreaterThan(0);
+    expect(summary.router.summary).toContain("Это первый import с роутера");
+    expect(summary.router.changedSections).toContain("Журнал");
+    expect(summary.router.items[0]).toMatchObject({
+      before: "Не задано",
+    });
+  });
+
+  it("shows digest-only router drift when re-import is needed but exact diff is unknown", () => {
+    const summary = buildUnconfirmedChangesSummary({
+      importState: "approved",
+      configTrust: buildConfigTrustState({
+        routerReachable: true,
+        lastCheckInAt: new Date("2026-04-19T12:00:00Z"),
+        authoritativeDigest: "digest-a",
+        snapshotDigest: "digest-b",
+        revisions: [
+          {
+            configDigest: "digest-a",
+            createdAt: new Date("2026-04-19T11:00:00Z"),
+            origin: "router_import",
+          },
+        ],
+        hasAuthoritativeConfig: true,
+      }),
+      activeRevisionId: "rev-active",
+      importedRevisionId: null,
+      latestDraftId: "rev-active",
+      authoritativeConfig: baseConfig,
+      importedConfig: null,
+      draftConfig: baseConfig,
+    });
+
+    expect(summary.router).toMatchObject({
+      status: "reimport-needed",
+      exact: false,
+      changeCount: 0,
+      items: [],
+    });
+  });
+
+  it("shows saved panel changes that are not yet confirmed on router", () => {
+    const draftConfig = structuredClone(baseConfig);
+    draftConfig.basicSettings.main.clientProxy = false;
+    draftConfig.subscriptions.keepList = ["domain:example.com"];
+
+    const summary = buildUnconfirmedChangesSummary({
+      importState: "approved",
+      configTrust: buildConfigTrustState({
+        routerReachable: true,
+        lastCheckInAt: new Date("2026-04-19T12:00:00Z"),
+        authoritativeDigest: "digest-a",
+        snapshotDigest: "digest-a",
+        revisions: [
+          {
+            configDigest: "digest-a",
+            createdAt: new Date("2026-04-19T11:59:00Z"),
+            origin: "router_import",
+          },
+        ],
+        hasAuthoritativeConfig: true,
+      }),
+      activeRevisionId: "rev-active",
+      importedRevisionId: null,
+      latestDraftId: "rev-draft",
+      authoritativeConfig: baseConfig,
+      importedConfig: null,
+      draftConfig,
+    });
+
+    expect(summary.panel).toMatchObject({
+      status: "saved-draft-pending-apply",
+      exact: true,
+      revisionId: "rev-draft",
+    });
+    expect(summary.panel.changeCount).toBeGreaterThan(0);
+    expect(summary.panel.changedSections).toEqual(
+      expect.arrayContaining(["Основные настройки", "Подписки"]),
+    );
+    expect(summary.panel.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "basicSettings.main.clientProxy",
+          before: "Да",
+          after: "Нет",
+        }),
+      ]),
+    );
+  });
+});
+
+describe("buildRouterManagementTaskLog", () => {
+  it("includes controller update jobs with failure details", () => {
+    const items = buildRouterManagementTaskLog({
+      jobs: [createJob()],
+      results: [
+        createJobResult({
+          payload: {
+            error: "opkg update: exit status 7",
+            stderr: "Collected errors:\n * failed",
+          },
+        }),
+      ],
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "controller-update",
+      label: "Обновление controller",
+      resultStatus: "failure",
+      summary: "opkg update: exit status 7",
+      error: "opkg update: exit status 7",
+      stderr: "Collected errors:\n * failed",
+      artifactVersion: "0.1.12-r2",
+    });
+  });
+
+  it("treats terminal self-update as controller task", () => {
+    const items = buildRouterManagementTaskLog({
+      jobs: [
+        createJob({
+          id: "terminal-controller-job",
+          type: "run_terminal_command",
+          state: "succeeded",
+          payload: {
+            purpose: "controller-self-update",
+            artifactVersion: "0.1.12-r13",
+            command: "opkg install --force-reinstall ...",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          jobId: "terminal-controller-job",
+          status: "success",
+          payload: {
+            stdout: "controller self-update to 0.1.12-r13 queued",
+          },
+        }),
+      ],
+    });
+
+    expect(items[0]).toMatchObject({
+      kind: "controller-self-update",
+      label: "Self-update controller",
+      resultStatus: "success",
+      command: "opkg install --force-reinstall ...",
+      summary: "controller self-update to 0.1.12-r13 queued",
+    });
+  });
+
+  it("treats router reboot as a dedicated task-log item", () => {
+    const items = buildRouterManagementTaskLog({
+      jobs: [
+        createJob({
+          id: "terminal-reboot-job",
+          type: "run_terminal_command",
+          state: "succeeded",
+          payload: {
+            purpose: "router-reboot",
+            command:
+              "set -eu; (sleep 5; /sbin/reboot) >/tmp/vectra-router-reboot.log 2>&1 &; printf 'router reboot scheduled\\n'",
+            timeoutSeconds: 15,
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          jobId: "terminal-reboot-job",
+          status: "success",
+          payload: {
+            stdout: "router reboot scheduled",
+          },
+        }),
+      ],
+    });
+
+    expect(items[0]).toMatchObject({
+      kind: "router-reboot",
+      label: "Перезагрузка роутера",
+      resultStatus: "success",
+      command:
+        "set -eu; (sleep 5; /sbin/reboot) >/tmp/vectra-router-reboot.log 2>&1 &; printf 'router reboot scheduled\\n'",
+      summary: "router reboot scheduled",
+    });
+  });
+
+  it("suppresses stale controller failure in task log when installed version already converged", () => {
+    const items = buildRouterManagementTaskLog({
+      jobs: [
+        createJob({
+          payload: { artifactVersion: "0.1.12-r11" },
+        }),
+      ],
+      results: [
+        createJobResult({
+          payload: {
+            error: "opkg install vectra-controller-agent: signal: killed",
+          },
+        }),
+      ],
+      installedControllerVersion: "0.1.12-r11",
+    });
+
+    expect(items[0]).toMatchObject({
+      resultStatus: "success",
+      summary:
+        "controller уже на 0.1.12-r11; старый failure-result после self-update больше не актуален",
+    });
+  });
+
+  it("includes managed-stack passwall jobs with per-package details", () => {
+    const items = buildRouterManagementTaskLog({
+      jobs: [
+        createJob({
+          id: "pw-managed-job",
+          type: "update_passwall_packages",
+          state: "failed",
+          payload: {
+            targetVersion: "26.4.10-1",
+            packageTargetVersion: "26.4.10-r1",
+            updateScope: "managed-stack",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          jobId: "pw-managed-job",
+          status: "failure",
+          payload: {
+            packageResults: [
+              {
+                package: "v2ray-geoip",
+                status: "storage-blocked",
+                error: "overlay free space too low",
+              },
+            ],
+          },
+        }),
+      ],
+    });
+
+    expect(items[0]).toMatchObject({
+      kind: "passwall-update",
+      label: "Обновление PassWall stack",
+      resultStatus: "failure",
+      targetVersion: "26.4.10-1",
+      packageTargetVersion: "26.4.10-r1",
+      summary: "v2ray-geoip: package path пропущен из-за места (overlay free space too low)",
+    });
+    expect(items[0]?.packageResults).toHaveLength(1);
+  });
+
+  it("includes scoped passwall package jobs in management history", () => {
+    const items = buildRouterManagementTaskLog({
+      jobs: [
+        createJob({
+          id: "pw-scoped-job",
+          type: "update_passwall_packages",
+          state: "succeeded",
+          payload: {
+            targetVersion: "26.3.27-r1",
+            packageTargetVersion: "26.3.27-r1",
+            updateScope: "scoped-package",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          jobId: "pw-scoped-job",
+          status: "success",
+          payload: {
+            packageResults: [
+              {
+                package: "xray-core",
+                status: "runtime-only-converged",
+                pathUsed: "built-in-updater",
+              },
+            ],
+          },
+        }),
+      ],
+    });
+
+    expect(items[0]).toMatchObject({
+      kind: "passwall-update",
+      updateScope: "scoped-package",
+      label: "Точечное обновление PassWall",
+    });
+  });
+
+  it("propagates delivery-blocked state into task log", () => {
+    const items = buildRouterManagementTaskLog({
+      jobs: [
+        createJob({
+          id: "pw-delivery-job",
+          type: "update_passwall_packages",
+          state: "queued",
+          payload: {
+            targetVersion: "26.4.10-1",
+            updateScope: "managed-stack",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          jobId: "pw-delivery-job",
+          status: "accepted",
+          payload: {
+            deliveryBlocked: true,
+            deliveryBlockedReason: "db write probe failed",
+          },
+        }),
+      ],
+    });
+
+    expect(items[0]).toMatchObject({
+      deliveryBlocked: true,
+      deliveryBlockedReason: "db write probe failed",
+      summary:
+        "job поставлен в очередь, но сервер сейчас не сохраняет check-in: db write probe failed",
+    });
+  });
+
+  it("keeps null result status when there is no confirmed non-accepted result", () => {
+    const items = buildRouterManagementTaskLog({
+      jobs: [
+        createJob({
+          id: "controller-no-result-job",
+          state: "succeeded",
+        }),
+      ],
+      results: [],
+    });
+
+    expect(items[0]).toMatchObject({
+      resultStatus: null,
+      summary: "обновление завершилось без подробностей",
+    });
+  });
+
+  it("filters out non-management terminal jobs", () => {
+    const items = buildRouterManagementTaskLog({
+      jobs: [
+        createJob({
+          id: "generic-terminal-job",
+          type: "run_terminal_command",
+          state: "succeeded",
+          payload: {
+            purpose: "generic-terminal",
+            command: "ubus call system board",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          jobId: "generic-terminal-job",
+          status: "success",
+          payload: {
+            stdout: "ok",
+          },
+        }),
+      ],
+    });
+
+    expect(items).toHaveLength(0);
   });
 });
 

@@ -1,4 +1,5 @@
 import {
+  type PasswallDesiredConfig,
   MASKED_SECRET_PLACEHOLDER,
   type RouterTelegramReachability,
 } from "@vectra/contracts";
@@ -19,10 +20,29 @@ import {
   resolveInstalledControllerVersion,
 } from "~/lib/controller-version";
 import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
+import {
+  isRouterRebootJob,
+  isRouterRebootTerminalPayload,
+} from "~/lib/router-reboot-jobs";
 import { db } from "~/server/db";
 import { buildEditorSurface } from "~/server/vectra/editor";
 import { buildConfigTrustState } from "~/server/vectra/config-trust";
+import {
+  pickActiveRevision,
+  pickCurrentLiveRevision,
+  pickImportedRevision,
+  pickLatestEditableDraft,
+  pickLatestOperatorDraft,
+  pickWorkspaceRevision,
+} from "~/server/vectra/draft-selection";
 import { isRouterReachable } from "~/server/vectra/router-presence";
+import { auditSubscriptions } from "~/server/vectra/subscription-audit";
+import {
+  buildSubscriptionRuntimeReadModel,
+  mergeNodesWithCurrentRuntime,
+  mergeSubscriptionsBySemanticIdentity,
+  type SubscriptionRuntimeReadModel,
+} from "~/server/vectra/subscription-runtime";
 import {
   canRunDestructiveAction,
   canRunUpdateAction,
@@ -72,6 +92,34 @@ export type LastPasswallUpdateAttempt = {
   }>;
 };
 
+export type RouterManagementTaskLogItem = {
+  jobId: string;
+  kind:
+    | "controller-update"
+    | "controller-self-update"
+    | "passwall-update"
+    | "router-reboot";
+  label: string;
+  jobType: string;
+  updateScope: string | null;
+  jobState: string;
+  resultStatus: ControllerUpdateAttemptStatus;
+  createdAt: Date;
+  reportedAt: Date | null;
+  summary: string;
+  error: string | null;
+  stdout: string | null;
+  stderr: string | null;
+  command: string | null;
+  artifactVersion: string | null;
+  targetVersion: string | null;
+  packageTargetVersion: string | null;
+  runtimeTargetVersion: string | null;
+  deliveryBlocked: boolean;
+  deliveryBlockedReason: string | null;
+  packageResults: LastPasswallUpdateAttempt["packageResults"];
+};
+
 export type RouterWorkspaceInventory = {
   controllerVersion?: string | null;
   passwallVersion?: string | null;
@@ -94,6 +142,32 @@ export type RouterWorkspaceInventory = {
     dnsmasq?: string | null;
   } | null;
   telegramReachability?: RouterTelegramReachability | null;
+};
+
+export type RouterSubscriptionRuntime = SubscriptionRuntimeReadModel;
+
+export type UnconfirmedChangeItem = {
+  path: string;
+  section: string;
+  label: string;
+  before: string;
+  after: string;
+};
+
+export type UnconfirmedChangeGroup = {
+  status: "none" | "reimport-needed" | "pending-import-review" | "saved-draft-pending-apply";
+  exact: boolean;
+  title: string;
+  summary: string;
+  changeCount: number;
+  changedSections: string[];
+  items: UnconfirmedChangeItem[];
+  revisionId: string | null;
+};
+
+export type UnconfirmedChangesSummary = {
+  router: UnconfirmedChangeGroup;
+  panel: UnconfirmedChangeGroup;
 };
 
 function formatValue(value: unknown): string {
@@ -152,6 +226,168 @@ function collectMaskedPaths(value: unknown, prefix = ""): string[] {
   }
 
   return [];
+}
+
+function buildComparisonSurface(args: {
+  currentConfig: PasswallDesiredConfig;
+  authoritativeConfig: PasswallDesiredConfig | null;
+  draftConfig: PasswallDesiredConfig;
+}) {
+  return buildEditorSurface({
+    routerRuntimeSummary: {
+      status: "active",
+      importState: "approved",
+      lastSeenAt: null,
+      passwallEnabled: args.currentConfig.basicSettings.main.mainSwitch,
+      selectedNodeId: args.currentConfig.basicSettings.main.selectedNodeId ?? null,
+      selectedNodeLabel: args.currentConfig.basicSettings.main.selectedNodeId ?? null,
+      pendingChanges: 0,
+      supportState: "certified",
+      supportTitle: "Сертифицировано",
+      supportReason: "Derived comparison summary.",
+    },
+    currentLiveConfig: args.currentConfig,
+    authoritativeConfig: args.authoritativeConfig,
+    draftConfig: args.draftConfig,
+    currentConfigFreshness: "live",
+    configSourceMode: "live-import",
+  });
+}
+
+function buildChangeItems(args: {
+  fieldDiffs: ReturnType<typeof buildComparisonSurface>["fieldDiffs"];
+  mode: "current" | "draft";
+  limit?: number;
+}) {
+  const relevantDiffs = args.fieldDiffs.filter((diff) =>
+    args.mode === "current" ? !diff.currentMatchesAuthoritative : diff.draftChanged,
+  );
+  const changedSections = [...new Set(relevantDiffs.map((diff) => diff.section))];
+  const items = relevantDiffs.slice(0, args.limit ?? 6).map((diff) => ({
+    path: diff.path,
+    section: diff.section,
+    label: diff.label,
+    before: formatValue(diff.authoritativeValue),
+    after: formatValue(args.mode === "current" ? diff.currentValue : diff.draftValue),
+  }));
+
+  return {
+    changeCount: relevantDiffs.length,
+    changedSections,
+    items,
+  };
+}
+
+export function buildUnconfirmedChangesSummary(args: {
+  importState: string;
+  configTrust: ReturnType<typeof buildConfigTrustState>;
+  activeRevisionId: string | null;
+  importedRevisionId: string | null;
+  latestDraftId: string | null;
+  authoritativeConfig: PasswallDesiredConfig | null;
+  importedConfig: PasswallDesiredConfig | null;
+  draftConfig: PasswallDesiredConfig;
+}) : UnconfirmedChangesSummary {
+  const noneGroup = (title: string, summary: string): UnconfirmedChangeGroup => ({
+    status: "none",
+    exact: false,
+    title,
+    summary,
+    changeCount: 0,
+    changedSections: [],
+    items: [],
+    revisionId: null,
+  });
+
+  let router = noneGroup(
+    "Роутер не показал неподтверждённых изменений",
+    "Последний подтверждённый deep config панели сейчас не расходится с тем, что уже подтверждено import-ом.",
+  );
+
+  if (
+    args.importedConfig &&
+    args.importedRevisionId &&
+    ["import_review", "out_of_sync"].includes(args.importState)
+  ) {
+    const comparisonBase = args.authoritativeConfig ?? null;
+    const comparison = buildComparisonSurface({
+      currentConfig: args.importedConfig,
+      authoritativeConfig: comparisonBase,
+      draftConfig: comparisonBase ?? args.importedConfig,
+    });
+    const changes = buildChangeItems({
+      fieldDiffs: comparison.fieldDiffs,
+      mode: "current",
+    });
+
+    router = {
+      status: "pending-import-review",
+      exact: true,
+      title: "На роутере есть изменения, которые панель ещё не подтвердила",
+      summary:
+        changes.changeCount > 0
+          ? args.authoritativeConfig
+            ? `Эти изменения пришли с роутера новым import-ом. Панель их ещё не приняла как эталон.`
+            : `Это первый import с роутера. Панель уже считала live-конфигурацию, но вы ещё не подтвердили её как стартовый эталон.`
+          : "Панель получила новый import с роутера, но значимые отличия по полям не удалось выделить автоматически.",
+      changeCount: changes.changeCount,
+      changedSections: changes.changedSections,
+      items: changes.items,
+      revisionId: args.importedRevisionId,
+    };
+  } else if (args.configTrust.requiresReimport) {
+    router = {
+      status: "reimport-needed",
+      exact: false,
+      title: "Роутер уже изменился, но точные deep-config правки ещё не считаны",
+      summary:
+        "Свежий snapshot уже показал новый config digest, но полного live import-а ещё нет. Панель видит, что deep config ушёл вперёд, но точный список полей появится только после re-import.",
+      changeCount: 0,
+      changedSections: [],
+      items: [],
+      revisionId: null,
+    };
+  }
+
+  let panel = noneGroup(
+    "В панели нет сохранённых, но неотправленных изменений",
+    "Сохранённый черновик не расходится с текущим подтверждённым baseline панели.",
+  );
+
+  if (
+    args.authoritativeConfig &&
+    args.latestDraftId &&
+    args.latestDraftId !== args.activeRevisionId
+  ) {
+    const comparison = buildComparisonSurface({
+      currentConfig: args.authoritativeConfig,
+      authoritativeConfig: args.authoritativeConfig,
+      draftConfig: args.draftConfig,
+    });
+    const changes = buildChangeItems({
+      fieldDiffs: comparison.fieldDiffs,
+      mode: "draft",
+    });
+
+    if (changes.changeCount > 0) {
+      panel = {
+        status: "saved-draft-pending-apply",
+        exact: true,
+        title: "В панели есть сохранённые изменения, которые ещё не подтверждены на роутере",
+        summary:
+          "Эти правки уже сохранены как ревизия в панели, но router apply ещё не подтвердил их как текущее live-состояние.",
+        changeCount: changes.changeCount,
+        changedSections: changes.changedSections,
+        items: changes.items,
+        revisionId: args.latestDraftId,
+      };
+    }
+  }
+
+  return {
+    router,
+    panel,
+  };
 }
 
 async function getSecretCiphertext(revisionId: string) {
@@ -371,18 +607,18 @@ function summarizePasswallUpdateAttempt(args: {
   packageResults: LastPasswallUpdateAttempt["packageResults"];
   driftDetected: boolean;
 }) {
-  if (
-    ["queued", "delivered", "running"].includes(args.jobState) ||
-    args.resultStatus === "accepted"
-  ) {
-    return "обновление ещё выполняется";
-  }
-
   const deliveryBlockedReason = readStringField(args.payload, "deliveryBlockedReason");
   if (args.payload?.deliveryBlocked === true) {
     return deliveryBlockedReason
       ? `job поставлен в очередь, но сервер сейчас не сохраняет check-in: ${deliveryBlockedReason}`
       : "job поставлен в очередь, но сервер сейчас не сохраняет check-in";
+  }
+
+  if (
+    ["queued", "delivered", "running"].includes(args.jobState) ||
+    args.resultStatus === "accepted"
+  ) {
+    return "обновление ещё выполняется";
   }
 
   const blockedPackage = args.packageResults.find((entry) =>
@@ -497,6 +733,40 @@ function summarizePasswallFallback(
     .join(", ");
 }
 
+function summarizeRouterRebootAttempt(args: {
+  jobState: string;
+  resultStatus: ControllerUpdateAttemptStatus;
+  payload: Record<string, unknown> | null;
+}) {
+  const errorLine = firstMeaningfulLine(readStringField(args.payload, "error"));
+  if (errorLine) {
+    return errorLine;
+  }
+
+  const stderrLine = firstMeaningfulLine(readStringField(args.payload, "stderr"));
+  if (stderrLine) {
+    return stderrLine;
+  }
+
+  if (
+    ["queued", "delivered", "running"].includes(args.jobState) ||
+    args.resultStatus === "accepted"
+  ) {
+    return "перезагрузка ещё ожидает выполнения";
+  }
+
+  const stdoutLine = firstMeaningfulLine(readStringField(args.payload, "stdout"));
+  if (stdoutLine) {
+    return stdoutLine;
+  }
+
+  if (args.resultStatus === "failure") {
+    return "перезагрузка завершилась ошибкой без подробностей";
+  }
+
+  return "роутер принял задачу на перезагрузку";
+}
+
 function readStringField(
   payload: Record<string, unknown> | null | undefined,
   key: string,
@@ -545,6 +815,147 @@ function parsePasswallPackageResult(value: unknown) {
   };
 }
 
+function getPreferredJobResult(args: {
+  jobId: string;
+  results: Array<typeof jobResults.$inferSelect>;
+}) {
+  const relatedResults = args.results
+    .filter((result) => result.jobId === args.jobId)
+    .sort((left, right) => right.reportedAt.getTime() - left.reportedAt.getTime());
+
+  return (
+    relatedResults.find((result) => result.status !== "accepted") ??
+    relatedResults[0] ??
+    null
+  );
+}
+
+export function buildRouterManagementTaskLog(args: {
+  jobs: Array<typeof jobs.$inferSelect>;
+  results: Array<typeof jobResults.$inferSelect>;
+  installedControllerVersion?: string | null;
+}): RouterManagementTaskLogItem[] {
+  return [...args.jobs]
+    .filter((job) => {
+      if (isControllerUpdateJob(job) || isRouterRebootJob(job)) {
+        return true;
+      }
+
+      return job.type === "update_passwall_packages";
+    })
+    .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())
+    .slice(0, 5)
+    .map((job) => {
+      const preferredResult = getPreferredJobResult({
+        jobId: job.id,
+        results: args.results,
+      });
+      const payload = preferredResult?.payload ?? null;
+      const rawResultStatus =
+        preferredResult?.status === "accepted" ||
+        preferredResult?.status === "success" ||
+        preferredResult?.status === "failure"
+          ? preferredResult.status
+          : null;
+      const packageResults = Array.isArray(payload?.packageResults)
+        ? payload.packageResults
+            .map((entry) => parsePasswallPackageResult(entry))
+            .filter(
+              (
+                entry,
+              ): entry is NonNullable<ReturnType<typeof parsePasswallPackageResult>> =>
+                entry !== null,
+            )
+        : [];
+
+      const updateScope = readStringField(job.payload, "updateScope") ?? readStringField(payload, "updateScope");
+      const deliveryBlocked =
+        (typeof payload?.deliveryBlocked === "boolean" && payload.deliveryBlocked) ||
+        packageResults.some((entry) => entry.status === "delivery-blocked");
+      const deliveryBlockedReason =
+        readStringField(payload, "deliveryBlockedReason") ??
+        packageResults.find((entry) => entry.status === "delivery-blocked")?.error ??
+        null;
+      const installedControllerVersion = normalizeControllerVersion(
+        args.installedControllerVersion,
+      );
+      const artifactVersion =
+        readStringField(job.payload, "artifactVersion") ??
+        readStringField(payload, "artifactVersion");
+      const convergedAfterFailure =
+        rawResultStatus === "failure" &&
+        installedControllerVersion !== null &&
+        normalizeControllerVersion(artifactVersion) !== null &&
+        (compareControllerVersions(installedControllerVersion, artifactVersion) ?? -1) >= 0;
+      const resultStatus = convergedAfterFailure ? "success" : rawResultStatus;
+
+      let kind: RouterManagementTaskLogItem["kind"] = "controller-update";
+      let label = "Обновление controller";
+      let summary = summarizeControllerUpdateAttempt({
+        jobState: job.state,
+        resultStatus,
+        payload,
+        installedControllerVersion,
+        convergedAfterFailure,
+      });
+
+      if (job.type === "run_terminal_command" && isRouterRebootTerminalPayload(job.payload)) {
+        kind = "router-reboot";
+        label = "Перезагрузка роутера";
+        summary = summarizeRouterRebootAttempt({
+          jobState: job.state,
+          resultStatus,
+          payload,
+        });
+      } else if (job.type === "run_terminal_command") {
+        kind = "controller-self-update";
+        label = "Self-update controller";
+      } else if (job.type === "update_passwall_packages") {
+        kind = "passwall-update";
+        label = updateScope === "scoped-package" ? "Точечное обновление PassWall" : "Обновление PassWall stack";
+        summary = summarizePasswallUpdateAttempt({
+          jobState: job.state,
+          resultStatus: deliveryBlocked ? null : resultStatus,
+          payload,
+          packageResults,
+          driftDetected:
+            (typeof payload?.driftDetected === "boolean" && payload.driftDetected) ||
+            packageResults.some((entry) => entry.driftDetected),
+        });
+      }
+
+      return {
+        jobId: job.id,
+        kind,
+        label,
+        jobType: job.type,
+        updateScope,
+        jobState: job.state,
+        resultStatus,
+        createdAt: job.createdAt,
+        reportedAt: preferredResult?.reportedAt ?? null,
+        summary,
+        error: readStringField(payload, "error"),
+        stdout: readStringField(payload, "stdout"),
+        stderr: readStringField(payload, "stderr"),
+        command: readStringField(job.payload, "command") ?? readStringField(payload, "command"),
+        artifactVersion,
+        targetVersion:
+          readStringField(job.payload, "targetVersion") ??
+          readStringField(payload, "targetVersion"),
+        packageTargetVersion:
+          readStringField(job.payload, "packageTargetVersion") ??
+          readStringField(payload, "packageTargetVersion"),
+        runtimeTargetVersion:
+          readStringField(job.payload, "runtimeTargetVersion") ??
+          readStringField(payload, "runtimeTargetVersion"),
+        deliveryBlocked,
+        deliveryBlockedReason,
+        packageResults,
+      };
+    });
+}
+
 export function mergeCurrentLiveRouterDataIntoDraftConfig(args: {
   draftConfig: ReturnType<typeof buildEditorSurface>["draftConfig"];
   currentLiveConfig: ReturnType<typeof buildEditorSurface>["currentLiveConfig"] | null;
@@ -561,14 +972,15 @@ export function mergeCurrentLiveRouterDataIntoDraftConfig(args: {
     ];
   };
 
-  const mergedNodes = appendMissingById(
-    args.draftConfig.nodes,
-    args.currentLiveConfig.nodes,
-  );
-  const mergedSubscriptions = appendMissingById(
-    args.draftConfig.subscriptions.items,
-    args.currentLiveConfig.subscriptions.items,
-  );
+  const mergedNodes = mergeNodesWithCurrentRuntime({
+    draftNodes: args.draftConfig.nodes,
+    liveNodes: args.currentLiveConfig.nodes,
+    liveSubscriptions: args.currentLiveConfig.subscriptions.items,
+  });
+  const mergedSubscriptions = mergeSubscriptionsBySemanticIdentity({
+    draftItems: args.draftConfig.subscriptions.items,
+    liveItems: args.currentLiveConfig.subscriptions.items,
+  });
   const mergedSocks = appendMissingById(
     args.draftConfig.basicSettings.socks,
     args.currentLiveConfig.basicSettings.socks,
@@ -664,31 +1076,37 @@ export async function getDraftEditorSurface(routerId: string) {
     inventory: payload ?? null,
   });
 
-  const importedRevision =
-    revisions.find((revision) => revision.id === router.pendingImportRevisionId) ??
-    revisions.find((revision) =>
-      ["router_import", "operator_reimport"].includes(revision.origin)
-    ) ??
-    null;
-  const activeRevision =
-    revisions.find((revision) => revision.id === router.activeRevisionId) ?? null;
-  const latestDraft =
-    revisions.find((revision) => revision.origin === "operator_draft") ?? null;
+  const importedRevision = pickImportedRevision({
+    pendingImportRevisionId: router.pendingImportRevisionId,
+    revisions,
+  });
+  const activeRevision = pickActiveRevision({
+    activeRevisionId: router.activeRevisionId,
+    revisions,
+  });
+  const latestPanelDraftRevision = pickLatestOperatorDraft(revisions);
+  const latestEditableDraftRevision = pickLatestEditableDraft(revisions);
   const liveImportRevisions = revisions.filter((revision) =>
     ["router_import", "operator_reimport"].includes(revision.origin),
   );
+  const currentLiveRevision = pickCurrentLiveRevision({
+    snapshotDigest: latestSnapshot?.payload.configDigest ?? null,
+    revisions: liveImportRevisions,
+  });
+  const workspaceRevision = pickWorkspaceRevision({
+    latestEditableDraft: latestEditableDraftRevision,
+    currentLiveRevision,
+    importedRevision,
+    activeRevision,
+    revisions,
+  });
 
-  const currentLiveRevision =
-    (latestSnapshot?.payload.configDigest
-      ? liveImportRevisions.find(
-          (revision) => revision.configDigest === latestSnapshot.payload.configDigest,
-        )
-      : null) ?? null;
-
-  const [currentLiveConfig, authoritativeConfig, draftConfig] = await Promise.all([
+  const [currentLiveConfig, authoritativeConfig, workspaceConfig, importedConfig, latestPanelDraftConfig] = await Promise.all([
     hydrateRevision(currentLiveRevision),
     hydrateRevision(activeRevision),
-    hydrateRevision(latestDraft ?? activeRevision ?? importedRevision),
+    hydrateRevision(workspaceRevision),
+    hydrateRevision(importedRevision),
+    hydrateRevision(latestPanelDraftRevision),
   ]);
 
   const routerReachable = isRouterReachable(router.lastSeenAt);
@@ -734,7 +1152,11 @@ export async function getDraftEditorSurface(routerId: string) {
   };
 
   const effectiveDraftBase =
-    draftConfig ?? authoritativeConfig ?? currentLiveConfig ?? importedRevision?.config ?? null;
+    workspaceConfig ??
+    currentLiveConfig ??
+    authoritativeConfig ??
+    importedConfig ??
+    null;
   const effectiveDraft = effectiveDraftBase
     ? mergeCurrentLiveRouterDataIntoDraftConfig({
         draftConfig: effectiveDraftBase,
@@ -754,6 +1176,11 @@ export async function getDraftEditorSurface(routerId: string) {
   const lastPasswallUpdateAttempt = buildLastPasswallUpdateAttempt({
     jobs: recentJobs,
     results: resultRows,
+  });
+  const managementTaskLog = buildRouterManagementTaskLog({
+    jobs: recentJobs,
+    results: resultRows,
+    installedControllerVersion,
   });
   const applyHistory = appliedRows.map((row) => {
     const relatedJob = recentJobs.find((job) => job.id === row.jobId) ?? null;
@@ -810,6 +1237,27 @@ export async function getDraftEditorSurface(routerId: string) {
       currentConfigFreshness === "live" ? "live" : "stale",
     configSourceMode: configTrust.configSourceMode,
   });
+  const unconfirmedChanges = buildUnconfirmedChangesSummary({
+    importState: router.importState,
+    configTrust,
+    activeRevisionId: activeRevision?.id ?? null,
+    importedRevisionId: importedRevision?.id ?? null,
+    latestDraftId: latestEditableDraftRevision?.id ?? null,
+    authoritativeConfig,
+    importedConfig,
+    draftConfig: effectiveDraft,
+  });
+  const runtimeConfigForAudit =
+    currentLiveConfig ?? authoritativeConfig ?? effectiveDraft;
+  const subscriptionRuntime = buildSubscriptionRuntimeReadModel({
+    runtimeConfig: runtimeConfigForAudit,
+    draftConfig: effectiveDraft,
+    latestPanelDraftConfig,
+    audits: await auditSubscriptions({
+      subscriptions: runtimeConfigForAudit.subscriptions.items,
+    }),
+    selectedNodeId,
+  });
 
   return {
     ...editorSurface,
@@ -832,6 +1280,8 @@ export async function getDraftEditorSurface(routerId: string) {
     },
     inventory,
     configTrust,
+    subscriptionRuntime,
+    unconfirmedChanges,
     fieldDiffs: editorSurface.fieldDiffs.map((diff) => ({
       ...diff,
       currentDisplay: formatValue(diff.currentValue),
@@ -852,9 +1302,11 @@ export async function getDraftEditorSurface(routerId: string) {
     applyHistory,
     lastControllerUpdateAttempt,
     lastPasswallUpdateAttempt,
+    managementTaskLog,
     approvalRequired: ["import_review", "out_of_sync"].includes(router.importState),
     importedRevisionId: importedRevision?.id ?? null,
     activeRevisionId: activeRevision?.id ?? null,
-    latestDraftId: latestDraft?.id ?? null,
+    latestDraftId: latestEditableDraftRevision?.id ?? null,
+    workspaceRevisionId: workspaceRevision?.id ?? null,
   };
 }

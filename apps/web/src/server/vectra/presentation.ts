@@ -127,10 +127,10 @@ export function buildRouterSummary(router: FleetRouter): RouterSummary {
     statusLabel: offline
       ? "Нет связи"
       : directMode
-        ? "Прямой режим"
+        ? "Сейчас в прямом режиме"
         : passwallEnabled
-          ? "Прокси-режим"
-          : "PassWall2 выключен",
+          ? "Сейчас в прокси-режиме"
+          : "PassWall2 сейчас выключен",
     nodeCount: router.latestSnapshot?.nodeCount ?? 0,
     subscriptionCount: router.latestSnapshot?.subscriptionCount ?? 0,
     controllerVersion: formatControllerVersion(
@@ -145,7 +145,7 @@ export function buildRouterSummary(router: FleetRouter): RouterSummary {
     reachable,
     pendingChanges: router.queuedJobCount,
     lastRescue: offline
-      ? `Последнее известное rescue: ${lastRescue}`
+      ? `Последний известный recovery-сигнал: ${lastRescue}`
       : lastRescue,
     telegramReachability: payload?.telegramReachability ?? null,
     importState: router.importState,

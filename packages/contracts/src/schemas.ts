@@ -498,7 +498,7 @@ export const collectRouterLogsJobPayloadSchema = z.object({
 export const runTerminalCommandJobPayloadSchema = z.object({
   command: z.string().trim().min(1).max(4000),
   timeoutSeconds: z.number().int().min(5).max(120).default(30),
-  purpose: z.enum(["controller-self-update"]).optional(),
+  purpose: z.enum(["controller-self-update", "router-reboot"]).optional(),
   artifactVersion: z.string().nullable().optional(),
 });
 

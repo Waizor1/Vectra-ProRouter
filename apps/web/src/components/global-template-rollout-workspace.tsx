@@ -44,9 +44,14 @@ function formatDateTime(value: Date | string | null | undefined) {
     return "неизвестно";
   }
 
-  const pad = (part: number) => String(part).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const year = String(date.getUTCFullYear());
+  const hours = String(date.getUTCHours()).padStart(2, "0");
+  const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+  const seconds = String(date.getUTCSeconds()).padStart(2, "0");
 
-  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()}, ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  return `${day}.${month}.${year}, ${hours}:${minutes}:${seconds}`;
 }
 
 function formatImportState(value: string) {

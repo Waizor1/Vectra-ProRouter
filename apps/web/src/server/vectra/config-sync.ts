@@ -35,6 +35,10 @@ export function resolvePersistedConfigDigest(
 export function shouldRequestImportOnCheckIn(
   args: ShouldRequestImportOnCheckInArgs
 ) {
+  if (args.importState === "awaiting_import") {
+    return !args.hasPasswallImport;
+  }
+
   return (
     args.importState === "approved" &&
     !args.hasPasswallImport &&

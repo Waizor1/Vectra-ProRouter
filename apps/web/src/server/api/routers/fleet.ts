@@ -13,39 +13,21 @@ import { desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
-import { db } from "~/server/db";
-import { loadFleetMonitoringSnapshot } from "~/server/vectra/fleet-monitoring-data";
+import {
+  loadFleetMonitoringSnapshot,
+  loadLatestSnapshots,
+} from "~/server/vectra/fleet-monitoring-data";
 import { buildConfigTrustState } from "~/server/vectra/config-trust";
+import {
+  loadRevisionMetadata,
+  type PasswallRevisionMetadataRow,
+} from "~/server/vectra/revision-metadata";
 import {
   getEffectiveRouterStatus,
   isRouterReachable,
 } from "~/server/vectra/router-presence";
 import { sanitizeRevisionForClient } from "~/server/vectra/router-control";
 import { describeRouterSupport } from "~/server/vectra/support";
-
-async function getLatestSnapshots(routerIds: string[]) {
-  if (routerIds.length === 0) {
-    return new Map<string, typeof routerInventorySnapshots.$inferSelect>();
-  }
-
-  const rows = await db
-    .select()
-    .from(routerInventorySnapshots)
-    .where(inArray(routerInventorySnapshots.routerId, routerIds))
-    .orderBy(desc(routerInventorySnapshots.createdAt));
-
-  const latest = new Map<
-    string,
-    typeof routerInventorySnapshots.$inferSelect
-  >();
-  for (const row of rows) {
-    if (!latest.has(row.routerId)) {
-      latest.set(row.routerId, row);
-    }
-  }
-
-  return latest;
-}
 
 export const fleetRouter = createTRPCRouter({
   overview: protectedProcedure.query(async ({ ctx }) => {
@@ -90,7 +72,7 @@ export const fleetRouter = createTRPCRouter({
     const routerIds = routerRows.map((router) => router.id);
     const [snapshots, incidentRows, revisionRows, queuedJobRows] =
       await Promise.all([
-        getLatestSnapshots(routerIds),
+        loadLatestSnapshots(ctx.db, routerIds),
         routerIds.length
           ? ctx.db
               .select()
@@ -98,13 +80,7 @@ export const fleetRouter = createTRPCRouter({
               .where(inArray(healthIncidents.routerId, routerIds))
               .orderBy(desc(healthIncidents.openedAt))
           : Promise.resolve([]),
-        routerIds.length
-          ? ctx.db
-              .select()
-              .from(passwallDesiredRevisions)
-              .where(inArray(passwallDesiredRevisions.routerId, routerIds))
-              .orderBy(desc(passwallDesiredRevisions.createdAt))
-          : Promise.resolve([]),
+        loadRevisionMetadata(ctx.db, routerIds),
         routerIds.length
           ? ctx.db
               .select()
@@ -115,14 +91,8 @@ export const fleetRouter = createTRPCRouter({
       ]);
 
     const incidentMap = new Map<string, typeof healthIncidents.$inferSelect>();
-    const revisionMap = new Map<
-      string,
-      typeof passwallDesiredRevisions.$inferSelect
-    >();
-    const revisionsByRouter = new Map<
-      string,
-      Array<typeof passwallDesiredRevisions.$inferSelect>
-    >();
+    const revisionMap = new Map<string, PasswallRevisionMetadataRow>();
+    const revisionsByRouter = new Map<string, PasswallRevisionMetadataRow[]>();
     const jobCountMap = new Map<string, number>();
 
     for (const incident of incidentRows) {
@@ -175,7 +145,7 @@ export const fleetRouter = createTRPCRouter({
         ...router,
         latestSnapshot: snapshot ?? null,
         openIncident: incident ?? null,
-        latestDesiredRevision: sanitizeRevisionForClient(revision),
+        latestDesiredRevision: revision ?? null,
         queuedJobCount: jobCountMap.get(router.id) ?? 0,
         configTrust,
         support,

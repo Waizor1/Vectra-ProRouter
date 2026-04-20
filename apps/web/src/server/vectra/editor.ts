@@ -6,6 +6,10 @@ import {
 } from "@vectra/contracts";
 
 import type { ConfigSourceMode } from "./config-trust";
+import {
+  buildNodeSemanticFingerprint,
+  buildSubscriptionSemanticKey,
+} from "./subscription-runtime";
 
 type FieldKind =
   | "boolean"
@@ -536,6 +540,7 @@ function registerDynamicFields(
     ],
     registerField,
     itemLabel: (item) => item.label || item.id,
+    identity: (item) => buildNodeSemanticFingerprint(item),
   });
 
   registerArrayFields({
@@ -557,6 +562,7 @@ function registerDynamicFields(
     ],
     registerField,
     itemLabel: (item) => item.remark || item.id,
+    identity: (item) => buildSubscriptionSemanticKey(item),
   });
 
   registerArrayFields({
@@ -598,9 +604,15 @@ function registerArrayFields<T extends { id: string }>(args: {
     draftValue: unknown
   ) => void;
   itemLabel?: (item: T) => string;
+  identity?: (item: T) => string;
 }) {
   const byId = (items: T[]) =>
-    new Map(items.map((item) => [item.id, item] as const));
+    new Map(
+      items.map((item) => [
+        args.identity?.(item) ?? item.id,
+        item,
+      ] as const),
+    );
 
   const currentById = byId(args.currentItems);
   const authoritativeById = byId(args.authoritativeItems);
