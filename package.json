@@ -3,6 +3,7 @@
   "private": true,
   "packageManager": "pnpm@10.28.0",
   "scripts": {
+    "release:web-slice": "bash ./scripts/build-web-release-slice.sh",
     "ast:rebuild": "bash ./scripts/ast-index.sh rebuild",
     "ast:update": "bash ./scripts/ast-index.sh update",
     "ast:stats": "bash ./scripts/ast-index.sh stats",

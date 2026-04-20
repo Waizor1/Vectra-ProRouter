@@ -58,7 +58,8 @@ rsync -av --delete ./ root@<vps-host>:/opt/vectra-prorouter/
 Safe example:
 
 ```bash
-scp ./release-slice.tar.gz root@<vps-host>:/tmp/
+./scripts/build-web-release-slice.sh
+scp /tmp/vectra-web-release-<timestamp>.tar.gz root@<vps-host>:/tmp/release-slice.tar.gz
 ssh root@<vps-host> '
   set -eu
   STAGE="/tmp/vectra-web-stage-$(date -u +%Y%m%d-%H%M%S)"
@@ -160,7 +161,8 @@ bootstrap lane, and writes `manifest.json` next to them.
 Do **not** sync the repository root directly into `/opt/vectra-prorouter`.
 
 ```bash
-scp ./release-slice.tar.gz root@<vps-host>:/tmp/
+./scripts/build-web-release-slice.sh
+scp /tmp/vectra-web-release-<timestamp>.tar.gz root@<vps-host>:/tmp/release-slice.tar.gz
 ssh root@<vps-host> '
   set -eu
   STAGE="/tmp/vectra-web-stage-$(date -u +%Y%m%d-%H%M%S)"
@@ -169,6 +171,10 @@ ssh root@<vps-host> '
   bash /opt/vectra-prorouter/deploy/scripts/deploy-web-release.sh --source "$STAGE"
 '
 ```
+
+The release-slice helper exports `COPYFILE_DISABLE=1`, strips `._*` AppleDouble
+files from staged content, and avoids macOS extended-attribute noise during VPS
+`tar -xzf` extraction.
 
 The deploy script hard-fails if the release payload contains `deploy/runtime`,
 `.env`, or `apps/web/.env`, and it refuses to proceed if protected runtime
