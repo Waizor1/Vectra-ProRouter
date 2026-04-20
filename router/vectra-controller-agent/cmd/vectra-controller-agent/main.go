@@ -49,6 +49,8 @@ var defaultPasswallPackageList = []string{
 
 var passwallRuleRefreshAssets = []string{"geoip", "geosite"}
 
+const controllerSelfUpdateTerminalPurpose = "controller-self-update"
+
 const passwallPostInstallRecoveryCommand = "/etc/init.d/passwall2 running >/dev/null 2>&1 && /etc/init.d/passwall2 restart || /etc/init.d/passwall2 start"
 
 func main() {
@@ -755,6 +757,44 @@ func executeJobs(
 				}
 				continue
 			}
+			incidentTransitions := []map[string]interface{}{}
+			if shouldResumeProxyAfterTerminalSuccess(job.Payload, rescueState) {
+				recoveryReason := "Proxy mode restored automatically after successful controller self-update."
+				if err := resumeProxyMode(
+					ctx,
+					backend,
+					rescueState,
+					persisted,
+					runtimeStatus,
+					time.Now().UTC(),
+				); err != nil {
+					resultPayload["controllerUpdated"] = true
+					resultPayload["autoResumeProxy"] = false
+					resultPayload["resumeProxyError"] = err.Error()
+					if submitErr := submitFailure(
+						ctx,
+						client,
+						cfg,
+						persisted,
+						job.ID,
+						execution.Stdout,
+						execution.Stderr,
+						fmt.Sprintf("terminal controller self-update succeeded but failed to restore proxy mode: %v", err),
+						resultPayload,
+					); submitErr != nil {
+						return submitErr
+					}
+					continue
+				}
+				resultPayload["controllerUpdated"] = true
+				resultPayload["autoResumeProxy"] = true
+				resultPayload["recoveredProxy"] = true
+				incidentTransitions = append(incidentTransitions, map[string]interface{}{
+					"type":   "recovered",
+					"state":  "resolved",
+					"reason": recoveryReason,
+				})
+			}
 			if err := submitJobResultNow(ctx, cfg, client, persisted, controlplane.JobResultRequest{
 				ProtocolVersion: controlplane.ProtocolVersion,
 				RouterID:        cfg.RouterID,
@@ -762,6 +802,7 @@ func executeJobs(
 				Status:          "success",
 				Stdout:          execution.Stdout,
 				Stderr:          execution.Stderr,
+				IncidentTransitions: incidentTransitions,
 				Result:          resultPayload,
 			}, controlplane.RouterInventory{}); err != nil {
 				return fmt.Errorf("submit terminal command result: %w", err)
@@ -1410,6 +1451,17 @@ func payloadBool(payload map[string]interface{}, key string) bool {
 	}
 	boolValue, ok := value.(bool)
 	return ok && boolValue
+}
+
+func shouldResumeProxyAfterTerminalSuccess(
+	payload map[string]interface{},
+	rescueState *rescue.State,
+) bool {
+	if rescueState == nil || rescueState.Mode != rescue.ModeDirect {
+		return false
+	}
+
+	return strings.TrimSpace(payloadString(payload, "purpose")) == controllerSelfUpdateTerminalPurpose
 }
 
 func payloadStringSlice(payload map[string]interface{}, key string) []string {
