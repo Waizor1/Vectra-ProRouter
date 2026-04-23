@@ -3,7 +3,7 @@ type: module
 path: packages/contracts
 stage: active
 confidence: medium
-last-reviewed: 2026-04-17
+last-reviewed: 2026-04-22
 tags:
   - module
   - contracts
@@ -51,3 +51,25 @@ tags:
 - `updatePasswallPackagesJobPayloadSchema` and `passwallPackageUpdateResult*` now also cover split package-vs-runtime semantics directly: `strategy`, `packageTargetVersion`, `runtimeTargetVersion`, package/runtime before-values, and delivery-block metadata are part of the typed contract rather than only ad hoc payload conventions.
 - Shared JSON fixtures now exercise those richer fields too, so both the TS schema corpus and the Go-side fixture decoder see the same PassWall update shape on `2026-04-18`.
 - This contract slice is no longer only local: the guarded `2026-04-18` production web rollout included the updated `packages/contracts/src/schemas.ts`, so the live control plane now serves the stronger health probe and richer PassWall update payload/result semantics from the same committed contract set rather than an older deployed snapshot.
+
+2026-04-22 router hostname update addendum:
+- `runTerminalCommandJobPayloadSchema` now explicitly reserves `purpose = router-hostname-update` alongside the existing controller self-update and reboot purposes, and it can carry the normalized target `hostname` in the queued payload. This is the contract-level boundary that keeps the new panel rename flow from being just another opaque shell string.
+- Because `routerTerminalResultPayloadSchema` remains passthrough-capable, the same lane can now report `hostnameAfter` from the agent without introducing a separate job type or a second result schema. That keeps the web-to-agent change narrow while still giving the control plane a typed-enough signal to persist the new router hostname immediately after job success.
+
+2026-04-22 control-plane recovery contract addendum:
+- The shared router check-in schema now carries the new public recovery summary required by the control-plane outage supervisor without breaking legacy agents. `routerInventorySchema` gained optional grouped reachability blocks for `panelReachability`, `ruReachability`, and `foreignReachability`, and router health now also accepts optional `recoveryPhase`, `lastRecoveryAction`, and `awaitingOperator`.
+- The new recovery surface is intentionally additive and migration-light. Older routers that do not send these fields still parse cleanly, while newer agents can report explicit phases such as `controller_restart_wait`, `post_reboot_check`, or `operator_attention` and let the web side reuse the existing incident pipeline rather than inventing another transport or enum layer.
+- This keeps `Shared Contracts` at `active/medium`: the cross-language boundary is now richer and locally verified, but still depends on coordinated web/agent rollout rather than a shared generated-code toolchain. The next review point for this module is contract parity after the matching controller publish and web rollout.
+
+2026-04-22 control-plane recovery contract safety review addendum:
+- A same-day review did not find a schema-level migration blocker in the new recovery payload itself. Legacy routers that omit grouped reachability or the new health fields still parse through the current optional/additive contract surface, so the primary rollout risk is behavioral drift across agent/web logic rather than a hard parser break.
+- The remaining contract risk is semantic rather than syntactic: `awaitingOperator`, `recoveryPhase`, and grouped `foreign/ru/panel` statuses now drive incident ownership and destructive-action interpretation on the web side, but the contract layer does not itself prevent stale or sticky state from being reported forever. This means contract compatibility alone is not enough to trust production behavior for the new supervisor without stronger cross-layer integration tests.
+
+2026-04-22 control-plane recovery contract blocker-fix addendum:
+- No schema change was required to close the supervisor blockers found in the safety review. The additive check-in/job-result contract introduced earlier remains unchanged, and the blocker fixes stayed entirely inside agent/web state-machine logic.
+- This keeps the current contract conclusion stable: backward compatibility for legacy payloads still holds, but production trust for the supervisor still depends on behavior-level regression coverage rather than on another contract migration or enum expansion.
+
+2026-04-23 rollout addendum:
+- The current contracts/db slice is now live together with the rebuilt production web app rather than staying only in local source. The deployed panel now serves the current `@vectra/contracts` layer that backs controller `0.1.13-r4` availability, router-control synthetic recovery ownership, and the newer router-side subscription preview / terminal-purpose payloads.
+- The only DB-side contract/migration requirement in this release window was the additive enum value for `inspect_subscriptions`, and that boundary is now explicitly confirmed in live PostgreSQL. This means the current panel/backend contract surface is not waiting on an unapplied migration before those newer job payloads can be queued.
+- Backward-compatibility reading remains the same after rollout: the contract changes in this slice are additive, so older routers that do not yet speak the new preview/recovery fields still keep parsing cleanly, while the stronger end-to-end proof for those new fields still depends on installing controller `0.1.13-r4` on at least one safe router.

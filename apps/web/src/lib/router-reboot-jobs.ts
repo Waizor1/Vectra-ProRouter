@@ -29,7 +29,7 @@ export function buildTerminalRouterRebootPayload() {
     'log_path="/tmp/vectra-router-reboot.log"',
     `(sleep ${routerRebootDelaySeconds}; /sbin/reboot) >"$log_path" 2>&1 &`,
     "printf 'router reboot scheduled\\n'",
-  ].join("; ");
+  ].join("\n");
 
   return runTerminalCommandJobPayloadSchema.parse({
     command,

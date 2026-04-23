@@ -15,7 +15,7 @@ export default async function RescuePage() {
       <PageHeader
         eyebrow="Восстановление"
         title="Direct mode и rescue-инциденты"
-        description="Сначала смотрите, есть ли сейчас роутеры в direct mode и открытые инциденты. Политика ниже остаётся справкой, а не основной рабочей зоной."
+        description="Сначала проверьте direct mode и открытые инциденты. Политика rescue вынесена ниже как справка."
         mobileDescription="Direct mode, инциденты и политика ниже."
         compact
       />
@@ -50,56 +50,6 @@ export default async function RescuePage() {
           compact
         />
       </div>
-
-      <section className="vectra-hero-panel space-y-4 rounded-[1.6rem] px-4 py-4 sm:px-5 sm:py-5">
-        <div>
-          <p className="vectra-kicker text-[var(--vectra-accent)]">Политика rescue</p>
-          <h2 className="mt-1 text-xl font-semibold tracking-[-0.03em] text-white sm:text-2xl">
-            Порог, возврат и причина direct mode
-          </h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
-            Этот блок нужен для сверки текущего порога и операторского текста. Сами рабочие списки устройств и инцидентов остаются отдельными ниже.
-          </p>
-        </div>
-        <div className="space-y-4">
-          <div className="vectra-stat-grid">
-            <StatusTile
-              label="Триггер"
-              value={String(policy.triggerFailureCount)}
-              hint="неудачных проверок до direct mode"
-              compact
-            />
-            <StatusTile
-              label="Возврат"
-              value={String(policy.recoverySuccessCount)}
-              hint="успешных проверок до возврата в proxy"
-              compact
-            />
-            <StatusTile
-              label="Пауза между циклами"
-              value={String(Math.round(policy.cooldownSeconds / 60))}
-              hint="минут до следующей проверки"
-              compact
-            />
-            <StatusTile
-              label="Проверка direct path"
-              value={policy.requireDirectPathSuccess ? "нужен" : "не обязателен"}
-              hint="для выхода из аварийного режима"
-              compact
-            />
-          </div>
-
-          <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-3 py-3">
-            <p className="vectra-kicker text-amber-200">Сообщение direct mode</p>
-            <p className="mt-2 text-base font-semibold text-white sm:text-lg">
-              {policy.directModeReason}
-            </p>
-            <p className="mt-2 text-sm leading-6 text-slate-200">
-              Сообщение должно оставаться коротким и однозначным, чтобы оператор сразу понимал, почему роутер ушёл в direct mode.
-            </p>
-          </div>
-        </div>
-      </section>
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Panel
@@ -164,6 +114,59 @@ export default async function RescuePage() {
           </div>
         </Panel>
       </div>
+
+      <details className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)]">
+        <summary className="cursor-pointer list-none px-4 py-3 sm:px-5">
+          <div className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:items-center">
+            <div>
+              <p className="vectra-kicker text-slate-500">Политика rescue</p>
+              <p className="mt-1 text-sm font-medium text-white">
+                Порог, возврат и сообщение direct mode
+              </p>
+            </div>
+            <span className="text-xs text-slate-400">раскрыть</span>
+          </div>
+        </summary>
+
+        <div className="space-y-4 border-t border-white/10 px-4 py-4 sm:px-5">
+          <div className="vectra-stat-grid">
+            <StatusTile
+              label="Триггер"
+              value={String(policy.triggerFailureCount)}
+              hint="неудачных проверок до direct mode"
+              compact
+            />
+            <StatusTile
+              label="Возврат"
+              value={String(policy.recoverySuccessCount)}
+              hint="успешных проверок до возврата в proxy"
+              compact
+            />
+            <StatusTile
+              label="Пауза между циклами"
+              value={String(Math.round(policy.cooldownSeconds / 60))}
+              hint="минут до следующей проверки"
+              compact
+            />
+            <StatusTile
+              label="Проверка direct path"
+              value={policy.requireDirectPathSuccess ? "нужен" : "не обязателен"}
+              hint="для выхода из аварийного режима"
+              compact
+            />
+          </div>
+
+          <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-3 py-3">
+            <p className="vectra-kicker text-amber-200">Сообщение direct mode</p>
+            <p className="mt-2 text-base font-semibold text-white sm:text-lg">
+              {policy.directModeReason}
+            </p>
+            <p className="mt-2 text-sm leading-6 text-slate-200">
+              Текст должен оставаться коротким и однозначным для оператора.
+            </p>
+          </div>
+        </div>
+      </details>
     </section>
   );
 }

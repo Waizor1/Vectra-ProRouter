@@ -208,13 +208,10 @@ export function DraftWorkspace({
   return (
     <div className="space-y-4">
       <div className="vectra-main-grid gap-4">
-        <Panel eyebrow="JSON workspace" title="Выбор роутера и контекст" tone="hero">
-          <p className="text-sm leading-6 text-slate-400">
-            Сначала выберите роутер, затем проверьте preview. Применение по-прежнему идёт только из сохранённого черновика.
-          </p>
+        <Panel eyebrow="Рабочая поверхность" title="Роутер и текущее состояние" tone="muted">
           <label
             htmlFor="draft-router-select"
-            className="mt-3 block text-xs font-medium uppercase tracking-[0.08em] text-slate-400"
+            className="block text-xs font-medium uppercase tracking-[0.08em] text-slate-400"
           >
             Выбор роутера
           </label>
@@ -232,6 +229,11 @@ export function DraftWorkspace({
               </option>
             ))}
           </select>
+
+          <div className="mt-3 rounded-2xl border border-white/10 bg-black/10 px-3 py-3 text-sm leading-6 text-slate-300">
+            Apply использует только сохранённую ревизию. Всё, что вы не
+            сохранили, остаётся только в текущем окне.
+          </div>
 
           <div className="mt-4 vectra-stat-grid">
             <StatusTile
@@ -256,40 +258,15 @@ export function DraftWorkspace({
               compact
             />
           </div>
-
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
-            {[
-              {
-                title: "1. Проверяете JSON",
-                body: "Редактор ниже не меняет поведение сервера, но позволяет точечно описать desired config.",
-              },
-              {
-                title: "2. Сохраняете ревизию",
-                body: "Сначала создаётся или обновляется черновик внутри панели.",
-              },
-              {
-                title: "3. Потом применяете",
-                body: "Отправка на роутер доступна только для approved-роутера и только из сохранённой ревизии.",
-              },
-            ].map((item) => (
-              <div
-                key={item.title}
-                className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
-              >
-                <p className="text-sm font-semibold text-white">{item.title}</p>
-                <p className="mt-2 text-sm leading-6 text-slate-300">{item.body}</p>
-              </div>
-            ))}
-          </div>
         </Panel>
 
         <Panel eyebrow="Preview" title="Что изменится" tone="muted">
           {parseError ? (
-            <div className="mt-3 rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-3 text-sm leading-7 text-rose-200">
+            <div className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-3 text-sm leading-7 text-rose-200">
               Некорректный JSON: {parseError}
             </div>
           ) : (
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded-2xl border border-white/10 bg-black/10 px-3 py-3">
                 <p className="vectra-kicker text-slate-500">Изменённые секции</p>
                 <p className="mt-3 text-sm leading-7 text-slate-200">
@@ -338,9 +315,11 @@ export function DraftWorkspace({
           <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
             <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
               <p className="vectra-kicker text-slate-500">Режим работы</p>
-              <p className="mt-2 text-sm text-white">Секреты маскируются автоматически.</p>
+              <p className="mt-2 text-sm text-white">
+                Секреты маскируются автоматически.
+              </p>
               <p className="mt-1 text-sm text-slate-400">
-                Если JSON валиден, сначала сохраните ревизию в панели. Применение остаётся вторым шагом и использует только уже записанный черновик.
+                Сначала сохранение в панели, потом apply из сохранённой ревизии.
               </p>
             </div>
 

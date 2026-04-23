@@ -2,7 +2,6 @@
 
 import dynamic from "next/dynamic";
 
-import { Panel } from "~/components/panel";
 import type { RouterOutputs } from "~/trpc/react";
 
 type GlobalTemplateWorkspaceData = RouterOutputs["update"]["globalTemplateWorkspace"];
@@ -15,15 +14,15 @@ const UpdatesControlWorkspace = dynamic(
   {
     ssr: false,
     loading: () => (
-      <Panel
-        eyebrow="Рабочие поверхности"
-        title="Подготавливаю baseline, группы и version-control"
-        tone="hero"
-      >
-        <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
-          Загружаю интерактивные рабочие поверхности обновлений. Статические сводки и опубликованные артефакты уже доступны выше.
-        </div>
-      </Panel>
+      <div className="rounded-[1.4rem] border border-white/10 bg-[rgba(8,11,17,0.76)] px-4 py-4">
+        <p className="vectra-kicker text-slate-500">Рабочие поверхности</p>
+        <p className="mt-2 text-sm font-medium text-white">
+          Подготавливаю active workspace
+        </p>
+        <p className="mt-1 text-sm leading-6 text-slate-400">
+          Загружаю интерактивную рабочую поверхность обновлений.
+        </p>
+      </div>
     ),
   },
 );

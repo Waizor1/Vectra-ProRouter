@@ -7,6 +7,7 @@ import type { RouterTelegramReachability } from "@vectra/contracts";
 import { formatControllerVersion } from "~/lib/controller-version";
 import {
   describeConfigTrustState,
+  formatConfigSourceModeLabel,
   type ConfigTrustDescription,
 } from "~/lib/router-config-trust";
 import {
@@ -105,6 +106,14 @@ export function RouterCard({ router }: { router: RouterSummary }) {
   const trustState = describeRouterTrustState(router);
   const primaryStatus = describePrimaryStatus(router);
   const savedPanelState = describeSavedPanelState(router, onboardingPending);
+  const trustDetailsOpen =
+    onboardingPending ||
+    router.configTrust.requiresReimport ||
+    router.directMode ||
+    router.offline;
+  const comparisonBaseLabel = router.configTrust.requiresReimport
+    ? "нужно перечитать"
+    : formatConfigSourceModeLabel(router.configTrust.configSourceMode);
 
   return (
     <article className="group overflow-hidden rounded-2xl border border-white/10 bg-[var(--vectra-panel)] shadow-[var(--vectra-shadow-md)]">
@@ -166,45 +175,34 @@ export function RouterCard({ router }: { router: RouterSummary }) {
           </span>
         </div>
 
-        <div
-          className={`mt-3 rounded-2xl border px-3 py-3 ${
-            onboardingPending || router.configTrust.requiresReimport
-              ? "border-amber-400/20 bg-amber-500/10"
-              : "border-sky-400/20 bg-sky-500/10"
-          }`}
-        >
-          <div className="flex items-center justify-between gap-3">
-            <p className="vectra-kicker text-slate-300">Что сохранено в панели</p>
-            <span className="vectra-chip rounded-full border border-white/10 bg-white/8 px-2.5 py-1 text-white/90">
-              {savedPanelState}
-            </span>
+        {onboardingPending || router.configTrust.requiresReimport ? (
+          <div
+            className={`mt-3 rounded-2xl border px-3 py-3 ${
+              onboardingPending || router.configTrust.requiresReimport
+                ? "border-amber-400/20 bg-amber-500/10"
+                : "border-sky-400/20 bg-sky-500/10"
+            }`}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <p className="vectra-kicker text-slate-300">
+                Что требует действия
+              </p>
+              <span className="vectra-chip rounded-full border border-white/10 bg-white/8 px-2.5 py-1 text-white/90">
+                {savedPanelState}
+              </span>
+            </div>
+            <p className="mt-2 text-sm font-medium text-white">
+              {router.configTrust.requiresReimport
+                ? "Подробные разделы пока опираются на прежнюю базу панели"
+                : onboarding.cardActionLabel}
+            </p>
+            <p className="mt-1 text-sm leading-6 text-slate-200/85">
+              {router.configTrust.requiresReimport
+                ? "Текущее состояние уже видно по check-in, но deep config ещё нужно перечитать с роутера."
+                : onboarding.cardHint}
+            </p>
           </div>
-          <p className="mt-2 text-sm font-medium text-white">
-            {router.configTrust.requiresReimport
-              ? "Подробные разделы пока опираются на прежнюю базу панели"
-              : onboardingPending
-                ? onboarding.cardActionLabel
-                : "Панель уже может опираться на сохранённый эталон"}
-          </p>
-          <p className="mt-1 text-sm leading-6 text-slate-200/85">
-            {router.configTrust.requiresReimport
-              ? "Текущее состояние сервиса уже видно по check-in, но подробные PassWall2-настройки ещё нужно перечитать с роутера."
-              : onboardingPending
-                ? onboarding.cardHint
-                : "Если правки уже были сохранены, именно эта база будет использована для сравнения и следующих действий из панели."}
-          </p>
-        </div>
-
-        <div className={`mt-3 rounded-2xl border px-3 py-3 ${trustState.badgeClassName}`}>
-          <div className="flex items-center justify-between gap-3">
-            <p className="vectra-kicker text-current/80">Насколько панель уверена</p>
-            <span className="vectra-chip rounded-full border border-white/10 bg-white/8 px-2.5 py-1 text-current">
-              {trustState.badge}
-            </span>
-          </div>
-          <p className="mt-2 text-sm font-medium text-white">{trustState.title}</p>
-          <p className="mt-1 text-sm leading-6 text-current/85">{trustState.detail}</p>
-        </div>
+        ) : null}
 
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <CompactRouterFact
@@ -213,7 +211,9 @@ export function RouterCard({ router }: { router: RouterSummary }) {
             emphasis
             clamp
           />
-          <CompactRouterFact label="Контур" value={primaryStatus} />
+          <CompactRouterFact label="Панель" value={savedPanelState} clamp />
+          <CompactRouterFact label="Основа" value={comparisonBaseLabel} />
+          <CompactRouterFact label="Trust" value={trustState.badge} />
           <CompactRouterFact
             label="Telegram"
             value={formatTelegramReachabilityLabel(router.telegramReachability)}
@@ -234,6 +234,25 @@ export function RouterCard({ router }: { router: RouterSummary }) {
             clamp
           />
         </div>
+
+        <details
+          open={trustDetailsOpen ? true : undefined}
+          className={`mt-3 rounded-2xl border px-3 py-3 ${trustState.badgeClassName}`}
+        >
+          <summary className="cursor-pointer list-none">
+            <div className="flex items-center justify-between gap-3">
+              <p className="vectra-kicker text-current/80">Панель и trust</p>
+              <span className="vectra-chip rounded-full border border-white/10 bg-white/8 px-2.5 py-1 text-current">
+                {trustState.badge}
+              </span>
+            </div>
+          </summary>
+          <p className="mt-2 text-sm font-medium text-white">{trustState.title}</p>
+          <p className="mt-1 text-sm leading-6 text-current/85">
+            База панели: {savedPanelState}. Основа сравнения: {comparisonBaseLabel}.
+          </p>
+          <p className="mt-1 text-sm leading-6 text-current/85">{trustState.detail}</p>
+        </details>
       </Link>
 
       <div className="border-t border-white/10 px-3 py-3 sm:px-4">

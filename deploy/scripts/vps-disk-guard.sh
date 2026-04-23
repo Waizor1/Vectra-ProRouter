@@ -8,6 +8,7 @@ Usage: vps-disk-guard.sh [options]
 Disk guard for the Vectra VPS:
 - always records a compact hotspot report to journald/stdout
 - if root usage is above the warn threshold, runs the existing conservative cleanup
+- if root usage is still very high afterwards, runs the cleanup helper in aggressive mode
 - if root usage is still above the warn threshold, prunes old deploy rollback backups
 - exits non-zero only if root usage remains above the critical threshold afterwards
 
@@ -153,6 +154,21 @@ run_conservative_cleanup() {
   fi
 }
 
+run_aggressive_cleanup() {
+  local cleanup_script="/opt/vectra-prorouter/deploy/scripts/vps-disk-cleanup.sh"
+  if [[ ! -x "$cleanup_script" && ! -f "$cleanup_script" ]]; then
+    log "Cleanup script not found: $cleanup_script"
+    return 0
+  fi
+
+  log "Running aggressive cleanup helper."
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    bash "$cleanup_script" --dry-run --aggressive
+  else
+    bash "$cleanup_script" --aggressive
+  fi
+}
+
 cleanup_old_release_backups() {
   if [[ ! -d "$BACKUP_ROOT" ]]; then
     log "Backup root is missing; deploy-backup pruning skipped."
@@ -226,7 +242,7 @@ main() {
     exit 0
   fi
 
-  local before_use after_cleanup after_backup_prune
+  local before_use after_cleanup after_aggressive after_backup_prune
   before_use="$(root_use_percent)"
 
   log "Starting VPS disk guard (warn=${WARN_USE_PERCENT}%, backup-prune=${BACKUP_PRUNE_USE_PERCENT}%, critical=${CRITICAL_USE_PERCENT}%, dry-run=${DRY_RUN})."
@@ -243,10 +259,18 @@ main() {
   after_cleanup="$(root_use_percent)"
   log "Root usage after conservative cleanup: ${after_cleanup}%."
 
+  after_aggressive="$after_cleanup"
   if (( after_cleanup >= BACKUP_PRUNE_USE_PERCENT )); then
+    log "Root usage is at or above backup-prune threshold; aggressive cleanup will run before backup pruning."
+    run_aggressive_cleanup
+    after_aggressive="$(root_use_percent)"
+    log "Root usage after aggressive cleanup: ${after_aggressive}%."
+  fi
+
+  if (( after_aggressive >= BACKUP_PRUNE_USE_PERCENT )); then
     log "Root usage is at or above backup-prune threshold; applying deploy rollback backup retention."
     cleanup_old_release_backups
-  elif (( after_cleanup >= WARN_USE_PERCENT )); then
+  elif (( after_aggressive >= WARN_USE_PERCENT )); then
     log "Root usage is still above warn threshold, but below backup-prune threshold; rollback backups are preserved."
   fi
 

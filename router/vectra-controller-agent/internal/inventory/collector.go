@@ -53,6 +53,7 @@ var passwallInventoryPackages = []string{
 	"sing-box",
 	"hysteria",
 	"geoview",
+	"tcping",
 	"v2ray-geoip",
 	"v2ray-geosite",
 	"dnsmasq",

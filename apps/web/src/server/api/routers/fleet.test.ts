@@ -56,7 +56,7 @@ function createSnapshotRow() {
     selectedNodeId: "myshunt",
     nodeCount: 17,
     subscriptionCount: 1,
-    controllerVersion: "0.1.12-r13",
+    controllerVersion: "0.1.13-r1",
     passwallAppVersion: "26.4.10-r1",
     createdAt: new Date("2026-04-20T09:00:00.000Z"),
   };

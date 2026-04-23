@@ -303,6 +303,10 @@ on the VPS and adds the missing analysis + threshold logic:
   Docker summary)
 - if root usage is above the warn threshold, runs the existing conservative
   cleanup helper
+- if root usage is still above the backup-prune threshold afterwards, reruns
+  the cleanup helper in aggressive mode so fresh Docker build cache and recent
+  `/tmp` release artifacts do not survive just because they are younger than
+  7 days
 - if usage is still very high afterwards, prunes old deploy rollback backups
   matching `web-release-*` and `web-deploy-ready-*`
 - keeps the newest rollback backups and only deletes older ones past the
@@ -349,7 +353,18 @@ space that is safe to drop automatically:
 - Docker builder cache older than 7 days
 - unused Docker images older than 7 days
 - `apt` package cache
-- stale `/tmp/vectra*` and `/tmp/passwall-bootstrap-mirror*` artifacts older than 2 days
+- stale `/tmp` release/staging artifacts matching `vectra*`,
+  `passwall-bootstrap*`, `release-*`, and `ustar-test*` older than 2 days
+
+The same helper also supports an aggressive mode for attended cleanup or the
+disk guard's high-watermark path. Aggressive mode still avoids running
+containers, volumes, PostgreSQL data, and rollback backups, but it does also:
+
+- prune all unused Docker builder cache immediately
+- prune all unused Docker images immediately
+- remove `/tmp` release/staging artifacts matching `vectra*`,
+  `passwall-bootstrap*`, `release-*`, and `ustar-test*` once they are older
+  than 12 hours
 
 It does not touch Docker volumes, PostgreSQL data, active containers, or
 deployment backups.

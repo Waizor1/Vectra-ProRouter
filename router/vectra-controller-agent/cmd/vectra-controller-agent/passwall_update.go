@@ -64,7 +64,13 @@ var passwallRuntimeOnlyPackages = map[string]bool{
 	"geoview":   true,
 }
 
+var passwallRuleManagedPackages = map[string]bool{
+	"v2ray-geoip":   true,
+	"v2ray-geosite": true,
+}
+
 var semverFragmentPattern = regexp.MustCompile(`\d+(?:\.\d+)+`)
+var versionNumberPattern = regexp.MustCompile(`\d+`)
 
 func runPasswallPackageUpdateJob(
 	ctx context.Context,
@@ -111,7 +117,7 @@ func runPasswallPackageUpdateJob(
 		}
 	}
 
-	packageResults := make([]map[string]interface{}, 0, len(orderedPackages))
+	packageResults := make([]passwallPackageUpdateResult, 0, len(orderedPackages))
 	for _, packageName := range orderedPackages {
 		currentResult, commandResults, nextInventory := updateSinglePasswallPackage(
 			ctx,
@@ -122,25 +128,17 @@ func runPasswallPackageUpdateJob(
 		)
 		results = append(results, commandResults...)
 		currentInventory = nextInventory
-		packageResults = append(packageResults, map[string]interface{}{
-			"package":              currentResult.Package,
-			"targetVersion":        currentResult.TargetVersion,
-			"packageTargetVersion": emptyStringToNil(currentResult.PackageTargetVersion),
-			"runtimeTargetVersion": emptyStringToNil(currentResult.RuntimeTargetVersion),
-			"status":               currentResult.Status,
-			"pathUsed":             currentResult.PathUsed,
-			"packageVersionBefore": emptyStringToNil(currentResult.PackageVersionBefore),
-			"packageVersionAfter":  emptyStringToNil(currentResult.PackageVersionAfter),
-			"runtimeVersionBefore": emptyStringToNil(currentResult.RuntimeVersionBefore),
-			"runtimeVersionAfter":  emptyStringToNil(currentResult.RuntimeVersionAfter),
-			"driftDetected":        currentResult.DriftDetected,
-			"error":                emptyStringToNil(currentResult.Error),
-		})
+		packageResults = append(packageResults, currentResult)
 	}
 
 	repairResults, repairErr := runPasswallPostInstallRepair(ctx, backend)
 	results = append(results, repairResults...)
 	stdout, stderr := collectCommandOutputs(results)
+	if repairErr == nil {
+		packageResults = reconcileRuleManagedPasswallPackageResults(packageResults)
+	}
+
+	serializedPackageResults := serializePasswallPackageResults(packageResults)
 
 	resultPayload := map[string]interface{}{
 		"packageList":          orderedPackages,
@@ -153,7 +151,7 @@ func runPasswallPackageUpdateJob(
 		"originSource":         emptyStringToNil(job.OriginSource),
 		"fallbackPolicy":       emptyStringToNil(job.FallbackPolicy),
 		"updateScope":          emptyStringToNil(job.UpdateScope),
-		"packageResults":       packageResults,
+		"packageResults":       serializedPackageResults,
 		"commands":             collectCommands(results),
 		"postInstallRepair":    true,
 		"ruleRefreshAssets":    append([]string(nil), passwallRuleRefreshAssets...),
@@ -162,7 +160,7 @@ func runPasswallPackageUpdateJob(
 			"overlayFreeMb": storageSnapshotBefore.OverlayFreeMB,
 			"tmpFreeMb":     storageSnapshotBefore.TMPFreeMB,
 		},
-		"driftDetected": anyPasswallResultDrift(packageResults),
+		"driftDetected": anyPasswallResultDrift(serializedPackageResults),
 	}
 
 	if repairErr != nil {
@@ -179,7 +177,7 @@ func runPasswallPackageUpdateJob(
 		)
 	}
 
-	if firstFailedPasswallResult(packageResults) != nil {
+	if firstFailedPasswallResult(serializedPackageResults) != nil {
 		return submitFailure(
 			ctx,
 			client,
@@ -239,7 +237,11 @@ func updateSinglePasswallPackage(
 
 	if status, drift := assessPasswallPackageStatus(
 		packageName,
-		packageTargetVersion,
+		resolvePasswallStatusTargetVersion(
+			packageName,
+			packageTargetVersion,
+			runtimeTargetVersion,
+		),
 		packageVersionBefore,
 		runtimeVersionBefore,
 	); status != "" {
@@ -271,7 +273,11 @@ func updateSinglePasswallPackage(
 			backend,
 			currentInventory,
 			packageName,
-			packageTargetVersion,
+			resolvePasswallStatusTargetVersion(
+				packageName,
+				packageTargetVersion,
+				runtimeTargetVersion,
+			),
 		)
 		commandResults = append(commandResults, builtinResults...)
 		if ok {
@@ -317,7 +323,11 @@ func updateSinglePasswallPackage(
 			})
 			if status, drift := assessPasswallPackageStatus(
 				packageName,
-				packageTargetVersion,
+				resolvePasswallStatusTargetVersion(
+					packageName,
+					packageTargetVersion,
+					runtimeTargetVersion,
+				),
 				nextInventory.PackageVersions[packageName],
 				nextInventory.BinaryVersions[passwallRuntimeKeyByPackage[packageName]],
 			); status != "" {
@@ -364,7 +374,11 @@ func updateSinglePasswallPackage(
 		backend,
 		currentInventory,
 		packageName,
-		packageTargetVersion,
+		resolvePasswallStatusTargetVersion(
+			packageName,
+			packageTargetVersion,
+			runtimeTargetVersion,
+		),
 	)
 	commandResults = append(commandResults, builtinResults...)
 	if ok {
@@ -388,7 +402,11 @@ func updateSinglePasswallPackage(
 			ctx,
 			backend,
 			currentInventory,
-			packageTargetVersion,
+			resolvePasswallStatusTargetVersion(
+				packageName,
+				packageTargetVersion,
+				runtimeTargetVersion,
+			),
 			artifact,
 		)
 		commandResults = append(commandResults, xrayResults...)
@@ -720,7 +738,7 @@ func assessPasswallPackageStatus(
 	}
 
 	if !passwallRuntimeOnlyPackages[packageName] {
-		if packageVersion == targetVersion {
+		if packageVersion == targetVersion || packageVersionAtLeast(packageVersion, targetVersion) {
 			return "already-current", false
 		}
 		return "", false
@@ -770,6 +788,42 @@ func failedPasswallPackageResult(
 		DriftDetected:        false,
 		Error:                errorMessage(lastError),
 	}
+}
+
+func reconcileRuleManagedPasswallPackageResults(
+	results []passwallPackageUpdateResult,
+) []passwallPackageUpdateResult {
+	reconciled := make([]passwallPackageUpdateResult, 0, len(results))
+	for _, result := range results {
+		reconciled = append(reconciled, reconcileRuleManagedPasswallPackageResult(result))
+	}
+	return reconciled
+}
+
+func reconcileRuleManagedPasswallPackageResult(
+	result passwallPackageUpdateResult,
+) passwallPackageUpdateResult {
+	if !passwallRuleManagedPackages[result.Package] || !isFailedPasswallStatus(result.Status) {
+		return result
+	}
+
+	packageVersion := result.PackageVersionAfter
+	if strings.TrimSpace(packageVersion) == "" {
+		packageVersion = result.PackageVersionBefore
+	}
+
+	result.PathUsed = "not-needed"
+	result.Error = ""
+	if packageVersionAtLeast(packageVersion, result.PackageTargetVersion) {
+		result.Status = "already-current"
+		result.DriftDetected = false
+		return result
+	}
+
+	result.Status = "updated"
+	result.DriftDetected = result.PackageTargetVersion != "" &&
+		!packageVersionAtLeast(packageVersion, result.PackageTargetVersion)
+	return result
 }
 
 func successfulPasswallPackageResult(
@@ -827,7 +881,11 @@ func classifySuccessfulPasswallStatus(
 ) (string, bool) {
 	status, drift := assessPasswallPackageStatus(
 		packageName,
-		packageTargetVersion,
+		resolvePasswallStatusTargetVersion(
+			packageName,
+			packageTargetVersion,
+			runtimeTargetVersion,
+		),
 		packageVersionAfter,
 		runtimeVersionAfter,
 	)
@@ -873,10 +931,21 @@ func resolvePasswallRuntimeTargetVersion(
 	if strings.TrimSpace(job.RuntimeTargetVersion) != "" {
 		return normalizeRuntimeTargetVersion(job.RuntimeTargetVersion)
 	}
-	if resolvePasswallPackageStrategy(job, packageName) == "xray-built-in-first" {
-		return ""
-	}
 	return normalizeRuntimeTargetVersion(packageTargetVersion)
+}
+
+func resolvePasswallStatusTargetVersion(
+	packageName string,
+	packageTargetVersion string,
+	runtimeTargetVersion string,
+) string {
+	if !passwallRuntimeOnlyPackages[packageName] {
+		return packageTargetVersion
+	}
+	if normalized := normalizeRuntimeTargetVersion(runtimeTargetVersion); normalized != "" {
+		return normalized
+	}
+	return packageTargetVersion
 }
 
 func effectiveRuntimeTargetVersion(
@@ -1020,49 +1089,226 @@ func versionAtLeast(actual string, target string) bool {
 		return false
 	}
 
+	return compareVersionParts(actual, target) >= 0
+}
+
+func packageVersionAtLeast(actual string, target string) bool {
+	actual = strings.TrimSpace(strings.TrimPrefix(actual, "v"))
+	target = strings.TrimSpace(strings.TrimPrefix(target, "v"))
+	if actual == "" || target == "" {
+		return false
+	}
+
+	return opkgVersionCompare(actual, target) >= 0
+}
+
+func compareVersionParts(actual string, target string) int {
 	actualParts := splitVersionParts(actual)
 	targetParts := splitVersionParts(target)
+	if len(actualParts) == 0 || len(targetParts) == 0 {
+		switch {
+		case actual == target:
+			return 0
+		case actual > target:
+			return 1
+		default:
+			return -1
+		}
+	}
+
 	maxLen := len(actualParts)
 	if len(targetParts) > maxLen {
 		maxLen = len(targetParts)
 	}
 
 	for index := 0; index < maxLen; index++ {
-		actualPart := 0
+		var actualPart int64
 		if index < len(actualParts) {
 			actualPart = actualParts[index]
 		}
-		targetPart := 0
+		var targetPart int64
 		if index < len(targetParts) {
 			targetPart = targetParts[index]
 		}
 		if actualPart > targetPart {
-			return true
+			return 1
 		}
 		if actualPart < targetPart {
-			return false
+			return -1
 		}
 	}
 
-	return true
+	return 0
 }
 
-func splitVersionParts(version string) []int {
-	match := semverFragmentPattern.FindString(version)
-	if match == "" {
+func splitVersionParts(version string) []int64 {
+	matches := versionNumberPattern.FindAllString(version, -1)
+	if len(matches) == 0 {
 		return nil
 	}
 
-	parts := strings.Split(match, ".")
-	values := make([]int, 0, len(parts))
-	for _, part := range parts {
-		value, err := strconv.Atoi(part)
+	values := make([]int64, 0, len(matches))
+	for index, part := range matches {
+		if index == 0 && strings.HasPrefix(part, "20") && len(part) >= 8 && len(part) < 14 {
+			part = part + strings.Repeat("0", 14-len(part))
+		}
+		value, err := strconv.ParseInt(part, 10, 64)
 		if err != nil {
 			continue
 		}
 		values = append(values, value)
 	}
 	return values
+}
+
+func opkgVersionCompare(actual string, target string) int {
+	epochActual, versionActual, revisionActual := splitOpkgVersion(actual)
+	epochTarget, versionTarget, revisionTarget := splitOpkgVersion(target)
+	switch {
+	case epochActual > epochTarget:
+		return 1
+	case epochActual < epochTarget:
+		return -1
+	}
+
+	if versionCompare := opkgVersionFragmentCompare(versionActual, versionTarget); versionCompare != 0 {
+		return versionCompare
+	}
+
+	return opkgVersionFragmentCompare(revisionActual, revisionTarget)
+}
+
+func splitOpkgVersion(version string) (uint64, string, string) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return 0, "", ""
+	}
+
+	epoch := uint64(0)
+	if epochText, remainder, ok := strings.Cut(version, ":"); ok {
+		if parsed, err := strconv.ParseUint(epochText, 10, 64); err == nil {
+			epoch = parsed
+			version = remainder
+		}
+	}
+
+	revision := ""
+	if index := strings.LastIndex(version, "-"); index >= 0 {
+		revision = version[index+1:]
+		version = version[:index]
+	}
+
+	return epoch, version, revision
+}
+
+func opkgVersionFragmentCompare(actual string, target string) int {
+	actualIndex := 0
+	targetIndex := 0
+
+	for actualIndex < len(actual) || targetIndex < len(target) {
+		firstDiff := 0
+
+		for (actualIndex < len(actual) && !isASCIIDigit(actual[actualIndex])) ||
+			(targetIndex < len(target) && !isASCIIDigit(target[targetIndex])) {
+			left := opkgOrder(fragmentByte(actual, actualIndex))
+			right := opkgOrder(fragmentByte(target, targetIndex))
+			if left != right {
+				if left > right {
+					return 1
+				}
+				return -1
+			}
+			if actualIndex < len(actual) {
+				actualIndex++
+			}
+			if targetIndex < len(target) {
+				targetIndex++
+			}
+		}
+
+		for fragmentByte(actual, actualIndex) == '0' {
+			actualIndex++
+		}
+		for fragmentByte(target, targetIndex) == '0' {
+			targetIndex++
+		}
+
+		for isASCIIDigit(fragmentByte(actual, actualIndex)) &&
+			isASCIIDigit(fragmentByte(target, targetIndex)) {
+			if firstDiff == 0 {
+				firstDiff = int(fragmentByte(actual, actualIndex)) -
+					int(fragmentByte(target, targetIndex))
+			}
+			actualIndex++
+			targetIndex++
+		}
+
+		if isASCIIDigit(fragmentByte(actual, actualIndex)) {
+			return 1
+		}
+		if isASCIIDigit(fragmentByte(target, targetIndex)) {
+			return -1
+		}
+		if firstDiff != 0 {
+			if firstDiff > 0 {
+				return 1
+			}
+			return -1
+		}
+	}
+
+	return 0
+}
+
+func fragmentByte(value string, index int) byte {
+	if index < 0 || index >= len(value) {
+		return 0
+	}
+	return value[index]
+}
+
+func opkgOrder(value byte) int {
+	switch {
+	case value == '~':
+		return -1
+	case value == 0 || isASCIIDigit(value):
+		return 0
+	case isASCIIAlpha(value):
+		return int(value)
+	default:
+		return int(value) + 256
+	}
+}
+
+func isASCIIDigit(value byte) bool {
+	return value >= '0' && value <= '9'
+}
+
+func isASCIIAlpha(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z')
+}
+
+func serializePasswallPackageResults(
+	results []passwallPackageUpdateResult,
+) []map[string]interface{} {
+	serialized := make([]map[string]interface{}, 0, len(results))
+	for _, result := range results {
+		serialized = append(serialized, map[string]interface{}{
+			"package":              result.Package,
+			"targetVersion":        result.TargetVersion,
+			"packageTargetVersion": emptyStringToNil(result.PackageTargetVersion),
+			"runtimeTargetVersion": emptyStringToNil(result.RuntimeTargetVersion),
+			"status":               result.Status,
+			"pathUsed":             result.PathUsed,
+			"packageVersionBefore": emptyStringToNil(result.PackageVersionBefore),
+			"packageVersionAfter":  emptyStringToNil(result.PackageVersionAfter),
+			"runtimeVersionBefore": emptyStringToNil(result.RuntimeVersionBefore),
+			"runtimeVersionAfter":  emptyStringToNil(result.RuntimeVersionAfter),
+			"driftDetected":        result.DriftDetected,
+			"error":                emptyStringToNil(result.Error),
+		})
+	}
+	return serialized
 }
 
 func errorMessage(err error) string {

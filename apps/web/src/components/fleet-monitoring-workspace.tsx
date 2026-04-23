@@ -681,55 +681,38 @@ export function FleetMonitoringWorkspace({
                 </span>
               </div>
 
-              <div className="flex flex-wrap gap-2 lg:justify-end">
-                {activeFilter ? (
+              <div className="flex flex-col items-start gap-2 lg:items-end">
+                <div className="flex flex-wrap gap-2 lg:justify-end">
+                  {activeFilter ? (
+                    <button
+                      type="button"
+                      onClick={() => setActiveFilter(null)}
+                      className="vectra-button-secondary px-3 py-2 text-sm text-white transition hover:border-white/20"
+                    >
+                      Сбросить фильтр
+                    </button>
+                  ) : null}
                   <button
                     type="button"
-                    onClick={() => setActiveFilter(null)}
-                    className="vectra-button-secondary px-3 py-2 text-sm text-white transition hover:border-white/20"
+                    onClick={handleNotificationToggle}
+                    disabled={notificationToggleDisabled}
+                    className="vectra-button-secondary px-3 py-2 text-sm text-white transition hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    Сбросить фильтр
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={handleNotificationToggle}
-                  disabled={notificationToggleDisabled}
-                  className="vectra-button-secondary px-3 py-2 text-sm text-white transition hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {subscribePushMutation.isPending || unsubscribePushMutation.isPending
-                    ? "Сохраняю..."
-                    : notificationMode === "push"
-                      ? notificationsEnabled
-                        ? "Push: вкл"
-                        : "Push: выкл"
-                      : notificationMode === "polling"
+                    {subscribePushMutation.isPending || unsubscribePushMutation.isPending
+                      ? "Сохраняю..."
+                      : notificationMode === "push"
                         ? notificationsEnabled
-                          ? "Во вкладке: вкл"
-                          : "Во вкладке: выкл"
-                        : "Уведомления недоступны"}
-                </button>
-              </div>
-            </div>
-
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)]">
-              <div className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.04)] px-3 py-3">
-                <p className="vectra-kicker text-[var(--vectra-accent)]">Triage-режим</p>
-                <p className="mt-2 text-sm font-medium text-white">
-                  Сначала смотрите, что происходит на роутере сейчас. Затем — что сохранено в панели. И только после этого — почему панели можно верить именно настолько.
-                </p>
-                <p className="mt-1 text-sm leading-6 text-slate-400">
-                  Таблица ниже специально раскладывает эти три слоя по отдельным колонкам, чтобы парк читался как рабочая поверхность для разбора, а не как набор смешанных технических статусов.
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.04)] px-3 py-3">
-                <p className="vectra-kicker text-[var(--vectra-accent-warm)]">Уведомления</p>
-                <p className="mt-2 text-sm font-medium text-white">
+                          ? "Push: вкл"
+                          : "Push: выкл"
+                        : notificationMode === "polling"
+                          ? notificationsEnabled
+                            ? "Во вкладке: вкл"
+                            : "Во вкладке: выкл"
+                          : "Уведомления недоступны"}
+                  </button>
+                </div>
+                <p className="text-xs leading-5 text-slate-400">
                   {notificationStatusCopy.title}
-                </p>
-                <p className="mt-1 text-sm leading-6 text-slate-400">
-                  {notificationStatusCopy.detail}
                 </p>
               </div>
             </div>
@@ -766,9 +749,11 @@ export function FleetMonitoringWorkspace({
               </div>
             </div>
 
-            <section className="space-y-3 lg:hidden">
+            <section className="space-y-3 xl:hidden">
               <div className="flex items-center justify-between gap-3">
-                <p className="text-sm text-slate-400">Карточки.</p>
+                <p className="text-sm text-slate-400">
+                  Роутеры в текущем срезе.
+                </p>
               </div>
 
               <div className="grid gap-3 lg:grid-cols-2">
@@ -785,53 +770,50 @@ export function FleetMonitoringWorkspace({
               </div>
             </section>
 
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,0.7fr)] xl:items-start">
-              <section className="hidden rounded-[1.4rem] border border-white/10 bg-[rgba(8,11,17,0.76)] px-4 py-4 lg:block">
-                <h3 className="text-base font-semibold text-white sm:text-lg">
-                  Плотная таблица парка
-                </h3>
-                <p className="mt-1 text-sm leading-6 text-slate-400">
-                  Для каждого роутера отдельно показано: что видно сейчас, что сохранено в панели, и почему этой картине можно доверять именно в такой степени.
-                </p>
-
-                <div className="mt-4">
-                  <DataTable
-                    title="Операционная таблица"
-                    hint="Свайп/скролл по горизонтали сохраняется; live и last-known вынесены в отдельные cues →"
-                    columns={[
-                      { key: "router", label: "Роутер" },
-                      { key: "state", label: "Что сейчас" },
-                      { key: "control", label: "Что сохранено в панели" },
-                      { key: "trust", label: "Почему панель уверена" },
-                      { key: "versions", label: "Версии" },
-                      { key: "actions", label: "Действие", className: "text-right" },
-                    ]}
-                  >
-                    {filteredRouters.length > 0 ? (
-                      filteredRouters.map((router) => (
-                        <FleetOperationsRow key={router.id} router={router} />
-                      ))
-                    ) : (
-                      <DataTableEmpty colSpan={6}>
-                        В этом срезе роутеров нет. Смените сегмент сверху,
-                        уточните поиск или сбросьте фильтр.
-                      </DataTableEmpty>
-                    )}
-                  </DataTable>
-                </div>
+            <div
+              className={`grid gap-4 ${
+                filteredAlerts.length > 0
+                  ? "xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,0.7fr)] xl:items-start"
+                  : ""
+              }`}
+            >
+              <section className="hidden rounded-[1.4rem] border border-white/10 bg-[rgba(8,11,17,0.76)] px-4 py-4 xl:block">
+                <DataTable
+                  title="Роутеры"
+                  hint="Live, панель и trust сведены в короткие cues →"
+                  columns={[
+                    { key: "router", label: "Роутер" },
+                    { key: "state", label: "Что сейчас" },
+                    { key: "control", label: "Панель" },
+                    { key: "trust", label: "Trust" },
+                    { key: "versions", label: "Версии" },
+                    { key: "actions", label: "Действие", className: "text-right" },
+                  ]}
+                >
+                  {filteredRouters.length > 0 ? (
+                    filteredRouters.map((router) => (
+                      <FleetOperationsRow key={router.id} router={router} />
+                    ))
+                  ) : (
+                    <DataTableEmpty colSpan={6}>
+                      В этом срезе роутеров нет. Смените сегмент сверху,
+                      уточните поиск или сбросьте фильтр.
+                    </DataTableEmpty>
+                  )}
+                </DataTable>
               </section>
 
-              <section className="space-y-3 rounded-[1.4rem] border border-white/10 bg-[rgba(8,11,17,0.76)] px-4 py-4 xl:sticky xl:top-4">
-                <div>
-                  <p className="vectra-kicker text-[var(--vectra-accent-warm)]">Алерты</p>
-                  <h3 className="mt-1 text-base font-semibold text-white sm:text-lg">
-                    Что требует внимания
-                  </h3>
-                </div>
+              {filteredAlerts.length > 0 ? (
+                <section className="space-y-3 rounded-[1.4rem] border border-white/10 bg-[rgba(8,11,17,0.76)] px-4 py-4 xl:sticky xl:top-4">
+                  <div>
+                    <p className="vectra-kicker text-[var(--vectra-accent-warm)]">Алерты</p>
+                    <h3 className="mt-1 text-base font-semibold text-white sm:text-lg">
+                      Что требует внимания
+                    </h3>
+                  </div>
 
-                <div className="space-y-2">
-                  {filteredAlerts.length > 0 ? (
-                    filteredAlerts.slice(0, 6).map((alert) => (
+                  <div className="space-y-2">
+                    {filteredAlerts.slice(0, 6).map((alert) => (
                       <Link
                         key={alert.id}
                         href={alert.href}
@@ -850,28 +832,51 @@ export function FleetMonitoringWorkspace({
                         </div>
                         <p className="mt-2 text-sm leading-6 text-slate-300">{alert.description}</p>
                       </Link>
-                    ))
-                  ) : (
-                    <div className="rounded-2xl border border-dashed border-white/12 bg-white/[0.03] px-3 py-6 text-sm leading-7 text-slate-400">
-                      В этом срезе сейчас нет активных проблем.
-                    </div>
-                  )}
-                </div>
-              </section>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
             </div>
 
             <details className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.02)] px-3 py-3">
               <summary className="cursor-pointer list-none">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <p className="vectra-kicker text-slate-500">Контекст парка</p>
-                    <p className="mt-1 text-sm text-slate-400">Вторичный слой: обзор, срезы и onboarding.</p>
+                    <p className="vectra-kicker text-slate-500">Как читать парк</p>
+                    <p className="mt-1 text-sm text-slate-400">
+                      Контекст, срезы и уведомления.
+                    </p>
                   </div>
                   <span className="text-xs text-slate-400">раскрыть</span>
                 </div>
               </summary>
 
               <div className="mt-4 space-y-4">
+                <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
+                  <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3">
+                    <p className="vectra-kicker text-[var(--vectra-accent)]">
+                      Рабочий порядок
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-slate-300">
+                      Сначала смотрите live-состояние, затем базу панели и только
+                      потом trust-сигнал. Таблица и карточки ниже уже раскладывают
+                      это по коротким колонкам и статусам.
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3">
+                    <p className="vectra-kicker text-[var(--vectra-accent-warm)]">
+                      Уведомления
+                    </p>
+                    <p className="mt-2 text-sm font-medium text-white">
+                      {notificationStatusCopy.title}
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-slate-400">
+                      {notificationStatusCopy.detail}
+                    </p>
+                  </div>
+                </div>
+
                 <div className="vectra-stat-grid lg:grid-cols-none 2xl:grid-cols-none">
                   {snapshot.stats.map((item) => (
                     <article
@@ -963,24 +968,6 @@ export function FleetMonitoringWorkspace({
               </div>
             </details>
 
-            <section className="space-y-3 lg:hidden">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm text-slate-400">Карточки.</p>
-              </div>
-
-              <div className="grid gap-3 lg:grid-cols-2">
-                {filteredRouters.length > 0 ? (
-                  filteredRouters.map((router) => (
-                    <RouterCard key={router.id} router={router} />
-                  ))
-                ) : (
-                  <div className="rounded-md border border-dashed border-white/12 bg-white/[0.03] p-4 text-sm leading-7 text-slate-300 lg:col-span-2">
-                    В этом фильтре роутеров нет. Смените сегмент сверху или
-                    сбросьте фильтр.
-                  </div>
-                )}
-              </div>
-            </section>
           </div>
         </Panel>
       </div>
@@ -1129,45 +1116,44 @@ function FleetOperationsRow({
               {freshness.label}
             </span>
           </div>
-          <div>
-            <p className="text-sm font-medium text-white">{router.statusLabel}</p>
-            <p className="text-slate-300">{freshness.summary}</p>
-            <p className="text-slate-500">{freshness.detail}</p>
+          <p className="text-sm font-medium text-white">{router.statusLabel}</p>
+          <div className="flex flex-wrap gap-2 text-slate-400">
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
+              {freshness.summary}
+            </span>
+            {router.lastRescue !== "никогда" ? (
+              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
+                rescue {router.lastRescue}
+              </span>
+            ) : null}
           </div>
-          {router.lastRescue !== "никогда" ? (
-            <p className="text-slate-500">Последний recovery-сигнал: {router.lastRescue}</p>
-          ) : null}
         </div>
       </td>
       <td className="px-3 py-3">
-        <div className="min-w-0 space-y-2 text-xs leading-5 text-slate-400 lg:min-w-[10rem]">
-          <p>
-            Статус в панели{" "}
-            <span className="font-medium text-white">
-              {router.configTrust.requiresReimport
-                ? onboarding.badge
-                : formatRouterImportStateLabel(router.importState)}
-            </span>
-          </p>
-          <p>
-            База сравнения{" "}
-            <span className="font-medium text-white">
-              {router.configTrust.requiresReimport
-                ? "нужно перечитать роутер"
-                : formatConfigSourceModeLabel(router.configTrust.configSourceMode)}
-            </span>
-          </p>
+        <div className="min-w-0 flex flex-wrap gap-2 text-xs leading-5 text-slate-400 lg:min-w-[10rem]">
+          <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
+            {router.configTrust.requiresReimport
+              ? onboarding.badge
+              : formatRouterImportStateLabel(router.importState)}
+          </span>
+          <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
+            {router.configTrust.requiresReimport
+              ? "нужно перечитать"
+              : formatConfigSourceModeLabel(router.configTrust.configSourceMode)}
+          </span>
         </div>
       </td>
       <td className="px-3 py-3">
-        <div className="min-w-0 space-y-2 text-xs leading-5 text-slate-400 lg:min-w-[11rem]">
-          <p>
-            Уверенность панели <span className="font-medium text-white">{trustState.badge}</span>
-          </p>
-          <p>{trustState.detail}</p>
-          <p>
-            Telegram <span className={telegramToneClassName}>{formatTelegramReachabilityLabel(router.telegramReachability)}</span>
-          </p>
+        <div className="min-w-0 flex flex-wrap gap-2 text-xs leading-5 text-slate-400 lg:min-w-[11rem]">
+          <span className={`rounded-full border px-2 py-0.5 ${trustState.badgeClassName}`}>
+            {trustState.badge}
+          </span>
+          <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
+            Telegram{" "}
+            <span className={telegramToneClassName}>
+              {formatTelegramReachabilityLabel(router.telegramReachability)}
+            </span>
+          </span>
         </div>
       </td>
       <td className="px-3 py-3">

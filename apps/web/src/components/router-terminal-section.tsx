@@ -5,10 +5,15 @@ import { useMemo, useState } from "react";
 import { ActionStrip } from "~/components/action-strip";
 import { DataTable, DataTableEmpty } from "~/components/data-table";
 import {
-  compareControllerVersions,
+  MobileCard,
+  MobileCardField,
+  MobileCardGrid,
+  MobileCardList,
+} from "~/components/mobile-records";
+import {
   formatControllerVersion,
-  normalizeControllerVersion,
 } from "~/lib/controller-version";
+import { supportsTerminalFeature } from "~/lib/router-terminal-support";
 import { api, type RouterOutputs } from "~/trpc/react";
 
 type RouterTerminalHistory = RouterOutputs["terminal"]["history"];
@@ -233,39 +238,101 @@ export function RouterTerminalSection({
           <span className="text-[11px] text-slate-500">последние one-shot запросы</span>
         </div>
 
-        <DataTable
-          columns={[
-            { key: "command", label: "Команда" },
-            { key: "state", label: "Статус" },
-            { key: "created", label: "Создана" },
-            { key: "result", label: "Результат" },
-          ]}
+        <MobileCardList
+          title="История terminal-команд"
+          hint="Телефонный режим"
         >
           {history.data?.history.length ? (
             history.data.history.map((item) => (
-              <tr
+              <MobileCard
                 key={item.jobId}
-                className="border-t border-white/10 text-slate-200"
+                tone={item.resultStatus === "failure" ? "danger" : "default"}
               >
-                <td className="px-3 py-2">
-                  <div className="max-w-[26rem] overflow-hidden text-xs font-[var(--font-vectra-mono)] text-ellipsis whitespace-nowrap text-white">
-                    {item.request.command || "команда не указана"}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white">Команда</p>
+                    <p className="mt-1 break-words font-[var(--font-vectra-mono)] text-xs leading-6 text-slate-200">
+                      {item.request.command || "команда не указана"}
+                    </p>
                   </div>
-                  <div className="text-xs text-slate-500">
-                    таймаут {item.request.timeoutSeconds} сек
-                  </div>
-                </td>
-                <td className="px-3 py-2">{formatTerminalState(item.state)}</td>
-                <td className="px-3 py-2">{formatDateTime(item.createdAt)}</td>
-                <td className="px-3 py-2">{formatTerminalResult(item)}</td>
-              </tr>
+                  <span
+                    className={`rounded-full border px-2.5 py-1 text-[11px] uppercase ${
+                      item.resultStatus === "failure"
+                        ? "border-rose-400/25 bg-rose-500/10 text-rose-100"
+                        : item.state === "queued" ||
+                            item.state === "delivered" ||
+                            item.state === "running"
+                          ? "border-amber-400/25 bg-amber-500/10 text-amber-100"
+                          : "border-emerald-400/25 bg-emerald-500/10 text-emerald-100"
+                    }`}
+                  >
+                    {formatTerminalState(item.state)}
+                  </span>
+                </div>
+
+                <div className="mt-3">
+                  <MobileCardGrid>
+                    <MobileCardField
+                      label="Создана"
+                      value={formatDateTime(item.createdAt)}
+                    />
+                    <MobileCardField
+                      label="Результат"
+                      value={formatTerminalResult(item)}
+                    />
+                    <MobileCardField
+                      label="Таймаут"
+                      value={`${item.request.timeoutSeconds} сек`}
+                    />
+                    <MobileCardField label="Job" value={item.jobId} mono />
+                  </MobileCardGrid>
+                </div>
+              </MobileCard>
             ))
           ) : (
-            <DataTableEmpty colSpan={4}>
-              История terminal-команд пока пустая.
-            </DataTableEmpty>
+            <MobileCard>
+              <p className="text-sm leading-7 text-slate-300">
+                История terminal-команд пока пустая.
+              </p>
+            </MobileCard>
           )}
-        </DataTable>
+        </MobileCardList>
+
+        <div className="max-lg:hidden">
+          <DataTable
+            columns={[
+              { key: "command", label: "Команда" },
+              { key: "state", label: "Статус" },
+              { key: "created", label: "Создана" },
+              { key: "result", label: "Результат" },
+            ]}
+          >
+            {history.data?.history.length ? (
+              history.data.history.map((item) => (
+                <tr
+                  key={item.jobId}
+                  className="border-t border-white/10 text-slate-200"
+                >
+                  <td className="px-3 py-2">
+                    <div className="max-w-[26rem] overflow-hidden text-xs font-[var(--font-vectra-mono)] text-ellipsis whitespace-nowrap text-white">
+                      {item.request.command || "команда не указана"}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      таймаут {item.request.timeoutSeconds} сек
+                    </div>
+                  </td>
+                  <td className="px-3 py-2">{formatTerminalState(item.state)}</td>
+                  <td className="px-3 py-2">{formatDateTime(item.createdAt)}</td>
+                  <td className="px-3 py-2">{formatTerminalResult(item)}</td>
+                </tr>
+              ))
+            ) : (
+              <DataTableEmpty colSpan={4}>
+                История terminal-команд пока пустая.
+              </DataTableEmpty>
+            )}
+          </DataTable>
+        </div>
       </div>
     </section>
   );
@@ -297,17 +364,6 @@ function TerminalOutput({
       </pre>
     </section>
   );
-}
-
-function supportsTerminalFeature(
-  currentVersion: string | null,
-  minimumVersion: string,
-) {
-  if (!normalizeControllerVersion(currentVersion)) {
-    return false;
-  }
-
-  return (compareControllerVersions(currentVersion, minimumVersion) ?? -1) >= 0;
 }
 
 function formatTerminalState(state: RouterTerminalHistoryItem["state"]) {

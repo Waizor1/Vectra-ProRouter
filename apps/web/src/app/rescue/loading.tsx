@@ -5,14 +5,16 @@ export default function RescueLoading() {
     <RouteLoadingState
       eyebrow="Восстановление"
       title="Загружаем rescue-контур"
-      description="Подготавливаем policy, список direct-mode роутеров и инциденты с явным состоянием загрузки маршрута."
+      description="Подготавливаем direct mode и открытые инциденты без длинного переходного экрана."
       summary="Считываем policy rescue и текущие аварийные случаи."
-      details="Страница дождётся порогов rescue, активных direct-mode роутеров и открытых инцидентов, а затем покажет полный рабочий контур без немого перехода."
+      details="Если rescue-контур отвечает медленно, можно выйти в парк и вернуться к инцидентам позже."
       checkpoints={[
         "читаем rescue policy",
         "подтягиваем direct-mode роутеры",
         "сверяем открытые инциденты",
       ]}
+      escapeHref="/fleet"
+      escapeLabel="Открыть Парк"
     />
   );
 }

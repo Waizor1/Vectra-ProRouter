@@ -1,14 +1,58 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { buildFallbackPasswallBundleMetadata } from "~/lib/passwall-artifacts";
 import {
   formatPasswallAvailableVersion,
   formatPasswallManagedStackAvailableVersion,
-  runtimeMeetsOrExceedsPackageTarget,
+  runtimeMeetsOrExceedsTargetVersion,
   summarizePasswallAttempt,
 } from "~/lib/passwall-update-summary";
 
 describe("router detail app update helpers", () => {
+  it("keeps inline router hostname controls near the router summary", () => {
+    const source = readFileSync(
+      new URL("./router-detail-workspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain('api.fleet.renameRouter.useMutation');
+    expect(source).toContain('name="router-hostname"');
+    expect(source).toContain("Hostname роутера");
+    expect(source).toContain(
+      "Меняется именно `system.@system[0].hostname` на",
+    );
+  });
+
+  it("keeps the app update summary copy on a wrapping full-width row", () => {
+    const source = readFileSync(
+      new URL("./router-detail-workspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain(
+      'className="min-w-0 w-full space-y-2 lg:basis-full"',
+    );
+    expect(source).toContain(
+      'className="break-words text-sm leading-6 text-slate-300"',
+    );
+    expect(source).toContain(
+      'className="break-words text-sm leading-6 text-slate-400"',
+    );
+  });
+
+  it("keeps a single-router reboot action inside App Update", () => {
+    const source = readFileSync(
+      new URL("./router-detail-workspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("api.update.queueRouterReboot.useMutation");
+    expect(source).toContain("Перезагрузить роутер");
+    expect(source).toContain("Поставить перезагрузку в очередь?");
+    expect(source).toContain("Последняя перезагрузка от панели");
+  });
+
   it("renders explicit managed-stack target semantics for PassWall2", () => {
     const bundleMetadata = buildFallbackPasswallBundleMetadata();
 
@@ -18,10 +62,50 @@ describe("router detail app update helpers", () => {
   });
 
   it("renders explicit available version and source for mirrored components", () => {
-    const bundleMetadata = buildFallbackPasswallBundleMetadata();
+    const bundleMetadata = {
+      ...buildFallbackPasswallBundleMetadata(),
+      runtimeTargets: {
+        "xray-core": {
+          componentName: "xray",
+          remoteVersion: "26.4.17",
+          releaseUrl: "https://github.com/XTLS/Xray-core/releases/tag/v26.4.17",
+          assetName: "Xray-linux-arm64-v8a.zip",
+          assetUrl:
+            "https://github.com/XTLS/Xray-core/releases/download/v26.4.17/Xray-linux-arm64-v8a.zip",
+          assetSizeBytes: 12345678,
+        },
+      },
+    };
 
     expect(formatPasswallAvailableVersion(bundleMetadata, "xray-core")).toBe(
-      "runtime: built-in PassWall updater / package: 26.3.27-r1 · Vectra mirror",
+      "runtime: 26.4.17 via built-in PassWall updater / package: 26.3.27-r1 · Vectra mirror",
+    );
+  });
+
+  it("renders runtime target metadata for non-xray runtime-only components", () => {
+    const bundleMetadata = {
+      ...buildFallbackPasswallBundleMetadata(),
+      runtimeTargets: {
+        "sing-box": {
+          componentName: "sing-box",
+          remoteVersion: "1.13.9",
+          releaseUrl: "https://github.com/SagerNet/sing-box/releases/tag/v1.13.9",
+          assetName: "sing-box-1.13.9-linux-arm64-musl.tar.gz",
+          assetUrl:
+            "https://github.com/SagerNet/sing-box/releases/download/v1.13.9/sing-box-1.13.9-linux-arm64-musl.tar.gz",
+          assetSizeBytes: 9876543,
+        },
+      },
+      packageArtifacts: buildFallbackPasswallBundleMetadata().packageArtifacts.map(
+        (artifact) =>
+          artifact.name === "sing-box"
+            ? { ...artifact, artifactVersion: "1.13.6-r1" }
+            : artifact,
+      ),
+    };
+
+    expect(formatPasswallAvailableVersion(bundleMetadata, "sing-box")).toBe(
+      "runtime: 1.13.9 via built-in PassWall updater / package: 1.13.6-r1 · Vectra mirror",
     );
   });
 
@@ -30,28 +114,48 @@ describe("router detail app update helpers", () => {
       ...buildFallbackPasswallBundleMetadata(),
       packageArtifacts: [],
       source: "upstream" as const,
+      runtimeTargets: {
+        "xray-core": {
+          componentName: "xray",
+          remoteVersion: "26.4.17",
+          releaseUrl: "https://github.com/XTLS/Xray-core/releases/tag/v26.4.17",
+          assetName: "Xray-linux-arm64-v8a.zip",
+          assetUrl:
+            "https://github.com/XTLS/Xray-core/releases/download/v26.4.17/Xray-linux-arm64-v8a.zip",
+          assetSizeBytes: 12345678,
+        },
+      },
     };
 
     expect(formatPasswallAvailableVersion(bundleMetadata, "xray-core")).toBe(
-      "runtime: built-in PassWall updater / package: через upstream",
+      "runtime: 26.4.17 via built-in PassWall updater / package: через upstream",
     );
   });
 
-  it("treats Xray runtime ahead of package target as already current", () => {
+  it("treats Xray runtime at the upstream runtime target as current", () => {
     expect(
-      runtimeMeetsOrExceedsPackageTarget(
-        "Xray 26.4.15 (Xray, Penetrates Everything.) c5edc12 (go1.26.2 linux/arm64)",
-        "26.3.27-r1",
+      runtimeMeetsOrExceedsTargetVersion(
+        "Xray 26.4.17 (Xray, Penetrates Everything.) c5edc12 (go1.26.2 linux/arm64)",
+        "26.4.17",
       ),
     ).toBe(true);
   });
 
-  it("does not treat older Xray runtime as current", () => {
+  it("does not treat older Xray runtime as current when upstream moved ahead", () => {
     expect(
-      runtimeMeetsOrExceedsPackageTarget(
-        "Xray 26.3.20 (Xray, Penetrates Everything.) abc123 (go1.26.1 linux/arm64)",
-        "26.3.27-r1",
+      runtimeMeetsOrExceedsTargetVersion(
+        "Xray 26.4.15 (Xray, Penetrates Everything.) abc123 (go1.26.1 linux/arm64)",
+        "26.4.17",
       ),
+    ).toBe(false);
+  });
+
+  it("treats newer sing-box runtime strings the same way as Xray runtime strings", () => {
+    expect(
+      runtimeMeetsOrExceedsTargetVersion("sing-box version 1.13.9", "1.13.9"),
+    ).toBe(true);
+    expect(
+      runtimeMeetsOrExceedsTargetVersion("sing-box version 1.13.6", "1.13.9"),
     ).toBe(false);
   });
 

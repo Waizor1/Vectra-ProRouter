@@ -26,7 +26,7 @@ export function Panel({
     <section
       className={`min-w-0 rounded-2xl px-4 py-4 sm:px-5 ${compact ? "sm:py-4" : "sm:py-5"} ${toneClassName}`}
     >
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+      <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
         <div className="min-w-0">
           {eyebrow ? (
             <p className="vectra-kicker text-slate-500">
@@ -37,7 +37,7 @@ export function Panel({
             {title}
           </h2>
         </div>
-        {aside ? <div className="w-full md:w-auto">{aside}</div> : null}
+        {aside ? <div className="min-w-0 w-full xl:w-auto">{aside}</div> : null}
       </div>
       <div className={compact ? "mt-3" : "mt-4"}>{children}</div>
     </section>

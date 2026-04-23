@@ -85,6 +85,9 @@ type RouterInventory struct {
 	Resources            RouterResources          `json:"resources"`
 	ServiceHealth        RouterServiceHealth      `json:"serviceHealth"`
 	LastRescue           *LastRescue              `json:"lastRescue,omitempty"`
+	PanelReachability    *RouterReachabilityProbe `json:"panelReachability,omitempty"`
+	RUReachability       *RouterReachabilityProbe `json:"ruReachability,omitempty"`
+	ForeignReachability  *RouterReachabilityProbe `json:"foreignReachability,omitempty"`
 	TelegramReachability *RouterReachabilityProbe `json:"telegramReachability,omitempty"`
 	RawSnapshot          map[string]interface{}   `json:"rawSnapshot,omitempty"`
 	ConfigDigest         string                   `json:"configDigest,omitempty"`
@@ -97,6 +100,9 @@ type RouterHealth struct {
 	DirectConnectivitySuccesses int    `json:"directConnectivitySuccesses"`
 	ProxyConnectivitySuccesses  int    `json:"proxyConnectivitySuccesses"`
 	ServerReachable             bool   `json:"serverReachable"`
+	RecoveryPhase               string `json:"recoveryPhase,omitempty"`
+	LastRecoveryAction          string `json:"lastRecoveryAction,omitempty"`
+	AwaitingOperator            bool   `json:"awaitingOperator,omitempty"`
 }
 
 type Job struct {

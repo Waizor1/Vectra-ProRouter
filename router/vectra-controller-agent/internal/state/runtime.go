@@ -30,6 +30,12 @@ type RuntimeStatus struct {
 	ProxyFailureCount   int    `json:"proxy_failure_count,omitempty"`
 	ProxySuccessCount   int    `json:"proxy_success_count,omitempty"`
 	DirectSuccessCount  int    `json:"direct_success_count,omitempty"`
+	RecoveryPhase       string `json:"recovery_phase,omitempty"`
+	LastRecoveryAction  string `json:"last_recovery_action,omitempty"`
+	AwaitingOperator    bool   `json:"awaiting_operator,omitempty"`
+	LastPanelStatus     string `json:"last_panel_status,omitempty"`
+	LastRUStatus        string `json:"last_ru_status,omitempty"`
+	LastForeignStatus   string `json:"last_foreign_status,omitempty"`
 	LastServerError     string `json:"last_server_error,omitempty"`
 	LastPublicError     string `json:"last_public_error,omitempty"`
 	LastError           string `json:"last_error,omitempty"`

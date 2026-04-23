@@ -3,6 +3,7 @@ package inventory
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -174,5 +175,11 @@ func TestBuildTelegramReachabilitySummaryBlocked(t *testing.T) {
 	}
 	if got, want := summary.TotalCount, 1; got != want {
 		t.Fatalf("TotalCount = %d, want %d", got, want)
+	}
+}
+
+func TestPasswallInventoryPackagesIncludesTcping(t *testing.T) {
+	if !slices.Contains(passwallInventoryPackages, "tcping") {
+		t.Fatalf("passwallInventoryPackages = %#v, want tcping to be tracked", passwallInventoryPackages)
 	}
 }

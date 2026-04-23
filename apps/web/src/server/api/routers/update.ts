@@ -1,6 +1,7 @@
 import {
   artifacts,
   firmwareManifests,
+  jobResults,
   jobs,
   routerInventorySnapshots,
   routers,
@@ -21,10 +22,13 @@ import {
   buildTerminalControllerSelfUpdatePayload,
   shouldUseTerminalControllerSelfUpdate,
 } from "~/lib/controller-update-jobs";
+import { buildTerminalRouterRebootPayload } from "~/lib/router-reboot-jobs";
 import {
   PASSWALL_MANAGED_STACK_REQUIRED_PACKAGES,
+  buildLatestPasswallArtifactMap,
   buildFallbackPasswallBundleMetadata,
   buildPasswallBundleMetadataFromArtifact,
+  findPasswallRuntimeTarget,
   resolveInstalledOptionalPasswallPackages,
   resolvePasswallPackageArtifactsFromRows,
   sortPasswallPackageList,
@@ -39,6 +43,7 @@ import {
   loadGlobalTemplateWorkspace,
   saveGlobalTemplate,
 } from "~/server/vectra/global-template";
+import { buildRouterManagementTaskLog } from "~/server/vectra/editor-surface";
 import {
   assignRoutersToGroup,
   deleteRolloutProfile,
@@ -153,6 +158,34 @@ async function assertUpdateCapableRouter(
   }
 
   return { router, snapshot, support };
+}
+
+function buildUpdateMonitorRouterDisplayName(args: {
+  router:
+    | (typeof routers.$inferSelect)
+    | null
+    | undefined;
+  snapshot:
+    | (typeof routerInventorySnapshots.$inferSelect)
+    | null
+    | undefined;
+}) {
+  const displayName = args.router?.displayName?.trim();
+  if (displayName) {
+    return displayName;
+  }
+
+  const hostname = args.router?.hostname?.trim();
+  if (hostname) {
+    return hostname;
+  }
+
+  const snapshotHostname = args.snapshot?.payload?.hostname?.trim();
+  if (snapshotHostname) {
+    return snapshotHostname;
+  }
+
+  return args.router?.deviceIdentifier ?? args.router?.id ?? "unknown-router";
 }
 
 async function enqueuePasswallPackageUpdate(args: {
@@ -294,21 +327,28 @@ async function enqueueControllerUpdateJob(args: {
     packageList: CONTROLLER_PACKAGE_LIST,
     packageArtifacts,
     artifactUrl:
-      primaryArtifact?.downloadUrl ?? primaryPackageArtifact?.artifactUrl ?? null,
+      primaryArtifact?.downloadUrl ??
+      primaryPackageArtifact?.artifactUrl ??
+      null,
     sha256:
       primaryArtifact?.checksumSha256 ?? primaryPackageArtifact?.sha256 ?? null,
     signatureUrl:
-      primaryArtifact?.signatureUrl ?? primaryPackageArtifact?.signatureUrl ?? null,
+      primaryArtifact?.signatureUrl ??
+      primaryPackageArtifact?.signatureUrl ??
+      null,
     artifactVersion:
-      primaryArtifact?.version ?? primaryPackageArtifact?.artifactVersion ?? null,
+      primaryArtifact?.version ??
+      primaryPackageArtifact?.artifactVersion ??
+      null,
   });
 
   const installedControllerVersion = resolveInstalledControllerVersion({
     controllerVersion: snapshot?.controllerVersion ?? null,
     payload: snapshot?.payload ?? null,
   });
-  const useTerminalSelfUpdate =
-    shouldUseTerminalControllerSelfUpdate(installedControllerVersion);
+  const useTerminalSelfUpdate = shouldUseTerminalControllerSelfUpdate(
+    installedControllerVersion,
+  );
   const terminalPayload = useTerminalSelfUpdate
     ? buildTerminalControllerSelfUpdatePayload({
         artifactVersion: payload.artifactVersion,
@@ -348,6 +388,43 @@ async function enqueueControllerUpdateJob(args: {
   return job;
 }
 
+async function enqueueRouterRebootJob(args: {
+  ctx: RouterMutationContext;
+  routerId: string;
+}) {
+  await assertCertifiedRouter(args.ctx, args.routerId);
+
+  const dedupeKey = `router_reboot:${args.routerId}`;
+  const [existingJob] = await args.ctx.db
+    .select()
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.routerId, args.routerId),
+        eq(jobs.dedupeKey, dedupeKey),
+        inArray(jobs.state, ["queued", "delivered", "running"]),
+      ),
+    )
+    .limit(1);
+
+  if (existingJob) {
+    return existingJob;
+  }
+
+  const [job] = await args.ctx.db
+    .insert(jobs)
+    .values({
+      routerId: args.routerId,
+      type: "run_terminal_command",
+      state: "queued",
+      dedupeKey,
+      payload: buildTerminalRouterRebootPayload(),
+    })
+    .returning();
+
+  return job;
+}
+
 function artifactMatchesRouterArchitecture(
   artifact: ArtifactRow,
   architecture: string | null | undefined,
@@ -356,7 +433,9 @@ function artifactMatchesRouterArchitecture(
     return true;
   }
 
-  return artifact.architecture === null || artifact.architecture === architecture;
+  return (
+    artifact.architecture === null || artifact.architecture === architecture
+  );
 }
 
 function resolveManagedPasswallPackageList(snapshotPayload: unknown) {
@@ -389,12 +468,32 @@ function buildPasswallArtifactDescriptorMap(
   passwallArtifacts: ArtifactRow[],
   bundleMetadata: PasswallBundleMetadata,
 ) {
+  const latestMatchingReleaseRows = buildLatestPasswallArtifactMap(
+    passwallArtifacts.filter(
+      (artifact) =>
+        artifact.type === "passwall_package" &&
+        readPasswallArtifactReleaseTag(artifact) === bundleMetadata.releaseTag,
+    ),
+  );
+
   return new Map<string, PasswallPackageArtifactDescriptor>(
     [
       ...bundleMetadata.packageArtifacts,
-      ...resolvePasswallPackageArtifactsFromRows(passwallArtifacts),
+      ...resolvePasswallPackageArtifactsFromRows([
+        ...latestMatchingReleaseRows.values(),
+      ]),
     ].map((artifact) => [artifact.name, artifact]),
   );
+}
+
+function readPasswallArtifactReleaseTag(artifact: ArtifactRow) {
+  const metadata = artifact.metadata;
+  if (!metadata || typeof metadata !== "object") {
+    return null;
+  }
+
+  const value = "releaseTag" in metadata ? metadata.releaseTag : null;
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 function latestPasswallBundleArtifactForRouter(args: {
@@ -441,11 +540,14 @@ function resolvePasswallTargetMetadata(args: {
     latestPackageArtifacts,
     bundleMetadata,
   );
+  const recoveryDependencySet = new Set<string>(
+    bundleMetadata.recoveryDependencies,
+  );
   const packageList =
     updateScope === "managed-stack"
       ? resolveManagedPasswallPackageList(args.snapshotPayload).filter(
           (packageName) =>
-            !bundleMetadata.recoveryDependencies.includes(packageName) ||
+            !recoveryDependencySet.has(packageName) ||
             packageArtifactMap.has(packageName) ||
             !snapshotHasInstalledPackage(args.snapshotPayload, packageName),
         )
@@ -469,7 +571,7 @@ function resolvePasswallTargetMetadata(args: {
   const targetVersion =
     updateScope === "managed-stack"
       ? bundleMetadata.releaseTag
-      : packageArtifacts[0]?.artifactVersion ?? bundleMetadata.releaseTag;
+      : (packageArtifacts[0]?.artifactVersion ?? bundleMetadata.releaseTag);
   const originSource: PasswallArtifactOrigin = packageArtifacts.every(
     (artifact) => artifact.source === "upstream",
   )
@@ -477,8 +579,9 @@ function resolvePasswallTargetMetadata(args: {
     : "vectra";
   const primaryArtifact = packageArtifacts[0] ?? null;
   const passwallAppArtifact =
-    packageArtifacts.find((artifact) => artifact.name === "luci-app-passwall2") ??
-    primaryArtifact;
+    packageArtifacts.find(
+      (artifact) => artifact.name === "luci-app-passwall2",
+    ) ?? primaryArtifact;
   const scopedPackageName =
     updateScope === "scoped-package" && packageList.length === 1
       ? packageList[0]
@@ -487,18 +590,22 @@ function resolvePasswallTargetMetadata(args: {
     scopedPackageName === "xray-core"
       ? ("xray-built-in-first" as const)
       : ("managed-stack-package-first" as const);
+  const runtimeTarget =
+    typeof scopedPackageName === "string"
+      ? findPasswallRuntimeTarget(bundleMetadata, scopedPackageName)
+      : null;
   const packageTargetVersion =
     updateScope === "managed-stack"
-      ? passwallAppArtifact?.artifactVersion ??
+      ? (passwallAppArtifact?.artifactVersion ??
         primaryArtifact?.artifactVersion ??
-        bundleMetadata.releaseTag
-      : primaryArtifact?.artifactVersion ?? bundleMetadata.releaseTag;
+        bundleMetadata.releaseTag)
+      : (primaryArtifact?.artifactVersion ?? bundleMetadata.releaseTag);
   const runtimeTargetVersion =
-    strategy === "xray-built-in-first"
-      ? null
-      : scopedPackageName && primaryArtifact?.artifactVersion
-        ? primaryArtifact.artifactVersion
-        : null;
+    typeof scopedPackageName === "string"
+      ? (runtimeTarget?.remoteVersion ??
+        primaryArtifact?.artifactVersion ??
+        null)
+      : null;
 
   return {
     packageList,
@@ -511,11 +618,10 @@ function resolvePasswallTargetMetadata(args: {
     targetReleaseTag: bundleMetadata.releaseTag,
     originSource,
     fallbackPolicy: "adaptive-component-fallback" as const,
-    artifactUrl: latestBundleArtifact?.downloadUrl ?? primaryArtifact?.artifactUrl ?? null,
+    artifactUrl:
+      latestBundleArtifact?.downloadUrl ?? primaryArtifact?.artifactUrl ?? null,
     sha256:
-      latestBundleArtifact?.checksumSha256 ??
-      primaryArtifact?.sha256 ??
-      null,
+      latestBundleArtifact?.checksumSha256 ?? primaryArtifact?.sha256 ?? null,
     signatureUrl:
       latestBundleArtifact?.signatureUrl ??
       primaryArtifact?.signatureUrl ??
@@ -546,7 +652,9 @@ export const updateRouter = createTRPCRouter({
   profilesAndGroupsWorkspace: protectedProcedure.query(async ({ ctx }) => {
     const globalTemplate = await getOrCreateGlobalTemplate(ctx.db);
     return loadProfilesAndGroupsWorkspace({
-      templateConfig: passwallDesiredConfigSchema.parse(globalTemplate.rolloutConfig),
+      templateConfig: passwallDesiredConfigSchema.parse(
+        globalTemplate.rolloutConfig,
+      ),
       client: ctx.db,
     });
   }),
@@ -554,6 +662,165 @@ export const updateRouter = createTRPCRouter({
   versionDriftWorkspace: protectedProcedure.query(async ({ ctx }) => {
     return loadVersionDriftWorkspace(ctx.db);
   }),
+
+  launchProgress: protectedProcedure
+    .input(
+      z.object({
+        jobIds: z.array(z.string().uuid()).min(1).max(64),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const requestedJobIds = [...new Set(input.jobIds)];
+      const monitoredJobs = await ctx.db
+        .select()
+        .from(jobs)
+        .where(inArray(jobs.id, requestedJobIds))
+        .orderBy(desc(jobs.createdAt));
+
+      if (monitoredJobs.length === 0) {
+        return {
+          items: [],
+        };
+      }
+
+      const routerIds = [...new Set(monitoredJobs.map((job) => job.routerId))];
+      const routerRows = await ctx.db
+        .select()
+        .from(routers)
+        .where(inArray(routers.id, routerIds));
+      const routerById = new Map(routerRows.map((router) => [router.id, router]));
+
+      const snapshotRows = await ctx.db
+        .select()
+        .from(routerInventorySnapshots)
+        .where(inArray(routerInventorySnapshots.routerId, routerIds))
+        .orderBy(desc(routerInventorySnapshots.createdAt));
+      const latestSnapshotByRouterId = new Map<
+        string,
+        typeof routerInventorySnapshots.$inferSelect
+      >();
+      for (const snapshot of snapshotRows) {
+        if (!latestSnapshotByRouterId.has(snapshot.routerId)) {
+          latestSnapshotByRouterId.set(snapshot.routerId, snapshot);
+        }
+      }
+
+      const monitoredResults = await ctx.db
+        .select()
+        .from(jobResults)
+        .where(inArray(jobResults.jobId, requestedJobIds))
+        .orderBy(desc(jobResults.reportedAt));
+      const resultsByRouterId = new Map<
+        string,
+        Array<typeof jobResults.$inferSelect>
+      >();
+      for (const result of monitoredResults) {
+        const bucket = resultsByRouterId.get(result.routerId);
+        if (bucket) {
+          bucket.push(result);
+        } else {
+          resultsByRouterId.set(result.routerId, [result]);
+        }
+      }
+
+      const jobById = new Map(monitoredJobs.map((job) => [job.id, job]));
+      const itemByJobId = new Map<
+        string,
+        ReturnType<typeof buildRouterManagementTaskLog>[number] & {
+          routerId: string;
+          displayName: string;
+        }
+      >();
+
+      for (const routerId of routerIds) {
+        const routerJobs = monitoredJobs.filter((job) => job.routerId === routerId);
+        if (routerJobs.length === 0) {
+          continue;
+        }
+
+        const latestSnapshot = latestSnapshotByRouterId.get(routerId) ?? null;
+        const displayName = buildUpdateMonitorRouterDisplayName({
+          router: routerById.get(routerId),
+          snapshot: latestSnapshot,
+        });
+        const items = buildRouterManagementTaskLog({
+          jobs: routerJobs,
+          results: resultsByRouterId.get(routerId) ?? [],
+          installedControllerVersion: latestSnapshot?.controllerVersion ?? null,
+        });
+
+        for (const item of items) {
+          itemByJobId.set(item.jobId, {
+            ...item,
+            routerId,
+            displayName,
+          });
+        }
+      }
+
+      return {
+        items: requestedJobIds.flatMap((jobId) => {
+          const item = itemByJobId.get(jobId);
+          const job = jobById.get(jobId);
+          if (item) {
+            return [item];
+          }
+          if (!job) {
+            return [];
+          }
+
+          const latestSnapshot = latestSnapshotByRouterId.get(job.routerId) ?? null;
+          return [
+            {
+              jobId,
+              routerId: job.routerId,
+              displayName: buildUpdateMonitorRouterDisplayName({
+                router: routerById.get(job.routerId),
+                snapshot: latestSnapshot,
+              }),
+              kind: "passwall-update" as const,
+              label: "Задача обновления",
+              jobType: job.type,
+              updateScope:
+                typeof job.payload?.updateScope === "string"
+                  ? job.payload.updateScope
+                  : null,
+              jobState: job.state,
+              resultStatus: null,
+              createdAt: job.createdAt,
+              reportedAt: null,
+              summary: "Ожидаю первый ответ от роутера.",
+              error: null,
+              stdout: null,
+              stderr: null,
+              command:
+                typeof job.payload?.command === "string"
+                  ? job.payload.command
+                  : null,
+              artifactVersion:
+                typeof job.payload?.artifactVersion === "string"
+                  ? job.payload.artifactVersion
+                  : null,
+              targetVersion:
+                typeof job.payload?.targetVersion === "string"
+                  ? job.payload.targetVersion
+                  : null,
+              packageTargetVersion:
+                typeof job.payload?.packageTargetVersion === "string"
+                  ? job.payload.packageTargetVersion
+                  : null,
+              runtimeTargetVersion:
+                typeof job.payload?.runtimeTargetVersion === "string"
+                  ? job.payload.runtimeTargetVersion
+                  : null,
+              deliveryBlocked: false,
+              deliveryBlockedReason: null,
+              packageResults: [],
+            },
+          ];
+        }),
+      };
+    }),
 
   saveGlobalTemplate: protectedProcedure
     .input(
@@ -678,8 +945,8 @@ export const updateRouter = createTRPCRouter({
         jobId: string | null;
       }>;
 
-        for (const routerId of [...new Set(input.routerIds)]) {
-          try {
+      for (const routerId of [...new Set(input.routerIds)]) {
+        try {
           const job = await enqueuePasswallPackageUpdate({
             ctx,
             routerId,
@@ -697,7 +964,10 @@ export const updateRouter = createTRPCRouter({
           results.push({
             routerId,
             status: "failed",
-            reason: error instanceof Error ? error.message : "Не удалось поставить update job.",
+            reason:
+              error instanceof Error
+                ? error.message
+                : "Не удалось поставить update job.",
             jobId: null,
           });
         }
@@ -785,7 +1055,10 @@ export const updateRouter = createTRPCRouter({
           results.push({
             routerId,
             status: "failed",
-            reason: error instanceof Error ? error.message : "Не удалось поставить update job.",
+            reason:
+              error instanceof Error
+                ? error.message
+                : "Не удалось поставить update job.",
             jobId: null,
           });
         }
@@ -795,6 +1068,65 @@ export const updateRouter = createTRPCRouter({
         ok: true as const,
         results,
       };
+    }),
+
+  queueBulkRouterReboot: protectedProcedure
+    .input(
+      z.object({
+        routerIds: z.array(z.string().uuid()).min(1),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const results = [] as Array<{
+        routerId: string;
+        status: "queued" | "failed";
+        reason: string | null;
+        jobId: string | null;
+      }>;
+
+      for (const routerId of [...new Set(input.routerIds)]) {
+        try {
+          const job = await enqueueRouterRebootJob({
+            ctx,
+            routerId,
+          });
+
+          results.push({
+            routerId,
+            status: "queued",
+            reason: null,
+            jobId: job?.id ?? null,
+          });
+        } catch (error) {
+          results.push({
+            routerId,
+            status: "failed",
+            reason:
+              error instanceof Error
+                ? error.message
+                : "Не удалось поставить reboot job.",
+            jobId: null,
+          });
+        }
+      }
+
+      return {
+        ok: true as const,
+        results,
+      };
+    }),
+
+  queueRouterReboot: protectedProcedure
+    .input(
+      z.object({
+        routerId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return enqueueRouterRebootJob({
+        ctx,
+        routerId: input.routerId,
+      });
     }),
 
   queueControllerUpdate: protectedProcedure
@@ -843,6 +1175,46 @@ export const updateRouter = createTRPCRouter({
         .values({
           routerId: input.routerId,
           type: "refresh_subscriptions",
+          state: "queued",
+          dedupeKey,
+          payload: {},
+        })
+        .returning();
+
+      return job;
+    }),
+
+  queueSubscriptionsInspect: protectedProcedure
+    .input(
+      z.object({
+        routerId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      await getRouterForMutation(ctx, input.routerId);
+
+      const dedupeKey = `inspect_subscriptions:${input.routerId}`;
+      const [existingJob] = await ctx.db
+        .select()
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.routerId, input.routerId),
+            eq(jobs.dedupeKey, dedupeKey),
+            inArray(jobs.state, ["queued", "delivered", "running"]),
+          ),
+        )
+        .limit(1);
+
+      if (existingJob) {
+        return existingJob;
+      }
+
+      const [job] = await ctx.db
+        .insert(jobs)
+        .values({
+          routerId: input.routerId,
+          type: "inspect_subscriptions",
           state: "queued",
           dedupeKey,
           payload: {},

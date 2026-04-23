@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"vectra-controller-agent/internal/controlplane"
+	"vectra-controller-agent/internal/recovery"
 )
 
 func TestSaveAndLoadPreservesJobJournal(t *testing.T) {
@@ -14,6 +15,19 @@ func TestSaveAndLoadPreservesJobJournal(t *testing.T) {
 		RouterID:         "router-123",
 		AgentToken:       "token-abc",
 		DeviceIdentifier: "vectra-test",
+		ControlPlaneRecovery: recovery.State{
+			LastSuccessfulControlPlaneAt: "2026-04-22T09:00:00Z",
+			OutageStartedAt:              "2026-04-22T10:00:00Z",
+			Phase:                        recovery.PhasePostRebootCheck,
+			LastControllerRestartAt:      "2026-04-22T10:05:00Z",
+			LastAutoRebootAt:             "2026-04-22T10:15:00Z",
+			LastPasswallRetryAt:          "2026-04-22T10:20:00Z",
+			AwaitingOperator:             true,
+			LastPanelStatus:              recovery.StatusBlocked,
+			LastRUStatus:                 recovery.StatusReachable,
+			LastForeignStatus:            recovery.StatusBlocked,
+			LastActionReason:             "waiting for operator",
+		},
 		CurrentJob: CurrentJob{
 			JobID:                     "job-123",
 			JobType:                   "update_controller",
@@ -54,5 +68,11 @@ func TestSaveAndLoadPreservesJobJournal(t *testing.T) {
 	}
 	if got, want := loaded.PendingJobResult.Status, "success"; got != want {
 		t.Fatalf("pending job result status = %q, want %q", got, want)
+	}
+	if got, want := loaded.ControlPlaneRecovery.Phase, recovery.PhasePostRebootCheck; got != want {
+		t.Fatalf("control plane recovery phase = %q, want %q", got, want)
+	}
+	if !loaded.ControlPlaneRecovery.AwaitingOperator {
+		t.Fatal("expected awaiting operator flag to survive round-trip")
 	}
 }

@@ -25,14 +25,14 @@ export default async function LoginPage({
 
   return (
     <section className="mx-auto flex min-h-[70vh] w-full max-w-xl items-center">
-      <div className="w-full rounded-[2.5rem] border border-white/10 bg-[linear-gradient(135deg,rgba(12,18,31,0.98),rgba(20,29,49,0.95),rgba(43,78,59,0.42))] p-8 shadow-[0_30px_90px_rgba(0,0,0,0.45)]">
+      <div className="w-full rounded-[2.5rem] border border-white/10 bg-[linear-gradient(135deg,rgba(12,18,31,0.98),rgba(20,29,49,0.95),rgba(43,78,59,0.42))] p-5 shadow-[0_30px_90px_rgba(0,0,0,0.45)] sm:p-8">
         <p className="vectra-kicker text-slate-500">
           Вход оператора
         </p>
-        <h1 className="mt-3 text-4xl font-semibold tracking-[-0.03em] text-white">
+        <h1 className="mt-3 text-3xl font-semibold tracking-[-0.03em] text-white sm:text-4xl">
           Панель Vectra
         </h1>
-        <p className="mt-4 text-base leading-8 text-slate-300">
+        <p className="mt-4 text-sm leading-7 text-slate-300 sm:text-base sm:leading-8">
           Панель рассчитана только на наших операторов. Войдите под
           операторскими учётными данными, чтобы управлять сертифицированными
           роутерами.

@@ -11,6 +11,12 @@ import {
 
 import { ActionStrip } from "~/components/action-strip";
 import { DataTable, DataTableEmpty } from "~/components/data-table";
+import {
+  MobileCard,
+  MobileCardField,
+  MobileCardGrid,
+  MobileCardList,
+} from "~/components/mobile-records";
 import { Panel } from "~/components/panel";
 import { StatusTile } from "~/components/status-tile";
 import { TabBar } from "~/components/tab-bar";
@@ -392,61 +398,6 @@ export function GlobalTemplateRolloutWorkspace({
         />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-        <Panel eyebrow="Операторский порядок" title="Сначала эталон, потом rollout" tone="muted" compact>
-          <div className="grid gap-3 md:grid-cols-3">
-            {[
-              {
-                title: "Правите эталон",
-                body: "Install baseline остаётся для новых роутеров, fleet-template — для уже подключённого парка.",
-              },
-              {
-                title: "Проверяете замечания",
-                body: "Если локальная проверка видит подписки, реальные ноды или ошибки JSON/UCI, сначала правьте шаблон.",
-              },
-              {
-                title: "Потом выбираете окна",
-                body: "Можно выпустить только drafts без apply, чтобы не превращать подготовку в немедленное массовое действие.",
-              },
-            ].map((item) => (
-              <div
-                key={item.title}
-                className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
-              >
-                <p className="text-sm font-semibold text-white">{item.title}</p>
-                <p className="mt-2 text-sm leading-6 text-slate-300">{item.body}</p>
-              </div>
-            ))}
-          </div>
-        </Panel>
-
-        <Panel eyebrow="Текущий снимок" title="Что важно перед действием" tone="muted" compact>
-          <div className="space-y-3">
-            <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3">
-              <p className="vectra-kicker text-slate-500">Эталон</p>
-              <p className="mt-2 text-sm font-semibold text-white">
-                {workspace.installBaselineIssues.length > 0 ||
-                workspace.rolloutTemplateIssues.length > 0
-                  ? "Есть замечания перед сохранением"
-                  : "Можно сохранять и готовить rollout"}
-              </p>
-              <p className="mt-2 text-sm leading-6 text-slate-400">
-                Обновлено {formatDateTime(workspace.template.updatedAt)}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3">
-              <p className="vectra-kicker text-slate-500">Подходящие роутеры</p>
-              <p className="mt-2 text-sm font-semibold text-white">
-                {workspace.summary.eligibleRouterCount} готовы к массовой операции
-              </p>
-              <p className="mt-2 text-sm leading-6 text-slate-400">
-                Только approved роутеры на разрешённой pilot/certified платформе.
-              </p>
-            </div>
-          </div>
-        </Panel>
-      </div>
-
       <Panel
         eyebrow="Baseline"
         title="Рабочая поверхность"
@@ -504,10 +455,6 @@ export function GlobalTemplateRolloutWorkspace({
 
           {activeTab === "baseline" ? (
             <div className="space-y-4">
-              <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
-                Здесь два связанных, но разных слоя: <strong className="text-white">Install baseline</strong> для новых роутеров и <strong className="text-white">Fleet-template</strong> для уже подключённого парка.
-              </div>
-
               <ActionStrip justify="start">
                 <button
                   type="button"
@@ -537,21 +484,47 @@ export function GlobalTemplateRolloutWorkspace({
                   />
                 </div>
               </ActionStrip>
+
+              <div className="flex flex-wrap gap-2 text-xs text-slate-300 sm:text-sm">
+                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
+                  Обновлено {formatDateTime(workspace.template.updatedAt)}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
+                  {workspace.installBaselineIssues.length > 0 ||
+                  workspace.rolloutTemplateIssues.length > 0
+                    ? "Есть замечания перед сохранением"
+                    : "Можно сохранять и готовить rollout"}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
+                  {workspace.summary.eligibleRouterCount} готовы к рассылке
+                </span>
+              </div>
+
               <div className="space-y-3">
-                <TabBar
-                  ariaLabel="Выбор редактора эталона"
-                  items={baselineEditorTabs.map((item) => ({
-                    id: item.id,
-                    label: item.label,
-                    active: baselineEditor === item.id,
-                    onSelect: () => setBaselineEditor(item.id),
-                  }))}
-                  variant="secondary"
-                />
+                <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="min-w-0 lg:flex-1">
+                      <TabBar
+                        ariaLabel="Выбор редактора эталона"
+                        items={baselineEditorTabs.map((item) => ({
+                          id: item.id,
+                          label: item.label,
+                          active: baselineEditor === item.id,
+                          onSelect: () => setBaselineEditor(item.id),
+                        }))}
+                        variant="secondary"
+                      />
+                    </div>
+                    <p className="max-w-xl text-sm leading-6 text-slate-300">
+                      {activeBaselineEditor.id === "install"
+                        ? "Новые роутеры получают этот UCI из раздела «Установка»."
+                        : "Текущий парк получает этот JSON через массовую рассылку."}
+                    </p>
+                  </div>
+                </div>
 
                 <TemplateEditorPane
                   title={activeBaselineEditor.title}
-                  description={activeBaselineEditor.description}
                   value={
                     activeBaselineEditor.id === "install"
                       ? installBaselineUci
@@ -570,9 +543,9 @@ export function GlobalTemplateRolloutWorkspace({
 
           {activeTab === "rollout" ? (
             <div className="space-y-4">
-              <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
+              <p className="text-sm leading-6 text-slate-300">
                 Сначала выберите подходящие роутеры. Для безопасного окна можно подготовить только drafts без apply; очередь применения остаётся отдельным, более рискованным действием.
-              </div>
+              </p>
 
               <ActionStrip justify="start">
                 <button
@@ -634,86 +607,191 @@ export function GlobalTemplateRolloutWorkspace({
                 </label>
               </div>
 
-              <DataTable
+              <MobileCardList
                 title="Цели для массовой рассылки"
-                columns={[
-                  { key: "pick", label: "Выбор", className: "w-16" },
-                  { key: "router", label: "Роутер" },
-                  { key: "state", label: "Статус" },
-                  { key: "selected", label: "Текущий node" },
-                  { key: "support", label: "Поддержка" },
-                  { key: "reason", label: "Ограничение" },
-                ]}
+                hint="Телефонный режим"
               >
                 {workspace.rolloutTargets.length > 0 ? (
                   workspace.rolloutTargets.map((target) => {
                     const selected = selectedRouterIds.includes(target.id);
 
                     return (
-                      <tr
+                      <MobileCard
                         key={target.id}
-                        className={`border-b border-white/6 ${
-                          selected ? "bg-white/[0.04]" : ""
-                        }`}
+                        tone={
+                          selected
+                            ? "accent"
+                            : target.rolloutEligible
+                              ? "default"
+                              : "warning"
+                        }
                       >
-                        <td className="px-3 py-3 align-top">
-                          <input
-                            type="checkbox"
-                            aria-label={`Выбрать ${target.displayName} для массовой рассылки`}
-                            checked={selected}
-                            disabled={!target.rolloutEligible}
-                            onChange={(event) =>
-                              setSelectedRouterIds((previous) => {
-                                if (event.target.checked) {
-                                  return [...new Set([...previous, target.id])];
-                                }
-                                return previous.filter(
-                                  (routerId) => routerId !== target.id,
-                                );
-                              })
-                            }
-                          />
-                        </td>
-                        <td className="px-3 py-3 align-top text-sm text-slate-100">
-                          <Link
-                            href={`/routers/${target.id}`}
-                            className="font-medium text-white underline decoration-white/10 underline-offset-4"
+                        <div className="flex items-start justify-between gap-3">
+                          <label className="inline-flex min-w-0 items-start gap-3">
+                            <input
+                              type="checkbox"
+                              aria-label={`Выбрать ${target.displayName} для массовой рассылки`}
+                              checked={selected}
+                              disabled={!target.rolloutEligible}
+                              onChange={(event) =>
+                                setSelectedRouterIds((previous) => {
+                                  if (event.target.checked) {
+                                    return [...new Set([...previous, target.id])];
+                                  }
+                                  return previous.filter(
+                                    (routerId) => routerId !== target.id,
+                                  );
+                                })
+                              }
+                              className="mt-1"
+                            />
+                            <div className="min-w-0">
+                              <Link
+                                href={`/routers/${target.id}`}
+                                className="text-sm font-semibold text-white underline decoration-white/10 underline-offset-4"
+                              >
+                                {target.displayName}
+                              </Link>
+                              <p className="mt-1 text-xs leading-5 text-slate-400">
+                                {target.hostname ?? target.deviceIdentifier} ·{" "}
+                                {target.reachable
+                                  ? "на связи"
+                                  : "нет свежей связи"}{" "}
+                                · {formatDateTime(target.lastSeenAt)}
+                              </p>
+                            </div>
+                          </label>
+                          <span
+                            className={`rounded-full border px-2.5 py-1 text-[11px] ${
+                              target.rolloutEligible
+                                ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100"
+                                : "border-amber-400/25 bg-amber-500/10 text-amber-100"
+                            }`}
                           >
-                            {target.displayName}
-                          </Link>
-                          <p className="mt-1 text-xs leading-6 text-slate-400">
-                            {target.hostname ?? target.deviceIdentifier} ·{" "}
-                            {target.reachable ? "на связи" : "нет свежей связи"} ·{" "}
-                            {formatDateTime(target.lastSeenAt)}
-                          </p>
-                        </td>
-                        <td className="px-3 py-3 align-top text-sm text-slate-200">
-                          {target.rolloutEligible ? "готов к рассылке" : "заблокирован"}
-                          <p className="mt-1 text-xs leading-6 text-slate-400">
-                            import: {formatImportState(target.importState)}
-                          </p>
-                        </td>
-                        <td className="px-3 py-3 align-top text-sm text-slate-300">
-                          {target.selectedNodeLabel ?? "не выбрана"}
-                        </td>
-                        <td className="px-3 py-3 align-top text-sm text-slate-300">
-                          {target.supportTitle}
-                          <p className="mt-1 text-xs leading-6 text-slate-400">
-                            {formatSupportState(target.supportState)}
-                          </p>
-                        </td>
-                        <td className="px-3 py-3 align-top text-sm text-slate-400">
-                          {target.blockedReason ?? "можно готовить rollout"}
-                        </td>
-                      </tr>
+                            {target.rolloutEligible
+                              ? "готов к рассылке"
+                              : "заблокирован"}
+                          </span>
+                        </div>
+
+                        <div className="mt-3">
+                          <MobileCardGrid>
+                            <MobileCardField
+                              label="Import"
+                              value={formatImportState(target.importState)}
+                            />
+                            <MobileCardField
+                              label="Текущий node"
+                              value={target.selectedNodeLabel ?? "не выбрана"}
+                            />
+                            <MobileCardField
+                              label="Поддержка"
+                              value={target.supportTitle}
+                              detail={formatSupportState(target.supportState)}
+                            />
+                            <MobileCardField
+                              label="Ограничение"
+                              value={
+                                target.blockedReason ?? "можно готовить rollout"
+                              }
+                            />
+                          </MobileCardGrid>
+                        </div>
+                      </MobileCard>
                     );
                   })
                 ) : (
-                  <DataTableEmpty colSpan={6}>
-                    Роутеров пока нет. Сначала подключите устройства через `Установка`.
-                  </DataTableEmpty>
+                  <MobileCard>
+                    <p className="text-sm leading-7 text-slate-300">
+                      Роутеров пока нет. Сначала подключите устройства через{" "}
+                      <code>Установка</code>.
+                    </p>
+                  </MobileCard>
                 )}
-              </DataTable>
+              </MobileCardList>
+
+              <div className="max-lg:hidden">
+                <DataTable
+                  title="Цели для массовой рассылки"
+                  columns={[
+                    { key: "pick", label: "Выбор", className: "w-16" },
+                    { key: "router", label: "Роутер" },
+                    { key: "state", label: "Статус" },
+                    { key: "selected", label: "Текущий node" },
+                    { key: "support", label: "Поддержка" },
+                    { key: "reason", label: "Ограничение" },
+                  ]}
+                >
+                  {workspace.rolloutTargets.length > 0 ? (
+                    workspace.rolloutTargets.map((target) => {
+                      const selected = selectedRouterIds.includes(target.id);
+
+                      return (
+                        <tr
+                          key={target.id}
+                          className={`border-b border-white/6 ${
+                            selected ? "bg-white/[0.04]" : ""
+                          }`}
+                        >
+                          <td className="px-3 py-3 align-top">
+                            <input
+                              type="checkbox"
+                              aria-label={`Выбрать ${target.displayName} для массовой рассылки`}
+                              checked={selected}
+                              disabled={!target.rolloutEligible}
+                              onChange={(event) =>
+                                setSelectedRouterIds((previous) => {
+                                  if (event.target.checked) {
+                                    return [...new Set([...previous, target.id])];
+                                  }
+                                  return previous.filter(
+                                    (routerId) => routerId !== target.id,
+                                  );
+                                })
+                              }
+                            />
+                          </td>
+                          <td className="px-3 py-3 align-top text-sm text-slate-100">
+                            <Link
+                              href={`/routers/${target.id}`}
+                              className="font-medium text-white underline decoration-white/10 underline-offset-4"
+                            >
+                              {target.displayName}
+                            </Link>
+                            <p className="mt-1 text-xs leading-6 text-slate-400">
+                              {target.hostname ?? target.deviceIdentifier} ·{" "}
+                              {target.reachable ? "на связи" : "нет свежей связи"} ·{" "}
+                              {formatDateTime(target.lastSeenAt)}
+                            </p>
+                          </td>
+                          <td className="px-3 py-3 align-top text-sm text-slate-200">
+                            {target.rolloutEligible ? "готов к рассылке" : "заблокирован"}
+                            <p className="mt-1 text-xs leading-6 text-slate-400">
+                              import: {formatImportState(target.importState)}
+                            </p>
+                          </td>
+                          <td className="px-3 py-3 align-top text-sm text-slate-300">
+                            {target.selectedNodeLabel ?? "не выбрана"}
+                          </td>
+                          <td className="px-3 py-3 align-top text-sm text-slate-300">
+                            {target.supportTitle}
+                            <p className="mt-1 text-xs leading-6 text-slate-400">
+                              {formatSupportState(target.supportState)}
+                            </p>
+                          </td>
+                          <td className="px-3 py-3 align-top text-sm text-slate-400">
+                            {target.blockedReason ?? "можно готовить rollout"}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  ) : (
+                    <DataTableEmpty colSpan={6}>
+                      Роутеров пока нет. Сначала подключите устройства через `Установка`.
+                    </DataTableEmpty>
+                  )}
+                </DataTable>
+              </div>
 
               {lastRolloutResult ? (
                 <div className="space-y-3 rounded-2xl border border-white/10 bg-[rgba(10,14,20,0.72)] px-3 py-3 sm:px-4">
@@ -727,46 +805,104 @@ export function GlobalTemplateRolloutWorkspace({
                     </div>
                   ) : null}
 
-                  <DataTable
-                    columns={[
-                      { key: "router", label: "Роутер" },
-                      { key: "status", label: "Результат" },
-                      { key: "revision", label: "Draft" },
-                      { key: "job", label: "Apply job" },
-                      { key: "reason", label: "Комментарий" },
-                    ]}
-                  >
+                  <MobileCardList title="Результаты рассылки" hint="Телефонный режим">
                     {lastRolloutResult.results.length > 0 ? (
                       lastRolloutResult.results.map((result) => (
-                        <tr key={result.routerId} className="border-b border-white/6">
-                          <td className="px-3 py-3 align-top text-sm text-slate-100">
+                        <MobileCard
+                          key={result.routerId}
+                          tone={
+                            result.status === "queued" || result.status === "prepared"
+                              ? "good"
+                              : result.status === "blocked"
+                                ? "warning"
+                                : result.status === "failed"
+                                  ? "danger"
+                                  : "default"
+                          }
+                        >
+                          <div className="flex items-start justify-between gap-3">
                             <Link
                               href={`/routers/${result.routerId}`}
-                              className="font-medium text-white underline decoration-white/10 underline-offset-4"
+                              className="min-w-0 text-sm font-semibold text-white underline decoration-white/10 underline-offset-4"
                             >
                               {result.displayName}
                             </Link>
-                          </td>
-                          <td className="px-3 py-3 align-top text-sm text-slate-200">
-                            {result.status}
-                          </td>
-                          <td className="px-3 py-3 align-top font-[family:var(--font-plex-mono)] text-xs text-slate-300">
-                            {result.revisionId ?? "—"}
-                          </td>
-                          <td className="px-3 py-3 align-top font-[family:var(--font-plex-mono)] text-xs text-slate-300">
-                            {result.jobId ?? "—"}
-                          </td>
-                          <td className="px-3 py-3 align-top text-sm text-slate-400">
+                            <span className="rounded-full border border-white/10 bg-black/10 px-2.5 py-1 text-[11px] text-slate-300">
+                              {result.status}
+                            </span>
+                          </div>
+
+                          <div className="mt-3">
+                            <MobileCardGrid>
+                              <MobileCardField
+                                label="Draft"
+                                value={result.revisionId ?? "—"}
+                                mono
+                              />
+                              <MobileCardField
+                                label="Apply job"
+                                value={result.jobId ?? "—"}
+                                mono
+                              />
+                            </MobileCardGrid>
+                          </div>
+
+                          <p className="mt-3 text-sm leading-6 text-slate-300">
                             {result.reason ?? "без ошибок"}
-                          </td>
-                        </tr>
+                          </p>
+                        </MobileCard>
                       ))
                     ) : (
-                      <DataTableEmpty colSpan={5}>
-                        Результатов пока нет.
-                      </DataTableEmpty>
+                      <MobileCard>
+                        <p className="text-sm leading-7 text-slate-300">
+                          Результатов пока нет.
+                        </p>
+                      </MobileCard>
                     )}
-                  </DataTable>
+                  </MobileCardList>
+
+                  <div className="max-lg:hidden">
+                    <DataTable
+                      columns={[
+                        { key: "router", label: "Роутер" },
+                        { key: "status", label: "Результат" },
+                        { key: "revision", label: "Draft" },
+                        { key: "job", label: "Apply job" },
+                        { key: "reason", label: "Комментарий" },
+                      ]}
+                    >
+                      {lastRolloutResult.results.length > 0 ? (
+                        lastRolloutResult.results.map((result) => (
+                          <tr key={result.routerId} className="border-b border-white/6">
+                            <td className="px-3 py-3 align-top text-sm text-slate-100">
+                              <Link
+                                href={`/routers/${result.routerId}`}
+                                className="font-medium text-white underline decoration-white/10 underline-offset-4"
+                              >
+                                {result.displayName}
+                              </Link>
+                            </td>
+                            <td className="px-3 py-3 align-top text-sm text-slate-200">
+                              {result.status}
+                            </td>
+                            <td className="px-3 py-3 align-top font-[family:var(--font-plex-mono)] text-xs text-slate-300">
+                              {result.revisionId ?? "—"}
+                            </td>
+                            <td className="px-3 py-3 align-top font-[family:var(--font-plex-mono)] text-xs text-slate-300">
+                              {result.jobId ?? "—"}
+                            </td>
+                            <td className="px-3 py-3 align-top text-sm text-slate-400">
+                              {result.reason ?? "без ошибок"}
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <DataTableEmpty colSpan={5}>
+                          Результатов пока нет.
+                        </DataTableEmpty>
+                      )}
+                    </DataTable>
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -818,6 +954,68 @@ export function GlobalTemplateRolloutWorkspace({
           ) : null}
         </div>
       </Panel>
+
+      <details className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)]">
+        <summary className="cursor-pointer list-none px-4 py-3 sm:px-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="vectra-kicker text-slate-500">Справка</p>
+              <p className="mt-1 text-sm font-medium text-white">
+                Порядок работы, rollout-контекст и guarded firmware path
+              </p>
+            </div>
+            <span className="text-xs text-slate-400">раскрыть</span>
+          </div>
+        </summary>
+
+        <div className="space-y-4 border-t border-white/10 px-4 py-4 sm:px-5">
+          <div className="grid gap-3 md:grid-cols-3">
+            {[
+              {
+                title: "Правите эталон",
+                body: "Install baseline остаётся для новых роутеров, fleet-template — для уже подключённого парка.",
+              },
+              {
+                title: "Проверяете замечания",
+                body: "Если локальная проверка видит подписки, реальные ноды или ошибки JSON/UCI, сначала правьте шаблон.",
+              },
+              {
+                title: "Потом выбираете окно",
+                body: "Можно выпустить только drafts без apply, если не хотите превращать подготовку в немедленное массовое действие.",
+              },
+            ].map((item) => (
+              <div
+                key={item.title}
+                className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
+              >
+                <p className="text-sm font-semibold text-white">{item.title}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-300">{item.body}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
+            <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3">
+              <p className="vectra-kicker text-slate-500">Текущий снимок</p>
+              <p className="mt-2 text-sm font-semibold text-white">
+                {workspace.summary.eligibleRouterCount} роутеров подходят для рассылки
+              </p>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                Только approved роутеры на разрешённой pilot/certified платформе. Эталон обновлён{" "}
+                {formatDateTime(workspace.template.updatedAt)}.
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
+              Прошивки остаются отдельным guarded-путём: сначала проверка через{" "}
+              <code>sysupgrade -T</code> или <code>ubus validate_firmware_image</code>,
+              затем точечное действие по совместимой плате и layout. Это
+              справка для проверки перед firmware-операциями, а не часть
+              обычного baseline editor.
+            </div>
+          </div>
+        </div>
+      </details>
     </div>
   );
 }
@@ -830,7 +1028,7 @@ function TemplateEditorPane({
   rows,
 }: {
   title: string;
-  description: string;
+  description?: string;
   value: string;
   onChange: (value: string) => void;
   rows: number;
@@ -844,9 +1042,11 @@ function TemplateEditorPane({
     <div className="space-y-3">
       <div>
         <p className="vectra-kicker text-slate-500">{title}</p>
-        <p className="mt-1 text-sm leading-6 text-slate-400 sm:leading-6">
-          {description}
-        </p>
+        {description ? (
+          <p className="mt-1 text-sm leading-6 text-slate-400 sm:leading-6">
+            {description}
+          </p>
+        ) : null}
       </div>
       <label htmlFor={editorId} className="sr-only">
         {title}

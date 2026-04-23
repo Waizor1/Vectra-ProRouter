@@ -85,6 +85,106 @@ export function deleteNode(config: PasswallDesiredConfig, index: number) {
   return next;
 }
 
+function pruneNodeReferenceExtras(
+  extras: Record<string, string | number | boolean | string[] | null>,
+  removedNodeIds: Set<string>,
+) {
+  const nextExtras = { ...extras };
+
+  for (const [key, value] of Object.entries(nextExtras)) {
+    if (typeof value !== "string") {
+      continue;
+    }
+
+    const targetsNodeReference =
+      key === "default_node" || key === "to_node" || key.endsWith("_proxy_tag");
+    if (!targetsNodeReference) {
+      continue;
+    }
+
+    if (removedNodeIds.has(value)) {
+      delete nextExtras[key];
+    }
+  }
+
+  return nextExtras;
+}
+
+export function pruneNodes(config: PasswallDesiredConfig, nodeIds: string[]) {
+  const removedNodeIds = new Set(nodeIds);
+  if (removedNodeIds.size === 0) {
+    return cloneConfig(config);
+  }
+
+  const next = cloneConfig(config);
+  next.nodes = next.nodes
+    .filter((node) => !removedNodeIds.has(node.id))
+    .map((node) => ({
+      ...node,
+      extras: pruneNodeReferenceExtras(node.extras, removedNodeIds),
+    }));
+
+  const fallbackNodeId = next.nodes[0]?.id;
+
+  if (
+    next.basicSettings.main.selectedNodeId &&
+    removedNodeIds.has(next.basicSettings.main.selectedNodeId)
+  ) {
+    next.basicSettings.main.selectedNodeId = fallbackNodeId;
+  }
+
+  next.basicSettings.socks = next.basicSettings.socks
+    .map((entry) => {
+      const nextBackupNodeIds = [
+        ...new Set(
+          entry.autoswitchBackupNodeIds.filter(
+            (nodeId) =>
+              !removedNodeIds.has(nodeId) && nodeId !== fallbackNodeId,
+          ),
+        ),
+      ];
+
+      if (!removedNodeIds.has(entry.nodeId)) {
+        return {
+          ...entry,
+          autoswitchBackupNodeIds: nextBackupNodeIds,
+        };
+      }
+
+      if (!fallbackNodeId) {
+        return null;
+      }
+
+      return {
+        ...entry,
+        nodeId: fallbackNodeId,
+        autoswitchBackupNodeIds: nextBackupNodeIds,
+      };
+    })
+    .filter(
+      (
+        entry,
+      ): entry is PasswallDesiredConfig["basicSettings"]["socks"][number] =>
+        entry !== null,
+    );
+
+  next.basicSettings.shuntRules = next.basicSettings.shuntRules.map((rule) => ({
+    ...rule,
+    outboundNodeId:
+      rule.outboundNodeId && removedNodeIds.has(rule.outboundNodeId)
+        ? undefined
+        : rule.outboundNodeId,
+  }));
+  syncShuntRules(next);
+
+  next.subscriptions.items = next.subscriptions.items.map((item) => ({
+    ...item,
+    extras: pruneNodeReferenceExtras(item.extras, removedNodeIds),
+  }));
+
+  return next;
+}
+
 export function moveNodeToTop(config: PasswallDesiredConfig, index: number) {
   const next = cloneConfig(config);
   const [node] = next.nodes.splice(index, 1);

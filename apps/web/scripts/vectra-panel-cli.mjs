@@ -71,6 +71,7 @@ const operatorTrpcCatalog = {
       "queueBulkPasswallPackageUpdate",
       "queueBulkXrayUpdate",
       "queueBulkControllerUpdate",
+      "queueBulkRouterReboot",
       "queueControllerUpdate",
       "queueSubscriptionsRefresh",
       "queueRulesRefresh",

@@ -241,7 +241,7 @@ describe("buildLastControllerUpdateAttempt", () => {
           state: "succeeded",
           payload: {
             purpose: "controller-self-update",
-            artifactVersion: "0.1.12-r13",
+            artifactVersion: "0.1.13-r1",
             command: "opkg install --force-reinstall ...",
           },
         }),
@@ -252,7 +252,7 @@ describe("buildLastControllerUpdateAttempt", () => {
           jobId: "controller-terminal-job",
           status: "success",
           payload: {
-            stdout: "controller self-update to 0.1.12-r13 queued",
+            stdout: "controller self-update to 0.1.13-r1 queued",
           },
         }),
       ],
@@ -262,8 +262,8 @@ describe("buildLastControllerUpdateAttempt", () => {
     expect(attempt).toMatchObject({
       jobState: "succeeded",
       resultStatus: "success",
-      artifactVersion: "0.1.12-r13",
-      summary: "controller self-update to 0.1.12-r13 queued",
+      artifactVersion: "0.1.13-r1",
+      summary: "controller self-update to 0.1.13-r1 queued",
     });
   });
 });
@@ -706,7 +706,7 @@ describe("buildRouterManagementTaskLog", () => {
           state: "succeeded",
           payload: {
             purpose: "controller-self-update",
-            artifactVersion: "0.1.12-r13",
+            artifactVersion: "0.1.13-r1",
             command: "opkg install --force-reinstall ...",
           },
         }),
@@ -716,7 +716,7 @@ describe("buildRouterManagementTaskLog", () => {
           jobId: "terminal-controller-job",
           status: "success",
           payload: {
-            stdout: "controller self-update to 0.1.12-r13 queued",
+            stdout: "controller self-update to 0.1.13-r1 queued",
           },
         }),
       ],
@@ -727,7 +727,7 @@ describe("buildRouterManagementTaskLog", () => {
       label: "Self-update controller",
       resultStatus: "success",
       command: "opkg install --force-reinstall ...",
-      summary: "controller self-update to 0.1.12-r13 queued",
+      summary: "controller self-update to 0.1.13-r1 queued",
     });
   });
 
@@ -764,6 +764,43 @@ describe("buildRouterManagementTaskLog", () => {
       command:
         "set -eu; (sleep 5; /sbin/reboot) >/tmp/vectra-router-reboot.log 2>&1 &; printf 'router reboot scheduled\\n'",
       summary: "router reboot scheduled",
+    });
+  });
+
+  it("treats router hostname update as a dedicated task-log item", () => {
+    const items = buildRouterManagementTaskLog({
+      jobs: [
+        createJob({
+          id: "terminal-hostname-job",
+          type: "run_terminal_command",
+          state: "succeeded",
+          payload: {
+            purpose: "router-hostname-update",
+            hostname: "andrey-livingroom",
+            command:
+              'uci set system.@system[0].hostname="$new_hostname"\nuci commit system',
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          jobId: "terminal-hostname-job",
+          status: "success",
+          payload: {
+            hostnameAfter: "andrey-livingroom",
+            stdout: "hostname updated to andrey-livingroom",
+          },
+        }),
+      ],
+    });
+
+    expect(items[0]).toMatchObject({
+      kind: "router-hostname-update",
+      label: "Смена OpenWrt hostname",
+      resultStatus: "success",
+      command:
+        'uci set system.@system[0].hostname="$new_hostname"\nuci commit system',
+      summary: "hostname updated to andrey-livingroom",
     });
   });
 
@@ -1036,5 +1073,208 @@ describe("mergeCurrentLiveRouterDataIntoDraftConfig", () => {
 
     expect(merged.basicSettings.main.selectedNodeId).toBe("myshunt");
     expect(merged.subscriptions.items).toEqual(draftConfig.subscriptions.items);
+  });
+
+  it("rebinds node references by label when live runtime node ids rotate", () => {
+    const draftConfig = structuredClone(baseConfig);
+    draftConfig.basicSettings.main.selectedNodeId = "old-eu";
+    draftConfig.basicSettings.socks = [
+      {
+        id: "managed-socks",
+        enabled: true,
+        nodeId: "old-eu",
+        port: 2080,
+        bindLocal: true,
+        autoswitchBackupNodeIds: ["old-us"],
+        extras: {},
+      },
+    ];
+    draftConfig.basicSettings.shuntRules = [
+      {
+        id: "route_us",
+        label: "US route",
+        outboundNodeId: "old-us",
+        domainRules: [],
+        ipRules: [],
+        extras: {},
+      },
+    ];
+    draftConfig.ruleManage.shuntRules = structuredClone(
+      draftConfig.basicSettings.shuntRules,
+    );
+    draftConfig.nodes = [
+      {
+        id: "myshunt",
+        label: "myshunt",
+        protocol: "shunt",
+        enabled: true,
+        group: "default",
+        tags: [],
+        extras: {
+          default_node: "old-eu",
+          route_us_proxy_tag: "old-us",
+        },
+      },
+      {
+        id: "old-eu",
+        label: "Europe",
+        protocol: "vless",
+        enabled: true,
+        group: "Managed",
+        address: "eu-old.example.invalid",
+        port: 443,
+        transport: "ws",
+        tls: true,
+        tags: [],
+        extras: {
+          add_mode: "2",
+        },
+      },
+      {
+        id: "old-us",
+        label: "United States",
+        protocol: "vless",
+        enabled: true,
+        group: "Managed",
+        address: "us-old.example.invalid",
+        port: 443,
+        transport: "ws",
+        tls: true,
+        tags: [],
+        extras: {
+          add_mode: "2",
+        },
+      },
+    ];
+    draftConfig.subscriptions.items = [
+      {
+        id: "@subscribe_list[0]",
+        remark: "Managed",
+        url: "https://managed.example.invalid/sub",
+        enabled: true,
+        addMode: "2",
+        metadata: {},
+        extras: {
+          to_node: "old-us",
+        },
+      },
+    ];
+
+    const currentLiveConfig = structuredClone(baseConfig);
+    currentLiveConfig.basicSettings.main.selectedNodeId = "new-eu";
+    currentLiveConfig.nodes = [
+      currentLiveConfig.nodes[0]!,
+      {
+        id: "new-eu",
+        label: "Europe",
+        protocol: "vless",
+        enabled: true,
+        group: "Managed",
+        address: "eu-new.example.invalid",
+        port: 443,
+        transport: "xhttp",
+        tls: true,
+        tags: [],
+        extras: {
+          add_mode: "2",
+        },
+      },
+      {
+        id: "new-us",
+        label: "United States",
+        protocol: "vless",
+        enabled: true,
+        group: "Managed",
+        address: "us-new.example.invalid",
+        port: 443,
+        transport: "xhttp",
+        tls: true,
+        tags: [],
+        extras: {
+          add_mode: "2",
+        },
+      },
+    ];
+    currentLiveConfig.subscriptions.items = [
+      {
+        id: "vectra_sub_managed",
+        remark: "Managed",
+        url: "https://managed.example.invalid/sub",
+        enabled: true,
+        addMode: "2",
+        metadata: {},
+        extras: {},
+      },
+    ];
+
+    const merged = mergeCurrentLiveRouterDataIntoDraftConfig({
+      draftConfig,
+      currentLiveConfig,
+    });
+
+    expect(merged.nodes.map((node) => node.id)).toEqual([
+      "myshunt",
+      "new-eu",
+      "new-us",
+    ]);
+    expect(merged.basicSettings.main.selectedNodeId).toBe("new-eu");
+    expect(merged.basicSettings.socks[0]).toMatchObject({
+      nodeId: "new-eu",
+      autoswitchBackupNodeIds: ["new-us"],
+    });
+    expect(merged.basicSettings.shuntRules[0]?.outboundNodeId).toBe("new-us");
+    expect(merged.ruleManage.shuntRules[0]?.outboundNodeId).toBe("new-us");
+    expect(merged.nodes[0]!.extras.default_node).toBe("new-eu");
+    expect(merged.nodes[0]!.extras.route_us_proxy_tag).toBe("new-us");
+    expect(merged.subscriptions.items[0]).toMatchObject({
+      id: "vectra_sub_managed",
+      extras: {
+        to_node: "new-us",
+      },
+    });
+  });
+
+  it("keeps live shunt outbound tags when they are opaque runtime ids", () => {
+    const draftConfig = structuredClone(baseConfig);
+    draftConfig.basicSettings.shuntRules = [
+      {
+        id: "WorldProxy",
+        label: "WorldProxy",
+        outboundNodeId: "draft-runtime-tag",
+        domainRules: [],
+        ipRules: [],
+        extras: {},
+      },
+    ];
+    draftConfig.ruleManage.shuntRules = structuredClone(
+      draftConfig.basicSettings.shuntRules,
+    );
+
+    const currentLiveConfig = structuredClone(baseConfig);
+    currentLiveConfig.basicSettings.shuntRules = [
+      {
+        id: "WorldProxy",
+        label: "WorldProxy",
+        outboundNodeId: "live-runtime-tag",
+        domainRules: [],
+        ipRules: [],
+        extras: {},
+      },
+    ];
+    currentLiveConfig.ruleManage.shuntRules = structuredClone(
+      currentLiveConfig.basicSettings.shuntRules,
+    );
+
+    const merged = mergeCurrentLiveRouterDataIntoDraftConfig({
+      draftConfig,
+      currentLiveConfig,
+    });
+
+    expect(merged.basicSettings.shuntRules[0]?.outboundNodeId).toBe(
+      "live-runtime-tag",
+    );
+    expect(merged.ruleManage.shuntRules[0]?.outboundNodeId).toBe(
+      "live-runtime-tag",
+    );
   });
 });

@@ -41,9 +41,14 @@ mobile-login-snapshot.md
 router-detail-mobile-after-load.png
 router-detail-tabbar-mobile.png
 updates-mobile-main.png
+/check-in
+/operator
+/router-api
+/output/
+/release-web-unconfirmed-changes.tar.gz
+/router-app-update-3400.png
 apps/install-helper/vectra-install-helper
 apps/install-helper/vectra-install-helper.exe
-apps/web/tests/mobile-action-qa.spec.js
 
 # Local private memory. Do not commit credentials or DPAPI blobs.
 ProRouter/98 Local/

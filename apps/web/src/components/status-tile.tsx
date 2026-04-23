@@ -24,7 +24,7 @@ export function StatusTile({
 
   return (
     <article
-      className={`rounded-2xl border ${emphasis ? "border-[var(--vectra-line-strong)] bg-[var(--vectra-panel-strong)]" : "border-white/10 bg-[var(--vectra-panel-soft)]"} ${
+      className={`min-w-0 rounded-2xl border ${emphasis ? "border-[var(--vectra-line-strong)] bg-[var(--vectra-panel-strong)]" : "border-white/10 bg-[var(--vectra-panel-soft)]"} ${
         compact ? "p-2.5 sm:p-3" : "p-3 sm:p-4"
       }`}
     >
@@ -32,7 +32,7 @@ export function StatusTile({
         {label}
       </p>
       <p
-        className={`mt-1.5 font-semibold tracking-[-0.01em] ${toneClassName} ${
+        className={`mt-1.5 break-words font-semibold tracking-[-0.01em] ${toneClassName} ${
           compact ? "text-sm sm:text-[15px]" : "text-sm sm:text-base xl:text-lg"
         }`}
       >
@@ -40,7 +40,7 @@ export function StatusTile({
       </p>
       {hint ? (
         <p
-          className={`mt-1 text-[11px] text-slate-400 ${
+          className={`mt-1 break-words text-[11px] text-slate-400 ${
             compact ? "leading-4.5 sm:text-[11px] sm:leading-5" : "leading-5 sm:text-xs sm:leading-6"
           }`}
         >

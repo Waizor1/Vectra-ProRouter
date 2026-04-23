@@ -68,8 +68,8 @@ export default function EnrollmentPage() {
       <PageHeader
         eyebrow="Установка"
         title="Подключение роутера"
-        description="Быстрый вход для нового устройства: bootstrap-команда, короткие шаги до первого check-in и технические материалы ниже, когда они действительно нужны."
-        mobileDescription="Bootstrap, первый check-in и технические материалы ниже."
+        description="Bootstrap-команда и ближайшие шаги вынесены на первый экран. Технические материалы остаются ниже по раскрытию."
+        mobileDescription="Bootstrap и ближайшие шаги."
         compact
       />
 
@@ -84,10 +84,6 @@ export default function EnrollmentPage() {
             }
           >
             <div className="space-y-4 min-w-0">
-            <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
-              Сначала выполняете bootstrap на роутере, потом проверяете появление устройства в <strong className="text-white">Парке</strong>, и только после этого решаете, принимать ли импорт как эталон.
-            </div>
-
             <div className="flex flex-wrap gap-2 text-slate-400">
               <span className="vectra-chip rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-2 py-1">
                 {ax3000tEnrollmentPreset.architecture}
@@ -100,8 +96,10 @@ export default function EnrollmentPage() {
               </span>
             </div>
 
-            <pre className="w-full max-w-full overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
-              <code>{quickCommand}</code>
+            <pre className="w-full max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100 [overflow-wrap:anywhere]">
+              <code className="whitespace-pre-wrap break-all [overflow-wrap:anywhere]">
+                {quickCommand}
+              </code>
             </pre>
 
             <div className="flex flex-wrap gap-2">
@@ -128,7 +126,7 @@ export default function EnrollmentPage() {
             {nextActionSteps.map((item) => (
               <div
                 key={item.step}
-                className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3"
+                className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2.5"
               >
                 <div className="flex items-start gap-3">
                   <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-black/10 text-sm font-semibold text-white">
@@ -146,10 +144,10 @@ export default function EnrollmentPage() {
               </div>
             ))}
 
-            <div className="rounded-md border border-amber-400/20 bg-amber-500/10 px-3 py-3 text-sm leading-6 text-amber-100">
-              <strong className="text-white">Когда нажимать «Принять import как эталон»:</strong>{" "}
-              только если текущая конфигурация вас устраивает, подписки и приватные
-              ноды на месте, и именно это состояние вы хотите считать стартовой базой.
+            <div className="rounded-md border border-amber-400/20 bg-amber-500/10 px-3 py-2.5 text-sm leading-6 text-amber-100">
+              <strong className="text-white">«Принять import как эталон»</strong>{" "}
+              нажимайте только если текущее состояние роутера действительно
+              должно стать стартовой базой.
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -206,8 +204,10 @@ export default function EnrollmentPage() {
                   <code> myshunt</code>.
                 </p>
 
-                <pre className="w-full max-w-full overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
-                  <code>{shuntRebindCommand}</code>
+                <pre className="w-full max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100 [overflow-wrap:anywhere]">
+                  <code className="whitespace-pre-wrap break-all [overflow-wrap:anywhere]">
+                    {shuntRebindCommand}
+                  </code>
                 </pre>
 
                 <p>
@@ -337,8 +337,10 @@ export default function EnrollmentPage() {
           >
               <div className="min-w-0 space-y-3">
                 <CopyTextButton text={bootstrapScript} label="Копировать скрипт" />
-              <pre className="max-h-[36rem] w-full max-w-full overflow-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
-                <code>{bootstrapScript}</code>
+              <pre className="max-h-[36rem] w-full max-w-full overflow-auto whitespace-pre-wrap break-all rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100 [overflow-wrap:anywhere]">
+                <code className="whitespace-pre-wrap break-all [overflow-wrap:anywhere]">
+                  {bootstrapScript}
+                </code>
               </pre>
             </div>
           </DisclosureSection>

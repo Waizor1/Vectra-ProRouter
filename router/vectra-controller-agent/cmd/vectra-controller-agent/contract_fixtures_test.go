@@ -140,6 +140,10 @@ func validateFixtureJob(job controlplane.Job) error {
 		if timeout < 5 || timeout > 120 {
 			return errFixture("terminal command fixture timeout must stay within supported bounds")
 		}
+	case "inspect_subscriptions":
+		if len(job.Payload) != 0 {
+			return errFixture("inspect subscriptions fixture should use an empty payload")
+		}
 	case "update_controller":
 		artifactJob := parseArtifactJob(job.Payload, []string{
 			"vectra-controller-agent",
@@ -230,6 +234,7 @@ func knownJobType(value string) bool {
 	switch value {
 	case "apply_passwall_config",
 		"refresh_subscriptions",
+		"inspect_subscriptions",
 		"refresh_rules",
 		"collect_router_logs",
 		"run_terminal_command",

@@ -11,10 +11,10 @@ export function ActionStrip({
 }) {
   return (
     <div
-      className={`vectra-toolbar flex-col items-stretch ${dense ? "gap-2" : "gap-3"} [&>*]:w-full sm:flex-row sm:flex-wrap sm:items-center sm:[&>*]:w-auto ${
+      className={`vectra-toolbar min-w-0 flex-col items-stretch ${dense ? "gap-2" : "gap-3"} [&>*]:min-w-0 [&>*]:w-full lg:flex-row lg:flex-wrap lg:items-center lg:[&>*]:w-auto lg:[&>*]:shrink-0 ${
         justify === "between"
-          ? "sm:justify-between"
-          : "sm:justify-start"
+          ? "lg:justify-between"
+          : "lg:justify-start"
       }`}
     >
       {children}

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"vectra-controller-agent/internal/config"
+	"vectra-controller-agent/internal/controlplane"
 	"vectra-controller-agent/internal/passwall"
 	"vectra-controller-agent/internal/state"
 )
@@ -258,6 +259,140 @@ func TestAssessPasswallPackageStatusRequiresRuntimeConvergenceForRuntimePackages
 	)
 	if status != "runtime-only-converged" || !drift {
 		t.Fatalf("expected runtime-only convergence drift, got status=%q drift=%v", status, drift)
+	}
+}
+
+func TestPackageVersionAtLeastMatchesOpkgSemanticsForMixedGeodataVersions(t *testing.T) {
+	if !packageVersionAtLeast("20250916122507-r1", "202603292224.1") {
+		t.Fatalf("expected opkg-style comparison to keep 14-digit geosite build ahead of 12-digit target")
+	}
+	if packageVersionAtLeast("202603292224.1", "20250916122507-r1") {
+		t.Fatalf("expected 12-digit geosite target to stay behind 14-digit installed build")
+	}
+	if !packageVersionAtLeast("202604090028.1", "202603260032.1") {
+		t.Fatalf("expected newer 12-digit geoip datestamp to satisfy older target")
+	}
+}
+
+func TestAssessPasswallPackageStatusTreatsNewerGeodataPackageAsCurrent(t *testing.T) {
+	status, drift := assessPasswallPackageStatus(
+		"v2ray-geosite",
+		"202603292224.1",
+		"20250916122507-r1",
+		"",
+	)
+	if status != "already-current" || drift {
+		t.Fatalf("expected newer geodata package to count as current, got status=%q drift=%v", status, drift)
+	}
+}
+
+func TestUpdateSinglePasswallPackageSkipsOlderGeodataTargetWhenRouterAlreadyAhead(t *testing.T) {
+	backend := &fakeCommandRunner{}
+	currentInventory := controlplane.RouterInventory{
+		PackageVersions: map[string]string{
+			"v2ray-geosite": "20250916122507-r1",
+		},
+		BinaryVersions: map[string]string{},
+	}
+
+	result, commandResults, nextInventory := updateSinglePasswallPackage(
+		context.Background(),
+		backend,
+		currentInventory,
+		"v2ray-geosite",
+		artifactJob{
+			PackageList: []string{"v2ray-geosite"},
+			PackageArtifacts: []packageArtifact{
+				{
+					Name:            "v2ray-geosite",
+					ArtifactVersion: "202603292224.1",
+				},
+			},
+		},
+	)
+
+	if result.Status != "already-current" || result.PathUsed != "not-needed" {
+		t.Fatalf("expected geosite to be treated as already current, got %#v", result)
+	}
+	if len(commandResults) != 0 || len(backend.calls) != 0 {
+		t.Fatalf("expected no package-path commands for older geosite target, got results=%#v calls=%#v", commandResults, backend.calls)
+	}
+	if nextInventory.PackageVersions["v2ray-geosite"] != "20250916122507-r1" {
+		t.Fatalf("expected inventory to remain on the newer geosite package, got %#v", nextInventory.PackageVersions)
+	}
+}
+
+func TestReconcileRuleManagedPasswallPackageResultTreatsOpkgAheadPackageAsCurrent(t *testing.T) {
+	result := reconcileRuleManagedPasswallPackageResult(passwallPackageUpdateResult{
+		Package:              "v2ray-geosite",
+		PackageTargetVersion: "202603292224.1",
+		Status:               "failed",
+		PathUsed:             "package",
+		PackageVersionBefore: "20250916122507-r1",
+		PackageVersionAfter:  "20250916122507-r1",
+		Error:                "v2ray-geosite did not reach target through package path",
+	})
+
+	if result.Status != "already-current" {
+		t.Fatalf("expected rule-managed geosite to reconcile as already-current, got %#v", result)
+	}
+	if result.PathUsed != "not-needed" {
+		t.Fatalf("expected reconciled pathUsed to switch to not-needed, got %#v", result)
+	}
+	if result.Error != "" || result.DriftDetected {
+		t.Fatalf("expected reconciled geosite result to clear error/drift, got %#v", result)
+	}
+}
+
+func TestReconcileRuleManagedPasswallPackageResultTreatsRuleRefreshAsUpdated(t *testing.T) {
+	result := reconcileRuleManagedPasswallPackageResult(passwallPackageUpdateResult{
+		Package:              "v2ray-geoip",
+		PackageTargetVersion: "202603260032.1",
+		Status:               "storage-blocked",
+		PathUsed:             "package",
+		PackageVersionBefore: "202511270021.1",
+		PackageVersionAfter:  "202511270021.1",
+		Error:                "v2ray-geoip package path skipped: not enough overlay space",
+	})
+
+	if result.Status != "updated" {
+		t.Fatalf("expected rule-managed geoip to reconcile as updated, got %#v", result)
+	}
+	if result.PathUsed != "not-needed" {
+		t.Fatalf("expected reconciled pathUsed to switch to not-needed, got %#v", result)
+	}
+	if result.Error != "" {
+		t.Fatalf("expected reconciled geoip result to clear error, got %#v", result)
+	}
+	if !result.DriftDetected {
+		t.Fatalf("expected geoip rule-refresh reconciliation to preserve drift, got %#v", result)
+	}
+}
+
+func TestResolvePasswallRuntimeTargetVersionKeepsExplicitRuntimeTargetForBuiltInXray(t *testing.T) {
+	got := resolvePasswallRuntimeTargetVersion(
+		artifactJob{
+			Strategy:             "xray-built-in-first",
+			RuntimeTargetVersion: "26.4.17",
+		},
+		"xray-core",
+		"26.3.27-r1",
+	)
+
+	if got != "26.4.17" {
+		t.Fatalf("resolvePasswallRuntimeTargetVersion() = %q, want %q", got, "26.4.17")
+	}
+}
+
+func TestResolvePasswallStatusTargetVersionPrefersRuntimeTargetForRuntimePackages(t *testing.T) {
+	got := resolvePasswallStatusTargetVersion("xray-core", "26.3.27-r1", "26.4.17")
+	if got != "26.4.17" {
+		t.Fatalf("resolvePasswallStatusTargetVersion() = %q, want %q", got, "26.4.17")
+	}
+
+	got = resolvePasswallStatusTargetVersion("luci-app-passwall2", "26.4.10-r1", "26.4.17")
+	if got != "26.4.10-r1" {
+		t.Fatalf("resolvePasswallStatusTargetVersion() = %q, want %q", got, "26.4.10-r1")
 	}
 }
 

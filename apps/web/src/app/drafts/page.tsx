@@ -48,27 +48,15 @@ export default async function DraftsPage({
       <PageHeader
         eyebrow="Черновики"
         title="Экспертные ревизии"
-        description="Это резервный экран для точечной JSON-правки и быстрой работы с ревизиями. Обычный операторский поток по-прежнему начинается со страницы конкретного роутера."
-        mobileDescription="Резервный JSON-режим и история ревизий."
+        description="Резервный JSON-маршрут для точечной правки и работы с ревизиями. Обычный поток по-прежнему начинается со страницы роутера."
+        mobileDescription="JSON-режим и история ревизий."
         compact
       />
 
-      <Panel eyebrow="Когда идти сюда" title="Не основной путь" tone="muted" compact>
-        <div className="grid gap-3 md:grid-cols-3">
-          {[
-            "Если обычной формы на странице роутера уже не хватает.",
-            "Если нужно быстро сравнить preview и сохранить ревизию как JSON.",
-            "Если apply должен идти только из уже сохранённого черновика.",
-          ].map((item) => (
-            <div
-              key={item}
-              className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300"
-            >
-              {item}
-            </div>
-          ))}
-        </div>
-      </Panel>
+      <div className="rounded-2xl border border-amber-400/20 bg-amber-500/10 px-4 py-3 text-sm leading-6 text-amber-100">
+        Экспертный маршрут: здесь удобно править JSON и сравнивать preview, но
+        применение по-прежнему идёт только из уже сохранённой ревизии.
+      </div>
 
       <DraftWorkspace
         initialRouterId={routerId}

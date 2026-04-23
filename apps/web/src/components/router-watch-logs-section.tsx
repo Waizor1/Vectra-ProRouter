@@ -6,6 +6,12 @@ import type { RouterLogSource } from "@vectra/contracts";
 
 import { ActionStrip } from "~/components/action-strip";
 import { DataTable, DataTableEmpty } from "~/components/data-table";
+import {
+  MobileCard,
+  MobileCardField,
+  MobileCardGrid,
+  MobileCardList,
+} from "~/components/mobile-records";
 import { RouterTerminalSection } from "~/components/router-terminal-section";
 import { api, type RouterOutputs } from "~/trpc/react";
 
@@ -217,39 +223,103 @@ export function RouterWatchLogsSection({
           <span className="text-[11px] text-slate-500">последние команды и результаты</span>
         </div>
 
-        <DataTable
-          columns={[
-            { key: "request", label: "Запрос" },
-            { key: "state", label: "Статус" },
-            { key: "created", label: "Создан" },
-            { key: "result", label: "Результат" },
-          ]}
+        <MobileCardList
+          title="История snapshot-запросов"
+          hint="Телефонный режим"
         >
           {history.data?.history.length ? (
             history.data.history.map((item) => (
-              <tr
+              <MobileCard
                 key={item.jobId}
-                className="border-t border-white/10 text-slate-200"
+                tone={item.resultStatus === "failure" ? "danger" : "default"}
               >
-                <td className="px-3 py-2">
-                  <div className="font-medium text-white">
-                    {formatSource(item.request.source)}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white">
+                      {formatSource(item.request.source)}
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-slate-400">
+                      {item.request.lines} строк
+                    </p>
                   </div>
-                  <div className="text-xs text-slate-500">
-                    {item.request.lines} строк
-                  </div>
-                </td>
-                <td className="px-3 py-2">{formatLogState(item.state)}</td>
-                <td className="px-3 py-2">{formatDateTime(item.createdAt)}</td>
-                <td className="px-3 py-2">{formatResult(item)}</td>
-              </tr>
+                  <span
+                    className={`rounded-full border px-2.5 py-1 text-[11px] uppercase ${
+                      item.resultStatus === "failure"
+                        ? "border-rose-400/25 bg-rose-500/10 text-rose-100"
+                        : item.state === "queued" ||
+                            item.state === "delivered" ||
+                            item.state === "running"
+                          ? "border-amber-400/25 bg-amber-500/10 text-amber-100"
+                          : "border-emerald-400/25 bg-emerald-500/10 text-emerald-100"
+                    }`}
+                  >
+                    {formatLogState(item.state)}
+                  </span>
+                </div>
+
+                <div className="mt-3">
+                  <MobileCardGrid>
+                    <MobileCardField
+                      label="Создан"
+                      value={formatDateTime(item.createdAt)}
+                    />
+                    <MobileCardField
+                      label="Результат"
+                      value={formatResult(item)}
+                    />
+                    <MobileCardField
+                      label="Источник"
+                      value={formatSource(item.request.source)}
+                    />
+                    <MobileCardField label="Job" value={item.jobId} mono />
+                  </MobileCardGrid>
+                </div>
+              </MobileCard>
             ))
           ) : (
-            <DataTableEmpty colSpan={4}>
-              История запросов пока пустая.
-            </DataTableEmpty>
+            <MobileCard>
+              <p className="text-sm leading-7 text-slate-300">
+                История запросов пока пустая.
+              </p>
+            </MobileCard>
           )}
-        </DataTable>
+        </MobileCardList>
+
+        <div className="max-lg:hidden">
+          <DataTable
+            columns={[
+              { key: "request", label: "Запрос" },
+              { key: "state", label: "Статус" },
+              { key: "created", label: "Создан" },
+              { key: "result", label: "Результат" },
+            ]}
+          >
+            {history.data?.history.length ? (
+              history.data.history.map((item) => (
+                <tr
+                  key={item.jobId}
+                  className="border-t border-white/10 text-slate-200"
+                >
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-white">
+                      {formatSource(item.request.source)}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {item.request.lines} строк
+                    </div>
+                  </td>
+                  <td className="px-3 py-2">{formatLogState(item.state)}</td>
+                  <td className="px-3 py-2">{formatDateTime(item.createdAt)}</td>
+                  <td className="px-3 py-2">{formatResult(item)}</td>
+                </tr>
+              ))
+            ) : (
+              <DataTableEmpty colSpan={4}>
+                История запросов пока пустая.
+              </DataTableEmpty>
+            )}
+          </DataTable>
+        </div>
       </div>
     </div>
   );

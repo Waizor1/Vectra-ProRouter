@@ -26,12 +26,19 @@ type Config struct {
 }
 
 type rawRescuePolicy struct {
-	HealthURLs               []string         `json:"health_urls,omitempty"`
-	TriggerFailureCount      int              `json:"trigger_failure_count"`
-	RecoverySuccessCount     int              `json:"recovery_success_count"`
-	Cooldown                 json.RawMessage  `json:"cooldown"`
-	RequireDirectPathSuccess *bool            `json:"require_direct_path_success,omitempty"`
-	DirectModeReason         string           `json:"direct_mode_reason"`
+	HealthURLs               []string        `json:"health_urls,omitempty"`
+	TriggerFailureCount      int             `json:"trigger_failure_count"`
+	RecoverySuccessCount     int             `json:"recovery_success_count"`
+	Cooldown                 json.RawMessage `json:"cooldown"`
+	RequireDirectPathSuccess *bool           `json:"require_direct_path_success,omitempty"`
+	DirectModeReason         string          `json:"direct_mode_reason"`
+	PanelOutageThreshold     json.RawMessage `json:"panel_outage_threshold,omitempty"`
+	ProbeCacheTTL            json.RawMessage `json:"probe_cache_ttl,omitempty"`
+	ControllerRestartSettle  json.RawMessage `json:"controller_restart_settle,omitempty"`
+	DirectSettle             json.RawMessage `json:"direct_settle,omitempty"`
+	PostRebootSettle         json.RawMessage `json:"post_reboot_settle,omitempty"`
+	PasswallWarmup           json.RawMessage `json:"passwall_warmup,omitempty"`
+	RebootCooldown           json.RawMessage `json:"reboot_cooldown,omitempty"`
 }
 
 type rawConfig struct {
@@ -59,6 +66,13 @@ func defaultRescuePolicy() rescue.Policy {
 		Cooldown:                 5 * time.Minute,
 		RequireDirectPathSuccess: true,
 		DirectModeReason:         "Subscription expired or upstream proxy unavailable",
+		PanelOutageThreshold:     time.Hour,
+		ProbeCacheTTL:            5 * time.Minute,
+		ControllerRestartSettle:  90 * time.Second,
+		DirectSettle:             45 * time.Second,
+		PostRebootSettle:         4 * time.Minute,
+		PasswallWarmup:           75 * time.Second,
+		RebootCooldown:           12 * time.Hour,
 	}
 }
 
@@ -92,6 +106,55 @@ func mergeRescuePolicy(base rescue.Policy, raw rawRescuePolicy) (rescue.Policy, 
 	}
 	if raw.DirectModeReason != "" {
 		policy.DirectModeReason = raw.DirectModeReason
+	}
+	if len(raw.PanelOutageThreshold) > 0 && string(raw.PanelOutageThreshold) != "null" {
+		duration, err := parseJSONDuration(raw.PanelOutageThreshold)
+		if err != nil {
+			return rescue.Policy{}, fmt.Errorf("decode rescue_policy.panel_outage_threshold: %w", err)
+		}
+		policy.PanelOutageThreshold = duration
+	}
+	if len(raw.ProbeCacheTTL) > 0 && string(raw.ProbeCacheTTL) != "null" {
+		duration, err := parseJSONDuration(raw.ProbeCacheTTL)
+		if err != nil {
+			return rescue.Policy{}, fmt.Errorf("decode rescue_policy.probe_cache_ttl: %w", err)
+		}
+		policy.ProbeCacheTTL = duration
+	}
+	if len(raw.ControllerRestartSettle) > 0 && string(raw.ControllerRestartSettle) != "null" {
+		duration, err := parseJSONDuration(raw.ControllerRestartSettle)
+		if err != nil {
+			return rescue.Policy{}, fmt.Errorf("decode rescue_policy.controller_restart_settle: %w", err)
+		}
+		policy.ControllerRestartSettle = duration
+	}
+	if len(raw.DirectSettle) > 0 && string(raw.DirectSettle) != "null" {
+		duration, err := parseJSONDuration(raw.DirectSettle)
+		if err != nil {
+			return rescue.Policy{}, fmt.Errorf("decode rescue_policy.direct_settle: %w", err)
+		}
+		policy.DirectSettle = duration
+	}
+	if len(raw.PostRebootSettle) > 0 && string(raw.PostRebootSettle) != "null" {
+		duration, err := parseJSONDuration(raw.PostRebootSettle)
+		if err != nil {
+			return rescue.Policy{}, fmt.Errorf("decode rescue_policy.post_reboot_settle: %w", err)
+		}
+		policy.PostRebootSettle = duration
+	}
+	if len(raw.PasswallWarmup) > 0 && string(raw.PasswallWarmup) != "null" {
+		duration, err := parseJSONDuration(raw.PasswallWarmup)
+		if err != nil {
+			return rescue.Policy{}, fmt.Errorf("decode rescue_policy.passwall_warmup: %w", err)
+		}
+		policy.PasswallWarmup = duration
+	}
+	if len(raw.RebootCooldown) > 0 && string(raw.RebootCooldown) != "null" {
+		duration, err := parseJSONDuration(raw.RebootCooldown)
+		if err != nil {
+			return rescue.Policy{}, fmt.Errorf("decode rescue_policy.reboot_cooldown: %w", err)
+		}
+		policy.RebootCooldown = duration
 	}
 
 	return policy, nil

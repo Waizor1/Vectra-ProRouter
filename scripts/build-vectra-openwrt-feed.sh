@@ -13,8 +13,10 @@ Required:
   --sdk-root PATH            OpenWrt SDK or buildroot root directory
 
 Optional:
-  --version VERSION          Package version for both packages (default: 0.1.12)
-  --release N                OpenWrt PKG_RELEASE for both packages (default: 11)
+  --version VERSION          Package version for both packages
+                             (default: derived from controller Makefiles)
+  --release N                OpenWrt PKG_RELEASE for both packages
+                             (default: derived from controller Makefiles)
   --channel NAME             Feed channel name (default: stable)
   --output-root PATH         Feed output root (default: <repo>/dist/openwrt-feed)
   --key-dir PATH             Directory with usign keys (default: <repo>/.keys/openwrt-feed)
@@ -32,6 +34,59 @@ require_command() {
 		echo "Missing required command: $1" >&2
 		exit 1
 	}
+}
+
+read_makefile_assignment() {
+	local file="$1"
+	local key="$2"
+
+	sed -n -E "s/^${key}\\?=([^[:space:]]+).*$/\\1/p" "$file" | head -n 1
+}
+
+resolve_package_defaults() {
+	local agent_makefile="$REPO_ROOT/router/vectra-controller-agent/openwrt/Makefile"
+	local luci_makefile="$REPO_ROOT/router/luci-app-vectra-controller/Makefile"
+	local agent_version
+	local agent_release
+	local luci_version
+	local luci_release
+
+	[[ -f "$agent_makefile" ]] || {
+		echo "Missing controller agent Makefile: $agent_makefile" >&2
+		exit 1
+	}
+	[[ -f "$luci_makefile" ]] || {
+		echo "Missing LuCI controller Makefile: $luci_makefile" >&2
+		exit 1
+	}
+
+	agent_version="$(read_makefile_assignment "$agent_makefile" "VECTRA_VERSION")"
+	agent_release="$(read_makefile_assignment "$agent_makefile" "VECTRA_RELEASE")"
+	luci_version="$(read_makefile_assignment "$luci_makefile" "VECTRA_VERSION")"
+	luci_release="$(read_makefile_assignment "$luci_makefile" "VECTRA_RELEASE")"
+
+	[[ -n "$agent_version" && -n "$agent_release" ]] || {
+		echo "Unable to resolve version defaults from $agent_makefile" >&2
+		exit 1
+	}
+	[[ -n "$luci_version" && -n "$luci_release" ]] || {
+		echo "Unable to resolve version defaults from $luci_makefile" >&2
+		exit 1
+	}
+
+	if [[ "$agent_version" != "$luci_version" || "$agent_release" != "$luci_release" ]]; then
+		echo "Controller package Makefiles disagree on version defaults:" >&2
+		echo "  $agent_makefile -> ${agent_version}-r${agent_release}" >&2
+		echo "  $luci_makefile -> ${luci_version}-r${luci_release}" >&2
+		exit 1
+	fi
+
+	if [[ -z "${VERSION:-}" ]]; then
+		VERSION="$agent_version"
+	fi
+	if [[ -z "${RELEASE:-}" ]]; then
+		RELEASE="$agent_release"
+	fi
 }
 
 resolve_usign() {
@@ -315,8 +370,8 @@ rm -rf /tmp/luci-modulecache/
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SDK_ROOT=""
-VERSION="0.1.12"
-RELEASE="11"
+VERSION=""
+RELEASE=""
 CHANNEL="stable"
 OUTPUT_ROOT="$REPO_ROOT/dist/openwrt-feed"
 KEY_DIR="$REPO_ROOT/.keys/openwrt-feed"
@@ -388,6 +443,8 @@ if [[ -z "$SDK_ROOT" ]]; then
 	exit 1
 fi
 
+resolve_package_defaults
+
 require_command awk
 require_command cp
 require_command du
@@ -430,6 +487,7 @@ ensure_sdk_metadata
 
 if [[ "$MAKE_LOG_LEVEL" == "V=sc" ]]; then
 	printf 'Manual packaging target arch: %s\n' "$TARGET_ARCH"
+	printf 'Resolved package version: %s-r%s\n' "$VERSION" "$RELEASE"
 fi
 
 AGENT_PACKAGE="$(build_agent_package_manually)"

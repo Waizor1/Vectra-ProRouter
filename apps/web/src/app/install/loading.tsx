@@ -13,6 +13,8 @@ export default function PublicInstallLoading() {
         "собираем bootstrap-команду",
         "подключаем helper-aware статусы",
       ]}
+      escapeHref="/enrollment"
+      escapeLabel="Открыть Установку"
     />
   );
 }

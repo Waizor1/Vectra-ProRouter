@@ -103,9 +103,19 @@ const passwallMirrorPackageEntrySchema = z.object({
   installedSizeBytes: z.number().int().nonnegative(),
 });
 
+const passwallMirrorRuntimeTargetSchema = z.object({
+  componentName: z.string().min(1),
+  remoteVersion: z.string().min(1),
+  releaseUrl: z.string().url().nullable().optional(),
+  assetName: z.string().min(1).nullable().optional(),
+  assetUrl: z.string().url().nullable().optional(),
+  assetSizeBytes: z.number().int().nonnegative().nullable().optional(),
+});
+
 const passwallMirrorManifestSchema = z.object({
   tag: z.string().min(1),
   arch: z.string().min(1),
+  runtimeTargets: z.record(passwallMirrorRuntimeTargetSchema).default({}),
   requiredPackages: z.array(passwallMirrorPackageEntrySchema).min(1),
   optionalPackages: z.array(passwallMirrorPackageEntrySchema).default([]),
   sourceUrls: z.object({
@@ -274,7 +284,7 @@ function parseOpenWrtPackageFileName(packageFile, targetArch) {
 
   if (!matchedSuffix) {
     throw new Error(
-      `Unable to match package architecture suffix for ${packageFile} against target ${targetArch}.`
+      `Unable to match package architecture suffix for ${packageFile} against target ${targetArch}.`,
     );
   }
 
@@ -309,7 +319,7 @@ async function buildFeedArtifacts(options) {
   for (const packageFile of indexJson.packages) {
     const parsedFile = parseOpenWrtPackageFileName(
       packageFile,
-      indexJson.targetArch
+      indexJson.targetArch,
     );
     const filePath = path.join(feedDir, packageFile);
 
@@ -337,7 +347,7 @@ async function buildFeedArtifacts(options) {
           targetArch: indexJson.targetArch,
         },
         publishedAt: new Date().toISOString(),
-      })
+      }),
     );
   }
 
@@ -469,6 +479,7 @@ async function buildPasswallMirrorArtifacts(options) {
       manifestUrl,
       releaseUrl: manifest.sourceUrls.release ?? null,
       packageBundleUrl: manifest.sourceUrls.packageBundle ?? null,
+      runtimeTargets: manifest.runtimeTargets,
       requiredPackages: manifest.requiredPackages,
       optionalPackages: manifest.optionalPackages,
       packageArtifacts: bundlePackageArtifacts,
@@ -516,7 +527,7 @@ async function buildSpecArtifacts(options) {
         metadata: artifact.metadata,
         publishedAt: artifact.publishedAt ?? new Date().toISOString(),
       };
-    })
+    }),
   );
 
   return {
@@ -526,7 +537,7 @@ async function buildSpecArtifacts(options) {
         file: undefined,
         downloadPath: undefined,
         signaturePath: undefined,
-      })
+      }),
     ),
     firmwareManifests: seed.firmwareManifests,
   };
@@ -552,7 +563,9 @@ async function selectExistingArtifact(sql, artifact) {
 async function upsertArtifact(sql, artifact) {
   const existing = await selectExistingArtifact(sql, artifact);
   const metadataJson = JSON.stringify(artifact.metadata ?? {});
-  const publishedAt = new Date(artifact.publishedAt ?? new Date().toISOString());
+  const publishedAt = new Date(
+    artifact.publishedAt ?? new Date().toISOString(),
+  );
 
   if (existing) {
     await sql`
@@ -665,10 +678,10 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const [feedArtifacts, passwallMirrorArtifacts, specPayload] =
     await Promise.all([
-    buildFeedArtifacts(options),
-    buildPasswallMirrorArtifacts(options),
-    buildSpecArtifacts(options),
-  ]);
+      buildFeedArtifacts(options),
+      buildPasswallMirrorArtifacts(options),
+      buildSpecArtifacts(options),
+    ]);
 
   const allArtifacts = [
     ...feedArtifacts,
@@ -676,7 +689,9 @@ async function main() {
     ...specPayload.artifacts,
   ];
   const dedupedArtifacts = Array.from(
-    new Map(allArtifacts.map((artifact) => [toNaturalKey(artifact), artifact])).values()
+    new Map(
+      allArtifacts.map((artifact) => [toNaturalKey(artifact), artifact]),
+    ).values(),
   );
 
   const plan = {
@@ -756,7 +771,7 @@ async function main() {
 
         if (!artifactId) {
           throw new Error(
-            `Firmware manifest ${manifest.boardName}/${manifest.layoutFamily} references missing artifact ${manifest.artifactName}@${manifest.artifactVersion ?? manifest.version}.`
+            `Firmware manifest ${manifest.boardName}/${manifest.layoutFamily} references missing artifact ${manifest.artifactName}@${manifest.artifactVersion ?? manifest.version}.`,
           );
         }
 
@@ -784,7 +799,7 @@ async function main() {
 
 main().catch((error) => {
   console.error(
-    `[sync-artifact-metadata] ${error instanceof Error ? error.message : String(error)}`
+    `[sync-artifact-metadata] ${error instanceof Error ? error.message : String(error)}`,
   );
   process.exit(1);
 });

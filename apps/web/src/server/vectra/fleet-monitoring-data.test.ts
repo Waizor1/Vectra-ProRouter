@@ -234,7 +234,7 @@ describe("loadFleetMonitoringSnapshot", () => {
           selected_node_id: "myshunt",
           node_count: 16,
           subscription_count: 1,
-          controller_version: "0.1.12-r13",
+          controller_version: "0.1.13-r1",
           passwall_app_version: "26.4.10-r1",
           created_at: "2026-04-14T11:30:16.731Z",
         },
@@ -249,7 +249,7 @@ describe("loadFleetMonitoringSnapshot", () => {
     );
 
     expect(snapshot.routers).toHaveLength(1);
-    expect(snapshot.routers[0]?.controllerVersion).toBe("0.1.12-r13");
+    expect(snapshot.routers[0]?.controllerVersion).toBe("0.1.13-r1");
     expect(snapshot.routers[0]?.passwallVersion).toBe("26.4.10-r1");
     expect(snapshot.routers[0]?.telegramReachability?.status).toBe("ok");
   });
@@ -306,7 +306,7 @@ describe("loadFleetMonitoringSnapshot", () => {
           selectedNodeId: "myshunt",
           nodeCount: 16,
           subscriptionCount: 1,
-          controllerVersion: "0.1.12-r13",
+          controllerVersion: "0.1.13-r1",
           passwallAppVersion: "26.4.10-r1",
           createdAt: new Date("2026-04-14T11:30:16.731Z"),
         },

@@ -129,6 +129,27 @@ func TestLoadKeepsDefaultRescuePolicyWhenConfigOmitsIt(t *testing.T) {
 	if !cfg.Rescue.RequireDirectPathSuccess {
 		t.Fatal("expected require direct path success to stay enabled by default")
 	}
+	if cfg.Rescue.PanelOutageThreshold != time.Hour {
+		t.Fatalf("panel outage threshold = %v, want %v", cfg.Rescue.PanelOutageThreshold, time.Hour)
+	}
+	if cfg.Rescue.ProbeCacheTTL != 5*time.Minute {
+		t.Fatalf("probe cache ttl = %v, want %v", cfg.Rescue.ProbeCacheTTL, 5*time.Minute)
+	}
+	if cfg.Rescue.ControllerRestartSettle != 90*time.Second {
+		t.Fatalf("controller restart settle = %v, want %v", cfg.Rescue.ControllerRestartSettle, 90*time.Second)
+	}
+	if cfg.Rescue.DirectSettle != 45*time.Second {
+		t.Fatalf("direct settle = %v, want %v", cfg.Rescue.DirectSettle, 45*time.Second)
+	}
+	if cfg.Rescue.PostRebootSettle != 4*time.Minute {
+		t.Fatalf("post reboot settle = %v, want %v", cfg.Rescue.PostRebootSettle, 4*time.Minute)
+	}
+	if cfg.Rescue.PasswallWarmup != 75*time.Second {
+		t.Fatalf("passwall warmup = %v, want %v", cfg.Rescue.PasswallWarmup, 75*time.Second)
+	}
+	if cfg.Rescue.RebootCooldown != 12*time.Hour {
+		t.Fatalf("reboot cooldown = %v, want %v", cfg.Rescue.RebootCooldown, 12*time.Hour)
+	}
 }
 
 func TestLoadMergesPartialRescuePolicyWithoutDroppingDefaultURLs(t *testing.T) {
@@ -153,5 +174,43 @@ func TestLoadMergesPartialRescuePolicyWithoutDroppingDefaultURLs(t *testing.T) {
 	}
 	if len(cfg.Rescue.HealthURLs) < 2 {
 		t.Fatalf("expected default rescue health urls to survive partial override, got %#v", cfg.Rescue.HealthURLs)
+	}
+}
+
+func TestLoadParsesExtendedRecoveryDurations(t *testing.T) {
+	path := writeConfigFixture(t, `{
+  "control_url": "https://api.vectra-pro.net",
+  "rescue_policy": {
+    "panel_outage_threshold": "90m",
+    "controller_restart_settle": "2m",
+    "direct_settle": "30s",
+    "post_reboot_settle": "5m",
+    "passwall_warmup": "80s",
+    "reboot_cooldown": "6h"
+  }
+}`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if got, want := cfg.Rescue.PanelOutageThreshold, 90*time.Minute; got != want {
+		t.Fatalf("panel outage threshold = %v, want %v", got, want)
+	}
+	if got, want := cfg.Rescue.ControllerRestartSettle, 2*time.Minute; got != want {
+		t.Fatalf("controller restart settle = %v, want %v", got, want)
+	}
+	if got, want := cfg.Rescue.DirectSettle, 30*time.Second; got != want {
+		t.Fatalf("direct settle = %v, want %v", got, want)
+	}
+	if got, want := cfg.Rescue.PostRebootSettle, 5*time.Minute; got != want {
+		t.Fatalf("post reboot settle = %v, want %v", got, want)
+	}
+	if got, want := cfg.Rescue.PasswallWarmup, 80*time.Second; got != want {
+		t.Fatalf("passwall warmup = %v, want %v", got, want)
+	}
+	if got, want := cfg.Rescue.RebootCooldown, 6*time.Hour; got != want {
+		t.Fatalf("reboot cooldown = %v, want %v", got, want)
 	}
 }

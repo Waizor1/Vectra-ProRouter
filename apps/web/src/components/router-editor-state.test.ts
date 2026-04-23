@@ -12,6 +12,7 @@ import {
   moveNodeToTop,
   moveShuntRuleToTop,
   moveSubscriptionToTop,
+  pruneNodes,
   renameShuntRule,
   selectNode,
   updateShuntRuleExtra,
@@ -242,5 +243,157 @@ describe("router editor state helpers", () => {
 
     expect(next.basicSettings.shuntRules[0]?.extras.protocol).toBe("http tls");
     expect(next.ruleManage.shuntRules[0]?.extras.protocol).toBe("http tls");
+  });
+
+  it("prunes orphan nodes and repairs dependent references", () => {
+    const base = createDraftFixture();
+    const config = createDraftFixture({
+      ...base,
+      basicSettings: {
+        ...base.basicSettings,
+        main: {
+          ...base.basicSettings.main,
+          selectedNodeId: "orphan-node",
+        },
+        socks: [
+          {
+            id: "socks-1",
+            enabled: true,
+            nodeId: "orphan-node",
+            port: 1080,
+            bindLocal: true,
+            autoswitchBackupNodeIds: ["orphan-node", "node-main"],
+            extras: {},
+          },
+        ],
+        shuntRules: [
+          {
+            id: "route-us",
+            label: "Route US",
+            outboundNodeId: "orphan-node",
+            domainRules: [],
+            ipRules: [],
+            extras: {},
+          },
+        ],
+      },
+      nodes: [
+        {
+          id: "node-main",
+          label: "Main",
+          protocol: "xray",
+          enabled: true,
+          group: "default",
+          tags: [],
+          extras: {
+            default_node: "orphan-node",
+            "route-us_proxy_tag": "orphan-node",
+          },
+        },
+        {
+          id: "orphan-node",
+          label: "Orphan",
+          protocol: "xray",
+          enabled: true,
+          group: "Managed",
+          tags: [],
+          extras: {
+            add_mode: "1",
+          },
+        },
+      ],
+      subscriptions: {
+        ...base.subscriptions,
+        items: [
+          {
+            id: "subscription-1",
+            remark: "Managed",
+            url: "https://example.invalid/sub",
+            enabled: true,
+            addMode: "2",
+            metadata: {},
+            extras: {
+              to_node: "orphan-node",
+            },
+          },
+        ],
+      },
+      ruleManage: {
+        ...base.ruleManage,
+        shuntRules: [
+          {
+            id: "route-us",
+            label: "Route US",
+            outboundNodeId: "orphan-node",
+            domainRules: [],
+            ipRules: [],
+            extras: {},
+          },
+        ],
+      },
+    });
+
+    const next = pruneNodes(config, ["orphan-node"]);
+
+    expect(next.nodes.map((node) => node.id)).toEqual(["node-main"]);
+    expect(next.basicSettings.main.selectedNodeId).toBe("node-main");
+    expect(next.basicSettings.socks[0]).toMatchObject({
+      nodeId: "node-main",
+      autoswitchBackupNodeIds: [],
+    });
+    expect(next.basicSettings.shuntRules[0]?.outboundNodeId).toBeUndefined();
+    expect(next.ruleManage.shuntRules[0]?.outboundNodeId).toBeUndefined();
+    expect(next.nodes[0]?.extras.default_node).toBeUndefined();
+    expect(next.nodes[0]?.extras["route-us_proxy_tag"]).toBeUndefined();
+    expect(next.subscriptions.items[0]?.extras.to_node).toBeUndefined();
+  });
+
+  it("drops socks entries that lose their node and have no fallback", () => {
+    const base = createDraftFixture();
+    const config = createDraftFixture({
+      basicSettings: {
+        ...base.basicSettings,
+        main: {
+          ...base.basicSettings.main,
+          mainSwitch: true,
+          localhostProxy: true,
+          clientProxy: true,
+          nodeSocksPort: 1070,
+          nodeSocksBindLocal: true,
+          socksMainSwitch: false,
+          extras: {},
+          selectedNodeId: "orphan-node",
+        },
+        socks: [
+          {
+            id: "socks-1",
+            enabled: true,
+            nodeId: "orphan-node",
+            port: 1080,
+            bindLocal: true,
+            autoswitchBackupNodeIds: [],
+            extras: {},
+          },
+        ],
+        shuntRules: [],
+      },
+      nodes: [
+        {
+          id: "orphan-node",
+          label: "Orphan",
+          protocol: "xray",
+          enabled: true,
+          group: "Managed",
+          tags: [],
+          extras: {},
+        },
+      ],
+    });
+
+    const next = pruneNodes(config, ["orphan-node"]);
+
+    expect(next.nodes).toHaveLength(0);
+    expect(next.basicSettings.main.selectedNodeId).toBeUndefined();
+    expect(next.basicSettings.socks).toHaveLength(0);
   });
 });

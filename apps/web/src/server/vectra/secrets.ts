@@ -264,13 +264,13 @@ export function sanitizePasswallRawSnapshot(snapshot: Record<string, unknown>) {
 export function hydratePasswallConfig(
   maskedConfig: PasswallDesiredConfig,
   ciphertext: string | null
-) {
+): PasswallDesiredConfig {
   if (!ciphertext) {
     return maskedConfig;
   }
 
   const payload = decryptJson<PasswallSecretPayload>(ciphertext);
-  return payload.config;
+  return passwallDesiredConfigSchema.parse(payload.config);
 }
 
 export function createSecretPayload(config: PasswallDesiredConfig) {

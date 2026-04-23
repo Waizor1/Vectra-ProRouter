@@ -1,6 +1,7 @@
 import type { RouterOutputs } from "~/trpc/react";
 
 import {
+  findPasswallRuntimeTarget,
   formatPasswallArtifactSourceLabel,
   type PasswallBundleMetadata,
   type PasswallPackageArtifactDescriptor,
@@ -13,8 +14,9 @@ function findPasswallPackageArtifact(
   packageName: string,
 ): PasswallPackageArtifactDescriptor | null {
   return (
-    bundleMetadata.packageArtifacts.find((entry) => entry.name === packageName) ??
-    null
+    bundleMetadata.packageArtifacts.find(
+      (entry) => entry.name === packageName,
+    ) ?? null
   );
 }
 
@@ -38,16 +40,24 @@ export function formatPasswallAvailableVersion(
   bundleMetadata: PasswallBundleMetadata,
   packageName: string,
 ) {
-  const packageArtifact = findPasswallPackageArtifact(bundleMetadata, packageName);
+  const packageArtifact = findPasswallPackageArtifact(
+    bundleMetadata,
+    packageName,
+  );
+  const runtimeTarget = findPasswallRuntimeTarget(bundleMetadata, packageName);
   const sourceLabel = formatPasswallArtifactSourceLabel(bundleMetadata.source);
   if (!packageArtifact) {
+    if (runtimeTarget) {
+      return `runtime: ${runtimeTarget.remoteVersion} via built-in PassWall updater / package: через ${sourceLabel}`;
+    }
+
     return packageName === "xray-core"
       ? `runtime: built-in PassWall updater / package: через ${sourceLabel}`
       : `package: через ${sourceLabel}`;
   }
 
-  if (packageName === "xray-core") {
-    return `runtime: built-in PassWall updater / package: ${packageArtifact.artifactVersion} · ${formatPasswallArtifactSourceLabel(
+  if (runtimeTarget) {
+    return `runtime: ${runtimeTarget.remoteVersion} via built-in PassWall updater / package: ${packageArtifact.artifactVersion} · ${formatPasswallArtifactSourceLabel(
       packageArtifact.source,
     )}`;
   }
@@ -100,30 +110,38 @@ function extractLooseSemverParts(value: string | null | undefined) {
   return [Number(match[1]), Number(match[2]), Number(match[3])] as const;
 }
 
-export function runtimeMeetsOrExceedsPackageTarget(
-  runtimeVersion: string | null | undefined,
-  packageVersion: string | null | undefined,
+export function compareLooseSemverVersions(
+  left: string | null | undefined,
+  right: string | null | undefined,
 ) {
-  const runtimeParts = extractLooseSemverParts(runtimeVersion);
-  const packageParts = extractLooseSemverParts(packageVersion);
+  const leftParts = extractLooseSemverParts(left);
+  const rightParts = extractLooseSemverParts(right);
 
-  if (!runtimeParts || !packageParts) {
-    return false;
+  if (!leftParts || !rightParts) {
+    return null;
   }
 
-  const [runtimeMajor, runtimeMinor, runtimePatch] = runtimeParts;
-  const [packageMajor, packageMinor, packagePatch] = packageParts;
+  const [leftMajor, leftMinor, leftPatch] = leftParts;
+  const [rightMajor, rightMinor, rightPatch] = rightParts;
   const diffs = [
-    runtimeMajor - packageMajor,
-    runtimeMinor - packageMinor,
-    runtimePatch - packagePatch,
+    leftMajor - rightMajor,
+    leftMinor - rightMinor,
+    leftPatch - rightPatch,
   ];
 
   for (const diff of diffs) {
     if (diff !== 0) {
-      return diff > 0;
+      return diff > 0 ? 1 : -1;
     }
   }
 
-  return true;
+  return 0;
+}
+
+export function runtimeMeetsOrExceedsTargetVersion(
+  runtimeVersion: string | null | undefined,
+  targetVersion: string | null | undefined,
+) {
+  const comparison = compareLooseSemverVersions(runtimeVersion, targetVersion);
+  return comparison !== null && comparison >= 0;
 }

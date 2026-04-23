@@ -2,6 +2,7 @@ import {
   type PasswallDesiredConfig,
   MASKED_SECRET_PLACEHOLDER,
   type RouterTelegramReachability,
+  subscriptionInspectResultPayloadSchema,
 } from "@vectra/contracts";
 import {
   jobResults,
@@ -21,6 +22,10 @@ import {
 } from "~/lib/controller-version";
 import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
 import {
+  isRouterHostnameUpdateJob,
+  isRouterHostnameUpdateTerminalPayload,
+} from "~/lib/router-hostname-jobs";
+import {
   isRouterRebootJob,
   isRouterRebootTerminalPayload,
 } from "~/lib/router-reboot-jobs";
@@ -36,8 +41,9 @@ import {
   pickWorkspaceRevision,
 } from "~/server/vectra/draft-selection";
 import { isRouterReachable } from "~/server/vectra/router-presence";
-import { auditSubscriptions } from "~/server/vectra/subscription-audit";
 import {
+  buildSubscriptionPreviewDigest,
+  buildSubscriptionPreviewLookup,
   buildSubscriptionRuntimeReadModel,
   mergeNodesWithCurrentRuntime,
   mergeSubscriptionsBySemanticIdentity,
@@ -98,6 +104,8 @@ export type RouterManagementTaskLogItem = {
     | "controller-update"
     | "controller-self-update"
     | "passwall-update"
+    | "subscription-preview"
+    | "router-hostname-update"
     | "router-reboot";
   label: string;
   jobType: string;
@@ -403,12 +411,73 @@ async function getSecretCiphertext(revisionId: string) {
 
 async function hydrateRevision(
   revision: typeof passwallDesiredRevisions.$inferSelect | null | undefined
-) {
+): Promise<PasswallDesiredConfig | null> {
   if (!revision) {
     return null;
   }
 
   return hydratePasswallConfig(revision.config, await getSecretCiphertext(revision.id));
+}
+
+function parseSubscriptionInspectPayload(payload: Record<string, unknown> | null) {
+  const parsed = subscriptionInspectResultPayloadSchema.safeParse(payload ?? {});
+  return parsed.success ? parsed.data : null;
+}
+
+function selectSubscriptionPreviewSource(args: {
+  currentDigest: string;
+  jobs: Array<typeof jobs.$inferSelect>;
+  results: Array<typeof jobResults.$inferSelect>;
+}) {
+  const inspectJobs = args.jobs
+    .filter((job) => job.type === "inspect_subscriptions")
+    .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+  const inspectResults = args.results
+    .filter((result) =>
+      inspectJobs.some((job) => job.id === result.jobId),
+    )
+    .sort((left, right) => right.reportedAt.getTime() - left.reportedAt.getTime());
+  const successfulResults = inspectResults
+    .filter((result) => result.status === "success")
+    .map((result) => ({
+      row: result,
+      payload: parseSubscriptionInspectPayload(result.payload),
+    }))
+    .filter(
+      (
+        entry,
+      ): entry is {
+        row: typeof jobResults.$inferSelect;
+        payload: ReturnType<typeof parseSubscriptionInspectPayload> extends infer T
+          ? Exclude<T, null>
+          : never;
+      } => entry.payload !== null,
+    );
+
+  const matchingResult =
+    successfulResults.find(
+      (entry) => entry.payload.subscriptionDigest === args.currentDigest,
+    ) ?? null;
+  const freshResult =
+    matchingResult &&
+    Date.now() - new Date(matchingResult.payload.checkedAt).getTime() <=
+      24 * 60 * 60 * 1000
+      ? matchingResult.payload
+      : null;
+  const hasPendingJob = inspectJobs.some((job) =>
+    ["queued", "delivered", "running"].includes(job.state),
+  );
+  const hasFailedJob = inspectResults.some((result) => result.status === "failure");
+  const hasStaleResult =
+    matchingResult !== null ||
+    successfulResults.length > 0;
+
+  return {
+    freshResult,
+    hasPendingJob,
+    hasFailedJob,
+    hasStaleResult: hasStaleResult && freshResult === null,
+  };
 }
 
 export function buildLastControllerUpdateAttempt(args: {
@@ -767,6 +836,72 @@ function summarizeRouterRebootAttempt(args: {
   return "роутер принял задачу на перезагрузку";
 }
 
+function summarizeRouterHostnameUpdateAttempt(args: {
+  jobState: string;
+  resultStatus: ControllerUpdateAttemptStatus;
+  payload: Record<string, unknown> | null;
+}) {
+  const errorLine = firstMeaningfulLine(readStringField(args.payload, "error"));
+  if (errorLine) {
+    return errorLine;
+  }
+
+  const hostnameAfter =
+    readStringField(args.payload, "hostnameAfter") ??
+    readStringField(args.payload, "hostname");
+
+  if (
+    ["queued", "delivered", "running"].includes(args.jobState) ||
+    args.resultStatus === "accepted"
+  ) {
+    return hostnameAfter
+      ? `ожидаю, когда роутер применит hostname ${hostnameAfter}`
+      : "ожидаю, когда роутер применит новый hostname";
+  }
+
+  const stdoutLine = firstMeaningfulLine(readStringField(args.payload, "stdout"));
+  if (stdoutLine) {
+    return stdoutLine;
+  }
+
+  if (args.resultStatus === "failure") {
+    return "смена hostname завершилась ошибкой без подробностей";
+  }
+
+  return hostnameAfter
+    ? `hostname ${hostnameAfter} применён`
+    : "hostname обновлён";
+}
+
+function summarizeSubscriptionInspectAttempt(args: {
+  jobState: string;
+  resultStatus: ControllerUpdateAttemptStatus;
+  payload: Record<string, unknown> | null;
+}) {
+  const errorLine = firstMeaningfulLine(readStringField(args.payload, "error"));
+  if (errorLine) {
+    return errorLine;
+  }
+
+  if (
+    ["queued", "delivered", "running"].includes(args.jobState) ||
+    args.resultStatus === "accepted"
+  ) {
+    return "роутер ещё проверяет текущую подписку PassWall";
+  }
+
+  const checkedSubscriptions = args.payload?.checkedSubscriptions;
+  if (typeof checkedSubscriptions === "number" && Number.isFinite(checkedSubscriptions)) {
+    return `preview собран: ${checkedSubscriptions} подписок`;
+  }
+
+  if (args.resultStatus === "failure") {
+    return "preview подписок завершился ошибкой без подробностей";
+  }
+
+  return "preview подписок завершён";
+}
+
 function readStringField(
   payload: Record<string, unknown> | null | undefined,
   key: string,
@@ -837,11 +972,18 @@ export function buildRouterManagementTaskLog(args: {
 }): RouterManagementTaskLogItem[] {
   return [...args.jobs]
     .filter((job) => {
-      if (isControllerUpdateJob(job) || isRouterRebootJob(job)) {
+      if (
+        isControllerUpdateJob(job) ||
+        isRouterRebootJob(job) ||
+        isRouterHostnameUpdateJob(job)
+      ) {
         return true;
       }
 
-      return job.type === "update_passwall_packages";
+      return (
+        job.type === "update_passwall_packages" ||
+        job.type === "inspect_subscriptions"
+      );
     })
     .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())
     .slice(0, 5)
@@ -907,6 +1049,17 @@ export function buildRouterManagementTaskLog(args: {
           resultStatus,
           payload,
         });
+      } else if (
+        job.type === "run_terminal_command" &&
+        isRouterHostnameUpdateTerminalPayload(job.payload)
+      ) {
+        kind = "router-hostname-update";
+        label = "Смена OpenWrt hostname";
+        summary = summarizeRouterHostnameUpdateAttempt({
+          jobState: job.state,
+          resultStatus,
+          payload,
+        });
       } else if (job.type === "run_terminal_command") {
         kind = "controller-self-update";
         label = "Self-update controller";
@@ -921,6 +1074,14 @@ export function buildRouterManagementTaskLog(args: {
           driftDetected:
             (typeof payload?.driftDetected === "boolean" && payload.driftDetected) ||
             packageResults.some((entry) => entry.driftDetected),
+        });
+      } else if (job.type === "inspect_subscriptions") {
+        kind = "subscription-preview";
+        label = "Проверка подписки на роутере";
+        summary = summarizeSubscriptionInspectAttempt({
+          jobState: job.state,
+          resultStatus,
+          payload,
         });
       }
 
@@ -956,10 +1117,276 @@ export function buildRouterManagementTaskLog(args: {
     });
 }
 
-export function mergeCurrentLiveRouterDataIntoDraftConfig(args: {
-  draftConfig: ReturnType<typeof buildEditorSurface>["draftConfig"];
-  currentLiveConfig: ReturnType<typeof buildEditorSurface>["currentLiveConfig"] | null;
+type DraftConfig = ReturnType<typeof buildEditorSurface>["draftConfig"];
+type DraftNode = DraftConfig["nodes"][number];
+type DraftExtras = DraftNode["extras"];
+type DraftShuntRule = DraftConfig["basicSettings"]["shuntRules"][number];
+
+const preservedNodeReferenceValues = new Set(["_default", "_direct", "_blackhole"]);
+
+function normalizeNodeReferenceText(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed.toLowerCase() : null;
+}
+
+function findNodeById(
+  nodes: DraftConfig["nodes"],
+  nodeId: string | null | undefined,
+) {
+  const normalizedId = nodeId?.trim();
+  if (!normalizedId) {
+    return null;
+  }
+
+  return nodes.find((node) => node.id === normalizedId) ?? null;
+}
+
+function findMatchingNodeByLabel(
+  targetNodes: DraftConfig["nodes"],
+  referenceNode: DraftNode | null,
+) {
+  if (!referenceNode) {
+    return null;
+  }
+
+  const referenceLabel = normalizeNodeReferenceText(referenceNode.label);
+  if (!referenceLabel) {
+    return null;
+  }
+
+  const referenceGroup = normalizeNodeReferenceText(referenceNode.group);
+
+  return (
+    targetNodes.find(
+      (node) =>
+        normalizeNodeReferenceText(node.label) === referenceLabel &&
+        normalizeNodeReferenceText(node.group) === referenceGroup,
+    ) ??
+    targetNodes.find(
+      (node) => normalizeNodeReferenceText(node.label) === referenceLabel,
+    ) ??
+    null
+  );
+}
+
+function rebindNodeReferenceId(args: {
+  referenceId: string | null | undefined;
+  referenceNodes: DraftConfig["nodes"];
+  targetNodes: DraftConfig["nodes"];
+  preferredNodeId?: string | null;
 }) {
+  const normalizedId = args.referenceId?.trim();
+  if (!normalizedId) {
+    return undefined;
+  }
+
+  if (preservedNodeReferenceValues.has(normalizedId)) {
+    return normalizedId;
+  }
+
+  const preferredNode = findNodeById(args.targetNodes, args.preferredNodeId);
+  const referenceNode =
+    findNodeById(args.referenceNodes, normalizedId) ??
+    findNodeById(args.targetNodes, normalizedId);
+
+  if (preferredNode && referenceNode) {
+    const preferredLabel = normalizeNodeReferenceText(preferredNode.label);
+    const referenceLabel = normalizeNodeReferenceText(referenceNode.label);
+    if (preferredLabel && preferredLabel === referenceLabel) {
+      return preferredNode.id;
+    }
+  }
+
+  const matchedNode =
+    findMatchingNodeByLabel(args.targetNodes, referenceNode) ??
+    findNodeById(args.targetNodes, normalizedId) ??
+    preferredNode;
+
+  return matchedNode?.id;
+}
+
+function rebindNodeReferenceList(args: {
+  referenceIds: string[] | null | undefined;
+  referenceNodes: DraftConfig["nodes"];
+  targetNodes: DraftConfig["nodes"];
+}) {
+  if (!args.referenceIds || args.referenceIds.length === 0) {
+    return [];
+  }
+
+  return [
+    ...new Set(
+      args.referenceIds
+        .map((referenceId) =>
+          rebindNodeReferenceId({
+            referenceId,
+            referenceNodes: args.referenceNodes,
+            targetNodes: args.targetNodes,
+          }),
+        )
+        .filter((referenceId): referenceId is string => Boolean(referenceId)),
+    ),
+  ];
+}
+
+function rebindNodeReferenceExtras(args: {
+  extras: DraftExtras;
+  referenceNodes: DraftConfig["nodes"];
+  targetNodes: DraftConfig["nodes"];
+}): DraftExtras {
+  const nextExtras: DraftExtras = { ...args.extras };
+  for (const [key, value] of Object.entries(nextExtras)) {
+    if (typeof value !== "string") {
+      continue;
+    }
+
+    if (
+      key === "default_node" ||
+      key === "to_node" ||
+      key.endsWith("_proxy_tag")
+    ) {
+      const rebound = rebindNodeReferenceId({
+        referenceId: value,
+        referenceNodes: args.referenceNodes,
+        targetNodes: args.targetNodes,
+      });
+      if (rebound) {
+        nextExtras[key] = rebound;
+      }
+    }
+  }
+
+  return nextExtras;
+}
+
+function findMatchingShuntRuleByIdentity(
+  rules: DraftShuntRule[],
+  rule: DraftShuntRule,
+) {
+  const normalizedRuleId = normalizeNodeReferenceText(rule.id);
+  if (normalizedRuleId) {
+    const matchedById = rules.find(
+      (entry) => normalizeNodeReferenceText(entry.id) === normalizedRuleId,
+    );
+    if (matchedById) {
+      return matchedById;
+    }
+  }
+
+  const normalizedLabel = normalizeNodeReferenceText(rule.label);
+  if (!normalizedLabel) {
+    return null;
+  }
+
+  return (
+    rules.find(
+      (entry) => normalizeNodeReferenceText(entry.label) === normalizedLabel,
+    ) ?? null
+  );
+}
+
+function resolveShuntRuleOutboundNodeId(args: {
+  rule: DraftShuntRule;
+  liveRules: DraftShuntRule[];
+  referenceNodes: DraftConfig["nodes"];
+  targetNodes: DraftConfig["nodes"];
+}) {
+  const rebound = rebindNodeReferenceId({
+    referenceId: args.rule.outboundNodeId,
+    referenceNodes: args.referenceNodes,
+    targetNodes: args.targetNodes,
+  });
+  if (rebound) {
+    return rebound;
+  }
+
+  const liveRule = findMatchingShuntRuleByIdentity(args.liveRules, args.rule);
+  return liveRule?.outboundNodeId ?? args.rule.outboundNodeId;
+}
+
+function rebindDraftNodeReferences(args: {
+  draftConfig: DraftConfig;
+  referenceNodes: DraftConfig["nodes"];
+  currentLiveConfig: DraftConfig | null;
+  preferredSelectedNodeId?: string | null;
+}): DraftConfig {
+  const targetNodes = args.draftConfig.nodes;
+
+  return {
+    ...args.draftConfig,
+    basicSettings: {
+      ...args.draftConfig.basicSettings,
+      main: {
+        ...args.draftConfig.basicSettings.main,
+        selectedNodeId: rebindNodeReferenceId({
+          referenceId: args.draftConfig.basicSettings.main.selectedNodeId,
+          referenceNodes: args.referenceNodes,
+          targetNodes,
+          preferredNodeId: args.preferredSelectedNodeId,
+        }),
+      },
+      socks: args.draftConfig.basicSettings.socks.map((entry) => ({
+        ...entry,
+        nodeId:
+          rebindNodeReferenceId({
+            referenceId: entry.nodeId,
+            referenceNodes: args.referenceNodes,
+            targetNodes,
+          }) ?? entry.nodeId,
+        autoswitchBackupNodeIds: rebindNodeReferenceList({
+          referenceIds: entry.autoswitchBackupNodeIds,
+          referenceNodes: args.referenceNodes,
+          targetNodes,
+        }),
+      })),
+      shuntRules: args.draftConfig.basicSettings.shuntRules.map((rule) => ({
+        ...rule,
+        outboundNodeId: resolveShuntRuleOutboundNodeId({
+          rule,
+          liveRules: args.currentLiveConfig?.basicSettings.shuntRules ?? [],
+          referenceNodes: args.referenceNodes,
+          targetNodes,
+        }),
+      })),
+    },
+    nodes: args.draftConfig.nodes.map((node) => ({
+      ...node,
+      extras: rebindNodeReferenceExtras({
+        extras: node.extras,
+        referenceNodes: args.referenceNodes,
+        targetNodes,
+      }),
+    })),
+    subscriptions: {
+      ...args.draftConfig.subscriptions,
+      items: args.draftConfig.subscriptions.items.map((item) => ({
+        ...item,
+        extras: rebindNodeReferenceExtras({
+          extras: item.extras,
+          referenceNodes: args.referenceNodes,
+          targetNodes,
+        }),
+      })),
+    },
+    ruleManage: {
+      ...args.draftConfig.ruleManage,
+      shuntRules: args.draftConfig.ruleManage.shuntRules.map((rule) => ({
+        ...rule,
+        outboundNodeId: resolveShuntRuleOutboundNodeId({
+          rule,
+          liveRules: args.currentLiveConfig?.ruleManage.shuntRules ?? [],
+          referenceNodes: args.referenceNodes,
+          targetNodes,
+        }),
+      })),
+    },
+  };
+}
+
+export function mergeCurrentLiveRouterDataIntoDraftConfig(args: {
+  draftConfig: PasswallDesiredConfig;
+  currentLiveConfig: PasswallDesiredConfig | null;
+}): PasswallDesiredConfig {
   if (!args.currentLiveConfig) {
     return args.draftConfig;
   }
@@ -994,24 +1421,31 @@ export function mergeCurrentLiveRouterDataIntoDraftConfig(args: {
     !draftKnownNodeIds.has(currentLiveSelectedNodeId) &&
     mergedNodes.some((node) => node.id === currentLiveSelectedNodeId);
 
-  return {
-    ...args.draftConfig,
-    basicSettings: {
-      ...args.draftConfig.basicSettings,
-      main: {
-        ...args.draftConfig.basicSettings.main,
-        selectedNodeId: shouldPreferCurrentLiveSelectedNode
-          ? currentLiveSelectedNodeId
-          : args.draftConfig.basicSettings.main.selectedNodeId,
+  return rebindDraftNodeReferences({
+    draftConfig: {
+      ...args.draftConfig,
+      basicSettings: {
+        ...args.draftConfig.basicSettings,
+        main: {
+          ...args.draftConfig.basicSettings.main,
+          selectedNodeId: shouldPreferCurrentLiveSelectedNode
+            ? currentLiveSelectedNodeId
+            : args.draftConfig.basicSettings.main.selectedNodeId,
+        },
+        socks: mergedSocks,
       },
-      socks: mergedSocks,
+      nodes: mergedNodes,
+      subscriptions: {
+        ...args.draftConfig.subscriptions,
+        items: mergedSubscriptions,
+      },
     },
-    nodes: mergedNodes,
-    subscriptions: {
-      ...args.draftConfig.subscriptions,
-      items: mergedSubscriptions,
-    },
-  };
+    referenceNodes: args.draftConfig.nodes,
+    currentLiveConfig: args.currentLiveConfig,
+    preferredSelectedNodeId: shouldPreferCurrentLiveSelectedNode
+      ? currentLiveSelectedNodeId
+      : null,
+  });
 }
 
 export async function getDraftEditorSurface(routerId: string) {
@@ -1249,13 +1683,31 @@ export async function getDraftEditorSurface(routerId: string) {
   });
   const runtimeConfigForAudit =
     currentLiveConfig ?? authoritativeConfig ?? effectiveDraft;
+  const previewSource = selectSubscriptionPreviewSource({
+    currentDigest: buildSubscriptionPreviewDigest(
+      runtimeConfigForAudit.subscriptions,
+    ),
+    jobs: recentJobs,
+    results: resultRows,
+  });
+  const previewLookup = buildSubscriptionPreviewLookup({
+    subscriptions: runtimeConfigForAudit.subscriptions,
+    freshResult: previewSource.freshResult
+      ? {
+          checkedAt: previewSource.freshResult.checkedAt,
+          entries: previewSource.freshResult.entries,
+        }
+      : null,
+    hasPendingJob: previewSource.hasPendingJob,
+    hasFailedJob: previewSource.hasFailedJob,
+    hasStaleResult: previewSource.hasStaleResult,
+  });
   const subscriptionRuntime = buildSubscriptionRuntimeReadModel({
     runtimeConfig: runtimeConfigForAudit,
     draftConfig: effectiveDraft,
     latestPanelDraftConfig,
-    audits: await auditSubscriptions({
-      subscriptions: runtimeConfigForAudit.subscriptions.items,
-    }),
+    previewLookup: previewLookup.stateByKey,
+    previewState: previewLookup.previewState,
     selectedNodeId,
   });
 
@@ -1263,10 +1715,13 @@ export async function getDraftEditorSurface(routerId: string) {
     ...editorSurface,
     routerRuntimeSummary: {
       id: router.id,
+      displayName: router.displayName ?? null,
+      hostname: router.hostname ?? payload?.hostname ?? null,
+      deviceIdentifier: router.deviceIdentifier,
       name:
         router.displayName ??
-        payload?.hostname ??
         router.hostname ??
+        payload?.hostname ??
         router.deviceIdentifier,
       destructiveActionsAllowed: canRunDestructiveAction(support.state),
       boardName: router.boardName,

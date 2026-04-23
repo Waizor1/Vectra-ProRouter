@@ -447,6 +447,7 @@ func resumeProxyMode(
 	}
 
 	clearPersistedRescueMetadata(persisted, runtimeStatus)
+	clearControlPlaneReachabilityCache()
 
 	return nil
 }

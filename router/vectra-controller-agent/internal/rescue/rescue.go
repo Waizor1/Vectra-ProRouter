@@ -21,6 +21,13 @@ type Policy struct {
 	Cooldown                 time.Duration `json:"cooldown"`
 	RequireDirectPathSuccess bool          `json:"require_direct_path_success"`
 	DirectModeReason         string        `json:"direct_mode_reason"`
+	PanelOutageThreshold     time.Duration `json:"panel_outage_threshold,omitempty"`
+	ProbeCacheTTL            time.Duration `json:"probe_cache_ttl,omitempty"`
+	ControllerRestartSettle  time.Duration `json:"controller_restart_settle,omitempty"`
+	DirectSettle             time.Duration `json:"direct_settle,omitempty"`
+	PostRebootSettle         time.Duration `json:"post_reboot_settle,omitempty"`
+	PasswallWarmup           time.Duration `json:"passwall_warmup,omitempty"`
+	RebootCooldown           time.Duration `json:"reboot_cooldown,omitempty"`
 }
 
 func (p *Policy) Normalize() {
@@ -38,6 +45,27 @@ func (p *Policy) Normalize() {
 	}
 	if p.DirectModeReason == "" {
 		p.DirectModeReason = "Subscription expired or upstream proxy unavailable"
+	}
+	if p.PanelOutageThreshold <= 0 {
+		p.PanelOutageThreshold = time.Hour
+	}
+	if p.ProbeCacheTTL <= 0 {
+		p.ProbeCacheTTL = 5 * time.Minute
+	}
+	if p.ControllerRestartSettle <= 0 {
+		p.ControllerRestartSettle = 90 * time.Second
+	}
+	if p.DirectSettle <= 0 {
+		p.DirectSettle = 45 * time.Second
+	}
+	if p.PostRebootSettle <= 0 {
+		p.PostRebootSettle = 4 * time.Minute
+	}
+	if p.PasswallWarmup <= 0 {
+		p.PasswallWarmup = 75 * time.Second
+	}
+	if p.RebootCooldown <= 0 {
+		p.RebootCooldown = 12 * time.Hour
 	}
 }
 

@@ -50,6 +50,13 @@
       "when": 1776433500000,
       "tag": "0006_sturdy_rollout_groups",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1776819600000,
+      "tag": "0007_hushed_subscription_preview",
+      "breakpoints": true
     }
   ]
 }

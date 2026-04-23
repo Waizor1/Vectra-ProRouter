@@ -399,7 +399,7 @@ export function PublicInstallWorkspace({
                     Открыть скрипт
                   </a>
                 </div>
-                <pre className="overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
+                <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
                   <code>{quickCommand}</code>
                 </pre>
               </div>
@@ -539,7 +539,7 @@ export function PublicInstallWorkspace({
                 Нужна ручная команда вместо helper?
               </summary>
               <div className="mt-3 space-y-4 text-sm leading-6 text-slate-300">
-                <pre className="overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
+                <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
                   <code>{quickCommand}</code>
                 </pre>
 
@@ -608,7 +608,7 @@ export function PublicInstallWorkspace({
                   </div>
                 ) : null}
 
-                <pre className="min-h-40 overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
+                <pre className="min-h-40 overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
                   <code>
                     {assembledLog ||
                       "Лог появится здесь после старта helper-flow или при ошибке bootstrap."}

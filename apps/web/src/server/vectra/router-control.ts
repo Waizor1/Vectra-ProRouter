@@ -33,6 +33,8 @@ import { and, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
 
 import { env } from "~/env";
 import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
+import { isRouterHostnameUpdateTerminalPayload } from "~/lib/router-hostname-jobs";
+import { isRouterRebootJob } from "~/lib/router-reboot-jobs";
 import { db } from "~/server/db";
 import { issueRouterCredential } from "~/server/vectra/auth";
 import {
@@ -147,7 +149,9 @@ export function selectDeliverableJobsForCheckIn(
       : queuedCandidates.filter((job) => job.type !== "apply_passwall_config");
 
   const exclusiveJob = allowedJobs.find((job) =>
-    isControllerUpdateJob(job) || job.type === "validate_firmware",
+    isControllerUpdateJob(job) ||
+    isRouterRebootJob(job) ||
+    job.type === "validate_firmware",
   );
 
   if (exclusiveJob) {
@@ -171,6 +175,167 @@ export function sanitizeRevisionForClient(
     ...safeRevision,
     hasRawImportedSnapshot: Boolean(revision.rawImportedSnapshot),
   };
+}
+
+export function resolveReportedRouterHostname(args: {
+  jobType: string;
+  jobPayload: Record<string, unknown> | null | undefined;
+  resultPayload: Record<string, unknown> | null | undefined;
+}) {
+  if (
+    args.jobType !== "run_terminal_command" ||
+    !isRouterHostnameUpdateTerminalPayload(args.jobPayload ?? null)
+  ) {
+    return null;
+  }
+
+  const hostnameAfter =
+    typeof args.resultPayload?.hostnameAfter === "string"
+      ? args.resultPayload.hostnameAfter.trim()
+      : "";
+  if (hostnameAfter.length > 0) {
+    return hostnameAfter;
+  }
+
+  const requestedHostname =
+    typeof args.jobPayload?.hostname === "string"
+      ? args.jobPayload.hostname.trim()
+      : "";
+  return requestedHostname.length > 0 ? requestedHostname : null;
+}
+
+type RecoveryHealthPayload = ReturnType<typeof routerCheckInRequestSchema.parse>["health"];
+type RecoveryIncidentTransition = ReturnType<
+  typeof jobResultRequestSchema.parse
+>["incidentTransitions"][number];
+type OpenIncidentRow = typeof healthIncidents.$inferSelect | null;
+
+const unresolvedProxyRecoveryPhases = new Set([
+  "direct_settle",
+  "reboot_wait",
+  "post_reboot_check",
+  "passwall_retry_wait",
+  "operator_attention",
+]);
+const controlPlaneRecoveryIncidentOrigin = "control-plane-recovery";
+
+function hasControlPlaneRecoveryIncidentOrigin(
+  metadata: Record<string, unknown> | null | undefined,
+) {
+  return metadata?.origin === controlPlaneRecoveryIncidentOrigin;
+}
+
+export function isControlPlaneRecoveryIncident(
+  incident:
+    | Pick<NonNullable<OpenIncidentRow>, "type" | "metadata">
+    | null
+    | undefined,
+) {
+  if (!incident) {
+    return false;
+  }
+
+  if (
+    incident.type !== "server_unreachable" &&
+    incident.type !== "proxy_outage"
+  ) {
+    return false;
+  }
+
+  return hasControlPlaneRecoveryIncidentOrigin(incident.metadata ?? {});
+}
+
+function isControlPlaneRecoveryTransition(
+  transition: RecoveryIncidentTransition,
+) {
+  return hasControlPlaneRecoveryIncidentOrigin(transition.metadata);
+}
+
+export function buildSyntheticRecoveryTransitions(args: {
+  health: RecoveryHealthPayload;
+  inventory: RouterInventory;
+  openIncident: OpenIncidentRow;
+}): RecoveryIncidentTransition[] {
+  const metadata = {
+    origin: controlPlaneRecoveryIncidentOrigin,
+    recoveryPhase: args.health.recoveryPhase,
+    awaitingOperator: args.health.awaitingOperator,
+    panelStatus: args.inventory.panelReachability?.status ?? null,
+    ruStatus: args.inventory.ruReachability?.status ?? null,
+    foreignStatus: args.inventory.foreignReachability?.status ?? null,
+  };
+  const hasUnrelatedOpenIncident =
+    args.openIncident?.state === "open" &&
+    !isControlPlaneRecoveryIncident(args.openIncident);
+
+  let desiredOpen:
+    | {
+        type: "server_unreachable" | "proxy_outage";
+        reason: string;
+      }
+    | null = null;
+
+  if (args.health.recoveryPhase === "controller_restart_wait") {
+    desiredOpen = {
+      type: "server_unreachable",
+      reason:
+        args.health.lastRecoveryAction ??
+        "Control plane stayed unreachable long enough to trigger local controller recovery.",
+    };
+  } else if (
+    args.health.awaitingOperator ||
+    (unresolvedProxyRecoveryPhases.has(args.health.recoveryPhase) &&
+      args.inventory.foreignReachability?.status !== "healthy")
+  ) {
+    desiredOpen = {
+      type: "proxy_outage",
+      reason:
+        args.health.lastRecoveryAction ??
+        "Proxy-path recovery did not converge; the router requires operator review.",
+    };
+  }
+
+  if (desiredOpen) {
+    if (hasUnrelatedOpenIncident) {
+      return [];
+    }
+
+    if (
+      args.openIncident?.state === "open" &&
+      isControlPlaneRecoveryIncident(args.openIncident) &&
+      args.openIncident.type === desiredOpen.type &&
+      args.openIncident.reason === desiredOpen.reason
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        type: desiredOpen.type,
+        state: "open",
+        reason: desiredOpen.reason,
+        metadata,
+      },
+    ];
+  }
+
+  if (
+    args.openIncident?.state === "open" &&
+    isControlPlaneRecoveryIncident(args.openIncident)
+  ) {
+    return [
+      {
+        type: "recovered",
+        state: "resolved",
+        reason:
+          args.health.lastRecoveryAction ??
+          "Router resumed normal control-plane contact and cleared the active recovery incident.",
+        metadata,
+      },
+    ];
+  }
+
+  return [];
 }
 
 async function insertInventorySnapshot(
@@ -552,7 +717,7 @@ function normalizeJobResultPayload(
   };
 }
 
-async function applyIncidentTransitions(
+export async function applyIncidentTransitions(
   router: RouterRow,
   transitions: ReturnType<
     typeof jobResultRequestSchema.parse
@@ -568,16 +733,71 @@ async function applyIncidentTransitions(
     const happenedAt = transition.happenedAt
       ? new Date(transition.happenedAt)
       : new Date();
+    const controlPlaneRecoveryTransition =
+      isControlPlaneRecoveryTransition(transition);
+    const openIncidents = await db
+      .select()
+      .from(healthIncidents)
+      .where(
+        and(
+          eq(healthIncidents.routerId, router.id),
+          eq(healthIncidents.state, "open"),
+        ),
+      )
+      .orderBy(desc(healthIncidents.openedAt));
 
     if (transition.state === "open") {
-      await db.insert(healthIncidents).values({
-        routerId: router.id,
-        type: transition.type,
-        state: "open",
-        reason: transition.reason,
-        metadata: transition.metadata,
-        openedAt: happenedAt,
-      });
+      const unrelatedOpenIncident = openIncidents.find(
+        (incident) => !isControlPlaneRecoveryIncident(incident),
+      );
+      if (controlPlaneRecoveryTransition && unrelatedOpenIncident) {
+        continue;
+      }
+      const existingOpen = controlPlaneRecoveryTransition
+        ? openIncidents.find((incident) => isControlPlaneRecoveryIncident(incident))
+        : openIncidents[0];
+
+      if (existingOpen?.type === transition.type) {
+        await db
+          .update(healthIncidents)
+          .set({
+            reason: transition.reason,
+            metadata: transition.metadata,
+            openedAt: happenedAt,
+            resolvedAt: null,
+          })
+          .where(eq(healthIncidents.id, existingOpen.id));
+      } else {
+        const incidentIdsToResolve = controlPlaneRecoveryTransition
+          ? openIncidents
+              .filter((incident) => isControlPlaneRecoveryIncident(incident))
+              .map((incident) => incident.id)
+          : openIncidents.map((incident) => incident.id);
+        if (incidentIdsToResolve.length > 0) {
+          await db
+            .update(healthIncidents)
+            .set({
+              state: "resolved",
+              resolvedAt: happenedAt,
+            })
+            .where(
+              and(
+                eq(healthIncidents.routerId, router.id),
+                eq(healthIncidents.state, "open"),
+                inArray(healthIncidents.id, incidentIdsToResolve),
+              ),
+            );
+        }
+
+        await db.insert(healthIncidents).values({
+          routerId: router.id,
+          type: transition.type,
+          state: "open",
+          reason: transition.reason,
+          metadata: transition.metadata,
+          openedAt: happenedAt,
+        });
+      }
 
       if (transition.type === "entered_direct_mode") {
         const [updatedRouter] = await db
@@ -593,6 +813,15 @@ async function applyIncidentTransitions(
         currentRouter = updatedRouter ?? currentRouter;
       }
     } else {
+      const incidentIdsToResolve = controlPlaneRecoveryTransition
+        ? openIncidents
+            .filter((incident) => isControlPlaneRecoveryIncident(incident))
+            .map((incident) => incident.id)
+        : openIncidents.map((incident) => incident.id);
+      if (incidentIdsToResolve.length === 0) {
+        continue;
+      }
+
       await db
         .update(healthIncidents)
         .set({
@@ -603,8 +832,13 @@ async function applyIncidentTransitions(
           and(
             eq(healthIncidents.routerId, router.id),
             eq(healthIncidents.state, "open"),
+            inArray(healthIncidents.id, incidentIdsToResolve),
           ),
         );
+
+      if (controlPlaneRecoveryTransition) {
+        continue;
+      }
 
       const [updatedRouter] = await db
         .update(routers)
@@ -822,7 +1056,19 @@ export async function checkInRouter(routerId: string, input: unknown) {
     "check_in",
   );
 
-  const router = parsed.passwallImport
+  const [openIncident] = await db
+    .select()
+    .from(healthIncidents)
+    .where(
+      and(
+        eq(healthIncidents.routerId, persistedRouter.id),
+        eq(healthIncidents.state, "open"),
+      ),
+    )
+    .orderBy(desc(healthIncidents.openedAt))
+    .limit(1);
+
+  const routerWithImport = parsed.passwallImport
     ? await createImportedBaselineRevision(
         persistedRouter,
         parsed.passwallImport,
@@ -831,6 +1077,17 @@ export async function checkInRouter(routerId: string, input: unknown) {
         },
       )
     : persistedRouter;
+
+  const recoveryTransitions = buildSyntheticRecoveryTransitions({
+    health: parsed.health,
+    inventory: parsed.inventory,
+    openIncident: openIncident ?? null,
+  });
+
+  const router =
+    recoveryTransitions.length > 0
+      ? await applyIncidentTransitions(routerWithImport, recoveryTransitions)
+      : routerWithImport;
 
   const queuedCandidates = await db
     .select()
@@ -1023,6 +1280,26 @@ export async function recordJobResult(routerId: string, input: unknown) {
         currentRouter = updatedRouter ?? currentRouter;
       }
     }
+  }
+
+  const reportedHostname =
+    parsed.status === "success"
+      ? resolveReportedRouterHostname({
+          jobType: job.type,
+          jobPayload: job.payload,
+          resultPayload: payload,
+        })
+      : null;
+  if (reportedHostname) {
+    const [updatedRouter] = await db
+      .update(routers)
+      .set({
+        hostname: reportedHostname,
+      })
+      .where(eq(routers.id, routerId))
+      .returning();
+
+    currentRouter = updatedRouter ?? currentRouter;
   }
 
   await db.insert(eventLog).values({

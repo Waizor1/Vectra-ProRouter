@@ -181,6 +181,16 @@
         }
       },
       {
+        "name": "inspect_subscriptions",
+        "value": {
+          "id": "3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c",
+          "type": "inspect_subscriptions",
+          "state": "queued",
+          "createdAt": "2026-04-07T08:02:50.000Z",
+          "payload": {}
+        }
+      },
+      {
         "name": "validate_firmware",
         "value": {
           "id": "44444444-4444-4444-8444-444444444444",
@@ -416,6 +426,44 @@
             "stderr": "",
             "stdoutTruncated": false,
             "stderrTruncated": false
+          }
+        }
+      },
+      {
+        "name": "inspect_subscriptions_success",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf",
+          "jobId": "3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c",
+          "status": "success",
+          "result": {
+            "checkedAt": "2026-04-07T08:02:52.000Z",
+            "subscriptionDigest": "subdigest-111",
+            "entries": [
+              {
+                "subscriptionId": "vectra_sub_subscribe_list_0",
+                "subscriptionKey": "bloopcat::urlhash-111",
+                "remark": "BloopCat",
+                "urlHash": "urlhash-111",
+                "enabled": true,
+                "accessMode": "auto",
+                "userAgent": "passwall2",
+                "fetchState": "ok",
+                "httpStatus": 200,
+                "payloadMode": "base64-lines",
+                "payloadNodeCount": 3,
+                "resolvedPayloadNodeCount": 2,
+                "payloadFingerprints": [
+                  {
+                    "fingerprint": "fp-111"
+                  },
+                  {
+                    "fingerprint": "fp-222"
+                  }
+                ],
+                "checkedAt": "2026-04-07T08:02:52.000Z"
+              }
+            ]
           }
         }
       },

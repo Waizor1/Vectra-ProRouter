@@ -1,5 +1,4 @@
 import { UpdatesWorkspaceClientBoundary } from "~/components/updates-workspace-client-boundary";
-import { Panel } from "~/components/panel";
 import { PageHeader } from "~/components/page-header";
 import { api } from "~/trpc/server";
 
@@ -94,80 +93,60 @@ export default async function UpdatesPage() {
       <PageHeader
         eyebrow="Обновления"
         title="Профили, группы и контроль обновлений"
-        description="Здесь вы ведёте reusable rollout-профили, раскладываете парк по группам и управляете массовыми обновлениями Xray / PassWall / controller без перегруженного интерфейса. Глобальный baseline остаётся рядом как отдельный рабочий контур."
-        mobileDescription="Профили, группы, baseline и update-контроль."
+        description="Baseline, группы и version-control собраны в один рабочий экран. Справочные треки и артефакты вынесены ниже."
+        mobileDescription="Baseline, группы и version-control."
         compact
       />
-
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-        <Panel eyebrow="Как работать" title="Быстрый путь по странице" tone="hero" compact>
-          <div className="grid gap-3 sm:grid-cols-3">
-            {[
-              {
-                step: "1",
-                title: "Правите эталон",
-                body: "Install baseline для новых роутеров и fleet-template для уже подключённого парка.",
-              },
-              {
-                step: "2",
-                title: "Готовите рассылку",
-                body: "Сначала можно выпустить только черновики, а применение оставить на отдельное окно.",
-              },
-              {
-                step: "3",
-                title: "Сверяете публикации",
-                body: "Каналы и артефакты ниже помогают проверить, что уже опубликовано для контроллера, PassWall2 и прошивок.",
-              },
-            ].map((item) => (
-              <div
-                key={item.step}
-                className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
-              >
-                <p className="vectra-kicker text-[var(--vectra-accent)]">Шаг {item.step}</p>
-                <p className="mt-2 text-sm font-semibold text-white">{item.title}</p>
-                <p className="mt-2 text-sm leading-6 text-slate-300">{item.body}</p>
-              </div>
-            ))}
-          </div>
-        </Panel>
-
-        <Panel eyebrow="Контур выпусков" title="Что сейчас опубликовано" tone="muted" compact>
-          <div className="space-y-3">
-            {releaseTracks.map((track) => (
-              <div
-                key={track.lane}
-                className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="vectra-kicker text-slate-500">
-                      {formatChannelLabel(track.channel)}
-                    </p>
-                    <p className="mt-2 text-sm font-semibold text-white sm:text-base">
-                      {track.lane}
-                    </p>
-                  </div>
-                  <p className="font-[family:var(--font-plex-mono)] text-sm text-slate-200">
-                    {track.version}
-                  </p>
-                </div>
-                <p className="mt-2 text-sm leading-6 text-slate-400">{track.scope}</p>
-              </div>
-            ))}
-          </div>
-        </Panel>
-      </div>
 
       <UpdatesWorkspaceClientBoundary
         initialGlobalTemplateWorkspace={globalTemplateWorkspace}
       />
 
-      <Panel eyebrow="Справка" title="Последние артефакты и guarded-контур" tone="muted">
-        <div className="space-y-4">
-          <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 text-sm leading-6 text-slate-300">
-            Прошивки остаются отдельным guarded-путём: сначала проверка через{" "}
-            <code>sysupgrade -T</code> или <code>ubus validate_firmware_image</code>,
-            затем точечное действие по совместимой плате и layout. Это справочный блок, а не место для массовой рассылки прошивок.
+      <details className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)]">
+        <summary className="cursor-pointer list-none px-4 py-3 sm:px-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="vectra-kicker text-slate-500">Справка</p>
+              <p className="mt-1 text-sm font-medium text-white">
+                Опубликованные треки, guarded-прошивки и последние артефакты
+              </p>
+            </div>
+            <span className="text-xs text-slate-400">раскрыть</span>
+          </div>
+        </summary>
+
+        <div className="space-y-4 border-t border-white/10 px-4 py-4 sm:px-5">
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
+            <div className="space-y-3">
+              {releaseTracks.map((track) => (
+                <div
+                  key={track.lane}
+                  className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="vectra-kicker text-slate-500">
+                        {formatChannelLabel(track.channel)}
+                      </p>
+                      <p className="mt-2 text-sm font-semibold text-white sm:text-base">
+                        {track.lane}
+                      </p>
+                    </div>
+                    <p className="font-[family:var(--font-plex-mono)] text-sm text-slate-200">
+                      {track.version}
+                    </p>
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-slate-400">{track.scope}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
+              Прошивки остаются отдельным guarded-путём: сначала проверка через{" "}
+              <code>sysupgrade -T</code> или <code>ubus validate_firmware_image</code>,
+              затем точечное действие по совместимой плате и layout. Этот блок
+              остаётся справкой, а не основной зоной массовой рассылки.
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -196,7 +175,7 @@ export default async function UpdatesPage() {
             )}
           </div>
         </div>
-      </Panel>
+      </details>
     </section>
   );
 }

@@ -38,6 +38,16 @@ export const routerLogSourceSchema = z.enum([
   "dnsmasq",
   "system",
 ]);
+export const recoveryPhaseSchema = z.enum([
+  "idle",
+  "monitoring",
+  "controller_restart_wait",
+  "direct_settle",
+  "reboot_wait",
+  "post_reboot_check",
+  "passwall_retry_wait",
+  "operator_attention",
+]);
 export const routerImportStateSchema = z.enum([
   "awaiting_import",
   "import_review",
@@ -56,6 +66,7 @@ export const incidentTypeSchema = z.enum([
 export const jobTypeSchema = z.enum([
   "apply_passwall_config",
   "refresh_subscriptions",
+  "inspect_subscriptions",
   "refresh_rules",
   "collect_router_logs",
   "run_terminal_command",
@@ -159,6 +170,28 @@ export const passwallPackagePathUsedSchema = z.enum([
   "built-in-updater",
   "xray-binary-payload",
   "not-needed",
+]);
+export const subscriptionPreviewFetchStateSchema = z.enum([
+  "ok",
+  "disabled",
+  "http_error",
+  "network_error",
+  "parse_error",
+]);
+export const subscriptionPreviewPayloadModeSchema = z.enum([
+  "plain-lines",
+  "base64-lines",
+  "ssd-json",
+  "single-link",
+  "unknown",
+]);
+export const subscriptionPreviewStateSchema = z.enum([
+  "fresh",
+  "pending",
+  "stale",
+  "failed",
+  "missing",
+  "disabled",
 ]);
 export const ruleScheduleModeSchema = z.enum(["daily", "weekly", "interval"]);
 
@@ -388,6 +421,18 @@ export const routerTelegramReachabilitySchema = z.object({
   checks: z.array(routerReachabilityProbeSchema).default([]),
 });
 
+export const routerGroupedReachabilitySchema = z.object({
+  reachable: z.boolean().optional(),
+  checkedAt: z.string().datetime(),
+  status: z.enum(["reachable", "healthy", "partial", "blocked"]).optional(),
+  reachableCount: z.number().int().nonnegative().optional(),
+  totalCount: z.number().int().nonnegative().optional(),
+  targetUrl: z.string().url().optional(),
+  statusCode: z.number().int().nonnegative().optional(),
+  error: z.string().min(1).optional(),
+  checks: z.array(routerReachabilityProbeSchema).default([]),
+});
+
 export const routerInventorySchema = z.object({
   protocolVersion: z.literal(VECTRA_PROTOCOL_VERSION),
   deviceIdentifier: z.string().min(1),
@@ -423,6 +468,9 @@ export const routerInventorySchema = z.object({
   resources: routerResourcesSchema,
   serviceHealth: routerServiceHealthSchema,
   lastRescue: routerLastRescueSchema.nullable().optional(),
+  panelReachability: routerGroupedReachabilitySchema.optional(),
+  ruReachability: routerGroupedReachabilitySchema.optional(),
+  foreignReachability: routerGroupedReachabilitySchema.optional(),
   telegramReachability: routerTelegramReachabilitySchema.optional(),
   rawSnapshot: z.record(z.string(), z.unknown()).optional(),
 });
@@ -440,6 +488,13 @@ export const rescuePolicySchema = z.object({
   cooldownSeconds: z.number().int().min(30).default(300),
   requireDirectPathSuccess: z.boolean().default(true),
   directModeReason: z.string().min(1).default(SYNTHETIC_DEGRADED_MESSAGE),
+  panelOutageThresholdSeconds: z.number().int().min(300).default(3600),
+  probeCacheTtlSeconds: z.number().int().min(30).default(300),
+  controllerRestartSettleSeconds: z.number().int().min(30).default(90),
+  directSettleSeconds: z.number().int().min(15).default(45),
+  postRebootSettleSeconds: z.number().int().min(60).default(240),
+  passwallWarmupSeconds: z.number().int().min(30).default(75),
+  rebootCooldownSeconds: z.number().int().min(300).default(43200),
 });
 
 export const updatePolicySchema = z.object({
@@ -495,11 +550,20 @@ export const collectRouterLogsJobPayloadSchema = z.object({
   lines: z.number().int().min(50).max(400).default(200),
 });
 
+export const inspectSubscriptionsJobPayloadSchema = z.object({}).passthrough();
+
 export const runTerminalCommandJobPayloadSchema = z.object({
   command: z.string().trim().min(1).max(4000),
   timeoutSeconds: z.number().int().min(5).max(120).default(30),
-  purpose: z.enum(["controller-self-update", "router-reboot"]).optional(),
+  purpose: z
+    .enum([
+      "controller-self-update",
+      "router-reboot",
+      "router-hostname-update",
+    ])
+    .optional(),
   artifactVersion: z.string().nullable().optional(),
+  hostname: z.string().min(1).max(63).nullable().optional(),
 });
 
 export const updatePasswallPackagesJobPayloadSchema = z.object({
@@ -610,6 +674,38 @@ export const routerTerminalResultPayloadSchema = z
   })
   .passthrough();
 
+export const subscriptionPreviewFingerprintSchema = z.object({
+  fingerprint: z.string().min(1),
+});
+
+export const subscriptionPreviewEntrySchema = z.object({
+  subscriptionId: z.string().min(1),
+  subscriptionKey: z.string().min(1),
+  remark: z.string().min(1),
+  urlHash: z.string().min(1),
+  enabled: z.boolean().default(true),
+  accessMode: z.enum(["auto", "direct", "proxy"]).default("auto"),
+  userAgent: z.string().min(1).nullable().optional(),
+  fetchState: subscriptionPreviewFetchStateSchema,
+  httpStatus: z.number().int().nullable().optional(),
+  payloadMode: subscriptionPreviewPayloadModeSchema.default("unknown"),
+  payloadNodeCount: z.number().int().nonnegative().nullable().optional(),
+  resolvedPayloadNodeCount: z.number().int().nonnegative().nullable().optional(),
+  payloadFingerprints: z
+    .array(subscriptionPreviewFingerprintSchema)
+    .default([]),
+  checkedAt: z.string().datetime(),
+});
+
+export const subscriptionInspectResultPayloadSchema = z
+  .object({
+    checkedAt: z.string().datetime(),
+    subscriptionDigest: z.string().min(1),
+    entries: z.array(subscriptionPreviewEntrySchema).default([]),
+    error: z.string().nullable().optional(),
+  })
+  .passthrough();
+
 export const desiredRevisionSummarySchema = z.object({
   id: z.string().uuid(),
   revisionNumber: z.number().int().nonnegative(),
@@ -660,6 +756,9 @@ export const routerCheckInRequestSchema = z.object({
     directConnectivitySuccesses: z.number().int().min(0).default(0),
     proxyConnectivitySuccesses: z.number().int().min(0).default(0),
     serverReachable: z.boolean().default(true),
+    recoveryPhase: recoveryPhaseSchema.default("idle"),
+    lastRecoveryAction: z.string().nullable().optional(),
+    awaitingOperator: z.boolean().default(false),
   }),
 });
 
@@ -770,6 +869,9 @@ export type UpdateControllerJobPayload = z.infer<
 export type CollectRouterLogsJobPayload = z.infer<
   typeof collectRouterLogsJobPayloadSchema
 >;
+export type InspectSubscriptionsJobPayload = z.infer<
+  typeof inspectSubscriptionsJobPayloadSchema
+>;
 export type RunTerminalCommandJobPayload = z.infer<
   typeof runTerminalCommandJobPayloadSchema
 >;
@@ -785,6 +887,12 @@ export type RouterLogResultPayload = z.infer<
 >;
 export type RouterTerminalResultPayload = z.infer<
   typeof routerTerminalResultPayloadSchema
+>;
+export type SubscriptionPreviewEntry = z.infer<
+  typeof subscriptionPreviewEntrySchema
+>;
+export type SubscriptionInspectResultPayload = z.infer<
+  typeof subscriptionInspectResultPayloadSchema
 >;
 export type FirmwareManifest = z.infer<typeof firmwareManifestSchema>;
 export type RouterConfigSyncState = z.infer<typeof routerConfigSyncStateSchema>;

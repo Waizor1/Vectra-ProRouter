@@ -36,6 +36,7 @@ body {
   text-rendering: optimizeLegibility;
   font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
   color: rgb(241 245 249);
+  overscroll-behavior-x: none;
 }
 
 a,
@@ -213,6 +214,20 @@ samp {
   display: grid;
   gap: 0.75rem;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.vectra-dialog-backdrop {
+  padding-top: max(env(safe-area-inset-top), 0.75rem);
+  padding-right: max(env(safe-area-inset-right), 0.75rem);
+  padding-bottom: max(env(safe-area-inset-bottom), 0.75rem);
+  padding-left: max(env(safe-area-inset-left), 0.75rem);
+}
+
+.vectra-dialog-panel {
+  max-height: calc(
+    100dvh - max(env(safe-area-inset-top), 0.75rem) -
+      max(env(safe-area-inset-bottom), 0.75rem)
+  );
 }
 
 @media (min-width: 1280px) {

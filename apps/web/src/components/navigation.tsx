@@ -33,7 +33,7 @@ export function Navigation() {
         })}
       </div>
 
-      <div className="hidden sm:block">
+      <div className="max-sm:hidden sm:block">
         <TabBar items={items} ariaLabel="Разделы панели оператора" />
       </div>
 

@@ -7,23 +7,35 @@ import {
   routers,
 } from "@vectra/db";
 import type { routerInventorySnapshots } from "@vectra/db";
-import { passwallDesiredConfigSchema, type PasswallDesiredConfig } from "@vectra/contracts";
+import {
+  passwallDesiredConfigSchema,
+  type PasswallDesiredConfig,
+} from "@vectra/contracts";
 import { desc, eq, inArray, sql } from "drizzle-orm";
 
 import {
   buildFallbackPasswallBundleMetadata,
   buildPasswallBundleMetadataFromArtifact,
+  findPasswallRuntimeTarget,
   formatPasswallArtifactSourceLabel,
   packageNameToRuntimeKey,
 } from "~/lib/passwall-artifacts";
-import { compareControllerVersions, formatControllerVersion } from "~/lib/controller-version";
+import {
+  compareControllerVersions,
+  formatControllerVersion,
+} from "~/lib/controller-version";
 import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
+import { compareLooseSemverVersions } from "~/lib/passwall-update-summary";
 import { db as defaultDb } from "~/server/db";
 import {
   createOperatorDraftRevisionWithDb,
   queueDesiredRevisionApplyJobWithDb,
 } from "~/server/vectra/router-control";
-import { canRunDestructiveAction, canRunUpdateAction, describeEffectiveRouterSupport } from "~/server/vectra/support";
+import {
+  canRunDestructiveAction,
+  canRunUpdateAction,
+  describeEffectiveRouterSupport,
+} from "~/server/vectra/support";
 import { buildTemplateRolloutDraft } from "~/server/vectra/global-template";
 
 type DatabaseClient = typeof defaultDb;
@@ -45,7 +57,8 @@ const DEFAULT_GROUP_KEYS = [
   {
     groupKey: "special",
     name: "Особая группа",
-    description: "Отдельная конфигурация для нестандартного подмножества роутеров.",
+    description:
+      "Отдельная конфигурация для нестандартного подмножества роутеров.",
   },
 ] as const;
 
@@ -75,8 +88,11 @@ function buildRouterDisplayName(
   snapshot: SnapshotRow | null,
 ) {
   return (
-    firstNonEmptyText(router.displayName, router.hostname, snapshot?.payload.hostname) ??
-    router.deviceIdentifier
+    firstNonEmptyText(
+      router.displayName,
+      router.hostname,
+      snapshot?.payload.hostname,
+    ) ?? router.deviceIdentifier
   );
 }
 
@@ -103,7 +119,10 @@ async function getLatestSnapshotsByRouter(
       created_at as "createdAt"
     from vectra_router_inventory_snapshot
     where router_id in (
-      ${sql.join(routerIds.map((routerId) => sql`${routerId}`), sql`, `)}
+      ${sql.join(
+        routerIds.map((routerId) => sql`${routerId}`),
+        sql`, `,
+      )}
     )
     order by router_id, created_at desc
   `);
@@ -188,7 +207,10 @@ export async function loadProfilesAndGroupsWorkspace(args: {
   client?: DatabaseClient;
 }) {
   const client = args.client ?? defaultDb;
-  const defaultProfile = await getOrCreateDefaultRolloutProfile(args.templateConfig, client);
+  const defaultProfile = await getOrCreateDefaultRolloutProfile(
+    args.templateConfig,
+    client,
+  );
   const groups = await ensureDefaultRouterGroups(defaultProfile.id, client);
   const profiles = await client
     .select()
@@ -225,7 +247,9 @@ export async function loadProfilesAndGroupsWorkspace(args: {
       },
       inventory: snapshot?.payload ?? null,
     });
-    const group = router.rolloutGroupId ? groupsById.get(router.rolloutGroupId) ?? null : null;
+    const group = router.rolloutGroupId
+      ? (groupsById.get(router.rolloutGroupId) ?? null)
+      : null;
 
     return {
       id: router.id,
@@ -254,7 +278,9 @@ export async function loadProfilesAndGroupsWorkspace(args: {
       rolloutConfig: profile.rolloutConfig,
       shuntRuleCount: profile.rolloutConfig.basicSettings.shuntRules.length,
       managedNodeCount: profile.rolloutConfig.nodes.length,
-      groupCount: groups.filter((group) => group.rolloutProfileId === profile.id).length,
+      groupCount: groups.filter(
+        (group) => group.rolloutProfileId === profile.id,
+      ).length,
     })),
     groups: groups.map((group) => ({
       id: group.id,
@@ -263,8 +289,8 @@ export async function loadProfilesAndGroupsWorkspace(args: {
       description: group.description,
       rolloutProfileId: group.rolloutProfileId,
       rolloutProfileName:
-        profiles.find((profile) => profile.id === group.rolloutProfileId)?.name ??
-        null,
+        profiles.find((profile) => profile.id === group.rolloutProfileId)
+          ?.name ?? null,
       routerCount: (groupRouterMap.get(group.id) ?? []).length,
       updatedAt: group.updatedAt,
     })),
@@ -281,7 +307,9 @@ function artifactMatchesRouterArchitecture(
     return true;
   }
 
-  return artifact.architecture === null || artifact.architecture === architecture;
+  return (
+    artifact.architecture === null || artifact.architecture === architecture
+  );
 }
 
 function latestPasswallArtifactsForRouter(args: {
@@ -318,7 +346,11 @@ function componentInstalledVersion(
 
   const runtimeKey = packageNameToRuntimeKey(packageName);
   if (packageName === "luci-app-passwall2") {
-    return snapshot?.passwallAppVersion ?? payload.packageVersions[packageName] ?? null;
+    return (
+      snapshot?.passwallAppVersion ??
+      payload.packageVersions[packageName] ??
+      null
+    );
   }
 
   return (
@@ -329,21 +361,9 @@ function componentInstalledVersion(
   );
 }
 
-function compareLooseVersions(
-  installed: string | null | undefined,
-  available: string | null | undefined,
+export async function loadVersionDriftWorkspace(
+  client: DatabaseClient = defaultDb,
 ) {
-  if (!installed || !available) {
-    return null;
-  }
-
-  return installed.localeCompare(available, undefined, {
-    numeric: true,
-    sensitivity: "base",
-  });
-}
-
-export async function loadVersionDriftWorkspace(client: DatabaseClient = defaultDb) {
   const routerRows = await client
     .select()
     .from(routers)
@@ -357,17 +377,29 @@ export async function loadVersionDriftWorkspace(client: DatabaseClient = default
   const queuedJobs = await client
     .select()
     .from(jobs)
-    .where(inArray(jobs.routerId, routerRows.map((router) => router.id)))
+    .where(
+      inArray(
+        jobs.routerId,
+        routerRows.map((router) => router.id),
+      ),
+    )
     .orderBy(desc(jobs.createdAt));
   const artifactRows = await client
     .select()
     .from(artifacts)
-    .where(inArray(artifacts.type, ["controller", "passwall_bundle", "passwall_package"]))
+    .where(
+      inArray(artifacts.type, [
+        "controller",
+        "passwall_bundle",
+        "passwall_package",
+      ]),
+    )
     .orderBy(desc(artifacts.publishedAt), desc(artifacts.version));
 
   const latestControllerArtifact =
     artifactRows.find(
-      (artifact) => artifact.type === "controller" && artifact.channel === "stable",
+      (artifact) =>
+        artifact.type === "controller" && artifact.channel === "stable",
     ) ?? null;
 
   const rows = routerRows.map((router) => {
@@ -398,10 +430,16 @@ export async function loadVersionDriftWorkspace(client: DatabaseClient = default
       buildFallbackPasswallBundleMetadata();
     const xrayInstalled = componentInstalledVersion(snapshot, "xray-core");
     const xrayAvailable =
-      passwallBundleMetadata.packageArtifacts.find((artifact) => artifact.name === "xray-core")
-        ?.artifactVersion ?? null;
+      findPasswallRuntimeTarget(passwallBundleMetadata, "xray-core")
+        ?.remoteVersion ??
+      passwallBundleMetadata.packageArtifacts.find(
+        (artifact) => artifact.name === "xray-core",
+      )?.artifactVersion ??
+      null;
     const passwallInstalled =
-      snapshot?.passwallAppVersion ?? payload?.packageVersions["luci-app-passwall2"] ?? null;
+      snapshot?.passwallAppVersion ??
+      payload?.packageVersions["luci-app-passwall2"] ??
+      null;
     const passwallAvailable = passwallBundleMetadata.releaseTag;
     const hasQueuedUpdate = queuedJobs.some(
       (job) =>
@@ -410,16 +448,19 @@ export async function loadVersionDriftWorkspace(client: DatabaseClient = default
         (isControllerUpdateJob(job) || job.type === "update_passwall_packages"),
     );
 
-    const xrayOutdated = compareLooseVersions(xrayInstalled, xrayAvailable) === -1;
-    const passwallOutdated = compareLooseVersions(passwallInstalled, passwallAvailable) === -1;
-    const blocked = !canRunUpdateAction(support.state) || router.importState !== "approved";
+    const xrayOutdated =
+      compareLooseSemverVersions(xrayInstalled, xrayAvailable) === -1;
+    const passwallOutdated =
+      compareLooseSemverVersions(passwallInstalled, passwallAvailable) === -1;
+    const blocked =
+      !canRunUpdateAction(support.state) || router.importState !== "approved";
 
     return {
       id: router.id,
       displayName: buildRouterDisplayName(router, snapshot),
       rolloutGroupId: router.rolloutGroupId,
       rolloutGroupName: router.rolloutGroupId
-        ? groupsById.get(router.rolloutGroupId)?.name ?? null
+        ? (groupsById.get(router.rolloutGroupId)?.name ?? null)
         : null,
       importState: router.importState,
       supportState: support.state,
@@ -427,7 +468,8 @@ export async function loadVersionDriftWorkspace(client: DatabaseClient = default
       lastSeenAt: router.lastSeenAt,
       controllerInstalled: formatControllerVersion(controllerInstalled),
       controllerAvailable,
-      controllerNeedsUpdate: controllerComparison !== null && controllerComparison < 0,
+      controllerNeedsUpdate:
+        controllerComparison !== null && controllerComparison < 0,
       passwallInstalled: passwallInstalled ?? "неизвестно",
       passwallAvailable,
       passwallAvailableLabel: `${passwallAvailable} · ${formatPasswallArtifactSourceLabel(
@@ -449,7 +491,8 @@ export async function loadVersionDriftWorkspace(client: DatabaseClient = default
 
   return {
     summary: {
-      outdatedPasswallCount: rows.filter((row) => row.passwallNeedsUpdate).length,
+      outdatedPasswallCount: rows.filter((row) => row.passwallNeedsUpdate)
+        .length,
       outdatedXrayCount: rows.filter((row) => row.xrayNeedsUpdate).length,
       blockedCount: rows.filter((row) => row.blocked).length,
       queuedCount: rows.filter((row) => row.hasQueuedUpdate).length,
@@ -578,7 +621,10 @@ export async function assignRoutersToGroup(args: {
     .returning();
 }
 
-export async function deleteRolloutProfile(profileId: string, client: DatabaseClient = defaultDb) {
+export async function deleteRolloutProfile(
+  profileId: string,
+  client: DatabaseClient = defaultDb,
+) {
   await client
     .update(operatorRouterGroups)
     .set({ rolloutProfileId: null })
@@ -592,7 +638,10 @@ export async function deleteRolloutProfile(profileId: string, client: DatabaseCl
   return deleted ?? null;
 }
 
-export async function deleteRouterGroup(groupId: string, client: DatabaseClient = defaultDb) {
+export async function deleteRouterGroup(
+  groupId: string,
+  client: DatabaseClient = defaultDb,
+) {
   await client
     .update(routers)
     .set({ rolloutGroupId: null })
@@ -694,8 +743,11 @@ export async function queueGroupProfileRollout(args: {
     try {
       const rolloutConfig = await buildTemplateRolloutDraft(client, {
         routerId: router.id,
-        preferredRevisionId: router.activeRevisionId ?? router.lastAppliedRevisionId,
-        templateConfig: passwallDesiredConfigSchema.parse(profile.rolloutConfig),
+        preferredRevisionId:
+          router.activeRevisionId ?? router.lastAppliedRevisionId,
+        templateConfig: passwallDesiredConfigSchema.parse(
+          profile.rolloutConfig,
+        ),
       });
       const revision = await createOperatorDraftRevisionWithDb(client, {
         routerId: router.id,
@@ -740,9 +792,11 @@ export async function queueGroupProfileRollout(args: {
 
   const summary = {
     requestedRouterCount: routerRows.length,
-    preparedCount: results.filter((result) => result.status === "prepared").length,
+    preparedCount: results.filter((result) => result.status === "prepared")
+      .length,
     queuedCount: results.filter((result) => result.status === "queued").length,
-    blockedCount: results.filter((result) => result.status === "blocked").length,
+    blockedCount: results.filter((result) => result.status === "blocked")
+      .length,
     failedCount: results.filter((result) => result.status === "failed").length,
   };
 
@@ -754,7 +808,10 @@ export async function queueGroupProfileRollout(args: {
         args.mode === "queue_apply"
           ? "fleet.rollout.group.queued"
           : "fleet.rollout.group.prepared",
-      severity: summary.blockedCount > 0 || summary.failedCount > 0 ? "warning" : "info",
+      severity:
+        summary.blockedCount > 0 || summary.failedCount > 0
+          ? "warning"
+          : "info",
       message:
         args.mode === "queue_apply"
           ? `Группа \"${group.name}\" поставлена в очередь для ${summary.queuedCount} из ${summary.requestedRouterCount} роутеров.`

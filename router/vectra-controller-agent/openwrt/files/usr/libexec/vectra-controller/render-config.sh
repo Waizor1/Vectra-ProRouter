@@ -193,6 +193,13 @@ json_add_int recovery_success_count 2
 json_add_int cooldown 300000000000
 json_add_boolean require_direct_path_success 1
 json_add_string direct_mode_reason "Subscription expired or upstream proxy unavailable"
+json_add_string panel_outage_threshold "1h"
+json_add_string probe_cache_ttl "5m"
+json_add_string controller_restart_settle "90s"
+json_add_string direct_settle "45s"
+json_add_string post_reboot_settle "4m"
+json_add_string passwall_warmup "75s"
+json_add_string reboot_cooldown "12h"
 json_close_object
 
 json_add_object inventory

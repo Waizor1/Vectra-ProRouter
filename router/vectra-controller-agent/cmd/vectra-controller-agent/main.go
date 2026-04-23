@@ -18,6 +18,7 @@ import (
 	"vectra-controller-agent/internal/controlplane"
 	"vectra-controller-agent/internal/inventory"
 	"vectra-controller-agent/internal/passwall"
+	"vectra-controller-agent/internal/recovery"
 	"vectra-controller-agent/internal/rescue"
 	"vectra-controller-agent/internal/state"
 )
@@ -50,6 +51,7 @@ var defaultPasswallPackageList = []string{
 var passwallRuleRefreshAssets = []string{"geoip", "geosite"}
 
 const controllerSelfUpdateTerminalPurpose = "controller-self-update"
+const routerHostnameUpdateTerminalPurpose = "router-hostname-update"
 
 const passwallPostInstallRecoveryCommand = "/etc/init.d/passwall2 running >/dev/null 2>&1 && /etc/init.d/passwall2 restart || /etc/init.d/passwall2 start"
 
@@ -163,23 +165,32 @@ func runOnce(
 		PasswallEnabled:   collectedInventory.PasswallEnabled,
 		AppliedRevisionID: persisted.AppliedRevisionID,
 	}
+	persisted.ControlPlaneRecovery.Normalize()
 
-	transitioned, health, rescueErr := evaluateLocalRescue(
-		ctx,
-		cfg,
-		passwall.ExecBackend{},
-		rescueState,
-		persisted,
-		&collectedInventory,
-		&runtimeStatus,
-	)
-	if rescueErr != nil {
-		runtimeStatus.LastError = rescueErr.Error()
-		_ = state.SaveRuntimeStatus(cfg.StatusPath, runtimeStatus)
-		if err := persistStateIfChanged(cfg.StatePath, persistedBefore, persisted); err != nil {
-			return err
+	transitioned := false
+	health := buildRouterHealth(*rescueState, runtimeStatus.ServerReachable)
+	if recovery.PasswallOwnedByRecovery(persisted.ControlPlaneRecovery.Phase) {
+		reconcileRescueStateWithInventory(rescueState, &collectedInventory)
+		applyRescueMetadata(persisted, rescueState, &collectedInventory, &runtimeStatus)
+	} else {
+		var rescueErr error
+		transitioned, health, rescueErr = evaluateLocalRescue(
+			ctx,
+			cfg,
+			passwall.ExecBackend{},
+			rescueState,
+			persisted,
+			&collectedInventory,
+			&runtimeStatus,
+		)
+		if rescueErr != nil {
+			runtimeStatus.LastError = rescueErr.Error()
+			_ = state.SaveRuntimeStatus(cfg.StatusPath, runtimeStatus)
+			if err := persistStateIfChanged(cfg.StatePath, persistedBefore, persisted); err != nil {
+				return err
+			}
+			return fmt.Errorf("evaluate local rescue: %w", rescueErr)
 		}
-		return fmt.Errorf("evaluate local rescue: %w", rescueErr)
 	}
 	if transitioned {
 		collectedInventory = inventory.NewCollector().Collect(collectedInventory)
@@ -192,6 +203,50 @@ func runOnce(
 		collectedInventory.DevicePublicKey = persisted.DevicePublicKey
 		collectedInventory.AppliedRevisionID = persisted.AppliedRevisionID
 		applyRescueMetadata(persisted, rescueState, &collectedInventory, &runtimeStatus)
+	}
+	recoveryOutcome, recoveryErr := advanceControlPlaneRecovery(
+		ctx,
+		cfg,
+		passwall.ExecBackend{},
+		&persisted.ControlPlaneRecovery,
+		rescueState,
+		persisted,
+		&collectedInventory,
+		&runtimeStatus,
+	)
+	if recoveryErr != nil {
+		runtimeStatus.LastError = recoveryErr.Error()
+		_ = state.SaveRuntimeStatus(cfg.StatusPath, runtimeStatus)
+		if err := persistStateIfChanged(cfg.StatePath, persistedBefore, persisted); err != nil {
+			return err
+		}
+		return fmt.Errorf("advance control plane recovery: %w", recoveryErr)
+	}
+	if recoveryOutcome.InventoryChanged {
+		collectedInventory = inventory.NewCollector().Collect(collectedInventory)
+		collectedInventory.ProtocolVersion = controlplane.ProtocolVersion
+		collectedInventory.PanelDomain = cfg.PanelURL
+		if collectedInventory.PanelDomain == "" {
+			collectedInventory.PanelDomain = cfg.ControlURL
+		}
+		collectedInventory.DeviceIdentifier = persisted.DeviceIdentifier
+		collectedInventory.DevicePublicKey = persisted.DevicePublicKey
+		collectedInventory.AppliedRevisionID = persisted.AppliedRevisionID
+		applyRescueMetadata(persisted, rescueState, &collectedInventory, &runtimeStatus)
+	}
+	health = buildRouterHealth(*rescueState, runtimeStatus.ServerReachable)
+	health.RecoveryPhase = string(persisted.ControlPlaneRecovery.Phase)
+	health.LastRecoveryAction = persisted.ControlPlaneRecovery.LastActionReason
+	health.AwaitingOperator = persisted.ControlPlaneRecovery.AwaitingOperator
+	if recoveryOutcome.SkipControlPlane {
+		runtimeStatus.LastError = ""
+		if err := state.SaveRuntimeStatus(cfg.StatusPath, runtimeStatus); err != nil {
+			return fmt.Errorf("persist runtime status: %w", err)
+		}
+		if err := persistStateIfChanged(cfg.StatePath, persistedBefore, persisted); err != nil {
+			return err
+		}
+		return nil
 	}
 
 	importSource := "check_in"
@@ -257,6 +312,7 @@ func runOnce(
 		runtimeStatus.LastOperatorMessage = registerResponse.OperatorMessage
 		runtimeStatus.LastRegisterAt = time.Now().UTC().Format(time.RFC3339)
 		runtimeStatus.LastError = ""
+		noteSuccessfulControlPlaneContact(persisted, &runtimeStatus, time.Now().UTC())
 		if sendPasswallImport {
 			persisted.LastImportedConfigDigest = collectedInventory.ConfigDigest
 			persisted.RequestImport = false
@@ -305,6 +361,7 @@ func runOnce(
 	runtimeStatus.PendingApproval = checkInResponse.Status == "pending"
 	runtimeStatus.ImportState = checkInResponse.ConfigSyncState.ImportState
 	runtimeStatus.LastError = ""
+	noteSuccessfulControlPlaneContact(persisted, &runtimeStatus, time.Now().UTC())
 	if sendPasswallImport {
 		persisted.LastImportedConfigDigest = collectedInventory.ConfigDigest
 	}
@@ -526,6 +583,7 @@ func submitJobResultNow(
 	if err := flushPendingJobResult(ctx, cfg, client, persisted, inventory); err != nil {
 		return err
 	}
+	noteSuccessfulControlPlaneContact(persisted, nil, time.Now().UTC())
 	return nil
 }
 
@@ -675,6 +733,53 @@ func executeJobs(
 			}, controlplane.RouterInventory{}); err != nil {
 				return fmt.Errorf("submit refresh subscriptions result: %w", err)
 			}
+		case "inspect_subscriptions":
+			preview, err := passwall.InspectSubscriptions(ctx, backend)
+			if err != nil {
+				if submitErr := submitFailure(
+					ctx,
+					client,
+					cfg,
+					persisted,
+					job.ID,
+					"",
+					"",
+					err.Error(),
+					map[string]interface{}{"error": err.Error()},
+				); submitErr != nil {
+					return submitErr
+				}
+				continue
+			}
+
+			resultPayload, marshalErr := resultToMap(preview)
+			if marshalErr != nil {
+				if submitErr := submitFailure(
+					ctx,
+					client,
+					cfg,
+					persisted,
+					job.ID,
+					"",
+					"",
+					marshalErr.Error(),
+					map[string]interface{}{"error": marshalErr.Error()},
+				); submitErr != nil {
+					return submitErr
+				}
+				continue
+			}
+			resultPayload["checkedSubscriptions"] = len(preview.Entries)
+
+			if err := submitJobResultNow(ctx, cfg, client, persisted, controlplane.JobResultRequest{
+				ProtocolVersion: controlplane.ProtocolVersion,
+				RouterID:        cfg.RouterID,
+				JobID:           job.ID,
+				Status:          "success",
+				Result:          resultPayload,
+			}, controlplane.RouterInventory{}); err != nil {
+				return fmt.Errorf("submit inspect subscriptions result: %w", err)
+			}
 		case "refresh_rules":
 			assets := "geoip,geosite"
 			if desiredRevision != nil && len(desiredRevision.Config.RuleManage.EnabledAssets) > 0 {
@@ -741,6 +846,12 @@ func executeJobs(
 			terminalRequest := parseRunTerminalCommandJob(job.Payload)
 			execution := executeTerminalCommand(ctx, terminalRequest)
 			resultPayload := buildTerminalCommandResultPayload(execution)
+			if strings.TrimSpace(payloadString(job.Payload, "purpose")) == routerHostnameUpdateTerminalPurpose {
+				resultPayload["purpose"] = routerHostnameUpdateTerminalPurpose
+				if hostname := strings.TrimSpace(payloadString(job.Payload, "hostname")); hostname != "" {
+					resultPayload["hostnameAfter"] = hostname
+				}
+			}
 			if execution.ExecutionFailure != nil {
 				if submitErr := submitFailure(
 					ctx,
@@ -786,6 +897,7 @@ func executeJobs(
 					}
 					continue
 				}
+				clearControlPlaneRecoveryOwnership(persisted, runtimeStatus)
 				resultPayload["controllerUpdated"] = true
 				resultPayload["autoResumeProxy"] = true
 				resultPayload["recoveredProxy"] = true
@@ -796,14 +908,14 @@ func executeJobs(
 				})
 			}
 			if err := submitJobResultNow(ctx, cfg, client, persisted, controlplane.JobResultRequest{
-				ProtocolVersion: controlplane.ProtocolVersion,
-				RouterID:        cfg.RouterID,
-				JobID:           job.ID,
-				Status:          "success",
-				Stdout:          execution.Stdout,
-				Stderr:          execution.Stderr,
+				ProtocolVersion:     controlplane.ProtocolVersion,
+				RouterID:            cfg.RouterID,
+				JobID:               job.ID,
+				Status:              "success",
+				Stdout:              execution.Stdout,
+				Stderr:              execution.Stderr,
 				IncidentTransitions: incidentTransitions,
-				Result:          resultPayload,
+				Result:              resultPayload,
 			}, controlplane.RouterInventory{}); err != nil {
 				return fmt.Errorf("submit terminal command result: %w", err)
 			}
@@ -889,6 +1001,7 @@ func executeJobs(
 					}
 					continue
 				}
+				clearControlPlaneRecoveryOwnership(persisted, runtimeStatus)
 				if err := submitJobResultNow(ctx, cfg, client, persisted, controlplane.JobResultRequest{
 					ProtocolVersion: controlplane.ProtocolVersion,
 					RouterID:        cfg.RouterID,
@@ -1451,6 +1564,20 @@ func payloadBool(payload map[string]interface{}, key string) bool {
 	}
 	boolValue, ok := value.(bool)
 	return ok && boolValue
+}
+
+func resultToMap(value any) (map[string]interface{}, error) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(payload, &result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 func shouldResumeProxyAfterTerminalSuccess(

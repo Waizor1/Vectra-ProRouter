@@ -57,6 +57,36 @@ PACKAGE_PATTERNS = {
     "sing-box": r"^sing-box_.*\.ipk$",
     "hysteria": r"^hysteria_.*\.ipk$",
 }
+RUNTIME_TARGET_SOURCES = {
+    "xray-core": {
+        "componentName": "xray",
+        "apiCacheUrl": "https://github.com/Openwrt-Passwall/openwrt-passwall-packages/releases/download/api-cache/xray-pre-release-api.json",
+        "assetPatterns": {
+            "aarch64": [r"Xray-linux-arm64(?:-v8a)?\.zip$"],
+        },
+    },
+    "sing-box": {
+        "componentName": "sing-box",
+        "apiCacheUrl": "https://github.com/Openwrt-Passwall/openwrt-passwall-packages/releases/download/api-cache/sing-box-release-api.json",
+        "assetPatterns": {
+            "aarch64": [r"sing-box-[\d.]+-linux-arm64-musl\.tar\.gz$"],
+        },
+    },
+    "hysteria": {
+        "componentName": "hysteria",
+        "apiCacheUrl": "https://github.com/Openwrt-Passwall/openwrt-passwall-packages/releases/download/api-cache/hysteria-release-api.json",
+        "assetPatterns": {
+            "aarch64": [r"hysteria-linux-arm64$"],
+        },
+    },
+    "geoview": {
+        "componentName": "geoview",
+        "apiCacheUrl": "https://github.com/Openwrt-Passwall/openwrt-passwall-packages/releases/download/api-cache/geoview-release-api.json",
+        "assetPatterns": {
+            "aarch64": [r"geoview-linux-arm64$"],
+        },
+    },
+}
 
 
 class RefreshError(RuntimeError):
@@ -145,28 +175,59 @@ def parse_control_dependencies(control_text: str) -> list[str]:
 
 
 def extract_control_text(ipk_path: Path) -> str:
-    listing = subprocess.run(
-        ["ar", "t", str(ipk_path)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    control_member = next(
-        (
-            line.strip()
-            for line in listing.stdout.splitlines()
-            if line.strip().startswith("control.tar.")
-        ),
-        None,
-    )
-    if not control_member:
-        raise RefreshError(f"control.tar.* member was not found in {ipk_path.name}")
+    archive_bytes: bytes | None = None
 
-    archive_bytes = subprocess.run(
-        ["ar", "p", str(ipk_path), control_member],
-        check=True,
-        capture_output=True,
-    ).stdout
+    try:
+        listing = subprocess.run(
+            ["ar", "t", str(ipk_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        listing = None
+
+    if listing is not None:
+        control_member = next(
+            (
+                line.strip()
+                for line in listing.stdout.splitlines()
+                if line.strip().startswith("control.tar.")
+            ),
+            None,
+        )
+        if control_member:
+            archive_bytes = subprocess.run(
+                ["ar", "p", str(ipk_path), control_member],
+                check=True,
+                capture_output=True,
+            ).stdout
+
+    if archive_bytes is None:
+        try:
+            with tarfile.open(ipk_path, mode="r:*") as archive:
+                member = next(
+                    (
+                        item
+                        for item in archive.getmembers()
+                        if item.name.lstrip("./").startswith("control.tar.")
+                    ),
+                    None,
+                )
+                if not member:
+                    raise RefreshError(
+                        f"control.tar.* member was not found in {ipk_path.name}"
+                    )
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    raise RefreshError(
+                        f"{member.name} could not be extracted from {ipk_path.name}"
+                    )
+                archive_bytes = extracted.read()
+        except tarfile.TarError as error:
+            raise RefreshError(
+                f"Failed to read control archive from {ipk_path.name}: {error}"
+            ) from error
 
     with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:*") as archive:
         member = next(
@@ -192,13 +253,13 @@ def resolve_ipk_metadata(ipk_path: Path) -> dict[str, int | str]:
     if not version:
         raise RefreshError(f"Version field is missing in {ipk_path.name}")
 
-    installed_size_kib = fields.get("Installed-Size")
-    if not installed_size_kib:
+    installed_size_bytes = fields.get("Installed-Size")
+    if not installed_size_bytes:
         raise RefreshError(f"Installed-Size field is missing in {ipk_path.name}")
 
     return {
         "version": version,
-        "installedSizeBytes": int(installed_size_kib) * 1024,
+        "installedSizeBytes": int(installed_size_bytes),
         "downloadSizeBytes": ipk_path.stat().st_size,
         "controlText": control_text,
     }
@@ -208,6 +269,79 @@ def fetch_release(tag: str | None) -> dict:
     if tag:
         return request_json(f"{GITHUB_API_ROOT}/tags/{tag}")
     return request_json(f"{GITHUB_API_ROOT}/latest")
+
+
+def normalize_runtime_version(version: str) -> str:
+    version = version.strip().lstrip("v")
+    match = re.search(r"\d+(?:\.\d+)+", version)
+    return match.group(0) if match else version
+
+
+def select_release_payload(payload: object) -> dict:
+    if isinstance(payload, list):
+        for entry in payload:
+            if isinstance(entry, dict):
+                return entry
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def match_runtime_asset(package_name: str, arch: str, assets: list[dict]) -> dict | None:
+    source = RUNTIME_TARGET_SOURCES.get(package_name) or {}
+    pattern_map = source.get("assetPatterns")
+    if not isinstance(pattern_map, dict):
+        return None
+
+    patterns: list[re.Pattern[str]] = []
+    for arch_prefix, raw_patterns in pattern_map.items():
+        if not arch.startswith(str(arch_prefix)):
+            continue
+        if not isinstance(raw_patterns, list):
+            continue
+        patterns.extend(
+            re.compile(str(pattern), re.IGNORECASE) for pattern in raw_patterns
+        )
+    if not patterns:
+        return None
+
+    for asset in assets:
+        name = str(asset.get("name") or "")
+        for pattern in patterns:
+            if pattern.search(name):
+                return asset
+    return None
+
+
+def resolve_runtime_targets(arch: str) -> dict[str, dict[str, object]]:
+    runtime_targets: dict[str, dict[str, object]] = {}
+
+    for package_name, source in RUNTIME_TARGET_SOURCES.items():
+        payload = select_release_payload(request_json(str(source["apiCacheUrl"])))
+        tag_name = str(payload.get("tag_name") or "").strip()
+        if not tag_name:
+            continue
+
+        assets = [
+            asset
+            for asset in payload.get("assets") or []
+            if isinstance(asset, dict)
+        ]
+        asset = match_runtime_asset(package_name, arch, assets)
+        if not asset:
+            continue
+
+        runtime_targets[package_name] = {
+            "componentName": str(source["componentName"]),
+            "remoteVersion": normalize_runtime_version(tag_name),
+            "releaseUrl": payload.get("html_url"),
+            "assetName": asset.get("name"),
+            "assetUrl": asset.get("browser_download_url"),
+            "assetSizeBytes": asset.get("size"),
+        }
+
+    return runtime_targets
 
 
 def current_manifest_is_usable(manifest_path: Path, tag: str, arch: str) -> bool:
@@ -238,16 +372,17 @@ def current_manifest_is_usable(manifest_path: Path, tag: str, arch: str) -> bool
 def build_manifest(
     release: dict,
     arch: str,
-    output_dir: Path,
     luci_asset: dict,
     bundle_asset: dict,
     resolved_files: dict[str, str],
     resolved_meta: dict[str, dict[str, int | str]],
     published_optional: list[str],
+    runtime_targets: dict[str, dict[str, object]],
 ) -> dict:
     return {
         "tag": release["tag_name"],
         "arch": arch,
+        "runtimeTargets": runtime_targets,
         "requiredPackages": [
             {
                 "name": package_name,
@@ -387,18 +522,33 @@ def build_passwall_mirror(release: dict, arch: str, output_dir: Path) -> None:
         manifest = build_manifest(
             release=release,
             arch=arch,
-            output_dir=output_dir,
             luci_asset=luci_asset,
             bundle_asset=bundle_asset,
             resolved_files=resolved_files,
             resolved_meta=resolved_meta,
             published_optional=published_optional,
+            runtime_targets=resolve_runtime_targets(arch),
         )
         manifest_path = output_dir / "manifest.json"
         manifest_path.write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+
+
+def refresh_manifest_runtime_targets(manifest_path: Path, arch: str) -> None:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    runtime_targets = resolve_runtime_targets(arch)
+    if manifest.get("runtimeTargets") == runtime_targets:
+        info("PassWall runtime target metadata is already current.")
+        return
+
+    manifest["runtimeTargets"] = runtime_targets
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    info("Updated PassWall runtime target metadata in manifest.json.")
 
 
 def ensure_live_deploy_root(deploy_root: Path) -> None:
@@ -490,6 +640,7 @@ def main() -> int:
 
     if mirror_is_current:
         info("Mirror already matches the latest upstream tag; skipping file refresh.")
+        refresh_manifest_runtime_targets(manifest_path, args.arch)
     else:
         with tempfile.TemporaryDirectory(prefix="vectra-passwall-mirror-stage-") as staging_dir_name:
             staging_dir = Path(staging_dir_name) / tag / args.arch

@@ -109,12 +109,22 @@ export type PasswallPackageArtifactDescriptor = {
   source: PasswallArtifactOrigin;
 };
 
+export type PasswallRuntimeTargetDescriptor = {
+  componentName: string;
+  remoteVersion: string;
+  releaseUrl: string | null;
+  assetName: string | null;
+  assetUrl: string | null;
+  assetSizeBytes: number | null;
+};
+
 export type PasswallBundleMetadata = {
   source: PasswallArtifactOrigin;
   releaseTag: string;
   manifestUrl: string | null;
   releaseUrl: string | null;
   packageBundleUrl: string | null;
+  runtimeTargets: Readonly<Record<string, PasswallRuntimeTargetDescriptor>>;
   requiredPackages: ReadonlyArray<{
     name: string;
     version: string;
@@ -216,7 +226,11 @@ function parsePackageArtifactDescriptor(
 
 function parseBundlePackageEntries(
   value: unknown,
-): ReadonlyArray<ReturnType<typeof parsePackageEntry> extends infer T ? Exclude<T, null> : never> {
+): ReadonlyArray<
+  ReturnType<typeof parsePackageEntry> extends infer T
+    ? Exclude<T, null>
+    : never
+> {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -236,6 +250,52 @@ function parseBundlePackageArtifacts(value: unknown) {
     .filter(
       (entry): entry is PasswallPackageArtifactDescriptor => entry !== null,
     );
+}
+
+function parseRuntimeTargetDescriptor(
+  value: unknown,
+): PasswallRuntimeTargetDescriptor | null {
+  if (!isObject(value)) {
+    return null;
+  }
+
+  const componentName = readString(value.componentName);
+  const remoteVersion = readString(value.remoteVersion);
+  if (!componentName || !remoteVersion) {
+    return null;
+  }
+
+  return {
+    componentName,
+    remoteVersion,
+    releaseUrl: readString(value.releaseUrl),
+    assetName: readString(value.assetName),
+    assetUrl: readString(value.assetUrl),
+    assetSizeBytes: readNumber(value.assetSizeBytes),
+  };
+}
+
+function parseRuntimeTargets(
+  value: unknown,
+): Readonly<Record<string, PasswallRuntimeTargetDescriptor>> {
+  if (!isObject(value)) {
+    return {};
+  }
+
+  const entries = Object.entries(value)
+    .map(([packageName, descriptor]) => {
+      const parsed = parseRuntimeTargetDescriptor(descriptor);
+      if (!parsed || packageName.trim().length === 0) {
+        return null;
+      }
+      return [packageName, parsed] as const;
+    })
+    .filter(
+      (entry): entry is readonly [string, PasswallRuntimeTargetDescriptor] =>
+        entry !== null,
+    );
+
+  return Object.fromEntries(entries);
 }
 
 export function sortPasswallPackageList(packages: readonly string[]) {
@@ -315,15 +375,19 @@ export function buildFallbackPasswallArtifactDescriptors(args?: {
   ];
 }
 
+export function findPasswallRuntimeTarget(
+  bundleMetadata: PasswallBundleMetadata,
+  packageName: string,
+) {
+  return bundleMetadata.runtimeTargets[packageName] ?? null;
+}
+
 export function buildFallbackPasswallBundleMetadata(args?: {
   artifactBaseUrl?: string;
 }) {
   const artifactBaseUrl = args?.artifactBaseUrl ?? DEFAULT_ARTIFACT_BASE_URL;
   const mirrorBaseUrl = buildAx3000tPasswallMirrorUrl(artifactBaseUrl);
-  const releaseTag = mirrorBaseUrl
-    .replace(/\/+$/, "")
-    .split("/")
-    .at(-2);
+  const releaseTag = mirrorBaseUrl.replace(/\/+$/, "").split("/").at(-2);
 
   return {
     source: "vectra" as const,
@@ -331,6 +395,7 @@ export function buildFallbackPasswallBundleMetadata(args?: {
     manifestUrl: new URL("manifest.json", mirrorBaseUrl).toString(),
     releaseUrl: null,
     packageBundleUrl: null,
+    runtimeTargets: {},
     requiredPackages: AX3000T_REQUIRED_MIRRORED_PACKAGES,
     optionalPackages: AX3000T_OPTIONAL_MIRRORED_PACKAGES,
     packageArtifacts: buildFallbackPasswallArtifactDescriptors({
@@ -353,8 +418,11 @@ export function parsePasswallBundleMetadata(
 
   const requiredPackages = parseBundlePackageEntries(metadata.requiredPackages);
   const optionalPackages = parseBundlePackageEntries(metadata.optionalPackages);
-  const packageArtifacts = parseBundlePackageArtifacts(metadata.packageArtifacts);
-  const releaseTag = readString(metadata.releaseTag) ?? readString(metadata.tag);
+  const packageArtifacts = parseBundlePackageArtifacts(
+    metadata.packageArtifacts,
+  );
+  const releaseTag =
+    readString(metadata.releaseTag) ?? readString(metadata.tag);
 
   if (!releaseTag || packageArtifacts.length === 0) {
     return null;
@@ -388,6 +456,7 @@ export function parsePasswallBundleMetadata(
     manifestUrl: readString(metadata.manifestUrl),
     releaseUrl: readString(metadata.releaseUrl),
     packageBundleUrl: readString(metadata.packageBundleUrl),
+    runtimeTargets: parseRuntimeTargets(metadata.runtimeTargets),
     requiredPackages,
     optionalPackages,
     packageArtifacts,
@@ -397,9 +466,9 @@ export function parsePasswallBundleMetadata(
   };
 }
 
-export function buildLatestPasswallArtifactMap<TArtifact extends ArtifactRowLike>(
-  artifacts: readonly TArtifact[],
-) {
+export function buildLatestPasswallArtifactMap<
+  TArtifact extends ArtifactRowLike,
+>(artifacts: readonly TArtifact[]) {
   const latestByName = new Map<string, TArtifact>();
   for (const artifact of artifacts) {
     if (!latestByName.has(artifact.name)) {
@@ -409,9 +478,9 @@ export function buildLatestPasswallArtifactMap<TArtifact extends ArtifactRowLike
   return latestByName;
 }
 
-export function resolvePasswallPackageArtifactsFromRows<TArtifact extends ArtifactRowLike>(
-  artifacts: readonly TArtifact[],
-) {
+export function resolvePasswallPackageArtifactsFromRows<
+  TArtifact extends ArtifactRowLike,
+>(artifacts: readonly TArtifact[]) {
   return artifacts
     .filter((artifact) => artifact.type === "passwall_package")
     .map((artifact) => ({
@@ -431,9 +500,9 @@ export function resolvePasswallPackageArtifactsFromRows<TArtifact extends Artifa
     .filter((artifact) => artifact.sha256.length > 0);
 }
 
-export function buildPasswallBundleMetadataFromArtifact<TArtifact extends ArtifactRowLike>(
-  artifact: TArtifact | null | undefined,
-) {
+export function buildPasswallBundleMetadataFromArtifact<
+  TArtifact extends ArtifactRowLike,
+>(artifact: TArtifact | null | undefined) {
   if (!artifact) {
     return null;
   }
@@ -456,6 +525,8 @@ export function resolveInstalledOptionalPasswallPackages(payload: unknown) {
   });
 }
 
-export function formatPasswallArtifactSourceLabel(source: PasswallArtifactOrigin) {
+export function formatPasswallArtifactSourceLabel(
+  source: PasswallArtifactOrigin,
+) {
   return source === "upstream" ? "upstream" : "Vectra mirror";
 }

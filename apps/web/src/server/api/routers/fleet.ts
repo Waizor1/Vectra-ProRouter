@@ -9,9 +9,16 @@ import {
   routers,
 } from "@vectra/db";
 import { TRPCError } from "@trpc/server";
-import { desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
+import { resolveInstalledControllerVersion } from "~/lib/controller-version";
+import {
+  buildTerminalRouterHostnameUpdatePayload,
+  normalizeRouterHostname,
+  routerHostnameInputPattern,
+} from "~/lib/router-hostname-jobs";
+import { minimumTerminalControllerVersion, supportsTerminalFeature } from "~/lib/router-terminal-support";
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
 import {
   loadFleetMonitoringSnapshot,
@@ -27,7 +34,22 @@ import {
   isRouterReachable,
 } from "~/server/vectra/router-presence";
 import { sanitizeRevisionForClient } from "~/server/vectra/router-control";
-import { describeRouterSupport } from "~/server/vectra/support";
+import { canRunDestructiveAction, describeRouterSupport } from "~/server/vectra/support";
+
+const activeJobStates: Array<"queued" | "delivered" | "running"> = [
+  "queued",
+  "delivered",
+  "running",
+];
+const routerHostnameInputSchema = z
+  .string()
+  .trim()
+  .min(1, "Введите hostname роутера.")
+  .max(63, "Hostname OpenWrt должен помещаться в 63 символа.")
+  .regex(
+    routerHostnameInputPattern,
+    "Hostname OpenWrt может содержать только латиницу, цифры и дефис, без дефиса в начале или в конце.",
+  );
 
 export const fleetRouter = createTRPCRouter({
   overview: protectedProcedure.query(async ({ ctx }) => {
@@ -425,6 +447,123 @@ export const fleetRouter = createTRPCRouter({
       });
 
       return updatedRouter ?? router;
+    }),
+
+  renameRouter: protectedProcedure
+    .input(
+      z.object({
+        routerId: z.string().uuid(),
+        hostname: routerHostnameInputSchema,
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [router] = await ctx.db
+        .select()
+        .from(routers)
+        .where(eq(routers.id, input.routerId))
+        .limit(1);
+
+      if (!router) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `Router ${input.routerId} was not found.`,
+        });
+      }
+
+      const [snapshot] = await ctx.db
+        .select()
+        .from(routerInventorySnapshots)
+        .where(eq(routerInventorySnapshots.routerId, input.routerId))
+        .orderBy(desc(routerInventorySnapshots.createdAt))
+        .limit(1);
+      const support = describeRouterSupport({
+        boardName: snapshot?.payload.boardName ?? router.boardName,
+        layoutFamily:
+          typeof snapshot?.payload.layoutFamily === "string"
+            ? snapshot.payload.layoutFamily
+            : null,
+        target: snapshot?.payload.target ?? router.target,
+        architecture: snapshot?.payload.architecture ?? router.architecture,
+        openwrtRelease:
+          snapshot?.payload.openwrtRelease ?? router.openwrtRelease,
+      });
+
+      if (!canRunDestructiveAction(support.state)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "Смена hostname доступна только для поддерживаемых pilot/certified board/layout пар.",
+        });
+      }
+
+      const controllerVersion = resolveInstalledControllerVersion({
+        controllerVersion: snapshot?.controllerVersion ?? null,
+        payload: snapshot?.payload ?? null,
+      });
+      if (!supportsTerminalFeature(controllerVersion, minimumTerminalControllerVersion)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            `Смена hostname доступна после обновления controller-agent до ${minimumTerminalControllerVersion} или новее.`,
+        });
+      }
+
+      const nextHostname = normalizeRouterHostname(input.hostname);
+      const currentHostname = normalizeRouterHostname(
+        snapshot?.payload.hostname ?? router.hostname ?? "",
+      );
+      if (nextHostname === currentHostname) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Hostname "${nextHostname}" уже установлен на этом роутере.`,
+        });
+      }
+
+      const payload = buildTerminalRouterHostnameUpdatePayload(nextHostname);
+      const dedupeKey = `router_hostname_update:${router.id}:${nextHostname}`;
+      const [existingJob] = await ctx.db
+        .select()
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.routerId, router.id),
+            eq(jobs.dedupeKey, dedupeKey),
+            inArray(jobs.state, activeJobStates),
+          ),
+        )
+        .orderBy(desc(jobs.createdAt))
+        .limit(1);
+
+      if (existingJob) {
+        return existingJob;
+      }
+
+      const [job] = await ctx.db
+        .insert(jobs)
+        .values({
+          routerId: router.id,
+          type: "run_terminal_command",
+          state: "queued",
+          dedupeKey,
+          payload,
+        })
+        .returning();
+
+      await ctx.db.insert(eventLog).values({
+        routerId: router.id,
+        type: "router.hostname.update.requested",
+        severity: "info",
+        message: `Operator queued OpenWrt hostname update to "${nextHostname}".`,
+        metadata: {
+          routerId: router.id,
+          requestedHostname: nextHostname,
+          previousHostname: snapshot?.payload.hostname ?? router.hostname ?? null,
+          deviceIdentifier: router.deviceIdentifier,
+          jobId: job?.id ?? null,
+        },
+      });
+
+      return job;
     }),
 
   deleteRouter: protectedProcedure

@@ -13,6 +13,17 @@ type GlobalTemplateWorkspaceData = RouterOutputs["update"]["globalTemplateWorksp
 
 type UpdatesControlTab = "baseline" | "groups" | "controller";
 
+function formatUpdatesControlTabLabel(tab: UpdatesControlTab) {
+  switch (tab) {
+    case "baseline":
+      return "Baseline";
+    case "groups":
+      return "Группы и профили";
+    case "controller":
+      return "Контроллер версий";
+  }
+}
+
 export function UpdatesControlWorkspace({
   initialGlobalTemplateWorkspace,
 }: {
@@ -30,12 +41,24 @@ export function UpdatesControlWorkspace({
 
   return (
     <div className="space-y-4">
-      <Panel eyebrow="Рабочие поверхности" title="Одна система для baseline, групп и update-контроля" tone="hero">
-        <div className="space-y-4">
-          <div className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3 text-sm leading-6 text-slate-300">
-            Разделите работу по ролям: в `Baseline` вы держите глобальный эталон, в `Группы и профили` собираете reusable профили и раскладываете парк по группам, а в `Контроллер версий` видите отстающие Xray / PassWall / controller и обновляете их адресно или пачкой.
+      <section className="rounded-[1.4rem] border border-white/10 bg-[rgba(8,11,17,0.76)] px-4 py-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="vectra-kicker text-slate-500">Рабочие поверхности</p>
+            <p className="mt-1 text-sm leading-6 text-slate-300">
+              Сейчас открыт{" "}
+              <span className="font-medium text-white">
+                {formatUpdatesControlTabLabel(activeTab)}
+              </span>
+              .
+            </p>
           </div>
+          <span className="w-fit rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
+            Основная рабочая поверхность ниже
+          </span>
+        </div>
 
+        <div className="mt-3">
           <TabBar
             ariaLabel="Рабочие поверхности обновлений"
             items={[
@@ -61,7 +84,7 @@ export function UpdatesControlWorkspace({
             variant="secondary"
           />
         </div>
-      </Panel>
+      </section>
 
       {activeTab === "baseline" ? (
         <GlobalTemplateRolloutWorkspace initialWorkspace={initialGlobalTemplateWorkspace} />
