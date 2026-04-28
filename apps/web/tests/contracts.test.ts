@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   jobResultRequestSchema,
+  passwallDesiredConfigSchema,
   routerJobSchema,
   type PasswallDesiredConfig,
   createDefaultRescuePolicy,
@@ -15,10 +16,10 @@ const jobFixtures = JSON.parse(
   readFileSync(
     new URL(
       "../../../packages/contracts/fixtures/job-contract-fixtures.json",
-      import.meta.url
+      import.meta.url,
     ),
-    "utf8"
-  )
+    "utf8",
+  ),
 ) as {
   routerJobs: {
     accepted: Array<{ name: string; value: unknown }>;
@@ -96,10 +97,30 @@ describe("summarizePasswallRevisionDiff", () => {
 
     const next: PasswallDesiredConfig = {
       ...previous,
-      nodes: [{ id: "node-a", label: "Node A", protocol: "xray" as const, group: "default", enabled: true, tags: [], extras: {} }],
+      nodes: [
+        {
+          id: "node-a",
+          label: "Node A",
+          protocol: "xray" as const,
+          group: "default",
+          enabled: true,
+          tags: [],
+          extras: {},
+        },
+      ],
       subscriptions: {
         ...previous.subscriptions,
-        items: [{ id: "sub-1", remark: "Primary", url: "https://example.com/sub", enabled: true, addMode: "2" as const, metadata: {}, extras: {} }],
+        items: [
+          {
+            id: "sub-1",
+            remark: "Primary",
+            url: "https://example.com/sub",
+            enabled: true,
+            addMode: "2" as const,
+            metadata: {},
+            extras: {},
+          },
+        ],
       },
       appUpdate: {
         ...previous.appUpdate,
@@ -108,6 +129,7 @@ describe("summarizePasswallRevisionDiff", () => {
       ruleManage: {
         ...previous.ruleManage,
         autoUpdate: true,
+        geoipUrl: "https://example.com/geoip-new.dat",
       },
     };
 
@@ -123,6 +145,259 @@ describe("summarizePasswallRevisionDiff", () => {
     expect(summary.refreshSubscriptions).toBe(true);
     expect(summary.refreshRules).toBe(true);
     expect(summary.packageInstall).toBe(true);
+  });
+
+  it("does not turn unrelated edits into subscription or rule refreshes", () => {
+    const previous = passwallDesiredConfigSchema.parse({
+      basicSettings: {
+        main: {
+          mainSwitch: true,
+          selectedNodeId: "myshunt",
+          localhostProxy: true,
+          clientProxy: true,
+          nodeSocksPort: 1070,
+          nodeSocksBindLocal: true,
+          socksMainSwitch: false,
+          extras: {},
+        },
+        dns: {
+          directQueryStrategy: "UseIP",
+          remoteDnsProtocol: "tcp",
+          remoteDns: "1.1.1.1",
+          remoteDnsDoh: "https://1.1.1.1/dns-query",
+          remoteDnsDetour: "remote",
+          remoteFakeDns: false,
+          remoteDnsQueryStrategy: "UseIPv4",
+          dnsHosts: [],
+          dnsRedirect: true,
+          extras: {},
+        },
+        log: { enableNodeLog: true, level: "warning", extras: {} },
+        maintenance: { backupPaths: ["/etc/config/passwall2"], extras: {} },
+        socks: [],
+        shuntRules: [],
+      },
+      nodes: [
+        {
+          id: "myshunt",
+          label: "myshunt",
+          protocol: "shunt",
+          enabled: true,
+          group: "default",
+          tags: [],
+          extras: {},
+        },
+      ],
+      subscriptions: {
+        filterKeywordMode: "0",
+        discardList: [],
+        keepList: [],
+        typePreferences: {},
+        domainStrategy: "auto",
+        items: [
+          {
+            id: "sub-1",
+            remark: "BloopCat",
+            url: "https://example.com/sub",
+            enabled: true,
+            addMode: "2",
+            metadata: {},
+            extras: {},
+          },
+        ],
+      },
+      appUpdate: {
+        binaryPaths: {
+          xray: "/usr/bin/xray",
+          singBox: "/usr/bin/sing-box",
+          hysteria: "/usr/bin/hysteria",
+          geoview: "/usr/bin/geoview",
+        },
+        updateStrategy: "package-preferred",
+        targetVersions: {},
+        extras: {},
+      },
+      ruleManage: {
+        geoipUrl: "https://example.com/geoip.dat",
+        geositeUrl: "https://example.com/geosite.dat",
+        assetDirectory: "/usr/share/v2ray/",
+        autoUpdate: true,
+        scheduleMode: "daily",
+        enabledAssets: ["geoip", "geosite"],
+        shuntRules: [],
+        extras: {},
+      },
+    });
+    const next = passwallDesiredConfigSchema.parse({
+      ...previous,
+      basicSettings: {
+        ...previous.basicSettings,
+        log: {
+          ...previous.basicSettings.log,
+          level: "debug",
+        },
+      },
+    });
+
+    const summary = summarizePasswallRevisionDiff(previous, next);
+
+    expect(summary.changedSections).toEqual(["basicSettings"]);
+    expect(summary.requiresRestart).toBe(true);
+    expect(summary.refreshSubscriptions).toBe(false);
+    expect(summary.refreshRules).toBe(false);
+    expect(summary.operationPreview.map((operation) => operation.kind)).toEqual(
+      ["uci_apply", "service_restart"],
+    );
+  });
+
+  it("treats subscription-managed node reordering and volatile ids as no-op", () => {
+    const previous = passwallDesiredConfigSchema.parse({
+      basicSettings: {
+        main: {
+          mainSwitch: true,
+          selectedNodeId: "myshunt",
+          localhostProxy: true,
+          clientProxy: true,
+          nodeSocksPort: 1070,
+          nodeSocksBindLocal: true,
+          socksMainSwitch: false,
+          extras: {},
+        },
+        dns: {
+          directQueryStrategy: "UseIP",
+          remoteDnsProtocol: "tcp",
+          remoteDns: "1.1.1.1",
+          remoteDnsDoh: "https://1.1.1.1/dns-query",
+          remoteDnsDetour: "remote",
+          remoteFakeDns: false,
+          remoteDnsQueryStrategy: "UseIPv4",
+          dnsHosts: [],
+          dnsRedirect: true,
+          extras: {},
+        },
+        log: { enableNodeLog: true, level: "warning", extras: {} },
+        maintenance: { backupPaths: ["/etc/config/passwall2"], extras: {} },
+        socks: [],
+        shuntRules: [],
+      },
+      nodes: [
+        {
+          id: "myshunt",
+          label: "myshunt",
+          protocol: "shunt",
+          enabled: true,
+          group: "default",
+          tags: [],
+          extras: {},
+        },
+        {
+          id: "old-ru-id",
+          label: "🇷🇺 Россия",
+          protocol: "vless",
+          enabled: true,
+          group: "BloopCat",
+          address: "ru.example.com",
+          port: 443,
+          transport: "grpc",
+          tls: true,
+          tags: [],
+          extras: {
+            add_mode: "2",
+            reality: "1",
+            reality_publicKey: "present-but-redacted-in-ui",
+            tls_serverName: "ru.example.com",
+          },
+        },
+        {
+          id: "old-fi-id",
+          label: "🇫🇮 Finland",
+          protocol: "vless",
+          enabled: true,
+          group: "BloopCat",
+          address: "fi.example.com",
+          port: 443,
+          transport: "tcp",
+          tls: true,
+          tags: [],
+          extras: {
+            add_mode: "2",
+            reality: "1",
+            reality_publicKey: "present-too",
+            tls_serverName: "fi.example.com",
+          },
+        },
+      ],
+      subscriptions: {
+        filterKeywordMode: "0",
+        discardList: [],
+        keepList: [],
+        typePreferences: {},
+        domainStrategy: "auto",
+        items: [
+          {
+            id: "old-sub-id",
+            remark: "BloopCat",
+            url: "https://example.com/sub",
+            enabled: true,
+            addMode: "2",
+            metadata: {},
+            extras: {},
+          },
+        ],
+      },
+      appUpdate: {
+        binaryPaths: {
+          xray: "/usr/bin/xray",
+          singBox: "/usr/bin/sing-box",
+          hysteria: "/usr/bin/hysteria",
+          geoview: "/usr/bin/geoview",
+        },
+        updateStrategy: "package-preferred",
+        targetVersions: {},
+        extras: {},
+      },
+      ruleManage: {
+        geoipUrl: "https://example.com/geoip.dat",
+        geositeUrl: "https://example.com/geosite.dat",
+        assetDirectory: "/usr/share/v2ray/",
+        autoUpdate: true,
+        scheduleMode: "daily",
+        enabledAssets: ["geoip", "geosite"],
+        shuntRules: [],
+        extras: {},
+      },
+    });
+    const next = passwallDesiredConfigSchema.parse({
+      ...previous,
+      nodes: [
+        previous.nodes[0]!,
+        {
+          ...previous.nodes[2]!,
+          id: "new-fi-id",
+        },
+        {
+          ...previous.nodes[1]!,
+          id: "new-ru-id",
+        },
+      ],
+      subscriptions: {
+        ...previous.subscriptions,
+        items: [
+          {
+            ...previous.subscriptions.items[0]!,
+            id: "new-sub-id",
+          },
+        ],
+      },
+    });
+
+    const summary = summarizePasswallRevisionDiff(previous, next);
+
+    expect(summary.changedSections).toEqual([]);
+    expect(summary.fieldDiffs).toEqual([]);
+    expect(summary.operationPreview).toEqual([]);
+    expect(summary.refreshSubscriptions).toBe(false);
+    expect(summary.refreshRules).toBe(false);
   });
 });
 
@@ -169,25 +444,37 @@ describe("evaluateRescueMode", () => {
 describe("shared job contract fixtures", () => {
   it("accepts the curated router job corpus", () => {
     for (const fixture of jobFixtures.routerJobs.accepted) {
-      expect(() => routerJobSchema.parse(fixture.value), fixture.name).not.toThrow();
+      expect(
+        () => routerJobSchema.parse(fixture.value),
+        fixture.name,
+      ).not.toThrow();
     }
   });
 
   it("rejects malformed router jobs consistently", () => {
     for (const fixture of jobFixtures.routerJobs.rejected) {
-      expect(() => routerJobSchema.parse(fixture.value), fixture.name).toThrow();
+      expect(
+        () => routerJobSchema.parse(fixture.value),
+        fixture.name,
+      ).toThrow();
     }
   });
 
   it("accepts the curated job result corpus", () => {
     for (const fixture of jobFixtures.jobResults.accepted) {
-      expect(() => jobResultRequestSchema.parse(fixture.value), fixture.name).not.toThrow();
+      expect(
+        () => jobResultRequestSchema.parse(fixture.value),
+        fixture.name,
+      ).not.toThrow();
     }
   });
 
   it("rejects malformed job results consistently", () => {
     for (const fixture of jobFixtures.jobResults.rejected) {
-      expect(() => jobResultRequestSchema.parse(fixture.value), fixture.name).toThrow();
+      expect(
+        () => jobResultRequestSchema.parse(fixture.value),
+        fixture.name,
+      ).toThrow();
     }
   });
 });

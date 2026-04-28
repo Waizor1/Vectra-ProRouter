@@ -50,7 +50,8 @@ const FIELD_LABELS: Record<string, string> = {
   "basicSettings.dns.remoteDnsClientIp": "Client IP для удалённого DNS",
   "basicSettings.dns.remoteDnsDetour": "Маршрут удалённого DNS",
   "basicSettings.dns.remoteFakeDns": "FakeDNS",
-  "basicSettings.dns.remoteDnsQueryStrategy": "Стратегия запросов удалённого DNS",
+  "basicSettings.dns.remoteDnsQueryStrategy":
+    "Стратегия запросов удалённого DNS",
   "basicSettings.dns.dnsHosts": "Локальные DNS-host записи",
   "basicSettings.dns.dnsRedirect": "Перенаправление DNS",
   "basicSettings.log.enableNodeLog": "Логи узлов",
@@ -77,13 +78,13 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 export function createDefaultRescuePolicy(
-  overrides: Partial<RescuePolicy> = {}
+  overrides: Partial<RescuePolicy> = {},
 ): RescuePolicy {
   return rescuePolicySchema.parse(overrides);
 }
 
 export function createDefaultUpdatePolicy(
-  overrides: Partial<UpdatePolicy> = {}
+  overrides: Partial<UpdatePolicy> = {},
 ): UpdatePolicy {
   return updatePolicySchema.parse(overrides);
 }
@@ -97,7 +98,7 @@ function stableValue(value: unknown): unknown {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
         .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entry]) => [key, stableValue(entry)])
+        .map(([key, entry]) => [key, stableValue(entry)]),
     );
   }
 
@@ -105,7 +106,180 @@ function stableValue(value: unknown): unknown {
 }
 
 function sameValue(left: unknown, right: unknown) {
-  return JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right));
+  return (
+    JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right))
+  );
+}
+
+function normalizeDiffText(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
+}
+
+function normalizeDiffLowerText(value: unknown) {
+  return normalizeDiffText(value)?.toLowerCase() ?? null;
+}
+
+function normalizeDiffNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizeDiffBoolean(value: unknown) {
+  return typeof value === "boolean" ? value : null;
+}
+
+function normalizeDiffExtraValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => (typeof entry === "string" ? entry.trim() : entry))
+      .filter((entry) => entry !== "");
+  }
+
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    value === null
+  ) {
+    return value;
+  }
+
+  return undefined;
+}
+
+function normalizeDiffExtras(
+  extras: Record<string, unknown> | undefined,
+  ignoredKeys: string[] = [],
+) {
+  const ignored = new Set(ignoredKeys);
+  return Object.fromEntries(
+    Object.entries(extras ?? {})
+      .filter(([key]) => !ignored.has(key))
+      .map(([key, value]) => [key, normalizeDiffExtraValue(value)] as const)
+      .filter(([, value]) => value !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function isManagedSubscriptionNodeForDiff(
+  node: PasswallDesiredConfig["nodes"][number],
+) {
+  const extras = node.extras ?? {};
+  return (
+    extras.add_mode === "2" ||
+    extras.add_mode === 2 ||
+    extras.addMode === "2" ||
+    extras.addMode === 2
+  );
+}
+
+function buildManagedNodeDiffIdentity(
+  node: PasswallDesiredConfig["nodes"][number],
+) {
+  return JSON.stringify(
+    stableValue({
+      label: normalizeDiffText(node.label),
+      protocol: normalizeDiffLowerText(node.protocol),
+      address: normalizeDiffLowerText(node.address),
+      port: normalizeDiffNumber(node.port),
+      username: normalizeDiffText(node.username),
+      password: normalizeDiffText(node.password),
+      transport: normalizeDiffLowerText(node.transport),
+      tls: normalizeDiffBoolean(node.tls),
+      extras: normalizeDiffExtras(node.extras, ["add_mode", "group"]),
+    }),
+  );
+}
+
+function canonicalizeArrayById<T extends { id: string }>(items: T[]) {
+  return [...items].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function canonicalizeNodesForDiff(nodes: PasswallDesiredConfig["nodes"]) {
+  return nodes
+    .map((node, index) => {
+      const managed = isManagedSubscriptionNodeForDiff(node);
+      const comparableNode = managed
+        ? Object.fromEntries(
+            Object.entries(node).filter(([key]) => key !== "id"),
+          )
+        : node;
+
+      return {
+        identity: managed
+          ? `managed:${buildManagedNodeDiffIdentity(node)}`
+          : `manual:${node.id}`,
+        index,
+        value: stableValue(comparableNode),
+      };
+    })
+    .sort(
+      (left, right) =>
+        left.identity.localeCompare(right.identity) ||
+        JSON.stringify(left.value).localeCompare(JSON.stringify(right.value)) ||
+        left.index - right.index,
+    )
+    .map((entry) => entry.value);
+}
+
+function buildSubscriptionDiffIdentity(
+  item: PasswallDesiredConfig["subscriptions"]["items"][number],
+) {
+  return `${normalizeDiffLowerText(item.remark) ?? "subscription"}::${
+    normalizeDiffText(item.url) ?? ""
+  }`;
+}
+
+function canonicalizeSubscriptionsForDiff(
+  items: PasswallDesiredConfig["subscriptions"]["items"],
+) {
+  return items
+    .map((item, index) => ({
+      identity: buildSubscriptionDiffIdentity(item),
+      index,
+      value: stableValue(
+        Object.fromEntries(
+          Object.entries(item).filter(([key]) => key !== "id"),
+        ),
+      ),
+    }))
+    .sort(
+      (left, right) =>
+        left.identity.localeCompare(right.identity) ||
+        JSON.stringify(left.value).localeCompare(JSON.stringify(right.value)) ||
+        left.index - right.index,
+    )
+    .map((entry) => entry.value);
+}
+
+function canonicalizePasswallForDiff(
+  config: PasswallDesiredConfig | null | undefined,
+): unknown {
+  if (!config) {
+    return null;
+  }
+
+  return {
+    ...config,
+    basicSettings: {
+      ...config.basicSettings,
+      socks: canonicalizeArrayById(config.basicSettings.socks),
+      shuntRules: canonicalizeArrayById(config.basicSettings.shuntRules),
+    },
+    nodes: canonicalizeNodesForDiff(config.nodes),
+    subscriptions: {
+      ...config.subscriptions,
+      items: canonicalizeSubscriptionsForDiff(config.subscriptions.items),
+    },
+    ruleManage: {
+      ...config.ruleManage,
+      shuntRules: canonicalizeArrayById(config.ruleManage.shuntRules),
+    },
+  };
 }
 
 function collectLeafPaths(value: unknown, prefix = ""): string[] {
@@ -115,7 +289,7 @@ function collectLeafPaths(value: unknown, prefix = ""): string[] {
     }
 
     return value.flatMap((entry, index) =>
-      collectLeafPaths(entry, `${prefix}[${index}]`)
+      collectLeafPaths(entry, `${prefix}[${index}]`),
     );
   }
 
@@ -126,11 +300,81 @@ function collectLeafPaths(value: unknown, prefix = ""): string[] {
     }
 
     return entries.flatMap(([key, entry]) =>
-      collectLeafPaths(entry, prefix ? `${prefix}.${key}` : key)
+      collectLeafPaths(entry, prefix ? `${prefix}.${key}` : key),
     );
   }
 
   return prefix ? [prefix] : [];
+}
+
+function isTopLevelSection(
+  value: string | undefined,
+): value is (typeof TOP_LEVEL_SECTIONS)[number] {
+  return TOP_LEVEL_SECTIONS.some((section) => section === value);
+}
+
+function sectionFromPath(path: string): keyof PasswallDesiredConfig {
+  const [root] = path.split(/[.[\]]/).filter(Boolean);
+  return isTopLevelSection(root) ? root : "basicSettings";
+}
+
+function pathMatchesPrefix(path: string, prefix: string) {
+  return (
+    path === prefix ||
+    path.startsWith(`${prefix}.`) ||
+    path.startsWith(`${prefix}[`)
+  );
+}
+
+function hasDiffPath(
+  fieldDiffs: PasswallFieldDiff[] | null,
+  predicate: (path: string) => boolean,
+) {
+  return fieldDiffs === null || fieldDiffs.some((diff) => predicate(diff.path));
+}
+
+function changedSectionsFromDiffs(fieldDiffs: PasswallFieldDiff[]) {
+  const changed = new Set(fieldDiffs.map((diff) => diff.section));
+  return TOP_LEVEL_SECTIONS.filter((section) => changed.has(section));
+}
+
+function touchesGlobalApplyPath(path: string) {
+  return (
+    pathMatchesPrefix(path, "basicSettings.main") ||
+    pathMatchesPrefix(path, "basicSettings.dns") ||
+    pathMatchesPrefix(path, "basicSettings.log") ||
+    pathMatchesPrefix(path, "basicSettings.maintenance") ||
+    pathMatchesPrefix(path, "appUpdate.binaryPaths") ||
+    pathMatchesPrefix(path, "appUpdate.updateStrategy") ||
+    (pathMatchesPrefix(path, "ruleManage") &&
+      !pathMatchesPrefix(path, "ruleManage.shuntRules"))
+  );
+}
+
+function touchesNodeSyncPath(path: string) {
+  return (
+    pathMatchesPrefix(path, "nodes") ||
+    pathMatchesPrefix(path, "basicSettings.socks") ||
+    pathMatchesPrefix(path, "basicSettings.shuntRules") ||
+    pathMatchesPrefix(path, "ruleManage.shuntRules")
+  );
+}
+
+function touchesSubscriptionPath(path: string) {
+  return pathMatchesPrefix(path, "subscriptions");
+}
+
+function touchesRuleRefreshPath(path: string) {
+  return (
+    pathMatchesPrefix(path, "ruleManage.geoipUrl") ||
+    pathMatchesPrefix(path, "ruleManage.geositeUrl") ||
+    pathMatchesPrefix(path, "ruleManage.assetDirectory") ||
+    pathMatchesPrefix(path, "ruleManage.enabledAssets")
+  );
+}
+
+function touchesPackageInstallPath(path: string) {
+  return pathMatchesPrefix(path, "appUpdate.targetVersions");
 }
 
 function getAtPath(value: unknown, path: string): unknown {
@@ -168,7 +412,7 @@ function getAtPath(value: unknown, path: string): unknown {
 function compactCommands(commands: Array<string | null | undefined>) {
   return commands.filter(
     (command): command is string =>
-      typeof command === "string" && command.trim().length > 0
+      typeof command === "string" && command.trim().length > 0,
   );
 }
 
@@ -176,7 +420,10 @@ function quoteUci(value: string) {
   return `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
 }
 
-function setValue(key: string, value: string | number | boolean | null | undefined) {
+function setValue(
+  key: string,
+  value: string | number | boolean | null | undefined,
+) {
   if (value === null || value === undefined || value === "") {
     return null;
   }
@@ -196,7 +443,10 @@ function setList(key: string, values: string[]) {
     return [];
   }
 
-  return [`delete ${key}`, ...values.map((value) => `add_list ${key}=${quoteUci(value)}`)];
+  return [
+    `delete ${key}`,
+    ...values.map((value) => `add_list ${key}=${quoteUci(value)}`),
+  ];
 }
 
 function truthyInt(value?: number) {
@@ -216,122 +466,139 @@ function renderGlobalCommands(config: PasswallDesiredConfig) {
     setValue("passwall2.vectra_global.node", basicSettings.main.selectedNodeId),
     setValue(
       "passwall2.vectra_global.localhost_proxy",
-      basicSettings.main.localhostProxy
+      basicSettings.main.localhostProxy,
     ),
-    setValue("passwall2.vectra_global.client_proxy", basicSettings.main.clientProxy),
+    setValue(
+      "passwall2.vectra_global.client_proxy",
+      basicSettings.main.clientProxy,
+    ),
     setValue(
       "passwall2.vectra_global.node_socks_port",
-      truthyInt(basicSettings.main.nodeSocksPort)
+      truthyInt(basicSettings.main.nodeSocksPort),
     ),
     setValue(
       "passwall2.vectra_global.node_socks_bind_local",
-      basicSettings.main.nodeSocksBindLocal
+      basicSettings.main.nodeSocksBindLocal,
     ),
     setValue(
       "passwall2.vectra_global.socks_enabled",
-      basicSettings.main.socksMainSwitch
+      basicSettings.main.socksMainSwitch,
     ),
     setValue(
       "passwall2.vectra_global.direct_dns_query_strategy",
-      basicSettings.dns.directQueryStrategy
+      basicSettings.dns.directQueryStrategy,
     ),
     setValue(
       "passwall2.vectra_global.remote_dns_protocol",
-      basicSettings.dns.remoteDnsProtocol
+      basicSettings.dns.remoteDnsProtocol,
     ),
     setValue("passwall2.vectra_global.remote_dns", basicSettings.dns.remoteDns),
     setValue(
       "passwall2.vectra_global.remote_dns_doh",
-      basicSettings.dns.remoteDnsDoh
+      basicSettings.dns.remoteDnsDoh,
     ),
     setValue(
       "passwall2.vectra_global.remote_dns_client_ip",
-      basicSettings.dns.remoteDnsClientIp
+      basicSettings.dns.remoteDnsClientIp,
     ),
     setValue(
       "passwall2.vectra_global.remote_dns_detour",
-      basicSettings.dns.remoteDnsDetour
+      basicSettings.dns.remoteDnsDetour,
     ),
     setValue(
       "passwall2.vectra_global.remote_fakedns",
-      basicSettings.dns.remoteFakeDns
+      basicSettings.dns.remoteFakeDns,
     ),
     setValue(
       "passwall2.vectra_global.remote_dns_query_strategy",
-      basicSettings.dns.remoteDnsQueryStrategy
+      basicSettings.dns.remoteDnsQueryStrategy,
     ),
     setValue(
       "passwall2.vectra_global.dns_hosts",
-      basicSettings.dns.dnsHosts.join("\n")
+      basicSettings.dns.dnsHosts.join("\n"),
     ),
-    setValue("passwall2.vectra_global.log_node", basicSettings.log.enableNodeLog),
+    setValue(
+      "passwall2.vectra_global.log_node",
+      basicSettings.log.enableNodeLog,
+    ),
     setValue("passwall2.vectra_global.loglevel", basicSettings.log.level),
     "set passwall2.vectra_global_rules=global_rules",
     setValue("passwall2.vectra_global_rules.geoip_url", ruleManage.geoipUrl),
-    setValue("passwall2.vectra_global_rules.geosite_url", ruleManage.geositeUrl),
+    setValue(
+      "passwall2.vectra_global_rules.geosite_url",
+      ruleManage.geositeUrl,
+    ),
     setValue(
       "passwall2.vectra_global_rules.v2ray_location_asset",
-      ruleManage.assetDirectory
+      ruleManage.assetDirectory,
     ),
-    setValue("passwall2.vectra_global_rules.auto_update", ruleManage.autoUpdate),
+    setValue(
+      "passwall2.vectra_global_rules.auto_update",
+      ruleManage.autoUpdate,
+    ),
     setValue(
       "passwall2.vectra_global_rules.geoip_update",
-      assetEnabled(ruleManage.enabledAssets, "geoip")
+      assetEnabled(ruleManage.enabledAssets, "geoip"),
     ),
     setValue(
       "passwall2.vectra_global_rules.geosite_update",
-      assetEnabled(ruleManage.enabledAssets, "geosite")
+      assetEnabled(ruleManage.enabledAssets, "geosite"),
     ),
     "set passwall2.vectra_global_app=global_app",
-    setValue("passwall2.vectra_global_app.xray_file", appUpdate.binaryPaths.xray),
+    setValue(
+      "passwall2.vectra_global_app.xray_file",
+      appUpdate.binaryPaths.xray,
+    ),
     setValue(
       "passwall2.vectra_global_app.sing_box_file",
-      appUpdate.binaryPaths.singBox
+      appUpdate.binaryPaths.singBox,
     ),
     setValue(
       "passwall2.vectra_global_app.hysteria_file",
-      appUpdate.binaryPaths.hysteria
+      appUpdate.binaryPaths.hysteria,
     ),
     setValue(
       "passwall2.vectra_global_app.geoview_file",
-      appUpdate.binaryPaths.geoview
+      appUpdate.binaryPaths.geoview,
     ),
     "set passwall2.vectra_global_subscribe=global_subscribe",
     setValue(
       "passwall2.vectra_global_subscribe.filter_keyword_mode",
-      subscriptions.filterKeywordMode
+      subscriptions.filterKeywordMode,
     ),
     ...setList(
       "passwall2.vectra_global_subscribe.filter_discard_list",
-      subscriptions.discardList
+      subscriptions.discardList,
     ),
     ...setList(
       "passwall2.vectra_global_subscribe.filter_keep_list",
-      subscriptions.keepList
+      subscriptions.keepList,
     ),
     setValue(
       "passwall2.vectra_global_subscribe.ss_type",
-      subscriptions.typePreferences.shadowsocks
+      subscriptions.typePreferences.shadowsocks,
     ),
     setValue(
       "passwall2.vectra_global_subscribe.trojan_type",
-      subscriptions.typePreferences.trojan
+      subscriptions.typePreferences.trojan,
     ),
     setValue(
       "passwall2.vectra_global_subscribe.vmess_type",
-      subscriptions.typePreferences.vmess
+      subscriptions.typePreferences.vmess,
     ),
     setValue(
       "passwall2.vectra_global_subscribe.vless_type",
-      subscriptions.typePreferences.vless
+      subscriptions.typePreferences.vless,
     ),
     setValue(
       "passwall2.vectra_global_subscribe.hysteria2_type",
-      subscriptions.typePreferences.hysteria2
+      subscriptions.typePreferences.hysteria2,
     ),
     setValue(
       "passwall2.vectra_global_subscribe.domain_strategy",
-      subscriptions.domainStrategy === "auto" ? "" : subscriptions.domainStrategy
+      subscriptions.domainStrategy === "auto"
+        ? ""
+        : subscriptions.domainStrategy,
     ),
   ]);
 }
@@ -350,7 +617,10 @@ function renderNodeCommands(config: PasswallDesiredConfig) {
         setValue(`${ref}.http_port`, truthyInt(socks.httpPort)),
         setValue(`${ref}.bind_local`, socks.bindLocal),
       ]),
-      ...setList(`${ref}.autoswitch_backup_node`, socks.autoswitchBackupNodeIds)
+      ...setList(
+        `${ref}.autoswitch_backup_node`,
+        socks.autoswitchBackupNodeIds,
+      ),
     );
   }
 
@@ -362,7 +632,7 @@ function renderNodeCommands(config: PasswallDesiredConfig) {
         setValue(`${ref}.remarks`, rule.label),
         setValue(`${ref}.domain_list`, rule.domainRules.join("\n")),
         setValue(`${ref}.ip_list`, rule.ipRules.join("\n")),
-      ])
+      ]),
     );
   }
 
@@ -383,7 +653,7 @@ function renderNodeCommands(config: PasswallDesiredConfig) {
         setValue(`${ref}.password`, node.password),
         setValue(`${ref}.tls`, node.tls),
       ]),
-      ...setList(`${ref}.tag`, node.tags)
+      ...setList(`${ref}.tag`, node.tags),
     );
   }
 
@@ -404,7 +674,7 @@ function renderSubscriptionCommands(config: PasswallDesiredConfig) {
         setValue(`${ref}.add_mode`, item.addMode),
         setValue(`${ref}.rem_traffic`, item.metadata.remainingTraffic),
         setValue(`${ref}.expired_date`, item.metadata.expiresAt),
-      ])
+      ]),
     );
   }
 
@@ -412,15 +682,21 @@ function renderSubscriptionCommands(config: PasswallDesiredConfig) {
 }
 
 export function buildPasswallOperationPreview(
-  config: PasswallDesiredConfig
+  config: PasswallDesiredConfig,
+  fieldDiffs?: PasswallFieldDiff[],
 ): PasswallOperationPreview[] {
   const operations: PasswallOperationPreview[] = [];
+  const scopedDiffs = fieldDiffs ?? null;
   const globalCommands = renderGlobalCommands(config);
-  if (globalCommands.length > 0) {
+  if (
+    globalCommands.length > 0 &&
+    hasDiffPath(scopedDiffs, touchesGlobalApplyPath)
+  ) {
     operations.push({
       kind: "uci_apply",
       section: "basicSettings",
-      description: "Записать основные настройки, DNS, app-path и rule settings в UCI.",
+      description:
+        "Записать основные настройки, DNS, app-path и rule settings в UCI.",
       restartRequired: true,
       uciCommands: globalCommands,
       commands: [],
@@ -428,7 +704,10 @@ export function buildPasswallOperationPreview(
   }
 
   const nodeCommands = renderNodeCommands(config);
-  if (nodeCommands.length > 0) {
+  if (
+    nodeCommands.length > 0 &&
+    hasDiffPath(scopedDiffs, touchesNodeSyncPath)
+  ) {
     operations.push({
       kind: "node_sync",
       section: "nodes",
@@ -440,11 +719,16 @@ export function buildPasswallOperationPreview(
   }
 
   const subscriptionCommands = renderSubscriptionCommands(config);
-  if (subscriptionCommands.length > 0) {
+  const shouldRefreshSubscriptions = hasDiffPath(
+    scopedDiffs,
+    touchesSubscriptionPath,
+  );
+  if (subscriptionCommands.length > 0 && shouldRefreshSubscriptions) {
     operations.push({
       kind: "subscription_sync",
       section: "subscriptions",
-      description: "Синхронизировать глобальные параметры подписок и список импортов.",
+      description:
+        "Синхронизировать глобальные параметры подписок и список импортов.",
       restartRequired: true,
       uciCommands: subscriptionCommands,
       commands: config.subscriptions.items.length
@@ -453,7 +737,10 @@ export function buildPasswallOperationPreview(
     });
   }
 
-  if (config.ruleManage.enabledAssets.length > 0) {
+  if (
+    config.ruleManage.enabledAssets.length > 0 &&
+    hasDiffPath(scopedDiffs, touchesRuleRefreshPath)
+  ) {
     operations.push({
       kind: "rule_refresh",
       section: "ruleManage",
@@ -466,11 +753,15 @@ export function buildPasswallOperationPreview(
     });
   }
 
-  if (Object.values(config.appUpdate.targetVersions).some(Boolean)) {
+  if (
+    Object.values(config.appUpdate.targetVersions).some(Boolean) &&
+    hasDiffPath(scopedDiffs, touchesPackageInstallPath)
+  ) {
     operations.push({
       kind: "package_update",
       section: "appUpdate",
-      description: "Запустить package lane для PassWall2 и runtime-компонентов.",
+      description:
+        "Запустить package lane для PassWall2 и runtime-компонентов.",
       restartRequired: false,
       uciCommands: [],
       commands: ["opkg update", "opkg install <packageList>"],
@@ -493,22 +784,24 @@ export function buildPasswallOperationPreview(
 
 export function buildPasswallFieldDiffs(
   previous: PasswallDesiredConfig | null,
-  next: PasswallDesiredConfig
+  next: PasswallDesiredConfig,
 ): PasswallFieldDiff[] {
+  const comparablePrevious = canonicalizePasswallForDiff(previous);
+  const comparableNext = canonicalizePasswallForDiff(next);
   const paths = new Set<string>([
-    ...collectLeafPaths(previous),
-    ...collectLeafPaths(next),
+    ...collectLeafPaths(comparablePrevious),
+    ...collectLeafPaths(comparableNext),
   ]);
 
   const diffs: PasswallFieldDiff[] = [];
   for (const path of paths) {
-    const previousValue = getAtPath(previous, path);
-    const nextValue = getAtPath(next, path);
+    const previousValue = getAtPath(comparablePrevious, path);
+    const nextValue = getAtPath(comparableNext, path);
     if (sameValue(previousValue, nextValue)) {
       continue;
     }
 
-    const [section] = path.split(".") as [keyof PasswallDesiredConfig, ...string[]];
+    const section = sectionFromPath(path);
     const changeType =
       previousValue === undefined
         ? "added"
@@ -534,14 +827,10 @@ export function labelPasswallField(path: string) {
 
 export function summarizePasswallRevisionDiff(
   previous: PasswallDesiredConfig | null,
-  next: PasswallDesiredConfig
+  next: PasswallDesiredConfig,
 ) {
-  const changedSections = TOP_LEVEL_SECTIONS.filter((section) => {
-    const prevValue = previous?.[section] ?? null;
-    const nextValue = next[section];
-    return !sameValue(prevValue, nextValue);
-  });
   const fieldDiffs = buildPasswallFieldDiffs(previous, next);
+  const changedSections = changedSectionsFromDiffs(fieldDiffs);
   if (fieldDiffs.length === 0) {
     return {
       changedSections,
@@ -554,19 +843,21 @@ export function summarizePasswallRevisionDiff(
       operationPreview: [],
     };
   }
-  const operationPreview = buildPasswallOperationPreview(next);
+  const operationPreview = buildPasswallOperationPreview(next, fieldDiffs);
 
   return {
     changedSections,
-    requiresRestart: operationPreview.some((operation) => operation.restartRequired),
+    requiresRestart: operationPreview.some(
+      (operation) => operation.restartRequired,
+    ),
     refreshSubscriptions: operationPreview.some(
-      (operation) => operation.kind === "subscription_sync"
+      (operation) => operation.kind === "subscription_sync",
     ),
     refreshRules: operationPreview.some(
-      (operation) => operation.kind === "rule_refresh"
+      (operation) => operation.kind === "rule_refresh",
     ),
     packageInstall: operationPreview.some(
-      (operation) => operation.kind === "package_update"
+      (operation) => operation.kind === "package_update",
     ),
     firmwareValidation: false,
     fieldDiffs,
@@ -575,13 +866,14 @@ export function summarizePasswallRevisionDiff(
 }
 
 export function evaluateRescueMode(
-  input: z.input<typeof rescueEvaluationInputSchema>
+  input: z.input<typeof rescueEvaluationInputSchema>,
 ) {
   const parsed = rescueEvaluationInputSchema.parse(input);
   const lastTransitionMs = parsed.lastTransitionAt?.getTime() ?? 0;
   const cooldownMs = parsed.policy.cooldownSeconds * 1000;
   const cooldownActive =
-    lastTransitionMs > 0 && parsed.now.getTime() - lastTransitionMs < cooldownMs;
+    lastTransitionMs > 0 &&
+    parsed.now.getTime() - lastTransitionMs < cooldownMs;
 
   if (
     parsed.currentMode === "proxy" &&

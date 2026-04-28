@@ -31,6 +31,24 @@ export type SubscriptionRuntimeNodeView = {
   enabled: boolean;
   selected: boolean;
   orphanReason: "group-only" | "cleanup-needed" | null;
+  details: {
+    address: string | null;
+    port: number | null;
+    transport: string | null;
+    tls: boolean | null;
+    usernamePresent: boolean;
+    passwordPresent: boolean;
+    realityEnabled: boolean;
+    realityPublicKeyPresent: boolean;
+    realityShortIdPresent: boolean;
+    tlsServerName: string | null;
+    grpcMode: string | null;
+    flow: string | null;
+    encryption: string | null;
+    fingerprint: string | null;
+    utls: string | null;
+    extraKeys: string[];
+  };
 };
 
 export type SubscriptionRuntimePreviewSummary = {
@@ -111,14 +129,20 @@ function normalizeExtraValue(
   value: string | number | boolean | string[] | null | undefined,
 ) {
   if (Array.isArray(value)) {
-    return value.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+    return value
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
   }
 
   if (typeof value === "string") {
     return value.trim();
   }
 
-  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    value === null
+  ) {
     return value;
   }
 
@@ -152,6 +176,29 @@ function buildNodeFingerprintPayload(node: NodeItem) {
 function endpointLabel(node: NodeItem) {
   const address = normalizeText(node.address) ?? "n/a";
   return node.port ? `${address}:${node.port}` : address;
+}
+
+function extraString(extras: NodeItem["extras"], key: string): string | null {
+  const value = extras[key];
+  if (typeof value === "string") {
+    return normalizeText(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    const joined = value
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .join(", ");
+    return joined.length > 0 ? joined : null;
+  }
+  return null;
+}
+
+function truthyExtra(extras: NodeItem["extras"], key: string) {
+  const value = extraString(extras, key)?.toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
 function normalizeSubscriptionRemark(value: string | null | undefined) {
@@ -224,7 +271,11 @@ export function nodeMatchesSubscriptionGroup(
 ) {
   const nodeGroup = normalizeLowerText(node.group);
   const subscriptionRemark = normalizeSubscriptionRemark(subscription.remark);
-  return nodeGroup !== null && subscriptionRemark !== null && nodeGroup === subscriptionRemark;
+  return (
+    nodeGroup !== null &&
+    subscriptionRemark !== null &&
+    nodeGroup === subscriptionRemark
+  );
 }
 
 function dedupeSubscriptions<T extends SubscriptionItem>(items: T[]) {
@@ -244,12 +295,13 @@ export function mergeSubscriptionsBySemanticIdentity(args: {
   draftItems: SubscriptionItem[];
   liveItems: SubscriptionItem[];
 }) {
-  const liveById = new Map(args.liveItems.map((item) => [item.id, item] as const));
+  const liveById = new Map(
+    args.liveItems.map((item) => [item.id, item] as const),
+  );
   const liveByKey = new Map(
-    dedupeSubscriptions(args.liveItems).map((item) => [
-      buildSubscriptionSemanticKey(item),
-      item,
-    ] as const),
+    dedupeSubscriptions(args.liveItems).map(
+      (item) => [buildSubscriptionSemanticKey(item), item] as const,
+    ),
   );
   const merged: SubscriptionItem[] = [];
   const seenKeys = new Set<string>();
@@ -300,7 +352,9 @@ function mergeNonRuntimeNodesByFingerprint(args: {
 }) {
   const draftIds = new Set(args.draftNodes.map((node) => node.id));
   const liveByFingerprint = new Map(
-    args.liveNodes.map((node) => [buildNodeSemanticFingerprint(node), node] as const),
+    args.liveNodes.map(
+      (node) => [buildNodeSemanticFingerprint(node), node] as const,
+    ),
   );
   const merged: NodeItem[] = [];
   const seenFingerprints = new Set<string>();
@@ -389,6 +443,30 @@ function buildNodeView(
     enabled: node.enabled,
     selected: selectedNodeId === node.id,
     orphanReason,
+    details: {
+      address: normalizeText(node.address),
+      port: node.port ?? null,
+      transport: normalizeText(node.transport),
+      tls: typeof node.tls === "boolean" ? node.tls : null,
+      usernamePresent:
+        normalizeText(node.username) !== null ||
+        extraString(node.extras, "uuid") !== null,
+      passwordPresent: normalizeText(node.password) !== null,
+      realityEnabled: truthyExtra(node.extras, "reality"),
+      realityPublicKeyPresent:
+        extraString(node.extras, "reality_publicKey") !== null,
+      realityShortIdPresent:
+        extraString(node.extras, "reality_shortId") !== null,
+      tlsServerName: extraString(node.extras, "tls_serverName"),
+      grpcMode: extraString(node.extras, "grpc_mode"),
+      flow: extraString(node.extras, "flow"),
+      encryption: extraString(node.extras, "encryption"),
+      fingerprint: extraString(node.extras, "fingerprint"),
+      utls: extraString(node.extras, "utls"),
+      extraKeys: Object.keys(node.extras).sort((left, right) =>
+        left.localeCompare(right),
+      ),
+    },
   };
 }
 
@@ -425,25 +503,23 @@ function buildNodeFingerprintCounts(nodes: NodeItem[]) {
 
 export function buildSubscriptionPreviewLookup(args: {
   subscriptions: PasswallDesiredConfig["subscriptions"];
-  freshResult:
-    | {
-        checkedAt: string;
-        entries: SubscriptionPreviewEntry[];
-      }
-    | null;
+  freshResult: {
+    checkedAt: string;
+    entries: SubscriptionPreviewEntry[];
+  } | null;
   hasPendingJob: boolean;
   hasFailedJob: boolean;
   hasStaleResult: boolean;
 }) {
   const currentSubscriptions = dedupeSubscriptions(args.subscriptions.items);
   const freshEntriesByKey = new Map(
-    (args.freshResult?.entries ?? []).map((entry) => [
-      entry.subscriptionKey,
-      entry,
-    ] as const),
+    (args.freshResult?.entries ?? []).map(
+      (entry) => [entry.subscriptionKey, entry] as const,
+    ),
   );
   const stateByKey = new Map<string, SubscriptionPreviewLookupItem>();
-  const overallStatus: Array<Exclude<SubscriptionPreviewState, "disabled">> = [];
+  const overallStatus: Array<Exclude<SubscriptionPreviewState, "disabled">> =
+    [];
 
   for (const subscription of currentSubscriptions) {
     const subscriptionKey = buildSubscriptionSemanticKey(subscription);
@@ -536,7 +612,7 @@ export function buildSubscriptionRuntimeReadModel(args: {
   previewLookup: Map<string, SubscriptionPreviewLookupItem>;
   previewState: SubscriptionRuntimeReadModel["previewState"];
   selectedNodeId: string | null | undefined;
-}) : SubscriptionRuntimeReadModel {
+}): SubscriptionRuntimeReadModel {
   const runtimeSubscriptions = dedupeSubscriptions(
     args.runtimeConfig.subscriptions.items,
   );
@@ -548,8 +624,8 @@ export function buildSubscriptionRuntimeReadModel(args: {
   const previews: SubscriptionRuntimePreviewSummary[] = [];
 
   for (const node of args.runtimeConfig.nodes) {
-    const belongsToRuntimeSubscription = runtimeSubscriptions.some((subscription) =>
-      nodeMatchesSubscriptionGroup(node, subscription),
+    const belongsToRuntimeSubscription = runtimeSubscriptions.some(
+      (subscription) => nodeMatchesSubscriptionGroup(node, subscription),
     );
 
     if (!belongsToRuntimeSubscription) {
@@ -578,7 +654,8 @@ export function buildSubscriptionRuntimeReadModel(args: {
           nodeMatchesSubscriptionGroup(node, subscription) &&
           isManagedSubscriptionNode(node),
       ) ?? [];
-    const remainingLiveFingerprintCounts = buildNodeFingerprintCounts(liveManagedNodes);
+    const remainingLiveFingerprintCounts =
+      buildNodeFingerprintCounts(liveManagedNodes);
     const subscriptionPanelOnlyNodes: SubscriptionRuntimeNodeView[] = [];
     const subscriptionCleanupNodes: SubscriptionRuntimeNodeView[] = [];
 
@@ -601,7 +678,8 @@ export function buildSubscriptionRuntimeReadModel(args: {
 
     for (const node of panelDraftManagedNodes) {
       const fingerprint = buildNodeSemanticFingerprint(node);
-      const remainingCount = remainingLiveFingerprintCounts.get(fingerprint) ?? 0;
+      const remainingCount =
+        remainingLiveFingerprintCounts.get(fingerprint) ?? 0;
 
       if (remainingCount > 0) {
         remainingLiveFingerprintCounts.set(fingerprint, remainingCount - 1);
@@ -620,39 +698,39 @@ export function buildSubscriptionRuntimeReadModel(args: {
       orphanNodes.push(buildNodeView(node, args.selectedNodeId, "group-only"));
     }
 
-    const latestPanelDraftManagedNodeCount =
-      panelDraftManagedNodes.length;
+    const latestPanelDraftManagedNodeCount = panelDraftManagedNodes.length;
     const panelOnlyNodeCount = subscriptionPanelOnlyNodes.length;
     const orphanNodeCount = nonManagedGroupNodes.length;
     const cleanupNodeCount = subscriptionCleanupNodes.length;
     const payloadNodeCount =
       previewLookupItem?.previewState === "fresh"
-        ? previewEntry?.payloadNodeCount ?? null
+        ? (previewEntry?.payloadNodeCount ?? null)
         : null;
     const liveManagedNodeCount = liveManagedNodes.length;
     const previewMatchesLive =
       previewLookupItem?.previewState === "fresh" &&
-      (previewEntry?.resolvedPayloadNodeCount ?? null) === liveManagedNodeCount &&
+      (previewEntry?.resolvedPayloadNodeCount ?? null) ===
+        liveManagedNodeCount &&
       cleanupNodeCount === 0;
-    const status =
-      !subscription.enabled
-        ? "disabled"
-        : previewLookupItem?.previewState !== "fresh" ||
-            previewEntry?.fetchState !== "ok" ||
-            payloadNodeCount === null
-          ? "unverifiable"
-          : previewMatchesLive &&
-              orphanNodeCount === 0 &&
-              panelOnlyNodeCount === 0
-            ? "in_sync"
-            : "drift";
+    const status = !subscription.enabled
+      ? "disabled"
+      : previewLookupItem?.previewState !== "fresh" ||
+          previewEntry?.fetchState !== "ok" ||
+          payloadNodeCount === null
+        ? "unverifiable"
+        : previewMatchesLive &&
+            orphanNodeCount === 0 &&
+            panelOnlyNodeCount === 0
+          ? "in_sync"
+          : "drift";
 
     previews.push({
       status,
       previewState: previewLookupItem?.previewState ?? "missing",
       remark: subscription.remark,
       subscriptionKey,
-      urlHash: previewEntry?.urlHash ?? buildSubscriptionUrlHash(subscription.url),
+      urlHash:
+        previewEntry?.urlHash ?? buildSubscriptionUrlHash(subscription.url),
       enabled: subscription.enabled,
       accessMode: previewEntry?.accessMode ?? "auto",
       userAgent: previewEntry?.userAgent ?? null,
@@ -665,13 +743,13 @@ export function buildSubscriptionRuntimeReadModel(args: {
             : "network_error",
       httpStatus:
         previewLookupItem?.previewState === "fresh"
-          ? previewEntry?.httpStatus ?? null
+          ? (previewEntry?.httpStatus ?? null)
           : null,
       checkedAt: previewLookupItem?.checkedAt ?? null,
       payloadNodeCount,
       resolvedPayloadNodeCount:
         previewLookupItem?.previewState === "fresh"
-          ? previewEntry?.resolvedPayloadNodeCount ?? null
+          ? (previewEntry?.resolvedPayloadNodeCount ?? null)
           : null,
       liveManagedNodeCount,
       panelDraftManagedNodeCount: latestPanelDraftManagedNodeCount,
@@ -682,14 +760,18 @@ export function buildSubscriptionRuntimeReadModel(args: {
   }
 
   const runtimeSubscriptionRemarks = new Set(
-    runtimeSubscriptions.map((subscription) => normalizeSubscriptionRemark(subscription.remark)),
+    runtimeSubscriptions.map((subscription) =>
+      normalizeSubscriptionRemark(subscription.remark),
+    ),
   );
   const editableNodeIds = args.draftConfig.nodes
-    .filter((node) => !runtimeSubscriptionRemarks.has(normalizeLowerText(node.group)))
+    .filter(
+      (node) => !runtimeSubscriptionRemarks.has(normalizeLowerText(node.group)),
+    )
     .map((node) => node.id);
-  const editableSubscriptionIds = dedupeSubscriptions(args.draftConfig.subscriptions.items).map(
-    (item) => item.id,
-  );
+  const editableSubscriptionIds = dedupeSubscriptions(
+    args.draftConfig.subscriptions.items,
+  ).map((item) => item.id);
 
   return {
     editableNodeIds,

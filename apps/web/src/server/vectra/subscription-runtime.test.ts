@@ -254,13 +254,25 @@ describe("buildSubscriptionRuntimeReadModel", () => {
       "managed-node",
       "payload-mismatch-managed-node",
     ]);
+    expect(readModel.managedNodes[0]?.details).toMatchObject({
+      address: "example.com",
+      port: 443,
+      transport: "ws",
+      tls: true,
+      usernamePresent: true,
+      realityPublicKeyPresent: false,
+      tlsServerName: null,
+      extraKeys: ["add_mode", "host", "path"],
+    });
     expect(readModel.panelOnlyNodes.map((node) => node.id)).toEqual([
       "panel-only-node",
     ]);
     expect(readModel.cleanupNodes.map((node) => node.id)).toEqual([
       "payload-mismatch-managed-node",
     ]);
-    expect(readModel.orphanNodes.map((node) => node.id)).toEqual(["orphan-node"]);
+    expect(readModel.orphanNodes.map((node) => node.id)).toEqual([
+      "orphan-node",
+    ]);
     expect(readModel.previews[0]).toMatchObject({
       previewState: "fresh",
       status: "drift",
@@ -289,7 +301,9 @@ describe("buildSubscriptionPreviewLookup", () => {
       hasFailedJob: false,
       hasStaleResult: false,
     });
-    const key = buildSubscriptionSemanticKey(runtimeConfig.subscriptions.items[0]!);
+    const key = buildSubscriptionSemanticKey(
+      runtimeConfig.subscriptions.items[0]!,
+    );
 
     expect(lookup.previewState).toEqual({
       status: "missing",
@@ -310,7 +324,9 @@ describe("buildSubscriptionPreviewLookup", () => {
       hasFailedJob: false,
       hasStaleResult: true,
     });
-    const key = buildSubscriptionSemanticKey(runtimeConfig.subscriptions.items[0]!);
+    const key = buildSubscriptionSemanticKey(
+      runtimeConfig.subscriptions.items[0]!,
+    );
 
     expect(lookup.previewState).toEqual({
       status: "stale",

@@ -104,7 +104,7 @@ type FieldRegistration = {
 };
 
 export function buildEditorSurface(
-  args: BuildEditorSurfaceArgs
+  args: BuildEditorSurfaceArgs,
 ): EditorSurfaceData {
   const fields: FieldRegistration[] = [];
   const maskedFields = new Set<string>();
@@ -113,7 +113,7 @@ export function buildEditorSurface(
     meta: EditorFieldMeta,
     currentValue: unknown,
     authoritativeValue: unknown,
-    draftValue: unknown
+    draftValue: unknown,
   ) => {
     if (
       currentValue === undefined &&
@@ -147,9 +147,13 @@ export function buildEditorSurface(
     .map((field) => toFieldDiff(field, args.configSourceMode))
     .filter((field) => field.currentValue !== undefined || field.draftChanged);
 
+  const applyBaseConfig =
+    args.currentConfigFreshness === "live"
+      ? args.currentLiveConfig
+      : (args.authoritativeConfig ?? args.currentLiveConfig);
   const coarse = summarizePasswallRevisionDiff(
-    args.authoritativeConfig,
-    args.draftConfig
+    applyBaseConfig,
+    args.draftConfig,
   );
   const operations = buildOperationsFromDiffs(fieldDiffs, coarse);
 
@@ -167,7 +171,7 @@ export function buildEditorSurface(
 
 export function buildDraftPreview(
   previous: PasswallDesiredConfig | null,
-  next: PasswallDesiredConfig
+  next: PasswallDesiredConfig,
 ) {
   const surface = buildEditorSurface({
     routerRuntimeSummary: {
@@ -202,8 +206,8 @@ function registerScalarFields(
     meta: EditorFieldMeta,
     currentValue: unknown,
     authoritativeValue: unknown,
-    draftValue: unknown
-  ) => void
+    draftValue: unknown,
+  ) => void,
 ) {
   const defs: EditorFieldMeta[] = [
     {
@@ -471,7 +475,7 @@ function registerScalarFields(
       def,
       getPathValue(args.currentLiveConfig, def.path),
       getPathValue(args.authoritativeConfig, def.path),
-      getPathValue(args.draftConfig, def.path)
+      getPathValue(args.draftConfig, def.path),
     );
   }
 }
@@ -482,8 +486,8 @@ function registerDynamicFields(
     meta: EditorFieldMeta,
     currentValue: unknown,
     authoritativeValue: unknown,
-    draftValue: unknown
-  ) => void
+    draftValue: unknown,
+  ) => void,
 ) {
   registerArrayFields({
     section: "SOCKS",
@@ -508,7 +512,8 @@ function registerDynamicFields(
   registerArrayFields({
     section: "Shunt",
     currentItems: args.currentLiveConfig.basicSettings.shuntRules,
-    authoritativeItems: args.authoritativeConfig?.basicSettings.shuntRules ?? [],
+    authoritativeItems:
+      args.authoritativeConfig?.basicSettings.shuntRules ?? [],
     draftItems: args.draftConfig.basicSettings.shuntRules,
     fields: [
       { key: "label", label: "Название правила", kind: "string" },
@@ -601,17 +606,14 @@ function registerArrayFields<T extends { id: string }>(args: {
     meta: EditorFieldMeta,
     currentValue: unknown,
     authoritativeValue: unknown,
-    draftValue: unknown
+    draftValue: unknown,
   ) => void;
   itemLabel?: (item: T) => string;
   identity?: (item: T) => string;
 }) {
   const byId = (items: T[]) =>
     new Map(
-      items.map((item) => [
-        args.identity?.(item) ?? item.id,
-        item,
-      ] as const),
+      items.map((item) => [args.identity?.(item) ?? item.id, item] as const),
     );
 
   const currentById = byId(args.currentItems);
@@ -628,8 +630,9 @@ function registerArrayFields<T extends { id: string }>(args: {
     const authoritativeItem = authoritativeById.get(id);
     const draftItem = draftById.get(id);
     const itemName =
-      args.itemLabel?.(draftItem ?? currentItem ?? authoritativeItem ?? ({ id } as T)) ??
-      id;
+      args.itemLabel?.(
+        draftItem ?? currentItem ?? authoritativeItem ?? ({ id } as T),
+      ) ?? id;
 
     for (const field of args.fields) {
       args.registerField(
@@ -642,7 +645,7 @@ function registerArrayFields<T extends { id: string }>(args: {
         },
         getNestedValue(currentItem, field.key),
         getNestedValue(authoritativeItem, field.key),
-        getNestedValue(draftItem, field.key)
+        getNestedValue(draftItem, field.key),
       );
     }
   }
@@ -650,11 +653,11 @@ function registerArrayFields<T extends { id: string }>(args: {
 
 function toFieldDiff(
   field: FieldRegistration,
-  configSourceMode: ConfigSourceMode
+  configSourceMode: ConfigSourceMode,
 ): EditorFieldDiff {
   const currentMatchesAuthoritative = isEqual(
     field.currentValue,
-    field.authoritativeValue
+    field.authoritativeValue,
   );
   const draftChanged = !isEqual(field.draftValue, field.authoritativeValue);
 
@@ -688,9 +691,16 @@ function toFieldDiff(
 
 function buildOperationsFromDiffs(
   fieldDiffs: EditorFieldDiff[],
-  coarse: ReturnType<typeof summarizePasswallRevisionDiff>
+  coarse: ReturnType<typeof summarizePasswallRevisionDiff>,
 ): EditorOperation[] {
-  const changed = fieldDiffs.filter((field) => field.draftChanged);
+  const changed = fieldDiffs.filter(
+    (field) =>
+      field.draftChanged &&
+      editorSectionMatchesChangedPasswallSection(
+        field.section,
+        coarse.changedSections,
+      ),
+  );
   const bySection = new Map<string, string[]>();
 
   for (const field of changed) {
@@ -706,9 +716,17 @@ function buildOperationsFromDiffs(
       key: section,
       label: operationLabel(section),
       description: operationDescription(section),
-      restartRequired: ["Основные настройки", "DNS", "Журнал", "Резервирование", "SOCKS", "Ноды", "Подписки", "Управление правилами", "Shunt"].includes(
-        section
-      ),
+      restartRequired: [
+        "Основные настройки",
+        "DNS",
+        "Журнал",
+        "Резервирование",
+        "SOCKS",
+        "Ноды",
+        "Подписки",
+        "Управление правилами",
+        "Shunt",
+      ].includes(section),
       details: unique(details),
     });
   }
@@ -758,6 +776,33 @@ function buildOperationsFromDiffs(
   }
 
   return operations;
+}
+
+function editorSectionMatchesChangedPasswallSection(
+  section: string,
+  changedSections: string[],
+) {
+  if (changedSections.length === 0) {
+    return false;
+  }
+
+  const candidates =
+    section === "Основные настройки" ||
+    section === "DNS" ||
+    section === "Журнал" ||
+    section === "Резервирование" ||
+    section === "SOCKS" ||
+    section === "Shunt"
+      ? ["basicSettings"]
+      : section === "Ноды"
+        ? ["nodes"]
+        : section === "Подписки"
+          ? ["subscriptions"]
+          : section === "Управление правилами"
+            ? ["ruleManage"]
+            : [section];
+
+  return candidates.some((candidate) => changedSections.includes(candidate));
 }
 
 function operationLabel(section: string) {

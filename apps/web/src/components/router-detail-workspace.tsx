@@ -52,7 +52,10 @@ import {
   formatControllerVersion,
   normalizeControllerVersion,
 } from "~/lib/controller-version";
-import { minimumTerminalControllerVersion, supportsTerminalFeature } from "~/lib/router-terminal-support";
+import {
+  minimumTerminalControllerVersion,
+  supportsTerminalFeature,
+} from "~/lib/router-terminal-support";
 import {
   describeConfigTrustState,
   formatConfigSourceModeLabel,
@@ -525,7 +528,10 @@ export function RouterDetailWorkspace({
   const preview =
     surface.data && validDraft
       ? summarizePasswallRevisionDiff(
-          surface.data.authoritativeConfig ?? surface.data.currentLiveConfig,
+          surface.data.currentConfigFreshness === "live"
+            ? surface.data.currentLiveConfig
+            : (surface.data.authoritativeConfig ??
+                surface.data.currentLiveConfig),
           validDraft,
         )
       : null;
@@ -710,8 +716,7 @@ export function RouterDetailWorkspace({
 
     await saveMutation.mutateAsync({
       routerId,
-      note:
-        note.trim() || "Принять текущий live-список нод с роутера",
+      note: note.trim() || "Принять текущий live-список нод с роутера",
       config: validDraft,
     });
   };
@@ -780,7 +785,11 @@ export function RouterDetailWorkspace({
         break;
       case "dns":
         tabContent = (
-          <DnsTabSection draft={draft} surface={editor} setDraft={setDraft} />
+          <DnsTabSection
+            draft={draft}
+            surface={editor}
+            setDraft={setDraft}
+          />
         );
         break;
       case "log":
@@ -949,7 +958,9 @@ export function RouterDetailWorkspace({
 
           <div className="flex flex-wrap gap-2 text-xs text-slate-300">
             <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-              {formatRouterImportStateLabel(editor.routerRuntimeSummary.importState)}
+              {formatRouterImportStateLabel(
+                editor.routerRuntimeSummary.importState,
+              )}
             </span>
             <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
               {routerReachable ? "контроллер на связи" : "нет свежей связи"}
@@ -988,11 +999,7 @@ export function RouterDetailWorkspace({
           <SummaryCell
             label="Режим"
             value={currentModeLabel}
-            meta={
-              onboardingPending
-                ? onboarding.badge
-                : "Эталон подтверждён"
-            }
+            meta={onboardingPending ? onboarding.badge : "Эталон подтверждён"}
           />
         </div>
 
@@ -1014,9 +1021,7 @@ export function RouterDetailWorkspace({
                 pattern="[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
                 className="vectra-field mt-2 px-3 py-2 text-sm text-white"
                 value={routerHostnameDraft}
-                onChange={(event) =>
-                  setRouterHostnameDraft(event.target.value)
-                }
+                onChange={(event) => setRouterHostnameDraft(event.target.value)}
                 placeholder="andrey-livingroom"
               />
             </label>
@@ -1070,7 +1075,7 @@ export function RouterDetailWorkspace({
           ) : null}
         </form>
 
-        <div className="mt-3 vectra-stat-grid">
+        <div className="vectra-stat-grid mt-3">
           <StatusTile
             label="Состояние PassWall2"
             value={
@@ -1110,9 +1115,13 @@ export function RouterDetailWorkspace({
           />
           <StatusTile
             label="Подключение"
-            value={formatRouterImportStateLabel(editor.routerRuntimeSummary.importState)}
+            value={formatRouterImportStateLabel(
+              editor.routerRuntimeSummary.importState,
+            )}
             tone={
-              editor.approvalRequired || directModeActive ? "warning" : "default"
+              editor.approvalRequired || directModeActive
+                ? "warning"
+                : "default"
             }
             hint={
               directModeActive
@@ -1155,9 +1164,7 @@ export function RouterDetailWorkspace({
                     </p>
                     <span
                       className={`text-xs ${
-                        check.reachable
-                          ? "text-emerald-100"
-                          : "text-rose-200"
+                        check.reachable ? "text-emerald-100" : "text-rose-200"
                       }`}
                     >
                       {check.reachable ? "доступно" : "недоступно"}
@@ -1313,8 +1320,8 @@ export function RouterDetailWorkspace({
             </summary>
             <p className="mt-3 text-xs leading-6 text-current/80">
               Основа сравнения:{" "}
-              {formatConfigSourceModeLabel(editor.configTrust.configSourceMode)} ·
-              последнее чтение конфигурации{" "}
+              {formatConfigSourceModeLabel(editor.configTrust.configSourceMode)}{" "}
+              · последнее чтение конфигурации{" "}
               {formatDateTime(editor.configTrust.lastLiveImportAt)} · последний
               check-in {formatDateTime(editor.configTrust.lastCheckInAt)}
             </p>
@@ -1505,7 +1512,9 @@ function RouterActionRail({
           <button
             type="button"
             disabled={
-              !validDraft || savePending || (!hasUnsavedChanges && canQueueApply)
+              !validDraft ||
+              savePending ||
+              (!hasUnsavedChanges && canQueueApply)
             }
             onClick={() => {
               void handleSaveDraft();
@@ -1589,7 +1598,8 @@ function RouterActionRail({
                 <div>
                   <p className="vectra-kicker text-rose-200">Опасная зона</p>
                   <p className="mt-2 text-sm font-semibold text-white">
-                    Панель забудет этот роутер, но не удалит пакеты на устройстве
+                    Панель забудет этот роутер, но не удалит пакеты на
+                    устройстве
                   </p>
                   <p className="mt-2 text-sm leading-6 text-rose-50/90">
                     Удаляются черновики, задачи, снапшоты и связанные записи
@@ -1603,7 +1613,9 @@ function RouterActionRail({
                   onClick={handleDeleteRouter}
                   className="vectra-button-danger px-3 py-2 text-sm font-medium transition hover:border-rose-300/40 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {deletePending ? "Удаляю роутер..." : "Удалить роутер из системы"}
+                  {deletePending
+                    ? "Удаляю роутер..."
+                    : "Удалить роутер из системы"}
                 </button>
               </div>
             </div>
@@ -1765,7 +1777,9 @@ function MainTabSection({
               <MobileCard key={item.id} tone={selected ? "accent" : "default"}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-white">{item.id}</p>
+                    <p className="text-sm font-semibold text-white">
+                      {item.id}
+                    </p>
                     <p className="mt-1 text-xs leading-5 text-slate-400">
                       {resolveNodeLabel(draft, item.nodeId)}
                     </p>
@@ -1948,114 +1962,124 @@ function DnsTabSection({
   setDraft: Dispatch<SetStateAction<DraftConfigInput | null>>;
 }) {
   return (
-    <FieldGrid>
-      <SelectControl
-        label="Стратегия прямого DNS"
-        value={draft.basicSettings.dns.directQueryStrategy}
-        options={dnsStrategyOptions}
-        onChange={(value) =>
-          updatePathValue(
-            setDraft,
-            "basicSettings.dns.directQueryStrategy",
-            value,
-          )
-        }
-        diff={getDiff(surface, "basicSettings.dns.directQueryStrategy")}
-      />
-      <SelectControl
-        label="Протокол удалённого DNS"
-        value={draft.basicSettings.dns.remoteDnsProtocol}
-        options={remoteDnsProtocolOptions}
-        onChange={(value) =>
-          updatePathValue(
-            setDraft,
-            "basicSettings.dns.remoteDnsProtocol",
-            value,
-          )
-        }
-        diff={getDiff(surface, "basicSettings.dns.remoteDnsProtocol")}
-      />
-      <TextControl
-        label="Удалённый DNS"
-        value={draft.basicSettings.dns.remoteDns}
-        onChange={(value) =>
-          updatePathValue(setDraft, "basicSettings.dns.remoteDns", value ?? "")
-        }
-        diff={getDiff(surface, "basicSettings.dns.remoteDns")}
-      />
-      <TextControl
-        label="URL DoH"
-        value={draft.basicSettings.dns.remoteDnsDoh}
-        onChange={(value) =>
-          updatePathValue(
-            setDraft,
-            "basicSettings.dns.remoteDnsDoh",
-            value ?? "",
-          )
-        }
-        diff={getDiff(surface, "basicSettings.dns.remoteDnsDoh")}
-      />
-      <TextControl
-        label="EDNS Client IP"
-        value={draft.basicSettings.dns.remoteDnsClientIp}
-        optional
-        onChange={(value) =>
-          updatePathValue(
-            setDraft,
-            "basicSettings.dns.remoteDnsClientIp",
-            value,
-          )
-        }
-        diff={getDiff(surface, "basicSettings.dns.remoteDnsClientIp")}
-      />
-      <SelectControl
-        label="Маршрут DNS"
-        value={draft.basicSettings.dns.remoteDnsDetour}
-        options={detourOptions}
-        onChange={(value) =>
-          updatePathValue(setDraft, "basicSettings.dns.remoteDnsDetour", value)
-        }
-        diff={getDiff(surface, "basicSettings.dns.remoteDnsDetour")}
-      />
-      <BooleanControl
-        label="Использовать FakeDNS"
-        value={draft.basicSettings.dns.remoteFakeDns}
-        onChange={(value) =>
-          updatePathValue(setDraft, "basicSettings.dns.remoteFakeDns", value)
-        }
-        diff={getDiff(surface, "basicSettings.dns.remoteFakeDns")}
-      />
-      <SelectControl
-        label="Стратегия удалённого DNS"
-        value={draft.basicSettings.dns.remoteDnsQueryStrategy}
-        options={dnsStrategyOptions}
-        onChange={(value) =>
-          updatePathValue(
-            setDraft,
-            "basicSettings.dns.remoteDnsQueryStrategy",
-            value,
-          )
-        }
-        diff={getDiff(surface, "basicSettings.dns.remoteDnsQueryStrategy")}
-      />
-      <BooleanControl
-        label="Перехватывать DNS"
-        value={draft.basicSettings.dns.dnsRedirect}
-        onChange={(value) =>
-          updatePathValue(setDraft, "basicSettings.dns.dnsRedirect", value)
-        }
-        diff={getDiff(surface, "basicSettings.dns.dnsRedirect")}
-      />
-      <TextAreaControl
-        label="DNS hosts"
-        rows={6}
-        value={draft.basicSettings.dns.dnsHosts}
-        onChange={(value) =>
-          updatePathValue(setDraft, "basicSettings.dns.dnsHosts", value)
-        }
-        diff={getDiff(surface, "basicSettings.dns.dnsHosts")}
-      />
-    </FieldGrid>
+    <div className="space-y-4">
+      <FieldGrid>
+        <SelectControl
+          label="Стратегия прямого DNS"
+          value={draft.basicSettings.dns.directQueryStrategy}
+          options={dnsStrategyOptions}
+          onChange={(value) =>
+            updatePathValue(
+              setDraft,
+              "basicSettings.dns.directQueryStrategy",
+              value,
+            )
+          }
+          diff={getDiff(surface, "basicSettings.dns.directQueryStrategy")}
+        />
+        <SelectControl
+          label="Протокол удалённого DNS"
+          value={draft.basicSettings.dns.remoteDnsProtocol}
+          options={remoteDnsProtocolOptions}
+          onChange={(value) =>
+            updatePathValue(
+              setDraft,
+              "basicSettings.dns.remoteDnsProtocol",
+              value,
+            )
+          }
+          diff={getDiff(surface, "basicSettings.dns.remoteDnsProtocol")}
+        />
+        <TextControl
+          label="Удалённый DNS"
+          value={draft.basicSettings.dns.remoteDns}
+          onChange={(value) =>
+            updatePathValue(
+              setDraft,
+              "basicSettings.dns.remoteDns",
+              value ?? "",
+            )
+          }
+          diff={getDiff(surface, "basicSettings.dns.remoteDns")}
+        />
+        <TextControl
+          label="URL DoH"
+          value={draft.basicSettings.dns.remoteDnsDoh}
+          onChange={(value) =>
+            updatePathValue(
+              setDraft,
+              "basicSettings.dns.remoteDnsDoh",
+              value ?? "",
+            )
+          }
+          diff={getDiff(surface, "basicSettings.dns.remoteDnsDoh")}
+        />
+        <TextControl
+          label="EDNS Client IP"
+          value={draft.basicSettings.dns.remoteDnsClientIp}
+          optional
+          onChange={(value) =>
+            updatePathValue(
+              setDraft,
+              "basicSettings.dns.remoteDnsClientIp",
+              value,
+            )
+          }
+          diff={getDiff(surface, "basicSettings.dns.remoteDnsClientIp")}
+        />
+        <SelectControl
+          label="Маршрут DNS"
+          value={draft.basicSettings.dns.remoteDnsDetour}
+          options={detourOptions}
+          onChange={(value) =>
+            updatePathValue(
+              setDraft,
+              "basicSettings.dns.remoteDnsDetour",
+              value,
+            )
+          }
+          diff={getDiff(surface, "basicSettings.dns.remoteDnsDetour")}
+        />
+        <BooleanControl
+          label="Использовать FakeDNS"
+          value={draft.basicSettings.dns.remoteFakeDns}
+          onChange={(value) =>
+            updatePathValue(setDraft, "basicSettings.dns.remoteFakeDns", value)
+          }
+          diff={getDiff(surface, "basicSettings.dns.remoteFakeDns")}
+        />
+        <SelectControl
+          label="Стратегия удалённого DNS"
+          value={draft.basicSettings.dns.remoteDnsQueryStrategy}
+          options={dnsStrategyOptions}
+          onChange={(value) =>
+            updatePathValue(
+              setDraft,
+              "basicSettings.dns.remoteDnsQueryStrategy",
+              value,
+            )
+          }
+          diff={getDiff(surface, "basicSettings.dns.remoteDnsQueryStrategy")}
+        />
+        <BooleanControl
+          label="Перехватывать DNS"
+          value={draft.basicSettings.dns.dnsRedirect}
+          onChange={(value) =>
+            updatePathValue(setDraft, "basicSettings.dns.dnsRedirect", value)
+          }
+          diff={getDiff(surface, "basicSettings.dns.dnsRedirect")}
+        />
+        <TextAreaControl
+          label="DNS hosts"
+          rows={6}
+          value={draft.basicSettings.dns.dnsHosts}
+          onChange={(value) =>
+            updatePathValue(setDraft, "basicSettings.dns.dnsHosts", value)
+          }
+          diff={getDiff(surface, "basicSettings.dns.dnsHosts")}
+        />
+      </FieldGrid>
+    </div>
   );
 }
 
@@ -2181,17 +2205,20 @@ function NodeListSection({
   const hasPanelOnlyNodes = panelOnlyCount > 0;
   const hasCleanupNodes = cleanupCount > 0;
   const hasOrphanNodes = orphanNodeIds.length > 0;
-  const cleanupTitle = routerOnlyCount > 0
-    ? "Список нод ещё не выровнен"
-    : "В панели остался старый список нод";
-  const cleanupDescription = routerOnlyCount > 0
-    ? "Ниже есть ноды, которые всё ещё лежат на роутере, хотя текущий preview подписки их уже не отдаёт или они не помечены как managed. Кнопка подготовит чистый draft по текущему live-списку; потом останется нажать «Сохранить» или «Сохранить и применить»."
-    : "На роутере список уже актуальный. Кнопка ниже просто сохранит этот live-список как новую ревизию в панели.";
-  const cleanupButtonLabel = routerOnlyCount > 0
-    ? "Подготовить чистый draft"
-    : savePending
-      ? "Сохраняю..."
-      : "Синхронизировать панель с роутером";
+  const cleanupTitle =
+    routerOnlyCount > 0
+      ? "Список нод ещё не выровнен"
+      : "В панели остался старый список нод";
+  const cleanupDescription =
+    routerOnlyCount > 0
+      ? "Ниже есть ноды, которые всё ещё лежат на роутере, хотя текущий preview подписки их уже не отдаёт или они не помечены как managed. Кнопка подготовит чистый draft по текущему live-списку; потом останется нажать «Сохранить» или «Сохранить и применить»."
+      : "На роутере список уже актуальный. Кнопка ниже просто сохранит этот live-список как новую ревизию в панели.";
+  const cleanupButtonLabel =
+    routerOnlyCount > 0
+      ? "Подготовить чистый draft"
+      : savePending
+        ? "Сохраняю..."
+        : "Синхронизировать панель с роутером";
 
   return (
     <div className="space-y-4">
@@ -2439,7 +2466,7 @@ function NodeListSection({
                     <p className="text-sm font-semibold text-white">
                       {node.label}
                     </p>
-                    <p className="mt-1 break-all text-xs leading-5 text-slate-400">
+                    <p className="mt-1 text-xs leading-5 break-all text-slate-400">
                       {node.id}
                     </p>
                   </div>
@@ -2787,7 +2814,9 @@ function SubscriptionSection({
             />
           </div>
 
-          <SubscriptionPreviewTable previews={surface.subscriptionRuntime.previews} />
+          <SubscriptionPreviewTable
+            previews={surface.subscriptionRuntime.previews}
+          />
         </div>
       </details>
 
@@ -2974,7 +3003,7 @@ function SubscriptionSection({
                     <p className="text-sm font-semibold text-white">
                       {item.remark}
                     </p>
-                    <p className="mt-1 break-all text-xs leading-5 text-slate-400">
+                    <p className="mt-1 text-xs leading-5 break-all text-slate-400">
                       {item.id}
                     </p>
                   </div>
@@ -3702,7 +3731,7 @@ function ShuntRulesSection({
                     <p className="text-sm font-semibold text-white">
                       {rule.label}
                     </p>
-                    <p className="mt-1 break-all text-xs leading-5 text-slate-400">
+                    <p className="mt-1 text-xs leading-5 break-all text-slate-400">
                       {rule.id}
                     </p>
                   </div>
@@ -3745,7 +3774,10 @@ function ShuntRulesSection({
                       label="Домены"
                       value={`${rule.domainRules.length}`}
                     />
-                    <MobileCardField label="IP" value={`${rule.ipRules.length}`} />
+                    <MobileCardField
+                      label="IP"
+                      value={`${rule.ipRules.length}`}
+                    />
                   </MobileCardGrid>
                 </div>
 
@@ -3803,7 +3835,10 @@ function ShuntRulesSection({
                 </td>
                 <td className="px-3 py-2">
                   {selectedShuntNode &&
-                  getExtraBoolean(selectedShuntNode.extras, `${rule.id}_fakedns`)
+                  getExtraBoolean(
+                    selectedShuntNode.extras,
+                    `${rule.id}_fakedns`,
+                  )
                     ? "on"
                     : "off"}
                 </td>
@@ -3943,6 +3978,97 @@ function ShuntRulesSection({
   );
 }
 
+function formatRuntimePresence(value: boolean) {
+  return value ? "есть" : "нет";
+}
+
+function formatRuntimeBoolean(value: boolean | null) {
+  if (value === null) {
+    return "не задано";
+  }
+  return value ? "да" : "нет";
+}
+
+function formatRuntimeValue(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === "") {
+    return "не задано";
+  }
+  return String(value);
+}
+
+function RuntimeNodeDetails({
+  node,
+}: {
+  node: EditorSurface["subscriptionRuntime"]["managedNodes"][number];
+}) {
+  const rows = [
+    ["ID", node.id],
+    ["Протокол", node.protocol],
+    ["Группа", node.group],
+    ["Адрес", formatRuntimeValue(node.details.address)],
+    ["Порт", formatRuntimeValue(node.details.port)],
+    ["Транспорт", formatRuntimeValue(node.details.transport)],
+    ["TLS", formatRuntimeBoolean(node.details.tls)],
+    ["UUID / username", formatRuntimePresence(node.details.usernamePresent)],
+    ["Password", formatRuntimePresence(node.details.passwordPresent)],
+    ["REALITY", node.details.realityEnabled ? "включён" : "нет"],
+    [
+      "REALITY public key",
+      formatRuntimePresence(node.details.realityPublicKeyPresent),
+    ],
+    [
+      "REALITY short id",
+      formatRuntimePresence(node.details.realityShortIdPresent),
+    ],
+    ["TLS server name", formatRuntimeValue(node.details.tlsServerName)],
+    ["gRPC mode", formatRuntimeValue(node.details.grpcMode)],
+    ["Flow", formatRuntimeValue(node.details.flow)],
+    ["Encryption", formatRuntimeValue(node.details.encryption)],
+    ["Fingerprint", formatRuntimeValue(node.details.fingerprint)],
+    ["uTLS", formatRuntimeValue(node.details.utls)],
+  ] as const;
+
+  return (
+    <div className="mt-3 rounded-xl border border-white/10 bg-black/10 px-3 py-3">
+      <div className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="min-w-0">
+            <p className="text-slate-500">{label}</p>
+            <p className="mt-0.5 font-medium break-words text-slate-200">
+              {value}
+            </p>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3">
+        <p className="text-xs text-slate-500">
+          Extra keys без значений секретов
+        </p>
+        <p className="mt-1 text-xs leading-5 break-words text-slate-300">
+          {node.details.extraKeys.length > 0
+            ? node.details.extraKeys.join(", ")
+            : "нет"}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function RuntimeNodeDetailsDisclosure({
+  node,
+}: {
+  node: EditorSurface["subscriptionRuntime"]["managedNodes"][number];
+}) {
+  return (
+    <details className="mt-3">
+      <summary className="cursor-pointer list-none text-xs font-medium text-sky-200 transition hover:text-sky-100">
+        Открыть read-only детали ноды
+      </summary>
+      <RuntimeNodeDetails node={node} />
+    </details>
+  );
+}
+
 function RuntimeNodeTable({
   title,
   description,
@@ -3962,14 +4088,20 @@ function RuntimeNodeTable({
           nodes.map((node) => (
             <MobileCard
               key={node.id}
-              tone={node.orphanReason ? "warning" : node.selected ? "accent" : "default"}
+              tone={
+                node.orphanReason
+                  ? "warning"
+                  : node.selected
+                    ? "accent"
+                    : "default"
+              }
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-white">
                     {node.label}
                   </p>
-                  <p className="mt-1 break-all text-xs leading-5 text-slate-400">
+                  <p className="mt-1 text-xs leading-5 break-all text-slate-400">
                     {node.id}
                   </p>
                 </div>
@@ -3995,11 +4127,18 @@ function RuntimeNodeTable({
                   <MobileCardField label="Группа" value={node.group} />
                   <MobileCardField label="Endpoint" value={node.endpoint} />
                   <MobileCardField
+                    label="REALITY key"
+                    value={formatRuntimePresence(
+                      node.details.realityPublicKeyPresent,
+                    )}
+                  />
+                  <MobileCardField
                     label="Статус"
                     value={node.enabled ? "enabled" : "disabled"}
                   />
                 </MobileCardGrid>
               </div>
+              <RuntimeNodeDetailsDisclosure node={node} />
             </MobileCard>
           ))
         ) : (
@@ -4016,7 +4155,9 @@ function RuntimeNodeTable({
             { key: "protocol", label: "Протокол" },
             { key: "group", label: "Группа" },
             { key: "endpoint", label: "Endpoint" },
+            { key: "reality", label: "REALITY key" },
             { key: "state", label: "Статус" },
+            { key: "details", label: "Детали" },
           ]}
         >
           {nodes.length > 0 ? (
@@ -4047,12 +4188,18 @@ function RuntimeNodeTable({
                 <td className="px-3 py-2">{node.group}</td>
                 <td className="px-3 py-2">{node.endpoint}</td>
                 <td className="px-3 py-2">
+                  {formatRuntimePresence(node.details.realityPublicKeyPresent)}
+                </td>
+                <td className="px-3 py-2">
                   {node.enabled ? "enabled" : "disabled"}
+                </td>
+                <td className="px-3 py-2">
+                  <RuntimeNodeDetailsDisclosure node={node} />
                 </td>
               </tr>
             ))
           ) : (
-            <DataTableEmpty colSpan={5}>{emptyText}</DataTableEmpty>
+            <DataTableEmpty colSpan={7}>{emptyText}</DataTableEmpty>
           )}
         </DataTable>
       </div>
@@ -4172,7 +4319,8 @@ function SubscriptionPreviewTable({
                 <td className="px-3 py-2">
                   <div>{preview.liveManagedNodeCount}</div>
                   <div className="text-xs text-slate-500">
-                    cleanup {preview.cleanupNodeCount} · orphan {preview.orphanNodeCount}
+                    cleanup {preview.cleanupNodeCount} · orphan{" "}
+                    {preview.orphanNodeCount}
                   </div>
                 </td>
                 <td className="px-3 py-2">
@@ -4520,15 +4668,15 @@ function AppUpdateSection({
   return (
     <div className="space-y-4">
       <ActionStrip justify="start">
-        <div className="min-w-0 w-full space-y-2 lg:basis-full">
-          <p className="break-words text-sm leading-6 text-slate-300">
+        <div className="w-full min-w-0 space-y-2 lg:basis-full">
+          <p className="text-sm leading-6 break-words text-slate-300">
             Кнопка <code>PassWall2</code> обновляет не только LuCI-приложение, а
             весь managed stack: bundle{" "}
             <code>{passwallBundleMetadata.releaseTag}</code>, app-package{" "}
             <code>{passwallAppArtifact?.artifactVersion ?? "unknown"}</code>,
             recovery deps и post-update repair.
           </p>
-          <p className="break-words text-sm leading-6 text-slate-400">
+          <p className="text-sm leading-6 break-words text-slate-400">
             Сам <code>luci-app-passwall2</code>
             {passwallAppArtifact
               ? ` небольшой: ${formatCompactSize(passwallAppArtifact.downloadSizeBytes)} download / ${formatCompactSize(passwallAppArtifact.installedSizeBytes)} installed.`
@@ -4560,12 +4708,12 @@ function AppUpdateSection({
       ) : null}
 
       <ActionStrip justify="start">
-        <div className="min-w-0 w-full space-y-1 lg:basis-full">
-          <p className="break-words text-sm leading-6 text-slate-300">
+        <div className="w-full min-w-0 space-y-1 lg:basis-full">
+          <p className="text-sm leading-6 break-words text-slate-300">
             После controller или PassWall-обновлений иногда удобнее сразу
             поставить перезагрузку отсюда, не уходя в другой раздел.
           </p>
-          <p className="break-words text-sm leading-6 text-slate-500">
+          <p className="text-sm leading-6 break-words text-slate-500">
             Панель создаст отдельную terminal-задачу с безопасной задержкой
             перед <code>/sbin/reboot</code>.
           </p>
@@ -4593,13 +4741,21 @@ function AppUpdateSection({
         {versionRows.map((row) => (
           <MobileCard
             key={row.key}
-            tone={row.runtimeCurrent ? "good" : row.action === "controller" ? "default" : "accent"}
+            tone={
+              row.runtimeCurrent
+                ? "good"
+                : row.action === "controller"
+                  ? "default"
+                  : "accent"
+            }
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-white">{row.name}</p>
                 <p className="mt-1 text-xs leading-5 text-slate-400">
-                  {row.runtimeCurrent ? "runtime уже актуален" : "доступно действие обновления"}
+                  {row.runtimeCurrent
+                    ? "runtime уже актуален"
+                    : "доступно действие обновления"}
                 </p>
               </div>
               <span
@@ -4692,7 +4848,10 @@ function AppUpdateSection({
           ]}
         >
           {versionRows.map((row) => (
-            <tr key={row.key} className="border-t border-white/10 text-slate-200">
+            <tr
+              key={row.key}
+              className="border-t border-white/10 text-slate-200"
+            >
               <td className="px-3 py-2 font-medium text-white">{row.name}</td>
               <td className="px-3 py-2">{row.installed}</td>
               <td className="px-3 py-2">{row.available}</td>
@@ -5242,7 +5401,9 @@ function RuleManageShuntRulesSection({
               <MobileCard key={rule.id} tone={selected ? "accent" : "default"}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-white">{rule.id}</p>
+                    <p className="text-sm font-semibold text-white">
+                      {rule.id}
+                    </p>
                     <p className="mt-1 text-xs leading-5 text-slate-400">
                       {rule.label}
                     </p>
@@ -5252,22 +5413,31 @@ function RuleManageShuntRulesSection({
 
                 <div className="mt-3">
                   <MobileCardGrid>
-                    <MobileCardField label="Inbound" value={formatExtraSelection(
-                      rule.extras,
-                      "inbound",
-                      shuntInboundOptions,
-                    )} />
-                    <MobileCardField label="Network" value={getExtraOptionLabel(
-                      rule.extras,
-                      "network",
-                      shuntNetworkOptions,
-                      "TCP UDP",
-                    )} />
+                    <MobileCardField
+                      label="Inbound"
+                      value={formatExtraSelection(
+                        rule.extras,
+                        "inbound",
+                        shuntInboundOptions,
+                      )}
+                    />
+                    <MobileCardField
+                      label="Network"
+                      value={getExtraOptionLabel(
+                        rule.extras,
+                        "network",
+                        shuntNetworkOptions,
+                        "TCP UDP",
+                      )}
+                    />
                     <MobileCardField
                       label="Domain"
                       value={`${rule.domainRules.length}`}
                     />
-                    <MobileCardField label="IP" value={`${rule.ipRules.length}`} />
+                    <MobileCardField
+                      label="IP"
+                      value={`${rule.ipRules.length}`}
+                    />
                   </MobileCardGrid>
                 </div>
 
@@ -5527,11 +5697,7 @@ function GeoViewSection({
         <MobileCard>
           <MobileCardGrid columns={1}>
             {rows.map(([name, value]) => (
-              <MobileCardField
-                key={name}
-                label={name}
-                value={value ?? "—"}
-              />
+              <MobileCardField key={name} label={name} value={value ?? "—"} />
             ))}
           </MobileCardGrid>
         </MobileCard>
@@ -5621,11 +5787,11 @@ function SummaryCell({
   return (
     <div className="min-w-0 rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
       <p className="vectra-kicker text-slate-500">{label}</p>
-      <p className="mt-2 break-words text-sm font-semibold tracking-[-0.01em] text-white sm:text-base">
+      <p className="mt-2 text-sm font-semibold tracking-[-0.01em] break-words text-white sm:text-base">
         {value}
       </p>
       {meta ? (
-        <p className="mt-1 break-words text-xs leading-5 text-slate-400 sm:text-sm sm:leading-6">
+        <p className="mt-1 text-xs leading-5 break-words text-slate-400 sm:text-sm sm:leading-6">
           {meta}
         </p>
       ) : null}
@@ -5661,12 +5827,14 @@ function ActionGroup({
         : "text-slate-500";
 
   return (
-    <section className={`min-w-0 rounded-2xl border px-4 py-4 ${toneClassName}`}>
+    <section
+      className={`min-w-0 rounded-2xl border px-4 py-4 ${toneClassName}`}
+    >
       <p className={`vectra-kicker ${eyebrowClassName}`}>{eyebrow}</p>
-      <h3 className="mt-2 break-words text-sm font-semibold tracking-[-0.01em] text-white sm:text-base">
+      <h3 className="mt-2 text-sm font-semibold tracking-[-0.01em] break-words text-white sm:text-base">
         {title}
       </h3>
-      <p className="mt-1 break-words text-sm leading-6 text-slate-400 max-sm:hidden sm:block">
+      <p className="mt-1 text-sm leading-6 break-words text-slate-400 max-sm:hidden sm:block">
         {description}
       </p>
       <div className="mt-3 space-y-3">{children}</div>
@@ -5684,7 +5852,9 @@ function UnconfirmedChangesPanel({
   compact?: boolean;
 }) {
   const content = (
-    <div className={`grid gap-3 [&>*]:min-w-0 lg:grid-cols-2 ${compact ? "" : "mt-4"}`}>
+    <div
+      className={`grid gap-3 lg:grid-cols-2 [&>*]:min-w-0 ${compact ? "" : "mt-4"}`}
+    >
       <UnconfirmedChangeCard
         eyebrow="Изменилось на роутере"
         badge={formatUnconfirmedStatusBadge(routerChanges)}
@@ -5745,32 +5915,32 @@ function UnconfirmedChangeCard({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <p className="vectra-kicker text-slate-500">{eyebrow}</p>
-          <h4 className="mt-2 break-words text-sm font-semibold text-white">
+          <h4 className="mt-2 text-sm font-semibold break-words text-white">
             {group.title}
           </h4>
         </div>
-        <span className="break-words rounded-full border border-white/10 bg-white/5 px-3 py-1 text-center text-xs font-medium text-slate-200 sm:max-w-[14rem]">
+        <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-center text-xs font-medium break-words text-slate-200 sm:max-w-[14rem]">
           {badge}
         </span>
       </div>
 
-      <p className="mt-2 break-words text-sm leading-6 text-slate-300">
+      <p className="mt-2 text-sm leading-6 break-words text-slate-300">
         {hasChanges ? group.summary : emptyText}
       </p>
 
       {hasChanges ? (
         <div className="mt-3 space-y-3">
           <div className="flex flex-wrap gap-2 text-xs text-slate-400">
-            <span className="break-words rounded-full border border-white/10 bg-white/5 px-2 py-1">
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 break-words">
               изменений: {group.changeCount}
             </span>
             {group.revisionId ? (
-              <span className="break-all rounded-full border border-white/10 bg-white/5 px-2 py-1">
+              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 break-all">
                 ревизия: {group.revisionId}
               </span>
             ) : null}
             {group.changedSections.length ? (
-              <span className="break-words rounded-full border border-white/10 bg-white/5 px-2 py-1">
+              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 break-words">
                 секции: {group.changedSections.join(", ")}
               </span>
             ) : null}
@@ -5785,14 +5955,14 @@ function UnconfirmedChangeCard({
                 >
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0">
-                      <p className="break-words text-sm font-medium text-white">
+                      <p className="text-sm font-medium break-words text-white">
                         {item.label}
                       </p>
-                      <p className="mt-1 break-words text-xs text-slate-500">
+                      <p className="mt-1 text-xs break-words text-slate-500">
                         {item.section}
                       </p>
                     </div>
-                    <code className="break-all text-[11px] text-slate-500">
+                    <code className="text-[11px] break-all text-slate-500">
                       {item.path}
                     </code>
                   </div>
@@ -5801,13 +5971,13 @@ function UnconfirmedChangeCard({
                       <p className="vectra-kicker text-slate-500">
                         Было подтверждено
                       </p>
-                      <p className="mt-1 break-words text-sm text-slate-200">
+                      <p className="mt-1 text-sm break-words text-slate-200">
                         {item.before}
                       </p>
                     </div>
                     <div className="rounded-md border border-white/10 bg-black/10 px-3 py-2">
                       <p className="vectra-kicker text-slate-500">Сейчас</p>
-                      <p className="mt-1 break-words text-sm text-slate-200">
+                      <p className="mt-1 text-sm break-words text-slate-200">
                         {item.after}
                       </p>
                     </div>
@@ -5858,12 +6028,14 @@ function InlineStateCard({
           : "text-slate-500";
 
   return (
-    <section className={`min-w-0 rounded-2xl border px-3 py-3 ${toneClassName}`}>
+    <section
+      className={`min-w-0 rounded-2xl border px-3 py-3 ${toneClassName}`}
+    >
       <p className={`vectra-kicker ${eyebrowClassName}`}>{eyebrow}</p>
-      <p className="mt-2 break-words text-sm font-medium text-white sm:text-[15px]">
+      <p className="mt-2 text-sm font-medium break-words text-white sm:text-[15px]">
         {title}
       </p>
-      <p className="mt-1 break-words text-sm leading-6 text-slate-300">
+      <p className="mt-1 text-sm leading-6 break-words text-slate-300">
         {description}
       </p>
     </section>

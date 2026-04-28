@@ -141,9 +141,7 @@ describe("editor surface", () => {
       configSourceMode: "live-import",
     });
 
-    expect(
-      surface.fieldDiffs.map((diff) => diff.path),
-    ).toEqual(
+    expect(surface.fieldDiffs.map((diff) => diff.path)).toEqual(
       expect.arrayContaining([
         "Управление правилами[direct].extras.protocol",
         "Управление правилами[direct].extras.inbound",
@@ -187,5 +185,35 @@ describe("editor surface", () => {
         (diff) => diff.path === "basicSettings.main.selectedNodeId",
       )?.source,
     ).toBe("stale-authoritative");
+  });
+
+  it("builds apply preview from fresh live config instead of stale authoritative config", () => {
+    const staleAuthoritativeConfig = structuredClone(baseConfig);
+    staleAuthoritativeConfig.nodes[0]!.extras.default_node = "old-ru-node";
+
+    const surface = buildEditorSurface({
+      routerRuntimeSummary: {
+        status: "active",
+        importState: "approved",
+        lastSeenAt: new Date("2026-04-29T00:00:00Z"),
+        passwallEnabled: true,
+        selectedNodeId: "shunt-main",
+        selectedNodeLabel: "Shunt",
+        pendingChanges: 0,
+        supportState: "certified",
+        supportTitle: "Сертифицировано",
+        supportReason: "test",
+      },
+      currentLiveConfig: baseConfig,
+      authoritativeConfig: staleAuthoritativeConfig,
+      draftConfig: baseConfig,
+      currentConfigFreshness: "live",
+      configSourceMode: "live-import",
+    });
+
+    expect(surface.operationPreview.changedSections).toEqual([]);
+    expect(surface.operationPreview.refreshSubscriptions).toBe(false);
+    expect(surface.operationPreview.refreshRules).toBe(false);
+    expect(surface.operationPreview.operations).toEqual([]);
   });
 });

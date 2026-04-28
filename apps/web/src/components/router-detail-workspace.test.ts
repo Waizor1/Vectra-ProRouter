@@ -16,12 +16,10 @@ describe("router detail app update helpers", () => {
       "utf8",
     );
 
-    expect(source).toContain('api.fleet.renameRouter.useMutation');
+    expect(source).toContain("api.fleet.renameRouter.useMutation");
     expect(source).toContain('name="router-hostname"');
     expect(source).toContain("Hostname роутера");
-    expect(source).toContain(
-      "Меняется именно `system.@system[0].hostname` на",
-    );
+    expect(source).toContain("Меняется именно `system.@system[0].hostname` на");
   });
 
   it("keeps the app update summary copy on a wrapping full-width row", () => {
@@ -31,13 +29,13 @@ describe("router detail app update helpers", () => {
     );
 
     expect(source).toContain(
-      'className="min-w-0 w-full space-y-2 lg:basis-full"',
+      'className="w-full min-w-0 space-y-2 lg:basis-full"',
     );
     expect(source).toContain(
-      'className="break-words text-sm leading-6 text-slate-300"',
+      'className="text-sm leading-6 break-words text-slate-300"',
     );
     expect(source).toContain(
-      'className="break-words text-sm leading-6 text-slate-400"',
+      'className="text-sm leading-6 break-words text-slate-400"',
     );
   });
 
@@ -51,6 +49,18 @@ describe("router detail app update helpers", () => {
     expect(source).toContain("Перезагрузить роутер");
     expect(source).toContain("Поставить перезагрузку в очередь?");
     expect(source).toContain("Последняя перезагрузка от панели");
+  });
+
+  it("keeps managed subscription nodes inspectable without making them editable", () => {
+    const source = readFileSync(
+      new URL("./router-detail-workspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("Открыть read-only детали ноды");
+    expect(source).toContain("REALITY public key");
+    expect(source).toContain("Extra keys без значений секретов");
+    expect(source).toContain("node.details.realityPublicKeyPresent");
   });
 
   it("renders explicit managed-stack target semantics for PassWall2", () => {
@@ -89,19 +99,21 @@ describe("router detail app update helpers", () => {
         "sing-box": {
           componentName: "sing-box",
           remoteVersion: "1.13.9",
-          releaseUrl: "https://github.com/SagerNet/sing-box/releases/tag/v1.13.9",
+          releaseUrl:
+            "https://github.com/SagerNet/sing-box/releases/tag/v1.13.9",
           assetName: "sing-box-1.13.9-linux-arm64-musl.tar.gz",
           assetUrl:
             "https://github.com/SagerNet/sing-box/releases/download/v1.13.9/sing-box-1.13.9-linux-arm64-musl.tar.gz",
           assetSizeBytes: 9876543,
         },
       },
-      packageArtifacts: buildFallbackPasswallBundleMetadata().packageArtifacts.map(
-        (artifact) =>
-          artifact.name === "sing-box"
-            ? { ...artifact, artifactVersion: "1.13.6-r1" }
-            : artifact,
-      ),
+      packageArtifacts:
+        buildFallbackPasswallBundleMetadata().packageArtifacts.map(
+          (artifact) =>
+            artifact.name === "sing-box"
+              ? { ...artifact, artifactVersion: "1.13.6-r1" }
+              : artifact,
+        ),
     };
 
     expect(formatPasswallAvailableVersion(bundleMetadata, "sing-box")).toBe(
