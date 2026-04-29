@@ -350,6 +350,7 @@ export async function loadFleetMonitoringSnapshot(
           "неизвестно",
         components: pickComponentVersions(snapshot),
         telegramReachability: payload?.telegramReachability ?? null,
+        youtubeReachability: payload?.youtubeReachability ?? null,
         queuedJobCount: jobCountMap.get(router.id) ?? 0,
         lastRescueReason: incident?.reason ?? router.lastRescueReason ?? null,
         configTrust: {

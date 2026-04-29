@@ -1,5 +1,6 @@
 import type {
   RouterTelegramReachability,
+  RouterYoutubeReachability,
   SupportState,
 } from "@vectra/contracts";
 
@@ -51,6 +52,7 @@ export type FleetMonitoringRouterInput = {
   passwallVersion: string;
   components: Record<string, string>;
   telegramReachability?: RouterTelegramReachability | null;
+  youtubeReachability?: RouterYoutubeReachability | null;
   queuedJobCount: number;
   lastRescueReason: string | null;
   configTrust?: Partial<FleetMonitoringConfigTrust> | null;
@@ -126,6 +128,7 @@ type FleetMonitoringRouter = {
   passwallVersion: string;
   components: Record<string, string>;
   telegramReachability?: RouterTelegramReachability | null;
+  youtubeReachability?: RouterYoutubeReachability | null;
   lastSeen: string;
   pendingChanges: number;
   lastRescue: string;
@@ -580,6 +583,7 @@ export function buildFleetMonitoringSnapshot(args: {
       passwallVersion: input.passwallVersion,
       components: input.components,
       telegramReachability: input.telegramReachability ?? null,
+      youtubeReachability: input.youtubeReachability ?? null,
       lastSeen: formatRelativeTime(input.lastSeenAt, now),
       pendingChanges: input.queuedJobCount,
       lastRescue:

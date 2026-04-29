@@ -89,6 +89,7 @@ type RouterInventory struct {
 	RUReachability       *RouterReachabilityProbe `json:"ruReachability,omitempty"`
 	ForeignReachability  *RouterReachabilityProbe `json:"foreignReachability,omitempty"`
 	TelegramReachability *RouterReachabilityProbe `json:"telegramReachability,omitempty"`
+	YouTubeReachability  *RouterReachabilityProbe `json:"youtubeReachability,omitempty"`
 	RawSnapshot          map[string]interface{}   `json:"rawSnapshot,omitempty"`
 	ConfigDigest         string                   `json:"configDigest,omitempty"`
 	AppliedRevisionID    string                   `json:"appliedRevisionId,omitempty"`

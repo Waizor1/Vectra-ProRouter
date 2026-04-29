@@ -26,6 +26,9 @@ var opkgInfoDir = "/usr/lib/opkg/info"
 const telegramProbeURL = "https://telegram.org/"
 const telegramProbeTimeout = 3 * time.Second
 const telegramProbeCacheTTL = 5 * time.Minute
+const youtubeProbeURL = "https://www.youtube.com/generate_204"
+const youtubeProbeTimeout = 3 * time.Second
+const youtubeProbeCacheTTL = 5 * time.Minute
 
 type telegramProbeTarget struct {
 	ID    string
@@ -40,7 +43,25 @@ var telegramProbeTargets = []telegramProbeTarget{
 	{ID: "bot-api", Label: "api.telegram.org", URL: "https://api.telegram.org/"},
 }
 
+type youtubeProbeTarget struct {
+	ID    string
+	Label string
+	URL   string
+}
+
+var youtubeProbeTargets = []youtubeProbeTarget{
+	{ID: "youtube-main", Label: "youtube.com", URL: youtubeProbeURL},
+	{ID: "youtube-img", Label: "i.ytimg.com", URL: "https://i.ytimg.com/generate_204"},
+	{ID: "youtube-api", Label: "youtubei.googleapis.com", URL: "https://youtubei.googleapis.com/generate_204"},
+}
+
 var telegramProbeCache = struct {
+	mu        sync.Mutex
+	result    *controlplane.RouterReachabilityProbe
+	expiresAt time.Time
+}{}
+
+var youtubeProbeCache = struct {
 	mu        sync.Mutex
 	result    *controlplane.RouterReachabilityProbe
 	expiresAt time.Time
@@ -153,6 +174,7 @@ func (Collector) Collect(base controlplane.RouterInventory) controlplane.RouterI
 		DNSMasq:        serviceState("/etc/init.d/dnsmasq"),
 	}
 	inventory.TelegramReachability = collectTelegramReachability()
+	inventory.YouTubeReachability = collectYouTubeReachability()
 
 	return inventory
 }
@@ -570,8 +592,71 @@ func collectTelegramReachability() *controlplane.RouterReachabilityProbe {
 	return cloneTelegramReachability(probe)
 }
 
+func collectYouTubeReachability() *controlplane.RouterReachabilityProbe {
+	now := time.Now().UTC()
+
+	youtubeProbeCache.mu.Lock()
+	if youtubeProbeCache.result != nil && now.Before(youtubeProbeCache.expiresAt) {
+		cached := cloneYouTubeReachability(youtubeProbeCache.result)
+		youtubeProbeCache.mu.Unlock()
+		return cached
+	}
+	youtubeProbeCache.mu.Unlock()
+
+	prober := rescue.NewHTTPProber(youtubeProbeTimeout)
+	checks := make([]controlplane.RouterReachabilityProbe, 0, len(youtubeProbeTargets))
+	for _, target := range youtubeProbeTargets {
+		ctx, cancel := context.WithTimeout(context.Background(), youtubeProbeTimeout)
+		result := prober.Probe(ctx, target.URL)
+		cancel()
+		checks = append(checks, buildYouTubeReachabilityCheck(target, result))
+	}
+	probe := buildYouTubeReachabilitySummary(checks)
+	if probe == nil {
+		return nil
+	}
+
+	youtubeProbeCache.mu.Lock()
+	youtubeProbeCache.result = cloneYouTubeReachability(probe)
+	youtubeProbeCache.expiresAt = now.Add(youtubeProbeCacheTTL)
+	youtubeProbeCache.mu.Unlock()
+
+	return cloneYouTubeReachability(probe)
+}
+
 func buildTelegramReachabilityCheck(
 	target telegramProbeTarget,
+	result rescue.HTTPProbeResult,
+) controlplane.RouterReachabilityProbe {
+	targetURL := strings.TrimSpace(result.URL)
+	if targetURL == "" {
+		targetURL = target.URL
+	}
+
+	checkedAt := result.CheckedAt.UTC()
+	if checkedAt.IsZero() {
+		checkedAt = time.Now().UTC()
+	}
+
+	probe := controlplane.RouterReachabilityProbe{
+		ID:        target.ID,
+		Label:     target.Label,
+		Reachable: result.Reachable,
+		CheckedAt: checkedAt.Format(time.RFC3339),
+		TargetURL: targetURL,
+	}
+	if result.StatusCode > 0 {
+		probe.StatusCode = result.StatusCode
+	}
+	if result.Error != "" {
+		probe.Error = normalizeProbeError(result.Error)
+	}
+
+	return probe
+}
+
+func buildYouTubeReachabilityCheck(
+	target youtubeProbeTarget,
 	result rescue.HTTPProbeResult,
 ) controlplane.RouterReachabilityProbe {
 	targetURL := strings.TrimSpace(result.URL)
@@ -639,7 +724,59 @@ func buildTelegramReachabilitySummary(
 	}
 }
 
+func buildYouTubeReachabilitySummary(
+	checks []controlplane.RouterReachabilityProbe,
+) *controlplane.RouterReachabilityProbe {
+	if len(checks) == 0 {
+		return nil
+	}
+
+	reachableCount := 0
+	checkedAt := checks[len(checks)-1].CheckedAt
+	for _, check := range checks {
+		if check.Reachable {
+			reachableCount++
+		}
+		if strings.TrimSpace(check.CheckedAt) != "" {
+			checkedAt = check.CheckedAt
+		}
+	}
+
+	status := "blocked"
+	reachable := false
+	switch {
+	case reachableCount == len(checks):
+		status = "reachable"
+		reachable = true
+	case reachableCount > 0:
+		status = "partial"
+	}
+
+	return &controlplane.RouterReachabilityProbe{
+		Reachable:      reachable,
+		CheckedAt:      checkedAt,
+		Status:         status,
+		ReachableCount: reachableCount,
+		TotalCount:     len(checks),
+		Checks:         append([]controlplane.RouterReachabilityProbe(nil), checks...),
+	}
+}
+
 func cloneTelegramReachability(
+	probe *controlplane.RouterReachabilityProbe,
+) *controlplane.RouterReachabilityProbe {
+	if probe == nil {
+		return nil
+	}
+
+	cloned := *probe
+	if len(probe.Checks) > 0 {
+		cloned.Checks = append([]controlplane.RouterReachabilityProbe(nil), probe.Checks...)
+	}
+	return &cloned
+}
+
+func cloneYouTubeReachability(
 	probe *controlplane.RouterReachabilityProbe,
 ) *controlplane.RouterReachabilityProbe {
 	if probe == nil {

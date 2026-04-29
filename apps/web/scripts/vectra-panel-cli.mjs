@@ -317,6 +317,7 @@ function summarizeRouterDetails(details) {
           packageVersions: latestSnapshotPayload?.packageVersions ?? null,
           binaryVersions: latestSnapshotPayload?.binaryVersions ?? null,
           telegramReachability: latestSnapshotPayload?.telegramReachability ?? null,
+          youtubeReachability: latestSnapshotPayload?.youtubeReachability ?? null,
         }
       : null,
     support: details.support ?? null,

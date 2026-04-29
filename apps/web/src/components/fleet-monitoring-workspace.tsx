@@ -24,6 +24,11 @@ import {
   getTelegramReachabilityStatus,
   hasTelegramReachabilityProblem,
 } from "~/lib/telegram-reachability";
+import {
+  formatYoutubeReachabilityLabel,
+  getYoutubeReachabilityStatus,
+  hasYoutubeReachabilityProblem,
+} from "~/lib/youtube-reachability";
 import { DataTable, DataTableEmpty } from "~/components/data-table";
 import { Panel } from "~/components/panel";
 import { RouterCard } from "~/components/router-card";
@@ -128,6 +133,7 @@ function matchesSearch(router: FleetMonitoringRouter, searchQuery: string) {
   }
 
   const telegramState = router.telegramReachability?.status ?? "нет данных";
+  const youtubeState = router.youtubeReachability?.status ?? "нет данных";
   const haystack = [
     router.name,
     router.id,
@@ -143,6 +149,7 @@ function matchesSearch(router: FleetMonitoringRouter, searchQuery: string) {
     router.controllerVersion,
     router.passwallVersion,
     telegramState,
+    youtubeState,
     ...router.alertKinds,
     ...Object.values(router.components),
   ]
@@ -1064,6 +1071,8 @@ function FleetOperationsRow({
   const controllerVersion = formatControllerVersion(router.controllerVersion);
   const telegramStatus = getTelegramReachabilityStatus(router.telegramReachability);
   const telegramProblem = hasTelegramReachabilityProblem(router.telegramReachability);
+  const youtubeStatus = getYoutubeReachabilityStatus(router.youtubeReachability);
+  const youtubeProblem = hasYoutubeReachabilityProblem(router.youtubeReachability);
   const freshness = describeFreshnessState(router.freshnessState, router.lastSeen);
   const trustState = describeConfigTrustState({
     trust: router.configTrust,
@@ -1077,6 +1086,14 @@ function FleetOperationsRow({
       : telegramStatus === "partial"
         ? "text-amber-100"
         : telegramProblem
+          ? "text-rose-100"
+          : "text-slate-300";
+  const youtubeToneClassName =
+    youtubeStatus === "reachable"
+      ? "text-emerald-100"
+      : youtubeStatus === "partial"
+        ? "text-amber-100"
+        : youtubeProblem
           ? "text-rose-100"
           : "text-slate-300";
 
@@ -1152,6 +1169,12 @@ function FleetOperationsRow({
             Telegram{" "}
             <span className={telegramToneClassName}>
               {formatTelegramReachabilityLabel(router.telegramReachability)}
+            </span>
+          </span>
+          <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
+            YouTube{" "}
+            <span className={youtubeToneClassName}>
+              {formatYoutubeReachabilityLabel(router.youtubeReachability)}
             </span>
           </span>
         </div>

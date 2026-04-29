@@ -2,7 +2,10 @@
 
 import Link from "next/link";
 
-import type { RouterTelegramReachability } from "@vectra/contracts";
+import type {
+  RouterTelegramReachability,
+  RouterYoutubeReachability,
+} from "@vectra/contracts";
 
 import { formatControllerVersion } from "~/lib/controller-version";
 import {
@@ -20,6 +23,11 @@ import {
   getTelegramReachabilityStatus,
   hasTelegramReachabilityProblem,
 } from "~/lib/telegram-reachability";
+import {
+  formatYoutubeReachabilityLabel,
+  getYoutubeReachabilityStatus,
+  hasYoutubeReachabilityProblem,
+} from "~/lib/youtube-reachability";
 
 export type RouterSummary = {
   id: string;
@@ -39,6 +47,7 @@ export type RouterSummary = {
   pendingChanges: number;
   lastRescue: string;
   telegramReachability?: RouterTelegramReachability | null;
+  youtubeReachability?: RouterYoutubeReachability | null;
   importState: string;
   needsImportReview: boolean;
   configTrust: {
@@ -102,6 +111,10 @@ export function RouterCard({ router }: { router: RouterSummary }) {
   );
   const telegramProblem = hasTelegramReachabilityProblem(
     router.telegramReachability,
+  );
+  const youtubeStatus = getYoutubeReachabilityStatus(router.youtubeReachability);
+  const youtubeProblem = hasYoutubeReachabilityProblem(
+    router.youtubeReachability,
   );
   const trustState = describeRouterTrustState(router);
   const primaryStatus = describePrimaryStatus(router);
@@ -223,6 +236,19 @@ export function RouterCard({ router }: { router: RouterSummary }) {
                 : telegramStatus === "partial"
                   ? "warning"
                   : telegramProblem
+                    ? "danger"
+                    : "default"
+            }
+          />
+          <CompactRouterFact
+            label="YouTube"
+            value={formatYoutubeReachabilityLabel(router.youtubeReachability)}
+            tone={
+              youtubeStatus === "reachable"
+                ? "good"
+                : youtubeStatus === "partial"
+                  ? "warning"
+                  : youtubeProblem
                     ? "danger"
                     : "default"
             }

@@ -148,6 +148,7 @@ export function buildRouterSummary(router: FleetRouter): RouterSummary {
       ? `Последний известный recovery-сигнал: ${lastRescue}`
       : lastRescue,
     telegramReachability: payload?.telegramReachability ?? null,
+    youtubeReachability: payload?.youtubeReachability ?? null,
     importState: router.importState,
     needsImportReview:
       router.importState !== "approved" || router.configTrust.requiresReimport,

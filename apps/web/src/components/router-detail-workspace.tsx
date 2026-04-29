@@ -82,6 +82,10 @@ import {
   formatTelegramReachabilityLabel,
   getTelegramReachabilityChecks,
 } from "~/lib/telegram-reachability";
+import {
+  formatYoutubeReachabilityLabel,
+  getYoutubeReachabilityChecks,
+} from "~/lib/youtube-reachability";
 import type { RouterWorkspaceInventory } from "~/server/vectra/editor-surface";
 import {
   addNode,
@@ -910,6 +914,9 @@ export function RouterDetailWorkspace({
   const telegramChecks = getTelegramReachabilityChecks(
     inventory.telegramReachability,
   );
+  const youtubeChecks = getYoutubeReachabilityChecks(
+    inventory.youtubeReachability,
+  );
   const hasUnconfirmedChanges =
     editor.unconfirmedChanges.router.status !== "none" ||
     editor.unconfirmedChanges.panel.status !== "none";
@@ -1154,6 +1161,55 @@ export function RouterDetailWorkspace({
             </summary>
             <div className="mt-3 grid gap-2 md:grid-cols-2">
               {telegramChecks.map((check) => (
+                <div
+                  key={`${check.label}-${check.checkedAt ?? "na"}`}
+                  className="rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-medium text-white">
+                      {check.label}
+                    </p>
+                    <span
+                      className={`text-xs ${
+                        check.reachable ? "text-emerald-100" : "text-rose-200"
+                      }`}
+                    >
+                      {check.reachable ? "доступно" : "недоступно"}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-slate-400">
+                    {check.detail}
+                  </p>
+                  <p className="mt-1 text-[11px] leading-5 text-slate-500">
+                    Проверка {formatDateTime(check.checkedAt)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
+
+        {youtubeChecks.length > 0 ? (
+          <details className="mt-3 rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
+            <summary className="cursor-pointer list-none">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="vectra-kicker text-slate-500">
+                    Проверки YouTube
+                  </p>
+                  <p className="mt-2 text-sm font-medium text-white">
+                    {formatYoutubeReachabilityLabel(
+                      inventory.youtubeReachability,
+                    )}
+                  </p>
+                </div>
+                <span className="text-xs text-slate-400">
+                  {youtubeChecks.length} цели
+                </span>
+              </div>
+            </summary>
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              {youtubeChecks.map((check) => (
                 <div
                   key={`${check.label}-${check.checkedAt ?? "na"}`}
                   className="rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2"

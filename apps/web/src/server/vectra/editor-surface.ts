@@ -2,6 +2,7 @@ import {
   type PasswallDesiredConfig,
   MASKED_SECRET_PLACEHOLDER,
   type RouterTelegramReachability,
+  type RouterYoutubeReachability,
   subscriptionInspectResultPayloadSchema,
 } from "@vectra/contracts";
 import {
@@ -150,6 +151,7 @@ export type RouterWorkspaceInventory = {
     dnsmasq?: string | null;
   } | null;
   telegramReachability?: RouterTelegramReachability | null;
+  youtubeReachability?: RouterYoutubeReachability | null;
 };
 
 export type RouterSubscriptionRuntime = SubscriptionRuntimeReadModel;
@@ -1583,6 +1585,7 @@ export async function getDraftEditorSurface(routerId: string) {
     rulesAssets: payload?.rulesAssets ?? null,
     serviceHealth: payload?.serviceHealth ?? null,
     telegramReachability: payload?.telegramReachability ?? null,
+    youtubeReachability: payload?.youtubeReachability ?? null,
   };
 
   const effectiveDraftBase =

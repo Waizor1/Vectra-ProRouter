@@ -43,6 +43,23 @@ describe("buildFleetMonitoringSnapshot", () => {
               },
             ],
           },
+          youtubeReachability: {
+            checkedAt: "2026-04-09T08:59:11.000Z",
+            status: "reachable",
+            reachable: true,
+            reachableCount: 3,
+            totalCount: 3,
+            checks: [
+              {
+                id: "youtube-main",
+                label: "youtube.com",
+                reachable: true,
+                checkedAt: "2026-04-09T08:59:09.000Z",
+                targetUrl: "https://www.youtube.com/generate_204",
+                statusCode: 204,
+              },
+            ],
+          },
           queuedJobCount: 1,
           lastRescueReason: null,
           configTrust: {
@@ -175,7 +192,9 @@ describe("buildFleetMonitoringSnapshot", () => {
       ["Задания в очереди", "6"],
     ]);
 
-    expect(snapshot.charts[0]?.slices.map((slice) => [slice.key, slice.count])).toEqual([
+    expect(
+      snapshot.charts[0]?.slices.map((slice) => [slice.key, slice.count]),
+    ).toEqual([
       ["stable", 1],
       ["recovery", 1],
       ["offline", 1],
@@ -183,7 +202,9 @@ describe("buildFleetMonitoringSnapshot", () => {
       ["blocked", 1],
     ]);
 
-    expect(snapshot.charts[1]?.slices.map((slice) => [slice.key, slice.count])).toEqual([
+    expect(
+      snapshot.charts[1]?.slices.map((slice) => [slice.key, slice.count]),
+    ).toEqual([
       ["fresh", 3],
       ["watch", 1],
       ["offline", 1],
@@ -195,7 +216,13 @@ describe("buildFleetMonitoringSnapshot", () => {
       snapshot.routers.find((router) => router.id === "stable-1")
         ?.telegramReachability?.status,
     ).toBe("partial");
-    expect(snapshot.alerts.slice(0, 4).map((alert) => [alert.kind, alert.routerId])).toEqual([
+    expect(
+      snapshot.routers.find((router) => router.id === "stable-1")
+        ?.youtubeReachability?.status,
+    ).toBe("reachable");
+    expect(
+      snapshot.alerts.slice(0, 4).map((alert) => [alert.kind, alert.routerId]),
+    ).toEqual([
       ["direct_mode", "direct-1"],
       ["offline", "offline-1"],
       ["blocked_support", "blocked-1"],

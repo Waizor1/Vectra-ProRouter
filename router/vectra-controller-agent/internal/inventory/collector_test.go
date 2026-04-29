@@ -178,6 +178,46 @@ func TestBuildTelegramReachabilitySummaryBlocked(t *testing.T) {
 	}
 }
 
+func TestBuildYouTubeReachabilitySummaryUsesYouTubeTargets(t *testing.T) {
+	if got, want := youtubeProbeTargets[0].URL, youtubeProbeURL; got != want {
+		t.Fatalf("youtube primary target = %q, want %q", got, want)
+	}
+	if len(youtubeProbeTargets) < 3 {
+		t.Fatalf("len(youtubeProbeTargets) = %d, want at least 3", len(youtubeProbeTargets))
+	}
+
+	checkedAt := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	checks := make([]controlplane.RouterReachabilityProbe, 0, len(youtubeProbeTargets))
+	for _, target := range youtubeProbeTargets {
+		checks = append(checks, buildYouTubeReachabilityCheck(target, rescue.HTTPProbeResult{
+			URL:        target.URL,
+			Reachable:  true,
+			StatusCode: 204,
+			CheckedAt:  checkedAt,
+		}))
+	}
+
+	summary := buildYouTubeReachabilitySummary(checks)
+	if summary == nil {
+		t.Fatal("expected summary")
+	}
+	if !summary.Reachable {
+		t.Fatalf("Reachable = false, want true")
+	}
+	if got, want := summary.Status, "reachable"; got != want {
+		t.Fatalf("Status = %q, want %q", got, want)
+	}
+	if got, want := summary.ReachableCount, len(youtubeProbeTargets); got != want {
+		t.Fatalf("ReachableCount = %d, want %d", got, want)
+	}
+	if got, want := summary.TotalCount, len(youtubeProbeTargets); got != want {
+		t.Fatalf("TotalCount = %d, want %d", got, want)
+	}
+	if got, want := summary.Checks[0].Label, "youtube.com"; got != want {
+		t.Fatalf("first check label = %q, want %q", got, want)
+	}
+}
+
 func TestPasswallInventoryPackagesIncludesTcping(t *testing.T) {
 	if !slices.Contains(passwallInventoryPackages, "tcping") {
 		t.Fatalf("passwallInventoryPackages = %#v, want tcping to be tracked", passwallInventoryPackages)
