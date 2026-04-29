@@ -1,7 +1,5 @@
 #!/usr/bin/lua
 
-local json = require("luci.jsonc")
-
 local function readfile(path)
   local handle = io.open(path, "r")
   if not handle then
@@ -34,6 +32,8 @@ end
 source = strip_shebang(source)
 
 local injected = [=[
+local vectra_preview_json = require("luci.jsonc")
+
 log = function() end
 
 local function vectra_preview_trim(value)
@@ -337,7 +337,7 @@ for _, value in ipairs(subscribe_list) do
 	}
 end
 
-io.write(json.stringify({
+io.write(vectra_preview_json.stringify({
 	checkedAt = checked_at,
 	entries = results
 }))
