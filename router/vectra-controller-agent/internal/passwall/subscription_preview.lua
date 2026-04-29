@@ -329,7 +329,8 @@ io.write(json.stringify({
 }))
 ]=]
 
-local chunk, err = load("arg = {}\n" .. source .. "\n" .. injected, "@/usr/share/passwall2/subscribe.lua")
+local loader = loadstring or load
+local chunk, err = loader("arg = {}\n" .. source .. "\n" .. injected, "@/usr/share/passwall2/subscribe.lua")
 if not chunk then
   io.stderr:write((err or "failed to load subscription preview helper") .. "\n")
   os.exit(1)
