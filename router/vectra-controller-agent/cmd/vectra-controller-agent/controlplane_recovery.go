@@ -62,6 +62,7 @@ const (
 	controlPlaneRetryReason    = "RU connectivity restored after reboot; retrying PassWall proxy path."
 	operatorAttentionReason    = "After auto-reboot and PassWall retry, foreign resources are still unavailable; router left in direct mode."
 	panelRecoveredDirectReason = "Control plane recovered only in direct mode; router is waiting for operator review."
+	autoProxyRetryReason       = "Control plane recovered after direct fallback; retrying PassWall proxy path before operator attention."
 	wanRecoveredReason         = "Control plane and foreign connectivity recovered."
 )
 
@@ -182,6 +183,21 @@ func advanceControlPlaneRecovery(
 			break
 		}
 		if panelProbe.Reachable {
+			if shouldAutoRetryPasswallAfterDirectSettle(inventory, recoveryState) {
+				if err := resumeProxyMode(ctx, backend, rescueState, persisted, runtimeStatus, now); err != nil {
+					return outcome, err
+				}
+				recoveryState.LastPasswallRetryAt = recovery.FormatTime(now)
+				setControlPlaneRecoveryPhase(
+					recoveryState,
+					runtimeStatus,
+					recovery.PhasePasswallRetryWait,
+					autoProxyRetryReason,
+					false,
+				)
+				outcome.InventoryChanged = true
+				break
+			}
 			setControlPlaneRecoveryPhase(
 				recoveryState,
 				runtimeStatus,
@@ -628,9 +644,32 @@ func restartedDuringCurrentOutage(recoveryState *recovery.State) bool {
 		(lastRestart.Equal(outageStarted) || lastRestart.After(outageStarted))
 }
 
+func passwallRetriedDuringCurrentOutage(recoveryState *recovery.State) bool {
+	if recoveryState == nil {
+		return false
+	}
+	lastRetry := recovery.ParseTime(recoveryState.LastPasswallRetryAt)
+	outageStarted := recovery.ParseTime(recoveryState.OutageStartedAt)
+	return !lastRetry.IsZero() &&
+		!outageStarted.IsZero() &&
+		(lastRetry.Equal(outageStarted) || lastRetry.After(outageStarted))
+}
+
 func controlPlaneOutageReady(now time.Time, policy rescue.Policy, recoveryState *recovery.State) bool {
 	outageStarted := recovery.ParseTime(recoveryState.OutageStartedAt)
 	return !outageStarted.IsZero() && now.Sub(outageStarted) >= policy.PanelOutageThreshold
+}
+
+func shouldAutoRetryPasswallAfterDirectSettle(inventory *controlplane.RouterInventory, recoveryState *recovery.State) bool {
+	if inventory == nil || recoveryState == nil || inventory.PasswallEnabled {
+		return false
+	}
+
+	if inventory.RUReachability == nil || inventory.RUReachability.Status != recovery.StatusReachable {
+		return false
+	}
+
+	return !passwallRetriedDuringCurrentOutage(recoveryState)
 }
 
 func shouldTriggerDirectFallback(inventory *controlplane.RouterInventory) bool {

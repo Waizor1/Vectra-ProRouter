@@ -643,6 +643,172 @@ func TestAdvanceControlPlaneRecoveryRetriesPasswallAfterReboot(t *testing.T) {
 	}
 }
 
+func TestAdvanceControlPlaneRecoveryAutoRetriesPasswallWhenPanelRecoversInDirectMode(t *testing.T) {
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusNoContent})
+	defer panel.Close()
+	ru := newStatusServer(map[string]int{"/": http.StatusNoContent})
+	defer ru.Close()
+	blocked := newStatusServer(map[string]int{"/": http.StatusServiceUnavailable})
+	defer blocked.Close()
+
+	setRecoveryProbeTargets(t,
+		[]probeTarget{
+			{ID: "ya", Label: "ya.ru", URL: ru.URL},
+			{ID: "vk", Label: "vk.com", URL: ru.URL},
+		},
+		[]probeTarget{
+			{ID: "youtube", Label: "youtube", URL: blocked.URL},
+			{ID: "instagram", Label: "instagram", URL: blocked.URL},
+			{ID: "telegram", Label: "telegram", URL: blocked.URL},
+		},
+	)
+
+	backend := &fakeRescueBackend{
+		runResults: map[string]passwall.CommandResult{
+			"/etc/init.d/passwall2 restart": {Stdout: "restarted"},
+		},
+	}
+	now := time.Now()
+	recoveryState := recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(now.Add(-2 * time.Hour)),
+		OutageStartedAt:              recovery.FormatTime(now.Add(-70 * time.Minute)),
+		Phase:                        recovery.PhaseDirectSettle,
+		LastPanelStatus:              recovery.StatusBlocked,
+		LastRUStatus:                 recovery.StatusReachable,
+		LastForeignStatus:            recovery.StatusBlocked,
+		LastActionReason:             controlPlaneDirectReason,
+	}
+	rescueState := rescue.State{
+		Mode:             rescue.ModeDirect,
+		LastTransitionAt: now.Add(-2 * time.Minute),
+	}
+	persisted := state.PersistedState{ControlPlaneRecovery: recoveryState}
+	inventory := controlplane.RouterInventory{PasswallEnabled: false}
+	runtimeStatus := state.RuntimeStatus{}
+
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if !outcome.SkipControlPlane {
+		t.Fatal("expected control-plane work to stay paused during PassWall retry warmup")
+	}
+	if !outcome.InventoryChanged {
+		t.Fatal("expected passwall retry to require inventory recollect")
+	}
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhasePasswallRetryWait; got != want {
+		t.Fatalf("recovery phase = %q, want %q", got, want)
+	}
+	if persisted.ControlPlaneRecovery.LastPasswallRetryAt == "" {
+		t.Fatal("expected last passwall retry timestamp to be set")
+	}
+	if persisted.ControlPlaneRecovery.AwaitingOperator {
+		t.Fatal("did not expect operator attention during first auto retry")
+	}
+	if got, want := persisted.ControlPlaneRecovery.LastActionReason, autoProxyRetryReason; got != want {
+		t.Fatalf("last action reason = %q, want %q", got, want)
+	}
+	if got, want := rescueState.Mode, rescue.ModeProxy; got != want {
+		t.Fatalf("rescue mode = %q, want %q", got, want)
+	}
+	if !runtimeStatus.PasswallEnabled {
+		t.Fatal("expected runtime status to reflect PassWall re-enabled")
+	}
+	if !containsBatchLine(backend.batchCommands, "set passwall2.@global[0].enabled='1'") {
+		t.Fatalf("expected passwall enable batch, got %#v", backend.batchCommands)
+	}
+	if !containsCommand(backend.runCommands, "/etc/init.d/passwall2 restart") {
+		t.Fatalf("expected passwall restart command, got %#v", backend.runCommands)
+	}
+}
+
+func TestAdvanceControlPlaneRecoveryDoesNotAutoRetryPasswallTwiceInSameOutage(t *testing.T) {
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusNoContent})
+	defer panel.Close()
+	ru := newStatusServer(map[string]int{"/": http.StatusNoContent})
+	defer ru.Close()
+	blocked := newStatusServer(map[string]int{"/": http.StatusServiceUnavailable})
+	defer blocked.Close()
+
+	setRecoveryProbeTargets(t,
+		[]probeTarget{
+			{ID: "ya", Label: "ya.ru", URL: ru.URL},
+			{ID: "vk", Label: "vk.com", URL: ru.URL},
+		},
+		[]probeTarget{
+			{ID: "youtube", Label: "youtube", URL: blocked.URL},
+			{ID: "instagram", Label: "instagram", URL: blocked.URL},
+			{ID: "telegram", Label: "telegram", URL: blocked.URL},
+		},
+	)
+
+	backend := &fakeRescueBackend{}
+	now := time.Now()
+	recoveryState := recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(now.Add(-2 * time.Hour)),
+		OutageStartedAt:              recovery.FormatTime(now.Add(-70 * time.Minute)),
+		Phase:                        recovery.PhaseDirectSettle,
+		LastPasswallRetryAt:          recovery.FormatTime(now.Add(-5 * time.Minute)),
+		LastPanelStatus:              recovery.StatusBlocked,
+		LastRUStatus:                 recovery.StatusReachable,
+		LastForeignStatus:            recovery.StatusBlocked,
+		LastActionReason:             controlPlaneDirectReason,
+	}
+	rescueState := rescue.State{
+		Mode:             rescue.ModeDirect,
+		LastTransitionAt: now.Add(-2 * time.Minute),
+	}
+	persisted := state.PersistedState{ControlPlaneRecovery: recoveryState}
+	inventory := controlplane.RouterInventory{PasswallEnabled: false}
+	runtimeStatus := state.RuntimeStatus{}
+
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if outcome.SkipControlPlane {
+		t.Fatal("expected panel reachability to allow operator-attention reporting")
+	}
+	if outcome.InventoryChanged {
+		t.Fatal("did not expect another passwall toggle after retry budget is spent")
+	}
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhaseOperatorAttention; got != want {
+		t.Fatalf("recovery phase = %q, want %q", got, want)
+	}
+	if !persisted.ControlPlaneRecovery.AwaitingOperator {
+		t.Fatal("expected operator attention after retry budget is spent")
+	}
+	if got, want := persisted.ControlPlaneRecovery.LastActionReason, panelRecoveredDirectReason; got != want {
+		t.Fatalf("last action reason = %q, want %q", got, want)
+	}
+	if containsBatchLine(backend.batchCommands, "set passwall2.@global[0].enabled='1'") {
+		t.Fatalf("did not expect second passwall enable batch, got %#v", backend.batchCommands)
+	}
+	if containsCommand(backend.runCommands, "/etc/init.d/passwall2 restart") {
+		t.Fatalf("did not expect second passwall restart, got %#v", backend.runCommands)
+	}
+}
+
 func TestAdvanceControlPlaneRecoveryEscalatesToOperatorAttentionAfterFailedRetry(t *testing.T) {
 	panel := newStatusServer(map[string]int{"/api/health": http.StatusNoContent})
 	defer panel.Close()
