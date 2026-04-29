@@ -1,5 +1,14 @@
 # RTK.md
 
+<!-- codex-global-rtk:start -->
+## Global RTK shell-output layer
+
+@/Users/waizor/.codex/RTK.md
+
+Load `/Users/waizor/.codex/RTK.md` first for the current global RTK policy: prefer `rtk` for shell commands, keep terminal output bounded, and fall back to raw commands only when exact output or tool behavior requires it. Local notes below add project-specific routing and do not replace the global RTK rules.
+<!-- codex-global-rtk:end -->
+
+
 Purpose: fast Codex runbook for this workspace. Read this before any substantial PassWall2/OpenWrt task.
 
 ## 1. Workspace Role

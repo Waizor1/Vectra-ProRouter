@@ -144,6 +144,16 @@ func validateFixtureJob(job controlplane.Job) error {
 		if len(job.Payload) != 0 {
 			return errFixture("inspect subscriptions fixture should use an empty payload")
 		}
+	case "run_rescue_repair":
+		actions := payloadStringSlice(job.Payload, "actions")
+		if len(actions) == 0 {
+			return errFixture("rescue repair fixture requires actions")
+		}
+		for _, action := range actions {
+			if _, ok := allowedRescueRepairActions[action]; !ok {
+				return errFixture("rescue repair fixture includes unsupported action")
+			}
+		}
 	case "update_controller":
 		artifactJob := parseArtifactJob(job.Payload, []string{
 			"vectra-controller-agent",
@@ -238,6 +248,7 @@ func knownJobType(value string) bool {
 		"refresh_rules",
 		"collect_router_logs",
 		"run_terminal_command",
+		"run_rescue_repair",
 		"update_controller",
 		"update_passwall_packages",
 		"validate_firmware",

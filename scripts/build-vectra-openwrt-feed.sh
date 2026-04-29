@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+# macOS tar/cp can materialize extended attributes as AppleDouble `._*`
+# entries unless this is disabled. Those files are invalid in OpenWrt .ipk
+# payloads because opkg treats them as real package-owned paths.
+export COPYFILE_DISABLE=1
+
 usage() {
 	cat <<'EOF'
 Build the Vectra OpenWrt packages with a matching SDK and publish a signed opkg feed.
@@ -200,6 +205,59 @@ mark_executable_if_present() {
 	done
 }
 
+remove_macos_metadata() {
+	local root="$1"
+
+	if [[ ! -d "$root" ]]; then
+		return 0
+	fi
+
+	find "$root" \( -name '.DS_Store' -o -name '._*' -o -name '__MACOSX' \) -exec rm -rf {} +
+}
+
+assert_no_macos_metadata() {
+	local root="$1"
+	local label="$2"
+	local matches
+
+	matches="$(
+		find "$root" \( -name '.DS_Store' -o -name '._*' -o -name '__MACOSX' \) -print | head -n 20
+	)"
+	if [[ -n "$matches" ]]; then
+		echo "Refusing to package macOS metadata in $label:" >&2
+		echo "$matches" >&2
+		return 1
+	fi
+}
+
+assert_tar_has_no_macos_metadata() {
+	local archive="$1"
+	local label="$2"
+	local matches
+
+	matches="$(
+		tar -tzf "$archive" \
+			| grep -E '(^|/)(\._[^/]+|\.DS_Store|__MACOSX)(/|$)' \
+			| head -n 20 || true
+	)"
+	if [[ -n "$matches" ]]; then
+		echo "Refusing to publish $label with macOS metadata entries:" >&2
+		echo "$matches" >&2
+		return 1
+	fi
+}
+
+assert_ipk_has_no_macos_metadata() {
+	local output_file="$1"
+	local temp_dir
+
+	temp_dir="$(mktemp -d "$SDK_ROOT/tmp/vectra-ipk-inspect.XXXXXX")"
+	tar -xzf "$output_file" -C "$temp_dir"
+	assert_tar_has_no_macos_metadata "$temp_dir/control.tar.gz" "$(basename "$output_file") control.tar.gz"
+	assert_tar_has_no_macos_metadata "$temp_dir/data.tar.gz" "$(basename "$output_file") data.tar.gz"
+	rm -rf "$temp_dir"
+}
+
 package_ipk() {
 	local data_dir="$1"
 	local control_dir="$2"
@@ -210,11 +268,18 @@ package_ipk() {
 	mkdir -p "$temp_dir/data" "$temp_dir/control"
 	cp -R "$data_dir/." "$temp_dir/data/"
 	cp -R "$control_dir/." "$temp_dir/control/"
+	remove_macos_metadata "$temp_dir/data"
+	remove_macos_metadata "$temp_dir/control"
+	assert_no_macos_metadata "$temp_dir/data" "$(basename "$output_file") data"
+	assert_no_macos_metadata "$temp_dir/control" "$(basename "$output_file") control"
 	printf '2.0\n' > "$temp_dir/debian-binary"
 	tar --numeric-owner --owner=0 --group=0 -czf "$temp_dir/control.tar.gz" -C "$temp_dir/control" .
 	tar --numeric-owner --owner=0 --group=0 -czf "$temp_dir/data.tar.gz" -C "$temp_dir/data" .
+	assert_tar_has_no_macos_metadata "$temp_dir/control.tar.gz" "$(basename "$output_file") control.tar.gz"
+	assert_tar_has_no_macos_metadata "$temp_dir/data.tar.gz" "$(basename "$output_file") data.tar.gz"
 	rm -f "$output_file"
 	tar --numeric-owner --owner=0 --group=0 -czf "$output_file" -C "$temp_dir" ./debian-binary ./control.tar.gz ./data.tar.gz
+	assert_ipk_has_no_macos_metadata "$output_file"
 	rm -rf "$temp_dir"
 }
 

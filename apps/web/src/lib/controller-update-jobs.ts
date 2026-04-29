@@ -89,15 +89,9 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     normalizeControllerVersion(args.artifactVersion) ??
     normalizeControllerVersion(agentArtifact.artifactVersion) ??
     normalizeControllerVersion(luciArtifact.artifactVersion);
-  const queuedSummary = `controller self-update to ${
+  const installedSummary = `controller self-update to ${
     artifactVersion ?? "target"
-  } queued`;
-  const splitSummary = `controller self-update to ${
-    artifactVersion ?? "target"
-  } queued after split install`;
-  const partialSummary = `controller core updated to ${
-    artifactVersion ?? "target"
-  }, but LuCI reinstall failed; retry from panel if UI package must converge`;
+  } installed`;
 
   const command = [
     "set -eu",
@@ -105,11 +99,14 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     'workdir="$(mktemp -d /tmp/vectra-controller-update.XXXXXX)"',
     'cleanup() { rm -rf "$workdir"; rm -f "$skip"; }',
     "trap cleanup EXIT INT TERM",
-    'fetch() { if command -v wget >/dev/null 2>&1; then wget -q -O "$1" "$2"; elif command -v uclient-fetch >/dev/null 2>&1; then uclient-fetch -q -O "$1" "$2"; else echo "missing downloader" >&2; exit 1; fi; }',
-    'check_sha() { actual_sha="$(sha256sum "$1" | awk \'{print $1}\')"; [ "$actual_sha" = "$2" ]; }',
+    `target_version=${shellSingleQuote(artifactVersion ?? "")}`,
+    'fail() { echo "controller self-update failed: $*" >&2; exit 1; }',
+    'fetch() { if command -v wget >/dev/null 2>&1; then wget -q -O "$1" "$2" || fail "download $2"; elif command -v uclient-fetch >/dev/null 2>&1; then uclient-fetch -q -O "$1" "$2" || fail "download $2"; else fail "missing downloader"; fi; }',
+    'check_sha() { actual_sha="$(sha256sum "$1" | awk \'{print $1}\')"; [ "$actual_sha" = "$2" ] || fail "sha256 mismatch for $1"; }',
+    'pkg_ok() { pkg="$1"; status="$(opkg status "$pkg" 2>/dev/null || true)"; printf "%s\\n" "$status" | grep -Eq "^Status: install (ok|user) installed$" || fail "$pkg is not installed"; if [ -n "$target_version" ]; then printf "%s\\n" "$status" | grep -Fqx "Version: $target_version" || fail "$pkg is not at $target_version"; fi; }',
+    'need_file() { [ -s "$1" ] || fail "missing LuCI file $1"; }',
     'install_pair() { VECTRA_SKIP_POSTINST_RESTART=1 opkg install --force-reinstall "$agent_ipk" "$luci_ipk"; }',
-    'install_agent() { VECTRA_SKIP_POSTINST_RESTART=1 opkg install --force-reinstall "$agent_ipk"; }',
-    'install_luci() { VECTRA_SKIP_POSTINST_RESTART=1 opkg install --force-reinstall "$luci_ipk"; }',
+    'cleanup_luci() { rm -f /tmp/luci-indexcache.*; rm -rf /tmp/luci-modulecache/; /etc/init.d/rpcd reload >/dev/null 2>&1 || true; }',
     'schedule_restart() { rm -f "$skip"; (sleep 5; /etc/init.d/vectra-controller enable >/dev/null 2>&1 || true; if /etc/init.d/vectra-controller running >/dev/null 2>&1; then /etc/init.d/vectra-controller restart >/tmp/vectra-controller-self-update.log 2>&1; else /etc/init.d/vectra-controller start >/tmp/vectra-controller-self-update.log 2>&1; fi) & }',
     'agent_ipk="$workdir/vectra-controller-agent.ipk"',
     'luci_ipk="$workdir/luci-app-vectra-controller.ipk"',
@@ -118,12 +115,16 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     `fetch "$luci_ipk" ${shellSingleQuote(luciArtifact.artifactUrl)}`,
     `check_sha "$luci_ipk" ${shellSingleQuote(luciArtifact.sha256)}`,
     ': > "$skip"',
-    `update_summary=${shellSingleQuote(queuedSummary)}`,
-    `split_summary=${shellSingleQuote(splitSummary)}`,
-    `partial_summary=${shellSingleQuote(partialSummary)}`,
-    'if install_pair; then :; elif install_agent; then if install_luci; then update_summary="$split_summary"; else update_summary="$partial_summary"; fi; else echo "controller self-update failed: unable to install vectra-controller-agent" >&2; exit 1; fi',
+    'install_pair || fail "opkg install controller/LuCI pair"',
+    'pkg_ok vectra-controller-agent',
+    'pkg_ok luci-app-vectra-controller',
+    'need_file /usr/share/luci/menu.d/luci-app-vectra-controller.json',
+    'need_file /usr/share/rpcd/acl.d/luci-app-vectra-controller.json',
+    'need_file /usr/libexec/vectra-controller/luci-bridge.sh',
+    'need_file /www/luci-static/resources/view/vectra-controller/status.js',
+    'cleanup_luci',
     'schedule_restart',
-    'printf \'%s\\n\' "$update_summary"',
+    `printf '%s\\n' ${shellSingleQuote(installedSummary)}`,
   ].join("; ");
 
   return runTerminalCommandJobPayloadSchema.parse({

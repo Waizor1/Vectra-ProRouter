@@ -497,8 +497,22 @@ describe("destructive route gating", () => {
       'actual_sha="$(sha256sum "$1" | awk \'{print $1}\')"',
     );
     expect(inserted.payload?.command).toContain(
-      "controller core updated to 0.1.13-r1, but LuCI reinstall failed",
+      "pkg_ok luci-app-vectra-controller",
     );
+    expect(inserted.payload?.command).toContain(
+      '^Status: install (ok|user) installed$',
+    );
+    expect(inserted.payload?.command).toContain(
+      "need_file /www/luci-static/resources/view/vectra-controller/status.js",
+    );
+    expect(inserted.payload?.command).toContain(
+      "controller self-update failed:",
+    );
+    expect(inserted.payload?.command).toContain(
+      "controller self-update to 0.1.13-r1 installed",
+    );
+    expect(inserted.payload?.command).not.toContain("LuCI reinstall failed");
+    expect(inserted.payload?.command?.length).toBeLessThanOrEqual(4000);
   });
 
   it("queues bulk router reboot through the terminal lane for pilot Filogic layouts", async () => {
@@ -541,6 +555,49 @@ describe("destructive route gating", () => {
     expect(inserted.payload?.command).toContain("sleep 5");
     expect(inserted.payload?.command).toContain("/sbin/reboot");
     expect(inserted.payload?.command).toContain("router reboot scheduled");
+  });
+
+  it("queues PassWall Clear IPSET/NFTSet through the terminal lane", async () => {
+    const mock = createMockDb([
+      [createCertifiedLikeRouter()],
+      [createPilotLayoutSnapshot("ubootmod")],
+      [],
+    ]);
+    const caller = createProtectedCaller(updateRouter, mock.db) as {
+      queuePasswallClearIpsets: (input: {
+        routerId: string;
+      }) => Promise<unknown>;
+    };
+
+    await caller.queuePasswallClearIpsets({
+      routerId: CERTIFIED_LIKE_ROUTER_ID,
+    });
+
+    const [inserted] = mock.insertedValues() as Array<{
+      type?: string;
+      dedupeKey?: string;
+      payload?: {
+        purpose?: string | null;
+        timeoutSeconds?: number;
+        command?: string;
+      };
+    }>;
+
+    expect(inserted).toBeDefined();
+    if (!inserted) {
+      throw new Error("Expected Clear IPSET/NFTSet job insert.");
+    }
+
+    expect(inserted.type).toBe("run_terminal_command");
+    expect(inserted.dedupeKey).toBe(
+      `passwall_clear_ipsets:${CERTIFIED_LIKE_ROUTER_ID}`,
+    );
+    expect(inserted.payload?.purpose).toBe("passwall-clear-ipsets");
+    expect(inserted.payload?.timeoutSeconds).toBe(90);
+    expect(inserted.payload?.command).toContain(
+      "uci -q set passwall2.@global[0].flush_set='1'",
+    );
+    expect(inserted.payload?.command).toContain("/etc/init.d/passwall2 restart");
   });
 
   it("falls back to legacy update_controller for too-old controller versions", async () => {

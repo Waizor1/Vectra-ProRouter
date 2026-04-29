@@ -234,13 +234,35 @@
             "clearRescue": true
           }
         }
+      },
+      {
+        "name": "run_rescue_repair",
+        "value": {
+          "id": "77777777-7777-4777-8777-777777777777",
+          "type": "run_rescue_repair",
+          "state": "queued",
+          "createdAt": "2026-04-07T08:05:30.000Z",
+          "payload": {
+            "actions": [
+              "restart_passwall",
+              "restart_dnsmasq",
+              "refresh_rules",
+              "refresh_subscriptions",
+              "reconnect_proxy"
+            ],
+            "timeoutSeconds": 90,
+            "caseId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "reason": "direct mode critical auto-rescue",
+            "requestedBy": "auto_rescue"
+          }
+        }
       }
     ],
     "rejected": [
       {
         "name": "payload_must_be_object",
         "value": {
-          "id": "77777777-7777-4777-8777-777777777777",
+          "id": "78787878-7878-4878-8878-787878787878",
           "type": "update_passwall_packages",
           "state": "queued",
           "createdAt": "2026-04-07T08:06:00.000Z",
@@ -353,7 +375,10 @@
               "sh -c /etc/init.d/passwall2 running >/dev/null 2>&1 && /etc/init.d/passwall2 restart || /etc/init.d/passwall2 start"
             ],
             "postInstallRepair": true,
-            "ruleRefreshAssets": ["geoip", "geosite"],
+            "ruleRefreshAssets": [
+              "geoip",
+              "geosite"
+            ],
             "postInstallCommands": [
               "lua /usr/share/passwall2/rule_update.lua log geoip,geosite",
               "sh -c /etc/init.d/passwall2 running >/dev/null 2>&1 && /etc/init.d/passwall2 restart || /etc/init.d/passwall2 start"
@@ -501,6 +526,66 @@
             }
           ],
           "result": {
+            "recoveredProxy": true
+          }
+        }
+      },
+      {
+        "name": "run_rescue_repair_success",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf",
+          "jobId": "77777777-7777-4777-8777-777777777777",
+          "status": "success",
+          "result": {
+            "caseId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "requestedBy": "auto_rescue",
+            "reason": "direct mode critical auto-rescue",
+            "actions": [
+              "restart_passwall",
+              "reconnect_proxy"
+            ],
+            "timeoutSeconds": 90,
+            "startedAt": "2026-04-07T08:05:31.000Z",
+            "completedAt": "2026-04-07T08:05:36.000Z",
+            "before": {
+              "capturedAt": "2026-04-07T08:05:31.000Z",
+              "passwallEnabled": false,
+              "rescueMode": "direct",
+              "serviceHealth": {
+                "controller": "running",
+                "passwall": "stopped",
+                "dnsmasq": "running"
+              }
+            },
+            "after": {
+              "capturedAt": "2026-04-07T08:05:36.000Z",
+              "passwallEnabled": true,
+              "rescueMode": "proxy",
+              "serviceHealth": {
+                "controller": "running",
+                "passwall": "running",
+                "dnsmasq": "running"
+              }
+            },
+            "results": [
+              {
+                "action": "restart_passwall",
+                "status": "success",
+                "command": "/etc/init.d/passwall2 restart",
+                "startedAt": "2026-04-07T08:05:32.000Z",
+                "completedAt": "2026-04-07T08:05:33.000Z",
+                "durationMs": 1000
+              },
+              {
+                "action": "reconnect_proxy",
+                "status": "success",
+                "command": "uci batch passwall2 enabled=1 + /etc/init.d/passwall2 restart",
+                "startedAt": "2026-04-07T08:05:34.000Z",
+                "completedAt": "2026-04-07T08:05:36.000Z",
+                "durationMs": 2000
+              }
+            ],
             "recoveredProxy": true
           }
         }

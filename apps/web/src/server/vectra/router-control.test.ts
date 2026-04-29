@@ -137,6 +137,30 @@ describe("selectDeliverableJobsForCheckIn", () => {
     expect(deliverable[0]?.id).toBe("controller-legacy-job");
   });
 
+  it("treats rescue repair jobs as exclusive", () => {
+    const deliverable = selectDeliverableJobsForCheckIn("approved", [
+      {
+        id: "apply-job",
+        type: "apply_passwall_config",
+        state: "queued",
+        payload: {},
+      },
+      {
+        id: "repair-job",
+        type: "run_rescue_repair",
+        state: "queued",
+        payload: {
+          actions: ["restart_passwall", "reconnect_proxy"],
+          timeoutSeconds: 90,
+          requestedBy: "auto_rescue",
+        },
+      },
+    ] as never);
+
+    expect(deliverable).toHaveLength(1);
+    expect(deliverable[0]?.id).toBe("repair-job");
+  });
+
   it("treats router reboot terminal jobs as exclusive", () => {
     const deliverable = selectDeliverableJobsForCheckIn("approved", [
       {
@@ -160,6 +184,31 @@ describe("selectDeliverableJobsForCheckIn", () => {
 
     expect(deliverable).toHaveLength(1);
     expect(deliverable[0]?.id).toBe("reboot-job");
+  });
+
+  it("treats PassWall Clear IPSET/NFTSet terminal jobs as exclusive", () => {
+    const deliverable = selectDeliverableJobsForCheckIn("approved", [
+      {
+        id: "apply-job",
+        type: "apply_passwall_config",
+        state: "queued",
+        payload: {},
+      },
+      {
+        id: "clear-ipsets-job",
+        type: "run_terminal_command",
+        state: "queued",
+        payload: {
+          purpose: "passwall-clear-ipsets",
+          command:
+            "uci -q set passwall2.@global[0].flush_set='1'\n/etc/init.d/passwall2 restart",
+          timeoutSeconds: 90,
+        },
+      },
+    ] as never);
+
+    expect(deliverable).toHaveLength(1);
+    expect(deliverable[0]?.id).toBe("clear-ipsets-job");
   });
 });
 
@@ -221,7 +270,9 @@ describe("buildSyntheticRecoveryTransitions", () => {
 
     expect(transitions).toHaveLength(1);
     expect(transitions[0]?.type).toBe("server_unreachable");
-    expect(transitions[0]?.reason).toContain("scheduled local vectra-controller restart");
+    expect(transitions[0]?.reason).toContain(
+      "scheduled local vectra-controller restart",
+    );
     expect(transitions[0]?.metadata.origin).toBe("control-plane-recovery");
   });
 
@@ -282,7 +333,9 @@ describe("buildSyntheticRecoveryTransitions", () => {
 
     expect(transitions).toHaveLength(1);
     expect(transitions[0]?.type).toBe("proxy_outage");
-    expect(transitions[0]?.reason).toContain("foreign resources are still unavailable");
+    expect(transitions[0]?.reason).toContain(
+      "foreign resources are still unavailable",
+    );
   });
 
   it("resolves open recovery incidents once router returns to idle recovery phase", () => {

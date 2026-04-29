@@ -806,6 +806,61 @@ func executeJobs(
 			}, controlplane.RouterInventory{}); err != nil {
 				return fmt.Errorf("submit refresh rules result: %w", err)
 			}
+		case "run_rescue_repair":
+			repairRequest, err := parseRunRescueRepairJob(job.Payload)
+			if err != nil {
+				if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, "", "", err.Error(), map[string]interface{}{"error": err.Error()}); submitErr != nil {
+					return submitErr
+				}
+				continue
+			}
+			resultPayload, stdout, stderr, err := executeRescueRepairJob(
+				ctx,
+				backend,
+				repairRequest,
+				rescueState,
+				persisted,
+				runtimeStatus,
+				func() controlplane.RouterInventory {
+					return collectRescueRepairInventorySnapshot(ctx, backend, runtimeStatus)
+				},
+			)
+			incidentTransitions := []map[string]interface{}{}
+			if recovered, _ := resultPayload["recoveredProxy"].(bool); recovered {
+				incidentTransitions = append(incidentTransitions, map[string]interface{}{
+					"type":   "recovered",
+					"state":  "resolved",
+					"reason": "Proxy mode restored by safe rescue repair.",
+				})
+			}
+			if err != nil {
+				resultPayload["error"] = err.Error()
+				if submitErr := submitJobResultNow(ctx, cfg, client, persisted, controlplane.JobResultRequest{
+					ProtocolVersion:     controlplane.ProtocolVersion,
+					RouterID:            cfg.RouterID,
+					JobID:               job.ID,
+					Status:              "failure",
+					Stdout:              stdout,
+					Stderr:              stderr,
+					IncidentTransitions: incidentTransitions,
+					Result:              resultPayload,
+				}, controlplane.RouterInventory{}); submitErr != nil {
+					return fmt.Errorf("submit rescue repair failure result: %w", submitErr)
+				}
+				continue
+			}
+			if err := submitJobResultNow(ctx, cfg, client, persisted, controlplane.JobResultRequest{
+				ProtocolVersion:     controlplane.ProtocolVersion,
+				RouterID:            cfg.RouterID,
+				JobID:               job.ID,
+				Status:              "success",
+				Stdout:              stdout,
+				Stderr:              stderr,
+				IncidentTransitions: incidentTransitions,
+				Result:              resultPayload,
+			}, controlplane.RouterInventory{}); err != nil {
+				return fmt.Errorf("submit rescue repair result: %w", err)
+			}
 		case "collect_router_logs":
 			logRequest := parseCollectRouterLogsJob(job.Payload)
 			snapshots, stdout, stderr, err := collectRouterLogs(ctx, backend, logRequest)

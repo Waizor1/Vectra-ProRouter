@@ -1,6 +1,7 @@
 import type {
   PasswallDesiredConfig,
   RouterInventory,
+  RescueRepairResultPayload,
 } from "@vectra/contracts";
 import {
   artifactTypeSchema,
@@ -16,6 +17,7 @@ import {
   secretBlobScopeSchema,
   severitySchema,
 } from "@vectra/contracts";
+import { sql } from "drizzle-orm";
 import {
   boolean,
   index,
@@ -28,41 +30,44 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
-const routerStatusEnum = pgEnum("vectra_router_status", routerStatusSchema.options);
+const routerStatusEnum = pgEnum(
+  "vectra_router_status",
+  routerStatusSchema.options,
+);
 const credentialTypeEnum = pgEnum(
   "vectra_credential_type",
-  credentialTypeSchema.options
+  credentialTypeSchema.options,
 );
 const jobTypeEnum = pgEnum("vectra_job_type", jobTypeSchema.options);
 const jobStateEnum = pgEnum("vectra_job_state", jobStateSchema.options);
 const jobResultStatusEnum = pgEnum(
   "vectra_job_result_status",
-  jobResultStatusSchema.options
+  jobResultStatusSchema.options,
 );
 const artifactTypeEnum = pgEnum(
   "vectra_artifact_type",
-  artifactTypeSchema.options
+  artifactTypeSchema.options,
 );
 const channelEnum = pgEnum(
   "vectra_controller_channel",
-  controllerChannelSchema.options
+  controllerChannelSchema.options,
 );
 const importStateEnum = pgEnum(
   "vectra_router_import_state",
-  routerImportStateSchema.options
+  routerImportStateSchema.options,
 );
 const incidentTypeEnum = pgEnum(
   "vectra_incident_type",
-  incidentTypeSchema.options
+  incidentTypeSchema.options,
 );
 const incidentStateEnum = pgEnum(
   "vectra_incident_state",
-  incidentStateSchema.options
+  incidentStateSchema.options,
 );
 const severityEnum = pgEnum("vectra_severity", severitySchema.options);
 const secretBlobScopeEnum = pgEnum(
   "vectra_secret_blob_scope",
-  secretBlobScopeSchema.options
+  secretBlobScopeSchema.options,
 );
 const pushAlertKindEnum = pgEnum("vectra_push_alert_kind", [
   "offline",
@@ -101,7 +106,9 @@ export const routers = createTable(
     importState: importStateEnum("import_state")
       .notNull()
       .default("awaiting_import"),
-    controllerChannel: channelEnum("controller_channel").notNull().default("stable"),
+    controllerChannel: channelEnum("controller_channel")
+      .notNull()
+      .default("stable"),
     rolloutGroupId: text("rollout_group_id"),
     pendingImportRevisionId: text("pending_import_revision_id"),
     activeRevisionId: text("active_revision_id"),
@@ -115,11 +122,13 @@ export const routers = createTable(
     ...timestamps,
   },
   (table) => [
-    uniqueIndex("vectra_router_device_identifier_idx").on(table.deviceIdentifier),
+    uniqueIndex("vectra_router_device_identifier_idx").on(
+      table.deviceIdentifier,
+    ),
     index("vectra_router_status_idx").on(table.status),
     index("vectra_router_last_seen_idx").on(table.lastSeenAt),
     index("vectra_router_rollout_group_idx").on(table.rolloutGroupId),
-  ]
+  ],
 );
 
 export const routerCredentials = createTable(
@@ -135,14 +144,16 @@ export const routerCredentials = createTable(
     tokenHash: text("token_hash").notNull(),
     tokenPreview: text("token_preview").notNull(),
     devicePublicKey: text("device_public_key").notNull(),
-    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
+    issuedAt: timestamp("issued_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
   },
   (table) => [
     index("vectra_router_credential_router_idx").on(table.routerId),
     uniqueIndex("vectra_router_credential_token_idx").on(table.tokenHash),
-  ]
+  ],
 );
 
 export const routerInventorySnapshots = createTable(
@@ -169,7 +180,7 @@ export const routerInventorySnapshots = createTable(
   (table) => [
     index("vectra_router_inventory_router_idx").on(table.routerId),
     index("vectra_router_inventory_created_idx").on(table.createdAt),
-  ]
+  ],
 );
 
 export const passwallDesiredRevisions = createTable(
@@ -199,10 +210,10 @@ export const passwallDesiredRevisions = createTable(
   (table) => [
     uniqueIndex("vectra_passwall_revision_router_revision_idx").on(
       table.routerId,
-      table.revisionNumber
+      table.revisionNumber,
     ),
     index("vectra_passwall_revision_router_idx").on(table.routerId),
-  ]
+  ],
 );
 
 export const passwallAppliedRevisions = createTable(
@@ -216,7 +227,7 @@ export const passwallAppliedRevisions = createTable(
       .references(() => routers.id, { onDelete: "cascade" }),
     desiredRevisionId: text("desired_revision_id").references(
       () => passwallDesiredRevisions.id,
-      { onDelete: "set null" }
+      { onDelete: "set null" },
     ),
     jobId: text("job_id"),
     result: text("result").notNull().default("applied"),
@@ -231,7 +242,7 @@ export const passwallAppliedRevisions = createTable(
       .notNull()
       .defaultNow(),
   },
-  (table) => [index("vectra_passwall_applied_router_idx").on(table.routerId)]
+  (table) => [index("vectra_passwall_applied_router_idx").on(table.routerId)],
 );
 
 export const passwallSecretBlobs = createTable(
@@ -245,7 +256,7 @@ export const passwallSecretBlobs = createTable(
       .references(() => routers.id, { onDelete: "cascade" }),
     desiredRevisionId: text("desired_revision_id").references(
       () => passwallDesiredRevisions.id,
-      { onDelete: "cascade" }
+      { onDelete: "cascade" },
     ),
     scope: secretBlobScopeEnum("scope").notNull(),
     ciphertext: text("ciphertext").notNull(),
@@ -256,8 +267,28 @@ export const passwallSecretBlobs = createTable(
   (table) => [
     index("vectra_passwall_secret_router_idx").on(table.routerId),
     index("vectra_passwall_secret_revision_idx").on(table.desiredRevisionId),
-  ]
+  ],
 );
+
+export type RescueCaseState =
+  | "open"
+  | "repairing"
+  | "escalated"
+  | "silenced"
+  | "resolved";
+
+export type RescueCaseTrigger =
+  | "direct_mode"
+  | "proxy_outage"
+  | "server_unreachable"
+  | "stale_check_in"
+  | "foreign_reachability_blocked"
+  | "telegram_blocked";
+
+export type RescueCaseEvidence = Record<string, unknown>;
+export type RescueCaseRepairAttempt =
+  | RescueRepairResultPayload
+  | Record<string, unknown>;
 
 export const jobs = createTable(
   "job",
@@ -270,10 +301,13 @@ export const jobs = createTable(
       .references(() => routers.id, { onDelete: "cascade" }),
     type: jobTypeEnum("type").notNull(),
     state: jobStateEnum("state").notNull().default("queued"),
-    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+    payload: jsonb("payload")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
     desiredRevisionId: text("desired_revision_id").references(
       () => passwallDesiredRevisions.id,
-      { onDelete: "set null" }
+      { onDelete: "set null" },
     ),
     dedupeKey: text("dedupe_key"),
     deliverAfter: timestamp("deliver_after", { withTimezone: true }),
@@ -286,7 +320,58 @@ export const jobs = createTable(
   (table) => [
     index("vectra_job_router_state_idx").on(table.routerId, table.state),
     uniqueIndex("vectra_job_dedupe_idx").on(table.dedupeKey),
-  ]
+  ],
+);
+
+export const rescueCases = createTable(
+  "rescue_case",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    routerId: text("router_id")
+      .notNull()
+      .references(() => routers.id, { onDelete: "cascade" }),
+    trigger: text("trigger").$type<RescueCaseTrigger>().notNull(),
+    state: text("state").$type<RescueCaseState>().notNull().default("open"),
+    triggerDetails: jsonb("trigger_details")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    evidence: jsonb("evidence")
+      .$type<RescueCaseEvidence>()
+      .notNull()
+      .default({}),
+    repairAttempts: jsonb("repair_attempts")
+      .$type<RescueCaseRepairAttempt[]>()
+      .notNull()
+      .default([]),
+    diagnosis: jsonb("diagnosis")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    escalatedAt: timestamp("escalated_at", { withTimezone: true }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    silencedUntil: timestamp("silenced_until", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    index("vectra_rescue_case_router_state_idx").on(
+      table.routerId,
+      table.state,
+    ),
+    index("vectra_rescue_case_started_idx").on(table.startedAt),
+    index("vectra_rescue_case_resolved_idx").on(table.resolvedAt),
+    uniqueIndex("vectra_rescue_case_one_active_router_idx")
+      .on(table.routerId)
+      .where(
+        sql`${table.state} IN ('open', 'repairing', 'escalated', 'silenced')`,
+      ),
+  ],
 );
 
 export const jobResults = createTable(
@@ -302,7 +387,10 @@ export const jobResults = createTable(
       .notNull()
       .references(() => routers.id, { onDelete: "cascade" }),
     status: jobResultStatusEnum("status").notNull(),
-    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+    payload: jsonb("payload")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
     reportedAt: timestamp("reported_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -310,7 +398,7 @@ export const jobResults = createTable(
   (table) => [
     index("vectra_job_result_router_idx").on(table.routerId),
     index("vectra_job_result_job_idx").on(table.jobId),
-  ]
+  ],
 );
 
 export const artifacts = createTable(
@@ -329,14 +417,21 @@ export const artifacts = createTable(
     downloadUrl: text("download_url").notNull(),
     checksumSha256: text("checksum_sha256").notNull(),
     signatureUrl: text("signature_url"),
-    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
     publishedAt: timestamp("published_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   (table) => [
-    index("vectra_artifact_lookup_idx").on(table.type, table.channel, table.name),
-  ]
+    index("vectra_artifact_lookup_idx").on(
+      table.type,
+      table.channel,
+      table.name,
+    ),
+  ],
 );
 
 export const firmwareManifests = createTable(
@@ -371,9 +466,9 @@ export const firmwareManifests = createTable(
       table.target,
       table.architecture,
       table.layoutFamily,
-      table.channel
+      table.channel,
     ),
-  ]
+  ],
 );
 
 export const eventLog = createTable(
@@ -388,12 +483,15 @@ export const eventLog = createTable(
     type: text("type").notNull(),
     severity: severityEnum("severity").notNull().default("info"),
     message: text("message").notNull(),
-    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
-  (table) => [index("vectra_event_log_router_idx").on(table.routerId)]
+  (table) => [index("vectra_event_log_router_idx").on(table.routerId)],
 );
 
 export const operatorPushSubscriptions = createTable(
@@ -417,11 +515,13 @@ export const operatorPushSubscriptions = createTable(
   },
   (table) => [
     uniqueIndex("vectra_operator_push_subscription_endpoint_idx").on(
-      table.endpoint
+      table.endpoint,
     ),
     index("vectra_operator_push_subscription_user_idx").on(table.operatorUser),
-    index("vectra_operator_push_subscription_disabled_idx").on(table.disabledAt),
-  ]
+    index("vectra_operator_push_subscription_disabled_idx").on(
+      table.disabledAt,
+    ),
+  ],
 );
 
 export const operatorGlobalTemplates = createTable(
@@ -433,14 +533,18 @@ export const operatorGlobalTemplates = createTable(
     templateKey: text("template_key").notNull(),
     title: text("title").notNull(),
     installBaselineUci: text("install_baseline_uci").notNull(),
-    rolloutConfig: jsonb("rollout_config").$type<PasswallDesiredConfig>().notNull(),
+    rolloutConfig: jsonb("rollout_config")
+      .$type<PasswallDesiredConfig>()
+      .notNull(),
     rolloutMode: text("rollout_mode").notNull().default("settings_only"),
     note: text("note"),
     ...timestamps,
   },
   (table) => [
-    uniqueIndex("vectra_operator_global_template_key_idx").on(table.templateKey),
-  ]
+    uniqueIndex("vectra_operator_global_template_key_idx").on(
+      table.templateKey,
+    ),
+  ],
 );
 
 export const operatorRolloutProfiles = createTable(
@@ -452,13 +556,15 @@ export const operatorRolloutProfiles = createTable(
     profileKey: text("profile_key").notNull(),
     name: text("name").notNull(),
     description: text("description"),
-    rolloutConfig: jsonb("rollout_config").$type<PasswallDesiredConfig>().notNull(),
+    rolloutConfig: jsonb("rollout_config")
+      .$type<PasswallDesiredConfig>()
+      .notNull(),
     note: text("note"),
     ...timestamps,
   },
   (table) => [
     uniqueIndex("vectra_operator_rollout_profile_key_idx").on(table.profileKey),
-  ]
+  ],
 );
 
 export const operatorRouterGroups = createTable(
@@ -472,14 +578,16 @@ export const operatorRouterGroups = createTable(
     description: text("description"),
     rolloutProfileId: text("rollout_profile_id").references(
       () => operatorRolloutProfiles.id,
-      { onDelete: "set null" }
+      { onDelete: "set null" },
     ),
     ...timestamps,
   },
   (table) => [
     uniqueIndex("vectra_operator_router_group_key_idx").on(table.groupKey),
-    index("vectra_operator_router_group_profile_idx").on(table.rolloutProfileId),
-  ]
+    index("vectra_operator_router_group_profile_idx").on(
+      table.rolloutProfileId,
+    ),
+  ],
 );
 
 export const operatorPushAlerts = createTable(
@@ -497,7 +605,10 @@ export const operatorPushAlerts = createTable(
     title: text("title").notNull(),
     body: text("body").notNull(),
     href: text("href").notNull(),
-    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+    payload: jsonb("payload")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -507,7 +618,7 @@ export const operatorPushAlerts = createTable(
     uniqueIndex("vectra_operator_push_alert_dedupe_idx").on(table.dedupeKey),
     index("vectra_operator_push_alert_router_idx").on(table.routerId),
     index("vectra_operator_push_alert_resolved_idx").on(table.resolvedAt),
-  ]
+  ],
 );
 
 export const healthIncidents = createTable(
@@ -522,11 +633,14 @@ export const healthIncidents = createTable(
     type: incidentTypeEnum("type").notNull(),
     state: incidentStateEnum("state").notNull().default("open"),
     reason: text("reason").notNull(),
-    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
     openedAt: timestamp("opened_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
   },
-  (table) => [index("vectra_health_incident_router_idx").on(table.routerId)]
+  (table) => [index("vectra_health_incident_router_idx").on(table.routerId)],
 );

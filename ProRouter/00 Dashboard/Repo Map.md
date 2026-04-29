@@ -1,6 +1,6 @@
 ---
 type: generated
-updated: '2026-04-23 12:40:41 +03:00'
+updated: '2026-04-30 01:51:10 +03:00'
 generated-by: scripts/Sync-ProRouterVault.py
 tags:
   - generated
@@ -13,9 +13,9 @@ Generated from the current workspace root `Vectra-ProRouter`.
 
 ## Snapshot
 
-- Generated at: `2026-04-23 12:40:41 +03:00`
+- Generated at: `2026-04-30 01:51:10 +03:00`
 - Top-level directories: `8`
-- Top-level files: `13`
+- Top-level files: `15`
 - Tree depth: `3`
 
 ## Module Notes
@@ -176,8 +176,10 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |- .gitignore
 |- AGENTS.md
 |- Caddyfile
+|- CLAUDE.md
 |- docker-compose.yml
 |- Dockerfile.web
+|- GEMINI.md
 |- package.json
 |- pnpm-lock.yaml
 |- pnpm-workspace.yaml

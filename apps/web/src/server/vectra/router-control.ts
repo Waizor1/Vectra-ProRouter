@@ -33,10 +33,12 @@ import { and, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
 
 import { env } from "~/env";
 import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
+import { isPasswallClearIpsetsJob } from "~/lib/passwall-clear-ipsets-jobs";
 import { isRouterHostnameUpdateTerminalPayload } from "~/lib/router-hostname-jobs";
 import { isRouterRebootJob } from "~/lib/router-reboot-jobs";
 import { db } from "~/server/db";
 import { issueRouterCredential } from "~/server/vectra/auth";
+import { appendRescueRepairAttemptFromJobResult } from "~/server/vectra/auto-rescue";
 import {
   resolveImportedConfigDigest,
   resolvePersistedConfigDigest,
@@ -148,10 +150,13 @@ export function selectDeliverableJobsForCheckIn(
       ? queuedCandidates
       : queuedCandidates.filter((job) => job.type !== "apply_passwall_config");
 
-  const exclusiveJob = allowedJobs.find((job) =>
-    isControllerUpdateJob(job) ||
-    isRouterRebootJob(job) ||
-    job.type === "validate_firmware",
+  const exclusiveJob = allowedJobs.find(
+    (job) =>
+      isControllerUpdateJob(job) ||
+      isPasswallClearIpsetsJob(job) ||
+      isRouterRebootJob(job) ||
+      job.type === "run_rescue_repair" ||
+      job.type === "validate_firmware",
   );
 
   if (exclusiveJob) {
@@ -204,7 +209,9 @@ export function resolveReportedRouterHostname(args: {
   return requestedHostname.length > 0 ? requestedHostname : null;
 }
 
-type RecoveryHealthPayload = ReturnType<typeof routerCheckInRequestSchema.parse>["health"];
+type RecoveryHealthPayload = ReturnType<
+  typeof routerCheckInRequestSchema.parse
+>["health"];
 type RecoveryIncidentTransition = ReturnType<
   typeof jobResultRequestSchema.parse
 >["incidentTransitions"][number];
@@ -268,12 +275,10 @@ export function buildSyntheticRecoveryTransitions(args: {
     args.openIncident?.state === "open" &&
     !isControlPlaneRecoveryIncident(args.openIncident);
 
-  let desiredOpen:
-    | {
-        type: "server_unreachable" | "proxy_outage";
-        reason: string;
-      }
-    | null = null;
+  let desiredOpen: {
+    type: "server_unreachable" | "proxy_outage";
+    reason: string;
+  } | null = null;
 
   if (args.health.recoveryPhase === "controller_restart_wait") {
     desiredOpen = {
@@ -451,7 +456,9 @@ async function getRevisionSummaryWithDb(
   const previous = revisions[currentIndex + 1] ?? null;
   const [currentConfig, previousConfig] = await Promise.all([
     hydrateRevisionConfigWithDb(client, current),
-    previous ? hydrateRevisionConfigWithDb(client, previous) : Promise.resolve(null),
+    previous
+      ? hydrateRevisionConfigWithDb(client, previous)
+      : Promise.resolve(null),
   ]);
 
   return desiredRevisionSummarySchema.parse({
@@ -556,10 +563,9 @@ async function createImportedBaselineRevision(
         ),
         createdBy:
           importedState.source === "operator_reimport" ? "operator" : "router",
-        note:
-          promoteAsApproved
-            ? "Imported from live router after authoritative apply."
-            : importedState.source === "operator_reimport"
+        note: promoteAsApproved
+          ? "Imported from live router after authoritative apply."
+          : importedState.source === "operator_reimport"
             ? "Operator requested re-import from live router state."
             : "Imported from live router PassWall2 state.",
         approvedAt: promoteAsApproved ? new Date() : null,
@@ -604,7 +610,9 @@ async function createImportedBaselineRevision(
     .set({
       importState: nextImportState,
       pendingImportRevisionId: promoteAsApproved ? null : revision.id,
-      activeRevisionId: promoteAsApproved ? revision.id : router.activeRevisionId,
+      activeRevisionId: promoteAsApproved
+        ? revision.id
+        : router.activeRevisionId,
       lastConfigDigest: configDigest,
     })
     .where(eq(routers.id, router.id))
@@ -617,12 +625,10 @@ async function createImportedBaselineRevision(
         importedState.source === "operator_reimport"
           ? "router.import.reimported"
           : "router.import.created",
-      severity:
-        nextImportState === "out_of_sync" ? "warning" : "info",
-      message:
-        promoteAsApproved
-          ? "Router reported a post-apply live PassWall2 baseline and it was promoted back to authoritative state."
-          : nextImportState === "out_of_sync"
+      severity: nextImportState === "out_of_sync" ? "warning" : "info",
+      message: promoteAsApproved
+        ? "Router reported a post-apply live PassWall2 baseline and it was promoted back to authoritative state."
+        : nextImportState === "out_of_sync"
           ? "Router reported a new live PassWall2 baseline that differs from the authoritative revision."
           : "Router imported its live PassWall2 baseline and is awaiting operator review.",
       metadata: {
@@ -754,7 +760,9 @@ export async function applyIncidentTransitions(
         continue;
       }
       const existingOpen = controlPlaneRecoveryTransition
-        ? openIncidents.find((incident) => isControlPlaneRecoveryIncident(incident))
+        ? openIncidents.find((incident) =>
+            isControlPlaneRecoveryIncident(incident),
+          )
         : openIncidents[0];
 
       if (existingOpen?.type === transition.type) {
@@ -1025,10 +1033,10 @@ export async function checkInRouter(routerId: string, input: unknown) {
       lastSeenAt: now,
       lastCheckInAt: now,
       status: nextStatus,
-          lastDirectModeAt:
-            parsed.health.currentMode === "direct"
-              ? now
-              : existingRouter.lastDirectModeAt,
+      lastDirectModeAt:
+        parsed.health.currentMode === "direct"
+          ? now
+          : existingRouter.lastDirectModeAt,
       lastRescueReason: resolveRescueReason(
         parsed.health.currentMode,
         parsed.inventory.lastRescue?.reason,
@@ -1184,6 +1192,19 @@ export async function recordJobResult(routerId: string, input: unknown) {
       dedupeKey: parsed.status === "accepted" ? job.dedupeKey : null,
     })
     .where(eq(jobs.id, job.id));
+
+  if (job.type === "run_rescue_repair" && parsed.status !== "accepted") {
+    const rescueRepairPayload = payload as Record<string, unknown>;
+    await appendRescueRepairAttemptFromJobResult({
+      routerId,
+      caseId:
+        typeof rescueRepairPayload.caseId === "string"
+          ? rescueRepairPayload.caseId
+          : null,
+      resultPayload: rescueRepairPayload,
+      status: parsed.status,
+    });
+  }
 
   const compatibilityTransitions = [...parsed.incidentTransitions];
   if (parsed.result.enteredDirectMode === true) {

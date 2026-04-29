@@ -177,7 +177,7 @@ describe("buildLastControllerUpdateAttempt", () => {
       ],
     });
 
-    expect(attempt?.summary).toBe("Collected errors:");
+    expect(attempt?.summary).toBe("failed to download");
   });
 
   it("falls back to stdout and running copy when needed", () => {
@@ -252,7 +252,7 @@ describe("buildLastControllerUpdateAttempt", () => {
           jobId: "controller-terminal-job",
           status: "success",
           payload: {
-            stdout: "controller self-update to 0.1.13-r1 queued",
+            stdout: "controller self-update to 0.1.13-r1 installed",
           },
         }),
       ],
@@ -263,7 +263,73 @@ describe("buildLastControllerUpdateAttempt", () => {
       jobState: "succeeded",
       resultStatus: "success",
       artifactVersion: "0.1.13-r1",
-      summary: "controller self-update to 0.1.13-r1 queued",
+      summary: "controller self-update to 0.1.13-r1 installed",
+    });
+  });
+
+  it("does not let harmless success stderr hide controller self-update success", () => {
+    const attempt = buildLastControllerUpdateAttempt({
+      jobs: [
+        createJob({
+          id: "controller-terminal-job",
+          type: "run_terminal_command",
+          state: "succeeded",
+          payload: {
+            purpose: "controller-self-update",
+            artifactVersion: "0.1.13-r5",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          id: "controller-terminal-result",
+          jobId: "controller-terminal-job",
+          status: "success",
+          payload: {
+            stdout: "controller self-update to 0.1.13-r5 installed",
+            stderr:
+              "Collected errors:\n * resolve_conffiles: Existing conffile is different",
+          },
+        }),
+      ],
+    });
+
+    expect(attempt?.summary).toBe(
+      "controller self-update to 0.1.13-r5 installed",
+    );
+  });
+
+  it("keeps terminal self-update LuCI failures red even when the agent version converged", () => {
+    const attempt = buildLastControllerUpdateAttempt({
+      jobs: [
+        createJob({
+          id: "controller-terminal-job",
+          type: "run_terminal_command",
+          state: "failed",
+          payload: {
+            purpose: "controller-self-update",
+            artifactVersion: "0.1.13-r5",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          id: "controller-terminal-result",
+          jobId: "controller-terminal-job",
+          status: "failure",
+          payload: {
+            stderr:
+              "Collected errors:\n * check_data_file_clashes: Package luci-app-vectra-controller wants to install file /._usr",
+          },
+        }),
+      ],
+      installedControllerVersion: "0.1.13-r5",
+    });
+
+    expect(attempt).toMatchObject({
+      resultStatus: "failure",
+      summary:
+        "check_data_file_clashes: Package luci-app-vectra-controller wants to install file /._usr",
     });
   });
 });
@@ -716,7 +782,7 @@ describe("buildRouterManagementTaskLog", () => {
           jobId: "terminal-controller-job",
           status: "success",
           payload: {
-            stdout: "controller self-update to 0.1.13-r1 queued",
+            stdout: "controller self-update to 0.1.13-r1 installed",
           },
         }),
       ],
@@ -727,7 +793,41 @@ describe("buildRouterManagementTaskLog", () => {
       label: "Self-update controller",
       resultStatus: "success",
       command: "opkg install --force-reinstall ...",
-      summary: "controller self-update to 0.1.13-r1 queued",
+      summary: "controller self-update to 0.1.13-r1 installed",
+    });
+  });
+
+  it("surfaces terminal self-update LuCI package failures as actionable errors", () => {
+    const items = buildRouterManagementTaskLog({
+      jobs: [
+        createJob({
+          id: "terminal-controller-job",
+          type: "run_terminal_command",
+          state: "failed",
+          payload: {
+            purpose: "controller-self-update",
+            artifactVersion: "0.1.13-r4",
+          },
+        }),
+      ],
+      installedControllerVersion: "0.1.13-r4",
+      results: [
+        createJobResult({
+          jobId: "terminal-controller-job",
+          status: "failure",
+          payload: {
+            stderr:
+              "Collected errors:\n * check_data_file_clashes: Package luci-app-vectra-controller wants to install file /._usr\n * opkg_install_cmd: Cannot install package luci-app-vectra-controller.",
+          },
+        }),
+      ],
+    });
+
+    expect(items[0]).toMatchObject({
+      kind: "controller-self-update",
+      resultStatus: "failure",
+      summary:
+        "check_data_file_clashes: Package luci-app-vectra-controller wants to install file /._usr",
     });
   });
 
@@ -801,6 +901,42 @@ describe("buildRouterManagementTaskLog", () => {
       command:
         'uci set system.@system[0].hostname="$new_hostname"\nuci commit system',
       summary: "hostname updated to andrey-livingroom",
+    });
+  });
+
+  it("treats PassWall Clear IPSET/NFTSet as a dedicated task-log item", () => {
+    const items = buildRouterManagementTaskLog({
+      jobs: [
+        createJob({
+          id: "terminal-clear-ipsets-job",
+          type: "run_terminal_command",
+          state: "succeeded",
+          payload: {
+            purpose: "passwall-clear-ipsets",
+            command:
+              "uci -q set passwall2.@global[0].flush_set='1'\n/etc/init.d/passwall2 restart",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          jobId: "terminal-clear-ipsets-job",
+          status: "success",
+          payload: {
+            stdout:
+              "PassWall2 IPSET/NFTSet clear requested; passwall2 restarted",
+          },
+        }),
+      ],
+    });
+
+    expect(items[0]).toMatchObject({
+      kind: "passwall-clear-ipsets",
+      label: "Clear IPSET/NFTSet",
+      resultStatus: "success",
+      command:
+        "uci -q set passwall2.@global[0].flush_set='1'\n/etc/init.d/passwall2 restart",
+      summary: "PassWall2 IPSET/NFTSet clear requested; passwall2 restarted",
     });
   });
 

@@ -22,6 +22,7 @@ import {
   buildTerminalControllerSelfUpdatePayload,
   shouldUseTerminalControllerSelfUpdate,
 } from "~/lib/controller-update-jobs";
+import { buildTerminalPasswallClearIpsetsPayload } from "~/lib/passwall-clear-ipsets-jobs";
 import { buildTerminalRouterRebootPayload } from "~/lib/router-reboot-jobs";
 import {
   PASSWALL_MANAGED_STACK_REQUIRED_PACKAGES,
@@ -419,6 +420,43 @@ async function enqueueRouterRebootJob(args: {
       state: "queued",
       dedupeKey,
       payload: buildTerminalRouterRebootPayload(),
+    })
+    .returning();
+
+  return job;
+}
+
+async function enqueuePasswallClearIpsetsJob(args: {
+  ctx: RouterMutationContext;
+  routerId: string;
+}) {
+  await assertCertifiedRouter(args.ctx, args.routerId);
+
+  const dedupeKey = `passwall_clear_ipsets:${args.routerId}`;
+  const [existingJob] = await args.ctx.db
+    .select()
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.routerId, args.routerId),
+        eq(jobs.dedupeKey, dedupeKey),
+        inArray(jobs.state, ["queued", "delivered", "running"]),
+      ),
+    )
+    .limit(1);
+
+  if (existingJob) {
+    return existingJob;
+  }
+
+  const [job] = await args.ctx.db
+    .insert(jobs)
+    .values({
+      routerId: args.routerId,
+      type: "run_terminal_command",
+      state: "queued",
+      dedupeKey,
+      payload: buildTerminalPasswallClearIpsetsPayload(),
     })
     .returning();
 
@@ -1124,6 +1162,19 @@ export const updateRouter = createTRPCRouter({
     )
     .mutation(async ({ ctx, input }) => {
       return enqueueRouterRebootJob({
+        ctx,
+        routerId: input.routerId,
+      });
+    }),
+
+  queuePasswallClearIpsets: protectedProcedure
+    .input(
+      z.object({
+        routerId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return enqueuePasswallClearIpsetsJob({
         ctx,
         routerId: input.routerId,
       });

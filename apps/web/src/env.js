@@ -1,6 +1,13 @@
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
 
+/** @param {boolean} defaultValue */
+const booleanFlagSchema = (defaultValue) =>
+  z
+    .enum(["true", "false"])
+    .default(defaultValue ? "true" : "false")
+    .transform((value) => value === "true");
+
 export const env = createEnv({
   /**
    * Specify your server-side environment variables schema here. This way you can ensure the app
@@ -10,7 +17,10 @@ export const env = createEnv({
     DATABASE_URL: z.string().url(),
     VECTRA_OPERATOR_USER: z.string().min(1).default("operator"),
     VECTRA_OPERATOR_PASSWORD: z.string().min(1).default("change-me"),
-    VECTRA_SECRETS_KEY: z.string().min(32).default("dev-only-vectra-secrets-key-000000"),
+    VECTRA_SECRETS_KEY: z
+      .string()
+      .min(32)
+      .default("dev-only-vectra-secrets-key-000000"),
     VECTRA_DEFAULT_CONTROL_DOMAIN: z
       .string()
       .url()
@@ -23,7 +33,11 @@ export const env = createEnv({
       .string()
       .url()
       .default("https://api.vectra-pro.net/artifacts"),
-    VECTRA_POLLING_INTERVAL_SECONDS: z.coerce.number().int().min(15).default(45),
+    VECTRA_POLLING_INTERVAL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(15)
+      .default(45),
     VECTRA_WEB_PUSH_PUBLIC_KEY: z.string().min(1).optional(),
     VECTRA_WEB_PUSH_PRIVATE_KEY: z.string().min(1).optional(),
     VECTRA_WEB_PUSH_SUBJECT: z
@@ -35,6 +49,28 @@ export const env = createEnv({
       .int()
       .min(30)
       .default(60),
+    VECTRA_AUTO_RESCUE_ENABLED: booleanFlagSchema(false),
+    VECTRA_AUTO_RESCUE_MONITOR_INTERVAL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(30)
+      .default(60),
+    VECTRA_AUTO_RESCUE_STALE_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(60)
+      .default(300),
+    VECTRA_AUTO_RESCUE_ESCALATION_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(300)
+      .max(900)
+      .default(600),
+    VECTRA_TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
+    VECTRA_TELEGRAM_ALLOWED_CHAT_IDS: z.string().min(1).optional(),
+    VECTRA_TELEGRAM_WEBHOOK_SECRET: z.string().min(16).optional(),
+    VECTRA_TELEGRAM_CALLBACK_SECRET: z.string().min(32).optional(),
+    VECTRA_TELEGRAM_DRY_RUN: booleanFlagSchema(true),
     NODE_ENV: z
       .enum(["development", "test", "production"])
       .default("development"),
@@ -61,12 +97,27 @@ export const env = createEnv({
     VECTRA_DEFAULT_CONTROL_DOMAIN: process.env.VECTRA_DEFAULT_CONTROL_DOMAIN,
     VECTRA_ROUTER_API_BASE_URL: process.env.VECTRA_ROUTER_API_BASE_URL,
     VECTRA_ARTIFACT_BASE_URL: process.env.VECTRA_ARTIFACT_BASE_URL,
-    VECTRA_POLLING_INTERVAL_SECONDS: process.env.VECTRA_POLLING_INTERVAL_SECONDS,
+    VECTRA_POLLING_INTERVAL_SECONDS:
+      process.env.VECTRA_POLLING_INTERVAL_SECONDS,
     VECTRA_WEB_PUSH_PUBLIC_KEY: process.env.VECTRA_WEB_PUSH_PUBLIC_KEY,
     VECTRA_WEB_PUSH_PRIVATE_KEY: process.env.VECTRA_WEB_PUSH_PRIVATE_KEY,
     VECTRA_WEB_PUSH_SUBJECT: process.env.VECTRA_WEB_PUSH_SUBJECT,
     VECTRA_WEB_PUSH_MONITOR_INTERVAL_SECONDS:
       process.env.VECTRA_WEB_PUSH_MONITOR_INTERVAL_SECONDS,
+    VECTRA_AUTO_RESCUE_ENABLED: process.env.VECTRA_AUTO_RESCUE_ENABLED,
+    VECTRA_AUTO_RESCUE_MONITOR_INTERVAL_SECONDS:
+      process.env.VECTRA_AUTO_RESCUE_MONITOR_INTERVAL_SECONDS,
+    VECTRA_AUTO_RESCUE_STALE_SECONDS:
+      process.env.VECTRA_AUTO_RESCUE_STALE_SECONDS,
+    VECTRA_AUTO_RESCUE_ESCALATION_SECONDS:
+      process.env.VECTRA_AUTO_RESCUE_ESCALATION_SECONDS,
+    VECTRA_TELEGRAM_BOT_TOKEN: process.env.VECTRA_TELEGRAM_BOT_TOKEN,
+    VECTRA_TELEGRAM_ALLOWED_CHAT_IDS:
+      process.env.VECTRA_TELEGRAM_ALLOWED_CHAT_IDS,
+    VECTRA_TELEGRAM_WEBHOOK_SECRET: process.env.VECTRA_TELEGRAM_WEBHOOK_SECRET,
+    VECTRA_TELEGRAM_CALLBACK_SECRET:
+      process.env.VECTRA_TELEGRAM_CALLBACK_SECRET,
+    VECTRA_TELEGRAM_DRY_RUN: process.env.VECTRA_TELEGRAM_DRY_RUN,
     NODE_ENV: process.env.NODE_ENV,
     // NEXT_PUBLIC_CLIENTVAR: process.env.NEXT_PUBLIC_CLIENTVAR,
   },

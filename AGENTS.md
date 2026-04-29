@@ -1,5 +1,13 @@
 # AGENTS.md
 
+<!-- codex-global-bridge:start -->
+## Global Codex efficiency layer
+
+@/Users/waizor/.codex/AGENTS.md
+
+Before applying project-local rules, load `/Users/waizor/.codex/AGENTS.md` and its includes (`MEMORY.md`, `ICM.md`, `WORKFLOW.md`, `TOOLS.md`, `PROJECTS.md`, `RTK.md`, `BROWSER.md`). If absolute includes are not expanded, read that file manually. Project-local rules below stay authoritative for repo-specific commands and boundaries, but must not weaken the global memory, privacy, context-budget, or verification guardrails.
+<!-- codex-global-bridge:end -->
+
 Precedence: the nearest `AGENTS.md` wins. Root file defines global defaults for this workspace.
 
 Note: the root Git history tracks the KB and helper scripts. `passwall2/`, `openwrt-24.10-src/`, and `procd-src/` are expected as optional local source mirrors and may be absent in a fresh clone until hydrated.

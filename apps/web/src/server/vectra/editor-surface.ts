@@ -21,11 +21,18 @@ import {
   normalizeControllerVersion,
   resolveInstalledControllerVersion,
 } from "~/lib/controller-version";
-import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
+import {
+  isControllerSelfUpdateTerminalPayload,
+  isControllerUpdateJob,
+} from "~/lib/controller-update-jobs";
 import {
   isRouterHostnameUpdateJob,
   isRouterHostnameUpdateTerminalPayload,
 } from "~/lib/router-hostname-jobs";
+import {
+  isPasswallClearIpsetsJob,
+  isPasswallClearIpsetsTerminalPayload,
+} from "~/lib/passwall-clear-ipsets-jobs";
 import {
   isRouterRebootJob,
   isRouterRebootTerminalPayload,
@@ -105,6 +112,7 @@ export type RouterManagementTaskLogItem = {
     | "controller-update"
     | "controller-self-update"
     | "passwall-update"
+    | "passwall-clear-ipsets"
     | "subscription-preview"
     | "router-hostname-update"
     | "router-reboot";
@@ -165,7 +173,11 @@ export type UnconfirmedChangeItem = {
 };
 
 export type UnconfirmedChangeGroup = {
-  status: "none" | "reimport-needed" | "pending-import-review" | "saved-draft-pending-apply";
+  status:
+    | "none"
+    | "reimport-needed"
+    | "pending-import-review"
+    | "saved-draft-pending-apply";
   exact: boolean;
   title: string;
   summary: string;
@@ -210,9 +222,7 @@ function formatValue(value: unknown): string {
       return "Пусто";
     }
 
-    return value
-      .map((entry) => formatValue(entry))
-      .join(", ");
+    return value.map((entry) => formatValue(entry)).join(", ");
   }
 
   return JSON.stringify(value);
@@ -225,13 +235,14 @@ function collectMaskedPaths(value: unknown, prefix = ""): string[] {
 
   if (Array.isArray(value)) {
     return value.flatMap((entry, index) =>
-      collectMaskedPaths(entry, `${prefix}[${index}]`)
+      collectMaskedPaths(entry, `${prefix}[${index}]`),
     );
   }
 
   if (value && typeof value === "object") {
-    return Object.entries(value as Record<string, unknown>).flatMap(([key, entry]) =>
-      collectMaskedPaths(entry, prefix ? `${prefix}.${key}` : key)
+    return Object.entries(value as Record<string, unknown>).flatMap(
+      ([key, entry]) =>
+        collectMaskedPaths(entry, prefix ? `${prefix}.${key}` : key),
     );
   }
 
@@ -249,8 +260,10 @@ function buildComparisonSurface(args: {
       importState: "approved",
       lastSeenAt: null,
       passwallEnabled: args.currentConfig.basicSettings.main.mainSwitch,
-      selectedNodeId: args.currentConfig.basicSettings.main.selectedNodeId ?? null,
-      selectedNodeLabel: args.currentConfig.basicSettings.main.selectedNodeId ?? null,
+      selectedNodeId:
+        args.currentConfig.basicSettings.main.selectedNodeId ?? null,
+      selectedNodeLabel:
+        args.currentConfig.basicSettings.main.selectedNodeId ?? null,
       pendingChanges: 0,
       supportState: "certified",
       supportTitle: "Сертифицировано",
@@ -270,15 +283,21 @@ function buildChangeItems(args: {
   limit?: number;
 }) {
   const relevantDiffs = args.fieldDiffs.filter((diff) =>
-    args.mode === "current" ? !diff.currentMatchesAuthoritative : diff.draftChanged,
+    args.mode === "current"
+      ? !diff.currentMatchesAuthoritative
+      : diff.draftChanged,
   );
-  const changedSections = [...new Set(relevantDiffs.map((diff) => diff.section))];
+  const changedSections = [
+    ...new Set(relevantDiffs.map((diff) => diff.section)),
+  ];
   const items = relevantDiffs.slice(0, args.limit ?? 6).map((diff) => ({
     path: diff.path,
     section: diff.section,
     label: diff.label,
     before: formatValue(diff.authoritativeValue),
-    after: formatValue(args.mode === "current" ? diff.currentValue : diff.draftValue),
+    after: formatValue(
+      args.mode === "current" ? diff.currentValue : diff.draftValue,
+    ),
   }));
 
   return {
@@ -297,8 +316,11 @@ export function buildUnconfirmedChangesSummary(args: {
   authoritativeConfig: PasswallDesiredConfig | null;
   importedConfig: PasswallDesiredConfig | null;
   draftConfig: PasswallDesiredConfig;
-}) : UnconfirmedChangesSummary {
-  const noneGroup = (title: string, summary: string): UnconfirmedChangeGroup => ({
+}): UnconfirmedChangesSummary {
+  const noneGroup = (
+    title: string,
+    summary: string,
+  ): UnconfirmedChangeGroup => ({
     status: "none",
     exact: false,
     title,
@@ -349,7 +371,8 @@ export function buildUnconfirmedChangesSummary(args: {
     router = {
       status: "reimport-needed",
       exact: false,
-      title: "Роутер уже изменился, но точные deep-config правки ещё не считаны",
+      title:
+        "Роутер уже изменился, но точные deep-config правки ещё не считаны",
       summary:
         "Свежий snapshot уже показал новый config digest, но полного live import-а ещё нет. Панель видит, что deep config ушёл вперёд, но точный список полей появится только после re-import.",
       changeCount: 0,
@@ -383,7 +406,8 @@ export function buildUnconfirmedChangesSummary(args: {
       panel = {
         status: "saved-draft-pending-apply",
         exact: true,
-        title: "В панели есть сохранённые изменения, которые ещё не подтверждены на роутере",
+        title:
+          "В панели есть сохранённые изменения, которые ещё не подтверждены на роутере",
         summary:
           "Эти правки уже сохранены как ревизия в панели, но router apply ещё не подтвердил их как текущее live-состояние.",
         changeCount: changes.changeCount,
@@ -412,17 +436,24 @@ async function getSecretCiphertext(revisionId: string) {
 }
 
 async function hydrateRevision(
-  revision: typeof passwallDesiredRevisions.$inferSelect | null | undefined
+  revision: typeof passwallDesiredRevisions.$inferSelect | null | undefined,
 ): Promise<PasswallDesiredConfig | null> {
   if (!revision) {
     return null;
   }
 
-  return hydratePasswallConfig(revision.config, await getSecretCiphertext(revision.id));
+  return hydratePasswallConfig(
+    revision.config,
+    await getSecretCiphertext(revision.id),
+  );
 }
 
-function parseSubscriptionInspectPayload(payload: Record<string, unknown> | null) {
-  const parsed = subscriptionInspectResultPayloadSchema.safeParse(payload ?? {});
+function parseSubscriptionInspectPayload(
+  payload: Record<string, unknown> | null,
+) {
+  const parsed = subscriptionInspectResultPayloadSchema.safeParse(
+    payload ?? {},
+  );
   return parsed.success ? parsed.data : null;
 }
 
@@ -433,12 +464,14 @@ function selectSubscriptionPreviewSource(args: {
 }) {
   const inspectJobs = args.jobs
     .filter((job) => job.type === "inspect_subscriptions")
-    .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+    .sort(
+      (left, right) => right.createdAt.getTime() - left.createdAt.getTime(),
+    );
   const inspectResults = args.results
-    .filter((result) =>
-      inspectJobs.some((job) => job.id === result.jobId),
-    )
-    .sort((left, right) => right.reportedAt.getTime() - left.reportedAt.getTime());
+    .filter((result) => inspectJobs.some((job) => job.id === result.jobId))
+    .sort(
+      (left, right) => right.reportedAt.getTime() - left.reportedAt.getTime(),
+    );
   const successfulResults = inspectResults
     .filter((result) => result.status === "success")
     .map((result) => ({
@@ -450,7 +483,9 @@ function selectSubscriptionPreviewSource(args: {
         entry,
       ): entry is {
         row: typeof jobResults.$inferSelect;
-        payload: ReturnType<typeof parseSubscriptionInspectPayload> extends infer T
+        payload: ReturnType<
+          typeof parseSubscriptionInspectPayload
+        > extends infer T
           ? Exclude<T, null>
           : never;
       } => entry.payload !== null,
@@ -469,10 +504,11 @@ function selectSubscriptionPreviewSource(args: {
   const hasPendingJob = inspectJobs.some((job) =>
     ["queued", "delivered", "running"].includes(job.state),
   );
-  const hasFailedJob = inspectResults.some((result) => result.status === "failure");
+  const hasFailedJob = inspectResults.some(
+    (result) => result.status === "failure",
+  );
   const hasStaleResult =
-    matchingResult !== null ||
-    successfulResults.length > 0;
+    matchingResult !== null || successfulResults.length > 0;
 
   return {
     freshResult,
@@ -490,8 +526,9 @@ export function buildLastControllerUpdateAttempt(args: {
   const latestJob =
     [...args.jobs]
       .filter((job) => isControllerUpdateJob(job))
-      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0] ??
-    null;
+      .sort(
+        (left, right) => right.createdAt.getTime() - left.createdAt.getTime(),
+      )[0] ?? null;
 
   if (!latestJob) {
     return null;
@@ -499,7 +536,9 @@ export function buildLastControllerUpdateAttempt(args: {
 
   const relatedResults = args.results
     .filter((result) => result.jobId === latestJob.id)
-    .sort((left, right) => right.reportedAt.getTime() - left.reportedAt.getTime());
+    .sort(
+      (left, right) => right.reportedAt.getTime() - left.reportedAt.getTime(),
+    );
   const preferredResult =
     relatedResults.find((result) => result.status !== "accepted") ??
     relatedResults[0] ??
@@ -516,13 +555,19 @@ export function buildLastControllerUpdateAttempt(args: {
   const installedControllerVersion = normalizeControllerVersion(
     args.installedControllerVersion,
   );
+  const isTerminalSelfUpdate =
+    latestJob.type === "run_terminal_command" &&
+    isControllerSelfUpdateTerminalPayload(latestJob.payload);
   const convergedAfterFailure =
+    !isTerminalSelfUpdate &&
     resultStatus === "failure" &&
     installedControllerVersion !== null &&
     normalizeControllerVersion(artifactVersion) !== null &&
-    (compareControllerVersions(installedControllerVersion, artifactVersion) ?? -1) >=
-      0;
-  const effectiveResultStatus = convergedAfterFailure ? "success" : resultStatus;
+    (compareControllerVersions(installedControllerVersion, artifactVersion) ??
+      -1) >= 0;
+  const effectiveResultStatus = convergedAfterFailure
+    ? "success"
+    : resultStatus;
 
   return {
     jobState: latestJob.state,
@@ -552,8 +597,9 @@ export function buildLastPasswallUpdateAttempt(args: {
         const updateScope = readStringField(job.payload, "updateScope");
         return updateScope === null || updateScope === "managed-stack";
       })
-      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0] ??
-    null;
+      .sort(
+        (left, right) => right.createdAt.getTime() - left.createdAt.getTime(),
+      )[0] ?? null;
 
   if (!latestJob) {
     return null;
@@ -561,7 +607,9 @@ export function buildLastPasswallUpdateAttempt(args: {
 
   const relatedResults = args.results
     .filter((result) => result.jobId === latestJob.id)
-    .sort((left, right) => right.reportedAt.getTime() - left.reportedAt.getTime());
+    .sort(
+      (left, right) => right.reportedAt.getTime() - left.reportedAt.getTime(),
+    );
   const preferredResult =
     relatedResults.find((result) => result.status !== "accepted") ??
     relatedResults[0] ??
@@ -579,19 +627,22 @@ export function buildLastPasswallUpdateAttempt(args: {
         .filter(
           (
             entry,
-          ): entry is NonNullable<ReturnType<typeof parsePasswallPackageResult>> =>
-            entry !== null,
+          ): entry is NonNullable<
+            ReturnType<typeof parsePasswallPackageResult>
+          > => entry !== null,
         )
     : [];
   const driftDetected =
     (typeof payload?.driftDetected === "boolean" && payload.driftDetected) ||
     packageResults.some((entry) => entry.driftDetected);
   const deliveryBlocked =
-    (typeof payload?.deliveryBlocked === "boolean" && payload.deliveryBlocked) ||
+    (typeof payload?.deliveryBlocked === "boolean" &&
+      payload.deliveryBlocked) ||
     packageResults.some((entry) => entry.status === "delivery-blocked");
   const deliveryBlockedReason =
     readStringField(payload, "deliveryBlockedReason") ??
-    packageResults.find((entry) => entry.status === "delivery-blocked")?.error ??
+    packageResults.find((entry) => entry.status === "delivery-blocked")
+      ?.error ??
     null;
 
   return {
@@ -647,14 +698,28 @@ function summarizeControllerUpdateAttempt(args: {
     return errorLine;
   }
 
-  const stderrLine = firstMeaningfulLine(readStringField(args.payload, "stderr"));
-  if (stderrLine) {
-    return stderrLine;
+  const stderrLine = firstMeaningfulErrorLine(
+    readStringField(args.payload, "stderr"),
+  );
+  const stdoutLine = firstMeaningfulLine(
+    readStringField(args.payload, "stdout"),
+  );
+
+  if (args.resultStatus === "failure") {
+    if (stderrLine) {
+      return stderrLine;
+    }
+    if (stdoutLine) {
+      return stdoutLine;
+    }
   }
 
-  const stdoutLine = firstMeaningfulLine(readStringField(args.payload, "stdout"));
   if (stdoutLine) {
     return stdoutLine;
+  }
+
+  if (stderrLine) {
+    return stderrLine;
   }
 
   if (
@@ -678,7 +743,10 @@ function summarizePasswallUpdateAttempt(args: {
   packageResults: LastPasswallUpdateAttempt["packageResults"];
   driftDetected: boolean;
 }) {
-  const deliveryBlockedReason = readStringField(args.payload, "deliveryBlockedReason");
+  const deliveryBlockedReason = readStringField(
+    args.payload,
+    "deliveryBlockedReason",
+  );
   if (args.payload?.deliveryBlocked === true) {
     return deliveryBlockedReason
       ? `job поставлен в очередь, но сервер сейчас не сохраняет check-in: ${deliveryBlockedReason}`
@@ -707,7 +775,9 @@ function summarizePasswallUpdateAttempt(args: {
     }`;
   }
 
-  const failedPackage = args.packageResults.find((entry) => entry.status === "failed");
+  const failedPackage = args.packageResults.find(
+    (entry) => entry.status === "failed",
+  );
   if (failedPackage) {
     return `${failedPackage.package}: ${
       failedPackage.error ?? "обновление пакета завершилось ошибкой"
@@ -798,7 +868,7 @@ function summarizePasswallFallback(
           ? "built-in updater"
           : entry.pathUsed === "xray-binary-payload"
             ? "xray binary payload"
-            : entry.pathUsed ?? "fallback";
+            : (entry.pathUsed ?? "fallback");
       return `${entry.package} via ${pathUsed}`;
     })
     .join(", ");
@@ -814,7 +884,9 @@ function summarizeRouterRebootAttempt(args: {
     return errorLine;
   }
 
-  const stderrLine = firstMeaningfulLine(readStringField(args.payload, "stderr"));
+  const stderrLine = firstMeaningfulLine(
+    readStringField(args.payload, "stderr"),
+  );
   if (stderrLine) {
     return stderrLine;
   }
@@ -826,7 +898,9 @@ function summarizeRouterRebootAttempt(args: {
     return "перезагрузка ещё ожидает выполнения";
   }
 
-  const stdoutLine = firstMeaningfulLine(readStringField(args.payload, "stdout"));
+  const stdoutLine = firstMeaningfulLine(
+    readStringField(args.payload, "stdout"),
+  );
   if (stdoutLine) {
     return stdoutLine;
   }
@@ -861,7 +935,9 @@ function summarizeRouterHostnameUpdateAttempt(args: {
       : "ожидаю, когда роутер применит новый hostname";
   }
 
-  const stdoutLine = firstMeaningfulLine(readStringField(args.payload, "stdout"));
+  const stdoutLine = firstMeaningfulLine(
+    readStringField(args.payload, "stdout"),
+  );
   if (stdoutLine) {
     return stdoutLine;
   }
@@ -873,6 +949,37 @@ function summarizeRouterHostnameUpdateAttempt(args: {
   return hostnameAfter
     ? `hostname ${hostnameAfter} применён`
     : "hostname обновлён";
+}
+
+function summarizePasswallClearIpsetsAttempt(args: {
+  jobState: string;
+  resultStatus: ControllerUpdateAttemptStatus;
+  payload: Record<string, unknown> | null;
+}) {
+  const errorLine = firstMeaningfulLine(readStringField(args.payload, "error"));
+  if (errorLine) {
+    return errorLine;
+  }
+
+  if (
+    ["queued", "delivered", "running"].includes(args.jobState) ||
+    args.resultStatus === "accepted"
+  ) {
+    return "ожидаю, когда роутер очистит IPSET/NFTSet и перезапустит PassWall2";
+  }
+
+  const stdoutLine = firstMeaningfulLine(
+    readStringField(args.payload, "stdout"),
+  );
+  if (stdoutLine) {
+    return stdoutLine;
+  }
+
+  if (args.resultStatus === "failure") {
+    return "очистка IPSET/NFTSet завершилась ошибкой без подробностей";
+  }
+
+  return "IPSET/NFTSet очищены, PassWall2 перезапущен";
 }
 
 function summarizeSubscriptionInspectAttempt(args: {
@@ -893,7 +1000,10 @@ function summarizeSubscriptionInspectAttempt(args: {
   }
 
   const checkedSubscriptions = args.payload?.checkedSubscriptions;
-  if (typeof checkedSubscriptions === "number" && Number.isFinite(checkedSubscriptions)) {
+  if (
+    typeof checkedSubscriptions === "number" &&
+    Number.isFinite(checkedSubscriptions)
+  ) {
     return `preview собран: ${checkedSubscriptions} подписок`;
   }
 
@@ -909,7 +1019,9 @@ function readStringField(
   key: string,
 ) {
   const value = payload?.[key];
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
 }
 
 function firstMeaningfulLine(value: string | null | undefined) {
@@ -923,6 +1035,21 @@ function firstMeaningfulLine(value: string | null | undefined) {
       .map((entry) => entry.trim())
       .find((entry) => entry.length > 0) ?? null;
   return line;
+}
+
+function firstMeaningfulErrorLine(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  return (
+    value
+      .split(/\r?\n/)
+      .map((entry) => entry.trim().replace(/^\*\s*/, ""))
+      .find(
+        (entry) => entry.length > 0 && !/^Collected errors:?$/i.test(entry),
+      ) ?? null
+  );
 }
 
 function parsePasswallPackageResult(value: unknown) {
@@ -958,7 +1085,9 @@ function getPreferredJobResult(args: {
 }) {
   const relatedResults = args.results
     .filter((result) => result.jobId === args.jobId)
-    .sort((left, right) => right.reportedAt.getTime() - left.reportedAt.getTime());
+    .sort(
+      (left, right) => right.reportedAt.getTime() - left.reportedAt.getTime(),
+    );
 
   return (
     relatedResults.find((result) => result.status !== "accepted") ??
@@ -976,6 +1105,7 @@ export function buildRouterManagementTaskLog(args: {
     .filter((job) => {
       if (
         isControllerUpdateJob(job) ||
+        isPasswallClearIpsetsJob(job) ||
         isRouterRebootJob(job) ||
         isRouterHostnameUpdateJob(job)
       ) {
@@ -1007,18 +1137,23 @@ export function buildRouterManagementTaskLog(args: {
             .filter(
               (
                 entry,
-              ): entry is NonNullable<ReturnType<typeof parsePasswallPackageResult>> =>
-                entry !== null,
+              ): entry is NonNullable<
+                ReturnType<typeof parsePasswallPackageResult>
+              > => entry !== null,
             )
         : [];
 
-      const updateScope = readStringField(job.payload, "updateScope") ?? readStringField(payload, "updateScope");
+      const updateScope =
+        readStringField(job.payload, "updateScope") ??
+        readStringField(payload, "updateScope");
       const deliveryBlocked =
-        (typeof payload?.deliveryBlocked === "boolean" && payload.deliveryBlocked) ||
+        (typeof payload?.deliveryBlocked === "boolean" &&
+          payload.deliveryBlocked) ||
         packageResults.some((entry) => entry.status === "delivery-blocked");
       const deliveryBlockedReason =
         readStringField(payload, "deliveryBlockedReason") ??
-        packageResults.find((entry) => entry.status === "delivery-blocked")?.error ??
+        packageResults.find((entry) => entry.status === "delivery-blocked")
+          ?.error ??
         null;
       const installedControllerVersion = normalizeControllerVersion(
         args.installedControllerVersion,
@@ -1026,11 +1161,18 @@ export function buildRouterManagementTaskLog(args: {
       const artifactVersion =
         readStringField(job.payload, "artifactVersion") ??
         readStringField(payload, "artifactVersion");
+      const isTerminalSelfUpdate =
+        job.type === "run_terminal_command" &&
+        isControllerSelfUpdateTerminalPayload(job.payload);
       const convergedAfterFailure =
+        !isTerminalSelfUpdate &&
         rawResultStatus === "failure" &&
         installedControllerVersion !== null &&
         normalizeControllerVersion(artifactVersion) !== null &&
-        (compareControllerVersions(installedControllerVersion, artifactVersion) ?? -1) >= 0;
+        (compareControllerVersions(
+          installedControllerVersion,
+          artifactVersion,
+        ) ?? -1) >= 0;
       const resultStatus = convergedAfterFailure ? "success" : rawResultStatus;
 
       let kind: RouterManagementTaskLogItem["kind"] = "controller-update";
@@ -1043,10 +1185,24 @@ export function buildRouterManagementTaskLog(args: {
         convergedAfterFailure,
       });
 
-      if (job.type === "run_terminal_command" && isRouterRebootTerminalPayload(job.payload)) {
+      if (
+        job.type === "run_terminal_command" &&
+        isRouterRebootTerminalPayload(job.payload)
+      ) {
         kind = "router-reboot";
         label = "Перезагрузка роутера";
         summary = summarizeRouterRebootAttempt({
+          jobState: job.state,
+          resultStatus,
+          payload,
+        });
+      } else if (
+        job.type === "run_terminal_command" &&
+        isPasswallClearIpsetsTerminalPayload(job.payload)
+      ) {
+        kind = "passwall-clear-ipsets";
+        label = "Clear IPSET/NFTSet";
+        summary = summarizePasswallClearIpsetsAttempt({
           jobState: job.state,
           resultStatus,
           payload,
@@ -1067,14 +1223,18 @@ export function buildRouterManagementTaskLog(args: {
         label = "Self-update controller";
       } else if (job.type === "update_passwall_packages") {
         kind = "passwall-update";
-        label = updateScope === "scoped-package" ? "Точечное обновление PassWall" : "Обновление PassWall stack";
+        label =
+          updateScope === "scoped-package"
+            ? "Точечное обновление PassWall"
+            : "Обновление PassWall stack";
         summary = summarizePasswallUpdateAttempt({
           jobState: job.state,
           resultStatus: deliveryBlocked ? null : resultStatus,
           payload,
           packageResults,
           driftDetected:
-            (typeof payload?.driftDetected === "boolean" && payload.driftDetected) ||
+            (typeof payload?.driftDetected === "boolean" &&
+              payload.driftDetected) ||
             packageResults.some((entry) => entry.driftDetected),
         });
       } else if (job.type === "inspect_subscriptions") {
@@ -1101,7 +1261,9 @@ export function buildRouterManagementTaskLog(args: {
         error: readStringField(payload, "error"),
         stdout: readStringField(payload, "stdout"),
         stderr: readStringField(payload, "stderr"),
-        command: readStringField(job.payload, "command") ?? readStringField(payload, "command"),
+        command:
+          readStringField(job.payload, "command") ??
+          readStringField(payload, "command"),
         artifactVersion,
         targetVersion:
           readStringField(job.payload, "targetVersion") ??
@@ -1124,7 +1286,11 @@ type DraftNode = DraftConfig["nodes"][number];
 type DraftExtras = DraftNode["extras"];
 type DraftShuntRule = DraftConfig["basicSettings"]["shuntRules"][number];
 
-const preservedNodeReferenceValues = new Set(["_default", "_direct", "_blackhole"]);
+const preservedNodeReferenceValues = new Set([
+  "_default",
+  "_direct",
+  "_blackhole",
+]);
 
 function normalizeNodeReferenceText(value: string | null | undefined) {
   const trimmed = value?.trim();
@@ -1393,7 +1559,10 @@ export function mergeCurrentLiveRouterDataIntoDraftConfig(args: {
     return args.draftConfig;
   }
 
-  const appendMissingById = <T extends { id: string }>(draftItems: T[], liveItems: T[]) => {
+  const appendMissingById = <T extends { id: string }>(
+    draftItems: T[],
+    liveItems: T[],
+  ) => {
     const knownIds = new Set(draftItems.map((item) => item.id));
     return [
       ...draftItems,
@@ -1416,7 +1585,9 @@ export function mergeCurrentLiveRouterDataIntoDraftConfig(args: {
   );
   const currentLiveSelectedNodeId =
     args.currentLiveConfig.basicSettings.main.selectedNodeId;
-  const draftKnownNodeIds = new Set(args.draftConfig.nodes.map((node) => node.id));
+  const draftKnownNodeIds = new Set(
+    args.draftConfig.nodes.map((node) => node.id),
+  );
   const shouldPreferCurrentLiveSelectedNode =
     typeof currentLiveSelectedNodeId === "string" &&
     currentLiveSelectedNodeId.length > 0 &&
@@ -1461,38 +1632,39 @@ export async function getDraftEditorSurface(routerId: string) {
     throw new Error("Router not found.");
   }
 
-  const [snapshots, revisions, appliedRows, resultRows, recentJobs] = await Promise.all([
-    db
-      .select()
-      .from(routerInventorySnapshots)
-      .where(eq(routerInventorySnapshots.routerId, routerId))
-      .orderBy(desc(routerInventorySnapshots.createdAt))
-      .limit(5),
-    db
-      .select()
-      .from(passwallDesiredRevisions)
-      .where(eq(passwallDesiredRevisions.routerId, routerId))
-      .orderBy(desc(passwallDesiredRevisions.revisionNumber))
-      .limit(20),
-    db
-      .select()
-      .from(passwallAppliedRevisions)
-      .where(eq(passwallAppliedRevisions.routerId, routerId))
-      .orderBy(desc(passwallAppliedRevisions.reportedAt))
-      .limit(10),
-    db
-      .select()
-      .from(jobResults)
-      .where(eq(jobResults.routerId, routerId))
-      .orderBy(desc(jobResults.reportedAt))
-      .limit(20),
-    db
-      .select()
-      .from(jobs)
-      .where(eq(jobs.routerId, routerId))
-      .orderBy(desc(jobs.createdAt))
-      .limit(20),
-  ]);
+  const [snapshots, revisions, appliedRows, resultRows, recentJobs] =
+    await Promise.all([
+      db
+        .select()
+        .from(routerInventorySnapshots)
+        .where(eq(routerInventorySnapshots.routerId, routerId))
+        .orderBy(desc(routerInventorySnapshots.createdAt))
+        .limit(5),
+      db
+        .select()
+        .from(passwallDesiredRevisions)
+        .where(eq(passwallDesiredRevisions.routerId, routerId))
+        .orderBy(desc(passwallDesiredRevisions.revisionNumber))
+        .limit(20),
+      db
+        .select()
+        .from(passwallAppliedRevisions)
+        .where(eq(passwallAppliedRevisions.routerId, routerId))
+        .orderBy(desc(passwallAppliedRevisions.reportedAt))
+        .limit(10),
+      db
+        .select()
+        .from(jobResults)
+        .where(eq(jobResults.routerId, routerId))
+        .orderBy(desc(jobResults.reportedAt))
+        .limit(20),
+      db
+        .select()
+        .from(jobs)
+        .where(eq(jobs.routerId, routerId))
+        .orderBy(desc(jobs.createdAt))
+        .limit(20),
+    ]);
 
   const latestSnapshot = snapshots[0] ?? null;
   const payload = latestSnapshot?.payload;
@@ -1537,7 +1709,13 @@ export async function getDraftEditorSurface(routerId: string) {
     revisions,
   });
 
-  const [currentLiveConfig, authoritativeConfig, workspaceConfig, importedConfig, latestPanelDraftConfig] = await Promise.all([
+  const [
+    currentLiveConfig,
+    authoritativeConfig,
+    workspaceConfig,
+    importedConfig,
+    latestPanelDraftConfig,
+  ] = await Promise.all([
     hydrateRevision(currentLiveRevision),
     hydrateRevision(activeRevision),
     hydrateRevision(workspaceRevision),
@@ -1554,12 +1732,11 @@ export async function getDraftEditorSurface(routerId: string) {
     revisions: liveImportRevisions,
     hasAuthoritativeConfig: Boolean(activeRevision),
   });
-  const currentConfigFreshness =
-    routerReachable
-      ? "live"
-      : currentLiveConfig || authoritativeConfig
-        ? "stale"
-        : "missing";
+  const currentConfigFreshness = routerReachable
+    ? "live"
+    : currentLiveConfig || authoritativeConfig
+      ? "stale"
+      : "missing";
   const selectedNodeId =
     payload?.selectedNodeId ??
     currentLiveConfig?.basicSettings.main.selectedNodeId ??
@@ -1570,8 +1747,10 @@ export async function getDraftEditorSurface(routerId: string) {
     payload.selectedNodeLabel.length > 0
       ? payload.selectedNodeLabel
       : null) ??
-    currentLiveConfig?.nodes.find((node) => node.id === selectedNodeId)?.label ??
-    authoritativeConfig?.nodes.find((node) => node.id === selectedNodeId)?.label ??
+    currentLiveConfig?.nodes.find((node) => node.id === selectedNodeId)
+      ?.label ??
+    authoritativeConfig?.nodes.find((node) => node.id === selectedNodeId)
+      ?.label ??
     selectedNodeId;
   const inventory: RouterWorkspaceInventory = {
     controllerVersion: installedControllerVersion,
@@ -1597,7 +1776,7 @@ export async function getDraftEditorSurface(routerId: string) {
   const effectiveDraft = effectiveDraftBase
     ? mergeCurrentLiveRouterDataIntoDraftConfig({
         draftConfig: effectiveDraftBase,
-        currentLiveConfig: routerReachable ? currentLiveConfig ?? null : null,
+        currentLiveConfig: routerReachable ? (currentLiveConfig ?? null) : null,
       })
     : null;
   if (!effectiveDraft) {
@@ -1621,7 +1800,9 @@ export async function getDraftEditorSurface(routerId: string) {
   });
   const applyHistory = appliedRows.map((row) => {
     const relatedJob = recentJobs.find((job) => job.id === row.jobId) ?? null;
-    const relatedResult = row.jobId ? resultByJobId.get(row.jobId) ?? null : null;
+    const relatedResult = row.jobId
+      ? (resultByJobId.get(row.jobId) ?? null)
+      : null;
     const payload = relatedResult?.payload ?? {};
 
     return {
@@ -1635,7 +1816,7 @@ export async function getDraftEditorSurface(routerId: string) {
       stderr: row.stderr ?? null,
       uciCommands: Array.isArray(payload.uciCommands)
         ? payload.uciCommands.filter(
-            (entry): entry is string => typeof entry === "string"
+            (entry): entry is string => typeof entry === "string",
           )
         : [],
       operationResults: Array.isArray(payload.operationResults)
@@ -1660,14 +1841,15 @@ export async function getDraftEditorSurface(routerId: string) {
       selectedNodeId,
       selectedNodeLabel,
       pendingChanges: recentJobs.filter((job) =>
-        ["queued", "delivered", "running"].includes(job.state)
+        ["queued", "delivered", "running"].includes(job.state),
       ).length,
       supportState: support.state,
       supportTitle: support.title,
       supportReason: support.reason,
       updateActionsAllowed: canRunUpdateAction(support.state),
     },
-    currentLiveConfig: currentLiveConfig ?? authoritativeConfig ?? effectiveDraft,
+    currentLiveConfig:
+      currentLiveConfig ?? authoritativeConfig ?? effectiveDraft,
     authoritativeConfig,
     draftConfig: effectiveDraft,
     currentConfigFreshness:
@@ -1761,7 +1943,9 @@ export async function getDraftEditorSurface(routerId: string) {
     lastControllerUpdateAttempt,
     lastPasswallUpdateAttempt,
     managementTaskLog,
-    approvalRequired: ["import_review", "out_of_sync"].includes(router.importState),
+    approvalRequired: ["import_review", "out_of_sync"].includes(
+      router.importState,
+    ),
     importedRevisionId: importedRevision?.id ?? null,
     activeRevisionId: activeRevision?.id ?? null,
     latestDraftId: latestEditableDraftRevision?.id ?? null,

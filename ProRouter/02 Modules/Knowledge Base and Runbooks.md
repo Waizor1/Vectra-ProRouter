@@ -3,7 +3,7 @@ type: module
 path: ai_docs/, scripts/, RTK.md
 stage: active
 confidence: high
-last-reviewed: 2026-04-17
+last-reviewed: 2026-04-28
 tags:
   - module
   - docs
@@ -32,6 +32,7 @@ tags:
 - Для этого же live recovery подтверждено, что baseline `luci-app-passwall2`/`xray-core`/`geoview` сам по себе недостаточен: для nftables transparent proxy после sysupgrade нужно вернуть `dnsmasq-full`, `chinadns-ng`, `kmod-nft-socket` и `kmod-nft-tproxy`; без них PassWall2 остаётся в no-proxy contour даже при `enabled=1`.
 - Для remote operational commands на PassWall2 зафиксирован ещё один practical rule: если команда вызывает runtime, который может читать stdin (`nft` path внутри `app.sh`), безопаснее запускать `/etc/init.d/passwall2 start|restart` как прямую SSH command string, а не оставлять после неё хвост в `sh -s` script, иначе внутренний процесс может съесть остаток stdin и исказить post-check commands.
 - Repo-side bootstrap tooling now also preserves storage facts instead of only filenames: native `scripts/Sync-PasswallBootstrapMirror.py` extracts `Version`, `Installed-Size`, and the actual `.ipk` file length from each mirrored package, publishes them into `manifest.json`, and therefore lets the web-side AX3000T bootstrap generator validate staging/overlay budgets against the same per-package metadata it renders into the installer script.
+- Project-local Kilo configuration now exists under `.kilo/`: default `vectra-prorouter-steward` agent, focused agents for web/OpenWrt/router-agent/deploy/read-only work, reusable `/vectra-*` commands, and project skills for Vectra workflow, OpenWrt/PassWall2, web control plane, router-agent release, and VPS deploy hygiene. Global Kilo config also now exposes Sugar Memory, ICM, Context7, and Playwright MCPs for future sessions.
 
 ## Boundaries
 
@@ -56,3 +57,9 @@ tags:
 - The repo now has a tracked local operator helper for fast live panel access: `scripts/VectraPanelCli.sh` wraps `apps/web/scripts/vectra-panel-cli.mjs`, logs in through the real `/api/operator/login` flow, talks to protected `tRPC` procedures under `/api/trpc`, and caches only the operator session cookie under gitignored `.codex-runtime/vectra-panel/session.json`.
 - On this workstation, the helper can also bootstrap its own credentials safely from the already-confirmed `ssh vectra-prod` path by reading `VECTRA_OPERATOR_USER`, `VECTRA_OPERATOR_PASSWORD`, and `VECTRA_DEFAULT_CONTROL_DOMAIN` from the production `.env` instead of duplicating secrets into tracked notes or repo files.
 - The helper now also exposes an explicit coverage map and the missing first-class lanes that were still only implicit in source: `catalog` prints the current operator `tRPC` surface, `draft` covers list/workspace/editor/save/queue-apply, `notifications` covers status plus subscribe/unsubscribe, `fleet` now has approve-import/reimport/delete actions, and `router-api` can hit the separate router-facing endpoints once a real router id/token pair is provided.
+
+2026-04-23 live Netis/Keenetic capture addendum:
+- A same-day live DmitryGubenko follow-up now documents a safe remote workaround for third-party extender capture behind the Netis `NX31` without touching WAN. Using `scripts/VectraPanelCli.sh terminal ...`, only the downstream `lan3` bridge membership was moved from `br-lan` into the already-isolated `wifi_clean` segment, while WAN stayed on `eth1 192.168.0.182/24`.
+- The write path itself is now proven fail-closed enough for future repeats: a temporary rollback script plus background timer were staged first, `network reload` and `dnsmasq restart` were then executed, and the rollback was cancelled only after read-back confirmed `network.cfg030f15.ports='lan1' 'lan2'`, `network.wifi_clean_dev.ports='lan3'`, and `lan3 master br-wifi_clean`.
+- The target Keenetic capture is also explicitly verified rather than inferred. Reset Keenetic Orbiter Pro `KN-2810` in `Ext` mode obtained DHCP lease `192.168.99.128` on `br-wifi_clean` with MAC `50:ff:20:7d:1e:46` and hostname `Keenetic-1151`; read-only checks confirmed successful ICMP and an initial live HTTP response `302 -> /netfriend` with header `Ndm-Sysmode: extender`.
+- Operationally this closes the earlier "can we grab the repeater onto Netis remotely?" question for the wired uplink path. A later read-back still showed the same Keenetic MAC reachable on `192.168.99.128` at ARP/L2 while HTTP timed out, so the confirmed durable state is the clean network capture; the Keenetic HTTP wizard should be treated as local/transient onboarding rather than a Netis-side networking blocker.

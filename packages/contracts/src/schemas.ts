@@ -70,6 +70,7 @@ export const jobTypeSchema = z.enum([
   "refresh_rules",
   "collect_router_logs",
   "run_terminal_command",
+  "run_rescue_repair",
   "update_controller",
   "update_passwall_packages",
   "validate_firmware",
@@ -555,12 +556,38 @@ export const collectRouterLogsJobPayloadSchema = z.object({
 
 export const inspectSubscriptionsJobPayloadSchema = z.object({}).passthrough();
 
+export const rescueRepairActionSchema = z.enum([
+  "restart_controller",
+  "restart_passwall",
+  "restart_dnsmasq",
+  "refresh_rules",
+  "refresh_subscriptions",
+  "reconnect_proxy",
+]);
+
+export const rescueRepairRequestedBySchema = z.enum([
+  "auto_rescue",
+  "operator",
+  "telegram",
+]);
+
+export const runRescueRepairJobPayloadSchema = z
+  .object({
+    actions: z.array(rescueRepairActionSchema).min(1).max(8),
+    timeoutSeconds: z.number().int().min(10).max(180).default(90),
+    caseId: z.string().uuid().nullable().optional(),
+    reason: z.string().trim().max(500).nullable().optional(),
+    requestedBy: rescueRepairRequestedBySchema.default("auto_rescue"),
+  })
+  .strict();
+
 export const runTerminalCommandJobPayloadSchema = z.object({
   command: z.string().trim().min(1).max(4000),
   timeoutSeconds: z.number().int().min(5).max(120).default(30),
   purpose: z
     .enum([
       "controller-self-update",
+      "passwall-clear-ipsets",
       "router-reboot",
       "router-hostname-update",
     ])
@@ -677,6 +704,65 @@ export const routerTerminalResultPayloadSchema = z
   })
   .passthrough();
 
+export const rescueRepairServiceHealthSchema = z.object({
+  controller: z.string().nullable().optional(),
+  passwall: z.string().nullable().optional(),
+  passwallServer: z.string().nullable().optional(),
+  dnsmasq: z.string().nullable().optional(),
+});
+
+export const rescueRepairHealthSnapshotSchema = z
+  .object({
+    capturedAt: z.string().datetime(),
+    passwallEnabled: z.boolean().nullable().optional(),
+    rescueMode: rescueModeSchema.nullable().optional(),
+    selectedNodeId: z.string().nullable().optional(),
+    selectedNodeLabel: z.string().nullable().optional(),
+    serviceHealth: rescueRepairServiceHealthSchema.default({}),
+    serverReachable: z.boolean().nullable().optional(),
+    publicReachable: z.boolean().nullable().optional(),
+  })
+  .passthrough();
+
+export const rescueRepairActionResultStatusSchema = z.enum([
+  "success",
+  "failure",
+  "scheduled",
+  "skipped",
+  "unsupported",
+]);
+
+export const rescueRepairActionResultSchema = z
+  .object({
+    action: rescueRepairActionSchema,
+    status: rescueRepairActionResultStatusSchema,
+    command: z.string().min(1).nullable().optional(),
+    startedAt: z.string().datetime(),
+    completedAt: z.string().datetime(),
+    durationMs: z.number().int().min(0),
+    stdout: z.string().max(4000).nullable().optional(),
+    stderr: z.string().max(4000).nullable().optional(),
+    error: z.string().max(1000).nullable().optional(),
+  })
+  .passthrough();
+
+export const rescueRepairResultPayloadSchema = z
+  .object({
+    caseId: z.string().uuid().nullable().optional(),
+    requestedBy: rescueRepairRequestedBySchema,
+    reason: z.string().nullable().optional(),
+    actions: z.array(rescueRepairActionSchema).min(1),
+    timeoutSeconds: z.number().int().min(10).max(180),
+    startedAt: z.string().datetime(),
+    completedAt: z.string().datetime(),
+    before: rescueRepairHealthSnapshotSchema,
+    after: rescueRepairHealthSnapshotSchema,
+    results: z.array(rescueRepairActionResultSchema),
+    recoveredProxy: z.boolean().default(false),
+    error: z.string().nullable().optional(),
+  })
+  .passthrough();
+
 export const subscriptionPreviewFingerprintSchema = z.object({
   fingerprint: z.string().min(1),
 });
@@ -693,7 +779,12 @@ export const subscriptionPreviewEntrySchema = z.object({
   httpStatus: z.number().int().nullable().optional(),
   payloadMode: subscriptionPreviewPayloadModeSchema.default("unknown"),
   payloadNodeCount: z.number().int().nonnegative().nullable().optional(),
-  resolvedPayloadNodeCount: z.number().int().nonnegative().nullable().optional(),
+  resolvedPayloadNodeCount: z
+    .number()
+    .int()
+    .nonnegative()
+    .nullable()
+    .optional(),
   payloadFingerprints: z
     .array(subscriptionPreviewFingerprintSchema)
     .default([]),
@@ -881,6 +972,10 @@ export type InspectSubscriptionsJobPayload = z.infer<
 export type RunTerminalCommandJobPayload = z.infer<
   typeof runTerminalCommandJobPayloadSchema
 >;
+export type RescueRepairAction = z.infer<typeof rescueRepairActionSchema>;
+export type RunRescueRepairJobPayload = z.infer<
+  typeof runRescueRepairJobPayloadSchema
+>;
 export type UpdatePasswallPackagesJobPayload = z.infer<
   typeof updatePasswallPackagesJobPayloadSchema
 >;
@@ -893,6 +988,9 @@ export type RouterLogResultPayload = z.infer<
 >;
 export type RouterTerminalResultPayload = z.infer<
   typeof routerTerminalResultPayloadSchema
+>;
+export type RescueRepairResultPayload = z.infer<
+  typeof rescueRepairResultPayloadSchema
 >;
 export type SubscriptionPreviewEntry = z.infer<
   typeof subscriptionPreviewEntrySchema

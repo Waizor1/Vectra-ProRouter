@@ -1,4 +1,9 @@
-import { healthIncidents, jobs, routerInventorySnapshots, routers } from "@vectra/db";
+import {
+  healthIncidents,
+  jobs,
+  routerInventorySnapshots,
+  routers,
+} from "@vectra/db";
 import { createDefaultRescuePolicy } from "@vectra/contracts";
 import { TRPCError } from "@trpc/server";
 import { desc, eq } from "drizzle-orm";
@@ -7,6 +12,15 @@ import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
 import type { db as webDb } from "~/server/db";
 import { hasActiveDirectMode } from "~/server/vectra/router-presence";
+import {
+  getActiveRescueCaseForRouter,
+  listRescueCases,
+  loadRescueCaseDetails,
+  queueRescueCaseLogCollection,
+  queueRescueCaseReconnectProxy,
+  queueRescueCaseSafeRepair,
+  silenceRescueCase,
+} from "~/server/vectra/auto-rescue";
 import {
   canRunDestructiveAction,
   describeEffectiveRouterSupport,
@@ -57,6 +71,95 @@ async function assertCertifiedRouterForRescue(
 
 export const rescueRouter = createTRPCRouter({
   policy: protectedProcedure.query(() => createDefaultRescuePolicy()),
+
+  cases: protectedProcedure.query(async ({ ctx }) => listRescueCases(ctx.db)),
+
+  activeCaseForRouter: protectedProcedure
+    .input(z.object({ routerId: z.string().uuid() }))
+    .query(async ({ ctx, input }) =>
+      getActiveRescueCaseForRouter(input.routerId, ctx.db),
+    ),
+
+  caseById: protectedProcedure
+    .input(z.object({ caseId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      try {
+        return await loadRescueCaseDetails(input.caseId, ctx.db);
+      } catch (error) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message:
+            error instanceof Error ? error.message : "Rescue case not found.",
+        });
+      }
+    }),
+
+  runCaseSafeRepair: protectedProcedure
+    .input(z.object({ caseId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      try {
+        return await queueRescueCaseSafeRepair(
+          {
+            caseId: input.caseId,
+            requestedBy: "operator",
+          },
+          ctx.db,
+        );
+      } catch (error) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            error instanceof Error ? error.message : "Failed to queue repair.",
+        });
+      }
+    }),
+
+  reconnectCase: protectedProcedure
+    .input(z.object({ caseId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      try {
+        return await queueRescueCaseReconnectProxy(
+          input.caseId,
+          "operator",
+          ctx.db,
+        );
+      } catch (error) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Failed to queue reconnect.",
+        });
+      }
+    }),
+
+  collectCaseLogs: protectedProcedure
+    .input(z.object({ caseId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      try {
+        return await queueRescueCaseLogCollection(input.caseId, ctx.db);
+      } catch (error) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Failed to queue log collection.",
+        });
+      }
+    }),
+
+  silenceCase: protectedProcedure
+    .input(
+      z.object({
+        caseId: z.string().uuid(),
+        durationSeconds: z.number().int().min(300).max(86400).default(3600),
+      }),
+    )
+    .mutation(async ({ ctx, input }) =>
+      silenceRescueCase(input.caseId, input.durationSeconds, ctx.db),
+    ),
 
   openIncidents: protectedProcedure.query(async ({ ctx }) => {
     return ctx.db

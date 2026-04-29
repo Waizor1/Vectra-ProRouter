@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { api } from "~/trpc/react";
@@ -20,6 +21,11 @@ export function RescueActions({
   const router = useRouter();
   const utils = api.useUtils();
 
+  const activeCase = api.rescue.activeCaseForRouter.useQuery(
+    { routerId },
+    { refetchInterval: 10000 },
+  );
+
   const reconnectMutation = api.rescue.triggerReconnect.useMutation({
     onSuccess: async () => {
       await Promise.all([
@@ -28,12 +34,22 @@ export function RescueActions({
         utils.fleet.monitoring.invalidate(),
         utils.rescue.directRouters.invalidate(),
         utils.rescue.openIncidents.invalidate(),
+        utils.rescue.activeCaseForRouter.invalidate({ routerId }),
       ]);
       router.refresh();
     },
   });
 
-  if (!needsRecoveryAction) {
+  const rescueCaseLink = activeCase.data ? (
+    <Link
+      href={`/rescue/cases/${activeCase.data.id}`}
+      className="vectra-button-secondary w-full px-3 py-2 text-center text-sm font-medium transition hover:border-white/20 hover:text-white sm:w-auto"
+    >
+      Открыть rescue cockpit
+    </Link>
+  ) : null;
+
+  if (!needsRecoveryAction && !rescueCaseLink) {
     return null;
   }
 
@@ -41,6 +57,7 @@ export function RescueActions({
 
   return (
     <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+      {rescueCaseLink}
       <button
         type="button"
         className="w-full rounded-md bg-emerald-400 px-3 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
@@ -51,14 +68,14 @@ export function RescueActions({
             clearRescue: true,
           })
         }
-        >
-          {reconnectMutation.isPending
-            ? directModeActive
-              ? "Возвращаю прокси-режим..."
-              : "Сбрасываю аварийный флаг..."
-            : !routerReachable
-              ? "Роутер офлайн"
-              : directModeActive
+      >
+        {reconnectMutation.isPending
+          ? directModeActive
+            ? "Возвращаю прокси-режим..."
+            : "Сбрасываю аварийный флаг..."
+          : !routerReachable
+            ? "Роутер офлайн"
+            : directModeActive
               ? "Отключить аварийный режим"
               : "Сбросить аварийный флаг"}
       </button>

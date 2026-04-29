@@ -1,13 +1,16 @@
+import Link from "next/link";
+
 import { Panel } from "~/components/panel";
 import { PageHeader } from "~/components/page-header";
 import { StatusTile } from "~/components/status-tile";
 import { api } from "~/trpc/server";
 
 export default async function RescuePage() {
-  const [policy, incidents, directRouters] = await Promise.all([
+  const [policy, incidents, directRouters, rescueCases] = await Promise.all([
     api.rescue.policy(),
     api.rescue.openIncidents(),
     api.rescue.directRouters(),
+    api.rescue.cases(),
   ]);
 
   return (
@@ -25,7 +28,11 @@ export default async function RescuePage() {
           label="Роутеры в direct mode"
           value={String(directRouters.length)}
           tone={directRouters.length > 0 ? "warning" : "good"}
-          hint={directRouters.length > 0 ? "нужна проверка" : "активных direct-mode случаев нет"}
+          hint={
+            directRouters.length > 0
+              ? "нужна проверка"
+              : "активных direct-mode случаев нет"
+          }
           compact
           emphasis={directRouters.length > 0}
         />
@@ -33,7 +40,11 @@ export default async function RescuePage() {
           label="Открытые инциденты"
           value={String(incidents.length)}
           tone={incidents.length > 0 ? "warning" : "good"}
-          hint={incidents.length > 0 ? "проверьте причины и затронутые роутеры" : "парк сейчас стабилен"}
+          hint={
+            incidents.length > 0
+              ? "проверьте причины и затронутые роутеры"
+              : "парк сейчас стабилен"
+          }
           compact
           emphasis={incidents.length > 0}
         />
@@ -50,6 +61,49 @@ export default async function RescuePage() {
           compact
         />
       </div>
+
+      <Panel
+        eyebrow="Auto-Rescue"
+        title="Guided rescue cases"
+        tone="muted"
+        aside={
+          <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm text-slate-300">
+            {rescueCases.length}
+          </div>
+        }
+      >
+        <div className="space-y-3">
+          {rescueCases.length > 0 ? (
+            rescueCases.map((rescueCase) => (
+              <Link
+                key={rescueCase.id}
+                href={`/rescue/cases/${rescueCase.id}`}
+                className="block rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] p-4 text-sm text-slate-200 transition hover:border-[var(--vectra-accent)]/50"
+              >
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="font-semibold text-white">
+                      {rescueCase.trigger} · {rescueCase.state}
+                    </p>
+                    <p className="mt-1 text-slate-400">
+                      Router {rescueCase.routerId}
+                    </p>
+                  </div>
+                  <span className="text-xs text-slate-500">
+                    {rescueCase.startedAt.toLocaleString("ru-RU")}
+                  </span>
+                </div>
+              </Link>
+            ))
+          ) : (
+            <div className="rounded-md border border-dashed border-white/12 bg-white/[0.03] p-4 text-sm leading-7 text-slate-300">
+              Auto-Rescue cases пока не открывались. При critical trigger панель
+              создаст case, соберёт evidence, попробует safe repair и при
+              необходимости позовёт в Telegram.
+            </div>
+          )}
+        </div>
+      </Panel>
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Panel
@@ -70,7 +124,9 @@ export default async function RescuePage() {
                   className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] p-4 text-sm text-slate-200"
                 >
                   <p className="font-semibold text-white">
-                    {router.displayName ?? router.hostname ?? router.deviceIdentifier}
+                    {router.displayName ??
+                      router.hostname ??
+                      router.deviceIdentifier}
                   </p>
                   <p className="mt-1 text-slate-400">
                     {router.lastRescueReason ?? "Причина не записана"}
@@ -150,14 +206,18 @@ export default async function RescuePage() {
             />
             <StatusTile
               label="Проверка direct path"
-              value={policy.requireDirectPathSuccess ? "нужен" : "не обязателен"}
+              value={
+                policy.requireDirectPathSuccess ? "нужен" : "не обязателен"
+              }
               hint="для выхода из аварийного режима"
               compact
             />
           </div>
 
           <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-3 py-3">
-            <p className="vectra-kicker text-amber-200">Сообщение direct mode</p>
+            <p className="vectra-kicker text-amber-200">
+              Сообщение direct mode
+            </p>
             <p className="mt-2 text-base font-semibold text-white sm:text-lg">
               {policy.directModeReason}
             </p>

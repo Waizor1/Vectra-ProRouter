@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "~/server/db";
+import { startAutoRescueMonitor } from "~/server/vectra/auto-rescue";
 import { startBrowserPushMonitor } from "~/server/vectra/browser-push-monitor";
 
 export const dynamic = "force-dynamic";
@@ -9,6 +10,7 @@ export async function GET() {
   const checkedAt = new Date().toISOString();
   const checks = {
     browserPushMonitor: false,
+    autoRescueMonitor: false,
     dbRead: false,
     dbWriteProbe: false,
   };
@@ -16,6 +18,8 @@ export async function GET() {
   try {
     startBrowserPushMonitor();
     checks.browserPushMonitor = true;
+    startAutoRescueMonitor();
+    checks.autoRescueMonitor = true;
     await db.execute(sql`select 1`);
     checks.dbRead = true;
     const probeId = crypto.randomUUID();
@@ -37,7 +41,7 @@ export async function GET() {
         checkedAt,
         checks,
       },
-      { status: 200 }
+      { status: 200 },
     );
   } catch (error) {
     console.error("[health]", error);
@@ -49,7 +53,7 @@ export async function GET() {
         checks,
         error: error instanceof Error ? error.message : "health check failed",
       },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

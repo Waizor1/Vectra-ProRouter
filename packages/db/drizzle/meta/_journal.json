@@ -57,6 +57,13 @@
       "when": 1776819600000,
       "tag": "0007_hushed_subscription_preview",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1777126089991,
+      "tag": "0008_bright_auto_rescue",
+      "breakpoints": true
     }
   ]
 }

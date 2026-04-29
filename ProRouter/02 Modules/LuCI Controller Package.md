@@ -70,3 +70,7 @@ tags:
 - После следующей публикации feed установить новый LuCI package на AX3000T и повторить local LuCI browser pass.
 - Подтвердить live, что richer status surface корректно читает runtime status агента после apply/update/rescue событий.
 - После live validation решить, нужен ли отдельный `po/` i18n lane или текущий stable-minimal JS path достаточен для V1.
+
+## 2026-04-26 LuCI package recovery hardening
+
+- Root cause of the `0.1.13-r4` LuCI disappearance was confirmed as macOS AppleDouble metadata inside the generated `.ipk` payloads (`._*`, `.DS_Store`, `__MACOSX`-class paths). `scripts/build-vectra-openwrt-feed.sh` now disables macOS copyfile sidecars, removes metadata from package staging, hard-fails if metadata remains in `data/` or `control/`, and verifies final `.ipk` inner `control.tar.gz`/`data.tar.gz` before publishing. Clean `0.1.13-r5` artifacts were verified with no metadata matches; canary `testrouter` also proved LuCI menu descriptor, rpcd ACL, `luci-bridge.sh`, and `status.js` present on-device.
