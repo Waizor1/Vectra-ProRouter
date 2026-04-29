@@ -13,11 +13,25 @@ local function readfile(path)
   return content
 end
 
+local function strip_shebang(content)
+  if content:sub(1, 2) ~= "#!" then
+    return content
+  end
+
+  local newline = content:find("\n", 1, true)
+  if not newline then
+    return ""
+  end
+
+  return content:sub(newline + 1)
+end
+
 local source = readfile("/usr/share/passwall2/subscribe.lua")
 if not source then
   io.stderr:write("failed to read /usr/share/passwall2/subscribe.lua\n")
   os.exit(1)
 end
+source = strip_shebang(source)
 
 local injected = [=[
 log = function() end
