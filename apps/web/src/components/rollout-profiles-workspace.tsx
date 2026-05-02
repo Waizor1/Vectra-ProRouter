@@ -72,15 +72,15 @@ function createEmptyProfileConfig(): PasswallDesiredConfig {
       },
       socks: [],
       dns: {
-        remoteDns: "1.1.1.1",
-        remoteDnsProtocol: "doh",
+        remoteDns: "8.8.8.8",
+        remoteDnsProtocol: "udp",
         directQueryStrategy: "UseIP",
-        remoteDnsDoh: "https://1.1.1.1/dns-query",
-        remoteDnsDetour: "remote",
+        remoteDnsDoh: "",
+        remoteDnsDetour: "direct",
         remoteDnsQueryStrategy: "UseIPv4",
         remoteFakeDns: false,
         dnsRedirect: true,
-        dnsHosts: [],
+        dnsHosts: ["dns.google.com 8.8.8.8", "cloudflare-dns.com 1.1.1.1"],
         extras: {},
       },
       log: {
@@ -126,7 +126,7 @@ function createEmptyProfileConfig(): PasswallDesiredConfig {
       assetDirectory: "/usr/share/v2ray/",
       autoUpdate: true,
       scheduleMode: "daily",
-      scheduleHour: 5,
+      scheduleHour: 6,
       enabledAssets: ["geoip", "geosite"],
       shuntRules: [],
       extras: {},
@@ -207,8 +207,8 @@ function buildSimpleProfileForm(config: PasswallDesiredConfig): SimpleProfileFor
     socksPort: String(
       typeof main.nodeSocksPort === "number" ? main.nodeSocksPort : 1070,
     ),
-    remoteDns: readString(dns, "remoteDns", "1.1.1.1"),
-    remoteDnsProtocol: readString(dns, "remoteDnsProtocol", "doh") as RemoteDnsProtocol,
+    remoteDns: readString(dns, "remoteDns", "8.8.8.8"),
+    remoteDnsProtocol: readString(dns, "remoteDnsProtocol", "udp") as RemoteDnsProtocol,
     directDnsQueryStrategy: readString(dns, "directQueryStrategy", "UseIP") as QueryStrategy,
     logLevel: readString(log, "level", "error") as LogLevel,
     autoUpdateGeoAssets: readBoolean(ruleManage, "autoUpdate", true),
@@ -216,7 +216,7 @@ function buildSimpleProfileForm(config: PasswallDesiredConfig): SimpleProfileFor
       scheduleMode === "weekly" && typeof scheduleDayValue === "number"
         ? String(scheduleDayValue)
         : "7",
-    updateTime: String(typeof scheduleHourValue === "number" ? scheduleHourValue : 5),
+    updateTime: String(typeof scheduleHourValue === "number" ? scheduleHourValue : 6),
   };
 }
 
@@ -240,11 +240,17 @@ function applySimpleProfileForm(
   main.nodeSocksBindLocal = true;
   main.socksMainSwitch = form.socksEnabled;
 
-  dns.remoteDns = form.remoteDns.trim() || readString(dns, "remoteDns", "1.1.1.1");
+  dns.remoteDns = form.remoteDns.trim() || readString(dns, "remoteDns", "8.8.8.8");
   dns.remoteDnsProtocol = form.remoteDnsProtocol;
   dns.directQueryStrategy = form.directDnsQueryStrategy;
-  dns.remoteDnsDoh = readString(dns, "remoteDnsDoh", "https://1.1.1.1/dns-query");
-  dns.remoteDnsDetour = readString(dns, "remoteDnsDetour", "remote");
+  dns.remoteDnsDoh =
+    form.remoteDnsProtocol === "doh"
+      ? readString(dns, "remoteDnsDoh", "https://1.1.1.1/dns-query")
+      : "";
+  dns.remoteDnsDetour =
+    form.remoteDnsProtocol === "udp"
+      ? "direct"
+      : readString(dns, "remoteDnsDetour", "direct");
   dns.remoteDnsQueryStrategy = readString(dns, "remoteDnsQueryStrategy", "UseIPv4");
   dns.remoteFakeDns = readBoolean(dns, "remoteFakeDns", false);
   dns.dnsRedirect = readBoolean(dns, "dnsRedirect", true);
@@ -274,7 +280,7 @@ function applySimpleProfileForm(
   ruleManage.autoUpdate = form.autoUpdateGeoAssets;
   ruleManage.scheduleMode = form.dayOfWeek === "7" ? "daily" : "weekly";
   ruleManage.scheduleDay = form.dayOfWeek === "7" ? undefined : Number(form.dayOfWeek);
-  ruleManage.scheduleHour = Number(form.updateTime) >= 0 ? Number(form.updateTime) : 5;
+  ruleManage.scheduleHour = Number(form.updateTime) >= 0 ? Number(form.updateTime) : 6;
   ruleManage.enabledAssets = Array.isArray(ruleManage.enabledAssets)
     ? ruleManage.enabledAssets
     : ["geoip", "geosite"];

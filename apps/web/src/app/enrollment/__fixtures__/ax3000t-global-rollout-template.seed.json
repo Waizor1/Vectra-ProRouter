@@ -14,15 +14,15 @@
     "dns": {
       "directQueryStrategy": "UseIP",
       "dnsHosts": [
-        "common.dot.dns.yandex.net 77.88.8.8",
-        "common.dot.dns.yandex.net 77.88.8.1"
+        "dns.google.com 8.8.8.8",
+        "cloudflare-dns.com 1.1.1.1"
       ],
       "dnsRedirect": true,
       "extras": {},
-      "remoteDns": "1.1.1.1",
+      "remoteDns": "8.8.8.8",
       "remoteDnsDetour": "direct",
-      "remoteDnsDoh": "common.dot.dns.yandex.net",
-      "remoteDnsProtocol": "doh",
+      "remoteDnsDoh": "",
+      "remoteDnsProtocol": "udp",
       "remoteDnsQueryStrategy": "UseIPv4",
       "remoteFakeDns": false
     },
@@ -3607,11 +3607,12 @@
       "geosite"
     ],
     "extras": {
-      "time_update": "5",
+      "time_update": "6",
       "week_update": "7"
     },
     "geoipUrl": "https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat",
     "geositeUrl": "https://github.com/itdoginfo/allow-domains/releases/latest/download/geosite.dat",
+    "scheduleHour": 6,
     "scheduleMode": "daily",
     "shuntRules": [
       {

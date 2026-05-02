@@ -127,6 +127,22 @@ export function validateInstallBaselineUci(text: string) {
     issues.push("Для Direct в install baseline должен оставаться FakeDNS = 0.");
   }
 
+  if (!text.includes("option remote_dns_protocol 'udp'")) {
+    issues.push("Install baseline должен использовать UDP remote DNS.");
+  }
+
+  if (!text.includes("option remote_dns '8.8.8.8'")) {
+    issues.push("Install baseline должен использовать 8.8.8.8 как remote DNS.");
+  }
+
+  if (/^\s*option\s+remote_dns_doh\b/m.test(text)) {
+    issues.push("Install baseline не должен хранить remote_dns_doh при UDP DNS.");
+  }
+
+  if (text.includes("common.dot.dns.yandex.net")) {
+    issues.push("Install baseline не должен пиновать legacy Yandex DNS host.");
+  }
+
   return issues;
 }
 
@@ -143,6 +159,32 @@ export function validateRolloutTemplateConfig(config: PasswallDesiredConfig) {
     issues.push(
       "Fleet-template не должен хранить реальные proxy-node секции: разрешены только template-managed shunt nodes.",
     );
+  }
+
+  const dns = config.basicSettings.dns;
+
+  if (dns.remoteDnsProtocol !== "udp") {
+    issues.push("Fleet-template должен использовать UDP remote DNS.");
+  }
+
+  if (dns.remoteDns !== "8.8.8.8") {
+    issues.push("Fleet-template должен использовать 8.8.8.8 как remote DNS.");
+  }
+
+  if (dns.remoteDnsDoh.trim().length > 0) {
+    issues.push("Fleet-template не должен хранить remoteDnsDoh при UDP DNS.");
+  }
+
+  if (dns.remoteDnsDetour !== "direct") {
+    issues.push("Fleet-template должен отправлять remote DNS напрямую.");
+  }
+
+  if (
+    dns.dnsHosts.some((entry) =>
+      entry.toLowerCase().includes("common.dot.dns.yandex.net"),
+    )
+  ) {
+    issues.push("Fleet-template не должен пиновать legacy Yandex DNS host.");
   }
 
   return issues;

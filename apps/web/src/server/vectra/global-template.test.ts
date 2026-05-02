@@ -43,6 +43,27 @@ describe("validateInstallBaselineUci", () => {
       "Для Direct в install baseline должен оставаться FakeDNS = 0.",
     ]);
   });
+
+  it("rejects a baseline when remote DNS drifts back to Yandex DoH", () => {
+    const baseline = readFileSync(baselinePath, "utf8")
+      .replace("option remote_dns_protocol 'udp'", "option remote_dns_protocol 'doh'")
+      .replace("option remote_dns '8.8.8.8'", "option remote_dns '1.1.1.1'")
+      .replace(
+        "option remote_dns_detour 'direct'",
+        "option remote_dns_doh 'common.dot.dns.yandex.net'\n\toption remote_dns_detour 'direct'",
+      )
+      .replace(
+        "dns.google.com 8.8.8.8\ncloudflare-dns.com 1.1.1.1",
+        "common.dot.dns.yandex.net 77.88.8.8\ncommon.dot.dns.yandex.net 77.88.8.1",
+      );
+
+    expect(validateInstallBaselineUci(baseline)).toEqual([
+      "Install baseline должен использовать UDP remote DNS.",
+      "Install baseline должен использовать 8.8.8.8 как remote DNS.",
+      "Install baseline не должен хранить remote_dns_doh при UDP DNS.",
+      "Install baseline не должен пиновать legacy Yandex DNS host.",
+    ]);
+  });
 });
 
 describe("validateRolloutTemplateConfig", () => {
@@ -74,6 +95,26 @@ describe("validateRolloutTemplateConfig", () => {
     expect(validateRolloutTemplateConfig(config)).toEqual([
       "Fleet-template не должен хранить subscription items: ссылки остаются локальными для каждого роутера.",
       "Fleet-template не должен хранить реальные proxy-node секции: разрешены только template-managed shunt nodes.",
+    ]);
+  });
+
+  it("rejects unsafe remote DNS defaults", () => {
+    const config = loadRolloutSeed();
+    config.basicSettings.dns.remoteDnsProtocol = "doh";
+    config.basicSettings.dns.remoteDns = "1.1.1.1";
+    config.basicSettings.dns.remoteDnsDoh = "common.dot.dns.yandex.net";
+    config.basicSettings.dns.remoteDnsDetour = "remote";
+    config.basicSettings.dns.dnsHosts = [
+      "common.dot.dns.yandex.net 77.88.8.8",
+      "common.dot.dns.yandex.net 77.88.8.1",
+    ];
+
+    expect(validateRolloutTemplateConfig(config)).toEqual([
+      "Fleet-template должен использовать UDP remote DNS.",
+      "Fleet-template должен использовать 8.8.8.8 как remote DNS.",
+      "Fleet-template не должен хранить remoteDnsDoh при UDP DNS.",
+      "Fleet-template должен отправлять remote DNS напрямую.",
+      "Fleet-template не должен пиновать legacy Yandex DNS host.",
     ]);
   });
 });
