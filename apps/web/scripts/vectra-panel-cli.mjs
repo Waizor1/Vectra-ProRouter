@@ -29,7 +29,7 @@ const supportedLogSources = ["all", "controller", "passwall", "dnsmasq", "system
 const operatorTrpcCatalog = {
   draft: {
     queries: ["list", "workspace", "editorSurface", "preview"],
-    mutations: ["save", "queueApply"],
+    mutations: ["save", "queueApply", "discard"],
   },
   fleet: {
     queries: ["overview", "list", "monitoring", "pendingImportReviews", "byId"],
@@ -404,7 +404,7 @@ class VectraPanelClient {
       "  fleet request-reimport <selector>",
       "  fleet delete <selector> --yes",
       "  router show <selector>",
-      "  draft list|workspace [selector]|editor <selector>|save <selector> [--config JSON|--config-file PATH] [--note TEXT]|queue-apply <selector> [--revision-id UUID]",
+      "  draft list|workspace [selector]|editor <selector>|save <selector> [--config JSON|--config-file PATH] [--note TEXT]|queue-apply <selector> [--revision-id UUID]|discard <selector> --revision-id UUID",
       "  logs history <selector>",
       "  logs snapshot <selector> [--source all|controller|passwall|dnsmasq|system] [--lines N]",
       "  notifications status|subscribe --input '{...}'|unsubscribe --endpoint URL",
@@ -1049,6 +1049,24 @@ async function runDraft(client, args, rawJson) {
       return client.mutate("draft.queueApply", {
         routerId: router.id,
         desiredRevisionId,
+      });
+    }
+    case "discard": {
+      const selector = args[1];
+      if (!selector) {
+        throw new CliError("Usage: draft discard <selector> --revision-id UUID");
+      }
+      const parsed = parseSubcommandArgs(args.slice(2), {
+        "revision-id": { type: "string" },
+      });
+      const revisionId = parsed.values["revision-id"];
+      if (!revisionId) {
+        throw new CliError("Usage: draft discard <selector> --revision-id UUID");
+      }
+      const router = await client.resolveRouter(selector);
+      return client.mutate("draft.discard", {
+        routerId: router.id,
+        revisionId,
       });
     }
     default:

@@ -3,6 +3,8 @@ type RevisionLike = {
   origin: string | null | undefined;
   status: string | null | undefined;
   configDigest: string | null | undefined;
+  revisionNumber?: number | null | undefined;
+  createdAt?: Date | string | null | undefined;
 };
 
 const editableDraftStatuses = new Set(["draft", "queued", "failed"]);
@@ -12,20 +14,88 @@ function normalizeDigest(value: string | null | undefined) {
   return trimmed && trimmed.length > 0 ? trimmed : null;
 }
 
-export function isLiveImportRevision(revision: RevisionLike | null | undefined) {
+export function isLiveImportRevision(
+  revision: RevisionLike | null | undefined,
+) {
   return (
-    revision?.origin === "router_import" || revision?.origin === "operator_reimport"
+    revision?.origin === "router_import" ||
+    revision?.origin === "operator_reimport"
   );
 }
 
-export function isOperatorDraftRevision(revision: RevisionLike | null | undefined) {
+export function isOperatorDraftRevision(
+  revision: RevisionLike | null | undefined,
+) {
   return revision?.origin === "operator_draft";
 }
 
-export function isEditableDraftRevision(revision: RevisionLike | null | undefined) {
+export function isEditableDraftRevision(
+  revision: RevisionLike | null | undefined,
+) {
   return (
     isOperatorDraftRevision(revision) &&
     editableDraftStatuses.has((revision?.status ?? "").trim().toLowerCase())
+  );
+}
+
+function normalizeRevisionNumber(revision: RevisionLike | null | undefined) {
+  return typeof revision?.revisionNumber === "number" &&
+    Number.isFinite(revision.revisionNumber)
+    ? revision.revisionNumber
+    : null;
+}
+
+function normalizeRevisionTime(revision: RevisionLike | null | undefined) {
+  if (!revision?.createdAt) {
+    return null;
+  }
+
+  const createdAt =
+    revision.createdAt instanceof Date
+      ? revision.createdAt
+      : new Date(revision.createdAt);
+  const timestamp = createdAt.getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function revisionSupersedesDraft(
+  supersedingRevision: RevisionLike | null | undefined,
+  draftRevision: RevisionLike | null | undefined,
+) {
+  if (!supersedingRevision || !draftRevision) {
+    return false;
+  }
+
+  if (supersedingRevision.id === draftRevision.id) {
+    return false;
+  }
+
+  const supersedingNumber = normalizeRevisionNumber(supersedingRevision);
+  const draftNumber = normalizeRevisionNumber(draftRevision);
+  if (supersedingNumber !== null && draftNumber !== null) {
+    return supersedingNumber >= draftNumber;
+  }
+
+  const supersedingTime = normalizeRevisionTime(supersedingRevision);
+  const draftTime = normalizeRevisionTime(draftRevision);
+  if (supersedingTime !== null && draftTime !== null) {
+    return supersedingTime >= draftTime;
+  }
+
+  return false;
+}
+
+export function isSupersededEditableDraft(args: {
+  draftRevision: RevisionLike | null | undefined;
+  activeRevision?: RevisionLike | null | undefined;
+  currentLiveRevision?: RevisionLike | null | undefined;
+}) {
+  if (!isEditableDraftRevision(args.draftRevision)) {
+    return false;
+  }
+
+  return [args.currentLiveRevision, args.activeRevision].some((revision) =>
+    revisionSupersedesDraft(revision, args.draftRevision),
   );
 }
 
@@ -55,12 +125,46 @@ export function pickActiveRevision<T extends RevisionLike>(args: {
   );
 }
 
-export function pickLatestOperatorDraft<T extends RevisionLike>(revisions: T[]) {
-  return revisions.find((revision) => isOperatorDraftRevision(revision)) ?? null;
+export function pickLatestOperatorDraft<T extends RevisionLike>(
+  revisions: T[],
+) {
+  return (
+    revisions.find(
+      (revision) =>
+        isOperatorDraftRevision(revision) &&
+        (revision.status ?? "").trim().toLowerCase() !== "discarded",
+    ) ?? null
+  );
 }
 
-export function pickLatestEditableDraft<T extends RevisionLike>(revisions: T[]) {
-  return revisions.find((revision) => isEditableDraftRevision(revision)) ?? null;
+export function pickLatestEditableDraft<T extends RevisionLike>(
+  input:
+    | T[]
+    | {
+        revisions: T[];
+        activeRevision?: T | null;
+        currentLiveRevision?: T | null;
+      },
+) {
+  const revisions = Array.isArray(input) ? input : input.revisions;
+  const activeRevision = Array.isArray(input)
+    ? null
+    : (input.activeRevision ?? null);
+  const currentLiveRevision = Array.isArray(input)
+    ? null
+    : (input.currentLiveRevision ?? null);
+
+  return (
+    revisions.find(
+      (revision) =>
+        isEditableDraftRevision(revision) &&
+        !isSupersededEditableDraft({
+          draftRevision: revision,
+          activeRevision,
+          currentLiveRevision,
+        }),
+    ) ?? null
+  );
 }
 
 export function pickCurrentLiveRevision<T extends RevisionLike>(args: {

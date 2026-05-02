@@ -409,7 +409,7 @@ export function buildUnconfirmedChangesSummary(args: {
         title:
           "В панели есть сохранённые изменения, которые ещё не подтверждены на роутере",
         summary:
-          "Эти правки уже сохранены как ревизия в панели, но router apply ещё не подтвердил их как текущее live-состояние.",
+          "Эти правки уже сохранены как ревизия в панели, но router apply ещё не подтвердил их как текущее live-состояние. Если запустить apply, controller перепишет управляемые PassWall-секции из этой ревизии.",
         changeCount: changes.changeCount,
         changedSections: changes.changedSections,
         items: changes.items,
@@ -1693,13 +1693,17 @@ export async function getDraftEditorSurface(routerId: string) {
     revisions,
   });
   const latestPanelDraftRevision = pickLatestOperatorDraft(revisions);
-  const latestEditableDraftRevision = pickLatestEditableDraft(revisions);
   const liveImportRevisions = revisions.filter((revision) =>
     ["router_import", "operator_reimport"].includes(revision.origin),
   );
   const currentLiveRevision = pickCurrentLiveRevision({
     snapshotDigest: latestSnapshot?.payload.configDigest ?? null,
     revisions: liveImportRevisions,
+  });
+  const latestEditableDraftRevision = pickLatestEditableDraft({
+    revisions,
+    activeRevision,
+    currentLiveRevision,
   });
   const workspaceRevision = pickWorkspaceRevision({
     latestEditableDraft: latestEditableDraftRevision,

@@ -56,7 +56,11 @@ function createMockDb(selectResponses: unknown[][]) {
           set() {
             return {
               where() {
-                return Promise.resolve([]);
+                return Object.assign(Promise.resolve([]), {
+                  returning() {
+                    return Promise.resolve([]);
+                  },
+                });
               },
             };
           },
@@ -378,15 +382,40 @@ function createBlockedSnapshot() {
   };
 }
 
-function createCertifiedLikeRouter() {
+function createCertifiedLikeRouter(options?: {
+  activeRevisionId?: string | null;
+  importState?: string;
+  lastConfigDigest?: string | null;
+}) {
   return {
     id: CERTIFIED_LIKE_ROUTER_ID,
     boardName: "xiaomi,mi-router-ax3000t",
     target: "mediatek/filogic",
     architecture: "aarch64_cortex-a53",
     openwrtRelease: "24.10.6",
-    importState: "approved",
+    importState: options?.importState ?? "approved",
     status: "active",
+    activeRevisionId: options?.activeRevisionId ?? null,
+    lastConfigDigest: options?.lastConfigDigest ?? null,
+  };
+}
+
+function createDesiredRevision(options?: {
+  id?: string;
+  origin?: string;
+  status?: string;
+  revisionNumber?: number;
+  configDigest?: string | null;
+  createdAt?: Date;
+}) {
+  return {
+    id: options?.id ?? CERTIFIED_LIKE_REVISION_ID,
+    routerId: CERTIFIED_LIKE_ROUTER_ID,
+    revisionNumber: options?.revisionNumber ?? 31,
+    origin: options?.origin ?? "operator_draft",
+    status: options?.status ?? "draft",
+    configDigest: options?.configDigest ?? "digest-draft",
+    createdAt: options?.createdAt ?? new Date("2026-04-29T12:00:00.000Z"),
   };
 }
 
@@ -395,8 +424,7 @@ describe("destructive route gating", () => {
     const mock = createMockDb([
       [createCertifiedLikeRouter()],
       [createPilotLayoutSnapshot()],
-      [],
-      [],
+      [createDesiredRevision()],
       [],
     ]);
     const caller = createProtectedCaller(draftRouter, mock.db) as {
@@ -414,6 +442,90 @@ describe("destructive route gating", () => {
     expect(mock.counts()).toEqual({
       insertCalls: 1,
       updateCalls: 1,
+    });
+  });
+
+  it("blocks apply queueing for an operator draft superseded by the active live baseline", async () => {
+    const activeRevisionId = "8a9af7ac-9d0f-4b13-a064-28b6b15f7b75";
+    const mock = createMockDb([
+      [
+        createCertifiedLikeRouter({
+          activeRevisionId,
+          lastConfigDigest: "digest-live",
+        }),
+      ],
+      [createPilotLayoutSnapshot()],
+      [
+        createDesiredRevision({
+          id: activeRevisionId,
+          origin: "router_import",
+          status: "approved",
+          revisionNumber: 19,
+          configDigest: "digest-live",
+          createdAt: new Date("2026-04-28T21:00:00.000Z"),
+        }),
+        createDesiredRevision({
+          id: CERTIFIED_LIKE_REVISION_ID,
+          origin: "operator_draft",
+          status: "draft",
+          revisionNumber: 13,
+          configDigest: "digest-stale",
+          createdAt: new Date("2026-04-23T12:00:00.000Z"),
+        }),
+      ],
+    ]);
+    const caller = createProtectedCaller(draftRouter, mock.db) as {
+      queueApply: (input: {
+        routerId: string;
+        desiredRevisionId: string;
+      }) => Promise<unknown>;
+    };
+
+    await expect(
+      caller.queueApply({
+        routerId: CERTIFIED_LIKE_ROUTER_ID,
+        desiredRevisionId: CERTIFIED_LIKE_REVISION_ID,
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+
+    expect(mock.counts()).toEqual({
+      insertCalls: 0,
+      updateCalls: 0,
+    });
+  });
+
+  it("does not demote an approved active revision to queued when re-applying the authoritative baseline", async () => {
+    const activeRevisionId = CERTIFIED_LIKE_REVISION_ID;
+    const mock = createMockDb([
+      [createCertifiedLikeRouter({ activeRevisionId })],
+      [createPilotLayoutSnapshot()],
+      [
+        createDesiredRevision({
+          id: activeRevisionId,
+          origin: "operator_draft",
+          status: "approved",
+          revisionNumber: 31,
+        }),
+      ],
+      [],
+    ]);
+    const caller = createProtectedCaller(draftRouter, mock.db) as {
+      queueApply: (input: {
+        routerId: string;
+        desiredRevisionId: string;
+      }) => Promise<unknown>;
+    };
+
+    await caller.queueApply({
+      routerId: CERTIFIED_LIKE_ROUTER_ID,
+      desiredRevisionId: activeRevisionId,
+    });
+
+    expect(mock.counts()).toEqual({
+      insertCalls: 1,
+      updateCalls: 0,
     });
   });
 

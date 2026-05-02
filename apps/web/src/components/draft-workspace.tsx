@@ -232,7 +232,8 @@ export function DraftWorkspace({
 
           <div className="mt-3 rounded-2xl border border-white/10 bg-black/10 px-3 py-3 text-sm leading-6 text-slate-300">
             Apply использует только сохранённую ревизию. Всё, что вы не
-            сохранили, остаётся только в текущем окне.
+            сохранили, остаётся только в текущем окне. При выполнении router
+            agent перепишет управляемые PassWall-секции из выбранной ревизии.
           </div>
 
           <div className="mt-4 vectra-stat-grid">
@@ -355,7 +356,7 @@ export function DraftWorkspace({
               >
                 {queueMutation.isPending
                   ? "Ставлю применение в очередь..."
-                  : "Сохранить и отправить на роутер"}
+                  : "Применить сохранённый черновик"}
               </button>
             </ActionStrip>
           </div>

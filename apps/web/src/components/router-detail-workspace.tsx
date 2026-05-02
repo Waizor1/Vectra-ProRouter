@@ -566,6 +566,20 @@ export function RouterDetailWorkspace({
       router.refresh();
     },
   });
+  const discardDraftMutation = api.draft.discard.useMutation({
+    onSuccess: async () => {
+      setSavedRevisionId(null);
+      setLoadedRevisionId(null);
+      await Promise.all([
+        utils.draft.editorSurface.invalidate({ routerId }),
+        utils.draft.workspace.invalidate({ routerId }),
+        utils.draft.list.invalidate(),
+        utils.fleet.byId.invalidate({ routerId }),
+        utils.fleet.monitoring.invalidate(),
+      ]);
+      router.refresh();
+    },
+  });
 
   const deleteRouterMutation = api.fleet.deleteRouter.useMutation({
     onSuccess: async () => {
@@ -673,7 +687,9 @@ export function RouterDetailWorkspace({
       ? "Сначала завершите импорт и подтвердите эталон."
       : !editor.routerRuntimeSummary.destructiveActionsAllowed
         ? "Для этого роутера применение отключено."
-        : "Сохранит текущие поля и поставит применение в очередь.";
+        : hasUnsavedChanges || !savedDraftExists
+          ? "Сохранит текущие поля как новую ревизию и только потом поставит apply в очередь."
+          : "Поставит apply последнего сохранённого черновика. Router agent перепишет управляемые PassWall-секции из этой ревизии.";
 
   const handleSaveDraft = async () => {
     if (!validDraft) {
@@ -723,6 +739,30 @@ export function RouterDetailWorkspace({
       note: note.trim() || "Принять текущий live-список нод с роутера",
       config: validDraft,
     });
+  };
+
+  const handleDiscardSavedDraft = async () => {
+    const revisionId =
+      editor.unconfirmedChanges.panel.revisionId ??
+      savedRevisionId ??
+      editor.latestDraftId ??
+      null;
+
+    if (!revisionId) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Отбросить сохранённый черновик?\n\n" +
+        "Черновик будет скрыт из apply и не изменит роутер. " +
+        "Если по нему уже была доставлена apply-задача, панель не даст отбросить её этим действием.",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    await discardDraftMutation.mutateAsync({ routerId, revisionId });
   };
 
   const primaryItems = routerPrimaryTabs.map((tab) => {
@@ -789,11 +829,7 @@ export function RouterDetailWorkspace({
         break;
       case "dns":
         tabContent = (
-          <DnsTabSection
-            draft={draft}
-            surface={editor}
-            setDraft={setDraft}
-          />
+          <DnsTabSection draft={draft} surface={editor} setDraft={setDraft} />
         );
         break;
       case "log":
@@ -1251,6 +1287,7 @@ export function RouterDetailWorkspace({
         setNote={setNote}
         savePending={saveMutation.isPending}
         queuePending={queueMutation.isPending}
+        discardDraftPending={discardDraftMutation.isPending}
         deletePending={deleteRouterMutation.isPending}
         canApplyCurrentDraft={canApplyCurrentDraft}
         canQueueApply={canQueueApply}
@@ -1261,6 +1298,7 @@ export function RouterDetailWorkspace({
         applyDisabledReason={applyDisabledReason}
         handleSaveDraft={handleSaveDraft}
         handleSaveAndApply={handleSaveAndApply}
+        handleDiscardSavedDraft={handleDiscardSavedDraft}
         watchLogsSupported={watchLogsSupported}
         watchLogsHref={watchLogsHref}
         minimumWatchLogsControllerVersion={minimumWatchLogsControllerVersion}
@@ -1400,6 +1438,7 @@ function RouterActionRail({
   setNote,
   savePending,
   queuePending,
+  discardDraftPending,
   deletePending,
   canApplyCurrentDraft,
   canQueueApply,
@@ -1410,6 +1449,7 @@ function RouterActionRail({
   applyDisabledReason,
   handleSaveDraft,
   handleSaveAndApply,
+  handleDiscardSavedDraft,
   watchLogsSupported,
   watchLogsHref,
   minimumWatchLogsControllerVersion,
@@ -1429,6 +1469,7 @@ function RouterActionRail({
   setNote: Dispatch<SetStateAction<string>>;
   savePending: boolean;
   queuePending: boolean;
+  discardDraftPending: boolean;
   deletePending: boolean;
   canApplyCurrentDraft: boolean;
   canQueueApply: boolean;
@@ -1439,6 +1480,7 @@ function RouterActionRail({
   applyDisabledReason: string;
   handleSaveDraft: () => Promise<void>;
   handleSaveAndApply: () => Promise<void>;
+  handleDiscardSavedDraft: () => Promise<void>;
   watchLogsSupported: boolean;
   watchLogsHref: string;
   minimumWatchLogsControllerVersion: string;
@@ -1494,6 +1536,36 @@ function RouterActionRail({
                 compact
               />
             </div>
+            {unconfirmedChanges.panel.status === "saved-draft-pending-apply" &&
+            unconfirmedChanges.panel.revisionId ? (
+              <div className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-500/10 px-4 py-3">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0">
+                    <p className="vectra-kicker text-amber-200">
+                      Безопасная развилка
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-amber-50/90">
+                      Этот черновик ещё не применён. Apply отправит на роутер
+                      именно сохранённую ревизию и перепишет управляемые
+                      PassWall-секции. Если это старый эксперимент — отбросьте
+                      его перед следующими правками.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={discardDraftPending || queuePending}
+                    onClick={() => {
+                      void handleDiscardSavedDraft();
+                    }}
+                    className="vectra-button-secondary px-3 py-2 text-sm font-medium text-amber-100 transition hover:border-amber-300/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {discardDraftPending
+                      ? "Отбрасываю..."
+                      : "Отбросить черновик"}
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </details>
         ) : null}
 
@@ -1536,7 +1608,7 @@ function RouterActionRail({
             }
             description={
               canQueueApply && !hasUnsavedChanges
-                ? "Если ничего не менялось, на роутер уйдёт уже сохранённый черновик из панели."
+                ? "Если ничего не менялось, на роутер уйдёт уже сохранённый черновик из панели; managed PassWall-секции будут переписаны из этой ревизии."
                 : applyDisabledReason
             }
           />
@@ -1559,7 +1631,7 @@ function RouterActionRail({
             {validationMessage ? (
               <span className="text-rose-200">{validationMessage}</span>
             ) : (
-              "Apply всегда использует последнюю сохранённую ревизию. Если правки ещё не записаны в панель, сначала сохраните черновик."
+              "Apply всегда использует сохранённую ревизию из панели, а не несохранённое состояние формы. При выполнении router agent перепишет управляемые PassWall-секции из этой ревизии."
             )}
           </div>
         </div>
@@ -1591,7 +1663,9 @@ function RouterActionRail({
               ? "Отправляю на роутер..."
               : savePending
                 ? "Сохраняю..."
-                : "Сохранить и применить на роутере"}
+                : hasUnsavedChanges || !savedDraftExists
+                  ? "Сохранить и применить на роутере"
+                  : "Применить сохранённый черновик"}
           </button>
           <Link
             href={`/drafts?routerId=${routerId}`}
@@ -2268,7 +2342,7 @@ function NodeListSection({
   const cleanupDescription =
     routerOnlyCount > 0
       ? "Ниже есть ноды, которые всё ещё лежат на роутере, хотя текущий preview подписки их уже не отдаёт или они не помечены как managed. Кнопка подготовит чистый draft по текущему live-списку; потом останется нажать «Сохранить» или «Сохранить и применить»."
-      : "На роутере список уже актуальный. Кнопка ниже просто сохранит этот live-список как новую ревизию в панели.";
+      : "На роутере список уже актуальный. Кнопка ниже создаст в панели новый черновик по этому live-списку и не применит его сама.";
   const cleanupButtonLabel =
     routerOnlyCount > 0
       ? "Подготовить чистый draft"
@@ -2370,7 +2444,7 @@ function NodeListSection({
           <p className="text-xs leading-5 text-slate-400">
             {routerOnlyCount > 0
               ? "Кнопка ничего не применяет сама: она только готовит чистый draft. После этого используйте обычное «Сохранить» или «Сохранить и применить»."
-              : "Это действие сразу создаст новую ревизию в панели на основе текущего live-списка с роутера."}
+              : "Это действие только создаст новую ревизию-черновик в панели на основе текущего live-списка с роутера. Apply нужно запускать отдельно."}
           </p>
         </ActionGroup>
       ) : null}

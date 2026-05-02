@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   isEditableDraftRevision,
+  isSupersededEditableDraft,
   pickActiveRevision,
   pickCurrentLiveRevision,
   pickImportedRevision,
@@ -64,6 +65,27 @@ describe("draft selection", () => {
     expect(pickLatestEditableDraft(baseRevisions)).toBeNull();
   });
 
+  it("does not treat discarded operator drafts as latest panel context", () => {
+    const revisions = [
+      {
+        id: "discarded-draft",
+        origin: "operator_draft",
+        status: "discarded",
+        configDigest: "digest-discarded",
+        revisionNumber: 32,
+      },
+      {
+        id: "applied-draft",
+        origin: "operator_draft",
+        status: "applied",
+        configDigest: "digest-applied",
+        revisionNumber: 31,
+      },
+    ];
+
+    expect(pickLatestOperatorDraft(revisions)?.id).toBe("applied-draft");
+  });
+
   it("prefers the matching live import over an older applied operator draft", () => {
     const importedRevision = pickImportedRevision({
       pendingImportRevisionId: null,
@@ -120,5 +142,77 @@ describe("draft selection", () => {
     });
 
     expect(workspaceRevision?.id).toBe("draft-queued");
+  });
+
+  it("ignores editable operator drafts that are older than the confirmed live baseline", () => {
+    const revisions = [
+      {
+        id: "active-live",
+        origin: "router_import",
+        status: "approved",
+        configDigest: "digest-live",
+        revisionNumber: 19,
+        createdAt: "2026-04-28T21:00:00.000Z",
+      },
+      {
+        id: "stale-draft",
+        origin: "operator_draft",
+        status: "draft",
+        configDigest: "digest-stale",
+        revisionNumber: 13,
+        createdAt: "2026-04-23T12:00:00.000Z",
+      },
+    ];
+
+    const activeRevision = pickActiveRevision({
+      activeRevisionId: "active-live",
+      revisions,
+    });
+
+    expect(
+      isSupersededEditableDraft({
+        draftRevision: revisions[1],
+        activeRevision,
+      }),
+    ).toBe(true);
+    expect(
+      pickLatestEditableDraft({
+        revisions,
+        activeRevision,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps a newer editable draft visible until the operator applies or discards it", () => {
+    const revisions = [
+      {
+        id: "new-draft",
+        origin: "operator_draft",
+        status: "draft",
+        configDigest: "digest-new-draft",
+        revisionNumber: 31,
+        createdAt: "2026-04-29T23:08:00.000Z",
+      },
+      {
+        id: "active-live",
+        origin: "router_import",
+        status: "approved",
+        configDigest: "digest-live",
+        revisionNumber: 30,
+        createdAt: "2026-04-28T21:00:00.000Z",
+      },
+    ];
+
+    const activeRevision = pickActiveRevision({
+      activeRevisionId: "active-live",
+      revisions,
+    });
+
+    expect(
+      pickLatestEditableDraft({
+        revisions,
+        activeRevision,
+      })?.id,
+    ).toBe("new-draft");
   });
 });

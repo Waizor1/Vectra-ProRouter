@@ -364,3 +364,7 @@ tags:
 - `Router Agent` now has a local source hardening for the Dmitry direct-mode repeat: after control-plane recovery in `direct_settle`, the agent performs one bounded PassWall proxy auto-retry when RU/local WAN is reachable and PassWall is disabled, then waits in `passwall_retry_wait` for fresh inventory instead of immediately requiring operator reconnect.
 - Safety boundary remains narrow: the retry budget is one per persisted outage window (`LastPasswallRetryAt` after `OutageStartedAt` blocks another attempt), and the old `operator_attention` path remains for already-retried, already-enabled, or RU-not-reachable states.
 - Verification is local and green on the scoped controller-agent package set plus full `cd router/vectra-controller-agent && go test ./...`; stage stays `pilot/high` because this patch has not yet been built into a new controller release or deployed to live routers.
+
+## 2026-04-30 Local Guardrail Addendum
+
+- Web control plane remains `pilot/high`, but the local candidate now includes saved-draft/apply safety guardrails: stale editable drafts are filtered against active/live imports, `draft.queueApply` rejects superseded or non-current revision ids, active authoritative re-apply no longer demotes approved revisions to `queued`, and operators can discard saved pending drafts before editing. Verified locally with targeted Vitest, typecheck, lint, build, plus read-only `VectraPanelCli.sh fleet list`. This is not yet deployed and did not mutate live drafts/jobs.

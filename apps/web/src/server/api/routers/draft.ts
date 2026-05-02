@@ -16,7 +16,11 @@ import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
 import { buildDraftPreview } from "~/server/vectra/editor";
 import { getDraftEditorSurface } from "~/server/vectra/editor-surface";
 import {
+  isEditableDraftRevision,
+  isOperatorDraftRevision,
+  isSupersededEditableDraft,
   pickActiveRevision,
+  pickCurrentLiveRevision,
   pickImportedRevision,
   pickLatestEditableDraft,
   pickWorkspaceRevision,
@@ -101,10 +105,26 @@ export const draftRouter = createTRPCRouter({
         activeRevisionId: selectedRouter.activeRevisionId,
         revisions: revisionRows,
       });
-      const latestDraft = pickLatestEditableDraft(revisionRows);
+      const [latestSnapshot] = await ctx.db
+        .select()
+        .from(routerInventorySnapshots)
+        .where(eq(routerInventorySnapshots.routerId, selectedRouter.id))
+        .orderBy(desc(routerInventorySnapshots.createdAt))
+        .limit(1);
+      const currentLiveRevision = pickCurrentLiveRevision({
+        snapshotDigest: latestSnapshot?.payload.configDigest ?? null,
+        revisions: revisionRows.filter((revision) =>
+          ["router_import", "operator_reimport"].includes(revision.origin),
+        ),
+      });
+      const latestDraft = pickLatestEditableDraft({
+        revisions: revisionRows,
+        activeRevision,
+        currentLiveRevision,
+      });
       const workspaceRevision = pickWorkspaceRevision({
         latestEditableDraft: latestDraft,
-        currentLiveRevision: null,
+        currentLiveRevision,
         importedRevision,
         activeRevision,
         revisions: revisionRows,
@@ -245,6 +265,66 @@ export const draftRouter = createTRPCRouter({
         });
       }
 
+      const revisionRows = await ctx.db
+        .select()
+        .from(passwallDesiredRevisions)
+        .where(eq(passwallDesiredRevisions.routerId, input.routerId))
+        .orderBy(desc(passwallDesiredRevisions.revisionNumber))
+        .limit(100);
+      const desiredRevision =
+        revisionRows.find(
+          (revision) => revision.id === input.desiredRevisionId,
+        ) ?? null;
+
+      if (!desiredRevision) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message:
+            "Выбранная ревизия не найдена у этого роутера. Обновите рабочую поверхность перед apply.",
+        });
+      }
+
+      const activeRevision = pickActiveRevision({
+        activeRevisionId: router.activeRevisionId,
+        revisions: revisionRows,
+      });
+      const currentLiveRevision = pickCurrentLiveRevision({
+        snapshotDigest: snapshot?.payload.configDigest ?? null,
+        revisions: revisionRows.filter((revision) =>
+          ["router_import", "operator_reimport"].includes(revision.origin),
+        ),
+      });
+      const latestDraft = pickLatestEditableDraft({
+        revisions: revisionRows,
+        activeRevision,
+        currentLiveRevision,
+      });
+
+      if (
+        isSupersededEditableDraft({
+          draftRevision: desiredRevision,
+          activeRevision,
+          currentLiveRevision,
+        })
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Этот черновик уже перекрыт более свежим live-импортом с роутера. Откройте актуальную рабочую поверхность и сохраните новый черновик перед apply.",
+        });
+      }
+
+      const applyableRevisionIds = new Set(
+        [latestDraft?.id, activeRevision?.id].filter(Boolean),
+      );
+      if (!applyableRevisionIds.has(desiredRevision.id)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Apply можно поставить только для текущей authoritative-ревизии или самого свежего не перекрытого черновика. Обновите рабочую поверхность и сохраните новый черновик.",
+        });
+      }
+
       const dedupeKey = `apply:${input.routerId}:${input.desiredRevisionId}`;
 
       const [existingJob] = await ctx.db
@@ -277,11 +357,113 @@ export const draftRouter = createTRPCRouter({
         })
         .returning();
 
-      await ctx.db
-        .update(passwallDesiredRevisions)
-        .set({ status: "queued" })
-        .where(eq(passwallDesiredRevisions.id, input.desiredRevisionId));
+      if (isEditableDraftRevision(desiredRevision)) {
+        await ctx.db
+          .update(passwallDesiredRevisions)
+          .set({ status: "queued" })
+          .where(eq(passwallDesiredRevisions.id, input.desiredRevisionId));
+      }
 
       return job;
+    }),
+
+  discard: protectedProcedure
+    .input(
+      z.object({
+        routerId: z.string().uuid(),
+        revisionId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [revision] = await ctx.db
+        .select()
+        .from(passwallDesiredRevisions)
+        .where(
+          and(
+            eq(passwallDesiredRevisions.routerId, input.routerId),
+            eq(passwallDesiredRevisions.id, input.revisionId),
+          ),
+        )
+        .limit(1);
+
+      if (!revision) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Черновик не найден у этого роутера.",
+        });
+      }
+
+      if (!isOperatorDraftRevision(revision)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Можно отбросить только operator draft. Импортированные и approved baseline-ревизии остаются в истории.",
+        });
+      }
+
+      if (!isEditableDraftRevision(revision)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Этот черновик уже не находится в editable-состоянии и не будет выбран для apply.",
+        });
+      }
+
+      const activeApplyJobs = await ctx.db
+        .select()
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.routerId, input.routerId),
+            eq(jobs.type, "apply_passwall_config"),
+            eq(jobs.desiredRevisionId, input.revisionId),
+            inArray(jobs.state, ["queued", "delivered", "running"]),
+          ),
+        )
+        .limit(20);
+      const alreadyDeliveredJob = activeApplyJobs.find(
+        (job) => job.state !== "queued",
+      );
+
+      if (alreadyDeliveredJob) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Apply-задача по этому черновику уже доставлена на роутер или выполняется. Дождитесь результата и затем сделайте re-import.",
+        });
+      }
+
+      if (activeApplyJobs.length > 0) {
+        await ctx.db
+          .update(jobs)
+          .set({
+            state: "cancelled",
+            completedAt: new Date(),
+            dedupeKey: null,
+          })
+          .where(
+            and(
+              eq(jobs.routerId, input.routerId),
+              eq(jobs.type, "apply_passwall_config"),
+              eq(jobs.desiredRevisionId, input.revisionId),
+              eq(jobs.state, "queued"),
+            ),
+          );
+      }
+
+      const [updatedRevision] = await ctx.db
+        .update(passwallDesiredRevisions)
+        .set({ status: "discarded" })
+        .where(
+          and(
+            eq(passwallDesiredRevisions.routerId, input.routerId),
+            eq(passwallDesiredRevisions.id, input.revisionId),
+          ),
+        )
+        .returning();
+
+      return sanitizeRevisionForClient(
+        updatedRevision ?? { ...revision, status: "discarded" },
+      );
     }),
 });
