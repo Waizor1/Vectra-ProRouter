@@ -3,7 +3,7 @@ type: module
 path: packages/contracts
 stage: active
 confidence: medium
-last-reviewed: 2026-04-22
+last-reviewed: 2026-05-03
 tags:
   - module
   - contracts
@@ -14,6 +14,7 @@ tags:
 
 ## Confirmed
 
+- 2026-05-03 production hotfix: `passwallNodeProtocolSchema` now accepts `socks` nodes, matching the Go importer/apply path that already preserved PassWall2 Socks nodes. This closes a real router enrollment parser drift where `/api/router/register` rejected a live import with `received 'socks'` before creating the router row; targeted `passwall-contracts` coverage now asserts the contract accepts imported Socks protocol nodes.
 - Пакет `@vectra/contracts` экспортирует TypeScript entrypoint из `src/index.ts`.
 - Основная внешняя зависимость на текущем срезе — `zod`.
 - Пакет задуман как общий контрактный слой между вебом и роутерными компонентами.

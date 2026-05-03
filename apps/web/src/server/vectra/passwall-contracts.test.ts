@@ -101,6 +101,91 @@ describe("passwall contracts", () => {
     expect(config.basicSettings.dns.extras.dns_redirect).toBe("1");
   });
 
+  it("accepts imported Socks protocol nodes", () => {
+    const config = passwallDesiredConfigSchema.parse({
+      basicSettings: {
+        main: {
+          mainSwitch: true,
+          selectedNodeId: "node-socks",
+          localhostProxy: true,
+          clientProxy: true,
+          nodeSocksPort: 1070,
+          nodeSocksBindLocal: true,
+          socksMainSwitch: false,
+          extras: {},
+        },
+        dns: {
+          directQueryStrategy: "UseIP",
+          remoteDnsProtocol: "tcp",
+          remoteDns: "1.1.1.1",
+          remoteDnsDoh: "https://1.1.1.1/dns-query",
+          remoteDnsDetour: "remote",
+          remoteFakeDns: false,
+          remoteDnsQueryStrategy: "UseIPv4",
+          dnsHosts: [],
+          dnsRedirect: true,
+          extras: {},
+        },
+        log: {
+          enableNodeLog: true,
+          level: "warning",
+          extras: {},
+        },
+        maintenance: {
+          backupPaths: ["/etc/config/passwall2"],
+          extras: {},
+        },
+        socks: [],
+        shuntRules: [],
+      },
+      nodes: [
+        {
+          id: "node-socks",
+          label: "Local Socks",
+          protocol: "socks",
+          enabled: true,
+          group: "default",
+          address: "127.0.0.1",
+          port: 1080,
+          transport: "tcp",
+          tags: [],
+          extras: {},
+        },
+      ],
+      subscriptions: {
+        filterKeywordMode: "0",
+        discardList: [],
+        keepList: [],
+        typePreferences: {},
+        domainStrategy: "auto",
+        items: [],
+      },
+      appUpdate: {
+        binaryPaths: {
+          xray: "/usr/bin/xray",
+          singBox: "/usr/bin/sing-box",
+          hysteria: "/usr/bin/hysteria",
+          geoview: "/usr/bin/geoview",
+        },
+        updateStrategy: "package-preferred",
+        targetVersions: {},
+        extras: {},
+      },
+      ruleManage: {
+        geoipUrl: "https://example.com/geoip.dat",
+        geositeUrl: "https://example.com/geosite.dat",
+        assetDirectory: "/usr/share/v2ray/",
+        autoUpdate: true,
+        scheduleMode: "daily",
+        enabledAssets: ["geoip", "geosite"],
+        shuntRules: [],
+        extras: {},
+      },
+    });
+
+    expect(config.nodes[0]?.protocol).toBe("socks");
+  });
+
   it("returns an empty operation preview for an identical draft", () => {
     const config = passwallDesiredConfigSchema.parse({
       basicSettings: {

@@ -3,7 +3,7 @@ type: module
 path: deploy/, docker-compose.yml, Caddyfile
 stage: pilot
 confidence: high
-last-reviewed: 2026-04-22
+last-reviewed: 2026-05-03
 tags:
   - module
   - deploy
@@ -14,6 +14,7 @@ tags:
 
 ## Confirmed
 
+- 2026-05-03 guarded web hotfix rollout: a minimal release slice for the `socks` protocol contract fix was synced through `deploy/scripts/deploy-web-release.sh`, rebuilt with `docker compose --env-file .env build web`, and restarted with `up -d web`. Post-deploy health is green on both `router.vectra-pro.net` and `api.vectra-pro.net`, and Caddy evidence shows the formerly failing register source moved from HTTP `400` to `201`.
 - Реальный pilot VPS `72.56.14.52` поднят на Ubuntu `24.04.4 LTS`.
 - Деплой-контур работает на двух живых хостах: `router.vectra-pro.net` и `api.vectra-pro.net`.
 - Стек `Docker Compose + Caddy + PostgreSQL + Next.js` реально развернут и переведен в healthy state.

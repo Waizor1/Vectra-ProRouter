@@ -109,6 +109,7 @@ export const passwallNodeProtocolSchema = z.enum([
   "trojan",
   "vmess",
   "vless",
+  "socks",
   "balancing",
   "urltest",
   "shunt",
