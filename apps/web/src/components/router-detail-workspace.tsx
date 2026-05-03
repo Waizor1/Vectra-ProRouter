@@ -20,6 +20,7 @@ import {
   passwallTransportSchema,
   summarizePasswallRevisionDiff,
   type PasswallDesiredConfig,
+  type PasswallFieldDiff,
   type PasswallOperationPreview,
 } from "@vectra/contracts";
 
@@ -539,6 +540,9 @@ export function RouterDetailWorkspace({
           validDraft,
         )
       : null;
+  const visibleFieldDiffs = preview
+    ? filterOperatorVisibleFieldDiffs(preview.fieldDiffs)
+    : [];
 
   const saveMutation = api.draft.save.useMutation({
     onSuccess: async (revision) => {
@@ -1345,10 +1349,15 @@ export function RouterDetailWorkspace({
         <div className="min-w-0 space-y-4">
           <Panel
             eyebrow="Предпросмотр применения"
-            title="Что уйдёт на роутер"
+            title="Что реально изменится"
             tone="muted"
           >
             <div className="vectra-stat-grid">
+              <StatusTile
+                label="Правки"
+                value={`${visibleFieldDiffs.length}`}
+                compact
+              />
               <StatusTile
                 label="Перезапуск"
                 value={preview?.requiresRestart ? "нужен" : "нет"}
@@ -1372,6 +1381,7 @@ export function RouterDetailWorkspace({
                 compact
               />
             </div>
+            <ActualChangesList fieldDiffs={visibleFieldDiffs} />
             <div className="mt-4 space-y-2">
               {preview?.operationPreview.length ? (
                 preview.operationPreview.map((operation) => (
@@ -6412,6 +6422,55 @@ function FieldShell({
   );
 }
 
+function ActualChangesList({
+  fieldDiffs,
+}: {
+  fieldDiffs: PasswallFieldDiff[];
+}) {
+  const visible = fieldDiffs.slice(0, 8);
+  const hiddenCount = Math.max(fieldDiffs.length - visible.length, 0);
+
+  return (
+    <div className="mt-4 rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-white">
+            Фактические правки оператора
+          </p>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            Здесь считаются поля, которые реально отличаются от базы сравнения.
+            Зеркало ShuntRule в Rule Manage скрыто, чтобы одна смена сервера не
+            выглядела как две разные правки.
+          </p>
+        </div>
+        <span className="rounded-full border border-white/10 bg-black/10 px-2.5 py-1 text-xs text-slate-300">
+          {fieldDiffs.length}
+        </span>
+      </div>
+      {visible.length > 0 ? (
+        <ul className="mt-3 space-y-1.5 text-xs leading-5 text-slate-300">
+          {visible.map((diff) => (
+            <li key={`${diff.path}-${diff.changeType}`} className="break-words">
+              <span className="text-slate-500">
+                {formatDiffChangeType(diff)}
+              </span>{" "}
+              {formatOperatorDiffPath(diff.path)}
+            </li>
+          ))}
+          {hiddenCount > 0 ? (
+            <li className="text-slate-500">и ещё {hiddenCount}</li>
+          ) : null}
+        </ul>
+      ) : (
+        <p className="mt-3 text-xs leading-5 text-slate-400">
+          Видимых правок нет. Если ниже есть технические команды — это служебная
+          синхронизация, а не новые изменения оператора.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function OperationRow({ operation }: { operation: PasswallOperationPreview }) {
   const details =
     operation.uciCommands.length > 0
@@ -6426,15 +6485,20 @@ function OperationRow({ operation }: { operation: PasswallOperationPreview }) {
   return (
     <div className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3 text-sm text-slate-200">
       <p className="font-semibold text-white">
-        {operation.section} / {operation.kind}
+        {formatOperationTitle(operation)}
       </p>
       <p className="mt-1 text-sm leading-6 text-slate-400">
         {operation.description}
       </p>
+      <p className="mt-1 text-xs leading-5 text-slate-500">
+        Это технический план применения. Контроллер синхронизирует управляемые
+        секции PassWall2 целиком, поэтому команд может быть много даже при одной
+        фактической правке.
+      </p>
       {longDetails ? (
         <details className="mt-2">
           <summary className="cursor-pointer list-none text-xs font-medium text-slate-300">
-            Показать команды ({detailsCount})
+            Показать технические UCI-команды ({detailsCount})
           </summary>
           <div className="mt-2 overflow-x-auto rounded-md border border-white/10 bg-black/10 px-2.5 py-2 text-xs leading-5 break-words text-slate-300">
             {details}
@@ -6447,6 +6511,74 @@ function OperationRow({ operation }: { operation: PasswallOperationPreview }) {
       )}
     </div>
   );
+}
+
+function filterOperatorVisibleFieldDiffs(fieldDiffs: PasswallFieldDiff[]) {
+  return fieldDiffs.filter((diff) => {
+    if (!diff.path.startsWith("ruleManage.shuntRules")) {
+      return true;
+    }
+
+    const basicSettingsMirrorPath = diff.path.replace(
+      "ruleManage.shuntRules",
+      "basicSettings.shuntRules",
+    );
+    return !fieldDiffs.some(
+      (candidate) =>
+        candidate.path === basicSettingsMirrorPath &&
+        candidate.changeType === diff.changeType,
+    );
+  });
+}
+
+function formatDiffChangeType(diff: PasswallFieldDiff) {
+  switch (diff.changeType) {
+    case "added":
+      return "+";
+    case "removed":
+      return "−";
+    default:
+      return "изменено";
+  }
+}
+
+function formatOperatorDiffPath(path: string) {
+  return path
+    .replace(/^basicSettings\.main\./, "Основные настройки → ")
+    .replace(/^basicSettings\.dns\./, "DNS → ")
+    .replace(/^basicSettings\.log\./, "Журнал → ")
+    .replace(/^basicSettings\.socks/, "SOCKS")
+    .replace(/^basicSettings\.shuntRules/, "ShuntRule")
+    .replace(/^ruleManage\.shuntRules/, "Rule Manage → ShuntRule")
+    .replace(/^ruleManage\./, "Rule Manage → ")
+    .replace(/^subscriptions\.items/, "Подписка")
+    .replace(/^subscriptions\./, "Подписки → ")
+    .replace(/^nodes/, "Нода")
+    .replace(/^appUpdate\./, "App Update → ")
+    .replace(/\.outboundNodeId$/, " → сервер")
+    .replace(/\.domainRules$/, " → домены")
+    .replace(/\.ipRules$/, " → IP")
+    .replace(/\.label$/, " → название")
+    .replaceAll(".", " → ");
+}
+
+function formatOperationTitle(operation: PasswallOperationPreview) {
+  switch (operation.kind) {
+    case "uci_apply":
+      return "Синхронизация базовых настроек";
+    case "node_sync":
+      return "Синхронизация нод / SOCKS / ShuntRule";
+    case "subscription_sync":
+      return "Синхронизация подписок";
+    case "rule_refresh":
+      return "Обновление GeoIP / GeoSite";
+    case "package_update":
+      return "Обновление пакетов";
+    case "service_restart":
+      return "Перезапуск PassWall2";
+    default:
+      return `${operation.section} / ${operation.kind}`;
+  }
 }
 
 function formatUnconfirmedStatusBadge(group: UnconfirmedChangeGroup) {

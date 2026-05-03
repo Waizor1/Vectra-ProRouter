@@ -11,6 +11,7 @@ tags:
 ## 2026-05-03 hotfix addendum
 
 - Production router enrollment recovered for the user-side stock `OpenWrt` install. Root cause was shared contract drift: Go importer/apply supported PassWall2 `socks` nodes, while `packages/contracts` rejected `protocol: "socks"` in imported baselines, causing repeated HTTP `400` on `/api/router/register` before a router row was created. The web/contracts slice was rebuilt and deployed; the same source then returned HTTP `201`, and the new router is visible as `OpenWrt` in `pending/import_review`.
+- Local router-detail UX now also separates real operator field changes from technical full managed-section sync in the apply preview. This is not deployed yet; production proof still needs guarded web rollout plus router-detail browser smoke.
 
 
 Легенда:
