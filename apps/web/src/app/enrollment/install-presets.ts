@@ -604,6 +604,9 @@ export function planAx3000tManagedPackageOperations(args: {
 }
 
 export const AX3000T_OPENWRT_FEED_PROVIDED_DEPENDENCIES = [
+  // OpenWrt 24.10 images ship libc in the base manifest, but it is not
+  // advertised in every opkg feed index. The shell preflight accepts already
+  // installed packages before checking package availability.
   "libc",
   "coreutils",
   "coreutils-base64",
@@ -1297,8 +1300,11 @@ export function buildAx3000tBootstrapScript(args: {
     "",
     "require_feed_package() {",
     "  pkg=\"$1\"",
+    "  if package_installed \"$pkg\"; then",
+    "    return 0",
+    "  fi",
     "  package_available \"$pkg\" || {",
-    "    log \"В доступных OpenWrt feeds не найден обязательный пакет: $pkg\"",
+    "    log \"Обязательный пакет не установлен и не найден в доступных OpenWrt feeds: $pkg\"",
     "    exit 1",
     "  }",
     "}",

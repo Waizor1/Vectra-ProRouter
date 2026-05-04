@@ -149,8 +149,22 @@ describe("enrollment install preset", () => {
     expect(script).toContain(
       "require_feed_packages_with_storage $REQUIRED_RUNTIME_PACKAGES",
     );
-    expect(script).toContain('if package_installed "$pkg"; then');
-    expect(script).toContain('return 0');
+    const feedPrereqFunctionStart = script.indexOf("require_feed_package() {");
+    const feedPrereqFunctionEnd = script.indexOf(
+      "require_feed_package_storage_metadata() {",
+    );
+    const feedPrereqFunction = script.slice(
+      feedPrereqFunctionStart,
+      feedPrereqFunctionEnd,
+    );
+    expect(feedPrereqFunction).toContain('if package_installed "$pkg"; then');
+    expect(feedPrereqFunction).toContain("    return 0");
+    expect(feedPrereqFunction.indexOf('package_installed "$pkg"')).toBeLessThan(
+      feedPrereqFunction.indexOf('package_available "$pkg"'),
+    );
+    expect(feedPrereqFunction).toContain(
+      "Обязательный пакет не установлен и не найден в доступных OpenWrt feeds: $pkg",
+    );
     expect(script).toContain("require_vectra_package vectra-controller-agent");
     expect(script).not.toContain(
       'Не удалось определить Installed-Size для пакета Vectra $pkg. Storage-aware preflight остановлен.',

@@ -14,6 +14,7 @@ tags:
 
 ## Confirmed
 
+- 2026-05-04 guarded web hotfix rollout: the Cudy/WR3000 `libc` bootstrap preflight fix was packed into a cleaned release slice, uploaded as `/tmp/vectra-web-release-libc-20260504-135409.tar.gz`, synced through `deploy/scripts/deploy-web-release.sh` with backup `/opt/vectra-prorouter-backups/web-release-20260504-135559`, then rebuilt/restarted via `docker compose --env-file .env build web && up -d web`. Post-deploy health is green on `router.vectra-pro.net/api/health`, `api.vectra-pro.net/api/health`, and the standard public smoke contour `307/200/200/200/400`; live `/install/ax3000t-bootstrap.sh` contains the installed-first package preflight and no longer contains the old `В доступных OpenWrt feeds...` abort text.
 - 2026-05-03 guarded web hotfix rollout: a minimal release slice for the `socks` protocol contract fix was synced through `deploy/scripts/deploy-web-release.sh`, rebuilt with `docker compose --env-file .env build web`, and restarted with `up -d web`. Post-deploy health is green on both `router.vectra-pro.net` and `api.vectra-pro.net`, and Caddy evidence shows the formerly failing register source moved from HTTP `400` to `201`.
 - Реальный pilot VPS `72.56.14.52` поднят на Ubuntu `24.04.4 LTS`.
 - Деплой-контур работает на двух живых хостах: `router.vectra-pro.net` и `api.vectra-pro.net`.

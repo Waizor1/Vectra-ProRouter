@@ -13,6 +13,10 @@ tags:
 - Production router enrollment recovered for the user-side stock `OpenWrt` install. Root cause was shared contract drift: Go importer/apply supported PassWall2 `socks` nodes, while `packages/contracts` rejected `protocol: "socks"` in imported baselines, causing repeated HTTP `400` on `/api/router/register` before a router row was created. The web/contracts slice was rebuilt and deployed; the same source then returned HTTP `201`, and the new router is visible as `OpenWrt` in `pending/import_review`.
 - Router-detail UX now also separates real operator field changes from technical full managed-section sync in the apply preview, and this web slice was deployed to production via the guarded release lane on 2026-05-03. Production health/smoke is green; deployed source and bundle contain the new preview copy.
 
+## 2026-05-04 bootstrap-preflight addendum
+
+- A production web hotfix now addresses the Cudy/WR3000 install stop where OpenWrt `24.10.4` reported `В доступных OpenWrt feeds не найден обязательный пакет: libc`. The generated bootstrap script now treats already-installed OpenWrt base packages as satisfied before looking for them in feed availability, which matches `libc` being a base image package rather than a normal feed-advertised package. Local proof is green on targeted `install-presets` Vitest, `@vectra/web typecheck`, and `@vectra/web build`; guarded VPS deployment synced release slice `/tmp/vectra-web-release-libc-20260504-135409.tar.gz`, rebuilt `vectra-web`, preserved health on both public API contours, and live `/install/ax3000t-bootstrap.sh` now contains the installed-first check plus the new error text while the old `В доступных OpenWrt feeds...` marker is absent.
+
 
 Легенда:
 
