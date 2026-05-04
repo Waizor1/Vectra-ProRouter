@@ -138,6 +138,8 @@ describe("enrollment install preset", () => {
       `BASELINE_URL='https://router.vectra-pro.net${AX3000T_BASELINE_PATH}'`,
     );
     expect(script).toContain("run_opkg() {");
+    expect(script).toContain("if ! run_opkg update; then");
+    expect(script).toContain("package-specific preflight проверит нужные пакеты отдельно");
     expect(script).toContain("run_preflight_checks() {");
     expect(script).toContain("detect_bootstrap_classification() {");
     expect(script).toContain("simulate_overlay_step() {");
