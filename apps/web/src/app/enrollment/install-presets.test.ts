@@ -159,6 +159,14 @@ describe("enrollment install preset", () => {
       feedPrereqFunctionStart,
       feedPrereqFunctionEnd,
     );
+    expect(script).toContain("openwrt_base_prereq_present() {");
+    expect(script).toContain("[ -e /lib/libc.so ] || ls /lib/ld-musl-*.so.1");
+    expect(feedPrereqFunction).toContain(
+      'if openwrt_base_prereq_present "$pkg"; then',
+    );
+    expect(
+      feedPrereqFunction.indexOf('openwrt_base_prereq_present "$pkg"'),
+    ).toBeLessThan(feedPrereqFunction.indexOf('package_installed "$pkg"'));
     expect(feedPrereqFunction).toContain('if package_installed "$pkg"; then');
     expect(feedPrereqFunction).toContain("    return 0");
     expect(feedPrereqFunction.indexOf('package_installed "$pkg"')).toBeLessThan(
