@@ -74,3 +74,7 @@ tags:
 ## 2026-04-26 LuCI package recovery hardening
 
 - Root cause of the `0.1.13-r4` LuCI disappearance was confirmed as macOS AppleDouble metadata inside the generated `.ipk` payloads (`._*`, `.DS_Store`, `__MACOSX`-class paths). `scripts/build-vectra-openwrt-feed.sh` now disables macOS copyfile sidecars, removes metadata from package staging, hard-fails if metadata remains in `data/` or `control/`, and verifies final `.ipk` inner `control.tar.gz`/`data.tar.gz` before publishing. Clean `0.1.13-r5` artifacts were verified with no metadata matches; canary `testrouter` also proved LuCI menu descriptor, rpcd ACL, `luci-bridge.sh`, and `status.js` present on-device.
+
+## 2026-05-04 controller package r10
+
+- Controller/LuCI package release moved from `0.1.13-r9` to `0.1.13-r10` only for the state self-heal hotfix. The published LuCI package was installed together with the agent on AndreyVK through the normal controller self-update command; post-install checks confirmed `luci-app-vectra-controller 0.1.13-r10`, required LuCI menu/ACL/bridge/status files present via the self-update guard, and `vectra-controller` running after restart.

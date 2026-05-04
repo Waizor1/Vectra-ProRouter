@@ -1,6 +1,6 @@
 ---
 type: dashboard
-updated: 2026-05-03
+updated: 2026-05-04
 tags:
   - dashboard
   - status
@@ -16,6 +16,10 @@ tags:
 ## 2026-05-04 bootstrap-preflight addendum
 
 - A production web hotfix now addresses the Cudy/WR3000 install stop where OpenWrt `24.10.4` reported `В доступных OpenWrt feeds не найден обязательный пакет: libc`. The generated bootstrap script now treats already-installed OpenWrt base packages as satisfied before looking for them in feed availability, which matches `libc` being a base image package rather than a normal feed-advertised package. Local proof is green on targeted `install-presets` Vitest, `@vectra/web typecheck`, and `@vectra/web build`; guarded VPS deployment synced release slice `/tmp/vectra-web-release-libc-20260504-135409.tar.gz`, rebuilt `vectra-web`, preserved health on both public API contours, and live `/install/ax3000t-bootstrap.sh` now contains the installed-first check plus the new error text while the old `В доступных OpenWrt feeds...` marker is absent.
+
+## 2026-05-04 controller state self-heal addendum
+
+- Controller/LuCI `0.1.13-r10` is now the production controller artifact line for the zero-byte/corrupt state fix. The agent now writes `state.json.last-good`, backs up unreadable `state.json` files, restores/salvages credentials when possible, and avoids crash-looping on empty JSON; local `go test -count=1 ./...` is green. Public feed files and panel metadata both advertise `0.1.13-r10`, AndreyVK has already self-updated successfully, and the latest live snapshot reports controller/LuCI `0.1.13-r10` with controller/passwall/dnsmasq healthy plus Telegram `4/4` and YouTube `3/3`.
 
 
 Легенда:

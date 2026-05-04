@@ -3,7 +3,7 @@ type: module
 path: router/vectra-controller-agent
 stage: pilot
 confidence: high
-last-reviewed: 2026-04-23
+last-reviewed: 2026-05-04
 tags:
   - module
   - go
@@ -14,6 +14,8 @@ tags:
 
 ## Confirmed
 
+- 2026-05-04 controller state self-heal release: `router/vectra-controller-agent/internal/state` now treats empty/corrupt `state.json` as recoverable instead of fatal. `Save()` writes an fsynced atomic `state.json` plus `state.json.last-good`; `Load()` backs up unreadable bytes to `state.json.corrupt-*`, restores `.last-good` when present, salvages top-level identity/token fields from truncated JSON when possible, and otherwise starts with a fresh state so the service can re-register rather than crash-loop. Fresh local proof is green on `cd router/vectra-controller-agent && go test -count=1 ./...`.
+- Controller/LuCI `0.1.13-r10` is production-published and live-installed on the recovered AndreyVK router `a0c9c42e-1934-40ce-8e02-d1cce12f278e`: the public signed feed and panel metadata both advertise `0.1.13-r10`, the controller self-update terminal job `6ba9ee84-4448-404c-a176-7844fbe91989` succeeded, latest snapshot reports `vectra-controller-agent=0.1.13-r10`, `luci-app-vectra-controller=0.1.13-r10`, controller/passwall/dnsmasq/passwallServer running, Telegram `4/4`, YouTube `3/3`, and a read-only terminal check confirmed `/etc/vectra-controller/state.json.last-good` exists with `0600` permissions.
 - Это отдельный Go-модуль `vectra-controller-agent` c `go 1.22.0`.
 - В README зафиксированы зоны ответственности:
   - `cmd/vectra-controller-agent`
