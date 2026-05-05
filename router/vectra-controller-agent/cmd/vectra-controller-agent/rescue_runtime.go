@@ -256,6 +256,34 @@ type mainSwitchOptions struct {
 	ClearRescueReason bool
 }
 
+var shuntProxyProbeOptions = []string{
+	"WorldProxy",
+	"YouTube",
+	"GooglePlay",
+	"Proxy",
+	"ProxyGame",
+	"Tiktok",
+	"Special",
+	"default_node",
+}
+
+func proxyNodeReachableForRecovery(
+	ctx context.Context,
+	backend passwall.UCIBackend,
+	inventory *controlplane.RouterInventory,
+) bool {
+	if inventory == nil || !inventory.PasswallEnabled {
+		return false
+	}
+
+	if reachable, _, _ := probeProxyPath(ctx, backend, inventory.SelectedNodeID); reachable {
+		return true
+	}
+
+	reachable, _ := probeSelectedShuntProxyOptions(ctx, backend, inventory.SelectedNodeID)
+	return reachable
+}
+
 func probeProxyPath(
 	ctx context.Context,
 	backend passwall.UCIBackend,
@@ -288,6 +316,55 @@ func probeProxyPath(
 		strings.HasPrefix(output, "204:") ||
 		output == "200" ||
 		output == "204", true, result
+}
+
+func probeSelectedShuntProxyOptions(
+	ctx context.Context,
+	backend passwall.UCIBackend,
+	selectedNodeID string,
+) (bool, bool) {
+	selectedNodeID = strings.TrimSpace(selectedNodeID)
+	if selectedNodeID == "" {
+		return false, false
+	}
+
+	protocol, ok := selectedNodeProtocol(ctx, backend, selectedNodeID)
+	if !ok || protocol != "_shunt" {
+		return false, false
+	}
+
+	tested := map[string]struct{}{}
+	conclusive := false
+	for _, option := range shuntProxyProbeOptions {
+		nodeID, ok := getUCIValue(
+			ctx,
+			backend,
+			fmt.Sprintf("passwall2.%s.%s", selectedNodeID, option),
+		)
+		if !ok {
+			continue
+		}
+		nodeID = strings.TrimSpace(nodeID)
+		if !isConcreteProxyNodeID(nodeID) {
+			continue
+		}
+		if _, seen := tested[nodeID]; seen {
+			continue
+		}
+		tested[nodeID] = struct{}{}
+
+		nodeProtocol, ok := selectedNodeProtocol(ctx, backend, nodeID)
+		if !ok || isVirtualSelectedNodeProtocol(nodeProtocol) {
+			continue
+		}
+
+		conclusive = true
+		if reachable, _, _ := probeProxyPath(ctx, backend, nodeID); reachable {
+			return true, true
+		}
+	}
+
+	return false, conclusive
 }
 
 func resolveProxyProbeNode(
@@ -353,6 +430,15 @@ func resolveProxyProbeNode(
 	return "", false, passwall.CommandResult{
 		Command: fmt.Sprintf("uci -q get passwall2.%s.default_node", selectedNodeID),
 		Stderr:  "selected node virtual chain is too deep to resolve safely",
+	}
+}
+
+func isConcreteProxyNodeID(nodeID string) bool {
+	switch strings.ToLower(strings.TrimSpace(nodeID)) {
+	case "", "_default", "_direct", "_blackhole":
+		return false
+	default:
+		return true
 	}
 }
 

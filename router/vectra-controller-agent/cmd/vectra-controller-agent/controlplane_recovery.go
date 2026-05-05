@@ -63,6 +63,7 @@ const (
 	operatorAttentionReason    = "After auto-reboot and PassWall retry, foreign resources are still unavailable; router left in direct mode."
 	panelRecoveredDirectReason = "Control plane recovered only in direct mode; router is waiting for operator review."
 	autoProxyRetryReason       = "Control plane recovered after direct fallback; retrying PassWall proxy path before operator attention."
+	proxyNodeRecoveredReason   = "PassWall proxy node responded after retry; keeping proxy mode while service probes refresh."
 	wanRecoveredReason         = "Control plane and foreign connectivity recovered."
 )
 
@@ -265,6 +266,17 @@ func advanceControlPlaneRecovery(
 				outcome.SkipControlPlane = false
 				break
 			}
+			if proxyNodeReachableForRecovery(ctx, backend, inventory) {
+				setControlPlaneRecoveryPhase(
+					recoveryState,
+					runtimeStatus,
+					recovery.PhaseIdle,
+					proxyNodeRecoveredReason,
+					false,
+				)
+				outcome.SkipControlPlane = false
+				break
+			}
 		}
 		if inventory.PasswallEnabled {
 			if err := enterDirectModeForRecovery(
@@ -300,6 +312,17 @@ func advanceControlPlaneRecovery(
 				runtimeStatus,
 				recovery.PhaseIdle,
 				wanRecoveredReason,
+				false,
+			)
+			outcome.SkipControlPlane = false
+			break
+		}
+		if proxyNodeReachableForRecovery(ctx, backend, inventory) {
+			setControlPlaneRecoveryPhase(
+				recoveryState,
+				runtimeStatus,
+				recovery.PhaseIdle,
+				proxyNodeRecoveredReason,
 				false,
 			)
 			outcome.SkipControlPlane = false

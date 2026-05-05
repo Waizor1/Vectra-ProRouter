@@ -876,6 +876,94 @@ func TestAdvanceControlPlaneRecoveryEscalatesToOperatorAttentionAfterFailedRetry
 	}
 }
 
+func TestAdvanceControlPlaneRecoveryKeepsProxyWhenShuntNodeRespondsAfterRetry(t *testing.T) {
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusNoContent})
+	defer panel.Close()
+	ru := newStatusServer(map[string]int{"/": http.StatusNoContent})
+	defer ru.Close()
+	blocked := newStatusServer(map[string]int{"/": http.StatusServiceUnavailable})
+	defer blocked.Close()
+
+	setRecoveryProbeTargets(t,
+		[]probeTarget{
+			{ID: "ya", Label: "ya.ru", URL: ru.URL},
+			{ID: "vk", Label: "vk.com", URL: ru.URL},
+		},
+		[]probeTarget{
+			{ID: "youtube", Label: "youtube", URL: blocked.URL},
+			{ID: "instagram", Label: "instagram", URL: blocked.URL},
+			{ID: "telegram", Label: "telegram", URL: blocked.URL},
+		},
+	)
+
+	backend := &fakeRescueBackend{
+		runResults: map[string]passwall.CommandResult{
+			"/usr/share/passwall2/test.sh url_test_node world-node": {Stdout: "204:0.31"},
+		},
+		protocols: map[string]string{
+			"passwall2.myshunt.protocol":     "_shunt",
+			"passwall2.myshunt.default_node": "_direct",
+			"passwall2.myshunt.WorldProxy":   "world-node",
+			"passwall2.world-node.protocol":  "vless",
+			"passwall2.myshunt.YouTube":      "_default",
+			"passwall2.myshunt.GooglePlay":   "_default",
+			"passwall2.myshunt.Proxy":        "_default",
+			"passwall2.myshunt.ProxyGame":    "_default",
+			"passwall2.myshunt.Tiktok":       "_default",
+			"passwall2.myshunt.Special":      "_default",
+		},
+	}
+	recoveryState := recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(time.Now().Add(-2 * time.Hour)),
+		OutageStartedAt:              recovery.FormatTime(time.Now().Add(-70 * time.Minute)),
+		Phase:                        recovery.PhasePasswallRetryWait,
+		LastPasswallRetryAt:          recovery.FormatTime(time.Now().Add(-2 * time.Minute)),
+	}
+	rescueState := rescue.State{Mode: rescue.ModeProxy}
+	persisted := state.PersistedState{ControlPlaneRecovery: recoveryState}
+	inventory := controlplane.RouterInventory{
+		PasswallEnabled: true,
+		SelectedNodeID:  "myshunt",
+	}
+	runtimeStatus := state.RuntimeStatus{}
+
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhaseIdle; got != want {
+		t.Fatalf("recovery phase = %q, want %q", got, want)
+	}
+	if persisted.ControlPlaneRecovery.AwaitingOperator {
+		t.Fatal("did not expect operator attention while a shunt proxy node responds")
+	}
+	if got, want := persisted.ControlPlaneRecovery.LastActionReason, proxyNodeRecoveredReason; got != want {
+		t.Fatalf("last action reason = %q, want %q", got, want)
+	}
+	if got, want := rescueState.Mode, rescue.ModeProxy; got != want {
+		t.Fatalf("rescue mode = %q, want %q", got, want)
+	}
+	if containsBatchLine(backend.batchCommands, "set passwall2.@global[0].enabled='0'") {
+		t.Fatalf("did not expect passwall disable batch, got %#v", backend.batchCommands)
+	}
+	if !containsCommand(backend.runCommands, "/usr/share/passwall2/test.sh url_test_node world-node") {
+		t.Fatalf("expected recovery guard to test concrete shunt node, got %#v", backend.runCommands)
+	}
+	if outcome.SkipControlPlane {
+		t.Fatal("expected panel reachability to allow normal check-in after proxy node recovery")
+	}
+}
+
 func TestSummarizeReachabilityProbeMarksForeignPartialAsNonHealthy(t *testing.T) {
 	t.Parallel()
 
