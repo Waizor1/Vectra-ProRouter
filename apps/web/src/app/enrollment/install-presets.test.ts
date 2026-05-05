@@ -123,6 +123,15 @@ describe("enrollment install preset", () => {
     expect(script).toContain(
       `TARGET="$(awk -F"'" '/^DISTRIB_TARGET=/{print $2; exit}' /etc/openwrt_release 2>/dev/null || true)"`,
     );
+    expect(script).toContain("ensure_opkg_architecture() {");
+    expect(script).toContain("ensure_arch_line \"$arch_name\" 100");
+    expect(script).toContain(
+      "[ -f /etc/opkg/arch.conf ] && cp /etc/opkg/arch.conf \"$BACKUP_DIR/opkg-arch.conf\" || true",
+    );
+    expect(script).toContain("ensure_opkg_architecture \"$ARCH\"");
+    expect(script).toContain(
+      "opkg arch.conf: добавил архитектуру $name",
+    );
     expect(script).toContain(`CONTROL_URL='${routerApiBase}'`);
     expect(script).toContain(`PASSWALL_RELEASE_TAG='${DEFAULT_PASSWALL2_RELEASE_TAG}'`);
     expect(script).toContain(

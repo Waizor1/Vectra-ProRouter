@@ -33,6 +33,11 @@ tags:
 - The public Cudy/WR3000 bootstrap now has a controller-only fallback for fresh low-overlay installs. When the starter PassWall2/Xray stack does not fit on `/overlay`, the script no longer aborts before changes; it logs the low-space condition, skips dnsmasq-full, PassWall2 runtime packages, managed stack refresh, baseline, subscriptions, shunt rebind, rule update, and PassWall2 start, then installs and starts the Vectra controller so the router can check in. PassWall2/Xray convergence is intentionally deferred to the existing managed panel/controller update lane. Local proof is green on targeted `install-presets` Vitest, generated-shell `bash -n` and `sh -n`, `@vectra/web typecheck`, and `@vectra/web build`; production was redeployed through the guarded release slice `/tmp/vectra-web-release-controller-only-final-20260505-093111.tar.gz`, `vectra-web` is healthy, both public health endpoints are green, live `/install/ax3000t-bootstrap.sh` contains the controller-only markers, and standard smoke returned `307/200/200/200/400`.
 
 
+## 2026-05-05 opkg-architecture libc addendum
+
+- The next Cudy WR3000H rerun showed controller package installation failing with `Cannot satisfy ... libc` and many `Packages ... found, but incompatible with the architectures configured` messages. The root cause is not a missing musl file to install manually, but an `opkg` architecture configuration mismatch on this firmware path. The public bootstrap now repairs `/etc/opkg/arch.conf` before `opkg update`/controller install: it backs up the old file, ensures `all`, `noarch`, and the detected `DISTRIB_ARCH` (`aarch64_cortex-a53`) are present, then continues through the controller-only lane. Local proof is green on targeted `install-presets` Vitest, generated-shell `bash -n`/`sh -n`, `@vectra/web typecheck`, and `@vectra/web build`; production `/install/ax3000t-bootstrap.sh` is redeployed and exposes `ensure_opkg_architecture()` plus `opkg-arch.conf` backup, with health and smoke green.
+
+
 Легенда:
 
 - `reference` — справочный или исследовательский слой
