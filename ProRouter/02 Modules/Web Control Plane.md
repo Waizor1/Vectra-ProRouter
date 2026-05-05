@@ -3,7 +3,7 @@ type: module
 path: apps/web, apps/install-helper
 stage: pilot
 confidence: high
-last-reviewed: 2026-05-04
+last-reviewed: 2026-05-05
 tags:
   - module
   - web
@@ -14,6 +14,7 @@ tags:
 
 ## Confirmed
 
+- 2026-05-05 Cudy/WR3000 controller-only bootstrap fallback: after the live router reached the storage-aware preflight, `/overlay` had only about `16.9 MB` available while `xray-core` alone needed about `30.3 MB`. The generated public bootstrap now treats this exact fresh-install low-overlay class as a controller-first lane: it detects PassWall2/Xray stack overflow, logs `controller-only bootstrap`, skips the installer-side PassWall2/Xray package/baseline/service steps, still installs and starts `vectra-controller-agent` plus LuCI, and tells the operator to finish PassWall2/Xray from the Vectra panel after first check-in. Local proof is green on targeted Vitest, generated-shell `bash -n`/`sh -n`, `@vectra/web typecheck`, and `@vectra/web build`; production `/install/ax3000t-bootstrap.sh` is redeployed and contains `CONTROLLER_ONLY_BOOTSTRAP`, `mark_controller_only_bootstrap()`, and the deferred PassWall2/Xray copy.
 - 2026-05-04 Cudy/WR3000 bootstrap preflight hotfix: a live user rerun on OpenWrt `24.10.4` stopped at `В доступных OpenWrt feeds не найден обязательный пакет: libc`. The root cause is web-generated install preflight treating every PassWall2 dependency as feed-advertised, while OpenWrt `libc` is image/base-manifest installed and not necessarily present in `opkg list`. `apps/web/src/app/enrollment/install-presets.ts` now accepts already-installed packages before checking feed availability, and `install-presets.test.ts` pins that order. Local proof is green on targeted Vitest, `@vectra/web typecheck`, and `@vectra/web build`; the production `/install/ax3000t-bootstrap.sh` route was redeployed via the guarded release lane and now exposes the installed-first check with the old `В доступных OpenWrt feeds...` marker absent. The only remaining proof gap is affected-router rerun.
 - 2026-05-04 Cudy/WR3000 opkg-update follow-up: the affected OpenWrt `24.10.4` router next stopped because `opkg update` returned non-zero after one target feed download failed with `wget returned 4`, even though other feed lists updated. The generated bootstrap now wraps `run_opkg update` in a warning-only branch and lets the existing package-specific preflight decide whether a required package is actually missing before any install/reclaim step runs. Local targeted Vitest, `@vectra/web typecheck`, and `@vectra/web build` are green; production `/install/ax3000t-bootstrap.sh` now contains the warning-only branch and health/smoke is green after redeploy. The remaining proof gap is the next affected-router rerun.
 - 2026-05-04 Cudy/WR3000 libc-musl follow-up: the affected router still failed on `libc` after the installed-first check, so this firmware path does not expose base-image `libc` through `opkg status`. `install-presets.ts` now adds `openwrt_base_prereq_present()` and accepts `libc` when `/lib/libc.so` or `/lib/ld-musl-*.so.1` exists before checking opkg status/list. Targeted Vitest, `@vectra/web typecheck`, and `@vectra/web build` are green; production `/install/ax3000t-bootstrap.sh` now exposes the musl detector and standard public smoke is green. The remaining proof gap is the next affected-router rerun.

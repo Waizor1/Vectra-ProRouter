@@ -3,7 +3,7 @@ type: module
 path: deploy/, docker-compose.yml, Caddyfile
 stage: pilot
 confidence: high
-last-reviewed: 2026-05-04
+last-reviewed: 2026-05-05
 tags:
   - module
   - deploy
@@ -14,6 +14,7 @@ tags:
 
 ## Confirmed
 
+- 2026-05-05 guarded web controller-only rollout: the Cudy/WR3000 low-overlay bootstrap fallback was packed into cleaned release slice `/tmp/vectra-web-release-controller-only-final-20260505-093111.tar.gz` after stripping package `node_modules`, synced through `deploy/scripts/deploy-web-release.sh` with backup `/opt/vectra-prorouter-backups/web-release-20260505-093151`, then rebuilt/restarted via `docker compose --env-file .env build web && up -d web`. Post-deploy proof is green: `vectra-web` returned `healthy`, `https://router.vectra-pro.net/api/health` and `https://api.vectra-pro.net/api/health` returned `ok`, live `/install/ax3000t-bootstrap.sh` passes `sh -n` and exposes the controller-only markers, and standard smoke stayed on `307/200/200/200/400`.
 - 2026-05-04 controller artifact release: production OpenWrt feed `https://api.vectra-pro.net/artifacts/openwrt/stable/aarch64_cortex-a53/` now serves signed controller/LuCI `0.1.13-r10`; `index.json`, `Packages`, `Packages.gz`, `Packages.sig`, `vectra.pub`, and both `.ipk` URLs return `HTTP 200`. PostgreSQL metadata is synced as `controller-state-self-heal-r10` with SHA-256 `712c97e6280d...` for `vectra-controller-agent_0.1.13-r10_aarch64_cortex-a53.ipk` and `d7630783c580...` for `luci-app-vectra-controller_0.1.13-r10_all.ipk`; `update.versionDriftWorkspace` shows AndreyVK already installed at `0.1.13-r10` and the rest of the observed fleet with `controllerAvailable=0.1.13-r10`.
 - 2026-05-04 guarded web follow-up rollout: the Cudy/WR3000 `opkg update` warning-only bootstrap fix was packed into cleaned release slice `/tmp/vectra-web-release-opkg-update-20260504-161658.tar.gz`, synced through `deploy/scripts/deploy-web-release.sh` with backup `/opt/vectra-prorouter-backups/web-release-20260504-161751`, and rebuilt/restarted via `docker compose --env-file .env build web && up -d web`. Public health is green on both operator and router API contours, live `/install/ax3000t-bootstrap.sh` contains `if ! run_opkg update`, and repeated standard smoke checks settled at `307/200/200/200/400` after one startup-transient `502` during container replacement.
 - 2026-05-04 guarded web libc-musl rollout: the Cudy/WR3000 base-image `libc` detector fix was packed into cleaned release slice `/tmp/vectra-web-release-libc-musl-20260504-171608.tar.gz`, synced through `deploy/scripts/deploy-web-release.sh` with backup `/opt/vectra-prorouter-backups/web-release-20260504-171701`, and rebuilt/restarted via `docker compose --env-file .env build web && up -d web`. Live `/install/ax3000t-bootstrap.sh` contains `openwrt_base_prereq_present()` plus `/lib/ld-musl-*.so.1`; public health is green and three standard smoke rounds returned `307/200/200/200/400`.

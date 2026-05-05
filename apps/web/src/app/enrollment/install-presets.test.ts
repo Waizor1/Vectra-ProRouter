@@ -203,6 +203,25 @@ describe("enrollment install preset", () => {
     expect(script).toContain("passwall_runtime_ready_for_reuse() {");
     expect(script).toContain("passwall_config_exists() {");
     expect(script).toContain("REUSE_EXISTING_PASSWALL_STACK='0'");
+    expect(script).toContain("CONTROLLER_ONLY_BOOTSTRAP='0'");
+    expect(script).toContain("mark_controller_only_bootstrap() {");
+    expect(script).toContain("detect_fresh_passwall_overlay_shortage() {");
+    expect(script).toContain("is_passwall_bootstrap_package() {");
+    expect(script).toContain(
+      "Продолжаю controller-only bootstrap: ставлю контроллер Vectra без PassWall2/Xray.",
+    );
+    expect(script).toContain(
+      "PassWall2/Xray обновим позже из панели Vectra через контроллер после первого check-in.",
+    );
+    expect(script).toContain(
+      "if [ \"$CONTROLLER_ONLY_BOOTSTRAP\" != '1' ]; then",
+    );
+    expect(script).toContain(
+      "Controller-only bootstrap: пропускаю установку/настройку PassWall2, baseline, подписки и запуск сервиса.",
+    );
+    expect(script).toContain(
+      "PassWall2/Xray не менялись во время установки из-за малого /overlay",
+    );
     expect(script).toContain("Reuse lane: существующий PassWall2 уже выглядит рабочим");
     expect(script).toContain("install_missing_managed_ipk() {");
     expect(script).toContain("refresh_managed_package_package_based() {");
@@ -438,13 +457,14 @@ describe("enrollment install preset", () => {
     expect(plan.storageCheck.message).toContain("xray-core");
   });
 
-  it("fails early with exact overlay diagnostics when a fresh install cannot fit", () => {
+  it("marks controller-only fallback when a fresh install cannot fit PassWall", () => {
     const plan = planAx3000tManagedPackageOperations({
       overlayFreeBytes: 5_000_000,
       stageFreeBytes: 80_000_000,
       packageStates: {},
     });
 
+    expect(plan.controllerOnlyFallback).toBe(true);
     expect(plan.storageCheck.ok).toBe(false);
     expect(plan.storageCheck.reason).toBe("overlay");
     expect(plan.storageCheck.blockingPackageName).toBe("xray-core");

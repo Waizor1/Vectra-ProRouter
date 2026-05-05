@@ -1,6 +1,6 @@
 ---
 type: dashboard
-updated: 2026-05-04
+updated: 2026-05-05
 tags:
   - dashboard
   - status
@@ -22,6 +22,10 @@ tags:
 ## 2026-05-04 controller state self-heal addendum
 
 - Controller/LuCI `0.1.13-r10` is now the production controller artifact line for the zero-byte/corrupt state fix. The agent now writes `state.json.last-good`, backs up unreadable `state.json` files, restores/salvages credentials when possible, and avoids crash-looping on empty JSON; local `go test -count=1 ./...` is green. Public feed files and panel metadata both advertise `0.1.13-r10`, AndreyVK has already self-updated successfully, and the latest live snapshot reports controller/LuCI `0.1.13-r10` with controller/passwall/dnsmasq healthy plus Telegram `4/4` and YouTube `3/3`.
+
+## 2026-05-05 controller-only bootstrap addendum
+
+- The public Cudy/WR3000 bootstrap now has a controller-only fallback for fresh low-overlay installs. When the starter PassWall2/Xray stack does not fit on `/overlay`, the script no longer aborts before changes; it logs the low-space condition, skips dnsmasq-full, PassWall2 runtime packages, managed stack refresh, baseline, subscriptions, shunt rebind, rule update, and PassWall2 start, then installs and starts the Vectra controller so the router can check in. PassWall2/Xray convergence is intentionally deferred to the existing managed panel/controller update lane. Local proof is green on targeted `install-presets` Vitest, generated-shell `bash -n` and `sh -n`, `@vectra/web typecheck`, and `@vectra/web build`; production was redeployed through the guarded release slice `/tmp/vectra-web-release-controller-only-final-20260505-093111.tar.gz`, `vectra-web` is healthy, both public health endpoints are green, live `/install/ax3000t-bootstrap.sh` contains the controller-only markers, and standard smoke returned `307/200/200/200/400`.
 
 
 Легенда:
