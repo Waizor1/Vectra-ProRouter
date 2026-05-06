@@ -271,6 +271,16 @@ describe("enrollment install preset", () => {
     );
     expect(script).toContain("refresh_existing_subscriptions");
     expect(script).toContain("rebind_myshunt_from_remarks");
+    expect(script).toContain(
+      "apply_shunt_slot 'default_node' '🇩🇪⚡Германия YouTube 🚫Ad🚫'",
+    );
+    expect(script).toContain("passwall_bootstrap_ready_to_start() {");
+    expect(script).toContain(
+      "shunt Default/default_node='$default_node' не привязан к серверу",
+    );
+    expect(script).toContain(
+      "  log 'Устанавливаю пакеты контроллера Vectra до запуска PassWall2...'\n  install_controller_packages\n  start_passwall_after_bootstrap",
+    );
     expect(script).toContain("normalize_remark() {");
     expect(script).toContain("repair broken PassWall config");
     expect(script).toContain("пытаюсь salvage подписки и ноды из raw backup");
@@ -342,6 +352,7 @@ describe("enrollment install preset", () => {
     expect(script).toContain("apply_slot 'YouTube' '🇷🇺⚡Россия YouTube 🚫Ad🚫'");
     expect(script).toContain("apply_slot 'Special' '🇫🇮 ⚡⚡ Финляндия Xhttp Gaming'");
     expect(script).toContain("apply_slot 'Tiktok' '🇧🇾 Беларусь'");
+    expect(script).toContain("apply_slot 'default_node' '🇩🇪⚡Германия YouTube 🚫Ad🚫'");
     expect(script).toContain('uci set "passwall2.$SHUNT_ID.$slot=$node_id"');
     expect(script).toContain("найдено несколько нод с remark");
     expect(script).toContain("Привязки myshunt обновлены и PassWall2 перезапущен.");

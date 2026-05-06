@@ -8,6 +8,10 @@ tags:
 
 # Stage Board
 
+## 2026-05-06 bootstrap PassWall start guard addendum
+
+- Source-only enrollment hardening now covers the router install failure where `opkg install vectra-controller-agent` reached the signed Vectra feed but failed after the bootstrap had already started PassWall2 while `myshunt` still had `Default/default_node` on a non-server fallback. The generated AX3000T bootstrap now binds `myshunt.default_node` to the same unique server remark used for `WorldProxy`, installs `vectra-controller-agent`/LuCI before any PassWall2 service start, and leaves PassWall2 disabled instead of starting it when the selected node or shunt default is `_direct`, `_default`, `_blackhole`, missing, or another shunt. Local proof is green on targeted `install-presets` Vitest, `@vectra/web typecheck`, `@vectra/web build`, and scoped diff check. The guarded web slice was deployed to production through the release-slice lane; VPS `vectra-web` rebuilt and returned healthy, public smoke is `307/200/200/200/400`, live `/install/ax3000t-bootstrap.sh` contains the controller-before-PassWall start order plus start guard, and live `/install/ax3000t-myshunt-rebind.sh` binds `default_node` as well. No live-router apply was executed.
+
 ## 2026-05-03 hotfix addendum
 
 - Production router enrollment recovered for the user-side stock `OpenWrt` install. Root cause was shared contract drift: Go importer/apply supported PassWall2 `socks` nodes, while `packages/contracts` rejected `protocol: "socks"` in imported baselines, causing repeated HTTP `400` on `/api/router/register` before a router row was created. The web/contracts slice was rebuilt and deployed; the same source then returned HTTP `201`, and the new router is visible as `OpenWrt` in `pending/import_review`.
