@@ -12,6 +12,7 @@ import {
   moveNodeToTop,
   moveShuntRuleToTop,
   moveSubscriptionToTop,
+  normalizeShuntRuleBindings,
   pruneNodes,
   renameShuntRule,
   selectNode,
@@ -114,7 +115,10 @@ describe("router editor state helpers", () => {
   it("keeps subscriptions and shunt rules reorderable through pure helpers", () => {
     const withSubscription = addSubscription(createDraftFixture());
     const withSecondSubscription = addSubscription(withSubscription);
-    const reorderedSubscription = moveSubscriptionToTop(withSecondSubscription, 1);
+    const reorderedSubscription = moveSubscriptionToTop(
+      withSecondSubscription,
+      1,
+    );
     const withRule = addShuntRule(reorderedSubscription);
     const withSecondRule = addShuntRule(withRule);
     const reorderedRule = moveShuntRuleToTop(withSecondRule, 1);
@@ -138,7 +142,9 @@ describe("router editor state helpers", () => {
   });
 
   it("deletes subscriptions and shunt rules without leaving stale mirrored state", () => {
-    const withSubscriptions = addSubscription(addSubscription(createDraftFixture()));
+    const withSubscriptions = addSubscription(
+      addSubscription(createDraftFixture()),
+    );
     const withRules = addShuntRule(addShuntRule(withSubscriptions));
 
     const nextSubscriptions = deleteSubscription(withRules, 0);
@@ -162,6 +168,7 @@ describe("router editor state helpers", () => {
           group: "default",
           tags: [],
           extras: {
+            direct: "node-a",
             direct_fakedns: "1",
             direct_proxy_tag: "node-b",
           },
@@ -200,8 +207,10 @@ describe("router editor state helpers", () => {
 
     expect(next.basicSettings.shuntRules[0]?.id).toBe("world");
     expect(next.ruleManage.shuntRules[0]?.id).toBe("world");
+    expect(next.nodes[0]?.extras.world).toBe("node-a");
     expect(next.nodes[0]?.extras.world_fakedns).toBe("1");
     expect(next.nodes[0]?.extras.world_proxy_tag).toBe("node-b");
+    expect(next.nodes[0]?.extras.direct).toBeUndefined();
     expect(next.nodes[0]?.extras.direct_fakedns).toBeUndefined();
     expect(next.nodes[0]?.extras.direct_proxy_tag).toBeUndefined();
   });
@@ -243,6 +252,73 @@ describe("router editor state helpers", () => {
 
     expect(next.basicSettings.shuntRules[0]?.extras.protocol).toBe("http tls");
     expect(next.ruleManage.shuntRules[0]?.extras.protocol).toBe("http tls");
+  });
+
+  it("normalizes shunt target bindings into shunt node extras before save/apply", () => {
+    const base = createDraftFixture();
+    const config = createDraftFixture({
+      ...base,
+      basicSettings: {
+        ...base.basicSettings,
+        main: {
+          ...base.basicSettings.main,
+          selectedNodeId: "myshunt",
+        },
+        socks: [],
+        shuntRules: [
+          {
+            id: "WorldProxy",
+            label: "WorldProxy",
+            outboundNodeId: "node-new",
+            domainRules: [],
+            ipRules: [],
+            extras: {},
+          },
+        ],
+      },
+      nodes: [
+        {
+          id: "myshunt",
+          label: "Main shunt",
+          protocol: "shunt",
+          enabled: true,
+          group: "default",
+          tags: [],
+          extras: {
+            WorldProxy: "node-old",
+            China: "_direct",
+          },
+        },
+        {
+          id: "node-old",
+          label: "Old",
+          protocol: "vless",
+          enabled: true,
+          group: "default",
+          tags: [],
+          extras: {},
+        },
+        {
+          id: "node-new",
+          label: "New",
+          protocol: "vless",
+          enabled: true,
+          group: "default",
+          tags: [],
+          extras: {},
+        },
+      ],
+      ruleManage: {
+        ...base.ruleManage,
+        shuntRules: [],
+      },
+    });
+
+    const next = normalizeShuntRuleBindings(config);
+
+    expect(next.nodes[0]?.extras.WorldProxy).toBe("node-new");
+    expect(next.nodes[0]?.extras.China).toBe("_direct");
+    expect(next.ruleManage.shuntRules[0]?.outboundNodeId).toBe("node-new");
   });
 
   it("prunes orphan nodes and repairs dependent references", () => {

@@ -3,7 +3,7 @@ type: module
 path: packages/contracts
 stage: active
 confidence: medium
-last-reviewed: 2026-05-03
+last-reviewed: 2026-05-08
 tags:
   - module
   - contracts
@@ -14,6 +14,9 @@ tags:
 
 ## Confirmed
 
+- 2026-05-08 preview/apply parity follow-up: `summarizePasswallRevisionDiff()` now renders `dns_redirect` and uses the same safe UCI section-id normalization as the Go controller for nodes, SOCKS, shunt rules, and imported subscription ids such as `@subscribe_list[0]`. This closes another preview-only blind spot where the panel could show technical commands that did not exactly match apply.
+- 2026-05-08 PassWall preview parity: `summarizePasswallRevisionDiff()` preview now includes shunt node bindings and preserved extras for nodes, socks, subscriptions, and global sections, while skipping stale duplicate shunt-slot extras on shunt nodes. This makes the operation preview match the apply lane for server-target changes instead of hiding the command that actually decides `WorldProxy`/`DiscordVoiceUdp`.
+- 2026-05-08 ShuntRule extras preview: `packages/contracts/src/helpers.ts` now includes shunt-rule `extras` when rendering operation preview UCI commands, closing the gap where fields imported and applied by the controller (`inbound`, `network`, `port`, etc.) were missing from the panel preview. Targeted `passwall-contracts` coverage pins `DiscordVoiceUdp` extras in the preview.
 - 2026-05-03 production hotfix: `passwallNodeProtocolSchema` now accepts `socks` nodes, matching the Go importer/apply path that already preserved PassWall2 Socks nodes. This closes a real router enrollment parser drift where `/api/router/register` rejected a live import with `received 'socks'` before creating the router row; targeted `passwall-contracts` coverage now asserts the contract accepts imported Socks protocol nodes.
 - Пакет `@vectra/contracts` экспортирует TypeScript entrypoint из `src/index.ts`.
 - Основная внешняя зависимость на текущем срезе — `zod`.

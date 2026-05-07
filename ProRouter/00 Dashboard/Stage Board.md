@@ -1,6 +1,6 @@
 ---
 type: dashboard
-updated: 2026-05-05
+updated: 2026-05-08
 tags:
   - dashboard
   - status
@@ -8,9 +8,34 @@ tags:
 
 # Stage Board
 
+## 2026-05-08 PassWall parity follow-up
+
+- Followed up on the same-class PassWall parity gaps surfaced during the ShuntRule incident. Production web now exposes node-local Xray/Mux/XUDP extras (`mux`, `mux_concurrency`, `xudp_concurrency`, `packet_encoding`) in the Node editor/read-only runtime node details, and `draft.editorSurface` now registers dynamic PassWall extras for nodes, SOCKS, subscriptions, global/rule/app extras, and non-standard shunt-rule extras so they appear in field diffs instead of being invisible panel state. Contract preview parity now also matches controller apply for `dns_redirect` and controller-style UCI safe section ids such as imported `@subscribe_list[0]`. Verification: targeted Vitest (`router-editor-state`, `editor`, `passwall-contracts`), `@vectra/web typecheck`, `@vectra/web lint`, `@vectra/web build`, full controller `go test ./...`, production Docker rebuild/restart, smoke-check, panel health, production source markers, and live `draft.editorSurface` proof that `extras.xudp_concurrency`/`extras.mux_concurrency` fields are now registered on router `1111111111`.
+
+## 2026-05-08 Shunt target apply fix addendum
+
+- Confirmed the operator symptom where an `apply_passwall_config` job finished successfully but server selections did not change on router `1111111111`. The failed apply receipt had `ShuntRule.outboundNodeId` updated to `6ee5vwyo`, while `myshunt.extras.WorldProxy` still held `OPIqwEuA` and `myshunt.extras.DiscordVoiceUdp` still held `dqnJE64Y`; existing controller apply rendered both and the later stale extra won. Production web now normalizes ShuntRule bindings before validation/save/apply and keeps `ruleManage.shuntRules` mirrored, so changing a ShuntRule target also updates the selected shunt node binding stored in extras. Preview parity was tightened to render shunt node bindings plus node/socks/subscription/global extras, and controller source was hardened so future controller builds skip stale shunt-binding extras after explicit ShuntRule bindings. Verification: targeted web Vitest, `@vectra/web typecheck`, `@vectra/web build`, Go passwall package test, full controller `go test ./...`, production Docker rebuild/restart, smoke-check, panel health, and browser route smoke.
+
+## 2026-05-08 ShuntRules panel recovery addendum
+
+- Production panel hotfix restored operator visibility/editability for PassWall2 ShuntRule extras that were already imported but hidden from Basic Settings: `protocol`, `inbound`, `network`, `source`, `port`, and `invert`. The operation preview now renders extras into UCI commands too, so Discord voice settings such as `DiscordVoiceUdp.inbound=tproxy`, `network=udp`, and `port=19294-19344,50000-50100` are no longer invisible in the panel. A second narrow route hotfix makes `/routers/1111111111?...` resolve to the UUID router page instead of failing with `Invalid uuid`, preserving the current tab/section query. Verification: targeted `passwall-contracts` Vitest, `@vectra/web typecheck`, `@vectra/web build`, production Docker rebuild/restart, smoke-check, panel health, and headless browser proof that Basic Settings → Shunt Rule shows `DiscordVoiceUdp`, `Inbound Tag`, `UDP`, and the Discord voice port range. Do not resume Discord fleet rollout until the volatile subscription-node target/source-of-truth mapping is normalized.
+
+## 2026-05-07 Discord voice `1111111111` test addendum
+
+- Live test patch applied on router `1111111111` after inspecting `/Users/waizor/Downloads/zapret-discord-youtube-1.9.8c.zip`: the archive's Discord voice fix points to UDP `19294-19344,50000-50100` with Discord/STUN handling, plus a fuller Discord host/IP surface. Router `WorldProxy` already had `geosite:DISCORD` and broad `66.22.192.0/18`, but was missing `66.22.176.0/24` and `66.22.188.0/22`; those ranges and explicit Discord domains were added to the live `WorldProxy` rule. First validation was green for `OPIqwEuA` (`xray=running`, `url_test_node=204:0.322123`, Discord API `200:0.298844`, generated Xray `xudpConcurrency=16`), but the user still reported voice failure, so the deeper live patch added a dedicated `DiscordVoiceUdp` shunt rule for UDP ports `19294-19344,50000-50100` and routed only that rule to the Poland/gRPC candidate `dqnJE64Y` with `mux=1`, `mux_concurrency=-1`, `xudp_concurrency=16`; general `WorldProxy` remains `OPIqwEuA`. Post-change proof: generated Xray contains `DiscordVoiceUdp` with the port rule to `dqnJE64Y`, `url_test_node dqnJE64Y=204:0.208831`, `url_test_node OPIqwEuA=204:0.176172`, and Discord API `200:0.228351`. The user confirmed Discord voice started working after this second patch. Next step: sync/reimport the live config into panel source of truth so a later apply does not overwrite the working contour.
+
+## 2026-05-07 live DNS rollout addendum
+
+- Live operator rollout moved the online non-`hh`, non-`1111111111` routers to the DNS contour tested on `1111111111`: Google DoH (`remote_dns_protocol=doh`, `remote_dns=8.8.8.8`, `remote_dns_doh=https://dns.google/dns-query`, `remote_dns_detour=direct`) with `dns.google` host pins. Applied targets: `AlekseyHorev`, `Vasily_Filicity`, `DmitryGubenko`, `AndreyVK`, `artempushkino`, `AndreyVK_Sochi`, `sairoutermsk`, and `VagrandRouter`; `hh` stayed excluded/no-touch, and stale `testrouter` was not queued because it already had 3 pending jobs and last checked in on 2026-05-01. Verification: panel health green, apply queues drained back to the stale `testrouter` jobs only, editor/live DNS surfaces match the source contour on all eight targets, router-terminal UCI checks match on all eight targets, and `url_test_node` returned `204` on all eight target WorldProxy nodes. Fleet monitoring later showed Telegram/YouTube reachable on all online routers except a stale/partial YouTube snapshot on `AlekseyHorev`; direct terminal YouTube probes there were mostly green with one transient timeout.
+
 ## 2026-05-06 bootstrap PassWall start guard addendum
 
 - Source-only enrollment hardening now covers the router install failure where `opkg install vectra-controller-agent` reached the signed Vectra feed but failed after the bootstrap had already started PassWall2 while `myshunt` still had `Default/default_node` on a non-server fallback. The generated AX3000T bootstrap now binds `myshunt.default_node` to the same unique server remark used for `WorldProxy`, installs `vectra-controller-agent`/LuCI before any PassWall2 service start, and leaves PassWall2 disabled instead of starting it when the selected node or shunt default is `_direct`, `_default`, `_blackhole`, missing, or another shunt. Local proof is green on targeted `install-presets` Vitest, `@vectra/web typecheck`, `@vectra/web build`, and scoped diff check. The guarded web slice was deployed to production through the release-slice lane; VPS `vectra-web` rebuilt and returned healthy, public smoke is `307/200/200/200/400`, live `/install/ax3000t-bootstrap.sh` contains the controller-before-PassWall start order plus start guard, and live `/install/ax3000t-myshunt-rebind.sh` binds `default_node` as well. No live-router apply was executed.
+
+## 2026-05-06 Google DoH default addendum
+
+- Source defaults for new AX3000T/global rollout DNS now use Google DoH (`remote_dns_protocol=doh`, `remote_dns=8.8.8.8`, `remote_dns_doh=https://dns.google/dns-query`, `remote_dns_detour=direct`) with `dns.google` host pins instead of the prior Google UDP profile. Validators now reject drift away from this Google DoH baseline and still reject legacy Yandex DoH pins. No live router apply was executed in this local change; router `hh` is explicitly special-case/no-touch and must be excluded from any future DNS rollout unless the operator asks otherwise.
+
 
 ## 2026-05-03 hotfix addendum
 

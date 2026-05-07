@@ -47,6 +47,10 @@ export type SubscriptionRuntimeNodeView = {
     encryption: string | null;
     fingerprint: string | null;
     utls: string | null;
+    mux: string | null;
+    muxConcurrency: string | null;
+    xudpConcurrency: string | null;
+    packetEncoding: string | null;
     extraKeys: string[];
   };
 };
@@ -463,6 +467,10 @@ function buildNodeView(
       encryption: extraString(node.extras, "encryption"),
       fingerprint: extraString(node.extras, "fingerprint"),
       utls: extraString(node.extras, "utls"),
+      mux: extraString(node.extras, "mux"),
+      muxConcurrency: extraString(node.extras, "mux_concurrency"),
+      xudpConcurrency: extraString(node.extras, "xudp_concurrency"),
+      packetEncoding: extraString(node.extras, "packet_encoding"),
       extraKeys: Object.keys(node.extras).sort((left, right) =>
         left.localeCompare(right),
       ),

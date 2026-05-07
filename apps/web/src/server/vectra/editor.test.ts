@@ -159,6 +159,62 @@ describe("editor surface", () => {
     ).toBe(true);
   });
 
+  it("tracks node subscription and global PassWall extras in the editor diff", () => {
+    const draftConfig = structuredClone(baseConfig);
+    draftConfig.nodes[0]!.extras.mux = "1";
+    draftConfig.nodes[0]!.extras.xudp_concurrency = "16";
+    draftConfig.subscriptions.items.push({
+      id: "sub-main",
+      remark: "Main sub",
+      url: "https://example.com/sub",
+      enabled: true,
+      addMode: "2",
+      metadata: {},
+      extras: {
+        auto_update: "1",
+      },
+    });
+    draftConfig.ruleManage.extras.week_update = "7";
+    draftConfig.appUpdate.extras.custom_binary_flag = "1";
+
+    const surface = buildEditorSurface({
+      routerRuntimeSummary: {
+        status: "active",
+        importState: "approved",
+        lastSeenAt: null,
+        passwallEnabled: true,
+        selectedNodeId: "shunt-main",
+        selectedNodeLabel: "Shunt",
+        pendingChanges: 0,
+        supportState: "certified",
+        supportTitle: "Сертифицировано",
+        supportReason: "test",
+      },
+      currentLiveConfig: baseConfig,
+      authoritativeConfig: baseConfig,
+      draftConfig,
+      currentConfigFreshness: "live",
+      configSourceMode: "live-import",
+    });
+
+    const paths = surface.fieldDiffs.map((diff) => diff.path);
+    expect(paths.some((path) => /^Ноды\[.+\]\.extras\.mux$/.test(path))).toBe(
+      true,
+    );
+    expect(
+      paths.some((path) => /^Ноды\[.+\]\.extras\.xudp_concurrency$/.test(path)),
+    ).toBe(true);
+    expect(
+      paths.some((path) => /^Подписки\[.+\]\.extras\.auto_update$/.test(path)),
+    ).toBe(true);
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        "ruleManage.extras.week_update",
+        "appUpdate.extras.custom_binary_flag",
+      ]),
+    );
+  });
+
   it("marks deep config as stale-authoritative when live import was not confirmed", () => {
     const surface = buildEditorSurface({
       routerRuntimeSummary: {

@@ -478,6 +478,34 @@ function registerScalarFields(
       getPathValue(args.draftConfig, def.path),
     );
   }
+
+  registerExtraMapFields({
+    section: "Основные настройки",
+    pathPrefix: "basicSettings.main.extras",
+    labelPrefix: "PassWall extra",
+    currentExtras: args.currentLiveConfig.basicSettings.main.extras,
+    authoritativeExtras: args.authoritativeConfig?.basicSettings.main.extras,
+    draftExtras: args.draftConfig.basicSettings.main.extras,
+    registerField,
+  });
+  registerExtraMapFields({
+    section: "Управление правилами",
+    pathPrefix: "ruleManage.extras",
+    labelPrefix: "PassWall extra",
+    currentExtras: args.currentLiveConfig.ruleManage.extras,
+    authoritativeExtras: args.authoritativeConfig?.ruleManage.extras,
+    draftExtras: args.draftConfig.ruleManage.extras,
+    registerField,
+  });
+  registerExtraMapFields({
+    section: "Обновление приложений",
+    pathPrefix: "appUpdate.extras",
+    labelPrefix: "PassWall extra",
+    currentExtras: args.currentLiveConfig.appUpdate.extras,
+    authoritativeExtras: args.authoritativeConfig?.appUpdate.extras,
+    draftExtras: args.draftConfig.appUpdate.extras,
+    registerField,
+  });
 }
 
 function registerDynamicFields(
@@ -505,6 +533,11 @@ function registerDynamicFields(
         label: "Резервные ноды",
         kind: "list",
       },
+      ...collectItemExtraFields(
+        args.currentLiveConfig.basicSettings.socks,
+        args.authoritativeConfig?.basicSettings.socks ?? [],
+        args.draftConfig.basicSettings.socks,
+      ),
     ],
     registerField,
   });
@@ -520,6 +553,11 @@ function registerDynamicFields(
       { key: "outboundNodeId", label: "Исходящая нода", kind: "string" },
       { key: "domainRules", label: "Доменные правила", kind: "multiline" },
       { key: "ipRules", label: "IP-правила", kind: "multiline" },
+      ...collectItemExtraFields(
+        args.currentLiveConfig.basicSettings.shuntRules,
+        args.authoritativeConfig?.basicSettings.shuntRules ?? [],
+        args.draftConfig.basicSettings.shuntRules,
+      ),
     ],
     registerField,
     itemLabel: (item) => item.label || item.id,
@@ -542,6 +580,11 @@ function registerDynamicFields(
       { key: "transport", label: "Транспорт", kind: "enum" },
       { key: "tls", label: "TLS", kind: "boolean" },
       { key: "tags", label: "Теги", kind: "list" },
+      ...collectItemExtraFields(
+        args.currentLiveConfig.nodes,
+        args.authoritativeConfig?.nodes ?? [],
+        args.draftConfig.nodes,
+      ),
     ],
     registerField,
     itemLabel: (item) => item.label || item.id,
@@ -564,6 +607,11 @@ function registerDynamicFields(
         kind: "string",
       },
       { key: "metadata.expiresAt", label: "Дата окончания", kind: "string" },
+      ...collectItemExtraFields(
+        args.currentLiveConfig.subscriptions.items,
+        args.authoritativeConfig?.subscriptions.items ?? [],
+        args.draftConfig.subscriptions.items,
+      ),
     ],
     registerField,
     itemLabel: (item) => item.remark || item.id,
@@ -585,10 +633,115 @@ function registerDynamicFields(
       { key: "domainRules", label: "Доменные правила", kind: "multiline" },
       { key: "ipRules", label: "IP-правила", kind: "multiline" },
       { key: "extras.invert", label: "Invert", kind: "boolean" },
+      ...collectItemExtraFields(
+        args.currentLiveConfig.ruleManage.shuntRules,
+        args.authoritativeConfig?.ruleManage.shuntRules ?? [],
+        args.draftConfig.ruleManage.shuntRules,
+        ["protocol", "inbound", "network", "source", "port", "invert"],
+      ),
     ],
     registerField,
     itemLabel: (item) => item.label || item.id,
   });
+}
+
+function registerExtraMapFields(args: {
+  section: string;
+  pathPrefix: string;
+  labelPrefix: string;
+  currentExtras: Record<string, unknown> | undefined;
+  authoritativeExtras: Record<string, unknown> | undefined;
+  draftExtras: Record<string, unknown> | undefined;
+  registerField: (
+    meta: EditorFieldMeta,
+    currentValue: unknown,
+    authoritativeValue: unknown,
+    draftValue: unknown,
+  ) => void;
+}) {
+  const keys = collectExtraKeys(
+    args.currentExtras,
+    args.authoritativeExtras,
+    args.draftExtras,
+  );
+
+  for (const key of keys) {
+    args.registerField(
+      {
+        path: `${args.pathPrefix}.${key}`,
+        section: args.section,
+        label: `${args.labelPrefix}: ${key}`,
+        kind: inferExtraFieldKind([
+          args.currentExtras?.[key],
+          args.authoritativeExtras?.[key],
+          args.draftExtras?.[key],
+        ]),
+        expert: true,
+      },
+      args.currentExtras?.[key],
+      args.authoritativeExtras?.[key],
+      args.draftExtras?.[key],
+    );
+  }
+}
+
+function collectItemExtraFields<T extends { extras?: Record<string, unknown> }>(
+  currentItems: T[],
+  authoritativeItems: T[],
+  draftItems: T[],
+  ignoredKeys: string[] = [],
+) {
+  const ignored = new Set(ignoredKeys);
+  const keys = collectExtraKeys(
+    ...[...currentItems, ...authoritativeItems, ...draftItems].map(
+      (item) => item.extras,
+    ),
+  ).filter((key) => !ignored.has(key));
+
+  return keys.map((key) => ({
+    key: `extras.${key}`,
+    label: `PassWall extra: ${key}`,
+    kind: inferExtraFieldKind(
+      [...currentItems, ...authoritativeItems, ...draftItems].map(
+        (item) => item.extras?.[key],
+      ),
+    ),
+    expert: true,
+  }));
+}
+
+function collectExtraKeys(
+  ...extras: Array<Record<string, unknown> | undefined>
+) {
+  return [
+    ...new Set(
+      extras.flatMap((entry) =>
+        entry ? Object.keys(entry).filter((key) => key.trim().length > 0) : [],
+      ),
+    ),
+  ].sort((left, right) => left.localeCompare(right));
+}
+
+function inferExtraFieldKind(values: unknown[]): FieldKind {
+  const present = values.filter(
+    (value) => value !== undefined && value !== null,
+  );
+  if (present.some((value) => Array.isArray(value))) {
+    return "list";
+  }
+  if (
+    present.length > 0 &&
+    present.every((value) => typeof value === "boolean")
+  ) {
+    return "boolean";
+  }
+  if (
+    present.length > 0 &&
+    present.every((value) => typeof value === "number")
+  ) {
+    return "number";
+  }
+  return "string";
 }
 
 function registerArrayFields<T extends { id: string }>(args: {
@@ -601,6 +754,7 @@ function registerArrayFields<T extends { id: string }>(args: {
     label: string;
     kind: FieldKind;
     secret?: boolean;
+    expert?: boolean;
   }>;
   registerField: (
     meta: EditorFieldMeta,
@@ -642,6 +796,7 @@ function registerArrayFields<T extends { id: string }>(args: {
           label: `${itemName}: ${field.label}`,
           kind: field.kind,
           secret: field.secret,
+          expert: field.expert,
         },
         getNestedValue(currentItem, field.key),
         getNestedValue(authoritativeItem, field.key),

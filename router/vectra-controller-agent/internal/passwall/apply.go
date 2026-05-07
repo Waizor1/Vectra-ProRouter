@@ -206,7 +206,7 @@ func renderNodeCommands(config DesiredConfig) []string {
 		}
 		commands = append(commands, setList(ref+".tag", node.Tags)...)
 		commands = append(commands, renderShuntNodeBindings(ref, node, config.BasicSettings.ShuntRules)...)
-		commands = append(commands, renderExtras(ref, node.Extras)...)
+		commands = append(commands, renderNodeExtras(ref, node, config.BasicSettings.ShuntRules)...)
 	}
 
 	return stripEmpty(commands)
@@ -280,13 +280,33 @@ func renderShuntNodeBindings(ref string, node NodeConfig, rules []ShuntRule) []s
 	return commands
 }
 
+func renderNodeExtras(ref string, node NodeConfig, rules []ShuntRule) []string {
+	if node.Protocol != "shunt" {
+		return renderExtras(ref, node.Extras)
+	}
+
+	ruleIDs := make(map[string]struct{}, len(rules))
+	for _, rule := range rules {
+		ruleIDs[rule.ID] = struct{}{}
+	}
+
+	return renderExtrasSkipping(ref, node.Extras, ruleIDs)
+}
+
 func renderExtras(ref string, extras map[string]any) []string {
+	return renderExtrasSkipping(ref, extras, nil)
+}
+
+func renderExtrasSkipping(ref string, extras map[string]any, skipKeys map[string]struct{}) []string {
 	if len(extras) == 0 {
 		return nil
 	}
 	keys := sortedKeys(extras)
 	commands := make([]string, 0, len(keys))
 	for _, key := range keys {
+		if _, skip := skipKeys[key]; skip {
+			continue
+		}
 		switch value := extras[key].(type) {
 		case string:
 			commands = append(commands, setValue(ref+"."+key, value))

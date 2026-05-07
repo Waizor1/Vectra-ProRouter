@@ -449,6 +449,53 @@ function setList(key: string, values: string[]) {
   ];
 }
 
+function safeUciName(value: string) {
+  const normalized = value
+    .replace(/[^A-Za-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_");
+
+  return normalized.length > 0 ? normalized : "section";
+}
+
+function renderExtras(
+  ref: string,
+  extras: Record<string, unknown> | undefined,
+  skipKeys?: ReadonlySet<string>,
+) {
+  const entries = Object.entries(extras ?? {}).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  const commands: string[] = [];
+
+  for (const [key, value] of entries) {
+    if (skipKeys?.has(key)) {
+      continue;
+    }
+    if (value === null || value === undefined) {
+      continue;
+    }
+
+    if (Array.isArray(value)) {
+      const values = value
+        .map((entry) => String(entry).trim())
+        .filter((entry) => entry.length > 0);
+      commands.push(...setList(`${ref}.${key}`, values));
+      continue;
+    }
+
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      commands.push(...compactCommands([setValue(`${ref}.${key}`, value)]));
+    }
+  }
+
+  return commands;
+}
+
 function truthyInt(value?: number) {
   return value && value > 0 ? value : undefined;
 }
@@ -516,6 +563,10 @@ function renderGlobalCommands(config: PasswallDesiredConfig) {
     setValue(
       "passwall2.vectra_global.dns_hosts",
       basicSettings.dns.dnsHosts.join("\n"),
+    ),
+    setValue(
+      "passwall2.vectra_global.dns_redirect",
+      basicSettings.dns.dnsRedirect,
     ),
     setValue(
       "passwall2.vectra_global.log_node",
@@ -600,14 +651,38 @@ function renderGlobalCommands(config: PasswallDesiredConfig) {
         ? ""
         : subscriptions.domainStrategy,
     ),
+    ...renderExtras("passwall2.vectra_global", basicSettings.main.extras),
+    ...renderExtras("passwall2.vectra_global_rules", ruleManage.extras),
+    ...renderExtras("passwall2.vectra_global_app", appUpdate.extras),
   ]);
+}
+
+function renderShuntNodeBindings(
+  ref: string,
+  node: PasswallDesiredConfig["nodes"][number],
+  rules: PasswallDesiredConfig["basicSettings"]["shuntRules"],
+) {
+  if (node.protocol !== "shunt") {
+    return [];
+  }
+
+  return compactCommands(
+    rules.map((rule) =>
+      rule.outboundNodeId
+        ? setValue(`${ref}.${safeUciName(rule.id)}`, rule.outboundNodeId)
+        : undefined,
+    ),
+  );
 }
 
 function renderNodeCommands(config: PasswallDesiredConfig) {
   const commands: string[] = [];
+  const shuntRuleIds = new Set(
+    config.basicSettings.shuntRules.map((rule) => rule.id),
+  );
 
   for (const socks of config.basicSettings.socks) {
-    const ref = `passwall2.vectra_socks_${socks.id.replaceAll("-", "_")}`;
+    const ref = `passwall2.${safeUciName(`vectra_socks_${socks.id}`)}`;
     commands.push(
       `set ${ref}=socks`,
       ...compactCommands([
@@ -621,11 +696,12 @@ function renderNodeCommands(config: PasswallDesiredConfig) {
         `${ref}.autoswitch_backup_node`,
         socks.autoswitchBackupNodeIds,
       ),
+      ...renderExtras(ref, socks.extras),
     );
   }
 
   for (const rule of config.basicSettings.shuntRules) {
-    const ref = `passwall2.${rule.id.replaceAll("-", "_")}`;
+    const ref = `passwall2.${safeUciName(rule.id)}`;
     commands.push(
       `set ${ref}=shunt_rules`,
       ...compactCommands([
@@ -633,12 +709,12 @@ function renderNodeCommands(config: PasswallDesiredConfig) {
         setValue(`${ref}.domain_list`, rule.domainRules.join("\n")),
         setValue(`${ref}.ip_list`, rule.ipRules.join("\n")),
       ]),
+      ...renderExtras(ref, rule.extras),
     );
   }
 
   for (const node of config.nodes) {
-    const safeId = node.id.replaceAll("-", "_");
-    const ref = `passwall2.${safeId}`;
+    const ref = `passwall2.${safeUciName(node.id)}`;
     commands.push(
       `set ${ref}=nodes`,
       ...compactCommands([
@@ -654,6 +730,12 @@ function renderNodeCommands(config: PasswallDesiredConfig) {
         setValue(`${ref}.tls`, node.tls),
       ]),
       ...setList(`${ref}.tag`, node.tags),
+      ...renderShuntNodeBindings(ref, node, config.basicSettings.shuntRules),
+      ...renderExtras(
+        ref,
+        node.extras,
+        node.protocol === "shunt" ? shuntRuleIds : undefined,
+      ),
     );
   }
 
@@ -664,7 +746,7 @@ function renderSubscriptionCommands(config: PasswallDesiredConfig) {
   const commands: string[] = [];
 
   for (const item of config.subscriptions.items) {
-    const ref = `passwall2.vectra_sub_${item.id.replaceAll("-", "_")}`;
+    const ref = `passwall2.${safeUciName(`vectra_sub_${item.id}`)}`;
     commands.push(
       `set ${ref}=subscribe_list`,
       ...compactCommands([
@@ -675,6 +757,7 @@ function renderSubscriptionCommands(config: PasswallDesiredConfig) {
         setValue(`${ref}.rem_traffic`, item.metadata.remainingTraffic),
         setValue(`${ref}.expired_date`, item.metadata.expiresAt),
       ]),
+      ...renderExtras(ref, item.extras),
     );
   }
 

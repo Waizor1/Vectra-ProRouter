@@ -99,6 +99,7 @@ import {
   moveNodeToTop,
   moveShuntRuleToTop,
   moveSubscriptionToTop,
+  normalizeShuntRuleBindings,
   pruneNodes,
   renameShuntRule,
   selectNode,
@@ -519,8 +520,11 @@ export function RouterDetailWorkspace({
     setSelectedSocksId,
   );
 
-  const validation = deferredDraft
-    ? passwallDesiredConfigSchema.safeParse(deferredDraft)
+  const normalizedDeferredDraft = deferredDraft
+    ? normalizeShuntRuleBindings(deferredDraft)
+    : null;
+  const validation = normalizedDeferredDraft
+    ? passwallDesiredConfigSchema.safeParse(normalizedDeferredDraft)
     : null;
   const validDraft = validation?.success ? validation.data : null;
   const validationMessage =
@@ -648,7 +652,7 @@ export function RouterDetailWorkspace({
   const editableSubscriptionIds = new Set(
     editor.subscriptionRuntime.editableSubscriptionIds,
   );
-  const currentDraftFingerprint = JSON.stringify(draft);
+  const currentDraftFingerprint = JSON.stringify(validDraft ?? draft);
   const loadedDraftFingerprint = JSON.stringify(editor.draftConfig);
   const hasUnsavedChanges = currentDraftFingerprint !== loadedDraftFingerprint;
   const selectedNode =
@@ -2797,7 +2801,63 @@ function NodeListSection({
                 updateNodeField(setDraft, selectedNode.id, "tags", value)
               }
             />
+            <BooleanControl
+              label="Mux"
+              value={getExtraBoolean(selectedNode.extras, "mux")}
+              onChange={(value) =>
+                updateNodeExtra(
+                  setDraft,
+                  selectedNode.id,
+                  "mux",
+                  boolExtra(value),
+                )
+              }
+            />
+            <NumberControl
+              label="Mux concurrency"
+              value={getExtraNumber(selectedNode.extras, "mux_concurrency")}
+              optional
+              onChange={(value) =>
+                updateNodeExtra(
+                  setDraft,
+                  selectedNode.id,
+                  "mux_concurrency",
+                  value === "" ? undefined : value,
+                )
+              }
+            />
+            <NumberControl
+              label="XUDP concurrency"
+              value={getExtraNumber(selectedNode.extras, "xudp_concurrency")}
+              optional
+              onChange={(value) =>
+                updateNodeExtra(
+                  setDraft,
+                  selectedNode.id,
+                  "xudp_concurrency",
+                  value === "" ? undefined : value,
+                )
+              }
+            />
+            <TextControl
+              label="Packet encoding"
+              value={getExtraString(selectedNode.extras, "packet_encoding")}
+              optional
+              onChange={(value) =>
+                updateNodeExtra(
+                  setDraft,
+                  selectedNode.id,
+                  "packet_encoding",
+                  value,
+                )
+              }
+            />
           </FieldGrid>
+          <p className="mt-3 text-xs leading-5 text-slate-400">
+            Эти поля пишутся в PassWall node extras и нужны для Xray/Mux/XUDP
+            тюнинга, включая Discord voice. Остальные импортированные extras не
+            теряются при apply и видны в предпросмотре технических UCI-команд.
+          </p>
         </SectionBox>
       ) : null}
     </div>
@@ -3885,6 +3945,35 @@ function ShuntRulesSection({
                       value={formatShuntTargetLabel(draft, rule.outboundNodeId)}
                     />
                     <MobileCardField
+                      label="Protocol"
+                      value={formatExtraSelection(
+                        rule.extras,
+                        "protocol",
+                        shuntProtocolOptions,
+                      )}
+                    />
+                    <MobileCardField
+                      label="Inbound"
+                      value={formatExtraSelection(
+                        rule.extras,
+                        "inbound",
+                        shuntInboundOptions,
+                      )}
+                    />
+                    <MobileCardField
+                      label="Network"
+                      value={getExtraOptionLabel(
+                        rule.extras,
+                        "network",
+                        shuntNetworkOptions,
+                        "TCP UDP",
+                      )}
+                    />
+                    <MobileCardField
+                      label="Port"
+                      value={getExtraString(rule.extras, "port") ?? "не задано"}
+                    />
+                    <MobileCardField
                       label="FakeDNS"
                       value={
                         selectedShuntNode &&
@@ -3946,6 +4035,10 @@ function ShuntRulesSection({
           columns={[
             { key: "label", label: title },
             { key: "node", label: "Target" },
+            { key: "protocol", label: "Protocol" },
+            { key: "inbound", label: "Inbound" },
+            { key: "network", label: "Network" },
+            { key: "port", label: "Port" },
             { key: "fakedns", label: "FakeDNS" },
             { key: "preproxy", label: "Preproxy" },
             { key: "domains", label: "Домены" },
@@ -3974,6 +4067,31 @@ function ShuntRulesSection({
                   {formatShuntTargetLabel(draft, rule.outboundNodeId)}
                 </td>
                 <td className="px-3 py-2">
+                  {formatExtraSelection(
+                    rule.extras,
+                    "protocol",
+                    shuntProtocolOptions,
+                  )}
+                </td>
+                <td className="px-3 py-2">
+                  {formatExtraSelection(
+                    rule.extras,
+                    "inbound",
+                    shuntInboundOptions,
+                  )}
+                </td>
+                <td className="px-3 py-2">
+                  {getExtraOptionLabel(
+                    rule.extras,
+                    "network",
+                    shuntNetworkOptions,
+                    "TCP UDP",
+                  )}
+                </td>
+                <td className="px-3 py-2">
+                  {getExtraString(rule.extras, "port") ?? "не задано"}
+                </td>
+                <td className="px-3 py-2">
                   {selectedShuntNode &&
                   getExtraBoolean(
                     selectedShuntNode.extras,
@@ -3998,7 +4116,7 @@ function ShuntRulesSection({
               </tr>
             ))
           ) : (
-            <DataTableEmpty colSpan={6}>Shunt-правил пока нет.</DataTableEmpty>
+            <DataTableEmpty colSpan={10}>Shunt-правил пока нет.</DataTableEmpty>
           )}
         </DataTable>
       </div>
@@ -4046,6 +4164,66 @@ function ShuntRulesSection({
                   "outboundNodeId",
                   value ?? "",
                 )
+              }
+            />
+            <CheckboxGroupControl
+              label="Protocol"
+              options={shuntProtocolOptions}
+              values={getExtraTokens(selectedRule.extras, "protocol")}
+              onChange={(values) =>
+                updateRuleExtra(
+                  setDraft,
+                  selectedRule.id,
+                  "protocol",
+                  encodeExtraTokens(values),
+                )
+              }
+            />
+            <CheckboxGroupControl
+              label="Inbound Tag"
+              options={shuntInboundOptions}
+              values={getExtraTokens(selectedRule.extras, "inbound")}
+              onChange={(values) =>
+                updateRuleExtra(
+                  setDraft,
+                  selectedRule.id,
+                  "inbound",
+                  encodeExtraTokens(values),
+                )
+              }
+            />
+            <SelectControl
+              label="Network"
+              value={getExtraString(selectedRule.extras, "network", "tcp,udp")}
+              options={shuntNetworkOptions}
+              onChange={(value) =>
+                updateRuleExtra(
+                  setDraft,
+                  selectedRule.id,
+                  "network",
+                  value ?? "tcp,udp",
+                )
+              }
+            />
+            <TextAreaControl
+              label="Source"
+              rows={4}
+              value={getExtraTokens(selectedRule.extras, "source")}
+              onChange={(value) =>
+                updateRuleExtra(
+                  setDraft,
+                  selectedRule.id,
+                  "source",
+                  encodeExtraTokens(value),
+                )
+              }
+            />
+            <TextControl
+              label="Port"
+              value={getExtraString(selectedRule.extras, "port")}
+              optional
+              onChange={(value) =>
+                updateRuleExtra(setDraft, selectedRule.id, "port", value)
               }
             />
             <BooleanControl
@@ -4111,6 +4289,18 @@ function ShuntRulesSection({
                 updateRuleField(setDraft, selectedRule.id, "ipRules", value)
               }
             />
+            <BooleanControl
+              label="invert (Sing-Box only)"
+              value={getExtraBoolean(selectedRule.extras, "invert")}
+              onChange={(value) =>
+                updateRuleExtra(
+                  setDraft,
+                  selectedRule.id,
+                  "invert",
+                  boolExtra(value),
+                )
+              }
+            />
           </FieldGrid>
         </SectionBox>
       ) : null}
@@ -4166,6 +4356,10 @@ function RuntimeNodeDetails({
     ["Encryption", formatRuntimeValue(node.details.encryption)],
     ["Fingerprint", formatRuntimeValue(node.details.fingerprint)],
     ["uTLS", formatRuntimeValue(node.details.utls)],
+    ["Mux", formatRuntimeValue(node.details.mux)],
+    ["Mux concurrency", formatRuntimeValue(node.details.muxConcurrency)],
+    ["XUDP concurrency", formatRuntimeValue(node.details.xudpConcurrency)],
+    ["Packet encoding", formatRuntimeValue(node.details.packetEncoding)],
   ] as const;
 
   return (
@@ -6664,6 +6858,18 @@ function getExtraBoolean(
   return fallback;
 }
 
+function getExtraNumber(extras: ExtrasRecord | undefined, key: string) {
+  const value = extras?.[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
 function getExtraList(extras: ExtrasRecord | undefined, key: string) {
   const value = extras?.[key];
   if (Array.isArray(value)) {
@@ -7126,8 +7332,7 @@ function updateConfig(
 ) {
   const next = structuredClone(previous);
   producer(next);
-  next.ruleManage.shuntRules = structuredClone(next.basicSettings.shuntRules);
-  return next;
+  return normalizeShuntRuleBindings(next);
 }
 
 function splitLines(value: string) {

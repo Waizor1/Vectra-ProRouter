@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
 import { TRPCError } from "@trpc/server";
 
@@ -11,20 +11,39 @@ import { api } from "~/trpc/server";
 
 export default async function RouterDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ routerId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { routerId } = await params;
+  const resolvedSearchParams = await searchParams;
 
-  const surface = await api.draft.editorSurface({ routerId }).catch((error: unknown) => {
-    if (error instanceof TRPCError && error.code === "NOT_FOUND") {
+  if (!isUuid(routerId)) {
+    const resolvedRouterId = await resolveRouterIdFromSelector(routerId);
+
+    if (!resolvedRouterId) {
       notFound();
     }
 
-    throw error;
-  });
+    redirect(
+      `/routers/${resolvedRouterId}${buildSearchSuffix(resolvedSearchParams)}`,
+    );
+  }
 
-  const routerReachable = isRouterReachable(surface.routerRuntimeSummary.lastSeenAt);
+  const surface = await api.draft
+    .editorSurface({ routerId })
+    .catch((error: unknown) => {
+      if (error instanceof TRPCError && error.code === "NOT_FOUND") {
+        notFound();
+      }
+
+      throw error;
+    });
+
+  const routerReachable = isRouterReachable(
+    surface.routerRuntimeSummary.lastSeenAt,
+  );
   const directModeActive = hasActiveDirectMode(
     (surface.routerRuntimeSummary.status ?? "offline") as
       | "pending"
@@ -51,4 +70,61 @@ export default async function RouterDetailPage({
       />
     </section>
   );
+}
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
+
+async function resolveRouterIdFromSelector(selector: string) {
+  const needle = decodeURIComponent(selector).trim().toLowerCase();
+  if (!needle) {
+    return null;
+  }
+
+  const fleet = await api.fleet.list();
+  const matches = fleet.filter((router) => {
+    const candidates = [
+      router.id,
+      router.displayName,
+      router.hostname,
+      router.panelDomain,
+      router.deviceIdentifier,
+    ]
+      .filter(
+        (value): value is string =>
+          typeof value === "string" && value.trim().length > 0,
+      )
+      .map((value) => value.toLowerCase());
+
+    return candidates.some(
+      (value) => value === needle || value.includes(needle),
+    );
+  });
+
+  return matches.length === 1 ? (matches[0]?.id ?? null) : null;
+}
+
+function buildSearchSuffix(
+  searchParams: Record<string, string | string[] | undefined>,
+) {
+  const params = new URLSearchParams();
+
+  for (const [key, rawValue] of Object.entries(searchParams)) {
+    if (Array.isArray(rawValue)) {
+      for (const value of rawValue) {
+        params.append(key, value);
+      }
+      continue;
+    }
+
+    if (typeof rawValue === "string") {
+      params.set(key, rawValue);
+    }
+  }
+
+  const encoded = params.toString();
+  return encoded ? `?${encoded}` : "";
 }

@@ -13,6 +13,7 @@ function syncShuntRules(config: PasswallDesiredConfig) {
 
 type ShuntRuleExtraValue =
   PasswallDesiredConfig["basicSettings"]["shuntRules"][number]["extras"][string];
+type NodeExtraValue = PasswallDesiredConfig["nodes"][number]["extras"][string];
 
 function nextId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
@@ -79,8 +80,7 @@ export function deleteNode(config: PasswallDesiredConfig, index: number) {
     next.basicSettings.main.selectedNodeId &&
     next.basicSettings.main.selectedNodeId === removed.id
   ) {
-    next.basicSettings.main.selectedNodeId =
-      next.nodes[0]?.id ?? undefined;
+    next.basicSettings.main.selectedNodeId = next.nodes[0]?.id ?? undefined;
   }
   return next;
 }
@@ -216,7 +216,10 @@ export function addSubscription(config: PasswallDesiredConfig) {
   return next;
 }
 
-export function deleteSubscription(config: PasswallDesiredConfig, index: number) {
+export function deleteSubscription(
+  config: PasswallDesiredConfig,
+  index: number,
+) {
   const next = cloneConfig(config);
   next.subscriptions.items.splice(index, 1);
   return next;
@@ -251,7 +254,14 @@ export function addShuntRule(config: PasswallDesiredConfig) {
 
 export function deleteShuntRule(config: PasswallDesiredConfig, index: number) {
   const next = cloneConfig(config);
-  next.basicSettings.shuntRules.splice(index, 1);
+  const [removed] = next.basicSettings.shuntRules.splice(index, 1);
+  if (removed) {
+    for (const node of next.nodes) {
+      delete node.extras[removed.id];
+      delete node.extras[`${removed.id}_fakedns`];
+      delete node.extras[`${removed.id}_proxy_tag`];
+    }
+  }
   syncShuntRules(next);
   return next;
 }
@@ -282,7 +292,9 @@ export function renameShuntRule(
     return next;
   }
 
-  const target = next.basicSettings.shuntRules.find((rule) => rule.id === ruleId);
+  const target = next.basicSettings.shuntRules.find(
+    (rule) => rule.id === ruleId,
+  );
   if (!target) {
     return next;
   }
@@ -296,6 +308,7 @@ export function renameShuntRule(
 
   target.id = normalized;
   for (const node of next.nodes) {
+    renameExtraKey(node.extras, ruleId, normalized);
     renameExtraKey(node.extras, `${ruleId}_fakedns`, `${normalized}_fakedns`);
     renameExtraKey(
       node.extras,
@@ -314,7 +327,9 @@ export function updateShuntRuleExtra(
   value: ShuntRuleExtraValue | undefined,
 ) {
   const next = cloneConfig(config);
-  const target = next.basicSettings.shuntRules.find((rule) => rule.id === ruleId);
+  const target = next.basicSettings.shuntRules.find(
+    (rule) => rule.id === ruleId,
+  );
   if (!target) {
     return next;
   }
@@ -324,8 +339,36 @@ export function updateShuntRuleExtra(
   return next;
 }
 
+export function normalizeShuntRuleBindings(config: PasswallDesiredConfig) {
+  const next = cloneConfig(config);
+  syncShuntRules(next);
+
+  const bindings = new Map(
+    next.basicSettings.shuntRules.map((rule) => [
+      rule.id,
+      rule.outboundNodeId?.trim() ? rule.outboundNodeId : undefined,
+    ]),
+  );
+
+  for (const node of next.nodes) {
+    if (node.protocol !== "shunt") {
+      continue;
+    }
+
+    for (const [ruleId, outboundNodeId] of bindings) {
+      if (outboundNodeId) {
+        node.extras[ruleId] = outboundNodeId;
+      } else {
+        delete node.extras[ruleId];
+      }
+    }
+  }
+
+  return next;
+}
+
 function renameExtraKey(
-  extras: Record<string, ShuntRuleExtraValue>,
+  extras: Record<string, NodeExtraValue>,
   previousKey: string,
   nextKey: string,
 ) {
