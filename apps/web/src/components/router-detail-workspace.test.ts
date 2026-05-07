@@ -63,6 +63,20 @@ describe("router detail app update helpers", () => {
     expect(source).toContain("node.details.realityPublicKeyPresent");
   });
 
+  it("keeps fresh PassWall parameters visible behind version gates", () => {
+    const source = readFileSync(
+      new URL("./router-detail-workspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("PASSWALL_FEATURE_MIN_VERSIONS");
+    expect(source).toContain("Domain DNS Resolve");
+    expect(source).toContain("domain_resolver_dns_https");
+    expect(source).toContain("mKCP MTU");
+    expect(source).toContain("TLS pinSHA256");
+    expect(source).toContain('{ value: "quic", label: "quic" }');
+  });
+
   it("renders explicit managed-stack target semantics for PassWall2", () => {
     const bundleMetadata = buildFallbackPasswallBundleMetadata();
 

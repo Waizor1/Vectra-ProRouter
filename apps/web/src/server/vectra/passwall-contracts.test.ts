@@ -392,6 +392,7 @@ describe("passwall contracts", () => {
     const previous = createMinimalPasswallConfig();
     const next = structuredClone(previous);
     const extras = {
+      protocol: "http quic",
       inbound: "tproxy",
       network: "udp",
       port: "19294-19344,50000-50100",
@@ -408,11 +409,56 @@ describe("passwall contracts", () => {
 
     expect(nodeSync?.uciCommands).toEqual(
       expect.arrayContaining([
+        "set passwall2.DiscordVoiceUdp.protocol='http quic'",
         "set passwall2.DiscordVoiceUdp.inbound='tproxy'",
         "set passwall2.DiscordVoiceUdp.network='udp'",
         "set passwall2.DiscordVoiceUdp.port='19294-19344,50000-50100'",
         "set passwall2.DiscordVoiceUdp.source='geoip:private'",
         "set passwall2.DiscordVoiceUdp.invert='1'",
+      ]),
+    );
+  });
+
+  it("preserves latest PassWall node and subscription extras in UCI preview", () => {
+    const previous = createMinimalPasswallConfig();
+    const next = structuredClone(previous);
+    next.nodes[1]!.extras = {
+      mkcp_mtu: 1400,
+      tls_pinSHA256: "sha256-fingerprint",
+    };
+    next.subscriptions.items.push({
+      id: "sub-main",
+      remark: "Main sub",
+      url: "https://example.com/sub",
+      enabled: true,
+      addMode: "2",
+      metadata: {},
+      extras: {
+        domain_resolver: "https",
+        domain_resolver_dns_https: "https://dns.example/dns-query",
+        domain_strategy: "UseIPv4",
+      },
+    });
+
+    const summary = summarizePasswallRevisionDiff(previous, next);
+    const nodeSync = summary.operationPreview.find(
+      (operation) => operation.kind === "node_sync",
+    );
+    const subscriptionSync = summary.operationPreview.find(
+      (operation) => operation.kind === "subscription_sync",
+    );
+
+    expect(nodeSync?.uciCommands).toEqual(
+      expect.arrayContaining([
+        "set passwall2.node_main.mkcp_mtu='1400'",
+        "set passwall2.node_main.tls_pinSHA256='sha256-fingerprint'",
+      ]),
+    );
+    expect(subscriptionSync?.uciCommands).toEqual(
+      expect.arrayContaining([
+        "set passwall2.vectra_sub_sub_main.domain_resolver='https'",
+        "set passwall2.vectra_sub_sub_main.domain_resolver_dns_https='https://dns.example/dns-query'",
+        "set passwall2.vectra_sub_sub_main.domain_strategy='UseIPv4'",
       ]),
     );
   });

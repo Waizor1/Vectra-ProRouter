@@ -3,7 +3,7 @@ type: module
 path: router/vectra-controller-agent
 stage: pilot
 confidence: high
-last-reviewed: 2026-05-04
+last-reviewed: 2026-05-08
 tags:
   - module
   - go
@@ -14,6 +14,7 @@ tags:
 
 ## Confirmed
 
+- 2026-05-08 upstream PassWall parameter parity: controller source still preserves new PassWall2 params as extras on apply. Added local `internal/passwall` tests for node `mkcp_mtu` / `tls_pinSHA256` and subscription domain-resolver extras so future controller package builds do not silently drop these 26.4.20+/26.5.1+ fields.
 - 2026-05-08 apply/preview parity follow-up: local controller tests remain green after the web/contract parity patch; the source controller remains the apply-side authority for safe UCI ids and shunt binding precedence. Controller package rollout is still a separate later step; production web now mirrors those controller rendering rules in preview.
 - 2026-05-08 Shunt binding apply hardening: controller source now renders explicit ShuntRule bindings as authoritative for shunt nodes and skips duplicate stale extras keys matching rule ids. Existing production controllers still rely on the web-side normalization until the next controller package rollout, but the source-level bug is covered by `internal/passwall` tests.
 - 2026-05-07 live Discord voice test on router `1111111111`: inspected local `zapret-discord-youtube-1.9.8c.zip` without executing it, found its Discord voice path relies on UDP `19294-19344,50000-50100` plus Discord/STUN detection and a fuller Discord host/IP surface, then applied a bounded live UCI test patch. First pass added explicit Discord domain rules from the archive, added the two Discord IP ranges that were missing below the existing `66.22.192.0/18` coverage (`66.22.176.0/24`, `66.22.188.0/22`), restored node-local `mux=1`, `mux_concurrency=-1`, `xudp_concurrency=16` on current `WorldProxy` outbound `OPIqwEuA`, committed `/etc/config/passwall2`, and restarted PassWall2. When the user reported voice still failed, the deeper fix added a dedicated `DiscordVoiceUdp` shunt rule for UDP ports `19294-19344,50000-50100` and moved only that UDP rule to the current Poland/gRPC candidate `dqnJE64Y` with `mux=1`, `mux_concurrency=-1`, `xudp_concurrency=16`; general `WorldProxy` stayed on `OPIqwEuA`. Post-change proof: `xray=running`, `url_test_node dqnJE64Y = 204:0.208831`, `url_test_node OPIqwEuA = 204:0.176172`, Discord API probe `200:0.228351`, and generated Xray routing contains `DiscordVoiceUdp` with `port="19294-19344,50000-50100"` to `dqnJE64Y`. The user then confirmed that Discord voice started working, so this is the current known-good contour; sync/reimport into panel source of truth is still needed before any future broad apply.

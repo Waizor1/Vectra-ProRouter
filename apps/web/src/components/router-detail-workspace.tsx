@@ -75,6 +75,11 @@ import {
   summarizePasswallAttempt,
 } from "~/lib/passwall-update-summary";
 import {
+  PASSWALL_FEATURE_MIN_VERSIONS,
+  getPasswallFeatureGate,
+  type PasswallFeatureGate,
+} from "~/lib/passwall-feature-gates";
+import {
   describeRouterOnboarding,
   formatRouterImportStateLabel,
   isRouterOnboardingPending,
@@ -133,6 +138,8 @@ type UnconfirmedChangeGroup = EditorSurface["unconfirmedChanges"]["router"];
 type Option = {
   value: string;
   label: string;
+  disabled?: boolean;
+  title?: string;
 };
 
 const dnsStrategyOptions = [
@@ -186,6 +193,8 @@ const domainStrategyOptions = [
 const subscriptionItemDomainStrategyOptions = [
   { value: "global", label: "Use global config" },
   { value: "", label: "Auto" },
+  { value: "UseIPv4", label: "UseIPv4" },
+  { value: "UseIPv6", label: "UseIPv6" },
   { value: "prefer_ipv4", label: "Prefer IPv4" },
   { value: "prefer_ipv6", label: "Prefer IPv6" },
   { value: "ipv4_only", label: "IPv4 Only" },
@@ -249,8 +258,57 @@ const ruleAssetOptions = [
 const shuntProtocolOptions = [
   { value: "http", label: "http" },
   { value: "tls", label: "tls" },
+  { value: "quic", label: "quic" },
   { value: "bittorrent", label: "bittorrent" },
 ] as const satisfies ReadonlyArray<Option>;
+
+const subscriptionDomainResolverOptions = [
+  { value: "", label: "Auto" },
+  { value: "tcp", label: "TCP" },
+  { value: "udp", label: "UDP" },
+  { value: "https", label: "DoH" },
+] as const satisfies ReadonlyArray<Option>;
+
+function gatedOption(
+  option: Option,
+  gate: PasswallFeatureGate,
+): Option {
+  if (gate.supported) {
+    return option;
+  }
+  return {
+    ...option,
+    disabled: true,
+    title: gate.reason ?? undefined,
+    label: `${option.label} · только ${gate.minimumVersion}+`,
+  };
+}
+
+function buildShuntProtocolOptions(passwallVersion: string | null | undefined) {
+  const quicGate = getPasswallFeatureGate(
+    passwallVersion,
+    PASSWALL_FEATURE_MIN_VERSIONS.shuntQuicProtocol,
+  );
+
+  return shuntProtocolOptions.map((option) =>
+    option.value === "quic" ? gatedOption(option, quicGate) : option,
+  );
+}
+
+function buildSubscriptionItemDomainStrategyOptions(
+  passwallVersion: string | null | undefined,
+) {
+  const resolverGate = getPasswallFeatureGate(
+    passwallVersion,
+    PASSWALL_FEATURE_MIN_VERSIONS.subscriptionDomainResolver,
+  );
+
+  return subscriptionItemDomainStrategyOptions.map((option) =>
+    option.value === "UseIPv4" || option.value === "UseIPv6"
+      ? gatedOption(option, resolverGate)
+      : option,
+  );
+}
 
 const shuntInboundOptions = [
   { value: "tproxy", label: "Transparent proxy" },
@@ -830,6 +888,7 @@ export function RouterDetailWorkspace({
             selectedRuleId={selectedRuleId}
             setSelectedRuleId={setSelectedRuleId}
             setDraft={setDraft}
+            passwallVersion={inventory.passwallVersion ?? null}
             title="Shunt Rule"
             description="Список правил сначала, редактор выбранной строки ниже."
           />
@@ -875,6 +934,7 @@ export function RouterDetailWorkspace({
         handlePersistNormalizedRuntime={
           handlePersistNormalizedSubscriptionRuntime
         }
+        passwallVersion={inventory.passwallVersion ?? null}
       />
     );
   } else if (effectivePrimaryTab === "node-subscribe") {
@@ -889,6 +949,7 @@ export function RouterDetailWorkspace({
         setSelectedSubscriptionId={setSelectedSubscriptionId}
         setDraft={setDraft}
         canRunJobs={editor.routerRuntimeSummary.destructiveActionsAllowed}
+        passwallVersion={inventory.passwallVersion ?? null}
       />
     );
   } else if (effectivePrimaryTab === "app-update") {
@@ -914,6 +975,7 @@ export function RouterDetailWorkspace({
         setSelectedRuleId={setSelectedRuleId}
         setDraft={setDraft}
         canRunJobs={editor.routerRuntimeSummary.destructiveActionsAllowed}
+        passwallVersion={inventory.passwallVersion ?? null}
       />
     );
   } else if (effectivePrimaryTab === "geo-view") {
@@ -2316,6 +2378,7 @@ function NodeListSection({
   queuePending,
   canPersistNormalizedRuntime,
   handlePersistNormalizedRuntime,
+  passwallVersion,
 }: {
   draft: DraftConfigInput;
   surface: EditorSurface;
@@ -2328,6 +2391,7 @@ function NodeListSection({
   queuePending: boolean;
   canPersistNormalizedRuntime: boolean;
   handlePersistNormalizedRuntime: () => Promise<void>;
+  passwallVersion: string | null;
 }) {
   const editableNodeIds = new Set(surface.subscriptionRuntime.editableNodeIds);
   const editableNodes = draft.nodes.filter((node) =>
@@ -2349,6 +2413,14 @@ function NodeListSection({
   const hasPanelOnlyNodes = panelOnlyCount > 0;
   const hasCleanupNodes = cleanupCount > 0;
   const hasOrphanNodes = orphanNodeIds.length > 0;
+  const mkcpMtuGate = getPasswallFeatureGate(
+    passwallVersion,
+    PASSWALL_FEATURE_MIN_VERSIONS.xrayMkcpMtu,
+  );
+  const tlsPinSha256Gate = getPasswallFeatureGate(
+    passwallVersion,
+    PASSWALL_FEATURE_MIN_VERSIONS.xrayTlsPinSha256,
+  );
   const cleanupTitle =
     routerOnlyCount > 0
       ? "Список нод ещё не выровнен"
@@ -2852,11 +2924,43 @@ function NodeListSection({
                 )
               }
             />
+            <NumberControl
+              label="mKCP MTU"
+              value={getExtraNumber(selectedNode.extras, "mkcp_mtu")}
+              optional
+              disabled={!mkcpMtuGate.supported}
+              hint={mkcpMtuGate.reason ?? undefined}
+              onChange={(value) =>
+                updateNodeExtra(
+                  setDraft,
+                  selectedNode.id,
+                  "mkcp_mtu",
+                  value === "" ? undefined : value,
+                )
+              }
+            />
+            <TextControl
+              label="TLS pinSHA256"
+              value={getExtraString(selectedNode.extras, "tls_pinSHA256")}
+              optional
+              disabled={!tlsPinSha256Gate.supported}
+              hint={tlsPinSha256Gate.reason ?? undefined}
+              onChange={(value) =>
+                updateNodeExtra(
+                  setDraft,
+                  selectedNode.id,
+                  "tls_pinSHA256",
+                  value,
+                )
+              }
+            />
           </FieldGrid>
           <p className="mt-3 text-xs leading-5 text-slate-400">
-            Эти поля пишутся в PassWall node extras и нужны для Xray/Mux/XUDP
-            тюнинга, включая Discord voice. Остальные импортированные extras не
-            теряются при apply и видны в предпросмотре технических UCI-команд.
+            Эти поля пишутся в PassWall node extras и нужны для
+            Xray/Mux/XUDP/KCP/TLS тюнинга, включая Discord voice. Новые поля
+            остаются неактивными на старых версиях PassWall2, а остальные
+            импортированные extras не теряются при apply и видны в предпросмотре
+            технических UCI-команд.
           </p>
         </SectionBox>
       ) : null}
@@ -2874,6 +2978,7 @@ function SubscriptionSection({
   setSelectedSubscriptionId,
   setDraft,
   canRunJobs,
+  passwallVersion,
 }: {
   routerId: string;
   draft: DraftConfigInput;
@@ -2886,6 +2991,7 @@ function SubscriptionSection({
   setSelectedSubscriptionId: (value: string | null) => void;
   setDraft: Dispatch<SetStateAction<DraftConfigInput | null>>;
   canRunJobs: boolean;
+  passwallVersion: string | null;
 }) {
   const router = useRouter();
   const utils = api.useUtils();
@@ -2917,6 +3023,12 @@ function SubscriptionSection({
   const editableSubscriptions = draft.subscriptions.items.filter((item) =>
     editableSubscriptionIds.has(item.id),
   );
+  const subscriptionDomainResolverGate = getPasswallFeatureGate(
+    passwallVersion,
+    PASSWALL_FEATURE_MIN_VERSIONS.subscriptionDomainResolver,
+  );
+  const subscriptionItemDomainStrategyOptionsForRouter =
+    buildSubscriptionItemDomainStrategyOptions(passwallVersion);
   const previewNodeCount = surface.subscriptionRuntime.previews.reduce(
     (sum, preview) => sum + (preview.resolvedPayloadNodeCount ?? 0),
     0,
@@ -3352,6 +3464,61 @@ function SubscriptionSection({
                 )
               }
             />
+            <SelectControl
+              label="Domain DNS Resolve"
+              value={getExtraString(
+                selectedSubscription.extras,
+                "domain_resolver",
+                "",
+              )}
+              options={subscriptionDomainResolverOptions}
+              disabled={!subscriptionDomainResolverGate.supported}
+              hint={subscriptionDomainResolverGate.reason ?? undefined}
+              onChange={(value) =>
+                updateSubscriptionExtra(
+                  setDraft,
+                  selectedSubscription.id,
+                  "domain_resolver",
+                  value,
+                )
+              }
+            />
+            <TextControl
+              label="Domain resolver DNS"
+              value={getExtraString(
+                selectedSubscription.extras,
+                "domain_resolver_dns",
+              )}
+              optional
+              disabled={!subscriptionDomainResolverGate.supported}
+              hint={subscriptionDomainResolverGate.reason ?? undefined}
+              onChange={(value) =>
+                updateSubscriptionExtra(
+                  setDraft,
+                  selectedSubscription.id,
+                  "domain_resolver_dns",
+                  value,
+                )
+              }
+            />
+            <TextControl
+              label="Domain resolver DoH"
+              value={getExtraString(
+                selectedSubscription.extras,
+                "domain_resolver_dns_https",
+              )}
+              optional
+              disabled={!subscriptionDomainResolverGate.supported}
+              hint={subscriptionDomainResolverGate.reason ?? undefined}
+              onChange={(value) =>
+                updateSubscriptionExtra(
+                  setDraft,
+                  selectedSubscription.id,
+                  "domain_resolver_dns_https",
+                  value,
+                )
+              }
+            />
             <TextControl
               label="Remaining traffic"
               value={selectedSubscription.metadata.remainingTraffic}
@@ -3534,7 +3701,7 @@ function SubscriptionSection({
                 "domain_strategy",
                 "global",
               )}
-              options={subscriptionItemDomainStrategyOptions}
+              options={subscriptionItemDomainStrategyOptionsForRouter}
               onChange={(value) =>
                 updateSubscriptionExtra(
                   setDraft,
@@ -3742,6 +3909,7 @@ function ShuntRulesSection({
   selectedRuleId,
   setSelectedRuleId,
   setDraft,
+  passwallVersion,
   title,
   description,
 }: {
@@ -3750,6 +3918,7 @@ function ShuntRulesSection({
   selectedRuleId: string | null;
   setSelectedRuleId: (value: string | null) => void;
   setDraft: Dispatch<SetStateAction<DraftConfigInput | null>>;
+  passwallVersion: string | null;
   title: string;
   description?: string;
 }) {
@@ -3757,6 +3926,8 @@ function ShuntRulesSection({
   const ruleTargetOptions = buildShuntTargetOptions(draft, true);
   const defaultTargetOptions = buildShuntTargetOptions(draft, false);
   const visibleRules = draft.basicSettings.shuntRules;
+  const shuntProtocolOptionsForRouter =
+    buildShuntProtocolOptions(passwallVersion);
 
   return (
     <div className="space-y-4">
@@ -3949,7 +4120,7 @@ function ShuntRulesSection({
                       value={formatExtraSelection(
                         rule.extras,
                         "protocol",
-                        shuntProtocolOptions,
+                        shuntProtocolOptionsForRouter,
                       )}
                     />
                     <MobileCardField
@@ -4070,7 +4241,7 @@ function ShuntRulesSection({
                   {formatExtraSelection(
                     rule.extras,
                     "protocol",
-                    shuntProtocolOptions,
+                    shuntProtocolOptionsForRouter,
                   )}
                 </td>
                 <td className="px-3 py-2">
@@ -4168,7 +4339,7 @@ function ShuntRulesSection({
             />
             <CheckboxGroupControl
               label="Protocol"
-              options={shuntProtocolOptions}
+              options={shuntProtocolOptionsForRouter}
               values={getExtraTokens(selectedRule.extras, "protocol")}
               onChange={(values) =>
                 updateRuleExtra(
@@ -5482,6 +5653,7 @@ function RuleManageSection({
   setSelectedRuleId,
   setDraft,
   canRunJobs,
+  passwallVersion,
 }: {
   routerId: string;
   draft: DraftConfigInput;
@@ -5491,6 +5663,7 @@ function RuleManageSection({
   setSelectedRuleId: (value: string | null) => void;
   setDraft: Dispatch<SetStateAction<DraftConfigInput | null>>;
   canRunJobs: boolean;
+  passwallVersion: string | null;
 }) {
   const router = useRouter();
   const utils = api.useUtils();
@@ -5645,6 +5818,7 @@ function RuleManageSection({
         selectedRuleId={selectedRuleId}
         setSelectedRuleId={setSelectedRuleId}
         setDraft={setDraft}
+        passwallVersion={passwallVersion}
       />
     </div>
   );
@@ -5657,6 +5831,7 @@ function RuleManageShuntRulesSection({
   selectedRuleId,
   setSelectedRuleId,
   setDraft,
+  passwallVersion,
 }: {
   draft: DraftConfigInput;
   surface: EditorSurface;
@@ -5664,8 +5839,11 @@ function RuleManageShuntRulesSection({
   selectedRuleId: string | null;
   setSelectedRuleId: (value: string | null) => void;
   setDraft: Dispatch<SetStateAction<DraftConfigInput | null>>;
+  passwallVersion: string | null;
 }) {
   const visibleRules = draft.basicSettings.shuntRules;
+  const shuntProtocolOptionsForRouter =
+    buildShuntProtocolOptions(passwallVersion);
 
   return (
     <div className="space-y-4">
@@ -5884,7 +6062,7 @@ function RuleManageShuntRulesSection({
             />
             <CheckboxGroupControl
               label="Protocol"
-              options={shuntProtocolOptions}
+              options={shuntProtocolOptionsForRouter}
               values={getExtraTokens(selectedRule.extras, "protocol")}
               onChange={(values) =>
                 updateRuleExtra(
@@ -6382,19 +6560,24 @@ function TextControl({
   onChange,
   optional,
   diff,
+  disabled,
+  hint,
 }: {
   label: string;
   value: string | undefined;
   onChange: (value: string | undefined) => void;
   optional?: boolean;
   diff?: EditorSurface["fieldDiffs"][number];
+  disabled?: boolean;
+  hint?: string;
 }) {
   const controlName = buildControlName(label);
   return (
-    <FieldShell label={label} diff={diff}>
+    <FieldShell label={label} diff={diff} hint={hint}>
       <input
         name={controlName}
-        className="w-full rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2 text-sm text-white transition outline-none focus:border-[var(--vectra-line-strong)]"
+        disabled={disabled}
+        className="w-full rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2 text-sm text-white transition outline-none focus:border-[var(--vectra-line-strong)] disabled:cursor-not-allowed disabled:opacity-60"
         value={value ?? ""}
         onChange={(event) =>
           onChange(normalizeTextValue(event.target.value, optional))
@@ -6410,20 +6593,25 @@ function NumberControl({
   onChange,
   optional,
   diff,
+  disabled,
+  hint,
 }: {
   label: string;
   value: number | undefined;
   onChange: (value: number | undefined | "") => void;
   optional?: boolean;
   diff?: EditorSurface["fieldDiffs"][number];
+  disabled?: boolean;
+  hint?: string;
 }) {
   const controlName = buildControlName(label);
   return (
-    <FieldShell label={label} diff={diff}>
+    <FieldShell label={label} diff={diff} hint={hint}>
       <input
         type="number"
         name={controlName}
-        className="w-full rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2 text-sm text-white transition outline-none focus:border-[var(--vectra-line-strong)]"
+        disabled={disabled}
+        className="w-full rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2 text-sm text-white transition outline-none focus:border-[var(--vectra-line-strong)] disabled:cursor-not-allowed disabled:opacity-60"
         value={value === undefined ? "" : String(value)}
         onChange={(event) =>
           onChange(normalizeNumberValue(event.target.value, optional))
@@ -6440,6 +6628,8 @@ function SelectControl({
   onChange,
   optional,
   diff,
+  disabled,
+  hint,
 }: {
   label: string;
   value: string | undefined;
@@ -6447,13 +6637,16 @@ function SelectControl({
   onChange: (value: string | undefined) => void;
   optional?: boolean;
   diff?: EditorSurface["fieldDiffs"][number];
+  disabled?: boolean;
+  hint?: string;
 }) {
   const controlName = buildControlName(label);
   return (
-    <FieldShell label={label} diff={diff}>
+    <FieldShell label={label} diff={diff} hint={hint}>
       <select
         name={controlName}
-        className="w-full rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2 text-sm text-white transition outline-none focus:border-[var(--vectra-line-strong)]"
+        disabled={disabled}
+        className="w-full rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2 text-sm text-white transition outline-none focus:border-[var(--vectra-line-strong)] disabled:cursor-not-allowed disabled:opacity-60"
         value={value ?? ""}
         onChange={(event) =>
           onChange(normalizeTextValue(event.target.value, optional))
@@ -6461,7 +6654,12 @@ function SelectControl({
       >
         {optional ? <option value="">Не задано</option> : null}
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
+          <option
+            key={option.value}
+            value={option.value}
+            disabled={option.disabled}
+            title={option.title}
+          >
             {option.label}
           </option>
         ))}
@@ -6503,28 +6701,34 @@ function CheckboxGroupControl({
   options,
   onChange,
   diff,
+  hint,
 }: {
   label: string;
   values: string[];
   options: ReadonlyArray<Option>;
   onChange: (value: string[]) => void;
   diff?: EditorSurface["fieldDiffs"][number];
+  hint?: string;
 }) {
   const controlName = buildControlName(label);
   const selected = new Set(values);
 
   return (
-    <FieldShell label={label} diff={diff}>
+    <FieldShell label={label} diff={diff} hint={hint}>
       <div className="flex flex-wrap gap-2">
         {options.map((option) => (
           <span
             key={option.value}
-            className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2 text-sm text-white"
+            title={option.title}
+            className={`inline-flex items-center gap-2 rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2 text-sm text-white ${
+              option.disabled ? "cursor-not-allowed opacity-60" : ""
+            }`}
           >
             <input
               type="checkbox"
               name={`${controlName}-${option.value}`}
               checked={selected.has(option.value)}
+              disabled={option.disabled}
               onChange={(event) => {
                 const next = new Set(values);
                 if (event.target.checked) {
@@ -6578,10 +6782,12 @@ function FieldShell({
   label,
   children,
   diff,
+  hint,
 }: {
   label: string;
   children: ReactNode;
   diff?: EditorSurface["fieldDiffs"][number];
+  hint?: string;
 }) {
   const sourceLabel =
     diff?.source === "masked"
@@ -6607,6 +6813,9 @@ function FieldShell({
         ) : null}
       </div>
       <div className="mt-2">{children}</div>
+      {hint ? (
+        <p className="mt-2 text-xs leading-5 text-amber-200">{hint}</p>
+      ) : null}
       {diff ? (
         <p className="mt-2 text-xs leading-6 text-slate-400">
           сейчас {diff.currentDisplay} | черновик {diff.draftDisplay}

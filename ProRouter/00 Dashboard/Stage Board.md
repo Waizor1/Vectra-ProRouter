@@ -8,6 +8,10 @@ tags:
 
 # Stage Board
 
+## 2026-05-08 upstream PassWall parameter watch addendum
+
+- Reviewed the current official Openwrt-Passwall/openwrt-passwall2 latest release `26.5.1-1` against the already supported `26.4.20-1` surface without touching the dirty local `passwall2/` mirror. The relevant new upstream parameters are now represented in the panel with version gates: ShuntRule protocol value `quic`, node extras `mkcp_mtu` and `tls_pinSHA256`, and the already newer `26.4.20+` per-subscription domain resolver fields (`domain_resolver`, `domain_resolver_dns`, `domain_resolver_dns_https`, `UseIPv4`/`UseIPv6`). Older or unknown router PassWall2 versions keep these controls inactive with `Работает только с PassWall2 ...+` copy while preserving imported extras. Added `scripts/Check-PasswallUpstreamParams.py` and `ai_docs/develop/features/passwall2-upstream-param-watch.md` so the weekly review can diff future upstream tags before adding more UI.
+
 ## 2026-05-08 PassWall parity follow-up
 
 - Followed up on the same-class PassWall parity gaps surfaced during the ShuntRule incident. Production web now exposes node-local Xray/Mux/XUDP extras (`mux`, `mux_concurrency`, `xudp_concurrency`, `packet_encoding`) in the Node editor/read-only runtime node details, and `draft.editorSurface` now registers dynamic PassWall extras for nodes, SOCKS, subscriptions, global/rule/app extras, and non-standard shunt-rule extras so they appear in field diffs instead of being invisible panel state. Contract preview parity now also matches controller apply for `dns_redirect` and controller-style UCI safe section ids such as imported `@subscribe_list[0]`. Verification: targeted Vitest (`router-editor-state`, `editor`, `passwall-contracts`), `@vectra/web typecheck`, `@vectra/web lint`, `@vectra/web build`, full controller `go test ./...`, production Docker rebuild/restart, smoke-check, panel health, production source markers, and live `draft.editorSurface` proof that `extras.xudp_concurrency`/`extras.mux_concurrency` fields are now registered on router `1111111111`.
