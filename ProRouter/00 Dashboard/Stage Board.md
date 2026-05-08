@@ -8,6 +8,10 @@ tags:
 
 # Stage Board
 
+## 2026-05-08 router-detail re-import refresh addendum
+
+- A production UI refresh hotfix is deployed after router `1111111111` briefly showed `Нужен re-import` while the backend had already converged. Live API and browser checks show the router is now `live-import`, `requiresReimport=false`, with no unconfirmed router/panel changes and ShuntRules still aligned (`WorldProxy=OPIqwEuA`, `YouTube=klu4sSMe`, `Special=1si4Q4xV`, `Tiktok=8JKbW0IN`, `DiscordVoiceUdp=dqnJE64Y`). `RouterDetailWorkspace` now refetches the editor surface on mount/focus/reconnect and polls while re-import/drift state can clear, so an open operator tab should not keep a stale re-import banner after the next import/check-in.
+
 ## 2026-05-08 ShuntRule post-apply workspace reset addendum
 
 - Live incident on router `1111111111` reproduced the operator-visible reset: immediately after a successful `apply_passwall_config`, the panel could base `draftConfig` on an older live-import revision while the newer applied operator revision was still waiting for the next router import/check-in. This made ShuntRule server choices look reverted even though the apply job had written the intended UCI commands. The web fix is deployed: workspace selection now picks the newest confirmed baseline among current live import, imported baseline, and active applied revision, so the just-applied ShuntRule state remains visible through the stale-authoritative window. Verified on a safe empty `CodexApplyProbe` ShuntRule on `1111111111`: add, target change, and cleanup/removal all kept `draftConfig` aligned immediately after job completion; final router-side `uci show passwall2 | grep CodexApplyProbe || true` returned empty.
