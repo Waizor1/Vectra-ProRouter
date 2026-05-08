@@ -10,7 +10,7 @@ tags:
 
 ## 2026-05-08 router-detail re-import refresh addendum
 
-- A production UI refresh hotfix is deployed after router `1111111111` briefly showed `Нужен re-import` while the backend had already converged. Live API and browser checks show the router is now `live-import`, `requiresReimport=false`, with no unconfirmed router/panel changes and ShuntRules still aligned (`WorldProxy=OPIqwEuA`, `YouTube=klu4sSMe`, `Special=1si4Q4xV`, `Tiktok=8JKbW0IN`, `DiscordVoiceUdp=dqnJE64Y`). `RouterDetailWorkspace` now refetches the editor surface on mount/focus/reconnect and polls while re-import/drift state can clear, so an open operator tab should not keep a stale re-import banner after the next import/check-in.
+- A production UI refresh hotfix is deployed after router `1111111111` briefly showed `Нужен re-import` while the backend had already converged. Live API and browser checks show the router is now `live-import`, `requiresReimport=false`, with no unconfirmed router/panel changes and ShuntRules still aligned (`WorldProxy=OPIqwEuA`, `YouTube=klu4sSMe`, `Special=1si4Q4xV`, `Tiktok=8JKbW0IN`, `DiscordVoiceUdp=dqnJE64Y`). `RouterDetailWorkspace` now refetches the editor surface on mount/focus/reconnect and polls while re-import/drift state can clear, so an open operator tab should not keep a stale re-import banner after the next import/check-in. The same redeploy also removed the router hostname input `pattern` console error found during browser verification.
 
 ## 2026-05-08 ShuntRule post-apply workspace reset addendum
 

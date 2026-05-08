@@ -1163,7 +1163,7 @@ export function RouterDetailWorkspace({
               <input
                 name="router-hostname"
                 maxLength={63}
-                pattern="[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+                pattern="[A-Za-z0-9](?:[A-Za-z0-9\\-]{0,61}[A-Za-z0-9])?"
                 className="vectra-field mt-2 px-3 py-2 text-sm text-white"
                 value={routerHostnameDraft}
                 onChange={(event) => setRouterHostnameDraft(event.target.value)}

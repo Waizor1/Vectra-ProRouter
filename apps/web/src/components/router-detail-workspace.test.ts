@@ -18,6 +18,7 @@ describe("router detail app update helpers", () => {
 
     expect(source).toContain("api.fleet.renameRouter.useMutation");
     expect(source).toContain('name="router-hostname"');
+    expect(source).toContain("[A-Za-z0-9\\\\-]");
     expect(source).toContain("Hostname роутера");
     expect(source).toContain("Меняется именно `system.@system[0].hostname` на");
   });
