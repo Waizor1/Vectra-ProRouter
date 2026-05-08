@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 
-import type {
-  PasswallDesiredConfig,
-  SubscriptionPreviewEntry,
+import {
+  buildVectraSubscriptionSectionName,
+  type PasswallDesiredConfig,
+  type SubscriptionPreviewEntry,
 } from "@vectra/contracts";
 
 import { stableStringify } from "./secrets";
@@ -295,15 +296,35 @@ function dedupeSubscriptions<T extends SubscriptionItem>(items: T[]) {
   return [...byKey.values()];
 }
 
+function shouldCanonicalizeSubscriptionId(id: string) {
+  return (
+    id.startsWith("vectra_sub_") ||
+    id.startsWith("@subscribe_list") ||
+    id.startsWith("subscribe_list")
+  );
+}
+
+function canonicalizeSubscriptionItemId<T extends SubscriptionItem>(
+  item: T,
+): T {
+  if (!shouldCanonicalizeSubscriptionId(item.id)) {
+    return item;
+  }
+
+  const canonicalId = buildVectraSubscriptionSectionName(item.id);
+  return canonicalId === item.id ? item : { ...item, id: canonicalId };
+}
+
 export function mergeSubscriptionsBySemanticIdentity(args: {
   draftItems: SubscriptionItem[];
   liveItems: SubscriptionItem[];
 }) {
+  const liveItems = args.liveItems.map(canonicalizeSubscriptionItemId);
   const liveById = new Map(
-    args.liveItems.map((item) => [item.id, item] as const),
+    liveItems.map((item) => [item.id, item] as const),
   );
   const liveByKey = new Map(
-    dedupeSubscriptions(args.liveItems).map(
+    dedupeSubscriptions(liveItems).map(
       (item) => [buildSubscriptionSemanticKey(item), item] as const,
     ),
   );
@@ -311,7 +332,8 @@ export function mergeSubscriptionsBySemanticIdentity(args: {
   const seenKeys = new Set<string>();
   const seenIds = new Set<string>();
 
-  for (const item of args.draftItems) {
+  for (const draftItem of args.draftItems) {
+    const item = canonicalizeSubscriptionItemId(draftItem);
     const key = buildSubscriptionSemanticKey(item);
     if (seenKeys.has(key)) {
       continue;
@@ -338,7 +360,7 @@ export function mergeSubscriptionsBySemanticIdentity(args: {
     merged.push(item);
   }
 
-  for (const item of args.liveItems) {
+  for (const item of liveItems) {
     const key = buildSubscriptionSemanticKey(item);
     if (!seenKeys.has(key) && !seenIds.has(item.id)) {
       seenKeys.add(key);

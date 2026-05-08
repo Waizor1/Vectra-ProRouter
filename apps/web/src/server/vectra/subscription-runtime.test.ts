@@ -163,6 +163,22 @@ describe("mergeSubscriptionsBySemanticIdentity", () => {
     expect(merged).toHaveLength(1);
     expect(merged[0]?.id).toBe("vectra_sub_subscribe_list_0");
   });
+
+  it("collapses repeated Vectra subscription prefixes from live imports", () => {
+    const merged = mergeSubscriptionsBySemanticIdentity({
+      draftItems: runtimeConfig.subscriptions.items.map((item) => ({
+        ...item,
+        id: "vectra_sub_vectra_sub_subscribe_list_0",
+      })),
+      liveItems: runtimeConfig.subscriptions.items.map((item) => ({
+        ...item,
+        id: "vectra_sub_vectra_sub_vectra_sub_subscribe_list_0",
+      })),
+    });
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.id).toBe("vectra_sub_subscribe_list_0");
+  });
 });
 
 describe("mergeNodesWithCurrentRuntime", () => {

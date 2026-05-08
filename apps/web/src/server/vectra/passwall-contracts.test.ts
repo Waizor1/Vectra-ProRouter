@@ -552,4 +552,30 @@ describe("passwall contracts", () => {
       "set passwall2.vectra_sub_subscribe_list_0=subscribe_list",
     );
   });
+
+  it("does not compound existing Vectra subscription section prefixes", () => {
+    const previous = createMinimalPasswallConfig();
+    const next = structuredClone(previous);
+    next.subscriptions.items.push({
+      id: "vectra_sub_vectra_sub_vectra_sub_subscribe_list1",
+      remark: "Imported sub",
+      url: "https://example.com/sub",
+      enabled: true,
+      addMode: "2",
+      metadata: {},
+      extras: {},
+    });
+
+    const summary = summarizePasswallRevisionDiff(previous, next);
+    const subscriptionSync = summary.operationPreview.find(
+      (operation) => operation.kind === "subscription_sync",
+    );
+
+    expect(subscriptionSync?.uciCommands).toContain(
+      "set passwall2.vectra_sub_subscribe_list1=subscribe_list",
+    );
+    expect(subscriptionSync?.uciCommands).not.toContain(
+      "set passwall2.vectra_sub_vectra_sub_vectra_sub_vectra_sub_subscribe_list1=subscribe_list",
+    );
+  });
 });

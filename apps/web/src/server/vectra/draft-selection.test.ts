@@ -144,6 +144,48 @@ describe("draft selection", () => {
     expect(workspaceRevision?.id).toBe("draft-queued");
   });
 
+  it("uses a newer applied operator draft while the post-apply live import is still catching up", () => {
+    const revisions = [
+      {
+        id: "applied-after-router-write",
+        origin: "operator_draft",
+        status: "applied",
+        configDigest: "digest-applied",
+        revisionNumber: 111,
+        createdAt: "2026-05-07T23:49:00.000Z",
+      },
+      {
+        id: "previous-live-import",
+        origin: "router_import",
+        status: "approved",
+        configDigest: "digest-previous-live",
+        revisionNumber: 110,
+        createdAt: "2026-05-07T23:47:00.000Z",
+      },
+    ];
+
+    const currentLiveRevision = pickCurrentLiveRevision({
+      snapshotDigest: "digest-previous-live",
+      revisions,
+    });
+    const workspaceRevision = pickWorkspaceRevision({
+      latestEditableDraft: pickLatestEditableDraft(revisions),
+      currentLiveRevision,
+      importedRevision: pickImportedRevision({
+        pendingImportRevisionId: null,
+        revisions,
+      }),
+      activeRevision: pickActiveRevision({
+        activeRevisionId: "applied-after-router-write",
+        revisions,
+      }),
+      revisions,
+    });
+
+    expect(currentLiveRevision?.id).toBe("previous-live-import");
+    expect(workspaceRevision?.id).toBe("applied-after-router-write");
+  });
+
   it("ignores editable operator drafts that are older than the confirmed live baseline", () => {
     const revisions = [
       {

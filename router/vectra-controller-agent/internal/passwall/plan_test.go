@@ -306,8 +306,8 @@ func TestExecutorApplyWritesBatchAndRunsScripts(t *testing.T) {
 				RemoteDNSDetour:        "remote",
 				RemoteDNSQueryStrategy: "UseIPv4",
 			},
-			Log:        LogSettings{EnableNodeLog: true, Level: "error"},
-			Socks:      []SocksConfig{{ID: "socks-main", Enabled: true, NodeID: "node-main", Port: 2080, BindLocal: true}},
+			Log:   LogSettings{EnableNodeLog: true, Level: "error"},
+			Socks: []SocksConfig{{ID: "socks-main", Enabled: true, NodeID: "node-main", Port: 2080, BindLocal: true}},
 			ShuntRules: []ShuntRule{{
 				ID:             "China",
 				Label:          "China",
@@ -472,6 +472,44 @@ func TestExecutorApplySanitizesImportedSubscriptionSectionIDs(t *testing.T) {
 	}
 	if !strings.Contains(joinedBatch, "set passwall2.vectra_sub_subscribe_list_0=subscribe_list") {
 		t.Fatalf("expected sanitized subscribe_list section name, got batch:\n%s", joinedBatch)
+	}
+}
+
+func TestExecutorApplyDoesNotCompoundVectraSubscriptionPrefix(t *testing.T) {
+	backend := &fakeBackend{
+		lines: []string{
+			"passwall2.vectra_sub_vectra_sub_subscribe_list1=subscribe_list",
+		},
+	}
+
+	_, err := NewExecutor(backend).Apply(context.Background(), DesiredConfig{
+		SchemaVersion: 1,
+		BasicSettings: BasicSettingsConfig{
+			Main: MainSettings{
+				LocalhostProxy:     true,
+				ClientProxy:        true,
+				NodeSocksBindLocal: true,
+			},
+		},
+		Subscriptions: SubscriptionSettings{
+			Items: []SubscriptionEntry{{
+				ID:      "vectra_sub_vectra_sub_vectra_sub_subscribe_list1",
+				Remark:  "Imported",
+				URL:     "https://example.com/sub",
+				Enabled: true,
+			}},
+		},
+	}, ApplyOptions{})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	joinedBatch := strings.Join(backend.batchCommands, "\n")
+	if strings.Contains(joinedBatch, "vectra_sub_vectra_sub_vectra_sub_vectra_sub_subscribe_list1") {
+		t.Fatalf("expected repeated vectra_sub prefixes to be collapsed, got batch:\n%s", joinedBatch)
+	}
+	if !strings.Contains(joinedBatch, "set passwall2.vectra_sub_subscribe_list1=subscribe_list") {
+		t.Fatalf("expected canonical subscribe_list section name, got batch:\n%s", joinedBatch)
 	}
 }
 

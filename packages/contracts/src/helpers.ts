@@ -458,6 +458,17 @@ function safeUciName(value: string) {
   return normalized.length > 0 ? normalized : "section";
 }
 
+export function buildVectraSubscriptionSectionName(subscriptionId: string) {
+  const normalized = safeUciName(subscriptionId);
+  const withoutVectraPrefix = normalized.replace(/^(?:vectra_sub_)+/, "");
+  const base =
+    withoutVectraPrefix.length > 0 && withoutVectraPrefix !== "vectra_sub"
+      ? withoutVectraPrefix
+      : "section";
+
+  return `vectra_sub_${base}`;
+}
+
 function renderExtras(
   ref: string,
   extras: Record<string, unknown> | undefined,
@@ -746,7 +757,7 @@ function renderSubscriptionCommands(config: PasswallDesiredConfig) {
   const commands: string[] = [];
 
   for (const item of config.subscriptions.items) {
-    const ref = `passwall2.${safeUciName(`vectra_sub_${item.id}`)}`;
+    const ref = `passwall2.${buildVectraSubscriptionSectionName(item.id)}`;
     commands.push(
       `set ${ref}=subscribe_list`,
       ...compactCommands([

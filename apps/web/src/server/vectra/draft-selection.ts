@@ -85,6 +85,28 @@ function revisionSupersedesDraft(
   return false;
 }
 
+function pickNewestRevision<T extends RevisionLike>(
+  revisions: Array<T | null | undefined>,
+) {
+  return revisions.filter((revision): revision is T => Boolean(revision)).sort(
+    (left, right) => {
+      const rightNumber = normalizeRevisionNumber(right);
+      const leftNumber = normalizeRevisionNumber(left);
+      if (rightNumber !== null && leftNumber !== null) {
+        return rightNumber - leftNumber;
+      }
+
+      const rightTime = normalizeRevisionTime(right);
+      const leftTime = normalizeRevisionTime(left);
+      if (rightTime !== null && leftTime !== null) {
+        return rightTime - leftTime;
+      }
+
+      return 0;
+    },
+  )[0] ?? null;
+}
+
 export function isSupersededEditableDraft(args: {
   draftRevision: RevisionLike | null | undefined;
   activeRevision?: RevisionLike | null | undefined;
@@ -194,9 +216,11 @@ export function pickWorkspaceRevision<T extends RevisionLike>(args: {
 }) {
   return (
     args.latestEditableDraft ??
-    args.currentLiveRevision ??
-    args.importedRevision ??
-    args.activeRevision ??
+    pickNewestRevision([
+      args.currentLiveRevision,
+      args.importedRevision,
+      args.activeRevision,
+    ]) ??
     args.revisions[0] ??
     null
   );

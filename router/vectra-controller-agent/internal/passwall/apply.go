@@ -215,7 +215,7 @@ func renderNodeCommands(config DesiredConfig) []string {
 func renderSubscriptionCommands(config DesiredConfig) []string {
 	commands := make([]string, 0, len(config.Subscriptions.Items)*8)
 	for _, item := range config.Subscriptions.Items {
-		ref := "passwall2." + safeID("vectra_sub_"+item.ID)
+		ref := "passwall2." + subscriptionSectionID(item.ID)
 		commands = append(commands, "set "+ref+"=subscribe_list")
 		commands = append(commands, setValue(ref+".remark", item.Remark))
 		commands = append(commands, setValue(ref+".url", item.URL))
@@ -435,6 +435,17 @@ func safeID(value string) string {
 	}
 
 	return sanitized
+}
+
+func subscriptionSectionID(id string) string {
+	sanitized := safeID(id)
+	for strings.HasPrefix(sanitized, "vectra_sub_") {
+		sanitized = strings.TrimPrefix(sanitized, "vectra_sub_")
+	}
+	if sanitized == "" || sanitized == "vectra_sub" {
+		sanitized = "section"
+	}
+	return safeID("vectra_sub_" + sanitized)
 }
 
 func encodeSubscriptionDomainStrategy(value string) string {
