@@ -7,27 +7,29 @@ import {
 } from "../src/lib/router-onboarding";
 
 describe("router onboarding copy", () => {
-  it("explains the first import stage in plain language", () => {
+  it("explains the first settings read stage in plain language", () => {
     const onboarding = describeRouterOnboarding("awaiting_import");
 
-    expect(onboarding.badge).toBe("Первый import");
-    expect(onboarding.title).toBe("Считать живую конфигурацию");
-    expect(onboarding.reimportLabel).toBe("Считать конфигурацию с роутера");
-    expect(onboarding.approveUnavailableLabel).toBe("Сначала получить import");
+    expect(onboarding.badge).toBe("Первое чтение");
+    expect(onboarding.title).toBe("Считать текущие настройки");
+    expect(onboarding.reimportLabel).toBe("Считать настройки с роутера");
+    expect(onboarding.approveUnavailableLabel).toBe(
+      "Сначала считать настройки",
+    );
   });
 
-  it("marks import review as the confirmation stage", () => {
+  it("marks settings review as the confirmation stage", () => {
     const onboarding = describeRouterOnboarding("import_review");
 
-    expect(onboarding.badge).toBe("Проверить import");
-    expect(onboarding.approveLabel).toBe("Принять import как эталон");
-    expect(onboarding.cardActionLabel).toBe("Проверить import");
+    expect(onboarding.badge).toBe("Проверить базу");
+    expect(onboarding.approveLabel).toBe("Принять как базу");
+    expect(onboarding.cardActionLabel).toBe("Проверить базу");
   });
 
   it("treats out_of_sync as a review problem and not a normal happy path", () => {
     const onboarding = describeRouterOnboarding("out_of_sync");
 
-    expect(onboarding.title).toContain("разошлись");
+    expect(onboarding.title).toContain("различаются");
     expect(onboarding.cardHint).toContain("правильной базой");
     expect(onboarding.tone).toBe("warning");
   });
@@ -41,10 +43,12 @@ describe("router onboarding copy", () => {
   });
 
   it("formats import labels consistently", () => {
-    expect(formatRouterImportStateLabel("approved")).toBe("подключён");
-    expect(formatRouterImportStateLabel("import_review")).toBe("на проверке");
+    expect(formatRouterImportStateLabel("approved")).toBe("в работе");
+    expect(formatRouterImportStateLabel("import_review")).toBe(
+      "проверить базу",
+    );
     expect(formatRouterImportStateLabel("awaiting_import")).toBe(
-      "ждёт первый import",
+      "ждёт первое чтение",
     );
   });
 

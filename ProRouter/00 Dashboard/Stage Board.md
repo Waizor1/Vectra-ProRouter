@@ -8,6 +8,10 @@ tags:
 
 # Stage Board
 
+## 2026-05-08 router-detail UX simplification addendum
+
+- First router-detail UX cleanup is live after the operator complaint that repeated `import/re-import/trust` language made normal work unbearable. The technical import model remains for onboarding, external LuCI/SSH changes, and conflict recovery, but the approved router happy path now presents it as background/secondary `Сверка с роутером` instead of a mandatory primary ritual. Main copy now says `Правки и применение на роутер`, `Сохранить черновик`, `рабочий режим`, `Сверка состояния`, and `сверено с роутером`; the visible `re-import`, `Панель и trust`, `Deep config`, and `Эталон уже подтверждён` wording is removed from the normal `1111111111` page. Verified with targeted tests/build, production smoke, live editor state, and browser proof with zero console errors.
+
 ## 2026-05-08 router-detail re-import refresh addendum
 
 - A production UI refresh hotfix is deployed after router `1111111111` briefly showed `Нужен re-import` while the backend had already converged. Live API and browser checks show the router is now `live-import`, `requiresReimport=false`, with no unconfirmed router/panel changes and ShuntRules still aligned (`WorldProxy=OPIqwEuA`, `YouTube=klu4sSMe`, `Special=1si4Q4xV`, `Tiktok=8JKbW0IN`, `DiscordVoiceUdp=dqnJE64Y`). `RouterDetailWorkspace` now refetches the editor surface on mount/focus/reconnect and polls while re-import/drift state can clear, so an open operator tab should not keep a stale re-import banner after the next import/check-in. The same redeploy also removed the router hostname input `pattern` console error found during browser verification.

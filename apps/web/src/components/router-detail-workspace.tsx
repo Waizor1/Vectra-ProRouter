@@ -233,7 +233,7 @@ const updateStrategyOptions = [
 
 const subscriptionAddModeOptions = [
   { value: "1", label: "Обновлять существующие" },
-  { value: "2", label: "Полный re-import" },
+  { value: "2", label: "Полностью перечитать подписку" },
 ] as const satisfies ReadonlyArray<Option>;
 
 const scheduleModeOptions = [
@@ -293,10 +293,7 @@ const subscriptionDomainResolverOptions = [
   { value: "https", label: "DoH" },
 ] as const satisfies ReadonlyArray<Option>;
 
-function gatedOption(
-  option: Option,
-  gate: PasswallFeatureGate,
-): Option {
+function gatedOption(option: Option, gate: PasswallFeatureGate): Option {
   if (gate.supported) {
     return option;
   }
@@ -782,12 +779,12 @@ export function RouterDetailWorkspace({
   const applyDisabledReason = !validDraft
     ? "Исправьте ошибки в форме."
     : editor.approvalRequired
-      ? "Сначала завершите импорт и подтвердите эталон."
+      ? "Сначала завершите подключение и подтвердите стартовую базу."
       : !editor.routerRuntimeSummary.destructiveActionsAllowed
         ? "Для этого роутера применение отключено."
         : hasUnsavedChanges || !savedDraftExists
-          ? "Сохранит текущие поля как новую ревизию и только потом поставит apply в очередь."
-          : "Поставит apply последнего сохранённого черновика. Router agent перепишет управляемые PassWall-секции из этой ревизии.";
+          ? "Сохранит текущие поля как новую ревизию и только потом поставит применение в очередь."
+          : "Поставит применение последнего сохранённого черновика. Controller перепишет управляемые PassWall-секции из этой ревизии.";
 
   const handleSaveDraft = async () => {
     if (!validDraft) {
@@ -852,8 +849,8 @@ export function RouterDetailWorkspace({
 
     const confirmed = window.confirm(
       "Отбросить сохранённый черновик?\n\n" +
-        "Черновик будет скрыт из apply и не изменит роутер. " +
-        "Если по нему уже была доставлена apply-задача, панель не даст отбросить её этим действием.",
+        "Черновик будет скрыт из применения и не изменит роутер. " +
+        "Если по нему уже была доставлена задача применения, панель не даст отбросить её этим действием.",
     );
 
     if (!confirmed) {
@@ -1096,8 +1093,8 @@ export function RouterDetailWorkspace({
               {editor.routerRuntimeSummary.name}
             </h2>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-              Главное состояние устройства и следующее безопасное действие
-              вынесены выше редакторов.
+              Рабочая страница роутера: поменяли настройки, сохранили и
+              применили на устройство.
             </p>
           </div>
 
@@ -1144,7 +1141,7 @@ export function RouterDetailWorkspace({
           <SummaryCell
             label="Режим"
             value={currentModeLabel}
-            meta={onboardingPending ? onboarding.badge : "Эталон подтверждён"}
+            meta={onboardingPending ? onboarding.badge : "рабочий режим"}
           />
         </div>
 
@@ -1502,16 +1499,16 @@ export function RouterDetailWorkspace({
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0">
                   <p className="vectra-kicker text-current/80">
-                    Панель и trust
+                    Сверка состояния
                   </p>
                   <h3 className="mt-2 text-sm font-semibold text-white sm:text-base">
                     {editor.configTrust.requiresReimport
-                      ? "Deep config ещё нужно перечитать"
+                      ? "Подробные настройки ещё обновляются"
                       : configTrust.title}
                   </h3>
                   <p className="mt-2 max-w-3xl text-sm leading-6 text-current/90">
                     {editor.configTrust.requiresReimport
-                      ? "Свежий check-in уже показал сервис, выбранную ноду и доступность, но глубокие разделы PassWall2 пока сравниваются с сохранённой базой панели."
+                      ? "Связь с роутером свежая, но подробные разделы PassWall2 ещё подтягиваются. Если настройки не меняли вне панели, обычно ничего делать не нужно."
                       : configTrust.detail}
                   </p>
                 </div>
@@ -1521,9 +1518,9 @@ export function RouterDetailWorkspace({
               </div>
             </summary>
             <p className="mt-3 text-xs leading-6 text-current/80">
-              Основа сравнения:{" "}
+              Источник настроек:{" "}
               {formatConfigSourceModeLabel(editor.configTrust.configSourceMode)}{" "}
-              · последнее чтение конфигурации{" "}
+              · последнее чтение{" "}
               {formatDateTime(editor.configTrust.lastLiveImportAt)} · последний
               check-in {formatDateTime(editor.configTrust.lastCheckInAt)}
             </p>
@@ -1603,7 +1600,7 @@ function RouterActionRail({
   return (
     <Panel
       eyebrow="Следующее безопасное действие"
-      title="Сохранение, apply, reimport и recovery"
+      title="Правки и применение на роутер"
       tone="muted"
     >
       <div className="space-y-4">
@@ -1627,10 +1624,10 @@ function RouterActionRail({
                   </p>
                   <p className="mt-1 text-sm font-medium text-white">
                     {hasRouterChanges && hasPanelChanges
-                      ? "Есть drift на роутере и в панели"
+                      ? "Есть расхождение на роутере и в панели"
                       : hasRouterChanges
-                        ? "Есть drift со стороны роутера"
-                        : "В панели есть изменения, которые ещё ждут apply"}
+                        ? "Есть расхождение со стороны роутера"
+                        : "В панели есть изменения, которые ещё ждут применения"}
                   </p>
                 </div>
                 <span className="text-xs text-slate-400">раскрыть</span>
@@ -1653,8 +1650,8 @@ function RouterActionRail({
                       Безопасная развилка
                     </p>
                     <p className="mt-2 text-sm leading-6 text-amber-50/90">
-                      Этот черновик ещё не применён. Apply отправит на роутер
-                      именно сохранённую ревизию и перепишет управляемые
+                      Этот черновик ещё не применён. На роутер уйдёт именно
+                      сохранённая ревизия панели, и она перепишет управляемые
                       PassWall-секции. Если это старый эксперимент — отбросьте
                       его перед следующими правками.
                     </p>
@@ -1702,7 +1699,7 @@ function RouterActionRail({
             eyebrow="Следующий шаг"
             title={
               !canApplyCurrentDraft
-                ? "Apply сейчас недоступен"
+                ? "Применение сейчас недоступно"
                 : hasUnsavedChanges
                   ? "Сохранить и применить текущие правки"
                   : "Применить последнюю сохранённую ревизию"
@@ -1716,7 +1713,7 @@ function RouterActionRail({
             }
             description={
               canQueueApply && !hasUnsavedChanges
-                ? "Если ничего не менялось, на роутер уйдёт уже сохранённый черновик из панели; managed PassWall-секции будут переписаны из этой ревизии."
+                ? "Если ничего не менялось, на роутер уйдёт уже сохранённый черновик из панели; управляемые PassWall-секции будут переписаны из этой ревизии."
                 : applyDisabledReason
             }
           />
@@ -1739,7 +1736,7 @@ function RouterActionRail({
             {validationMessage ? (
               <span className="text-rose-200">{validationMessage}</span>
             ) : (
-              "Apply всегда использует сохранённую ревизию из панели, а не несохранённое состояние формы. При выполнении router agent перепишет управляемые PassWall-секции из этой ревизии."
+              "На роутер отправляется сохранённая ревизия из панели, а не несохранённое состояние формы. При выполнении controller перепишет управляемые PassWall-секции из этой ревизии."
             )}
           </div>
         </div>
@@ -1757,7 +1754,7 @@ function RouterActionRail({
             }}
             className="vectra-button-secondary px-3 py-2 text-sm font-medium transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {savePending ? "Сохраняю..." : "Сохранить только в панели"}
+            {savePending ? "Сохраняю..." : "Сохранить черновик"}
           </button>
           <button
             type="button"
@@ -3281,7 +3278,7 @@ function SubscriptionSection({
           className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-sm text-slate-200 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
         >
           {refreshMutation.isPending
-            ? "Ставлю re-import..."
+            ? "Ставлю обновление..."
             : "Обновить подписки сейчас"}
         </button>
         <button
@@ -3359,7 +3356,11 @@ function SubscriptionSection({
                     <MobileCardField label="URL" value={item.url} mono />
                     <MobileCardField
                       label="Режим"
-                      value={item.addMode === "1" ? "merge" : "re-import"}
+                      value={
+                        item.addMode === "1"
+                          ? "обновлять существующие"
+                          : "полное чтение"
+                      }
                     />
                     <MobileCardField
                       label="Состояние"
@@ -3419,7 +3420,9 @@ function SubscriptionSection({
                 </td>
                 <td className="px-3 py-2">{item.url}</td>
                 <td className="px-3 py-2">
-                  {item.addMode === "1" ? "merge" : "re-import"}
+                  {item.addMode === "1"
+                    ? "обновлять существующие"
+                    : "полное чтение"}
                 </td>
                 <td className="px-3 py-2">
                   {item.enabled ? "enabled" : "disabled"}
@@ -7019,11 +7022,11 @@ function formatOperationTitle(operation: PasswallOperationPreview) {
 function formatUnconfirmedStatusBadge(group: UnconfirmedChangeGroup) {
   switch (group.status) {
     case "pending-import-review":
-      return "нужна проверка import";
+      return "нужна проверка базы";
     case "reimport-needed":
-      return "нужен re-import";
+      return "нужна сверка";
     case "saved-draft-pending-apply":
-      return "ждёт apply";
+      return "ждёт применения";
     default:
       return "чисто";
   }

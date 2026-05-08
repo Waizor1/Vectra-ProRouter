@@ -78,7 +78,7 @@ describe("router detail app update helpers", () => {
     expect(source).toContain('{ value: "quic", label: "quic" }');
   });
 
-  it("keeps the live editor surface refreshing while re-import or drift can clear", () => {
+  it("keeps the live editor surface refreshing while sync or drift can clear", () => {
     const source = readFileSync(
       new URL("./router-detail-workspace.tsx", import.meta.url),
       "utf8",
