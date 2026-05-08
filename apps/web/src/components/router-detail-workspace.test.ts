@@ -77,6 +77,21 @@ describe("router detail app update helpers", () => {
     expect(source).toContain('{ value: "quic", label: "quic" }');
   });
 
+  it("keeps the live editor surface refreshing while re-import or drift can clear", () => {
+    const source = readFileSync(
+      new URL("./router-detail-workspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("getRouterDetailSurfaceRefetchInterval");
+    expect(source).toContain("surfaceData.configTrust.requiresReimport");
+    expect(source).toContain(
+      'surfaceData.unconfirmedChanges.panel.status !== "none"',
+    );
+    expect(source).toContain('refetchOnMount: "always"');
+    expect(source).toContain('refetchOnWindowFocus: "always"');
+  });
+
   it("renders explicit managed-stack target semantics for PassWall2", () => {
     const bundleMetadata = buildFallbackPasswallBundleMetadata();
 

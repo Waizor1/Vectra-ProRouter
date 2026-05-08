@@ -133,6 +133,30 @@ type RouterDetailWorkspaceProps = {
   needsRecoveryAction: boolean;
 };
 
+const routerDetailReimportRefreshMs = 5_000;
+const routerDetailDriftRefreshMs = 10_000;
+
+function getRouterDetailSurfaceRefetchInterval(
+  surfaceData: EditorSurface | undefined,
+) {
+  if (!surfaceData) {
+    return false;
+  }
+
+  if (surfaceData.configTrust.requiresReimport) {
+    return routerDetailReimportRefreshMs;
+  }
+
+  if (
+    surfaceData.unconfirmedChanges.router.status !== "none" ||
+    surfaceData.unconfirmedChanges.panel.status !== "none"
+  ) {
+    return routerDetailDriftRefreshMs;
+  }
+
+  return false;
+}
+
 type UnconfirmedChangeGroup = EditorSurface["unconfirmedChanges"]["router"];
 
 type Option = {
@@ -391,7 +415,15 @@ export function RouterDetailWorkspace({
   const searchParams = useSearchParams();
   const surface = api.draft.editorSurface.useQuery(
     { routerId },
-    { initialData: initialSurface },
+    {
+      initialData: initialSurface,
+      refetchInterval: (query) =>
+        getRouterDetailSurfaceRefetchInterval(query.state.data),
+      refetchIntervalInBackground: false,
+      refetchOnMount: "always",
+      refetchOnReconnect: "always",
+      refetchOnWindowFocus: "always",
+    },
   );
   const [routerHostnameDraft, setRouterHostnameDraft] = useState(
     initialSurface.routerRuntimeSummary.hostname ?? "",
