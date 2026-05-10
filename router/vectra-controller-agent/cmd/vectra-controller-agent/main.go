@@ -253,6 +253,18 @@ func runOnce(
 	if cfg.RouterID == "" || cfg.AgentToken == "" {
 		importSource = "register"
 	}
+	if importSource == "check_in" && !persisted.RequestImport && persisted.LastDesiredRevision != nil {
+		reconcileResult, reconcileErr := passwall.ReconcileShuntBindings(
+			ctx,
+			passwall.ExecBackend{},
+			lastDesiredConfig(persisted),
+		)
+		if reconcileErr != nil {
+			log.Printf("passwall shunt self-heal skipped: %v", reconcileErr)
+		} else if reconcileResult.Changed {
+			log.Printf("passwall shunt self-heal restored %d binding(s)", len(reconcileResult.Changes))
+		}
+	}
 	passwallImport, importErr := buildPasswallImport(ctx, importSource)
 	sendPasswallImport := false
 	if importErr != nil {
@@ -371,6 +383,9 @@ func runOnce(
 	if decodeErr != nil {
 		log.Printf("desired revision decode failed: %v", decodeErr)
 	}
+	if desiredRevision != nil {
+		persisted.LastDesiredRevision = desiredRevision
+	}
 
 	if err := executeJobs(
 		ctx,
@@ -452,6 +467,13 @@ func buildPasswallImport(ctx context.Context, source string) (*controlplane.Pass
 		ImportedAt:   imported.ImportedAt,
 		Source:       imported.Source,
 	}, nil
+}
+
+func lastDesiredConfig(persisted *state.PersistedState) passwall.DesiredConfig {
+	if persisted == nil || persisted.LastDesiredRevision == nil {
+		return passwall.DesiredConfig{}
+	}
+	return persisted.LastDesiredRevision.Config
 }
 
 func decodeDesiredRevision(raw json.RawMessage) (*controlplane.DesiredRevisionSummary, error) {
@@ -676,6 +698,7 @@ func executeJobs(
 
 			persisted.AppliedRevisionID = desiredRevision.ID
 			persisted.ConfigDigest = result.ConfigDigest
+			persisted.LastDesiredRevision = desiredRevision
 			runtimeStatus.AppliedRevisionID = desiredRevision.ID
 			runtimeStatus.ConfigDigest = result.ConfigDigest
 
@@ -720,6 +743,17 @@ func executeJobs(
 				}
 				continue
 			}
+			reconcileResult := passwall.ShuntReconcileResult{}
+			if desiredRevision != nil {
+				reconcileResult, err = passwall.ReconcileShuntBindings(ctx, backend, desiredRevision.Config)
+				if err != nil {
+					if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, result.Stdout, result.Stderr, err.Error(), map[string]interface{}{"error": err.Error(), "command": result.Command}); submitErr != nil {
+						return submitErr
+					}
+					continue
+				}
+				persisted.LastDesiredRevision = desiredRevision
+			}
 			if err := submitJobResultNow(ctx, cfg, client, persisted, controlplane.JobResultRequest{
 				ProtocolVersion: controlplane.ProtocolVersion,
 				RouterID:        cfg.RouterID,
@@ -728,7 +762,8 @@ func executeJobs(
 				Stdout:          result.Stdout,
 				Stderr:          result.Stderr,
 				Result: map[string]interface{}{
-					"command": result.Command,
+					"command":        result.Command,
+					"shuntReconcile": reconcileResult,
 				},
 			}, controlplane.RouterInventory{}); err != nil {
 				return fmt.Errorf("submit refresh subscriptions result: %w", err)

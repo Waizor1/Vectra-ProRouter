@@ -1,12 +1,28 @@
 ---
 type: dashboard
-updated: 2026-05-08
+updated: 2026-05-11
 tags:
   - dashboard
   - status
 ---
 
 # Stage Board
+
+## 2026-05-11 `1111111111` subscription auto-update self-heal fix
+
+- Re-checked live router `1111111111` after the operator report that chosen servers changed without a manual action. Current live state showed the drift came after native PassWall2 subscription refresh, not a new operator apply: the latest intended route intent was `WorldProxy` RU-entry Germany, `YouTube` RU Russia, `Special` Netherlands, `Tiktok` Belarus, and `DiscordVoiceUdp` RU-entry Poland, while the live import after scheduled refresh had moved `WorldProxy` and `DiscordVoiceUdp` to different semantic targets. The product decision is that PassWall2 subscription `auto_update` must stay enabled; Vectra controller must restore the selected server intent after PassWall rotates subscription-managed node ids. Controller/LuCI `0.1.13-r13` is published to the signed stable feed and installed on `1111111111`. The agent now persists the latest desired revision and reconciles shunt bindings by route intent before normal check-in imports and after explicit `refresh_subscriptions`. Live proof on `1111111111`: `auto_update=1`, current targets are `WorldProxy=K4YF9ZXV`, `YouTube=7JuG36XG`, `Special=QX2Uz8x9`, `Tiktok=CpskllNJ`, `DiscordVoiceUdp=1AGMNJC6`; a bounded manual drift of `WorldProxy` to `7JuG36XG` was automatically restored by the next controller check-in, with log `passwall shunt self-heal restored 1 binding(s)`, and the router remains `approved` on controller/LuCI `0.1.13-r13`.
+
+## 2026-05-08 `1111111111` ShuntRule correction addendum
+
+- Investigated the operator report that `1111111111` had random server countries while the rest of the fleet looked normal. Revision history showed temporary safe-probe/cleanup applies had earlier placed `WorldProxy`/`YouTube`/`DiscordVoiceUdp` on unintended country nodes, and the later `09:29` operator draft restored the main fleet baseline but left `DiscordVoiceUdp` on RU-entry Germany instead of RU-entry Poland. The live router was corrected with a narrow `DiscordVoiceUdp` remap to RU-entry Poland (`UDP 19294-19344,50000-50100`, `mux=1`, `mux_concurrency=-1`, `xudp_concurrency=16`) followed by re-import. Final proof: `approved`, queue `0`, `live-import`, `requiresReimport=false`, no unconfirmed router/panel changes, `WorldProxy`/`YouTube`/`Special`/`Tiktok` match the fleet baseline, and `DiscordVoiceUdp` now matches the other normal routers.
+
+## 2026-05-08 Stewe onboarding addendum
+
+- New live router `stewe` (`netis NX31`, OpenWrt `24.10.5`, controller `0.1.13-r12`) was aligned with the 2026-05-07 non-`hh` ShuntRules/DiscordVoiceUdp baseline after first refreshing its stale authoritative state with re-import. Final live state: Google DoH (`8.8.8.8` / `https://dns.google/dns-query`), `WorldProxy` on RU-entry Germany, `YouTube` on RU-entry Russia, `Special` on Netherlands, `Tiktok` on Belarus, and dedicated `DiscordVoiceUdp` on RU-entry Poland with UDP `19294-19344,50000-50100`, `mux=1`, `mux_concurrency=-1`, and `xudp_concurrency=16`. The panel apply reproduced the known subscription-id/shunt-binding UCI quirk, so the finish used bounded router-side UCI remap, PassWall2 restart, and re-import. Final proof: queue `0`, `live-import`, `requiresReimport=false`, no unconfirmed router/panel changes, service health green, Telegram `4/4`, YouTube `3/3`, and Discord node `url_test_node=204`.
+
+## 2026-05-08 non-HH Discord/ShuntRules fleet rollout addendum
+
+- Live rollout copied the `1111111111` PassWall ShuntRules baseline to the eight online approved routers outside the source router and `hh`: `AlekseyHorev`, `AndreyVK`, `AndreyVK_Sochi`, `DmitryGubenko`, `VagrandRouter`, `Vasily_Filicity`, `artempushkino`, and `sairoutermsk`. The final live state has `WorldProxy` on RU-entry Germany, `YouTube` on RU-entry Russia, `Special` on Netherlands, `Tiktok` on Belarus, plus dedicated `DiscordVoiceUdp` on RU-entry Poland with `network=udp`, `port=19294-19344,50000-50100`, `mux=1`, `mux_concurrency=-1`, and `xudp_concurrency=16`. `hh` was not touched and stale `testrouter` was not queued. Final proof: all eight target routers have drained queues, panel `live-import`/`requiresReimport=false`, no unconfirmed router/panel changes, and router terminal checks show the expected UCI routes plus Discord node `url_test_node=204`.
 
 ## 2026-05-08 router-detail UX simplification addendum
 

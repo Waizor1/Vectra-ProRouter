@@ -1,6 +1,6 @@
 ---
 type: generated
-updated: '2026-04-30 01:51:10 +03:00'
+updated: '2026-05-11 02:14:21 +03:00'
 generated-by: scripts/Sync-ProRouterVault.py
 tags:
   - generated
@@ -13,7 +13,7 @@ Generated from the current workspace root `Vectra-ProRouter`.
 
 ## Snapshot
 
-- Generated at: `2026-04-30 01:51:10 +03:00`
+- Generated at: `2026-05-11 02:14:21 +03:00`
 - Top-level directories: `8`
 - Top-level files: `15`
 - Tree depth: `3`
@@ -151,6 +151,7 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |- ast-index.sh
 |  |- build-vectra-openwrt-feed.sh
 |  |- build-web-release-slice.sh
+|  |- Check-PasswallUpstreamParams.py
 |  |- ensure-sugar-memory-local-fallback.py
 |  |- Get-OpenWrtRouterInventory.ps1
 |  |- Get-OpenWrtRouterInventory.py

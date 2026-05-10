@@ -513,6 +513,156 @@ func TestExecutorApplyDoesNotCompoundVectraSubscriptionPrefix(t *testing.T) {
 	}
 }
 
+func TestReconcileShuntBindingsRestoresSemanticTargetsAfterSubscriptionRefresh(t *testing.T) {
+	backend := &fakeBackend{
+		lines: []string{
+			"passwall2.myshunt=nodes",
+			"passwall2.myshunt.remarks='Маршрутизатор BloopCat'",
+			"passwall2.myshunt.type='Xray'",
+			"passwall2.myshunt.protocol='_shunt'",
+			"passwall2.myshunt.WorldProxy='bad_world'",
+			"passwall2.myshunt.DiscordVoiceUdp='bad_discord'",
+			"passwall2.WorldProxy=shunt_rules",
+			"passwall2.WorldProxy.remarks='WorldProxy'",
+			"passwall2.DiscordVoiceUdp=shunt_rules",
+			"passwall2.DiscordVoiceUdp.remarks='DiscordVoiceUdp'",
+			"passwall2.good_world=nodes",
+			"passwall2.good_world.remarks='🇷🇺🇩🇪⚡Германия YouTube 🚫Ad🚫'",
+			"passwall2.good_world.type='Xray'",
+			"passwall2.good_world.protocol='vless'",
+			"passwall2.good_world.transport='grpc'",
+			"passwall2.good_world.address='ru3.nfnpx.online'",
+			"passwall2.good_world.port='50052'",
+			"passwall2.good_discord=nodes",
+			"passwall2.good_discord.remarks='🇷🇺🇵🇱 ⚡️Польша YouTube 🚫Ad🚫'",
+			"passwall2.good_discord.type='Xray'",
+			"passwall2.good_discord.protocol='vless'",
+			"passwall2.good_discord.transport='grpc'",
+			"passwall2.good_discord.address='ru3.nfnpx.online'",
+			"passwall2.good_discord.port='50053'",
+			"passwall2.bad_world=nodes",
+			"passwall2.bad_world.remarks='🇩🇪⚡Германия YouTube 🚫Ad🚫'",
+			"passwall2.bad_world.type='Xray'",
+			"passwall2.bad_world.protocol='vless'",
+			"passwall2.bad_world.transport='raw'",
+			"passwall2.bad_world.address='ger3.nfnpx.online'",
+			"passwall2.bad_world.port='443'",
+			"passwall2.bad_discord=nodes",
+			"passwall2.bad_discord.remarks='🇷🇺🇺🇸 США'",
+			"passwall2.bad_discord.type='Xray'",
+			"passwall2.bad_discord.protocol='vless'",
+			"passwall2.bad_discord.transport='grpc'",
+			"passwall2.bad_discord.address='ru4.nfnpx.online'",
+			"passwall2.bad_discord.port='50058'",
+		},
+	}
+
+	result, err := ReconcileShuntBindings(context.Background(), backend, DesiredConfig{
+		BasicSettings: BasicSettingsConfig{
+			ShuntRules: []ShuntRule{
+				{ID: "WorldProxy", Label: "WorldProxy", OutboundNodeID: "old_world"},
+				{ID: "DiscordVoiceUdp", Label: "DiscordVoiceUdp", OutboundNodeID: "old_discord"},
+			},
+		},
+		Nodes: []NodeConfig{
+			{ID: "myshunt", Label: "Маршрутизатор BloopCat", Protocol: "shunt", Enabled: true},
+			{
+				ID:        "old_world",
+				Label:     "🇷🇺🇩🇪⚡Германия YouTube 🚫Ad🚫",
+				Protocol:  "vless",
+				Enabled:   true,
+				Address:   "ru4.nfnpx.online",
+				Port:      50052,
+				Transport: "grpc",
+			},
+			{
+				ID:        "old_discord",
+				Label:     "🇷🇺🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+				Protocol:  "vless",
+				Enabled:   true,
+				Address:   "ru4.nfnpx.online",
+				Port:      50053,
+				Transport: "grpc",
+				Extras: map[string]any{
+					"mux":              "1",
+					"mux_concurrency":  "-1",
+					"xudp_concurrency": "16",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !result.Changed || len(result.Changes) != 2 {
+		t.Fatalf("expected two reconcile changes, got %#v", result)
+	}
+	joinedBatch := strings.Join(backend.batchCommands, "\n")
+	for _, needle := range []string{
+		"set passwall2.myshunt.WorldProxy='good_world'",
+		"set passwall2.myshunt.DiscordVoiceUdp='good_discord'",
+		"set passwall2.good_discord.mux='1'",
+		"set passwall2.good_discord.mux_concurrency='-1'",
+		"set passwall2.good_discord.xudp_concurrency='16'",
+		"commit passwall2",
+	} {
+		if !strings.Contains(joinedBatch, needle) {
+			t.Fatalf("expected reconcile batch to contain %q, got:\n%s", needle, joinedBatch)
+		}
+	}
+	if !reflect.DeepEqual(backend.runCommands, []string{"/etc/init.d/passwall2 restart"}) {
+		t.Fatalf("unexpected run commands: %#v", backend.runCommands)
+	}
+}
+
+func TestReconcileShuntBindingsNoopsWhenRefreshedNodeKeepsSameLabel(t *testing.T) {
+	backend := &fakeBackend{
+		lines: []string{
+			"passwall2.myshunt=nodes",
+			"passwall2.myshunt.remarks='Маршрутизатор BloopCat'",
+			"passwall2.myshunt.type='Xray'",
+			"passwall2.myshunt.protocol='_shunt'",
+			"passwall2.myshunt.DiscordVoiceUdp='new_discord'",
+			"passwall2.DiscordVoiceUdp=shunt_rules",
+			"passwall2.DiscordVoiceUdp.remarks='DiscordVoiceUdp'",
+			"passwall2.new_discord=nodes",
+			"passwall2.new_discord.remarks='🇷🇺🇵🇱 ⚡️Польша YouTube 🚫Ad🚫'",
+			"passwall2.new_discord.type='Xray'",
+			"passwall2.new_discord.protocol='vless'",
+			"passwall2.new_discord.transport='grpc'",
+			"passwall2.new_discord.address='ru3.nfnpx.online'",
+			"passwall2.new_discord.port='50053'",
+		},
+	}
+
+	result, err := ReconcileShuntBindings(context.Background(), backend, DesiredConfig{
+		BasicSettings: BasicSettingsConfig{
+			ShuntRules: []ShuntRule{{ID: "DiscordVoiceUdp", Label: "DiscordVoiceUdp", OutboundNodeID: "old_discord"}},
+		},
+		Nodes: []NodeConfig{
+			{ID: "myshunt", Label: "Маршрутизатор BloopCat", Protocol: "shunt", Enabled: true},
+			{
+				ID:        "old_discord",
+				Label:     "🇷🇺🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+				Protocol:  "vless",
+				Enabled:   true,
+				Address:   "ru4.nfnpx.online",
+				Port:      50053,
+				Transport: "grpc",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if result.Changed {
+		t.Fatalf("expected no-op for semantically preserved refreshed node, got %#v", result)
+	}
+	if len(backend.batchCommands) != 0 || len(backend.runCommands) != 0 {
+		t.Fatalf("expected no commands, got batch=%#v run=%#v", backend.batchCommands, backend.runCommands)
+	}
+}
+
 func TestExecutorPropagatesCommandFailures(t *testing.T) {
 	backend := &fakeBackend{
 		runErrFor: map[string]error{

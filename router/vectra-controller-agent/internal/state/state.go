@@ -33,19 +33,20 @@ type CurrentJob struct {
 }
 
 type PersistedState struct {
-	RouterID                 string                         `json:"router_id,omitempty"`
-	AgentToken               string                         `json:"agent_token,omitempty"`
-	DeviceIdentifier         string                         `json:"device_identifier,omitempty"`
-	DevicePublicKey          string                         `json:"device_public_key,omitempty"`
-	DevicePrivateKey         string                         `json:"device_private_key,omitempty"`
-	AppliedRevisionID        string                         `json:"applied_revision_id,omitempty"`
-	ConfigDigest             string                         `json:"config_digest,omitempty"`
-	LastImportedConfigDigest string                         `json:"last_imported_config_digest,omitempty"`
-	RequestImport            bool                           `json:"request_import,omitempty"`
-	Rescue                   RescueSnapshot                 `json:"rescue,omitempty"`
-	ControlPlaneRecovery     recovery.State                 `json:"control_plane_recovery,omitempty"`
-	CurrentJob               CurrentJob                     `json:"current_job,omitempty"`
-	PendingJobResult         *controlplane.JobResultRequest `json:"pending_job_result,omitempty"`
+	RouterID                 string                               `json:"router_id,omitempty"`
+	AgentToken               string                               `json:"agent_token,omitempty"`
+	DeviceIdentifier         string                               `json:"device_identifier,omitempty"`
+	DevicePublicKey          string                               `json:"device_public_key,omitempty"`
+	DevicePrivateKey         string                               `json:"device_private_key,omitempty"`
+	AppliedRevisionID        string                               `json:"applied_revision_id,omitempty"`
+	ConfigDigest             string                               `json:"config_digest,omitempty"`
+	LastImportedConfigDigest string                               `json:"last_imported_config_digest,omitempty"`
+	LastDesiredRevision      *controlplane.DesiredRevisionSummary `json:"last_desired_revision,omitempty"`
+	RequestImport            bool                                 `json:"request_import,omitempty"`
+	Rescue                   RescueSnapshot                       `json:"rescue,omitempty"`
+	ControlPlaneRecovery     recovery.State                       `json:"control_plane_recovery,omitempty"`
+	CurrentJob               CurrentJob                           `json:"current_job,omitempty"`
+	PendingJobResult         *controlplane.JobResultRequest       `json:"pending_job_result,omitempty"`
 }
 
 func Load(path string) (PersistedState, error) {
