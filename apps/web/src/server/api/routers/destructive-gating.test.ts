@@ -611,6 +611,8 @@ describe("destructive route gating", () => {
     expect(inserted.payload?.command).toContain(
       "pkg_ok luci-app-vectra-controller",
     );
+    expect(inserted.payload?.command).toContain("/usr/lib/opkg/status");
+    expect(inserted.payload?.command).not.toContain("opkg status");
     expect(inserted.payload?.command).toContain(
       '^Status: install (ok|user) installed$',
     );

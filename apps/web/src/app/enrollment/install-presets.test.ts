@@ -149,6 +149,8 @@ describe("enrollment install preset", () => {
     expect(script).toContain("run_opkg() {");
     expect(script).toContain("if ! run_opkg update; then");
     expect(script).toContain("package-specific preflight проверит нужные пакеты отдельно");
+    expect(script).toContain("/usr/lib/opkg/status");
+    expect(script).not.toContain("opkg status");
     expect(script).toContain("run_preflight_checks() {");
     expect(script).toContain("detect_bootstrap_classification() {");
     expect(script).toContain("simulate_overlay_step() {");

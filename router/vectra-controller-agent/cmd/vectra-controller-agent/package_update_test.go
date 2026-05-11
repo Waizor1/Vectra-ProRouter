@@ -22,6 +22,7 @@ import (
 type fakeCommandRunner struct {
 	calls   []string
 	runHook func(name string, args ...string)
+	stdout  string
 }
 
 func (f *fakeCommandRunner) Run(_ context.Context, name string, args ...string) (passwall.CommandResult, error) {
@@ -30,9 +31,13 @@ func (f *fakeCommandRunner) Run(_ context.Context, name string, args ...string) 
 	if f.runHook != nil {
 		f.runHook(name, args...)
 	}
+	stdout := f.stdout
+	if stdout == "" {
+		stdout = "ok"
+	}
 	return passwall.CommandResult{
 		Command: command,
-		Stdout:  "ok",
+		Stdout:  stdout,
 	}, nil
 }
 
@@ -259,6 +264,26 @@ func TestAssessPasswallPackageStatusRequiresRuntimeConvergenceForRuntimePackages
 	)
 	if status != "runtime-only-converged" || !drift {
 		t.Fatalf("expected runtime-only convergence drift, got status=%q drift=%v", status, drift)
+	}
+}
+
+func TestReadInstalledPackageSizeReadsStatusFileWithoutOpkgProcess(t *testing.T) {
+	backend := &fakeCommandRunner{stdout: "2048\n"}
+
+	got := readInstalledPackageSizeBytes(context.Background(), backend, "xray-core")
+
+	if got != 2048 {
+		t.Fatalf("readInstalledPackageSizeBytes() = %d, want 2048", got)
+	}
+	if len(backend.calls) != 1 {
+		t.Fatalf("expected one status-file read command, got %#v", backend.calls)
+	}
+	command := backend.calls[0]
+	if strings.Contains(command, "opkg status") {
+		t.Fatalf("expected direct /usr/lib/opkg/status read, got opkg command %q", command)
+	}
+	if !strings.Contains(command, "/usr/lib/opkg/status") {
+		t.Fatalf("expected command to read opkg status file directly, got %q", command)
 	}
 }
 

@@ -55,6 +55,21 @@ json_file_string() {
 	printf '%s' "$value"
 }
 
+package_version() {
+	local package_name="$1"
+	local version=""
+	version="$(awk -F': ' '/^Version:/ { print $2; exit }' "/usr/lib/opkg/info/${package_name}.control" 2>/dev/null || true)"
+	if [ -n "$version" ]; then
+		printf '%s' "$version"
+		return 0
+	fi
+
+	awk -F': ' -v package_name="$package_name" '
+		/^Package:/ { current = ($2 == package_name); next }
+		current && /^Version:/ { print $2; exit }
+	' /usr/lib/opkg/status 2>/dev/null || true
+}
+
 state_rescue_mutate() {
 	local mode="$1"
 	local reason="$2"
@@ -199,8 +214,8 @@ write_status() {
 	if [ -z "$control_url" ]; then
 		control_url="${panel_url:-}"
 	fi
-	controller_version="$(opkg status vectra-controller-agent 2>/dev/null | awk -F': ' '/^Version:/ { print $2; exit }')"
-	luci_version="$(opkg status luci-app-vectra-controller 2>/dev/null | awk -F': ' '/^Version:/ { print $2; exit }')"
+	controller_version="$(package_version vectra-controller-agent)"
+	luci_version="$(package_version luci-app-vectra-controller)"
 	router_id="$(json_file_field "$AGENT_STATUS_FILE" '@.router_id')"
 	rescue_mode="$(json_file_field "$AGENT_STATUS_FILE" '@.rescue_mode')"
 	if [ -z "$rescue_mode" ]; then

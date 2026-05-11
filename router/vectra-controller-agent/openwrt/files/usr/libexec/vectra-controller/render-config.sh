@@ -12,6 +12,7 @@ OUTPUT_PATH="${1:-/var/run/vectra-controller/config.json}"
 CONFIG_NAME="vectra-controller"
 SECTION="main"
 BOARD_JSON="$(ubus call system board 2>/dev/null || true)"
+LOW_MEMORY_EXPENSIVE_PROBE_FLOOR_MB="${VECTRA_LOW_MEMORY_EXPENSIVE_PROBE_FLOOR_MB:-64}"
 
 uci_get_or_default() {
 	local option="$1"
@@ -54,19 +55,26 @@ service_state() {
 package_version() {
 	local package_name="$1"
 	local version=""
-	version="$(opkg status "$package_name" 2>/dev/null | awk -F': ' '/^Version:/ { print $2; exit }')"
+	version="$(awk -F': ' '/^Version:/ { print $2; exit }' "/usr/lib/opkg/info/${package_name}.control" 2>/dev/null || true)"
 	if [ -n "$version" ]; then
 		printf '%s' "$version"
 		return 0
 	fi
 
-	awk -F': ' '/^Version:/ { print $2; exit }' "/usr/lib/opkg/info/${package_name}.control" 2>/dev/null
+	awk -F': ' -v package_name="$package_name" '
+		/^Package:/ { current = ($2 == package_name); next }
+		current && /^Version:/ { print $2; exit }
+	' /usr/lib/opkg/status 2>/dev/null || true
 }
 
 binary_version() {
 	local binary_path="$1"
 	shift
 	[ -x "$binary_path" ] || return 0
+	if [ "${memory_available_mb:-0}" -gt 0 ] 2>/dev/null && \
+		[ "${memory_available_mb:-0}" -lt "$LOW_MEMORY_EXPENSIVE_PROBE_FLOOR_MB" ] 2>/dev/null; then
+		return 0
+	fi
 	"$binary_path" "$@" 2>&1 | awk 'NF && $0 ~ /[0-9]+\.[0-9]+/ { print; exit }'
 }
 

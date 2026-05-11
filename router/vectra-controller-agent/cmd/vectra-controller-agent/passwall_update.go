@@ -683,7 +683,7 @@ func readInstalledPackageSizeBytes(
 		ctx,
 		"sh",
 		"-c",
-		"opkg status "+shellQuote(packageName)+" 2>/dev/null | awk -F': ' '/^Installed-Size: / { print $2; exit }'",
+		"awk -F': ' -v package_name="+shellQuote(packageName)+" '/^Package:/ { current = ($2 == package_name); next } current && /^Installed-Size: / { print $2; exit }' /usr/lib/opkg/status 2>/dev/null",
 	)
 	if err != nil {
 		return 0

@@ -22,6 +22,7 @@ type Collector struct{}
 
 var semverLikePattern = regexp.MustCompile(`\b[vV]?\d+\.\d+(?:\.\d+)?(?:[-+._0-9A-Za-z]*)?\b`)
 var opkgInfoDir = "/usr/lib/opkg/info"
+var opkgStatusFile = "/usr/lib/opkg/status"
 
 const telegramProbeURL = "https://telegram.org/"
 const telegramProbeTimeout = 3 * time.Second
@@ -29,6 +30,7 @@ const telegramProbeCacheTTL = 5 * time.Minute
 const youtubeProbeURL = "https://www.youtube.com/generate_204"
 const youtubeProbeTimeout = 3 * time.Second
 const youtubeProbeCacheTTL = 5 * time.Minute
+const lowMemoryExpensiveProbeFloorMB = 64
 
 type telegramProbeTarget struct {
 	ID    string
@@ -159,13 +161,16 @@ func (Collector) Collect(base controlplane.RouterInventory) controlplane.RouterI
 		}
 	}
 
-	setBinaryVersion(&inventory, "xray", commandVersion("/usr/bin/xray", "-version"))
-	setBinaryVersion(&inventory, "sing-box", commandVersion("/usr/bin/sing-box", "version"))
-	setBinaryVersion(&inventory, "hysteria", commandVersion("/usr/bin/hysteria", "version"))
-	setBinaryVersion(&inventory, "geoview", commandVersion("/usr/bin/geoview", "-version"))
-	setBinaryVersion(&inventory, "dnsmasq", firstLine("dnsmasq", "-v"))
-
 	inventory.Resources = collectResources()
+	deferExpensiveProbes := shouldDeferExpensiveInventoryProbes(inventory.Resources)
+	if !deferExpensiveProbes {
+		setBinaryVersion(&inventory, "xray", commandVersion("/usr/bin/xray", "-version"))
+		setBinaryVersion(&inventory, "sing-box", commandVersion("/usr/bin/sing-box", "version"))
+		setBinaryVersion(&inventory, "hysteria", commandVersion("/usr/bin/hysteria", "version"))
+		setBinaryVersion(&inventory, "geoview", commandVersion("/usr/bin/geoview", "-version"))
+		setBinaryVersion(&inventory, "dnsmasq", firstLine("dnsmasq", "-v"))
+	}
+
 	inventory.RulesAssets = collectRulesAssets()
 	inventory.ServiceHealth = controlplane.RouterServiceHealth{
 		Controller:     serviceState("/etc/init.d/vectra-controller"),
@@ -173,8 +178,10 @@ func (Collector) Collect(base controlplane.RouterInventory) controlplane.RouterI
 		PasswallServer: serviceState("/etc/init.d/passwall2_server"),
 		DNSMasq:        serviceState("/etc/init.d/dnsmasq"),
 	}
-	inventory.TelegramReachability = collectTelegramReachability()
-	inventory.YouTubeReachability = collectYouTubeReachability()
+	if !deferExpensiveProbes {
+		inventory.TelegramReachability = collectTelegramReachability()
+		inventory.YouTubeReachability = collectYouTubeReachability()
+	}
 
 	return inventory
 }
@@ -223,45 +230,42 @@ func readUCI(key string) string {
 }
 
 func countPasswallSections(sectionType string) int {
-	command := "uci -q show passwall2 2>/dev/null | grep '=" + sectionType + "' | wc -l"
-	output, err := exec.Command("sh", "-c", command).Output()
+	output, err := exec.Command("uci", "-q", "show", "passwall2").Output()
 	if err != nil {
 		return 0
 	}
 
-	count, err := strconv.Atoi(strings.TrimSpace(string(output)))
-	if err != nil {
-		return 0
-	}
+	return countUCISections(string(output), sectionType)
+}
 
+func countUCISections(output string, sectionType string) int {
+	count := 0
+	for _, line := range strings.Split(output, "\n") {
+		_, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		if strings.Trim(value, `"'`) == sectionType {
+			count++
+		}
+	}
 	return count
 }
 
 func packageVersion(name string) string {
-	if version := packageVersionFromOpkgStatus(name); version != "" {
-		return version
-	}
-
 	// Self-update can leave opkg in a half-installed state where the new package
 	// control metadata is already present, but `opkg status <name>` returns
 	// nothing. In that case we still want inventory to surface the unpacked
-	// version instead of falling back to "unknown".
-	return packageVersionFromControlFile(
+	// version instead of falling back to "unknown". Prefer direct file reads for
+	// the steady-state inventory path: forking `opkg` on low-memory routers can
+	// add enough pressure for the kernel to kill the already-running Xray.
+	if version := packageVersionFromControlFile(
 		filepath.Join(opkgInfoDir, name+".control"),
-	)
-}
-
-func packageVersionFromOpkgStatus(name string) string {
-	output, err := exec.Command(
-		"sh",
-		"-c",
-		"opkg status '"+name+"' 2>/dev/null | awk -F': ' '/^Version: / { print $2; exit }'",
-	).Output()
-	if err != nil {
-		return ""
+	); version != "" {
+		return version
 	}
 
-	return strings.TrimSpace(string(output))
+	return packageVersionFromStatusFile(opkgStatusFile, name)
 }
 
 func packageVersionFromControlFile(controlPath string) string {
@@ -283,6 +287,49 @@ func parseControlVersion(content string) string {
 	}
 
 	return ""
+}
+
+func packageVersionFromStatusFile(statusPath string, packageName string) string {
+	content, err := os.ReadFile(statusPath)
+	if err != nil {
+		return ""
+	}
+
+	return parseStatusPackageVersion(string(content), packageName)
+}
+
+func parseStatusPackageVersion(content string, packageName string) string {
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	currentPackage := ""
+	currentVersion := ""
+
+	flush := func() string {
+		if currentPackage == packageName {
+			return currentVersion
+		}
+		return ""
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			if version := flush(); version != "" {
+				return version
+			}
+			currentPackage = ""
+			currentVersion = ""
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "Package: "); ok {
+			currentPackage = strings.TrimSpace(value)
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "Version: "); ok {
+			currentVersion = strings.TrimSpace(value)
+		}
+	}
+
+	return flush()
 }
 
 func firstLine(binary string, args ...string) string {
@@ -458,6 +505,10 @@ func parseMemInfoMB(content string) map[string]int {
 	}
 
 	return mem
+}
+
+func shouldDeferExpensiveInventoryProbes(resources controlplane.RouterResources) bool {
+	return resources.MemoryAvailableMB > 0 && resources.MemoryAvailableMB < lowMemoryExpensiveProbeFloorMB
 }
 
 func diskFreeMB(path string) int {

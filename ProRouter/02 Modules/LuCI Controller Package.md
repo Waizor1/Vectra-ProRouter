@@ -14,6 +14,8 @@ tags:
 
 ## Confirmed
 
+- 2026-05-11 LuCI/controller package `0.1.13-r16`: release is published to the signed stable feed and installed across online active routers. `luci-bridge.sh` and `render-config.sh` now avoid `opkg status` in status/config rendering by reading opkg metadata files directly, and `render-config.sh` skips expensive binary-version probes under the 64 MB low-memory floor. Vagrand live package proof reports `version_luci=0.1.13-r16`, `render_uses_opkg=0`, and `luci_uses_opkg=0`.
+
 - Пакет состоит из `htdocs/` и `root/`, без обязательного server-side Lua controller layer.
 - Legacy `luasrc/` tree удалён из pilot package path, чтобы LuCI package не проваливался обратно в старый Lua runtime lane.
 - `Makefile` переведён на plain `package.mk` semantics; published `.ipk` больше не тянет `luci-lua-runtime`.

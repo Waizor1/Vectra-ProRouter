@@ -60,6 +60,103 @@ Version: 0.1.12-r5
 	}
 }
 
+func TestParseStatusPackageVersion(t *testing.T) {
+	content := `Package: dnsmasq-full
+Status: install user installed
+Version: 2.90-r4
+
+Package: vectra-controller-agent
+Status: install user installed
+Version: 0.1.13-r14
+`
+
+	if got, want := parseStatusPackageVersion(content, "vectra-controller-agent"), "0.1.13-r14"; got != want {
+		t.Fatalf("parseStatusPackageVersion() = %q, want %q", got, want)
+	}
+	if got := parseStatusPackageVersion(content, "missing-package"); got != "" {
+		t.Fatalf("parseStatusPackageVersion() = %q, want empty for missing package", got)
+	}
+}
+
+func TestPackageVersionPrefersControlFileWithoutOpkgProcess(t *testing.T) {
+	previousInfoDir := opkgInfoDir
+	previousStatusFile := opkgStatusFile
+	t.Cleanup(func() {
+		opkgInfoDir = previousInfoDir
+		opkgStatusFile = previousStatusFile
+	})
+
+	root := t.TempDir()
+	opkgInfoDir = root
+	opkgStatusFile = filepath.Join(root, "status")
+	if err := os.WriteFile(filepath.Join(root, "vectra-controller-agent.control"), []byte(`Package: vectra-controller-agent
+Version: 0.1.13-r14
+`), 0o644); err != nil {
+		t.Fatalf("write control file: %v", err)
+	}
+	if err := os.WriteFile(opkgStatusFile, []byte(`Package: vectra-controller-agent
+Version: 0.1.13-r13
+`), 0o644); err != nil {
+		t.Fatalf("write status file: %v", err)
+	}
+
+	if got, want := packageVersion("vectra-controller-agent"), "0.1.13-r14"; got != want {
+		t.Fatalf("packageVersion() = %q, want %q", got, want)
+	}
+}
+
+func TestPackageVersionFallsBackToStatusFileRead(t *testing.T) {
+	previousInfoDir := opkgInfoDir
+	previousStatusFile := opkgStatusFile
+	t.Cleanup(func() {
+		opkgInfoDir = previousInfoDir
+		opkgStatusFile = previousStatusFile
+	})
+
+	root := t.TempDir()
+	opkgInfoDir = root
+	opkgStatusFile = filepath.Join(root, "status")
+	if err := os.WriteFile(opkgStatusFile, []byte(`Package: luci-app-passwall2
+Status: install user installed
+Version: 26.4.20-r1
+`), 0o644); err != nil {
+		t.Fatalf("write status file: %v", err)
+	}
+
+	if got, want := packageVersion("luci-app-passwall2"), "26.4.20-r1"; got != want {
+		t.Fatalf("packageVersion() = %q, want %q", got, want)
+	}
+}
+
+func TestCountUCISectionsAvoidsShellPipelineSemantics(t *testing.T) {
+	output := `passwall2.@global[0]=global
+passwall2.node_a=nodes
+passwall2.node_a.remarks='World'
+passwall2.sub_a='subscribe_list'
+passwall2.node_b=nodes
+passwall2.node_b.protocol='vless'
+`
+
+	if got, want := countUCISections(output, "nodes"), 2; got != want {
+		t.Fatalf("countUCISections(nodes) = %d, want %d", got, want)
+	}
+	if got, want := countUCISections(output, "subscribe_list"), 1; got != want {
+		t.Fatalf("countUCISections(subscribe_list) = %d, want %d", got, want)
+	}
+}
+
+func TestShouldDeferExpensiveInventoryProbes(t *testing.T) {
+	if !shouldDeferExpensiveInventoryProbes(controlplane.RouterResources{MemoryAvailableMB: 24}) {
+		t.Fatalf("expected expensive probes to be deferred under low memory")
+	}
+	if shouldDeferExpensiveInventoryProbes(controlplane.RouterResources{MemoryAvailableMB: lowMemoryExpensiveProbeFloorMB}) {
+		t.Fatalf("expected expensive probes to run at the configured floor")
+	}
+	if shouldDeferExpensiveInventoryProbes(controlplane.RouterResources{}) {
+		t.Fatalf("expected unknown memory to keep existing probe behavior")
+	}
+}
+
 func TestBuildTelegramReachabilityCheckReachable(t *testing.T) {
 	checkedAt := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 
