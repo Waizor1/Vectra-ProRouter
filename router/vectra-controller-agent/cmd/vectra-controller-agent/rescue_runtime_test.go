@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -258,6 +258,120 @@ func TestEvaluateLocalRescueUsesShuntDefaultNodeAsConclusiveProxyProbe(t *testin
 	}
 }
 
+func TestEvaluateLocalRescueRestartsPasswallWhenServiceStopped(t *testing.T) {
+	t.Parallel()
+
+	serverProbe := newHTTPTestServer(http.StatusNoContent)
+	defer serverProbe.Close()
+	publicProbe := newHTTPTestServer(http.StatusNoContent)
+	defer publicProbe.Close()
+
+	backend := &fakeRescueBackend{}
+
+	rescueState := rescue.State{Mode: rescue.ModeProxy}
+	persisted := state.PersistedState{}
+	inventory := controlplane.RouterInventory{
+		PasswallEnabled: true,
+		SelectedNodeID:  "node-1",
+		ServiceHealth: controlplane.RouterServiceHealth{
+			Passwall: "stopped",
+		},
+	}
+	runtimeStatus := state.RuntimeStatus{}
+
+	transitioned, health, err := evaluateLocalRescue(
+		context.Background(),
+		baseRescueConfig(serverProbe.URL, publicProbe.URL),
+		backend,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("evaluateLocalRescue returned error: %v", err)
+	}
+	if transitioned {
+		t.Fatalf("expected watchdog restart to keep current mode while PassWall warms up")
+	}
+	if health.CurrentMode != "proxy" {
+		t.Fatalf("expected current mode proxy, got %s", health.CurrentMode)
+	}
+	if !containsCommand(backend.runCommands, "/etc/init.d/passwall2 restart") {
+		t.Fatalf("expected PassWall restart, got %#v", backend.runCommands)
+	}
+	if persisted.ControlPlaneRecovery.LastPasswallWatchdogRestartAt == "" {
+		t.Fatalf("expected watchdog restart timestamp to be persisted")
+	}
+	if persisted.ControlPlaneRecovery.PasswallWatchdogRestartCount != 1 {
+		t.Fatalf("expected watchdog restart count 1, got %d", persisted.ControlPlaneRecovery.PasswallWatchdogRestartCount)
+	}
+	if persisted.ControlPlaneRecovery.LastPasswallWatchdogReason != passwallWatchdogServiceReason {
+		t.Fatalf("unexpected watchdog reason %q", persisted.ControlPlaneRecovery.LastPasswallWatchdogReason)
+	}
+	if runtimeStatus.LastPasswallWatchdogAt == "" ||
+		runtimeStatus.LastPasswallWatchdogReason != passwallWatchdogServiceReason ||
+		runtimeStatus.PasswallWatchdogRestartCount != 1 {
+		t.Fatalf("runtime watchdog status was not populated: %+v", runtimeStatus)
+	}
+}
+
+func TestEvaluateLocalRescueRestartsPasswallBeforeDirectModeOnConclusiveProxyFailure(t *testing.T) {
+	t.Parallel()
+
+	serverProbe := newHTTPTestServer(http.StatusNoContent)
+	defer serverProbe.Close()
+	publicProbe := newHTTPTestServer(http.StatusServiceUnavailable)
+	defer publicProbe.Close()
+
+	backend := &fakeRescueBackend{
+		runErrors: map[string]error{
+			"/usr/share/passwall2/test.sh url_test_node node-1": fmt.Errorf("node-1 unreachable"),
+		},
+		protocols: map[string]string{
+			"passwall2.myshunt.protocol":     "_shunt",
+			"passwall2.myshunt.default_node": "node-1",
+			"passwall2.node-1.protocol":      "vmess",
+		},
+	}
+
+	rescueState := rescue.State{Mode: rescue.ModeProxy}
+	persisted := state.PersistedState{}
+	inventory := controlplane.RouterInventory{
+		PasswallEnabled: true,
+		SelectedNodeID:  "myshunt",
+	}
+	runtimeStatus := state.RuntimeStatus{}
+
+	transitioned, health, err := evaluateLocalRescue(
+		context.Background(),
+		baseRescueConfig(serverProbe.URL, publicProbe.URL),
+		backend,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("evaluateLocalRescue returned error: %v", err)
+	}
+	if transitioned {
+		t.Fatalf("expected watchdog restart to happen before direct-mode transition")
+	}
+	if health.CurrentMode != "proxy" {
+		t.Fatalf("expected current mode proxy, got %s", health.CurrentMode)
+	}
+	if rescueState.ProxyFailureCount != 0 {
+		t.Fatalf("expected watchdog restart to defer proxy failure count, got %d", rescueState.ProxyFailureCount)
+	}
+	if !containsCommand(backend.runCommands, "/etc/init.d/passwall2 restart") {
+		t.Fatalf("expected PassWall restart, got %#v", backend.runCommands)
+	}
+	if len(backend.batchCommands) != 0 {
+		t.Fatalf("expected no direct-mode UCI writes before warmup, got %d batch call(s)", len(backend.batchCommands))
+	}
+}
+
 func TestEvaluateLocalRescueEntersDirectModeAfterConclusiveShuntProxyFailure(t *testing.T) {
 	t.Parallel()
 
@@ -287,6 +401,7 @@ func TestEvaluateLocalRescueEntersDirectModeAfterConclusiveShuntProxyFailure(t *
 
 	rescueState := rescue.State{Mode: rescue.ModeProxy}
 	persisted := state.PersistedState{}
+	persisted.ControlPlaneRecovery.LastPasswallWatchdogRestartAt = time.Now().UTC().Format(time.RFC3339)
 	inventory := controlplane.RouterInventory{
 		PasswallEnabled: true,
 		SelectedNodeID:  "myshunt",
@@ -322,6 +437,9 @@ func TestEvaluateLocalRescueEntersDirectModeAfterConclusiveShuntProxyFailure(t *
 	}
 	if len(backend.batchCommands) == 0 {
 		t.Fatalf("expected passwall main switch writes for direct-mode transition")
+	}
+	if countCommand(backend.runCommands, "/etc/init.d/passwall2 restart") > 3 {
+		t.Fatalf("expected no extra watchdog restart during cooldown, got %#v", backend.runCommands)
 	}
 }
 
@@ -462,6 +580,16 @@ func containsCommand(commands []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func countCommand(commands []string, needle string) int {
+	count := 0
+	for _, command := range commands {
+		if command == needle || strings.Contains(command, needle) {
+			count++
+		}
+	}
+	return count
 }
 
 func TestApplyRescueMetadataClearsStaleReasonWhenRouterIsBackInProxyMode(t *testing.T) {

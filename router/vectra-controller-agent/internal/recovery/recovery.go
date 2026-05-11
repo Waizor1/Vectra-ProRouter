@@ -23,17 +23,20 @@ const (
 )
 
 type State struct {
-	LastSuccessfulControlPlaneAt string `json:"last_successful_control_plane_at,omitempty"`
-	OutageStartedAt              string `json:"outage_started_at,omitempty"`
-	Phase                        Phase  `json:"phase,omitempty"`
-	LastControllerRestartAt      string `json:"last_controller_restart_at,omitempty"`
-	LastAutoRebootAt             string `json:"last_auto_reboot_at,omitempty"`
-	LastPasswallRetryAt          string `json:"last_passwall_retry_at,omitempty"`
-	AwaitingOperator             bool   `json:"awaiting_operator,omitempty"`
-	LastPanelStatus              string `json:"last_panel_status,omitempty"`
-	LastRUStatus                 string `json:"last_ru_status,omitempty"`
-	LastForeignStatus            string `json:"last_foreign_status,omitempty"`
-	LastActionReason             string `json:"last_action_reason,omitempty"`
+	LastSuccessfulControlPlaneAt  string `json:"last_successful_control_plane_at,omitempty"`
+	OutageStartedAt               string `json:"outage_started_at,omitempty"`
+	Phase                         Phase  `json:"phase,omitempty"`
+	LastControllerRestartAt       string `json:"last_controller_restart_at,omitempty"`
+	LastAutoRebootAt              string `json:"last_auto_reboot_at,omitempty"`
+	LastPasswallRetryAt           string `json:"last_passwall_retry_at,omitempty"`
+	LastPasswallWatchdogRestartAt string `json:"last_passwall_watchdog_restart_at,omitempty"`
+	PasswallWatchdogRestartCount  int    `json:"passwall_watchdog_restart_count,omitempty"`
+	LastPasswallWatchdogReason    string `json:"last_passwall_watchdog_reason,omitempty"`
+	AwaitingOperator              bool   `json:"awaiting_operator,omitempty"`
+	LastPanelStatus               string `json:"last_panel_status,omitempty"`
+	LastRUStatus                  string `json:"last_ru_status,omitempty"`
+	LastForeignStatus             string `json:"last_foreign_status,omitempty"`
+	LastActionReason              string `json:"last_action_reason,omitempty"`
 }
 
 func (s *State) Normalize() {

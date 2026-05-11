@@ -58,6 +58,9 @@ func applyRescueMetadata(
 	runtimeStatus.ProxyFailureCount = rescueState.ProxyFailureCount
 	runtimeStatus.ProxySuccessCount = rescueState.ProxySuccessCount
 	runtimeStatus.DirectSuccessCount = rescueState.DirectSuccessCount
+	runtimeStatus.LastPasswallWatchdogAt = persisted.ControlPlaneRecovery.LastPasswallWatchdogRestartAt
+	runtimeStatus.LastPasswallWatchdogReason = persisted.ControlPlaneRecovery.LastPasswallWatchdogReason
+	runtimeStatus.PasswallWatchdogRestartCount = persisted.ControlPlaneRecovery.PasswallWatchdogRestartCount
 
 	if rescueState.Mode == rescue.ModeDirect &&
 		persisted.Rescue.LastReason != "" &&
@@ -114,6 +117,27 @@ func evaluateLocalRescue(
 	runtimeStatus.LastServerError = serverProbe.Error
 	runtimeStatus.LastPublicError = publicProbe.Error
 
+	if reason, ok := passwallWatchdogServiceRestartReason(inventory); ok {
+		restarted, err := maybeRestartPasswallWatchdog(
+			ctx,
+			cfg,
+			backend,
+			persisted,
+			inventory,
+			runtimeStatus,
+			now,
+			reason,
+		)
+		if err != nil {
+			applyRescueMetadata(persisted, rescueState, inventory, runtimeStatus)
+			return false, buildRouterHealth(*rescueState, serverReachable), err
+		}
+		if restarted {
+			applyRescueMetadata(persisted, rescueState, inventory, runtimeStatus)
+			return false, buildRouterHealth(*rescueState, serverReachable), nil
+		}
+	}
+
 	input := rescue.EvaluationInput{
 		Now:    now,
 		Policy: cfg.Rescue,
@@ -138,6 +162,24 @@ func evaluateLocalRescue(
 			if proxyReachable {
 				input.ProxySuccessIncrement = 1
 			} else if proxyConclusive {
+				restarted, err := maybeRestartPasswallWatchdog(
+					ctx,
+					cfg,
+					backend,
+					persisted,
+					inventory,
+					runtimeStatus,
+					now,
+					passwallWatchdogConnectivityReason,
+				)
+				if err != nil {
+					applyRescueMetadata(persisted, rescueState, inventory, runtimeStatus)
+					return false, buildRouterHealth(*rescueState, serverReachable), err
+				}
+				if restarted {
+					applyRescueMetadata(persisted, rescueState, inventory, runtimeStatus)
+					return false, buildRouterHealth(*rescueState, serverReachable), nil
+				}
 				input.ProxyFailureIncrement = 1
 				if cfg.Rescue.RequireDirectPathSuccess &&
 					rescue.ShouldAttemptDirectFallback(now, cfg.Rescue, *rescueState) {
