@@ -15,4 +15,16 @@ describe("FleetMonitoringWorkspace", () => {
     expect(source).not.toContain('className="space-y-3 lg:hidden"');
     expect(source).not.toContain('className="max-lg:hidden rounded-[1.4rem]');
   });
+
+  it("keeps RAM risk visible in the fleet monitoring surface", () => {
+    const source = readFileSync(
+      new URL("./fleet-monitoring-workspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("RAM риск:");
+    expect(source).toContain("Мин. RAM:");
+    expect(source).toContain("router.memory.summary");
+    expect(source).toContain("router.memory.level");
+  });
 });

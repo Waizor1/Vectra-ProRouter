@@ -19,6 +19,10 @@ import {
   isRouterOnboardingPending,
 } from "~/lib/router-onboarding";
 import {
+  getRouterMemoryTone,
+  type RouterMemoryStatus,
+} from "~/lib/router-memory";
+import {
   formatTelegramReachabilityLabel,
   getTelegramReachabilityStatus,
   hasTelegramReachabilityProblem,
@@ -48,6 +52,7 @@ export type RouterSummary = {
   lastRescue: string;
   telegramReachability?: RouterTelegramReachability | null;
   youtubeReachability?: RouterYoutubeReachability | null;
+  memory: RouterMemoryStatus;
   importState: string;
   needsImportReview: boolean;
   configTrust: {
@@ -60,7 +65,9 @@ export type RouterSummary = {
   };
 };
 
-function describeRouterTrustState(router: RouterSummary): ConfigTrustDescription {
+function describeRouterTrustState(
+  router: RouterSummary,
+): ConfigTrustDescription {
   return describeConfigTrustState({
     trust: router.configTrust,
     offline: router.offline || !router.reachable,
@@ -84,7 +91,10 @@ function describePrimaryStatus(router: RouterSummary) {
   return router.statusLabel;
 }
 
-function describeSavedPanelState(router: RouterSummary, onboardingPending: boolean) {
+function describeSavedPanelState(
+  router: RouterSummary,
+  onboardingPending: boolean,
+) {
   if (router.configTrust.requiresReimport) {
     return "Панель ждёт повторное чтение конфигурации";
   }
@@ -112,7 +122,9 @@ export function RouterCard({ router }: { router: RouterSummary }) {
   const telegramProblem = hasTelegramReachabilityProblem(
     router.telegramReachability,
   );
-  const youtubeStatus = getYoutubeReachabilityStatus(router.youtubeReachability);
+  const youtubeStatus = getYoutubeReachabilityStatus(
+    router.youtubeReachability,
+  );
   const youtubeProblem = hasYoutubeReachabilityProblem(
     router.youtubeReachability,
   );
@@ -141,7 +153,8 @@ export function RouterCard({ router }: { router: RouterSummary }) {
               {router.name}
             </p>
             <p className="mt-1 text-sm leading-6 text-slate-400">
-              Сейчас: {primaryStatus.toLowerCase()} · очередь {router.pendingChanges}
+              Сейчас: {primaryStatus.toLowerCase()} · очередь{" "}
+              {router.pendingChanges}
             </p>
           </div>
           <div className="flex flex-wrap gap-2 sm:max-w-[13rem] sm:justify-end">
@@ -183,7 +196,9 @@ export function RouterCard({ router }: { router: RouterSummary }) {
           <span className="vectra-chip rounded-full border border-white/10 bg-white/5 px-3 py-1 text-slate-200">
             {router.subscriptionCount} подписок
           </span>
-          <span className={`vectra-chip rounded-full border px-3 py-1 ${trustState.badgeClassName}`}>
+          <span
+            className={`vectra-chip rounded-full border px-3 py-1 ${trustState.badgeClassName}`}
+          >
             {router.lastSeen}
           </span>
         </div>
@@ -254,6 +269,12 @@ export function RouterCard({ router }: { router: RouterSummary }) {
             }
           />
           <CompactRouterFact
+            label="RAM"
+            value={`${router.memory.label} · ${router.memory.summary}`}
+            tone={getRouterMemoryTone(router.memory.level)}
+            clamp
+          />
+          <CompactRouterFact
             label="Controller"
             value={controllerVersion}
             emphasis
@@ -273,11 +294,16 @@ export function RouterCard({ router }: { router: RouterSummary }) {
               </span>
             </div>
           </summary>
-          <p className="mt-2 text-sm font-medium text-white">{trustState.title}</p>
-          <p className="mt-1 text-sm leading-6 text-current/85">
-            База панели: {savedPanelState}. Основа сравнения: {comparisonBaseLabel}.
+          <p className="mt-2 text-sm font-medium text-white">
+            {trustState.title}
           </p>
-          <p className="mt-1 text-sm leading-6 text-current/85">{trustState.detail}</p>
+          <p className="mt-1 text-sm leading-6 text-current/85">
+            База панели: {savedPanelState}. Основа сравнения:{" "}
+            {comparisonBaseLabel}.
+          </p>
+          <p className="mt-1 text-sm leading-6 text-current/85">
+            {trustState.detail}
+          </p>
         </details>
       </Link>
 

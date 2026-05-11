@@ -57,6 +57,7 @@ import {
   minimumTerminalControllerVersion,
   supportsTerminalFeature,
 } from "~/lib/router-terminal-support";
+import { describeRouterMemory, getRouterMemoryTone } from "~/lib/router-memory";
 import {
   describeConfigTrustState,
   formatConfigSourceModeLabel,
@@ -1052,6 +1053,7 @@ export function RouterDetailWorkspace({
   const youtubeChecks = getYoutubeReachabilityChecks(
     inventory.youtubeReachability,
   );
+  const memoryStatus = describeRouterMemory(inventory.resources ?? null);
   const hasUnconfirmedChanges =
     editor.unconfirmedChanges.router.status !== "none" ||
     editor.unconfirmedChanges.panel.status !== "none";
@@ -1243,6 +1245,14 @@ export function RouterDetailWorkspace({
             hint={`Последний check-in: ${formatDateTime(editor.routerRuntimeSummary.lastSeenAt)}`}
             compact
             emphasis={routerReachable}
+          />
+          <StatusTile
+            label="RAM свободно"
+            value={memoryStatus.summary}
+            tone={getRouterMemoryTone(memoryStatus.level)}
+            hint={memoryStatus.detail}
+            compact
+            emphasis={memoryStatus.level === "critical"}
           />
           <StatusTile
             label="Нода и режим"
@@ -5083,6 +5093,7 @@ function AppUpdateSection({
     : null;
   const passwallAttempt = surface.lastPasswallUpdateAttempt ?? null;
   const passwallHint = summarizePasswallAttempt(passwallAttempt);
+  const memoryStatus = describeRouterMemory(inventory.resources ?? null);
   const overlayFreeMb = inventory.resources?.overlayFreeMb ?? null;
   const tmpFreeMb = inventory.resources?.tmpFreeMb ?? null;
   const backendDeliveryBlocked =
@@ -5229,6 +5240,9 @@ function AppUpdateSection({
             {overlayFreeMb !== null || tmpFreeMb !== null
               ? ` Сейчас свободно: overlay ${formatMaybeMegabytes(overlayFreeMb)}, /tmp ${formatMaybeMegabytes(tmpFreeMb)}.`
               : ""}
+            {memoryStatus.level !== "unknown"
+              ? ` RAM: ${memoryStatus.summary}.`
+              : " RAM: нет данных в последнем check-in."}
           </p>
         </div>
       </ActionStrip>

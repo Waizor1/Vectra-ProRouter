@@ -4,6 +4,7 @@ import type { AppRouter } from "~/server/api/root";
 import type { RouterSummary } from "~/components/router-card";
 import type { StatItem } from "~/components/stat-grid";
 import { formatControllerVersion } from "~/lib/controller-version";
+import { describeRouterMemory } from "~/lib/router-memory";
 import {
   getEffectiveRouterStatus,
   hasActiveDirectMode,
@@ -149,6 +150,7 @@ export function buildRouterSummary(router: FleetRouter): RouterSummary {
       : lastRescue,
     telegramReachability: payload?.telegramReachability ?? null,
     youtubeReachability: payload?.youtubeReachability ?? null,
+    memory: describeRouterMemory(payload?.resources ?? null),
     importState: router.importState,
     needsImportReview:
       router.importState !== "approved" || router.configTrust.requiresReimport,

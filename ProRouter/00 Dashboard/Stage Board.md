@@ -8,6 +8,10 @@ tags:
 
 # Stage Board
 
+## 2026-05-11 Fleet RAM monitoring
+
+- Added visible free-RAM monitoring to the web control plane using the router inventory fields already reported by controller check-in. Fleet monitoring now carries a normalized RAM state (`good`/`warning`/`critical`/`unknown`), raises `low_memory` alerts for reachable routers below the warning/critical thresholds, shows top-level `RAM риск` and numeric `Мин. RAM` counters, adds a `RAM на роутерах` chart/filter, and surfaces RAM on fleet rows/mobile cards plus router detail. Thresholds are intentionally aligned with the low-memory guardrail contour: warning below 64 MB or 28%, critical below 48 MB or 20%. Verification: full `@vectra/web` Vitest suite, typecheck, lint, production build, and `git diff --check` are green locally.
+
 ## 2026-05-11 PassWall watchdog r17 rollout
 
 - Added a controller-side PassWall watchdog after the VagrandRouter outage showed that `xray` can be OOM-killed while the controller remains alive and no automatic PassWall restart happens. Controller/LuCI `0.1.13-r17` restarts `/etc/init.d/passwall2 restart` when PassWall is enabled and the service is `stopped`/`degraded`, or when public connectivity plus a conclusive selected proxy-node probe fail before the direct-mode fallback path. The restart is cooldown-bound by the existing rescue cooldown/warmup window, persists `last_passwall_watchdog_at`, reason, and count in agent state/status, and does not run while control-plane recovery already owns PassWall. Release proof: `go test ./... -count=1` for `router/vectra-controller-agent`, `git diff --check`, public `index.json`/`Packages`/agent/LuCI r17 artifacts return HTTP 200 with expected SHA-256, Vagrand reports controller/LuCI `0.1.13-r17`, PassWall/dnsmasq/controller/passwallServer all `running`, open incidents `0`, and 13 fresh online active routers are on r17. `testrouter` remains stale/offline on r9, and `denisvitalevichtescha` has r17 installed but is separately stale with queued work.

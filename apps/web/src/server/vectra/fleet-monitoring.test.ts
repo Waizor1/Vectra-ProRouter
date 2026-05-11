@@ -60,6 +60,10 @@ describe("buildFleetMonitoringSnapshot", () => {
               },
             ],
           },
+          resources: {
+            memoryTotalMb: 234,
+            memoryAvailableMb: 57,
+          },
           queuedJobCount: 1,
           lastRescueReason: null,
           configTrust: {
@@ -189,6 +193,8 @@ describe("buildFleetMonitoringSnapshot", () => {
       ["Проблемные", "3"],
       ["Импорт / drift", "1"],
       ["Открытые инциденты", "1"],
+      ["RAM риск", "1"],
+      ["Мин. RAM", "57 МБ"],
       ["Задания в очереди", "6"],
     ]);
 
@@ -211,7 +217,23 @@ describe("buildFleetMonitoringSnapshot", () => {
       ["never", 0],
     ]);
 
+    expect(
+      snapshot.charts[2]?.slices.map((slice) => [slice.key, slice.count]),
+    ).toEqual([
+      ["good", 0],
+      ["warning", 1],
+      ["critical", 0],
+      ["unknown", 4],
+    ]);
+
     expect(snapshot.routers[0]?.id).toBe("direct-1");
+    expect(
+      snapshot.routers.find((router) => router.id === "stable-1")?.memory,
+    ).toMatchObject({
+      level: "warning",
+      availableMb: 57,
+      availablePercent: 24,
+    });
     expect(
       snapshot.routers.find((router) => router.id === "stable-1")
         ?.telegramReachability?.status,
@@ -221,10 +243,11 @@ describe("buildFleetMonitoringSnapshot", () => {
         ?.youtubeReachability?.status,
     ).toBe("reachable");
     expect(
-      snapshot.alerts.slice(0, 4).map((alert) => [alert.kind, alert.routerId]),
+      snapshot.alerts.slice(0, 5).map((alert) => [alert.kind, alert.routerId]),
     ).toEqual([
       ["direct_mode", "direct-1"],
       ["offline", "offline-1"],
+      ["low_memory", "stable-1"],
       ["blocked_support", "blocked-1"],
       ["import_review", "review-1"],
     ]);

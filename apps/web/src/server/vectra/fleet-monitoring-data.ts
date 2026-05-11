@@ -180,9 +180,8 @@ export async function loadLatestSnapshots(
     return new Map<string, typeof routerInventorySnapshots.$inferSelect>();
   }
 
-  const rows =
-    supportsSnapshotExecute(database)
-      ? await database.execute(sql`
+  const rows = supportsSnapshotExecute(database)
+    ? await database.execute(sql`
           select distinct on (router_id)
             id,
             router_id as "routerId",
@@ -197,15 +196,18 @@ export async function loadLatestSnapshots(
             created_at as "createdAt"
           from vectra_router_inventory_snapshot
           where router_id in (
-            ${sql.join(routerIds.map((routerId) => sql`${routerId}`), sql`, `)}
+            ${sql.join(
+              routerIds.map((routerId) => sql`${routerId}`),
+              sql`, `,
+            )}
           )
           order by router_id, created_at desc
         `)
-      : await database
-          .select()
-          .from(routerInventorySnapshots)
-          .where(inArray(routerInventorySnapshots.routerId, routerIds))
-          .orderBy(desc(routerInventorySnapshots.createdAt));
+    : await database
+        .select()
+        .from(routerInventorySnapshots)
+        .where(inArray(routerInventorySnapshots.routerId, routerIds))
+        .orderBy(desc(routerInventorySnapshots.createdAt));
 
   const latest = new Map<
     string,
@@ -250,33 +252,39 @@ export async function loadFleetMonitoringSnapshot(
     .orderBy(desc(routers.lastSeenAt), desc(routers.createdAt));
 
   const routerIds = routerRows.map((router) => router.id);
-  const [snapshots, incidentRows, queuedJobRows, revisionRows] = await Promise.all([
-    loadLatestSnapshots(database, routerIds),
-    routerIds.length
-      ? database
-          .select()
-          .from(healthIncidents)
-          .where(and(inArray(healthIncidents.routerId, routerIds), eq(healthIncidents.state, "open")))
-          .orderBy(desc(healthIncidents.openedAt))
-      : Promise.resolve([]),
-    routerIds.length
-      ? database
-          .select()
-          .from(jobs)
-          .where(
-            and(
-              inArray(jobs.routerId, routerIds),
-              inArray(jobs.state, ["queued", "delivered", "running"]),
-            ),
-          )
-          .orderBy(desc(jobs.createdAt))
-      : Promise.resolve([]),
-    routerIds.length
-      ? loadRevisionMetadata(database, routerIds, {
-          origins: ["router_import", "operator_reimport"],
-        })
-      : Promise.resolve([]),
-  ]);
+  const [snapshots, incidentRows, queuedJobRows, revisionRows] =
+    await Promise.all([
+      loadLatestSnapshots(database, routerIds),
+      routerIds.length
+        ? database
+            .select()
+            .from(healthIncidents)
+            .where(
+              and(
+                inArray(healthIncidents.routerId, routerIds),
+                eq(healthIncidents.state, "open"),
+              ),
+            )
+            .orderBy(desc(healthIncidents.openedAt))
+        : Promise.resolve([]),
+      routerIds.length
+        ? database
+            .select()
+            .from(jobs)
+            .where(
+              and(
+                inArray(jobs.routerId, routerIds),
+                inArray(jobs.state, ["queued", "delivered", "running"]),
+              ),
+            )
+            .orderBy(desc(jobs.createdAt))
+        : Promise.resolve([]),
+      routerIds.length
+        ? loadRevisionMetadata(database, routerIds, {
+            origins: ["router_import", "operator_reimport"],
+          })
+        : Promise.resolve([]),
+    ]);
 
   const incidentMap = new Map<string, typeof healthIncidents.$inferSelect>();
   const openIncidentCount = incidentRows.length;
@@ -339,7 +347,9 @@ export async function loadFleetMonitoringSnapshot(
         supportState: support.state,
         lastSeenAt: router.lastSeenAt,
         selectedNode:
-          payload?.selectedNodeLabel ?? snapshot?.selectedNodeId ?? "Не выбрана",
+          payload?.selectedNodeLabel ??
+          snapshot?.selectedNodeId ??
+          "Не выбрана",
         passwallEnabled: snapshot?.passwallEnabled ?? false,
         nodeCount: snapshot?.nodeCount ?? 0,
         subscriptionCount: snapshot?.subscriptionCount ?? 0,
@@ -351,6 +361,7 @@ export async function loadFleetMonitoringSnapshot(
         components: pickComponentVersions(snapshot),
         telegramReachability: payload?.telegramReachability ?? null,
         youtubeReachability: payload?.youtubeReachability ?? null,
+        resources: payload?.resources ?? null,
         queuedJobCount: jobCountMap.get(router.id) ?? 0,
         lastRescueReason: incident?.reason ?? router.lastRescueReason ?? null,
         configTrust: {

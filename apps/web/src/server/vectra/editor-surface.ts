@@ -143,6 +143,8 @@ export type RouterWorkspaceInventory = {
   packageVersions: Record<string, string | null | undefined>;
   binaryVersions: Record<string, string | null | undefined>;
   resources?: {
+    memoryTotalMb?: number | null;
+    memoryAvailableMb?: number | null;
     overlayFreeMb?: number | null;
     tmpFreeMb?: number | null;
   } | null;

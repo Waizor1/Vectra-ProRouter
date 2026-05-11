@@ -1,11 +1,21 @@
 import type {
+  RouterInventory,
   RouterTelegramReachability,
   RouterYoutubeReachability,
   SupportState,
 } from "@vectra/contracts";
 
+import {
+  describeRouterMemory,
+  type RouterMemoryLevel,
+  type RouterMemoryStatus,
+} from "~/lib/router-memory";
+
 import type { ConfigSourceMode } from "./config-trust";
-import { getEffectiveRouterStatus, getRouterOfflineThresholdMs } from "./router-presence";
+import {
+  getEffectiveRouterStatus,
+  getRouterOfflineThresholdMs,
+} from "./router-presence";
 
 type MonitoringOperationalState =
   | "stable"
@@ -24,6 +34,7 @@ type MonitoringAlertKind =
   | "out_of_sync"
   | "reimport_needed"
   | "awaiting_import"
+  | "low_memory"
   | "blocked_support";
 
 type FleetMonitoringConfigTrust = {
@@ -53,6 +64,10 @@ export type FleetMonitoringRouterInput = {
   components: Record<string, string>;
   telegramReachability?: RouterTelegramReachability | null;
   youtubeReachability?: RouterYoutubeReachability | null;
+  resources?: Pick<
+    RouterInventory["resources"],
+    "memoryTotalMb" | "memoryAvailableMb"
+  > | null;
   queuedJobCount: number;
   lastRescueReason: string | null;
   configTrust?: Partial<FleetMonitoringConfigTrust> | null;
@@ -69,7 +84,7 @@ export type FleetMonitoringRouterInput = {
 };
 
 type FleetMonitoringChartFilter = {
-  kind: "operational" | "freshness";
+  kind: "operational" | "freshness" | "memory";
   value: string;
 };
 
@@ -84,7 +99,7 @@ type FleetMonitoringChartSlice = {
 };
 
 type FleetMonitoringChart = {
-  id: "operational" | "freshness";
+  id: "operational" | "freshness" | "memory";
   title: string;
   description: string;
   slices: FleetMonitoringChartSlice[];
@@ -93,7 +108,7 @@ type FleetMonitoringChart = {
 type FleetMonitoringStat = {
   label: string;
   value: string;
-  tone: "default" | "good" | "warning";
+  tone: "default" | "good" | "warning" | "critical";
   hint: string;
 };
 
@@ -110,6 +125,7 @@ type FleetMonitoringAlert = {
   filters: {
     operational: MonitoringOperationalState;
     freshness: MonitoringFreshnessState;
+    memory: RouterMemoryLevel;
   };
 };
 
@@ -129,6 +145,7 @@ type FleetMonitoringRouter = {
   components: Record<string, string>;
   telegramReachability?: RouterTelegramReachability | null;
   youtubeReachability?: RouterYoutubeReachability | null;
+  memory: RouterMemoryStatus;
   lastSeen: string;
   pendingChanges: number;
   lastRescue: string;
@@ -323,6 +340,7 @@ function buildAlerts(
   const routerFilters = {
     operational: router.operationalState,
     freshness: router.freshnessState,
+    memory: router.memory.level,
   } as const;
 
   if (router.offline) {
@@ -358,7 +376,9 @@ function buildAlerts(
       description:
         incident?.reason ??
         router.lastRescue.replace(/^Последнее известное rescue:\s*/i, ""),
-      openedAt: incident?.openedAt ? formatIso(incident.openedAt) : router.lastSeenAt,
+      openedAt: incident?.openedAt
+        ? formatIso(incident.openedAt)
+        : router.lastSeenAt,
       filters: routerFilters,
     });
   } else if (
@@ -428,7 +448,10 @@ function buildAlerts(
       break;
   }
 
-  if (router.importState === "approved" && router.configTrust.requiresReimport) {
+  if (
+    router.importState === "approved" &&
+    router.configTrust.requiresReimport
+  ) {
     alerts.push({
       id: `reimport_needed:${router.id}`,
       kind: "reimport_needed",
@@ -462,17 +485,42 @@ function buildAlerts(
     });
   }
 
+  if (
+    router.reachable &&
+    (router.memory.level === "critical" || router.memory.level === "warning")
+  ) {
+    alerts.push({
+      id: `low_memory:${router.id}`,
+      kind: "low_memory",
+      severity: router.memory.level === "critical" ? "critical" : "warning",
+      routerId: router.id,
+      routerName: router.name,
+      href,
+      title:
+        router.memory.level === "critical"
+          ? "RAM критически низкая"
+          : "RAM близко к low-memory зоне",
+      description: `${router.memory.summary}. ${router.memory.detail}`,
+      openedAt: router.lastSeenAt,
+      filters: routerFilters,
+    });
+  }
+
   return alerts;
 }
 
-function compareAlerts(left: FleetMonitoringAlert, right: FleetMonitoringAlert) {
+function compareAlerts(
+  left: FleetMonitoringAlert,
+  right: FleetMonitoringAlert,
+) {
   const severityScore: Record<MonitoringAlertSeverity, number> = {
     critical: 3,
     warning: 2,
     info: 1,
   };
 
-  const severityDiff = severityScore[right.severity] - severityScore[left.severity];
+  const severityDiff =
+    severityScore[right.severity] - severityScore[left.severity];
   if (severityDiff !== 0) {
     return severityDiff;
   }
@@ -482,7 +530,10 @@ function compareAlerts(left: FleetMonitoringAlert, right: FleetMonitoringAlert) 
   return rightTime - leftTime;
 }
 
-function compareRouters(left: FleetMonitoringRouter, right: FleetMonitoringRouter) {
+function compareRouters(
+  left: FleetMonitoringRouter,
+  right: FleetMonitoringRouter,
+) {
   const stateScore: Record<MonitoringOperationalState, number> = {
     recovery: 5,
     offline: 4,
@@ -491,9 +542,22 @@ function compareRouters(left: FleetMonitoringRouter, right: FleetMonitoringRoute
     stable: 1,
   };
 
-  const stateDiff = stateScore[right.operationalState] - stateScore[left.operationalState];
+  const stateDiff =
+    stateScore[right.operationalState] - stateScore[left.operationalState];
   if (stateDiff !== 0) {
     return stateDiff;
+  }
+
+  const memoryScore: Record<RouterMemoryLevel, number> = {
+    critical: 4,
+    warning: 3,
+    unknown: 2,
+    good: 1,
+  };
+  const memoryDiff =
+    memoryScore[right.memory.level] - memoryScore[left.memory.level];
+  if (memoryDiff !== 0) {
+    return memoryDiff;
   }
 
   const queueDiff = right.pendingChanges - left.pendingChanges;
@@ -519,7 +583,8 @@ function buildSlices<T extends string>(options: {
 }) {
   return options.items.map((item) => {
     const count = options.counts[item.key] ?? 0;
-    const percent = options.total > 0 ? Math.round((count / options.total) * 100) : 0;
+    const percent =
+      options.total > 0 ? Math.round((count / options.total) * 100) : 0;
 
     return {
       key: item.key,
@@ -544,7 +609,8 @@ export function buildFleetMonitoringSnapshot(args: {
   offlineThresholdMs?: number;
 }): FleetMonitoringSnapshot {
   const now = args.now ?? new Date();
-  const offlineThresholdMs = args.offlineThresholdMs ?? getRouterOfflineThresholdMs();
+  const offlineThresholdMs =
+    args.offlineThresholdMs ?? getRouterOfflineThresholdMs();
 
   const operationalCounts: Record<MonitoringOperationalState, number> = {
     stable: 0,
@@ -559,15 +625,30 @@ export function buildFleetMonitoringSnapshot(args: {
     offline: 0,
     never: 0,
   };
+  const memoryCounts: Record<RouterMemoryLevel, number> = {
+    good: 0,
+    warning: 0,
+    critical: 0,
+    unknown: 0,
+  };
 
   const routers = args.routers.map((input) => {
-    const effectiveStatus = getEffectiveRouterStatus(input.status, input.lastSeenAt, now);
+    const effectiveStatus = getEffectiveRouterStatus(
+      input.status,
+      input.lastSeenAt,
+      now,
+    );
     const reachable = effectiveStatus !== "offline";
-    const freshnessState = getFreshnessState(input.lastSeenAt, now, offlineThresholdMs);
+    const freshnessState = getFreshnessState(
+      input.lastSeenAt,
+      now,
+      offlineThresholdMs,
+    );
     const operationalState = getOperationalState(input, reachable);
     const directMode =
       reachable && (input.status === "direct" || input.status === "rescue");
     const configTrust = normalizeConfigTrust(input.configTrust);
+    const memory = describeRouterMemory(input.resources);
     const router: FleetMonitoringRouter = {
       id: input.id,
       name: input.name,
@@ -584,6 +665,7 @@ export function buildFleetMonitoringSnapshot(args: {
       components: input.components,
       telegramReachability: input.telegramReachability ?? null,
       youtubeReachability: input.youtubeReachability ?? null,
+      memory,
       lastSeen: formatRelativeTime(input.lastSeenAt, now),
       pendingChanges: input.queuedJobCount,
       lastRescue:
@@ -593,7 +675,8 @@ export function buildFleetMonitoringSnapshot(args: {
             : `Последнее известное rescue: ${input.lastRescueReason}`
           : "Нет недавних rescue-событий",
       importState: input.importState,
-      needsImportReview: input.importState !== "approved" || configTrust.requiresReimport,
+      needsImportReview:
+        input.importState !== "approved" || configTrust.requiresReimport,
       configTrust,
       lastSeenAt: formatIso(input.lastSeenAt),
       operationalState,
@@ -604,6 +687,7 @@ export function buildFleetMonitoringSnapshot(args: {
 
     operationalCounts[operationalState] += 1;
     freshnessCounts[freshnessState] += 1;
+    memoryCounts[memory.level] += 1;
 
     return {
       router,
@@ -629,6 +713,14 @@ export function buildFleetMonitoringSnapshot(args: {
   const reviewRouters = sortedRouters.filter(
     (router) => router.operationalState === "review",
   ).length;
+  const ramRiskRouters = memoryCounts.warning + memoryCounts.critical;
+  const availableMemoryValues = sortedRouters.flatMap((router) =>
+    router.memory.availableMb !== null ? [router.memory.availableMb] : [],
+  );
+  const minimumAvailableMemoryMb =
+    availableMemoryValues.length > 0
+      ? Math.min(...availableMemoryValues)
+      : null;
 
   return {
     generatedAt: now.toISOString(),
@@ -666,6 +758,33 @@ export function buildFleetMonitoringSnapshot(args: {
         hint: "Текущие rescue/health incident записи по парку.",
       },
       {
+        label: "RAM риск",
+        value: String(ramRiskRouters),
+        tone:
+          memoryCounts.critical > 0
+            ? "critical"
+            : ramRiskRouters > 0
+              ? "warning"
+              : "default",
+        hint: "Роутеры, где последний check-in показывает RAM ниже безопасного запаса.",
+      },
+      {
+        label: "Мин. RAM",
+        value:
+          minimumAvailableMemoryMb !== null
+            ? `${Math.round(minimumAvailableMemoryMb)} МБ`
+            : "нет данных",
+        tone:
+          memoryCounts.critical > 0
+            ? "critical"
+            : ramRiskRouters > 0
+              ? "warning"
+              : minimumAvailableMemoryMb !== null
+                ? "good"
+                : "default",
+        hint: "Минимальное числовое значение свободной RAM по свежим inventory snapshots.",
+      },
+      {
         label: "Задания в очереди",
         value: String(args.queuedJobs),
         tone: args.queuedJobs > 0 ? "warning" : "default",
@@ -684,31 +803,36 @@ export function buildFleetMonitoringSnapshot(args: {
               key: "stable",
               label: "В строю",
               tone: "good",
-              description: "Свежая связь, approved-эталон и без активных проблем.",
+              description:
+                "Свежая связь, approved-эталон и без активных проблем.",
             },
             {
               key: "recovery",
               label: "Recovery",
               tone: "critical",
-              description: "Direct/rescue mode или активный incident, где нужно реагировать быстро.",
+              description:
+                "Direct/rescue mode или активный incident, где нужно реагировать быстро.",
             },
             {
               key: "offline",
               label: "Нет связи",
               tone: "critical",
-              description: "Контроллер давно не делал check-in, состояние роутера уже stale.",
+              description:
+                "Контроллер давно не делал check-in, состояние роутера уже stale.",
             },
             {
               key: "review",
               label: "Проверка",
               tone: "warning",
-              description: "Импорт, drift или состояние вне confirmed live-import контура.",
+              description:
+                "Импорт, drift или состояние вне confirmed live-import контура.",
             },
             {
               key: "blocked",
               label: "Заблокированы",
               tone: "warning",
-              description: "Устройства вне pilot/certified контура, где destructive-действия запрещены.",
+              description:
+                "Устройства вне pilot/certified контура, где destructive-действия запрещены.",
             },
           ],
           counts: operationalCounts,
@@ -727,30 +851,75 @@ export function buildFleetMonitoringSnapshot(args: {
               key: "fresh",
               label: "Свежая",
               tone: "good",
-              description: "Недавний check-in, роутер явно на связи прямо сейчас.",
+              description:
+                "Недавний check-in, роутер явно на связи прямо сейчас.",
             },
             {
               key: "watch",
               label: "На грани",
               tone: "warning",
-              description: "Связь ещё считается живой, но уже близко к offline threshold.",
+              description:
+                "Связь ещё считается живой, но уже близко к offline threshold.",
             },
             {
               key: "offline",
               label: "Офлайн",
               tone: "critical",
-              description: "Heartbeat window уже пройден, текущие runtime-данные считаются stale.",
+              description:
+                "Heartbeat window уже пройден, текущие runtime-данные считаются stale.",
             },
             {
               key: "never",
               label: "Без check-in",
               tone: "default",
-              description: "Устройство зарегистрировано, но ещё не прислало ни одного check-in.",
+              description:
+                "Устройство зарегистрировано, но ещё не прислало ни одного check-in.",
             },
           ],
           counts: freshnessCounts,
           total: args.routers.length,
           filterKind: "freshness",
+        }),
+      },
+      {
+        id: "memory",
+        title: "RAM на роутерах",
+        description:
+          "Свободная RAM из последнего check-in. Warning начинается до зоны, где controller уже должен экономить probes.",
+        slices: buildSlices({
+          items: [
+            {
+              key: "good",
+              label: "RAM OK",
+              tone: "good",
+              description:
+                "Запаса RAM достаточно для штатных probes и PassWall runtime.",
+            },
+            {
+              key: "warning",
+              label: "Низкая",
+              tone: "warning",
+              description:
+                "Меньше 64 МБ или 28% доступно: роутер близко к low-memory зоне.",
+            },
+            {
+              key: "critical",
+              label: "Критично",
+              tone: "critical",
+              description:
+                "Меньше 48 МБ или 20% доступно: риск OOM и обрыва Xray/PassWall.",
+            },
+            {
+              key: "unknown",
+              label: "Нет данных",
+              tone: "default",
+              description:
+                "Последний snapshot не содержит usable RAM telemetry.",
+            },
+          ],
+          counts: memoryCounts,
+          total: args.routers.length,
+          filterKind: "memory",
         }),
       },
     ],

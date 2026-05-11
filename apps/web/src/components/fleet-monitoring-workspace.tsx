@@ -19,6 +19,7 @@ import {
   describeRouterOnboarding,
   formatRouterImportStateLabel,
 } from "~/lib/router-onboarding";
+import { getRouterMemoryTone } from "~/lib/router-memory";
 import {
   formatTelegramReachabilityLabel,
   getTelegramReachabilityStatus,
@@ -58,13 +59,13 @@ const statToneMap = {
   default: "text-white",
   good: "text-emerald-200",
   warning: "text-amber-200",
+  critical: "text-rose-200",
 } as const;
 
 const sliceToneMap = {
   default:
     "bg-slate-500/18 text-slate-200 ring-1 ring-inset ring-white/10 hover:bg-slate-500/24",
-  good:
-    "bg-emerald-500/14 text-emerald-100 ring-1 ring-inset ring-emerald-400/20 hover:bg-emerald-500/20",
+  good: "bg-emerald-500/14 text-emerald-100 ring-1 ring-inset ring-emerald-400/20 hover:bg-emerald-500/20",
   warning:
     "bg-amber-500/14 text-amber-100 ring-1 ring-inset ring-amber-400/20 hover:bg-amber-500/20",
   critical:
@@ -79,12 +80,9 @@ const stackedToneMap = {
 } as const;
 
 const alertToneMap = {
-  critical:
-    "border-rose-400/25 bg-rose-500/10 text-rose-50",
-  warning:
-    "border-amber-400/25 bg-amber-500/10 text-amber-50",
-  info:
-    "border-sky-400/25 bg-sky-500/10 text-sky-50",
+  critical: "border-rose-400/25 bg-rose-500/10 text-rose-50",
+  warning: "border-amber-400/25 bg-amber-500/10 text-amber-50",
+  info: "border-sky-400/25 bg-sky-500/10 text-sky-50",
 } as const;
 
 const alertBadgeMap = {
@@ -145,6 +143,9 @@ function matchesSearch(router: FleetMonitoringRouter, searchQuery: string) {
     router.configTrust.configSourceMode,
     router.configTrust.requiresReimport ? "needs re-import" : "",
     router.configTrust.digestMismatch ? "digest mismatch" : "",
+    router.memory.label,
+    router.memory.summary,
+    router.memory.level,
     router.lastRescue,
     router.controllerVersion,
     router.passwallVersion,
@@ -236,11 +237,11 @@ function getNotificationStatusCopy({
   permission: NotificationPermission | "unsupported";
 }) {
   if (permission === "unsupported") {
-      return {
-        title: "Системные уведомления недоступны",
-        detail:
-          "Этот браузер не поддерживает уведомления. В этом режиме `Парк` остаётся только экраном наблюдения внутри панели.",
-      };
+    return {
+      title: "Системные уведомления недоступны",
+      detail:
+        "Этот браузер не поддерживает уведомления. В этом режиме `Парк` остаётся только экраном наблюдения внутри панели.",
+    };
   }
 
   if (permission === "denied") {
@@ -290,17 +291,30 @@ function filtersMatch(
     return router.operationalState === activeFilter.value;
   }
 
-  return router.freshnessState === activeFilter.value;
+  if (activeFilter.kind === "freshness") {
+    return router.freshnessState === activeFilter.value;
+  }
+
+  return router.memory.level === activeFilter.value;
 }
 
-function alertMatchesFilter(activeFilter: ActiveFilter, alert: FleetMonitoringAlert) {
+function alertMatchesFilter(
+  activeFilter: ActiveFilter,
+  alert: FleetMonitoringAlert,
+) {
   if (!activeFilter) {
     return true;
   }
 
-  return activeFilter.kind === "operational"
-    ? alert.filters.operational === activeFilter.value
-    : alert.filters.freshness === activeFilter.value;
+  if (activeFilter.kind === "operational") {
+    return alert.filters.operational === activeFilter.value;
+  }
+
+  if (activeFilter.kind === "freshness") {
+    return alert.filters.freshness === activeFilter.value;
+  }
+
+  return alert.filters.memory === activeFilter.value;
 }
 
 function sameFilter(left: ActiveFilter, right: ActiveFilter) {
@@ -378,6 +392,8 @@ export function FleetMonitoringWorkspace({
   const unsubscribePushMutation = api.notifications.unsubscribe.useMutation();
 
   const snapshot = monitoringQuery.data ?? initialMonitoring;
+  const minimumRamStat =
+    snapshot.stats.find((item) => item.label === "Мин. RAM") ?? null;
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>(null);
   const [searchInput, setSearchInput] = useState(initialSearchQuery);
   const [notificationMode, setNotificationMode] =
@@ -418,7 +434,9 @@ export function FleetMonitoringWorkspace({
 
     let cancelled = false;
 
-    const syncNotificationState = async (status: NotificationsStatus | undefined) => {
+    const syncNotificationState = async (
+      status: NotificationsStatus | undefined,
+    ) => {
       const nextPermission = Notification.permission;
       setNotificationPermission(nextPermission);
 
@@ -461,7 +479,8 @@ export function FleetMonitoringWorkspace({
       }
 
       const storedEnabled =
-        window.localStorage.getItem(browserNotificationStorageKey) === "enabled";
+        window.localStorage.getItem(browserNotificationStorageKey) ===
+        "enabled";
       setNotificationMode("polling");
       setNotificationsEnabled(storedEnabled && nextPermission === "granted");
     };
@@ -471,10 +490,7 @@ export function FleetMonitoringWorkspace({
     return () => {
       cancelled = true;
     };
-  }, [
-    notificationsStatusQuery.data,
-    subscribePushMutation,
-  ]);
+  }, [notificationsStatusQuery.data, subscribePushMutation]);
 
   useEffect(() => {
     const currentNotifiableIds = new Set(
@@ -563,6 +579,13 @@ export function FleetMonitoringWorkspace({
   const reimportCount = onboardingRouters.filter(
     (router) => router.configTrust.requiresReimport,
   ).length;
+  const ramWarningCount = snapshot.routers.filter(
+    (router) => router.memory.level === "warning",
+  ).length;
+  const ramCriticalCount = snapshot.routers.filter(
+    (router) => router.memory.level === "critical",
+  ).length;
+  const ramRiskCount = ramWarningCount + ramCriticalCount;
 
   const handleNotificationToggle = async () => {
     if (typeof window === "undefined" || !("Notification" in window)) {
@@ -683,6 +706,33 @@ export function FleetMonitoringWorkspace({
                 <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2">
                   Алертов: {filteredAlerts.length}
                 </span>
+                <span
+                  className={`rounded-full border px-3 py-2 ${
+                    ramCriticalCount > 0
+                      ? "border-rose-400/25 bg-rose-500/10 text-rose-100"
+                      : ramRiskCount > 0
+                        ? "border-amber-400/25 bg-amber-500/10 text-amber-100"
+                        : "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
+                  }`}
+                >
+                  RAM риск: {ramRiskCount}
+                </span>
+                {minimumRamStat ? (
+                  <span
+                    className={`rounded-full border px-3 py-2 ${
+                      minimumRamStat.tone === "critical"
+                        ? "border-rose-400/25 bg-rose-500/10 text-rose-100"
+                        : minimumRamStat.tone === "warning"
+                          ? "border-amber-400/25 bg-amber-500/10 text-amber-100"
+                          : minimumRamStat.tone === "good"
+                            ? "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
+                            : "border-white/10 bg-white/5 text-slate-300"
+                    }`}
+                    title={minimumRamStat.hint}
+                  >
+                    Мин. RAM: {minimumRamStat.value}
+                  </span>
+                ) : null}
                 <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2">
                   Снимок обновлён {formatRelativeTime(snapshot.generatedAt)}
                 </span>
@@ -705,7 +755,8 @@ export function FleetMonitoringWorkspace({
                     disabled={notificationToggleDisabled}
                     className="vectra-button-secondary px-3 py-2 text-sm text-white transition hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {subscribePushMutation.isPending || unsubscribePushMutation.isPending
+                    {subscribePushMutation.isPending ||
+                    unsubscribePushMutation.isPending
                       ? "Сохраняю..."
                       : notificationMode === "push"
                         ? notificationsEnabled
@@ -733,7 +784,7 @@ export function FleetMonitoringWorkspace({
                   name="fleet-operations-search"
                   value={searchInput}
                   onChange={(event) => setSearchInput(event.target.value)}
-                  placeholder="AX3000T, direct, import review, 0.1.12-r10, WorldProxy..."
+                  placeholder="AX3000T, direct, import review, RAM критично, 0.1.12-r10..."
                   className="vectra-field mt-2 min-h-11 px-3 py-2 text-sm text-white placeholder:text-slate-500"
                 />
               </label>
@@ -794,7 +845,11 @@ export function FleetMonitoringWorkspace({
                     { key: "control", label: "Панель" },
                     { key: "trust", label: "Trust" },
                     { key: "versions", label: "Версии" },
-                    { key: "actions", label: "Действие", className: "text-right" },
+                    {
+                      key: "actions",
+                      label: "Действие",
+                      className: "text-right",
+                    },
                   ]}
                 >
                   {filteredRouters.length > 0 ? (
@@ -813,7 +868,9 @@ export function FleetMonitoringWorkspace({
               {filteredAlerts.length > 0 ? (
                 <section className="space-y-3 rounded-[1.4rem] border border-white/10 bg-[rgba(8,11,17,0.76)] px-4 py-4 xl:sticky xl:top-4">
                   <div>
-                    <p className="vectra-kicker text-[var(--vectra-accent-warm)]">Алерты</p>
+                    <p className="vectra-kicker text-[var(--vectra-accent-warm)]">
+                      Алерты
+                    </p>
                     <h3 className="mt-1 text-base font-semibold text-white sm:text-lg">
                       Что требует внимания
                     </h3>
@@ -828,16 +885,21 @@ export function FleetMonitoringWorkspace({
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div>
-                            <p className="text-sm font-semibold text-white">{alert.title}</p>
+                            <p className="text-sm font-semibold text-white">
+                              {alert.title}
+                            </p>
                             <p className="mt-1 text-xs leading-5 text-slate-300">
-                              {alert.routerName} · {formatRelativeTime(alert.openedAt)}
+                              {alert.routerName} ·{" "}
+                              {formatRelativeTime(alert.openedAt)}
                             </p>
                           </div>
                           <span className="rounded-full border border-white/12 bg-white/8 px-2 py-1 text-[10px] font-semibold tracking-[0.08em] text-white uppercase">
                             {alertBadgeMap[alert.severity]}
                           </span>
                         </div>
-                        <p className="mt-2 text-sm leading-6 text-slate-300">{alert.description}</p>
+                        <p className="mt-2 text-sm leading-6 text-slate-300">
+                          {alert.description}
+                        </p>
                       </Link>
                     ))}
                   </div>
@@ -849,7 +911,9 @@ export function FleetMonitoringWorkspace({
               <summary className="cursor-pointer list-none">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <p className="vectra-kicker text-slate-500">Как читать парк</p>
+                    <p className="vectra-kicker text-slate-500">
+                      Как читать парк
+                    </p>
                     <p className="mt-1 text-sm text-slate-400">
                       Контекст, срезы и уведомления.
                     </p>
@@ -865,9 +929,9 @@ export function FleetMonitoringWorkspace({
                       Рабочий порядок
                     </p>
                     <p className="mt-2 text-sm leading-6 text-slate-300">
-                      Сначала смотрите live-состояние, затем базу панели и только
-                      потом trust-сигнал. Таблица и карточки ниже уже раскладывают
-                      это по коротким колонкам и статусам.
+                      Сначала смотрите live-состояние, затем базу панели и
+                      только потом trust-сигнал. Таблица и карточки ниже уже
+                      раскладывают это по коротким колонкам и статусам.
                     </p>
                   </div>
 
@@ -890,8 +954,12 @@ export function FleetMonitoringWorkspace({
                       key={item.label}
                       className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.03)] px-3 py-3"
                     >
-                      <p className="vectra-kicker text-slate-500">{item.label}</p>
-                      <p className={`mt-2 text-xl font-semibold tracking-[-0.03em] sm:text-2xl ${statToneMap[item.tone]}`}>
+                      <p className="vectra-kicker text-slate-500">
+                        {item.label}
+                      </p>
+                      <p
+                        className={`mt-2 text-xl font-semibold tracking-[-0.03em] sm:text-2xl ${statToneMap[item.tone]}`}
+                      >
                         {item.value}
                       </p>
                     </article>
@@ -947,11 +1015,15 @@ export function FleetMonitoringWorkspace({
                           >
                             <div className="flex items-start justify-between gap-3">
                               <div>
-                                <p className="text-sm font-semibold text-white">{router.name}</p>
+                                <p className="text-sm font-semibold text-white">
+                                  {router.name}
+                                </p>
                                 <p className="mt-1 text-xs text-slate-400">
                                   {router.configTrust.requiresReimport
                                     ? onboarding.badge
-                                    : formatRouterImportStateLabel(router.importState)}{" "}
+                                    : formatRouterImportStateLabel(
+                                        router.importState,
+                                      )}{" "}
                                   · {router.lastSeen}
                                 </p>
                               </div>
@@ -974,11 +1046,9 @@ export function FleetMonitoringWorkspace({
                 </div>
               </div>
             </details>
-
           </div>
         </Panel>
       </div>
-
     </div>
   );
 }
@@ -1059,21 +1129,29 @@ function MonitoringChartCard({
   );
 }
 
-function FleetOperationsRow({
-  router,
-}: {
-  router: FleetMonitoringRouter;
-}) {
+function FleetOperationsRow({ router }: { router: FleetMonitoringRouter }) {
   const onboarding = describeRouterOnboarding(
     router.importState,
     router.configTrust,
   );
   const controllerVersion = formatControllerVersion(router.controllerVersion);
-  const telegramStatus = getTelegramReachabilityStatus(router.telegramReachability);
-  const telegramProblem = hasTelegramReachabilityProblem(router.telegramReachability);
-  const youtubeStatus = getYoutubeReachabilityStatus(router.youtubeReachability);
-  const youtubeProblem = hasYoutubeReachabilityProblem(router.youtubeReachability);
-  const freshness = describeFreshnessState(router.freshnessState, router.lastSeen);
+  const telegramStatus = getTelegramReachabilityStatus(
+    router.telegramReachability,
+  );
+  const telegramProblem = hasTelegramReachabilityProblem(
+    router.telegramReachability,
+  );
+  const youtubeStatus = getYoutubeReachabilityStatus(
+    router.youtubeReachability,
+  );
+  const youtubeProblem = hasYoutubeReachabilityProblem(
+    router.youtubeReachability,
+  );
+  const freshness = describeFreshnessState(
+    router.freshnessState,
+    router.lastSeen,
+  );
+  const memoryTone = getRouterMemoryTone(router.memory.level);
   const trustState = describeConfigTrustState({
     trust: router.configTrust,
     offline: router.operationalState === "offline",
@@ -1096,6 +1174,18 @@ function FleetOperationsRow({
         : youtubeProblem
           ? "text-rose-100"
           : "text-slate-300";
+  const memoryToneClassName =
+    memoryTone === "good"
+      ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100"
+      : memoryTone === "warning"
+        ? "border-amber-400/25 bg-amber-500/10 text-amber-100"
+        : memoryTone === "danger"
+          ? "border-rose-400/25 bg-rose-500/10 text-rose-100"
+          : "border-white/10 bg-white/5 text-slate-300";
+  const memoryValue =
+    router.memory.level === "unknown"
+      ? router.memory.summary
+      : `RAM ${router.memory.summary}`;
 
   return (
     <tr className="border-t border-white/10 align-top text-slate-200">
@@ -1143,11 +1233,17 @@ function FleetOperationsRow({
                 rescue {router.lastRescue}
               </span>
             ) : null}
+            <span
+              className={`rounded-full border px-2 py-0.5 ${memoryToneClassName}`}
+              title={router.memory.detail}
+            >
+              {memoryValue}
+            </span>
           </div>
         </div>
       </td>
       <td className="px-3 py-3">
-        <div className="min-w-0 flex flex-wrap gap-2 text-xs leading-5 text-slate-400 lg:min-w-[10rem]">
+        <div className="flex min-w-0 flex-wrap gap-2 text-xs leading-5 text-slate-400 lg:min-w-[10rem]">
           <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
             {router.configTrust.requiresReimport
               ? onboarding.badge
@@ -1156,13 +1252,17 @@ function FleetOperationsRow({
           <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
             {router.configTrust.requiresReimport
               ? "нужно перечитать"
-              : formatConfigSourceModeLabel(router.configTrust.configSourceMode)}
+              : formatConfigSourceModeLabel(
+                  router.configTrust.configSourceMode,
+                )}
           </span>
         </div>
       </td>
       <td className="px-3 py-3">
-        <div className="min-w-0 flex flex-wrap gap-2 text-xs leading-5 text-slate-400 lg:min-w-[11rem]">
-          <span className={`rounded-full border px-2 py-0.5 ${trustState.badgeClassName}`}>
+        <div className="flex min-w-0 flex-wrap gap-2 text-xs leading-5 text-slate-400 lg:min-w-[11rem]">
+          <span
+            className={`rounded-full border px-2 py-0.5 ${trustState.badgeClassName}`}
+          >
             {trustState.badge}
           </span>
           <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
@@ -1182,15 +1282,19 @@ function FleetOperationsRow({
       <td className="px-3 py-3">
         <div className="min-w-0 space-y-2 text-xs leading-5 text-slate-400 lg:min-w-[11rem]">
           <p>
-            Controller <span className="font-medium text-white">{controllerVersion}</span>
+            Controller{" "}
+            <span className="font-medium text-white">{controllerVersion}</span>
           </p>
           <p>
-            PassWall2 <span className="font-medium text-white">{router.passwallVersion}</span>
+            PassWall2{" "}
+            <span className="font-medium text-white">
+              {router.passwallVersion}
+            </span>
           </p>
         </div>
       </td>
       <td className="px-3 py-3 text-right">
-        <div className="flex min-w-0 flex-col items-stretch gap-2 lg:min-w-[11rem] sm:items-end">
+        <div className="flex min-w-0 flex-col items-stretch gap-2 sm:items-end lg:min-w-[11rem]">
           <Link
             href={`/routers/${router.id}`}
             className="rounded-md border border-[var(--vectra-line-strong)] bg-[var(--vectra-accent-soft)] px-3 py-2 text-center text-sm font-medium text-white transition hover:bg-[rgba(99,185,255,0.22)]"

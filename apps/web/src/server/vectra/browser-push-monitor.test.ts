@@ -30,6 +30,7 @@ describe("buildFleetPushCandidates", () => {
           filters: {
             operational: "offline",
             freshness: "offline",
+            memory: "unknown",
           },
         },
         {
@@ -45,6 +46,7 @@ describe("buildFleetPushCandidates", () => {
           filters: {
             operational: "recovery",
             freshness: "fresh",
+            memory: "unknown",
           },
         },
         {
@@ -60,6 +62,7 @@ describe("buildFleetPushCandidates", () => {
           filters: {
             operational: "review",
             freshness: "fresh",
+            memory: "unknown",
           },
         },
         {
@@ -75,6 +78,7 @@ describe("buildFleetPushCandidates", () => {
           filters: {
             operational: "review",
             freshness: "never",
+            memory: "unknown",
           },
         },
         {
@@ -90,6 +94,7 @@ describe("buildFleetPushCandidates", () => {
           filters: {
             operational: "recovery",
             freshness: "fresh",
+            memory: "unknown",
           },
         },
       ],

@@ -98,8 +98,8 @@ describe("buildRouterSummary", () => {
           },
           rulesAssets: {},
           resources: {
-            memoryTotalMb: 0,
-            memoryAvailableMb: 0,
+            memoryTotalMb: 234,
+            memoryAvailableMb: 57,
             swapTotalMb: 0,
             swapFreeMb: 0,
             overlayFreeMb: 0,
@@ -147,6 +147,10 @@ describe("buildRouterSummary", () => {
     expect(summary.components).toEqual({ xray: "26.2.6" });
     expect(summary.pendingChanges).toBe(2);
     expect(summary.lastRescue).toBe("Proxy health failed repeatedly.");
+    expect(summary.memory).toMatchObject({
+      level: "warning",
+      summary: "57 МБ свободно из 234 МБ (24%)",
+    });
   });
 
   it("treats stale direct state as offline instead of active rescue", () => {

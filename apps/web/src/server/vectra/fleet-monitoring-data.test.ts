@@ -133,6 +133,14 @@ describe("loadFleetMonitoringSnapshot", () => {
               totalCount: 3,
               checks: [],
             },
+            resources: {
+              memoryTotalMb: 234,
+              memoryAvailableMb: 57,
+              swapTotalMb: 0,
+              swapFreeMb: 0,
+              overlayFreeMb: 42,
+              tmpFreeMb: 104,
+            },
           },
           passwallEnabled: true,
           selectedNodeId: "myshunt",
@@ -178,6 +186,11 @@ describe("loadFleetMonitoringSnapshot", () => {
     expect(snapshot.routers[0]?.telegramReachability?.status).toBe("partial");
     expect(snapshot.routers[0]?.telegramReachability?.reachableCount).toBe(3);
     expect(snapshot.routers[0]?.youtubeReachability?.status).toBe("reachable");
+    expect(snapshot.routers[0]?.memory).toMatchObject({
+      level: "warning",
+      availableMb: 57,
+      totalMb: 234,
+    });
   });
 
   it("hydrates latest snapshots from execute() rows with raw snake_case fields", async () => {
@@ -246,6 +259,14 @@ describe("loadFleetMonitoringSnapshot", () => {
               totalCount: 3,
               checks: [],
             },
+            resources: {
+              memoryTotalMb: 256,
+              memoryAvailableMb: 180,
+              swapTotalMb: 0,
+              swapFreeMb: 0,
+              overlayFreeMb: 42,
+              tmpFreeMb: 104,
+            },
           }),
           passwall_enabled: true,
           selected_node_id: "myshunt",
@@ -270,6 +291,7 @@ describe("loadFleetMonitoringSnapshot", () => {
     expect(snapshot.routers[0]?.passwallVersion).toBe("26.4.10-r1");
     expect(snapshot.routers[0]?.telegramReachability?.status).toBe("ok");
     expect(snapshot.routers[0]?.youtubeReachability?.status).toBe("reachable");
+    expect(snapshot.routers[0]?.memory.level).toBe("good");
   });
 
   it("marks approved routers with unmatched snapshot digests as re-import-needed", async () => {
