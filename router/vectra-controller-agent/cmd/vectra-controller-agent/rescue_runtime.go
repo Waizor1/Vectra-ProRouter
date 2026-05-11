@@ -107,17 +107,7 @@ func evaluateLocalRescue(
 	now := time.Now().UTC()
 	reconcileRescueStateWithInventory(rescueState, inventory)
 
-	prober := rescue.NewHTTPProber(probeTimeout(cfg.RequestTimeout))
-	serverProbe := rescue.ProbeAny(ctx, prober, serverHealthURLs(cfg.ControlURL))
-	publicProbe := rescue.ProbeAny(ctx, prober, cfg.Rescue.HealthURLs)
-	serverReachable := serverProbe.Reachable
-
-	runtimeStatus.ServerReachable = serverProbe.Reachable
-	runtimeStatus.PublicReachable = publicProbe.Reachable
-	runtimeStatus.LastServerError = serverProbe.Error
-	runtimeStatus.LastPublicError = publicProbe.Error
-
-	if reason, ok := passwallWatchdogServiceRestartReason(inventory); ok {
+	if reason, ok := passwallWatchdogRestartReason(inventory); ok {
 		restarted, err := maybeRestartPasswallWatchdog(
 			ctx,
 			cfg,
@@ -130,13 +120,23 @@ func evaluateLocalRescue(
 		)
 		if err != nil {
 			applyRescueMetadata(persisted, rescueState, inventory, runtimeStatus)
-			return false, buildRouterHealth(*rescueState, serverReachable), err
+			return false, buildRouterHealth(*rescueState, false), err
 		}
 		if restarted {
 			applyRescueMetadata(persisted, rescueState, inventory, runtimeStatus)
-			return false, buildRouterHealth(*rescueState, serverReachable), nil
+			return false, buildRouterHealth(*rescueState, false), nil
 		}
 	}
+
+	prober := rescue.NewHTTPProber(probeTimeout(cfg.RequestTimeout))
+	serverProbe := rescue.ProbeAny(ctx, prober, serverHealthURLs(cfg.ControlURL))
+	publicProbe := rescue.ProbeAny(ctx, prober, cfg.Rescue.HealthURLs)
+	serverReachable := serverProbe.Reachable
+
+	runtimeStatus.ServerReachable = serverProbe.Reachable
+	runtimeStatus.PublicReachable = publicProbe.Reachable
+	runtimeStatus.LastServerError = serverProbe.Error
+	runtimeStatus.LastPublicError = publicProbe.Error
 
 	input := rescue.EvaluationInput{
 		Now:    now,

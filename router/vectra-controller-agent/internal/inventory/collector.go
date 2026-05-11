@@ -37,6 +37,8 @@ const lowMemoryExpensiveProbeFloorMB = 64
 const serviceReachabilityProbeFloorMB = 128
 const safetyDiagnosticsCacheTTL = 10 * time.Minute
 const safetyDiagnosticsTimeout = 2 * time.Second
+const proxyRuntimeProbeTimeout = time.Second
+const passwallGlobalRuntimeConfigPath = "/tmp/etc/passwall2/acl/default/global.json"
 const safetyDiagnosticsMemoryFloorMB = 64
 const safetyLogLines = 160
 const maxSafetyEvents = 12
@@ -641,7 +643,7 @@ func serviceSafetyEvents(
 	inventory controlplane.RouterInventory,
 	observedAt time.Time,
 ) []controlplane.RouterSafetyEvent {
-	events := make([]controlplane.RouterSafetyEvent, 0, 3)
+	events := make([]controlplane.RouterSafetyEvent, 0, 4)
 
 	if inventory.PasswallEnabled && inventory.ServiceHealth.Passwall != "" &&
 		inventory.ServiceHealth.Passwall != "running" &&
@@ -686,7 +688,159 @@ func serviceSafetyEvents(
 		))
 	}
 
+	if event, ok := proxyRuntimeSafetyEvent(inventory, observedAt, proxyRuntimeRunning); ok {
+		events = append(events, event)
+	}
+
 	return events
+}
+
+func proxyRuntimeSafetyEvent(
+	inventory controlplane.RouterInventory,
+	observedAt time.Time,
+	runtimeRunning func(string) bool,
+) (controlplane.RouterSafetyEvent, bool) {
+	if !inventory.PasswallEnabled || inventory.ServiceHealth.Passwall != "running" {
+		return controlplane.RouterSafetyEvent{}, false
+	}
+
+	nodeID := strings.TrimSpace(inventory.SelectedNodeID)
+	if nodeID == "" {
+		return controlplane.RouterSafetyEvent{}, false
+	}
+
+	rawType := readUCI("passwall2." + nodeID + ".type")
+	return proxyRuntimeSafetyEventForNodeType(inventory, observedAt, nodeID, rawType, runtimeRunning)
+}
+
+func proxyRuntimeSafetyEventForNodeType(
+	inventory controlplane.RouterInventory,
+	observedAt time.Time,
+	nodeID string,
+	rawType string,
+	runtimeRunning func(string) bool,
+) (controlplane.RouterSafetyEvent, bool) {
+	if !inventory.PasswallEnabled || inventory.ServiceHealth.Passwall != "running" {
+		return controlplane.RouterSafetyEvent{}, false
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return controlplane.RouterSafetyEvent{}, false
+	}
+
+	runtime := normalizeProxyRuntimeType(rawType)
+	if runtime == "" {
+		return controlplane.RouterSafetyEvent{}, false
+	}
+	if runtimeRunning == nil || runtimeRunning(runtime) {
+		return controlplane.RouterSafetyEvent{}, false
+	}
+
+	return buildSafetyEvent(
+		"proxy_runtime_missing",
+		"critical",
+		runtime,
+		"process",
+		fmt.Sprintf("PassWall2 is running but expected %s process is missing", runtime),
+		observedAt,
+		proxyRuntimeMissingEvidence(runtime, nodeID, rawType),
+	), true
+}
+
+func normalizeProxyRuntimeType(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	switch normalized {
+	case "xray", "xray-core", "v2ray":
+		return "xray"
+	case "sing-box", "singbox":
+		return "sing-box"
+	case "hysteria", "hysteria2", "hysteria-2", "hy2":
+		return "hysteria"
+	default:
+		return ""
+	}
+}
+
+func proxyRuntimeRunning(component string) bool {
+	component = strings.TrimSpace(component)
+	if component == "" {
+		return false
+	}
+	switch component {
+	case "xray", "sing-box":
+		return processTableHasRuntimeConfig(component, passwallGlobalRuntimeConfigPath)
+	}
+	return strings.TrimSpace(boundedCommandOutput(proxyRuntimeProbeTimeout, "pidof", component)) != ""
+}
+
+func proxyRuntimeMissingEvidence(runtime string, nodeID string, rawType string) string {
+	if runtime == "xray" || runtime == "sing-box" {
+		return fmt.Sprintf(
+			"process table has no %s using %s; selected node %s type=%s",
+			runtime,
+			passwallGlobalRuntimeConfigPath,
+			nodeID,
+			strings.TrimSpace(rawType),
+		)
+	}
+	return fmt.Sprintf("pidof %s returned no pid; selected node %s type=%s", runtime, nodeID, strings.TrimSpace(rawType))
+}
+
+func processTableHasRuntimeConfig(component string, configPath string) bool {
+	component = strings.TrimSpace(component)
+	configPath = strings.TrimSpace(configPath)
+	if component == "" || configPath == "" {
+		return false
+	}
+
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return strings.TrimSpace(boundedCommandOutput(proxyRuntimeProbeTimeout, "pidof", component)) != ""
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() || !isProcessDirectory(entry.Name()) {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if err != nil || len(cmdline) == 0 {
+			continue
+		}
+		if processCommandMatchesRuntimeConfig(cmdline, component, configPath) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isProcessDirectory(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, ch := range name {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func processCommandMatchesRuntimeConfig(cmdline []byte, component string, configPath string) bool {
+	args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
+	if len(args) == 0 {
+		return false
+	}
+	if filepath.Base(args[0]) != component {
+		return false
+	}
+	for _, arg := range args[1:] {
+		if arg == configPath {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldCollectSafetyDiagnostics(resources controlplane.RouterResources) bool {

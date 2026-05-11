@@ -316,6 +316,69 @@ func TestEvaluateLocalRescueRestartsPasswallWhenServiceStopped(t *testing.T) {
 	}
 }
 
+func TestEvaluateLocalRescueRestartsPasswallWhenProxyRuntimeMissing(t *testing.T) {
+	t.Parallel()
+
+	serverProbe := newHTTPTestServer(http.StatusNoContent)
+	defer serverProbe.Close()
+	publicProbe := newHTTPTestServer(http.StatusNoContent)
+	defer publicProbe.Close()
+
+	backend := &fakeRescueBackend{}
+
+	rescueState := rescue.State{Mode: rescue.ModeProxy}
+	persisted := state.PersistedState{}
+	inventory := controlplane.RouterInventory{
+		PasswallEnabled: true,
+		SelectedNodeID:  "myshunt",
+		ServiceHealth: controlplane.RouterServiceHealth{
+			Passwall: "running",
+		},
+		SafetyEvents: []controlplane.RouterSafetyEvent{
+			{
+				Type:      "proxy_runtime_missing",
+				Severity:  "critical",
+				Component: "xray",
+				Source:    "process",
+				Message:   "PassWall2 is running but expected xray process is missing",
+			},
+		},
+	}
+	runtimeStatus := state.RuntimeStatus{}
+
+	transitioned, health, err := evaluateLocalRescue(
+		context.Background(),
+		baseRescueConfig(serverProbe.URL, publicProbe.URL),
+		backend,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("evaluateLocalRescue returned error: %v", err)
+	}
+	if transitioned {
+		t.Fatalf("expected watchdog restart to keep current mode while PassWall warms up")
+	}
+	if health.CurrentMode != "proxy" {
+		t.Fatalf("expected current mode proxy, got %s", health.CurrentMode)
+	}
+	if !containsCommand(backend.runCommands, "/etc/init.d/passwall2 restart") {
+		t.Fatalf("expected PassWall restart, got %#v", backend.runCommands)
+	}
+	if containsCommand(backend.runCommands, "/usr/share/passwall2/test.sh") {
+		t.Fatalf("expected cheap runtime guard to restart before node probes, got %#v", backend.runCommands)
+	}
+	if persisted.ControlPlaneRecovery.LastPasswallWatchdogReason != passwallWatchdogRuntimeReason {
+		t.Fatalf("unexpected watchdog reason %q", persisted.ControlPlaneRecovery.LastPasswallWatchdogReason)
+	}
+	if runtimeStatus.LastPasswallWatchdogReason != passwallWatchdogRuntimeReason ||
+		runtimeStatus.PasswallWatchdogRestartCount != 1 {
+		t.Fatalf("runtime watchdog status was not populated: %+v", runtimeStatus)
+	}
+}
+
 func TestEvaluateLocalRescueRestartsPasswallBeforeDirectModeOnConclusiveProxyFailure(t *testing.T) {
 	t.Parallel()
 

@@ -16,8 +16,16 @@ import (
 
 const (
 	passwallWatchdogServiceReason      = "PassWall watchdog restarted local proxy because the PassWall service is not running."
+	passwallWatchdogRuntimeReason      = "PassWall watchdog restarted local proxy because the expected proxy runtime process is missing."
 	passwallWatchdogConnectivityReason = "PassWall watchdog restarted local proxy after proxy connectivity failed."
 )
+
+func passwallWatchdogRestartReason(inventory *controlplane.RouterInventory) (string, bool) {
+	if reason, ok := passwallWatchdogServiceRestartReason(inventory); ok {
+		return reason, true
+	}
+	return passwallWatchdogRuntimeRestartReason(inventory)
+}
 
 func passwallWatchdogServiceRestartReason(inventory *controlplane.RouterInventory) (string, bool) {
 	if inventory == nil || !inventory.PasswallEnabled {
@@ -30,6 +38,28 @@ func passwallWatchdogServiceRestartReason(inventory *controlplane.RouterInventor
 	default:
 		return "", false
 	}
+}
+
+func passwallWatchdogRuntimeRestartReason(inventory *controlplane.RouterInventory) (string, bool) {
+	if inventory == nil || !inventory.PasswallEnabled {
+		return "", false
+	}
+
+	if strings.ToLower(strings.TrimSpace(inventory.ServiceHealth.Passwall)) != "running" {
+		return "", false
+	}
+
+	for _, event := range inventory.SafetyEvents {
+		if strings.TrimSpace(event.Type) != "proxy_runtime_missing" {
+			continue
+		}
+		if strings.TrimSpace(event.Severity) != "critical" {
+			continue
+		}
+		return passwallWatchdogRuntimeReason, true
+	}
+
+	return "", false
 }
 
 func maybeRestartPasswallWatchdog(

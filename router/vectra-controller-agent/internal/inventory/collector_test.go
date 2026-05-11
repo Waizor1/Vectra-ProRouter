@@ -255,6 +255,112 @@ func TestResourceSafetyEventsFlagsLowMemoryWithoutLogProbe(t *testing.T) {
 	}
 }
 
+func TestProxyRuntimeSafetyEventFlagsMissingSelectedRuntime(t *testing.T) {
+	observedAt := time.Date(2026, 5, 12, 1, 35, 54, 0, time.UTC)
+	inventory := controlplane.RouterInventory{
+		PasswallEnabled: true,
+		SelectedNodeID:  "myshunt",
+		ServiceHealth: controlplane.RouterServiceHealth{
+			Passwall: "running",
+		},
+	}
+
+	event, ok := proxyRuntimeSafetyEventForNodeType(
+		inventory,
+		observedAt,
+		"myshunt",
+		"Xray",
+		func(component string) bool {
+			if component != "xray" {
+				t.Fatalf("runtime component = %q, want xray", component)
+			}
+			return false
+		},
+	)
+	if !ok {
+		t.Fatalf("expected missing xray runtime to produce a safety event")
+	}
+	if got, want := event.Type, "proxy_runtime_missing"; got != want {
+		t.Fatalf("event type = %q, want %q", got, want)
+	}
+	if got, want := event.Severity, "critical"; got != want {
+		t.Fatalf("event severity = %q, want %q", got, want)
+	}
+	if got, want := event.Component, "xray"; got != want {
+		t.Fatalf("event component = %q, want %q", got, want)
+	}
+	if !strings.Contains(event.Evidence, "global.json") {
+		t.Fatalf("expected evidence to include global runtime config, got %q", event.Evidence)
+	}
+}
+
+func TestProcessCommandMatchesRuntimeConfig(t *testing.T) {
+	if !processCommandMatchesRuntimeConfig(
+		[]byte("/tmp/etc/passwall2/bin/xray\x00run\x00-c\x00/tmp/etc/passwall2/acl/default/global.json\x00"),
+		"xray",
+		"/tmp/etc/passwall2/acl/default/global.json",
+	) {
+		t.Fatalf("expected xray global runtime command to match")
+	}
+
+	if processCommandMatchesRuntimeConfig(
+		[]byte("/tmp/etc/passwall2/bin/xray\x00run\x00-c\x00/tmp/etc/passwall2/global_dns_remote.json\x00"),
+		"xray",
+		"/tmp/etc/passwall2/acl/default/global.json",
+	) {
+		t.Fatalf("did not expect DNS helper xray command to satisfy global runtime check")
+	}
+
+	if processCommandMatchesRuntimeConfig(
+		[]byte("/tmp/etc/passwall2/bin/sing-box\x00run\x00-c\x00/tmp/etc/passwall2/acl/default/global.json\x00"),
+		"xray",
+		"/tmp/etc/passwall2/acl/default/global.json",
+	) {
+		t.Fatalf("did not expect a different runtime binary to match")
+	}
+}
+
+func TestProxyRuntimeSafetyEventSkipsWhenRuntimePresentOrNotExpected(t *testing.T) {
+	inventory := controlplane.RouterInventory{
+		PasswallEnabled: true,
+		SelectedNodeID:  "myshunt",
+		ServiceHealth: controlplane.RouterServiceHealth{
+			Passwall: "running",
+		},
+	}
+
+	if _, ok := proxyRuntimeSafetyEventForNodeType(
+		inventory,
+		time.Now(),
+		"myshunt",
+		"Xray",
+		func(string) bool { return true },
+	); ok {
+		t.Fatalf("did not expect event while xray is running")
+	}
+
+	if _, ok := proxyRuntimeSafetyEventForNodeType(
+		inventory,
+		time.Now(),
+		"myshunt",
+		"",
+		func(string) bool { return false },
+	); ok {
+		t.Fatalf("did not expect event when selected node runtime type is unknown")
+	}
+
+	inventory.PasswallEnabled = false
+	if _, ok := proxyRuntimeSafetyEventForNodeType(
+		inventory,
+		time.Now(),
+		"myshunt",
+		"Xray",
+		func(string) bool { return false },
+	); ok {
+		t.Fatalf("did not expect event when PassWall is disabled")
+	}
+}
+
 func TestShouldCollectSafetyDiagnosticsRequiresMemoryFloor(t *testing.T) {
 	if shouldCollectSafetyDiagnostics(controlplane.RouterResources{MemoryAvailableMB: safetyDiagnosticsMemoryFloorMB - 1}) {
 		t.Fatalf("expected diagnostics to be skipped under memory floor")
