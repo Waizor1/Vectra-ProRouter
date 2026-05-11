@@ -26,11 +26,12 @@ var opkgStatusFile = "/usr/lib/opkg/status"
 
 const telegramProbeURL = "https://telegram.org/"
 const telegramProbeTimeout = 3 * time.Second
-const telegramProbeCacheTTL = 5 * time.Minute
+const telegramProbeCacheTTL = 30 * time.Minute
 const youtubeProbeURL = "https://www.youtube.com/generate_204"
 const youtubeProbeTimeout = 3 * time.Second
-const youtubeProbeCacheTTL = 5 * time.Minute
+const youtubeProbeCacheTTL = 30 * time.Minute
 const lowMemoryExpensiveProbeFloorMB = 64
+const serviceReachabilityProbeFloorMB = 128
 
 type telegramProbeTarget struct {
 	ID    string
@@ -178,7 +179,7 @@ func (Collector) Collect(base controlplane.RouterInventory) controlplane.RouterI
 		PasswallServer: serviceState("/etc/init.d/passwall2_server"),
 		DNSMasq:        serviceState("/etc/init.d/dnsmasq"),
 	}
-	if !deferExpensiveProbes {
+	if shouldCollectServiceReachability(inventory) {
 		inventory.TelegramReachability = collectTelegramReachability()
 		inventory.YouTubeReachability = collectYouTubeReachability()
 	}
@@ -509,6 +510,16 @@ func parseMemInfoMB(content string) map[string]int {
 
 func shouldDeferExpensiveInventoryProbes(resources controlplane.RouterResources) bool {
 	return resources.MemoryAvailableMB > 0 && resources.MemoryAvailableMB < lowMemoryExpensiveProbeFloorMB
+}
+
+func shouldCollectServiceReachability(inventory controlplane.RouterInventory) bool {
+	if !inventory.PasswallEnabled {
+		return false
+	}
+	if inventory.ServiceHealth.Passwall != "running" {
+		return false
+	}
+	return inventory.Resources.MemoryAvailableMB >= serviceReachabilityProbeFloorMB
 }
 
 func diskFreeMB(path string) int {

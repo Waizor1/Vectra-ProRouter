@@ -3,7 +3,7 @@ type: module
 path: router/vectra-controller-agent
 stage: pilot
 confidence: high
-last-reviewed: 2026-05-11
+last-reviewed: 2026-05-12
 tags:
   - module
   - go
@@ -13,6 +13,8 @@ tags:
 # Router Agent
 
 ## Confirmed
+
+- 2026-05-12 router-safe service monitoring: the controller agent no longer treats Telegram/YouTube HTTPS probes as a normal every-check-in inventory task. Probes are cached for `30m`, require PassWall enabled/running, and require `MemAvailable >= 128 MB`; unknown or lower memory omits service reachability from the snapshot so the panel shows a blind spot instead of spending RAM/CPU on service checks. Local proof: `cd router/vectra-controller-agent && go test ./... -count=1`.
 
 - 2026-05-11 controller `0.1.13-r17` PassWall watchdog: after the VagrandRouter OOM case proved that `xray`/PassWall can die while the controller stays alive, the local rescue evaluator now tries a bounded `/etc/init.d/passwall2 restart` before incrementing proxy-failure/direct-fallback state. The trigger covers enabled PassWall with `passwall2` service `stopped`/`degraded` and conclusive selected proxy-node failure; the watchdog is skipped while control-plane recovery owns PassWall, uses the existing rescue cooldown/warmup window, and persists `last_passwall_watchdog_at`, reason, and restart count into state/status. Local proof: `cd router/vectra-controller-agent && go test ./... -count=1`; live proof: Vagrand and 13 fresh online active routers report controller/LuCI `0.1.13-r17`, with Vagrand services running and open incidents `0`.
 

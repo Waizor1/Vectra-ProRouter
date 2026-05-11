@@ -70,6 +70,44 @@ function isBlockedReachability(value: unknown) {
   return status === "blocked" || status === "partial" || status === "failed";
 }
 
+type ReachabilitySnapshotLike = {
+  payload: unknown;
+};
+
+function reachabilityCheckedAt(value: unknown) {
+  const record = asRecord(value);
+  const checkedAt = record.checkedAt;
+  return typeof checkedAt === "string" && checkedAt.trim().length > 0
+    ? checkedAt
+    : null;
+}
+
+export function hasDistinctBlockedReachabilityEvidence(
+  snapshots: readonly ReachabilitySnapshotLike[],
+  field: "foreignReachability" | "telegramReachability",
+  required = blockedSnapshotWindow,
+) {
+  if (snapshots.length < required) {
+    return false;
+  }
+
+  const checkedAtValues = new Set<string>();
+  for (const snapshot of snapshots.slice(0, required)) {
+    const reachability = asRecord(snapshot.payload)[field];
+    if (!isBlockedReachability(reachability)) {
+      return false;
+    }
+
+    const checkedAt = reachabilityCheckedAt(reachability);
+    if (!checkedAt) {
+      return false;
+    }
+    checkedAtValues.add(checkedAt);
+  }
+
+  return checkedAtValues.size >= required;
+}
+
 function compactReachability(value: unknown) {
   const record = asRecord(value);
   return {
@@ -268,8 +306,9 @@ async function detectBlockedReachabilityTriggers(
       continue;
     }
 
-    const foreignBlocked = recentSnapshots.every((snapshot) =>
-      isBlockedReachability(snapshot.payload.foreignReachability),
+    const foreignBlocked = hasDistinctBlockedReachabilityEvidence(
+      recentSnapshots,
+      "foreignReachability",
     );
     if (foreignBlocked) {
       triggers.push({
@@ -285,8 +324,9 @@ async function detectBlockedReachabilityTriggers(
       });
     }
 
-    const telegramBlocked = recentSnapshots.every((snapshot) =>
-      isBlockedReachability(snapshot.payload.telegramReachability),
+    const telegramBlocked = hasDistinctBlockedReachabilityEvidence(
+      recentSnapshots,
+      "telegramReachability",
     );
     if (telegramBlocked) {
       triggers.push({

@@ -10,6 +10,14 @@ import {
   type RouterMemoryLevel,
   type RouterMemoryStatus,
 } from "~/lib/router-memory";
+import {
+  formatTelegramReachabilityLabel,
+  getTelegramReachabilityStatus,
+} from "~/lib/telegram-reachability";
+import {
+  formatYoutubeReachabilityLabel,
+  getYoutubeReachabilityStatus,
+} from "~/lib/youtube-reachability";
 
 import type { ConfigSourceMode } from "./config-trust";
 import {
@@ -30,6 +38,8 @@ type MonitoringAlertKind =
   | "direct_mode"
   | "incident"
   | "offline"
+  | "telegram_degraded"
+  | "youtube_degraded"
   | "import_review"
   | "out_of_sync"
   | "reimport_needed"
@@ -47,6 +57,10 @@ type FleetMonitoringConfigTrust = {
 };
 
 type MonitoringChartTone = "good" | "warning" | "critical" | "default";
+type MonitoringServiceFilterValue =
+  | "telegram_degraded"
+  | "youtube_degraded"
+  | "service_unknown";
 
 export type FleetMonitoringRouterInput = {
   id: string;
@@ -84,7 +98,7 @@ export type FleetMonitoringRouterInput = {
 };
 
 type FleetMonitoringChartFilter = {
-  kind: "operational" | "freshness" | "memory";
+  kind: "operational" | "freshness" | "memory" | "service";
   value: string;
 };
 
@@ -99,7 +113,7 @@ type FleetMonitoringChartSlice = {
 };
 
 type FleetMonitoringChart = {
-  id: "operational" | "freshness" | "memory";
+  id: "operational" | "freshness" | "memory" | "service";
   title: string;
   description: string;
   slices: FleetMonitoringChartSlice[];
@@ -126,6 +140,7 @@ type FleetMonitoringAlert = {
     operational: MonitoringOperationalState;
     freshness: MonitoringFreshnessState;
     memory: RouterMemoryLevel;
+    service?: MonitoringServiceFilterValue | null;
   };
 };
 
@@ -341,6 +356,7 @@ function buildAlerts(
     operational: router.operationalState,
     freshness: router.freshnessState,
     memory: router.memory.level,
+    service: null,
   } as const;
 
   if (router.offline) {
@@ -398,6 +414,56 @@ function buildAlerts(
       openedAt: formatIso(incident.openedAt),
       filters: routerFilters,
     });
+  }
+
+  if (router.reachable) {
+    const telegramStatus = getTelegramReachabilityStatus(
+      router.telegramReachability,
+    );
+    if (telegramStatus === "partial" || telegramStatus === "blocked") {
+      alerts.push({
+        id: `telegram:${router.id}:${telegramStatus}`,
+        kind: "telegram_degraded",
+        severity: telegramStatus === "blocked" ? "critical" : "warning",
+        routerId: router.id,
+        routerName: router.name,
+        href,
+        title:
+          telegramStatus === "blocked"
+            ? "Telegram не отвечает"
+            : "Telegram частично деградировал",
+        description: `Telegram ${formatTelegramReachabilityLabel(router.telegramReachability)}: сервисные probes уже не полностью зелёные.`,
+        openedAt: router.telegramReachability?.checkedAt ?? router.lastSeenAt,
+        filters: {
+          ...routerFilters,
+          service: "telegram_degraded",
+        },
+      });
+    }
+
+    const youtubeStatus = getYoutubeReachabilityStatus(
+      router.youtubeReachability,
+    );
+    if (youtubeStatus === "partial" || youtubeStatus === "blocked") {
+      alerts.push({
+        id: `youtube:${router.id}:${youtubeStatus}`,
+        kind: "youtube_degraded",
+        severity: youtubeStatus === "blocked" ? "critical" : "warning",
+        routerId: router.id,
+        routerName: router.name,
+        href,
+        title:
+          youtubeStatus === "blocked"
+            ? "YouTube не отвечает"
+            : "YouTube частично деградировал",
+        description: `YouTube ${formatYoutubeReachabilityLabel(router.youtubeReachability)}: сервисные probes уже не полностью зелёные.`,
+        openedAt: router.youtubeReachability?.checkedAt ?? router.lastSeenAt,
+        filters: {
+          ...routerFilters,
+          service: "youtube_degraded",
+        },
+      });
+    }
   }
 
   switch (router.importState) {
@@ -631,6 +697,11 @@ export function buildFleetMonitoringSnapshot(args: {
     critical: 0,
     unknown: 0,
   };
+  const serviceCounts: Record<MonitoringServiceFilterValue, number> = {
+    telegram_degraded: 0,
+    youtube_degraded: 0,
+    service_unknown: 0,
+  };
 
   const routers = args.routers.map((input) => {
     const effectiveStatus = getEffectiveRouterStatus(
@@ -688,6 +759,24 @@ export function buildFleetMonitoringSnapshot(args: {
     operationalCounts[operationalState] += 1;
     freshnessCounts[freshnessState] += 1;
     memoryCounts[memory.level] += 1;
+
+    if (reachable) {
+      const telegramStatus = getTelegramReachabilityStatus(
+        router.telegramReachability,
+      );
+      const youtubeStatus = getYoutubeReachabilityStatus(
+        router.youtubeReachability,
+      );
+      if (telegramStatus === "partial" || telegramStatus === "blocked") {
+        serviceCounts.telegram_degraded += 1;
+      }
+      if (youtubeStatus === "partial" || youtubeStatus === "blocked") {
+        serviceCounts.youtube_degraded += 1;
+      }
+      if (telegramStatus === "unknown" || youtubeStatus === "unknown") {
+        serviceCounts.service_unknown += 1;
+      }
+    }
 
     return {
       router,
@@ -920,6 +1009,41 @@ export function buildFleetMonitoringSnapshot(args: {
           counts: memoryCounts,
           total: args.routers.length,
           filterKind: "memory",
+        }),
+      },
+      {
+        id: "service",
+        title: "Telegram / YouTube",
+        description:
+          "Быстрые срезы по сервисным probes. Срезы не взаимоисключающие: один роутер может попасть сразу в несколько.",
+        slices: buildSlices({
+          items: [
+            {
+              key: "telegram_degraded",
+              label: "Telegram сбои",
+              tone:
+                serviceCounts.telegram_degraded > 0 ? "warning" : "good",
+              description:
+                "Свежие роутеры, где Telegram partial/blocked и нужно открыть карточку.",
+            },
+            {
+              key: "youtube_degraded",
+              label: "YouTube сбои",
+              tone: serviceCounts.youtube_degraded > 0 ? "warning" : "good",
+              description:
+                "Свежие роутеры, где YouTube partial/blocked и нужно открыть карточку.",
+            },
+            {
+              key: "service_unknown",
+              label: "Нет service-проб",
+              tone: serviceCounts.service_unknown > 0 ? "warning" : "good",
+              description:
+                "Роутер на связи, но service-probes не пришли: между редкими проверками или из-за low-memory skip.",
+            },
+          ],
+          counts: serviceCounts,
+          total: args.routers.length,
+          filterKind: "service",
         }),
       },
     ],

@@ -295,6 +295,38 @@ function filtersMatch(
     return router.freshnessState === activeFilter.value;
   }
 
+  if (activeFilter.kind === "service") {
+    const telegramStatus = getTelegramReachabilityStatus(
+      router.telegramReachability,
+    );
+    const youtubeStatus = getYoutubeReachabilityStatus(
+      router.youtubeReachability,
+    );
+
+    if (activeFilter.value === "telegram_degraded") {
+      return (
+        router.reachable &&
+        (telegramStatus === "partial" || telegramStatus === "blocked")
+      );
+    }
+
+    if (activeFilter.value === "youtube_degraded") {
+      return (
+        router.reachable &&
+        (youtubeStatus === "partial" || youtubeStatus === "blocked")
+      );
+    }
+
+    if (activeFilter.value === "service_unknown") {
+      return (
+        router.reachable &&
+        (telegramStatus === "unknown" || youtubeStatus === "unknown")
+      );
+    }
+
+    return false;
+  }
+
   return router.memory.level === activeFilter.value;
 }
 
@@ -312,6 +344,10 @@ function alertMatchesFilter(
 
   if (activeFilter.kind === "freshness") {
     return alert.filters.freshness === activeFilter.value;
+  }
+
+  if (activeFilter.kind === "service") {
+    return alert.filters.service === activeFilter.value;
   }
 
   return alert.filters.memory === activeFilter.value;
@@ -586,6 +622,26 @@ export function FleetMonitoringWorkspace({
     (router) => router.memory.level === "critical",
   ).length;
   const ramRiskCount = ramWarningCount + ramCriticalCount;
+  const telegramProblemCount = snapshot.routers.filter((router) => {
+    const status = getTelegramReachabilityStatus(router.telegramReachability);
+    return router.reachable && (status === "partial" || status === "blocked");
+  }).length;
+  const youtubeProblemCount = snapshot.routers.filter((router) => {
+    const status = getYoutubeReachabilityStatus(router.youtubeReachability);
+    return router.reachable && (status === "partial" || status === "blocked");
+  }).length;
+  const serviceUnknownCount = snapshot.routers.filter((router) => {
+    const telegramStatus = getTelegramReachabilityStatus(
+      router.telegramReachability,
+    );
+    const youtubeStatus = getYoutubeReachabilityStatus(
+      router.youtubeReachability,
+    );
+    return (
+      router.reachable &&
+      (telegramStatus === "unknown" || youtubeStatus === "unknown")
+    );
+  }).length;
 
   const handleNotificationToggle = async () => {
     if (typeof window === "undefined" || !("Notification" in window)) {
@@ -717,6 +773,70 @@ export function FleetMonitoringWorkspace({
                 >
                   RAM риск: {ramRiskCount}
                 </span>
+                <button
+                  type="button"
+                  disabled={telegramProblemCount === 0}
+                  onClick={() =>
+                    setActiveFilter((previous) =>
+                      sameFilter(previous, {
+                        kind: "service",
+                        value: "telegram_degraded",
+                      })
+                        ? null
+                        : { kind: "service", value: "telegram_degraded" },
+                    )
+                  }
+                  className={`rounded-full border px-3 py-2 text-left transition disabled:cursor-default disabled:opacity-75 ${
+                    telegramProblemCount > 0
+                      ? "border-amber-400/25 bg-amber-500/10 text-amber-100 hover:border-amber-300/40"
+                      : "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
+                  }`}
+                >
+                  Telegram сбои: {telegramProblemCount}
+                </button>
+                <button
+                  type="button"
+                  disabled={youtubeProblemCount === 0}
+                  onClick={() =>
+                    setActiveFilter((previous) =>
+                      sameFilter(previous, {
+                        kind: "service",
+                        value: "youtube_degraded",
+                      })
+                        ? null
+                        : { kind: "service", value: "youtube_degraded" },
+                    )
+                  }
+                  className={`rounded-full border px-3 py-2 text-left transition disabled:cursor-default disabled:opacity-75 ${
+                    youtubeProblemCount > 0
+                      ? "border-amber-400/25 bg-amber-500/10 text-amber-100 hover:border-amber-300/40"
+                      : "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
+                  }`}
+                >
+                  YouTube сбои: {youtubeProblemCount}
+                </button>
+                <button
+                  type="button"
+                  disabled={serviceUnknownCount === 0}
+                  onClick={() =>
+                    setActiveFilter((previous) =>
+                      sameFilter(previous, {
+                        kind: "service",
+                        value: "service_unknown",
+                      })
+                        ? null
+                        : { kind: "service", value: "service_unknown" },
+                    )
+                  }
+                  className={`rounded-full border px-3 py-2 text-left transition disabled:cursor-default disabled:opacity-75 ${
+                    serviceUnknownCount > 0
+                      ? "border-sky-400/25 bg-sky-500/10 text-sky-100 hover:border-sky-300/40"
+                      : "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
+                  }`}
+                  title="На связи, но последний snapshot не содержит Telegram/YouTube probes. Это нормально между редкими проверками или при low-memory skip."
+                >
+                  Нет проб: {serviceUnknownCount}
+                </button>
                 {minimumRamStat ? (
                   <span
                     className={`rounded-full border px-3 py-2 ${

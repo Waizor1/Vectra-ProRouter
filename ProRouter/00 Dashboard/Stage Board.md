@@ -1,12 +1,20 @@
 ---
 type: dashboard
-updated: 2026-05-11
+updated: 2026-05-12
 tags:
   - dashboard
   - status
 ---
 
 # Stage Board
+
+## 2026-05-12 Router-safe service monitoring
+
+- Converted Telegram/YouTube service monitoring away from steady-state live probing on every check-in. The router agent now runs those HTTPS probes only from cached rare checks (`30m` TTL), only when PassWall is enabled/running, and only when `MemAvailable >= 128 MB`; unknown or low memory skips the service probes entirely. The web UI now explains `нет данных` as an intentional blind spot/skip state, not an outage, while auto-rescue requires distinct blocked probe `checkedAt` values before opening Telegram/foreign reachability repair cases so repeated cached blocked snapshots cannot trigger repair loops. Verification: `go test ./... -count=1` for `router/vectra-controller-agent`, full `@vectra/web` Vitest suite, `@vectra/web typecheck`, `@vectra/web lint`, `@vectra/web build`, and `git diff --check` are green locally.
+
+## 2026-05-11 Fleet service outage visibility
+
+- Added fleet-level Telegram/YouTube outage visibility to `apps/web`: reachable routers with Telegram or YouTube `partial`/`blocked` probes now produce fleet alerts and browser-notification candidates; the `Парк` header shows direct quick filters `Telegram сбои`, `YouTube сбои`, and `Нет проб`; and the monitoring details now include a Telegram/YouTube service slice so operators can click straight to affected routers instead of opening each router card. `Нет проб` is intentionally a visibility/blind-spot slice, not proof that a service is down. Verification: full `@vectra/web` Vitest suite, typecheck, lint, production build, and `git diff --check` are green locally.
 
 ## 2026-05-11 Fleet RAM monitoring
 

@@ -144,7 +144,7 @@ function describeSingleCheck(check: TelegramReachabilityCheckLike) {
 
 export function describeTelegramReachability(probe: TelegramReachabilityLike) {
   if (!probe) {
-    return "Агент ещё не присылал проверку Telegram.";
+    return "Агент не прислал проверку Telegram: service-probes выполняются редко и пропускаются при low-memory или неработающем PassWall.";
   }
 
   const checks = getChecks(probe);

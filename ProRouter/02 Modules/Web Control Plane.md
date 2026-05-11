@@ -3,7 +3,7 @@ type: module
 path: apps/web, apps/install-helper
 stage: pilot
 confidence: high
-last-reviewed: 2026-05-11
+last-reviewed: 2026-05-12
 tags:
   - module
   - web
@@ -13,6 +13,10 @@ tags:
 # Web Control Plane
 
 ## Confirmed
+
+- 2026-05-12 safe service-probe semantics: fleet UI copy now treats missing Telegram/YouTube probes as an intentional `нет проб` blind spot caused by rare checks, low memory, or non-running PassWall rather than as an outage. Auto-rescue now requires distinct blocked reachability `checkedAt` values before opening Telegram/foreign reachability cases, preventing repeated cached blocked snapshots from triggering repair loops. Local proof: full `@vectra/web` Vitest, `typecheck`, `lint`, and `build` are green.
+
+- 2026-05-11 fleet service outage visibility: `fleet.monitoring` now raises Telegram/YouTube service-degraded alerts for reachable routers with `partial` or `blocked` probes, while the `Парк` surface exposes top quick filters for `Telegram сбои`, `YouTube сбои`, and `Нет проб`. The new `Нет проб` slice is a monitoring blind-spot indicator for fresh routers that did not send Telegram/YouTube probes, not an outage claim. Local proof is green on full `@vectra/web` Vitest, `@vectra/web typecheck`, `@vectra/web lint`, `@vectra/web build`, and `git diff --check`.
 
 - 2026-05-11 low-memory package-status command hardening: the production web surfaces that generate router-side scripts no longer emit `opkg status` for controller self-update verification or AX3000T bootstrap package metadata reads. They read `/usr/lib/opkg/status` directly with `awk`, avoiding redundant `opkg` process forks during future controller updates/bootstrap repair flows. Verified with targeted Vitest (`install-presets`, `destructive-gating`), `@vectra/web typecheck`, production Docker build, smoke-check, and live grep/curl checks after deploy.
 

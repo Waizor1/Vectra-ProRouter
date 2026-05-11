@@ -12,7 +12,7 @@ describe("youtube reachability helpers", () => {
   it("returns empty-state labels when probe is missing", () => {
     expect(formatYoutubeReachabilityLabel(null)).toBe("нет данных");
     expect(describeYoutubeReachability(null)).toBe(
-      "Агент ещё не присылал проверку YouTube.",
+      "Агент не прислал проверку YouTube: service-probes выполняются редко и пропускаются при low-memory или неработающем PassWall.",
     );
     expect(hasYoutubeReachabilityProblem(null)).toBe(false);
     expect(getYoutubeReachabilityStatus(null)).toBe("unknown");

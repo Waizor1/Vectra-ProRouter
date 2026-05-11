@@ -225,6 +225,13 @@ describe("buildFleetMonitoringSnapshot", () => {
       ["critical", 0],
       ["unknown", 4],
     ]);
+    expect(
+      snapshot.charts[3]?.slices.map((slice) => [slice.key, slice.count]),
+    ).toEqual([
+      ["telegram_degraded", 1],
+      ["youtube_degraded", 0],
+      ["service_unknown", 3],
+    ]);
 
     expect(snapshot.routers[0]?.id).toBe("direct-1");
     expect(
@@ -243,11 +250,12 @@ describe("buildFleetMonitoringSnapshot", () => {
         ?.youtubeReachability?.status,
     ).toBe("reachable");
     expect(
-      snapshot.alerts.slice(0, 5).map((alert) => [alert.kind, alert.routerId]),
+      snapshot.alerts.slice(0, 6).map((alert) => [alert.kind, alert.routerId]),
     ).toEqual([
       ["direct_mode", "direct-1"],
       ["offline", "offline-1"],
       ["low_memory", "stable-1"],
+      ["telegram_degraded", "stable-1"],
       ["blocked_support", "blocked-1"],
       ["import_review", "review-1"],
     ]);

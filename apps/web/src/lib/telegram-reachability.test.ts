@@ -12,7 +12,7 @@ describe("telegram reachability helpers", () => {
   it("returns empty-state labels when probe is missing", () => {
     expect(formatTelegramReachabilityLabel(null)).toBe("нет данных");
     expect(describeTelegramReachability(null)).toBe(
-      "Агент ещё не присылал проверку Telegram.",
+      "Агент не прислал проверку Telegram: service-probes выполняются редко и пропускаются при low-memory или неработающем PassWall.",
     );
     expect(hasTelegramReachabilityProblem(null)).toBe(false);
     expect(getTelegramReachabilityStatus(null)).toBe("unknown");

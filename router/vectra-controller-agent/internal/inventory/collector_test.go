@@ -157,6 +157,97 @@ func TestShouldDeferExpensiveInventoryProbes(t *testing.T) {
 	}
 }
 
+func TestShouldCollectServiceReachabilityRequiresSafeRuntime(t *testing.T) {
+	safeInventory := controlplane.RouterInventory{
+		PasswallEnabled: true,
+		Resources: controlplane.RouterResources{
+			MemoryAvailableMB: serviceReachabilityProbeFloorMB,
+		},
+		ServiceHealth: controlplane.RouterServiceHealth{
+			Passwall: "running",
+		},
+	}
+
+	if !shouldCollectServiceReachability(safeInventory) {
+		t.Fatalf("expected service reachability probes at the configured memory floor")
+	}
+
+	tests := []struct {
+		name      string
+		inventory controlplane.RouterInventory
+	}{
+		{
+			name: "disabled passwall",
+			inventory: controlplane.RouterInventory{
+				PasswallEnabled: false,
+				Resources: controlplane.RouterResources{
+					MemoryAvailableMB: serviceReachabilityProbeFloorMB,
+				},
+				ServiceHealth: controlplane.RouterServiceHealth{
+					Passwall: "running",
+				},
+			},
+		},
+		{
+			name: "passwall not running",
+			inventory: controlplane.RouterInventory{
+				PasswallEnabled: true,
+				Resources: controlplane.RouterResources{
+					MemoryAvailableMB: serviceReachabilityProbeFloorMB,
+				},
+				ServiceHealth: controlplane.RouterServiceHealth{
+					Passwall: "stopped",
+				},
+			},
+		},
+		{
+			name: "low memory",
+			inventory: controlplane.RouterInventory{
+				PasswallEnabled: true,
+				Resources: controlplane.RouterResources{
+					MemoryAvailableMB: serviceReachabilityProbeFloorMB - 1,
+				},
+				ServiceHealth: controlplane.RouterServiceHealth{
+					Passwall: "running",
+				},
+			},
+		},
+		{
+			name: "unknown memory",
+			inventory: controlplane.RouterInventory{
+				PasswallEnabled: true,
+				ServiceHealth: controlplane.RouterServiceHealth{
+					Passwall: "running",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if shouldCollectServiceReachability(tt.inventory) {
+				t.Fatalf("expected service reachability probes to be skipped")
+			}
+		})
+	}
+}
+
+func TestServiceReachabilityProbeCadenceIsNotSteadyStateCheckInCadence(t *testing.T) {
+	if telegramProbeCacheTTL < 30*time.Minute {
+		t.Fatalf("telegramProbeCacheTTL = %s, want at least 30m", telegramProbeCacheTTL)
+	}
+	if youtubeProbeCacheTTL < 30*time.Minute {
+		t.Fatalf("youtubeProbeCacheTTL = %s, want at least 30m", youtubeProbeCacheTTL)
+	}
+	if serviceReachabilityProbeFloorMB <= lowMemoryExpensiveProbeFloorMB {
+		t.Fatalf(
+			"serviceReachabilityProbeFloorMB = %d, should be stricter than generic expensive floor %d",
+			serviceReachabilityProbeFloorMB,
+			lowMemoryExpensiveProbeFloorMB,
+		)
+	}
+}
+
 func TestBuildTelegramReachabilityCheckReachable(t *testing.T) {
 	checkedAt := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 

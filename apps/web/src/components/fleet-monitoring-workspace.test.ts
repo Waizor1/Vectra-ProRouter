@@ -27,4 +27,18 @@ describe("FleetMonitoringWorkspace", () => {
     expect(source).toContain("router.memory.summary");
     expect(source).toContain("router.memory.level");
   });
+
+  it("keeps service outage filters visible without opening router details", () => {
+    const source = readFileSync(
+      new URL("./fleet-monitoring-workspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("Telegram сбои:");
+    expect(source).toContain("YouTube сбои:");
+    expect(source).toContain("Нет проб:");
+    expect(source).toContain('value: "telegram_degraded"');
+    expect(source).toContain('value: "youtube_degraded"');
+    expect(source).toContain('value: "service_unknown"');
+  });
 });

@@ -142,7 +142,7 @@ function describeSingleCheck(check: YoutubeReachabilityCheckLike) {
 
 export function describeYoutubeReachability(probe: YoutubeReachabilityLike) {
   if (!probe) {
-    return "Агент ещё не присылал проверку YouTube.";
+    return "Агент не прислал проверку YouTube: service-probes выполняются редко и пропускаются при low-memory или неработающем PassWall.";
   }
 
   const checks = getChecks(probe);
