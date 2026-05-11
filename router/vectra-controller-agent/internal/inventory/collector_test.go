@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,6 +230,64 @@ func TestShouldCollectServiceReachabilityRequiresSafeRuntime(t *testing.T) {
 				t.Fatalf("expected service reachability probes to be skipped")
 			}
 		})
+	}
+}
+
+func TestResourceSafetyEventsFlagsLowMemoryWithoutLogProbe(t *testing.T) {
+	events := resourceSafetyEvents(controlplane.RouterResources{
+		MemoryTotalMB:     234,
+		MemoryAvailableMB: 45,
+		OverlayFreeMB:     28,
+		TMPFreeMB:         96,
+	}, time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC))
+
+	if len(events) != 1 {
+		t.Fatalf("expected one low-memory event, got %#v", events)
+	}
+	if got, want := events[0].Type, "low_memory"; got != want {
+		t.Fatalf("event type = %q, want %q", got, want)
+	}
+	if got, want := events[0].Severity, "critical"; got != want {
+		t.Fatalf("event severity = %q, want %q", got, want)
+	}
+	if !strings.Contains(events[0].Message, "45 MB") {
+		t.Fatalf("expected event to include available memory, got %q", events[0].Message)
+	}
+}
+
+func TestShouldCollectSafetyDiagnosticsRequiresMemoryFloor(t *testing.T) {
+	if shouldCollectSafetyDiagnostics(controlplane.RouterResources{MemoryAvailableMB: safetyDiagnosticsMemoryFloorMB - 1}) {
+		t.Fatalf("expected diagnostics to be skipped under memory floor")
+	}
+	if !shouldCollectSafetyDiagnostics(controlplane.RouterResources{MemoryAvailableMB: safetyDiagnosticsMemoryFloorMB}) {
+		t.Fatalf("expected diagnostics at memory floor")
+	}
+	if shouldCollectSafetyDiagnostics(controlplane.RouterResources{}) {
+		t.Fatalf("expected unknown memory to skip diagnostics")
+	}
+}
+
+func TestParseSafetyDiagnosticsFindsXrayOOMKill(t *testing.T) {
+	events := parseSafetyDiagnostics(
+		"dmesg",
+		"[12345.678] Out of memory: Killed process 2699 (xray) total-vm:600000kB\n",
+		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+	)
+
+	if len(events) != 1 {
+		t.Fatalf("expected one safety event, got %#v", events)
+	}
+	if got, want := events[0].Type, "oom_kill"; got != want {
+		t.Fatalf("event type = %q, want %q", got, want)
+	}
+	if got, want := events[0].Severity, "critical"; got != want {
+		t.Fatalf("event severity = %q, want %q", got, want)
+	}
+	if got, want := events[0].Component, "xray"; got != want {
+		t.Fatalf("event component = %q, want %q", got, want)
+	}
+	if !strings.Contains(events[0].Evidence, "Killed process") {
+		t.Fatalf("expected OOM evidence, got %q", events[0].Evidence)
 	}
 }
 

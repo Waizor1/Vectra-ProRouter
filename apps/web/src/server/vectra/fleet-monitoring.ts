@@ -1,5 +1,6 @@
 import type {
   RouterInventory,
+  RouterSafetyEvent,
   RouterTelegramReachability,
   RouterYoutubeReachability,
   SupportState,
@@ -45,6 +46,7 @@ type MonitoringAlertKind =
   | "reimport_needed"
   | "awaiting_import"
   | "low_memory"
+  | "router_safety"
   | "blocked_support";
 
 type FleetMonitoringConfigTrust = {
@@ -82,6 +84,7 @@ export type FleetMonitoringRouterInput = {
     RouterInventory["resources"],
     "memoryTotalMb" | "memoryAvailableMb"
   > | null;
+  safetyEvents?: RouterSafetyEvent[] | null;
   queuedJobCount: number;
   lastRescueReason: string | null;
   configTrust?: Partial<FleetMonitoringConfigTrust> | null;
@@ -160,6 +163,7 @@ type FleetMonitoringRouter = {
   components: Record<string, string>;
   telegramReachability?: RouterTelegramReachability | null;
   youtubeReachability?: RouterYoutubeReachability | null;
+  safetyEvents: RouterSafetyEvent[];
   memory: RouterMemoryStatus;
   lastSeen: string;
   pendingChanges: number;
@@ -572,6 +576,29 @@ function buildAlerts(
     });
   }
 
+  for (const event of router.safetyEvents) {
+    if (event.severity !== "critical" && event.severity !== "warning") {
+      continue;
+    }
+    alerts.push({
+      id: `router_safety:${router.id}:${event.type}:${event.component ?? "router"}:${event.observedAt}`,
+      kind: "router_safety",
+      severity: event.severity,
+      routerId: router.id,
+      routerName: router.name,
+      href,
+      title:
+        event.severity === "critical"
+          ? "Критическое событие на роутере"
+          : "Предупреждение от контроллера",
+      description: [event.message, event.evidence]
+        .filter((part) => part && part.trim().length > 0)
+        .join(" — "),
+      openedAt: event.observedAt ?? router.lastSeenAt,
+      filters: routerFilters,
+    });
+  }
+
   return alerts;
 }
 
@@ -736,6 +763,7 @@ export function buildFleetMonitoringSnapshot(args: {
       components: input.components,
       telegramReachability: input.telegramReachability ?? null,
       youtubeReachability: input.youtubeReachability ?? null,
+      safetyEvents: input.safetyEvents ?? [],
       memory,
       lastSeen: formatRelativeTime(input.lastSeenAt, now),
       pendingChanges: input.queuedJobCount,

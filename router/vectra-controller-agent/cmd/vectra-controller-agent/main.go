@@ -675,6 +675,29 @@ func executeJobs(
 			return fmt.Errorf("persist current job %s: %w", job.ID, err)
 		}
 
+		if safety := evaluateJobSafety(
+			job,
+			desiredRevision,
+			inventory.CollectResources(),
+			time.Now().UTC(),
+		); safety.Blocked {
+			log.Printf("job %s (%s) blocked by router resource guard: %s", job.ID, job.Type, safety.Message)
+			if err := submitFailure(
+				ctx,
+				client,
+				cfg,
+				persisted,
+				job.ID,
+				"",
+				"",
+				safety.Message,
+				safety.ResultPayload(job),
+			); err != nil {
+				return err
+			}
+			continue
+		}
+
 		switch job.Type {
 		case "apply_passwall_config":
 			if desiredRevision == nil {

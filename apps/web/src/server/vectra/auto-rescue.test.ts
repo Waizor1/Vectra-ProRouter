@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   hasDistinctBlockedReachabilityEvidence,
+  planRepairActionsForRouterSafety,
   repairActionsForTrigger,
+  resourceGuardReasonsForLogCollection,
 } from "./auto-rescue";
 
 describe("repairActionsForTrigger", () => {
@@ -79,5 +81,66 @@ describe("hasDistinctBlockedReachabilityEvidence", () => {
         "telegramReachability",
       ),
     ).toBe(true);
+  });
+});
+
+describe("planRepairActionsForRouterSafety", () => {
+  it("keeps full repair sequence when router resources are safe", () => {
+    const actions = repairActionsForTrigger("proxy_outage");
+
+    expect(
+      planRepairActionsForRouterSafety(actions, {
+        resources: {
+          memoryAvailableMb: 96,
+          overlayFreeMb: 32,
+          tmpFreeMb: 64,
+        },
+        safetyEvents: [],
+      }),
+    ).toEqual({
+      actions: [
+        "restart_passwall",
+        "restart_dnsmasq",
+        "refresh_rules",
+        "refresh_subscriptions",
+        "reconnect_proxy",
+      ],
+      droppedActions: [],
+      reasons: [],
+    });
+  });
+
+  it("does not restart PassWall for service-specific repair while memory is low", () => {
+    const planned = planRepairActionsForRouterSafety(
+      repairActionsForTrigger("telegram_blocked"),
+      {
+        resources: {
+          memoryAvailableMb: 45,
+          overlayFreeMb: 32,
+          tmpFreeMb: 64,
+        },
+      },
+      "telegram_blocked",
+    );
+
+    expect(planned.actions).toEqual(["restart_dnsmasq"]);
+    expect(planned.droppedActions).toEqual([
+      "restart_passwall",
+      "refresh_rules",
+      "refresh_subscriptions",
+    ]);
+    expect(planned.reasons.join("; ")).toContain("available RAM 45 MB");
+  });
+
+  it("blocks log collection under the diagnostic resource floor", () => {
+    expect(
+      resourceGuardReasonsForLogCollection({
+        resources: {
+          memoryAvailableMb: 40,
+          overlayFreeMb: 64,
+          tmpFreeMb: 64,
+        },
+      }).join("; "),
+    ).toContain("available RAM 40 MB");
   });
 });

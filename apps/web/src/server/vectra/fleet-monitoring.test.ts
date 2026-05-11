@@ -332,4 +332,61 @@ describe("pickFreshAlertsForBrowser", () => {
     expect(snapshot.routers[0]?.configTrust.requiresReimport).toBe(true);
     expect(snapshot.alerts[0]?.kind).toBe("reimport_needed");
   });
+
+  it("surfaces router-side safety events as fleet alerts", () => {
+    const snapshot = buildFleetMonitoringSnapshot({
+      now: new Date("2026-05-12T10:10:00.000Z"),
+      offlineThresholdMs: 3 * 60 * 1000,
+      openIncidentCount: 0,
+      queuedJobs: 0,
+      routers: [
+        {
+          id: "oom-router",
+          name: "OOM Router",
+          status: "active",
+          importState: "approved",
+          supportState: "pilot",
+          lastSeenAt: new Date("2026-05-12T10:09:40.000Z"),
+          selectedNode: "WorldProxy",
+          passwallEnabled: true,
+          nodeCount: 3,
+          subscriptionCount: 1,
+          controllerVersion: "0.1.13-r18",
+          passwallVersion: "26.5.1-r1",
+          components: {},
+          queuedJobCount: 0,
+          lastRescueReason: null,
+          configTrust: {
+            liveConfigAvailable: true,
+            requiresReimport: false,
+            digestMismatch: false,
+            configSourceMode: "live-import",
+            lastLiveImportAt: "2026-05-12T10:08:00.000Z",
+            lastCheckInAt: "2026-05-12T10:09:40.000Z",
+          },
+          safetyEvents: [
+            {
+              type: "oom_kill",
+              severity: "critical",
+              component: "xray",
+              source: "dmesg",
+              message: "OOM pressure mentioned xray",
+              observedAt: "2026-05-12T10:09:00.000Z",
+              evidence: "Out of memory: Killed process 2699 (xray)",
+            },
+          ],
+          openIncident: null,
+        },
+      ],
+    });
+
+    expect(snapshot.alerts[0]).toMatchObject({
+      kind: "router_safety",
+      severity: "critical",
+      routerId: "oom-router",
+      title: "Критическое событие на роутере",
+    });
+    expect(snapshot.alerts[0]?.description).toContain("xray");
+    expect(snapshot.routers[0]?.alertKinds).toContain("router_safety");
+  });
 });

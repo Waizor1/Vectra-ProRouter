@@ -1054,6 +1054,9 @@ export function RouterDetailWorkspace({
     inventory.youtubeReachability,
   );
   const memoryStatus = describeRouterMemory(inventory.resources ?? null);
+  const safetyEvents = (inventory.safetyEvents ?? []).filter(
+    (event) => event.severity === "critical" || event.severity === "warning",
+  );
   const hasUnconfirmedChanges =
     editor.unconfirmedChanges.router.status !== "none" ||
     editor.unconfirmedChanges.panel.status !== "none";
@@ -1284,6 +1287,64 @@ export function RouterDetailWorkspace({
             compact
           />
         </div>
+
+        {safetyEvents.length > 0 ? (
+          <details className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-500/[0.07] px-3 py-3">
+            <summary className="cursor-pointer list-none">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="vectra-kicker text-amber-200">
+                    События безопасности
+                  </p>
+                  <p className="mt-2 text-sm font-medium text-white">
+                    Контроллер заметил риск для PassWall/Xray или ресурсов
+                    роутера
+                  </p>
+                </div>
+                <span className="text-xs text-amber-100">
+                  {safetyEvents.length}
+                </span>
+              </div>
+            </summary>
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              {safetyEvents.slice(0, 6).map((event) => (
+                <div
+                  key={`${event.type}-${event.component ?? "router"}-${event.observedAt}`}
+                  className="rounded-md border border-white/10 bg-[rgba(11,14,20,0.86)] px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-medium text-white">
+                      {event.component ?? event.type}
+                    </p>
+                    <span
+                      className={`text-xs ${
+                        event.severity === "critical"
+                          ? "text-rose-200"
+                          : "text-amber-100"
+                      }`}
+                    >
+                      {event.severity === "critical"
+                        ? "критично"
+                        : "предупреждение"}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-slate-300">
+                    {event.message}
+                  </p>
+                  {event.evidence ? (
+                    <p className="mt-1 text-[11px] leading-5 text-slate-500">
+                      {event.evidence}
+                    </p>
+                  ) : null}
+                  <p className="mt-1 text-[11px] leading-5 text-slate-500">
+                    Источник {event.source ?? "inventory"} ·{" "}
+                    {formatDateTime(event.observedAt)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
 
         {telegramChecks.length > 0 ? (
           <details className="mt-3 rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">

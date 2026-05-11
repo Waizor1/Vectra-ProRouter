@@ -40,6 +40,16 @@ type RouterServiceHealth struct {
 	DNSMasq        string `json:"dnsmasq"`
 }
 
+type RouterSafetyEvent struct {
+	Type       string `json:"type"`
+	Severity   string `json:"severity"`
+	Component  string `json:"component,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Message    string `json:"message"`
+	ObservedAt string `json:"observedAt"`
+	Evidence   string `json:"evidence,omitempty"`
+}
+
 type RouterReachabilityProbe struct {
 	ID             string                    `json:"id,omitempty"`
 	Label          string                    `json:"label,omitempty"`
@@ -84,6 +94,7 @@ type RouterInventory struct {
 	RulesAssets          RouterRulesAssets        `json:"rulesAssets"`
 	Resources            RouterResources          `json:"resources"`
 	ServiceHealth        RouterServiceHealth      `json:"serviceHealth"`
+	SafetyEvents         []RouterSafetyEvent      `json:"safetyEvents,omitempty"`
 	LastRescue           *LastRescue              `json:"lastRescue,omitempty"`
 	PanelReachability    *RouterReachabilityProbe `json:"panelReachability,omitempty"`
 	RUReachability       *RouterReachabilityProbe `json:"ruReachability,omitempty"`

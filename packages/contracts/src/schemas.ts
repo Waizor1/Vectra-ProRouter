@@ -437,6 +437,18 @@ export const routerGroupedReachabilitySchema = z.object({
   checks: z.array(routerReachabilityProbeSchema).default([]),
 });
 
+export const routerSafetyEventSchema = z
+  .object({
+    type: z.string().min(1),
+    severity: z.enum(["info", "warning", "critical"]),
+    component: z.string().min(1).optional(),
+    source: z.string().min(1).optional(),
+    message: z.string().min(1),
+    observedAt: z.string().datetime(),
+    evidence: z.string().min(1).optional(),
+  })
+  .passthrough();
+
 export const routerInventorySchema = z.object({
   protocolVersion: z.literal(VECTRA_PROTOCOL_VERSION),
   deviceIdentifier: z.string().min(1),
@@ -477,6 +489,7 @@ export const routerInventorySchema = z.object({
   foreignReachability: routerGroupedReachabilitySchema.optional(),
   telegramReachability: routerTelegramReachabilitySchema.optional(),
   youtubeReachability: routerYoutubeReachabilitySchema.optional(),
+  safetyEvents: z.array(routerSafetyEventSchema).optional(),
   rawSnapshot: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -953,6 +966,7 @@ export type RouterTelegramReachability = z.infer<
 export type RouterYoutubeReachability = z.infer<
   typeof routerYoutubeReachabilitySchema
 >;
+export type RouterSafetyEvent = z.infer<typeof routerSafetyEventSchema>;
 export type RouterInventory = z.infer<typeof routerInventorySchema>;
 export type RescuePolicy = z.infer<typeof rescuePolicySchema>;
 export type UpdatePolicy = z.infer<typeof updatePolicySchema>;

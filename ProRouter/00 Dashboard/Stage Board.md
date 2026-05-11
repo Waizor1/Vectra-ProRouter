@@ -8,6 +8,11 @@ tags:
 
 # Stage Board
 
+## 2026-05-12 OpenWrt-aware router safety guard
+
+- Added an additive OpenWrt safety layer across controller, contracts, and web. Router inventory now reports bounded `safetyEvents` for low RAM, low `/overlay`, low `/tmp`, degraded PassWall/dnsmasq/passwall_server, and OOM/crash evidence from cached `logread`/`dmesg` diagnostics. The router agent blocks heavy jobs before running commands when resource floors are unsafe or unknown, including package/firmware/storage work, rule/subscription refreshes, heavy apply previews, heavy rescue repair payloads, generic terminal diagnostics, and log collection; explicit router reboot and hostname update stay allowed. The web side surfaces these events as fleet/router-detail alerts and throttles Auto-Rescue so low-resource service-specific incidents do not restart PassWall/Xray or run refreshes just because Telegram/foreign probes are red. Verification: `cd router/vectra-controller-agent && go test ./... -count=1`, full `@vectra/web` Vitest run via the targeted command, `@vectra/web typecheck`, `@vectra/web lint`, `@vectra/web build`, and `git diff --check` are green locally.
+
+
 ## 2026-05-12 Router-safe service monitoring
 
 - Converted Telegram/YouTube service monitoring away from steady-state live probing on every check-in. The router agent now runs those HTTPS probes only from cached rare checks (`30m` TTL), only when PassWall is enabled/running, and only when `MemAvailable >= 128 MB`; unknown or low memory skips the service probes entirely. The web UI now explains `нет данных` as an intentional blind spot/skip state, not an outage, while auto-rescue requires distinct blocked probe `checkedAt` values before opening Telegram/foreign reachability repair cases so repeated cached blocked snapshots cannot trigger repair loops. Verification: `go test ./... -count=1` for `router/vectra-controller-agent`, full `@vectra/web` Vitest suite, `@vectra/web typecheck`, `@vectra/web lint`, `@vectra/web build`, and `git diff --check` are green locally.

@@ -48,11 +48,162 @@ const activeRescueStates = [
 ] as const;
 const repairJobStates = ["queued", "delivered", "running"] as const;
 const blockedSnapshotWindow = 3;
+const heavyRescueRepairActions = [
+  "refresh_rules",
+  "refresh_subscriptions",
+] as const;
+const proxyRuntimeRepairActions = ["restart_passwall", "reconnect_proxy"] as const;
+const heavyRepairMemoryFloorMb = 64;
+const heavyRepairOverlayFloorMb = 8;
+const heavyRepairTmpFloorMb = 16;
+const diagnosticMemoryFloorMb = 48;
+const diagnosticTmpFloorMb = 8;
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function numberField(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function latestResourceRecord(snapshotPayload: unknown) {
+  return asRecord(asRecord(snapshotPayload).resources);
+}
+
+function latestSafetyEventRecords(snapshotPayload: unknown) {
+  const events = asRecord(snapshotPayload).safetyEvents;
+  return Array.isArray(events) ? events.map(asRecord) : [];
+}
+
+function resourceSafetyEventReasons(
+  snapshotPayload: unknown,
+  eventTypes: readonly string[],
+) {
+  const allowed = new Set(eventTypes);
+  return latestSafetyEventRecords(snapshotPayload).flatMap((event) => {
+    const type = typeof event.type === "string" ? event.type : null;
+    const severity =
+      typeof event.severity === "string" ? event.severity : null;
+    if (
+      !type ||
+      !allowed.has(type) ||
+      (severity !== "critical" && severity !== "warning")
+    ) {
+      return [];
+    }
+    const component =
+      typeof event.component === "string" ? `/${event.component}` : "";
+    return [`latest safety event ${type}${component} is ${severity}`];
+  });
+}
+
+function resourceFloorReasons(
+  resources: Record<string, unknown>,
+  floors: {
+    memoryAvailableMb: number;
+    tmpFreeMb: number;
+    overlayFreeMb?: number;
+  },
+) {
+  const reasons: string[] = [];
+  const memoryAvailableMb = numberField(resources, "memoryAvailableMb");
+  if (!memoryAvailableMb || memoryAvailableMb <= 0) {
+    reasons.push("available RAM is unknown");
+  } else if (memoryAvailableMb < floors.memoryAvailableMb) {
+    reasons.push(
+      `available RAM ${memoryAvailableMb} MB is below ${floors.memoryAvailableMb} MB floor`,
+    );
+  }
+
+  const tmpFreeMb = numberField(resources, "tmpFreeMb");
+  if (!tmpFreeMb || tmpFreeMb <= 0) {
+    reasons.push("/tmp free space is unknown");
+  } else if (tmpFreeMb < floors.tmpFreeMb) {
+    reasons.push(
+      `/tmp free ${tmpFreeMb} MB is below ${floors.tmpFreeMb} MB floor`,
+    );
+  }
+
+  if (floors.overlayFreeMb !== undefined) {
+    const overlayFreeMb = numberField(resources, "overlayFreeMb");
+    if (!overlayFreeMb || overlayFreeMb <= 0) {
+      reasons.push("/overlay free space is unknown");
+    } else if (overlayFreeMb < floors.overlayFreeMb) {
+      reasons.push(
+        `/overlay free ${overlayFreeMb} MB is below ${floors.overlayFreeMb} MB floor`,
+      );
+    }
+  }
+
+  return reasons;
+}
+
+export function resourceGuardReasonsForHeavyRescueRepair(
+  snapshotPayload: unknown,
+) {
+  return [
+    ...resourceFloorReasons(latestResourceRecord(snapshotPayload), {
+      memoryAvailableMb: heavyRepairMemoryFloorMb,
+      overlayFreeMb: heavyRepairOverlayFloorMb,
+      tmpFreeMb: heavyRepairTmpFloorMb,
+    }),
+    ...resourceSafetyEventReasons(snapshotPayload, [
+      "low_memory",
+      "low_overlay",
+      "low_tmp",
+      "oom_kill",
+    ]),
+  ];
+}
+
+export function resourceGuardReasonsForLogCollection(snapshotPayload: unknown) {
+  return [
+    ...resourceFloorReasons(latestResourceRecord(snapshotPayload), {
+      memoryAvailableMb: diagnosticMemoryFloorMb,
+      tmpFreeMb: diagnosticTmpFloorMb,
+    }),
+    ...resourceSafetyEventReasons(snapshotPayload, [
+      "low_memory",
+      "low_tmp",
+      "oom_kill",
+    ]),
+  ];
+}
+
+export function planRepairActionsForRouterSafety(
+  actions: readonly string[],
+  snapshotPayload: unknown,
+  trigger?: RescueCaseTrigger,
+) {
+  const heavyReasons =
+    resourceGuardReasonsForHeavyRescueRepair(snapshotPayload);
+  if (heavyReasons.length === 0) {
+    return {
+      actions: [...actions],
+      droppedActions: [] as string[],
+      reasons: [] as string[],
+    };
+  }
+
+  const blocked = new Set<string>(heavyRescueRepairActions);
+  if (
+    trigger === "foreign_reachability_blocked" ||
+    trigger === "telegram_blocked"
+  ) {
+    for (const action of proxyRuntimeRepairActions) {
+      blocked.add(action);
+    }
+  }
+
+  return {
+    actions: actions.filter((action) => !blocked.has(action)),
+    droppedActions: actions.filter((action) => blocked.has(action)),
+    reasons: heavyReasons,
+  };
 }
 
 function readStatus(value: unknown) {
@@ -136,6 +287,7 @@ function compactSnapshot(snapshot: SnapshotRow) {
     panelReachability: compactReachability(payload.panelReachability),
     foreignReachability: compactReachability(payload.foreignReachability),
     telegramReachability: compactReachability(payload.telegramReachability),
+    safetyEvents: payload.safetyEvents ?? [],
     resources: payload.resources ?? null,
     rulesAssets: payload.rulesAssets ?? null,
   };
@@ -211,6 +363,16 @@ async function loadRecentSnapshots(
     .where(eq(routerInventorySnapshots.routerId, routerId))
     .orderBy(desc(routerInventorySnapshots.createdAt))
     .limit(limit);
+}
+
+async function loadLatestSnapshot(database: DatabaseClient, routerId: string) {
+  const [snapshot] = await database
+    .select()
+    .from(routerInventorySnapshots)
+    .where(eq(routerInventorySnapshots.routerId, routerId))
+    .orderBy(desc(routerInventorySnapshots.createdAt))
+    .limit(1);
+  return snapshot ?? null;
 }
 
 async function buildCompactEvidence(
@@ -548,6 +710,16 @@ export async function queueRescueCaseLogCollection(
     return existingJob;
   }
 
+  const latestSnapshot = await loadLatestSnapshot(database, rescueCase.routerId);
+  const guardReasons = latestSnapshot
+    ? resourceGuardReasonsForLogCollection(latestSnapshot.payload)
+    : ["latest router resource snapshot is unavailable"];
+  if (guardReasons.length > 0) {
+    throw new Error(
+      `Router resource guard blocked log collection: ${guardReasons.join("; ")}`,
+    );
+  }
+
   const payload = collectRouterLogsJobPayloadSchema.parse({
     source: "all",
     lines: 200,
@@ -593,9 +765,21 @@ export async function queueRescueCaseSafeRepair(
     throw new Error("Safe repair is allowed only for pilot/certified routers.");
   }
 
-  const actions = args.actions ?? repairActionsForTrigger(rescueCase.trigger);
+  const requestedActions =
+    args.actions ?? repairActionsForTrigger(rescueCase.trigger);
+  const latestSnapshot = await loadLatestSnapshot(database, rescueCase.routerId);
+  const actionPlan = planRepairActionsForRouterSafety(
+    requestedActions,
+    latestSnapshot?.payload ?? null,
+    rescueCase.trigger,
+  );
+  const actions = actionPlan.actions;
   if (actions.length === 0) {
-    throw new Error("This rescue trigger has no remote repair sequence.");
+    throw new Error(
+      actionPlan.droppedActions.length > 0
+        ? `Router resource guard blocked all requested repair actions: ${actionPlan.reasons.join("; ")}`
+        : "This rescue trigger has no remote repair sequence.",
+    );
   }
   if (await hasActiveRepairJob(database, rescueCase.routerId, rescueCase.id)) {
     const [existingJob] = await database
@@ -645,6 +829,13 @@ export async function queueRescueCaseSafeRepair(
         ...asRecord(rescueCase.diagnosis),
         lastQueuedJobId: job?.id ?? null,
         lastQueuedActions: payload.actions,
+        resourceGuard:
+          actionPlan.droppedActions.length > 0
+            ? {
+                droppedActions: actionPlan.droppedActions,
+                reasons: actionPlan.reasons,
+              }
+            : null,
       },
     })
     .where(eq(rescueCases.id, rescueCase.id));

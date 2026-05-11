@@ -361,6 +361,7 @@ export async function loadFleetMonitoringSnapshot(
         components: pickComponentVersions(snapshot),
         telegramReachability: payload?.telegramReachability ?? null,
         youtubeReachability: payload?.youtubeReachability ?? null,
+        safetyEvents: payload?.safetyEvents ?? [],
         resources: payload?.resources ?? null,
         queuedJobCount: jobCountMap.get(router.id) ?? 0,
         lastRescueReason: incident?.reason ?? router.lastRescueReason ?? null,

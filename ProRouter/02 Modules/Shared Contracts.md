@@ -14,6 +14,8 @@ tags:
 
 ## Confirmed
 
+- 2026-05-12 router safety event contract: `RouterInventory` now has additive optional `safetyEvents[]` with `type`, `severity`, `component`, `source`, `message`, `observedAt`, and bounded `evidence`. This keeps legacy agents compatible while letting the agent, fleet monitoring, router detail, and Auto-Rescue share OpenWrt-side safety evidence without overloading reachability or generic incident fields.
+
 - 2026-05-08 r12 deployed contract parity: production web now uses `buildVectraSubscriptionSectionName()` in operation preview, so previewed `subscribe_list` section names match the controller `0.1.13-r12` apply renderer and no longer compound `vectra_sub_` prefixes.
 - 2026-05-08 subscription section-name parity: `packages/contracts/src/helpers.ts` now exposes `buildVectraSubscriptionSectionName()` and operation preview uses it for `subscribe_list` UCI commands, matching controller apply while collapsing repeated `vectra_sub_` prefixes to a single canonical section name. Regression coverage lives in `apps/web/src/server/vectra/passwall-contracts.test.ts`.
 - 2026-05-08 upstream PassWall parameter parity: preview/contracts now pin the latest supported extras in tests, including ShuntRule `protocol=http quic`, node `mkcp_mtu`, node `tls_pinSHA256`, and subscription `domain_resolver` / `domain_resolver_dns_https` / `domain_strategy=UseIPv4`, so the UCI preview continues to match controller apply for newly surfaced PassWall2 fields.
