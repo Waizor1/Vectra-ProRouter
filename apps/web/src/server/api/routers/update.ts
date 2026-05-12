@@ -831,10 +831,7 @@ export const updateRouter = createTRPCRouter({
               error: null,
               stdout: null,
               stderr: null,
-              command:
-                typeof job.payload?.command === "string"
-                  ? job.payload.command
-                  : null,
+              command: null,
               artifactVersion:
                 typeof job.payload?.artifactVersion === "string"
                   ? job.payload.artifactVersion

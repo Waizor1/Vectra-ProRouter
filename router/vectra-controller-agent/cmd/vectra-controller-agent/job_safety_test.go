@@ -112,6 +112,47 @@ func TestEvaluateJobSafetyWithResourceCollectorSkipsUnguardedJob(t *testing.T) {
 	}
 }
 
+func TestEvaluateJobSafetyUsesControllerOverlayFloorForTerminalSelfUpdate(t *testing.T) {
+	job := controlplane.Job{
+		ID:   "job-1",
+		Type: "run_terminal_command",
+		Payload: map[string]interface{}{
+			"purpose": controllerSelfUpdateTerminalPurpose,
+		},
+	}
+
+	allowed := evaluateJobSafety(
+		job,
+		nil,
+		controlplane.RouterResources{
+			MemoryAvailableMB: 96,
+			OverlayFreeMB:     12,
+			TMPFreeMB:         64,
+		},
+		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+	)
+	if allowed.Blocked {
+		t.Fatalf("expected terminal controller self-update to use controller overlay floor, got %#v", allowed)
+	}
+
+	blocked := evaluateJobSafety(
+		job,
+		nil,
+		controlplane.RouterResources{
+			MemoryAvailableMB: 96,
+			OverlayFreeMB:     7,
+			TMPFreeMB:         64,
+		},
+		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+	)
+	if !blocked.Blocked {
+		t.Fatalf("expected terminal controller self-update below controller overlay floor to be blocked")
+	}
+	if !strings.Contains(strings.Join(blocked.Reasons, "; "), "/overlay free 7 MB is below 8 MB floor") {
+		t.Fatalf("expected controller overlay floor reason, got %#v", blocked.Reasons)
+	}
+}
+
 func TestClassifyApplyPasswallConfigOnlyGuardsHeavyImpact(t *testing.T) {
 	job := controlplane.Job{ID: "job-1", Type: "apply_passwall_config"}
 

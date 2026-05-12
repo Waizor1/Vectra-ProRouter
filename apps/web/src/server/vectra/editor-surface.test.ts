@@ -797,6 +797,40 @@ describe("buildRouterManagementTaskLog", () => {
     });
   });
 
+  it("compacts verbose terminal self-update details before returning monitor payloads", () => {
+    const longCommand = `set -eu; ${"opkg install --force-reinstall ".repeat(120)}`;
+    const longStdout = "controller self-update log\n".repeat(240);
+
+    const items = buildRouterManagementTaskLog({
+      jobs: [
+        createJob({
+          id: "terminal-controller-job",
+          type: "run_terminal_command",
+          state: "succeeded",
+          payload: {
+            purpose: "controller-self-update",
+            artifactVersion: "0.1.13-r20",
+            command: longCommand,
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          jobId: "terminal-controller-job",
+          status: "success",
+          payload: {
+            stdout: longStdout,
+          },
+        }),
+      ],
+    });
+
+    expect(items[0]?.command).toContain("…[truncated");
+    expect(items[0]?.command?.length).toBeLessThan(longCommand.length);
+    expect(items[0]?.stdout).toContain("…[truncated");
+    expect(items[0]?.stdout?.length).toBeLessThan(longStdout.length);
+  });
+
   it("surfaces terminal self-update LuCI package failures as actionable errors", () => {
     const items = buildRouterManagementTaskLog({
       jobs: [

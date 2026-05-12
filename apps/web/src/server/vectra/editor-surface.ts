@@ -138,6 +138,10 @@ export type RouterManagementTaskLogItem = {
   packageResults: LastPasswallUpdateAttempt["packageResults"];
 };
 
+const taskLogErrorLimit = 2_000;
+const taskLogOutputLimit = 4_000;
+const taskLogCommandLimit = 1_200;
+
 export type RouterWorkspaceInventory = {
   controllerVersion?: string | null;
   passwallVersion?: string | null;
@@ -1028,6 +1032,14 @@ function readStringField(
     : null;
 }
 
+function compactTaskLogText(value: string | null, maxChars: number) {
+  if (!value || value.length <= maxChars) {
+    return value;
+  }
+
+  return `${value.slice(0, maxChars).trimEnd()}\n…[truncated ${value.length - maxChars} chars]`;
+}
+
 function firstMeaningfulLine(value: string | null | undefined) {
   if (!value) {
     return null;
@@ -1262,12 +1274,23 @@ export function buildRouterManagementTaskLog(args: {
         createdAt: job.createdAt,
         reportedAt: preferredResult?.reportedAt ?? null,
         summary,
-        error: readStringField(payload, "error"),
-        stdout: readStringField(payload, "stdout"),
-        stderr: readStringField(payload, "stderr"),
-        command:
+        error: compactTaskLogText(
+          readStringField(payload, "error"),
+          taskLogErrorLimit,
+        ),
+        stdout: compactTaskLogText(
+          readStringField(payload, "stdout"),
+          taskLogOutputLimit,
+        ),
+        stderr: compactTaskLogText(
+          readStringField(payload, "stderr"),
+          taskLogOutputLimit,
+        ),
+        command: compactTaskLogText(
           readStringField(job.payload, "command") ??
-          readStringField(payload, "command"),
+            readStringField(payload, "command"),
+          taskLogCommandLimit,
+        ),
         artifactVersion,
         targetVersion:
           readStringField(job.payload, "targetVersion") ??

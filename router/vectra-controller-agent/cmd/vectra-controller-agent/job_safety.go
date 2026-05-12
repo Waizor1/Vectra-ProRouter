@@ -96,7 +96,7 @@ func evaluateJobSafetyForClass(
 		tmpFloor = jobSafetyDiagnosticTMPFloorMB
 		overlayFloor = 0
 	}
-	if job.Type == "update_controller" {
+	if isControllerUpdateSafetyJob(job) {
 		overlayFloor = jobSafetyControllerOverlayFloorMB
 	}
 
@@ -145,6 +145,14 @@ func evaluateJobSafetyForClass(
 		strings.Join(reasons, "; "),
 	)
 	return decision
+}
+
+func isControllerUpdateSafetyJob(job controlplane.Job) bool {
+	if job.Type == "update_controller" {
+		return true
+	}
+	return job.Type == "run_terminal_command" &&
+		strings.TrimSpace(payloadString(job.Payload, "purpose")) == controllerSelfUpdateTerminalPurpose
 }
 
 func classifyJobSafety(
