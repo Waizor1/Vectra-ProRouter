@@ -137,6 +137,31 @@ describe("selectDeliverableJobsForCheckIn", () => {
     expect(deliverable[0]?.id).toBe("controller-legacy-job");
   });
 
+  it("treats compat controller self-update terminal jobs as exclusive", () => {
+    const deliverable = selectDeliverableJobsForCheckIn("approved", [
+      {
+        id: "apply-job",
+        type: "apply_passwall_config",
+        state: "queued",
+        payload: {},
+      },
+      {
+        id: "controller-compat-job",
+        type: "run_terminal_command",
+        state: "queued",
+        payload: {
+          purpose: "controller-self-update-compat",
+          artifactVersion: "0.1.13-r20",
+          command: "opkg install --force-reinstall ...",
+          timeoutSeconds: 120,
+        },
+      },
+    ] as never);
+
+    expect(deliverable).toHaveLength(1);
+    expect(deliverable[0]?.id).toBe("controller-compat-job");
+  });
+
   it("treats rescue repair jobs as exclusive", () => {
     const deliverable = selectDeliverableJobsForCheckIn("approved", [
       {

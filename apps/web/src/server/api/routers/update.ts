@@ -17,9 +17,13 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
-import { resolveInstalledControllerVersion } from "~/lib/controller-version";
+import {
+  compareControllerVersions,
+  resolveInstalledControllerVersion,
+} from "~/lib/controller-version";
 import {
   buildTerminalControllerSelfUpdatePayload,
+  controllerSelfUpdateCompatTerminalPurpose,
   shouldUseTerminalControllerSelfUpdate,
 } from "~/lib/controller-update-jobs";
 import { buildTerminalPasswallClearIpsetsPayload } from "~/lib/passwall-clear-ipsets-jobs";
@@ -76,6 +80,50 @@ const CONTROLLER_PACKAGE_LIST = [
   "vectra-controller-agent",
   "luci-app-vectra-controller",
 ];
+
+const controllerSelfUpdateCompatBridgeMaxVersion = "0.1.13-r20";
+const controllerSelfUpdateCompatMemoryFloorMb = 48;
+const controllerSelfUpdateCompatOverlayFloorMb = 8;
+const controllerSelfUpdateCompatTmpFloorMb = 16;
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function numberField(source: Record<string, unknown>, key: string) {
+  const value = source[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function shouldUseControllerSelfUpdateCompatBridge(args: {
+  installedControllerVersion: string | null | undefined;
+  snapshotPayload: unknown;
+}) {
+  const versionCompare = compareControllerVersions(
+    args.installedControllerVersion,
+    controllerSelfUpdateCompatBridgeMaxVersion,
+  );
+  if (versionCompare === null || versionCompare >= 0) {
+    return false;
+  }
+
+  const resources = asRecord(asRecord(args.snapshotPayload).resources);
+  const memoryAvailableMb = numberField(resources, "memoryAvailableMb");
+  const overlayFreeMb = numberField(resources, "overlayFreeMb");
+  const tmpFreeMb = numberField(resources, "tmpFreeMb");
+
+  return (
+    memoryAvailableMb !== null &&
+    memoryAvailableMb >= controllerSelfUpdateCompatMemoryFloorMb &&
+    overlayFreeMb !== null &&
+    overlayFreeMb >= controllerSelfUpdateCompatOverlayFloorMb &&
+    tmpFreeMb !== null &&
+    tmpFreeMb >= controllerSelfUpdateCompatTmpFloorMb
+  );
+}
+
 const passwallUpdatePackageSchema = z.enum(SELECTABLE_PASSWALL_PACKAGE_NAMES);
 type DatabaseClient = typeof DatabaseClientValue;
 type ArtifactRow = typeof artifacts.$inferSelect;
@@ -354,6 +402,12 @@ async function enqueueControllerUpdateJob(args: {
     ? buildTerminalControllerSelfUpdatePayload({
         artifactVersion: payload.artifactVersion,
         packageArtifacts,
+        purpose: shouldUseControllerSelfUpdateCompatBridge({
+          installedControllerVersion,
+          snapshotPayload: snapshot?.payload ?? null,
+        })
+          ? controllerSelfUpdateCompatTerminalPurpose
+          : undefined,
       })
     : null;
   const dedupeKey = `update_controller:${args.routerId}:${args.channel}:${

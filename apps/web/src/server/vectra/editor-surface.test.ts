@@ -797,6 +797,38 @@ describe("buildRouterManagementTaskLog", () => {
     });
   });
 
+  it("treats compat terminal self-update as controller task", () => {
+    const items = buildRouterManagementTaskLog({
+      jobs: [
+        createJob({
+          id: "terminal-controller-compat-job",
+          type: "run_terminal_command",
+          state: "succeeded",
+          payload: {
+            purpose: "controller-self-update-compat",
+            artifactVersion: "0.1.13-r20",
+            command: "opkg install --force-reinstall ...",
+          },
+        }),
+      ],
+      results: [
+        createJobResult({
+          jobId: "terminal-controller-compat-job",
+          status: "success",
+          payload: {
+            stdout: "controller self-update to 0.1.13-r20 installed",
+          },
+        }),
+      ],
+    });
+
+    expect(items[0]).toMatchObject({
+      kind: "controller-self-update",
+      label: "Self-update controller",
+      resultStatus: "success",
+    });
+  });
+
   it("compacts verbose terminal self-update details before returning monitor payloads", () => {
     const longCommand = `set -eu; ${"opkg install --force-reinstall ".repeat(120)}`;
     const longStdout = "controller self-update log\n".repeat(240);

@@ -87,6 +87,7 @@ function createProtectedCaller<T>(router: T, db: unknown) {
 function createPilotLayoutSnapshot(
   layoutFamily = "ubootmod",
   packageVersions?: Record<string, string>,
+  payloadOverrides: Record<string, unknown> = {},
 ) {
   return {
     id: "snapshot-1",
@@ -103,6 +104,7 @@ function createPilotLayoutSnapshot(
         "sing-box": "1.13.5-r1",
         ...packageVersions,
       },
+      ...payloadOverrides,
     },
   };
 }
@@ -627,6 +629,100 @@ describe("destructive route gating", () => {
     );
     expect(inserted.payload?.command).not.toContain("LuCI reinstall failed");
     expect(inserted.payload?.command?.length).toBeLessThanOrEqual(4000);
+  });
+
+  it("uses a compat terminal purpose for pre-r20 controllers when the controller update is resource-safe", async () => {
+    const mock = createMockDb([
+      [createCertifiedLikeRouter()],
+      [
+        createPilotLayoutSnapshot(
+          "ubootmod",
+          {
+            "vectra-controller-agent": "0.1.13-r18",
+            "luci-app-vectra-controller": "0.1.13-r18",
+          },
+          {
+            resources: {
+              memoryAvailableMb: 74,
+              overlayFreeMb: 12,
+              tmpFreeMb: 114,
+            },
+          },
+        ),
+      ],
+      [
+        createControllerArtifact("vectra-controller-agent", "0.1.13-r20"),
+        createControllerArtifact("luci-app-vectra-controller", "0.1.13-r20"),
+      ],
+      [],
+    ]);
+    const caller = createProtectedCaller(updateRouter, mock.db) as {
+      queueControllerUpdate: (input: {
+        routerId: string;
+        channel: "stable" | "beta";
+      }) => Promise<unknown>;
+    };
+
+    await caller.queueControllerUpdate({
+      routerId: CERTIFIED_LIKE_ROUTER_ID,
+      channel: "stable",
+    });
+
+    const [inserted] = mock.insertedValues() as Array<{
+      type?: string;
+      payload?: { purpose?: string | null; artifactVersion?: string | null };
+    }>;
+
+    expect(inserted?.type).toBe("run_terminal_command");
+    expect(inserted?.payload?.purpose).toBe("controller-self-update-compat");
+    expect(inserted?.payload?.artifactVersion).toBe("0.1.13-r20");
+  });
+
+  it("keeps the normal self-update purpose when a pre-r20 controller is below bridge floors", async () => {
+    const mock = createMockDb([
+      [createCertifiedLikeRouter()],
+      [
+        createPilotLayoutSnapshot(
+          "ubootmod",
+          {
+            "vectra-controller-agent": "0.1.13-r18",
+            "luci-app-vectra-controller": "0.1.13-r18",
+          },
+          {
+            resources: {
+              memoryAvailableMb: 74,
+              overlayFreeMb: 7,
+              tmpFreeMb: 114,
+            },
+          },
+        ),
+      ],
+      [
+        createControllerArtifact("vectra-controller-agent", "0.1.13-r20"),
+        createControllerArtifact("luci-app-vectra-controller", "0.1.13-r20"),
+      ],
+      [],
+    ]);
+    const caller = createProtectedCaller(updateRouter, mock.db) as {
+      queueControllerUpdate: (input: {
+        routerId: string;
+        channel: "stable" | "beta";
+      }) => Promise<unknown>;
+    };
+
+    await caller.queueControllerUpdate({
+      routerId: CERTIFIED_LIKE_ROUTER_ID,
+      channel: "stable",
+    });
+
+    const [inserted] = mock.insertedValues() as Array<{
+      type?: string;
+      payload?: { purpose?: string | null; artifactVersion?: string | null };
+    }>;
+
+    expect(inserted?.type).toBe("run_terminal_command");
+    expect(inserted?.payload?.purpose).toBe("controller-self-update");
+    expect(inserted?.payload?.artifactVersion).toBe("0.1.13-r20");
   });
 
   it("queues bulk router reboot through the terminal lane for pilot Filogic layouts", async () => {

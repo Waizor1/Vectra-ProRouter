@@ -6,6 +6,8 @@ import {
 } from "~/lib/controller-version";
 
 export const controllerSelfUpdateTerminalPurpose = "controller-self-update";
+export const controllerSelfUpdateCompatTerminalPurpose =
+  "controller-self-update-compat";
 export const controllerTerminalSupportMinVersion = "0.1.12-r1";
 
 const controllerSelfUpdateTimeoutSeconds = 120;
@@ -43,7 +45,10 @@ function findControllerPackageArtifact(
 export function isControllerSelfUpdateTerminalPayload(
   payload: Record<string, unknown> | null | undefined,
 ) {
-  return payload?.purpose === controllerSelfUpdateTerminalPurpose;
+  return (
+    payload?.purpose === controllerSelfUpdateTerminalPurpose ||
+    payload?.purpose === controllerSelfUpdateCompatTerminalPurpose
+  );
 }
 
 export function isControllerUpdateJob(job: ControllerUpdateJobLike) {
@@ -71,6 +76,9 @@ export function shouldUseTerminalControllerSelfUpdate(
 export function buildTerminalControllerSelfUpdatePayload(args: {
   artifactVersion: string | null | undefined;
   packageArtifacts: ReadonlyArray<ControllerPackageArtifact>;
+  purpose?:
+    | typeof controllerSelfUpdateTerminalPurpose
+    | typeof controllerSelfUpdateCompatTerminalPurpose;
 }) {
   const agentArtifact = findControllerPackageArtifact(
     args.packageArtifacts,
@@ -131,7 +139,7 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
   return runTerminalCommandJobPayloadSchema.parse({
     command,
     timeoutSeconds: controllerSelfUpdateTimeoutSeconds,
-    purpose: controllerSelfUpdateTerminalPurpose,
+    purpose: args.purpose ?? controllerSelfUpdateTerminalPurpose,
     artifactVersion: artifactVersion ?? null,
   });
 }

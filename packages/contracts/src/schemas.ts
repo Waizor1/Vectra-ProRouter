@@ -601,6 +601,7 @@ export const runTerminalCommandJobPayloadSchema = z.object({
   purpose: z
     .enum([
       "controller-self-update",
+      "controller-self-update-compat",
       "passwall-clear-ipsets",
       "router-reboot",
       "router-hostname-update",
