@@ -97,8 +97,18 @@ function numberField(source: Record<string, unknown>, key: string) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function isDirectRescueSnapshot(snapshotPayload: unknown) {
+  const payload = asRecord(snapshotPayload);
+  if (payload.rescueMode === "direct") {
+    return true;
+  }
+  const lastRescue = asRecord(payload.lastRescue);
+  return lastRescue.mode === "direct";
+}
+
 function shouldUseControllerSelfUpdateCompatBridge(args: {
   installedControllerVersion: string | null | undefined;
+  routerStatus?: string | null | undefined;
   snapshotPayload: unknown;
 }) {
   const versionCompare = compareControllerVersions(
@@ -106,6 +116,13 @@ function shouldUseControllerSelfUpdateCompatBridge(args: {
     controllerSelfUpdateCompatBridgeMaxVersion,
   );
   if (versionCompare === null || versionCompare >= 0) {
+    return false;
+  }
+
+  if (
+    args.routerStatus === "direct" ||
+    isDirectRescueSnapshot(args.snapshotPayload)
+  ) {
     return false;
   }
 
@@ -332,7 +349,10 @@ async function enqueueControllerUpdateJob(args: {
   routerId: string;
   channel: "stable" | "beta";
 }) {
-  const { snapshot } = await assertUpdateCapableRouter(args.ctx, args.routerId);
+  const { router, snapshot } = await assertUpdateCapableRouter(
+    args.ctx,
+    args.routerId,
+  );
 
   const controllerArtifacts = await args.ctx.db
     .select()
@@ -404,6 +424,7 @@ async function enqueueControllerUpdateJob(args: {
         packageArtifacts,
         purpose: shouldUseControllerSelfUpdateCompatBridge({
           installedControllerVersion,
+          routerStatus: router.status,
           snapshotPayload: snapshot?.payload ?? null,
         })
           ? controllerSelfUpdateCompatTerminalPurpose

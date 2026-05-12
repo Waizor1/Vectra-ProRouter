@@ -48,7 +48,7 @@ sync_dir_with_excludes() {
 cd "$REPO_ROOT"
 
 sync_dir_with_excludes "apps" "apps" ".env" "web/.env" "web/.next" "web/node_modules"
-sync_dir "packages" "packages"
+sync_dir_with_excludes "packages" "packages" "node_modules" "*/node_modules"
 sync_dir_with_excludes "deploy" "deploy" "runtime"
 
 cp \

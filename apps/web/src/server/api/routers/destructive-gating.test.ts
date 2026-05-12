@@ -388,6 +388,7 @@ function createCertifiedLikeRouter(options?: {
   activeRevisionId?: string | null;
   importState?: string;
   lastConfigDigest?: string | null;
+  status?: string;
 }) {
   return {
     id: CERTIFIED_LIKE_ROUTER_ID,
@@ -396,7 +397,7 @@ function createCertifiedLikeRouter(options?: {
     architecture: "aarch64_cortex-a53",
     openwrtRelease: "24.10.6",
     importState: options?.importState ?? "approved",
-    status: "active",
+    status: options?.status ?? "active",
     activeRevisionId: options?.activeRevisionId ?? null,
     lastConfigDigest: options?.lastConfigDigest ?? null,
   };
@@ -605,6 +606,9 @@ describe("destructive route gating", () => {
       "VECTRA_SKIP_POSTINST_RESTART=1 opkg install --force-reinstall",
     );
     expect(inserted.payload?.command).toContain(
+      "controller self-update resource guard:",
+    );
+    expect(inserted.payload?.command).toContain(
       "/tmp/vectra-skip-postinst-restart",
     );
     expect(inserted.payload?.command).toContain(
@@ -675,6 +679,58 @@ describe("destructive route gating", () => {
 
     expect(inserted?.type).toBe("run_terminal_command");
     expect(inserted?.payload?.purpose).toBe("controller-self-update-compat");
+    expect(inserted?.payload?.artifactVersion).toBe("0.1.13-r20");
+  });
+
+  it("does not use the compat bridge for pre-r20 routers already in direct rescue mode", async () => {
+    const mock = createMockDb([
+      [createCertifiedLikeRouter({ status: "direct" })],
+      [
+        createPilotLayoutSnapshot(
+          "ubootmod",
+          {
+            "vectra-controller-agent": "0.1.13-r18",
+            "luci-app-vectra-controller": "0.1.13-r18",
+          },
+          {
+            resources: {
+              memoryAvailableMb: 74,
+              overlayFreeMb: 12,
+              tmpFreeMb: 114,
+            },
+            lastRescue: {
+              mode: "direct",
+              reason: "proxy outage",
+              happenedAt: "2026-05-12T00:00:00.000Z",
+            },
+          },
+        ),
+      ],
+      [
+        createControllerArtifact("vectra-controller-agent", "0.1.13-r20"),
+        createControllerArtifact("luci-app-vectra-controller", "0.1.13-r20"),
+      ],
+      [],
+    ]);
+    const caller = createProtectedCaller(updateRouter, mock.db) as {
+      queueControllerUpdate: (input: {
+        routerId: string;
+        channel: "stable" | "beta";
+      }) => Promise<unknown>;
+    };
+
+    await caller.queueControllerUpdate({
+      routerId: CERTIFIED_LIKE_ROUTER_ID,
+      channel: "stable",
+    });
+
+    const [inserted] = mock.insertedValues() as Array<{
+      type?: string;
+      payload?: { purpose?: string | null; artifactVersion?: string | null };
+    }>;
+
+    expect(inserted?.type).toBe("run_terminal_command");
+    expect(inserted?.payload?.purpose).toBe("controller-self-update");
     expect(inserted?.payload?.artifactVersion).toBe("0.1.13-r20");
   });
 

@@ -14,6 +14,8 @@ tags:
 
 ## Confirmed
 
+- 2026-05-12 LuCI/controller package `0.1.13-r20`: the aligned LuCI package is published and installed with the r20 controller agent across all fresh online routers. There is still no LuCI UI behavior change in this slice; the package version is kept aligned so self-update installs a validated controller/LuCI pair. Stale offline `testrouter` remains queued on r9 and was intentionally not forced.
+
 - 2026-05-12 LuCI/controller package `0.1.13-r18`: package release is bumped alongside the router-agent runtime watchdog fix. There is no LuCI UI behavior change in this slice; the LuCI package version stays aligned so controller self-update installs the matching agent/LuCI pair and the local console reports the same release line. Public r18 artifacts are synced and `1111111111` plus the online active fleet now report `luci-app-vectra-controller=0.1.13-r18` except stale queued `testrouter`.
 - 2026-05-11 LuCI/controller package `0.1.13-r17`: package release was bumped with the PassWall watchdog agent release so local console/package metadata stays aligned. There is no LuCI UI behavior change in this slice; the LuCI package is published beside `vectra-controller-agent 0.1.13-r17`, synced into production metadata, and installed on the fresh online active fleet. Vagrand live package proof reports `luci-app-vectra-controller=0.1.13-r17` with controller `0.1.13-r17` and PassWall services running.
 
