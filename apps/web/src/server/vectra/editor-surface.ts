@@ -41,6 +41,7 @@ import {
 import { db } from "~/server/db";
 import { buildEditorSurface } from "~/server/vectra/editor";
 import { buildConfigTrustState } from "~/server/vectra/config-trust";
+import { evaluateFleetRoutePolicy } from "~/server/vectra/fleet-route-policy";
 import {
   pickActiveRevision,
   pickCurrentLiveRevision,
@@ -1763,6 +1764,17 @@ export async function getDraftEditorSurface(routerId: string) {
     revisions: liveImportRevisions,
     hasAuthoritativeConfig: Boolean(activeRevision),
   });
+  const fleetPolicyCompliance = evaluateFleetRoutePolicy(currentLiveConfig, {
+    id: router.id,
+    name:
+      router.displayName ??
+      router.hostname ??
+      payload?.hostname ??
+      router.deviceIdentifier,
+    displayName: router.displayName,
+    hostname: router.hostname ?? payload?.hostname ?? null,
+    deviceIdentifier: router.deviceIdentifier,
+  });
   const currentConfigFreshness = routerReachable
     ? "live"
     : currentLiveConfig || authoritativeConfig
@@ -1952,6 +1964,7 @@ export async function getDraftEditorSurface(routerId: string) {
     },
     inventory,
     configTrust,
+    fleetPolicyCompliance,
     subscriptionRuntime,
     unconfirmedChanges,
     fieldDiffs: editorSurface.fieldDiffs.map((diff) => ({

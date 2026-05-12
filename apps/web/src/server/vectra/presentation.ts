@@ -69,6 +69,22 @@ function normalizeRouterSummaryConfigTrust(
   };
 }
 
+function normalizeRouterSummaryFleetPolicy(
+  compliance: FleetRouter["fleetPolicyCompliance"] | null | undefined,
+): RouterSummary["fleetPolicyCompliance"] {
+  return {
+    status: compliance?.status ?? "unknown",
+    summary:
+      compliance?.summary ??
+      "No full live PassWall import is available for fleet policy matching.",
+    mismatches: (compliance?.mismatches ?? []).map((mismatch) => ({
+      slot: mismatch.slot,
+      actual: mismatch.actual,
+      expected: mismatch.expected,
+    })),
+  };
+}
+
 export function buildFleetStats(overview: FleetOverview): StatItem[] {
   return [
     {
@@ -153,8 +169,13 @@ export function buildRouterSummary(router: FleetRouter): RouterSummary {
     memory: describeRouterMemory(payload?.resources ?? null),
     importState: router.importState,
     needsImportReview:
-      router.importState !== "approved" || router.configTrust.requiresReimport,
+      router.importState !== "approved" ||
+      router.configTrust.requiresReimport ||
+      router.fleetPolicyCompliance?.status === "violation",
     configTrust: normalizeRouterSummaryConfigTrust(router.configTrust),
+    fleetPolicyCompliance: normalizeRouterSummaryFleetPolicy(
+      router.fleetPolicyCompliance,
+    ),
   };
 }
 

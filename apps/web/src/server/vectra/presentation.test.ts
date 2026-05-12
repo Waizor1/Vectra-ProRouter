@@ -10,6 +10,18 @@ import {
   formatRouterStatus,
 } from "./presentation";
 
+const unknownFleetPolicyCompliance = {
+  policyVersion: "2026-05-12-v1" as const,
+  status: "unknown" as const,
+  checked: false,
+  exempt: false,
+  exceptionReason: null,
+  canNormalize: false,
+  matchedSlots: [],
+  mismatches: [],
+  summary: "No full live PassWall import is available for fleet policy matching.",
+};
+
 describe("buildFleetStats", () => {
   it("summarizes fleet counters into stat cards", () => {
     const stats = buildFleetStats({
@@ -133,6 +145,7 @@ describe("buildRouterSummary", () => {
         lastLiveImportAt: null,
         lastCheckInAt: new Date(),
       },
+      fleetPolicyCompliance: unknownFleetPolicyCompliance,
       support: {
         state: "certified",
         title: "Сертифицировано",
@@ -238,6 +251,7 @@ describe("buildRouterSummary", () => {
         lastLiveImportAt: new Date(),
         lastCheckInAt: new Date(),
       },
+      fleetPolicyCompliance: unknownFleetPolicyCompliance,
       support: {
         state: "certified",
         title: "Сертифицировано",
@@ -336,6 +350,7 @@ describe("buildRouterSummary", () => {
         lastLiveImportAt: new Date(),
         lastCheckInAt: new Date(),
       },
+      fleetPolicyCompliance: unknownFleetPolicyCompliance,
       support: {
         state: "certified",
         title: "Сертифицировано",
@@ -537,6 +552,7 @@ describe("router detail helpers", () => {
       lastLiveImportAt: new Date(),
       lastCheckInAt: new Date(),
     },
+    fleetPolicyCompliance: unknownFleetPolicyCompliance,
     support: {
       state: "certified",
       title: "Сертифицировано",

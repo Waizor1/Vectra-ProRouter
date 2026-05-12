@@ -63,7 +63,41 @@ export type RouterSummary = {
     lastLiveImportAt: string | null;
     lastCheckInAt: string | null;
   };
+  fleetPolicyCompliance: {
+    status: "compliant" | "violation" | "exempt" | "unknown";
+    summary: string;
+    mismatches: Array<{ slot: string; actual: string; expected: string }>;
+  };
 };
+
+function formatFleetPolicyStatus(
+  status: RouterSummary["fleetPolicyCompliance"]["status"],
+) {
+  switch (status) {
+    case "compliant":
+      return "policy OK";
+    case "violation":
+      return "policy drift";
+    case "exempt":
+      return "исключение";
+    case "unknown":
+      return "policy ?";
+  }
+}
+
+function getFleetPolicyTone(
+  status: RouterSummary["fleetPolicyCompliance"]["status"],
+) {
+  switch (status) {
+    case "compliant":
+      return "good";
+    case "violation":
+      return "warning";
+    case "exempt":
+    case "unknown":
+      return "default";
+  }
+}
 
 function describeRouterTrustState(
   router: RouterSummary,
@@ -134,6 +168,7 @@ export function RouterCard({ router }: { router: RouterSummary }) {
   const trustDetailsOpen =
     onboardingPending ||
     router.configTrust.requiresReimport ||
+    router.fleetPolicyCompliance.status === "violation" ||
     router.directMode ||
     router.offline;
   const comparisonBaseLabel = router.configTrust.requiresReimport
@@ -243,6 +278,12 @@ export function RouterCard({ router }: { router: RouterSummary }) {
           <CompactRouterFact label="Основа" value={comparisonBaseLabel} />
           <CompactRouterFact label="Trust" value={trustState.badge} />
           <CompactRouterFact
+            label="Policy"
+            value={formatFleetPolicyStatus(router.fleetPolicyCompliance.status)}
+            tone={getFleetPolicyTone(router.fleetPolicyCompliance.status)}
+            clamp
+          />
+          <CompactRouterFact
             label="Telegram"
             value={formatTelegramReachabilityLabel(router.telegramReachability)}
             tone={
@@ -304,6 +345,11 @@ export function RouterCard({ router }: { router: RouterSummary }) {
           <p className="mt-1 text-sm leading-6 text-current/85">
             {trustState.detail}
           </p>
+          {router.fleetPolicyCompliance.status === "violation" ? (
+            <p className="mt-2 rounded-xl border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-sm leading-6 text-amber-50">
+              Fleet package: {router.fleetPolicyCompliance.summary}
+            </p>
+          ) : null}
         </details>
       </Link>
 

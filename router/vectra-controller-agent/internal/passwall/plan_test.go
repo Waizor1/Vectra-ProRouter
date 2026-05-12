@@ -663,6 +663,145 @@ func TestReconcileShuntBindingsNoopsWhenRefreshedNodeKeepsSameLabel(t *testing.T
 	}
 }
 
+func TestReconcileFleetRoutePolicyRestoresPackageAndDiscordTuning(t *testing.T) {
+	backend := &fakeBackend{
+		lines: []string{
+			"passwall2.myshunt=nodes",
+			"passwall2.myshunt.remarks='Маршрутизатор BloopCat'",
+			"passwall2.myshunt.type='Xray'",
+			"passwall2.myshunt.protocol='_shunt'",
+			"passwall2.myshunt.WorldProxy='bad_world'",
+			"passwall2.myshunt.YouTube='good_youtube'",
+			"passwall2.myshunt.Special='good_special'",
+			"passwall2.myshunt.Tiktok='good_tiktok'",
+			"passwall2.myshunt.DiscordVoiceUdp='bad_discord'",
+			"passwall2.WorldProxy=shunt_rules",
+			"passwall2.WorldProxy.remarks='WorldProxy'",
+			"passwall2.YouTube=shunt_rules",
+			"passwall2.YouTube.remarks='YouTube'",
+			"passwall2.Special=shunt_rules",
+			"passwall2.Special.remarks='Special'",
+			"passwall2.Tiktok=shunt_rules",
+			"passwall2.Tiktok.remarks='Tiktok'",
+			"passwall2.DiscordVoiceUdp=shunt_rules",
+			"passwall2.DiscordVoiceUdp.remarks='DiscordVoiceUdp'",
+			"passwall2.DiscordVoiceUdp.network='tcp'",
+			"passwall2.DiscordVoiceUdp.port='443'",
+			"passwall2.good_world=nodes",
+			"passwall2.good_world.remarks='🇷🇺🇩🇪⚡Германия YouTube 🚫Ad🚫'",
+			"passwall2.good_world.type='Xray'",
+			"passwall2.good_world.protocol='vless'",
+			"passwall2.good_world.transport='grpc'",
+			"passwall2.good_world.address='ru4.nfnpx.online'",
+			"passwall2.good_world.port='50052'",
+			"passwall2.good_youtube=nodes",
+			"passwall2.good_youtube.remarks='🇷🇺⚡Россия YouTube 🚫Ad🚫'",
+			"passwall2.good_youtube.type='Xray'",
+			"passwall2.good_youtube.protocol='vless'",
+			"passwall2.good_youtube.transport='grpc'",
+			"passwall2.good_youtube.address='ru5.nfnpx.online'",
+			"passwall2.good_youtube.port='50051'",
+			"passwall2.good_special=nodes",
+			"passwall2.good_special.remarks='🇳🇱 Нидерланды'",
+			"passwall2.good_special.type='Xray'",
+			"passwall2.good_special.protocol='vless'",
+			"passwall2.good_special.transport='raw'",
+			"passwall2.good_special.address='nl2.nfnpx.online'",
+			"passwall2.good_special.port='443'",
+			"passwall2.good_tiktok=nodes",
+			"passwall2.good_tiktok.remarks='🇧🇾 Беларусь'",
+			"passwall2.good_tiktok.type='Xray'",
+			"passwall2.good_tiktok.protocol='vless'",
+			"passwall2.good_tiktok.transport='raw'",
+			"passwall2.good_tiktok.address='by2.nfnpx.online'",
+			"passwall2.good_tiktok.port='443'",
+			"passwall2.good_discord=nodes",
+			"passwall2.good_discord.remarks='🇷🇺🇵🇱 ⚡️Польша YouTube 🚫Ad🚫'",
+			"passwall2.good_discord.type='Xray'",
+			"passwall2.good_discord.protocol='vless'",
+			"passwall2.good_discord.transport='grpc'",
+			"passwall2.good_discord.address='ru3.nfnpx.online'",
+			"passwall2.good_discord.port='50053'",
+			"passwall2.good_discord.mux='0'",
+			"passwall2.good_discord.mux_concurrency='8'",
+			"passwall2.good_discord.xudp_concurrency='4'",
+			"passwall2.bad_world=nodes",
+			"passwall2.bad_world.remarks='🇷🇺🇺🇸 США'",
+			"passwall2.bad_world.type='Xray'",
+			"passwall2.bad_world.protocol='vless'",
+			"passwall2.bad_world.transport='grpc'",
+			"passwall2.bad_world.address='ru3.nfnpx.online'",
+			"passwall2.bad_world.port='50058'",
+			"passwall2.bad_discord=nodes",
+			"passwall2.bad_discord.remarks='🇷🇺🇰🇿 Казахстан'",
+			"passwall2.bad_discord.type='Xray'",
+			"passwall2.bad_discord.protocol='vless'",
+			"passwall2.bad_discord.transport='grpc'",
+			"passwall2.bad_discord.address='ru5.nfnpx.online'",
+			"passwall2.bad_discord.port='50056'",
+		},
+	}
+
+	result, err := ReconcileFleetRoutePolicy(context.Background(), backend, FleetRoutePolicyIdentity{Name: "normal-router"})
+	if err != nil {
+		t.Fatalf("reconcile fleet policy: %v", err)
+	}
+	if !result.Changed || len(result.Changes) != 2 {
+		t.Fatalf("expected two fleet policy changes, got %#v", result)
+	}
+	joinedBatch := strings.Join(backend.batchCommands, "\n")
+	for _, needle := range []string{
+		"set passwall2.myshunt.WorldProxy='good_world'",
+		"set passwall2.myshunt.DiscordVoiceUdp='good_discord'",
+		"set passwall2.DiscordVoiceUdp.network='udp'",
+		"set passwall2.DiscordVoiceUdp.port='19294-19344,50000-50100'",
+		"set passwall2.good_discord.mux='1'",
+		"set passwall2.good_discord.mux_concurrency='-1'",
+		"set passwall2.good_discord.xudp_concurrency='16'",
+		"commit passwall2",
+	} {
+		if !strings.Contains(joinedBatch, needle) {
+			t.Fatalf("expected fleet policy batch to contain %q, got:\n%s", needle, joinedBatch)
+		}
+	}
+	if !reflect.DeepEqual(backend.runCommands, []string{"/etc/init.d/passwall2 restart"}) {
+		t.Fatalf("unexpected run commands: %#v", backend.runCommands)
+	}
+}
+
+func TestReconcileFleetRoutePolicyNoopsForHHException(t *testing.T) {
+	backend := &fakeBackend{
+		lines: []string{
+			"passwall2.myshunt=nodes",
+			"passwall2.myshunt.remarks='Маршрутизатор BloopCat'",
+			"passwall2.myshunt.protocol='_shunt'",
+			"passwall2.myshunt.WorldProxy='bad_world'",
+			"passwall2.WorldProxy=shunt_rules",
+			"passwall2.WorldProxy.remarks='WorldProxy'",
+			"passwall2.good_world=nodes",
+			"passwall2.good_world.remarks='🇷🇺🇩🇪⚡Германия YouTube 🚫Ad🚫'",
+			"passwall2.good_world.protocol='vless'",
+			"passwall2.good_world.transport='grpc'",
+			"passwall2.good_world.address='ru4.nfnpx.online'",
+			"passwall2.good_world.port='50052'",
+			"passwall2.bad_world=nodes",
+			"passwall2.bad_world.remarks='🇷🇺🇺🇸 США'",
+			"passwall2.bad_world.protocol='vless'",
+		},
+	}
+
+	result, err := ReconcileFleetRoutePolicy(context.Background(), backend, FleetRoutePolicyIdentity{Name: "hh"})
+	if err != nil {
+		t.Fatalf("reconcile fleet policy: %v", err)
+	}
+	if result.Changed {
+		t.Fatalf("expected hh exception no-op, got %#v", result)
+	}
+	if len(backend.batchCommands) != 0 || len(backend.runCommands) != 0 {
+		t.Fatalf("expected no commands for hh, got batch=%#v run=%#v", backend.batchCommands, backend.runCommands)
+	}
+}
+
 func TestExecutorPropagatesCommandFailures(t *testing.T) {
 	backend := &fakeBackend{
 		runErrFor: map[string]error{

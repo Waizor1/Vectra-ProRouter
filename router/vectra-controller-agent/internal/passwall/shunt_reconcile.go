@@ -13,6 +13,11 @@ var routeTuningExtras = []string{
 	"packet_encoding",
 }
 
+var routeRuleExtras = []string{
+	"network",
+	"port",
+}
+
 type ShuntReconcileChange struct {
 	ShuntNodeID       string `json:"shuntNodeId"`
 	RuleID            string `json:"ruleId"`
@@ -44,7 +49,10 @@ func ReconcileShuntBindings(ctx context.Context, backend UCIBackend, desired Des
 		return ShuntReconcileResult{}, err
 	}
 	currentConfig := importDesiredConfig(currentSections)
+	return reconcileShuntBindingsFromCurrent(ctx, backend, currentConfig, desired)
+}
 
+func reconcileShuntBindingsFromCurrent(ctx context.Context, backend UCIBackend, currentConfig DesiredConfig, desired DesiredConfig) (ShuntReconcileResult, error) {
 	desiredNodes := nodesByID(desired.Nodes)
 	currentNodes := nodesByID(currentConfig.Nodes)
 	currentRules := shuntRulesByIdentity(currentConfig.BasicSettings.ShuntRules)
@@ -78,16 +86,43 @@ func ReconcileShuntBindings(ctx context.Context, backend UCIBackend, desired Des
 				currentTargetID = currentShuntBindingID(currentShunt, desiredRule)
 			}
 			currentTarget := currentNodes[currentTargetID]
-			if currentTarget != nil && nodesMatchRouteIntent(*currentTarget, *desiredTarget) {
-				continue
+			targetMatches := currentTarget != nil && nodesMatchRouteIntent(*currentTarget, *desiredTarget)
+			candidate := currentTarget
+			if !targetMatches {
+				candidate = findNodeByRouteIntent(currentConfig.Nodes, *desiredTarget)
 			}
-
-			candidate := findNodeByRouteIntent(currentConfig.Nodes, *desiredTarget)
 			if candidate == nil || candidate.ID == "" || candidate.ID == currentTargetID {
+				nodeCommands := []string{}
+				ruleCommands := []string{}
+				if targetMatches {
+					nodeCommands = renderRouteTuningCommands("passwall2."+safeID(candidate.ID), *candidate, *desiredTarget)
+					if currentRule != nil {
+						ruleCommands = renderRouteRuleExtraCommands("passwall2."+safeID(currentRule.ID), *currentRule, desiredRule)
+					}
+				}
+				if len(nodeCommands) == 0 && len(ruleCommands) == 0 {
+					continue
+				}
+				commands = append(commands, ruleCommands...)
+				commands = append(commands, nodeCommands...)
+				changes = append(changes, ShuntReconcileChange{
+					ShuntNodeID:       currentShunt.ID,
+					RuleID:            desiredRule.ID,
+					RuleLabel:         desiredRule.Label,
+					PreviousNodeID:    currentTargetID,
+					PreviousNodeLabel: nodeLabel(currentTarget),
+					RestoredNodeID:    candidate.ID,
+					RestoredNodeLabel: candidate.Label,
+				})
 				continue
 			}
 
-			commands = append(commands, setValue("passwall2."+safeID(currentShunt.ID)+"."+safeID(desiredRule.ID), candidate.ID))
+			if !targetMatches {
+				commands = append(commands, setValue("passwall2."+safeID(currentShunt.ID)+"."+safeID(desiredRule.ID), candidate.ID))
+			}
+			if currentRule != nil {
+				commands = append(commands, renderRouteRuleExtraCommands("passwall2."+safeID(currentRule.ID), *currentRule, desiredRule)...)
+			}
 			commands = append(commands, renderRouteTuningCommands("passwall2."+safeID(candidate.ID), *candidate, *desiredTarget)...)
 			changes = append(changes, ShuntReconcileChange{
 				ShuntNodeID:       currentShunt.ID,
@@ -249,6 +284,21 @@ func routeIntentScore(candidate NodeConfig, desired NodeConfig) int {
 func renderRouteTuningCommands(ref string, current NodeConfig, desired NodeConfig) []string {
 	commands := []string{}
 	for _, key := range routeTuningExtras {
+		value, ok := desired.Extras[key]
+		if !ok || value == nil {
+			continue
+		}
+		if fmt.Sprint(current.Extras[key]) == fmt.Sprint(value) {
+			continue
+		}
+		commands = append(commands, setValue(ref+"."+key, fmt.Sprint(value)))
+	}
+	return commands
+}
+
+func renderRouteRuleExtraCommands(ref string, current ShuntRule, desired ShuntRule) []string {
+	commands := []string{}
+	for _, key := range routeRuleExtras {
 		value, ok := desired.Extras[key]
 		if !ok || value == nil {
 			continue

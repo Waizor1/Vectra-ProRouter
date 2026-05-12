@@ -134,6 +134,9 @@ function createProtectedCaller(db: unknown) {
           requiresReimport: boolean;
           digestMismatch: boolean;
         };
+        fleetPolicyCompliance: {
+          status: string;
+        };
       }>
     >;
   };
@@ -146,6 +149,7 @@ describe("fleet.list", () => {
         [createRouterRow()],
         [createSnapshotRow()],
         [createRevisionMetadata()],
+        [],
         [],
         [],
       ]),
@@ -168,5 +172,8 @@ describe("fleet.list", () => {
       hasRawImportedSnapshot: true,
     });
     expect(result[0]?.latestDesiredRevision).not.toHaveProperty("config");
+    expect(result[0]?.fleetPolicyCompliance).toMatchObject({
+      status: "unknown",
+    });
   });
 });

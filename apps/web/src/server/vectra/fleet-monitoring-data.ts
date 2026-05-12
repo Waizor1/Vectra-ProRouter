@@ -1,6 +1,11 @@
 import {
+  passwallDesiredConfigSchema,
+  type PasswallDesiredConfig,
+} from "@vectra/contracts";
+import {
   healthIncidents,
   jobs,
+  passwallDesiredRevisions,
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
@@ -10,6 +15,7 @@ import type { db as appDb } from "~/server/db";
 import { formatControllerVersion } from "~/lib/controller-version";
 
 import { buildConfigTrustState } from "./config-trust";
+import { evaluateFleetRoutePolicy } from "./fleet-route-policy";
 import { buildFleetMonitoringSnapshot } from "./fleet-monitoring";
 import { loadRevisionMetadata } from "./revision-metadata";
 import { isRouterReachable } from "./router-presence";
@@ -21,6 +27,10 @@ type SnapshotExecuteClient = Pick<DatabaseClient, "execute">;
 type FleetMonitoringDatabaseClient = SnapshotSelectClient &
   Partial<SnapshotExecuteClient>;
 type RouterInventorySnapshotRow = typeof routerInventorySnapshots.$inferSelect;
+type FleetPolicyConfigRow = Pick<
+  typeof passwallDesiredRevisions.$inferSelect,
+  "id" | "routerId" | "origin" | "config" | "createdAt"
+>;
 
 function supportsSnapshotExecute(
   database: FleetMonitoringDatabaseClient,
@@ -172,6 +182,104 @@ function normalizeSnapshotRow(row: unknown): RouterInventorySnapshotRow | null {
   };
 }
 
+function readUnknownField(record: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    if (key in record) {
+      return record[key];
+    }
+  }
+
+  return undefined;
+}
+
+function normalizePasswallConfig(
+  value: unknown,
+): PasswallDesiredConfig | null {
+  const raw =
+    typeof value === "string"
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return null;
+          }
+        })()
+      : value;
+  const parsed = passwallDesiredConfigSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+function normalizeFleetPolicyConfigRow(row: unknown): FleetPolicyConfigRow | null {
+  if (!row || typeof row !== "object") {
+    return null;
+  }
+
+  const record = row as Record<string, unknown>;
+  const id = readStringField(record, "id");
+  const routerId = readStringField(record, "routerId", "router_id");
+  const origin = readStringField(record, "origin");
+  const config = normalizePasswallConfig(readUnknownField(record, "config"));
+  if (!id || !routerId || !origin || !config) {
+    return null;
+  }
+
+  return {
+    id,
+    routerId,
+    origin,
+    config,
+    createdAt: readDateField(record, "createdAt", "created_at"),
+  };
+}
+
+export async function loadLatestFleetPolicyConfigRows(
+  database: FleetMonitoringDatabaseClient,
+  routerIds: string[],
+) {
+  if (routerIds.length === 0) {
+    return new Map<string, FleetPolicyConfigRow>();
+  }
+
+  const rows = supportsSnapshotExecute(database)
+    ? await database.execute(sql`
+          select distinct on (router_id)
+            id,
+            router_id as "routerId",
+            origin,
+            config,
+            created_at as "createdAt"
+          from vectra_passwall_desired_revision
+          where router_id in (
+            ${sql.join(
+              routerIds.map((routerId) => sql`${routerId}`),
+              sql`, `,
+            )}
+          )
+            and origin in ('router_import', 'operator_reimport')
+          order by router_id, created_at desc
+        `)
+    : await database
+        .select()
+        .from(passwallDesiredRevisions)
+        .where(inArray(passwallDesiredRevisions.routerId, routerIds))
+        .orderBy(desc(passwallDesiredRevisions.createdAt));
+
+  const latest = new Map<string, FleetPolicyConfigRow>();
+  for (const row of rows) {
+    const revision = normalizeFleetPolicyConfigRow(row);
+    if (
+      revision &&
+      (revision.origin === "router_import" ||
+        revision.origin === "operator_reimport") &&
+      !latest.has(revision.routerId)
+    ) {
+      latest.set(revision.routerId, revision);
+    }
+  }
+
+  return latest;
+}
+
 export async function loadLatestSnapshots(
   database: FleetMonitoringDatabaseClient,
   routerIds: string[],
@@ -252,7 +360,13 @@ export async function loadFleetMonitoringSnapshot(
     .orderBy(desc(routers.lastSeenAt), desc(routers.createdAt));
 
   const routerIds = routerRows.map((router) => router.id);
-  const [snapshots, incidentRows, queuedJobRows, revisionRows] =
+  const [
+    snapshots,
+    incidentRows,
+    queuedJobRows,
+    revisionRows,
+    policyConfigRows,
+  ] =
     await Promise.all([
       loadLatestSnapshots(database, routerIds),
       routerIds.length
@@ -284,6 +398,7 @@ export async function loadFleetMonitoringSnapshot(
             origins: ["router_import", "operator_reimport"],
           })
         : Promise.resolve([]),
+      loadLatestFleetPolicyConfigRows(database, routerIds),
     ]);
 
   const incidentMap = new Map<string, typeof healthIncidents.$inferSelect>();
@@ -326,6 +441,11 @@ export async function loadFleetMonitoringSnapshot(
         openwrtRelease: payload?.openwrtRelease ?? router.openwrtRelease,
       });
       const incident = incidentMap.get(router.id) ?? null;
+      const routerName =
+        router.displayName ??
+        payload?.hostname ??
+        router.hostname ??
+        router.deviceIdentifier;
       const configTrust = buildConfigTrustState({
         routerReachable: isRouterReachable(router.lastSeenAt, now),
         lastCheckInAt: router.lastCheckInAt ?? router.lastSeenAt,
@@ -337,11 +457,7 @@ export async function loadFleetMonitoringSnapshot(
 
       return {
         id: router.id,
-        name:
-          router.displayName ??
-          payload?.hostname ??
-          router.hostname ??
-          router.deviceIdentifier,
+        name: routerName,
         status: router.status,
         importState: router.importState,
         supportState: support.state,
@@ -370,6 +486,16 @@ export async function loadFleetMonitoringSnapshot(
           lastLiveImportAt: configTrust.lastLiveImportAt?.toISOString() ?? null,
           lastCheckInAt: configTrust.lastCheckInAt?.toISOString() ?? null,
         },
+        fleetPolicyCompliance: evaluateFleetRoutePolicy(
+          policyConfigRows.get(router.id)?.config ?? null,
+          {
+            id: router.id,
+            name: routerName,
+            displayName: router.displayName,
+            hostname: payload?.hostname ?? router.hostname,
+            deviceIdentifier: router.deviceIdentifier,
+          },
+        ),
         openIncident: incident
           ? {
               type: incident.type,

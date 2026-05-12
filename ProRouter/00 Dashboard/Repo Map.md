@@ -1,6 +1,6 @@
 ---
 type: generated
-updated: '2026-05-11 02:14:21 +03:00'
+updated: '2026-05-12 23:45:13 +03:00'
 generated-by: scripts/Sync-ProRouterVault.py
 tags:
   - generated
@@ -13,8 +13,8 @@ Generated from the current workspace root `Vectra-ProRouter`.
 
 ## Snapshot
 
-- Generated at: `2026-05-11 02:14:21 +03:00`
-- Top-level directories: `8`
+- Generated at: `2026-05-12 23:45:13 +03:00`
+- Top-level directories: `9`
 - Top-level files: `15`
 - Tree depth: `3`
 
@@ -35,6 +35,8 @@ Generated from the current workspace root `Vectra-ProRouter`.
 
 ```text
 ./
+|- .omx/
+|  \- state/
 |- ai_docs/
 |  \- develop/
 |     \- features/

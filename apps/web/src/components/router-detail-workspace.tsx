@@ -158,6 +158,36 @@ function getRouterDetailSurfaceRefetchInterval(
   return false;
 }
 
+function formatFleetPolicyStatus(
+  status: EditorSurface["fleetPolicyCompliance"]["status"],
+) {
+  switch (status) {
+    case "compliant":
+      return "policy OK";
+    case "violation":
+      return "policy drift";
+    case "exempt":
+      return "исключение";
+    case "unknown":
+      return "policy ?";
+  }
+}
+
+function getFleetPolicyBadgeClassName(
+  status: EditorSurface["fleetPolicyCompliance"]["status"],
+) {
+  switch (status) {
+    case "compliant":
+      return "border-emerald-400/25 bg-emerald-500/10 text-emerald-100";
+    case "violation":
+      return "border-amber-400/30 bg-amber-500/10 text-amber-100";
+    case "exempt":
+      return "border-white/10 bg-white/5 text-slate-200";
+    case "unknown":
+      return "border-sky-400/25 bg-sky-500/10 text-sky-100";
+  }
+}
+
 type UnconfirmedChangeGroup = EditorSurface["unconfirmedChanges"]["router"];
 
 type Option = {
@@ -1061,7 +1091,10 @@ export function RouterDetailWorkspace({
     editor.unconfirmedChanges.router.status !== "none" ||
     editor.unconfirmedChanges.panel.status !== "none";
   const trustDetailsOpen =
-    editor.configTrust.requiresReimport || !routerReachable || directModeActive;
+    editor.configTrust.requiresReimport ||
+    editor.fleetPolicyCompliance.status === "violation" ||
+    !routerReachable ||
+    directModeActive;
   const supportMeta = formatSupportMeta(
     editor.routerRuntimeSummary.supportState,
   );
@@ -1586,6 +1619,14 @@ export function RouterDetailWorkspace({
                 <span className="rounded-full border border-white/10 bg-white/8 px-3 py-1 text-xs font-medium text-current">
                   {configTrust.badge}
                 </span>
+                <span
+                  className={`rounded-full border px-3 py-1 text-xs font-medium ${getFleetPolicyBadgeClassName(
+                    editor.fleetPolicyCompliance.status,
+                  )}`}
+                  title="Отдельно от configTrust: соответствие общему fleet server package."
+                >
+                  {formatFleetPolicyStatus(editor.fleetPolicyCompliance.status)}
+                </span>
               </div>
             </summary>
             <p className="mt-3 text-xs leading-6 text-current/80">
@@ -1595,6 +1636,28 @@ export function RouterDetailWorkspace({
               {formatDateTime(editor.configTrust.lastLiveImportAt)} · последний
               check-in {formatDateTime(editor.configTrust.lastCheckInAt)}
             </p>
+            {editor.fleetPolicyCompliance.status === "violation" ? (
+              <div className="mt-3 rounded-xl border border-amber-400/20 bg-amber-500/10 px-3 py-3 text-sm leading-6 text-amber-50">
+                <p className="font-semibold">
+                  Fleet package не совпадает с live ShuntRules
+                </p>
+                <p className="mt-1">
+                  {editor.fleetPolicyCompliance.summary}
+                </p>
+                {editor.fleetPolicyCompliance.mismatches.length > 0 ? (
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    {editor.fleetPolicyCompliance.mismatches
+                      .slice(0, 5)
+                      .map((mismatch) => (
+                        <li key={`${mismatch.slot}-${mismatch.reason}`}>
+                          {mismatch.slot}: ожидается {mismatch.expected}, сейчас{" "}
+                          {mismatch.actual}
+                        </li>
+                      ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
           </details>
         </div>
       </div>

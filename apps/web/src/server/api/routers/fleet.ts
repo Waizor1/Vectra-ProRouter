@@ -22,9 +22,14 @@ import { minimumTerminalControllerVersion, supportsTerminalFeature } from "~/lib
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
 import {
   loadFleetMonitoringSnapshot,
+  loadLatestFleetPolicyConfigRows,
   loadLatestSnapshots,
 } from "~/server/vectra/fleet-monitoring-data";
 import { buildConfigTrustState } from "~/server/vectra/config-trust";
+import {
+  evaluateFleetRoutePolicy,
+  normalizeFleetRoutePolicy,
+} from "~/server/vectra/fleet-route-policy";
 import {
   loadRevisionMetadata,
   type PasswallRevisionMetadataRow,
@@ -33,7 +38,12 @@ import {
   getEffectiveRouterStatus,
   isRouterReachable,
 } from "~/server/vectra/router-presence";
-import { sanitizeRevisionForClient } from "~/server/vectra/router-control";
+import {
+  createOperatorDraftRevisionWithDb,
+  getFullConfigForRevisionWithDb,
+  queueDesiredRevisionApplyJobWithDb,
+  sanitizeRevisionForClient,
+} from "~/server/vectra/router-control";
 import { canRunDestructiveAction, describeRouterSupport } from "~/server/vectra/support";
 
 const activeJobStates: Array<"queued" | "delivered" | "running"> = [
@@ -41,6 +51,9 @@ const activeJobStates: Array<"queued" | "delivered" | "running"> = [
   "delivered",
   "running",
 ];
+const routePolicyNormalizeModeSchema = z
+  .enum(["dry_run", "draft", "queue_apply"])
+  .default("dry_run");
 const routerHostnameInputSchema = z
   .string()
   .trim()
@@ -92,7 +105,13 @@ export const fleetRouter = createTRPCRouter({
       .orderBy(desc(routers.lastSeenAt), desc(routers.createdAt));
 
     const routerIds = routerRows.map((router) => router.id);
-    const [snapshots, incidentRows, revisionRows, queuedJobRows] =
+    const [
+      snapshots,
+      incidentRows,
+      revisionRows,
+      queuedJobRows,
+      policyConfigRows,
+    ] =
       await Promise.all([
         loadLatestSnapshots(ctx.db, routerIds),
         routerIds.length
@@ -110,6 +129,7 @@ export const fleetRouter = createTRPCRouter({
               .where(inArray(jobs.routerId, routerIds))
               .orderBy(desc(jobs.createdAt))
           : Promise.resolve([]),
+        loadLatestFleetPolicyConfigRows(ctx.db, routerIds),
       ]);
 
     const incidentMap = new Map<string, typeof healthIncidents.$inferSelect>();
@@ -162,6 +182,11 @@ export const fleetRouter = createTRPCRouter({
         revisions: revisionsByRouter.get(router.id) ?? [],
         hasAuthoritativeConfig: Boolean(router.activeRevisionId),
       });
+      const routerName =
+        router.displayName ??
+        snapshot?.payload.hostname ??
+        router.hostname ??
+        router.deviceIdentifier;
 
       return {
         ...router,
@@ -170,6 +195,16 @@ export const fleetRouter = createTRPCRouter({
         latestDesiredRevision: revision ?? null,
         queuedJobCount: jobCountMap.get(router.id) ?? 0,
         configTrust,
+        fleetPolicyCompliance: evaluateFleetRoutePolicy(
+          policyConfigRows.get(router.id)?.config ?? null,
+          {
+            id: router.id,
+            name: routerName,
+            displayName: router.displayName,
+            hostname: snapshot?.payload.hostname ?? router.hostname,
+            deviceIdentifier: router.deviceIdentifier,
+          },
+        ),
         support,
       };
     });
@@ -178,6 +213,223 @@ export const fleetRouter = createTRPCRouter({
   monitoring: protectedProcedure.query(async ({ ctx }) => {
     return loadFleetMonitoringSnapshot(ctx.db);
   }),
+
+  normalizeRoutePolicy: protectedProcedure
+    .input(
+      z.object({
+        routerIds: z.array(z.string().uuid()).min(1).max(25),
+        mode: routePolicyNormalizeModeSchema,
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const routerRows = await ctx.db
+        .select()
+        .from(routers)
+        .where(inArray(routers.id, input.routerIds));
+      const routerMap = new Map(routerRows.map((router) => [router.id, router]));
+      const latestSnapshots = await loadLatestSnapshots(ctx.db, input.routerIds);
+
+      const revisionRows = await ctx.db
+        .select()
+        .from(passwallDesiredRevisions)
+        .where(inArray(passwallDesiredRevisions.routerId, input.routerIds))
+        .orderBy(desc(passwallDesiredRevisions.createdAt));
+      const latestLiveRevisionByRouter = new Map<
+        string,
+        typeof passwallDesiredRevisions.$inferSelect
+      >();
+      for (const revision of revisionRows) {
+        if (
+          revision.origin !== "router_import" &&
+          revision.origin !== "operator_reimport"
+        ) {
+          continue;
+        }
+        if (!latestLiveRevisionByRouter.has(revision.routerId)) {
+          latestLiveRevisionByRouter.set(revision.routerId, revision);
+        }
+      }
+
+      const results = [];
+      for (const routerId of input.routerIds) {
+        const router = routerMap.get(routerId);
+        if (!router) {
+          results.push({
+            routerId,
+            status: "router_not_found" as const,
+            compliance: null,
+            changes: [],
+            draftRevision: null,
+            queuedJob: null,
+          });
+          continue;
+        }
+
+        const sourceRevision = latestLiveRevisionByRouter.get(router.id) ?? null;
+        const snapshot = latestSnapshots.get(router.id) ?? null;
+        const routerName =
+          router.displayName ??
+          snapshot?.payload.hostname ??
+          router.hostname ??
+          router.deviceIdentifier;
+        const identity = {
+          id: router.id,
+          name: routerName,
+          displayName: router.displayName,
+          hostname: snapshot?.payload.hostname ?? router.hostname,
+          deviceIdentifier: router.deviceIdentifier,
+        };
+        if (!sourceRevision) {
+          results.push({
+            routerId: router.id,
+            status: "no_live_import" as const,
+            compliance: evaluateFleetRoutePolicy(null, identity),
+            changes: [],
+            draftRevision: null,
+            queuedJob: null,
+          });
+          continue;
+        }
+
+        const sourceConfig =
+          (await getFullConfigForRevisionWithDb(ctx.db, sourceRevision.id)) ??
+          sourceRevision.config;
+        const normalization = normalizeFleetRoutePolicy(sourceConfig, identity);
+        if (normalization.before.status === "exempt") {
+          results.push({
+            routerId: router.id,
+            status: "exempt" as const,
+            compliance: normalization.before,
+            changes: normalization.changes,
+            draftRevision: null,
+            queuedJob: null,
+          });
+          continue;
+        }
+
+        if (!normalization.changed) {
+          results.push({
+            routerId: router.id,
+            status:
+              normalization.before.status === "compliant"
+                ? ("already_compliant" as const)
+                : ("not_normalizable" as const),
+            compliance: normalization.before,
+            changes: normalization.changes,
+            draftRevision: null,
+            queuedJob: null,
+          });
+          continue;
+        }
+
+        if (input.mode === "dry_run") {
+          results.push({
+            routerId: router.id,
+            status: "would_change" as const,
+            compliance: normalization.before,
+            afterCompliance: normalization.after,
+            changes: normalization.changes,
+            draftRevision: null,
+            queuedJob: null,
+          });
+          continue;
+        }
+
+        if (normalization.after.status !== "compliant") {
+          results.push({
+            routerId: router.id,
+            status: "not_normalizable" as const,
+            compliance: normalization.before,
+            afterCompliance: normalization.after,
+            changes: normalization.changes,
+            draftRevision: null,
+            queuedJob: null,
+          });
+          continue;
+        }
+
+        if (input.mode === "queue_apply") {
+          const support = describeRouterSupport({
+            boardName: snapshot?.payload.boardName ?? router.boardName,
+            layoutFamily:
+              typeof snapshot?.payload.layoutFamily === "string"
+                ? snapshot.payload.layoutFamily
+                : null,
+            target: snapshot?.payload.target ?? router.target,
+            architecture: snapshot?.payload.architecture ?? router.architecture,
+            openwrtRelease:
+              snapshot?.payload.openwrtRelease ?? router.openwrtRelease,
+          });
+          if (!canRunDestructiveAction(support.state)) {
+            results.push({
+              routerId: router.id,
+              status: "unsupported" as const,
+              compliance: normalization.before,
+              afterCompliance: normalization.after,
+              changes: normalization.changes,
+              draftRevision: null,
+              queuedJob: null,
+              message:
+                "Fleet route policy apply is blocked for unsupported board/layout.",
+              support,
+            });
+            continue;
+          }
+        }
+
+        const draftRevision = await createOperatorDraftRevisionWithDb(ctx.db, {
+          routerId: router.id,
+          note: `Normalize fleet route policy ${normalization.policyVersion}`,
+          config: normalization.config,
+        });
+        const queuedJob =
+          input.mode === "queue_apply"
+            ? await queueDesiredRevisionApplyJobWithDb(ctx.db, {
+                routerId: router.id,
+                desiredRevisionId: draftRevision.id,
+              })
+            : null;
+
+        await ctx.db.insert(eventLog).values({
+          routerId: router.id,
+          type:
+            input.mode === "queue_apply"
+              ? "router.fleet_policy.normalize_queued"
+              : "router.fleet_policy.draft_created",
+          severity: "info",
+          message:
+            input.mode === "queue_apply"
+              ? "Operator queued fleet route policy normalization apply job."
+              : "Operator created a fleet route policy normalization draft.",
+          metadata: {
+            policyVersion: normalization.policyVersion,
+            sourceRevisionId: sourceRevision.id,
+            draftRevisionId: draftRevision.id,
+            queuedJobId: queuedJob?.id ?? null,
+            changes: normalization.changes,
+          },
+        });
+
+        results.push({
+          routerId: router.id,
+          status:
+            input.mode === "queue_apply"
+              ? ("queued_apply" as const)
+              : ("draft_created" as const),
+          compliance: normalization.before,
+          afterCompliance: normalization.after,
+          changes: normalization.changes,
+          draftRevision: sanitizeRevisionForClient(draftRevision),
+          queuedJob,
+        });
+      }
+
+      return {
+        policyVersion: "2026-05-12-v1" as const,
+        mode: input.mode,
+        results,
+      };
+    }),
 
   pendingImportReviews: protectedProcedure.query(async ({ ctx }) => {
     const routerRows = await ctx.db
@@ -302,6 +554,27 @@ export const fleetRouter = createTRPCRouter({
         revisions,
         hasAuthoritativeConfig: Boolean(router.activeRevisionId),
       });
+      const routerName =
+        router.displayName ??
+        snapshots[0]?.payload.hostname ??
+        router.hostname ??
+        router.deviceIdentifier;
+      const latestLiveRevision =
+        revisions.find(
+          (revision) =>
+            revision.origin === "router_import" ||
+            revision.origin === "operator_reimport",
+        ) ?? null;
+      const fleetPolicyCompliance = evaluateFleetRoutePolicy(
+        latestLiveRevision?.config ?? null,
+        {
+          id: router.id,
+          name: routerName,
+          displayName: router.displayName,
+          hostname: snapshots[0]?.payload.hostname ?? router.hostname,
+          deviceIdentifier: router.deviceIdentifier,
+        },
+      );
 
       return {
         router,
@@ -313,6 +586,7 @@ export const fleetRouter = createTRPCRouter({
         recentJobs,
         incidents,
         configTrust,
+        fleetPolicyCompliance,
         support,
         applyReceipts: appliedRevisions.map((receipt) => ({
           ...receipt,

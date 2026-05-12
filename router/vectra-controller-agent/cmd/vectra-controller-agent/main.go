@@ -265,6 +265,18 @@ func runOnce(
 			log.Printf("passwall shunt self-heal restored %d binding(s)", len(reconcileResult.Changes))
 		}
 	}
+	if importSource == "check_in" && !persisted.RequestImport {
+		policyResult, policyErr := passwall.ReconcileFleetRoutePolicy(
+			ctx,
+			passwall.ExecBackend{},
+			fleetRoutePolicyIdentity(collectedInventory),
+		)
+		if policyErr != nil {
+			log.Printf("fleet route policy self-heal skipped: %v", policyErr)
+		} else if policyResult.Changed {
+			log.Printf("fleet route policy self-heal restored %d binding(s)", len(policyResult.Changes))
+		}
+	}
 	passwallImport, importErr := buildPasswallImport(ctx, importSource)
 	sendPasswallImport := false
 	if importErr != nil {
@@ -396,6 +408,7 @@ func runOnce(
 		rescueState,
 		persisted,
 		&runtimeStatus,
+		collectedInventory,
 	); err != nil {
 		if errors.Is(err, errControllerRestartRequested) {
 			applyRescueMetadata(persisted, rescueState, &collectedInventory, &runtimeStatus)
@@ -474,6 +487,14 @@ func lastDesiredConfig(persisted *state.PersistedState) passwall.DesiredConfig {
 		return passwall.DesiredConfig{}
 	}
 	return persisted.LastDesiredRevision.Config
+}
+
+func fleetRoutePolicyIdentity(inventory controlplane.RouterInventory) passwall.FleetRoutePolicyIdentity {
+	return passwall.FleetRoutePolicyIdentity{
+		Name:             inventory.Hostname,
+		Hostname:         inventory.Hostname,
+		DeviceIdentifier: inventory.DeviceIdentifier,
+	}
 }
 
 func decodeDesiredRevision(raw json.RawMessage) (*controlplane.DesiredRevisionSummary, error) {
@@ -658,6 +679,7 @@ func executeJobs(
 	rescueState *rescue.State,
 	persisted *state.PersistedState,
 	runtimeStatus *state.RuntimeStatus,
+	collectedInventory controlplane.RouterInventory,
 ) error {
 	backend := passwall.ExecBackend{}
 	executor := passwall.NewExecutor(backend)
@@ -777,6 +799,17 @@ func executeJobs(
 				}
 				persisted.LastDesiredRevision = desiredRevision
 			}
+			fleetPolicyReconcileResult, err := passwall.ReconcileFleetRoutePolicy(
+				ctx,
+				backend,
+				fleetRoutePolicyIdentity(collectedInventory),
+			)
+			if err != nil {
+				if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, result.Stdout, result.Stderr, err.Error(), map[string]interface{}{"error": err.Error(), "command": result.Command}); submitErr != nil {
+					return submitErr
+				}
+				continue
+			}
 			if err := submitJobResultNow(ctx, cfg, client, persisted, controlplane.JobResultRequest{
 				ProtocolVersion: controlplane.ProtocolVersion,
 				RouterID:        cfg.RouterID,
@@ -785,8 +818,9 @@ func executeJobs(
 				Stdout:          result.Stdout,
 				Stderr:          result.Stderr,
 				Result: map[string]interface{}{
-					"command":        result.Command,
-					"shuntReconcile": reconcileResult,
+					"command":              result.Command,
+					"shuntReconcile":       reconcileResult,
+					"fleetPolicyReconcile": fleetPolicyReconcileResult,
 				},
 			}, controlplane.RouterInventory{}); err != nil {
 				return fmt.Errorf("submit refresh subscriptions result: %w", err)

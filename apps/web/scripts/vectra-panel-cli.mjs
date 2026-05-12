@@ -33,7 +33,12 @@ const operatorTrpcCatalog = {
   },
   fleet: {
     queries: ["overview", "list", "monitoring", "pendingImportReviews", "byId"],
-    mutations: ["approveImportedBaseline", "requestReimport", "deleteRouter"],
+    mutations: [
+      "approveImportedBaseline",
+      "requestReimport",
+      "deleteRouter",
+      "normalizeRoutePolicy",
+    ],
   },
   logs: {
     queries: ["history"],

@@ -192,6 +192,7 @@ describe("buildFleetMonitoringSnapshot", () => {
       ["В строю", "1"],
       ["Проблемные", "3"],
       ["Импорт / drift", "1"],
+      ["Policy drift", "0"],
       ["Открытые инциденты", "1"],
       ["RAM риск", "1"],
       ["Мин. RAM", "57 МБ"],
@@ -227,6 +228,14 @@ describe("buildFleetMonitoringSnapshot", () => {
     ]);
     expect(
       snapshot.charts[3]?.slices.map((slice) => [slice.key, slice.count]),
+    ).toEqual([
+      ["compliant", 0],
+      ["violation", 0],
+      ["exempt", 0],
+      ["unknown", 5],
+    ]);
+    expect(
+      snapshot.charts[4]?.slices.map((slice) => [slice.key, slice.count]),
     ).toEqual([
       ["telegram_degraded", 1],
       ["youtube_degraded", 0],
@@ -331,6 +340,73 @@ describe("pickFreshAlertsForBrowser", () => {
     expect(snapshot.routers[0]?.operationalState).toBe("review");
     expect(snapshot.routers[0]?.configTrust.requiresReimport).toBe(true);
     expect(snapshot.alerts[0]?.kind).toBe("reimport_needed");
+  });
+
+  it("surfaces fleet policy violation even when live import trust is green", () => {
+    const snapshot = buildFleetMonitoringSnapshot({
+      now: new Date("2026-05-12T10:10:00.000Z"),
+      offlineThresholdMs: 3 * 60 * 1000,
+      openIncidentCount: 0,
+      queuedJobs: 0,
+      routers: [
+        {
+          id: "policy-drift",
+          name: "Policy Drift",
+          status: "active",
+          importState: "approved",
+          supportState: "pilot",
+          lastSeenAt: new Date("2026-05-12T10:09:40.000Z"),
+          selectedNode: "WorldProxy",
+          passwallEnabled: true,
+          nodeCount: 8,
+          subscriptionCount: 1,
+          controllerVersion: "0.1.13-r20",
+          passwallVersion: "26.5.1-r1",
+          components: {},
+          queuedJobCount: 0,
+          lastRescueReason: null,
+          configTrust: {
+            liveConfigAvailable: true,
+            requiresReimport: false,
+            digestMismatch: false,
+            configSourceMode: "live-import",
+            lastLiveImportAt: "2026-05-12T10:08:00.000Z",
+            lastCheckInAt: "2026-05-12T10:09:40.000Z",
+          },
+          fleetPolicyCompliance: {
+            policyVersion: "2026-05-12-v1",
+            status: "violation",
+            checked: true,
+            exempt: false,
+            exceptionReason: null,
+            canNormalize: true,
+            matchedSlots: [],
+            mismatches: [
+              {
+                slot: "WorldProxy",
+                expected: "RU-entry Germany",
+                actual: "🇷🇺🇺🇸 США | ru3.nfnpx.online:50058 | grpc",
+                reason: "wrong_target",
+              },
+            ],
+            summary: "1 fleet route policy mismatch(es): WorldProxy.",
+          },
+          openIncident: null,
+        },
+      ],
+    });
+
+    expect(snapshot.routers[0]?.operationalState).toBe("review");
+    expect(snapshot.routers[0]?.needsImportReview).toBe(true);
+    expect(snapshot.routers[0]?.configTrust.requiresReimport).toBe(false);
+    expect(snapshot.routers[0]?.alertKinds).toContain(
+      "fleet_policy_violation",
+    );
+    expect(snapshot.alerts[0]).toMatchObject({
+      kind: "fleet_policy_violation",
+      routerId: "policy-drift",
+      severity: "warning",
+    });
   });
 
   it("surfaces router-side safety events as fleet alerts", () => {

@@ -121,6 +121,36 @@ const freshnessToneMap = {
   never: "border-white/12 bg-white/5 text-slate-200",
 } as const;
 
+function formatFleetPolicyStatus(
+  status: FleetMonitoringRouter["fleetPolicyCompliance"]["status"],
+) {
+  switch (status) {
+    case "compliant":
+      return "policy OK";
+    case "violation":
+      return "policy drift";
+    case "exempt":
+      return "исключение";
+    case "unknown":
+      return "policy ?";
+  }
+}
+
+function getFleetPolicyToneClassName(
+  status: FleetMonitoringRouter["fleetPolicyCompliance"]["status"],
+) {
+  switch (status) {
+    case "compliant":
+      return "border-emerald-400/25 bg-emerald-500/10 text-emerald-100";
+    case "violation":
+      return "border-amber-400/30 bg-amber-500/10 text-amber-100";
+    case "exempt":
+      return "border-white/10 bg-white/5 text-slate-200";
+    case "unknown":
+      return "border-sky-400/25 bg-sky-500/10 text-sky-100";
+  }
+}
+
 function normalizeSearchQuery(value: string) {
   return value.trim().toLowerCase();
 }
@@ -143,6 +173,11 @@ function matchesSearch(router: FleetMonitoringRouter, searchQuery: string) {
     router.configTrust.configSourceMode,
     router.configTrust.requiresReimport ? "needs re-import" : "",
     router.configTrust.digestMismatch ? "digest mismatch" : "",
+    router.fleetPolicyCompliance.status,
+    router.fleetPolicyCompliance.summary,
+    ...router.fleetPolicyCompliance.mismatches.map(
+      (mismatch) => `${mismatch.slot} ${mismatch.actual} ${mismatch.expected}`,
+    ),
     router.memory.label,
     router.memory.summary,
     router.memory.level,
@@ -327,6 +362,10 @@ function filtersMatch(
     return false;
   }
 
+  if (activeFilter.kind === "policy") {
+    return router.fleetPolicyCompliance.status === activeFilter.value;
+  }
+
   return router.memory.level === activeFilter.value;
 }
 
@@ -348,6 +387,10 @@ function alertMatchesFilter(
 
   if (activeFilter.kind === "service") {
     return alert.filters.service === activeFilter.value;
+  }
+
+  if (activeFilter.kind === "policy") {
+    return alert.filters.policy === activeFilter.value;
   }
 
   return alert.filters.memory === activeFilter.value;
@@ -595,7 +638,9 @@ export function FleetMonitoringWorkspace({
   );
   const onboardingRouters = snapshot.routers.filter(
     (router) =>
-      router.importState !== "approved" || router.configTrust.requiresReimport,
+      router.importState !== "approved" ||
+      router.configTrust.requiresReimport ||
+      router.fleetPolicyCompliance.status === "violation",
   );
   const nextOnboardingRouters = [...onboardingRouters]
     .sort(
@@ -614,6 +659,9 @@ export function FleetMonitoringWorkspace({
   ).length;
   const reimportCount = onboardingRouters.filter(
     (router) => router.configTrust.requiresReimport,
+  ).length;
+  const fleetPolicyViolationCount = snapshot.routers.filter(
+    (router) => router.fleetPolicyCompliance.status === "violation",
   ).length;
   const ramWarningCount = snapshot.routers.filter(
     (router) => router.memory.level === "warning",
@@ -836,6 +884,28 @@ export function FleetMonitoringWorkspace({
                   title="На связи, но последний snapshot не содержит Telegram/YouTube probes. Это нормально между редкими проверками или при low-memory skip."
                 >
                   Нет проб: {serviceUnknownCount}
+                </button>
+                <button
+                  type="button"
+                  disabled={fleetPolicyViolationCount === 0}
+                  onClick={() =>
+                    setActiveFilter((previous) =>
+                      sameFilter(previous, {
+                        kind: "policy",
+                        value: "violation",
+                      })
+                        ? null
+                        : { kind: "policy", value: "violation" },
+                    )
+                  }
+                  className={`rounded-full border px-3 py-2 text-left transition disabled:cursor-default disabled:opacity-75 ${
+                    fleetPolicyViolationCount > 0
+                      ? "border-amber-400/25 bg-amber-500/10 text-amber-100 hover:border-amber-300/40"
+                      : "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
+                  }`}
+                  title="Синхронизация с revision может быть зелёной, но выбранные ShuntRules всё равно отличаются от общего пакета серверов."
+                >
+                  Policy drift: {fleetPolicyViolationCount}
                 </button>
                 {minimumRamStat ? (
                   <span
@@ -1116,6 +1186,9 @@ export function FleetMonitoringWorkspace({
                       <span className="rounded-full border border-sky-400/25 bg-sky-500/10 px-3 py-1 text-sm text-sky-100">
                         Нужен re-import: {reimportCount}
                       </span>
+                      <span className="rounded-full border border-amber-400/25 bg-amber-500/10 px-3 py-1 text-sm text-amber-100">
+                        Policy drift: {fleetPolicyViolationCount}
+                      </span>
                     </div>
                   </div>
 
@@ -1139,11 +1212,16 @@ export function FleetMonitoringWorkspace({
                                   {router.name}
                                 </p>
                                 <p className="mt-1 text-xs text-slate-400">
-                                  {router.configTrust.requiresReimport
-                                    ? onboarding.badge
-                                    : formatRouterImportStateLabel(
-                                        router.importState,
-                                      )}{" "}
+                                  {router.fleetPolicyCompliance.status ===
+                                  "violation"
+                                    ? formatFleetPolicyStatus(
+                                        router.fleetPolicyCompliance.status,
+                                      )
+                                    : router.configTrust.requiresReimport
+                                      ? onboarding.badge
+                                      : formatRouterImportStateLabel(
+                                          router.importState,
+                                        )}{" "}
                                   · {router.lastSeen}
                                 </p>
                               </div>
@@ -1152,7 +1230,10 @@ export function FleetMonitoringWorkspace({
                               </span>
                             </div>
                             <p className="mt-3 text-sm font-medium text-white">
-                              {onboarding.cardActionLabel}
+                              {router.fleetPolicyCompliance.status ===
+                              "violation"
+                                ? "Проверить fleet package diff"
+                                : onboarding.cardActionLabel}
                             </p>
                           </Link>
                         );
@@ -1306,6 +1387,9 @@ function FleetOperationsRow({ router }: { router: FleetMonitoringRouter }) {
     router.memory.level === "unknown"
       ? router.memory.summary
       : `RAM ${router.memory.summary}`;
+  const fleetPolicyToneClassName = getFleetPolicyToneClassName(
+    router.fleetPolicyCompliance.status,
+  );
 
   return (
     <tr className="border-t border-white/10 align-top text-slate-200">
@@ -1375,6 +1459,12 @@ function FleetOperationsRow({ router }: { router: FleetMonitoringRouter }) {
               : formatConfigSourceModeLabel(
                   router.configTrust.configSourceMode,
                 )}
+          </span>
+          <span
+            className={`rounded-full border px-2 py-0.5 ${fleetPolicyToneClassName}`}
+            title={router.fleetPolicyCompliance.summary}
+          >
+            {formatFleetPolicyStatus(router.fleetPolicyCompliance.status)}
           </span>
         </div>
       </td>

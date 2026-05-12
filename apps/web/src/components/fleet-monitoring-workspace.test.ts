@@ -41,4 +41,16 @@ describe("FleetMonitoringWorkspace", () => {
     expect(source).toContain('value: "youtube_degraded"');
     expect(source).toContain('value: "service_unknown"');
   });
+
+  it("keeps fleet policy drift visible as a separate filter", () => {
+    const source = readFileSync(
+      new URL("./fleet-monitoring-workspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("Policy drift:");
+    expect(source).toContain('kind: "policy"');
+    expect(source).toContain('value: "violation"');
+    expect(source).toContain("router.fleetPolicyCompliance.status");
+  });
 });

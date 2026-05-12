@@ -93,6 +93,17 @@ describe("router detail app update helpers", () => {
     expect(source).toContain('refetchOnWindowFocus: "always"');
   });
 
+  it("renders fleet route policy separately from config trust", () => {
+    const source = readFileSync(
+      new URL("./router-detail-workspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("editor.fleetPolicyCompliance.status");
+    expect(source).toContain("Fleet package не совпадает");
+    expect(source).toContain("formatFleetPolicyStatus");
+  });
+
   it("renders explicit managed-stack target semantics for PassWall2", () => {
     const bundleMetadata = buildFallbackPasswallBundleMetadata();
 

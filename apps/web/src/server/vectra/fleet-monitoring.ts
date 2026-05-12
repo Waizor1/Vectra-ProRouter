@@ -21,6 +21,10 @@ import {
 } from "~/lib/youtube-reachability";
 
 import type { ConfigSourceMode } from "./config-trust";
+import type {
+  FleetRoutePolicyCompliance,
+  FleetRoutePolicyStatus,
+} from "./fleet-route-policy";
 import {
   getEffectiveRouterStatus,
   getRouterOfflineThresholdMs,
@@ -44,6 +48,7 @@ type MonitoringAlertKind =
   | "import_review"
   | "out_of_sync"
   | "reimport_needed"
+  | "fleet_policy_violation"
   | "awaiting_import"
   | "low_memory"
   | "router_safety"
@@ -88,6 +93,7 @@ export type FleetMonitoringRouterInput = {
   queuedJobCount: number;
   lastRescueReason: string | null;
   configTrust?: Partial<FleetMonitoringConfigTrust> | null;
+  fleetPolicyCompliance?: FleetRoutePolicyCompliance | null;
   openIncident: {
     type:
       | "proxy_outage"
@@ -101,7 +107,7 @@ export type FleetMonitoringRouterInput = {
 };
 
 type FleetMonitoringChartFilter = {
-  kind: "operational" | "freshness" | "memory" | "service";
+  kind: "operational" | "freshness" | "memory" | "service" | "policy";
   value: string;
 };
 
@@ -116,7 +122,7 @@ type FleetMonitoringChartSlice = {
 };
 
 type FleetMonitoringChart = {
-  id: "operational" | "freshness" | "memory" | "service";
+  id: "operational" | "freshness" | "memory" | "service" | "policy";
   title: string;
   description: string;
   slices: FleetMonitoringChartSlice[];
@@ -144,6 +150,7 @@ type FleetMonitoringAlert = {
     freshness: MonitoringFreshnessState;
     memory: RouterMemoryLevel;
     service?: MonitoringServiceFilterValue | null;
+    policy?: FleetRoutePolicyStatus | null;
   };
 };
 
@@ -171,6 +178,7 @@ type FleetMonitoringRouter = {
   importState: string;
   needsImportReview: boolean;
   configTrust: FleetMonitoringConfigTrust;
+  fleetPolicyCompliance: FleetRoutePolicyCompliance;
   lastSeenAt: string | null;
   operationalState: MonitoringOperationalState;
   freshnessState: MonitoringFreshnessState;
@@ -205,6 +213,24 @@ function normalizeConfigTrust(
     lastLiveImportAt: trust?.lastLiveImportAt ?? null,
     lastCheckInAt: trust?.lastCheckInAt ?? null,
   };
+}
+
+function normalizeFleetPolicyCompliance(
+  compliance: FleetMonitoringRouterInput["fleetPolicyCompliance"],
+): FleetRoutePolicyCompliance {
+  return (
+    compliance ?? {
+      policyVersion: "2026-05-12-v1",
+      status: "unknown",
+      checked: false,
+      exempt: false,
+      exceptionReason: null,
+      canNormalize: false,
+      matchedSlots: [],
+      mismatches: [],
+      summary: "No full live PassWall import is available for fleet policy matching.",
+    }
+  );
 }
 
 function formatRelativeTime(value: Date | null | undefined, now = new Date()) {
@@ -278,7 +304,8 @@ function getOperationalState(
   if (
     input.importState !== "approved" ||
     input.configTrust?.requiresReimport ||
-    input.configTrust?.digestMismatch
+    input.configTrust?.digestMismatch ||
+    input.fleetPolicyCompliance?.status === "violation"
   ) {
     return "review";
   }
@@ -361,6 +388,7 @@ function buildAlerts(
     freshness: router.freshnessState,
     memory: router.memory.level,
     service: null,
+    policy: router.fleetPolicyCompliance.status,
   } as const;
 
   if (router.offline) {
@@ -534,6 +562,21 @@ function buildAlerts(
         : "Нужен re-import: deep config не подтверждён",
       description:
         "Свежий snapshot уже есть, но matching full import для глубокой PassWall-конфигурации пока отсутствует.",
+      openedAt: router.configTrust.lastCheckInAt ?? router.lastSeenAt,
+      filters: routerFilters,
+    });
+  }
+
+  if (router.fleetPolicyCompliance.status === "violation") {
+    alerts.push({
+      id: `fleet_policy:${router.id}:${router.fleetPolicyCompliance.policyVersion}`,
+      kind: "fleet_policy_violation",
+      severity: "warning",
+      routerId: router.id,
+      routerName: router.name,
+      href,
+      title: "Маршруты не совпадают с fleet package",
+      description: router.fleetPolicyCompliance.summary,
       openedAt: router.configTrust.lastCheckInAt ?? router.lastSeenAt,
       filters: routerFilters,
     });
@@ -729,6 +772,12 @@ export function buildFleetMonitoringSnapshot(args: {
     youtube_degraded: 0,
     service_unknown: 0,
   };
+  const policyCounts: Record<FleetRoutePolicyStatus, number> = {
+    compliant: 0,
+    violation: 0,
+    exempt: 0,
+    unknown: 0,
+  };
 
   const routers = args.routers.map((input) => {
     const effectiveStatus = getEffectiveRouterStatus(
@@ -746,6 +795,9 @@ export function buildFleetMonitoringSnapshot(args: {
     const directMode =
       reachable && (input.status === "direct" || input.status === "rescue");
     const configTrust = normalizeConfigTrust(input.configTrust);
+    const fleetPolicyCompliance = normalizeFleetPolicyCompliance(
+      input.fleetPolicyCompliance,
+    );
     const memory = describeRouterMemory(input.resources);
     const router: FleetMonitoringRouter = {
       id: input.id,
@@ -775,8 +827,11 @@ export function buildFleetMonitoringSnapshot(args: {
           : "Нет недавних rescue-событий",
       importState: input.importState,
       needsImportReview:
-        input.importState !== "approved" || configTrust.requiresReimport,
+        input.importState !== "approved" ||
+        configTrust.requiresReimport ||
+        fleetPolicyCompliance.status === "violation",
       configTrust,
+      fleetPolicyCompliance,
       lastSeenAt: formatIso(input.lastSeenAt),
       operationalState,
       freshnessState,
@@ -787,6 +842,7 @@ export function buildFleetMonitoringSnapshot(args: {
     operationalCounts[operationalState] += 1;
     freshnessCounts[freshnessState] += 1;
     memoryCounts[memory.level] += 1;
+    policyCounts[fleetPolicyCompliance.status] += 1;
 
     if (reachable) {
       const telegramStatus = getTelegramReachabilityStatus(
@@ -866,7 +922,13 @@ export function buildFleetMonitoringSnapshot(args: {
         label: "Импорт / drift",
         value: String(reviewRouters),
         tone: reviewRouters > 0 ? "warning" : "default",
-        hint: "Нужно принять import, проверить конфигурационный drift или перечитать live-конфиг с роутера.",
+        hint: "Нужно принять import, проверить configTrust drift, fleet policy drift или перечитать live-конфиг с роутера.",
+      },
+      {
+        label: "Policy drift",
+        value: String(policyCounts.violation),
+        tone: policyCounts.violation > 0 ? "warning" : "good",
+        hint: "Роутеры, где live ShuntRules не совпадают с общим fleet server package.",
       },
       {
         label: "Открытые инциденты",
@@ -1037,6 +1099,47 @@ export function buildFleetMonitoringSnapshot(args: {
           counts: memoryCounts,
           total: args.routers.length,
           filterKind: "memory",
+        }),
+      },
+      {
+        id: "policy",
+        title: "Fleet server package",
+        description:
+          "Отдельная проверка live ShuntRules против общего пакета серверов; это не configTrust/revision sync.",
+        slices: buildSlices({
+          items: [
+            {
+              key: "compliant",
+              label: "Policy OK",
+              tone: "good",
+              description:
+                "Live bindings совпадают с canonical fleet route policy.",
+            },
+            {
+              key: "violation",
+              label: "Policy drift",
+              tone: policyCounts.violation > 0 ? "warning" : "good",
+              description:
+                "Роутер синхронен с revision, но выбранные серверы не из fleet package.",
+            },
+            {
+              key: "exempt",
+              label: "Исключения",
+              tone: "default",
+              description:
+                "Явно исключены из общего пакета серверов, например hh.",
+            },
+            {
+              key: "unknown",
+              label: "Нет deep import",
+              tone: policyCounts.unknown > 0 ? "warning" : "default",
+              description:
+                "Нет полного live import, поэтому semantic policy нельзя проверить.",
+            },
+          ],
+          counts: policyCounts,
+          total: args.routers.length,
+          filterKind: "policy",
         }),
       },
       {
