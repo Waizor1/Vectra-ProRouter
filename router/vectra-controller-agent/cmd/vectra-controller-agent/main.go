@@ -675,11 +675,11 @@ func executeJobs(
 			return fmt.Errorf("persist current job %s: %w", job.ID, err)
 		}
 
-		if safety := evaluateJobSafety(
+		if safety := evaluateJobSafetyWithResourceCollector(
 			job,
 			desiredRevision,
-			inventory.CollectResources(),
 			time.Now().UTC(),
+			inventory.CollectResources,
 		); safety.Blocked {
 			log.Printf("job %s (%s) blocked by router resource guard: %s", job.ID, job.Type, safety.Message)
 			if err := submitFailure(

@@ -45,6 +45,36 @@ func evaluateJobSafety(
 	now time.Time,
 ) jobSafetyDecision {
 	class := classifyJobSafety(job, desiredRevision)
+	return evaluateJobSafetyForClass(job, class, resources, now)
+}
+
+func evaluateJobSafetyWithResourceCollector(
+	job controlplane.Job,
+	desiredRevision *controlplane.DesiredRevisionSummary,
+	now time.Time,
+	collectResources func() controlplane.RouterResources,
+) jobSafetyDecision {
+	class := classifyJobSafety(job, desiredRevision)
+	if class == jobSafetyClassNone {
+		return jobSafetyDecision{
+			Class:     class,
+			CheckedAt: now.UTC(),
+		}
+	}
+
+	resources := controlplane.RouterResources{}
+	if collectResources != nil {
+		resources = collectResources()
+	}
+	return evaluateJobSafetyForClass(job, class, resources, now)
+}
+
+func evaluateJobSafetyForClass(
+	job controlplane.Job,
+	class jobSafetyClass,
+	resources controlplane.RouterResources,
+	now time.Time,
+) jobSafetyDecision {
 	decision := jobSafetyDecision{
 		Class:     class,
 		Resources: resources,

@@ -79,6 +79,39 @@ func TestEvaluateJobSafetyAllowsRouterRebootTerminalUnderLowMemory(t *testing.T)
 	}
 }
 
+func TestEvaluateJobSafetyWithResourceCollectorSkipsUnguardedJob(t *testing.T) {
+	called := false
+	decision := evaluateJobSafetyWithResourceCollector(
+		controlplane.Job{
+			ID:   "job-1",
+			Type: "run_terminal_command",
+			Payload: map[string]interface{}{
+				"purpose": "router-reboot",
+			},
+		},
+		nil,
+		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		func() controlplane.RouterResources {
+			called = true
+			return controlplane.RouterResources{
+				MemoryAvailableMB: 12,
+				OverlayFreeMB:     0,
+				TMPFreeMB:         0,
+			}
+		},
+	)
+
+	if called {
+		t.Fatalf("expected unguarded job to skip resource collection")
+	}
+	if decision.Blocked {
+		t.Fatalf("expected explicit router reboot terminal job to stay allowed, got %#v", decision)
+	}
+	if got, want := decision.Class, jobSafetyClassNone; got != want {
+		t.Fatalf("decision class = %q, want %q", got, want)
+	}
+}
+
 func TestClassifyApplyPasswallConfigOnlyGuardsHeavyImpact(t *testing.T) {
 	job := controlplane.Job{ID: "job-1", Type: "apply_passwall_config"}
 
