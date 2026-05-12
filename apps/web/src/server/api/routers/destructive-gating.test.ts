@@ -608,6 +608,8 @@ describe("destructive route gating", () => {
     expect(inserted.payload?.command).toContain(
       "controller self-update resource guard:",
     );
+    expect(inserted.payload?.command).not.toContain("then;");
+    expect(inserted.payload?.command).toContain("then\n  echo");
     expect(inserted.payload?.command).toContain(
       "/tmp/vectra-skip-postinst-restart",
     );

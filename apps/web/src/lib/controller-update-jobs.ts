@@ -142,7 +142,7 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     'cleanup_luci',
     'schedule_restart',
     `printf '%s\\n' ${shellSingleQuote(installedSummary)}`,
-  ].join("; ");
+  ].join("\n");
 
   return runTerminalCommandJobPayloadSchema.parse({
     command,
