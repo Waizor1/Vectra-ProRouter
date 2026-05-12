@@ -3,7 +3,7 @@ type: module
 path: deploy/, docker-compose.yml, Caddyfile
 stage: pilot
 confidence: high
-last-reviewed: 2026-05-12
+last-reviewed: 2026-05-13
 tags:
   - module
   - deploy
@@ -13,6 +13,8 @@ tags:
 # Deployment Stack
 
 ## Confirmed
+
+- 2026-05-13 guarded release-slice hotfix: the production web deploy lane successfully carried the controller self-update shell-generation fix through tarball staging, VPS backup, release sync, rebuild, health check, and smoke. Fresh `VectraPanelCli.sh status` after the rollout reports operator app health `200`, router API health `200`, and `vectra-web` `ok` with DB read/write probes green.
 
 - 2026-05-12 r20 release and web guard hotfix: public stable OpenWrt feed serves `vectra-controller-agent_0.1.13-r20_aarch64_cortex-a53.ipk` and `luci-app-vectra-controller_0.1.13-r20_all.ipk` with SHA-256 `da26c1e499f4848e9feec1ef106c548d09a5beaf017163b5196c09e6ed2b51c3` and `f3aec0421e1c38adf5b94d9d4c04fa1e3b1551af7f704af121025beed8a5b1bb`. The online fleet converged to r20 after the web-side legacy compat bridge requeued the three previously blocked routers under conservative floors; stale offline `testrouter` stayed untouched. A follow-up guarded web release then deployed the review fixes for direct-rescue exclusion, live self-update resource preflight, and clean release-slice payloads. Final deploy evidence: backup `/opt/vectra-prorouter-backups/web-release-20260512-011100`, compose web healthy, standard smoke `307/200/200/200/400`, app/router API health `200`, and production source markers present under `/opt/vectra-prorouter`.
 

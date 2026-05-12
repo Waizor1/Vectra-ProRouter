@@ -3,7 +3,7 @@ type: module
 path: router/luci-app-vectra-controller
 stage: active
 confidence: high
-last-reviewed: 2026-05-11
+last-reviewed: 2026-05-13
 tags:
   - module
   - luci
@@ -13,6 +13,8 @@ tags:
 # LuCI Controller Package
 
 ## Confirmed
+
+- 2026-05-13 controller/LuCI `0.1.13-r21` rollout: signed r21 artifacts are installed on 14/15 active routers and the production version workspace has no queued controller updates. The residual r20 router (`denisvitalevichtescha`) is intentionally not forced because its live resource snapshot reports critical low RAM; previous update and log jobs failed with no stdout/stderr because the router-side guard rejected them before execution.
 
 - 2026-05-12 LuCI/controller package `0.1.13-r20`: the aligned LuCI package is published and installed with the r20 controller agent across all fresh online routers. There is still no LuCI UI behavior change in this slice; the package version is kept aligned so self-update installs a validated controller/LuCI pair. Stale offline `testrouter` remains queued on r9 and was intentionally not forced.
 

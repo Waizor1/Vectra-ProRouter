@@ -3,7 +3,7 @@ type: module
 path: apps/web, apps/install-helper
 stage: pilot
 confidence: high
-last-reviewed: 2026-05-12
+last-reviewed: 2026-05-13
 tags:
   - module
   - web
@@ -13,6 +13,8 @@ tags:
 # Web Control Plane
 
 ## Confirmed
+
+- 2026-05-13 fleet policy rollout closeout: production web now carries the self-update shell newline hotfix (`6019194`) after the initial r21 rollout exposed an invalid OpenWrt shell `then;` command. The guarded release-slice deploy left `vectra-web` healthy, public operator/router API health at `200`, and the final fleet read model reports all 15 routers as `live-import` with `requiresReimport=false`; `fleetPolicyCompliance` is `compliant` for 14 non-`hh` routers and `exempt` for `hh`. A final `fleet.normalizeRoutePolicy` dry-run returned `already_compliant` for every non-`hh` router, so the panel now distinguishes revision trust from server-package compliance in live operations.
 
 - 2026-05-12 fleet route policy guard: web/API now separates `configTrust` (live-import/revision sync) from `fleetPolicyCompliance` (semantic match against the canonical fleet server package). Fleet list, monitoring charts/alerts, router cards, and router detail can show `Policy drift` even when `requiresReimport=false` and `digestMismatch=false`; `hh` is an explicit policy exception. A protected `fleet.normalizeRoutePolicy` path supports read-only dry-run, draft creation, and guarded apply queueing from the latest live import without touching subscription URLs/secrets. Local proof: full `@vectra/web` Vitest, `lint`, `typecheck`, `build`, full controller `go test`, and `git diff --check` are green.
 

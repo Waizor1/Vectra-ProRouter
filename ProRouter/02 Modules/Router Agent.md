@@ -3,7 +3,7 @@ type: module
 path: router/vectra-controller-agent
 stage: pilot
 confidence: high
-last-reviewed: 2026-05-12
+last-reviewed: 2026-05-13
 tags:
   - module
   - go
@@ -13,6 +13,8 @@ tags:
 # Router Agent
 
 ## Confirmed
+
+- 2026-05-13 controller r21 rollout closeout: the r21 fleet-policy self-heal package is live on 14/15 active routers after selective safe retries. The only router left on r20 is `denisvitalevichtescha`; its latest snapshots show critical low RAM around 29 MB, and the r20 resource guard correctly blocks `controller-self-update` terminal jobs before any router-side commands run. `AndreyVK` and `Vasily_Filicity` initially failed for the same empty-result reason (`run_terminal_command` blocked below the 64 MB storage floor) and then upgraded successfully once `MemAvailable` recovered. Route-policy compliance remains green on every non-`hh` router, so the remaining r20 holdback is an update-safety/resource issue, not active server-package drift.
 
 - 2026-05-12 fleet route policy self-heal: the controller source now has a canonical fleet route policy layer for the standard non-`hh` server package (`WorldProxy` RU-entry Germany, `YouTube` RU Russia, `Special` Netherlands, `Tiktok` Belarus, `DiscordVoiceUdp` RU-entry Poland with UDP/mux/xudp tuning). After check-in and after `refresh_subscriptions`, non-exempt routers can reconcile live `myshunt` bindings by semantic target instead of volatile subscription node id, while preserving subscription `auto_update` and not rewriting subscription URLs. `hh` is a no-touch exception. Local proof: new `internal/passwall` regression tests cover fleet-policy restoration, Discord tuning preservation, refreshed node ids, and the `hh` no-op path; full `go test ./... -count=1` is green.
 
