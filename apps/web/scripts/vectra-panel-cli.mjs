@@ -52,6 +52,10 @@ const operatorTrpcCatalog = {
     queries: ["policy", "openIncidents", "directRouters"],
     mutations: ["triggerDirectMode", "triggerReconnect"],
   },
+  onboarding: {
+    queries: ["get", "listRuns"],
+    mutations: ["saveProfile", "advance", "pause", "retry"],
+  },
   terminal: {
     queries: ["history"],
     mutations: ["queueCommand"],
