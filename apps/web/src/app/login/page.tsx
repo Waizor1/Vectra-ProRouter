@@ -86,7 +86,7 @@ export default async function LoginPage({
         <div className="mt-6 text-sm text-slate-500">
           <Link
             href="/install"
-            className="underline decoration-white/20 underline-offset-4 hover:text-slate-300"
+            className="inline-flex min-h-11 items-center underline decoration-white/20 underline-offset-4 hover:text-slate-300"
           >
             Перейти к публичной установке
           </Link>

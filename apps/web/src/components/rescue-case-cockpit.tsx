@@ -302,7 +302,7 @@ export function RescueCaseCockpit({ initialDetails }: RescueCaseCockpitProps) {
       </Panel>
 
       <details className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)] px-4 py-3">
-        <summary className="cursor-pointer list-none text-sm font-medium text-white">
+        <summary className="min-h-11 cursor-pointer list-none text-sm font-medium text-white">
           Manual terminal section
         </summary>
         <p className="mt-3 text-sm leading-6 text-slate-300">

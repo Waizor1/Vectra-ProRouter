@@ -1114,7 +1114,7 @@ export function FleetMonitoringWorkspace({
             </div>
 
             <details className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.02)] px-3 py-3">
-              <summary className="cursor-pointer list-none">
+              <summary className="min-h-11 cursor-pointer list-none">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="vectra-kicker text-slate-500">

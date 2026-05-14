@@ -1323,7 +1323,7 @@ export function RouterDetailWorkspace({
 
         {safetyEvents.length > 0 ? (
           <details className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-500/[0.07] px-3 py-3">
-            <summary className="cursor-pointer list-none">
+            <summary className="min-h-11 cursor-pointer list-none">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="vectra-kicker text-amber-200">
@@ -1381,7 +1381,7 @@ export function RouterDetailWorkspace({
 
         {telegramChecks.length > 0 ? (
           <details className="mt-3 rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
-            <summary className="cursor-pointer list-none">
+            <summary className="min-h-11 cursor-pointer list-none">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="vectra-kicker text-slate-500">
@@ -1430,7 +1430,7 @@ export function RouterDetailWorkspace({
 
         {youtubeChecks.length > 0 ? (
           <details className="mt-3 rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
-            <summary className="cursor-pointer list-none">
+            <summary className="min-h-11 cursor-pointer list-none">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="vectra-kicker text-slate-500">
@@ -1599,7 +1599,7 @@ export function RouterDetailWorkspace({
             open={trustDetailsOpen ? true : undefined}
             className={`rounded-2xl border px-4 py-3 ${configTrust.badgeClassName}`}
           >
-            <summary className="cursor-pointer list-none">
+            <summary className="min-h-11 cursor-pointer list-none">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0">
                   <p className="vectra-kicker text-current/80">
@@ -1750,7 +1750,7 @@ function RouterActionRail({
             open={hasRouterChanges || hasPanelChanges ? true : undefined}
             className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3"
           >
-            <summary className="cursor-pointer list-none">
+            <summary className="min-h-11 cursor-pointer list-none">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="vectra-kicker text-slate-500">
@@ -1923,7 +1923,7 @@ function RouterActionRail({
         </ActionStrip>
 
         <details className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-3">
-          <summary className="cursor-pointer list-none">
+          <summary className="min-h-11 cursor-pointer list-none">
             <div className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:items-center">
               <div>
                 <p className="vectra-kicker text-slate-500">
@@ -2700,7 +2700,7 @@ function NodeListSection({
 
       {needsAttentionCount > 0 ? (
         <details className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
-          <summary className="cursor-pointer list-none">
+          <summary className="min-h-11 cursor-pointer list-none">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <p className="vectra-kicker text-amber-200">
@@ -3246,7 +3246,7 @@ function SubscriptionSection({
   return (
     <div className="space-y-4">
       <details className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4">
-        <summary className="cursor-pointer list-none">
+        <summary className="min-h-11 cursor-pointer list-none">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="vectra-kicker text-slate-500">
@@ -4735,7 +4735,7 @@ function RuntimeNodeDetailsDisclosure({
 }) {
   return (
     <details className="mt-3">
-      <summary className="cursor-pointer list-none text-xs font-medium text-sky-200 transition hover:text-sky-100">
+      <summary className="min-h-11 cursor-pointer list-none text-xs font-medium text-sky-200 transition hover:text-sky-100">
         Открыть read-only детали ноды
       </summary>
       <RuntimeNodeDetails node={node} />
@@ -7073,7 +7073,7 @@ function OperationRow({ operation }: { operation: PasswallOperationPreview }) {
       </p>
       {longDetails ? (
         <details className="mt-2">
-          <summary className="cursor-pointer list-none text-xs font-medium text-slate-300">
+          <summary className="min-h-11 cursor-pointer list-none text-xs font-medium text-slate-300">
             Показать технические UCI-команды ({detailsCount})
           </summary>
           <div className="mt-2 overflow-x-auto rounded-md border border-white/10 bg-black/10 px-2.5 py-2 text-xs leading-5 break-words text-slate-300">

@@ -94,7 +94,7 @@ export function ImportReviewActions({
   if (approved) {
     return (
       <details className="rounded-md border border-white/10 bg-black/10 px-3 py-3">
-        <summary className="cursor-pointer list-none">
+        <summary className="min-h-11 cursor-pointer list-none">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="vectra-kicker text-slate-500">Сверка с роутером</p>
@@ -145,7 +145,7 @@ export function ImportReviewActions({
 
       {!approved ? (
         <details className="mt-4 rounded-md border border-white/10 bg-black/10 px-3 py-3">
-          <summary className="cursor-pointer list-none text-sm font-medium text-white">
+          <summary className="min-h-11 cursor-pointer list-none text-sm font-medium text-white">
             Шаги подключения
           </summary>
           <div className="mt-3 grid gap-2 sm:grid-cols-3">

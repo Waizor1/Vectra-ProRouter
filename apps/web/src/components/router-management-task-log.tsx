@@ -137,7 +137,7 @@ export function RouterManagementTaskLog({
             </div>
 
             <details className="mt-4 rounded-lg border border-white/10 bg-[rgba(11,14,20,0.78)] px-3 py-3">
-              <summary className="cursor-pointer list-none text-sm font-medium text-white">
+              <summary className="min-h-11 cursor-pointer list-none text-sm font-medium text-white">
                 Показать детали ответа роутера
               </summary>
               <div className="mt-3 space-y-3">

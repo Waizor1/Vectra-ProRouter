@@ -956,7 +956,7 @@ export function GlobalTemplateRolloutWorkspace({
       </Panel>
 
       <details className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-muted)]">
-        <summary className="cursor-pointer list-none px-4 py-3 sm:px-5">
+        <summary className="min-h-11 cursor-pointer list-none px-4 py-3 sm:px-5">
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="vectra-kicker text-slate-500">Справка</p>

@@ -327,7 +327,7 @@ export function RouterCard({ router }: { router: RouterSummary }) {
           open={trustDetailsOpen ? true : undefined}
           className={`mt-3 rounded-2xl border px-3 py-3 ${trustState.badgeClassName}`}
         >
-          <summary className="cursor-pointer list-none">
+          <summary className="min-h-11 cursor-pointer list-none">
             <div className="flex items-center justify-between gap-3">
               <p className="vectra-kicker text-current/80">Панель и trust</p>
               <span className="vectra-chip rounded-full border border-white/10 bg-white/8 px-2.5 py-1 text-current">
