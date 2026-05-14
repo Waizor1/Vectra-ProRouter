@@ -3,7 +3,7 @@ type: module
 path: router/luci-app-vectra-controller
 stage: active
 confidence: high
-last-reviewed: 2026-05-13
+last-reviewed: 2026-05-15
 tags:
   - module
   - luci
@@ -13,6 +13,8 @@ tags:
 # LuCI Controller Package
 
 ## Confirmed
+
+- 2026-05-15 r23 rollout: bumped `VECTRA_RELEASE` to `23` so the LuCI package tracks controller `0.1.13-r23`; the published stable artifacts were used to update `yuranrod-msk`, and the live router came back with matching controller/LuCI versions and approved import state.
 
 - 2026-05-13 controller/LuCI `0.1.13-r22` is published in the stable OpenWrt feed and installed on Kirill-MSK. There is no LuCI UX change in this slice; the package release is aligned with the controller agent so self-update installs a matched pair while the agent lowers only the heavy operational refresh RAM floor to 40 MB. Live install proof on Kirill-MSK showed both `vectra-controller-agent` and `luci-app-vectra-controller` at `0.1.13-r22`, after which the saved subscription replacement applied and re-imported cleanly.
 

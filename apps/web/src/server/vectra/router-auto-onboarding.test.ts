@@ -5,6 +5,8 @@ import { passwallDesiredConfigSchema } from "@vectra/contracts";
 import {
   createSubscriptionSecretCiphertext,
   hashOnboardingSecret,
+  onboardingAttemptDedupePrefix,
+  onboardingRunResumeStatuses,
   planNextOnboardingAction,
   sanitizeOnboardingProfileForClient,
   type RouterOnboardingContext,
@@ -82,7 +84,7 @@ function snapshot(
       protocolVersion: "2026-04-v1",
       deviceIdentifier: "router-auto-onboarding-1",
       devicePublicKey: "public-key",
-      controllerVersion: "0.1.13-r21",
+      controllerVersion: "0.1.13-r23",
       hostname: "openwrt",
       model: "Xiaomi AX3000T",
       boardName: "xiaomi,mi-router-ax3000t",
@@ -140,6 +142,20 @@ describe("router auto-onboarding planner", () => {
     expect(
       planNextOnboardingAction(context({ featureEnabled: false })),
     ).toEqual({ action: "skip", reason: "feature flag disabled" });
+  });
+
+  it("loads completed runs so an enabled profile does not start again after done", () => {
+    expect(onboardingRunResumeStatuses).toContain("done");
+    expect(
+      planNextOnboardingAction(
+        context({
+          run: run({ state: "done", status: "done" }),
+        }),
+      ),
+    ).toMatchObject({
+      action: "skip",
+      reason: "onboarding run is done",
+    });
   });
 
   it("waits for offline routers without queueing work", () => {
@@ -236,6 +252,30 @@ describe("router auto-onboarding planner", () => {
       action: "queue_ensure_runtime",
       actions: ["compact_geodata", "dnsmasq_full"],
       reason: "queueing typed runtime repair: compact_geodata, dnsmasq_full",
+    });
+  });
+
+  it("blocks typed runtime repair on older controller agents", () => {
+    expect(
+      planNextOnboardingAction(
+        context({
+          run: run({ state: "ensure_runtime" }),
+          latestSnapshot: snapshot({
+            controllerVersion: "0.1.13-r22",
+            packageVersions: {
+              "luci-app-passwall2": "26.5.1-r1",
+              "xray-core": "26.4.25-r1",
+            },
+            binaryVersions: { xray: "26.4.25" },
+            rulesAssets: {},
+          }),
+        }),
+      ),
+    ).toMatchObject({
+      action: "block",
+      nextState: "ensure_runtime",
+      reason:
+        "controller 0.1.13-r22 does not support ensure_passwall_runtime; update vectra-controller-agent/LuCI to 0.1.13-r23+ before retrying",
     });
   });
 
@@ -371,6 +411,25 @@ describe("router auto-onboarding planner", () => {
     });
   });
 
+  it("blocks typed route-smoke verification on older controller agents", () => {
+    expect(
+      planNextOnboardingAction(
+        context({
+          run: run({ state: "verify_runtime" }),
+          activeConfig: standardRouteConfig(),
+          latestSnapshot: snapshot({
+            controllerVersion: "0.1.13-r22",
+          }),
+        }),
+      ),
+    ).toMatchObject({
+      action: "block",
+      nextState: "verify_runtime",
+      reason:
+        "controller 0.1.13-r22 does not support verify_passwall_routes; update vectra-controller-agent/LuCI to 0.1.13-r23+ before retrying",
+    });
+  });
+
   it("moves to final import after green typed route verification", () => {
     expect(
       planNextOnboardingAction(
@@ -409,6 +468,15 @@ describe("router auto-onboarding planner", () => {
       nextState: "final_reimport",
       reason: "typed route verifier returned green route-smoke proof",
     });
+  });
+
+  it("separates dedupe keys by onboarding attempt", () => {
+    expect(onboardingAttemptDedupePrefix("run-1", 0)).toBe(
+      "onboarding:run-1:attempt:0:",
+    );
+    expect(onboardingAttemptDedupePrefix("run-1", 2)).toBe(
+      "onboarding:run-1:attempt:2:",
+    );
   });
 
   it("does not accept route verifier payloads from failed job results", () => {

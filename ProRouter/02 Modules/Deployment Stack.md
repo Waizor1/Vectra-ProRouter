@@ -3,7 +3,7 @@ type: module
 path: deploy/, docker-compose.yml, Caddyfile
 stage: pilot
 confidence: high
-last-reviewed: 2026-05-13
+last-reviewed: 2026-05-15
 tags:
   - module
   - deploy
@@ -13,6 +13,8 @@ tags:
 # Deployment Stack
 
 ## Confirmed
+
+- 2026-05-15 r23 production rollout: the controller/LuCI stable feed was built and published at `0.1.13-r23`, the live router `yuranrod-msk` was updated through the panel controller-update lane, and the follow-up web deploy fixed the completed-run restart bug so the production onboarding flow now stays parked on `done` instead of spawning a fresh run after completion.
 
 - 2026-05-13 controller guard-floor release `0.1.13-r22`: the stable `aarch64_cortex-a53` OpenWrt feed was rebuilt/published from a staged VPS SDK workspace and now exposes the matched `vectra-controller-agent`/`luci-app-vectra-controller` r22 artifacts. Production metadata was synced so `update.versionDriftWorkspace` advertises `controllerAvailable=0.1.13-r22`; public artifact checks returned HTTP 200, and Kirill-MSK installed the r22 pair before successfully applying the previously blocked subscription-only revision.
 

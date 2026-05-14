@@ -22,6 +22,10 @@ import { z } from "zod";
 
 import { env } from "~/env";
 import {
+  compareControllerVersions,
+  resolveInstalledControllerVersion,
+} from "~/lib/controller-version";
+import {
   buildTerminalRouterHostnameUpdatePayload,
   normalizeRouterHostname,
 } from "~/lib/router-hostname-jobs";
@@ -121,6 +125,14 @@ const activeJobStates: OnboardingJobState[] = [
   "delivered",
   "running",
 ];
+export const onboardingRunResumeStatuses: RouterOnboardingRunStatus[] = [
+  "running",
+  "waiting",
+  "blocked",
+  "failed",
+  "paused",
+  "done",
+];
 
 const onboardingSubscriptionId = "vectra-onboarding-subscription";
 const compactGeoipUrl =
@@ -134,6 +146,7 @@ const overlayFreeFloorMb = 4;
 const ensureRuntimeMemoryAvailableFloorMb = 64;
 const ensureRuntimeTmpFreeFloorMb = 32;
 const ensureRuntimeOverlayFreeFloorMb = 16;
+const typedOnboardingJobMinControllerVersion = "0.1.13-r23";
 
 const subscriptionSecretPayloadSchema = z.object({
   url: z.string().url(),
@@ -330,8 +343,36 @@ function onboardingDedupePrefix(runId: string) {
   return `onboarding:${runId}:`;
 }
 
+export function onboardingAttemptDedupePrefix(runId: string, attempt: number) {
+  return `onboarding:${runId}:attempt:${attempt}:`;
+}
+
 function isOnboardingJobForRun(job: JobLike, runId: string) {
   return job.dedupeKey?.startsWith(onboardingDedupePrefix(runId)) ?? false;
+}
+
+function installedControllerVersion(ctx: RouterOnboardingContext) {
+  return resolveInstalledControllerVersion({
+    controllerVersion: ctx.latestSnapshot?.payload?.controllerVersion ?? null,
+    payload: ctx.latestSnapshot?.payload ?? null,
+  });
+}
+
+function controllerMeetsMinimumVersion(
+  ctx: RouterOnboardingContext,
+  minimumVersion: string,
+) {
+  const currentVersion = installedControllerVersion(ctx);
+  const comparison = compareControllerVersions(currentVersion, minimumVersion);
+  return comparison !== null && comparison >= 0;
+}
+
+function typedOnboardingJobBlockReason(
+  ctx: RouterOnboardingContext,
+  jobLabel: string,
+) {
+  const currentVersion = installedControllerVersion(ctx) ?? "unknown";
+  return `controller ${currentVersion} does not support ${jobLabel}; update vectra-controller-agent/LuCI to ${typedOnboardingJobMinControllerVersion}+ before retrying`;
 }
 
 function readRouterHostname(router: RouterLike, snapshot: SnapshotLike | null) {
@@ -681,6 +722,22 @@ function planRuntimeEnsureAction(ctx: RouterOnboardingContext):
       action: "transition",
       nextState: "apply_subscription",
       reason: "minimal PassWall/Xray runtime is already present",
+    };
+  }
+
+  if (
+    !controllerMeetsMinimumVersion(
+      ctx,
+      typedOnboardingJobMinControllerVersion,
+    )
+  ) {
+    return {
+      action: "block",
+      nextState: "ensure_runtime",
+      reason: typedOnboardingJobBlockReason(
+        ctx,
+        "ensure_passwall_runtime",
+      ),
     };
   }
 
@@ -1047,6 +1104,21 @@ export function planNextOnboardingAction(
               "typed route-smoke verifier currently supports only the standard non-hh baseline",
           };
         }
+        if (
+          !controllerMeetsMinimumVersion(
+            ctx,
+            typedOnboardingJobMinControllerVersion,
+          )
+        ) {
+          return {
+            action: "block",
+            nextState: ctx.run.state,
+            reason: typedOnboardingJobBlockReason(
+              ctx,
+              "verify_passwall_routes",
+            ),
+          };
+        }
         return {
           action: "queue_route_verification",
           reason: "queueing typed PassWall route-smoke verifier",
@@ -1179,11 +1251,12 @@ async function queueOnboardingApplyJob(
   input: {
     routerId: string;
     runId: string;
+    attempt: number;
     revisionId: string;
     purpose: string;
   },
 ) {
-  const dedupeKey = `${onboardingDedupePrefix(input.runId)}apply:${input.purpose}:${input.revisionId}`;
+  const dedupeKey = `${onboardingAttemptDedupePrefix(input.runId, input.attempt)}apply:${input.purpose}:${input.revisionId}`;
   const [existingJob] = await client
     .select()
     .from(jobs)
@@ -1226,9 +1299,9 @@ async function queueOnboardingApplyJob(
 
 async function queueHostnameJob(
   client: DatabaseClient,
-  input: { routerId: string; runId: string; hostname: string },
+  input: { routerId: string; runId: string; attempt: number; hostname: string },
 ) {
-  const dedupeKey = `${onboardingDedupePrefix(input.runId)}hostname:${input.hostname}`;
+  const dedupeKey = `${onboardingAttemptDedupePrefix(input.runId, input.attempt)}hostname:${input.hostname}`;
   const [existingJob] = await client
     .select()
     .from(jobs)
@@ -1267,10 +1340,11 @@ async function queueEnsureRuntimeJob(
   input: {
     routerId: string;
     runId: string;
+    attempt: number;
     actions: Array<"compact_geodata" | "dnsmasq_full">;
   },
 ) {
-  const dedupeKey = `${onboardingDedupePrefix(input.runId)}ensure_passwall_runtime:${input.actions.join("+")}`;
+  const dedupeKey = `${onboardingAttemptDedupePrefix(input.runId, input.attempt)}ensure_passwall_runtime:${input.actions.join("+")}`;
   const [existingJob] = await client
     .select()
     .from(jobs)
@@ -1314,9 +1388,9 @@ async function queueEnsureRuntimeJob(
 
 async function queueRefreshSubscriptionsJob(
   client: DatabaseClient,
-  input: { routerId: string; runId: string },
+  input: { routerId: string; runId: string; attempt: number },
 ) {
-  const dedupeKey = `${onboardingDedupePrefix(input.runId)}refresh_subscriptions`;
+  const dedupeKey = `${onboardingAttemptDedupePrefix(input.runId, input.attempt)}refresh_subscriptions`;
   const [existingJob] = await client
     .select()
     .from(jobs)
@@ -1349,9 +1423,9 @@ async function queueRefreshSubscriptionsJob(
 
 async function queueRouteVerificationJob(
   client: DatabaseClient,
-  input: { routerId: string; runId: string },
+  input: { routerId: string; runId: string; attempt: number },
 ) {
-  const dedupeKey = `${onboardingDedupePrefix(input.runId)}verify_passwall_routes`;
+  const dedupeKey = `${onboardingAttemptDedupePrefix(input.runId, input.attempt)}verify_passwall_routes`;
   const [existingJob] = await client
     .select()
     .from(jobs)
@@ -1411,13 +1485,7 @@ async function loadOnboardingContext(
       .where(
         and(
           eq(routerOnboardingRuns.routerId, routerId),
-          inArray(routerOnboardingRuns.status, [
-            "running",
-            "waiting",
-            "blocked",
-            "failed",
-            "paused",
-          ]),
+          inArray(routerOnboardingRuns.status, onboardingRunResumeStatuses),
         ),
       )
       .orderBy(desc(routerOnboardingRuns.createdAt))
@@ -1706,6 +1774,7 @@ async function executePlan(
     const job = await queueHostnameJob(client, {
       routerId: ctx.router.id,
       runId: ctx.run.id,
+      attempt: ctx.run.attempt,
       hostname: plan.hostname,
     });
     await updateRun(client, ctx.run, {
@@ -1736,6 +1805,7 @@ async function executePlan(
     const job = await queueEnsureRuntimeJob(client, {
       routerId: ctx.router.id,
       runId: ctx.run.id,
+      attempt: ctx.run.attempt,
       actions: plan.actions,
     });
     await updateRun(client, ctx.run, {
@@ -1782,6 +1852,7 @@ async function executePlan(
     const job = await queueOnboardingApplyJob(client, {
       routerId: ctx.router.id,
       runId: ctx.run.id,
+      attempt: ctx.run.attempt,
       revisionId: revision.id,
       purpose:
         plan.action === "apply_subscription"
@@ -1832,6 +1903,7 @@ async function executePlan(
     const job = await queueRefreshSubscriptionsJob(client, {
       routerId: ctx.router.id,
       runId: ctx.run.id,
+      attempt: ctx.run.attempt,
     });
     await updateRun(client, ctx.run, {
       state: "refresh_subscription",
@@ -1861,6 +1933,7 @@ async function executePlan(
     const job = await queueRouteVerificationJob(client, {
       routerId: ctx.router.id,
       runId: ctx.run.id,
+      attempt: ctx.run.attempt,
     });
     await updateRun(client, ctx.run, {
       state: "verify_runtime",

@@ -3,7 +3,7 @@ type: module
 path: apps/web, apps/install-helper
 stage: pilot
 confidence: high
-last-reviewed: 2026-05-14
+last-reviewed: 2026-05-15
 tags:
   - module
   - web
@@ -13,6 +13,8 @@ tags:
 # Web Control Plane
 
 ## Confirmed
+
+- 2026-05-15 automated onboarding r23 rollout closeout: web onboarding now gates typed `ensure_passwall_runtime` and `verify_passwall_routes` behind controller/LuCI `0.1.13-r23+`, scopes onboarding dedupe keys by attempt, and treats `done` as a resumable terminal state so enabled profiles do not spawn a fresh run after completion. Production rollout for `yuranrod-msk` finished cleanly, the router run ended `done`, and final route-smoke proof stayed green across all five managed slots.
 
 - 2026-05-14 automated onboarding backend MVP: the intended web/control-plane shape is documented in `ai_docs/develop/features/router-automated-onboarding-workflow.md` and ADR-0002, and the local implementation now spans `apps/web/src/server/vectra/router-auto-onboarding.ts`, protected `onboarding` tRPC procedures, and the router-detail `Автонастройка роутера` card. The web layer has feature-flagged register/check-in/job-result hooks, profile/run persistence in `packages/db`, subscription-secret encryption/hash-only client output, and a state-machine lane for first import approval, hostname job, typed runtime repair, subscription apply/refresh, semantic fleet route baseline, typed route-smoke verification, final re-import, and safety gates. Auto-run remains off by default with `VECTRA_AUTO_ONBOARDING_ENABLED=false`; runtime repair is now queued only after core PassWall/Xray exist and advances only after green post-repair service/resource/action proof.
 

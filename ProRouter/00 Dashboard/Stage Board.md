@@ -1,12 +1,16 @@
 ---
 type: dashboard
-updated: 2026-05-14
+updated: 2026-05-15
 tags:
   - dashboard
   - status
 ---
 
 # Stage Board
+
+## 2026-05-15 Automated onboarding r23 production closeout
+
+- Rolled the panel-owned auto-onboarding path to the live `yuranrod-msk` router on controller/LuCI `0.1.13-r23`. The web state machine now blocks typed onboarding jobs on older agents, scopes dedupe keys by attempt, and treats completed runs as terminal so enabled profiles do not restart after `done`; production feed artifacts were published, the router updated through the panel lane, and the final run ended `done` with green five-slot route proof. This is the first fully closed production pilot for the new onboarding workflow.
 
 ## 2026-05-14 Automated onboarding runtime repair closure
 

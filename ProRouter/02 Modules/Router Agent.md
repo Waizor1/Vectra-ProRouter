@@ -3,7 +3,7 @@ type: module
 path: router/vectra-controller-agent
 stage: pilot
 confidence: high
-last-reviewed: 2026-05-14
+last-reviewed: 2026-05-15
 tags:
   - module
   - go
@@ -13,6 +13,8 @@ tags:
 # Router Agent
 
 ## Confirmed
+
+- 2026-05-15 automated onboarding r23 rollout closeout: controller/LuCI `0.1.13-r23` is now the live floor for typed onboarding jobs, the router-side agent stayed compatible with the new `ensure_passwall_runtime` and `verify_passwall_routes` path, and `yuranrod-msk` completed onboarding with green five-slot route proof while preserving the Discord UDP tuning and service health.
 
 - 2026-05-14 automated onboarding backend MVP: ADR-0002 and `ai_docs/develop/features/router-automated-onboarding-workflow.md` define the controller-side role for unattended onboarding, and the web/backend now has a feature-flagged state machine that advances from router `register`, `check-in`, and `job-result`. The controller implements typed `verify_passwall_routes`: it verifies PassWall main switch, selected shunt binding intent, route/rule/node extras, and five `url_test_node=204` smokes before the web run can move to final re-import. The scorer accepts the proven RU-entry Netherlands `Special` fallback so low-storage routers like the recent Cudy/YuranRod path are not forced back to a dead plain-NL node. The controller now also implements typed `ensure_passwall_runtime` for known minimal runtime repairs: compact geodata and `dnsmasq-full`, classified as storage-gated, with `dnsmasq-full` package staging before base `dnsmasq` removal, `/etc/config/dhcp` preservation, PassWall restart, and post-repair inventory returned to the web gate.
 
