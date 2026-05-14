@@ -104,6 +104,26 @@ describe("router detail app update helpers", () => {
     expect(source).toContain("formatFleetPolicyStatus");
   });
 
+  it("keeps the panel-owned onboarding card mounted from router detail", () => {
+    const source = readFileSync(
+      new URL("./router-detail-workspace.tsx", import.meta.url),
+      "utf8",
+    );
+    const onboardingSource = readFileSync(
+      new URL("./router-onboarding-panel.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("RouterOnboardingPanel");
+    expect(onboardingSource).toContain("api.onboarding.get.useQuery");
+    expect(onboardingSource).toContain(
+      "api.onboarding.saveProfile.useMutation",
+    );
+    expect(onboardingSource).toContain("Автонастройка роутера");
+    expect(onboardingSource).toContain("verify_passwall_routes");
+    expect(onboardingSource).not.toContain("subscriptionSecretCiphertext");
+  });
+
   it("renders explicit managed-stack target semantics for PassWall2", () => {
     const bundleMetadata = buildFallbackPasswallBundleMetadata();
 

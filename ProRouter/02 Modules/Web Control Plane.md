@@ -3,7 +3,7 @@ type: module
 path: apps/web, apps/install-helper
 stage: pilot
 confidence: high
-last-reviewed: 2026-05-13
+last-reviewed: 2026-05-14
 tags:
   - module
   - web
@@ -13,6 +13,8 @@ tags:
 # Web Control Plane
 
 ## Confirmed
+
+- 2026-05-14 automated onboarding backend MVP: the intended web/control-plane shape is documented in `ai_docs/develop/features/router-automated-onboarding-workflow.md` and ADR-0002, and the local implementation now spans `apps/web/src/server/vectra/router-auto-onboarding.ts`, protected `onboarding` tRPC procedures, and the router-detail `Автонастройка роутера` card. The web layer has feature-flagged register/check-in/job-result hooks, profile/run persistence in `packages/db`, subscription-secret encryption/hash-only client output, and a state-machine lane for first import approval, hostname job, typed runtime repair, subscription apply/refresh, semantic fleet route baseline, typed route-smoke verification, final re-import, and safety gates. Auto-run remains off by default with `VECTRA_AUTO_ONBOARDING_ENABLED=false`; runtime repair is now queued only after core PassWall/Xray exist and advances only after green post-repair service/resource/action proof.
 
 - 2026-05-13 local portal hardening pass: fixed review findings without deploying. Public router re-registration now passes authenticated router context and blocks token reissue for an existing `deviceIdentifier` unless the request is authenticated as that same router; prod env validation rejects `change-me` / dev secrets defaults; public install/register rate-limit identity uses trusted `X-Vectra-Client-IP` from Caddy and ignores raw `X-Forwarded-For`/`X-Real-IP`; tRPC timing logs are dev/debug-only; `Special` route normalization prefers the live-good RU-entry Netherlands fallback when available; login goes to `/install`, hides operator command/search pre-auth, and key fleet/install controls have larger touch targets plus `aria-pressed`. Local proof: full `@vectra/web` Vitest, lint, typecheck/build with temporary safe env values, Playwright mobile/tablet login→install smoke, and `git diff --check`.
 

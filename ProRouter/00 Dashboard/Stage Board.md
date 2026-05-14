@@ -1,12 +1,28 @@
 ---
 type: dashboard
-updated: 2026-05-13
+updated: 2026-05-14
 tags:
   - dashboard
   - status
 ---
 
 # Stage Board
+
+## 2026-05-14 Automated onboarding runtime repair closure
+
+- Closed the local `ensure_passwall_runtime` slice for panel-owned onboarding. Contracts/DB now know the typed job; the controller executes compact geodata plus `dnsmasq-full` repair under storage safety gates, stages `dnsmasq-full` before removing base `dnsmasq`, preserves `/etc/config/dhcp`, restarts PassWall, and reports post-repair inventory. The web state machine queues this repair only after core PassWall/Xray are already present, requires green post-repair service/resource/action proof before subscription apply, and serializes same-process per-router advances to reduce duplicate event races. Auto-run remains feature-flagged off by default; no production deploy or live router write was executed in this slice.
+
+## 2026-05-14 Automated onboarding verifier + operator card
+
+- Extended the local panel-owned onboarding MVP with typed route-smoke proof and an operator-facing router-detail control card. The controller now supports `verify_passwall_routes` as a diagnostic job, returns five-slot PassWall route evidence, accepts the proven RU-entry Netherlands `Special` fallback, and keeps the web state machine from treating a failed job-result payload as green proof. Router detail now exposes `Автонастройка роутера`: save/update profile, store subscription secret without echoing the URL, manually advance/retry the run, pause for manual takeover, and inspect recent run blockers. Auto-run is still feature-flagged off by default; supervised pilot rollout remains the next gate.
+
+## 2026-05-14 Automated onboarding backend MVP
+
+- Added the first feature-flagged implementation slice for panel-owned automated router onboarding. The database now has durable `vectra_router_onboarding_profile` and `vectra_router_onboarding_run` tables; `apps/web/src/server/vectra/router-auto-onboarding.ts` owns the idempotent state-machine advance path; router `register`, `check-in`, and `job-result` events call the orchestrator only when `VECTRA_AUTO_ONBOARDING_ENABLED=true`; and a protected `onboarding` tRPC router can save/pause/retry profiles without exposing subscription URLs. The first slice covered profile/run persistence, initial import approval, hostname job queueing, subscription apply/refresh, semantic fleet route baseline apply, service-only final re-import, safety gates for offline/unsupported/incidents/resources/jobs, and secret hygiene. It intentionally did not deploy or enable auto-run; typed route-smoke and runtime repair were left for follow-up slices.
+
+## 2026-05-14 Automated onboarding workflow proposal
+
+- Added an implementation-ready workflow for panel-owned automated router onboarding in `ai_docs/develop/features/router-automated-onboarding-workflow.md` and recorded ADR-0002. The proposal turns the repeated manual/Codex lane into a durable state machine driven by router register/check-in/job-result events: profile attach, first import approval, hostname change, minimal PassWall/Xray runtime repair, subscription refresh, semantic route baseline resolution, route smoke, and final live-import approval. It explicitly captures the live lessons from AX3000T/Netis/Cudy onboardings: route intent must be semantic instead of node-id based, selected `_shunt` extras are authoritative for LuCI-visible targets, low-storage Cudy routers need a minimal Xray contour, compact geodata plus `dnsmasq-full` can be a safe known repair, and completion requires runtime proof rather than apply success alone. This is documentation/architecture only; no production auto-run code was deployed yet.
 
 ## 2026-05-13 Portal hardening local fix pass
 

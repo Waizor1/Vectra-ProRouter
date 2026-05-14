@@ -1,6 +1,6 @@
 ---
 type: generated
-updated: '2026-05-12 23:45:13 +03:00'
+updated: '2026-05-14 22:57:03 +03:00'
 generated-by: scripts/Sync-ProRouterVault.py
 tags:
   - generated
@@ -13,8 +13,8 @@ Generated from the current workspace root `Vectra-ProRouter`.
 
 ## Snapshot
 
-- Generated at: `2026-05-12 23:45:13 +03:00`
-- Top-level directories: `9`
+- Generated at: `2026-05-14 22:57:03 +03:00`
+- Top-level directories: `10`
 - Top-level files: `15`
 - Tree depth: `3`
 
@@ -35,6 +35,8 @@ Generated from the current workspace root `Vectra-ProRouter`.
 
 ```text
 ./
+|- .keys/
+|  \- openwrt-feed/
 |- .omx/
 |  \- state/
 |- ai_docs/
@@ -53,6 +55,8 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |  |- server_test.go
 |  |  |- sessions.go
 |  |  \- storage.go
+|  |- output/
+|  |  \- playwright/
 |  \- web/
 |     |- public/
 |     |- scripts/
@@ -124,7 +128,8 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |  \- Web Control Plane.md
 |  |- 03 Decisions/
 |  |  |- ADR Index.md
-|  |  \- ADR-0001-obsidian-project-vault.md
+|  |  |- ADR-0001-obsidian-project-vault.md
+|  |  \- ADR-0002-panel-owned-auto-onboarding.md
 |  |- 04 Sessions/
 |  |  |- Daily/
 |  |  \- Handoffs/

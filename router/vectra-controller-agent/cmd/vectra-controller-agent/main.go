@@ -825,6 +825,91 @@ func executeJobs(
 			}, controlplane.RouterInventory{}); err != nil {
 				return fmt.Errorf("submit refresh subscriptions result: %w", err)
 			}
+		case "ensure_passwall_runtime":
+			resultPayload, commandResults, err := runEnsurePasswallRuntimeJob(
+				ctx,
+				backend,
+				job.Payload,
+				collectedInventory,
+			)
+			postInventory := inventory.NewCollector().Collect(collectedInventory)
+			resultPayload = enrichEnsureRuntimeResultPayload(resultPayload, postInventory)
+			stdout, stderr := collectCommandOutputs(commandResults)
+			if err != nil {
+				resultPayload["error"] = err.Error()
+				if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, stdout, stderr, err.Error(), resultPayload); submitErr != nil {
+					return submitErr
+				}
+				continue
+			}
+			if err := submitJobResultNow(ctx, cfg, client, persisted, controlplane.JobResultRequest{
+				ProtocolVersion: controlplane.ProtocolVersion,
+				RouterID:        cfg.RouterID,
+				JobID:           job.ID,
+				Status:          "success",
+				Stdout:          stdout,
+				Stderr:          stderr,
+				Result:          resultPayload,
+			}, postInventory); err != nil {
+				return fmt.Errorf("submit ensure runtime result: %w", err)
+			}
+		case "verify_passwall_routes":
+			verification, err := passwall.VerifyFleetRoutes(
+				ctx,
+				backend,
+				fleetRoutePolicyIdentity(collectedInventory),
+			)
+			resultPayload, marshalErr := resultToMap(verification)
+			if marshalErr != nil {
+				if submitErr := submitFailure(
+					ctx,
+					client,
+					cfg,
+					persisted,
+					job.ID,
+					"",
+					"",
+					marshalErr.Error(),
+					map[string]interface{}{"error": marshalErr.Error()},
+				); submitErr != nil {
+					return submitErr
+				}
+				continue
+			}
+			resultPayload["services"] = collectedInventory.ServiceHealth
+			resultPayload["resources"] = collectedInventory.Resources
+			resultPayload["passwallEnabled"] = collectedInventory.PasswallEnabled
+			resultPayload["selectedNodeId"] = collectedInventory.SelectedNodeID
+			resultPayload["selectedNodeLabel"] = collectedInventory.SelectedNodeLabel
+			resultPayload["packageVersions"] = collectedInventory.PackageVersions
+			resultPayload["binaryVersions"] = collectedInventory.BinaryVersions
+			if err != nil {
+				resultPayload["error"] = err.Error()
+				if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, "", "", err.Error(), resultPayload); submitErr != nil {
+					return submitErr
+				}
+				continue
+			}
+			if !verification.OK {
+				errorText := strings.Join(verification.Errors, "; ")
+				if strings.TrimSpace(errorText) == "" {
+					errorText = "route verification failed"
+				}
+				resultPayload["error"] = errorText
+				if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, "", "", errorText, resultPayload); submitErr != nil {
+					return submitErr
+				}
+				continue
+			}
+			if err := submitJobResultNow(ctx, cfg, client, persisted, controlplane.JobResultRequest{
+				ProtocolVersion: controlplane.ProtocolVersion,
+				RouterID:        cfg.RouterID,
+				JobID:           job.ID,
+				Status:          "success",
+				Result:          resultPayload,
+			}, controlplane.RouterInventory{}); err != nil {
+				return fmt.Errorf("submit route verification result: %w", err)
+			}
 		case "inspect_subscriptions":
 			preview, err := passwall.InspectSubscriptions(ctx, backend)
 			if err != nil {

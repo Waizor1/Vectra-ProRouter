@@ -162,7 +162,7 @@ func classifyJobSafety(
 	desiredRevision *controlplane.DesiredRevisionSummary,
 ) jobSafetyClass {
 	switch job.Type {
-	case "update_controller", "update_passwall_packages", "validate_firmware":
+	case "update_controller", "update_passwall_packages", "validate_firmware", "ensure_passwall_runtime":
 		return jobSafetyClassStorage
 	case "refresh_subscriptions", "refresh_rules":
 		return jobSafetyClassHeavy
@@ -171,7 +171,7 @@ func classifyJobSafety(
 			return jobSafetyClassHeavy
 		}
 		return jobSafetyClassNone
-	case "collect_router_logs":
+	case "collect_router_logs", "verify_passwall_routes":
 		return jobSafetyClassDiagnostic
 	case "run_terminal_command":
 		switch strings.TrimSpace(payloadString(job.Payload, "purpose")) {

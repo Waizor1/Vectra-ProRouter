@@ -3,7 +3,7 @@ type: module
 path: router/vectra-controller-agent
 stage: pilot
 confidence: high
-last-reviewed: 2026-05-13
+last-reviewed: 2026-05-14
 tags:
   - module
   - go
@@ -13,6 +13,8 @@ tags:
 # Router Agent
 
 ## Confirmed
+
+- 2026-05-14 automated onboarding backend MVP: ADR-0002 and `ai_docs/develop/features/router-automated-onboarding-workflow.md` define the controller-side role for unattended onboarding, and the web/backend now has a feature-flagged state machine that advances from router `register`, `check-in`, and `job-result`. The controller implements typed `verify_passwall_routes`: it verifies PassWall main switch, selected shunt binding intent, route/rule/node extras, and five `url_test_node=204` smokes before the web run can move to final re-import. The scorer accepts the proven RU-entry Netherlands `Special` fallback so low-storage routers like the recent Cudy/YuranRod path are not forced back to a dead plain-NL node. The controller now also implements typed `ensure_passwall_runtime` for known minimal runtime repairs: compact geodata and `dnsmasq-full`, classified as storage-gated, with `dnsmasq-full` package staging before base `dnsmasq` removal, `/etc/config/dhcp` preservation, PassWall restart, and post-repair inventory returned to the web gate.
 
 - 2026-05-13 controller `0.1.13-r22` resource-guard adjustment: heavy non-storage jobs now use a 40 MB RAM floor so `refresh_subscriptions`/apply-style operational refreshes can run during low-but-usable RAM windows; storage/package/firmware jobs keep the conservative 64 MB floor. This was driven by Kirill-MSK, where the saved subscription-only revision was initially blocked at 37 MB but later ran cleanly after r22. Local proof: targeted Go tests cover allowing subscription refresh at 48 MB while still blocking storage updates below 64 MB; live proof: Kirill-MSK installed controller/LuCI `0.1.13-r22`, applied the saved subscription URL replacement, re-imported to `live-import`, and finished with `requiresReimport=false`, `digestMismatch=false`, `pendingChanges=0`, `alertKinds=[]`, and green route smoke across WorldProxy/YouTube/Special/Tiktok/DiscordVoiceUdp.
 

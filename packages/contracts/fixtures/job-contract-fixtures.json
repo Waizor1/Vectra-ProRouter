@@ -256,6 +256,40 @@
             "requestedBy": "auto_rescue"
           }
         }
+      },
+      {
+        "name": "verify_passwall_routes",
+        "value": {
+          "id": "aaaaaaaa-1111-4111-8111-aaaaaaaa1111",
+          "type": "verify_passwall_routes",
+          "state": "queued",
+          "createdAt": "2026-05-14T18:00:00.000Z",
+          "payload": {
+            "expectedPolicy": "standard-non-hh",
+            "onboardingRunId": "bbbbbbbb-2222-4222-8222-bbbbbbbb2222"
+          }
+        }
+      },
+      {
+        "name": "ensure_passwall_runtime",
+        "value": {
+          "id": "90909090-9090-4090-9090-909090909090",
+          "type": "ensure_passwall_runtime",
+          "state": "queued",
+          "createdAt": "2026-05-14T19:30:00.000Z",
+          "payload": {
+            "actions": ["compact_geodata", "dnsmasq_full"],
+            "onboardingRunId": "91919191-9191-4191-9191-919191919191",
+            "assetDirectory": "/usr/share/v2ray/",
+            "geoipUrl": "https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat",
+            "geositeUrl": "https://github.com/itdoginfo/allow-domains/releases/latest/download/geosite.dat",
+            "resourceFloors": {
+              "memoryAvailableMb": 64,
+              "overlayFreeMb": 16,
+              "tmpFreeMb": 32
+            }
+          }
+        }
       }
     ],
     "rejected": [
@@ -375,10 +409,7 @@
               "sh -c /etc/init.d/passwall2 running >/dev/null 2>&1 && /etc/init.d/passwall2 restart || /etc/init.d/passwall2 start"
             ],
             "postInstallRepair": true,
-            "ruleRefreshAssets": [
-              "geoip",
-              "geosite"
-            ],
+            "ruleRefreshAssets": ["geoip", "geosite"],
             "postInstallCommands": [
               "lua /usr/share/passwall2/rule_update.lua log geoip,geosite",
               "sh -c /etc/init.d/passwall2 running >/dev/null 2>&1 && /etc/init.d/passwall2 restart || /etc/init.d/passwall2 start"
@@ -541,10 +572,7 @@
             "caseId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
             "requestedBy": "auto_rescue",
             "reason": "direct mode critical auto-rescue",
-            "actions": [
-              "restart_passwall",
-              "reconnect_proxy"
-            ],
+            "actions": ["restart_passwall", "reconnect_proxy"],
             "timeoutSeconds": 90,
             "startedAt": "2026-04-07T08:05:31.000Z",
             "completedAt": "2026-04-07T08:05:36.000Z",
@@ -587,6 +615,141 @@
               }
             ],
             "recoveredProxy": true
+          }
+        }
+      },
+      {
+        "name": "verify_passwall_routes_success",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "33333333-3333-4333-8333-333333333333",
+          "jobId": "aaaaaaaa-1111-4111-8111-aaaaaaaa1111",
+          "status": "success",
+          "result": {
+            "verifierVersion": "2026-05-14-v1",
+            "verifiedAt": "2026-05-14T18:01:00.000Z",
+            "ok": true,
+            "selectedNodeId": "myshunt",
+            "selectedNodeLabel": "Маршрутизатор BloopCat",
+            "slots": [
+              {
+                "slotId": "WorldProxy",
+                "bindingOk": true,
+                "ruleExtrasOk": true,
+                "nodeExtrasOk": true,
+                "smokeOk": true,
+                "statusCode": 204
+              },
+              {
+                "slotId": "YouTube",
+                "bindingOk": true,
+                "ruleExtrasOk": true,
+                "nodeExtrasOk": true,
+                "smokeOk": true,
+                "statusCode": 204
+              },
+              {
+                "slotId": "Special",
+                "bindingOk": true,
+                "ruleExtrasOk": true,
+                "nodeExtrasOk": true,
+                "smokeOk": true,
+                "statusCode": 204
+              },
+              {
+                "slotId": "Tiktok",
+                "bindingOk": true,
+                "ruleExtrasOk": true,
+                "nodeExtrasOk": true,
+                "smokeOk": true,
+                "statusCode": 204
+              },
+              {
+                "slotId": "DiscordVoiceUdp",
+                "bindingOk": true,
+                "ruleExtrasOk": true,
+                "nodeExtrasOk": true,
+                "smokeOk": true,
+                "statusCode": 204
+              }
+            ],
+            "services": {
+              "controller": "running",
+              "passwall": "running",
+              "passwallServer": "running",
+              "dnsmasq": "running"
+            },
+            "resources": {
+              "memoryAvailableMb": 96,
+              "overlayFreeMb": 32,
+              "tmpFreeMb": 64
+            },
+            "packageVersions": {
+              "luci-app-passwall2": "26.5.1-r1",
+              "xray-core": "26.4.25-r1"
+            },
+            "binaryVersions": {
+              "xray": "Xray 26.4.25"
+            },
+            "errors": []
+          }
+        }
+      },
+      {
+        "name": "ensure_passwall_runtime_success",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf",
+          "jobId": "90909090-9090-4090-9090-909090909090",
+          "status": "success",
+          "stdout": "compact geodata present; dnsmasq-full installed",
+          "stderr": "",
+          "result": {
+            "ok": true,
+            "repaired": true,
+            "checkedAt": "2026-05-14T19:31:00.000Z",
+            "actions": [
+              {
+                "action": "compact_geodata",
+                "status": "success",
+                "command": "sh -c <compact-geodata>"
+              },
+              {
+                "action": "dnsmasq_full",
+                "status": "success",
+                "command": "sh -c <dnsmasq-full>"
+              }
+            ],
+            "commands": [
+              "sh -c <compact-geodata>",
+              "sh -c <dnsmasq-full>",
+              "sh -c /etc/init.d/passwall2 restart"
+            ],
+            "services": {
+              "controller": "running",
+              "passwall": "running",
+              "passwallServer": "running",
+              "dnsmasq": "running"
+            },
+            "resources": {
+              "memoryAvailableMb": 96,
+              "overlayFreeMb": 28,
+              "tmpFreeMb": 64
+            },
+            "rulesAssets": {
+              "assetDirectory": "/usr/share/v2ray/",
+              "geoipVersion": "size:1024",
+              "geositeVersion": "size:2048"
+            },
+            "packageVersions": {
+              "dnsmasq-full": "2.90-r4",
+              "luci-app-passwall2": "26.5.1-r1",
+              "xray-core": "26.4.25-r1"
+            },
+            "binaryVersions": {
+              "xray": "26.4.25"
+            },
+            "errors": []
           }
         }
       }

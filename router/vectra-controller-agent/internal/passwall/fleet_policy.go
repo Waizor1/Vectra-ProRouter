@@ -214,14 +214,25 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 			return 0
 		}
 		score := 60
+		// Keep this aligned with the panel-side policy scorer. Several live
+		// routers have a plain NL node that matches the country label but returns
+		// 000, while the RU-entry Netherlands subscription slot on port 50055 is
+		// the proven safe fallback. Treat that shape as a first-class Special
+		// target instead of rejecting it below the semantic threshold.
+		if ruEntry {
+			score += 20
+		}
+		if isGRPC {
+			score += 15
+		}
+		if ruNLPort {
+			score += 65
+		}
 		if nlHost {
 			score += 25
 		}
 		if node.Port == 443 {
 			score += 15
-		}
-		if ruNLPort {
-			score += 20
 		}
 		return score
 	case "Tiktok":

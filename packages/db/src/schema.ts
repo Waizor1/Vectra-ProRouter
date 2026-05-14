@@ -401,6 +401,126 @@ export const jobResults = createTable(
   ],
 );
 
+export type RouterOnboardingProfileBaseline =
+  | "standard-non-hh"
+  | "hh-exempt"
+  | "subscription-only";
+
+export type RouterOnboardingRuntimePolicy =
+  | "auto-minimal-passwall-xray"
+  | "controller-only";
+
+export type RouterOnboardingVerifyPolicy = "route-smoke" | "services-only";
+
+export type RouterOnboardingState =
+  | "created"
+  | "preflight"
+  | "request_initial_import"
+  | "approve_initial_import"
+  | "rename_router"
+  | "ensure_runtime"
+  | "apply_subscription"
+  | "refresh_subscription"
+  | "resolve_route_baseline"
+  | "apply_route_baseline"
+  | "verify_runtime"
+  | "repair_runtime"
+  | "final_reimport"
+  | "done";
+
+export type RouterOnboardingRunStatus =
+  | "running"
+  | "waiting"
+  | "blocked"
+  | "failed"
+  | "done"
+  | "paused";
+
+export const routerOnboardingProfiles = createTable(
+  "router_onboarding_profile",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    routerId: text("router_id")
+      .notNull()
+      .references(() => routers.id, { onDelete: "cascade" }),
+    enabled: boolean("enabled").notNull().default(true),
+    targetHostname: text("target_hostname"),
+    displayName: text("display_name"),
+    subscriptionSecretCiphertext: text("subscription_secret_ciphertext"),
+    subscriptionUrlHash: text("subscription_url_hash"),
+    subscriptionRemark: text("subscription_remark"),
+    baseline: text("baseline")
+      .$type<RouterOnboardingProfileBaseline>()
+      .notNull()
+      .default("standard-non-hh"),
+    runtimePolicy: text("runtime_policy")
+      .$type<RouterOnboardingRuntimePolicy>()
+      .notNull()
+      .default("auto-minimal-passwall-xray"),
+    verifyPolicy: text("verify_policy")
+      .$type<RouterOnboardingVerifyPolicy>()
+      .notNull()
+      .default("route-smoke"),
+    notes: text("notes"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("vectra_router_onboarding_profile_router_idx").on(
+      table.routerId,
+    ),
+    index("vectra_router_onboarding_profile_enabled_idx").on(table.enabled),
+  ],
+);
+
+export const routerOnboardingRuns = createTable(
+  "router_onboarding_run",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    routerId: text("router_id")
+      .notNull()
+      .references(() => routers.id, { onDelete: "cascade" }),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => routerOnboardingProfiles.id, { onDelete: "cascade" }),
+    state: text("state")
+      .$type<RouterOnboardingState>()
+      .notNull()
+      .default("created"),
+    status: text("status")
+      .$type<RouterOnboardingRunStatus>()
+      .notNull()
+      .default("running"),
+    attempt: integer("attempt").notNull().default(0),
+    lastJobId: text("last_job_id").references(() => jobs.id, {
+      onDelete: "set null",
+    }),
+    activeRevisionId: text("active_revision_id").references(
+      () => passwallDesiredRevisions.id,
+      { onDelete: "set null" },
+    ),
+    lastError: text("last_error"),
+    nextRunAfter: timestamp("next_run_after", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    index("vectra_router_onboarding_run_router_status_idx").on(
+      table.routerId,
+      table.status,
+    ),
+    index("vectra_router_onboarding_run_profile_idx").on(table.profileId),
+    uniqueIndex("vectra_router_onboarding_run_one_active_router_idx")
+      .on(table.routerId)
+      .where(
+        sql`${table.status} IN ('running', 'waiting', 'blocked', 'failed', 'paused')`,
+      ),
+  ],
+);
+
 export const artifacts = createTable(
   "artifact",
   {

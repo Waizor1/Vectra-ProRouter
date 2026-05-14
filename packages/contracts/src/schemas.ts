@@ -66,6 +66,8 @@ export const incidentTypeSchema = z.enum([
 export const jobTypeSchema = z.enum([
   "apply_passwall_config",
   "refresh_subscriptions",
+  "ensure_passwall_runtime",
+  "verify_passwall_routes",
   "inspect_subscriptions",
   "refresh_rules",
   "collect_router_logs",
@@ -570,6 +572,55 @@ export const collectRouterLogsJobPayloadSchema = z.object({
 
 export const inspectSubscriptionsJobPayloadSchema = z.object({}).passthrough();
 
+export const ensurePasswallRuntimeActionSchema = z.enum([
+  "compact_geodata",
+  "dnsmasq_full",
+]);
+
+export const ensurePasswallRuntimeJobPayloadSchema = z
+  .object({
+    actions: z
+      .array(ensurePasswallRuntimeActionSchema)
+      .min(1)
+      .max(4)
+      .default(["compact_geodata", "dnsmasq_full"]),
+    onboardingRunId: z.string().uuid().nullable().optional(),
+    assetDirectory: z.string().trim().min(1).default("/usr/share/v2ray/"),
+    geoipUrl: z
+      .string()
+      .url()
+      .default(
+        "https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat",
+      ),
+    geositeUrl: z
+      .string()
+      .url()
+      .default(
+        "https://github.com/itdoginfo/allow-domains/releases/latest/download/geosite.dat",
+      ),
+    resourceFloors: z
+      .object({
+        memoryAvailableMb: z.number().int().nonnegative().default(64),
+        overlayFreeMb: z.number().int().nonnegative().default(16),
+        tmpFreeMb: z.number().int().nonnegative().default(32),
+      })
+      .default({
+        memoryAvailableMb: 64,
+        overlayFreeMb: 16,
+        tmpFreeMb: 32,
+      }),
+  })
+  .passthrough();
+
+export const verifyPasswallRoutesJobPayloadSchema = z
+  .object({
+    expectedPolicy: z
+      .enum(["standard-non-hh", "hh-exempt", "subscription-only"])
+      .default("standard-non-hh"),
+    onboardingRunId: z.string().uuid().nullable().optional(),
+  })
+  .passthrough();
+
 export const rescueRepairActionSchema = z.enum([
   "restart_controller",
   "restart_passwall",
@@ -716,6 +767,80 @@ export const routerTerminalResultPayloadSchema = z
     stdoutTruncated: z.boolean().default(false),
     stderrTruncated: z.boolean().default(false),
     error: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+export const verifyPasswallRouteSlotResultSchema = z
+  .object({
+    slotId: z.string().min(1),
+    expected: z.string().nullable().optional(),
+    ruleId: z.string().nullable().optional(),
+    ruleLabel: z.string().nullable().optional(),
+    boundNodeId: z.string().nullable().optional(),
+    boundNodeLabel: z.string().nullable().optional(),
+    bindingOk: z.boolean().default(false),
+    ruleExtrasOk: z.boolean().default(false),
+    nodeExtrasOk: z.boolean().default(false),
+    smokeOk: z.boolean().default(false),
+    statusCode: z.number().int().nullable().optional(),
+    command: z.string().nullable().optional(),
+    error: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+export const verifyPasswallRoutesResultPayloadSchema = z
+  .object({
+    verifierVersion: z.string().min(1),
+    verifiedAt: z.string().datetime(),
+    ok: z.boolean(),
+    exempt: z.boolean().default(false),
+    selectedNodeId: z.string().nullable().optional(),
+    selectedNodeLabel: z.string().nullable().optional(),
+    slots: z.array(verifyPasswallRouteSlotResultSchema).default([]),
+    services: z
+      .object({
+        controller: z.string().nullable().optional(),
+        passwall: z.string().nullable().optional(),
+        passwallServer: z.string().nullable().optional(),
+        dnsmasq: z.string().nullable().optional(),
+      })
+      .default({}),
+    resources: z.record(z.string(), z.unknown()).default({}),
+    packageVersions: z.record(z.string(), z.string()).default({}),
+    binaryVersions: z.record(z.string(), z.string()).default({}),
+    errors: z.array(z.string()).default([]),
+  })
+  .passthrough();
+
+export const ensurePasswallRuntimeActionResultSchema = z
+  .object({
+    action: ensurePasswallRuntimeActionSchema,
+    status: z.enum(["success", "skipped", "failure"]),
+    command: z.string().nullable().optional(),
+    error: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+export const ensurePasswallRuntimeResultPayloadSchema = z
+  .object({
+    ok: z.boolean(),
+    repaired: z.boolean().default(false),
+    checkedAt: z.string().datetime(),
+    actions: z.array(ensurePasswallRuntimeActionResultSchema).default([]),
+    commands: z.array(z.string()).default([]),
+    services: z
+      .object({
+        controller: z.string().nullable().optional(),
+        passwall: z.string().nullable().optional(),
+        passwallServer: z.string().nullable().optional(),
+        dnsmasq: z.string().nullable().optional(),
+      })
+      .default({}),
+    resources: z.record(z.string(), z.unknown()).default({}),
+    rulesAssets: z.record(z.string(), z.unknown()).default({}),
+    packageVersions: z.record(z.string(), z.string()).default({}),
+    binaryVersions: z.record(z.string(), z.string()).default({}),
+    errors: z.array(z.string()).default([]),
   })
   .passthrough();
 

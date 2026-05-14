@@ -37,6 +37,7 @@ import {
 import { Panel } from "~/components/panel";
 import { RescueActions } from "~/components/rescue-actions";
 import { RouterManagementTaskLog } from "~/components/router-management-task-log";
+import { RouterOnboardingPanel } from "~/components/router-onboarding-panel";
 import { RouterWatchLogsSection } from "~/components/router-watch-logs-section";
 import {
   basicSettingsSecondaryTabs,
@@ -1511,6 +1512,16 @@ export function RouterDetailWorkspace({
         handleDeleteRouter={handleDeleteRouter}
       />
 
+      <RouterOnboardingPanel
+        routerId={routerId}
+        defaultHostname={
+          editor.routerRuntimeSummary.hostname ??
+          normalizeRouterHostnameForDefault(editor.routerRuntimeSummary.name)
+        }
+        defaultDisplayName={editor.routerRuntimeSummary.name}
+        canRunJobs={editor.routerRuntimeSummary.destructiveActionsAllowed}
+      />
+
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.85fr)]">
         <div className="min-w-0">
           <Panel
@@ -1641,9 +1652,7 @@ export function RouterDetailWorkspace({
                 <p className="font-semibold">
                   Fleet package не совпадает с live ShuntRules
                 </p>
-                <p className="mt-1">
-                  {editor.fleetPolicyCompliance.summary}
-                </p>
+                <p className="mt-1">{editor.fleetPolicyCompliance.summary}</p>
                 {editor.fleetPolicyCompliance.mismatches.length > 0 ? (
                   <ul className="mt-2 list-disc space-y-1 pl-5">
                     {editor.fleetPolicyCompliance.mismatches
@@ -7768,6 +7777,17 @@ function createSocksDraft(
     autoswitchBackupNodeIds: [],
     extras: {},
   };
+}
+
+function normalizeRouterHostnameForDefault(value: string) {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 63);
+
+  return normalized || "openwrt";
 }
 
 function formatDateTime(value: Date | string | null | undefined) {

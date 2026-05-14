@@ -144,6 +144,18 @@ func validateFixtureJob(job controlplane.Job) error {
 		if len(job.Payload) != 0 {
 			return errFixture("inspect subscriptions fixture should use an empty payload")
 		}
+	case "ensure_passwall_runtime":
+		actions := payloadStringSlice(job.Payload, "actions")
+		if len(actions) == 0 {
+			return errFixture("ensure runtime fixture requires actions")
+		}
+		for _, action := range actions {
+			switch action {
+			case ensureRuntimeActionCompactGeodata, ensureRuntimeActionDNSMasqFull:
+			default:
+				return errFixture("ensure runtime fixture includes unsupported action")
+			}
+		}
 	case "run_rescue_repair":
 		actions := payloadStringSlice(job.Payload, "actions")
 		if len(actions) == 0 {
@@ -244,6 +256,8 @@ func knownJobType(value string) bool {
 	switch value {
 	case "apply_passwall_config",
 		"refresh_subscriptions",
+		"ensure_passwall_runtime",
+		"verify_passwall_routes",
 		"inspect_subscriptions",
 		"refresh_rules",
 		"collect_router_logs",

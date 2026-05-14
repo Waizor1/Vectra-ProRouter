@@ -64,6 +64,27 @@
       "when": 1777126089991,
       "tag": "0008_bright_auto_rescue",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1778783394853,
+      "tag": "0009_panel_owned_onboarding",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1778784946024,
+      "tag": "0010_verify_passwall_routes_job",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1778786414000,
+      "tag": "0011_ensure_passwall_runtime_job",
+      "breakpoints": true
     }
   ]
 }

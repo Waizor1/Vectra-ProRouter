@@ -71,6 +71,14 @@ func TestEvaluateJobSafetyKeepsStorageJobMemoryFloorConservative(t *testing.T) {
 	}
 }
 
+func TestClassifyEnsurePasswallRuntimeAsStorageJob(t *testing.T) {
+	job := controlplane.Job{ID: "job-ensure-runtime", Type: "ensure_passwall_runtime"}
+
+	if got := classifyJobSafety(job, nil); got != jobSafetyClassStorage {
+		t.Fatalf("ensure_passwall_runtime class = %q, want storage", got)
+	}
+}
+
 func TestEvaluateJobSafetyBlocksStorageJobWhenSpaceUnknown(t *testing.T) {
 	decision := evaluateJobSafety(
 		controlplane.Job{ID: "job-1", Type: "update_passwall_packages"},
