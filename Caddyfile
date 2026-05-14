@@ -61,6 +61,9 @@
 
 	handle /api/health {
 		reverse_proxy web:3000 {
+			header_up X-Vectra-Client-IP {remote_host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
 			health_uri /api/health
 			health_interval 30s
 			health_timeout 5s
@@ -69,6 +72,9 @@
 
 	handle /api/router/* {
 		reverse_proxy web:3000 {
+			header_up X-Vectra-Client-IP {remote_host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
 			health_uri /api/health
 			health_interval 30s
 			health_timeout 5s

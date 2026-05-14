@@ -250,9 +250,15 @@ function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
         return 0;
       }
       let score = 60;
+      // Prefer the RU-entry Netherlands subscription slot when it is present:
+      // plain NL nodes have repeatedly passed semantic matching while failing
+      // live router probes, whereas the RU-entry 50055 path is the proven
+      // fleet fallback for Special.
+      if (ruEntry) score += 20;
+      if (isGrpc) score += 15;
+      if (ruNlPort) score += 65;
       if (nlHost) score += 25;
       if (node.port === 443) score += 15;
-      if (ruNlPort) score += 20;
       return score;
     }
     case "Tiktok": {
@@ -409,9 +415,7 @@ function readRuleBindingId(
     return shuntBindingId;
   }
   const outboundNodeId = rule.outboundNodeId?.trim();
-  return outboundNodeId && outboundNodeId.length > 0
-    ? outboundNodeId
-    : null;
+  return outboundNodeId && outboundNodeId.length > 0 ? outboundNodeId : null;
 }
 
 function summarizeCompliance(

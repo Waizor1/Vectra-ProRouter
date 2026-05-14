@@ -13,7 +13,7 @@ func TestEvaluateJobSafetyBlocksHeavyJobUnderLowMemory(t *testing.T) {
 		controlplane.Job{ID: "job-1", Type: "refresh_rules"},
 		nil,
 		controlplane.RouterResources{
-			MemoryAvailableMB: 52,
+			MemoryAvailableMB: 37,
 			MemoryTotalMB:     234,
 			OverlayFreeMB:     40,
 			TMPFreeMB:         80,
@@ -27,8 +27,47 @@ func TestEvaluateJobSafetyBlocksHeavyJobUnderLowMemory(t *testing.T) {
 	if decision.Code != "router_resource_guard" {
 		t.Fatalf("unexpected decision code %q", decision.Code)
 	}
-	if !strings.Contains(decision.Message, "available RAM 52 MB") {
+	if !strings.Contains(decision.Message, "available RAM 37 MB") {
 		t.Fatalf("expected low-memory reason, got %q", decision.Message)
+	}
+}
+
+func TestEvaluateJobSafetyAllowsHeavyJobAtOperationalLowMemory(t *testing.T) {
+	decision := evaluateJobSafety(
+		controlplane.Job{ID: "job-1", Type: "refresh_subscriptions"},
+		nil,
+		controlplane.RouterResources{
+			MemoryAvailableMB: 48,
+			MemoryTotalMB:     234,
+			OverlayFreeMB:     40,
+			TMPFreeMB:         80,
+		},
+		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+	)
+
+	if decision.Blocked {
+		t.Fatalf("expected subscription refresh to stay allowed at 48 MB, got %#v", decision)
+	}
+}
+
+func TestEvaluateJobSafetyKeepsStorageJobMemoryFloorConservative(t *testing.T) {
+	decision := evaluateJobSafety(
+		controlplane.Job{ID: "job-1", Type: "update_passwall_packages"},
+		nil,
+		controlplane.RouterResources{
+			MemoryAvailableMB: 52,
+			MemoryTotalMB:     234,
+			OverlayFreeMB:     40,
+			TMPFreeMB:         80,
+		},
+		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+	)
+
+	if !decision.Blocked {
+		t.Fatalf("expected storage job to keep blocking below 64 MB")
+	}
+	if !strings.Contains(decision.Message, "available RAM 52 MB is below 64 MB floor") {
+		t.Fatalf("expected storage memory floor reason, got %q", decision.Message)
 	}
 }
 

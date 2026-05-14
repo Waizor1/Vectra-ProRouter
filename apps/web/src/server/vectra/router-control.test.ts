@@ -2,12 +2,47 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildSyntheticRecoveryTransitions,
+  canIssueRegistrationToken,
   isControlPlaneRecoveryIncident,
   resolveReportedRouterHostname,
   resolveRescueReason,
   selectDeliverableJobsForCheckIn,
   shouldPromotePostApplyImport,
 } from "./router-control";
+
+describe("canIssueRegistrationToken", () => {
+  it("allows first-time public registration", () => {
+    expect(
+      canIssueRegistrationToken({
+        existingRouterId: null,
+        authenticatedRouterId: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("allows existing-router registration only for the same authenticated router", () => {
+    expect(
+      canIssueRegistrationToken({
+        existingRouterId: "router-1",
+        authenticatedRouterId: "router-1",
+      }),
+    ).toBe(true);
+
+    expect(
+      canIssueRegistrationToken({
+        existingRouterId: "router-1",
+        authenticatedRouterId: null,
+      }),
+    ).toBe(false);
+
+    expect(
+      canIssueRegistrationToken({
+        existingRouterId: "router-1",
+        authenticatedRouterId: "router-2",
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("resolveRescueReason", () => {
   it("clears stale rescue reason after proxy recovery", () => {

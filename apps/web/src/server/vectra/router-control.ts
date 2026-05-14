@@ -863,7 +863,24 @@ export async function applyIncidentTransitions(
   return currentRouter;
 }
 
-export async function registerRouter(input: unknown) {
+export type RegisterRouterOptions = {
+  authenticatedRouterId?: string | null;
+};
+
+export function canIssueRegistrationToken(args: {
+  existingRouterId: string | null | undefined;
+  authenticatedRouterId?: string | null;
+}) {
+  return (
+    !args.existingRouterId ||
+    args.existingRouterId === args.authenticatedRouterId
+  );
+}
+
+export async function registerRouter(
+  input: unknown,
+  options: RegisterRouterOptions = {},
+) {
   const parsed = routerRegisterRequestSchema.parse(input);
   const now = new Date();
 
@@ -872,6 +889,33 @@ export async function registerRouter(input: unknown) {
     .from(routers)
     .where(eq(routers.deviceIdentifier, parsed.inventory.deviceIdentifier))
     .limit(1);
+
+  if (
+    existingRouter &&
+    !canIssueRegistrationToken({
+      existingRouterId: existingRouter.id,
+      authenticatedRouterId: options.authenticatedRouterId ?? null,
+    })
+  ) {
+    await db.insert(eventLog).values({
+      routerId: existingRouter.id,
+      type: "router.reregister_blocked",
+      severity: "warning",
+      message:
+        "Existing router re-registration was rejected because the request was not authenticated as that router.",
+      metadata: {
+        deviceIdentifier: parsed.inventory.deviceIdentifier,
+        authenticatedRouterId: options.authenticatedRouterId ?? null,
+      },
+    });
+
+    throw Object.assign(
+      new Error(
+        "Existing router registration requires the current router token.",
+      ),
+      { status: 403 },
+    );
+  }
 
   const nextStatus = deriveRouterStatus(
     existingRouter?.status ?? "pending",

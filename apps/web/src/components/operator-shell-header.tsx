@@ -40,7 +40,7 @@ export function OperatorShellHeader() {
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex min-w-0 items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">
+              <p className="text-[11px] font-medium tracking-[0.14em] text-slate-500 uppercase">
                 Vectra Operator
               </p>
               <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -54,10 +54,14 @@ export function OperatorShellHeader() {
             </div>
 
             {!isLoginPage ? (
-              <form action="/api/operator/logout" method="post" className="xl:hidden">
+              <form
+                action="/api/operator/logout"
+                method="post"
+                className="xl:hidden"
+              >
                 <button
                   type="submit"
-                  className="vectra-button-secondary px-3 py-2 text-sm font-medium transition hover:border-white/20 hover:text-white"
+                  className="vectra-button-secondary min-h-11 px-3 py-2 text-sm font-medium transition hover:border-white/20 hover:text-white"
                 >
                   Выйти
                 </button>
@@ -78,7 +82,7 @@ export function OperatorShellHeader() {
                     <Link
                       key={tab.id}
                       href={tab.href}
-                      className={`inline-flex min-h-10 items-center justify-center rounded-xl border px-3 py-2 text-center text-[13px] font-medium transition ${
+                      className={`inline-flex min-h-11 items-center justify-center rounded-xl border px-3 py-2 text-center text-[13px] font-medium transition ${
                         active
                           ? "border-[var(--vectra-line-strong)] bg-[var(--vectra-panel-strong)] text-white"
                           : "border-white/10 bg-[var(--vectra-panel-soft)] text-slate-300 hover:border-white/20 hover:text-white"
@@ -101,7 +105,7 @@ export function OperatorShellHeader() {
                       <Link
                         key={tab.id}
                         href={tab.href}
-                        className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-sm font-medium transition ${
+                        className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-3.5 py-2 text-sm font-medium transition ${
                           active
                             ? "border-[var(--vectra-line-strong)] bg-[var(--vectra-panel-strong)] text-white"
                             : "border-white/10 bg-[var(--vectra-panel-soft)] text-slate-300 hover:border-white/20 hover:text-white"
@@ -121,7 +125,7 @@ export function OperatorShellHeader() {
               <form action="/api/operator/logout" method="post">
                 <button
                   type="submit"
-                  className="vectra-button-secondary px-3 py-2 text-sm font-medium tracking-[0.01em] transition hover:border-white/20 hover:text-white"
+                  className="vectra-button-secondary min-h-11 px-3 py-2 text-sm font-medium tracking-[0.01em] transition hover:border-white/20 hover:text-white"
                 >
                   Выйти
                 </button>
@@ -130,30 +134,32 @@ export function OperatorShellHeader() {
           ) : null}
         </div>
 
-        <form onSubmit={handleSubmit} className="w-full">
-          <label htmlFor="operator-command-surface" className="sr-only">
-            Команда / поиск по парку
-          </label>
-          <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:items-center">
-            <div className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.03)] px-3 py-2 text-[11px] uppercase tracking-[0.12em] text-slate-500 lg:shrink-0">
-              Команда / поиск
+        {!isLoginPage ? (
+          <form onSubmit={handleSubmit} className="w-full">
+            <label htmlFor="operator-command-surface" className="sr-only">
+              Команда / поиск по парку
+            </label>
+            <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:items-center">
+              <div className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.03)] px-3 py-2 text-[11px] tracking-[0.12em] text-slate-500 uppercase lg:shrink-0">
+                Команда / поиск
+              </div>
+              <input
+                id="operator-command-surface"
+                name="operator-command-surface"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="/fleet, AX3000T, direct mode, import review..."
+                className="vectra-field min-h-11 min-w-0 flex-1 border-white/8 bg-[rgba(255,255,255,0.03)] px-3 py-2 text-sm text-white placeholder:text-slate-500"
+              />
+              <button
+                type="submit"
+                className="vectra-button-secondary min-h-11 w-full px-4 py-2 text-sm font-medium transition hover:border-white/20 hover:text-white lg:w-auto lg:min-w-[7.5rem]"
+              >
+                Открыть
+              </button>
             </div>
-            <input
-              id="operator-command-surface"
-              name="operator-command-surface"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="/fleet, AX3000T, direct mode, import review..."
-              className="vectra-field min-h-10 min-w-0 flex-1 border-white/8 bg-[rgba(255,255,255,0.03)] px-3 py-2 text-sm text-white placeholder:text-slate-500"
-            />
-            <button
-              type="submit"
-              className="vectra-button-secondary min-h-10 w-full px-4 py-2 text-sm font-medium transition hover:border-white/20 hover:text-white lg:w-auto lg:min-w-[7.5rem]"
-            >
-              Открыть
-            </button>
-          </div>
-        </form>
+          </form>
+        ) : null}
       </div>
     </header>
   );

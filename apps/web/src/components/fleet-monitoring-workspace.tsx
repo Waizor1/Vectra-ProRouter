@@ -824,6 +824,10 @@ export function FleetMonitoringWorkspace({
                 <button
                   type="button"
                   disabled={telegramProblemCount === 0}
+                  aria-pressed={sameFilter(activeFilter, {
+                    kind: "service",
+                    value: "telegram_degraded",
+                  })}
                   onClick={() =>
                     setActiveFilter((previous) =>
                       sameFilter(previous, {
@@ -834,7 +838,7 @@ export function FleetMonitoringWorkspace({
                         : { kind: "service", value: "telegram_degraded" },
                     )
                   }
-                  className={`rounded-full border px-3 py-2 text-left transition disabled:cursor-default disabled:opacity-75 ${
+                  className={`min-h-11 rounded-full border px-3 py-2 text-left transition disabled:cursor-default disabled:opacity-75 ${
                     telegramProblemCount > 0
                       ? "border-amber-400/25 bg-amber-500/10 text-amber-100 hover:border-amber-300/40"
                       : "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
@@ -845,6 +849,10 @@ export function FleetMonitoringWorkspace({
                 <button
                   type="button"
                   disabled={youtubeProblemCount === 0}
+                  aria-pressed={sameFilter(activeFilter, {
+                    kind: "service",
+                    value: "youtube_degraded",
+                  })}
                   onClick={() =>
                     setActiveFilter((previous) =>
                       sameFilter(previous, {
@@ -855,7 +863,7 @@ export function FleetMonitoringWorkspace({
                         : { kind: "service", value: "youtube_degraded" },
                     )
                   }
-                  className={`rounded-full border px-3 py-2 text-left transition disabled:cursor-default disabled:opacity-75 ${
+                  className={`min-h-11 rounded-full border px-3 py-2 text-left transition disabled:cursor-default disabled:opacity-75 ${
                     youtubeProblemCount > 0
                       ? "border-amber-400/25 bg-amber-500/10 text-amber-100 hover:border-amber-300/40"
                       : "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
@@ -866,6 +874,10 @@ export function FleetMonitoringWorkspace({
                 <button
                   type="button"
                   disabled={serviceUnknownCount === 0}
+                  aria-pressed={sameFilter(activeFilter, {
+                    kind: "service",
+                    value: "service_unknown",
+                  })}
                   onClick={() =>
                     setActiveFilter((previous) =>
                       sameFilter(previous, {
@@ -876,7 +888,7 @@ export function FleetMonitoringWorkspace({
                         : { kind: "service", value: "service_unknown" },
                     )
                   }
-                  className={`rounded-full border px-3 py-2 text-left transition disabled:cursor-default disabled:opacity-75 ${
+                  className={`min-h-11 rounded-full border px-3 py-2 text-left transition disabled:cursor-default disabled:opacity-75 ${
                     serviceUnknownCount > 0
                       ? "border-sky-400/25 bg-sky-500/10 text-sky-100 hover:border-sky-300/40"
                       : "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
@@ -888,6 +900,10 @@ export function FleetMonitoringWorkspace({
                 <button
                   type="button"
                   disabled={fleetPolicyViolationCount === 0}
+                  aria-pressed={sameFilter(activeFilter, {
+                    kind: "policy",
+                    value: "violation",
+                  })}
                   onClick={() =>
                     setActiveFilter((previous) =>
                       sameFilter(previous, {
@@ -898,7 +914,7 @@ export function FleetMonitoringWorkspace({
                         : { kind: "policy", value: "violation" },
                     )
                   }
-                  className={`rounded-full border px-3 py-2 text-left transition disabled:cursor-default disabled:opacity-75 ${
+                  className={`min-h-11 rounded-full border px-3 py-2 text-left transition disabled:cursor-default disabled:opacity-75 ${
                     fleetPolicyViolationCount > 0
                       ? "border-amber-400/25 bg-amber-500/10 text-amber-100 hover:border-amber-300/40"
                       : "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
@@ -934,7 +950,7 @@ export function FleetMonitoringWorkspace({
                     <button
                       type="button"
                       onClick={() => setActiveFilter(null)}
-                      className="vectra-button-secondary px-3 py-2 text-sm text-white transition hover:border-white/20"
+                      className="vectra-button-secondary min-h-11 px-3 py-2 text-sm text-white transition hover:border-white/20"
                     >
                       Сбросить фильтр
                     </button>
@@ -943,7 +959,7 @@ export function FleetMonitoringWorkspace({
                     type="button"
                     onClick={handleNotificationToggle}
                     disabled={notificationToggleDisabled}
-                    className="vectra-button-secondary px-3 py-2 text-sm text-white transition hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="vectra-button-secondary min-h-11 px-3 py-2 text-sm text-white transition hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {subscribePushMutation.isPending ||
                     unsubscribePushMutation.isPending
@@ -984,7 +1000,7 @@ export function FleetMonitoringWorkspace({
                   <button
                     type="button"
                     onClick={() => setSearchInput("")}
-                    className="vectra-button-secondary px-3 py-2 text-sm text-white transition hover:border-white/20"
+                    className="vectra-button-secondary min-h-11 px-3 py-2 text-sm text-white transition hover:border-white/20"
                   >
                     Сбросить поиск
                   </button>
@@ -1304,6 +1320,7 @@ function MonitoringChartCard({
               type="button"
               onClick={() => onFilterChange(slice.filter)}
               disabled={slice.count === 0}
+              aria-pressed={selected}
               className={`flex w-full items-start justify-between gap-4 rounded-md px-3 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-45 ${
                 sliceToneMap[slice.tone]
               } ${selected ? "outline outline-1 outline-offset-[-1px] outline-white/40" : ""}`}

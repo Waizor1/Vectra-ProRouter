@@ -14,7 +14,7 @@ export default async function LoginPage({
 }) {
   const [cookieStore, params] = await Promise.all([cookies(), searchParams]);
   const session = await verifyOperatorSession(
-    cookieStore.get(getOperatorCookieName())?.value
+    cookieStore.get(getOperatorCookieName())?.value,
   );
 
   if (session) {
@@ -26,9 +26,7 @@ export default async function LoginPage({
   return (
     <section className="mx-auto flex min-h-[70vh] w-full max-w-xl items-center">
       <div className="w-full rounded-[2.5rem] border border-white/10 bg-[linear-gradient(135deg,rgba(12,18,31,0.98),rgba(20,29,49,0.95),rgba(43,78,59,0.42))] p-5 shadow-[0_30px_90px_rgba(0,0,0,0.45)] sm:p-8">
-        <p className="vectra-kicker text-slate-500">
-          Вход оператора
-        </p>
+        <p className="vectra-kicker text-slate-500">Вход оператора</p>
         <h1 className="mt-3 text-3xl font-semibold tracking-[-0.03em] text-white sm:text-4xl">
           Панель Vectra
         </h1>
@@ -38,14 +36,18 @@ export default async function LoginPage({
           роутерами.
         </p>
 
-        <form action="/api/operator/login" method="post" className="mt-8 space-y-5">
+        <form
+          action="/api/operator/login"
+          method="post"
+          className="mt-8 space-y-5"
+        >
           <label className="block">
             <span className="text-sm font-medium text-slate-200">Логин</span>
             <input
               name="username"
               type="text"
               autoComplete="username"
-              className="mt-2 w-full rounded-2xl border border-white/10 bg-[rgba(8,12,20,0.82)] px-4 py-3 text-sm text-white outline-none transition focus:border-[var(--vectra-accent)]/60"
+              className="mt-2 w-full rounded-2xl border border-white/10 bg-[rgba(8,12,20,0.82)] px-4 py-3 text-sm text-white transition outline-none focus:border-[var(--vectra-accent)]/60"
               placeholder="operator"
             />
           </label>
@@ -56,7 +58,7 @@ export default async function LoginPage({
               name="password"
               type="password"
               autoComplete="current-password"
-              className="mt-2 w-full rounded-2xl border border-white/10 bg-[rgba(8,12,20,0.82)] px-4 py-3 text-sm text-white outline-none transition focus:border-[var(--vectra-accent)]/60"
+              className="mt-2 w-full rounded-2xl border border-white/10 bg-[rgba(8,12,20,0.82)] px-4 py-3 text-sm text-white transition outline-none focus:border-[var(--vectra-accent)]/60"
               placeholder="Введите пароль оператора"
             />
           </label>
@@ -82,8 +84,11 @@ export default async function LoginPage({
         </p>
 
         <div className="mt-6 text-sm text-slate-500">
-          <Link href="/downloads" className="underline decoration-white/20 underline-offset-4 hover:text-slate-300">
-            Перейти к странице установки
+          <Link
+            href="/install"
+            className="underline decoration-white/20 underline-offset-4 hover:text-slate-300"
+          >
+            Перейти к публичной установке
           </Link>
         </div>
       </div>

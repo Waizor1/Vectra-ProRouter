@@ -332,8 +332,7 @@ export function PublicInstallWorkspace({
     }
     return lastIndex;
   }, [eventsByStage]);
-  const hasCompletedSuccessfully =
-    eventsByStage.completed?.state === "success";
+  const hasCompletedSuccessfully = eventsByStage.completed?.state === "success";
   const hasInstallActivity =
     latestStageIndex >= 0 ||
     isInstalling ||
@@ -364,7 +363,8 @@ export function PublicInstallWorkspace({
             </div>
 
             <div className="rounded-full border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-xs text-slate-300">
-              helper: <span className={helperBadge.tone}>{helperBadge.label}</span>
+              helper:{" "}
+              <span className={helperBadge.tone}>{helperBadge.label}</span>
             </div>
           </div>
 
@@ -391,7 +391,10 @@ export function PublicInstallWorkspace({
             ) : helperAvailability === "mobile" ? (
               <div className="mt-4 space-y-3">
                 <div className="flex flex-wrap gap-2">
-                  <CopyTextButton text={quickCommand} label="Копировать команду" />
+                  <CopyTextButton
+                    text={quickCommand}
+                    label="Копировать команду"
+                  />
                   <a
                     href={bootstrapScriptUrl}
                     className="vectra-button-secondary px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
@@ -399,7 +402,7 @@ export function PublicInstallWorkspace({
                     Открыть скрипт
                   </a>
                 </div>
-                <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
+                <pre className="overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] break-all whitespace-pre-wrap text-slate-100">
                   <code>{quickCommand}</code>
                 </pre>
               </div>
@@ -436,7 +439,7 @@ export function PublicInstallWorkspace({
 
                 {extraHelperDownloads.length > 0 ? (
                   <details className="rounded-md border border-white/10 bg-black/20 px-3 py-3">
-                    <summary className="cursor-pointer list-none text-sm font-medium text-white">
+                    <summary className="flex min-h-11 cursor-pointer list-none items-center text-sm font-medium text-white">
                       Другие версии helper
                     </summary>
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -445,7 +448,7 @@ export function PublicInstallWorkspace({
                           key={download.id}
                           href={download.url}
                           download
-                          className="vectra-button-secondary px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
+                          className="vectra-button-secondary inline-flex min-h-11 items-center px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
                         >
                           {download.label}
                         </a>
@@ -472,7 +475,7 @@ export function PublicInstallWorkspace({
 
           {scanCandidates.length > 1 ? (
             <details className="rounded-md border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-3">
-              <summary className="cursor-pointer list-none text-sm font-medium text-white">
+              <summary className="flex min-h-11 cursor-pointer list-none items-center text-sm font-medium text-white">
                 Выбрать другой найденный роутер
               </summary>
               <div className="mt-3 flex flex-wrap gap-2">
@@ -481,7 +484,7 @@ export function PublicInstallWorkspace({
                     key={candidate.ip}
                     type="button"
                     onClick={() => setSelectedCandidate(candidate)}
-                    className={`rounded-full border px-3 py-1.5 text-xs transition ${
+                    className={`min-h-11 rounded-full border px-3 py-2 text-xs transition ${
                       selectedCandidate?.ip === candidate.ip
                         ? "border-sky-400/40 bg-sky-500/15 text-sky-100"
                         : "border-white/10 bg-black/20 text-slate-300 hover:border-white/20 hover:text-white"
@@ -526,7 +529,7 @@ export function PublicInstallWorkspace({
                 type="button"
                 onClick={() => void runInstallAttempt(manualPassword)}
                 disabled={isInstalling || manualPassword.trim().length === 0}
-                className="vectra-button-primary px-4 py-2 text-sm font-medium text-white transition hover:bg-[rgba(99,185,255,0.22)] disabled:cursor-not-allowed disabled:opacity-60"
+                className="vectra-button-primary min-h-11 px-4 py-2 text-sm font-medium text-white transition hover:bg-[rgba(99,185,255,0.22)] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Повторить с паролем
               </button>
@@ -535,19 +538,22 @@ export function PublicInstallWorkspace({
 
           {helperAvailability !== "mobile" ? (
             <details className="rounded-md border border-white/10 bg-black/20 px-3 py-3">
-              <summary className="cursor-pointer list-none text-sm font-medium text-white">
+              <summary className="flex min-h-11 cursor-pointer list-none items-center text-sm font-medium text-white">
                 Нужна ручная команда вместо helper?
               </summary>
               <div className="mt-3 space-y-4 text-sm leading-6 text-slate-300">
-                <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
+                <pre className="overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] break-all whitespace-pre-wrap text-slate-100">
                   <code>{quickCommand}</code>
                 </pre>
 
                 <div className="flex flex-wrap gap-2">
-                  <CopyTextButton text={quickCommand} label="Копировать команду" />
+                  <CopyTextButton
+                    text={quickCommand}
+                    label="Копировать команду"
+                  />
                   <a
                     href={bootstrapScriptUrl}
-                    className="vectra-button-secondary px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
+                    className="vectra-button-secondary inline-flex min-h-11 items-center px-3 py-2 text-sm font-medium text-white transition hover:border-white/20"
                   >
                     Открыть bootstrap-скрипт
                   </a>
@@ -608,7 +614,7 @@ export function PublicInstallWorkspace({
                   </div>
                 ) : null}
 
-                <pre className="min-h-40 overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] text-slate-100">
+                <pre className="min-h-40 overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 text-[12px] leading-6 font-[family:var(--font-plex-mono)] break-all whitespace-pre-wrap text-slate-100">
                   <code>
                     {assembledLog ||
                       "Лог появится здесь после старта helper-flow или при ошибке bootstrap."}

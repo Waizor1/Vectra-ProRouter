@@ -356,7 +356,7 @@ export function RouterCard({ router }: { router: RouterSummary }) {
       <div className="border-t border-white/10 px-3 py-3 sm:px-4">
         <Link
           href={`/routers/${router.id}`}
-          className="rounded-xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-center text-sm font-medium text-slate-200 transition hover:border-white/20 hover:text-white sm:border-transparent sm:bg-transparent sm:px-0 sm:py-0 sm:text-left"
+          className="inline-flex min-h-11 w-full items-center justify-center rounded-xl border border-white/10 bg-[var(--vectra-panel-soft)] px-3 py-2 text-center text-sm font-medium text-slate-200 transition hover:border-white/20 hover:text-white sm:justify-start sm:border-transparent sm:bg-transparent sm:px-0 sm:text-left"
         >
           {onboarding.cardActionLabel}
         </Link>

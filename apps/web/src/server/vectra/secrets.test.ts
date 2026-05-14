@@ -1,6 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 
-import { MASKED_SECRET_PLACEHOLDER, passwallDesiredConfigSchema } from "@vectra/contracts";
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  MASKED_SECRET_PLACEHOLDER,
+  passwallDesiredConfigSchema,
+} from "@vectra/contracts";
+import { z } from "zod";
+
+import { productionSafeStringSchema } from "~/env";
 
 import {
   createSecretPayload,
@@ -102,8 +110,42 @@ describe("sanitizePasswallConfig", () => {
 
     expect(sanitized.nodes[0]?.username).toBe(MASKED_SECRET_PLACEHOLDER);
     expect(sanitized.nodes[0]?.password).toBe(MASKED_SECRET_PLACEHOLDER);
-    expect(sanitized.nodes[0]?.extras.api_token).toBe(MASKED_SECRET_PLACEHOLDER);
-    expect(sanitized.subscriptions.items[0]?.url).toBe(MASKED_SECRET_PLACEHOLDER);
+    expect(sanitized.nodes[0]?.extras.api_token).toBe(
+      MASKED_SECRET_PLACEHOLDER,
+    );
+    expect(sanitized.subscriptions.items[0]?.url).toBe(
+      MASKED_SECRET_PLACEHOLDER,
+    );
+  });
+});
+
+describe("productionSafeStringSchema", () => {
+  it("rejects placeholder secrets in production", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      const schema = productionSafeStringSchema(
+        z.string().min(1),
+        ["change-me"],
+        "VECTRA_OPERATOR_PASSWORD",
+      );
+
+      expect(schema.safeParse("change-me").success).toBe(false);
+      expect(schema.safeParse("real-production-secret").success).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("web runtime image env validation", () => {
+  it("does not persist SKIP_ENV_VALIDATION into the runtime container", () => {
+    const dockerfile = readFileSync(
+      new URL("../../../../../Dockerfile.web", import.meta.url),
+      "utf8",
+    );
+
+    expect(dockerfile).toContain("RUN SKIP_ENV_VALIDATION=1");
+    expect(dockerfile).not.toMatch(/^ENV\s+SKIP_ENV_VALIDATION=/m);
   });
 });
 
@@ -132,7 +174,7 @@ describe("restoreMaskedPasswallConfig", () => {
     expect(restored.nodes[0]?.label).toBe("Updated label");
     expect(restored.nodes[0]?.password).toBe("secret-pass");
     expect(restored.subscriptions.items[0]?.url).toBe(
-      "https://example.com/subscription"
+      "https://example.com/subscription",
     );
   });
 });
@@ -161,32 +203,28 @@ describe("sanitizePasswallRawSnapshot", () => {
     });
 
     expect(
-      ((sanitized.sections as Array<{ password: string }>)[0]?.password)
+      (sanitized.sections as Array<{ password: string }>)[0]?.password,
     ).toBe(MASKED_SECRET_PLACEHOLDER);
     expect(
-      (
-        (sanitized.sections as Array<{ options: { url: string[] } }>)[0]?.options
-          .url?.[0]
-      )
+      (sanitized.sections as Array<{ options: { url: string[] } }>)[0]?.options
+        .url?.[0],
     ).toBe(MASKED_SECRET_PLACEHOLDER);
     expect(
-      (
-        (sanitized.sections as Array<{ options: { geoip_url: string[] } }>)[0]
-          ?.options.geoip_url?.[0]
-      )
+      (sanitized.sections as Array<{ options: { geoip_url: string[] } }>)[0]
+        ?.options.geoip_url?.[0],
     ).toBe("https://public.example/geoip.dat");
     expect(
       ((sanitized.uciLines as string[])[0] ?? "").includes(
-        MASKED_SECRET_PLACEHOLDER
-      )
+        MASKED_SECRET_PLACEHOLDER,
+      ),
     ).toBe(true);
     expect((sanitized.uciLines as string[])[1]).toContain(
-      "https://public.example/geoip.dat"
+      "https://public.example/geoip.dat",
     );
     expect(
       ((sanitized.uciLines as string[])[2] ?? "").includes(
-        MASKED_SECRET_PLACEHOLDER
-      )
+        MASKED_SECRET_PLACEHOLDER,
+      ),
     ).toBe(true);
   });
 });

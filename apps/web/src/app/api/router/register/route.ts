@@ -2,6 +2,7 @@ import { eventLog } from "@vectra/db";
 
 import { db } from "~/server/db";
 import { registerRouter } from "~/server/vectra/router-control";
+import { authenticateRouter } from "~/server/vectra/auth";
 import {
   publicInstallRegisterRateLimiter,
   readRequestIp,
@@ -45,7 +46,10 @@ export async function POST(request: Request) {
     }
 
     const payload: unknown = await parseJsonBody(request);
-    const response = await registerRouter(payload);
+    const authenticatedRouter = await authenticateRouter(request.headers);
+    const response = await registerRouter(payload, {
+      authenticatedRouterId: authenticatedRouter?.router.id ?? null,
+    });
     return Response.json(response, { status: 201 });
   } catch (error) {
     return toRouteErrorResponse(error);

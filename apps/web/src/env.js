@@ -8,6 +8,25 @@ const booleanFlagSchema = (defaultValue) =>
     .default(defaultValue ? "true" : "false")
     .transform((value) => value === "true");
 
+/**
+ * @param {import("zod").ZodType<string, import("zod").ZodTypeDef, string | undefined>} schema
+ * @param {string[]} unsafeValues
+ * @param {string} label
+ */
+export const productionSafeStringSchema = (schema, unsafeValues, label) =>
+  schema.superRefine((value, ctx) => {
+    if (process.env.NODE_ENV !== "production") {
+      return;
+    }
+
+    if (unsafeValues.includes(value)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${label} must be set to a production secret.`,
+      });
+    }
+  });
+
 export const env = createEnv({
   /**
    * Specify your server-side environment variables schema here. This way you can ensure the app
@@ -16,11 +35,16 @@ export const env = createEnv({
   server: {
     DATABASE_URL: z.string().url(),
     VECTRA_OPERATOR_USER: z.string().min(1).default("operator"),
-    VECTRA_OPERATOR_PASSWORD: z.string().min(1).default("change-me"),
-    VECTRA_SECRETS_KEY: z
-      .string()
-      .min(32)
-      .default("dev-only-vectra-secrets-key-000000"),
+    VECTRA_OPERATOR_PASSWORD: productionSafeStringSchema(
+      z.string().min(1).default("change-me"),
+      ["change-me"],
+      "VECTRA_OPERATOR_PASSWORD",
+    ),
+    VECTRA_SECRETS_KEY: productionSafeStringSchema(
+      z.string().min(32).default("dev-only-vectra-secrets-key-000000"),
+      ["dev-only-vectra-secrets-key-000000"],
+      "VECTRA_SECRETS_KEY",
+    ),
     VECTRA_DEFAULT_CONTROL_DOMAIN: z
       .string()
       .url()

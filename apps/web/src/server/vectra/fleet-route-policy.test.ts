@@ -342,4 +342,42 @@ describe("fleet route policy", () => {
       DiscordVoiceUdp: "node-discord-1",
     });
   });
+
+  it("prefers the live-good RU-entry Netherlands fallback for Special when it is available", () => {
+    const config = buildConfig({
+      bindings: {
+        Special: "node-kz",
+      },
+    });
+    config.nodes.push({
+      id: "node-special-ru-entry",
+      label: "🇷🇺🇳🇱 Нидерланды YouTube 🚫Ad🚫",
+      protocol: "vless",
+      enabled: true,
+      group: "default",
+      tags: [],
+      address: "ru6.nfnpx.online",
+      port: 50055,
+      transport: "grpc",
+      extras: {},
+    });
+
+    const result = normalizeFleetRoutePolicy(config, { name: "normal-router" });
+
+    expect(result.changed).toBe(true);
+    expect(result.after.status).toBe("compliant");
+    expect(
+      result.config.basicSettings.shuntRules.find(
+        (rule) => rule.id === "Special",
+      )?.outboundNodeId,
+    ).toBe("node-special-ru-entry");
+    expect(
+      result.config.nodes.find((node) => node.id === "myshunt")?.extras,
+    ).toMatchObject({
+      Special: "node-special-ru-entry",
+    });
+    expect(
+      result.changes.find((change) => change.slot === "Special")?.nextNodeId,
+    ).toBe("node-special-ru-entry");
+  });
 });

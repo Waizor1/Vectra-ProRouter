@@ -35,12 +35,15 @@ export class MemoryWindowRateLimiter {
 }
 
 export function readRequestIp(request: Request) {
-  const forwarded = request.headers.get("x-forwarded-for");
-  if (forwarded) {
-    return forwarded.split(",")[0]?.trim() ?? "unknown";
+  const trustedClientIp = request.headers.get("x-vectra-client-ip")?.trim();
+  if (trustedClientIp) {
+    return trustedClientIp;
   }
 
-  return request.headers.get("x-real-ip") ?? "unknown";
+  // Deliberately ignore client-controlled X-Forwarded-For / X-Real-IP here.
+  // Production Caddy injects x-vectra-client-ip from {remote_host}; direct app
+  // traffic without that trusted proxy marker shares a single conservative bucket.
+  return "unknown";
 }
 
 export const publicInstallRegisterRateLimiter = new MemoryWindowRateLimiter(

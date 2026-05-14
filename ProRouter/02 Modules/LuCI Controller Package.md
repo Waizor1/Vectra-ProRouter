@@ -14,6 +14,8 @@ tags:
 
 ## Confirmed
 
+- 2026-05-13 controller/LuCI `0.1.13-r22` is published in the stable OpenWrt feed and installed on Kirill-MSK. There is no LuCI UX change in this slice; the package release is aligned with the controller agent so self-update installs a matched pair while the agent lowers only the heavy operational refresh RAM floor to 40 MB. Live install proof on Kirill-MSK showed both `vectra-controller-agent` and `luci-app-vectra-controller` at `0.1.13-r22`, after which the saved subscription replacement applied and re-imported cleanly.
+
 - 2026-05-13 controller/LuCI `0.1.13-r21` rollout: signed r21 artifacts are installed on 14/15 active routers and the production version workspace has no queued controller updates. The residual r20 router (`denisvitalevichtescha`) is intentionally not forced because its live resource snapshot reports critical low RAM; previous update and log jobs failed with no stdout/stderr because the router-side guard rejected them before execution.
 
 - 2026-05-12 LuCI/controller package `0.1.13-r20`: the aligned LuCI package is published and installed with the r20 controller agent across all fresh online routers. There is still no LuCI UI behavior change in this slice; the package version is kept aligned so self-update installs a validated controller/LuCI pair. Stale offline `testrouter` remains queued on r9 and was intentionally not forced.

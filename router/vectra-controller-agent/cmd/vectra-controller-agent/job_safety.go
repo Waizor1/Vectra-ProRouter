@@ -9,12 +9,13 @@ import (
 )
 
 const (
-	jobSafetyMemoryFloorMB            = 64
+	jobSafetyHeavyMemoryFloorMB       = 40
+	jobSafetyStorageMemoryFloorMB     = 64
 	jobSafetyOverlayFloorMB           = 8
 	jobSafetyStorageOverlayFloorMB    = 16
 	jobSafetyTMPFloorMB               = 16
 	jobSafetyStorageTMPFloorMB        = 32
-	jobSafetyDiagnosticMemoryFloorMB  = 48
+	jobSafetyDiagnosticMemoryFloorMB  = 40
 	jobSafetyDiagnosticTMPFloorMB     = 8
 	jobSafetyControllerOverlayFloorMB = 8
 )
@@ -84,11 +85,12 @@ func evaluateJobSafetyForClass(
 		return decision
 	}
 
-	memoryFloor := jobSafetyMemoryFloorMB
+	memoryFloor := jobSafetyHeavyMemoryFloorMB
 	tmpFloor := jobSafetyTMPFloorMB
 	overlayFloor := jobSafetyOverlayFloorMB
 	switch class {
 	case jobSafetyClassStorage:
+		memoryFloor = jobSafetyStorageMemoryFloorMB
 		tmpFloor = jobSafetyStorageTMPFloorMB
 		overlayFloor = jobSafetyStorageOverlayFloorMB
 	case jobSafetyClassDiagnostic:
