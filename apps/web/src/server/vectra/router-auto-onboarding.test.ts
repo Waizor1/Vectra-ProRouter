@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { passwallDesiredConfigSchema } from "@vectra/contracts";
+import { jobs } from "@vectra/db";
 
 import {
+  advanceRouterOnboardingWithDb,
   createSubscriptionSecretCiphertext,
   hashOnboardingSecret,
   onboardingAttemptDedupePrefix,
@@ -134,6 +136,104 @@ function context(
     activeConfig: null,
     now,
     ...overrides,
+  };
+}
+
+function createOnboardingDbMock(options: {
+  selectResponses: unknown[][];
+  updateResponses?: unknown[][];
+  jobInsertRows?: unknown[];
+}) {
+  const { selectResponses, updateResponses = [], jobInsertRows = [] } = options;
+  let selectIndex = 0;
+  let updateIndex = 0;
+  const insertedValues: Array<{ table: "jobs" | "other"; value: unknown }> = [];
+  const updatedValues: unknown[] = [];
+
+  const nextSelectRows = () => selectResponses[selectIndex++] ?? [];
+  const nextUpdateRows = () => updateResponses[updateIndex++] ?? [];
+  const makeReturning = (rows: unknown[]) => {
+    const promise = Promise.resolve(rows);
+    return {
+      returning() {
+        return promise;
+      },
+      then<TResult1 = unknown[], TResult2 = never>(
+        onfulfilled?:
+          | ((value: unknown[]) => TResult1 | PromiseLike<TResult1>)
+          | null,
+        onrejected?:
+          | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
+          | null,
+      ) {
+        return promise.then(onfulfilled, onrejected);
+      },
+    };
+  };
+
+  const db = {
+    select() {
+      return {
+        from() {
+          return this;
+        },
+        where() {
+          return this;
+        },
+        orderBy() {
+          return this;
+        },
+        limit() {
+          return Promise.resolve(nextSelectRows());
+        },
+      };
+    },
+    update(table: unknown) {
+      return {
+        set(value: unknown) {
+          updatedValues.push({ table, value });
+          return {
+            where() {
+              return makeReturning(nextUpdateRows());
+            },
+          };
+        },
+      };
+    },
+    insert(table: unknown) {
+      return {
+        values(value: unknown) {
+          insertedValues.push({
+            table: table === jobs ? "jobs" : "other",
+            value,
+          });
+          if (table === jobs) {
+            return {
+              onConflictDoNothing() {
+                return makeReturning(jobInsertRows);
+              },
+              returning() {
+                throw new Error(
+                  "job insert should use onConflictDoNothing for dedupe",
+                );
+              },
+              then() {
+                throw new Error(
+                  "job insert should use onConflictDoNothing for dedupe",
+                );
+              },
+            };
+          }
+          return makeReturning([]);
+        },
+      };
+    },
+  };
+
+  return {
+    db: db as never,
+    insertedValues,
+    updatedValues,
   };
 }
 
@@ -516,6 +616,124 @@ describe("router auto-onboarding planner", () => {
       action: "block",
       nextState: "verify_runtime",
       reason: "typed route verifier finished without green route-smoke proof",
+    });
+  });
+});
+
+describe("router auto-onboarding job queueing", () => {
+  it("reuses terminal jobs with the same attempt dedupe key instead of inserting a duplicate", async () => {
+    const terminalJob = {
+      id: "job-refresh-1",
+      type: "refresh_subscriptions",
+      state: "succeeded",
+      dedupeKey: `${onboardingAttemptDedupePrefix("run-1", 2)}refresh_subscriptions`,
+      payload: { onboardingRunId: "run-1" },
+      desiredRevisionId: null,
+    };
+    const mock = createOnboardingDbMock({
+      selectResponses: [
+        [router({ activeRevisionId: null })],
+        [profile()],
+        [run({ state: "refresh_subscription", attempt: 2 })],
+        [snapshot()],
+        [],
+        [],
+        [terminalJob],
+      ],
+      updateResponses: [
+        [
+          run({
+            state: "refresh_subscription",
+            status: "waiting",
+            attempt: 2,
+            lastJobId: terminalJob.id,
+          }),
+        ],
+      ],
+    });
+
+    const result = await advanceRouterOnboardingWithDb(
+      mock.db,
+      router().id,
+      {
+        featureEnabled: true,
+        now,
+        maxSteps: 1,
+      },
+    );
+
+    expect(result).toMatchObject({
+      action: "queue_refresh_subscriptions",
+      status: "waiting",
+      jobId: terminalJob.id,
+    });
+    expect(
+      mock.insertedValues.filter((value) => value.table === "jobs"),
+    ).toHaveLength(0);
+    expect(mock.updatedValues[0]).toMatchObject({
+      value: {
+        lastJobId: terminalJob.id,
+        status: "waiting",
+      },
+    });
+  });
+
+  it("refetches the dedupe job after an insert conflict race", async () => {
+    const terminalJob = {
+      id: "job-refresh-race",
+      type: "refresh_subscriptions",
+      state: "succeeded",
+      dedupeKey: `${onboardingAttemptDedupePrefix("run-1", 3)}refresh_subscriptions`,
+      payload: { onboardingRunId: "run-1" },
+      desiredRevisionId: null,
+    };
+    const mock = createOnboardingDbMock({
+      selectResponses: [
+        [router({ activeRevisionId: null })],
+        [profile()],
+        [run({ state: "refresh_subscription", attempt: 3 })],
+        [snapshot()],
+        [],
+        [],
+        [],
+        [terminalJob],
+      ],
+      updateResponses: [
+        [
+          run({
+            state: "refresh_subscription",
+            status: "waiting",
+            attempt: 3,
+            lastJobId: terminalJob.id,
+          }),
+        ],
+      ],
+      jobInsertRows: [],
+    });
+
+    const result = await advanceRouterOnboardingWithDb(
+      mock.db,
+      router().id,
+      {
+        featureEnabled: true,
+        now,
+        maxSteps: 1,
+      },
+    );
+
+    expect(result).toMatchObject({
+      action: "queue_refresh_subscriptions",
+      status: "waiting",
+      jobId: terminalJob.id,
+    });
+    expect(
+      mock.insertedValues.filter((value) => value.table === "jobs"),
+    ).toHaveLength(1);
+    expect(mock.updatedValues[0]).toMatchObject({
+      value: {
+        lastJobId: terminalJob.id,
+        status: "waiting",
+      },
     });
   });
 });

@@ -110,6 +110,11 @@ export type JobLike = Pick<
   "id" | "type" | "state" | "dedupeKey" | "payload" | "desiredRevisionId"
 >;
 
+type OnboardingQueuedJob = {
+  job: JobLike;
+  inserted: boolean;
+};
+
 export type JobResultLike = Pick<
   JobResultRow,
   "status" | "payload" | "reportedAt"
@@ -1201,6 +1206,57 @@ async function updateRun(
   return updatedRun ?? null;
 }
 
+async function findOnboardingJobByDedupeKey(
+  client: DatabaseClient,
+  input: { routerId: string; dedupeKey: string },
+) {
+  const [job] = await client
+    .select()
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.routerId, input.routerId),
+        eq(jobs.dedupeKey, input.dedupeKey),
+      ),
+    )
+    .limit(1);
+
+  return job ?? null;
+}
+
+async function queueOnboardingJobWithDedupe(
+  client: DatabaseClient,
+  input: {
+    routerId: string;
+    dedupeKey: string;
+    values: typeof jobs.$inferInsert;
+  },
+): Promise<OnboardingQueuedJob> {
+  const existingJob = await findOnboardingJobByDedupeKey(client, input);
+  if (existingJob) {
+    return { job: existingJob, inserted: false };
+  }
+
+  const [insertedJob] = await client
+    .insert(jobs)
+    .values(input.values)
+    .onConflictDoNothing({ target: jobs.dedupeKey })
+    .returning();
+
+  if (insertedJob) {
+    return { job: insertedJob, inserted: true };
+  }
+
+  const reusedJob = await findOnboardingJobByDedupeKey(client, input);
+  if (reusedJob) {
+    return { job: reusedJob, inserted: false };
+  }
+
+  throw new Error(
+    `Failed to queue onboarding job for dedupe key ${input.dedupeKey}.`,
+  );
+}
+
 async function approveImportWithDb(
   client: DatabaseClient,
   router: RouterLike,
@@ -1257,25 +1313,10 @@ async function queueOnboardingApplyJob(
   },
 ) {
   const dedupeKey = `${onboardingAttemptDedupePrefix(input.runId, input.attempt)}apply:${input.purpose}:${input.revisionId}`;
-  const [existingJob] = await client
-    .select()
-    .from(jobs)
-    .where(
-      and(
-        eq(jobs.routerId, input.routerId),
-        eq(jobs.dedupeKey, dedupeKey),
-        inArray(jobs.state, activeJobStates),
-      ),
-    )
-    .limit(1);
-
-  if (existingJob) {
-    return existingJob;
-  }
-
-  const [job] = await client
-    .insert(jobs)
-    .values({
+  const { job, inserted } = await queueOnboardingJobWithDedupe(client, {
+    routerId: input.routerId,
+    dedupeKey,
+    values: {
       routerId: input.routerId,
       type: "apply_passwall_config",
       state: "queued",
@@ -1286,15 +1327,17 @@ async function queueOnboardingApplyJob(
         onboardingRunId: input.runId,
         purpose: input.purpose,
       },
-    })
-    .returning();
+    },
+  });
 
-  await client
-    .update(passwallDesiredRevisions)
-    .set({ status: "queued" })
-    .where(eq(passwallDesiredRevisions.id, input.revisionId));
+  if (inserted || activeJobStates.includes(job.state as OnboardingJobState)) {
+    await client
+      .update(passwallDesiredRevisions)
+      .set({ status: "queued" })
+      .where(eq(passwallDesiredRevisions.id, input.revisionId));
+  }
 
-  return job ?? null;
+  return job;
 }
 
 async function queueHostnameJob(
@@ -1302,25 +1345,10 @@ async function queueHostnameJob(
   input: { routerId: string; runId: string; attempt: number; hostname: string },
 ) {
   const dedupeKey = `${onboardingAttemptDedupePrefix(input.runId, input.attempt)}hostname:${input.hostname}`;
-  const [existingJob] = await client
-    .select()
-    .from(jobs)
-    .where(
-      and(
-        eq(jobs.routerId, input.routerId),
-        eq(jobs.dedupeKey, dedupeKey),
-        inArray(jobs.state, activeJobStates),
-      ),
-    )
-    .limit(1);
-
-  if (existingJob) {
-    return existingJob;
-  }
-
-  const [job] = await client
-    .insert(jobs)
-    .values({
+  const { job } = await queueOnboardingJobWithDedupe(client, {
+    routerId: input.routerId,
+    dedupeKey,
+    values: {
       routerId: input.routerId,
       type: "run_terminal_command",
       state: "queued",
@@ -1329,10 +1357,10 @@ async function queueHostnameJob(
         ...buildTerminalRouterHostnameUpdatePayload(input.hostname),
         onboardingRunId: input.runId,
       },
-    })
-    .returning();
+    },
+  });
 
-  return job ?? null;
+  return job;
 }
 
 async function queueEnsureRuntimeJob(
@@ -1345,25 +1373,10 @@ async function queueEnsureRuntimeJob(
   },
 ) {
   const dedupeKey = `${onboardingAttemptDedupePrefix(input.runId, input.attempt)}ensure_passwall_runtime:${input.actions.join("+")}`;
-  const [existingJob] = await client
-    .select()
-    .from(jobs)
-    .where(
-      and(
-        eq(jobs.routerId, input.routerId),
-        eq(jobs.dedupeKey, dedupeKey),
-        inArray(jobs.state, activeJobStates),
-      ),
-    )
-    .limit(1);
-
-  if (existingJob) {
-    return existingJob;
-  }
-
-  const [job] = await client
-    .insert(jobs)
-    .values({
+  const { job } = await queueOnboardingJobWithDedupe(client, {
+    routerId: input.routerId,
+    dedupeKey,
+    values: {
       routerId: input.routerId,
       type: "ensure_passwall_runtime",
       state: "queued",
@@ -1380,10 +1393,10 @@ async function queueEnsureRuntimeJob(
           tmpFreeMb: ensureRuntimeTmpFreeFloorMb,
         },
       },
-    })
-    .returning();
+    },
+  });
 
-  return job ?? null;
+  return job;
 }
 
 async function queueRefreshSubscriptionsJob(
@@ -1391,34 +1404,19 @@ async function queueRefreshSubscriptionsJob(
   input: { routerId: string; runId: string; attempt: number },
 ) {
   const dedupeKey = `${onboardingAttemptDedupePrefix(input.runId, input.attempt)}refresh_subscriptions`;
-  const [existingJob] = await client
-    .select()
-    .from(jobs)
-    .where(
-      and(
-        eq(jobs.routerId, input.routerId),
-        eq(jobs.dedupeKey, dedupeKey),
-        inArray(jobs.state, activeJobStates),
-      ),
-    )
-    .limit(1);
-
-  if (existingJob) {
-    return existingJob;
-  }
-
-  const [job] = await client
-    .insert(jobs)
-    .values({
+  const { job } = await queueOnboardingJobWithDedupe(client, {
+    routerId: input.routerId,
+    dedupeKey,
+    values: {
       routerId: input.routerId,
       type: "refresh_subscriptions",
       state: "queued",
       dedupeKey,
       payload: { onboardingRunId: input.runId },
-    })
-    .returning();
+    },
+  });
 
-  return job ?? null;
+  return job;
 }
 
 async function queueRouteVerificationJob(
@@ -1426,25 +1424,10 @@ async function queueRouteVerificationJob(
   input: { routerId: string; runId: string; attempt: number },
 ) {
   const dedupeKey = `${onboardingAttemptDedupePrefix(input.runId, input.attempt)}verify_passwall_routes`;
-  const [existingJob] = await client
-    .select()
-    .from(jobs)
-    .where(
-      and(
-        eq(jobs.routerId, input.routerId),
-        eq(jobs.dedupeKey, dedupeKey),
-        inArray(jobs.state, activeJobStates),
-      ),
-    )
-    .limit(1);
-
-  if (existingJob) {
-    return existingJob;
-  }
-
-  const [job] = await client
-    .insert(jobs)
-    .values({
+  const { job } = await queueOnboardingJobWithDedupe(client, {
+    routerId: input.routerId,
+    dedupeKey,
+    values: {
       routerId: input.routerId,
       type: "verify_passwall_routes",
       state: "queued",
@@ -1453,10 +1436,10 @@ async function queueRouteVerificationJob(
         onboardingRunId: input.runId,
         expectedPolicy: "standard-non-hh",
       },
-    })
-    .returning();
+    },
+  });
 
-  return job ?? null;
+  return job;
 }
 
 async function loadOnboardingContext(

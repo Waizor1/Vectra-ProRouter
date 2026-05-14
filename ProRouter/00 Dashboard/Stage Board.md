@@ -8,6 +8,16 @@ tags:
 
 # Stage Board
 
+## 2026-05-15 r23 post-review onboarding hardening
+
+- Follow-up code/risk review found one real retry/resume bug after the r23 rollout: attempt-scoped `job.dedupe_key` values were still inserted after checking only active jobs, so a replayed same-attempt terminal job could hit the global unique index instead of being reused. The web state machine now looks up any existing job by dedupe key, inserts with `onConflictDoNothing`, refetches after conflict races, and has regression tests for terminal/replayed refresh jobs. Router detail also warns operators that a completed `done` run is one-shot: saving the profile changes stored fields but does not silently restart onboarding.
+
+## 2026-05-15 OpenWrt/Xray optimization KB
+
+- Live read-only optimization baseline collected from `1111111111`, `VagrandRouter`, and `kirill-msk`: all three are AX3000T/OpenWrt 24.10.x with active Xray global runtime; Xray RSS ranged roughly 36-50 MB, MemAvailable roughly 59-86 MB, conntrack pressure was low, conservative `prefer_nft=1`/`ipv6_tproxy=0`/Google DoH defaults were confirmed, and the only concrete historical OOM signal in this sample remains the known prior `1111111111` Xray OOM. These facts were added to the optimization KB as the starting baseline for future canary design.
+
+- Added a dedicated research-backed optimization KB for OpenWrt 24.x + PassWall2/Xray routers at `ai_docs/develop/features/openwrt24-passwall2-xray-optimization-kb.md`. The report separates low-risk defaults from canary-only tuning and no-go tweaks, ties recommendations to OpenWrt/Xray/PassWall2 sources plus local PassWall2 code paths, and defines the diagnostic/rollback lane required before applying packet steering, software offload, XUDP/Mux, FakeDNS, SQM, or zram experiments to live routers.
+
 ## 2026-05-15 Automated onboarding r23 production closeout
 
 - Rolled the panel-owned auto-onboarding path to the live `yuranrod-msk` router on controller/LuCI `0.1.13-r23`. The web state machine now blocks typed onboarding jobs on older agents, scopes dedupe keys by attempt, and treats completed runs as terminal so enabled profiles do not restart after `done`; production feed artifacts were published, the router updated through the panel lane, and the final run ended `done` with green five-slot route proof. This is the first fully closed production pilot for the new onboarding workflow.

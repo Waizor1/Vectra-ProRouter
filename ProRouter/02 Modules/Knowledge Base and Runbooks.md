@@ -3,7 +3,7 @@ type: module
 path: ai_docs/, scripts/, RTK.md
 stage: active
 confidence: high
-last-reviewed: 2026-04-28
+last-reviewed: 2026-05-15
 tags:
   - module
   - docs
@@ -14,6 +14,7 @@ tags:
 
 ## Confirmed
 
+- Added `ai_docs/develop/features/openwrt24-passwall2-xray-optimization-kb.md` as the first dedicated optimization knowledge base for memory/CPU-heavy OpenWrt + PassWall2/Xray routers: source tiers, safe/yellow/red action matrix, measurement lane, canary commands, and Vectra rollout roadmap.
 - Корневой репозиторий исторически держит исследования, ранбуки и helper scripts.
 - Основные входы для будущих агентов: `AGENTS.md`, `RTK.md`, `ai_docs/develop/features/`.
 - В `scripts/` уже есть утилиты для инвентаризации роутера, безопасных tmp-сессий и планирования обновлений PassWall2.
