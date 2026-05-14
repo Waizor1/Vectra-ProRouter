@@ -1295,17 +1295,14 @@ function MonitoringChartCard({
 
       <div className="mt-4 flex h-3 overflow-hidden rounded-full bg-white/6">
         {chart.slices.map((slice) => (
-          <button
+          <div
             key={slice.key}
-            type="button"
-            onClick={() => onFilterChange(slice.filter)}
-            disabled={slice.count === 0}
-            aria-label={`${slice.label}: ${slice.count}`}
+            aria-hidden="true"
             style={{
               flexBasis: 0,
               flexGrow: slice.count,
             }}
-            className={`transition ${stackedToneMap[slice.tone]} disabled:opacity-30`}
+            className={`${stackedToneMap[slice.tone]} ${slice.count === 0 ? "opacity-30" : ""}`}
           />
         ))}
       </div>
