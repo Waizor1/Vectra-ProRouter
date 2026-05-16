@@ -1,5 +1,7 @@
 import { UpdatesWorkspaceClientBoundary } from "~/components/updates-workspace-client-boundary";
 import { PageHeader } from "~/components/page-header";
+import { UpdatesV2 } from "~/features/updates/updates-v2";
+import { isUiV2 } from "~/lib/feature-flag";
 import { api } from "~/trpc/server";
 
 function describeArtifactScope(name: string) {
@@ -80,13 +82,24 @@ function buildReleaseTracks(
   ];
 }
 
-export default async function UpdatesPage() {
-  const [artifacts, manifests, globalTemplateWorkspace] = await Promise.all([
-    api.update.artifacts(),
-    api.update.firmwareMatrix(),
-    api.update.globalTemplateWorkspace(),
-  ]);
+export default async function UpdatesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ ui?: string }>;
+}) {
+  const [artifacts, manifests, globalTemplateWorkspace, v2, params] =
+    await Promise.all([
+      api.update.artifacts(),
+      api.update.firmwareMatrix(),
+      api.update.globalTemplateWorkspace(),
+      isUiV2(),
+      searchParams,
+    ]);
   const releaseTracks = buildReleaseTracks(artifacts, manifests);
+
+  if (v2 && params.ui !== "v1") {
+    return <UpdatesV2 artifacts={artifacts} manifests={manifests} />;
+  }
 
   return (
     <section className="space-y-4">
