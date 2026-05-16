@@ -1,6 +1,6 @@
 ---
 type: generated
-updated: '2026-05-15 02:17:11 +03:00'
+updated: '2026-05-17 01:02:58 +03:00'
 generated-by: scripts/Sync-ProRouterVault.py
 tags:
   - generated
@@ -13,8 +13,8 @@ Generated from the current workspace root `Vectra-ProRouter`.
 
 ## Snapshot
 
-- Generated at: `2026-05-15 02:17:11 +03:00`
-- Top-level directories: `10`
+- Generated at: `2026-05-17 01:02:58 +03:00`
+- Top-level directories: `11`
 - Top-level files: `15`
 - Tree depth: `3`
 
@@ -35,10 +35,16 @@ Generated from the current workspace root `Vectra-ProRouter`.
 
 ```text
 ./
-|- .keys/
-|  \- openwrt-feed/
+|- .claude/
+|  |- worktrees/
+|  |  |- agent-a10866714d68d2c84/
+|  |  |- agent-ad49332c64a9e262b/
+|  |  \- inspiring-elgamal-c69968/
+|  \- scheduled_tasks.lock
+|- .github/
+|  \- workflows/
+|     \- ci.yml
 |- .omx/
-|  \- state/
 |- ai_docs/
 |  \- develop/
 |     \- features/
@@ -55,8 +61,6 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |  |- server_test.go
 |  |  |- sessions.go
 |  |  \- storage.go
-|  |- output/
-|  |  \- playwright/
 |  \- web/
 |     |- public/
 |     |- scripts/
@@ -129,7 +133,8 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |- 03 Decisions/
 |  |  |- ADR Index.md
 |  |  |- ADR-0001-obsidian-project-vault.md
-|  |  \- ADR-0002-panel-owned-auto-onboarding.md
+|  |  |- ADR-0002-panel-owned-auto-onboarding.md
+|  |  \- ADR-0003-filogic-universalization.md
 |  |- 04 Sessions/
 |  |  |- Daily/
 |  |  \- Handoffs/

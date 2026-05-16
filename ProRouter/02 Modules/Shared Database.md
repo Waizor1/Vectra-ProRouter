@@ -14,6 +14,8 @@ tags:
 
 ## Confirmed
 
+- 2026-05-15 optimization baseline migration: added Drizzle migration `0012_collect_optimization_baseline_job.sql` to extend `vectra_job_type` with the read-only `collect_optimization_baseline` diagnostic job type. This is additive-only and is paired with the shared contract enum update; web queueing still clears the stable optimization dedupe key after completion so future baseline snapshots are not one-shot.
+
 - Пакет `@vectra/db` использует `drizzle-orm`.
 - Есть директория `drizzle/` и `src/`, то есть слой схем и миграций уже выделен.
 - Пакет зависит от `@vectra/contracts`, что указывает на связь между схемами хранения и общими типами.

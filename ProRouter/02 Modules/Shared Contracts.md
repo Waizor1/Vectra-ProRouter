@@ -14,6 +14,10 @@ tags:
 
 ## Confirmed
 
+- 2026-05-15 onboarding review contract: `routerInventorySchema` now accepts optional `controllerRuntimeVersion` from the running controller process, and onboarding job payloads can carry optional `onboardingAttempt` so web-side terminal job recovery stays same-attempt; current web completion also keeps `onboarding:` dedupe keys durable while retaining payload fallback for older rows.
+
+- 2026-05-15 optimization baseline contract: `jobTypeSchema` now includes `collect_optimization_baseline`, and `collectOptimizationBaselineJobPayloadSchema` / `optimizationBaselineResultPayloadSchema` define the new read-only diagnostic queue/result surface shared between the web queueing layer and the controller agent. The contract fixtures now carry accepted job and result samples for the new baseline flow, and the Go fixture decoder validates the new payload/result shape.
+
 - 2026-05-12 router safety event contract: `RouterInventory` now has additive optional `safetyEvents[]` with `type`, `severity`, `component`, `source`, `message`, `observedAt`, and bounded `evidence`. This keeps legacy agents compatible while letting the agent, fleet monitoring, router detail, and Auto-Rescue share OpenWrt-side safety evidence without overloading reachability or generic incident fields.
 
 - 2026-05-08 r12 deployed contract parity: production web now uses `buildVectraSubscriptionSectionName()` in operation preview, so previewed `subscribe_list` section names match the controller `0.1.13-r12` apply renderer and no longer compound `vectra_sub_` prefixes.
