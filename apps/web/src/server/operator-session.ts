@@ -1,3 +1,5 @@
+import { timingSafeEqual } from "node:crypto";
+
 const SESSION_COOKIE_NAME = "vectra_operator_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 
@@ -78,7 +80,12 @@ export async function verifyOperatorSession(token: string | undefined | null) {
   }
 
   const expectedSignature = await signValue(payloadPart);
-  if (expectedSignature !== signaturePart) {
+  const expectedBuffer = Buffer.from(expectedSignature);
+  const actualBuffer = Buffer.from(signaturePart);
+  if (
+    expectedBuffer.length !== actualBuffer.length ||
+    !timingSafeEqual(expectedBuffer, actualBuffer)
+  ) {
     return null;
   }
 

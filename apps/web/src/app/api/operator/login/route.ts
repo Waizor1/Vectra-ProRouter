@@ -1,3 +1,5 @@
+import { timingSafeEqual } from "node:crypto";
+
 import { cookies } from "next/headers";
 
 import { env } from "~/env";
@@ -8,6 +10,15 @@ import {
 } from "~/server/operator-session";
 import { relativeRedirect } from "~/server/redirect";
 
+function constantTimeStringEquals(actual: string, expected: string) {
+  const actualBuffer = Buffer.from(actual);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
 export async function POST(request: Request) {
   const formData = await request.formData();
   const usernameEntry = formData.get("username");
@@ -17,10 +28,15 @@ export async function POST(request: Request) {
   const password =
     typeof passwordEntry === "string" ? passwordEntry : "";
 
-  if (
-    username !== env.VECTRA_OPERATOR_USER ||
-    password !== env.VECTRA_OPERATOR_PASSWORD
-  ) {
+  const usernameMatches = constantTimeStringEquals(
+    username,
+    env.VECTRA_OPERATOR_USER,
+  );
+  const passwordMatches = constantTimeStringEquals(
+    password,
+    env.VECTRA_OPERATOR_PASSWORD,
+  );
+  if (!usernameMatches || !passwordMatches) {
     return relativeRedirect("/login?error=1");
   }
 
