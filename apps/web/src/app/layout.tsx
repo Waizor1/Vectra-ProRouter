@@ -33,7 +33,7 @@ export default function RootLayout({
   return (
     <html
       lang="ru"
-      className={`${plexSans.variable} ${plexMono.variable}`}
+      className={`dark ${plexSans.variable} ${plexMono.variable}`}
     >
       <body className="min-h-screen bg-[var(--vectra-bg)] font-sans text-slate-100 antialiased">
         <TRPCReactProvider>
