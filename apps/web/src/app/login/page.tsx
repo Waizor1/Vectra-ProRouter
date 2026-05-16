@@ -6,13 +6,19 @@ import {
   getOperatorCookieName,
   verifyOperatorSession,
 } from "~/server/operator-session";
+import { isUiV2 } from "~/lib/feature-flag";
+import { LoginV2 } from "~/features/auth/login-v2";
 
 export default async function LoginPage({
   searchParams,
 }: {
   searchParams: Promise<{ error?: string }>;
 }) {
-  const [cookieStore, params] = await Promise.all([cookies(), searchParams]);
+  const [cookieStore, params, v2] = await Promise.all([
+    cookies(),
+    searchParams,
+    isUiV2(),
+  ]);
   const session = await verifyOperatorSession(
     cookieStore.get(getOperatorCookieName())?.value,
   );
@@ -22,6 +28,10 @@ export default async function LoginPage({
   }
 
   const hasError = params.error === "1";
+
+  if (v2) {
+    return <LoginV2 hasError={hasError} />;
+  }
 
   return (
     <section className="mx-auto flex min-h-[70vh] w-full max-w-xl items-center">
