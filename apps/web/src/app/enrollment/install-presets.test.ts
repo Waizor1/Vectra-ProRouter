@@ -162,6 +162,28 @@ describe("enrollment install preset", () => {
     expect(script).toContain(
       "require_feed_packages_with_storage $REQUIRED_RUNTIME_PACKAGES",
     );
+    expect(script).toContain("ensure_openwrt_feeds_usable() {");
+    expect(script).toContain("sentinel_pkg='dnsmasq-full'");
+    expect(script).toContain(
+      "OpenWrt feeds недоступны: $sentinel_pkg не виден в opkg lists после opkg update.",
+    );
+    expect(script).toContain("ping -c 2 -W 5 downloads.openwrt.org");
+    expect(script).toContain("nslookup downloads.openwrt.org");
+    expect(script).toContain(
+      "echo 'nameserver 1.1.1.1' >> /etc/resolv.conf",
+    );
+    const preflightFunctionStart = script.indexOf("run_preflight_checks() {");
+    const preflightFunctionEnd = script.indexOf("\n}\n", preflightFunctionStart);
+    const preflightFunction = script.slice(
+      preflightFunctionStart,
+      preflightFunctionEnd,
+    );
+    expect(preflightFunction).toContain("ensure_openwrt_feeds_usable");
+    expect(preflightFunction.indexOf("ensure_openwrt_feeds_usable")).toBeLessThan(
+      preflightFunction.indexOf(
+        "require_feed_packages $OPENWRT_FEED_PREREQS",
+      ),
+    );
     const feedPrereqFunctionStart = script.indexOf("require_feed_package() {");
     const feedPrereqFunctionEnd = script.indexOf(
       "require_feed_package_storage_metadata() {",
