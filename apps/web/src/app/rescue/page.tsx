@@ -3,15 +3,29 @@ import Link from "next/link";
 import { Panel } from "~/components/panel";
 import { PageHeader } from "~/components/page-header";
 import { StatusTile } from "~/components/status-tile";
+import { RescueV2 } from "~/features/rescue/rescue-v2";
+import { isUiV2 } from "~/lib/feature-flag";
 import { api } from "~/trpc/server";
 
 export default async function RescuePage() {
-  const [policy, incidents, directRouters, rescueCases] = await Promise.all([
+  const [policy, incidents, directRouters, rescueCases, v2] = await Promise.all([
     api.rescue.policy(),
     api.rescue.openIncidents(),
     api.rescue.directRouters(),
     api.rescue.cases(),
+    isUiV2(),
   ]);
+
+  if (v2) {
+    return (
+      <RescueV2
+        policy={policy}
+        incidents={incidents}
+        directRouters={directRouters}
+        rescueCases={rescueCases}
+      />
+    );
+  }
 
   return (
     <section className="mx-auto max-w-6xl space-y-4">
