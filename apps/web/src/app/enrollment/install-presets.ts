@@ -2,6 +2,11 @@ export const AX3000T_BASELINE_PATH =
   "/api/install/ax3000t-passwall2-baseline.uci";
 export const AX3000T_BOOTSTRAP_PATH = "/install/ax3000t-bootstrap.sh";
 export const AX3000T_SHUNT_REBIND_PATH = "/install/ax3000t-myshunt-rebind.sh";
+
+export const FILOGIC_BASELINE_PATH =
+  "/api/install/filogic-passwall2-baseline.uci";
+export const FILOGIC_BOOTSTRAP_PATH = "/install/filogic-bootstrap.sh";
+export const FILOGIC_SHUNT_REBIND_PATH = "/install/filogic-myshunt-rebind.sh";
 export const DEFAULT_CONTROL_DOMAIN = "https://router.vectra-pro.net";
 export const DEFAULT_ROUTER_API_BASE_URL = "https://api.vectra-pro.net";
 export const DEFAULT_ARTIFACT_BASE_URL =
@@ -816,6 +821,54 @@ export function buildAx3000tShuntRebindCommand(
 ) {
   const scriptUrl = buildAx3000tShuntRebindScriptUrl(controlDomain);
   return `wget -O /tmp/vectra-ax3000t-myshunt-rebind.sh '${scriptUrl}' && sh /tmp/vectra-ax3000t-myshunt-rebind.sh`;
+}
+
+export const filogicEnrollmentPreset = ax3000tEnrollmentPreset;
+
+export function buildFilogicFeedUrl(artifactBase: string | undefined) {
+  return buildAx3000tFeedUrl(artifactBase);
+}
+
+export function buildFilogicPasswallMirrorUrl(artifactBase: string | undefined) {
+  return buildAx3000tPasswallMirrorUrl(artifactBase);
+}
+
+export function buildFilogicBaselineUrl(controlDomain: string | undefined) {
+  return resolveAbsoluteUrl(controlDomain, FILOGIC_BASELINE_PATH);
+}
+
+export function buildFilogicBootstrapScriptUrl(controlDomain: string | undefined) {
+  return resolveAbsoluteUrl(controlDomain, FILOGIC_BOOTSTRAP_PATH);
+}
+
+export function buildFilogicShuntRebindScriptUrl(
+  controlDomain: string | undefined,
+) {
+  return resolveAbsoluteUrl(controlDomain, FILOGIC_SHUNT_REBIND_PATH);
+}
+
+export function buildFilogicBootstrapCommand(controlDomain: string | undefined) {
+  const scriptUrl = buildFilogicBootstrapScriptUrl(controlDomain);
+  return `wget -O /tmp/vectra-filogic-bootstrap.sh '${scriptUrl}' && sh /tmp/vectra-filogic-bootstrap.sh`;
+}
+
+export function buildFilogicShuntRebindCommand(
+  controlDomain: string | undefined,
+) {
+  const scriptUrl = buildFilogicShuntRebindScriptUrl(controlDomain);
+  return `wget -O /tmp/vectra-filogic-myshunt-rebind.sh '${scriptUrl}' && sh /tmp/vectra-filogic-myshunt-rebind.sh`;
+}
+
+export function buildFilogicBootstrapScript(
+  args: Parameters<typeof buildAx3000tBootstrapScript>[0],
+) {
+  return buildAx3000tBootstrapScript(args);
+}
+
+export function buildFilogicShuntRebindScript(
+  args?: Parameters<typeof buildAx3000tShuntRebindScript>[0],
+) {
+  return buildAx3000tShuntRebindScript(args);
 }
 
 export function buildAx3000tShuntRebindScript(args?: {

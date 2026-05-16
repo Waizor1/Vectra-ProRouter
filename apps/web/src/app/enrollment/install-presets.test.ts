@@ -23,6 +23,19 @@ import {
   buildAx3000tShuntRebindScriptUrl,
   classifyFilogicPasswallInstallState,
   DEFAULT_PASSWALL2_RELEASE_TAG,
+  filogicEnrollmentPreset,
+  FILOGIC_BASELINE_PATH,
+  FILOGIC_BOOTSTRAP_PATH,
+  FILOGIC_SHUNT_REBIND_PATH,
+  buildFilogicBaselineUrl,
+  buildFilogicBootstrapCommand,
+  buildFilogicBootstrapScript,
+  buildFilogicBootstrapScriptUrl,
+  buildFilogicFeedUrl,
+  buildFilogicPasswallMirrorUrl,
+  buildFilogicShuntRebindCommand,
+  buildFilogicShuntRebindScript,
+  buildFilogicShuntRebindScriptUrl,
   planAx3000tManagedPackageOperations,
 } from "~/app/enrollment/install-presets";
 
@@ -95,6 +108,73 @@ describe("enrollment install preset", () => {
     expect(buildAx3000tPasswallMirrorUrl("https://api.vectra-pro.net/artifacts")).toBe(
       `https://api.vectra-pro.net/artifacts/bootstrap/passwall2/${DEFAULT_PASSWALL2_RELEASE_TAG}/${ax3000tEnrollmentPreset.architecture}/`,
     );
+  });
+
+  it("exposes a generic Filogic surface that mirrors AX3000T output on parallel /install/filogic-* paths", () => {
+    expect(FILOGIC_BASELINE_PATH).toBe("/api/install/filogic-passwall2-baseline.uci");
+    expect(FILOGIC_BOOTSTRAP_PATH).toBe("/install/filogic-bootstrap.sh");
+    expect(FILOGIC_SHUNT_REBIND_PATH).toBe("/install/filogic-myshunt-rebind.sh");
+
+    expect(FILOGIC_BASELINE_PATH).not.toBe(AX3000T_BASELINE_PATH);
+    expect(FILOGIC_BOOTSTRAP_PATH).not.toBe(AX3000T_BOOTSTRAP_PATH);
+    expect(FILOGIC_SHUNT_REBIND_PATH).not.toBe(AX3000T_SHUNT_REBIND_PATH);
+
+    expect(filogicEnrollmentPreset).toBe(ax3000tEnrollmentPreset);
+
+    expect(buildFilogicBaselineUrl("https://router.vectra-pro.net")).toBe(
+      `https://router.vectra-pro.net${FILOGIC_BASELINE_PATH}`,
+    );
+    expect(buildFilogicBootstrapScriptUrl("https://router.vectra-pro.net")).toBe(
+      `https://router.vectra-pro.net${FILOGIC_BOOTSTRAP_PATH}`,
+    );
+    expect(
+      buildFilogicShuntRebindScriptUrl("https://router.vectra-pro.net"),
+    ).toBe(`https://router.vectra-pro.net${FILOGIC_SHUNT_REBIND_PATH}`);
+
+    expect(buildFilogicFeedUrl("https://api.vectra-pro.net/artifacts")).toBe(
+      buildAx3000tFeedUrl("https://api.vectra-pro.net/artifacts"),
+    );
+    expect(
+      buildFilogicPasswallMirrorUrl("https://api.vectra-pro.net/artifacts"),
+    ).toBe(
+      buildAx3000tPasswallMirrorUrl("https://api.vectra-pro.net/artifacts"),
+    );
+
+    const controlDomain = "https://router.vectra-pro.net";
+    const filogicCommand = buildFilogicBootstrapCommand(controlDomain);
+    expect(filogicCommand).toContain(
+      `https://router.vectra-pro.net${FILOGIC_BOOTSTRAP_PATH}`,
+    );
+    expect(filogicCommand).toContain("/tmp/vectra-filogic-bootstrap.sh");
+    expect(filogicCommand).not.toContain("vectra-ax3000t-bootstrap.sh");
+
+    const filogicShuntCommand = buildFilogicShuntRebindCommand(controlDomain);
+    expect(filogicShuntCommand).toContain(
+      `https://router.vectra-pro.net${FILOGIC_SHUNT_REBIND_PATH}`,
+    );
+    expect(filogicShuntCommand).toContain(
+      "/tmp/vectra-filogic-myshunt-rebind.sh",
+    );
+
+    const generatedScript = buildFilogicBootstrapScript({
+      controlDomain,
+      routerApiBase: "https://api.vectra-pro.net",
+      artifactBase: "https://api.vectra-pro.net/artifacts",
+    });
+    const ax3000tScript = buildAx3000tBootstrapScript({
+      controlDomain,
+      routerApiBase: "https://api.vectra-pro.net",
+      artifactBase: "https://api.vectra-pro.net/artifacts",
+    });
+    expect(generatedScript).toBe(ax3000tScript);
+
+    const generatedRebindScript = buildFilogicShuntRebindScript({
+      controlDomain,
+    });
+    const ax3000tRebindScript = buildAx3000tShuntRebindScript({
+      controlDomain,
+    });
+    expect(generatedRebindScript).toBe(ax3000tRebindScript);
   });
 
   it("renders a bootstrap command and script aligned to the live control-plane URLs", () => {
