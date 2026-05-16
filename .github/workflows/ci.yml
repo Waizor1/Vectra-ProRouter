@@ -12,11 +12,12 @@ concurrency:
 
 jobs:
   web:
-    name: web (typecheck + install-presets vitest)
+    name: web (typecheck + full vitest)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       SKIP_ENV_VALIDATION: "1"
+      VECTRA_SECRETS_KEY: ci-only-non-production-key-do-not-use-in-prod
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -28,7 +29,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @vectra/web typecheck
-      - run: pnpm --filter @vectra/web test --run install-presets
+      - run: pnpm --filter @vectra/web test --run
 
   controller-agent:
     name: controller-agent (go test)
