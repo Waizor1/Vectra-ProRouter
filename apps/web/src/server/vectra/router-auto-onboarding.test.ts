@@ -87,6 +87,7 @@ function snapshot(
       deviceIdentifier: "router-auto-onboarding-1",
       devicePublicKey: "public-key",
       controllerVersion: "0.1.13-r23",
+      controllerRuntimeVersion: "0.1.13-r23",
       hostname: "openwrt",
       model: "Xiaomi AX3000T",
       boardName: "xiaomi,mi-router-ax3000t",
@@ -258,6 +259,29 @@ describe("router auto-onboarding planner", () => {
     });
   });
 
+  it("requires retry instead of advance for blocked and failed runs", () => {
+    expect(
+      planNextOnboardingAction(
+        context({
+          run: run({ status: "blocked", state: "verify_runtime" }),
+        }),
+      ),
+    ).toMatchObject({
+      action: "skip",
+      reason: "onboarding run is blocked",
+    });
+    expect(
+      planNextOnboardingAction(
+        context({
+          run: run({ status: "failed", state: "verify_runtime" }),
+        }),
+      ),
+    ).toMatchObject({
+      action: "skip",
+      reason: "onboarding run is failed",
+    });
+  });
+
   it("waits for offline routers without queueing work", () => {
     const plan = planNextOnboardingAction(
       context({ router: router({ lastSeenAt: stale }) }),
@@ -361,7 +385,8 @@ describe("router auto-onboarding planner", () => {
         context({
           run: run({ state: "ensure_runtime" }),
           latestSnapshot: snapshot({
-            controllerVersion: "0.1.13-r22",
+            controllerVersion: "0.1.13-r23",
+            controllerRuntimeVersion: "0.1.13-r22",
             packageVersions: {
               "luci-app-passwall2": "26.5.1-r1",
               "xray-core": "26.4.25-r1",
@@ -375,7 +400,33 @@ describe("router auto-onboarding planner", () => {
       action: "block",
       nextState: "ensure_runtime",
       reason:
-        "controller 0.1.13-r22 does not support ensure_passwall_runtime; update vectra-controller-agent/LuCI to 0.1.13-r23+ before retrying",
+        "controller runtime 0.1.13-r22 does not support ensure_passwall_runtime; wait for a restarted vectra-controller-agent 0.1.13-r23+ check-in before retrying",
+    });
+  });
+
+  it("does not trust installed controller metadata without a runtime version signal", () => {
+    expect(
+      planNextOnboardingAction(
+        context({
+          run: run({ state: "ensure_runtime" }),
+          latestSnapshot: snapshot({
+            controllerVersion: "0.1.13-r23",
+            controllerRuntimeVersion: undefined,
+            packageVersions: {
+              "vectra-controller-agent": "0.1.13-r23",
+              "luci-app-passwall2": "26.5.1-r1",
+              "xray-core": "26.4.25-r1",
+            },
+            binaryVersions: { xray: "26.4.25" },
+            rulesAssets: {},
+          }),
+        }),
+      ),
+    ).toMatchObject({
+      action: "block",
+      nextState: "ensure_runtime",
+      reason:
+        "controller runtime unknown does not support ensure_passwall_runtime; wait for a restarted vectra-controller-agent 0.1.13-r23+ check-in before retrying",
     });
   });
 
@@ -511,6 +562,41 @@ describe("router auto-onboarding planner", () => {
     });
   });
 
+  it("treats route-smoke as services-only for non-standard baselines", () => {
+    expect(
+      planNextOnboardingAction(
+        context({
+          profile: profile({
+            baseline: "subscription-only",
+            verifyPolicy: "route-smoke",
+          }),
+          run: run({ state: "verify_runtime" }),
+          activeConfig: standardRouteConfig(),
+        }),
+      ),
+    ).toMatchObject({
+      action: "request_import",
+      nextState: "final_reimport",
+      reason: "runtime services are green; requesting final live import",
+    });
+    expect(
+      planNextOnboardingAction(
+        context({
+          profile: profile({
+            baseline: "hh-exempt",
+            verifyPolicy: "route-smoke",
+          }),
+          run: run({ state: "verify_runtime" }),
+          activeConfig: standardRouteConfig(),
+        }),
+      ),
+    ).toMatchObject({
+      action: "request_import",
+      nextState: "final_reimport",
+      reason: "runtime services are green; requesting final live import",
+    });
+  });
+
   it("blocks typed route-smoke verification on older controller agents", () => {
     expect(
       planNextOnboardingAction(
@@ -518,7 +604,8 @@ describe("router auto-onboarding planner", () => {
           run: run({ state: "verify_runtime" }),
           activeConfig: standardRouteConfig(),
           latestSnapshot: snapshot({
-            controllerVersion: "0.1.13-r22",
+            controllerVersion: "0.1.13-r23",
+            controllerRuntimeVersion: "0.1.13-r22",
           }),
         }),
       ),
@@ -526,7 +613,7 @@ describe("router auto-onboarding planner", () => {
       action: "block",
       nextState: "verify_runtime",
       reason:
-        "controller 0.1.13-r22 does not support verify_passwall_routes; update vectra-controller-agent/LuCI to 0.1.13-r23+ before retrying",
+        "controller runtime 0.1.13-r22 does not support verify_passwall_routes; wait for a restarted vectra-controller-agent 0.1.13-r23+ check-in before retrying",
     });
   });
 
@@ -621,13 +708,13 @@ describe("router auto-onboarding planner", () => {
 });
 
 describe("router auto-onboarding job queueing", () => {
-  it("reuses terminal jobs with the same attempt dedupe key instead of inserting a duplicate", async () => {
+  it("reuses legacy terminal jobs by onboarding payload when the dedupe key is already cleared", async () => {
     const terminalJob = {
       id: "job-refresh-1",
       type: "refresh_subscriptions",
       state: "succeeded",
-      dedupeKey: `${onboardingAttemptDedupePrefix("run-1", 2)}refresh_subscriptions`,
-      payload: { onboardingRunId: "run-1" },
+      dedupeKey: null,
+      payload: { onboardingRunId: "run-1", onboardingAttempt: 2 },
       desiredRevisionId: null,
     };
     const mock = createOnboardingDbMock({
@@ -652,15 +739,11 @@ describe("router auto-onboarding job queueing", () => {
       ],
     });
 
-    const result = await advanceRouterOnboardingWithDb(
-      mock.db,
-      router().id,
-      {
-        featureEnabled: true,
-        now,
-        maxSteps: 1,
-      },
-    );
+    const result = await advanceRouterOnboardingWithDb(mock.db, router().id, {
+      featureEnabled: true,
+      now,
+      maxSteps: 1,
+    });
 
     expect(result).toMatchObject({
       action: "queue_refresh_subscriptions",
@@ -678,13 +761,13 @@ describe("router auto-onboarding job queueing", () => {
     });
   });
 
-  it("refetches the dedupe job after an insert conflict race", async () => {
+  it("refetches legacy onboarding jobs by payload when an insert conflict finds no dedupe key", async () => {
     const terminalJob = {
       id: "job-refresh-race",
       type: "refresh_subscriptions",
       state: "succeeded",
-      dedupeKey: `${onboardingAttemptDedupePrefix("run-1", 3)}refresh_subscriptions`,
-      payload: { onboardingRunId: "run-1" },
+      dedupeKey: null,
+      payload: { onboardingRunId: "run-1", onboardingAttempt: 3 },
       desiredRevisionId: null,
     };
     const mock = createOnboardingDbMock({
@@ -711,15 +794,11 @@ describe("router auto-onboarding job queueing", () => {
       jobInsertRows: [],
     });
 
-    const result = await advanceRouterOnboardingWithDb(
-      mock.db,
-      router().id,
-      {
-        featureEnabled: true,
-        now,
-        maxSteps: 1,
-      },
-    );
+    const result = await advanceRouterOnboardingWithDb(mock.db, router().id, {
+      featureEnabled: true,
+      now,
+      maxSteps: 1,
+    });
 
     expect(result).toMatchObject({
       action: "queue_refresh_subscriptions",
@@ -734,6 +813,57 @@ describe("router auto-onboarding job queueing", () => {
         lastJobId: terminalJob.id,
         status: "waiting",
       },
+    });
+  });
+
+  it("does not reuse previous-attempt terminal jobs after retry increments the attempt", async () => {
+    const currentAttemptJob = {
+      id: "job-refresh-new-attempt",
+      type: "refresh_subscriptions",
+      state: "queued",
+      dedupeKey: "onboarding:run-1:attempt:2:refresh_subscriptions",
+      payload: { onboardingRunId: "run-1", onboardingAttempt: 2 },
+      desiredRevisionId: null,
+    };
+    const mock = createOnboardingDbMock({
+      selectResponses: [
+        [router({ activeRevisionId: null })],
+        [profile()],
+        [run({ state: "refresh_subscription", attempt: 2 })],
+        [snapshot()],
+        [],
+        [],
+        [],
+      ],
+      updateResponses: [
+        [
+          run({
+            state: "refresh_subscription",
+            status: "waiting",
+            attempt: 2,
+            lastJobId: currentAttemptJob.id,
+          }),
+        ],
+      ],
+      jobInsertRows: [currentAttemptJob],
+    });
+
+    const result = await advanceRouterOnboardingWithDb(mock.db, router().id, {
+      featureEnabled: true,
+      now,
+      maxSteps: 1,
+    });
+
+    expect(result).toMatchObject({
+      action: "queue_refresh_subscriptions",
+      status: "waiting",
+      jobId: currentAttemptJob.id,
+    });
+    const [insertedJob] = mock.insertedValues.filter(
+      (value) => value.table === "jobs",
+    );
+    expect(insertedJob?.value).toMatchObject({
+      payload: { onboardingRunId: "run-1", onboardingAttempt: 2 },
     });
   });
 });

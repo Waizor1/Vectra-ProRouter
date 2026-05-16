@@ -79,6 +79,14 @@ func TestClassifyEnsurePasswallRuntimeAsStorageJob(t *testing.T) {
 	}
 }
 
+func TestClassifyOptimizationBaselineAsDiagnosticJob(t *testing.T) {
+	job := controlplane.Job{ID: "job-optimization-baseline", Type: "collect_optimization_baseline"}
+
+	if got := classifyJobSafety(job, nil); got != jobSafetyClassDiagnostic {
+		t.Fatalf("collect_optimization_baseline class = %q, want diagnostic", got)
+	}
+}
+
 func TestEvaluateJobSafetyBlocksStorageJobWhenSpaceUnknown(t *testing.T) {
 	decision := evaluateJobSafety(
 		controlplane.Job{ID: "job-1", Type: "update_passwall_packages"},
@@ -160,43 +168,60 @@ func TestEvaluateJobSafetyWithResourceCollectorSkipsUnguardedJob(t *testing.T) {
 }
 
 func TestEvaluateJobSafetyUsesControllerOverlayFloorForTerminalSelfUpdate(t *testing.T) {
-	job := controlplane.Job{
-		ID:   "job-1",
-		Type: "run_terminal_command",
-		Payload: map[string]interface{}{
-			"purpose": controllerSelfUpdateTerminalPurpose,
+	selfUpdateJobs := []controlplane.Job{
+		{
+			ID:   "job-controller-self-update",
+			Type: "run_terminal_command",
+			Payload: map[string]interface{}{
+				"purpose": controllerSelfUpdateTerminalPurpose,
+			},
+		},
+		{
+			ID:   "job-controller-self-update-compat",
+			Type: "run_terminal_command",
+			Payload: map[string]interface{}{
+				"purpose": controllerSelfUpdateCompatTerminalPurpose,
+			},
 		},
 	}
 
-	allowed := evaluateJobSafety(
-		job,
-		nil,
-		controlplane.RouterResources{
-			MemoryAvailableMB: 96,
-			OverlayFreeMB:     12,
-			TMPFreeMB:         64,
-		},
-		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
-	)
-	if allowed.Blocked {
-		t.Fatalf("expected terminal controller self-update to use controller overlay floor, got %#v", allowed)
-	}
+	for _, job := range selfUpdateJobs {
+		t.Run(payloadString(job.Payload, "purpose"), func(t *testing.T) {
+			if got := classifyJobSafety(job, nil); got != jobSafetyClassStorage {
+				t.Fatalf("terminal controller self-update class = %q, want storage", got)
+			}
 
-	blocked := evaluateJobSafety(
-		job,
-		nil,
-		controlplane.RouterResources{
-			MemoryAvailableMB: 96,
-			OverlayFreeMB:     7,
-			TMPFreeMB:         64,
-		},
-		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
-	)
-	if !blocked.Blocked {
-		t.Fatalf("expected terminal controller self-update below controller overlay floor to be blocked")
-	}
-	if !strings.Contains(strings.Join(blocked.Reasons, "; "), "/overlay free 7 MB is below 8 MB floor") {
-		t.Fatalf("expected controller overlay floor reason, got %#v", blocked.Reasons)
+			allowed := evaluateJobSafety(
+				job,
+				nil,
+				controlplane.RouterResources{
+					MemoryAvailableMB: 96,
+					OverlayFreeMB:     12,
+					TMPFreeMB:         64,
+				},
+				time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+			)
+			if allowed.Blocked {
+				t.Fatalf("expected terminal controller self-update to use controller overlay floor, got %#v", allowed)
+			}
+
+			blocked := evaluateJobSafety(
+				job,
+				nil,
+				controlplane.RouterResources{
+					MemoryAvailableMB: 96,
+					OverlayFreeMB:     7,
+					TMPFreeMB:         64,
+				},
+				time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+			)
+			if !blocked.Blocked {
+				t.Fatalf("expected terminal controller self-update below controller overlay floor to be blocked")
+			}
+			if !strings.Contains(strings.Join(blocked.Reasons, "; "), "/overlay free 7 MB is below 8 MB floor") {
+				t.Fatalf("expected controller overlay floor reason, got %#v", blocked.Reasons)
+			}
+		})
 	}
 }
 

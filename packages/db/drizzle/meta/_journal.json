@@ -85,6 +85,13 @@
       "when": 1778786414000,
       "tag": "0011_ensure_passwall_runtime_job",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1778790900000,
+      "tag": "0012_collect_optimization_baseline_job",
+      "breakpoints": true
     }
   ]
 }

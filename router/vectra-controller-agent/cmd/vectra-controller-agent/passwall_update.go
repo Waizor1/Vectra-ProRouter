@@ -9,7 +9,6 @@ import (
 
 	"vectra-controller-agent/internal/config"
 	"vectra-controller-agent/internal/controlplane"
-	"vectra-controller-agent/internal/inventory"
 	"vectra-controller-agent/internal/passwall"
 	"vectra-controller-agent/internal/state"
 )
@@ -82,7 +81,7 @@ func runPasswallPackageUpdateJob(
 	job artifactJob,
 ) error {
 	orderedPackages := sortPasswallPackages(job.PackageList)
-	currentInventory := inventory.NewCollector().Collect(controlplane.RouterInventory{
+	currentInventory := collectInventoryWithRuntimeVersion(controlplane.RouterInventory{
 		PackageVersions: map[string]string{},
 		BinaryVersions:  map[string]string{},
 	})
@@ -317,7 +316,7 @@ func updateSinglePasswallPackage(
 		commandResults = append(commandResults, packagePathResults...)
 		lastError = installErr
 		if installErr == nil {
-			nextInventory := inventory.NewCollector().Collect(controlplane.RouterInventory{
+			nextInventory := collectInventoryWithRuntimeVersion(controlplane.RouterInventory{
 				PackageVersions: map[string]string{},
 				BinaryVersions:  map[string]string{},
 			})
@@ -353,7 +352,7 @@ func updateSinglePasswallPackage(
 	}
 
 	if job.FallbackPolicy == "package-only" || !passwallRuntimeOnlyPackages[packageName] {
-		nextInventory := inventory.NewCollector().Collect(controlplane.RouterInventory{
+		nextInventory := collectInventoryWithRuntimeVersion(controlplane.RouterInventory{
 			PackageVersions: map[string]string{},
 			BinaryVersions:  map[string]string{},
 		})
@@ -427,7 +426,7 @@ func updateSinglePasswallPackage(
 		currentInventory = nextInventory
 	}
 
-	nextInventory = inventory.NewCollector().Collect(controlplane.RouterInventory{
+	nextInventory = collectInventoryWithRuntimeVersion(controlplane.RouterInventory{
 		PackageVersions: map[string]string{},
 		BinaryVersions:  map[string]string{},
 	})
@@ -545,7 +544,7 @@ LUA`
 		return []passwall.CommandResult{result}, false, err, currentInventory
 	}
 
-	nextInventory := inventory.NewCollector().Collect(controlplane.RouterInventory{
+	nextInventory := collectInventoryWithRuntimeVersion(controlplane.RouterInventory{
 		PackageVersions: map[string]string{},
 		BinaryVersions:  map[string]string{},
 	})
@@ -621,7 +620,7 @@ chmod 0755 /usr/bin/xray || true`
 		return []passwall.CommandResult{result}, false, commandErr, currentInventory
 	}
 
-	nextInventory := inventory.NewCollector().Collect(controlplane.RouterInventory{
+	nextInventory := collectInventoryWithRuntimeVersion(controlplane.RouterInventory{
 		PackageVersions: map[string]string{},
 		BinaryVersions:  map[string]string{},
 	})

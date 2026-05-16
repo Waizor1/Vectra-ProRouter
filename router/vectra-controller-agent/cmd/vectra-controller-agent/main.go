@@ -51,6 +51,7 @@ var defaultPasswallPackageList = []string{
 var passwallRuleRefreshAssets = []string{"geoip", "geosite"}
 
 const controllerSelfUpdateTerminalPurpose = "controller-self-update"
+const controllerSelfUpdateCompatTerminalPurpose = "controller-self-update-compat"
 const routerHostnameUpdateTerminalPurpose = "router-hostname-update"
 
 const passwallPostInstallRecoveryCommand = "/etc/init.d/passwall2 running >/dev/null 2>&1 && /etc/init.d/passwall2 restart || /etc/init.d/passwall2 start"
@@ -138,7 +139,7 @@ func runOnce(
 	persisted *state.PersistedState,
 ) error {
 	persistedBefore := *persisted
-	collectedInventory := inventory.NewCollector().Collect(cfg.Inventory)
+	collectedInventory := collectInventoryWithRuntimeVersion(cfg.Inventory)
 	collectedInventory.ProtocolVersion = controlplane.ProtocolVersion
 	collectedInventory.PanelDomain = cfg.PanelURL
 	if collectedInventory.PanelDomain == "" {
@@ -193,7 +194,7 @@ func runOnce(
 		}
 	}
 	if transitioned {
-		collectedInventory = inventory.NewCollector().Collect(collectedInventory)
+		collectedInventory = collectInventoryWithRuntimeVersion(collectedInventory)
 		collectedInventory.ProtocolVersion = controlplane.ProtocolVersion
 		collectedInventory.PanelDomain = cfg.PanelURL
 		if collectedInventory.PanelDomain == "" {
@@ -223,7 +224,7 @@ func runOnce(
 		return fmt.Errorf("advance control plane recovery: %w", recoveryErr)
 	}
 	if recoveryOutcome.InventoryChanged {
-		collectedInventory = inventory.NewCollector().Collect(collectedInventory)
+		collectedInventory = collectInventoryWithRuntimeVersion(collectedInventory)
 		collectedInventory.ProtocolVersion = controlplane.ProtocolVersion
 		collectedInventory.PanelDomain = cfg.PanelURL
 		if collectedInventory.PanelDomain == "" {
@@ -428,7 +429,7 @@ func runOnce(
 		return err
 	}
 	if len(checkInResponse.Jobs) > 0 {
-		collectedInventory = inventory.NewCollector().Collect(collectedInventory)
+		collectedInventory = collectInventoryWithRuntimeVersion(collectedInventory)
 		collectedInventory.ProtocolVersion = controlplane.ProtocolVersion
 		collectedInventory.PanelDomain = cfg.PanelURL
 		if collectedInventory.PanelDomain == "" {
@@ -529,6 +530,8 @@ func persistCurrentJob(
 			"luci-app-vectra-controller",
 		})
 		current.ExpectedControllerVersion = artifactJob.ArtifactVersion
+	} else if job.Type == "run_terminal_command" && isControllerSelfUpdateTerminalPayload(job.Payload) {
+		current.ExpectedControllerVersion = payloadString(job.Payload, "artifactVersion")
 	}
 
 	persisted.CurrentJob = current
@@ -578,25 +581,28 @@ func flushPendingJobResult(
 		request.RouterID = cfg.RouterID
 	}
 
-	if persisted.CurrentJob.JobType == "update_controller" &&
+	if requiresControllerRuntimeConfirmation(persisted.CurrentJob) &&
 		request.Status == "success" &&
 		persisted.CurrentJob.ExpectedControllerVersion != "" {
-		if inventory.ControllerVersion == "" {
+		if inventory.ControllerRuntimeVersion == "" {
 			return fmt.Errorf(
-				"controller restart confirmation pending: runtime controller version unavailable",
+				"controller restart confirmation pending: running controller runtime version unavailable",
 			)
 		}
-		if inventory.ControllerVersion != persisted.CurrentJob.ExpectedControllerVersion {
+		if inventory.ControllerRuntimeVersion != persisted.CurrentJob.ExpectedControllerVersion {
 			return fmt.Errorf(
-				"controller restart confirmation pending: got %s want %s",
-				inventory.ControllerVersion,
+				"controller restart confirmation pending: running runtime got %s want %s",
+				inventory.ControllerRuntimeVersion,
 				persisted.CurrentJob.ExpectedControllerVersion,
 			)
 		}
 		if request.Result == nil {
 			request.Result = map[string]interface{}{}
 		}
-		request.Result["confirmedControllerVersion"] = inventory.ControllerVersion
+		request.Result["confirmedControllerRuntimeVersion"] = inventory.ControllerRuntimeVersion
+		if inventory.ControllerVersion != "" {
+			request.Result["confirmedControllerVersion"] = inventory.ControllerVersion
+		}
 	}
 
 	if _, err := client.SubmitJobResult(ctx, request); err != nil {
@@ -832,7 +838,7 @@ func executeJobs(
 				job.Payload,
 				collectedInventory,
 			)
-			postInventory := inventory.NewCollector().Collect(collectedInventory)
+			postInventory := collectInventoryWithRuntimeVersion(collectedInventory)
 			resultPayload = enrichEnsureRuntimeResultPayload(resultPayload, postInventory)
 			stdout, stderr := collectCommandOutputs(commandResults)
 			if err != nil {
@@ -1073,6 +1079,25 @@ func executeJobs(
 				Result:          resultPayload,
 			}, controlplane.RouterInventory{}); err != nil {
 				return fmt.Errorf("submit collect router logs result: %w", err)
+			}
+		case "collect_optimization_baseline":
+			baselineRequest := parseCollectOptimizationBaselineJob(job.Payload)
+			resultPayload, postInventory, stdout, stderr := runOptimizationBaselineJob(
+				ctx,
+				backend,
+				baselineRequest,
+				collectedInventory,
+			)
+			if err := submitJobResultNow(ctx, cfg, client, persisted, controlplane.JobResultRequest{
+				ProtocolVersion: controlplane.ProtocolVersion,
+				RouterID:        cfg.RouterID,
+				JobID:           job.ID,
+				Status:          "success",
+				Stdout:          stdout,
+				Stderr:          stderr,
+				Result:          resultPayload,
+			}, postInventory); err != nil {
+				return fmt.Errorf("submit collect optimization baseline result: %w", err)
 			}
 		case "run_terminal_command":
 			terminalRequest := parseRunTerminalCommandJob(job.Payload)
@@ -1820,7 +1845,18 @@ func shouldResumeProxyAfterTerminalSuccess(
 		return false
 	}
 
-	return strings.TrimSpace(payloadString(payload, "purpose")) == controllerSelfUpdateTerminalPurpose
+	return isControllerSelfUpdateTerminalPayload(payload)
+}
+
+func isControllerSelfUpdateTerminalPayload(payload map[string]interface{}) bool {
+	purpose := strings.TrimSpace(payloadString(payload, "purpose"))
+	return purpose == controllerSelfUpdateTerminalPurpose ||
+		purpose == controllerSelfUpdateCompatTerminalPurpose
+}
+
+func requiresControllerRuntimeConfirmation(job state.CurrentJob) bool {
+	return job.ExpectedControllerVersion != "" &&
+		(job.JobType == "update_controller" || job.JobType == "run_terminal_command")
 }
 
 func payloadStringSlice(payload map[string]interface{}, key string) []string {

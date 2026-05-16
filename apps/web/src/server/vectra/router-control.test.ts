@@ -4,6 +4,7 @@ import {
   buildSyntheticRecoveryTransitions,
   canIssueRegistrationToken,
   isControlPlaneRecoveryIncident,
+  resolveJobDedupeKeyAfterResult,
   resolveReportedRouterHostname,
   resolveRescueReason,
   selectDeliverableJobsForCheckIn,
@@ -143,6 +144,35 @@ describe("resolveReportedRouterHostname", () => {
         },
       }),
     ).toBeNull();
+  });
+});
+
+describe("resolveJobDedupeKeyAfterResult", () => {
+  it("keeps onboarding dedupe keys after terminal completion", () => {
+    expect(
+      resolveJobDedupeKeyAfterResult({
+        currentDedupeKey: "onboarding:run-1:attempt:2:refresh_subscriptions",
+        resultStatus: "success",
+      }),
+    ).toBe("onboarding:run-1:attempt:2:refresh_subscriptions");
+  });
+
+  it("still clears non-onboarding dedupe keys after terminal completion", () => {
+    expect(
+      resolveJobDedupeKeyAfterResult({
+        currentDedupeKey: "optimization-baseline:router-1",
+        resultStatus: "success",
+      }),
+    ).toBeNull();
+  });
+
+  it("retains any dedupe key when the router only accepted the job", () => {
+    expect(
+      resolveJobDedupeKeyAfterResult({
+        currentDedupeKey: "apply:router-1:revision-1",
+        resultStatus: "accepted",
+      }),
+    ).toBe("apply:router-1:revision-1");
   });
 });
 

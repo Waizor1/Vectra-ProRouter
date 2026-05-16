@@ -313,7 +313,7 @@ build_agent_package_manually() {
 		CGO_ENABLED=0 \
 		GOOS=linux \
 		GOARCH="$go_arch" \
-			go build -trimpath -ldflags="-s -w" \
+			go build -trimpath -ldflags="-s -w -X main.controllerAgentRuntimeVersion=${package_version}" \
 				-o "$data_dir/usr/sbin/vectra-controller-agent" \
 				./cmd/vectra-controller-agent
 	)

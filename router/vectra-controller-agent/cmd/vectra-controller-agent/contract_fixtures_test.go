@@ -132,6 +132,16 @@ func validateFixtureJob(job controlplane.Job) error {
 		if lines := payloadInt(job.Payload, "lines", 0); lines < 50 {
 			return errFixture("log collection fixture must request at least 50 lines")
 		}
+	case "collect_optimization_baseline":
+		source := payloadString(job.Payload, "logSource")
+		switch source {
+		case "", "all", "controller", "passwall", "dnsmasq", "system":
+		default:
+			return errFixture("optimization baseline fixture must use a known log source")
+		}
+		if lines := payloadInt(job.Payload, "logLines", 0); lines < 50 {
+			return errFixture("optimization baseline fixture must request at least 50 log lines")
+		}
 	case "run_terminal_command":
 		if payloadString(job.Payload, "command") == "" {
 			return errFixture("terminal command fixture must include a command")
@@ -261,6 +271,7 @@ func knownJobType(value string) bool {
 		"inspect_subscriptions",
 		"refresh_rules",
 		"collect_router_logs",
+		"collect_optimization_baseline",
 		"run_terminal_command",
 		"run_rescue_repair",
 		"update_controller",
