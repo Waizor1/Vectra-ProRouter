@@ -3,11 +3,22 @@ import { notFound, redirect } from "next/navigation";
 import { TRPCError } from "@trpc/server";
 
 import { RouterDetailWorkspace } from "~/components/router-detail-workspace";
+import { RouterDetailV2 } from "~/features/router-detail";
+import { isUiV2 } from "~/lib/feature-flag";
 import {
   hasActiveDirectMode,
   isRouterReachable,
 } from "~/server/vectra/router-presence";
 import { api } from "~/trpc/server";
+
+function firstParam(
+  value: string | string[] | undefined,
+): string | undefined {
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  return value;
+}
 
 export default async function RouterDetailPage({
   params,
@@ -31,15 +42,16 @@ export default async function RouterDetailPage({
     );
   }
 
-  const surface = await api.draft
-    .editorSurface({ routerId })
-    .catch((error: unknown) => {
+  const [surface, v2] = await Promise.all([
+    api.draft.editorSurface({ routerId }).catch((error: unknown) => {
       if (error instanceof TRPCError && error.code === "NOT_FOUND") {
         notFound();
       }
 
       throw error;
-    });
+    }),
+    isUiV2(),
+  ]);
 
   const routerReachable = isRouterReachable(
     surface.routerRuntimeSummary.lastSeenAt,
@@ -58,6 +70,21 @@ export default async function RouterDetailPage({
     surface.routerRuntimeSummary.status === "direct" ||
     surface.routerRuntimeSummary.passwallEnabled === false ||
     Boolean(surface.routerRuntimeSummary.lastRescueReason);
+
+  const uiOverride = firstParam(resolvedSearchParams.ui);
+  if (v2 && uiOverride !== "v1") {
+    return (
+      <section>
+        <RouterDetailV2
+          routerId={surface.routerRuntimeSummary.id}
+          initialSurface={surface}
+          routerReachable={routerReachable}
+          directModeActive={directModeActive}
+          needsRecoveryAction={needsRecoveryAction}
+        />
+      </section>
+    );
+  }
 
   return (
     <section>
