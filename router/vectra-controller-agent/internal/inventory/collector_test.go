@@ -576,3 +576,28 @@ func TestPasswallInventoryPackagesIncludesTcping(t *testing.T) {
 		t.Fatalf("passwallInventoryPackages = %#v, want tcping to be tracked", passwallInventoryPackages)
 	}
 }
+
+func TestDetectLayoutFamilyClassifiesUbootmod(t *testing.T) {
+	if got, want := detectLayoutFamily("xiaomi,mi-router-ax3000t-ubootmod"), "ubootmod"; got != want {
+		t.Fatalf("ubootmod board detected as %q, want %q", got, want)
+	}
+}
+
+func TestDetectLayoutFamilyKeepsAx3000tStockFallback(t *testing.T) {
+	// Existing behaviour: AX3000T always reports stock-layout, even when
+	// /proc/cmdline is absent (e.g. running tests off-device).
+	if got, want := detectLayoutFamily("xiaomi,mi-router-ax3000t"), "stock-layout"; got != want {
+		t.Fatalf("AX3000T board detected as %q, want %q", got, want)
+	}
+}
+
+func TestDetectLayoutFamilyLeavesUnknownBoardsEmptyOffDevice(t *testing.T) {
+	// Off-device, /proc/cmdline does not contain `firmware=`, so an
+	// unknown Filogic-class board name should fall through to the empty
+	// string. Once the agent runs on a Cudy WR3000H rev2 / GL.iNet MT3000
+	// etc. with a real OpenWrt cmdline, the same call will return
+	// "stock-layout" via the cmdline branch.
+	if got, want := detectLayoutFamily("cudy,wr3000h-v2"), ""; got != want {
+		t.Fatalf("unknown Filogic board detected as %q off-device, want %q", got, want)
+	}
+}
