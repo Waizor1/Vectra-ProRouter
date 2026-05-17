@@ -1,0 +1,95 @@
+#!/bin/sh
+# One-shot setup for the Vectra low-RAM profile. Runs at package install (the
+# controller's postinst invokes uci-defaults, and procd also runs them on first
+# boot if the marker file is absent). Idempotent — safe to re-run on upgrade.
+#
+# Decision: auto-enable the profile on devices where MemTotal < 384 MB, unless
+# the operator forced it on/off via:
+#   uci set vectra-controller.main.low_mem_profile=force|off  (auto by default)
+
+set -u
+
+LOG_TAG="vectra-low-mem-profile"
+SYSCTL_FILE="/etc/sysctl.d/99-vectra-lowmem.conf"
+GUARD_INIT="/etc/init.d/vectra-oom-guard"
+XRAY_WRAPPER="/usr/sbin/vectra-xray-wrapper"
+DEFAULT_XRAY_BIN="/usr/bin/xray"
+
+log() {
+	logger -t "$LOG_TAG" "$1"
+}
+
+# Resolve operator override. Values: "auto" (default), "force", "off".
+mode="$(uci -q get vectra-controller.main.low_mem_profile 2>/dev/null || echo auto)"
+case "$mode" in
+	force|off|auto) : ;;
+	*) mode="auto" ;;
+esac
+
+mem_total_kb="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0)"
+mem_total_mb=$(( mem_total_kb / 1024 ))
+
+decide_enable() {
+	case "$mode" in
+		force) echo 1; return ;;
+		off)   echo 0; return ;;
+	esac
+	if [ "$mem_total_mb" -gt 0 ] && [ "$mem_total_mb" -lt 384 ]; then
+		echo 1
+	else
+		echo 0
+	fi
+}
+
+enable=$(decide_enable)
+log "mode=$mode mem_total_mb=$mem_total_mb decision=enable=$enable"
+
+if [ "$enable" -eq 0 ]; then
+	# Profile disabled for this device. Stop guard if it was running and remove
+	# the active state hint. Sysctl file is left in place (it's harmless when
+	# nothing reads it; removing it would require a reboot to revert effects).
+	if [ -x "$GUARD_INIT" ]; then
+		"$GUARD_INIT" disable >/dev/null 2>&1 || true
+		"$GUARD_INIT" stop >/dev/null 2>&1 || true
+	fi
+	exit 0
+fi
+
+# --- enable path ---
+
+# 1) Apply sysctl tunings immediately. Procd's sysctl service also loads this
+# file on next boot, but we want the new values active right now.
+if [ -f "$SYSCTL_FILE" ]; then
+	if command -v sysctl >/dev/null 2>&1; then
+		sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || log "sysctl -p $SYSCTL_FILE failed"
+	fi
+fi
+
+# 2) Enable and start the OOM guard service. We accept errors but log them —
+# this script must not block other uci-defaults from running.
+if [ -x "$GUARD_INIT" ]; then
+	"$GUARD_INIT" enable >/dev/null 2>&1 || log "enable vectra-oom-guard failed"
+	if "$GUARD_INIT" running >/dev/null 2>&1; then
+		"$GUARD_INIT" restart >/dev/null 2>&1 || log "restart vectra-oom-guard failed"
+	else
+		"$GUARD_INIT" start >/dev/null 2>&1 || log "start vectra-oom-guard failed"
+	fi
+fi
+
+# 3) Point passwall2 at our xray wrapper, but ONLY if (a) passwall2 config
+# exists and (b) the current xray_file is the default /usr/bin/xray (we don't
+# overwrite operator customizations) and (c) the wrapper is present and
+# executable. If any condition fails, we leave passwall2 untouched.
+if [ -x "$XRAY_WRAPPER" ] && uci -q show passwall2.@global_app[0] >/dev/null 2>&1; then
+	current_xray="$(uci -q get passwall2.@global_app[0].xray_file || echo '')"
+	if [ -z "$current_xray" ] || [ "$current_xray" = "$DEFAULT_XRAY_BIN" ] || [ "$current_xray" = "xray" ]; then
+		uci -q set passwall2.@global_app[0].xray_file="$XRAY_WRAPPER"
+		uci -q commit passwall2 && log "set passwall2 xray_file=$XRAY_WRAPPER (was '$current_xray')"
+		# Deliberately do NOT restart passwall2 here. On install time it may be
+		# starting up concurrently, and on upgrade the operator may not want a
+		# proxy interruption from a uci-defaults script. The wrapper will be
+		# picked up on the next natural passwall2 restart.
+	fi
+fi
+
+exit 0

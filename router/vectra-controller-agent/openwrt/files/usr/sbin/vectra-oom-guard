@@ -1,0 +1,43 @@
+#!/bin/sh
+# vectra-oom-guard: shield critical processes from the OOM-killer on low-RAM
+# OpenWrt routers. Background: Go-runtime binaries like xray-core and the Vectra
+# controller agent reserve a large virtual address space (VmSize 1.2-1.4 GB)
+# even when their actual resident set is a few tens of MB. The Linux OOM heuristic
+# scores by VmSize+RSS, so on a 234 MB AX3000T those processes always look like
+# the fattest target and get killed first whenever a transient order=0 page
+# allocation fails. This daemon periodically writes /proc/<pid>/oom_score_adj
+# for the processes that must survive transient pressure, so the kernel picks
+# something less critical (or, ideally, never trips global_oom because sysctl
+# tunings raise the watermark).
+set -u
+
+# Make sure we ourselves are never the victim — we must survive in order to keep
+# re-applying after process restarts (passwall2 respawn, package upgrade, ...).
+echo -1000 > /proc/$$/oom_score_adj 2>/dev/null || true
+
+INTERVAL=${VECTRA_OOM_GUARD_INTERVAL:-15}
+
+# Each guard line is "<pgrep-pattern> <oom_score_adj>". Order matters only when
+# patterns overlap; we keep adjustments distinct per critical process so that if
+# OOM does fire it picks the least-critical of the protected set.
+guard() {
+	pattern="$1"
+	adj="$2"
+	for pid in $(pgrep -f "$pattern" 2>/dev/null); do
+		current=$(cat "/proc/$pid/oom_score_adj" 2>/dev/null || echo 0)
+		if [ "$current" != "$adj" ]; then
+			echo "$adj" > "/proc/$pid/oom_score_adj" 2>/dev/null \
+				&& logger -t vectra-oom-guard "pid=$pid pattern=$pattern adj=$adj"
+		fi
+	done
+}
+
+logger -t vectra-oom-guard "started interval=${INTERVAL}s guard_pid=$$"
+
+while true; do
+	guard "vectra-controller-agent" -800
+	guard "/tmp/etc/passwall2/bin/xray run" -500
+	guard "/tmp/etc/passwall2/bin/chinadns-ng" -300
+	guard "/tmp/etc/passwall2/bin/dnsmasq_default" -200
+	sleep "$INTERVAL"
+done
