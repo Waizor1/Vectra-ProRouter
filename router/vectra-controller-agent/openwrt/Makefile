@@ -16,6 +16,7 @@ VECTRA_AGENT_SOURCE_DIR?=$(CURDIR)/..
 GO_PKG:=vectra-controller-agent
 GO_PKG_BUILD_PKG:=vectra-controller-agent/cmd/vectra-controller-agent
 GO_PKG_INSTALL_BIN_PATH:=/usr/sbin
+GO_PKG_LDFLAGS_X:=main.controllerAgentRuntimeVersion=$(PKG_VERSION)-r$(PKG_RELEASE)
 
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 include $(INCLUDE_DIR)/package.mk

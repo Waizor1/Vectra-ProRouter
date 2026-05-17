@@ -5,6 +5,13 @@ import { useEffect, useState } from "react";
 import { ActionStrip } from "~/components/action-strip";
 import { Panel } from "~/components/panel";
 import { StatusTile } from "~/components/status-tile";
+import {
+  buildOnboardingSaveProfileInput,
+  getOnboardingDoneBannerCopy,
+  normalizeOnboardingVerifyPolicyForBaseline,
+  shouldEnableOnboardingAdvance,
+  shouldEnableOnboardingRetry,
+} from "~/lib/router-onboarding-policy";
 import { api, type RouterOutputs } from "~/trpc/react";
 
 type RouterOnboardingPanelProps = {
@@ -153,8 +160,14 @@ export function RouterOnboardingPanel({
     setTargetHostname(profile?.targetHostname ?? defaultHostname);
     setDisplayName(profile?.displayName ?? defaultDisplayName);
     setSubscriptionRemark(profile?.subscriptionRemark ?? "StarMY");
-    setBaseline(profile?.baseline ?? "standard-non-hh");
-    setVerifyPolicy(profile?.verifyPolicy ?? "route-smoke");
+    const nextBaseline = profile?.baseline ?? "standard-non-hh";
+    setBaseline(nextBaseline);
+    setVerifyPolicy(
+      normalizeOnboardingVerifyPolicyForBaseline(
+        nextBaseline,
+        profile?.verifyPolicy ?? "route-smoke",
+      ),
+    );
     setNotes(profile?.notes ?? "");
   }, [
     defaultDisplayName,
@@ -201,19 +214,18 @@ export function RouterOnboardingPanel({
     advanceMutation.isPending ||
     retryMutation.isPending ||
     pauseMutation.isPending;
-  const canAdvance =
-    Boolean(profile?.enabled) &&
-    canRunJobs &&
-    !busy &&
-    run?.status !== "done" &&
-    run?.status !== "paused";
-  const canRetry =
-    Boolean(profile) &&
-    canRunJobs &&
-    !busy &&
-    (run?.status === "blocked" ||
-      run?.status === "failed" ||
-      run?.status === "paused");
+  const canAdvance = shouldEnableOnboardingAdvance({
+    profileEnabled: profile?.enabled,
+    canRunJobs,
+    busy,
+    runStatus: run?.status,
+  });
+  const canRetry = shouldEnableOnboardingRetry({
+    profilePresent: Boolean(profile),
+    canRunJobs,
+    busy,
+    runStatus: run?.status,
+  });
   const actionResult =
     advanceMutation.data?.reason ??
     retryMutation.data?.result?.reason ??
@@ -274,9 +286,7 @@ export function RouterOnboardingPanel({
 
         {run?.status === "done" ? (
           <p className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-sm leading-6 text-emerald-50">
-            Run завершён и не перезапускается автоматически. Сохранение
-            профиля меняет только сохранённые поля; для новой настройки нужен
-            новый run или ручной takeover.
+            {getOnboardingDoneBannerCopy()}
           </p>
         ) : null}
 
@@ -284,18 +294,19 @@ export function RouterOnboardingPanel({
           className="rounded-2xl border border-white/10 bg-[var(--vectra-panel-soft)] px-4 py-4"
           onSubmit={(event) => {
             event.preventDefault();
-            saveMutation.mutate({
-              routerId,
-              enabled: true,
-              targetHostname: targetHostname.trim() || null,
-              displayName: displayName.trim() || null,
-              subscriptionUrl: subscriptionUrl.trim() || undefined,
-              subscriptionRemark: subscriptionRemark.trim() || null,
-              baseline,
-              runtimePolicy: "auto-minimal-passwall-xray",
-              verifyPolicy,
-              notes: notes.trim() || null,
-            });
+            saveMutation.mutate(
+              buildOnboardingSaveProfileInput({
+                routerId,
+                targetHostname,
+                displayName,
+                subscriptionUrl,
+                subscriptionRemark,
+                baseline,
+                runtimePolicy: "auto-minimal-passwall-xray",
+                verifyPolicy,
+                notes,
+              }),
+            );
           }}
         >
           <div className="grid gap-3 lg:grid-cols-2">
@@ -358,12 +369,17 @@ export function RouterOnboardingPanel({
                 name="onboarding-baseline"
                 className="vectra-field mt-2 px-3 py-2 text-sm text-white"
                 value={baseline}
-                onChange={(event) =>
-                  setBaseline(
-                    event.target
-                      .value as (typeof baselineOptions)[number]["value"],
-                  )
-                }
+                onChange={(event) => {
+                  const nextBaseline = event.target
+                    .value as (typeof baselineOptions)[number]["value"];
+                  setBaseline(nextBaseline);
+                  setVerifyPolicy((current) =>
+                    normalizeOnboardingVerifyPolicyForBaseline(
+                      nextBaseline,
+                      current,
+                    ),
+                  );
+                }}
               >
                 {baselineOptions.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -386,18 +402,25 @@ export function RouterOnboardingPanel({
                 value={verifyPolicy}
                 onChange={(event) =>
                   setVerifyPolicy(
-                    event.target.value as "route-smoke" | "services-only",
+                    normalizeOnboardingVerifyPolicyForBaseline(
+                      baseline,
+                      event.target.value as "route-smoke" | "services-only",
+                    ),
                   )
                 }
               >
-                <option value="route-smoke">
+                <option
+                  value="route-smoke"
+                  disabled={baseline !== "standard-non-hh"}
+                >
                   route-smoke: 5 PassWall url_test_node
                 </option>
                 <option value="services-only">services-only</option>
               </select>
               <p className="mt-2 text-xs leading-5 text-slate-500">
-                Для обычных роутеров держим route-smoke: run завершится только
-                после typed `verify_passwall_routes`.
+                {baseline === "standard-non-hh"
+                  ? "Для обычных роутеров держим route-smoke: run завершится только после typed `verify_passwall_routes`."
+                  : "Для baseline без нормализации маршрутов используем services-only: route-smoke включается только на Standard non-hh."}
               </p>
             </label>
           </div>

@@ -3,6 +3,7 @@ import { fleetRouter } from "~/server/api/routers/fleet";
 import { logsRouter } from "~/server/api/routers/logs";
 import { notificationsRouter } from "~/server/api/routers/notifications";
 import { onboardingRouter } from "~/server/api/routers/onboarding";
+import { optimizationRouter } from "~/server/api/routers/optimization";
 import { rescueRouter } from "~/server/api/routers/rescue";
 import { terminalRouter } from "~/server/api/routers/terminal";
 import { updateRouter } from "~/server/api/routers/update";
@@ -19,6 +20,7 @@ export const appRouter = createTRPCRouter({
   logs: logsRouter,
   notifications: notificationsRouter,
   onboarding: onboardingRouter,
+  optimization: optimizationRouter,
   rescue: rescueRouter,
   terminal: terminalRouter,
   update: updateRouter,

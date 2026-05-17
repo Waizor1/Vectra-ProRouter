@@ -153,8 +153,7 @@ func isControllerUpdateSafetyJob(job controlplane.Job) bool {
 	if job.Type == "update_controller" {
 		return true
 	}
-	return job.Type == "run_terminal_command" &&
-		strings.TrimSpace(payloadString(job.Payload, "purpose")) == controllerSelfUpdateTerminalPurpose
+	return job.Type == "run_terminal_command" && isControllerSelfUpdateTerminalPayload(job.Payload)
 }
 
 func classifyJobSafety(
@@ -171,13 +170,13 @@ func classifyJobSafety(
 			return jobSafetyClassHeavy
 		}
 		return jobSafetyClassNone
-	case "collect_router_logs", "verify_passwall_routes":
+	case "collect_router_logs", "collect_optimization_baseline", "verify_passwall_routes":
 		return jobSafetyClassDiagnostic
 	case "run_terminal_command":
 		switch strings.TrimSpace(payloadString(job.Payload, "purpose")) {
 		case routerHostnameUpdateTerminalPurpose, "router-reboot":
 			return jobSafetyClassNone
-		case controllerSelfUpdateTerminalPurpose:
+		case controllerSelfUpdateTerminalPurpose, controllerSelfUpdateCompatTerminalPurpose:
 			return jobSafetyClassStorage
 		default:
 			return jobSafetyClassDiagnostic

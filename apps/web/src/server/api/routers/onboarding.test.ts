@@ -106,6 +106,7 @@ function createProtectedCaller(db: unknown) {
   }) as {
     saveProfile: (input: {
       routerId: string;
+      enabled?: boolean;
       targetHostname: string;
       displayName: string;
       subscriptionUrl: string;
@@ -116,6 +117,7 @@ function createProtectedCaller(db: unknown) {
       notes: string;
     }) => Promise<{
       profile: {
+        enabled: boolean;
         hasSubscription: boolean;
         subscriptionUrlHash: string | null;
       } | null;
@@ -129,7 +131,7 @@ describe("onboarding router", () => {
     const profile = createProfileRow();
     const mock = createMockDb({
       insertResponses: [[profile], []],
-      selectResponses: [[profile], []],
+      selectResponses: [[], [profile], []],
     });
     const caller = createProtectedCaller(mock.db);
     const subscriptionUrl = "https://sub.example.invalid/api/sub/secret-token";
@@ -161,5 +163,37 @@ describe("onboarding router", () => {
     expect(profileInsert?.subscriptionUrlHash).toBeTypeOf("string");
     expect(JSON.stringify(eventInsert)).not.toContain(subscriptionUrl);
     expect(JSON.stringify(eventInsert)).not.toContain("secret-token");
+  });
+
+  it("keeps a paused profile disabled when saving metadata even if the client sends enabled true", async () => {
+    const existingProfile = createProfileRow({ enabled: false });
+    const savedProfile = createProfileRow({
+      enabled: false,
+      displayName: "Updated panel name",
+    });
+    const mock = createMockDb({
+      insertResponses: [[savedProfile], []],
+      selectResponses: [[existingProfile], [savedProfile], []],
+    });
+    const caller = createProtectedCaller(mock.db);
+
+    const result = await caller.saveProfile({
+      routerId: ROUTER_ID,
+      enabled: true,
+      targetHostname: "YuranRod-msk",
+      displayName: "Updated panel name",
+      subscriptionUrl: "https://sub.example.invalid/api/sub/updated-token",
+      subscriptionRemark: "StarMY",
+      baseline: "standard-non-hh",
+      runtimePolicy: "auto-minimal-passwall-xray",
+      verifyPolicy: "route-smoke",
+      notes: "operator metadata edit",
+    });
+
+    expect(result.profile?.enabled).toBe(false);
+    const [profileInsert] = mock.insertedValues() as Array<
+      Record<string, unknown>
+    >;
+    expect(profileInsert?.enabled).toBe(false);
   });
 });

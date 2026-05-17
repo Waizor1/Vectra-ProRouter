@@ -168,6 +168,21 @@
         }
       },
       {
+        "name": "collect_optimization_baseline",
+        "value": {
+          "id": "3d3d3d3d-3d3d-4d3d-8d3d-3d3d3d3d3d3d",
+          "type": "collect_optimization_baseline",
+          "state": "queued",
+          "createdAt": "2026-05-15T08:00:00.000Z",
+          "payload": {
+            "logSource": "all",
+            "logLines": 160,
+            "includeLogs": true,
+            "includeRoutes": true
+          }
+        }
+      },
+      {
         "name": "run_terminal_command",
         "value": {
           "id": "3b3b3b3b-3b3b-4b3b-8b3b-3b3b3b3b3b3b",
@@ -278,7 +293,10 @@
           "state": "queued",
           "createdAt": "2026-05-14T19:30:00.000Z",
           "payload": {
-            "actions": ["compact_geodata", "dnsmasq_full"],
+            "actions": [
+              "compact_geodata",
+              "dnsmasq_full"
+            ],
             "onboardingRunId": "91919191-9191-4191-9191-919191919191",
             "assetDirectory": "/usr/share/v2ray/",
             "geoipUrl": "https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat",
@@ -409,7 +427,10 @@
               "sh -c /etc/init.d/passwall2 running >/dev/null 2>&1 && /etc/init.d/passwall2 restart || /etc/init.d/passwall2 start"
             ],
             "postInstallRepair": true,
-            "ruleRefreshAssets": ["geoip", "geosite"],
+            "ruleRefreshAssets": [
+              "geoip",
+              "geosite"
+            ],
             "postInstallCommands": [
               "lua /usr/share/passwall2/rule_update.lua log geoip,geosite",
               "sh -c /etc/init.d/passwall2 running >/dev/null 2>&1 && /etc/init.d/passwall2 restart || /etc/init.d/passwall2 start"
@@ -458,6 +479,77 @@
                 "truncated": false
               }
             ]
+          }
+        }
+      },
+      {
+        "name": "collect_optimization_baseline_success",
+        "value": {
+          "protocolVersion": "2026-04-v1",
+          "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf",
+          "jobId": "3d3d3d3d-3d3d-4d3d-8d3d-3d3d3d3d3d3d",
+          "status": "success",
+          "result": {
+            "baselineVersion": "2026-05-15-v1",
+            "collectedAt": "2026-05-15T08:00:10.000Z",
+            "ok": true,
+            "hostname": "1111111111",
+            "model": "Xiaomi Mi Router AX3000T",
+            "passwallEnabled": true,
+            "selectedNodeId": "myshunt",
+            "selectedNodeLabel": "Маршрутизатор BloopCat",
+            "resources": {
+              "memoryAvailableMb": 96,
+              "memoryTotalMb": 234,
+              "overlayFreeMb": 32,
+              "tmpFreeMb": 64
+            },
+            "serviceHealth": {
+              "controller": "running",
+              "passwall": "running",
+              "passwallServer": "running",
+              "dnsmasq": "running"
+            },
+            "safetyEvents": [],
+            "packageVersions": {
+              "luci-app-passwall2": "26.5.1-r1"
+            },
+            "binaryVersions": {
+              "xray": "Xray 26.5.9"
+            },
+            "processes": [
+              {
+                "pid": 1234,
+                "role": "xray",
+                "command": "/tmp/etc/passwall2/bin/xray run -c /tmp/etc/passwall2/acl/default/global.json",
+                "vmRssKb": 49680,
+                "vmSizeKb": 1361952,
+                "threads": 10
+              }
+            ],
+            "conntrack": {
+              "count": 313,
+              "max": 15360
+            },
+            "logs": {
+              "source": "all",
+              "requestedLines": 160,
+              "collectedAt": "2026-05-15T08:00:10.000Z",
+              "snapshots": []
+            },
+            "routeVerification": {
+              "verifierVersion": "2026-05-14-v1",
+              "verifiedAt": "2026-05-15T08:00:10.000Z",
+              "ok": true,
+              "slots": [],
+              "services": {},
+              "resources": {},
+              "packageVersions": {},
+              "binaryVersions": {},
+              "errors": []
+            },
+            "warnings": [],
+            "errors": []
           }
         }
       },
@@ -572,7 +664,10 @@
             "caseId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
             "requestedBy": "auto_rescue",
             "reason": "direct mode critical auto-rescue",
-            "actions": ["restart_passwall", "reconnect_proxy"],
+            "actions": [
+              "restart_passwall",
+              "reconnect_proxy"
+            ],
             "timeoutSeconds": 90,
             "startedAt": "2026-04-07T08:05:31.000Z",
             "completedAt": "2026-04-07T08:05:36.000Z",

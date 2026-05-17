@@ -14,6 +14,7 @@ tags:
 
 ## Confirmed
 
+- 2026-05-16: создан безопасный handoff для нового агента `ProRouter/04 Sessions/Handoffs/2026-05-16-agent-access-memory-handoff.md`: он собирает карту доступов, local-only secret locations, проверочные команды, актуальную проектную память и guardrails без raw-паролей, cookies, токенов, DSN или ключей.
 - Added `ai_docs/develop/features/openwrt24-passwall2-xray-optimization-kb.md` as the first dedicated optimization knowledge base for memory/CPU-heavy OpenWrt + PassWall2/Xray routers: source tiers, safe/yellow/red action matrix, measurement lane, canary commands, and Vectra rollout roadmap.
 - Корневой репозиторий исторически держит исследования, ранбуки и helper scripts.
 - Основные входы для будущих агентов: `AGENTS.md`, `RTK.md`, `ai_docs/develop/features/`.

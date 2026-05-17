@@ -17,18 +17,19 @@ import {
   type RouterOnboardingRunStatus,
   type RouterOnboardingState,
 } from "@vectra/db";
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { env } from "~/env";
 import {
   compareControllerVersions,
-  resolveInstalledControllerVersion,
+  resolveRunningControllerVersion,
 } from "~/lib/controller-version";
 import {
   buildTerminalRouterHostnameUpdatePayload,
   normalizeRouterHostname,
 } from "~/lib/router-hostname-jobs";
+import { normalizeOnboardingVerifyPolicyForBaseline } from "~/lib/router-onboarding-policy";
 import { db } from "~/server/db";
 import {
   evaluateFleetRoutePolicy,
@@ -184,7 +185,7 @@ async function withRouterOnboardingAdvanceLock<T>(
 
 export const routerOnboardingProfileInputSchema = z.object({
   routerId: z.string().uuid(),
-  enabled: z.boolean().default(true),
+  enabled: z.boolean().optional(),
   targetHostname: z.string().trim().min(1).max(63).nullable().optional(),
   displayName: z.string().trim().min(1).max(120).nullable().optional(),
   subscriptionUrl: z.string().trim().url().nullable().optional(),
@@ -356,9 +357,10 @@ function isOnboardingJobForRun(job: JobLike, runId: string) {
   return job.dedupeKey?.startsWith(onboardingDedupePrefix(runId)) ?? false;
 }
 
-function installedControllerVersion(ctx: RouterOnboardingContext) {
-  return resolveInstalledControllerVersion({
-    controllerVersion: ctx.latestSnapshot?.payload?.controllerVersion ?? null,
+function runningControllerVersion(ctx: RouterOnboardingContext) {
+  return resolveRunningControllerVersion({
+    controllerRuntimeVersion:
+      ctx.latestSnapshot?.payload?.controllerRuntimeVersion ?? null,
     payload: ctx.latestSnapshot?.payload ?? null,
   });
 }
@@ -367,7 +369,7 @@ function controllerMeetsMinimumVersion(
   ctx: RouterOnboardingContext,
   minimumVersion: string,
 ) {
-  const currentVersion = installedControllerVersion(ctx);
+  const currentVersion = runningControllerVersion(ctx);
   const comparison = compareControllerVersions(currentVersion, minimumVersion);
   return comparison !== null && comparison >= 0;
 }
@@ -376,8 +378,8 @@ function typedOnboardingJobBlockReason(
   ctx: RouterOnboardingContext,
   jobLabel: string,
 ) {
-  const currentVersion = installedControllerVersion(ctx) ?? "unknown";
-  return `controller ${currentVersion} does not support ${jobLabel}; update vectra-controller-agent/LuCI to ${typedOnboardingJobMinControllerVersion}+ before retrying`;
+  const currentVersion = runningControllerVersion(ctx) ?? "unknown";
+  return `controller runtime ${currentVersion} does not support ${jobLabel}; wait for a restarted vectra-controller-agent ${typedOnboardingJobMinControllerVersion}+ check-in before retrying`;
 }
 
 function readRouterHostname(router: RouterLike, snapshot: SnapshotLike | null) {
@@ -731,18 +733,12 @@ function planRuntimeEnsureAction(ctx: RouterOnboardingContext):
   }
 
   if (
-    !controllerMeetsMinimumVersion(
-      ctx,
-      typedOnboardingJobMinControllerVersion,
-    )
+    !controllerMeetsMinimumVersion(ctx, typedOnboardingJobMinControllerVersion)
   ) {
     return {
       action: "block",
       nextState: "ensure_runtime",
-      reason: typedOnboardingJobBlockReason(
-        ctx,
-        "ensure_passwall_runtime",
-      ),
+      reason: typedOnboardingJobBlockReason(ctx, "ensure_passwall_runtime"),
     };
   }
 
@@ -776,7 +772,12 @@ export function planNextOnboardingAction(
     };
   }
 
-  if (ctx.run.status === "done" || ctx.run.status === "paused") {
+  if (
+    ctx.run.status === "done" ||
+    ctx.run.status === "paused" ||
+    ctx.run.status === "blocked" ||
+    ctx.run.status === "failed"
+  ) {
     return {
       action: "skip",
       reason: `onboarding run is ${ctx.run.status}`,
@@ -1100,15 +1101,11 @@ export function planNextOnboardingAction(
         }
       }
 
-      if (ctx.profile.verifyPolicy === "route-smoke") {
-        if (ctx.profile.baseline !== "standard-non-hh") {
-          return {
-            action: "block",
-            nextState: ctx.run.state,
-            reason:
-              "typed route-smoke verifier currently supports only the standard non-hh baseline",
-          };
-        }
+      const verifyPolicy = normalizeOnboardingVerifyPolicyForBaseline(
+        ctx.profile.baseline,
+        ctx.profile.verifyPolicy,
+      );
+      if (verifyPolicy === "route-smoke") {
         if (
           !controllerMeetsMinimumVersion(
             ctx,
@@ -1206,19 +1203,32 @@ async function updateRun(
   return updatedRun ?? null;
 }
 
-async function findOnboardingJobByDedupeKey(
+async function findOnboardingJobByIdentity(
   client: DatabaseClient,
-  input: { routerId: string; dedupeKey: string },
+  input: {
+    routerId: string;
+    dedupeKey: string;
+    jobType: JobRow["type"];
+    payload: Record<string, unknown>;
+  },
 ) {
+  const payloadJson = JSON.stringify(input.payload ?? {});
   const [job] = await client
     .select()
     .from(jobs)
     .where(
       and(
         eq(jobs.routerId, input.routerId),
-        eq(jobs.dedupeKey, input.dedupeKey),
+        or(
+          eq(jobs.dedupeKey, input.dedupeKey),
+          and(
+            eq(jobs.type, input.jobType),
+            sql<boolean>`${jobs.payload} = ${payloadJson}::jsonb`,
+          ),
+        ),
       ),
     )
+    .orderBy(desc(jobs.createdAt))
     .limit(1);
 
   return job ?? null;
@@ -1232,7 +1242,13 @@ async function queueOnboardingJobWithDedupe(
     values: typeof jobs.$inferInsert;
   },
 ): Promise<OnboardingQueuedJob> {
-  const existingJob = await findOnboardingJobByDedupeKey(client, input);
+  const lookup = {
+    routerId: input.routerId,
+    dedupeKey: input.dedupeKey,
+    jobType: input.values.type,
+    payload: input.values.payload ?? {},
+  };
+  const existingJob = await findOnboardingJobByIdentity(client, lookup);
   if (existingJob) {
     return { job: existingJob, inserted: false };
   }
@@ -1247,7 +1263,7 @@ async function queueOnboardingJobWithDedupe(
     return { job: insertedJob, inserted: true };
   }
 
-  const reusedJob = await findOnboardingJobByDedupeKey(client, input);
+  const reusedJob = await findOnboardingJobByIdentity(client, lookup);
   if (reusedJob) {
     return { job: reusedJob, inserted: false };
   }
@@ -1325,6 +1341,7 @@ async function queueOnboardingApplyJob(
       payload: {
         desiredRevisionId: input.revisionId,
         onboardingRunId: input.runId,
+        onboardingAttempt: input.attempt,
         purpose: input.purpose,
       },
     },
@@ -1356,6 +1373,7 @@ async function queueHostnameJob(
       payload: {
         ...buildTerminalRouterHostnameUpdatePayload(input.hostname),
         onboardingRunId: input.runId,
+        onboardingAttempt: input.attempt,
       },
     },
   });
@@ -1383,6 +1401,7 @@ async function queueEnsureRuntimeJob(
       dedupeKey,
       payload: {
         onboardingRunId: input.runId,
+        onboardingAttempt: input.attempt,
         actions: input.actions,
         assetDirectory: passwallAssetDirectory,
         geoipUrl: compactGeoipUrl,
@@ -1412,7 +1431,10 @@ async function queueRefreshSubscriptionsJob(
       type: "refresh_subscriptions",
       state: "queued",
       dedupeKey,
-      payload: { onboardingRunId: input.runId },
+      payload: {
+        onboardingRunId: input.runId,
+        onboardingAttempt: input.attempt,
+      },
     },
   });
 
@@ -1434,6 +1456,7 @@ async function queueRouteVerificationJob(
       dedupeKey,
       payload: {
         onboardingRunId: input.runId,
+        onboardingAttempt: input.attempt,
         expectedPolicy: "standard-non-hh",
       },
     },
@@ -2057,6 +2080,11 @@ export async function upsertRouterOnboardingProfileWithDb(
   input: RouterOnboardingProfileInput,
 ) {
   const parsed = routerOnboardingProfileInputSchema.parse(input);
+  const [existingProfile] = await client
+    .select()
+    .from(routerOnboardingProfiles)
+    .where(eq(routerOnboardingProfiles.routerId, parsed.routerId))
+    .limit(1);
   const subscriptionPatch = parsed.subscriptionUrl
     ? {
         subscriptionSecretCiphertext: createSubscriptionSecretCiphertext(
@@ -2068,7 +2096,7 @@ export async function upsertRouterOnboardingProfileWithDb(
 
   const values = {
     routerId: parsed.routerId,
-    enabled: parsed.enabled,
+    enabled: existingProfile?.enabled ?? parsed.enabled ?? true,
     targetHostname: parsed.targetHostname
       ? normalizeRouterHostname(parsed.targetHostname)
       : null,
@@ -2076,7 +2104,10 @@ export async function upsertRouterOnboardingProfileWithDb(
     subscriptionRemark: parsed.subscriptionRemark ?? null,
     baseline: parsed.baseline,
     runtimePolicy: parsed.runtimePolicy,
-    verifyPolicy: parsed.verifyPolicy,
+    verifyPolicy: normalizeOnboardingVerifyPolicyForBaseline(
+      parsed.baseline,
+      parsed.verifyPolicy,
+    ),
     notes: parsed.notes ?? null,
     ...subscriptionPatch,
   } satisfies Partial<typeof routerOnboardingProfiles.$inferInsert> & {

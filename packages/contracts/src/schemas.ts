@@ -71,6 +71,7 @@ export const jobTypeSchema = z.enum([
   "inspect_subscriptions",
   "refresh_rules",
   "collect_router_logs",
+  "collect_optimization_baseline",
   "run_terminal_command",
   "run_rescue_repair",
   "update_controller",
@@ -456,6 +457,7 @@ export const routerInventorySchema = z.object({
   deviceIdentifier: z.string().min(1),
   devicePublicKey: z.string().min(1),
   controllerVersion: z.string().min(1),
+  controllerRuntimeVersion: z.string().min(1).optional(),
   hostname: z.string().optional(),
   panelDomain: z.string().optional(),
   model: z.string().min(1),
@@ -570,6 +572,15 @@ export const collectRouterLogsJobPayloadSchema = z.object({
   lines: z.number().int().min(50).max(400).default(200),
 });
 
+export const collectOptimizationBaselineJobPayloadSchema = z
+  .object({
+    logSource: routerLogSourceSchema.default("all"),
+    logLines: z.number().int().min(50).max(400).default(160),
+    includeLogs: z.boolean().default(true),
+    includeRoutes: z.boolean().default(true),
+  })
+  .passthrough();
+
 export const inspectSubscriptionsJobPayloadSchema = z.object({}).passthrough();
 
 export const ensurePasswallRuntimeActionSchema = z.enum([
@@ -585,6 +596,7 @@ export const ensurePasswallRuntimeJobPayloadSchema = z
       .max(4)
       .default(["compact_geodata", "dnsmasq_full"]),
     onboardingRunId: z.string().uuid().nullable().optional(),
+    onboardingAttempt: z.number().int().nonnegative().nullable().optional(),
     assetDirectory: z.string().trim().min(1).default("/usr/share/v2ray/"),
     geoipUrl: z
       .string()
@@ -618,6 +630,7 @@ export const verifyPasswallRoutesJobPayloadSchema = z
       .enum(["standard-non-hh", "hh-exempt", "subscription-only"])
       .default("standard-non-hh"),
     onboardingRunId: z.string().uuid().nullable().optional(),
+    onboardingAttempt: z.number().int().nonnegative().nullable().optional(),
   })
   .passthrough();
 
@@ -660,6 +673,8 @@ export const runTerminalCommandJobPayloadSchema = z.object({
     .optional(),
   artifactVersion: z.string().nullable().optional(),
   hostname: z.string().min(1).max(63).nullable().optional(),
+  onboardingRunId: z.string().uuid().nullable().optional(),
+  onboardingAttempt: z.number().int().nonnegative().nullable().optional(),
 });
 
 export const updatePasswallPackagesJobPayloadSchema = z.object({
@@ -808,6 +823,51 @@ export const verifyPasswallRoutesResultPayloadSchema = z
     resources: z.record(z.string(), z.unknown()).default({}),
     packageVersions: z.record(z.string(), z.string()).default({}),
     binaryVersions: z.record(z.string(), z.string()).default({}),
+    errors: z.array(z.string()).default([]),
+  })
+  .passthrough();
+
+export const optimizationBaselineProcessSchema = z.object({
+  pid: z.number().int().positive(),
+  role: z.string().min(1),
+  command: z.string().min(1),
+  vmSizeKb: z.number().int().nonnegative().nullable().optional(),
+  vmRssKb: z.number().int().nonnegative().nullable().optional(),
+  threads: z.number().int().nonnegative().nullable().optional(),
+});
+
+export const optimizationBaselineConntrackSchema = z.object({
+  count: z.number().int().nonnegative().nullable().optional(),
+  max: z.number().int().nonnegative().nullable().optional(),
+});
+
+export const optimizationBaselineResultPayloadSchema = z
+  .object({
+    baselineVersion: z.string().min(1),
+    collectedAt: z.string().datetime(),
+    ok: z.boolean(),
+    selectedNodeId: z.string().nullable().optional(),
+    selectedNodeLabel: z.string().nullable().optional(),
+    passwallEnabled: z.boolean().default(false),
+    resources: z.record(z.string(), z.unknown()).default({}),
+    serviceHealth: z
+      .object({
+        controller: z.string().nullable().optional(),
+        passwall: z.string().nullable().optional(),
+        passwallServer: z.string().nullable().optional(),
+        dnsmasq: z.string().nullable().optional(),
+      })
+      .default({}),
+    safetyEvents: z.array(z.record(z.string(), z.unknown())).default([]),
+    packageVersions: z.record(z.string(), z.string()).default({}),
+    binaryVersions: z.record(z.string(), z.string()).default({}),
+    processes: z.array(optimizationBaselineProcessSchema).default([]),
+    conntrack: optimizationBaselineConntrackSchema.default({}),
+    logs: routerLogResultPayloadSchema.nullable().optional(),
+    routeVerification: verifyPasswallRoutesResultPayloadSchema
+      .nullable()
+      .optional(),
+    warnings: z.array(z.string()).default([]),
     errors: z.array(z.string()).default([]),
   })
   .passthrough();
@@ -1107,6 +1167,9 @@ export type UpdateControllerJobPayload = z.infer<
 export type CollectRouterLogsJobPayload = z.infer<
   typeof collectRouterLogsJobPayloadSchema
 >;
+export type CollectOptimizationBaselineJobPayload = z.infer<
+  typeof collectOptimizationBaselineJobPayloadSchema
+>;
 export type InspectSubscriptionsJobPayload = z.infer<
   typeof inspectSubscriptionsJobPayloadSchema
 >;
@@ -1126,6 +1189,9 @@ export type ValidateFirmwareJobPayload = z.infer<
 export type RouterLogSnapshot = z.infer<typeof routerLogSnapshotSchema>;
 export type RouterLogResultPayload = z.infer<
   typeof routerLogResultPayloadSchema
+>;
+export type OptimizationBaselineResultPayload = z.infer<
+  typeof optimizationBaselineResultPayloadSchema
 >;
 export type RouterTerminalResultPayload = z.infer<
   typeof routerTerminalResultPayloadSchema

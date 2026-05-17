@@ -38,6 +38,15 @@ func TestShouldResumeProxyAfterTerminalSuccess(t *testing.T) {
 		}
 	})
 
+	t.Run("returns true for compat controller self-update in direct mode", func(t *testing.T) {
+		rescueState := &rescue.State{Mode: rescue.ModeDirect}
+		if !shouldResumeProxyAfterTerminalSuccess(map[string]interface{}{
+			"purpose": controllerSelfUpdateCompatTerminalPurpose,
+		}, rescueState) {
+			t.Fatalf("expected compat controller self-update in direct mode to resume proxy")
+		}
+	})
+
 	t.Run("returns false when not in direct mode", func(t *testing.T) {
 		rescueState := &rescue.State{Mode: rescue.ModeProxy}
 		if shouldResumeProxyAfterTerminalSuccess(map[string]interface{}{

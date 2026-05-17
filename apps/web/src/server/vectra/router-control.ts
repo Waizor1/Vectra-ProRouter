@@ -209,6 +209,21 @@ export function resolveReportedRouterHostname(args: {
   return requestedHostname.length > 0 ? requestedHostname : null;
 }
 
+export function resolveJobDedupeKeyAfterResult(args: {
+  currentDedupeKey: string | null;
+  resultStatus: ReturnType<typeof jobResultRequestSchema.parse>["status"];
+}) {
+  if (args.resultStatus === "accepted") {
+    return args.currentDedupeKey;
+  }
+
+  if (args.currentDedupeKey?.startsWith("onboarding:")) {
+    return args.currentDedupeKey;
+  }
+
+  return null;
+}
+
 type RecoveryHealthPayload = ReturnType<
   typeof routerCheckInRequestSchema.parse
 >["health"];
@@ -1233,7 +1248,10 @@ export async function recordJobResult(routerId: string, input: unknown) {
           ? (job.deliveredAt ?? new Date())
           : (job.deliveredAt ?? new Date()),
       completedAt: parsed.status === "accepted" ? null : new Date(),
-      dedupeKey: parsed.status === "accepted" ? job.dedupeKey : null,
+      dedupeKey: resolveJobDedupeKeyAfterResult({
+        currentDedupeKey: job.dedupeKey,
+        resultStatus: parsed.status,
+      }),
     })
     .where(eq(jobs.id, job.id));
 

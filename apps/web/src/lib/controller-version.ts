@@ -1,7 +1,4 @@
-const invalidControllerVersionSentinels = new Set([
-  "unknown",
-  "неизвестно",
-]);
+const invalidControllerVersionSentinels = new Set(["unknown", "неизвестно"]);
 
 export const unknownControllerVersionLabel = "Не удалось определить";
 
@@ -72,7 +69,9 @@ export function resolveInstalledControllerVersion(args: {
   payload?: unknown;
 }): string | null {
   const payload =
-    args.payload && typeof args.payload === "object" && !Array.isArray(args.payload)
+    args.payload &&
+    typeof args.payload === "object" &&
+    !Array.isArray(args.payload)
       ? (args.payload as Record<string, unknown>)
       : null;
   const packageVersions =
@@ -82,7 +81,9 @@ export function resolveInstalledControllerVersion(args: {
       ? (payload.packageVersions as Record<string, unknown>)
       : null;
   const payloadControllerVersion =
-    typeof payload?.controllerVersion === "string" ? payload.controllerVersion : null;
+    typeof payload?.controllerVersion === "string"
+      ? payload.controllerVersion
+      : null;
   const agentPackageVersion =
     typeof packageVersions?.["vectra-controller-agent"] === "string"
       ? packageVersions["vectra-controller-agent"]
@@ -97,6 +98,27 @@ export function resolveInstalledControllerVersion(args: {
     normalizeControllerVersion(args.controllerVersion) ??
     normalizeControllerVersion(agentPackageVersion) ??
     normalizeControllerVersion(luciPackageVersion)
+  );
+}
+
+export function resolveRunningControllerVersion(args: {
+  controllerRuntimeVersion?: string | null;
+  payload?: unknown;
+}): string | null {
+  const payload =
+    args.payload &&
+    typeof args.payload === "object" &&
+    !Array.isArray(args.payload)
+      ? (args.payload as Record<string, unknown>)
+      : null;
+  const payloadRuntimeVersion =
+    typeof payload?.controllerRuntimeVersion === "string"
+      ? payload.controllerRuntimeVersion
+      : null;
+
+  return (
+    normalizeControllerVersion(payloadRuntimeVersion) ??
+    normalizeControllerVersion(args.controllerRuntimeVersion)
   );
 }
 
