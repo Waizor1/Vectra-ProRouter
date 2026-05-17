@@ -1,4 +1,7 @@
 @import "tailwindcss";
+@plugin "tailwindcss-animate";
+
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
   --font-sans: var(--font-plex-sans), ui-sans-serif, sans-serif;
@@ -20,6 +23,62 @@
   --vectra-shadow-lg: 0 18px 42px rgba(0, 0, 0, 0.28);
   --vectra-shadow-md: 0 10px 24px rgba(0, 0, 0, 0.2);
   --vectra-shell-max: 1880px;
+}
+
+/* shadcn v2 token layer — HSL triplets, mapped to Tailwind utilities below.
+   Lives on :root because we treat dark as the default theme and never toggle. */
+:root {
+  --background: 218 22% 9%;
+  --foreground: 210 40% 96%;
+  --card: 218 22% 12%;
+  --card-foreground: 210 40% 96%;
+  --popover: 220 16% 13%;
+  --popover-foreground: 210 40% 96%;
+  --primary: 207 100% 69%;
+  --primary-foreground: 222 47% 8%;
+  --secondary: 220 16% 18%;
+  --secondary-foreground: 210 40% 96%;
+  --muted: 220 16% 16%;
+  --muted-foreground: 215 16% 65%;
+  --accent: 22 100% 64%;
+  --accent-foreground: 222 47% 8%;
+  --destructive: 0 100% 78%;
+  --destructive-foreground: 222 47% 8%;
+  --border: 0 0% 100%;
+  --input: 0 0% 100%;
+  --ring: 207 35% 67%;
+  --radius: 0.5rem;
+  --tone-good: #65d6a3;
+  --tone-warning: #ffc36d;
+  --tone-critical: #ff8f8f;
+  --tone-info: #63b9ff;
+}
+
+/* Map shadcn tokens to Tailwind utilities. `@theme inline` resolves at build
+   time so `bg-background`, `text-foreground`, etc. just work. */
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border) / 0.08);
+  --color-input: hsl(var(--input) / 0.1);
+  --color-ring: hsl(var(--ring) / 0.35);
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
 }
 
 html {

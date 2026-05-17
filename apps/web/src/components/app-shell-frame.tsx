@@ -3,10 +3,17 @@
 import { usePathname } from "next/navigation";
 
 import { OperatorShellHeader } from "~/components/operator-shell-header";
+import { OperatorShellV2 } from "~/features/shell/operator-shell-v2";
+
+export interface AppShellFrameProps {
+  children: React.ReactNode;
+  uiV2: boolean;
+}
 
 export function AppShellFrame({
   children,
-}: Readonly<{ children: React.ReactNode }>) {
+  uiV2,
+}: Readonly<AppShellFrameProps>) {
   const pathname = usePathname();
   const isPublicInstallPage = pathname === "/install";
 
@@ -16,6 +23,10 @@ export function AppShellFrame({
         <main className="w-full">{children}</main>
       </div>
     );
+  }
+
+  if (uiV2) {
+    return <OperatorShellV2>{children}</OperatorShellV2>;
   }
 
   return (
