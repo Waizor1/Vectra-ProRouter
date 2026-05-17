@@ -900,19 +900,35 @@ func TestExecutorApplyNoopsWhenDesiredAlreadyMatchesCurrent(t *testing.T) {
 }
 
 type fakeBackend struct {
-	lines         []string
-	batchCommands []string
-	runCommands   []string
-	runErrFor     map[string]error
-	runResults    map[string]CommandResult
+	lines            []string
+	appliedLines     []string
+	showCount        int
+	batchCommands    []string
+	batchErr         error
+	revertedPackages []string
+	runCommands      []string
+	runErrFor        map[string]error
+	runResults       map[string]CommandResult
 }
 
-func (f fakeBackend) Show(_ context.Context, _ string) ([]string, error) {
+func (f *fakeBackend) Show(_ context.Context, _ string) ([]string, error) {
+	f.showCount++
+	// After Batch has staged commands, subsequent Show calls reflect the
+	// "applied" state if the test supplied it. Otherwise we keep returning
+	// the initial lines so digest computations are stable.
+	if f.showCount > 1 && f.appliedLines != nil {
+		return append([]string(nil), f.appliedLines...), nil
+	}
 	return append([]string(nil), f.lines...), nil
 }
 
 func (f *fakeBackend) Batch(_ context.Context, commands []string) error {
 	f.batchCommands = append([]string(nil), commands...)
+	return f.batchErr
+}
+
+func (f *fakeBackend) Revert(_ context.Context, packageName string) error {
+	f.revertedPackages = append(f.revertedPackages, packageName)
 	return nil
 }
 

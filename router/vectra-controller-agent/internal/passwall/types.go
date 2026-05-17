@@ -203,6 +203,7 @@ type CommandResult struct {
 type ApplyResult struct {
 	Plan           ApplyPlan       `json:"plan"`
 	ConfigDigest   string          `json:"configDigest"`
+	AppliedDigest  string          `json:"appliedDigest,omitempty"`
 	UCICommands    []string        `json:"uciCommands,omitempty"`
 	CommandResults []CommandResult `json:"commandResults,omitempty"`
 }
