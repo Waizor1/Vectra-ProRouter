@@ -23,6 +23,29 @@ type Config struct {
 	Rescue                rescue.Policy                `json:"rescue_policy"`
 	Inventory             controlplane.RouterInventory `json:"inventory"`
 	DryRunPasswallProfile *passwall.DesiredConfig      `json:"dry_run_passwall_profile,omitempty"`
+	JobSafety             JobSafetyConfig              `json:"job_safety,omitempty"`
+}
+
+// JobSafetyConfig lets operators tune the resource-guard floors that gate
+// job execution on low-RAM routers, and opt into a one-shot cache reclaim
+// before failing the guard. Zero values fall back to compile-time defaults
+// in cmd/vectra-controller-agent/job_safety.go.
+type JobSafetyConfig struct {
+	HeavyMemoryFloorMB      int  `json:"heavy_memory_floor_mb,omitempty"`
+	StorageMemoryFloorMB    int  `json:"storage_memory_floor_mb,omitempty"`
+	DiagnosticMemoryFloorMB int  `json:"diagnostic_memory_floor_mb,omitempty"`
+	HeavyOverlayFloorMB     int  `json:"heavy_overlay_floor_mb,omitempty"`
+	StorageOverlayFloorMB   int  `json:"storage_overlay_floor_mb,omitempty"`
+	HeavyTMPFloorMB         int  `json:"heavy_tmp_floor_mb,omitempty"`
+	StorageTMPFloorMB       int  `json:"storage_tmp_floor_mb,omitempty"`
+	DiagnosticTMPFloorMB    int  `json:"diagnostic_tmp_floor_mb,omitempty"`
+	// PreDropCaches, when true, causes the guard to invoke
+	// `echo 3 > /proc/sys/vm/drop_caches` (page-cache + dentry/inode reclaim;
+	// no data loss, dirty pages are kept) once if the initial reading is below
+	// the memory floor, then re-measure before deciding to block the job.
+	// Intended for AX3000T-class routers where 30-60 MB of MemAvailable
+	// genuinely free up after a single cache flush.
+	PreDropCaches bool `json:"pre_drop_caches,omitempty"`
 }
 
 type rawRescuePolicy struct {
@@ -53,6 +76,7 @@ type rawConfig struct {
 	Rescue                rawRescuePolicy              `json:"rescue_policy"`
 	Inventory             controlplane.RouterInventory `json:"inventory"`
 	DryRunPasswallProfile *passwall.DesiredConfig      `json:"dry_run_passwall_profile,omitempty"`
+	JobSafety             JobSafetyConfig              `json:"job_safety,omitempty"`
 }
 
 func defaultRescuePolicy() rescue.Policy {
@@ -213,6 +237,7 @@ func Load(path string) (Config, error) {
 	cfg.RouterID = raw.RouterID
 	cfg.Inventory = raw.Inventory
 	cfg.DryRunPasswallProfile = raw.DryRunPasswallProfile
+	cfg.JobSafety = raw.JobSafety
 
 	cfg.Rescue, err = mergeRescuePolicy(cfg.Rescue, raw.Rescue)
 	if err != nil {

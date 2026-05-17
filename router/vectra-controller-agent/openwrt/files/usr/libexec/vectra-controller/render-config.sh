@@ -210,6 +210,36 @@ json_add_string passwall_warmup "75s"
 json_add_string reboot_cooldown "12h"
 json_close_object
 
+# Optional operator overrides for the resource guard. Each *_memory_floor_mb
+# zero/empty means "use compile-time default in job_safety.go". pre_drop_caches
+# opts in to a one-shot vm.drop_caches=3 before the guard fails on RAM — safe
+# read-only call, gives AX3000T-class boxes enough headroom for urgent updates.
+job_safety_heavy_memory_floor_mb="$(uci_get_or_default job_safety_heavy_memory_floor_mb 0)"
+job_safety_storage_memory_floor_mb="$(uci_get_or_default job_safety_storage_memory_floor_mb 0)"
+job_safety_diagnostic_memory_floor_mb="$(uci_get_or_default job_safety_diagnostic_memory_floor_mb 0)"
+job_safety_heavy_overlay_floor_mb="$(uci_get_or_default job_safety_heavy_overlay_floor_mb 0)"
+job_safety_storage_overlay_floor_mb="$(uci_get_or_default job_safety_storage_overlay_floor_mb 0)"
+job_safety_heavy_tmp_floor_mb="$(uci_get_or_default job_safety_heavy_tmp_floor_mb 0)"
+job_safety_storage_tmp_floor_mb="$(uci_get_or_default job_safety_storage_tmp_floor_mb 0)"
+job_safety_diagnostic_tmp_floor_mb="$(uci_get_or_default job_safety_diagnostic_tmp_floor_mb 0)"
+job_safety_pre_drop_caches="$(uci_get_or_default job_safety_pre_drop_caches 0)"
+
+json_add_object job_safety
+json_add_int heavy_memory_floor_mb "${job_safety_heavy_memory_floor_mb:-0}"
+json_add_int storage_memory_floor_mb "${job_safety_storage_memory_floor_mb:-0}"
+json_add_int diagnostic_memory_floor_mb "${job_safety_diagnostic_memory_floor_mb:-0}"
+json_add_int heavy_overlay_floor_mb "${job_safety_heavy_overlay_floor_mb:-0}"
+json_add_int storage_overlay_floor_mb "${job_safety_storage_overlay_floor_mb:-0}"
+json_add_int heavy_tmp_floor_mb "${job_safety_heavy_tmp_floor_mb:-0}"
+json_add_int storage_tmp_floor_mb "${job_safety_storage_tmp_floor_mb:-0}"
+json_add_int diagnostic_tmp_floor_mb "${job_safety_diagnostic_tmp_floor_mb:-0}"
+if [ "$job_safety_pre_drop_caches" = "1" ] || [ "$job_safety_pre_drop_caches" = "true" ]; then
+	json_add_boolean pre_drop_caches 1
+else
+	json_add_boolean pre_drop_caches 0
+fi
+json_close_object
+
 json_add_object inventory
 json_add_string protocolVersion "2026-04-v1"
 json_add_string deviceIdentifier ""

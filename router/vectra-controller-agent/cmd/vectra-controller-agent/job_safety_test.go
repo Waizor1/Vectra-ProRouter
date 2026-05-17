@@ -19,6 +19,7 @@ func TestEvaluateJobSafetyBlocksHeavyJobUnderLowMemory(t *testing.T) {
 			TMPFreeMB:         80,
 		},
 		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		JobSafetyTuning{},
 	)
 
 	if !decision.Blocked {
@@ -43,6 +44,7 @@ func TestEvaluateJobSafetyAllowsHeavyJobAtOperationalLowMemory(t *testing.T) {
 			TMPFreeMB:         80,
 		},
 		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		JobSafetyTuning{},
 	)
 
 	if decision.Blocked {
@@ -61,6 +63,7 @@ func TestEvaluateJobSafetyKeepsStorageJobMemoryFloorConservative(t *testing.T) {
 			TMPFreeMB:         80,
 		},
 		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		JobSafetyTuning{},
 	)
 
 	if !decision.Blocked {
@@ -98,6 +101,7 @@ func TestEvaluateJobSafetyBlocksStorageJobWhenSpaceUnknown(t *testing.T) {
 			TMPFreeMB:         64,
 		},
 		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		JobSafetyTuning{},
 	)
 
 	if !decision.Blocked {
@@ -127,6 +131,7 @@ func TestEvaluateJobSafetyAllowsRouterRebootTerminalUnderLowMemory(t *testing.T)
 			TMPFreeMB:         0,
 		},
 		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		JobSafetyTuning{},
 	)
 
 	if decision.Blocked {
@@ -154,6 +159,7 @@ func TestEvaluateJobSafetyWithResourceCollectorSkipsUnguardedJob(t *testing.T) {
 				TMPFreeMB:         0,
 			}
 		},
+		JobSafetyTuning{},
 	)
 
 	if called {
@@ -200,6 +206,7 @@ func TestEvaluateJobSafetyUsesControllerOverlayFloorForTerminalSelfUpdate(t *tes
 					TMPFreeMB:         64,
 				},
 				time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				JobSafetyTuning{},
 			)
 			if allowed.Blocked {
 				t.Fatalf("expected terminal controller self-update to use controller overlay floor, got %#v", allowed)
@@ -214,6 +221,7 @@ func TestEvaluateJobSafetyUsesControllerOverlayFloorForTerminalSelfUpdate(t *tes
 					TMPFreeMB:         64,
 				},
 				time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				JobSafetyTuning{},
 			)
 			if !blocked.Blocked {
 				t.Fatalf("expected terminal controller self-update below controller overlay floor to be blocked")
@@ -222,6 +230,116 @@ func TestEvaluateJobSafetyUsesControllerOverlayFloorForTerminalSelfUpdate(t *tes
 				t.Fatalf("expected controller overlay floor reason, got %#v", blocked.Reasons)
 			}
 		})
+	}
+}
+
+func TestEvaluateJobSafetyHonorsStorageMemoryFloorOverride(t *testing.T) {
+	// Default storage floor is 64 MB; an operator lowering it to 40 MB should
+	// let an update_controller job through at 48 MB even though it sits below
+	// the compile-time default. This is what 91_vectra_low_mem_profile uses to
+	// let r26+ self-update reach AX3000T-class boxes where MemAvailable
+	// hovers in the 40-60 MB band.
+	decision := evaluateJobSafety(
+		controlplane.Job{ID: "job-1", Type: "update_controller"},
+		nil,
+		controlplane.RouterResources{
+			MemoryAvailableMB: 48,
+			MemoryTotalMB:     234,
+			OverlayFreeMB:     40,
+			TMPFreeMB:         80,
+		},
+		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		JobSafetyTuning{StorageMemoryFloorMB: 40},
+	)
+
+	if decision.Blocked {
+		t.Fatalf("expected update_controller at 48 MB to pass with lowered 40 MB floor, got %#v", decision)
+	}
+}
+
+func TestEvaluateJobSafetyDefaultStorageFloorStillBlocks(t *testing.T) {
+	// Sanity-check the inverse: without an override, the default 64 MB floor
+	// still blocks the same job at 48 MB. Guards the regression that override
+	// is the only path to bypass.
+	decision := evaluateJobSafety(
+		controlplane.Job{ID: "job-1", Type: "update_controller"},
+		nil,
+		controlplane.RouterResources{
+			MemoryAvailableMB: 48,
+			MemoryTotalMB:     234,
+			OverlayFreeMB:     40,
+			TMPFreeMB:         80,
+		},
+		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		JobSafetyTuning{},
+	)
+
+	if !decision.Blocked {
+		t.Fatalf("expected default storage floor to block 48 MB, got %#v", decision)
+	}
+	if !strings.Contains(decision.Message, "is below 64 MB floor") {
+		t.Fatalf("expected 64 MB floor reason, got %q", decision.Message)
+	}
+}
+
+func TestEvaluateJobSafetyWithResourceCollectorRetriesAfterDropCaches(t *testing.T) {
+	// Simulate the AX3000T-class scenario: first read shows 48 MB (below the
+	// 64 MB storage floor), pre_drop_caches kicks in, second read shows 80 MB
+	// (above floor) and the guard lets the job through.
+	//
+	// We can't actually write to /proc/sys/vm/drop_caches in unit tests, so
+	// attemptDropCaches will fail silently on hosts that lack the file; the
+	// retry path still re-reads via the collector, which is what we verify.
+	calls := 0
+	collector := func() controlplane.RouterResources {
+		calls++
+		if calls == 1 {
+			return controlplane.RouterResources{
+				MemoryAvailableMB: 48, OverlayFreeMB: 40, TMPFreeMB: 80,
+			}
+		}
+		return controlplane.RouterResources{
+			MemoryAvailableMB: 80, OverlayFreeMB: 40, TMPFreeMB: 80,
+		}
+	}
+
+	decision := evaluateJobSafetyWithResourceCollector(
+		controlplane.Job{ID: "job-1", Type: "update_controller"},
+		nil,
+		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		collector,
+		JobSafetyTuning{PreDropCaches: true},
+	)
+
+	if calls < 2 {
+		t.Fatalf("expected collector to be called twice (pre + post drop_caches), got %d", calls)
+	}
+	if decision.Blocked {
+		t.Fatalf("expected post-drop_caches reading 80 MB to clear the floor, got %#v", decision)
+	}
+}
+
+func TestEvaluateJobSafetyWithResourceCollectorSkipsDropCachesWhenDisabled(t *testing.T) {
+	// Inverse: when PreDropCaches=false, the collector is called exactly once
+	// regardless of the first reading.
+	calls := 0
+	collector := func() controlplane.RouterResources {
+		calls++
+		return controlplane.RouterResources{
+			MemoryAvailableMB: 48, OverlayFreeMB: 40, TMPFreeMB: 80,
+		}
+	}
+
+	evaluateJobSafetyWithResourceCollector(
+		controlplane.Job{ID: "job-1", Type: "update_controller"},
+		nil,
+		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		collector,
+		JobSafetyTuning{},
+	)
+
+	if calls != 1 {
+		t.Fatalf("expected collector to be called exactly once when PreDropCaches is off, got %d", calls)
 	}
 }
 
