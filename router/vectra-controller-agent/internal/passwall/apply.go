@@ -51,6 +51,13 @@ func (e Executor) Apply(ctx context.Context, config DesiredConfig, options Apply
 	uciCommands := buildBatchCommands(currentSections, config)
 	if len(uciCommands) > 0 {
 		if err := e.Backend.Batch(ctx, uciCommands); err != nil {
+			// Discard any /tmp/.uci/passwall2 staging left behind by a
+			// mid-batch failure so the next caller does not silently inherit
+			// it. Best-effort: revert errors are not surfaced because we are
+			// already returning the original batch failure to the caller.
+			if reverter, ok := e.Backend.(UCIReverter); ok {
+				_ = reverter.Revert(ctx, "passwall2")
+			}
 			return ApplyResult{}, err
 		}
 	}
@@ -83,9 +90,25 @@ func (e Executor) Apply(ctx context.Context, config DesiredConfig, options Apply
 		}
 	}
 
+	// Re-read passwall2 after all UCI + script steps so callers see the
+	// digest the kernel/passwall2 actually settled on. If this disagrees with
+	// desiredDigest, the apply ran but something downstream (subscribe.lua,
+	// rule_update.lua, passwall2 restart hooks) mutated state out from under
+	// us. Surfacing it lets the control plane detect silent drift instead of
+	// trusting the desiredDigest blindly.
+	appliedDigest := ""
+	if afterLines, showErr := e.Backend.Show(ctx, "passwall2"); showErr == nil {
+		if afterSections, parseErr := ParseUCILines(afterLines); parseErr == nil {
+			if d, digestErr := computeConfigDigest(importDesiredConfig(afterSections)); digestErr == nil {
+				appliedDigest = d
+			}
+		}
+	}
+
 	return ApplyResult{
 		Plan:           plan,
 		ConfigDigest:   desiredDigest,
+		AppliedDigest:  appliedDigest,
 		UCICommands:    uciCommands,
 		CommandResults: commandResults,
 	}, nil

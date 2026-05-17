@@ -231,6 +231,16 @@ func dnsmasqFullRepairScript() string {
 		"}",
 		"pkg_file=\"$(find \"$pkgdir\" -type f -name 'dnsmasq-full_*.ipk' | head -n 1)\"",
 		"[ -n \"$pkg_file\" ] && [ -s \"$pkg_file\" ] || { echo 'downloaded dnsmasq-full package is missing or empty; refusing to remove base dnsmasq' >&2; exit 1; }",
+		// Refuse to remove the running dnsmasq if overlay does not have enough
+		// headroom to install dnsmasq-full afterwards — a failed install in
+		// that window leaves the router without DNS/DHCP. 30 MB is enough
+		// margin for the installed package (~600 KB) plus opkg lists, locks,
+		// /var temp space, and the rollback path that re-installs base
+		// dnsmasq if the install fails.
+		"required_overlay_kb=30720",
+		"overlay_avail_kb=\"$(df -k /overlay 2>/dev/null | awk 'NR>1 {print $4; exit}')\"",
+		"[ -n \"$overlay_avail_kb\" ] || { echo 'unable to read overlay free space; refusing to remove base dnsmasq' >&2; exit 1; }",
+		"if [ \"$overlay_avail_kb\" -lt \"$required_overlay_kb\" ]; then echo \"insufficient overlay free space: ${overlay_avail_kb} KB available, ${required_overlay_kb} KB required; refusing to remove base dnsmasq\" >&2; exit 1; fi",
 		"dhcp_backup=''",
 		"if [ -f /etc/config/dhcp ]; then",
 		"  dhcp_backup=\"$workdir/dhcp.before-dnsmasq-full\"",

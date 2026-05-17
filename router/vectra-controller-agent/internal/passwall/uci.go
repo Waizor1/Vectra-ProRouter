@@ -21,6 +21,16 @@ type UCIBackend interface {
 	Run(ctx context.Context, name string, args ...string) (CommandResult, error)
 }
 
+// UCIReverter is an optional capability that allows callers to discard
+// uncommitted UCI staging for a package after a failed batch operation. uci
+// batch leaves partial staging in /tmp/.uci/<package> if it errors before its
+// final commit, and that staging will silently merge into the next caller's
+// view. Implementations that can revert (notably ExecBackend) opt in by
+// satisfying this interface; callers should type-assert and best-effort-call.
+type UCIReverter interface {
+	Revert(ctx context.Context, packageName string) error
+}
+
 type ExecBackend struct{}
 
 func (ExecBackend) Show(ctx context.Context, packageName string) ([]string, error) {
@@ -38,6 +48,15 @@ func (ExecBackend) Batch(ctx context.Context, commands []string) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("uci batch: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (ExecBackend) Revert(ctx context.Context, packageName string) error {
+	cmd := exec.CommandContext(ctx, "uci", "-q", "revert", packageName)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("uci revert %s: %w (%s)", packageName, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
