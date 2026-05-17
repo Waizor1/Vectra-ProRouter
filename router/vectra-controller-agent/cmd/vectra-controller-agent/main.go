@@ -708,6 +708,7 @@ func executeJobs(
 			desiredRevision,
 			time.Now().UTC(),
 			inventory.CollectResources,
+			cfg.JobSafety,
 		); safety.Blocked {
 			log.Printf("job %s (%s) blocked by router resource guard: %s", job.ID, job.Type, safety.Message)
 			if err := submitFailure(

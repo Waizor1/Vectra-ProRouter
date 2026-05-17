@@ -92,4 +92,43 @@ if [ -x "$XRAY_WRAPPER" ] && uci -q show passwall2.@global_app[0] >/dev/null 2>&
 	fi
 fi
 
+# 4) Loosen the controller's resource guard for this device so emergency
+# self-updates and other storage-class jobs can land even when MemAvailable
+# hovers in the 40-60 MB band that's normal on AX3000T-class boxes. The
+# defaults in cmd/vectra-controller-agent/job_safety.go target generic OpenWrt
+# hardware with 256+ MB and refuse storage jobs below 64 MB MemAvailable. We
+# lower the storage floor to 40 MB (matches the heavy job floor) and enable
+# pre_drop_caches so the guard gets one free `vm.drop_caches=3` attempt before
+# blocking the job — that single reclaim usually frees 30-50 MB of clean
+# page-cache slack that's been holding MemAvailable below the floor.
+#
+# Operator can override any of these per-router via:
+#   uci set vectra-controller.main.job_safety_storage_memory_floor_mb=NN
+#   uci set vectra-controller.main.job_safety_pre_drop_caches=0
+# and then `service vectra-controller restart` to pick up the new config.json.
+set_if_unset_or_default() {
+	local option="$1"
+	local desired="$2"
+	local default_used="$3"
+	local current
+	current="$(uci -q get vectra-controller.main."$option" 2>/dev/null || echo '')"
+	# Leave operator overrides intact: only touch when value is empty or it
+	# still matches the prior default we shipped.
+	if [ -z "$current" ] || [ "$current" = "$default_used" ]; then
+		uci -q set vectra-controller.main."$option"="$desired"
+	fi
+}
+
+set_if_unset_or_default job_safety_storage_memory_floor_mb 40 0
+set_if_unset_or_default job_safety_diagnostic_memory_floor_mb 24 0
+set_if_unset_or_default job_safety_pre_drop_caches 1 0
+uci -q commit vectra-controller && log "applied job_safety tuning: storage_floor=40MB diagnostic_floor=24MB pre_drop_caches=1"
+
+# Re-render config + restart controller so the new tuning is picked up
+# immediately. This is best-effort — postinst will restart the controller
+# shortly after this uci-defaults runs, and procd takes care of warmup.
+if [ -x /usr/libexec/vectra-controller/render-config.sh ]; then
+	/usr/libexec/vectra-controller/render-config.sh /var/run/vectra-controller/config.json >/dev/null 2>&1 || log "render-config.sh failed"
+fi
+
 exit 0
