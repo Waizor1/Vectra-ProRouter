@@ -345,16 +345,13 @@ func stagePackageIndex(
 	}
 
 	signaturePath := filepath.Join(stagingDir, "Packages.sig")
-	if downloadErr := downloadFile(ctx, signatureURL, signaturePath, timeout); downloadErr == nil {
-		if err := verifyUsignSignature(indexPath, signaturePath); err != nil {
-			return "", "", err
-		}
-		return indexPath, signaturePath, nil
-	} else if explicitSignatureURL != "" {
-		return "", "", fmt.Errorf("download package index signature: %w", downloadErr)
+	if err := downloadFile(ctx, signatureURL, signaturePath, timeout); err != nil {
+		return "", "", fmt.Errorf("download package index signature: %w", err)
 	}
-
-	return indexPath, "", nil
+	if err := verifyUsignSignature(indexPath, signaturePath); err != nil {
+		return "", "", err
+	}
+	return indexPath, signaturePath, nil
 }
 
 func parsePackagesIndex(indexPath string) ([]packageIndexEntry, error) {

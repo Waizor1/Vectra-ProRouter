@@ -475,18 +475,20 @@ func readKeyValueFile(path string, key string) string {
 
 func detectLayoutFamily(boardName string) string {
 	normalized := strings.ToLower(strings.TrimSpace(boardName))
-	switch {
-	case strings.Contains(normalized, "ubootmod"):
+	if strings.Contains(normalized, "ubootmod") {
 		return "ubootmod"
-	case normalized == "xiaomi,mi-router-ax3000t":
-		cmdline, err := os.ReadFile("/proc/cmdline")
-		if err == nil && strings.Contains(string(cmdline), "firmware=") {
-			return "stock-layout"
-		}
-		return "stock-layout"
-	default:
-		return ""
 	}
+
+	cmdline, err := os.ReadFile("/proc/cmdline")
+	if err == nil && strings.Contains(string(cmdline), "firmware=") {
+		return "stock-layout"
+	}
+
+	if normalized == "xiaomi,mi-router-ax3000t" {
+		return "stock-layout"
+	}
+
+	return ""
 }
 
 func collectResources() controlplane.RouterResources {

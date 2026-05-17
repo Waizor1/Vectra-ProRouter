@@ -10,9 +10,17 @@ type RouterStatus =
 
 const HEARTBEAT_GRACE_MULTIPLIER = 3;
 const MINIMUM_OFFLINE_WINDOW_SECONDS = 180;
+const DEFAULT_POLLING_INTERVAL_SECONDS = 45;
+
+function resolvePollingIntervalSeconds() {
+  const raw = Number(env.VECTRA_POLLING_INTERVAL_SECONDS);
+  return Number.isFinite(raw) && raw > 0
+    ? raw
+    : DEFAULT_POLLING_INTERVAL_SECONDS;
+}
 
 export function getRouterOfflineThresholdMs(
-  pollingIntervalSeconds = Number(env.VECTRA_POLLING_INTERVAL_SECONDS),
+  pollingIntervalSeconds = resolvePollingIntervalSeconds(),
 ) {
   const thresholdSeconds = Math.max(
     pollingIntervalSeconds * HEARTBEAT_GRACE_MULTIPLIER,

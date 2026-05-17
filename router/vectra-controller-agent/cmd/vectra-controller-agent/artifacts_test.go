@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseArtifactJobPrefersPackageList(t *testing.T) {
@@ -163,5 +168,36 @@ SHA256sum: ccccdddd
 	}
 	if got, want := entries[1].Filename, "luci-app-vectra-controller_0.1.6-r1_all.ipk"; got != want {
 		t.Fatalf("entry[1].Filename = %q, want %q", got, want)
+	}
+}
+
+func TestStagePackageIndexRefusesUnsignedFeed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/Packages"):
+			w.Header().Set("content-type", "text/plain")
+			_, _ = w.Write([]byte("Package: bogus\nVersion: 0\nFilename: bogus.ipk\nSHA256sum: 00\n"))
+		case strings.HasSuffix(r.URL.Path, "/Packages.sig"):
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	indexPath, signaturePath, err := stagePackageIndex(
+		context.Background(),
+		server.URL+"/feed",
+		"",
+		2*time.Second,
+	)
+	if err == nil {
+		t.Fatalf("expected error when Packages.sig is missing, got indexPath=%q signaturePath=%q", indexPath, signaturePath)
+	}
+	if !strings.Contains(err.Error(), "download package index signature") {
+		t.Fatalf("expected signature-download error, got: %v", err)
+	}
+	if indexPath != "" || signaturePath != "" {
+		t.Fatalf("expected empty paths on signature failure, got indexPath=%q signaturePath=%q", indexPath, signaturePath)
 	}
 }

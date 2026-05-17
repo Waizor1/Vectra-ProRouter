@@ -2,8 +2,8 @@ import { env } from "~/env";
 import { PublicInstallWorkspace } from "~/components/public-install-workspace";
 import {
   DEFAULT_CONTROL_DOMAIN,
-  buildAx3000tBootstrapCommand,
-  buildAx3000tBootstrapScriptUrl,
+  buildFilogicBootstrapCommand,
+  buildFilogicBootstrapScriptUrl,
 } from "~/app/enrollment/install-presets";
 
 export default function PublicInstallPage() {
@@ -12,8 +12,8 @@ export default function PublicInstallPage() {
 
   return (
     <PublicInstallWorkspace
-      quickCommand={buildAx3000tBootstrapCommand(controlDomain)}
-      bootstrapScriptUrl={buildAx3000tBootstrapScriptUrl(controlDomain)}
+      quickCommand={buildFilogicBootstrapCommand(controlDomain)}
+      bootstrapScriptUrl={buildFilogicBootstrapScriptUrl(controlDomain)}
     />
   );
 }
