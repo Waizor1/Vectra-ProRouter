@@ -1,6 +1,15 @@
-import { timingSafeEqual } from "node:crypto";
-
 const SESSION_COOKIE_NAME = "vectra_operator_session";
+
+function timingSafeStringEqual(a: string, b: string) {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let mismatch = 0;
+  for (let index = 0; index < a.length; index += 1) {
+    mismatch |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  }
+  return mismatch === 0;
+}
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 
 type SessionPayload = {
@@ -80,12 +89,7 @@ export async function verifyOperatorSession(token: string | undefined | null) {
   }
 
   const expectedSignature = await signValue(payloadPart);
-  const expectedBuffer = Buffer.from(expectedSignature);
-  const actualBuffer = Buffer.from(signaturePart);
-  if (
-    expectedBuffer.length !== actualBuffer.length ||
-    !timingSafeEqual(expectedBuffer, actualBuffer)
-  ) {
+  if (!timingSafeStringEqual(expectedSignature, signaturePart)) {
     return null;
   }
 
