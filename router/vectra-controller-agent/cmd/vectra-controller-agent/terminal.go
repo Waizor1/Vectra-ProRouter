@@ -5,10 +5,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 )
+
+// terminalBashPath is the preferred shell if installed. Several operator
+// playbooks rely on bash-only features (process substitution, [[, arrays) and
+// busybox sh silently fails on them — falling through to sh causes confusing
+// "syntax error" failures that look like router-side problems. We probe once
+// per process via os.Stat.
+const terminalBashPath = "/bin/bash"
 
 const (
 	defaultTerminalCommandTimeoutSeconds = 30
@@ -53,12 +62,31 @@ func clampTerminalCommandTimeout(value int) int {
 		return defaultTerminalCommandTimeoutSeconds
 	}
 	if value < minTerminalCommandTimeoutSeconds {
+		log.Printf(
+			"terminal command timeout %ds below minimum %ds, raising",
+			value, minTerminalCommandTimeoutSeconds,
+		)
 		return minTerminalCommandTimeoutSeconds
 	}
 	if value > maxTerminalCommandTimeoutSeconds {
+		log.Printf(
+			"terminal command timeout %ds exceeds maximum %ds, capping",
+			value, maxTerminalCommandTimeoutSeconds,
+		)
 		return maxTerminalCommandTimeoutSeconds
 	}
 	return value
+}
+
+// terminalCommandShell returns the path to the shell used to invoke operator
+// commands. Prefers /bin/bash if present (most operator playbooks expect bash
+// semantics); falls back to "sh" otherwise (resolved via PATH at exec time,
+// busybox on OpenWrt).
+func terminalCommandShell() string {
+	if info, err := os.Stat(terminalBashPath); err == nil && !info.IsDir() {
+		return terminalBashPath
+	}
+	return "sh"
 }
 
 func executeTerminalCommand(
@@ -86,7 +114,7 @@ func executeTerminalCommand(
 	)
 	defer cancel()
 
-	cmd := exec.CommandContext(commandCtx, "sh", "-c", commandText)
+	cmd := exec.CommandContext(commandCtx, terminalCommandShell(), "-c", commandText)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
