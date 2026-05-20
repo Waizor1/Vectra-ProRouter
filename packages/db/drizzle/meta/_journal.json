@@ -92,6 +92,13 @@
       "when": 1778790900000,
       "tag": "0012_collect_optimization_baseline_job",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1779580800000,
+      "tag": "0013_inventory_router_created_idx",
+      "breakpoints": true
     }
   ]
 }

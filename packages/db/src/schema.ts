@@ -180,6 +180,10 @@ export const routerInventorySnapshots = createTable(
   (table) => [
     index("vectra_router_inventory_router_idx").on(table.routerId),
     index("vectra_router_inventory_created_idx").on(table.createdAt),
+    index("vectra_router_inventory_router_created_idx").on(
+      table.routerId,
+      table.createdAt.desc(),
+    ),
   ],
 );
 
