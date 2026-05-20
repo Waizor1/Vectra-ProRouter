@@ -1,0 +1,15 @@
+[Unit]
+Description=Vectra router inventory snapshot retention
+Wants=docker.service
+After=docker.service
+ConditionPathExists=/opt/vectra-prorouter/deploy/scripts/prune-inventory-snapshots.sh
+
+[Service]
+Type=oneshot
+User=root
+Environment=RETENTION_DAYS=7
+ExecStart=/bin/bash /opt/vectra-prorouter/deploy/scripts/prune-inventory-snapshots.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=yes

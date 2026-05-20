@@ -26,7 +26,7 @@ import {
   canRunDestructiveAction,
   describeEffectiveRouterSupport,
 } from "~/server/vectra/support";
-import { sql } from "drizzle-orm";
+import { loadLatestSnapshots } from "~/server/vectra/fleet-monitoring-data";
 
 export const AX3000T_GLOBAL_TEMPLATE_KEY = "ax3000t-global-baseline";
 
@@ -334,46 +334,6 @@ export async function saveGlobalTemplate(
   };
 }
 
-async function getLatestSnapshotsByRouter(
-  routerIds: string[],
-  client: DatabaseClient,
-) {
-  if (routerIds.length === 0) {
-    return new Map<string, typeof routerInventorySnapshots.$inferSelect>();
-  }
-
-  const rows = await client.execute(sql`
-    select distinct on (router_id)
-      id,
-      router_id as "routerId",
-      source,
-      payload,
-      passwall_enabled as "passwallEnabled",
-      selected_node_id as "selectedNodeId",
-      node_count as "nodeCount",
-      subscription_count as "subscriptionCount",
-      controller_version as "controllerVersion",
-      passwall_app_version as "passwallAppVersion",
-      created_at as "createdAt"
-    from vectra_router_inventory_snapshot
-    where router_id in (
-      ${sql.join(routerIds.map((routerId) => sql`${routerId}`), sql`, `)}
-    )
-    order by router_id, created_at desc
-  `);
-
-  const latest = new Map<string, typeof routerInventorySnapshots.$inferSelect>();
-  for (const row of rows) {
-    const snapshot = row as typeof routerInventorySnapshots.$inferSelect;
-    if (!routerIds.includes(snapshot.routerId) || latest.has(snapshot.routerId)) {
-      continue;
-    }
-    latest.set(snapshot.routerId, snapshot);
-  }
-
-  return latest;
-}
-
 async function getHydratedRouterConfig(
   client: DatabaseClient,
   routerId: string,
@@ -437,7 +397,7 @@ export async function loadGlobalTemplateWorkspace(
 
   const routerIds = routerRows.map((router) => router.id);
   const [latestSnapshots, historyRows] = await Promise.all([
-    getLatestSnapshotsByRouter(routerIds, client),
+    loadLatestSnapshots(client, routerIds),
     client
       .select()
       .from(eventLog)
@@ -542,9 +502,9 @@ export async function executeGlobalTemplateRollout(
           .where(inArray(routers.id, requestedRouterIds))
       : [];
   const routerById = new Map(routerRows.map((router) => [router.id, router]));
-  const latestSnapshots = await getLatestSnapshotsByRouter(
-    routerRows.map((router) => router.id),
+  const latestSnapshots = await loadLatestSnapshots(
     client,
+    routerRows.map((router) => router.id),
   );
   const note = firstNonEmptyText(input.note);
 

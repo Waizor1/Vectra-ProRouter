@@ -242,21 +242,26 @@ export async function loadLatestFleetPolicyConfigRows(
 
   const rows = supportsSnapshotExecute(database)
     ? await database.execute(sql`
-          select distinct on (router_id)
-            id,
-            router_id as "routerId",
-            origin,
-            config,
-            created_at as "createdAt"
-          from vectra_passwall_desired_revision
-          where router_id in (
-            ${sql.join(
-              routerIds.map((routerId) => sql`${routerId}`),
+          select
+            s.id,
+            s.router_id as "routerId",
+            s.origin,
+            s.config,
+            s.created_at as "createdAt"
+          from (
+            values ${sql.join(
+              routerIds.map((routerId) => sql`(${routerId})`),
               sql`, `,
             )}
-          )
-            and origin in ('router_import', 'operator_reimport')
-          order by router_id, created_at desc
+          ) as r(router_id)
+          join lateral (
+            select *
+            from vectra_passwall_desired_revision rev
+            where rev.router_id = r.router_id
+              and rev.origin in ('router_import', 'operator_reimport')
+            order by rev.created_at desc
+            limit 1
+          ) s on true
         `)
     : await database
         .select()
@@ -290,26 +295,31 @@ export async function loadLatestSnapshots(
 
   const rows = supportsSnapshotExecute(database)
     ? await database.execute(sql`
-          select distinct on (router_id)
-            id,
-            router_id as "routerId",
-            source,
-            payload,
-            passwall_enabled as "passwallEnabled",
-            selected_node_id as "selectedNodeId",
-            node_count as "nodeCount",
-            subscription_count as "subscriptionCount",
-            controller_version as "controllerVersion",
-            passwall_app_version as "passwallAppVersion",
-            created_at as "createdAt"
-          from vectra_router_inventory_snapshot
-          where router_id in (
-            ${sql.join(
-              routerIds.map((routerId) => sql`${routerId}`),
+          select
+            s.id,
+            s.router_id as "routerId",
+            s.source,
+            s.payload,
+            s.passwall_enabled as "passwallEnabled",
+            s.selected_node_id as "selectedNodeId",
+            s.node_count as "nodeCount",
+            s.subscription_count as "subscriptionCount",
+            s.controller_version as "controllerVersion",
+            s.passwall_app_version as "passwallAppVersion",
+            s.created_at as "createdAt"
+          from (
+            values ${sql.join(
+              routerIds.map((routerId) => sql`(${routerId})`),
               sql`, `,
             )}
-          )
-          order by router_id, created_at desc
+          ) as r(router_id)
+          join lateral (
+            select *
+            from vectra_router_inventory_snapshot snap
+            where snap.router_id = r.router_id
+            order by snap.created_at desc
+            limit 1
+          ) s on true
         `)
     : await database
         .select()

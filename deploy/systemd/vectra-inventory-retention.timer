@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Vectra router inventory snapshot retention
+
+[Timer]
+Unit=vectra-inventory-retention.service
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

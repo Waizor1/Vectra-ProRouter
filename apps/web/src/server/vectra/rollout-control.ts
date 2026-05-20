@@ -11,7 +11,7 @@ import {
   passwallDesiredConfigSchema,
   type PasswallDesiredConfig,
 } from "@vectra/contracts";
-import { desc, eq, inArray, sql } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 
 import {
   buildFallbackPasswallBundleMetadata,
@@ -37,6 +37,7 @@ import {
   describeEffectiveRouterSupport,
 } from "~/server/vectra/support";
 import { buildTemplateRolloutDraft } from "~/server/vectra/global-template";
+import { loadLatestSnapshots } from "~/server/vectra/fleet-monitoring-data";
 
 type DatabaseClient = typeof defaultDb;
 type RouterRow = typeof routers.$inferSelect;
@@ -94,48 +95,6 @@ function buildRouterDisplayName(
       snapshot?.payload.hostname,
     ) ?? router.deviceIdentifier
   );
-}
-
-async function getLatestSnapshotsByRouter(
-  client: DatabaseClient,
-  routerIds: string[],
-) {
-  if (routerIds.length === 0) {
-    return new Map<string, SnapshotRow>();
-  }
-
-  const rows = await client.execute(sql`
-    select distinct on (router_id)
-      id,
-      router_id as "routerId",
-      source,
-      payload,
-      passwall_enabled as "passwallEnabled",
-      selected_node_id as "selectedNodeId",
-      node_count as "nodeCount",
-      subscription_count as "subscriptionCount",
-      controller_version as "controllerVersion",
-      passwall_app_version as "passwallAppVersion",
-      created_at as "createdAt"
-    from vectra_router_inventory_snapshot
-    where router_id in (
-      ${sql.join(
-        routerIds.map((routerId) => sql`${routerId}`),
-        sql`, `,
-      )}
-    )
-    order by router_id, created_at desc
-  `);
-
-  const latest = new Map<string, SnapshotRow>();
-  for (const row of rows) {
-    const snapshot = row as typeof routerInventorySnapshots.$inferSelect;
-    if (!latest.has(snapshot.routerId)) {
-      latest.set(snapshot.routerId, snapshot);
-    }
-  }
-
-  return latest;
 }
 
 export async function getOrCreateDefaultRolloutProfile(
@@ -222,7 +181,7 @@ export async function loadProfilesAndGroupsWorkspace(args: {
     .from(routers)
     .orderBy(desc(routers.lastSeenAt), desc(routers.createdAt));
   const routerIds = routerRows.map((router) => router.id);
-  const latestSnapshots = await getLatestSnapshotsByRouter(client, routerIds);
+  const latestSnapshots = await loadLatestSnapshots(client, routerIds);
   const groupsById = new Map(groups.map((group) => [group.id, group]));
 
   const groupRouterMap = new Map<string, typeof routerRows>();
@@ -370,7 +329,7 @@ export async function loadVersionDriftWorkspace(
     .orderBy(desc(routers.lastSeenAt), desc(routers.createdAt));
   const groups = await client.select().from(operatorRouterGroups);
   const groupsById = new Map(groups.map((group) => [group.id, group]));
-  const snapshots = await getLatestSnapshotsByRouter(
+  const snapshots = await loadLatestSnapshots(
     client,
     routerRows.map((router) => router.id),
   );
@@ -690,7 +649,7 @@ export async function queueGroupProfileRollout(args: {
     .select()
     .from(routers)
     .where(eq(routers.rolloutGroupId, group.id));
-  const latestSnapshots = await getLatestSnapshotsByRouter(
+  const latestSnapshots = await loadLatestSnapshots(
     client,
     routerRows.map((router) => router.id),
   );
