@@ -615,7 +615,12 @@ export const eventLog = createTable(
       .notNull()
       .defaultNow(),
   },
-  (table) => [index("vectra_event_log_router_idx").on(table.routerId)],
+  (table) => [
+    index("vectra_event_log_router_idx").on(table.routerId),
+    index("vectra_event_log_fleet_recent_idx")
+      .on(table.createdAt.desc())
+      .where(sql`${table.routerId} is null`),
+  ],
 );
 
 export const operatorPushSubscriptions = createTable(

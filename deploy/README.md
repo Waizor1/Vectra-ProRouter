@@ -396,6 +396,50 @@ systemctl list-timers vectra-vps-disk-cleanup.timer
 journalctl -u vectra-vps-disk-cleanup.service -n 100 --no-pager
 ```
 
+## 5.3. Inventory snapshot retention timer
+
+Router check-ins append one row per router to `vectra_router_inventory_snapshot`
+roughly every minute, but every reader only needs the latest snapshot per
+router. Left unbounded the table grew to ~700k rows / 1.7 GB and made the fleet
+monitoring query (and the web container) fall over.
+
+`deploy/scripts/prune-inventory-snapshots.sh` drops snapshots older than
+`RETENTION_DAYS` (default 7) in committed batches, always keeping the most
+recent snapshot per router (an offline router can have an old "latest" that must
+not be deleted). The steady-state daily delta is a single small batch.
+
+Manual run on the VPS:
+
+```bash
+cd /opt/vectra-prorouter
+RETENTION_DAYS=7 bash ./deploy/scripts/prune-inventory-snapshots.sh
+```
+
+After the first large prune, return the freed space to the OS once (brief
+`ACCESS EXCLUSIVE` lock on the table; router check-ins retry):
+
+```bash
+cd /opt/vectra-prorouter
+docker compose --env-file .env exec -T postgres \
+  sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "VACUUM (FULL, ANALYZE) vectra_router_inventory_snapshot;"'
+```
+
+Install the bundled daily timer on the VPS:
+
+```bash
+sudo install -m 0644 deploy/systemd/vectra-inventory-retention.service /etc/systemd/system/vectra-inventory-retention.service
+sudo install -m 0644 deploy/systemd/vectra-inventory-retention.timer /etc/systemd/system/vectra-inventory-retention.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now vectra-inventory-retention.timer
+```
+
+Verify:
+
+```bash
+systemctl status vectra-inventory-retention.timer --no-pager
+journalctl -u vectra-inventory-retention.service -n 100 --no-pager
+```
+
 ## 6. Health checks
 
 Local container health:

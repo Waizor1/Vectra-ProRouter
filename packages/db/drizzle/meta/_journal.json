@@ -99,6 +99,13 @@
       "when": 1779580800000,
       "tag": "0013_inventory_router_created_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1779580900000,
+      "tag": "0014_event_log_fleet_recent_idx",
+      "breakpoints": true
     }
   ]
 }
