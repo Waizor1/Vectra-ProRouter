@@ -1,5 +1,14 @@
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
-import { AlertOctagon, AlertTriangle, ArrowRight, Info } from "lucide-react";
+import {
+  AlertOctagon,
+  AlertTriangle,
+  ArrowRight,
+  ChevronDown,
+  Info,
+} from "lucide-react";
 
 import { cn } from "~/lib/utils";
 import { ToneBadge } from "~/components/vectra/tone-badge";
@@ -44,7 +53,11 @@ const severityIcon = {
   info: Info,
 } as const;
 
+const COLLAPSED_LIMIT = 4;
+
 export function FleetAlertStrip({ alerts, className }: FleetAlertStripProps) {
+  const [expanded, setExpanded] = useState(false);
+
   const actionable = alerts.filter(
     (alert) => alert.severity === "critical" || alert.severity === "warning",
   );
@@ -56,6 +69,10 @@ export function FleetAlertStrip({ alerts, className }: FleetAlertStripProps) {
     (left, right) => severityRank[left.severity] - severityRank[right.severity],
   );
   const topSeverity = sorted[0]?.severity ?? "warning";
+
+  const overflowCount = Math.max(0, sorted.length - COLLAPSED_LIMIT);
+  const hasOverflow = overflowCount > 0;
+  const visible = expanded ? sorted : sorted.slice(0, COLLAPSED_LIMIT);
 
   return (
     <aside
@@ -69,8 +86,13 @@ export function FleetAlertStrip({ alerts, className }: FleetAlertStripProps) {
         className,
       )}
     >
-      <ul className="flex flex-col divide-y divide-border/40">
-        {sorted.map((alert) => {
+      <ul
+        className={cn(
+          "flex flex-col divide-y divide-border/40",
+          expanded && hasOverflow && "max-h-[40vh] overflow-y-auto",
+        )}
+      >
+        {visible.map((alert) => {
           const Icon = severityIcon[alert.severity];
           return (
             <li
@@ -111,6 +133,23 @@ export function FleetAlertStrip({ alerts, className }: FleetAlertStripProps) {
           );
         })}
       </ul>
+      {hasOverflow ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          className="mt-1.5 flex w-full items-center justify-center gap-1 rounded-md border border-border/40 bg-card/40 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-secondary/40 hover:text-foreground"
+        >
+          {expanded ? "Свернуть" : `Показать ещё ${overflowCount}`}
+          <ChevronDown
+            className={cn(
+              "h-3.5 w-3.5 transition-transform",
+              expanded && "rotate-180",
+            )}
+            strokeWidth={1.75}
+          />
+        </button>
+      ) : null}
     </aside>
   );
 }

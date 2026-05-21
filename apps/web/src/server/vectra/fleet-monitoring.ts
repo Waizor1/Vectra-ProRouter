@@ -619,8 +619,14 @@ function buildAlerts(
     });
   }
 
+  const hasLowMemoryAlert = alerts.some((alert) => alert.kind === "low_memory");
   for (const event of router.safetyEvents) {
     if (event.severity !== "critical" && event.severity !== "warning") {
+      continue;
+    }
+    // The dedicated low_memory alert already covers this RAM condition with a
+    // richer summary; drop the controller's duplicate low_memory safety event.
+    if (event.type === "low_memory" && hasLowMemoryAlert) {
       continue;
     }
     alerts.push({

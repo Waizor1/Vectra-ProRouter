@@ -465,4 +465,100 @@ describe("pickFreshAlertsForBrowser", () => {
     expect(snapshot.alerts[0]?.description).toContain("xray");
     expect(snapshot.routers[0]?.alertKinds).toContain("router_safety");
   });
+
+  it("drops the duplicate low_memory safety event when the dedicated RAM alert covers it", () => {
+    const snapshot = buildFleetMonitoringSnapshot({
+      now: new Date("2026-05-17T10:10:00.000Z"),
+      offlineThresholdMs: 3 * 60 * 1000,
+      openIncidentCount: 0,
+      queuedJobs: 0,
+      routers: [
+        {
+          id: "low-ram",
+          name: "Low RAM AX3000T",
+          status: "active",
+          importState: "approved",
+          supportState: "pilot",
+          lastSeenAt: new Date("2026-05-17T10:09:40.000Z"),
+          selectedNode: "WorldProxy",
+          passwallEnabled: true,
+          nodeCount: 3,
+          subscriptionCount: 1,
+          controllerVersion: "0.1.13-r24",
+          passwallVersion: "26.5.1-r1",
+          components: {},
+          queuedJobCount: 0,
+          lastRescueReason: null,
+          resources: { memoryTotalMb: 234, memoryAvailableMb: 46 },
+          safetyEvents: [
+            {
+              type: "low_memory",
+              severity: "critical",
+              component: "memory",
+              source: "resources",
+              message: "available RAM is low: 46 MB available (19% of 234 MB)",
+              observedAt: "2026-05-17T10:09:00.000Z",
+            },
+          ],
+          openIncident: null,
+        },
+      ],
+    });
+
+    const lowMemoryAlerts = snapshot.alerts.filter(
+      (alert) => alert.kind === "low_memory",
+    );
+    expect(lowMemoryAlerts).toHaveLength(1);
+    expect(
+      snapshot.alerts.some((alert) => alert.kind === "router_safety"),
+    ).toBe(false);
+    expect(snapshot.routers[0]?.alertKinds).not.toContain("router_safety");
+  });
+
+  it("keeps a low_memory safety event when no dedicated RAM alert is present", () => {
+    const snapshot = buildFleetMonitoringSnapshot({
+      now: new Date("2026-05-17T10:10:00.000Z"),
+      offlineThresholdMs: 3 * 60 * 1000,
+      openIncidentCount: 0,
+      queuedJobs: 0,
+      routers: [
+        {
+          id: "ok-ram",
+          name: "Healthy AX3000T",
+          status: "active",
+          importState: "approved",
+          supportState: "pilot",
+          lastSeenAt: new Date("2026-05-17T10:09:40.000Z"),
+          selectedNode: "WorldProxy",
+          passwallEnabled: true,
+          nodeCount: 3,
+          subscriptionCount: 1,
+          controllerVersion: "0.1.13-r24",
+          passwallVersion: "26.5.1-r1",
+          components: {},
+          queuedJobCount: 0,
+          lastRescueReason: null,
+          resources: { memoryTotalMb: 234, memoryAvailableMb: 180 },
+          safetyEvents: [
+            {
+              type: "low_memory",
+              severity: "warning",
+              component: "memory",
+              source: "resources",
+              message: "controller low-memory guard tripped early",
+              observedAt: "2026-05-17T10:09:00.000Z",
+            },
+          ],
+          openIncident: null,
+        },
+      ],
+    });
+
+    expect(snapshot.alerts.some((alert) => alert.kind === "low_memory")).toBe(
+      false,
+    );
+    expect(
+      snapshot.alerts.some((alert) => alert.kind === "router_safety"),
+    ).toBe(true);
+  });
 });
