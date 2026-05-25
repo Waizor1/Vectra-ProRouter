@@ -4,7 +4,6 @@ import { type Metadata } from "next";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 
 import { AppShellFrame } from "~/components/app-shell-frame";
-import { isUiV2 } from "~/lib/feature-flag";
 import { TRPCReactProvider } from "~/trpc/react";
 
 export const metadata: Metadata = {
@@ -28,11 +27,9 @@ const plexMono = IBM_Plex_Mono({
   display: "swap",
 });
 
-export default async function RootLayout({
+export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
-  const uiV2 = await isUiV2();
-
   return (
     <html
       lang="ru"
@@ -40,7 +37,7 @@ export default async function RootLayout({
     >
       <body className="min-h-screen bg-[var(--vectra-bg)] font-sans text-slate-100 antialiased">
         <TRPCReactProvider>
-          <AppShellFrame uiV2={uiV2}>{children}</AppShellFrame>
+          <AppShellFrame>{children}</AppShellFrame>
         </TRPCReactProvider>
       </body>
     </html>

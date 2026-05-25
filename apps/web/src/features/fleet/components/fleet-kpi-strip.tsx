@@ -5,16 +5,20 @@ import { cn } from "~/lib/utils";
 import { StatusDot } from "~/components/vectra/status-dot";
 import { toneClasses, type Tone } from "~/lib/tone";
 
+export type FleetKpiKey = "all" | "healthy" | "problem" | "offline";
+
 export interface FleetKpiStripProps {
   total: number;
   healthy: number;
   problem: number;
   offline: number;
+  active?: FleetKpiKey;
+  onSelect?: (key: FleetKpiKey) => void;
   className?: string;
 }
 
 interface KpiTile {
-  key: string;
+  key: FleetKpiKey;
   label: string;
   value: number;
   tone: Tone;
@@ -27,11 +31,13 @@ export function FleetKpiStrip({
   healthy,
   problem,
   offline,
+  active,
+  onSelect,
   className,
 }: FleetKpiStripProps) {
   const tiles: KpiTile[] = [
     {
-      key: "total",
+      key: "all",
       label: "Всего",
       value: total,
       tone: "neutral",
@@ -74,12 +80,21 @@ export function FleetKpiStrip({
       {tiles.map((tile) => {
         const t = toneClasses[tile.tone];
         const Icon = tile.icon;
+        const isActive = active === tile.key;
+        const interactive = Boolean(onSelect);
         return (
-          <div
+          <button
             key={tile.key}
+            type="button"
+            onClick={() => onSelect?.(tile.key)}
+            disabled={!interactive}
+            aria-pressed={interactive ? isActive : undefined}
             className={cn(
-              "flex flex-col gap-1 rounded-lg border bg-card/40 px-3 py-2.5",
+              "flex flex-col gap-1 rounded-lg border bg-card/40 px-3 py-2.5 text-left transition-colors",
               t.border,
+              interactive && "hover:bg-card/70 cursor-pointer",
+              isActive && "ring-2 ring-ring ring-offset-1 ring-offset-background",
+              !interactive && "cursor-default",
             )}
           >
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -103,7 +118,7 @@ export function FleetKpiStrip({
                 {tile.hint}
               </span>
             </div>
-          </div>
+          </button>
         );
       })}
     </div>

@@ -7,13 +7,11 @@ import {
   ArrowLeft,
   Activity,
   Boxes,
-  Code2,
   RefreshCw,
   ScrollText,
   Wrench,
 } from "lucide-react";
 
-import { Button } from "~/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import { ToneBadge } from "~/components/vectra/tone-badge";
 import { StaleBadge } from "~/components/vectra/stale-badge";
@@ -25,7 +23,6 @@ import { ConfigTab } from "~/features/router-detail/tabs/config-tab";
 import { NodesTab } from "~/features/router-detail/tabs/nodes-tab";
 import { UpdatesTab } from "~/features/router-detail/tabs/updates-tab";
 import { DiagnosticsTab } from "~/features/router-detail/tabs/diagnostics-tab";
-import { JsonTab } from "~/features/router-detail/tabs/json-tab";
 
 export type RouterDetailEditorSurface =
   RouterOutputs["draft"]["editorSurface"];
@@ -36,7 +33,6 @@ const TAB_IDS = [
   "nodes",
   "updates",
   "diagnostics",
-  "json",
 ] as const;
 
 export type RouterDetailTabId = (typeof TAB_IDS)[number];
@@ -51,7 +47,6 @@ const TABS: ReadonlyArray<{
   { id: "nodes", label: "Узлы", icon: Boxes },
   { id: "updates", label: "Обновления", icon: RefreshCw },
   { id: "diagnostics", label: "Диагностика", icon: ScrollText },
-  { id: "json", label: "JSON эксперт", icon: Code2 },
 ];
 
 function normalizeTab(value: string | null | undefined): RouterDetailTabId {
@@ -180,11 +175,6 @@ export function RouterDetailV2({
               {summary.boardName ? ` · ${summary.boardName}` : ""}
             </p>
           </div>
-          <Button asChild variant="outline" size="sm">
-            <Link href={`/routers/${routerId}?ui=v1`}>
-              Расширенный режим (v1)
-            </Link>
-          </Button>
         </header>
       </div>
 
@@ -215,19 +205,16 @@ export function RouterDetailV2({
           />
         </TabsContent>
         <TabsContent value="config">
-          <ConfigTab routerId={routerId} />
+          <ConfigTab routerId={routerId} initialSurface={initialSurface} />
         </TabsContent>
         <TabsContent value="nodes">
-          <NodesTab routerId={routerId} />
+          <NodesTab routerId={routerId} initialSurface={initialSurface} />
         </TabsContent>
         <TabsContent value="updates">
-          <UpdatesTab routerId={routerId} />
+          <UpdatesTab routerId={routerId} initialSurface={initialSurface} />
         </TabsContent>
         <TabsContent value="diagnostics">
-          <DiagnosticsTab routerId={routerId} />
-        </TabsContent>
-        <TabsContent value="json">
-          <JsonTab routerId={routerId} />
+          <DiagnosticsTab routerId={routerId} initialSurface={initialSurface} />
         </TabsContent>
       </Tabs>
     </section>
