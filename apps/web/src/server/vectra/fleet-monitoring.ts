@@ -1,4 +1,5 @@
 import type {
+  RouterInstagramReachability,
   RouterInventory,
   RouterSafetyEvent,
   RouterTelegramReachability,
@@ -6,6 +7,10 @@ import type {
   SupportState,
 } from "@vectra/contracts";
 
+import {
+  getInstagramReachabilityStatus,
+  formatInstagramReachabilityLabel,
+} from "~/lib/instagram-reachability";
 import {
   describeRouterMemory,
   type RouterMemoryLevel,
@@ -45,6 +50,7 @@ type MonitoringAlertKind =
   | "offline"
   | "telegram_degraded"
   | "youtube_degraded"
+  | "instagram_degraded"
   | "import_review"
   | "out_of_sync"
   | "reimport_needed"
@@ -67,6 +73,7 @@ type MonitoringChartTone = "good" | "warning" | "critical" | "default";
 type MonitoringServiceFilterValue =
   | "telegram_degraded"
   | "youtube_degraded"
+  | "instagram_degraded"
   | "service_unknown";
 
 export type FleetMonitoringRouterInput = {
@@ -85,6 +92,7 @@ export type FleetMonitoringRouterInput = {
   components: Record<string, string>;
   telegramReachability?: RouterTelegramReachability | null;
   youtubeReachability?: RouterYoutubeReachability | null;
+  instagramReachability?: RouterInstagramReachability | null;
   resources?: Pick<
     RouterInventory["resources"],
     "memoryTotalMb" | "memoryAvailableMb"
@@ -154,6 +162,8 @@ type FleetMonitoringAlert = {
   };
 };
 
+export type ConnectivityVerdict = "ok" | "partial" | "down" | "unknown";
+
 type FleetMonitoringRouter = {
   id: string;
   name: string;
@@ -170,6 +180,8 @@ type FleetMonitoringRouter = {
   components: Record<string, string>;
   telegramReachability?: RouterTelegramReachability | null;
   youtubeReachability?: RouterYoutubeReachability | null;
+  instagramReachability?: RouterInstagramReachability | null;
+  connectivityVerdict: ConnectivityVerdict;
   safetyEvents: RouterSafetyEvent[];
   memory: RouterMemoryStatus;
   lastSeen: string;
@@ -231,6 +243,41 @@ function normalizeFleetPolicyCompliance(
       summary: "No full live PassWall import is available for fleet policy matching.",
     }
   );
+}
+
+export function computeConnectivityVerdict(input: {
+  reachable: boolean;
+  passwallEnabled: boolean;
+  telegramReachability?: RouterTelegramReachability | null;
+  youtubeReachability?: RouterYoutubeReachability | null;
+  instagramReachability?: RouterInstagramReachability | null;
+}): ConnectivityVerdict {
+  if (!input.reachable || !input.passwallEnabled) {
+    return "unknown";
+  }
+
+  const statuses = [
+    getTelegramReachabilityStatus(input.telegramReachability),
+    getYoutubeReachabilityStatus(input.youtubeReachability),
+    getInstagramReachabilityStatus(input.instagramReachability),
+  ];
+
+  const known = statuses.filter((s) => s !== "unknown");
+  if (known.length === 0) {
+    return "unknown";
+  }
+
+  const allReachable = known.every((s) => s === "reachable");
+  if (allReachable) {
+    return "ok";
+  }
+
+  const allDown = known.every((s) => s === "blocked");
+  if (allDown) {
+    return "down";
+  }
+
+  return "partial";
 }
 
 function formatRelativeTime(value: Date | null | undefined, now = new Date()) {
@@ -493,6 +540,30 @@ function buildAlerts(
         filters: {
           ...routerFilters,
           service: "youtube_degraded",
+        },
+      });
+    }
+
+    const instagramStatus = getInstagramReachabilityStatus(
+      router.instagramReachability,
+    );
+    if (instagramStatus === "partial" || instagramStatus === "blocked") {
+      alerts.push({
+        id: `instagram:${router.id}:${instagramStatus}`,
+        kind: "instagram_degraded",
+        severity: instagramStatus === "blocked" ? "critical" : "warning",
+        routerId: router.id,
+        routerName: router.name,
+        href,
+        title:
+          instagramStatus === "blocked"
+            ? "Instagram не отвечает"
+            : "Instagram частично деградировал",
+        description: `Instagram ${formatInstagramReachabilityLabel(router.instagramReachability)}: сервисные probes уже не полностью зелёные.`,
+        openedAt: router.instagramReachability?.checkedAt ?? router.lastSeenAt,
+        filters: {
+          ...routerFilters,
+          service: "instagram_degraded",
         },
       });
     }
@@ -776,6 +847,7 @@ export function buildFleetMonitoringSnapshot(args: {
   const serviceCounts: Record<MonitoringServiceFilterValue, number> = {
     telegram_degraded: 0,
     youtube_degraded: 0,
+    instagram_degraded: 0,
     service_unknown: 0,
   };
   const policyCounts: Record<FleetRoutePolicyStatus, number> = {
@@ -821,6 +893,14 @@ export function buildFleetMonitoringSnapshot(args: {
       components: input.components,
       telegramReachability: input.telegramReachability ?? null,
       youtubeReachability: input.youtubeReachability ?? null,
+      instagramReachability: input.instagramReachability ?? null,
+      connectivityVerdict: computeConnectivityVerdict({
+        reachable,
+        passwallEnabled: input.passwallEnabled,
+        telegramReachability: input.telegramReachability,
+        youtubeReachability: input.youtubeReachability,
+        instagramReachability: input.instagramReachability,
+      }),
       safetyEvents: input.safetyEvents ?? [],
       memory,
       lastSeen: formatRelativeTime(input.lastSeenAt, now),
@@ -857,13 +937,23 @@ export function buildFleetMonitoringSnapshot(args: {
       const youtubeStatus = getYoutubeReachabilityStatus(
         router.youtubeReachability,
       );
+      const instagramStatus = getInstagramReachabilityStatus(
+        router.instagramReachability,
+      );
       if (telegramStatus === "partial" || telegramStatus === "blocked") {
         serviceCounts.telegram_degraded += 1;
       }
       if (youtubeStatus === "partial" || youtubeStatus === "blocked") {
         serviceCounts.youtube_degraded += 1;
       }
-      if (telegramStatus === "unknown" || youtubeStatus === "unknown") {
+      if (instagramStatus === "partial" || instagramStatus === "blocked") {
+        serviceCounts.instagram_degraded += 1;
+      }
+      if (
+        telegramStatus === "unknown" ||
+        youtubeStatus === "unknown" ||
+        instagramStatus === "unknown"
+      ) {
         serviceCounts.service_unknown += 1;
       }
     }
@@ -1150,7 +1240,7 @@ export function buildFleetMonitoringSnapshot(args: {
       },
       {
         id: "service",
-        title: "Telegram / YouTube",
+        title: "Сервисы",
         description:
           "Быстрые срезы по сервисным probes. Срезы не взаимоисключающие: один роутер может попасть сразу в несколько.",
         slices: buildSlices({
@@ -1169,6 +1259,14 @@ export function buildFleetMonitoringSnapshot(args: {
               tone: serviceCounts.youtube_degraded > 0 ? "warning" : "good",
               description:
                 "Свежие роутеры, где YouTube partial/blocked и нужно открыть карточку.",
+            },
+            {
+              key: "instagram_degraded",
+              label: "Instagram сбои",
+              tone:
+                serviceCounts.instagram_degraded > 0 ? "warning" : "good",
+              description:
+                "Свежие роутеры, где Instagram partial/blocked и нужно открыть карточку.",
             },
             {
               key: "service_unknown",

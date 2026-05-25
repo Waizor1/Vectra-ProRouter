@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import { pickFreshAlertsForBrowser } from "~/lib/fleet-browser-alerts";
 
-import { buildFleetMonitoringSnapshot } from "./fleet-monitoring";
+import {
+  buildFleetMonitoringSnapshot,
+  computeConnectivityVerdict,
+} from "./fleet-monitoring";
 
 describe("buildFleetMonitoringSnapshot", () => {
   it("builds operational charts and prioritized alerts from the current fleet state", () => {
@@ -239,7 +242,8 @@ describe("buildFleetMonitoringSnapshot", () => {
     ).toEqual([
       ["telegram_degraded", 1],
       ["youtube_degraded", 0],
-      ["service_unknown", 3],
+      ["instagram_degraded", 0],
+      ["service_unknown", 4],
     ]);
 
     expect(snapshot.routers[0]?.id).toBe("direct-1");
@@ -560,5 +564,163 @@ describe("pickFreshAlertsForBrowser", () => {
     expect(
       snapshot.alerts.some((alert) => alert.kind === "router_safety"),
     ).toBe(true);
+  });
+});
+
+describe("computeConnectivityVerdict", () => {
+  it("returns 'unknown' when router is offline", () => {
+    expect(
+      computeConnectivityVerdict({
+        reachable: false,
+        passwallEnabled: true,
+        telegramReachability: {
+          checkedAt: "2026-05-26T12:00:00Z",
+          status: "reachable",
+          reachable: true,
+          reachableCount: 4,
+          totalCount: 4,
+          checks: [],
+        },
+      }),
+    ).toBe("unknown");
+  });
+
+  it("returns 'unknown' when passwall is disabled", () => {
+    expect(
+      computeConnectivityVerdict({
+        reachable: true,
+        passwallEnabled: false,
+      }),
+    ).toBe("unknown");
+  });
+
+  it("returns 'unknown' when no probes have data", () => {
+    expect(
+      computeConnectivityVerdict({
+        reachable: true,
+        passwallEnabled: true,
+        telegramReachability: null,
+        youtubeReachability: null,
+        instagramReachability: null,
+      }),
+    ).toBe("unknown");
+  });
+
+  it("returns 'ok' when all services are reachable", () => {
+    expect(
+      computeConnectivityVerdict({
+        reachable: true,
+        passwallEnabled: true,
+        telegramReachability: {
+          checkedAt: "2026-05-26T12:00:00Z",
+          status: "reachable",
+          reachable: true,
+          reachableCount: 4,
+          totalCount: 4,
+          checks: [],
+        },
+        youtubeReachability: {
+          checkedAt: "2026-05-26T12:00:00Z",
+          status: "reachable",
+          reachable: true,
+          reachableCount: 3,
+          totalCount: 3,
+          checks: [],
+        },
+        instagramReachability: {
+          checkedAt: "2026-05-26T12:00:00Z",
+          status: "reachable",
+          reachable: true,
+          reachableCount: 2,
+          totalCount: 2,
+          checks: [],
+        },
+      }),
+    ).toBe("ok");
+  });
+
+  it("returns 'partial' when some services degraded", () => {
+    expect(
+      computeConnectivityVerdict({
+        reachable: true,
+        passwallEnabled: true,
+        telegramReachability: {
+          checkedAt: "2026-05-26T12:00:00Z",
+          status: "reachable",
+          reachable: true,
+          reachableCount: 4,
+          totalCount: 4,
+          checks: [],
+        },
+        youtubeReachability: {
+          checkedAt: "2026-05-26T12:00:00Z",
+          status: "blocked",
+          reachable: false,
+          reachableCount: 0,
+          totalCount: 3,
+          checks: [],
+        },
+        instagramReachability: {
+          checkedAt: "2026-05-26T12:00:00Z",
+          status: "reachable",
+          reachable: true,
+          reachableCount: 2,
+          totalCount: 2,
+          checks: [],
+        },
+      }),
+    ).toBe("partial");
+  });
+
+  it("returns 'down' when all services are blocked", () => {
+    expect(
+      computeConnectivityVerdict({
+        reachable: true,
+        passwallEnabled: true,
+        telegramReachability: {
+          checkedAt: "2026-05-26T12:00:00Z",
+          status: "blocked",
+          reachable: false,
+          reachableCount: 0,
+          totalCount: 4,
+          checks: [],
+        },
+        youtubeReachability: {
+          checkedAt: "2026-05-26T12:00:00Z",
+          status: "blocked",
+          reachable: false,
+          reachableCount: 0,
+          totalCount: 3,
+          checks: [],
+        },
+        instagramReachability: {
+          checkedAt: "2026-05-26T12:00:00Z",
+          status: "blocked",
+          reachable: false,
+          reachableCount: 0,
+          totalCount: 2,
+          checks: [],
+        },
+      }),
+    ).toBe("down");
+  });
+
+  it("ignores unknown services when computing verdict", () => {
+    expect(
+      computeConnectivityVerdict({
+        reachable: true,
+        passwallEnabled: true,
+        telegramReachability: {
+          checkedAt: "2026-05-26T12:00:00Z",
+          status: "reachable",
+          reachable: true,
+          reachableCount: 4,
+          totalCount: 4,
+          checks: [],
+        },
+        youtubeReachability: null,
+        instagramReachability: null,
+      }),
+    ).toBe("ok");
   });
 });
