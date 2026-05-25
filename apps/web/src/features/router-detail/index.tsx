@@ -12,7 +12,6 @@ import {
   Wrench,
 } from "lucide-react";
 
-import { Button } from "~/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import { ToneBadge } from "~/components/vectra/tone-badge";
 import { StaleBadge } from "~/components/vectra/stale-badge";
@@ -176,11 +175,6 @@ export function RouterDetailV2({
               {summary.boardName ? ` · ${summary.boardName}` : ""}
             </p>
           </div>
-          <Button asChild variant="outline" size="sm">
-            <Link href={`/routers/${routerId}?ui=v1`}>
-              Расширенный режим (v1)
-            </Link>
-          </Button>
         </header>
       </div>
 
