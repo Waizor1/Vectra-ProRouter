@@ -87,18 +87,31 @@ export default async function UpdatesPage({
 }: {
   searchParams: Promise<{ ui?: string }>;
 }) {
-  const [artifacts, manifests, globalTemplateWorkspace, v2, params] =
-    await Promise.all([
-      api.update.artifacts(),
-      api.update.firmwareMatrix(),
-      api.update.globalTemplateWorkspace(),
-      isUiV2(),
-      searchParams,
-    ]);
+  const [
+    artifacts,
+    manifests,
+    globalTemplateWorkspace,
+    profilesWorkspace,
+    v2,
+    params,
+  ] = await Promise.all([
+    api.update.artifacts(),
+    api.update.firmwareMatrix(),
+    api.update.globalTemplateWorkspace(),
+    api.update.profilesAndGroupsWorkspace(),
+    isUiV2(),
+    searchParams,
+  ]);
   const releaseTracks = buildReleaseTracks(artifacts, manifests);
 
   if (v2 && params.ui !== "v1") {
-    return <UpdatesV2 artifacts={artifacts} manifests={manifests} />;
+    return (
+      <UpdatesV2
+        initialWorkspace={profilesWorkspace}
+        artifacts={artifacts}
+        manifests={manifests}
+      />
+    );
   }
 
   return (

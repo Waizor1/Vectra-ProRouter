@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertOctagon, Info, RotateCcw, Save, Send } from "lucide-react";
+import { AlertOctagon, Info, Layers, RotateCcw, Save, Send } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -76,7 +76,11 @@ export function ConfigTab({ routerId, initialSurface }: ConfigTabProps) {
 
   const saveMutation = api.draft.save.useMutation();
   const applyMutation = api.draft.queueApply.useMutation();
-  const busy = saveMutation.isPending || applyMutation.isPending;
+  const saveProfileMutation = api.update.saveRolloutProfile.useMutation();
+  const busy =
+    saveMutation.isPending ||
+    applyMutation.isPending ||
+    saveProfileMutation.isPending;
 
   const summary = surface.routerRuntimeSummary;
   const applyAllowed =
@@ -127,6 +131,27 @@ export function ConfigTab({ routerId, initialSurface }: ConfigTabProps) {
     setConfig(passwallDesiredConfigSchema.parse(surface.draftConfig));
   };
 
+  const handleSaveAsProfile = async () => {
+    const name = window.prompt(
+      "Название профиля (текущая конфигурация станет шаблоном для раскатки)",
+    );
+    if (!name?.trim()) {
+      return;
+    }
+    try {
+      await saveProfileMutation.mutateAsync({
+        name: name.trim(),
+        rolloutConfig: config,
+      });
+      await utils.update.profilesAndGroupsWorkspace.invalidate();
+      toast.success("Профиль сохранён — доступен в разделе «Обновления»");
+    } catch (error) {
+      toast.error("Не удалось сохранить профиль", {
+        description: errorMessage(error),
+      });
+    }
+  };
+
   const { router: routerChanges, panel: panelChanges } =
     surface.unconfirmedChanges;
 
@@ -165,6 +190,15 @@ export function ConfigTab({ routerId, initialSurface }: ConfigTabProps) {
             ) : null}
           </p>
           <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={handleSaveAsProfile}
+              disabled={busy}
+            >
+              <Layers className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.75} />
+              Сохранить как профиль
+            </Button>
             <Button
               size="sm"
               variant="ghost"
