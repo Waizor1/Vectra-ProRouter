@@ -7,7 +7,6 @@ import {
   ArrowLeft,
   Activity,
   Boxes,
-  Code2,
   RefreshCw,
   ScrollText,
   Wrench,
@@ -25,7 +24,6 @@ import { ConfigTab } from "~/features/router-detail/tabs/config-tab";
 import { NodesTab } from "~/features/router-detail/tabs/nodes-tab";
 import { UpdatesTab } from "~/features/router-detail/tabs/updates-tab";
 import { DiagnosticsTab } from "~/features/router-detail/tabs/diagnostics-tab";
-import { JsonTab } from "~/features/router-detail/tabs/json-tab";
 
 export type RouterDetailEditorSurface =
   RouterOutputs["draft"]["editorSurface"];
@@ -36,7 +34,6 @@ const TAB_IDS = [
   "nodes",
   "updates",
   "diagnostics",
-  "json",
 ] as const;
 
 export type RouterDetailTabId = (typeof TAB_IDS)[number];
@@ -51,7 +48,6 @@ const TABS: ReadonlyArray<{
   { id: "nodes", label: "Узлы", icon: Boxes },
   { id: "updates", label: "Обновления", icon: RefreshCw },
   { id: "diagnostics", label: "Диагностика", icon: ScrollText },
-  { id: "json", label: "JSON эксперт", icon: Code2 },
 ];
 
 function normalizeTab(value: string | null | undefined): RouterDetailTabId {
@@ -225,9 +221,6 @@ export function RouterDetailV2({
         </TabsContent>
         <TabsContent value="diagnostics">
           <DiagnosticsTab routerId={routerId} initialSurface={initialSurface} />
-        </TabsContent>
-        <TabsContent value="json">
-          <JsonTab routerId={routerId} />
         </TabsContent>
       </Tabs>
     </section>

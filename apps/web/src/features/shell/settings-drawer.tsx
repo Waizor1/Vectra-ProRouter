@@ -7,7 +7,6 @@ import {
   KeyRound,
   LogOut,
   PackagePlus,
-  Wrench,
 } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
@@ -38,12 +37,6 @@ const TOOLS: DrawerLink[] = [
     icon: PackagePlus,
     label: "Онбординг роутера",
     description: "Bootstrap-команда и шаги для нового устройства",
-  },
-  {
-    href: "/drafts",
-    icon: Wrench,
-    label: "JSON эксперт-режим",
-    description: "Прямое редактирование конфигов PassWall2",
   },
   {
     href: "/downloads",

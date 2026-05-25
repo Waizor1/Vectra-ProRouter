@@ -8,7 +8,6 @@ import {
   PackagePlus,
   PlusCircle,
   Rocket,
-  Wrench,
 } from "lucide-react";
 
 import {
@@ -70,10 +69,6 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           <CommandItem onSelect={() => go("/enrollment")}>
             <PackagePlus />
             <span>Онбординг нового роутера</span>
-          </CommandItem>
-          <CommandItem onSelect={() => go("/drafts")}>
-            <Wrench />
-            <span>JSON эксперт-режим</span>
           </CommandItem>
           <CommandItem onSelect={() => go("/downloads")}>
             <Download />
