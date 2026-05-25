@@ -114,6 +114,15 @@ textarea {
   letter-spacing: inherit;
 }
 
+/* The `font: inherit` reset above bumps form controls to the body size (16px),
+   overriding the shadcn `text-sm` control scale. Restore 14px controls inside
+   the V2 config editor so field text matches its labels. Scoped to avoid
+   touching legacy surfaces. */
+.vectra-config-editor :where(input, textarea, [role="combobox"]) {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
 code,
 pre,
 kbd,

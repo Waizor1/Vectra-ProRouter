@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Activity,
   AlertOctagon,
@@ -10,6 +11,8 @@ import {
   ScrollText,
 } from "lucide-react";
 import { toast } from "sonner";
+
+import { api } from "~/trpc/react";
 
 import {
   AlertDialog,
@@ -146,6 +149,11 @@ export function OverviewTab({
   const [rebootOpen, setRebootOpen] = useState(false);
   const [reimportOpen, setReimportOpen] = useState(false);
 
+  const router = useRouter();
+  const utils = api.useUtils();
+  const rebootMutation = api.update.queueRouterReboot.useMutation();
+  const reimportMutation = api.fleet.requestReimport.useMutation();
+
   const summary = surface.routerRuntimeSummary;
   const inventory = surface.inventory;
   const memoryStatus = describeRouterMemory(inventory?.resources ?? null);
@@ -166,24 +174,36 @@ export function OverviewTab({
       };
     });
 
-  const handleRebootConfirm = useCallback(() => {
+  const handleRebootConfirm = useCallback(async () => {
     setRebootOpen(false);
-    // TODO Phase 6.2: wire to api.update.queueRouterReboot
-    console.log("router-detail.v2: reboot requested", { routerId });
-    toast.message("Скоро", {
-      description: "Команда reboot подключится в следующей итерации.",
-    });
-  }, [routerId]);
+    try {
+      await rebootMutation.mutateAsync({ routerId });
+      await utils.draft.editorSurface.invalidate({ routerId });
+      router.refresh();
+      toast.success("Перезагрузка поставлена в очередь");
+    } catch (error) {
+      toast.error("Не удалось перезагрузить роутер", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  }, [routerId, rebootMutation, utils, router]);
 
-  const handleReimportConfirm = useCallback(() => {
+  const handleReimportConfirm = useCallback(async () => {
     setReimportOpen(false);
-    // TODO Phase 6.2: wire to api.draft.queueReimport
-    console.log("router-detail.v2: re-import requested", { routerId });
-    toast.message("Скоро", {
-      description:
-        "Принудительный re-import будет подключён в следующей итерации.",
-    });
-  }, [routerId]);
+    try {
+      await reimportMutation.mutateAsync({ routerId });
+      await Promise.all([
+        utils.draft.editorSurface.invalidate({ routerId }),
+        utils.fleet.byId.invalidate({ routerId }),
+      ]);
+      router.refresh();
+      toast.success("Принудительный re-import поставлен в очередь");
+    } catch (error) {
+      toast.error("Не удалось запустить re-import", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  }, [routerId, reimportMutation, utils, router]);
 
   const passwallEnabled = summary.passwallEnabled === true;
   const passwallTone: Tone =

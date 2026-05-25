@@ -1,12 +1,19 @@
+"use client";
+
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   AlertOctagon,
   AlertTriangle,
-  ArrowRight,
+  BellOff,
   CheckCircle2,
   Clock,
+  FileText,
+  PlugZap,
   ShieldAlert,
+  Wrench,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -19,6 +26,7 @@ import {
 } from "~/components/ui/card";
 import { Separator } from "~/components/ui/separator";
 import { ToneBadge } from "~/components/vectra/tone-badge";
+import { api } from "~/trpc/react";
 
 interface DirectModeRouter {
   id: string;
@@ -136,7 +144,7 @@ function CalmState({ resolvedCases }: { resolvedCases: RescueCase[] }) {
               {recent.map((c) => (
                 <li key={c.id}>
                   <Link
-                    href={`/rescue/cases/${c.id}`}
+                    href={`/routers/${c.routerId}`}
                     className="flex items-center gap-2 rounded-md border border-border/40 bg-card/50 px-3 py-2 text-xs transition-colors hover:bg-secondary/40"
                   >
                     <CheckCircle2 className="h-3 w-3 text-emerald-400" />
@@ -188,23 +196,7 @@ function ActiveIncidents({
           </CardHeader>
           <CardContent className="space-y-2">
             {directRouters.map((router) => (
-              <Link
-                key={router.id}
-                href={`/routers/${router.id}`}
-                className="flex items-center gap-3 rounded-md border border-border/40 bg-card/40 px-3 py-2.5 text-sm transition-colors hover:border-amber-500/40 hover:bg-secondary/40"
-              >
-                <div className="flex-1 min-w-0">
-                  <p className="truncate font-medium text-foreground">
-                    {router.displayName ??
-                      router.hostname ??
-                      router.deviceIdentifier}
-                  </p>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {router.lastRescueReason ?? "Причина не записана"}
-                  </p>
-                </div>
-                <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
-              </Link>
+              <DirectRouterRow key={router.id} router={router} />
             ))}
           </CardContent>
         </Card>
@@ -229,33 +221,7 @@ function ActiveIncidents({
           </CardHeader>
           <CardContent className="space-y-2">
             {activeCases.map((c) => (
-              <Link
-                key={c.id}
-                href={`/rescue/cases/${c.id}`}
-                className="flex items-start gap-3 rounded-md border border-border/40 bg-card/40 px-3 py-2.5 text-sm transition-colors hover:border-rose-500/40 hover:bg-secondary/40"
-              >
-                <Clock
-                  className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                  strokeWidth={1.75}
-                />
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-foreground">
-                    {c.trigger}
-                    <Badge variant="outline" className="ml-2 align-middle">
-                      {c.state}
-                    </Badge>
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Router {c.routerId} ·{" "}
-                    {c.startedAt.toLocaleString("ru-RU")}
-                  </p>
-                </div>
-                <Button size="sm" variant="ghost" asChild>
-                  <span>
-                    Открыть <ArrowRight className="ml-1 h-3 w-3" />
-                  </span>
-                </Button>
-              </Link>
+              <RescueCaseCard key={c.id} rescueCase={c} />
             ))}
           </CardContent>
         </Card>
@@ -290,6 +256,187 @@ function ActiveIncidents({
           </CardContent>
         </Card>
       ) : null}
+    </div>
+  );
+}
+
+function useRescueRefresh() {
+  const router = useRouter();
+  const utils = api.useUtils();
+  return async () => {
+    await Promise.all([
+      utils.rescue.cases.invalidate(),
+      utils.rescue.openIncidents.invalidate(),
+      utils.rescue.directRouters.invalidate(),
+    ]);
+    router.refresh();
+  };
+}
+
+function errMsg(error: unknown): string {
+  return error instanceof Error ? error.message : "Неизвестная ошибка";
+}
+
+function DirectRouterRow({ router }: { router: DirectModeRouter }) {
+  const refresh = useRescueRefresh();
+  const reconnect = api.rescue.triggerReconnect.useMutation();
+  const name =
+    router.displayName ?? router.hostname ?? router.deviceIdentifier;
+
+  const handleReconnect = async () => {
+    try {
+      await reconnect.mutateAsync({ routerId: router.id });
+      await refresh();
+      toast.success("Возврат в proxy поставлен в очередь", {
+        description: name,
+      });
+    } catch (error) {
+      toast.error("Не удалось вернуть из direct mode", {
+        description: errMsg(error),
+      });
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-md border border-border/40 bg-card/40 px-3 py-2.5 text-sm">
+      <div className="min-w-0 flex-1">
+        <Link
+          href={`/routers/${router.id}`}
+          className="truncate font-medium text-foreground hover:text-primary"
+        >
+          {name}
+        </Link>
+        <p className="truncate text-xs text-muted-foreground">
+          {router.lastRescueReason ?? "Причина не записана"}
+        </p>
+      </div>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={handleReconnect}
+        disabled={reconnect.isPending}
+      >
+        <PlugZap className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.75} />
+        Вернуть из direct mode
+      </Button>
+    </div>
+  );
+}
+
+function RescueCaseCard({ rescueCase }: { rescueCase: RescueCase }) {
+  const c = rescueCase;
+  const refresh = useRescueRefresh();
+  const safeRepair = api.rescue.runCaseSafeRepair.useMutation();
+  const reconnect = api.rescue.reconnectCase.useMutation();
+  const collectLogs = api.rescue.collectCaseLogs.useMutation();
+  const silence = api.rescue.silenceCase.useMutation();
+  const busy =
+    safeRepair.isPending ||
+    reconnect.isPending ||
+    collectLogs.isPending ||
+    silence.isPending;
+
+  const act = async (
+    fn: () => Promise<unknown>,
+    ok: string,
+    fail: string,
+  ) => {
+    try {
+      await fn();
+      await refresh();
+      toast.success(ok);
+    } catch (error) {
+      toast.error(fail, { description: errMsg(error) });
+    }
+  };
+
+  return (
+    <div className="rounded-md border border-border/40 bg-card/40 px-3 py-2.5 text-sm">
+      <div className="flex items-start gap-3">
+        <Clock
+          className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground"
+          strokeWidth={1.75}
+        />
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-foreground">
+            {c.trigger}
+            <Badge variant="outline" className="ml-2 align-middle">
+              {c.state}
+            </Badge>
+          </p>
+          <p className="text-xs text-muted-foreground">
+            <Link
+              href={`/routers/${c.routerId}`}
+              className="hover:text-primary"
+            >
+              Router {c.routerId}
+            </Link>
+            {" · "}
+            {c.startedAt.toLocaleString("ru-RU")}
+          </p>
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          disabled={busy}
+          onClick={() =>
+            act(
+              () => safeRepair.mutateAsync({ caseId: c.id }),
+              "Безопасный ремонт поставлен в очередь",
+              "Не удалось запустить ремонт",
+            )
+          }
+        >
+          <Wrench className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.75} />
+          Безопасный ремонт
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() =>
+            act(
+              () => reconnect.mutateAsync({ caseId: c.id }),
+              "Возврат в proxy поставлен в очередь",
+              "Не удалось вернуть в proxy",
+            )
+          }
+        >
+          <PlugZap className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.75} />
+          Вернуть в proxy
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={busy}
+          onClick={() =>
+            act(
+              () => collectLogs.mutateAsync({ caseId: c.id }),
+              "Сбор логов поставлен в очередь",
+              "Не удалось собрать логи",
+            )
+          }
+        >
+          <FileText className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.75} />
+          Собрать логи
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={busy}
+          onClick={() =>
+            act(
+              () => silence.mutateAsync({ caseId: c.id }),
+              "Case заглушён на 1 час",
+              "Не удалось заглушить case",
+            )
+          }
+        >
+          <BellOff className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.75} />
+          Заглушить 1ч
+        </Button>
+      </div>
     </div>
   );
 }

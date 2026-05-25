@@ -215,16 +215,16 @@ export function RouterDetailV2({
           />
         </TabsContent>
         <TabsContent value="config">
-          <ConfigTab routerId={routerId} />
+          <ConfigTab routerId={routerId} initialSurface={initialSurface} />
         </TabsContent>
         <TabsContent value="nodes">
-          <NodesTab routerId={routerId} />
+          <NodesTab routerId={routerId} initialSurface={initialSurface} />
         </TabsContent>
         <TabsContent value="updates">
-          <UpdatesTab routerId={routerId} />
+          <UpdatesTab routerId={routerId} initialSurface={initialSurface} />
         </TabsContent>
         <TabsContent value="diagnostics">
-          <DiagnosticsTab routerId={routerId} />
+          <DiagnosticsTab routerId={routerId} initialSurface={initialSurface} />
         </TabsContent>
         <TabsContent value="json">
           <JsonTab routerId={routerId} />
