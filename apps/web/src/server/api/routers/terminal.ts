@@ -129,7 +129,7 @@ export const terminalRouter = createTRPCRouter({
     .input(
       z.object({
         routerId: z.string().uuid(),
-        command: z.string().trim().min(1).max(4000),
+        command: z.string().trim().min(1).max(8000),
         timeoutSeconds: z.number().int().min(5).max(120).default(30),
       }),
     )

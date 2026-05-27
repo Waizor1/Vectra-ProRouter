@@ -1,0 +1,129 @@
+#!/bin/sh
+# vectra-controller-watchdog: best-effort recovery for a stuck/missing
+# vectra-controller-agent. Runs from cron every 5 min. Designed for the
+# AX3000T fleet where a botched controller self-update can leave the router
+# with no live controller AND no way for the panel to push a fix (panel only
+# sees fresh check-ins; no check-ins = no remote remediation possible).
+#
+# Recovery policy (in order):
+#   1. If the binary exists and is executable but no process: nudge init.d
+#      to restart. Cheap, idempotent, fixes "procd gave up after 20 retries"
+#      cases.
+#   2. If the binary is missing or zero-sized: log a CRITICAL marker to
+#      syslog so the next operator who SSHes in immediately sees the
+#      situation. Don't try to download a replacement — we can't trust the
+#      router has network at this point, and a botched download would only
+#      make things worse.
+#   3. If init.d isn't installed: out of scope (router predates this
+#      package), exit silently.
+#
+# Failure mode this script SOLVES: r27 incident on totchto-filiciy where a
+# binary-less .ipk was installed and procd exhausted its respawn retries
+# (15s threshold × 5s wait × 20 retries = ~100s), leaving the router with
+# no controller and no remote recovery path.
+#
+# Failure mode this script does NOT solve: total network loss, hardware
+# failure, or a binary that crashes immediately on startup. For those the
+# operator still needs LAN/SSH access.
+
+set -u
+
+LOG_TAG="vectra-controller-watchdog"
+INIT_SCRIPT="/etc/init.d/vectra-controller"
+AGENT_BIN="/usr/sbin/vectra-controller-agent"
+STATE_FILE="/var/run/vectra-controller-watchdog.state"
+LAST_RESTART_FILE="/var/run/vectra-controller-watchdog.last-restart"
+
+# Throttle restart attempts. If we just nudged the service in the past N
+# seconds, don't nudge again — give procd respawn a chance to actually do
+# its work without us thrashing on top of it.
+RESTART_THROTTLE_SECONDS=300
+
+log() {
+	# Use logger so the action surfaces in `logread` alongside other procd
+	# events. Stderr fallback for hosts where logger isn't installed (rare on
+	# OpenWrt but possible on minimal builds).
+	if command -v logger >/dev/null 2>&1; then
+		logger -t "$LOG_TAG" "$1"
+	else
+		printf '[%s] %s\n' "$LOG_TAG" "$1" >&2
+	fi
+}
+
+now_epoch() {
+	date +%s
+}
+
+read_last_restart_epoch() {
+	if [ -f "$LAST_RESTART_FILE" ]; then
+		cat "$LAST_RESTART_FILE" 2>/dev/null || echo 0
+	else
+		echo 0
+	fi
+}
+
+mark_restart_attempt() {
+	mkdir -p "$(dirname "$LAST_RESTART_FILE")" 2>/dev/null || true
+	now_epoch > "$LAST_RESTART_FILE"
+}
+
+# Quick sanity: is init.d/vectra-controller even installed?
+if [ ! -x "$INIT_SCRIPT" ]; then
+	exit 0
+fi
+
+# Branch 1: binary missing or empty. This is the r27-incident scenario.
+# We can't auto-recover (no source to copy from on-router) so we log
+# loud-and-clear and exit. Operator needs to SSH in.
+if [ ! -f "$AGENT_BIN" ] || [ ! -s "$AGENT_BIN" ]; then
+	# Only log once per state-change to avoid spamming the syslog ring buffer.
+	if [ ! -f "$STATE_FILE" ] || [ "$(cat "$STATE_FILE" 2>/dev/null)" != "missing" ]; then
+		log "CRITICAL: $AGENT_BIN is missing or empty — controller cannot run; manual recovery required (scp the correct .ipk + opkg install /tmp/<ipk>)"
+		echo missing > "$STATE_FILE"
+	fi
+	exit 0
+fi
+
+if [ ! -x "$AGENT_BIN" ]; then
+	log "WARN: $AGENT_BIN is not executable — chmod +x to repair"
+	chmod 0755 "$AGENT_BIN" 2>/dev/null || true
+	echo not-executable > "$STATE_FILE"
+fi
+
+# Branch 2: binary OK, but process not running. Probably procd gave up.
+if ! pgrep -f "$AGENT_BIN" >/dev/null 2>&1; then
+	last_restart="$(read_last_restart_epoch)"
+	now="$(now_epoch)"
+	delta=$((now - last_restart))
+	if [ "$delta" -lt "$RESTART_THROTTLE_SECONDS" ]; then
+		# Recent attempt; let procd / kernel work and re-check next tick.
+		log "controller process missing but last restart was ${delta}s ago (< ${RESTART_THROTTLE_SECONDS}s throttle); skipping"
+		exit 0
+	fi
+	log "controller process missing; attempting init.d restart (last attempt ${delta}s ago)"
+	mark_restart_attempt
+	# `enable` is idempotent; we run it in case the service was somehow
+	# disabled. `start` is preferred over `restart` for the "not running"
+	# case since restart would error on a service that's already stopped on
+	# some procd builds.
+	"$INIT_SCRIPT" enable >/dev/null 2>&1 || true
+	"$INIT_SCRIPT" start >/dev/null 2>&1 || true
+	# Give procd a moment then re-check; reporting success/failure helps
+	# operators triage from `logread` without an extra SSH round-trip.
+	sleep 3
+	if pgrep -f "$AGENT_BIN" >/dev/null 2>&1; then
+		log "controller process restarted successfully"
+		rm -f "$STATE_FILE"
+	else
+		log "WARN: controller process still missing after init.d start; will retry next tick"
+	fi
+	exit 0
+fi
+
+# Branch 3: everything looks fine. Clear any prior state marker so the next
+# transition logs again.
+if [ -f "$STATE_FILE" ]; then
+	log "controller recovered; clearing watchdog state"
+	rm -f "$STATE_FILE"
+fi
+exit 0

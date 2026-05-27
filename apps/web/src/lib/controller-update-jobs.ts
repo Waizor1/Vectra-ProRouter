@@ -125,14 +125,28 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     'install_pair() { VECTRA_SKIP_POSTINST_RESTART=1 opkg install --force-reinstall "$agent_ipk" "$luci_ipk"; }',
     'cleanup_luci() { rm -f /tmp/luci-indexcache.*; rm -rf /tmp/luci-modulecache/; /etc/init.d/rpcd reload >/dev/null 2>&1 || true; }',
     'schedule_restart() { rm -f "$skip"; (sleep 5; /etc/init.d/vectra-controller enable >/dev/null 2>&1 || true; if /etc/init.d/vectra-controller running >/dev/null 2>&1; then /etc/init.d/vectra-controller restart >/tmp/vectra-controller-self-update.log 2>&1; else /etc/init.d/vectra-controller start >/tmp/vectra-controller-self-update.log 2>&1; fi) & }',
+    // Belt-and-suspenders verification added after the r27 incident
+    // (2026-05-28, totchto-filiciy): a binary-less .ipk made it to the feed
+    // and opkg cheerfully replaced the controller with an empty package,
+    // bricking remote management. These two helpers stop that failure mode
+    // at install time. verify_ipk_has_agent inspects the downloaded .ipk
+    // BEFORE running opkg, so a corrupted feed is refused without losing
+    // the running r{N-1} controller. verify_agent_on_disk re-checks AFTER
+    // opkg install but BEFORE scheduling the restart, so even a successful
+    // opkg install that somehow left no binary aborts the update before
+    // the live controller is killed.
+    'verify_ipk_has_agent() { ipk="$1"; inspect_dir="$workdir/agent-inspect"; rm -rf "$inspect_dir"; mkdir -p "$inspect_dir"; tar -xzf "$ipk" -C "$inspect_dir" 2>/dev/null || fail "agent .ipk is not a valid tar.gz"; tar -tzf "$inspect_dir/data.tar.gz" 2>/dev/null | grep -qE "^\\./usr/sbin/vectra-controller-agent$" || fail "agent .ipk is missing usr/sbin/vectra-controller-agent (corrupted package — refusing to install)"; rm -rf "$inspect_dir"; }',
+    'verify_agent_on_disk() { [ -x /usr/sbin/vectra-controller-agent ] || fail "/usr/sbin/vectra-controller-agent missing or non-executable after opkg install (refusing to schedule restart)"; bin_size="$(stat -c %s /usr/sbin/vectra-controller-agent 2>/dev/null || stat -f %z /usr/sbin/vectra-controller-agent 2>/dev/null || echo 0)"; [ "${bin_size:-0}" -ge 1048576 ] || fail "/usr/sbin/vectra-controller-agent is suspiciously small (${bin_size} bytes < 1 MB)"; }',
     'agent_ipk="$workdir/vectra-controller-agent.ipk"',
     'luci_ipk="$workdir/luci-app-vectra-controller.ipk"',
     `fetch "$agent_ipk" ${shellSingleQuote(agentArtifact.artifactUrl)}`,
     `check_sha "$agent_ipk" ${shellSingleQuote(agentArtifact.sha256)}`,
     `fetch "$luci_ipk" ${shellSingleQuote(luciArtifact.artifactUrl)}`,
     `check_sha "$luci_ipk" ${shellSingleQuote(luciArtifact.sha256)}`,
+    'verify_ipk_has_agent "$agent_ipk"',
     ': > "$skip"',
     'install_pair || fail "opkg install controller/LuCI pair"',
+    'verify_agent_on_disk',
     'pkg_ok vectra-controller-agent',
     'pkg_ok luci-app-vectra-controller',
     'need_file /usr/share/luci/menu.d/luci-app-vectra-controller.json',

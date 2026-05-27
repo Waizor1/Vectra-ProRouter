@@ -634,7 +634,10 @@ describe("destructive route gating", () => {
       "controller self-update to 0.1.13-r1 installed",
     );
     expect(inserted.payload?.command).not.toContain("LuCI reinstall failed");
-    expect(inserted.payload?.command?.length).toBeLessThanOrEqual(4000);
+    // Bumped from 4000 → 8000 in 2026-05-28 r28 release to make room for
+    // the new verify_ipk_has_agent / verify_agent_on_disk safety helpers
+    // (added after the r27 binary-less-IPK incident on totchto-filiciy).
+    expect(inserted.payload?.command?.length).toBeLessThanOrEqual(8000);
   });
 
   it("uses a compat terminal purpose for pre-r20 controllers when the controller update is resource-safe", async () => {
