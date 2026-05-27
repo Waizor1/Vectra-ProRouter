@@ -122,7 +122,19 @@ set_if_unset_or_default() {
 set_if_unset_or_default job_safety_storage_memory_floor_mb 40 0
 set_if_unset_or_default job_safety_diagnostic_memory_floor_mb 24 0
 set_if_unset_or_default job_safety_pre_drop_caches 1 0
-uci -q commit vectra-controller && log "applied job_safety tuning: storage_floor=40MB diagnostic_floor=24MB pre_drop_caches=1"
+# Overlay floors: AX3000T has a 44 MB UBI overlay partition, and the full
+# PassWall2 stack (xray-core 30 MB + geo data + luci-app-passwall2 + deps)
+# routinely settles at 9-13 MB free. The default storage floor of 16 MB then
+# perpetually blocks update_passwall_packages, and the default heavy floor of
+# 8 MB blocks refresh_subscriptions whenever the stack grows. UBIFS compresses
+# package payloads ~3x, so the on-disk delta from an opkg upgrade is typically
+# 2-5 MB compressed even when opkg reports 20+ MB uncompressed.
+# We lower storage→10 MB and heavy→6 MB to match the compressed delta plus a
+# small safety margin. Operator can still override per-router via the same
+# UCI options if a specific device needs different floors.
+set_if_unset_or_default job_safety_storage_overlay_floor_mb 10 0
+set_if_unset_or_default job_safety_heavy_overlay_floor_mb 6 0
+uci -q commit vectra-controller && log "applied job_safety tuning: storage_mem=40MB diagnostic_mem=24MB storage_overlay=10MB heavy_overlay=6MB pre_drop_caches=1"
 
 # Re-render config + restart controller so the new tuning is picked up
 # immediately. This is best-effort — postinst will restart the controller

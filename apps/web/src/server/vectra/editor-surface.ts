@@ -1,6 +1,7 @@
 import {
   type PasswallDesiredConfig,
   MASKED_SECRET_PLACEHOLDER,
+  type RouterInstagramReachability,
   type RouterSafetyEvent,
   type RouterTelegramReachability,
   type RouterYoutubeReachability,
@@ -168,6 +169,7 @@ export type RouterWorkspaceInventory = {
   } | null;
   telegramReachability?: RouterTelegramReachability | null;
   youtubeReachability?: RouterYoutubeReachability | null;
+  instagramReachability?: RouterInstagramReachability | null;
   safetyEvents?: RouterSafetyEvent[] | null;
 };
 
@@ -1808,6 +1810,7 @@ export async function getDraftEditorSurface(routerId: string) {
     serviceHealth: payload?.serviceHealth ?? null,
     telegramReachability: payload?.telegramReachability ?? null,
     youtubeReachability: payload?.youtubeReachability ?? null,
+    instagramReachability: payload?.instagramReachability ?? null,
     safetyEvents: payload?.safetyEvents ?? [],
   };
 

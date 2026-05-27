@@ -166,6 +166,7 @@ export function buildRouterSummary(router: FleetRouter): RouterSummary {
       : lastRescue,
     telegramReachability: payload?.telegramReachability ?? null,
     youtubeReachability: payload?.youtubeReachability ?? null,
+    instagramReachability: payload?.instagramReachability ?? null,
     memory: describeRouterMemory(payload?.resources ?? null),
     importState: router.importState,
     needsImportReview:

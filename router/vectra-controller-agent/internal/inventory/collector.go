@@ -33,6 +33,8 @@ const telegramProbeCacheTTL = 30 * time.Minute
 const youtubeProbeURL = "https://www.youtube.com/generate_204"
 const youtubeProbeTimeout = 3 * time.Second
 const youtubeProbeCacheTTL = 30 * time.Minute
+const instagramProbeTimeout = 3 * time.Second
+const instagramProbeCacheTTL = 30 * time.Minute
 const lowMemoryExpensiveProbeFloorMB = 64
 const serviceReachabilityProbeFloorMB = 128
 const safetyDiagnosticsCacheTTL = 10 * time.Minute
@@ -76,6 +78,17 @@ var youtubeProbeTargets = []youtubeProbeTarget{
 	{ID: "youtube-api", Label: "youtubei.googleapis.com", URL: "https://youtubei.googleapis.com/generate_204"},
 }
 
+type instagramProbeTarget struct {
+	ID    string
+	Label string
+	URL   string
+}
+
+var instagramProbeTargets = []instagramProbeTarget{
+	{ID: "instagram-main", Label: "instagram.com", URL: "https://www.instagram.com/"},
+	{ID: "instagram-cdn", Label: "cdninstagram.com", URL: "https://www.cdninstagram.com/"},
+}
+
 var telegramProbeCache = struct {
 	mu        sync.Mutex
 	result    *controlplane.RouterReachabilityProbe
@@ -83,6 +96,12 @@ var telegramProbeCache = struct {
 }{}
 
 var youtubeProbeCache = struct {
+	mu        sync.Mutex
+	result    *controlplane.RouterReachabilityProbe
+	expiresAt time.Time
+}{}
+
+var instagramProbeCache = struct {
 	mu        sync.Mutex
 	result    *controlplane.RouterReachabilityProbe
 	expiresAt time.Time
@@ -207,6 +226,7 @@ func (Collector) Collect(base controlplane.RouterInventory) controlplane.RouterI
 	if shouldCollectServiceReachability(inventory) {
 		inventory.TelegramReachability = collectTelegramReachability()
 		inventory.YouTubeReachability = collectYouTubeReachability()
+		inventory.InstagramReachability = collectInstagramReachability()
 	}
 
 	return inventory
@@ -1385,6 +1405,121 @@ func cloneTelegramReachability(
 }
 
 func cloneYouTubeReachability(
+	probe *controlplane.RouterReachabilityProbe,
+) *controlplane.RouterReachabilityProbe {
+	if probe == nil {
+		return nil
+	}
+
+	cloned := *probe
+	if len(probe.Checks) > 0 {
+		cloned.Checks = append([]controlplane.RouterReachabilityProbe(nil), probe.Checks...)
+	}
+	return &cloned
+}
+
+func collectInstagramReachability() *controlplane.RouterReachabilityProbe {
+	now := time.Now().UTC()
+
+	instagramProbeCache.mu.Lock()
+	if instagramProbeCache.result != nil && now.Before(instagramProbeCache.expiresAt) {
+		cached := cloneInstagramReachability(instagramProbeCache.result)
+		instagramProbeCache.mu.Unlock()
+		return cached
+	}
+	instagramProbeCache.mu.Unlock()
+
+	prober := rescue.NewHTTPProber(instagramProbeTimeout)
+	checks := make([]controlplane.RouterReachabilityProbe, 0, len(instagramProbeTargets))
+	for _, target := range instagramProbeTargets {
+		ctx, cancel := context.WithTimeout(context.Background(), instagramProbeTimeout)
+		result := prober.Probe(ctx, target.URL)
+		cancel()
+		checks = append(checks, buildInstagramReachabilityCheck(target, result))
+	}
+	probe := buildInstagramReachabilitySummary(checks)
+	if probe == nil {
+		return nil
+	}
+
+	instagramProbeCache.mu.Lock()
+	instagramProbeCache.result = cloneInstagramReachability(probe)
+	instagramProbeCache.expiresAt = now.Add(instagramProbeCacheTTL)
+	instagramProbeCache.mu.Unlock()
+
+	return cloneInstagramReachability(probe)
+}
+
+func buildInstagramReachabilityCheck(
+	target instagramProbeTarget,
+	result rescue.HTTPProbeResult,
+) controlplane.RouterReachabilityProbe {
+	targetURL := strings.TrimSpace(result.URL)
+	if targetURL == "" {
+		targetURL = target.URL
+	}
+
+	checkedAt := result.CheckedAt.UTC()
+	if checkedAt.IsZero() {
+		checkedAt = time.Now().UTC()
+	}
+
+	probe := controlplane.RouterReachabilityProbe{
+		ID:        target.ID,
+		Label:     target.Label,
+		Reachable: result.Reachable,
+		CheckedAt: checkedAt.Format(time.RFC3339),
+		TargetURL: targetURL,
+	}
+	if result.StatusCode > 0 {
+		probe.StatusCode = result.StatusCode
+	}
+	if result.Error != "" {
+		probe.Error = normalizeProbeError(result.Error)
+	}
+
+	return probe
+}
+
+func buildInstagramReachabilitySummary(
+	checks []controlplane.RouterReachabilityProbe,
+) *controlplane.RouterReachabilityProbe {
+	if len(checks) == 0 {
+		return nil
+	}
+
+	reachableCount := 0
+	checkedAt := checks[len(checks)-1].CheckedAt
+	for _, check := range checks {
+		if check.Reachable {
+			reachableCount++
+		}
+		if strings.TrimSpace(check.CheckedAt) != "" {
+			checkedAt = check.CheckedAt
+		}
+	}
+
+	status := "blocked"
+	reachable := false
+	switch {
+	case reachableCount == len(checks):
+		status = "reachable"
+		reachable = true
+	case reachableCount > 0:
+		status = "partial"
+	}
+
+	return &controlplane.RouterReachabilityProbe{
+		Reachable:      reachable,
+		CheckedAt:      checkedAt,
+		Status:         status,
+		ReachableCount: reachableCount,
+		TotalCount:     len(checks),
+		Checks:         append([]controlplane.RouterReachabilityProbe(nil), checks...),
+	}
+}
+
+func cloneInstagramReachability(
 	probe *controlplane.RouterReachabilityProbe,
 ) *controlplane.RouterReachabilityProbe {
 	if probe == nil {

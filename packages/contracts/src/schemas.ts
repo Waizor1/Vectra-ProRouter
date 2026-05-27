@@ -427,6 +427,8 @@ export const routerTelegramReachabilitySchema = z.object({
 });
 
 export const routerYoutubeReachabilitySchema = routerTelegramReachabilitySchema;
+export const routerInstagramReachabilitySchema =
+  routerTelegramReachabilitySchema;
 
 export const routerGroupedReachabilitySchema = z.object({
   reachable: z.boolean().optional(),
@@ -493,6 +495,7 @@ export const routerInventorySchema = z.object({
   foreignReachability: routerGroupedReachabilitySchema.optional(),
   telegramReachability: routerTelegramReachabilitySchema.optional(),
   youtubeReachability: routerYoutubeReachabilitySchema.optional(),
+  instagramReachability: routerInstagramReachabilitySchema.optional(),
   safetyEvents: z.array(routerSafetyEventSchema).optional(),
   rawSnapshot: z.record(z.string(), z.unknown()).optional(),
 });
@@ -1151,6 +1154,9 @@ export type RouterTelegramReachability = z.infer<
 >;
 export type RouterYoutubeReachability = z.infer<
   typeof routerYoutubeReachabilitySchema
+>;
+export type RouterInstagramReachability = z.infer<
+  typeof routerInstagramReachabilitySchema
 >;
 export type RouterSafetyEvent = z.infer<typeof routerSafetyEventSchema>;
 export type RouterInventory = z.infer<typeof routerInventorySchema>;

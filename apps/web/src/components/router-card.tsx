@@ -3,6 +3,7 @@
 import Link from "next/link";
 
 import type {
+  RouterInstagramReachability,
   RouterTelegramReachability,
   RouterYoutubeReachability,
 } from "@vectra/contracts";
@@ -28,6 +29,11 @@ import {
   hasTelegramReachabilityProblem,
 } from "~/lib/telegram-reachability";
 import {
+  formatInstagramReachabilityLabel,
+  getInstagramReachabilityStatus,
+  hasInstagramReachabilityProblem,
+} from "~/lib/instagram-reachability";
+import {
   formatYoutubeReachabilityLabel,
   getYoutubeReachabilityStatus,
   hasYoutubeReachabilityProblem,
@@ -52,6 +58,8 @@ export type RouterSummary = {
   lastRescue: string;
   telegramReachability?: RouterTelegramReachability | null;
   youtubeReachability?: RouterYoutubeReachability | null;
+  instagramReachability?: RouterInstagramReachability | null;
+  connectivityVerdict?: "ok" | "partial" | "down" | "unknown";
   memory: RouterMemoryStatus;
   importState: string;
   needsImportReview: boolean;
@@ -161,6 +169,12 @@ export function RouterCard({ router }: { router: RouterSummary }) {
   );
   const youtubeProblem = hasYoutubeReachabilityProblem(
     router.youtubeReachability,
+  );
+  const instagramStatus = getInstagramReachabilityStatus(
+    router.instagramReachability,
+  );
+  const instagramProblem = hasInstagramReachabilityProblem(
+    router.instagramReachability,
   );
   const trustState = describeRouterTrustState(router);
   const primaryStatus = describePrimaryStatus(router);
@@ -305,6 +319,21 @@ export function RouterCard({ router }: { router: RouterSummary }) {
                 : youtubeStatus === "partial"
                   ? "warning"
                   : youtubeProblem
+                    ? "danger"
+                    : "default"
+            }
+          />
+          <CompactRouterFact
+            label="Instagram"
+            value={formatInstagramReachabilityLabel(
+              router.instagramReachability,
+            )}
+            tone={
+              instagramStatus === "reachable"
+                ? "good"
+                : instagramStatus === "partial"
+                  ? "warning"
+                  : instagramProblem
                     ? "danger"
                     : "default"
             }
