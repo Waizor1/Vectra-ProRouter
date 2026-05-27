@@ -28,6 +28,24 @@ const (
 	jobSafetyDiagnosticMemoryFloorMB  = 40
 	jobSafetyDiagnosticTMPFloorMB     = 8
 	jobSafetyControllerOverlayFloorMB = 8
+	// jobSafetyAbsoluteMinimumOverlayMB is the hard floor below which we never
+	// let an overlay-relaxing knob descend. Operators can lower static floors
+	// and panel can ship manifest-aware tightening, but never below this.
+	// Set to match the controller-self-update floor — that's the empirically
+	// proven minimum where opkg's own staging files don't push overlay full.
+	jobSafetyAbsoluteMinimumOverlayMB = 4
+	// jobSafetyUBIFSCompressionRatio approximates the typical compression
+	// ratio of opkg-installed payloads on UBIFS (binaries + geo data + lua).
+	// xray-core measures 32 MB uncompressed → ~10-12 MB on UBIFS; geo .dat
+	// files vary 3-5x depending on entropy. 3 is the conservative midpoint
+	// for the PassWall2 stack, used to convert installedSizeBytes into a
+	// realistic overlay-delta estimate.
+	jobSafetyUBIFSCompressionRatio = 3
+	// jobSafetyManifestOverlayHeadroomMB is added on top of the
+	// manifest-derived estimate to cover opkg's own staging metadata
+	// (control files, conffiles backup, scratch buffer) that doesn't show
+	// up in installedSizeBytes.
+	jobSafetyManifestOverlayHeadroomMB = 2
 )
 
 type jobSafetyClass string
@@ -145,10 +163,74 @@ func overlayFloorFor(class jobSafetyClass, tuning JobSafetyTuning, job controlpl
 		// overlay floor for self-update specifically to recover stuck routers,
 		// but don't let it fall under the compile-time minimum.
 		if jobSafetyControllerOverlayFloorMB < base {
-			return jobSafetyControllerOverlayFloorMB
+			base = jobSafetyControllerOverlayFloorMB
+		}
+	}
+	// Manifest-aware tightening: when the panel ships per-package
+	// installedSizeBytes for a storage job, compute the realistic
+	// UBIFS-compressed overlay delta and use that as the floor when it
+	// drops below the static class default. This only RELAXES the floor
+	// (never tightens it above the static default) and never descends below
+	// jobSafetyAbsoluteMinimumOverlayMB. Keeps stuck low-overlay routers
+	// (AX3000T-class with full PassWall2 stack) updatable without weakening
+	// the guard for fresh-install or bloated payloads.
+	if class == jobSafetyClassStorage {
+		if manifestFloor := manifestOverlayFloorMB(job); manifestFloor > 0 && manifestFloor < base {
+			base = manifestFloor
 		}
 	}
 	return base
+}
+
+// manifestOverlayFloorMB derives a realistic minimum-required overlay floor
+// from the per-package installedSizeBytes carried in the job payload. Returns
+// 0 when the job has no usable manifest, falling back to the caller's static
+// floor. The math: sum installedSizeBytes across packageArtifacts → divide by
+// jobSafetyUBIFSCompressionRatio to approximate compressed on-disk usage →
+// add jobSafetyManifestOverlayHeadroomMB for opkg's staging overhead → clamp
+// to jobSafetyAbsoluteMinimumOverlayMB.
+//
+// Note this is the worst-case fresh-install delta. For upgrades where the
+// same package is being replaced, opkg's package-first strategy removes the
+// old version first, so actual peak overlay use is even lower. We do NOT try
+// to subtract currently-installed sizes at this layer (would require reading
+// /usr/lib/opkg/status from a context that doesn't have backend access) —
+// the worst-case estimate is still tight enough to unblock AX3000T routers
+// where the static 16 MB floor is the actual problem.
+func manifestOverlayFloorMB(job controlplane.Job) int {
+	if job.Type != "update_passwall_packages" {
+		return 0
+	}
+	artifacts := parsePackageArtifacts(job.Payload)
+	if len(artifacts) == 0 {
+		return 0
+	}
+	var totalInstalledBytes int64
+	for _, a := range artifacts {
+		if a.InstalledSize > 0 {
+			totalInstalledBytes += a.InstalledSize
+		}
+	}
+	if totalInstalledBytes <= 0 {
+		return 0
+	}
+	compressedBytes := totalInstalledBytes / jobSafetyUBIFSCompressionRatio
+	requiredMB := int(compressedBytes/(1024*1024)) + jobSafetyManifestOverlayHeadroomMB
+	if requiredMB < jobSafetyAbsoluteMinimumOverlayMB {
+		return jobSafetyAbsoluteMinimumOverlayMB
+	}
+	return requiredMB
+}
+
+// forceOverlayBypass returns true when the panel marked this job payload with
+// {"forceOverlayBypass": true}. Used by operators to override the overlay
+// guard for one specific update job when a router is stuck below the floor
+// and the operator has externally verified there's enough room (e.g. by
+// pre-removing old packages). When true, the overlay reason is dropped from
+// the safety decision and a WARN line is emitted for audit. Memory and tmp
+// floors are NOT bypassed — those guard against hard failure modes.
+func forceOverlayBypass(job controlplane.Job) bool {
+	return payloadBool(job.Payload, "forceOverlayBypass")
 }
 
 func tmpFloorFor(class jobSafetyClass, tuning JobSafetyTuning) int {
@@ -167,6 +249,18 @@ func pickFloor(override, deflt int) int {
 		return override
 	}
 	return deflt
+}
+
+// overlayTuningKnobName returns the UCI option name that operators can set
+// to lower the overlay floor for a given safety class. Used inside the
+// guard's error message so the recovery path is self-documented.
+func overlayTuningKnobName(class jobSafetyClass) string {
+	switch class {
+	case jobSafetyClassStorage:
+		return "job_safety_storage_overlay_floor_mb"
+	default:
+		return "job_safety_heavy_overlay_floor_mb"
+	}
 }
 
 func evaluateJobSafetyForClass(
@@ -203,10 +297,32 @@ func evaluateJobSafetyForClass(
 		if resources.OverlayFreeMB <= 0 {
 			reasons = append(reasons, "/overlay free space is unknown")
 		} else if resources.OverlayFreeMB < overlayFloor {
-			reasons = append(
-				reasons,
-				fmt.Sprintf("/overlay free %d MB is below %d MB floor", resources.OverlayFreeMB, overlayFloor),
-			)
+			if forceOverlayBypass(job) {
+				// Operator opted into bypass; log to syslog so the audit trail
+				// captures who chose to override the guard. We deliberately
+				// keep memory/tmp checks intact — those guard against hard
+				// failure modes (OOM, opkg staging failure) that bypass can't
+				// safely paper over.
+				log.Printf(
+					"job %s (%s): overlay guard bypassed by operator (forceOverlayBypass=true); /overlay free %d MB vs %d MB floor",
+					job.ID, job.Type, resources.OverlayFreeMB, overlayFloor,
+				)
+			} else {
+				// Build an actionable error: report current vs floor, plus
+				// the operator knobs that can lift the floor. Keep the
+				// "free N MB is below M MB floor" substring intact — multiple
+				// downstream log scrapers, self-heal tests, and the panel's
+				// rescue UI grep for this exact pattern.
+				reasons = append(
+					reasons,
+					fmt.Sprintf(
+						"/overlay free %d MB is below %d MB floor (set %s in /etc/config/vectra-controller or pass forceOverlayBypass=true in job payload)",
+						resources.OverlayFreeMB,
+						overlayFloor,
+						overlayTuningKnobName(class),
+					),
+				)
+			}
 		}
 	}
 
