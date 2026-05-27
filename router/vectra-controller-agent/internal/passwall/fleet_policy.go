@@ -206,6 +206,17 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 		if isGRPC {
 			score += 20
 		}
+		// YouTube-purposed nodes (label explicitly carries "youtube") beat
+		// generic geo-only nodes for the YouTube slot. Mirrors the panel-side
+		// scoring in apps/web/src/server/vectra/fleet-route-policy.ts so that
+		// the controller's self-heal converges on the same selection the panel
+		// applies. Without this, the two halves disagreed on which subscription
+		// node should fill the YouTube slot when no perfect port-50051 candidate
+		// existed (real BloopCat subscriptions consistently pair port-50051 with
+		// "YouTube" in remarks; this stays a tiebreaker, not a regression vector).
+		if containsAny(label, "youtube") {
+			score += 30
+		}
 		return score
 	case "Special":
 		nlHost := strings.HasPrefix(address, "nl") && strings.Contains(address, ".")
