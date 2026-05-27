@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vectra-controller-agent
 VECTRA_VERSION?=0.1.13
-VECTRA_RELEASE?=27
+VECTRA_RELEASE?=28
 PKG_VERSION:=$(VECTRA_VERSION)
 PKG_RELEASE:=$(VECTRA_RELEASE)
 
@@ -89,6 +89,7 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) ./files/etc/uci-defaults/90_vectra_controller_defaults $(1)/etc/uci-defaults/90_vectra_controller_defaults
 	$(INSTALL_BIN) ./files/etc/uci-defaults/91_vectra_low_mem_profile $(1)/etc/uci-defaults/91_vectra_low_mem_profile
+	$(INSTALL_BIN) ./files/etc/uci-defaults/92_vectra_controller_watchdog $(1)/etc/uci-defaults/92_vectra_controller_watchdog
 	$(INSTALL_DIR) $(1)/etc/sysctl.d
 	$(INSTALL_DATA) ./files/etc/sysctl.d/99-vectra-lowmem.conf $(1)/etc/sysctl.d/99-vectra-lowmem.conf
 	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
@@ -98,6 +99,7 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) ./files/usr/sbin/vectra-oom-guard $(1)/usr/sbin/vectra-oom-guard
 	$(INSTALL_BIN) ./files/usr/sbin/vectra-xray-wrapper $(1)/usr/sbin/vectra-xray-wrapper
+	$(INSTALL_BIN) ./files/usr/sbin/vectra-controller-watchdog $(1)/usr/sbin/vectra-controller-watchdog
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))

@@ -1,0 +1,85 @@
+#!/bin/sh
+# Install (or refresh) the vectra-controller-watchdog cron entry. Runs on
+# every package install/upgrade via OpenWrt's uci-defaults mechanism. Safe
+# to re-run — uses sentinel comments to detect+update an existing entry
+# rather than appending duplicates.
+#
+# Why a cron entry instead of procd-managed: the watchdog should keep
+# working even when the controller-agent process tree is broken, and even
+# if /etc/init.d/vectra-controller itself was somehow knocked out. cron
+# (busybox crond) is one of the most resilient services in OpenWrt: it
+# survives controller crashes, low-RAM OOM-kills targeting controller
+# processes, and most package-upgrade misadventures.
+
+set -u
+
+LOG_TAG="vectra-controller-watchdog-install"
+CRONTAB="/etc/crontabs/root"
+WATCHDOG_BIN="/usr/sbin/vectra-controller-watchdog"
+SENTINEL_BEGIN="# >>> vectra-controller-watchdog (managed) >>>"
+SENTINEL_END="# <<< vectra-controller-watchdog (managed) <<<"
+CRON_LINE="*/5 * * * * $WATCHDOG_BIN >/dev/null 2>&1"
+
+log() {
+	if command -v logger >/dev/null 2>&1; then
+		logger -t "$LOG_TAG" "$1"
+	fi
+}
+
+# Bail if the watchdog binary isn't on disk (package extraction in flight,
+# downgrade, etc.). Postinst order in OpenWrt isn't always deterministic.
+if [ ! -x "$WATCHDOG_BIN" ]; then
+	log "skipping cron install: $WATCHDOG_BIN not present"
+	exit 0
+fi
+
+mkdir -p "$(dirname "$CRONTAB")" 2>/dev/null || true
+touch "$CRONTAB" 2>/dev/null || true
+
+if grep -Fxq "$SENTINEL_BEGIN" "$CRONTAB" 2>/dev/null; then
+	# Already installed — refresh the body in case the watchdog path or
+	# schedule has changed across versions. sed -i is busybox-safe.
+	tmp_file="$(mktemp -t vectra-cron.XXXXXX 2>/dev/null || echo /tmp/vectra-cron.tmp)"
+	awk -v begin="$SENTINEL_BEGIN" -v end="$SENTINEL_END" -v line="$CRON_LINE" '
+		BEGIN { in_block = 0 }
+		$0 == begin {
+			print begin
+			print line
+			print end
+			in_block = 1
+			next
+		}
+		$0 == end {
+			if (in_block) {
+				in_block = 0
+				next
+			}
+			print
+			next
+		}
+		!in_block { print }
+	' "$CRONTAB" > "$tmp_file" && mv "$tmp_file" "$CRONTAB"
+	log "refreshed existing cron entry"
+else
+	# Fresh install — append the sentinel-wrapped block.
+	{
+		printf '%s\n' "$SENTINEL_BEGIN"
+		printf '%s\n' "$CRON_LINE"
+		printf '%s\n' "$SENTINEL_END"
+	} >> "$CRONTAB"
+	log "installed cron entry"
+fi
+
+# Nudge crond to re-read the crontab so the new entry takes effect now,
+# not on next 5-min boundary tick. crond watches mtime so a simple touch
+# is enough; explicit restart is the belt-and-suspenders path.
+if [ -x /etc/init.d/cron ]; then
+	/etc/init.d/cron enable >/dev/null 2>&1 || true
+	if /etc/init.d/cron running >/dev/null 2>&1; then
+		/etc/init.d/cron reload >/dev/null 2>&1 || /etc/init.d/cron restart >/dev/null 2>&1 || true
+	else
+		/etc/init.d/cron start >/dev/null 2>&1 || true
+	fi
+fi
+
+exit 0

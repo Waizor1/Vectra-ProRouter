@@ -307,6 +307,22 @@ build_agent_package_manually() {
 		"$control_dir" \
 		"$output_dir"
 
+	# Pre-build sanity: the source subdir MUST exist. Without this guard, an
+	# incomplete staging tarball (e.g. a stray `rsync --exclude` that swallowed
+	# the source subdir) would result in Go building nothing and we'd ship an
+	# IPK with no binary — exactly the failure mode that bricked totchto-filiciy
+	# during the r27 rollout. Fail loud here so the build aborts instead of
+	# silently shipping an empty package.
+	if [[ ! -d "$package_root/cmd/vectra-controller-agent" ]]; then
+		echo "build_agent_package_manually: missing source directory $package_root/cmd/vectra-controller-agent" >&2
+		echo "  (staging tarball is incomplete — see r27 incident notes)" >&2
+		exit 1
+	fi
+	if [[ ! -f "$package_root/cmd/vectra-controller-agent/main.go" ]]; then
+		echo "build_agent_package_manually: missing main.go in $package_root/cmd/vectra-controller-agent" >&2
+		exit 1
+	fi
+
 	(
 		cd "$package_root"
 		GOTOOLCHAIN=local \
@@ -317,6 +333,22 @@ build_agent_package_manually() {
 				-o "$data_dir/usr/sbin/vectra-controller-agent" \
 				./cmd/vectra-controller-agent
 	)
+
+	# Post-build assertion: Go can succeed with no .go files in the package
+	# under unusual SDK toolchain configs, producing an empty output. Make sure
+	# the binary actually landed and is non-trivially sized before we package it.
+	if [[ ! -f "$data_dir/usr/sbin/vectra-controller-agent" ]]; then
+		echo "build_agent_package_manually: go build produced no binary at $data_dir/usr/sbin/vectra-controller-agent" >&2
+		exit 1
+	fi
+	local binary_size
+	binary_size="$(stat -c %s "$data_dir/usr/sbin/vectra-controller-agent" 2>/dev/null \
+		|| stat -f %z "$data_dir/usr/sbin/vectra-controller-agent")"
+	if [[ "${binary_size:-0}" -lt 1048576 ]]; then
+		echo "build_agent_package_manually: binary is suspiciously small (${binary_size} bytes < 1 MB)" >&2
+		exit 1
+	fi
+	chmod 0755 "$data_dir/usr/sbin/vectra-controller-agent"
 
 	if [[ -d "$openwrt_root" ]]; then
 		cp -R "$openwrt_root/." "$data_dir/"
@@ -368,6 +400,33 @@ fi
 '
 
 	package_ipk "$data_dir" "$control_dir" "$output_file"
+
+	# Final IPK-level verification: extract data.tar.gz and confirm the binary
+	# is present, executable, and non-empty. This catches the case where the
+	# pre-build / post-build assertions above passed but `package_ipk` or
+	# `tar` somehow dropped the file (e.g. macOS metadata stripping, future
+	# refactors). Belt and suspenders: any of the three guards firing aborts
+	# the build before a binary-less IPK can reach the feed.
+	local verify_dir
+	verify_dir="$(mktemp -d "$SDK_ROOT/tmp/vectra-agent-verify.XXXXXX")"
+	tar -xzf "$output_file" -C "$verify_dir"
+	mkdir -p "$verify_dir/data-unpacked"
+	tar -xzf "$verify_dir/data.tar.gz" -C "$verify_dir/data-unpacked"
+	if [[ ! -f "$verify_dir/data-unpacked/usr/sbin/vectra-controller-agent" ]]; then
+		echo "build_agent_package_manually: IPK $output_file does not contain usr/sbin/vectra-controller-agent" >&2
+		echo "  data.tar.gz contents:" >&2
+		tar -tzf "$verify_dir/data.tar.gz" | sed 's/^/    /' >&2
+		exit 1
+	fi
+	local packed_size
+	packed_size="$(stat -c %s "$verify_dir/data-unpacked/usr/sbin/vectra-controller-agent" 2>/dev/null \
+		|| stat -f %z "$verify_dir/data-unpacked/usr/sbin/vectra-controller-agent")"
+	if [[ "${packed_size:-0}" -lt 1048576 ]]; then
+		echo "build_agent_package_manually: binary inside IPK is suspiciously small (${packed_size} bytes < 1 MB)" >&2
+		exit 1
+	fi
+	rm -rf "$verify_dir"
+
 	rm -rf "$temp_dir"
 	printf '%s\n' "$output_file"
 }
