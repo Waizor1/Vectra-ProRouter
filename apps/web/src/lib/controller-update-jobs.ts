@@ -135,8 +135,15 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     // opkg install but BEFORE scheduling the restart, so even a successful
     // opkg install that somehow left no binary aborts the update before
     // the live controller is killed.
+    //
+    // Size check uses `wc -c`, NOT `stat`: the AX3000T OpenWrt image ships no
+    // `stat` binary (busybox built without it), so `stat -c %s`/`stat -f %z`
+    // both exit 127 and the old `|| echo 0` fallback made bin_size=0 on every
+    // router — verify_agent_on_disk failed right after a perfectly good
+    // install, leaving r28 on disk but never restarted (sergeyavito canary,
+    // 2026-05-29). `wc -c` is a core busybox applet and is always present.
     'verify_ipk_has_agent() { ipk="$1"; inspect_dir="$workdir/agent-inspect"; rm -rf "$inspect_dir"; mkdir -p "$inspect_dir"; tar -xzf "$ipk" -C "$inspect_dir" 2>/dev/null || fail "agent .ipk is not a valid tar.gz"; tar -tzf "$inspect_dir/data.tar.gz" 2>/dev/null | grep -qE "^\\./usr/sbin/vectra-controller-agent$" || fail "agent .ipk is missing usr/sbin/vectra-controller-agent (corrupted package — refusing to install)"; rm -rf "$inspect_dir"; }',
-    'verify_agent_on_disk() { [ -x /usr/sbin/vectra-controller-agent ] || fail "/usr/sbin/vectra-controller-agent missing or non-executable after opkg install (refusing to schedule restart)"; bin_size="$(stat -c %s /usr/sbin/vectra-controller-agent 2>/dev/null || stat -f %z /usr/sbin/vectra-controller-agent 2>/dev/null || echo 0)"; [ "${bin_size:-0}" -ge 1048576 ] || fail "/usr/sbin/vectra-controller-agent is suspiciously small (${bin_size} bytes < 1 MB)"; }',
+    'verify_agent_on_disk() { [ -x /usr/sbin/vectra-controller-agent ] || fail "/usr/sbin/vectra-controller-agent missing or non-executable after opkg install (refusing to schedule restart)"; bin_size="$(wc -c < /usr/sbin/vectra-controller-agent 2>/dev/null | tr -dc 0-9)"; [ "${bin_size:-0}" -ge 1048576 ] || fail "/usr/sbin/vectra-controller-agent is suspiciously small (${bin_size:-0} bytes < 1 MB)"; }',
     'agent_ipk="$workdir/vectra-controller-agent.ipk"',
     'luci_ipk="$workdir/luci-app-vectra-controller.ipk"',
     `fetch "$agent_ipk" ${shellSingleQuote(agentArtifact.artifactUrl)}`,
