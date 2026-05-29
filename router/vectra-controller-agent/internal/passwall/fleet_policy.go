@@ -192,8 +192,21 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 			return score
 		}
 	case "YouTube":
+		// Subscription labels are an entry/exit flag pair: "🇷🇺🇩🇪 Германия
+		// YouTube" is RU-entry / DE-exit, "🇷🇺🇦🇪 ОАЭ" is RU-entry / UAE-exit.
+		// The leading 🇷🇺 is therefore the ENTRY marker and must NOT, on its own,
+		// qualify a node for this slot — that is precisely how the dead generic
+		// "🇷🇺🇦🇪 ОАЭ" node (port 50061, passes a trivial google-204 healthcheck
+		// but fails real youtube.com) used to win the YouTube slot while a working
+		// "...Германия YouTube" node sat unused. Require an explicit YouTube
+		// purpose or a genuine Russia destination (the fleet provides no pure
+		// Russia-exit node, so YouTube-purposed RU-entry nodes are the real
+		// targets). Keep this aligned with the panel-side scorer in
+		// apps/web/src/server/vectra/fleet-route-policy.ts.
+		youTubePurposed := containsAny(label, "youtube")
 		ruRussiaPort := hostLooksLikeRuEntry(address) && node.Port == 50051
-		if !containsAny(label, "росси", "russia", "🇷🇺") && !ruRussiaPort {
+		russiaExit := containsAny(label, "росси", "russia") || ruRussiaPort
+		if !youTubePurposed && !russiaExit {
 			return 0
 		}
 		score := 60
@@ -206,15 +219,7 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 		if isGRPC {
 			score += 20
 		}
-		// YouTube-purposed nodes (label explicitly carries "youtube") beat
-		// generic geo-only nodes for the YouTube slot. Mirrors the panel-side
-		// scoring in apps/web/src/server/vectra/fleet-route-policy.ts so that
-		// the controller's self-heal converges on the same selection the panel
-		// applies. Without this, the two halves disagreed on which subscription
-		// node should fill the YouTube slot when no perfect port-50051 candidate
-		// existed (real BloopCat subscriptions consistently pair port-50051 with
-		// "YouTube" in remarks; this stays a tiebreaker, not a regression vector).
-		if containsAny(label, "youtube") {
+		if youTubePurposed {
 			score += 30
 		}
 		return score
