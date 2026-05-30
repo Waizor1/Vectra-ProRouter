@@ -380,4 +380,41 @@ describe("fleet route policy", () => {
       result.changes.find((change) => change.slot === "Special")?.nextNodeId,
     ).toBe("node-special-ru-entry");
   });
+
+  it("never binds YouTube to an entry-flag-only node that fails the real service", () => {
+    // "🇷🇺🇦🇪 ОАЭ" carries a leading 🇷🇺 ENTRY flag and a genuine RU-entry host, but
+    // it is a UAE exit: it passes a google-204 healthcheck yet fails real
+    // youtube.com. It must never qualify for the YouTube slot off the entry marker
+    // alone — this mirrors the Go scorer guard in fleet_policy_test.go.
+    const config = buildConfig({ bindings: { YouTube: "node-uae" } });
+    config.nodes.push({
+      id: "node-uae",
+      label: "🇷🇺🇦🇪 ОАЭ",
+      protocol: "vless",
+      enabled: true,
+      group: "default",
+      tags: [],
+      address: "ru4.nfnpx.online",
+      port: 50061,
+      transport: "grpc",
+      extras: {},
+    });
+
+    const compliance = evaluateFleetRoutePolicy(config, {
+      name: "normal-router",
+    });
+    expect(compliance.status).toBe("violation");
+    expect(compliance.canNormalize).toBe(true);
+    expect(compliance.mismatches.map((mismatch) => mismatch.slot)).toContain(
+      "YouTube",
+    );
+
+    const result = normalizeFleetRoutePolicy(config, { name: "normal-router" });
+    expect(result.changed).toBe(true);
+    const youtubeRule = result.config.basicSettings.shuntRules.find(
+      (rule) => rule.id === "YouTube",
+    );
+    expect(youtubeRule?.outboundNodeId).toBe("node-youtube-1");
+    expect(youtubeRule?.outboundNodeId).not.toBe("node-uae");
+  });
 });

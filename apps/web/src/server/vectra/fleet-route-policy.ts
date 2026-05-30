@@ -226,28 +226,29 @@ function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
       return ruEntry ? score : 0;
     }
     case "YouTube": {
-      const russia = includesAny(label, ["росси", "russia", "🇷🇺"]);
+      // Subscription labels are an entry/exit flag pair: "🇷🇺🇩🇪 Германия
+      // YouTube" is RU-entry / DE-exit, "🇷🇺🇦🇪 ОАЭ" is RU-entry / UAE-exit. The
+      // leading 🇷🇺 is the ENTRY marker and must NOT, on its own, qualify a node
+      // for this slot — that is how the dead generic "🇷🇺🇦🇪 ОАЭ" node (port
+      // 50061, passes a trivial google-204 healthcheck but fails real
+      // youtube.com) used to win YouTube while a working "...Германия YouTube"
+      // node sat unused. Require an explicit YouTube purpose or a genuine Russia
+      // destination (the fleet provides no pure Russia-exit node, so
+      // YouTube-purposed RU-entry nodes are the real targets). Keep aligned with
+      // the controller scorer in
+      // router/vectra-controller-agent/internal/passwall/fleet_policy.go.
+      const youTubePurposed = includesAny(label, ["youtube"]);
       const ruRussiaPort = hostLooksLikeRuEntry(address) && node.port === 50051;
-      if (!russia && !ruRussiaPort) {
+      const russiaExit =
+        includesAny(label, ["росси", "russia"]) || ruRussiaPort;
+      if (!youTubePurposed && !russiaExit) {
         return 0;
       }
       let score = 60;
       if (ruEntry) score += 25;
       if (node.port === 50051) score += 35;
       if (isGrpc) score += 20;
-      // YouTube-purposed nodes (label explicitly carries "youtube") beat
-      // generic geo-only nodes for the YouTube slot. Without this, two RU-entry
-      // gRPC nodes with non-50051 ports tie at 105 and the winner becomes
-      // node-iteration order — which on 2026-05-28 caused totchto-filiciy to be
-      // bound to a generic "🇷🇺🇦🇪 ОАЭ" node (port 50061) that fails actual
-      // VLESS+REALITY handshake while a clearly-better "🇷🇺🇩🇪 Германия YouTube"
-      // candidate sat unused. BloopCat ships YouTube-purposed nodes with
-      // "YouTube" in remarks specifically so they can be selected for this slot;
-      // honour the upstream signal. +30 is enough to overtake the +35 port
-      // bonus only when the port-50051 node also lacks "youtube" in its label
-      // (real subscriptions consistently pair the two, so this stays a tiebreaker
-      // and not a regression vector).
-      if (includesAny(label, ["youtube"])) score += 30;
+      if (youTubePurposed) score += 30;
       return score;
     }
     case "Special": {
