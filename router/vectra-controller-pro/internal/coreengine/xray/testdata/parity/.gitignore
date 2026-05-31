@@ -1,0 +1,5 @@
+# Captured/authored parity pairs may contain real endpoints — keep them local.
+*.passwall-xray.json
+*.operator.json
+!README.md
+!.gitignore
