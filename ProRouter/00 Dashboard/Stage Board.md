@@ -1,12 +1,16 @@
 ---
 type: dashboard
-updated: 2026-05-15
+updated: 2026-05-31
 tags:
   - dashboard
   - status
 ---
 
 # Stage Board
+
+## 2026-05-31 xray-direct controller (vctl) — canary-ready
+
+- Brought the next-generation standalone controller `router/vectra-controller-pro` (`vctl`) from an isolated engine to **canary-ready**: it now drives Xray directly, replacing the PassWall2 lua/shell prosthetic, with its own autonomous loop (control-plane register/check-in/job-result on protocol `2026-04-v1`, xray-native inventory with `engineMode`, atomic state with legacy-identity adoption, xray apply contract, job-safety floors, connectivity rescue) plus a restart-safe firewall commit-confirm auto-revert. Off-router support is fully additive (`engineMode` defaults `passwall`): contracts (`xrayDesiredConfigSchema`, xray job/artifact types), DB column + drizzle `0015`, engine-aware `router-control.ts`, separate `queueApplyXray`/`saveXray`; the 18 live PassWall2 routers are provably unaffected (confirmed by independent code+security review). Added OpenWrt `.ipk` packaging (binary `/usr/sbin/vctl`, `DEPENDS +xray-core` + tproxy kmods, init.d that stops the legacy agent for mutual exclusion), feed integration, golden-snapshot renderer tests, and a gated live parity oracle. Self-update is security-hardened (fail-closed sha256, pro-package identity guard, HTTPS-pinned fetches). Decision recorded in ADR-0005. Local proof green: `go test -race ./...`, e2e + self-update-guard tests, web tsc + vitest (327 pass / 4 pre-existing env failures), aarch64 cross-compile, `bash -n`. **No live router was touched** — real `.ipk` build/publish, parity-corpus capture, on-device dry-run, and the live canary flip are all explicitly gated behind operator sign-off. Module note: [[02 Modules/Xray-Direct Controller]].
 
 ## 2026-05-15 optimization baseline controller job
 
