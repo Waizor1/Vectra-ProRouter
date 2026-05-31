@@ -305,6 +305,56 @@ describe("enrollment install preset", () => {
     expect(script).toContain("feed_package_storage_budget_bytes() {");
     expect(script).toContain('feed_package_download_size_bytes "$pkg"');
     expect(script).toContain("require_feed_package_storage_metadata() {");
+    const storageMetadataFunctionStart = script.indexOf(
+      "require_feed_package_storage_metadata() {",
+    );
+    const storageMetadataFunctionEnd = script.indexOf(
+      "\n}\n",
+      storageMetadataFunctionStart,
+    );
+    const storageMetadataFunction = script.slice(
+      storageMetadataFunctionStart,
+      storageMetadataFunctionEnd,
+    );
+    // OpenWrt 24.10 `opkg info` omits Installed-Size/Size for not-yet-installed
+    // packages (e.g. dnsmasq-full), so unknown size must warn and continue, not
+    // hard-abort the storage-aware preflight regardless of free space.
+    expect(storageMetadataFunction).toContain(
+      "Предупреждение: не удалось определить storage budget для OpenWrt пакета $pkg",
+    );
+    expect(storageMetadataFunction).toContain("    return 0");
+    expect(storageMetadataFunction).not.toContain("exit 1");
+    expect(storageMetadataFunction).not.toContain(
+      "Не удалось определить storage budget для OpenWrt пакета $pkg. Storage-aware preflight остановлен.",
+    );
+    expect(script).not.toContain(
+      "Не удалось определить storage budget для OpenWrt пакета $pkg. Storage-aware preflight остановлен.",
+    );
+    const simulateOverlayFunctionStart = script.indexOf(
+      "simulate_overlay_step() {",
+    );
+    const simulateOverlayFunctionEnd = script.indexOf(
+      "\n}\n",
+      simulateOverlayFunctionStart,
+    );
+    const simulateOverlayFunction = script.slice(
+      simulateOverlayFunctionStart,
+      simulateOverlayFunctionEnd,
+    );
+    // An unknown overlay budget must skip the simulation for that package, not
+    // abort the whole bootstrap; the genuine "not enough space" branch below it
+    // (available + reclaim < required) still aborts via overlay_fail.
+    expect(simulateOverlayFunction).toContain(
+      "Предупреждение: не удалось определить storage budget для $pkg",
+    );
+    expect(simulateOverlayFunction).toContain("    return 0");
+    expect(simulateOverlayFunction).not.toContain("exit 1");
+    expect(simulateOverlayFunction).toContain(
+      'if [ $((available_bytes + reclaim_bytes)) -lt "$required_bytes" ]; then',
+    );
+    expect(simulateOverlayFunction).toContain(
+      'overlay_fail "$pkg" "$available_bytes" "$required_bytes" "$reclaim_bytes"',
+    );
     expect(script).toContain("vectra_package_storage_budget_bytes() {");
     expect(script).toContain('vectra_package_download_size_bytes "$pkg"');
     expect(script).toContain("download_and_install_managed_ipk() {");
