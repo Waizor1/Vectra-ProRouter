@@ -100,3 +100,52 @@ make vet           # go vet ./...                     (0 warnings)
 ```
 
 Module: `vectra-controller-pro`, Go `1.22.0`, **no external dependencies** (stdlib only).
+
+## Canary cutover runbook (gated — do not run on a client router without sign-off)
+
+`vctl` is a *second* controller package alongside the live `vectra-controller-agent`.
+Exactly one controller owns a router at a time; `engineMode` is the source of truth.
+
+1. Pick a healthy volunteer (non-`hh`, non-low-RAM). PassWall2 stays installed as
+   the instant rollback.
+2. Install `vectra-controller-pro`. Its `init.d` **stops + disables the legacy
+   `vectra-controller`** automatically (mutual exclusion), and `vctl` **adopts
+   the legacy router id + token** from `/etc/vectra-controller/state.json`
+   (`state.ImportLegacyIdentity`) so the panel sees the *same* router flip to
+   `xray-direct`, not a duplicate.
+3. Flip the router's `engineMode` to `xray-direct` in the panel and push an
+   `XrayDesiredConfig`. The first `apply_xray_config` programs the firewall behind
+   **commit-confirm** (a detached deadman auto-reverts within 90s unless a
+   successful check-in proves the panel link survived).
+4. Rollback = re-enable `vectra-controller`, set `engineMode` back to `passwall`.
+
+## Security posture (ratified for canary) + fast-follows before fleet rollout
+
+Ratified, intentional decisions for the canary stage:
+
+- **Self-update is fail-closed and engine-scoped.** `update_controller` refuses any
+  artifact whose name/URL isn't `vectra-controller-pro`, requires a `sha256`
+  (no checksum → refuse), caps the download, and only fetches over HTTPS.
+- **All external fetches are HTTPS-pinned** (controller artifact, geo assets,
+  subscriptions) — a downgraded link can't deliver cleartext config/binaries.
+- **`run_terminal_command` runs operator-authored shell** from the authenticated
+  panel (HTTPS + per-router token) — same trust model as the legacy agent.
+- **nftables is fail-open-to-direct** (`policy accept`): a broken ruleset or a dead
+  Xray lets traffic egress *direct* rather than black-holing the router. This
+  matches PassWall2 and is acceptable for canary because PassWall2 remains the
+  rollback. **Fast-follow (before fleet rollout):** an operator-selectable strict
+  kill-switch mode that `drop`s non-bypass traffic when the proxy is unhealthy.
+
+Tracked fast-follows (not canary blockers):
+
+- **At-rest masking parity for xray configs.** Node secrets are stored encrypted in
+  `passwallSecretBlobs` (AES-256-GCM), but the `XrayDesiredConfig` is currently also
+  written to the revision `config` jsonb in cleartext (passwall masks this). Mirror
+  `sanitizePasswallConfig` for xray and stop shipping the raw config to clients via
+  `draft.list`.
+- **`allowInsecure` from subscription nodes** is passed through (PassWall2 parity);
+  gate it so only operator-set nodes may disable TLS verification.
+- **Job ordering** is newest-first (the pre-existing shared contract); switch the
+  delivery to creation order (asc) so queued applies run in order.
+- **Native gRPC** Observatory/Handler hot-reload (today: shell-out `xray api` +
+  active-probe health).

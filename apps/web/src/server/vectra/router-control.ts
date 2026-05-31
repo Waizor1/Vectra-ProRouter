@@ -1406,6 +1406,7 @@ export async function recordJobResult(routerId: string, input: unknown) {
         routerId,
         desiredRevisionId: revision.id,
         jobId: job.id,
+        engineMode: revision.engineMode,
         result: resultState,
         uciDigest: parsed.configDigest ?? revision.configDigest ?? null,
         stdout: parsed.stdout ?? null,

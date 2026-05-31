@@ -517,7 +517,7 @@ build_pro_package_manually() {
 		CGO_ENABLED=0 \
 		GOOS=linux \
 		GOARCH="$go_arch" \
-			go build -trimpath -ldflags="-s -w -X main.runtimeVersion=${package_version}" \
+			go build -trimpath -ldflags="-s -w -X main.Version=${package_version} -X main.runtimeVersion=${package_version}" \
 				-o "$data_dir/usr/sbin/vctl" \
 				./cmd/vctl
 	)

@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -39,6 +41,11 @@ func UpdateOne(ctx context.Context, dir string, a Asset, hc *http.Client) Result
 	r := Result{Asset: a}
 	start := time.Now()
 	defer func() { r.Took = time.Since(start) }()
+	// Pin HTTPS so an on-path attacker can't serve cleartext routing data.
+	if u, err := url.Parse(a.URL); err != nil || !strings.EqualFold(u.Scheme, "https") {
+		r.Error = fmt.Errorf("refusing non-https geo url: %s", a.URL)
+		return r
+	}
 	if hc == nil {
 		hc = &http.Client{Timeout: 60 * time.Second}
 	}

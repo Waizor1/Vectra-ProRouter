@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +48,11 @@ func ComputeHWID(mac, model string) string {
 func Fetch(ctx context.Context, opts FetchOptions) (*FetchResult, error) {
 	if opts.URL == "" {
 		return nil, fmt.Errorf("subscription.Fetch: URL required")
+	}
+	// Pin HTTPS: a cleartext subscription lets an on-path attacker reshape which
+	// traffic is proxied vs. sent direct.
+	if u, err := url.Parse(opts.URL); err != nil || !strings.EqualFold(u.Scheme, "https") {
+		return nil, fmt.Errorf("subscription.Fetch: refusing non-https url: %s", opts.URL)
 	}
 	if opts.ConnectTimeout == 0 {
 		opts.ConnectTimeout = 5 * time.Second

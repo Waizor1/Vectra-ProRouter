@@ -22,7 +22,7 @@ GO_PKG:=vectra-controller-pro
 # exact path.
 GO_PKG_BUILD_PKG:=vectra-controller-pro/cmd/vctl
 GO_PKG_INSTALL_BIN_PATH:=/usr/sbin
-GO_PKG_LDFLAGS_X:=main.runtimeVersion=$(PKG_VERSION)-r$(PKG_RELEASE)
+GO_PKG_LDFLAGS_X:=main.Version=$(PKG_VERSION)-r$(PKG_RELEASE) main.runtimeVersion=$(PKG_VERSION)-r$(PKG_RELEASE)
 
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 include $(INCLUDE_DIR)/package.mk

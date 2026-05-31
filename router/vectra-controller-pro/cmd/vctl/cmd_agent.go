@@ -76,11 +76,15 @@ type daemon struct {
 	rescuePolicy rescue.Policy
 	confirmer    *firewall.CommitConfirmer
 
-	supCtx                 context.Context
-	supCancel              context.CancelFunc
-	supStarted             bool
-	pendingFirewallConfirm bool
+	supCtx     context.Context
+	supCancel  context.CancelFunc
+	supStarted bool
 }
+
+// xrayOOMScoreAdj keeps the supervised Xray (and the controller) less likely to
+// be OOM-killed than ordinary processes, without the fully anti-social -1000.
+// Matches the documented operator-config default intent (config/defaults.go).
+const xrayOOMScoreAdj = -100
 
 func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 	st, err := state.Load(cfg.StatePath)
@@ -121,7 +125,7 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 		ConfigFile:  cfg.XrayRenderPath,
 		WorkDir:     "/var/run/vectra-controller-pro",
 		LogDir:      "/var/log/vectra-controller-pro",
-		OOMScoreAdj: -300,
+		OOMScoreAdj: xrayOOMScoreAdj,
 		RestartBackoff: config.Backoff{
 			InitialMs: 1000,
 			Factor:    2.0,
@@ -203,7 +207,10 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	inv.AppliedRevisionID = d.st.AppliedRevisionID
 	inv.ConfigDigest = d.st.ConfigDigest
 
-	health := d.evaluateHealth(ctx, &inv)
+	health, rescueDecision := d.evaluateHealth(ctx, &inv)
+	if rescueDecision.ShouldTransition {
+		d.applyRescueTransition(ctx, rescueDecision)
+	}
 
 	// Register if we have no identity yet; next loop will check in.
 	if d.st.RouterID == "" || d.st.AgentToken == "" {
@@ -220,15 +227,14 @@ func (d *daemon) runOnce(ctx context.Context) error {
 		return fmt.Errorf("check-in: %w", err)
 	}
 
-	// A successful check-in proves the panel link survived the last firewall
-	// change — cancel the pending auto-revert.
-	if d.pendingFirewallConfirm {
-		if err := d.confirmer.Confirm(); err != nil {
-			logging.L().Warn("firewall commit-confirm failed", "err", err.Error())
-		} else {
-			d.pendingFirewallConfirm = false
-			logging.L().Info("firewall change confirmed (panel reachable post-apply)")
-		}
+	// A successful check-in proves the panel link is healthy, so (re)write the
+	// firewall commit-confirm sentinel. This disarms a pending auto-revert even
+	// one armed by a PREVIOUS process before a restart (the durable signal is
+	// the sentinel, not an in-memory flag). If a firewall change had severed the
+	// panel link, CheckIn above would have errored and we would never reach
+	// here — so the detached deadman correctly reverts.
+	if err := d.confirmer.Confirm(); err != nil {
+		logging.L().Debug("firewall commit-confirm sentinel write failed", "err", err.Error())
 	}
 
 	if len(resp.DesiredRevision) > 0 {
@@ -272,7 +278,7 @@ func (d *daemon) register(ctx context.Context, inv controlplane.RouterInventory)
 
 // evaluateHealth runs connectivity probes and updates rescue state, returning
 // the RouterHealth summary for check-in.
-func (d *daemon) evaluateHealth(ctx context.Context, inv *controlplane.RouterInventory) controlplane.RouterHealth {
+func (d *daemon) evaluateHealth(ctx context.Context, inv *controlplane.RouterInventory) (controlplane.RouterHealth, rescue.Decision) {
 	hc := &http.Client{Timeout: 4 * time.Second}
 	serverReachable := rescue.ProbeAny(ctx, hc, serverHealthURLs(d.cfg.ControlURL))
 	publicReachable := rescue.ProbeAny(ctx, hc, d.rescuePolicy.HealthURLs)
@@ -293,12 +299,12 @@ func (d *daemon) evaluateHealth(ctx context.Context, inv *controlplane.RouterInv
 	}
 
 	return controlplane.RouterHealth{
-		CurrentMode:                string(decision.NextState.Mode),
-		ProxyConnectivitySuccesses: decision.NextState.ProxySuccessCount,
+		CurrentMode:                 string(decision.NextState.Mode),
+		ProxyConnectivitySuccesses:  decision.NextState.ProxySuccessCount,
 		DirectConnectivitySuccesses: decision.NextState.DirectSuccessCount,
-		PublicConnectivityFailures: decision.NextState.ProxyFailureCount,
-		ServerReachable:            serverReachable,
-	}
+		PublicConnectivityFailures:  decision.NextState.ProxyFailureCount,
+		ServerReachable:             serverReachable,
+	}, decision
 }
 
 func (d *daemon) rescueState() rescue.State {

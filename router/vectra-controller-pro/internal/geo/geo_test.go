@@ -14,7 +14,7 @@ import (
 func TestUpdateOne_DownloadsAndVerifiesSHA(t *testing.T) {
 	payload := []byte("geoip-test-bytes")
 	hex := sha256Hex(payload)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write(payload)
 	}))
@@ -25,7 +25,7 @@ func TestUpdateOne_DownloadsAndVerifiesSHA(t *testing.T) {
 		Filename:       "geoip.dat",
 		URL:            srv.URL + "/geoip.dat",
 		ExpectedSHA256: hex,
-	}, nil)
+	}, srv.Client())
 	if r.Error != nil {
 		t.Fatal(r.Error)
 	}
@@ -44,7 +44,7 @@ func TestUpdateOne_SkipsWhenExistingHashMatches(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "geosite.dat"), payload, 0o644)
 	// Server should NOT be hit; assert by failing if it is.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("server should not be hit when hash matches")
 	}))
 	defer srv.Close()
@@ -52,7 +52,7 @@ func TestUpdateOne_SkipsWhenExistingHashMatches(t *testing.T) {
 		Filename:       "geosite.dat",
 		URL:            srv.URL + "/geosite.dat",
 		ExpectedSHA256: hex,
-	}, nil)
+	}, srv.Client())
 	if r.Error != nil {
 		t.Fatal(r.Error)
 	}

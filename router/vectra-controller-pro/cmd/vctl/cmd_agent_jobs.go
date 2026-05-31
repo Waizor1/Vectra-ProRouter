@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -225,16 +227,22 @@ func (d *daemon) jobReloadOutbound(ctx context.Context, job controlplane.Job) er
 }
 
 func (d *daemon) jobEnterDirect(ctx context.Context, job controlplane.Job) error {
+	// Tear down the TPROXY firewall so traffic actually flows direct — otherwise
+	// packets keep being tproxy'd into a (possibly dead) Xray and black-holed.
+	d.tearDownFirewall(ctx)
 	d.storeRescueState(rescue.State{Mode: rescue.ModeDirect, LastTransitionAt: time.Now()}, "operator requested direct mode")
 	_ = d.persist()
 	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"enteredDirectMode": true})
 }
 
 func (d *daemon) jobReconnect(ctx context.Context, job controlplane.Job) error {
-	d.storeRescueState(rescue.State{Mode: rescue.ModeProxy, LastTransitionAt: time.Now()}, "operator requested reconnect")
+	// Re-program the firewall (behind commit-confirm) and reload Xray so the
+	// proxy data plane is actually restored.
+	d.reapplyFirewall(ctx)
 	if d.supStarted {
 		_ = d.sup.Reload(d.supCtx)
 	}
+	d.storeRescueState(rescue.State{Mode: rescue.ModeProxy, LastTransitionAt: time.Now()}, "operator requested reconnect")
 	_ = d.persist()
 	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"reconnected": true})
 }
@@ -247,7 +255,18 @@ func (d *daemon) jobRunTerminal(ctx context.Context, job controlplane.Job) error
 	if strings.TrimSpace(cmdStr) == "" {
 		return d.submitFailure(ctx, job, "run_terminal_command: empty command")
 	}
-	runCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	// Honor the panel-provided timeout (schema: 5..120s, default 30); JSON
+	// numbers decode to float64 in the payload map.
+	timeoutS := 30
+	if v, ok := job.Payload["timeoutSeconds"].(float64); ok {
+		timeoutS = int(v)
+	}
+	if timeoutS < 5 {
+		timeoutS = 5
+	} else if timeoutS > 120 {
+		timeoutS = 120
+	}
+	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutS)*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, "sh", "-c", cmdStr)
 	out, err := cmd.CombinedOutput()
@@ -275,12 +294,31 @@ func (d *daemon) jobCollectLogs(ctx context.Context, job controlplane.Job) error
 
 // jobUpdateController self-updates the controller package and schedules a
 // restart so the init system brings up the new binary.
+const proPackageName = "vectra-controller-pro"
+
 func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) error {
 	artifactURL, _ := job.Payload["artifactUrl"].(string)
-	sha, _ := job.Payload["checksumSha256"].(string)
-	version, _ := job.Payload["version"].(string)
 	if artifactURL == "" {
 		return d.submitFailure(ctx, job, "update_controller: missing artifactUrl")
+	}
+	// Panel contract field is `sha256` (packageArtifactPayloadSchema); tolerate
+	// the older `checksumSha256` key for forward-compat.
+	sha, _ := job.Payload["sha256"].(string)
+	if sha == "" {
+		sha, _ = job.Payload["checksumSha256"].(string)
+	}
+	version, _ := job.Payload["version"].(string)
+	pkgName, _ := job.Payload["name"].(string)
+
+	// Identity guard: the controller-update lane is engine-agnostic and could
+	// hand a pro router the LEGACY agent .ipk. We only ever install our OWN
+	// package — refuse anything else rather than overwrite vctl with the agent.
+	if !strings.Contains(pkgName, proPackageName) && !strings.Contains(path.Base(artifactURL), proPackageName) {
+		return d.submitFailure(ctx, job, fmt.Sprintf("update_controller: refusing artifact that is not %s (name=%q url=%s)", proPackageName, pkgName, artifactURL))
+	}
+	// Fail closed: never install an unverified root package.
+	if sha == "" {
+		return d.submitFailure(ctx, job, "update_controller: missing sha256 (refusing unverified install)")
 	}
 
 	dest := filepath.Join(os.TempDir(), "vectra-controller-pro-update.ipk")
@@ -288,7 +326,7 @@ func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) 
 	if err != nil {
 		return d.submitFailure(ctx, job, "download: "+err.Error())
 	}
-	if sha != "" && !strings.EqualFold(sha, gotSha) {
+	if !strings.EqualFold(sha, gotSha) {
 		return d.submitFailure(ctx, job, fmt.Sprintf("checksum mismatch: got %s want %s", gotSha, sha))
 	}
 
@@ -381,17 +419,69 @@ func (d *daemon) programFirewall(ctx context.Context, raw []byte) {
 		return
 	}
 	if err := d.confirmer.Apply(script, spec); err != nil {
-		logging.L().Error("firewall apply failed (deadman armed; will auto-revert)", "err", err.Error())
-		d.pendingFirewallConfirm = true
+		logging.L().Error("firewall apply failed (deadman armed; auto-reverts unless a check-in confirms)", "err", err.Error())
 		return
 	}
+	// Fast path: confirm immediately if the panel is already reachable. If not,
+	// the next successful check-in's unconditional Confirm() disarms the deadman;
+	// and if connectivity never returns, the deadman reverts at its timeout.
 	if rescue.ProbeAny(ctx, &http.Client{Timeout: 4 * time.Second}, serverHealthURLs(d.cfg.ControlURL)) {
 		if err := d.confirmer.Confirm(); err == nil {
 			logging.L().Info("firewall change confirmed immediately (panel reachable)")
-			return
 		}
 	}
-	d.pendingFirewallConfirm = true
+}
+
+// tearDownFirewall removes the vctl TPROXY table + ip rules so traffic flows
+// DIRECT. Best-effort; the revert commands are vctl constants. Disarms any
+// pending deadman since we are intentionally direct now.
+func (d *daemon) tearDownFirewall(ctx context.Context) {
+	cfg, err := d.loadDesiredConfig()
+	if err != nil {
+		return
+	}
+	spec, ok := firewallSpecFromConfig(cfg)
+	if !ok {
+		return
+	}
+	for _, c := range firewall.RevertCommands(spec) {
+		fields := strings.Fields(c)
+		if len(fields) == 0 {
+			continue
+		}
+		_ = exec.CommandContext(ctx, fields[0], fields[1:]...).Run()
+	}
+	_ = d.confirmer.Confirm()
+}
+
+// reapplyFirewall re-programs the TPROXY ruleset (reconnect / rescue recovery)
+// behind commit-confirm.
+func (d *daemon) reapplyFirewall(ctx context.Context) {
+	cfg, err := d.loadDesiredConfig()
+	if err != nil {
+		return
+	}
+	raw, err := config.Marshal(cfg)
+	if err != nil {
+		return
+	}
+	d.programFirewall(ctx, raw)
+}
+
+// applyRescueTransition makes the data plane match an auto-rescue decision so
+// "direct" really bypasses the proxy and "proxy" really restores it.
+func (d *daemon) applyRescueTransition(ctx context.Context, dec rescue.Decision) {
+	switch dec.NextMode {
+	case rescue.ModeDirect:
+		logging.L().Warn("rescue: entering direct mode (tearing down proxy firewall)", "reason", dec.Reason)
+		d.tearDownFirewall(ctx)
+	case rescue.ModeProxy:
+		logging.L().Info("rescue: recovering proxy mode (reapplying firewall)", "reason", dec.Reason)
+		d.reapplyFirewall(ctx)
+		if d.supStarted {
+			_ = d.sup.Reload(d.supCtx)
+		}
+	}
 }
 
 func firewallSpecFromConfig(cfg *config.Config) (firewall.Spec, bool) {
@@ -415,8 +505,15 @@ func tail(s string, max int) string {
 	return s[len(s)-max:]
 }
 
-func downloadFile(ctx context.Context, url, dest string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// maxArtifactBytes caps a controller .ipk download so a hostile/oversized
+// response cannot fill /tmp.
+const maxArtifactBytes = 64 << 20
+
+func downloadFile(ctx context.Context, rawURL, dest string) (string, error) {
+	if err := requireHTTPS(rawURL); err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", err
 	}
@@ -434,7 +531,7 @@ func downloadFile(ctx context.Context, url, dest string) (string, error) {
 		return "", err
 	}
 	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(f, h), resp.Body); err != nil {
+	if _, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, maxArtifactBytes)); err != nil {
 		_ = f.Close()
 		return "", err
 	}
@@ -442,6 +539,19 @@ func downloadFile(ctx context.Context, url, dest string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// requireHTTPS rejects any non-https URL so a tampered panel response or a
+// downgraded link cannot deliver an unencrypted artifact/asset/subscription.
+func requireHTTPS(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse url: %w", err)
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return fmt.Errorf("refusing non-https url (scheme %q)", u.Scheme)
+	}
+	return nil
 }
 
 // scheduleControllerRestart restarts the controller service shortly after we

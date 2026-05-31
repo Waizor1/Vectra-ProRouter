@@ -24,6 +24,16 @@ start_service() {
 	config_get_bool enabled "$SECTION" enabled 1
 	[ "$enabled" -eq 1 ] || return 0
 
+	# Mutual exclusion: exactly one controller owns a router. If the legacy
+	# vectra-controller agent is present (canary cutover, where vctl adopts the
+	# same router identity), stop and disable it so the two daemons never check
+	# in concurrently with the same id/token.
+	if [ -x /etc/init.d/vectra-controller ]; then
+		logger -t vectra-controller-pro "stopping legacy vectra-controller (xray-direct takes over)"
+		/etc/init.d/vectra-controller disable >/dev/null 2>&1 || true
+		/etc/init.d/vectra-controller stop >/dev/null 2>&1 || true
+	fi
+
 	[ -x "$RENDERER" ] || return 1
 	[ -x "$VCTL_BIN" ] || return 1
 
