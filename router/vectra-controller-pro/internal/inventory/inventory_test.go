@@ -57,8 +57,11 @@ func TestCollectAssemblesXrayNativeInventory(t *testing.T) {
 	if inv.XrayVersion != "1.8.24" || !inv.XrayEnabled {
 		t.Errorf("xray version/enabled: %q %v", inv.XrayVersion, inv.XrayEnabled)
 	}
-	if inv.ServiceHealth.Xray != "running" || inv.ServiceHealth.Passwall != "disabled" {
+	if inv.ServiceHealth.Xray != "running" || inv.ServiceHealth.Passwall != "stopped" {
 		t.Errorf("service health: %+v", inv.ServiceHealth)
+	}
+	if inv.PasswallEnabled {
+		t.Errorf("xray-direct inventory must report passwallEnabled=false")
 	}
 	if inv.Resources.MemoryAvailableMB != 195 { // 200000kB/1024
 		t.Errorf("resources mem: %+v", inv.Resources)

@@ -87,16 +87,19 @@ func (c *Collector) Collect(ctx context.Context, xrayStatus supervisor.Status, n
 
 	xrayRunning := xrayStatus.State == supervisor.StateRunning
 	inv.XrayEnabled = xrayRunning
+	inv.PasswallEnabled = false // xray-direct: PassWall2 is never the data plane
 	if v := c.xrayVersion(ctx); v != "" {
 		inv.XrayVersion = v
 		inv.BinaryVersions["xray"] = v
 	}
+	// Service states must be valid panel enum values (running|stopped|
+	// degraded|unknown). PassWall2 is intentionally not running here.
 	inv.ServiceHealth = controlplane.RouterServiceHealth{
 		Controller:     "running",
 		Xray:           serviceState(xrayRunning),
 		DNSMasq:        serviceState(c.processAlive(ctx, "dnsmasq")),
-		Passwall:       "disabled",
-		PasswallServer: "disabled",
+		Passwall:       "stopped",
+		PasswallServer: "stopped",
 	}
 	inv.RulesAssets = c.geoAssets()
 	return inv

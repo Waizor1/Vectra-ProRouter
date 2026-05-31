@@ -4,6 +4,8 @@ import {
   MASKED_SECRET_PLACEHOLDER,
   passwallDesiredConfigSchema,
   type PasswallDesiredConfig,
+  type XrayDesiredConfig,
+  xrayDesiredConfigSchema,
 } from "@vectra/contracts";
 
 import { env } from "~/env";
@@ -18,6 +20,10 @@ type JsonValue =
 
 type PasswallSecretPayload = {
   config: PasswallDesiredConfig;
+};
+
+type XraySecretPayload = {
+  config: XrayDesiredConfig;
 };
 
 const sensitiveExtraPatterns = [
@@ -290,4 +296,32 @@ export function restoreMaskedPasswallConfig(
   return passwallDesiredConfigSchema.parse(
     restoreMaskedSecrets(maskedConfig, sourceConfig)
   );
+}
+
+// ---------------------------------------------------------------------------
+// xray-direct engine secret handling (Vectra Controller Pro).
+//
+// Minimal, additive: the xray config is stored whole and encrypted at rest in
+// the same secret-blob mechanism as passwall. Secrets within an xray config
+// live inside opaque `nodes`/`subscriptions` objects, so there is no
+// field-level masking in this pass; the encrypted blob is the source of truth
+// when present.
+// ---------------------------------------------------------------------------
+
+export function hydrateXrayConfig(
+  storedConfig: XrayDesiredConfig,
+  ciphertext: string | null
+): XrayDesiredConfig {
+  if (!ciphertext) {
+    return storedConfig;
+  }
+
+  const payload = decryptJson<XraySecretPayload>(ciphertext);
+  return xrayDesiredConfigSchema.parse(payload.config);
+}
+
+export function createXraySecretPayload(config: XrayDesiredConfig) {
+  return encryptJson({
+    config,
+  } satisfies XraySecretPayload);
 }

@@ -7,6 +7,7 @@ import {
 import {
   passwallDesiredConfigSchema,
   summarizePasswallRevisionDiff,
+  xrayDesiredConfigSchema,
 } from "@vectra/contracts";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -211,6 +212,51 @@ export const draftRouter = createTRPCRouter({
       return sanitizeRevisionForClient(revision);
     }),
 
+  // Additive xray-direct counterpart of `save`. Stores an XrayDesiredConfig
+  // revision tagged engineMode "xray-direct". The passwall `save` above is left
+  // untouched. The router must already be on the xray-direct engine.
+  saveXray: protectedProcedure
+    .input(
+      z.object({
+        routerId: z.string().uuid(),
+        note: z.string().trim().max(500).optional(),
+        config: xrayDesiredConfigSchema,
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [router] = await ctx.db
+        .select()
+        .from(routers)
+        .where(eq(routers.id, input.routerId))
+        .limit(1);
+
+      if (!router) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `Router ${input.routerId} was not found.`,
+        });
+      }
+
+      if (router.engineMode !== "xray-direct") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Router is not on the xray-direct engine. Switch engineMode before saving an xray config.",
+        });
+      }
+
+      const revision = await createOperatorDraftRevision({
+        routerId: input.routerId,
+        note: input.note,
+        engineMode: "xray-direct",
+        xrayConfig: input.config,
+        // The passwall `config` carrier is unused on the xray path; the helper
+        // ignores it once engineMode is "xray-direct".
+        config: undefined as never,
+      });
+      return sanitizeRevisionForClient(revision);
+    }),
+
   queueApply: protectedProcedure
     .input(
       z.object({
@@ -348,6 +394,140 @@ export const draftRouter = createTRPCRouter({
         .values({
           routerId: input.routerId,
           type: "apply_passwall_config",
+          state: "queued",
+          dedupeKey,
+          desiredRevisionId: input.desiredRevisionId,
+          payload: {
+            desiredRevisionId: input.desiredRevisionId,
+          },
+        })
+        .returning();
+
+      if (isEditableDraftRevision(desiredRevision)) {
+        await ctx.db
+          .update(passwallDesiredRevisions)
+          .set({ status: "queued" })
+          .where(eq(passwallDesiredRevisions.id, input.desiredRevisionId));
+      }
+
+      return job;
+    }),
+
+  // Additive xray-direct counterpart of `queueApply`. Queues an
+  // `apply_xray_config` job for an xray revision. `queueApply` above is left
+  // untouched so the passwall path carries zero risk.
+  queueApplyXray: protectedProcedure
+    .input(
+      z.object({
+        routerId: z.string().uuid(),
+        desiredRevisionId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [router] = await ctx.db
+        .select()
+        .from(routers)
+        .where(eq(routers.id, input.routerId))
+        .limit(1);
+
+      const [snapshot] = await ctx.db
+        .select()
+        .from(routerInventorySnapshots)
+        .where(eq(routerInventorySnapshots.routerId, input.routerId))
+        .orderBy(desc(routerInventorySnapshots.createdAt))
+        .limit(1);
+
+      if (!router) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `Router ${input.routerId} was not found.`,
+        });
+      }
+
+      if (router.engineMode !== "xray-direct") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Router is not on the xray-direct engine. Use queueApply for passwall routers.",
+        });
+      }
+
+      const support = describeEffectiveRouterSupport({
+        router: {
+          boardName: router.boardName,
+          target: router.target,
+          architecture: router.architecture,
+          openwrtRelease: router.openwrtRelease,
+        },
+        inventory: snapshot?.payload ?? null,
+      });
+
+      if (!canRunDestructiveAction(support.state)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "Конфигурация может применяться только на поддерживаемых pilot/certified роутерах.",
+        });
+      }
+
+      if (router.importState !== "approved") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Сначала нужно завершить import review или re-import, затем сервер снова станет authoritative.",
+        });
+      }
+
+      const [desiredRevision] = await ctx.db
+        .select()
+        .from(passwallDesiredRevisions)
+        .where(
+          and(
+            eq(passwallDesiredRevisions.routerId, input.routerId),
+            eq(passwallDesiredRevisions.id, input.desiredRevisionId),
+          ),
+        )
+        .limit(1);
+
+      if (!desiredRevision) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message:
+            "Выбранная ревизия не найдена у этого роутера. Обновите рабочую поверхность перед apply.",
+        });
+      }
+
+      if (desiredRevision.engineMode !== "xray-direct") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Выбранная ревизия не относится к движку xray-direct.",
+        });
+      }
+
+      const dedupeKey = `apply:${input.routerId}:${input.desiredRevisionId}`;
+
+      const [existingJob] = await ctx.db
+        .select()
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.routerId, input.routerId),
+            eq(jobs.dedupeKey, dedupeKey),
+            inArray(jobs.state, ["queued", "delivered", "running"]),
+          ),
+        )
+        .limit(1);
+
+      if (existingJob) {
+        return existingJob;
+      }
+
+      const [job] = await ctx.db
+        .insert(jobs)
+        .values({
+          routerId: input.routerId,
+          type: "apply_xray_config",
           state: "queued",
           dedupeKey,
           desiredRevisionId: input.desiredRevisionId,

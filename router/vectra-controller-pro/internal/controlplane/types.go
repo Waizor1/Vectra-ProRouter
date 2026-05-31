@@ -83,8 +83,11 @@ type RouterInventory struct {
 	Architecture             string                   `json:"architecture"`
 	OpenWrtRelease           string                   `json:"openwrtRelease"`
 	OpenWrtDescription       string                   `json:"openwrtDescription,omitempty"`
-	XrayEnabled              bool                     `json:"xrayEnabled"`
-	XrayVersion              string                   `json:"xrayVersion,omitempty"`
+	// PasswallEnabled is required by the panel's inventory schema; on an
+	// xray-direct router it is always false (PassWall2 is not the data plane).
+	PasswallEnabled bool   `json:"passwallEnabled"`
+	XrayEnabled     bool   `json:"xrayEnabled"`
+	XrayVersion     string `json:"xrayVersion,omitempty"`
 	SelectedNodeID           string                   `json:"selectedNodeId,omitempty"`
 	SelectedNodeLabel        string                   `json:"selectedNodeLabel,omitempty"`
 	NodeCount                int                      `json:"nodeCount"`
