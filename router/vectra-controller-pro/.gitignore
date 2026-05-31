@@ -1,4 +1,5 @@
 /bin/
+/vctl
 /dist/
 *.test
 *.out

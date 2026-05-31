@@ -1,0 +1,5 @@
+# Preserve Vectra Controller Pro identity, issued credentials, operator desired
+# xray config, applied-revision state, and the retry-safe job journal across
+# OpenWrt sysupgrade.
+/etc/config/vectra-controller-pro
+/etc/vectra-controller-pro/
