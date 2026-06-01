@@ -85,12 +85,13 @@ func buildInbounds(c *config.Config) []xInbound {
 			settings.Accounts = []xSocksAccount{{User: s.Username, Pass: s.Password}}
 		}
 		out = append(out, xInbound{
-			Tag:      s.Tag,
-			Listen:   s.ListenIP,
-			Port:     s.Port,
-			Protocol: "socks",
-			Settings: settings,
-			Sniffing: convertSniffing(s.Sniffing),
+			Tag:            s.Tag,
+			Listen:         s.ListenIP,
+			Port:           s.Port,
+			Protocol:       "socks",
+			Settings:       settings,
+			StreamSettings: buildStream(s.Stream),
+			Sniffing:       convertSniffing(s.Sniffing),
 		})
 	}
 	if h := c.Inbounds.HTTP; h != nil {
@@ -99,12 +100,13 @@ func buildInbounds(c *config.Config) []xInbound {
 			settings.Accounts = []xHTTPAccount{{User: h.Username, Pass: h.Password}}
 		}
 		out = append(out, xInbound{
-			Tag:      h.Tag,
-			Listen:   h.ListenIP,
-			Port:     h.Port,
-			Protocol: "http",
-			Settings: settings,
-			Sniffing: convertSniffing(h.Sniffing),
+			Tag:            h.Tag,
+			Listen:         h.ListenIP,
+			Port:           h.Port,
+			Protocol:       "http",
+			Settings:       settings,
+			StreamSettings: buildStream(h.Stream),
+			Sniffing:       convertSniffing(h.Sniffing),
 		})
 	}
 	if d := c.Inbounds.DNS; d != nil {
@@ -148,8 +150,12 @@ func buildInbounds(c *config.Config) []xInbound {
 				Password: ss.Password,
 				Network:  orString(ss.Network, "tcp,udp"),
 			},
-			Sniffing: convertSniffing(ss.Sniffing),
+			StreamSettings: buildStream(ss.Stream),
+			Sniffing:       convertSniffing(ss.Sniffing),
 		})
+	}
+	if r := c.Inbounds.Reality; r != nil {
+		out = append(out, buildRealityInbound(r))
 	}
 	// Xray API inbound — synthesized if c.API is set with internal listen.
 	if c.API != nil && c.API.Listen != "" {
@@ -164,7 +170,40 @@ func buildInbounds(c *config.Config) []xInbound {
 			})
 		}
 	}
+	// Metrics inbound — synthesized if c.Metrics has a listen address, mirroring
+	// the API path. Xray's metrics block needs a matching dokodemo-door inbound
+	// bound to the same tag to be scrapable.
+	if c.Metrics != nil && c.Metrics.Tag != "" && c.Metrics.Listen != "" {
+		host, port, ok := splitHostPort(c.Metrics.Listen)
+		if ok {
+			out = append(out, xInbound{
+				Tag:      c.Metrics.Tag,
+				Listen:   host,
+				Port:     port,
+				Protocol: "dokodemo-door",
+				Settings: xDokodemoSettings{Address: host, Port: port, Network: "tcp"},
+			})
+		}
+	}
 	return out
+}
+
+// buildRealityInbound renders a server-side REALITY inbound. Protocol defaults
+// to "vless" (the only protocol REALITY pairs with). Settings is an
+// operator-supplied passthrough map (e.g. clients[], decryption) — the
+// controller does not invent it. Stream typically carries
+// security:"reality" with the server-side REALITY fields (privateKey/dest/
+// serverNames/shortIds), but the operator owns the whole block.
+func buildRealityInbound(r *config.RealityInbound) xInbound {
+	return xInbound{
+		Tag:            r.Tag,
+		Listen:         r.ListenIP,
+		Port:           r.Port,
+		Protocol:       orString(r.Protocol, "vless"),
+		Settings:       r.Settings,
+		StreamSettings: buildStream(r.Stream),
+		Sniffing:       convertSniffing(r.Sniffing),
+	}
 }
 
 func convertSniffing(s config.Sniffing) *xSniffing {

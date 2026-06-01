@@ -15,6 +15,19 @@ func ToConfigNodes(parsed []ParsedNode, source SubscriptionRef) []config.Node {
 	out := make([]config.Node, 0, len(parsed))
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, p := range parsed {
+		defaults := p.ParserDefaults()
+		// Security gate: a subscription-SOURCED node must NOT be able to disable
+		// TLS certificate verification. A hostile/compromised upstream could set
+		// allowInsecure=1 in its URIs and silently MITM every client. We drop it
+		// here (see buildStream) and record the strip in the audit trail so an
+		// operator can see it happened. allowInsecure remains expressible on
+		// operator-authored nodes (which never go through this adapter).
+		if p.Stream.AllowInsec {
+			if defaults == nil {
+				defaults = map[string]string{}
+			}
+			defaults["stream.tls.allowInsecure"] = "stripped (subscription-sourced; controller forbids upstream-disabled TLS verification)"
+		}
 		n := config.Node{
 			ID:     p.ID,
 			Remark: p.Remark,
@@ -27,7 +40,7 @@ func ToConfigNodes(parsed []ParsedNode, source SubscriptionRef) []config.Node {
 				RawLink:         p.RawURI,
 				ImportedAt:      now,
 				Fingerprint:     "", // computed by dedupe step elsewhere
-				ParserDefaults:  p.ParserDefaults(),
+				ParserDefaults:  defaults,
 			},
 			Outbound: buildOutbound(p),
 		}
@@ -140,8 +153,12 @@ func buildStream(s ParsedStream) *config.StreamSettings {
 	switch s.Security {
 	case "tls":
 		st.TLS = &config.TLSSettings{
-			ServerName:    s.SNI,
-			AllowInsecure: s.AllowInsec,
+			ServerName: s.SNI,
+			// allowInsecure is deliberately NOT propagated from the subscription
+			// URI: a subscription-sourced node must not be able to disable TLS
+			// verification (the strip is audited in ToConfigNodes). Operator-
+			// authored nodes set this field directly, bypassing this adapter.
+			AllowInsecure: false,
 			ALPN:          s.ALPN,
 			Fingerprint:   s.Fingerprint,
 		}

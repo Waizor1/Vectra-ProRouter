@@ -31,6 +31,11 @@ type Config struct {
 	Reverse       []ReverseConfig `json:"reverse,omitempty"`
 	Metrics       *MetricsConfig  `json:"metrics,omitempty"`
 	FakeDNS       *FakeDNS        `json:"fakedns,omitempty"`
+	// Observatory and BurstObservatory feed the health/latency data that
+	// leastPing / leastLoad balancer strategies consume. Without one of these
+	// blocks those strategies have no probe data to rank outbounds.
+	Observatory      *ObservatoryConfig      `json:"observatory,omitempty"`
+	BurstObservatory *BurstObservatoryConfig `json:"burstObservatory,omitempty"`
 	// Normalization captures operator-explicit normalization toggles.
 	// All defaults here are "off". When on, the controller WILL transform
 	// the value BUT will log every change at INFO level.
@@ -101,7 +106,10 @@ type SocksInbound struct {
 	UDP      bool     `json:"udp"`
 	IP       string   `json:"ip,omitempty"` // bind IP for UDP
 	Sniffing Sniffing `json:"sniffing"`
-	Tag      string   `json:"tag,omitempty"`
+	// Stream is optional: lets the operator wrap the inbound in TLS/REALITY/
+	// a transport (e.g. SOCKS-over-TLS). Empty = plain SOCKS, as before.
+	Stream *StreamSettings `json:"stream,omitempty"`
+	Tag    string          `json:"tag,omitempty"`
 }
 
 // HTTPInbound: local HTTP proxy endpoint.
@@ -111,7 +119,9 @@ type HTTPInbound struct {
 	Username string   `json:"username,omitempty"`
 	Password string   `json:"password,omitempty"`
 	Sniffing Sniffing `json:"sniffing"`
-	Tag      string   `json:"tag,omitempty"`
+	// Stream is optional (see SocksInbound.Stream). Empty = plain HTTP.
+	Stream *StreamSettings `json:"stream,omitempty"`
+	Tag    string          `json:"tag,omitempty"`
 }
 
 // DNSInbound: Xray DNS server inbound for split DNS / fakedns routing.
@@ -147,7 +157,9 @@ type SSInbound struct {
 	Password string   `json:"password"`
 	Network  string   `json:"network,omitempty"`
 	Sniffing Sniffing `json:"sniffing"`
-	Tag      string   `json:"tag,omitempty"`
+	// Stream is optional (see SocksInbound.Stream). Empty = plain Shadowsocks.
+	Stream *StreamSettings `json:"stream,omitempty"`
+	Tag    string          `json:"tag,omitempty"`
 }
 
 // RealityInbound: server-side REALITY inbound (advanced; rarely used on a client controller).
@@ -346,8 +358,41 @@ type ReverseEndpoint struct {
 }
 
 // MetricsConfig: separate metrics inbound for internal stats scraping.
+// Listen is optional: when set (host:port), the controller synthesizes the
+// matching dokodemo-door inbound bound to Tag plus a routing rule, exactly as
+// it does for the API surface. When empty, only the metrics block is emitted
+// and the operator is responsible for declaring the inbound — the controller
+// will not invent a listen address (no silent normalization).
 type MetricsConfig struct {
-	Tag string `json:"tag"`
+	Tag    string `json:"tag"`
+	Listen string `json:"listen,omitempty"` // host:port for the synthesized metrics inbound
+}
+
+// ObservatoryConfig configures Xray's connection observatory, which probes the
+// outbounds named by SubjectSelector and exposes health/latency the leastPing
+// balancer strategy uses. All fields are operator-set; the controller invents
+// nothing.
+type ObservatoryConfig struct {
+	SubjectSelector   []string `json:"subjectSelector,omitempty"` // outbound-tag prefixes to observe
+	ProbeURL          string   `json:"probeUrl,omitempty"`        // e.g. https://www.google.com/generate_204
+	ProbeInterval     string   `json:"probeInterval,omitempty"`   // duration ("10m", "1h")
+	EnableConcurrency bool     `json:"enableConcurrency,omitempty"`
+}
+
+// BurstObservatoryConfig configures Xray's burst observatory (used by the
+// leastLoad strategy). PingConfig drives the latency sampling.
+type BurstObservatoryConfig struct {
+	SubjectSelector []string         `json:"subjectSelector,omitempty"`
+	PingConfig      *ObservatoryPing `json:"pingConfig,omitempty"`
+}
+
+// ObservatoryPing is the burst-observatory probe configuration.
+type ObservatoryPing struct {
+	Destination   string `json:"destination,omitempty"`   // e.g. https://connectivitycheck.gstatic.com/generate_204
+	Connectivity  string `json:"connectivity,omitempty"`  // optional connectivity-check URL
+	Interval      string `json:"interval,omitempty"`      // duration ("5m")
+	Timeout       string `json:"timeout,omitempty"`       // duration ("30s")
+	SamplingCount int    `json:"samplingCount,omitempty"` // number of samples to keep
 }
 
 // Normalization toggles. Each toggle, when true, will TRANSFORM operator values.

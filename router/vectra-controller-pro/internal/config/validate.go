@@ -75,6 +75,16 @@ func Validate(c *Config) error {
 			add("inbounds.dns.address: required (set the upstream DNS server explicitly; controller will not silently default)")
 		}
 	}
+	if r := c.Inbounds.Reality; r != nil {
+		if r.Port <= 0 || r.Port > 65535 {
+			add("inbounds.realityInbound.port: invalid %d", r.Port)
+		}
+		if len(r.Settings) == 0 {
+			// Server-side REALITY needs operator-supplied protocol settings
+			// (e.g. clients[]/decryption); the controller will not invent them.
+			add("inbounds.realityInbound.settings: required (operator must supply server-side protocol settings; controller will not silently default)")
+		}
+	}
 
 	// DNS: at least one server required if DNS block is used at all.
 	// Empty DNS is OK; Xray will use its defaults.
@@ -216,7 +226,7 @@ func validateStream(s *StreamSettings, ctx string, add func(string, ...any)) {
 	case "":
 		add("%s.transport: required", ctx)
 		return
-	case "tcp", "ws", "grpc", "kcp", "quic", "xhttp", "httpupgrade", "domainsocket":
+	case "tcp", "ws", "grpc", "kcp", "quic", "http", "xhttp", "httpupgrade", "domainsocket":
 		// known
 	default:
 		add("%s.transport: unknown %q", ctx, s.Transport)

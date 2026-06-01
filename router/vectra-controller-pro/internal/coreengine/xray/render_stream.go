@@ -72,6 +72,10 @@ func buildStream(s *config.StreamSettings) *xStreamSettings {
 			}
 			out.QUICSettings = q
 		}
+	case "http":
+		if s.HTTP != nil {
+			out.HTTPSettings = &xHTTPSettings{Host: s.HTTP.Host, Path: s.HTTP.Path}
+		}
 	case "xhttp":
 		if s.XHTTP != nil {
 			out.XHTTPSettings = &xXHTTPSettings{
@@ -134,6 +138,12 @@ func buildStream(s *config.StreamSettings) *xStreamSettings {
 				ShortID:     s.REALITY.ShortID,
 				SpiderX:     s.REALITY.SpiderX,
 				MaxTimeDiff: s.REALITY.MaxTimeDiff,
+				// Server-side (REALITY inbound) fields; empty on outbounds.
+				PrivateKey:  s.REALITY.PrivateKey,
+				Dest:        s.REALITY.Dest,
+				Xver:        s.REALITY.Xver,
+				ServerNames: s.REALITY.ServerNames,
+				ShortIDs:    s.REALITY.ShortIDs,
 			}
 		}
 	}

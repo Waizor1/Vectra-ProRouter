@@ -7,6 +7,7 @@ import (
 
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/coreengine"
+	"vectra-controller-pro/internal/logging"
 )
 
 // Engine implements coreengine.Engine for Xray-core.
@@ -54,6 +55,19 @@ func (e *Engine) Render(_ context.Context, c *config.Config) ([]byte, error) {
 	if c == nil {
 		return nil, fmt.Errorf("xray.Render: nil config")
 	}
+	// Pre-pass: apply operator-explicit normalization toggles (all default OFF).
+	// We never mutate the caller's config silently — when a toggle IS on we work
+	// on a clone and log every change, so the transformation is auditable.
+	if c.Normalization.ForceFingerprint {
+		dup, err := config.Clone(c)
+		if err != nil {
+			return nil, fmt.Errorf("xray.Render: clone for normalization: %w", err)
+		}
+		for _, ch := range config.ApplyNormalization(dup) {
+			logging.L().Info("normalization applied", "change", ch)
+		}
+		c = dup
+	}
 	doc := xConfig{
 		Log:      buildLog(c),
 		API:      buildAPI(c),
@@ -66,6 +80,8 @@ func (e *Engine) Render(_ context.Context, c *config.Config) ([]byte, error) {
 		Routing:  buildRouting(c),
 		Reverse:  buildReverse(c),
 		Metrics:  buildMetrics(c),
+		Observatory:      buildObservatory(c),
+		BurstObservatory: buildBurstObservatory(c),
 	}
 	return json.MarshalIndent(&doc, "", "  ")
 }
@@ -143,6 +159,37 @@ func buildMetrics(c *config.Config) *xMetrics {
 		return nil
 	}
 	return &xMetrics{Tag: c.Metrics.Tag}
+}
+
+func buildObservatory(c *config.Config) *xObservatory {
+	if c.Observatory == nil {
+		return nil
+	}
+	return &xObservatory{
+		SubjectSelector:   c.Observatory.SubjectSelector,
+		ProbeURL:          c.Observatory.ProbeURL,
+		ProbeInterval:     c.Observatory.ProbeInterval,
+		EnableConcurrency: c.Observatory.EnableConcurrency,
+	}
+}
+
+func buildBurstObservatory(c *config.Config) *xBurstObservatory {
+	if c.BurstObservatory == nil {
+		return nil
+	}
+	out := &xBurstObservatory{
+		SubjectSelector: c.BurstObservatory.SubjectSelector,
+	}
+	if p := c.BurstObservatory.PingConfig; p != nil {
+		out.PingConfig = &xPingConfig{
+			Destination:   p.Destination,
+			Connectivity:  p.Connectivity,
+			Interval:      p.Interval,
+			SamplingCount: p.SamplingCount,
+			Timeout:       p.Timeout,
+		}
+	}
+	return out
 }
 
 // Compile-time assertion that *Engine satisfies coreengine.Engine.

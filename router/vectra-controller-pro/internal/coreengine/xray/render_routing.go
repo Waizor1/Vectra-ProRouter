@@ -25,6 +25,15 @@ func buildRouting(c *config.Config) *xRouting {
 			OutboundTag: c.API.Tag,
 		})
 	}
+	// Synthesize a metrics rule when a metrics inbound is synthesized (listen set),
+	// so scrape traffic on the metrics inbound is handled by the metrics tag.
+	if c.Metrics != nil && c.Metrics.Tag != "" && c.Metrics.Listen != "" {
+		out.Rules = append(out.Rules, xRoutingRule{
+			Type:        "field",
+			InboundTag:  []string{c.Metrics.Tag},
+			OutboundTag: c.Metrics.Tag,
+		})
+	}
 	for _, r := range c.Routing.Rules {
 		t := r.Type
 		if t == "" {
@@ -45,6 +54,9 @@ func buildRouting(c *config.Config) *xRouting {
 			Attrs:       r.Attrs,
 			OutboundTag: r.OutboundTag,
 			BalancerTag: r.BalancerTag,
+			// Emit ruleTag so API-driven rerouting (HandlerService/RoutingService)
+			// can target this rule by name. Operator-set label only.
+			RuleTag: r.Tag,
 		})
 	}
 	for _, b := range c.Routing.Balancers {

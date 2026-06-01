@@ -179,11 +179,17 @@ type xTLSCertificate struct {
 type xRealitySettings struct {
 	Show        bool   `json:"show,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
-	ServerName  string `json:"serverName"`
-	PublicKey   string `json:"publicKey"`
+	ServerName  string `json:"serverName,omitempty"`
+	PublicKey   string `json:"publicKey,omitempty"`
 	ShortID     string `json:"shortId,omitempty"`
 	SpiderX     string `json:"spiderX,omitempty"`
 	MaxTimeDiff int    `json:"maxTimeDiff,omitempty"`
+	// Server-side (REALITY inbound) fields.
+	PrivateKey  string   `json:"privateKey,omitempty"`
+	Dest        string   `json:"dest,omitempty"`
+	Xver        int      `json:"xver,omitempty"`
+	ServerNames []string `json:"serverNames,omitempty"`
+	ShortIDs    []string `json:"shortIds,omitempty"`
 }
 
 type xTCPSettings struct {
@@ -308,6 +314,7 @@ type xRoutingRule struct {
 	Attrs       string   `json:"attrs,omitempty"`
 	OutboundTag string   `json:"outboundTag,omitempty"`
 	BalancerTag string   `json:"balancerTag,omitempty"`
+	RuleTag     string   `json:"ruleTag,omitempty"`
 }
 
 type xBalancer struct {

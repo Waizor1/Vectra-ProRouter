@@ -179,17 +179,20 @@
         "domain": [
           "geosite:cn"
         ],
-        "outboundTag": "direct"
+        "outboundTag": "direct",
+        "ruleTag": "direct-cn"
       },
       {
         "type": "field",
         "port": "19294-19344,50000-50100",
         "network": "udp",
-        "outboundTag": "node-world-pl"
+        "outboundTag": "node-world-pl",
+        "ruleTag": "discord-udp"
       },
       {
         "type": "field",
-        "outboundTag": "node-world-de"
+        "outboundTag": "node-world-de",
+        "ruleTag": "world-proxy"
       }
     ]
   }

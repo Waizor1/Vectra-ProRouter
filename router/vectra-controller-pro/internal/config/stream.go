@@ -2,7 +2,7 @@ package config
 
 // StreamSettings is Xray's stream/transport/security configuration.
 type StreamSettings struct {
-	Transport string `json:"transport"`           // tcp|ws|grpc|kcp|quic|xhttp|httpupgrade|domainsocket
+	Transport string `json:"transport"`           // tcp|ws|grpc|kcp|quic|http|xhttp|httpupgrade|domainsocket
 	Security  string `json:"security,omitempty"`  // none|tls|reality
 
 	TCP         *TCPSettings         `json:"tcp,omitempty"`
@@ -10,6 +10,7 @@ type StreamSettings struct {
 	GRPC        *GRPCSettings        `json:"grpc,omitempty"`
 	KCP         *KCPSettings         `json:"kcp,omitempty"`
 	QUIC        *QUICSettings        `json:"quic,omitempty"`
+	HTTP        *HTTPSettings        `json:"http,omitempty"`
 	XHTTP       *XHTTPSettings       `json:"xhttp,omitempty"`
 	HTTPUpgrade *HTTPUpgradeSettings `json:"httpupgrade,omitempty"`
 	DS          *DSSettings          `json:"ds,omitempty"`
@@ -76,6 +77,13 @@ type QUICHeader struct {
 	Type string `json:"type"`
 }
 
+// HTTPSettings is the classic HTTP/2 (network "http") transport. Distinct from
+// XHTTP (the newer "xhttp") and HTTPUpgrade. Host is a list of authorities.
+type HTTPSettings struct {
+	Host []string `json:"host,omitempty"`
+	Path string   `json:"path,omitempty"`
+}
+
 type XHTTPSettings struct {
 	Path    string            `json:"path,omitempty"`
 	Host    string            `json:"host,omitempty"`
@@ -128,15 +136,27 @@ type TLSCertificate struct {
 	OCSPStapling    int      `json:"ocspStapling,omitempty"`
 }
 
-// REALITYSettings: client-side REALITY parameters. All fields operator-set.
+// REALITYSettings: REALITY parameters. The first block is client-side
+// (outbound) and the second block is server-side (inbound). All fields are
+// operator-set — no silent rewrite. An outbound uses publicKey/serverName/
+// shortId/spiderX; a REALITY inbound uses privateKey/dest/serverNames/shortIds/
+// xver. The two never mix in a single valid Xray block, but keeping one struct
+// avoids a parallel type tree.
 type REALITYSettings struct {
-	Show         bool   `json:"show,omitempty"`
-	Fingerprint  string `json:"fingerprint,omitempty"` // OPERATOR-CONTROLLED — no silent rewrite
-	ServerName   string `json:"serverName"`
-	PublicKey    string `json:"publicKey"`
-	ShortID      string `json:"shortId,omitempty"`
-	SpiderX      string `json:"spiderX,omitempty"`
-	MaxTimeDiff  int    `json:"maxTimeDiff,omitempty"`
+	Show        bool   `json:"show,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"` // OPERATOR-CONTROLLED — no silent rewrite
+	ServerName  string `json:"serverName"`
+	PublicKey   string `json:"publicKey"`
+	ShortID     string `json:"shortId,omitempty"`
+	SpiderX     string `json:"spiderX,omitempty"`
+	MaxTimeDiff int    `json:"maxTimeDiff,omitempty"`
+
+	// Server-side (REALITY inbound) fields. Optional; ignored on outbounds.
+	PrivateKey  string   `json:"privateKey,omitempty"`
+	Dest        string   `json:"dest,omitempty"`        // e.g. "www.microsoft.com:443"
+	Xver        int      `json:"xver,omitempty"`        // PROXY protocol version (0|1|2)
+	ServerNames []string `json:"serverNames,omitempty"` // accepted SNIs
+	ShortIDs    []string `json:"shortIds,omitempty"`    // accepted shortIds
 }
 
 // Sockopt: low-level socket options on the connection.

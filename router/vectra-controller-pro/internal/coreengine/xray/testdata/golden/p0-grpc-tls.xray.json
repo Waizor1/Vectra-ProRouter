@@ -84,7 +84,8 @@
     "rules": [
       {
         "type": "field",
-        "outboundTag": "node-n1"
+        "outboundTag": "node-n1",
+        "ruleTag": "all"
       }
     ]
   }
