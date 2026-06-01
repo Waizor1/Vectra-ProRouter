@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -629,6 +630,129 @@ describe("enrollment install preset", () => {
     expect(plan.storageCheck.blockingPackageName).toBe("xray-core");
     expect(plan.storageCheck.message).toContain("staging-space");
     expect(plan.storageCheck.message).toContain("xray-core");
+  });
+
+  it("falls back to controller-only on a fresh install when OpenWrt feeds are unreachable", () => {
+    const script = buildAx3000tBootstrapScript({});
+
+    const feedsFnStart = script.indexOf("ensure_openwrt_feeds_usable() {");
+    const feedsFn = script.slice(
+      feedsFnStart,
+      script.indexOf("\n}\n", feedsFnStart),
+    );
+
+    // A fresh install that cannot reach downloads.openwrt.org must degrade to a
+    // controller-only bootstrap (the lean agent depends only on base-image
+    // packages), instead of aborting — otherwise low-overlay / RU Filogic routers
+    // such as the Cudy WR3000H can never enroll the controller at all.
+    expect(feedsFn).toContain(
+      "if [ \"$BOOTSTRAP_CLASSIFICATION\" = 'fresh install' ]; then",
+    );
+    expect(feedsFn).toContain("CONTROLLER_ONLY_BOOTSTRAP='1'");
+    expect(feedsFn).toContain(
+      "Свежая установка при недоступных OpenWrt feeds: dnsmasq-full и kmod-* сейчас не скачать с downloads.openwrt.org.",
+    );
+    // The fresh-install fallback must short-circuit before the fatal hard-stop.
+    expect(feedsFn.indexOf("CONTROLLER_ONLY_BOOTSTRAP='1'")).toBeLessThan(
+      feedsFn.indexOf("exit 1"),
+    );
+    // Existing routers (upgrade / repair lanes) must still hard-stop before any
+    // change, so we never silently degrade a working PassWall2 deployment.
+    expect(feedsFn).toContain(
+      "Bootstrap не может продолжаться: dnsmasq-full и kmod-* надо ставить из downloads.openwrt.org",
+    );
+    expect(feedsFn).toContain("exit 1");
+
+    // The Filogic preset shares the same generated shell, so it inherits the
+    // fallback without a separate code path.
+    expect(buildFilogicBootstrapScript({})).toContain(
+      "Свежая установка при недоступных OpenWrt feeds: dnsmasq-full и kmod-* сейчас не скачать с downloads.openwrt.org.",
+    );
+  });
+
+  it("re-guards OpenWrt feed package checks after the feeds-usable fallback", () => {
+    const script = buildAx3000tBootstrapScript({});
+    const preflightStart = script.indexOf("run_preflight_checks() {");
+    const preflight = script.slice(
+      preflightStart,
+      script.indexOf("\n}\n", preflightStart),
+    );
+
+    // ensure_openwrt_feeds_usable may flip CONTROLLER_ONLY_BOOTSTRAP, so the
+    // OpenWrt feed-package storage checks that follow it must be re-gated — a
+    // controller-only fallback must not run feed lookups that need
+    // downloads.openwrt.org metadata.
+    const feedsCall = preflight.indexOf("ensure_openwrt_feeds_usable");
+    const storageCall = preflight.indexOf(
+      "require_feed_packages_with_storage $REQUIRED_RUNTIME_PACKAGES",
+    );
+    expect(feedsCall).toBeGreaterThanOrEqual(0);
+    expect(storageCall).toBeGreaterThan(feedsCall);
+    expect(preflight.slice(feedsCall, storageCall)).toContain(
+      "if [ \"$CONTROLLER_ONLY_BOOTSTRAP\" != '1' ]; then",
+    );
+  });
+
+  it("routes opkg through the Vectra caching proxy when direct OpenWrt feeds are unreachable", () => {
+    const script = buildAx3000tBootstrapScript({
+      controlDomain: "https://router.vectra-pro.net",
+      routerApiBase: "https://api.vectra-pro.net",
+      artifactBase: "https://api.vectra-pro.net/artifacts",
+    });
+
+    // A caching-proxy base URL is exposed to the shell.
+    expect(script).toContain(
+      "OPENWRT_MIRROR_URL='https://api.vectra-pro.net/openwrt-cache'",
+    );
+    // The proxy switch rewrites the router's OWN distfeeds host -> Vectra proxy,
+    // so it inherits the exact kernel/kmod feed path (vermagic-correct) instead
+    // of us having to know the kernel hash.
+    expect(script).toContain("try_openwrt_feed_proxy() {");
+    expect(script).toContain(
+      "s#https://downloads.openwrt.org#$OPENWRT_MIRROR_URL#g",
+    );
+
+    // ensure_openwrt_feeds_usable must try the proxy BEFORE degrading to
+    // controller-only, so a reachable proxy yields a full-stack install.
+    const feedsFnStart = script.indexOf("ensure_openwrt_feeds_usable() {");
+    const feedsFn = script.slice(
+      feedsFnStart,
+      script.indexOf("\n}\n", feedsFnStart),
+    );
+    expect(feedsFn).toContain("try_openwrt_feed_proxy");
+    expect(feedsFn.indexOf("try_openwrt_feed_proxy")).toBeLessThan(
+      feedsFn.indexOf("CONTROLLER_ONLY_BOOTSTRAP='1'"),
+    );
+  });
+
+  it("restores the original OpenWrt distfeeds on cleanup after using the proxy", () => {
+    const script = buildAx3000tBootstrapScript({});
+
+    expect(script).toContain("restore_openwrt_feeds() {");
+    // distfeeds is backed up before rewrite and restored, so the system returns
+    // to its stock feeds after enrollment (no silent persistent re-homing).
+    expect(script).toContain("distfeeds.conf.orig");
+
+    const cleanupStart = script.indexOf("cleanup() {");
+    const cleanupFn = script.slice(
+      cleanupStart,
+      script.indexOf("\n}\n", cleanupStart),
+    );
+    expect(cleanupFn).toContain("restore_openwrt_feeds");
+  });
+
+  it("generates a bootstrap script that passes `sh -n` syntax validation", () => {
+    // The bootstrap shell is regenerated for the whole fleet; a malformed control
+    // flow (e.g. an unbalanced if/fi) would brick every enrollment. Validate that
+    // both presets still parse as POSIX sh after any generator change.
+    for (const script of [
+      buildAx3000tBootstrapScript({}),
+      buildFilogicBootstrapScript({}),
+    ]) {
+      expect(() =>
+        execFileSync("sh", ["-n"], { input: script }),
+      ).not.toThrow();
+    }
   });
 
   it("marks controller-only fallback when a fresh install cannot fit PassWall", () => {
