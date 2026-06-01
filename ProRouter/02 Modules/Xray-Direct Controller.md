@@ -1,15 +1,16 @@
 ---
 type: module
 path: router/vectra-controller-pro
-stage: alpha
+stage: beta
 confidence: medium
-last-reviewed: 2026-05-31
+last-reviewed: 2026-06-01
 tags:
   - module
   - go
   - openwrt
   - xray
   - passwall2-replacement
+  - happ-crypt
 ---
 
 # Xray-Direct Controller (`vctl`)
@@ -18,6 +19,13 @@ Next-generation standalone controller that drives Xray **directly**, replacing
 the PassWall2 lua/shell prosthetic. See [[03 Decisions/ADR-0005-standalone-xray-direct-controller|ADR-0005]]
 for the standalone-vs-fold-in decision and risks. Sibling of (eventually
 replaces) [[Router Agent]].
+
+## 2026-06-01 — full Xray + HAPP CRYPT v5 + hardening (verified; live flip still gated)
+
+- **Full Xray parity** closed: Observatory/BurstObservatory (balancer health feed for leastPing/leastLoad), http/2 transport, REALITY inbound + inbound streamSettings, applied `ForceFingerprint` normalization, `ruleTag`, metrics inbound.
+- **HAPP CRYPT v5 key protection** (new `internal/happcrypt` + `vctl happ-crypt` CLI + panel `happCrypt.encrypt`): encrypts subscription links into `happ://crypt{2,3,4,5}/` so only the Happ app can decrypt — the app's VLESS keys can't be viewed/extracted. crypt2/3/4 offline (embedded official RSA-4096 keys, fingerprints pinned in a test); crypt5 via the official `crypto.happ.su` API (closed algorithm → license-clean, no key redistribution; HTTPS-pinned incl. redirects, no-retry on permanent 4xx, response validated, never logged). See research memory [[project... happ-crypt]].
+- **Hardening:** optional firewall kill-switch (PREROUTING `policy drop` fail-closed; OUTPUT always `accept` so control-plane/DNS never dropped — can't strand the router; off by default); xray at-rest secret masking parity + `restoreMaskedXrayConfig` (closes a latent save-path trap before any xray editor UI); subscription `allowInsecure` gate (a hostile upstream can't disable outbound TLS verification); creation-order (asc) job delivery.
+- **Verified:** code-review + security-review + verifier — **ALL CLEAN, 0 Critical/High**; `go test -race`, web tsc + vitest (348 pass / 4 known env), aarch64 cross-compile, `bash -n` green. PR #27. Live `.ipk` build / parity capture / on-device `192.168.99.1` test / live canary remain GATED. Plain-language report: `ai_docs/develop/features/vctl-controller-report.md`.
 
 ## Confirmed (2026-05-31 — canary-ready, NOT deployed to any live router)
 

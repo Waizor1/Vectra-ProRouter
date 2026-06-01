@@ -1,12 +1,16 @@
 ---
 type: dashboard
-updated: 2026-05-31
+updated: 2026-06-01
 tags:
   - dashboard
   - status
 ---
 
 # Stage Board
+
+## 2026-06-01 vctl — full Xray + HAPP CRYPT v5 + hardening (verified, live flip gated)
+
+- Extended the xray-direct controller to full Xray parity (Observatory/BurstObservatory so leastPing/leastLoad balancers finally have a health feed, http/2 transport, REALITY inbound + inbound streamSettings, applied ForceFingerprint normalization, ruleTag, metrics inbound) and added **HAPP CRYPT v5** key protection: new `internal/happcrypt` (crypt2/3/4 fully offline with embedded official RSA-4096 keys; crypt5 via the official `crypto.happ.su` API since its algorithm/keys are closed — license-clean, no key redistribution), a `vctl happ-crypt` CLI, and a panel `happCrypt.encrypt` tRPC seam — so subscription links handed to the end-user app are encrypted and the underlying VLESS keys can't be viewed/extracted. Hardening from the security review: optional firewall kill-switch (PREROUTING fail-closed; OUTPUT/control-plane always `accept` so the router can't be stranded), xray at-rest secret masking parity (+ `restoreMaskedXrayConfig` to close a latent save-path trap), subscription `allowInsecure` gate, creation-order job delivery, redirect-safe + no-retry-on-4xx crypt5 client, pinned key fingerprints. Verified by **three independent agent passes — code-review + security-review + verifier — ALL CLEAN, 0 Critical/High**; `go test -race`, web tsc + vitest (348 pass / 4 known `VECTRA_SECRETS_KEY` env failures), aarch64 cross-compile, `bash -n` all green. The 18 live passwall routers are untouched (additive, default `engineMode=passwall`). Branch `feat/vectra-controller-pro-autonomous`, PR #27. **No live router was touched** — real `.ipk` build, parity-corpus capture, on-device test on `192.168.99.1`, and the live canary remain gated on explicit go-ahead. Plain-language report: `ai_docs/develop/features/vctl-controller-report.md`.
 
 ## 2026-05-31 xray-direct controller (vctl) — canary-ready
 
