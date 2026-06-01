@@ -94,6 +94,10 @@ type TproxyInbound struct {
 	FollowRedirect bool   `json:"followRedirect,omitempty"`
 	Sniffing     Sniffing `json:"sniffing"`
 	Tag          string   `json:"tag,omitempty"` // default: "tproxy-in"
+	// KillSwitch makes forwarded LAN-client traffic fail CLOSED at the firewall
+	// (no unproxied WAN leak); the router's own control-plane/DNS traffic is
+	// never affected. Off by default. See internal/firewall Spec.KillSwitch.
+	KillSwitch bool `json:"killSwitch,omitempty"`
 }
 
 // SocksInbound: local SOCKS5 endpoint (e.g. for LAN clients).

@@ -495,6 +495,7 @@ func firewallSpecFromConfig(cfg *config.Config) (firewall.Spec, bool) {
 	}
 	spec := firewall.DefaultSpec(t.Port, fwmark)
 	spec.IPv6Enabled = true
+	spec.KillSwitch = t.KillSwitch
 	return spec, true
 }
 

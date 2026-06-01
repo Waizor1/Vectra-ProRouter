@@ -27,6 +27,15 @@ type Spec struct {
 	RtTable     int    // routing table id for fwmark route (default 100)
 	IPv6Enabled bool
 
+	// KillSwitch makes the PREROUTING (forwarded LAN-client) chain fail CLOSED:
+	// its policy becomes `drop`, so any forwarded client traffic that is not
+	// explicitly returned (local/LAN/bypass/direct) or tproxy'd cannot leak out
+	// the WAN unproxied. The OUTPUT chain (the router's OWN traffic, incl. the
+	// controller->panel control plane and DNS) ALWAYS stays `accept`, so the
+	// router can never lose remote management because of the kill-switch.
+	// Off by default (fail-open-to-direct, PassWall2 parity).
+	KillSwitch bool
+
 	// Static bypass nets — typical LAN-side ranges that must NEVER be proxied.
 	BypassV4 []string
 	BypassV6 []string
@@ -89,7 +98,7 @@ table inet {{ .TableName }} {
 {{- end }}
 
   chain prerouting {
-    type filter hook prerouting priority mangle; policy accept;
+    type filter hook prerouting priority mangle; policy {{ if .KillSwitch }}drop{{ else }}accept{{ end }};
     fib daddr type { local, broadcast, multicast } return
     ip  daddr @bypass4 return
 {{- if .IPv6Enabled }}
