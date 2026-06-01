@@ -1,0 +1,26 @@
+#!/bin/sh
+# vctl-xray-wrapper: thin wrapper around /usr/bin/xray that applies Go runtime
+# memory caps before exec'ing the real binary. Reduces xray's peak heap by
+# ~30-40% on low-RAM routers, which is the difference between "occasional OOM
+# under load" and "comfortable steady state" on a 234 MB AX3000T.
+#
+# vctl is configured to launch xray through this wrapper via the rendered daemon
+# config (xrayBinary='/usr/sbin/vctl-xray-wrapper').
+#
+# We preserve argv[0] with `exec -a "$0"` so that /proc/<pid>/cmdline keeps
+# reading the original path — pgrep patterns and the supervisor's own process
+# tracking keep working unchanged.
+
+# GOMEMLIMIT: soft heap cap. When live heap approaches this, the Go runtime
+# triggers GC aggressively to stay under it. Without this xray can balloon
+# transiently (e.g. on subscription refresh or large geoip reload) and trip
+# OOM even when steady-state RSS is fine.
+export GOMEMLIMIT="${GOMEMLIMIT:-80MiB}"
+
+# GOGC: smaller value = more frequent GC = lower steady-state heap. Default 100
+# means heap can double between GC cycles, which is too lax on a 234 MB system.
+# 30 gives a good balance: GC runs ~3x more often, heap stays ~30% smaller, the
+# extra CPU is negligible on mt7986 (which idles most of the time anyway).
+export GOGC="${GOGC:-30}"
+
+exec -a "$0" /usr/bin/xray "$@"

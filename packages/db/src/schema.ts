@@ -7,6 +7,7 @@ import {
   artifactTypeSchema,
   controllerChannelSchema,
   credentialTypeSchema,
+  engineModeSchema,
   incidentStateSchema,
   incidentTypeSchema,
   jobResultStatusSchema,
@@ -48,6 +49,7 @@ const artifactTypeEnum = pgEnum(
   "vectra_artifact_type",
   artifactTypeSchema.options,
 );
+const engineModeEnum = pgEnum("vectra_engine_mode", engineModeSchema.options);
 const channelEnum = pgEnum(
   "vectra_controller_channel",
   controllerChannelSchema.options,
@@ -109,6 +111,7 @@ export const routers = createTable(
     controllerChannel: channelEnum("controller_channel")
       .notNull()
       .default("stable"),
+    engineMode: engineModeEnum("engine_mode").notNull().default("passwall"),
     rolloutGroupId: text("rollout_group_id"),
     pendingImportRevisionId: text("pending_import_revision_id"),
     activeRevisionId: text("active_revision_id"),
@@ -199,7 +202,12 @@ export const passwallDesiredRevisions = createTable(
     revisionNumber: integer("revision_number").notNull(),
     status: text("status").notNull().default("draft"),
     origin: text("origin").notNull().default("operator_draft"),
+    engineMode: engineModeEnum("engine_mode").notNull().default("passwall"),
     configDigest: text("config_digest"),
+    // Typed as the passwall config so the (many) existing passwall consumers
+    // keep their inferred type unchanged. xray-direct revisions store an
+    // XrayDesiredConfig in the same jsonb column and narrow/cast at their own
+    // read/write boundary (see router-control xray draft path).
     config: jsonb("config").$type<PasswallDesiredConfig>().notNull(),
     rawImportedSnapshot: jsonb("raw_imported_snapshot")
       .$type<Record<string, unknown> | null>()
@@ -235,6 +243,7 @@ export const passwallAppliedRevisions = createTable(
     ),
     jobId: text("job_id"),
     result: text("result").notNull().default("applied"),
+    engineMode: engineModeEnum("engine_mode").notNull().default("passwall"),
     uciDigest: text("uci_digest"),
     stdout: text("stdout"),
     stderr: text("stderr"),

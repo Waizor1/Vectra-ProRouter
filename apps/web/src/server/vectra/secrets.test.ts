@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   MASKED_SECRET_PLACEHOLDER,
   passwallDesiredConfigSchema,
+  xrayDesiredConfigSchema,
 } from "@vectra/contracts";
 import { z } from "zod";
 
@@ -13,9 +14,12 @@ import { productionSafeStringSchema } from "~/env";
 import {
   createSecretPayload,
   hydratePasswallConfig,
+  hydrateXrayConfig,
   restoreMaskedPasswallConfig,
+  restoreMaskedXrayConfig,
   sanitizePasswallConfig,
   sanitizePasswallRawSnapshot,
+  sanitizeXrayConfig,
 } from "./secrets";
 
 const baseConfig = passwallDesiredConfigSchema.parse({
@@ -226,5 +230,328 @@ describe("sanitizePasswallRawSnapshot", () => {
         MASKED_SECRET_PLACEHOLDER,
       ),
     ).toBe(true);
+  });
+});
+
+const baseXrayConfig = xrayDesiredConfigSchema.parse({
+  schema: 1,
+  instance: { name: "test-router", logLevel: "info" },
+  process: { xrayBinary: "/usr/bin/xray", workDir: "./work" },
+  inbounds: {
+    tproxy: { listenIP: "0.0.0.0", port: 12345 },
+    socks: {
+      listenIP: "127.0.0.1",
+      port: 1080,
+      username: "socks-user",
+      password: "socks-pass",
+    },
+    realityInbound: {
+      listenIP: "0.0.0.0",
+      port: 8443,
+      protocol: "vless",
+      settings: {
+        privateKey: "reality-inbound-private-key",
+        shortIds: ["abcd"],
+      },
+    },
+  },
+  nodes: [
+    {
+      id: "world-de",
+      remark: "WorldProxy DE",
+      enabled: true,
+      outbound: {
+        protocol: "vless",
+        server: "de1.example.online",
+        port: 443,
+        settings: {
+          vless: {
+            uuid: "11111111-2222-3333-4444-555555555555",
+            flow: "xtls-rprx-vision",
+            encryption: "none",
+          },
+        },
+        stream: {
+          transport: "tcp",
+          security: "reality",
+          reality: {
+            serverName: "www.cloudflare.com",
+            publicKey: "real-reality-public-key",
+            shortId: "deadbeef",
+            fingerprint: "firefox",
+          },
+        },
+      },
+    },
+    {
+      id: "world-trojan",
+      remark: "Trojan node",
+      enabled: true,
+      outbound: {
+        protocol: "trojan",
+        server: "tj.example.online",
+        port: 443,
+        settings: { trojan: { password: "trojan-secret-password" } },
+      },
+    },
+  ],
+  routing: {
+    domainStrategy: "IPIfNonMatch",
+    rules: [{ tag: "world-proxy", outboundTag: "node-world-de" }],
+  },
+  subscriptions: [
+    {
+      id: "primary",
+      remark: "BloopCat",
+      url: "https://sub.example.com/api/sub/REAL_TOKEN",
+      enabled: true,
+      userAgent: "passwall2",
+      headers: { Authorization: "Bearer real-bearer-token" },
+    },
+  ],
+  geo: {
+    assetDir: "/usr/share/xray",
+    geoipUrl: "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat",
+    geositeUrl:
+      "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
+  },
+});
+
+describe("sanitizeXrayConfig", () => {
+  it("masks node secrets (vless uuid, reality publicKey/shortId, trojan password)", () => {
+    const sanitized = sanitizeXrayConfig(baseXrayConfig);
+
+    const firstNode = sanitized.nodes[0] as Record<string, unknown>;
+    const firstOutbound = firstNode.outbound as Record<string, unknown>;
+    const vlessSettings = (firstOutbound.settings as Record<string, unknown>)
+      .vless as Record<string, unknown>;
+    const reality = (firstOutbound.stream as Record<string, unknown>)
+      .reality as Record<string, unknown>;
+
+    expect(vlessSettings.uuid).toBe(MASKED_SECRET_PLACEHOLDER);
+    expect(reality.publicKey).toBe(MASKED_SECRET_PLACEHOLDER);
+    expect(reality.shortId).toBe(MASKED_SECRET_PLACEHOLDER);
+    // Non-secret node fields stay intact for the operator UI.
+    expect(firstOutbound.server).toBe("de1.example.online");
+    expect(reality.serverName).toBe("www.cloudflare.com");
+    expect(reality.fingerprint).toBe("firefox");
+
+    const secondNode = sanitized.nodes[1] as Record<string, unknown>;
+    const trojan = (
+      (secondNode.outbound as Record<string, unknown>).settings as Record<
+        string,
+        unknown
+      >
+    ).trojan as Record<string, unknown>;
+    expect(trojan.password).toBe(MASKED_SECRET_PLACEHOLDER);
+  });
+
+  it("masks subscription url + headers and inbound credentials but keeps public geo URLs", () => {
+    const sanitized = sanitizeXrayConfig(baseXrayConfig);
+
+    const subscription = sanitized.subscriptions?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(subscription.url).toBe(MASKED_SECRET_PLACEHOLDER);
+    expect(
+      (subscription.headers as Record<string, unknown>).Authorization,
+    ).toBe(MASKED_SECRET_PLACEHOLDER);
+    expect(subscription.remark).toBe("BloopCat");
+
+    const socks = sanitized.inbounds?.socks as Record<string, unknown>;
+    expect(socks.username).toBe(MASKED_SECRET_PLACEHOLDER);
+    expect(socks.password).toBe(MASKED_SECRET_PLACEHOLDER);
+    const realityInbound = sanitized.inbounds?.realityInbound as Record<
+      string,
+      unknown
+    >;
+    expect(
+      (realityInbound.settings as Record<string, unknown>).privateKey,
+    ).toBe(MASKED_SECRET_PLACEHOLDER);
+
+    // Public asset URLs under geo are never masked.
+    expect(sanitized.geo?.geoipUrl).toBe(
+      "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat",
+    );
+    expect(sanitized.geo?.geositeUrl).toBe(
+      "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
+    );
+  });
+
+  it("produces a config that still parses through the xray schema", () => {
+    expect(() =>
+      xrayDesiredConfigSchema.parse(sanitizeXrayConfig(baseXrayConfig)),
+    ).not.toThrow();
+  });
+
+  it("masks socks/http outbound `pass`, http outbound auth headers, and kcp `seed`", () => {
+    const config = xrayDesiredConfigSchema.parse({
+      schema: 1,
+      instance: { name: "test-router", logLevel: "info" },
+      process: { xrayBinary: "/usr/bin/xray", workDir: "./work" },
+      inbounds: { tproxy: { listenIP: "0.0.0.0", port: 12345 } },
+      nodes: [
+        {
+          id: "socks-out",
+          remark: "SOCKS outbound",
+          enabled: true,
+          outbound: {
+            protocol: "socks",
+            server: "socks.example.online",
+            port: 1080,
+            settings: {
+              socks: { user: "socks-out-user", pass: "socks-out-secret-pass" },
+            },
+          },
+        },
+        {
+          id: "http-out",
+          remark: "HTTP outbound",
+          enabled: true,
+          outbound: {
+            protocol: "http",
+            server: "http.example.online",
+            port: 8080,
+            settings: {
+              http: {
+                user: "http-out-user",
+                pass: "http-out-secret-pass",
+                headers: { Authorization: "Bearer http-outbound-bearer" },
+              },
+            },
+          },
+        },
+        {
+          id: "kcp-out",
+          remark: "KCP node",
+          enabled: true,
+          outbound: {
+            protocol: "vless",
+            server: "kcp.example.online",
+            port: 443,
+            settings: { vless: { uuid: "aaaa-bbbb-cccc-dddd", encryption: "none" } },
+            stream: {
+              transport: "kcp",
+              kcp: { seed: "kcp-obfuscation-seed", header: { type: "none" } },
+            },
+          },
+        },
+      ],
+      routing: { domainStrategy: "IPIfNonMatch", rules: [] },
+      geo: { assetDir: "/usr/share/xray" },
+    });
+
+    const sanitized = sanitizeXrayConfig(config);
+    const nodes = sanitized.nodes as Array<Record<string, unknown>>;
+
+    const socksOutbound = nodes[0]!.outbound as Record<string, unknown>;
+    const socksSettings = (socksOutbound.settings as Record<string, unknown>)
+      .socks as Record<string, unknown>;
+    expect(socksSettings.pass).toBe(MASKED_SECRET_PLACEHOLDER);
+    // Non-secret outbound fields are preserved.
+    expect(socksOutbound.server).toBe("socks.example.online");
+
+    const httpOutbound = nodes[1]!.outbound as Record<string, unknown>;
+    const httpSettings = (httpOutbound.settings as Record<string, unknown>)
+      .http as Record<string, unknown>;
+    expect(httpSettings.pass).toBe(MASKED_SECRET_PLACEHOLDER);
+    expect(
+      (httpSettings.headers as Record<string, unknown>).Authorization,
+    ).toBe(MASKED_SECRET_PLACEHOLDER);
+
+    const kcpOutbound = nodes[2]!.outbound as Record<string, unknown>;
+    const kcp = (kcpOutbound.stream as Record<string, unknown>).kcp as Record<
+      string,
+      unknown
+    >;
+    expect(kcp.seed).toBe(MASKED_SECRET_PLACEHOLDER);
+    // Non-secret kcp field stays intact.
+    expect((kcp.header as Record<string, unknown>).type).toBe("none");
+
+    // No real secret material survives anywhere in the masked config.
+    const maskedJson = JSON.stringify(sanitized);
+    expect(maskedJson).not.toContain("socks-out-secret-pass");
+    expect(maskedJson).not.toContain("http-out-secret-pass");
+    expect(maskedJson).not.toContain("http-outbound-bearer");
+    expect(maskedJson).not.toContain("kcp-obfuscation-seed");
+  });
+});
+
+describe("hydrateXrayConfig", () => {
+  it("returns the stored (masked) config unchanged when no ciphertext is present", () => {
+    const masked = sanitizeXrayConfig(baseXrayConfig);
+    expect(hydrateXrayConfig(masked, null)).toEqual(masked);
+  });
+
+  // The full encrypt -> hydrate round-trip (which depends on VECTRA_SECRETS_KEY)
+  // lives in secrets.xray-roundtrip.test.ts, where ~/env is mocked so it does
+  // not depend on the shared, intentionally-unset secrets key.
+});
+
+describe("restoreMaskedXrayConfig", () => {
+  it("re-injects real secrets when an operator re-submits a previously-masked config", () => {
+    // Simulate the latent save-path trap: an edit UI loads the MASKED config
+    // and re-submits it (placeholders in place of every secret) with one
+    // cosmetic edit. Without restore, placeholders would be persisted as real
+    // secrets and the controller would hydrate placeholders into the router.
+    const masked = sanitizeXrayConfig(baseXrayConfig) as Record<
+      string,
+      unknown
+    >;
+    const maskedNodes = masked.nodes as Array<Record<string, unknown>>;
+    const resubmitted = xrayDesiredConfigSchema.parse({
+      ...masked,
+      nodes: [
+        { ...maskedNodes[0]!, remark: "WorldProxy DE (renamed)" },
+        ...maskedNodes.slice(1),
+      ],
+    });
+
+    const restored = restoreMaskedXrayConfig(resubmitted, baseXrayConfig);
+
+    // The cosmetic edit is preserved.
+    const restoredNodes = restored.nodes as Array<Record<string, unknown>>;
+    expect(restoredNodes[0]!.remark).toBe("WorldProxy DE (renamed)");
+
+    // Every masked secret is restored to its real prior value, matched by node
+    // `id`/subscription `id` through the shared restore walker.
+    const vless = (
+      (restoredNodes[0]!.outbound as Record<string, unknown>)
+        .settings as Record<string, unknown>
+    ).vless as Record<string, unknown>;
+    expect(vless.uuid).toBe("11111111-2222-3333-4444-555555555555");
+    const reality = (
+      (restoredNodes[0]!.outbound as Record<string, unknown>)
+        .stream as Record<string, unknown>
+    ).reality as Record<string, unknown>;
+    expect(reality.publicKey).toBe("real-reality-public-key");
+    expect(reality.shortId).toBe("deadbeef");
+
+    const trojan = (
+      (restoredNodes[1]!.outbound as Record<string, unknown>)
+        .settings as Record<string, unknown>
+    ).trojan as Record<string, unknown>;
+    expect(trojan.password).toBe("trojan-secret-password");
+
+    const subscription = (restored.subscriptions as Array<
+      Record<string, unknown>
+    >)[0]!;
+    expect(subscription.url).toBe("https://sub.example.com/api/sub/REAL_TOKEN");
+    expect((subscription.headers as Record<string, unknown>).Authorization).toBe(
+      "Bearer real-bearer-token",
+    );
+
+    const socksInbound = (restored.inbounds as Record<string, unknown>)
+      .socks as Record<string, unknown>;
+    expect(socksInbound.password).toBe("socks-pass");
+
+    // No placeholder survives once restored from the prior revision.
+    expect(JSON.stringify(restored)).not.toContain(MASKED_SECRET_PLACEHOLDER);
+  });
+
+  it("returns the masked config unchanged when there is no source revision", () => {
+    const masked = sanitizeXrayConfig(baseXrayConfig);
+    expect(restoreMaskedXrayConfig(masked, null)).toEqual(masked);
   });
 });

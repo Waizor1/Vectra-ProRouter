@@ -1,0 +1,183 @@
+{
+  "schema": 1,
+  "instance": {
+    "name": "test-router",
+    "logLevel": "info"
+  },
+  "process": {
+    "xrayBinary": "/usr/bin/xray",
+    "workDir": "./work",
+    "memorySoftMiB": 128,
+    "oomScoreAdj": -100,
+    "restartBackoff": {
+      "initialMs": 500,
+      "factor": 2.0,
+      "maxMs": 60000,
+      "reset": "60s"
+    }
+  },
+  "inbounds": {
+    "tproxy": {
+      "listenIP": "0.0.0.0",
+      "port": 12345,
+      "fwmark": 1,
+      "udpEnabled": true,
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"],
+        "routeOnly": false
+      }
+    },
+    "dns": {
+      "listenIP": "127.0.0.1",
+      "port": 5353,
+      "address": "8.8.8.8",
+      "network": "tcp,udp"
+    }
+  },
+  "dns": {
+    "queryStrategy": "UseIPv4",
+    "servers": [
+      {
+        "address": "https://dns.google/dns-query",
+        "skipFallback": false,
+        "queryStrategy": "UseIPv4"
+      },
+      {
+        "address": "8.8.8.8",
+        "skipFallback": true,
+        "domains": ["geosite:cn"],
+        "queryStrategy": "UseIPv4"
+      }
+    ],
+    "hosts": {
+      "dns.google": "8.8.8.8"
+    },
+    "tag": "dns-upstream"
+  },
+  "nodes": [
+    {
+      "id": "world-de",
+      "remark": "WorldProxy DE",
+      "enabled": true,
+      "outbound": {
+        "protocol": "vless",
+        "server": "de1.example.online",
+        "port": 443,
+        "settings": {
+          "vless": {
+            "uuid": "00000000-0000-0000-0000-000000000000",
+            "flow": "xtls-rprx-vision",
+            "encryption": "none"
+          }
+        },
+        "stream": {
+          "transport": "tcp",
+          "security": "reality",
+          "reality": {
+            "serverName": "www.cloudflare.com",
+            "publicKey": "REPLACE_REALITY_PUBLIC_KEY",
+            "shortId": "abcdef",
+            "spiderX": "/",
+            "fingerprint": "firefox"
+          }
+        }
+      }
+    },
+    {
+      "id": "world-pl",
+      "remark": "DiscordVoiceUDP PL",
+      "enabled": true,
+      "outbound": {
+        "protocol": "vless",
+        "server": "pl1.example.online",
+        "port": 443,
+        "settings": {
+          "vless": {
+            "uuid": "00000000-0000-0000-0000-000000000000",
+            "encryption": "none"
+          }
+        },
+        "stream": {
+          "transport": "grpc",
+          "security": "reality",
+          "grpc": {
+            "serviceName": "voice",
+            "multiMode": false
+          },
+          "reality": {
+            "serverName": "www.microsoft.com",
+            "publicKey": "REPLACE_REALITY_PUBLIC_KEY",
+            "shortId": "00",
+            "fingerprint": "chrome"
+          }
+        },
+        "mux": {
+          "enabled": true,
+          "concurrency": -1,
+          "xudpConcurrency": 16,
+          "packetEncoding": "xudp"
+        }
+      }
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "domainMatcher": "hybrid",
+    "rules": [
+      {
+        "tag": "direct-cn",
+        "domain": ["geosite:cn"],
+        "outboundTag": "direct"
+      },
+      {
+        "tag": "discord-udp",
+        "network": "udp",
+        "port": "19294-19344,50000-50100",
+        "outboundTag": "node-world-pl"
+      },
+      {
+        "tag": "world-proxy",
+        "outboundTag": "node-world-de"
+      }
+    ]
+  },
+  "subscriptions": [
+    {
+      "id": "primary",
+      "remark": "BloopCat",
+      "url": "https://sub.example.com/api/sub/REDACTED_TOKEN",
+      "enabled": true,
+      "userAgent": "passwall2",
+      "updateMinutes": 1440,
+      "fetch": {
+        "mode": "auto",
+        "connectTimeoutS": 5,
+        "maxTimeoutS": 30,
+        "retries": 2,
+        "impersonatePassWall": true
+      },
+      "filter": {
+        "mode": "off"
+      }
+    }
+  ],
+  "geo": {
+    "assetDir": "/usr/share/xray",
+    "geoipUrl": "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat",
+    "geositeUrl": "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
+    "updateOnStart": false
+  },
+  "stats": {
+    "enabled": true
+  },
+  "api": {
+    "tag": "api",
+    "services": ["HandlerService", "StatsService", "ObservatoryService", "LoggerService"]
+  },
+  "normalization": {
+    "forceFingerprint": false,
+    "collapseDuplicateSubscriptionPrefix": true,
+    "dropDeadNodes": false
+  }
+}

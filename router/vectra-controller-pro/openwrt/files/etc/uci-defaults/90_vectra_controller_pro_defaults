@@ -1,0 +1,52 @@
+#!/bin/sh
+
+set -eu
+
+changed=0
+
+set_if_empty() {
+	local option="$1"
+	local value="$2"
+	local current
+
+	[ -n "$value" ] || return 0
+	current="$(uci -q get "vectra-controller-pro.main.$option" || true)"
+	[ -n "$current" ] && return 0
+	uci -q set "vectra-controller-pro.main.$option=$value"
+	changed=1
+}
+
+# Ensure the named section exists before seeding options.
+if ! uci -q get vectra-controller-pro.main >/dev/null 2>&1; then
+	uci -q set vectra-controller-pro.main=controller
+	changed=1
+fi
+
+set_if_empty enabled "1"
+set_if_empty control_url "https://api.vectra-pro.net"
+set_if_empty panel_url "https://router.vectra-pro.net"
+set_if_empty poll_interval "45"
+set_if_empty request_timeout "10"
+set_if_empty state_path "/etc/vectra-controller-pro/state.json"
+set_if_empty status_path "/var/run/vectra-controller-pro/status.json"
+set_if_empty xray_config_path "/etc/vectra-controller-pro/xray-desired.json"
+set_if_empty xray_render_path "/var/run/vectra-controller-pro/xray.json"
+set_if_empty xray_binary "/usr/sbin/vctl-xray-wrapper"
+set_if_empty legacy_state_path "/etc/vectra-controller/state.json"
+set_if_empty job_safety_heavy_memory_floor_mb "0"
+set_if_empty job_safety_storage_memory_floor_mb "0"
+set_if_empty job_safety_diagnostic_memory_floor_mb "0"
+set_if_empty job_safety_heavy_overlay_floor_mb "0"
+set_if_empty job_safety_storage_overlay_floor_mb "0"
+set_if_empty job_safety_heavy_tmp_floor_mb "0"
+set_if_empty job_safety_storage_tmp_floor_mb "0"
+set_if_empty job_safety_diagnostic_tmp_floor_mb "0"
+set_if_empty job_safety_pre_drop_caches "0"
+
+if [ "$changed" -eq 1 ]; then
+	uci commit vectra-controller-pro
+fi
+
+rm -f /etc/config/vectra-controller-pro-opkg
+
+exit 0

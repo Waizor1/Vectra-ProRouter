@@ -22,6 +22,11 @@ Optional:
                              (default: derived from controller Makefiles)
   --release N                OpenWrt PKG_RELEASE for both packages
                              (default: derived from controller Makefiles)
+  --pro-version VERSION      Package version for vectra-controller-pro
+                             (default: derived from its own Makefile;
+                             independent of agent/luci)
+  --pro-release N            OpenWrt PKG_RELEASE for vectra-controller-pro
+                             (default: derived from its own Makefile)
   --channel NAME             Feed channel name (default: stable)
   --output-root PATH         Feed output root (default: <repo>/dist/openwrt-feed)
   --key-dir PATH             Directory with usign keys (default: <repo>/.keys/openwrt-feed)
@@ -86,11 +91,43 @@ resolve_package_defaults() {
 		exit 1
 	fi
 
+	# The agent + luci packages share a version (asserted above). The
+	# --version/--release CLI flags override that shared value.
 	if [[ -z "${VERSION:-}" ]]; then
 		VERSION="$agent_version"
 	fi
 	if [[ -z "${RELEASE:-}" ]]; then
 		RELEASE="$agent_release"
+	fi
+}
+
+resolve_pro_package_defaults() {
+	# vectra-controller-pro is an additive, independently-versioned package: it
+	# is deliberately NOT held to the agent/luci version equality assertion.
+	# Its version is sourced from its own Makefile unless overridden by
+	# --pro-version / --pro-release.
+	local pro_makefile="$REPO_ROOT/router/vectra-controller-pro/openwrt/Makefile"
+	local pro_version
+	local pro_release
+
+	[[ -f "$pro_makefile" ]] || {
+		echo "Missing controller-pro Makefile: $pro_makefile" >&2
+		exit 1
+	}
+
+	pro_version="$(read_makefile_assignment "$pro_makefile" "VECTRA_VERSION")"
+	pro_release="$(read_makefile_assignment "$pro_makefile" "VECTRA_RELEASE")"
+
+	[[ -n "$pro_version" && -n "$pro_release" ]] || {
+		echo "Unable to resolve version defaults from $pro_makefile" >&2
+		exit 1
+	}
+
+	if [[ -z "${PRO_VERSION:-}" ]]; then
+		PRO_VERSION="$pro_version"
+	fi
+	if [[ -z "${PRO_RELEASE:-}" ]]; then
+		PRO_RELEASE="$pro_release"
 	fi
 }
 
@@ -356,8 +393,14 @@ build_agent_package_manually() {
 
 	mark_executable_if_present \
 		"$data_dir/etc/init.d/vectra-controller" \
+		"$data_dir/etc/init.d/vectra-oom-guard" \
 		"$data_dir/etc/uci-defaults/90_vectra_controller_defaults" \
-		"$data_dir/usr/libexec/vectra-controller/render-config.sh"
+		"$data_dir/etc/uci-defaults/91_vectra_low_mem_profile" \
+		"$data_dir/etc/uci-defaults/92_vectra_controller_watchdog" \
+		"$data_dir/usr/libexec/vectra-controller/render-config.sh" \
+		"$data_dir/usr/sbin/vectra-oom-guard" \
+		"$data_dir/usr/sbin/vectra-xray-wrapper" \
+		"$data_dir/usr/sbin/vectra-controller-watchdog"
 
 	installed_size="$(du -sk "$data_dir" | awk '{print $1}')"
 
@@ -431,6 +474,146 @@ fi
 	printf '%s\n' "$output_file"
 }
 
+build_pro_package_manually() {
+	local package_root="$REPO_ROOT/router/vectra-controller-pro"
+	local openwrt_root="$package_root/openwrt/files"
+	local package_version="${PRO_VERSION}-r${PRO_RELEASE}"
+	local go_arch
+	local temp_dir
+	local data_dir
+	local control_dir
+	local output_dir
+	local output_file
+	local installed_size
+
+	go_arch="$(resolve_go_arch)"
+	temp_dir="$(mktemp -d "$SDK_ROOT/tmp/vectra-pro.XXXXXX")"
+	data_dir="$temp_dir/data"
+	control_dir="$temp_dir/control"
+	output_dir="$SDK_ROOT/bin/packages/vectra-manual"
+	output_file="$output_dir/vectra-controller-pro_${package_version}_${TARGET_ARCH}.ipk"
+
+	mkdir -p \
+		"$data_dir/usr/sbin" \
+		"$control_dir" \
+		"$output_dir"
+
+	# Pre-build sanity: the source subdir MUST exist (r27 binary-less-IPK guard).
+	# GoPackage names the binary after the last path component of the build pkg,
+	# so ./cmd/vctl produces a binary named `vctl`.
+	if [[ ! -d "$package_root/cmd/vctl" ]]; then
+		echo "build_pro_package_manually: missing source directory $package_root/cmd/vctl" >&2
+		echo "  (staging tarball is incomplete — see r27 incident notes)" >&2
+		exit 1
+	fi
+	if [[ ! -f "$package_root/cmd/vctl/main.go" ]]; then
+		echo "build_pro_package_manually: missing main.go in $package_root/cmd/vctl" >&2
+		exit 1
+	fi
+
+	(
+		cd "$package_root"
+		GOTOOLCHAIN=local \
+		CGO_ENABLED=0 \
+		GOOS=linux \
+		GOARCH="$go_arch" \
+			go build -trimpath -ldflags="-s -w -X main.Version=${package_version} -X main.runtimeVersion=${package_version}" \
+				-o "$data_dir/usr/sbin/vctl" \
+				./cmd/vctl
+	)
+
+	# Post-build assertion: the binary actually landed and is non-trivially sized.
+	if [[ ! -f "$data_dir/usr/sbin/vctl" ]]; then
+		echo "build_pro_package_manually: go build produced no binary at $data_dir/usr/sbin/vctl" >&2
+		exit 1
+	fi
+	local binary_size
+	binary_size="$(stat -c %s "$data_dir/usr/sbin/vctl" 2>/dev/null \
+		|| stat -f %z "$data_dir/usr/sbin/vctl")"
+	if [[ "${binary_size:-0}" -lt 1048576 ]]; then
+		echo "build_pro_package_manually: binary is suspiciously small (${binary_size} bytes < 1 MB)" >&2
+		exit 1
+	fi
+	chmod 0755 "$data_dir/usr/sbin/vctl"
+
+	if [[ -d "$openwrt_root" ]]; then
+		cp -R "$openwrt_root/." "$data_dir/"
+	fi
+
+	mark_executable_if_present \
+		"$data_dir/etc/init.d/vectra-controller-pro" \
+		"$data_dir/etc/uci-defaults/90_vectra_controller_pro_defaults" \
+		"$data_dir/usr/libexec/vectra-controller-pro/render-xray-config.sh" \
+		"$data_dir/usr/sbin/vctl-xray-wrapper"
+
+	installed_size="$(du -sk "$data_dir" | awk '{print $1}')"
+
+	cat > "$control_dir/control" <<EOF
+Package: vectra-controller-pro
+Version: ${package_version}
+Depends: ca-bundle, jsonfilter, jshn, procd, procd-ujail, uci, xray-core, kmod-nft-tproxy, kmod-nft-socket, kmod-nft-nat, dnsmasq-full
+Section: net
+Priority: optional
+Architecture: ${TARGET_ARCH}
+Maintainer: Vectra
+License: MIT
+Source: https://router.vectra-pro.net
+Installed-Size: ${installed_size}
+Description: Standalone Go controller that owns Xray end-to-end and polls the Vectra control plane directly (xray-direct engine).
+EOF
+
+	cat > "$control_dir/conffiles" <<'EOF'
+/etc/config/vectra-controller-pro
+EOF
+
+write_postinst "$control_dir/postinst" '
+if [ -n "${IPKG_INSTROOT:-}" ]; then
+	exit 0
+fi
+
+if [ -x /etc/uci-defaults/90_vectra_controller_pro_defaults ]; then
+	/etc/uci-defaults/90_vectra_controller_pro_defaults || true
+fi
+
+[ "${VECTRA_SKIP_POSTINST_RESTART:-}" = "1" ] && exit 0
+[ -f /tmp/vectra-skip-postinst-restart ] && exit 0
+
+/etc/init.d/vectra-controller-pro enable >/dev/null 2>&1 || true
+if /etc/init.d/vectra-controller-pro running >/dev/null 2>&1; then
+	/etc/init.d/vectra-controller-pro restart >/dev/null 2>&1 || true
+else
+	/etc/init.d/vectra-controller-pro start >/dev/null 2>&1 || true
+fi
+'
+
+	package_ipk "$data_dir" "$control_dir" "$output_file"
+
+	# Final IPK-level verification: extract data.tar.gz and confirm the binary is
+	# present, executable, and non-empty (belt-and-suspenders r27 guard).
+	local verify_dir
+	verify_dir="$(mktemp -d "$SDK_ROOT/tmp/vectra-pro-verify.XXXXXX")"
+	tar -xzf "$output_file" -C "$verify_dir"
+	mkdir -p "$verify_dir/data-unpacked"
+	tar -xzf "$verify_dir/data.tar.gz" -C "$verify_dir/data-unpacked"
+	if [[ ! -f "$verify_dir/data-unpacked/usr/sbin/vctl" ]]; then
+		echo "build_pro_package_manually: IPK $output_file does not contain usr/sbin/vctl" >&2
+		echo "  data.tar.gz contents:" >&2
+		tar -tzf "$verify_dir/data.tar.gz" | sed 's/^/    /' >&2
+		exit 1
+	fi
+	local packed_size
+	packed_size="$(stat -c %s "$verify_dir/data-unpacked/usr/sbin/vctl" 2>/dev/null \
+		|| stat -f %z "$verify_dir/data-unpacked/usr/sbin/vctl")"
+	if [[ "${packed_size:-0}" -lt 1048576 ]]; then
+		echo "build_pro_package_manually: binary inside IPK is suspiciously small (${packed_size} bytes < 1 MB)" >&2
+		exit 1
+	fi
+	rm -rf "$verify_dir"
+
+	rm -rf "$temp_dir"
+	printf '%s\n' "$output_file"
+}
+
 build_luci_package_manually() {
 	local package_root="$REPO_ROOT/router/luci-app-vectra-controller"
 	local package_version="${VERSION}-r${RELEASE}"
@@ -496,6 +679,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SDK_ROOT=""
 VERSION=""
 RELEASE=""
+PRO_VERSION=""
+PRO_RELEASE=""
 CHANNEL="stable"
 OUTPUT_ROOT="$REPO_ROOT/dist/openwrt-feed"
 KEY_DIR="$REPO_ROOT/.keys/openwrt-feed"
@@ -519,6 +704,14 @@ while [[ $# -gt 0 ]]; do
 			;;
 		--release)
 			RELEASE="$2"
+			shift 2
+			;;
+		--pro-version)
+			PRO_VERSION="$2"
+			shift 2
+			;;
+		--pro-release)
+			PRO_RELEASE="$2"
 			shift 2
 			;;
 		--channel)
@@ -568,6 +761,7 @@ if [[ -z "$SDK_ROOT" ]]; then
 fi
 
 resolve_package_defaults
+resolve_pro_package_defaults
 
 require_command awk
 require_command cp
@@ -612,6 +806,7 @@ ensure_sdk_metadata
 if [[ "$MAKE_LOG_LEVEL" == "V=sc" ]]; then
 	printf 'Manual packaging target arch: %s\n' "$TARGET_ARCH"
 	printf 'Resolved package version: %s-r%s\n' "$VERSION" "$RELEASE"
+	printf 'Resolved controller-pro version: %s-r%s\n' "$PRO_VERSION" "$PRO_RELEASE"
 fi
 
 AGENT_PACKAGE="$(build_agent_package_manually)"
@@ -626,12 +821,19 @@ LUCI_PACKAGE="$(build_luci_package_manually)"
 	exit 1
 }
 
+PRO_PACKAGE="$(build_pro_package_manually)"
+[[ -f "$PRO_PACKAGE" ]] || {
+	echo "Expected vectra-controller-pro .ipk after build" >&2
+	exit 1
+}
+
 FEED_DIR="$OUTPUT_ROOT/$CHANNEL/$TARGET_ARCH"
 rm -rf "$FEED_DIR"
 mkdir -p "$FEED_DIR"
 
 cp "$AGENT_PACKAGE" "$FEED_DIR/"
 cp "$LUCI_PACKAGE" "$FEED_DIR/"
+cp "$PRO_PACKAGE" "$FEED_DIR/"
 
 MKHASH="$MKHASH_BIN" "$SDK_ROOT/scripts/ipkg-make-index.sh" "$FEED_DIR" \
 	| sed -E 's#^Filename: .*/#Filename: #' \
@@ -653,7 +855,8 @@ cat > "$FEED_DIR/index.json" <<EOF
   "release": "${RELEASE}",
   "packages": [
     "$(basename "$AGENT_PACKAGE")",
-    "$(basename "$LUCI_PACKAGE")"
+    "$(basename "$LUCI_PACKAGE")",
+    "$(basename "$PRO_PACKAGE")"
   ],
   "publicKey": "${FEED_NAME}.pub",
   "feedConfig": "feed.conf",

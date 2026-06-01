@@ -1,0 +1,29 @@
+config controller 'main'
+	option enabled '1'
+	option control_url 'https://api.vectra-pro.net'
+	option panel_url 'https://router.vectra-pro.net'
+	# Loop cadence and per-request timeout, in seconds (agentcfg expects ints).
+	option poll_interval '45'
+	option request_timeout '10'
+	# Persistent identity/state + operator desired config live under /etc so they
+	# survive sysupgrade (see lib/upgrade/keep.d/vectra-controller-pro).
+	option state_path '/etc/vectra-controller-pro/state.json'
+	option status_path '/var/run/vectra-controller-pro/status.json'
+	option xray_config_path '/etc/vectra-controller-pro/xray-desired.json'
+	option xray_render_path '/var/run/vectra-controller-pro/xray.json'
+	# Wrapper applies GOMEMLIMIT/GOGC caps around the real /usr/bin/xray.
+	option xray_binary '/usr/sbin/vctl-xray-wrapper'
+	# Canary identity reuse: old agent state to import RouterID + AgentToken from.
+	option legacy_state_path '/etc/vectra-controller/state.json'
+	# Job-safety resource floors. 0/empty means "use the compile-time default in
+	# jobsafety". pre_drop_caches opts into a one-shot vm.drop_caches=3 before the
+	# guard fails on low RAM.
+	option job_safety_heavy_memory_floor_mb '0'
+	option job_safety_storage_memory_floor_mb '0'
+	option job_safety_diagnostic_memory_floor_mb '0'
+	option job_safety_heavy_overlay_floor_mb '0'
+	option job_safety_storage_overlay_floor_mb '0'
+	option job_safety_heavy_tmp_floor_mb '0'
+	option job_safety_storage_tmp_floor_mb '0'
+	option job_safety_diagnostic_tmp_floor_mb '0'
+	option job_safety_pre_drop_caches '0'

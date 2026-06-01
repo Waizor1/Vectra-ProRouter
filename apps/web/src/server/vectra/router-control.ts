@@ -3,9 +3,11 @@ import {
   createDefaultRescuePolicy,
   createDefaultUpdatePolicy,
   desiredRevisionSummarySchema,
+  type EngineMode,
   firmwareManifestSchema,
   jobResultRequestSchema,
   jobResultResponseSchema,
+  type PasswallDesiredConfig,
   type PasswallImportedState,
   type RouterConfigSyncState,
   type RouterInventory,
@@ -15,6 +17,8 @@ import {
   routerRegisterRequestSchema,
   routerRegisterResponseSchema,
   summarizePasswallRevisionDiff,
+  type XrayDesiredConfig,
+  xrayDesiredConfigSchema,
 } from "@vectra/contracts";
 import {
   artifacts,
@@ -29,7 +33,7 @@ import {
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
-import { and, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
 
 import { env } from "~/env";
 import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
@@ -47,16 +51,33 @@ import {
 import {
   computeConfigDigest,
   createSecretPayload,
+  createXraySecretPayload,
   hydratePasswallConfig,
+  hydrateXrayConfig,
   restoreMaskedPasswallConfig,
+  restoreMaskedXrayConfig,
   sanitizePasswallConfig,
   sanitizePasswallRawSnapshot,
+  sanitizeXrayConfig,
 } from "~/server/vectra/secrets";
 
 type RouterRow = typeof routers.$inferSelect;
 type RevisionRow = typeof passwallDesiredRevisions.$inferSelect;
 type JobRow = typeof jobs.$inferSelect;
 type DatabaseClient = typeof db;
+
+// Job types owned by the xray-direct engine. Only delivered to routers whose
+// engineMode is "xray-direct"; passwall routers never receive these.
+const XRAY_JOB_TYPES = new Set<JobRow["type"]>([
+  "apply_xray_config",
+  "reload_xray_outbound",
+  "refresh_xray_subscriptions",
+  "update_xray_assets",
+]);
+
+function isXrayEngineJob(job: JobRow) {
+  return XRAY_JOB_TYPES.has(job.type);
+}
 
 export type ClientRevisionRow = Omit<RevisionRow, "rawImportedSnapshot"> & {
   hasRawImportedSnapshot: boolean;
@@ -144,19 +165,29 @@ function serializeJob(job: JobRow) {
 export function selectDeliverableJobsForCheckIn(
   importState: RouterRow["importState"],
   queuedCandidates: JobRow[],
+  engineMode: RouterRow["engineMode"] = "passwall",
 ) {
+  // Engine isolation: a router only ever receives jobs for its own engine.
+  // passwall routers (the default, all 18 live devices) never see xray jobs
+  // and vice versa. Engine-agnostic exclusive jobs (controller self-update,
+  // reboot, clear-ipsets, rescue, firmware) are handled below for both.
+  const engineScopedJobs =
+    engineMode === "xray-direct"
+      ? queuedCandidates.filter(
+          (job) => isXrayEngineJob(job) || isEngineAgnosticExclusiveJob(job),
+        )
+      : queuedCandidates.filter((job) => !isXrayEngineJob(job));
+
+  const applyGateJobType =
+    engineMode === "xray-direct" ? "apply_xray_config" : "apply_passwall_config";
+
   const allowedJobs =
     importState === "approved"
-      ? queuedCandidates
-      : queuedCandidates.filter((job) => job.type !== "apply_passwall_config");
+      ? engineScopedJobs
+      : engineScopedJobs.filter((job) => job.type !== applyGateJobType);
 
-  const exclusiveJob = allowedJobs.find(
-    (job) =>
-      isControllerUpdateJob(job) ||
-      isPasswallClearIpsetsJob(job) ||
-      isRouterRebootJob(job) ||
-      job.type === "run_rescue_repair" ||
-      job.type === "validate_firmware",
+  const exclusiveJob = allowedJobs.find((job) =>
+    isEngineAgnosticExclusiveJob(job),
   );
 
   if (exclusiveJob) {
@@ -164,6 +195,16 @@ export function selectDeliverableJobsForCheckIn(
   }
 
   return allowedJobs;
+}
+
+function isEngineAgnosticExclusiveJob(job: JobRow) {
+  return (
+    isControllerUpdateJob(job) ||
+    isPasswallClearIpsetsJob(job) ||
+    isRouterRebootJob(job) ||
+    job.type === "run_rescue_repair" ||
+    job.type === "validate_firmware"
+  );
 }
 
 export function sanitizeRevisionForClient(
@@ -176,8 +217,21 @@ export function sanitizeRevisionForClient(
   const safeRevision = Object.fromEntries(
     Object.entries(revision).filter(([key]) => key !== "rawImportedSnapshot"),
   ) as Omit<RevisionRow, "rawImportedSnapshot">;
+
+  // xray-direct revisions store an XrayDesiredConfig in the jsonb column.
+  // Writes mask it at rest, but re-mask defensively at the client boundary so
+  // operator surfaces never receive raw node/subscription/inbound secrets even
+  // for revisions persisted before at-rest masking landed.
+  const safeConfig =
+    revision.engineMode === "xray-direct"
+      ? (sanitizeXrayConfig(
+          revision.config as unknown as XrayDesiredConfig,
+        ) as unknown as RevisionRow["config"])
+      : safeRevision.config;
+
   return {
     ...safeRevision,
+    config: safeConfig,
     hasRawImportedSnapshot: Boolean(revision.rawImportedSnapshot),
   };
 }
@@ -438,6 +492,15 @@ async function hydrateRevisionConfigWithDb(
     client,
     revision.id,
   );
+  if (revision.engineMode === "xray-direct") {
+    // The jsonb column is typed as the passwall config for the (many) existing
+    // consumers; an xray revision stores an XrayDesiredConfig there, so narrow
+    // at this boundary before hydrating through the xray schema.
+    return hydrateXrayConfig(
+      revision.config as unknown as XrayDesiredConfig,
+      ciphertext,
+    );
+  }
   return hydratePasswallConfig(revision.config, ciphertext);
 }
 
@@ -468,7 +531,35 @@ async function getRevisionSummaryWithDb(
     return null;
   }
 
-  const previous = revisions[currentIndex + 1] ?? null;
+  if (current.engineMode === "xray-direct") {
+    // xray-direct revisions are not diffed by the passwall differ. The pro
+    // controller computes its own apply impact from the desired config; the
+    // panel just delivers the config with a neutral, restart-safe summary.
+    const currentConfig = await hydrateRevisionConfigWithDb(client, current);
+    return desiredRevisionSummarySchema.parse({
+      id: current.id,
+      revisionNumber: current.revisionNumber,
+      status: current.status,
+      origin: current.origin,
+      engineMode: current.engineMode,
+      configDigest: current.configDigest,
+      config: currentConfig,
+      impact: {
+        changedSections: [],
+        requiresRestart: true,
+        refreshSubscriptions: false,
+        refreshRules: false,
+        packageInstall: false,
+        firmwareValidation: false,
+      },
+    });
+  }
+
+  // passwall path (unchanged): diff against the previous passwall revision.
+  const previous =
+    revisions
+      .slice(currentIndex + 1)
+      .find((revision) => revision.engineMode !== "xray-direct") ?? null;
   const [currentConfig, previousConfig] = await Promise.all([
     hydrateRevisionConfigWithDb(client, current),
     previous
@@ -481,9 +572,13 @@ async function getRevisionSummaryWithDb(
     revisionNumber: current.revisionNumber,
     status: current.status,
     origin: current.origin,
+    engineMode: current.engineMode,
     configDigest: current.configDigest,
     config: currentConfig,
-    impact: summarizePasswallRevisionDiff(previousConfig, currentConfig),
+    impact: summarizePasswallRevisionDiff(
+      previousConfig as PasswallDesiredConfig | null,
+      currentConfig as PasswallDesiredConfig,
+    ),
   });
 }
 
@@ -672,7 +767,16 @@ async function resolveDesiredRevision(router: RouterRow, queuedJobs: JobRow[]) {
     router.lastAppliedRevisionId ??
     null;
 
-  return getRevisionSummary(router.id, preferredRevisionId);
+  const summary = await getRevisionSummary(router.id, preferredRevisionId);
+
+  // Engine guard: never hand a router a desired config for a different engine.
+  // Old routers (engineMode "passwall") only ever see passwall revisions, and
+  // an xray-direct router only sees xray revisions.
+  if (summary && summary.engineMode !== router.engineMode) {
+    return null;
+  }
+
+  return summary;
 }
 
 function buildRegisterMessage(router: RouterRow) {
@@ -1166,12 +1270,16 @@ export async function checkInRouter(routerId: string, input: unknown) {
         or(isNull(jobs.deliverAfter), lte(jobs.deliverAfter, now)),
       ),
     )
-    .orderBy(desc(jobs.createdAt))
+    // Deliver in creation order (oldest first) so an older queued apply/reboot
+    // is never skipped by a newer one; selectDeliverableJobsForCheckIn then
+    // picks the OLDEST pending exclusive job (find on ascending order).
+    .orderBy(asc(jobs.createdAt))
     .limit(10);
 
   const deliverableJobs = selectDeliverableJobsForCheckIn(
     router.importState,
     queuedCandidates,
+    router.engineMode,
   );
 
   const desiredRevision = await resolveDesiredRevision(router, deliverableJobs);
@@ -1316,6 +1424,7 @@ export async function recordJobResult(routerId: string, input: unknown) {
         routerId,
         desiredRevisionId: revision.id,
         jobId: job.id,
+        engineMode: revision.engineMode,
         result: resultState,
         uciDigest: parsed.configDigest ?? revision.configDigest ?? null,
         stdout: parsed.stdout ?? null,
@@ -1518,6 +1627,16 @@ export async function getFullConfigForRevisionWithDb(
     return null;
   }
 
+  // Defensive: this helper feeds passwall-only restore logic. If ever asked for
+  // an xray revision, hand back the stored xray config rather than parsing it
+  // through the passwall schema (which would throw).
+  if (revision.engineMode === "xray-direct") {
+    return hydrateXrayConfig(
+      revision.config as unknown as XrayDesiredConfig,
+      await getSecretCiphertextForRevisionWithDb(client, revision.id),
+    ) as unknown as PasswallDesiredConfig;
+  }
+
   return hydratePasswallConfig(
     revision.config,
     await getSecretCiphertextForRevisionWithDb(client, revision.id),
@@ -1528,6 +1647,8 @@ export async function createOperatorDraftRevision(input: {
   routerId: string;
   note?: string;
   config: RevisionRow["config"];
+  engineMode?: EngineMode;
+  xrayConfig?: XrayDesiredConfig;
 }) {
   return createOperatorDraftRevisionWithDb(db, input);
 }
@@ -1537,7 +1658,12 @@ export async function createOperatorDraftRevisionWithDb(
   input: {
     routerId: string;
     note?: string;
+    // passwall config carrier; required for the passwall path (the default).
     config: RevisionRow["config"];
+    // engineMode defaults to "passwall"; when "xray-direct" the xray path runs
+    // and `xrayConfig` is stored instead of `config`.
+    engineMode?: EngineMode;
+    xrayConfig?: XrayDesiredConfig;
   },
 ) {
   const [router] = await client
@@ -1556,6 +1682,82 @@ export async function createOperatorDraftRevisionWithDb(
     .where(eq(passwallDesiredRevisions.routerId, input.routerId))
     .orderBy(desc(passwallDesiredRevisions.revisionNumber))
     .limit(1);
+
+  if (input.engineMode === "xray-direct") {
+    if (!input.xrayConfig) {
+      throw new Error("xray-direct draft requires an xray config.");
+    }
+
+    const submittedXrayConfig = xrayDesiredConfigSchema.parse(input.xrayConfig);
+
+    // Re-inject real secrets if the operator re-submitted a previously-MASKED
+    // config (placeholders must never be persisted as real secrets, or the
+    // controller would hydrate placeholders into a broken router). Mirrors the
+    // passwall path below: source the prior revision's hydrated cleartext.
+    // Guard the source to an xray-direct revision so a passwall baseline left
+    // over from an engine switch is never fed into the xray restore walker.
+    const xraySourceRevisionId =
+      router.pendingImportRevisionId ??
+      router.activeRevisionId ??
+      latestRevision?.id ??
+      null;
+    const [xraySourceRevision] = xraySourceRevisionId
+      ? await client
+          .select()
+          .from(passwallDesiredRevisions)
+          .where(eq(passwallDesiredRevisions.id, xraySourceRevisionId))
+          .limit(1)
+      : [];
+    const xraySourceConfig =
+      xraySourceRevision?.engineMode === "xray-direct"
+        ? ((await getFullConfigForRevisionWithDb(
+            client,
+            xraySourceRevision.id,
+          )) as unknown as XrayDesiredConfig)
+        : null;
+    const xrayConfig = restoreMaskedXrayConfig(
+      submittedXrayConfig,
+      xraySourceConfig,
+    );
+
+    // Digest covers the real (cleartext) config so it matches what the
+    // controller ultimately renders, mirroring the passwall path.
+    const configDigest = computeConfigDigest(xrayConfig);
+    // Mask node/subscription/inbound secrets before persisting in the jsonb
+    // column; cleartext lives only in the encrypted secret blob below.
+    const maskedXrayConfig = sanitizeXrayConfig(xrayConfig);
+
+    const [revision] = await client
+      .insert(passwallDesiredRevisions)
+      .values({
+        routerId: input.routerId,
+        revisionNumber: (latestRevision?.revisionNumber ?? 0) + 1,
+        status: "draft",
+        origin: "operator_draft",
+        engineMode: "xray-direct",
+        configDigest,
+        // The column is typed as the passwall config for existing consumers;
+        // narrow at this write boundary (mirrored by hydrateRevisionConfigWithDb).
+        config: maskedXrayConfig as unknown as RevisionRow["config"],
+        createdBy: "operator",
+        note: input.note,
+      })
+      .returning();
+
+    if (!revision) {
+      throw new Error("Failed to create xray draft revision.");
+    }
+
+    await upsertRevisionSecretBlobWithDb(
+      client,
+      input.routerId,
+      revision.id,
+      "desired_revision",
+      createXraySecretPayload(xrayConfig),
+    );
+
+    return revision;
+  }
 
   const sourceRevisionId =
     router.pendingImportRevisionId ??

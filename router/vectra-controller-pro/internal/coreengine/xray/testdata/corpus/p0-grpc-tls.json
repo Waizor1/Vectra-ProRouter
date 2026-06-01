@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "instance": { "name": "grpc-router", "logLevel": "warning" },
+  "process": {
+    "xrayBinary": "/usr/bin/xray",
+    "workDir": "./work",
+    "restartBackoff": { "initialMs": 500, "factor": 2.0, "maxMs": 60000, "reset": "60s" }
+  },
+  "inbounds": {
+    "socks": {
+      "listenIP": "127.0.0.1",
+      "port": 1080,
+      "udp": true,
+      "sniffing": { "enabled": true, "destOverride": ["http", "tls"] }
+    }
+  },
+  "dns": {
+    "queryStrategy": "UseIP",
+    "servers": [{ "address": "1.1.1.1" }]
+  },
+  "nodes": [
+    {
+      "id": "n1",
+      "remark": "grpc tls multi",
+      "enabled": true,
+      "outbound": {
+        "protocol": "vless",
+        "server": "a.example.com",
+        "port": 443,
+        "settings": { "vless": { "uuid": "11111111-1111-1111-1111-111111111111", "encryption": "none" } },
+        "stream": {
+          "transport": "grpc",
+          "security": "tls",
+          "grpc": { "serviceName": "gun", "multiMode": true },
+          "tls": { "serverName": "a.example.com", "fingerprint": "chrome", "alpn": ["h2"] }
+        }
+      }
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [{ "tag": "all", "outboundTag": "node-n1" }]
+  },
+  "geo": {
+    "assetDir": "/usr/share/xray",
+    "geoipUrl": "https://example.com/geoip.dat",
+    "geositeUrl": "https://example.com/geosite.dat",
+    "updateOnStart": false
+  },
+  "normalization": {
+    "forceFingerprint": false,
+    "collapseDuplicateSubscriptionPrefix": false,
+    "dropDeadNodes": false
+  }
+}

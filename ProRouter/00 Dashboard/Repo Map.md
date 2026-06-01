@@ -1,6 +1,6 @@
 ---
 type: generated
-updated: '2026-05-17 01:02:58 +03:00'
+updated: '2026-06-01 03:45:57 +03:00'
 generated-by: scripts/Sync-ProRouterVault.py
 tags:
   - generated
@@ -13,8 +13,8 @@ Generated from the current workspace root `Vectra-ProRouter`.
 
 ## Snapshot
 
-- Generated at: `2026-05-17 01:02:58 +03:00`
-- Top-level directories: `11`
+- Generated at: `2026-06-01 03:45:57 +03:00`
+- Top-level directories: `10`
 - Top-level files: `15`
 - Tree depth: `3`
 
@@ -37,14 +37,11 @@ Generated from the current workspace root `Vectra-ProRouter`.
 ./
 |- .claude/
 |  |- worktrees/
-|  |  |- agent-a10866714d68d2c84/
-|  |  |- agent-ad49332c64a9e262b/
-|  |  \- inspiring-elgamal-c69968/
-|  \- scheduled_tasks.lock
+|  |  \- agent-ad49332c64a9e262b/
+|  \- launch.json
 |- .github/
 |  \- workflows/
 |     \- ci.yml
-|- .omx/
 |- ai_docs/
 |  \- develop/
 |     \- features/
@@ -68,6 +65,7 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |     |- tests/
 |     |- .env.example
 |     |- .gitignore
+|     |- components.json
 |     |- drizzle.config.ts
 |     |- eslint.config.js
 |     |- next.config.js
@@ -76,6 +74,7 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |     |- prettier.config.js
 |     |- README.md
 |     |- start-database.sh
+|     |- tailwind.config.ts
 |     |- tsconfig.json
 |     \- vitest.config.ts
 |- deploy/
@@ -85,6 +84,7 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |  |- backup-postgres.sh
 |  |  |- deploy-web-release.sh
 |  |  |- prepare-runtime.sh
+|  |  |- prune-inventory-snapshots.sh
 |  |  |- refresh-passwall-mirror.py
 |  |  |- restore-postgres.sh
 |  |  |- smoke-check.sh
@@ -92,6 +92,8 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |  |- vps-disk-cleanup.sh
 |  |  \- vps-disk-guard.sh
 |  |- systemd/
+|  |  |- vectra-inventory-retention.service
+|  |  |- vectra-inventory-retention.timer
 |  |  |- vectra-passwall-mirror-refresh.service
 |  |  |- vectra-passwall-mirror-refresh.timer
 |  |  |- vectra-vps-disk-cleanup.service
@@ -129,12 +131,15 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |  |- Shared Contracts.md
 |  |  |- Shared Database.md
 |  |  |- Source Mirrors.md
-|  |  \- Web Control Plane.md
+|  |  |- Web Control Plane.md
+|  |  \- Xray-Direct Controller.md
 |  |- 03 Decisions/
 |  |  |- ADR Index.md
 |  |  |- ADR-0001-obsidian-project-vault.md
 |  |  |- ADR-0002-panel-owned-auto-onboarding.md
-|  |  \- ADR-0003-filogic-universalization.md
+|  |  |- ADR-0003-filogic-universalization.md
+|  |  |- ADR-0004-router-connectivity-health-checks.md
+|  |  \- ADR-0005-standalone-xray-direct-controller.md
 |  |- 04 Sessions/
 |  |  |- Daily/
 |  |  \- Handoffs/
@@ -148,11 +153,23 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |  |- htdocs/
 |  |  |- root/
 |  |  \- Makefile
-|  \- vectra-controller-agent/
+|  |- vectra-controller-agent/
+|  |  |- cmd/
+|  |  |- internal/
+|  |  |- openwrt/
+|  |  |- go.mod
+|  |  |- README.md
+|  |  \- vectra-controller-agent
+|  \- vectra-controller-pro/
 |     |- cmd/
+|     |- examples/
 |     |- internal/
 |     |- openwrt/
+|     |- .gitignore
+|     |- ARCHITECTURE.md
+|     |- CHANGELOG.md
 |     |- go.mod
+|     |- Makefile
 |     \- README.md
 |- scripts/
 |  |- fixtures/
@@ -163,6 +180,7 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |- ast-index.sh
 |  |- build-vectra-openwrt-feed.sh
 |  |- build-web-release-slice.sh
+|  |- Capture-XrayParityCorpus.sh
 |  |- Check-PasswallUpstreamParams.py
 |  |- ensure-sugar-memory-local-fallback.py
 |  |- Get-OpenWrtRouterInventory.ps1

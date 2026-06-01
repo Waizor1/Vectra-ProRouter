@@ -79,7 +79,18 @@ export const jobTypeSchema = z.enum([
   "validate_firmware",
   "enter_direct_mode",
   "reconnect",
+  // xray-direct engine (Vectra Controller Pro) job types. Additive; only
+  // delivered to routers whose engineMode is "xray-direct".
+  "apply_xray_config",
+  "reload_xray_outbound",
+  "refresh_xray_subscriptions",
+  "update_xray_assets",
 ]);
+
+// engineMode discriminates which router controller owns the device. The 18
+// live routers run the legacy PassWall2 path ("passwall", the default); the
+// standalone Vectra Controller Pro reports "xray-direct".
+export const engineModeSchema = z.enum(["passwall", "xray-direct"]);
 
 export const jobStateSchema = z.enum([
   "queued",
@@ -97,6 +108,8 @@ export const artifactTypeSchema = z.enum([
   "passwall_package",
   "passwall_bundle",
   "firmware",
+  // Standalone Xray binary shipped alongside the Vectra Controller Pro feed.
+  "xray_binary",
 ]);
 export const secretBlobScopeSchema = z.enum([
   "router_import",
@@ -365,6 +378,391 @@ export const passwallDesiredConfigSchema = z.object({
   ruleManage: passwallRuleManageSchema,
 });
 
+// ---------------------------------------------------------------------------
+// xray-direct desired config (Vectra Controller Pro engine).
+//
+// This mirrors the canonical Go struct at
+// router/vectra-controller-pro/internal/config/types.go (the `Config` struct,
+// schema version 1). Keep the two in lock-step: field names match the Go JSON
+// tags exactly. Go `omitempty` optionals become `.optional()`; Go
+// `map[string]any` becomes tolerant passthrough objects. Tolerant objects are
+// used throughout so an evolving Go struct (forward-compatible per its own
+// design rule) does not break older panels.
+// ---------------------------------------------------------------------------
+
+const xraySniffingSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    destOverride: z.array(z.string()).optional(),
+    domainsExcluded: z.array(z.string()).optional(),
+    metadataOnly: z.boolean().optional(),
+    routeOnly: z.boolean().optional(),
+  })
+  .passthrough();
+
+const xrayStreamSettingsSchema = z.record(z.string(), z.unknown());
+
+const xrayInstanceSchema = z
+  .object({
+    name: z.string().default(""),
+    logLevel: z.string().optional(),
+  })
+  .passthrough();
+
+const xrayBackoffSchema = z
+  .object({
+    initialMs: z.number().default(0),
+    factor: z.number().default(0),
+    maxMs: z.number().default(0),
+    reset: z.string().optional(),
+  })
+  .passthrough();
+
+const xrayProcessSchema = z
+  .object({
+    xrayBinary: z.string().default(""),
+    workDir: z.string().default(""),
+    configFile: z.string().optional(),
+    logDir: z.string().optional(),
+    memorySoftMiB: z.number().int().optional(),
+    memoryHardMiB: z.number().int().optional(),
+    oomScoreAdj: z.number().int().default(0),
+    niceLevel: z.number().int().optional(),
+    gomaxprocs: z.number().int().optional(),
+    restartBackoff: xrayBackoffSchema.default({}),
+    reloadGrace: z.string().optional(),
+    startTimeout: z.string().optional(),
+  })
+  .passthrough();
+
+const xrayTproxyInboundSchema = z
+  .object({
+    listenIP: z.string().default(""),
+    port: z.number().int().default(0),
+    fwmark: z.number().int().optional(),
+    udpEnabled: z.boolean().default(false),
+    followRedirect: z.boolean().optional(),
+    sniffing: xraySniffingSchema.default({}),
+    tag: z.string().optional(),
+  })
+  .passthrough();
+
+const xraySocksInboundSchema = z
+  .object({
+    listenIP: z.string().default(""),
+    port: z.number().int().default(0),
+    auth: z.string().optional(),
+    username: z.string().optional(),
+    password: z.string().optional(),
+    udp: z.boolean().default(false),
+    ip: z.string().optional(),
+    sniffing: xraySniffingSchema.default({}),
+    tag: z.string().optional(),
+  })
+  .passthrough();
+
+const xrayHttpInboundSchema = z
+  .object({
+    listenIP: z.string().default(""),
+    port: z.number().int().default(0),
+    username: z.string().optional(),
+    password: z.string().optional(),
+    sniffing: xraySniffingSchema.default({}),
+    tag: z.string().optional(),
+  })
+  .passthrough();
+
+const xrayDnsInboundSchema = z
+  .object({
+    listenIP: z.string().default(""),
+    port: z.number().int().default(0),
+    address: z.string().default(""),
+    network: z.string().optional(),
+    tag: z.string().optional(),
+  })
+  .passthrough();
+
+const xrayDokodemoInboundSchema = z
+  .object({
+    listenIP: z.string().default(""),
+    port: z.number().int().default(0),
+    address: z.string().optional(),
+    targetPort: z.number().int().optional(),
+    network: z.string().optional(),
+    followRedirect: z.boolean().optional(),
+    sniffing: xraySniffingSchema.default({}),
+    tag: z.string().optional(),
+  })
+  .passthrough();
+
+const xraySsInboundSchema = z
+  .object({
+    listenIP: z.string().default(""),
+    port: z.number().int().default(0),
+    method: z.string().default(""),
+    password: z.string().default(""),
+    network: z.string().optional(),
+    sniffing: xraySniffingSchema.default({}),
+    tag: z.string().optional(),
+  })
+  .passthrough();
+
+const xrayRealityInboundSchema = z
+  .object({
+    listenIP: z.string().default(""),
+    port: z.number().int().default(0),
+    protocol: z.string().default(""),
+    settings: z.record(z.string(), z.unknown()).default({}),
+    stream: xrayStreamSettingsSchema.optional(),
+    sniffing: xraySniffingSchema.default({}),
+    tag: z.string().optional(),
+  })
+  .passthrough();
+
+const xrayInboundsSchema = z
+  .object({
+    tproxy: xrayTproxyInboundSchema.optional(),
+    socks: xraySocksInboundSchema.optional(),
+    http: xrayHttpInboundSchema.optional(),
+    dns: xrayDnsInboundSchema.optional(),
+    dokodemo: xrayDokodemoInboundSchema.optional(),
+    shadowsocks: xraySsInboundSchema.optional(),
+    realityInbound: xrayRealityInboundSchema.optional(),
+  })
+  .passthrough();
+
+const xrayDnsServerSchema = z
+  .object({
+    address: z.string().default(""),
+    port: z.number().int().optional(),
+    clientIp: z.string().optional(),
+    skipFallback: z.boolean().optional(),
+    domains: z.array(z.string()).optional(),
+    expectIPs: z.array(z.string()).optional(),
+    queryStrategy: z.string().optional(),
+    finalQuery: z.boolean().optional(),
+    tag: z.string().optional(),
+  })
+  .passthrough();
+
+const xrayDnsSchema = z
+  .object({
+    servers: z.array(xrayDnsServerSchema).default([]),
+    hosts: z.record(z.string(), z.string()).optional(),
+    clientIp: z.string().optional(),
+    queryStrategy: z.string().optional(),
+    disableCache: z.boolean().optional(),
+    disableFallback: z.boolean().optional(),
+    disableFallbackIfMatch: z.boolean().optional(),
+    tag: z.string().optional(),
+  })
+  .passthrough();
+
+// Node is an upstream outbound. Its concrete shape is driven by Xray protocol
+// specifics, so it is kept as a tolerant object rather than a tight schema.
+const xrayNodeSchema = z.record(z.string(), z.unknown());
+
+const xrayRoutingRuleSchema = z
+  .object({
+    type: z.string().optional(),
+    domain: z.array(z.string()).optional(),
+    domains: z.array(z.string()).optional(),
+    ip: z.array(z.string()).optional(),
+    port: z.string().optional(),
+    sourcePort: z.string().optional(),
+    network: z.string().optional(),
+    source: z.array(z.string()).optional(),
+    user: z.array(z.string()).optional(),
+    inboundTag: z.array(z.string()).optional(),
+    protocol: z.array(z.string()).optional(),
+    attrs: z.string().optional(),
+    outboundTag: z.string().optional(),
+    balancerTag: z.string().optional(),
+    tag: z.string().optional(),
+    comment: z.string().optional(),
+  })
+  .passthrough();
+
+const xrayBalancerStrategySchema = z
+  .object({
+    type: z.string().default(""),
+    settings: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+
+const xrayBalancerSchema = z
+  .object({
+    tag: z.string().default(""),
+    selector: z.array(z.string()).optional(),
+    fallbackTag: z.string().optional(),
+    strategy: xrayBalancerStrategySchema.optional(),
+  })
+  .passthrough();
+
+const xrayRoutingSchema = z
+  .object({
+    domainStrategy: z.string().optional(),
+    domainMatcher: z.string().optional(),
+    rules: z.array(xrayRoutingRuleSchema).default([]),
+    balancers: z.array(xrayBalancerSchema).optional(),
+  })
+  .passthrough();
+
+const xrayFetchPolicySchema = z
+  .object({
+    mode: z.string().optional(),
+    connectTimeoutS: z.number().int().optional(),
+    maxTimeoutS: z.number().int().optional(),
+    retries: z.number().int().optional(),
+    impersonatePassWall: z.boolean().default(false),
+  })
+  .passthrough();
+
+const xrayFilterPolicySchema = z
+  .object({
+    mode: z.string().optional(),
+    keywords: z.array(z.string()).optional(),
+    includeRegex: z.array(z.string()).optional(),
+    excludeRegex: z.array(z.string()).optional(),
+    onlyProtocols: z.array(z.string()).optional(),
+    onlyTransports: z.array(z.string()).optional(),
+  })
+  .passthrough();
+
+const xraySubscriptionSchema = z
+  .object({
+    id: z.string().default(""),
+    remark: z.string().optional(),
+    url: z.string().default(""),
+    enabled: z.boolean().default(false),
+    userAgent: z.string().optional(),
+    updateMinutes: z.number().int().optional(),
+    fetch: xrayFetchPolicySchema.default({}),
+    filter: xrayFilterPolicySchema.default({}),
+    group: z.string().optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    preservedTags: z.array(z.string()).optional(),
+  })
+  .passthrough();
+
+const xrayGeoFileSchema = z
+  .object({
+    filename: z.string().default(""),
+    url: z.string().default(""),
+    sha256: z.string().optional(),
+  })
+  .passthrough();
+
+const xrayGeoSchema = z
+  .object({
+    assetDir: z.string().default(""),
+    geoipUrl: z.string().default(""),
+    geositeUrl: z.string().default(""),
+    updateSchedule: z.string().optional(),
+    updateOnStart: z.boolean().default(false),
+    extraAssets: z.array(xrayGeoFileSchema).optional(),
+  })
+  .passthrough();
+
+const xrayPolicyLevelSchema = z
+  .object({
+    handshake: z.number().int().optional(),
+    connIdle: z.number().int().optional(),
+    uplinkOnly: z.number().int().optional(),
+    downlinkOnly: z.number().int().optional(),
+    statsUserUplink: z.boolean().optional(),
+    statsUserDownlink: z.boolean().optional(),
+    bufferSize: z.number().int().optional(),
+  })
+  .passthrough();
+
+const xraySystemPolicySchema = z
+  .object({
+    statsInboundUplink: z.boolean().optional(),
+    statsInboundDownlink: z.boolean().optional(),
+    statsOutboundUplink: z.boolean().optional(),
+    statsOutboundDownlink: z.boolean().optional(),
+  })
+  .passthrough();
+
+const xrayPolicySchema = z
+  .object({
+    levels: z.record(z.string(), xrayPolicyLevelSchema).optional(),
+    system: xraySystemPolicySchema.optional(),
+  })
+  .passthrough();
+
+const xrayStatsConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+  })
+  .passthrough();
+
+const xrayApiConfigSchema = z
+  .object({
+    tag: z.string().default(""),
+    services: z.array(z.string()).default([]),
+    listen: z.string().optional(),
+  })
+  .passthrough();
+
+const xrayReverseEndpointSchema = z
+  .object({
+    tag: z.string().default(""),
+    domain: z.string().default(""),
+  })
+  .passthrough();
+
+const xrayReverseConfigSchema = z
+  .object({
+    bridges: z.array(xrayReverseEndpointSchema).optional(),
+    portals: z.array(xrayReverseEndpointSchema).optional(),
+  })
+  .passthrough();
+
+const xrayMetricsConfigSchema = z
+  .object({
+    tag: z.string().default(""),
+  })
+  .passthrough();
+
+const xrayFakeDnsSchema = z
+  .object({
+    ipPool: z.string().default(""),
+    poolSize: z.number().int().default(0),
+  })
+  .passthrough();
+
+const xrayNormalizationSchema = z
+  .object({
+    forceFingerprint: z.boolean().default(false),
+    fingerprintValue: z.string().optional(),
+    collapseDuplicateSubscriptionPrefix: z.boolean().default(false),
+    dropDeadNodes: z.boolean().default(false),
+  })
+  .passthrough();
+
+export const xrayDesiredConfigSchema = z
+  .object({
+    schema: z.literal(1),
+    instance: xrayInstanceSchema.default({}),
+    process: xrayProcessSchema.default({}),
+    inbounds: xrayInboundsSchema.default({}),
+    dns: xrayDnsSchema.default({}),
+    nodes: z.array(xrayNodeSchema).default([]),
+    routing: xrayRoutingSchema.default({}),
+    subscriptions: z.array(xraySubscriptionSchema).optional(),
+    geo: xrayGeoSchema.default({}),
+    policy: xrayPolicySchema.optional(),
+    stats: xrayStatsConfigSchema.optional(),
+    api: xrayApiConfigSchema.optional(),
+    reverse: z.array(xrayReverseConfigSchema).optional(),
+    metrics: xrayMetricsConfigSchema.optional(),
+    fakedns: xrayFakeDnsSchema.optional(),
+    normalization: xrayNormalizationSchema.default({}),
+  })
+  .passthrough();
+
 export const passwallImportedStateSchema = z.object({
   config: passwallDesiredConfigSchema,
   rawSnapshot: z.record(z.string(), z.unknown()).default({}),
@@ -396,6 +794,10 @@ export const routerServiceHealthSchema = z.object({
   passwall: serviceRuntimeStateSchema.default("unknown"),
   passwallServer: serviceRuntimeStateSchema.default("unknown"),
   dnsmasq: serviceRuntimeStateSchema.default("unknown"),
+  // xray is the proxy process an xray-direct controller owns directly. Optional
+  // so passwall routers (which never report it) are unaffected; an xray-direct
+  // controller always sends it.
+  xray: serviceRuntimeStateSchema.optional(),
 });
 
 export const routerLastRescueSchema = z.object({
@@ -470,6 +872,12 @@ export const routerInventorySchema = z.object({
   openwrtRelease: z.string().min(1),
   openwrtDescription: z.string().optional(),
   passwallEnabled: z.boolean(),
+  // engineMode + xray fields are reported by an xray-direct controller so the
+  // panel can confirm which engine owns the device and see xray health. All
+  // optional/additive — a passwall router omits them and is unaffected.
+  engineMode: engineModeSchema.optional(),
+  xrayEnabled: z.boolean().optional(),
+  xrayVersion: z.string().optional(),
   selectedNodeId: z.string().nullable().optional(),
   selectedNodeLabel: z.string().nullable().optional(),
   nodeCount: z.number().int().nonnegative(),
@@ -1003,13 +1411,19 @@ export const subscriptionInspectResultPayloadSchema = z
   })
   .passthrough();
 
+// The desired-config carrier accepts either the passwall config (default,
+// unchanged for the 18 live routers) or an xray-direct config. engineMode is
+// the discriminator and defaults to "passwall" so existing payloads parse
+// exactly as before. passwall is listed first in the union so passwall configs
+// continue to parse through the passwall schema unchanged.
 export const desiredRevisionSummarySchema = z.object({
   id: z.string().uuid(),
   revisionNumber: z.number().int().nonnegative(),
   status: z.string().min(1),
   origin: z.string().min(1).default("operator_draft"),
+  engineMode: engineModeSchema.default("passwall"),
   configDigest: z.string().nullable().optional(),
-  config: passwallDesiredConfigSchema,
+  config: z.union([passwallDesiredConfigSchema, xrayDesiredConfigSchema]),
   impact: z.object({
     changedSections: z.array(z.string()),
     requiresRestart: z.boolean(),
@@ -1143,6 +1557,8 @@ export const rescueEvaluationResultSchema = z.object({
 });
 
 export type PasswallDesiredConfig = z.infer<typeof passwallDesiredConfigSchema>;
+export type XrayDesiredConfig = z.infer<typeof xrayDesiredConfigSchema>;
+export type EngineMode = z.infer<typeof engineModeSchema>;
 export type PasswallImportedState = z.infer<typeof passwallImportedStateSchema>;
 export type PasswallNode = z.infer<typeof passwallNodeSchema>;
 export type PasswallSubscription = z.infer<typeof passwallSubscriptionSchema>;
