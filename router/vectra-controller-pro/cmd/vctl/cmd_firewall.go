@@ -38,6 +38,10 @@ func loadSpec(cfgPath string) (firewall.Spec, error) {
 		return firewall.Spec{}, fmt.Errorf("config has no inbounds.tproxy; firewall not applicable")
 	}
 	s := firewall.DefaultSpec(c.Inbounds.Tproxy.Port, c.Inbounds.Tproxy.FwMark)
+	// Keep in lockstep with the daemon's firewallSpecFromConfig so `vctl firewall
+	// render/apply` reflects the operator's kill-switch setting (was silently
+	// ignored, misleading operators validating the ruleset offline).
+	s.KillSwitch = c.Inbounds.Tproxy.KillSwitch
 	return s, nil
 }
 

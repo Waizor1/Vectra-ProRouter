@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"time"
 
 	"vectra-controller-pro/internal/happcrypt"
@@ -54,7 +53,7 @@ func happCryptEncrypt(args []string) error {
 	case 5:
 		client := happcrypt.NewAPIClient()
 		client.Endpoint = *apiURL
-		client.HTTP = &http.Client{Timeout: time.Duration(*timeout) * time.Second}
+		client.HTTP = happcrypt.NewHTTPClient(time.Duration(*timeout) * time.Second)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeout+5)*time.Second)
 		defer cancel()
 		link, err := client.EncryptV5(ctx, *subURL)

@@ -4,14 +4,38 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+// TestEmbeddedKeyFingerprintsPinned fails CI if an embedded official key is
+// ever swapped/corrupted (a wrong-but-valid RSA-4096 key would silently produce
+// links the Happ app can't decrypt). Fingerprints are of the verbatim PEMs from
+// @kastov/cryptohapp src/constants/crypt{2,3,4}.constant.ts.
+func TestEmbeddedKeyFingerprintsPinned(t *testing.T) {
+	want := map[string]string{
+		"keys/crypt2.pub.pem": "bf2a3802e10442a455b912d5f66302b7fc07ef740d6bfb03a91fe3c243cca7e5",
+		"keys/crypt3.pub.pem": "568a10d3722d8c84e223701b4b4d82ddaf9fef9f3e84e9050538a430b41c3c8b",
+		"keys/crypt4.pub.pem": "872b12e0f6dd4814dfd9f6f4d2a96c881c4352aaaab6a2ce93662f165223a036",
+	}
+	for name, sum := range want {
+		b, err := keyFS.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		got := fmt.Sprintf("%x", sha256.Sum256(b))
+		if got != sum {
+			t.Errorf("%s fingerprint drifted: got %s want %s (key swap? re-fetch from @kastov/cryptohapp)", name, got, sum)
+		}
+	}
+}
 
 func TestEmbeddedKeysAreRSA4096(t *testing.T) {
 	for _, v := range []int{2, 3, 4} {
@@ -132,6 +156,24 @@ func TestAPIClientSurfacesNon2xx(t *testing.T) {
 	_, err := c.EncryptV5(context.Background(), "https://x")
 	if err == nil || !strings.Contains(err.Error(), "429") {
 		t.Fatalf("expected 429 surfaced, got %v", err)
+	}
+}
+
+func TestAPIClientDoesNotRetryPermanent4xx(t *testing.T) {
+	var calls int
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("bad url"))
+	}))
+	defer srv.Close()
+	c := &APIClient{Endpoint: srv.URL, HTTP: srv.Client(), Retries: 3}
+	if _, err := c.EncryptV5(context.Background(), "https://x"); err == nil {
+		t.Fatal("expected error on 400")
+	}
+	// A permanent 4xx must NOT be retried (would re-send the secret URL).
+	if calls != 1 {
+		t.Errorf("400 was retried %d times; permanent 4xx must not retry", calls)
 	}
 }
 

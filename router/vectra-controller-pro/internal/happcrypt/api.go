@@ -32,7 +32,7 @@ type APIClient struct {
 func NewAPIClient() *APIClient {
 	return &APIClient{
 		Endpoint: DefaultAPIEndpoint,
-		HTTP:     &http.Client{Timeout: 15 * time.Second},
+		HTTP:     NewHTTPClient(15 * time.Second),
 		Retries:  2,
 	}
 }
@@ -62,7 +62,7 @@ func (c *APIClient) EncryptV5(ctx context.Context, subURL string) (string, error
 	}
 	hc := c.HTTP
 	if hc == nil {
-		hc = &http.Client{Timeout: 15 * time.Second}
+		hc = NewHTTPClient(15 * time.Second)
 	}
 
 	var lastErr error
@@ -93,7 +93,14 @@ func (c *APIClient) EncryptV5(ctx context.Context, subURL string) (string, error
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
-			lastErr = fmt.Errorf("happcrypt: API status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+			statusErr := fmt.Errorf("happcrypt: API status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+			// A permanent 4xx (e.g. malformed/blocked URL) won't change on retry;
+			// return immediately rather than re-POST the secret-bearing URL again.
+			// Only 5xx and 429 (and transport errors) are treated as transient.
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+				return "", statusErr
+			}
+			lastErr = statusErr
 			continue
 		}
 		var out apiResponse
@@ -110,6 +117,28 @@ func (c *APIClient) EncryptV5(ctx context.Context, subURL string) (string, error
 		lastErr = fmt.Errorf("happcrypt: unknown API error")
 	}
 	return "", fmt.Errorf("happcrypt: crypt5 API failed after %d attempt(s): %w", c.Retries+1, lastErr)
+}
+
+// NewHTTPClient returns an HTTP client safe for carrying a secret-bearing
+// subscription URL: it refuses to follow a redirect to a non-HTTPS target (so a
+// hostile/compromised API cannot downgrade the connection and re-send the URL
+// in cleartext) and caps the redirect chain.
+func NewHTTPClient(timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if !strings.EqualFold(req.URL.Scheme, "https") {
+				return fmt.Errorf("happcrypt: refusing redirect to non-https %q", req.URL.Scheme)
+			}
+			if len(via) >= 3 {
+				return fmt.Errorf("happcrypt: too many redirects")
+			}
+			return nil
+		},
+	}
 }
 
 func requireHTTPSURL(raw string) error {
