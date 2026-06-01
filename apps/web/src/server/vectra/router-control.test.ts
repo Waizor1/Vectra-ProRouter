@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { MASKED_SECRET_PLACEHOLDER } from "@vectra/contracts";
+
 import {
   buildSyntheticRecoveryTransitions,
   canIssueRegistrationToken,
@@ -7,6 +9,7 @@ import {
   resolveJobDedupeKeyAfterResult,
   resolveReportedRouterHostname,
   resolveRescueReason,
+  sanitizeRevisionForClient,
   selectDeliverableJobsForCheckIn,
   shouldPromotePostApplyImport,
 } from "./router-control";
@@ -299,6 +302,104 @@ describe("selectDeliverableJobsForCheckIn", () => {
 
     expect(deliverable).toHaveLength(1);
     expect(deliverable[0]?.id).toBe("clear-ipsets-job");
+  });
+
+  it("preserves creation order and picks the OLDEST pending exclusive job", () => {
+    // checkInRouter feeds candidates in ascending createdAt (oldest first).
+    // The exclusive pick must be the oldest exclusive job, not the newest.
+    const deliverable = selectDeliverableJobsForCheckIn("approved", [
+      {
+        id: "reboot-old",
+        type: "run_terminal_command",
+        state: "queued",
+        payload: {
+          purpose: "router-reboot",
+          command: "/sbin/reboot",
+          timeoutSeconds: 15,
+        },
+      },
+      {
+        id: "reboot-new",
+        type: "run_terminal_command",
+        state: "queued",
+        payload: {
+          purpose: "router-reboot",
+          command: "/sbin/reboot",
+          timeoutSeconds: 15,
+        },
+      },
+    ] as never);
+
+    expect(deliverable).toHaveLength(1);
+    expect(deliverable[0]?.id).toBe("reboot-old");
+  });
+
+  it("delivers non-exclusive jobs in the order received (oldest first)", () => {
+    const deliverable = selectDeliverableJobsForCheckIn("approved", [
+      {
+        id: "apply-old",
+        type: "apply_passwall_config",
+        state: "queued",
+        payload: {},
+      },
+      {
+        id: "apply-new",
+        type: "apply_passwall_config",
+        state: "queued",
+        payload: {},
+      },
+    ] as never);
+
+    expect(deliverable.map((job) => job.id)).toEqual(["apply-old", "apply-new"]);
+  });
+});
+
+describe("sanitizeRevisionForClient", () => {
+  it("strips rawImportedSnapshot and reports its presence for passwall revisions", () => {
+    const sanitized = sanitizeRevisionForClient({
+      id: "rev-1",
+      engineMode: "passwall",
+      config: { nodes: [], subscriptions: { items: [] } },
+      rawImportedSnapshot: { uciLines: ["secret"] },
+    } as never);
+
+    expect(sanitized).not.toBeNull();
+    expect("rawImportedSnapshot" in (sanitized ?? {})).toBe(false);
+    expect(sanitized?.hasRawImportedSnapshot).toBe(true);
+  });
+
+  it("masks xray node/subscription secrets before returning to operator clients", () => {
+    const sanitized = sanitizeRevisionForClient({
+      id: "rev-xray",
+      engineMode: "xray-direct",
+      rawImportedSnapshot: null,
+      config: {
+        schema: 1,
+        nodes: [
+          {
+            id: "n1",
+            outbound: {
+              protocol: "vless",
+              server: "de1.example.online",
+              settings: { vless: { uuid: "raw-secret-uuid" } },
+            },
+          },
+        ],
+        subscriptions: [{ id: "s1", url: "https://sub.example/raw-token" }],
+      },
+    } as never);
+
+    const config = sanitized?.config as unknown as {
+      nodes: Array<{ outbound: { server: string; settings: { vless: { uuid: string } } } }>;
+      subscriptions: Array<{ url: string }>;
+    };
+
+    expect(config.nodes[0]?.outbound.settings.vless.uuid).toBe(
+      MASKED_SECRET_PLACEHOLDER,
+    );
+    expect(config.subscriptions[0]?.url).toBe(MASKED_SECRET_PLACEHOLDER);
+    // Non-secret fields survive so the operator can still read the topology.
+    expect(config.nodes[0]?.outbound.server).toBe("de1.example.online");
   });
 });
 

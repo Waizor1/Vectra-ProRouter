@@ -33,7 +33,7 @@ import {
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
-import { and, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
 
 import { env } from "~/env";
 import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
@@ -57,6 +57,7 @@ import {
   restoreMaskedPasswallConfig,
   sanitizePasswallConfig,
   sanitizePasswallRawSnapshot,
+  sanitizeXrayConfig,
 } from "~/server/vectra/secrets";
 
 type RouterRow = typeof routers.$inferSelect;
@@ -215,8 +216,21 @@ export function sanitizeRevisionForClient(
   const safeRevision = Object.fromEntries(
     Object.entries(revision).filter(([key]) => key !== "rawImportedSnapshot"),
   ) as Omit<RevisionRow, "rawImportedSnapshot">;
+
+  // xray-direct revisions store an XrayDesiredConfig in the jsonb column.
+  // Writes mask it at rest, but re-mask defensively at the client boundary so
+  // operator surfaces never receive raw node/subscription/inbound secrets even
+  // for revisions persisted before at-rest masking landed.
+  const safeConfig =
+    revision.engineMode === "xray-direct"
+      ? (sanitizeXrayConfig(
+          revision.config as unknown as XrayDesiredConfig,
+        ) as unknown as RevisionRow["config"])
+      : safeRevision.config;
+
   return {
     ...safeRevision,
+    config: safeConfig,
     hasRawImportedSnapshot: Boolean(revision.rawImportedSnapshot),
   };
 }
@@ -1255,7 +1269,10 @@ export async function checkInRouter(routerId: string, input: unknown) {
         or(isNull(jobs.deliverAfter), lte(jobs.deliverAfter, now)),
       ),
     )
-    .orderBy(desc(jobs.createdAt))
+    // Deliver in creation order (oldest first) so an older queued apply/reboot
+    // is never skipped by a newer one; selectDeliverableJobsForCheckIn then
+    // picks the OLDEST pending exclusive job (find on ascending order).
+    .orderBy(asc(jobs.createdAt))
     .limit(10);
 
   const deliverableJobs = selectDeliverableJobsForCheckIn(
@@ -1670,10 +1687,13 @@ export async function createOperatorDraftRevisionWithDb(
       throw new Error("xray-direct draft requires an xray config.");
     }
 
-    // xray configs are stored whole; secrets live in opaque node/subscription
-    // objects so there is no field-level masking in this pass.
     const xrayConfig = xrayDesiredConfigSchema.parse(input.xrayConfig);
+    // Digest covers the real (cleartext) config so it matches what the
+    // controller ultimately renders, mirroring the passwall path.
     const configDigest = computeConfigDigest(xrayConfig);
+    // Mask node/subscription/inbound secrets before persisting in the jsonb
+    // column; cleartext lives only in the encrypted secret blob below.
+    const maskedXrayConfig = sanitizeXrayConfig(xrayConfig);
 
     const [revision] = await client
       .insert(passwallDesiredRevisions)
@@ -1686,7 +1706,7 @@ export async function createOperatorDraftRevisionWithDb(
         configDigest,
         // The column is typed as the passwall config for existing consumers;
         // narrow at this write boundary (mirrored by hydrateRevisionConfigWithDb).
-        config: xrayConfig as unknown as RevisionRow["config"],
+        config: maskedXrayConfig as unknown as RevisionRow["config"],
         createdBy: "operator",
         note: input.note,
       })

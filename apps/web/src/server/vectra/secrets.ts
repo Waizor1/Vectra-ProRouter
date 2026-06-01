@@ -301,12 +301,112 @@ export function restoreMaskedPasswallConfig(
 // ---------------------------------------------------------------------------
 // xray-direct engine secret handling (Vectra Controller Pro).
 //
-// Minimal, additive: the xray config is stored whole and encrypted at rest in
-// the same secret-blob mechanism as passwall. Secrets within an xray config
-// live inside opaque `nodes`/`subscriptions` objects, so there is no
-// field-level masking in this pass; the encrypted blob is the source of truth
-// when present.
+// The xray config carries node/subscription secrets (vless uuid, reality
+// publicKey/shortId, trojan/shadowsocks passwords, wireguard secretKey,
+// subscription URLs and headers, inbound credentials). Mirroring the passwall
+// path, those are MASKED in the jsonb `config` column (and in anything shipped
+// to operator clients) and kept in cleartext only inside the encrypted secret
+// blob, which is the source of truth when hydrating for the controller.
 // ---------------------------------------------------------------------------
+
+// `shortId` is a reality secret and `username`/`user` are inbound credentials;
+// neither matches the shared secret-key patterns, so they are masked
+// explicitly alongside them. Subscription `url`/`headers` are handled
+// structurally on the subscription itself (so public geo asset URLs under
+// `geo` are never masked).
+const xraySecretKeyPatterns = [
+  ...sensitiveExtraPatterns,
+  /^shortid$/i,
+  /^username$/i,
+  /^user$/i,
+];
+
+function maskJsonSecretsByKey(value: unknown, keyHint?: string): JsonValue {
+  if (typeof value === "string") {
+    if (
+      keyHint &&
+      xraySecretKeyPatterns.some((pattern) => pattern.test(keyHint))
+    ) {
+      return MASKED_SECRET_PLACEHOLDER;
+    }
+    return value;
+  }
+
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    value === null
+  ) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => maskJsonSecretsByKey(entry, keyHint));
+  }
+
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        maskJsonSecretsByKey(entry, key),
+      ])
+    ) as JsonValue;
+  }
+
+  return null;
+}
+
+function maskHeaders(headers: unknown) {
+  if (!isRecord(headers)) {
+    return headers;
+  }
+
+  return Object.fromEntries(
+    Object.entries(headers).map(([key]) => [key, MASKED_SECRET_PLACEHOLDER])
+  );
+}
+
+export function sanitizeXrayConfig(config: XrayDesiredConfig): XrayDesiredConfig {
+  const sanitized: Record<string, unknown> = { ...config };
+
+  // Outbound nodes are opaque protocol objects; mask any secret-bearing key
+  // (uuid/password/key/secret/token/private/shortId) at any depth. Non-secret
+  // fields (server, serverName, port, flow, fingerprint, …) are preserved.
+  if (Array.isArray(config.nodes)) {
+    sanitized.nodes = config.nodes.map(
+      (node) => maskJsonSecretsByKey(node) as Record<string, unknown>
+    );
+  }
+
+  // Subscriptions: the fetch URL and any auth headers are the secrets. Mask
+  // them structurally so public geo asset URLs (under `geo`) are untouched.
+  if (Array.isArray(config.subscriptions)) {
+    sanitized.subscriptions = config.subscriptions.map((subscription) => {
+      const masked = maskJsonSecretsByKey(subscription) as Record<
+        string,
+        unknown
+      >;
+      if (typeof subscription.url === "string" && subscription.url.length > 0) {
+        masked.url = MASKED_SECRET_PLACEHOLDER;
+      }
+      if ("headers" in subscription) {
+        masked.headers = maskHeaders(subscription.headers);
+      }
+      return masked;
+    });
+  }
+
+  // Local inbounds can carry credentials (socks/http auth, shadowsocks
+  // password, reality private keys). Mask by key over the inbounds subtree.
+  if (config.inbounds) {
+    sanitized.inbounds = maskJsonSecretsByKey(config.inbounds) as Record<
+      string,
+      unknown
+    >;
+  }
+
+  return sanitized as XrayDesiredConfig;
+}
 
 export function hydrateXrayConfig(
   storedConfig: XrayDesiredConfig,
