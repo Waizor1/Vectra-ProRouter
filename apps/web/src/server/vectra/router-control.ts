@@ -55,6 +55,7 @@ import {
   hydratePasswallConfig,
   hydrateXrayConfig,
   restoreMaskedPasswallConfig,
+  restoreMaskedXrayConfig,
   sanitizePasswallConfig,
   sanitizePasswallRawSnapshot,
   sanitizeXrayConfig,
@@ -1687,7 +1688,38 @@ export async function createOperatorDraftRevisionWithDb(
       throw new Error("xray-direct draft requires an xray config.");
     }
 
-    const xrayConfig = xrayDesiredConfigSchema.parse(input.xrayConfig);
+    const submittedXrayConfig = xrayDesiredConfigSchema.parse(input.xrayConfig);
+
+    // Re-inject real secrets if the operator re-submitted a previously-MASKED
+    // config (placeholders must never be persisted as real secrets, or the
+    // controller would hydrate placeholders into a broken router). Mirrors the
+    // passwall path below: source the prior revision's hydrated cleartext.
+    // Guard the source to an xray-direct revision so a passwall baseline left
+    // over from an engine switch is never fed into the xray restore walker.
+    const xraySourceRevisionId =
+      router.pendingImportRevisionId ??
+      router.activeRevisionId ??
+      latestRevision?.id ??
+      null;
+    const [xraySourceRevision] = xraySourceRevisionId
+      ? await client
+          .select()
+          .from(passwallDesiredRevisions)
+          .where(eq(passwallDesiredRevisions.id, xraySourceRevisionId))
+          .limit(1)
+      : [];
+    const xraySourceConfig =
+      xraySourceRevision?.engineMode === "xray-direct"
+        ? ((await getFullConfigForRevisionWithDb(
+            client,
+            xraySourceRevision.id,
+          )) as unknown as XrayDesiredConfig)
+        : null;
+    const xrayConfig = restoreMaskedXrayConfig(
+      submittedXrayConfig,
+      xraySourceConfig,
+    );
+
     // Digest covers the real (cleartext) config so it matches what the
     // controller ultimately renders, mirroring the passwall path.
     const configDigest = computeConfigDigest(xrayConfig);

@@ -57,6 +57,49 @@ const baseXrayConfig = xrayDesiredConfigSchema.parse({
         },
       },
     },
+    {
+      id: "socks-out",
+      remark: "SOCKS outbound",
+      enabled: true,
+      outbound: {
+        protocol: "socks",
+        server: "socks.example.online",
+        port: 1080,
+        settings: { socks: { user: "socks-out-user", pass: "socks-out-secret-pass" } },
+      },
+    },
+    {
+      id: "http-out",
+      remark: "HTTP outbound",
+      enabled: true,
+      outbound: {
+        protocol: "http",
+        server: "http.example.online",
+        port: 8080,
+        settings: {
+          http: {
+            user: "http-out-user",
+            pass: "http-out-secret-pass",
+            headers: { Authorization: "Bearer http-outbound-bearer" },
+          },
+        },
+      },
+    },
+    {
+      id: "kcp-out",
+      remark: "KCP node",
+      enabled: true,
+      outbound: {
+        protocol: "vless",
+        server: "kcp.example.online",
+        port: 443,
+        settings: { vless: { uuid: "99999999-8888-7777-6666-555555555555", encryption: "none" } },
+        stream: {
+          transport: "kcp",
+          kcp: { seed: "kcp-obfuscation-seed", header: { type: "none" } },
+        },
+      },
+    },
   ],
   routing: {
     domainStrategy: "IPIfNonMatch",
@@ -90,10 +133,15 @@ describe("hydrateXrayConfig encrypt round-trip", () => {
     expect(maskedJson).not.toContain("REAL_TOKEN");
     expect(maskedJson).not.toContain("real-bearer-token");
     expect(maskedJson).not.toContain("socks-pass");
+    // Outbound credential `pass`, outbound auth headers, and kcp `seed`.
+    expect(maskedJson).not.toContain("socks-out-secret-pass");
+    expect(maskedJson).not.toContain("http-out-secret-pass");
+    expect(maskedJson).not.toContain("http-outbound-bearer");
+    expect(maskedJson).not.toContain("kcp-obfuscation-seed");
     expect(maskedJson).toContain(MASKED_SECRET_PLACEHOLDER);
 
     // Hydrating from the blob yields the exact original cleartext config that
-    // the controller renders from.
+    // the controller renders from (real `pass`/headers/`seed` restored too).
     expect(hydrateXrayConfig(masked, ciphertext)).toEqual(baseXrayConfig);
   });
 });

@@ -314,11 +314,22 @@ export function restoreMaskedPasswallConfig(
 // explicitly alongside them. Subscription `url`/`headers` are handled
 // structurally on the subscription itself (so public geo asset URLs under
 // `geo` are never masked).
+//
+// `pass` is the socks/http OUTBOUND credential key (node.go
+// SocksOutboundSettings.Pass / HTTPOutboundSettings.Pass) which `/password/i`
+// does not catch; `seed` is the KCP stream obfuscation pre-shared secret
+// (stream.go KCPSettings.Seed). Outbound auth `headers` are masked
+// structurally on the node (see `maskHeaders` use in `sanitizeXrayConfig`),
+// because `maskJsonSecretsByKey` only matches the header MAP key, never the
+// inner header names (e.g. `headers.Authorization`).
 const xraySecretKeyPatterns = [
   ...sensitiveExtraPatterns,
   /^shortid$/i,
   /^username$/i,
   /^user$/i,
+  /^pass$/i,
+  /pass/i,
+  /^seed$/i,
 ];
 
 function maskJsonSecretsByKey(value: unknown, keyHint?: string): JsonValue {
@@ -366,15 +377,46 @@ function maskHeaders(headers: unknown) {
   );
 }
 
+// Recursively replace the VALUES of any nested `headers` map with the
+// placeholder. `maskJsonSecretsByKey` only matches the `headers` key itself
+// (a record, not a string) and the inner header NAMES never match the secret
+// patterns, so an outbound `headers.Authorization: "Bearer …"` would otherwise
+// survive in cleartext. Mirrors the structural `maskHeaders` used for
+// subscriptions, applied at any depth under a node (http outbound auth headers,
+// ws/xhttp/httpupgrade stream headers).
+function maskNestedHeaders(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) {
+    return value.map((entry) => maskNestedHeaders(entry));
+  }
+
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) =>
+        key.toLowerCase() === "headers" && isRecord(entry)
+          ? [key, maskHeaders(entry) as JsonValue]
+          : [key, maskNestedHeaders(entry as JsonValue)]
+      )
+    ) as JsonValue;
+  }
+
+  return value;
+}
+
 export function sanitizeXrayConfig(config: XrayDesiredConfig): XrayDesiredConfig {
   const sanitized: Record<string, unknown> = { ...config };
 
   // Outbound nodes are opaque protocol objects; mask any secret-bearing key
-  // (uuid/password/key/secret/token/private/shortId) at any depth. Non-secret
-  // fields (server, serverName, port, flow, fingerprint, …) are preserved.
+  // (uuid/password/pass/key/secret/token/private/shortId/seed) at any depth.
+  // Non-secret fields (server, serverName, port, flow, fingerprint, …) are
+  // preserved. Then structurally mask any nested `headers` map values, since
+  // outbound auth/stream header NAMES never match the key patterns.
   if (Array.isArray(config.nodes)) {
     sanitized.nodes = config.nodes.map(
-      (node) => maskJsonSecretsByKey(node) as Record<string, unknown>
+      (node) =>
+        maskNestedHeaders(maskJsonSecretsByKey(node)) as Record<
+          string,
+          unknown
+        >
     );
   }
 
@@ -424,4 +466,24 @@ export function createXraySecretPayload(config: XrayDesiredConfig) {
   return encryptJson({
     config,
   } satisfies XraySecretPayload);
+}
+
+// Mirror of `restoreMaskedPasswallConfig` for the xray path. When an edit UI
+// loads a MASKED config and re-submits it, every placeholder must be replaced
+// with the real secret from the prior (hydrated) revision before digest +
+// encrypt — otherwise the literal placeholder would be persisted as a "real"
+// secret and the controller would hydrate placeholders into a broken router.
+// `restoreMaskedSecrets` already matches array entries by `id`, which covers
+// xray `nodes[]`/`subscriptions[]` (both keyed by a string `id`).
+export function restoreMaskedXrayConfig(
+  maskedConfig: XrayDesiredConfig,
+  sourceConfig: XrayDesiredConfig | null
+) {
+  if (!sourceConfig) {
+    return maskedConfig;
+  }
+
+  return xrayDesiredConfigSchema.parse(
+    restoreMaskedSecrets(maskedConfig, sourceConfig)
+  );
 }
