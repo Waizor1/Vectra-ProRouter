@@ -693,6 +693,54 @@ describe("enrollment install preset", () => {
     );
   });
 
+  it("routes opkg through the Vectra caching proxy when direct OpenWrt feeds are unreachable", () => {
+    const script = buildAx3000tBootstrapScript({
+      controlDomain: "https://router.vectra-pro.net",
+      routerApiBase: "https://api.vectra-pro.net",
+      artifactBase: "https://api.vectra-pro.net/artifacts",
+    });
+
+    // A caching-proxy base URL is exposed to the shell.
+    expect(script).toContain(
+      "OPENWRT_MIRROR_URL='https://api.vectra-pro.net/openwrt-cache'",
+    );
+    // The proxy switch rewrites the router's OWN distfeeds host -> Vectra proxy,
+    // so it inherits the exact kernel/kmod feed path (vermagic-correct) instead
+    // of us having to know the kernel hash.
+    expect(script).toContain("try_openwrt_feed_proxy() {");
+    expect(script).toContain(
+      "s#https://downloads.openwrt.org#$OPENWRT_MIRROR_URL#g",
+    );
+
+    // ensure_openwrt_feeds_usable must try the proxy BEFORE degrading to
+    // controller-only, so a reachable proxy yields a full-stack install.
+    const feedsFnStart = script.indexOf("ensure_openwrt_feeds_usable() {");
+    const feedsFn = script.slice(
+      feedsFnStart,
+      script.indexOf("\n}\n", feedsFnStart),
+    );
+    expect(feedsFn).toContain("try_openwrt_feed_proxy");
+    expect(feedsFn.indexOf("try_openwrt_feed_proxy")).toBeLessThan(
+      feedsFn.indexOf("CONTROLLER_ONLY_BOOTSTRAP='1'"),
+    );
+  });
+
+  it("restores the original OpenWrt distfeeds on cleanup after using the proxy", () => {
+    const script = buildAx3000tBootstrapScript({});
+
+    expect(script).toContain("restore_openwrt_feeds() {");
+    // distfeeds is backed up before rewrite and restored, so the system returns
+    // to its stock feeds after enrollment (no silent persistent re-homing).
+    expect(script).toContain("distfeeds.conf.orig");
+
+    const cleanupStart = script.indexOf("cleanup() {");
+    const cleanupFn = script.slice(
+      cleanupStart,
+      script.indexOf("\n}\n", cleanupStart),
+    );
+    expect(cleanupFn).toContain("restore_openwrt_feeds");
+  });
+
   it("generates a bootstrap script that passes `sh -n` syntax validation", () => {
     // The bootstrap shell is regenerated for the whole fleet; a malformed control
     // flow (e.g. an unbalanced if/fi) would brick every enrollment. Validate that

@@ -24,6 +24,17 @@
 		file_server
 	}
 
+	# Caching/relay proxy for the public OpenWrt package + kmod feeds. Routers on
+	# ISPs with broken IPv6 cannot reach downloads.openwrt.org (dual-stack Fastly)
+	# directly; the bootstrap repoints opkg distfeeds here so dnsmasq-full and the
+	# vermagic-locked kmods install via the VPS (which reaches upstream over IPv4).
+	# Signature-transparent: opkg verifies the original OpenWrt usign signatures.
+	handle_path /openwrt-cache/* {
+		reverse_proxy https://downloads.openwrt.org {
+			header_up Host downloads.openwrt.org
+		}
+	}
+
 	handle /healthz {
 		respond "ok" 200
 	}
@@ -53,6 +64,17 @@
 	handle_path /artifacts/* {
 		root * /srv/artifacts
 		file_server
+	}
+
+	# Caching/relay proxy for the public OpenWrt package + kmod feeds. Routers on
+	# ISPs with broken IPv6 cannot reach downloads.openwrt.org (dual-stack Fastly)
+	# directly; the bootstrap repoints opkg distfeeds here so dnsmasq-full and the
+	# vermagic-locked kmods install via the VPS (which reaches upstream over IPv4).
+	# Signature-transparent: opkg verifies the original OpenWrt usign signatures.
+	handle_path /openwrt-cache/* {
+		reverse_proxy https://downloads.openwrt.org {
+			header_up Host downloads.openwrt.org
+		}
 	}
 
 	handle /healthz {
