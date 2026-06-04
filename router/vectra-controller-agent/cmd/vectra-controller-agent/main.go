@@ -575,17 +575,21 @@ func clearJobJournal(path string, persisted *state.PersistedState) error {
 
 // pendingJobResultMaxRetries is the number of consecutive run_once cycles a
 // pending success result may fail the controller-runtime-confirmation check
-// before the controller gives up and submits a failure to the panel. With the
-// default poll interval of ~30s, 10 retries ≈ 5 minutes of grace — long
-// enough to outlast a single controller restart, short enough to recover
-// before the silent-router watchdog fires.
+// before the controller gives up and submits a failure to the panel.
+//
+// Sizing rationale: with the production poll interval of 45s (VECTRA_POLLING_INTERVAL_SECONDS
+// default), 6 retries ≈ 4.5 minutes of grace. The auto-rescue monitor opens a
+// stale_check_in case at VECTRA_AUTO_RESCUE_STALE_SECONDS=300 (5 min), so we
+// finish bailing out BEFORE that watchdog fires — recovery happens silently
+// without operator-side alert noise. A single controller-restart cycle takes
+// ~60-90s on AX3000T, well inside this budget.
 //
 // Backstop for the totchto-filiciy 2026-06-04 incident: a stuck panel-side
 // update_controller job re-created a CurrentJob with an ExpectedControllerVersion
 // the running runtime would never reach. Without this guard the controller
 // looped forever, never sent a check-in, and the router went silent for 9
 // days until an operator manually cancelled the stuck job in the database.
-const pendingJobResultMaxRetries = 10
+const pendingJobResultMaxRetries = 6
 
 func flushPendingJobResult(
 	ctx context.Context,
@@ -619,11 +623,21 @@ func flushPendingJobResult(
 			// just mean the new controller binary hasn't been read yet by
 			// the inventory probe, or that runtime version detection is
 			// momentarily flaky.
-			persisted.PendingJobResultRetryCount++
+			//
+			// Cap the counter at pendingJobResultMaxRetries+1 so that if
+			// the bail-out submit fails repeatedly (network outage), the
+			// counter doesn't grow unboundedly in state.json across many
+			// retries — keeps disk image readable in support diagnostics.
+			if persisted.PendingJobResultRetryCount <= pendingJobResultMaxRetries {
+				persisted.PendingJobResultRetryCount++
+			}
 			retries := persisted.PendingJobResultRetryCount
 			if saveErr := state.Save(cfg.StatePath, *persisted); saveErr != nil {
-				// Best-effort persist; not fatal — counter will keep
-				// incrementing in-memory and we'll try saving next cycle.
+				// Best-effort persist; not fatal — counter still
+				// increments in-memory within the live process. If the
+				// agent restarts during disk-full, we re-read the last
+				// successfully-persisted value and the bail-out is delayed
+				// by exactly the number of un-saved cycles.
 				log.Printf("warn: persist pending-job-result retry counter failed: %v", saveErr)
 			}
 
@@ -646,11 +660,15 @@ func flushPendingJobResult(
 			// pending success into a failure so the panel learns the
 			// outcome, and the local journal can be cleared. The router
 			// will resume normal check-in cadence on the next cycle.
+			runningDescription := inventory.ControllerRuntimeVersion
+			if runningDescription == "" {
+				runningDescription = "<runtime version unavailable>"
+			}
 			abandonReason := fmt.Sprintf(
 				"controller runtime never reached expected %s after %d retries (running %s); abandoned to restore connectivity",
 				persisted.CurrentJob.ExpectedControllerVersion,
 				retries,
-				inventory.ControllerRuntimeVersion,
+				runningDescription,
 			)
 			log.Printf("CRITICAL: %s; converting pending success to failure for job %s",
 				abandonReason, persisted.CurrentJob.JobID)

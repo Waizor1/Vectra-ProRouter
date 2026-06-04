@@ -893,22 +893,45 @@ export const fleetRouter = createTRPCRouter({
   // Manual on-demand trigger of the stuck-job janitor — runs one sweep
   // immediately, returns the list of cancelled job IDs. Useful when an
   // operator notices a stuck router and doesn't want to wait for the
-  // scheduled sweep (default 10 min). Optional override of the stale
-  // threshold so an operator can sweep more aggressively for a known
-  // incident without changing the env-wide default.
+  // scheduled sweep (default 10 min). The staleSeconds floor matches
+  // VECTRA_STUCK_JOB_STALE_SECONDS' env-level minimum (600s); going lower
+  // would risk cancelling legitimate in-flight work (update_passwall_packages
+  // and refresh_subscriptions routinely live past 5 min on stressed
+  // AX3000T routers, and the totchto-style pattern this whole janitor is
+  // designed to prevent starts when an operator-cancelled-but-still-running
+  // job poisons a router's check-in cycle).
   cancelStuckJobs: protectedProcedure
     .input(
       z
         .object({
-          staleSeconds: z.number().int().min(60).max(86400).optional(),
+          staleSeconds: z.number().int().min(600).max(86400).optional(),
         })
         .optional(),
     )
     .mutation(async ({ ctx, input }) => {
-      const result = await runStuckJobJanitorTick(new Date(), ctx.db, {
-        staleSeconds: input?.staleSeconds,
-        enabled: true,
-      });
-      return result;
+      // Re-use the singleton "sweep in progress" flag so an operator
+      // flood-clicking the trigger button can't pile up concurrent sweeps
+      // against each other or against the background timer. Production
+      // single-process deployments only — mirrors the auto-rescue pattern.
+      const flagHolder = globalThis as typeof globalThis & {
+        __vectraStuckJobJanitorRunning?: boolean;
+      };
+      if (flagHolder.__vectraStuckJobJanitorRunning) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Stuck-job sweep already in progress; retry shortly.",
+        });
+      }
+      flagHolder.__vectraStuckJobJanitorRunning = true;
+      try {
+        return await runStuckJobJanitorTick(new Date(), ctx.db, {
+          staleSeconds: input?.staleSeconds,
+          enabled: true,
+          triggeredBy: "operator",
+          operatorUser: ctx.operatorSession.user,
+        });
+      } finally {
+        flagHolder.__vectraStuckJobJanitorRunning = false;
+      }
     }),
 });
