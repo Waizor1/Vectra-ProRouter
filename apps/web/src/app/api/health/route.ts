@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { db } from "~/server/db";
 import { startAutoRescueMonitor } from "~/server/vectra/auto-rescue";
 import { startBrowserPushMonitor } from "~/server/vectra/browser-push-monitor";
+import { startStuckJobJanitor } from "~/server/vectra/stuck-job-janitor";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +12,7 @@ export async function GET() {
   const checks = {
     browserPushMonitor: false,
     autoRescueMonitor: false,
+    stuckJobJanitor: false,
     dbRead: false,
     dbWriteProbe: false,
   };
@@ -20,6 +22,8 @@ export async function GET() {
     checks.browserPushMonitor = true;
     startAutoRescueMonitor();
     checks.autoRescueMonitor = true;
+    startStuckJobJanitor();
+    checks.stuckJobJanitor = true;
     await db.execute(sql`select 1`);
     checks.dbRead = true;
     const probeId = crypto.randomUUID();

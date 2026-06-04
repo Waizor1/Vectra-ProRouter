@@ -91,6 +91,25 @@ export const env = createEnv({
       .min(300)
       .max(900)
       .default(600),
+    // Stuck-job janitor (post-totchto-r27-incident guard 2026-06-04):
+    // periodically cancels vectra_job rows that have been state='running'
+    // for longer than the threshold. A router that died mid-job leaves an
+    // open journal entry the new controller re-fetches forever, blocking
+    // all check-ins. Default 10 min between sweeps; default 60 min threshold
+    // so transient slow jobs aren't swept (refresh_subscriptions can take
+    // 30+ min on a stressed router).
+    VECTRA_STUCK_JOB_JANITOR_ENABLED: booleanFlagSchema(true),
+    VECTRA_STUCK_JOB_JANITOR_INTERVAL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(60)
+      .max(3600)
+      .default(600),
+    VECTRA_STUCK_JOB_STALE_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(600)
+      .default(3600),
     VECTRA_TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
     VECTRA_TELEGRAM_ALLOWED_CHAT_IDS: z.string().min(1).optional(),
     VECTRA_TELEGRAM_WEBHOOK_SECRET: z.string().min(16).optional(),
@@ -137,6 +156,12 @@ export const env = createEnv({
       process.env.VECTRA_AUTO_RESCUE_STALE_SECONDS,
     VECTRA_AUTO_RESCUE_ESCALATION_SECONDS:
       process.env.VECTRA_AUTO_RESCUE_ESCALATION_SECONDS,
+    VECTRA_STUCK_JOB_JANITOR_ENABLED:
+      process.env.VECTRA_STUCK_JOB_JANITOR_ENABLED,
+    VECTRA_STUCK_JOB_JANITOR_INTERVAL_SECONDS:
+      process.env.VECTRA_STUCK_JOB_JANITOR_INTERVAL_SECONDS,
+    VECTRA_STUCK_JOB_STALE_SECONDS:
+      process.env.VECTRA_STUCK_JOB_STALE_SECONDS,
     VECTRA_TELEGRAM_BOT_TOKEN: process.env.VECTRA_TELEGRAM_BOT_TOKEN,
     VECTRA_TELEGRAM_ALLOWED_CHAT_IDS:
       process.env.VECTRA_TELEGRAM_ALLOWED_CHAT_IDS,

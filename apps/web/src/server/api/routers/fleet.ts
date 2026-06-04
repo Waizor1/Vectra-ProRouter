@@ -38,6 +38,7 @@ import {
   getEffectiveRouterStatus,
   isRouterReachable,
 } from "~/server/vectra/router-presence";
+import { runStuckJobJanitorTick } from "~/server/vectra/stuck-job-janitor";
 import {
   createOperatorDraftRevisionWithDb,
   getFullConfigForRevisionWithDb,
@@ -887,5 +888,27 @@ export const fleetRouter = createTRPCRouter({
             ...router,
           } as typeof routers.$inferSelect),
       };
+    }),
+
+  // Manual on-demand trigger of the stuck-job janitor — runs one sweep
+  // immediately, returns the list of cancelled job IDs. Useful when an
+  // operator notices a stuck router and doesn't want to wait for the
+  // scheduled sweep (default 10 min). Optional override of the stale
+  // threshold so an operator can sweep more aggressively for a known
+  // incident without changing the env-wide default.
+  cancelStuckJobs: protectedProcedure
+    .input(
+      z
+        .object({
+          staleSeconds: z.number().int().min(60).max(86400).optional(),
+        })
+        .optional(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await runStuckJobJanitorTick(new Date(), ctx.db, {
+        staleSeconds: input?.staleSeconds,
+        enabled: true,
+      });
+      return result;
     }),
 });
