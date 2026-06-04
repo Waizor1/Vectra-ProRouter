@@ -135,7 +135,7 @@ export async function runStuckJobJanitorTick(
         severity: "warning",
         message: `Auto-cancelled job ${candidate.id} stuck in 'running' for ${ageSeconds}s`,
         routerId: candidate.routerId,
-        details: {
+        metadata: {
           jobId: candidate.id,
           jobType: candidate.type,
           ageSeconds,

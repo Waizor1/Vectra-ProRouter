@@ -161,10 +161,10 @@ describe("runStuckJobJanitorTick", () => {
     expect(totchtoAudit?.type).toBe("fleet.stuck_job_cancelled");
     expect(totchtoAudit?.severity).toBe("warning");
     expect(
-      (totchtoAudit?.details as { artifactVersion?: unknown })?.artifactVersion,
+      (totchtoAudit?.metadata as { artifactVersion?: unknown })?.artifactVersion,
     ).toBe("0.1.13-r27");
     expect(
-      (totchtoAudit?.details as { jobType?: unknown })?.jobType,
+      (totchtoAudit?.metadata as { jobType?: unknown })?.jobType,
     ).toBe("run_terminal_command");
   });
 
