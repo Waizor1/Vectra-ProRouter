@@ -96,8 +96,8 @@ export const env = createEnv({
     // for longer than the threshold. A router that died mid-job leaves an
     // open journal entry the new controller re-fetches forever, blocking
     // all check-ins. Default 10 min between sweeps; default 60 min threshold
-    // so transient slow jobs aren't swept (refresh_subscriptions can take
-    // 30+ min on a stressed router).
+    // (no observed production job exceeds ~10 min, so 1 h is a safe upper
+    // bound — replace with per-job-type SLAs in r31).
     VECTRA_STUCK_JOB_JANITOR_ENABLED: booleanFlagSchema(true),
     VECTRA_STUCK_JOB_JANITOR_INTERVAL_SECONDS: z.coerce
       .number()

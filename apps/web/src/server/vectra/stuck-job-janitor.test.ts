@@ -12,7 +12,9 @@ function createJanitorMockDb(candidates: Array<Record<string, unknown>>) {
   let updatesActuallyApplied = 0;
   let abortNextUpdate = false; // simulate concurrent winner-takes-all
   let throwOnNextTx = false; // simulate per-candidate DB failure
+  let throwOnNextEventInsert = false; // simulate eventLog INSERT failure
   const eventLogInserts: Array<Record<string, unknown>> = [];
+  const updateSetValues: Array<Record<string, unknown>> = [];
 
   return {
     db: {
@@ -41,6 +43,7 @@ function createJanitorMockDb(candidates: Array<Record<string, unknown>>) {
       updateAttempts: () => updateAttempts,
       updatesApplied: () => updatesActuallyApplied,
       eventLogInserts: () => eventLogInserts,
+      updateSetValues: () => updateSetValues,
       // Simulate the next update losing the race to a concurrent writer
       // by returning an empty rows array even though we matched.
       simulateConcurrentLossOnNextUpdate() {
@@ -50,13 +53,17 @@ function createJanitorMockDb(candidates: Array<Record<string, unknown>>) {
     failOnNextTransaction() {
       throwOnNextTx = true;
     },
+    failOnNextEventInsert() {
+      throwOnNextEventInsert = true;
+    },
   };
 
   function buildTx() {
     return {
       update() {
         return {
-          set() {
+          set(setVal: Record<string, unknown>) {
+            updateSetValues.push(setVal);
             return {
               where() {
                 return {
@@ -78,6 +85,12 @@ function createJanitorMockDb(candidates: Array<Record<string, unknown>>) {
       insert() {
         return {
           values(row: Record<string, unknown>) {
+            if (throwOnNextEventInsert) {
+              throwOnNextEventInsert = false;
+              return Promise.reject(
+                new Error("simulated eventLog INSERT failure"),
+              );
+            }
             eventLogInserts.push(row);
             return Promise.resolve();
           },
@@ -249,6 +262,71 @@ describe("runStuckJobJanitorTick", () => {
     };
     expect(metadata?.triggeredBy).toBe("operator");
     expect(metadata?.operatorUser).toBe("ilya@vectra-pro.net");
+  });
+
+  // Regression: critic-agent finding (2026-06-05). The unique index on
+  // vectra_job.dedupe_key is global (not partial-on-state, no
+  // NULLS-NOT-DISTINCT), so a cancelled row with a populated dedupeKey
+  // would block any subsequent operator re-queue of the same logical
+  // action (e.g. an operator clicking "Update controller" after a sweep)
+  // with a unique-constraint violation. The janitor MUST null dedupeKey
+  // on cancel, matching the contract enforced by draft.ts:442 and
+  // router-control.ts:212-225.
+  it("clears dedupeKey on cancel so re-queue of same logical job succeeds", async () => {
+    const { db, metrics } = createJanitorMockDb([
+      {
+        id: "job-stuck-update-controller",
+        routerId: "router-a",
+        type: "update_controller",
+        createdAt: TWO_HOURS_AGO,
+        deliveredAt: TWO_HOURS_AGO,
+        payload: { artifactVersion: "0.1.13-r29" },
+      },
+    ]);
+
+    await runStuckJobJanitorTick(
+      NOW,
+      db as unknown as Parameters<typeof runStuckJobJanitorTick>[1],
+      { enabled: true, staleSeconds: 3600 },
+    );
+
+    const setVals = metrics.updateSetValues();
+    expect(setVals).toHaveLength(1);
+    expect(setVals[0]).toMatchObject({
+      state: "cancelled",
+      dedupeKey: null,
+    });
+  });
+
+  // Regression: code-reviewer probe B (2026-06-05). When the eventLog
+  // INSERT throws inside the per-row transaction, drizzle rolls back the
+  // UPDATE. The result.cancelledJobIds must NOT include the rolled-back
+  // ID — otherwise operators reading the result see an inflated
+  // cancellation count while the row is genuinely still running.
+  it("does not over-count cancellations when audit insert rolls back the transaction", async () => {
+    const { db, metrics, failOnNextEventInsert } = createJanitorMockDb([
+      {
+        id: "job-tx-rollback",
+        routerId: "router-x",
+        type: "refresh_subscriptions",
+        createdAt: TWO_HOURS_AGO,
+        deliveredAt: TWO_HOURS_AGO,
+        payload: {},
+      },
+    ]);
+    failOnNextEventInsert();
+
+    const result = await runStuckJobJanitorTick(
+      NOW,
+      db as unknown as Parameters<typeof runStuckJobJanitorTick>[1],
+      { enabled: true, staleSeconds: 3600 },
+    );
+
+    expect(result.scanned).toBe(1);
+    expect(result.cancelled).toBe(0);
+    expect(result.cancelledJobIds).toEqual([]);
+    expect(result.failedJobIds).toEqual(["job-tx-rollback"]);
+    expect(metrics.eventLogInserts()).toHaveLength(0);
   });
 
   it("isolates per-candidate failures so one bad row doesn't abort the sweep", async () => {

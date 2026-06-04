@@ -24,10 +24,14 @@
 // and an event-log row records the auto-cancellation. The controller's next
 // poll returns no jobs → recoverJobJournal returns nil → check-in resumes.
 //
-// Threshold tuning: refresh_subscriptions can take 30+ minutes on a stressed
-// AX3000T (RAM ~80MB during subscription parse). Default `staleSeconds` is
-// 3600 (1 hour) — well beyond any legitimate job runtime but short enough
-// that an incident is caught within one full sweep + threshold (≤70 min).
+// Threshold tuning: default `staleSeconds` is 3600 (1 hour) — a
+// conservative upper bound. No observed production job in the daily-notes
+// archive (2026-04 through 2026-06) exceeded ~10 min of runtime, but a
+// stressed low-RAM router (AX3000T with RAM~80MB during subscription
+// parse) could plausibly slow further. 1 h leaves comfortable headroom
+// for legitimate work; an incident is still caught within one full
+// sweep + threshold (≤70 min total). When per-job-type SLAs land in r31
+// this static threshold becomes per-type expiry.
 
 import { and, eq, isNull, lt, sql } from "drizzle-orm";
 
@@ -147,7 +151,22 @@ export async function runStuckJobJanitorTick(
       await database.transaction(async (tx) => {
         const updated = await tx
           .update(jobs)
-          .set({ state: "cancelled", completedAt: now })
+          .set({
+            state: "cancelled",
+            completedAt: now,
+            // Clear dedupeKey so a future operator-triggered re-queue of
+            // the same logical job (same dedupeKey, e.g.
+            // `update_controller:<routerId>:stable:<version>`) doesn't
+            // collide with this cancelled row on the unique index.
+            // Without this, the recovery flow this PR enables would
+            // immediately fail with a unique-constraint violation on the
+            // next operator click — defeating the purpose. The canonical
+            // operator-cancel path (draft.ts:442) and the normal
+            // job-completion path (router-control.ts:212-225) already
+            // null dedupeKey for the same reason; we mirror that
+            // contract.
+            dedupeKey: null,
+          })
           .where(
             and(
               eq(jobs.id, candidate.id),
@@ -164,7 +183,12 @@ export async function runStuckJobJanitorTick(
           return;
         }
 
-        cancelledIds.push(candidate.id);
+        // The audit row goes INSIDE the same transaction. If it throws
+        // (disk full, JSONB size limit, future schema regression), the
+        // entire transaction rolls back — the row stays in 'running' and
+        // the next sweep retries. We push to cancelledIds AFTER the
+        // insert succeeds, so a rolled-back tx doesn't over-report
+        // cancellations in the operator-facing result shape.
         await tx.insert(eventLog).values({
           type: "fleet.stuck_job_cancelled",
           severity: "warning",
@@ -182,6 +206,7 @@ export async function runStuckJobJanitorTick(
             operatorUser: options?.operatorUser ?? null,
           },
         });
+        cancelledIds.push(candidate.id);
       });
     } catch (error) {
       // Per-candidate isolation: one bad row (deadlock, FK violation,

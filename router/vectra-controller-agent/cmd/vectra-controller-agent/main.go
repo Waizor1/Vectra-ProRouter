@@ -577,11 +577,13 @@ func clearJobJournal(path string, persisted *state.PersistedState) error {
 // pending success result may fail the controller-runtime-confirmation check
 // before the controller gives up and submits a failure to the panel.
 //
-// Sizing rationale: with the production poll interval of 45s (VECTRA_POLLING_INTERVAL_SECONDS
-// default), 6 retries ≈ 4.5 minutes of grace. The auto-rescue monitor opens a
-// stale_check_in case at VECTRA_AUTO_RESCUE_STALE_SECONDS=300 (5 min), so we
-// finish bailing out BEFORE that watchdog fires — recovery happens silently
-// without operator-side alert noise. A single controller-restart cycle takes
+// Sizing rationale: with the production poll interval of 45s
+// (VECTRA_POLLING_INTERVAL_SECONDS default), 6 retries spans 5×45s = 225s
+// from the first failing flush to the bail-out submit on the 6th cycle.
+// The auto-rescue monitor opens a stale_check_in case at
+// VECTRA_AUTO_RESCUE_STALE_SECONDS=300 (5 min), so we finish bailing out
+// BEFORE that watchdog fires — recovery happens silently without
+// operator-side alert noise. A single controller-restart cycle takes
 // ~60-90s on AX3000T, well inside this budget.
 //
 // Backstop for the totchto-filiciy 2026-06-04 incident: a stuck panel-side
@@ -679,7 +681,12 @@ func flushPendingJobResult(
 			}
 			request.Result["error"] = abandonReason
 			request.Result["abandonedAfterRetries"] = retries
-			request.Result["runningControllerRuntimeVersion"] = inventory.ControllerRuntimeVersion
+			// Use runningDescription so the panel-side payload preserves
+			// the "<runtime version unavailable>" placeholder when the
+			// runtime version probe genuinely had nothing to report — an
+			// empty string in the payload reads as "unknown bug" to the
+			// next operator triaging this incident.
+			request.Result["runningControllerRuntimeVersion"] = runningDescription
 			request.Result["expectedControllerVersion"] = persisted.CurrentJob.ExpectedControllerVersion
 			request.Stdout = strings.TrimSpace(strings.Join(
 				[]string{request.Stdout, abandonReason},
