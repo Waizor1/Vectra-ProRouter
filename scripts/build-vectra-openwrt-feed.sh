@@ -354,10 +354,22 @@ build_agent_package_manually() {
 		cp -R "$openwrt_root/." "$data_dir/"
 	fi
 
+	# Mark every shipped helper executable. The Go binary is chmod'd
+	# directly by the pre-build assertion (line 320); these scripts are
+	# copied as-is from openwrt/files/. Without explicit chmod the
+	# OpenWrt tar preserves the source mode, which for files committed
+	# to git can drift to 0644. Past incident: r28 first build shipped
+	# vectra-controller-watchdog without +x → cron silently no-op'd.
 	mark_executable_if_present \
 		"$data_dir/etc/init.d/vectra-controller" \
+		"$data_dir/etc/init.d/vectra-oom-guard" \
 		"$data_dir/etc/uci-defaults/90_vectra_controller_defaults" \
-		"$data_dir/usr/libexec/vectra-controller/render-config.sh"
+		"$data_dir/etc/uci-defaults/91_vectra_low_mem_profile" \
+		"$data_dir/etc/uci-defaults/92_vectra_controller_watchdog" \
+		"$data_dir/usr/libexec/vectra-controller/render-config.sh" \
+		"$data_dir/usr/sbin/vectra-oom-guard" \
+		"$data_dir/usr/sbin/vectra-xray-wrapper" \
+		"$data_dir/usr/sbin/vectra-controller-watchdog"
 
 	installed_size="$(du -sk "$data_dir" | awk '{print $1}')"
 
