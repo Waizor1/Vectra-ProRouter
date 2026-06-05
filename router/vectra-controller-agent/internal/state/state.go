@@ -47,6 +47,15 @@ type PersistedState struct {
 	ControlPlaneRecovery     recovery.State                       `json:"control_plane_recovery,omitempty"`
 	CurrentJob               CurrentJob                           `json:"current_job,omitempty"`
 	PendingJobResult         *controlplane.JobResultRequest       `json:"pending_job_result,omitempty"`
+	// PendingJobResultRetryCount tracks how many consecutive run_once cycles
+	// have failed to flush PendingJobResult. The controller uses this to bail
+	// out of an unrecoverable version-mismatch loop (the totchto-filiciy
+	// 2026-06-04 incident: a stuck panel-side update_controller job kept
+	// re-creating a CurrentJob with ExpectedControllerVersion that the
+	// running runtime would never reach). After a threshold the controller
+	// converts the success result to failure, lets the panel learn the
+	// outcome, and clears the journal locally — restoring check-in cadence.
+	PendingJobResultRetryCount int `json:"pending_job_result_retry_count,omitempty"`
 }
 
 func Load(path string) (PersistedState, error) {

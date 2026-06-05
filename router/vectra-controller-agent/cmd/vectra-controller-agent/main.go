@@ -548,6 +548,13 @@ func persistPendingJobResult(
 	}
 
 	requestCopy := request
+	// Detect a brand-new pending result so we reset the retry counter on
+	// every fresh attempt. The counter must only accumulate across cycles
+	// that try to flush the SAME pending result.
+	if persisted.PendingJobResult == nil ||
+		persisted.PendingJobResult.JobID != requestCopy.JobID {
+		persisted.PendingJobResultRetryCount = 0
+	}
 	persisted.PendingJobResult = &requestCopy
 	return state.Save(path, *persisted)
 }
@@ -559,8 +566,32 @@ func clearJobJournal(path string, persisted *state.PersistedState) error {
 
 	persisted.CurrentJob = state.CurrentJob{}
 	persisted.PendingJobResult = nil
+	// Reset the retry counter so a future flush starts with a fresh budget.
+	// Without this, a one-off transient failure on a NEW job could leak the
+	// counter from a previous job and prematurely trip the bail-out.
+	persisted.PendingJobResultRetryCount = 0
 	return state.Save(path, *persisted)
 }
+
+// pendingJobResultMaxRetries is the number of consecutive run_once cycles a
+// pending success result may fail the controller-runtime-confirmation check
+// before the controller gives up and submits a failure to the panel.
+//
+// Sizing rationale: with the production poll interval of 45s
+// (VECTRA_POLLING_INTERVAL_SECONDS default), 6 retries spans 5×45s = 225s
+// from the first failing flush to the bail-out submit on the 6th cycle.
+// The auto-rescue monitor opens a stale_check_in case at
+// VECTRA_AUTO_RESCUE_STALE_SECONDS=300 (5 min), so we finish bailing out
+// BEFORE that watchdog fires — recovery happens silently without
+// operator-side alert noise. A single controller-restart cycle takes
+// ~60-90s on AX3000T, well inside this budget.
+//
+// Backstop for the totchto-filiciy 2026-06-04 incident: a stuck panel-side
+// update_controller job re-created a CurrentJob with an ExpectedControllerVersion
+// the running runtime would never reach. Without this guard the controller
+// looped forever, never sent a check-in, and the router went silent for 9
+// days until an operator manually cancelled the stuck job in the database.
+const pendingJobResultMaxRetries = 6
 
 func flushPendingJobResult(
 	ctx context.Context,
@@ -584,24 +615,93 @@ func flushPendingJobResult(
 	if requiresControllerRuntimeConfirmation(persisted.CurrentJob) &&
 		request.Status == "success" &&
 		persisted.CurrentJob.ExpectedControllerVersion != "" {
-		if inventory.ControllerRuntimeVersion == "" {
-			return fmt.Errorf(
-				"controller restart confirmation pending: running controller runtime version unavailable",
-			)
-		}
-		if inventory.ControllerRuntimeVersion != persisted.CurrentJob.ExpectedControllerVersion {
-			return fmt.Errorf(
-				"controller restart confirmation pending: running runtime got %s want %s",
-				inventory.ControllerRuntimeVersion,
+		runtimeMissing := inventory.ControllerRuntimeVersion == ""
+		runtimeMismatch := !runtimeMissing &&
+			inventory.ControllerRuntimeVersion != persisted.CurrentJob.ExpectedControllerVersion
+
+		if runtimeMissing || runtimeMismatch {
+			// Increment the retry counter and persist. We DON'T fail out
+			// immediately on the first mismatch — a single bad cycle could
+			// just mean the new controller binary hasn't been read yet by
+			// the inventory probe, or that runtime version detection is
+			// momentarily flaky.
+			//
+			// Cap the counter at pendingJobResultMaxRetries+1 so that if
+			// the bail-out submit fails repeatedly (network outage), the
+			// counter doesn't grow unboundedly in state.json across many
+			// retries — keeps disk image readable in support diagnostics.
+			if persisted.PendingJobResultRetryCount <= pendingJobResultMaxRetries {
+				persisted.PendingJobResultRetryCount++
+			}
+			retries := persisted.PendingJobResultRetryCount
+			if saveErr := state.Save(cfg.StatePath, *persisted); saveErr != nil {
+				// Best-effort persist; not fatal — counter still
+				// increments in-memory within the live process. If the
+				// agent restarts during disk-full, we re-read the last
+				// successfully-persisted value and the bail-out is delayed
+				// by exactly the number of un-saved cycles.
+				log.Printf("warn: persist pending-job-result retry counter failed: %v", saveErr)
+			}
+
+			if retries < pendingJobResultMaxRetries {
+				if runtimeMissing {
+					return fmt.Errorf(
+						"controller restart confirmation pending: running controller runtime version unavailable (retry %d/%d)",
+						retries, pendingJobResultMaxRetries,
+					)
+				}
+				return fmt.Errorf(
+					"controller restart confirmation pending: running runtime got %s want %s (retry %d/%d)",
+					inventory.ControllerRuntimeVersion,
+					persisted.CurrentJob.ExpectedControllerVersion,
+					retries, pendingJobResultMaxRetries,
+				)
+			}
+
+			// Bail out: we've exhausted the retry budget. Convert the
+			// pending success into a failure so the panel learns the
+			// outcome, and the local journal can be cleared. The router
+			// will resume normal check-in cadence on the next cycle.
+			runningDescription := inventory.ControllerRuntimeVersion
+			if runningDescription == "" {
+				runningDescription = "<runtime version unavailable>"
+			}
+			abandonReason := fmt.Sprintf(
+				"controller runtime never reached expected %s after %d retries (running %s); abandoned to restore connectivity",
 				persisted.CurrentJob.ExpectedControllerVersion,
+				retries,
+				runningDescription,
 			)
-		}
-		if request.Result == nil {
-			request.Result = map[string]interface{}{}
-		}
-		request.Result["confirmedControllerRuntimeVersion"] = inventory.ControllerRuntimeVersion
-		if inventory.ControllerVersion != "" {
-			request.Result["confirmedControllerVersion"] = inventory.ControllerVersion
+			log.Printf("CRITICAL: %s; converting pending success to failure for job %s",
+				abandonReason, persisted.CurrentJob.JobID)
+
+			request.Status = "failure"
+			if request.Result == nil {
+				request.Result = map[string]interface{}{}
+			}
+			request.Result["error"] = abandonReason
+			request.Result["abandonedAfterRetries"] = retries
+			// Use runningDescription so the panel-side payload preserves
+			// the "<runtime version unavailable>" placeholder when the
+			// runtime version probe genuinely had nothing to report — an
+			// empty string in the payload reads as "unknown bug" to the
+			// next operator triaging this incident.
+			request.Result["runningControllerRuntimeVersion"] = runningDescription
+			request.Result["expectedControllerVersion"] = persisted.CurrentJob.ExpectedControllerVersion
+			request.Stdout = strings.TrimSpace(strings.Join(
+				[]string{request.Stdout, abandonReason},
+				"\n",
+			))
+			// Fall through to client.SubmitJobResult and clearJobJournal.
+		} else {
+			// Runtime matches expected version — happy path.
+			if request.Result == nil {
+				request.Result = map[string]interface{}{}
+			}
+			request.Result["confirmedControllerRuntimeVersion"] = inventory.ControllerRuntimeVersion
+			if inventory.ControllerVersion != "" {
+				request.Result["confirmedControllerVersion"] = inventory.ControllerVersion
+			}
 		}
 	}
 
