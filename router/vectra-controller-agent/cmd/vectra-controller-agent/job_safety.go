@@ -102,7 +102,13 @@ func evaluateJobSafetyWithResourceCollector(
 	// AX3000T-class boxes; freeing it via vm.drop_caches=3 is read-only and
 	// lossless (dirty pages stay), and usually lifts MemAvailable enough to
 	// pass the guard for an urgent self-update.
-	if tuning.PreDropCaches && collectResources != nil {
+	//
+	// A controller self-update ALWAYS opts into this regardless of the tuning
+	// flag: keeping the panel connection alive by landing the new controller is
+	// more important than the transient cache, and the reclaim is lossless. This
+	// makes self-updates survive a starved 234 MB box with no per-router config.
+	preDropCaches := tuning.PreDropCaches || job.Type == "update_controller"
+	if preDropCaches && collectResources != nil {
 		memFloor := memoryFloorFor(class, tuning, job)
 		if resources.MemoryAvailableMB > 0 && resources.MemoryAvailableMB < memFloor {
 			if err := attemptDropCaches(); err != nil {

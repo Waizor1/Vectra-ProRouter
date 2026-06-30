@@ -1,0 +1,69 @@
+#!/bin/sh
+#
+# 93_vectra_controlplane_direct - install the control-plane DIRECT carve-out so
+# the controller agent's own marked traffic ALWAYS bypasses the PassWall2 tproxy
+# and egresses via WAN directly. Runs on every package install/upgrade (and on
+# boot until it succeeds) via OpenWrt's uci-defaults mechanism.
+#
+# Idempotent and safe to run repeatedly. Safe when PassWall2 is not installed:
+# it only touches its own firewall include + its own nftables table.
+#
+# Two complementary persistence paths (see controlplane-direct.sh header):
+#   1. A dedicated `inet vectra_controlplane` table that survives `passwall2
+#      restart` untouched (PassWall2 only flushes its own table).
+#   2. A fw4 firewall include (registered here in UCI) that re-creates the table
+#      on every full `fw4 reload` - mirrors how PassWall2 registers itself.
+#
+# POSIX/ash only. No bashisms.
+
+set -u
+
+LOG_TAG="vectra-controlplane-direct-install"
+SELF_SCRIPT="/usr/libexec/vectra-controller/controlplane-direct.sh"
+FW_INCLUDE_NAME="vectra_controlplane"
+FW_INCLUDE_PATH="/var/etc/vectra-controlplane.include"
+
+log() {
+	if command -v logger >/dev/null 2>&1; then
+		logger -t "$LOG_TAG" "$1"
+	fi
+}
+
+# Bail quietly if the carve-out script isn't on disk yet (package extraction in
+# flight, partial downgrade). uci-defaults ordering in OpenWrt isn't always
+# deterministic, and this script re-runs on boot, so a skip here is recoverable.
+if [ ! -x "$SELF_SCRIPT" ]; then
+	log "skipping: $SELF_SCRIPT not present"
+	exit 0
+fi
+
+# --- 1. Register the fw4 firewall include (idempotent) --------------------
+# Modeled on passwall2/.../root/etc/uci-defaults/luci-passwall2: a script-type
+# include whose path points at our generated include file. fw4 re-runs script
+# includes on every reload, which is how the carve-out survives `fw4 reload`.
+if command -v uci >/dev/null 2>&1; then
+	if [ "$(uci -q get firewall.${FW_INCLUDE_NAME})" != "include" ]; then
+		uci -q delete firewall.${FW_INCLUDE_NAME} 2>/dev/null || true
+		uci -q set firewall.${FW_INCLUDE_NAME}=include
+	fi
+	uci -q set firewall.${FW_INCLUDE_NAME}.type='script'
+	uci -q set firewall.${FW_INCLUDE_NAME}.path="$FW_INCLUDE_PATH"
+	# fw3 (legacy) needs reload=1 to honor script includes on reload; fw4 ignores
+	# it harmlessly. Match PassWall2's own conditional.
+	if [ -x "/sbin/fw3" ]; then
+		uci -q set firewall.${FW_INCLUDE_NAME}.reload='1'
+	else
+		uci -q delete firewall.${FW_INCLUDE_NAME}.reload 2>/dev/null || true
+	fi
+	uci -q commit firewall
+	log "registered fw4 firewall include ${FW_INCLUDE_NAME}"
+else
+	log "uci unavailable; skipping firewall include registration"
+fi
+
+# --- 2. Write the include file + apply the carve-out now -------------------
+# `apply` writes the include file (write_fw_include) and installs the nftables
+# table immediately, so the carve-out is live without waiting for a reload.
+"$SELF_SCRIPT" apply >/dev/null 2>&1 || log "initial apply returned non-zero"
+
+exit 0

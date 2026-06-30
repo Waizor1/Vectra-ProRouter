@@ -530,10 +530,16 @@ export const updatePolicySchema = z.object({
   guardedFirmware: z.boolean().default(true),
 });
 
+export const routerReauthProofSchema = z.object({
+  signedAt: z.string().datetime({ offset: true }),
+  signature: z.string().min(1),
+});
+
 export const routerRegisterRequestSchema = z.object({
   protocolVersion: z.literal(VECTRA_PROTOCOL_VERSION),
   inventory: routerInventorySchema,
   passwallImport: passwallImportedStateSchema.optional(),
+  recoveryProof: routerReauthProofSchema.optional(),
 });
 
 export const routerJobSchema = z.object({
@@ -1160,6 +1166,7 @@ export type RouterInstagramReachability = z.infer<
 >;
 export type RouterSafetyEvent = z.infer<typeof routerSafetyEventSchema>;
 export type RouterInventory = z.infer<typeof routerInventorySchema>;
+export type RouterReauthProof = z.infer<typeof routerReauthProofSchema>;
 export type RescuePolicy = z.infer<typeof rescuePolicySchema>;
 export type UpdatePolicy = z.infer<typeof updatePolicySchema>;
 export type RouterJob = z.infer<typeof routerJobSchema>;

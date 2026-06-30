@@ -58,7 +58,26 @@ type PersistedState struct {
 	PendingJobResultRetryCount int `json:"pending_job_result_retry_count,omitempty"`
 }
 
+// Load reads persisted state and guarantees that durable credentials are never
+// silently dropped. After the base read (which may decode a valid-but-tokenless
+// file, restore a last-good backup, or salvage a partial write), any missing
+// credentials are refilled from the dedicated identity mirror — the separately
+// written file that only ever holds real credentials. This is the read side of
+// the guard against the register-403 brick (2026-06-29 incident).
 func Load(path string) (PersistedState, error) {
+	persisted, err := loadBase(path)
+	if err != nil {
+		return persisted, err
+	}
+	if !hasCredentials(persisted) {
+		if stored := loadStoredCredentials(path); hasCredentials(stored) {
+			fillMissingCredentials(&persisted, stored)
+		}
+	}
+	return persisted, nil
+}
+
+func loadBase(path string) (PersistedState, error) {
 	bytes, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -179,9 +198,81 @@ func salvageString(bytes []byte, field string) string {
 	return value
 }
 
+func identityMirrorPath(path string) string {
+	return path + ".identity"
+}
+
+func hasCredentials(p PersistedState) bool {
+	return p.RouterID != "" && p.AgentToken != ""
+}
+
+func fillMissingCredentials(dst *PersistedState, src PersistedState) {
+	if dst.RouterID == "" {
+		dst.RouterID = src.RouterID
+	}
+	if dst.AgentToken == "" {
+		dst.AgentToken = src.AgentToken
+	}
+	if dst.DeviceIdentifier == "" {
+		dst.DeviceIdentifier = src.DeviceIdentifier
+	}
+	if dst.DevicePublicKey == "" {
+		dst.DevicePublicKey = src.DevicePublicKey
+	}
+	if dst.DevicePrivateKey == "" {
+		dst.DevicePrivateKey = src.DevicePrivateKey
+	}
+}
+
+// loadStoredCredentials returns the most trustworthy credentials currently on
+// disk, preferring the dedicated identity mirror (which only ever holds real
+// credentials), then the primary state, then the last-good backup. It never
+// calls Save, so it is safe to use from inside Save and Load.
+func loadStoredCredentials(path string) PersistedState {
+	for _, candidate := range []string{identityMirrorPath(path), path, lastGoodPath(path)} {
+		bytes, err := os.ReadFile(candidate)
+		if err != nil {
+			continue
+		}
+		decoded, err := decode(bytes)
+		if err != nil {
+			continue
+		}
+		if hasCredentials(decoded) {
+			return decoded
+		}
+	}
+	return PersistedState{}
+}
+
+func writeCredentialMirror(path string, persisted PersistedState) error {
+	mirror := PersistedState{
+		RouterID:         persisted.RouterID,
+		AgentToken:       persisted.AgentToken,
+		DeviceIdentifier: persisted.DeviceIdentifier,
+		DevicePublicKey:  persisted.DevicePublicKey,
+		DevicePrivateKey: persisted.DevicePrivateKey,
+	}
+	bytes, err := json.MarshalIndent(mirror, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode identity mirror: %w", err)
+	}
+	return writeAtomic(identityMirrorPath(path), bytes, 0o600)
+}
+
 func Save(path string, persisted PersistedState) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
+	}
+
+	// Credential floor: a write that lacks credentials must never erase the
+	// credentials already durably stored. This neutralizes the register-403
+	// brick where EnsureIdentity()+Save() (or a salvage) persists an
+	// identity-only struct over a good one (2026-06-29 incident).
+	if !hasCredentials(persisted) {
+		if stored := loadStoredCredentials(path); hasCredentials(stored) {
+			fillMissingCredentials(&persisted, stored)
+		}
 	}
 
 	bytes, err := json.MarshalIndent(persisted, "", "  ")
@@ -195,6 +286,16 @@ func Save(path string, persisted PersistedState) error {
 
 	if err := writeAtomic(lastGoodPath(path), bytes, 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to update last-good state backup %s: %v\n", lastGoodPath(path), err)
+	}
+
+	// Mirror credentials to a dedicated file written by a separate call, so a
+	// single corrupt state.json (which clobbers last-good too — same buffer)
+	// cannot take the token with it. Only ever written when real credentials
+	// exist, so the mirror can never itself become a tokenless trap.
+	if hasCredentials(persisted) {
+		if err := writeCredentialMirror(path, persisted); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to update identity mirror %s: %v\n", identityMirrorPath(path), err)
+		}
 	}
 
 	return nil

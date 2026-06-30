@@ -26,10 +26,12 @@ import {
   passwallAppliedRevisions,
   passwallDesiredRevisions,
   passwallSecretBlobs,
+  routerCredentials,
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
 import { and, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
+import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 
 import { env } from "~/env";
 import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
@@ -892,6 +894,164 @@ export function canIssueRegistrationToken(args: {
   );
 }
 
+/**
+ * Canonical prefix for the ed25519 re-auth recovery proof. The Go agent lane
+ * signs the exact same bytes, so this MUST stay byte-for-byte identical:
+ *   "vectra-router-reauth:v1\n" + deviceIdentifier + "\n" + signedAt
+ */
+export const ROUTER_REAUTH_MESSAGE_PREFIX = "vectra-router-reauth:v1\n";
+
+/** Allowed clock skew (seconds) between the signed timestamp and server now. */
+export const ROUTER_REAUTH_SKEW_SECONDS = 300;
+
+/** DER prefix for an ed25519 SubjectPublicKeyInfo wrapping the raw 32-byte key. */
+const ED25519_SPKI_DER_PREFIX = Buffer.from(
+  "302a300506032b6570032100",
+  "hex",
+);
+
+export function buildRouterReauthMessage(
+  deviceIdentifier: string,
+  signedAt: string,
+) {
+  return `${ROUTER_REAUTH_MESSAGE_PREFIX}${deviceIdentifier}\n${signedAt}`;
+}
+
+export type RouterReauthVerifyReason =
+  | "timestamp_invalid"
+  | "timestamp_outside_window"
+  | "public_key_invalid"
+  | "signature_invalid";
+
+export type RouterReauthVerifyResult =
+  | { ok: true }
+  | { ok: false; reason: RouterReauthVerifyReason };
+
+function decodeRawEd25519PublicKey(devicePublicKey: string) {
+  let raw: Buffer;
+  try {
+    raw = Buffer.from(devicePublicKey, "base64");
+  } catch {
+    return null;
+  }
+
+  // base64 of a 32-byte ed25519 public key; anything else is malformed.
+  if (raw.length !== 32) {
+    return null;
+  }
+
+  try {
+    return createPublicKey({
+      key: Buffer.concat([ED25519_SPKI_DER_PREFIX, raw]),
+      format: "der",
+      type: "spki",
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verifies an ed25519 recovery proof against the device's stored public key.
+ *
+ * Acceptance requires BOTH:
+ *  (a) `signedAt` parses as a real timestamp and is within ±skew seconds of
+ *      `now` (future-dated proofs beyond the skew are rejected too), and
+ *  (b) the std-encoded base64 signature verifies over the canonical message
+ *      `buildRouterReauthMessage(deviceIdentifier, signedAt)`.
+ *
+ * Uses Node's stdlib `crypto.verify(null, …)` for ed25519, reconstructing the
+ * public key from the raw 32 bytes via an SPKI DER wrapper. No external lib.
+ */
+export function verifyRouterReauthProof(args: {
+  recoveryProof: { signedAt: string; signature: string };
+  deviceIdentifier: string;
+  devicePublicKey: string;
+  now: Date;
+  skewSeconds?: number;
+}): RouterReauthVerifyResult {
+  const skewSeconds = args.skewSeconds ?? ROUTER_REAUTH_SKEW_SECONDS;
+
+  const signedAtMs = Date.parse(args.recoveryProof.signedAt);
+  if (Number.isNaN(signedAtMs)) {
+    return { ok: false, reason: "timestamp_invalid" };
+  }
+
+  if (Math.abs(args.now.getTime() - signedAtMs) > skewSeconds * 1000) {
+    return { ok: false, reason: "timestamp_outside_window" };
+  }
+
+  const publicKey = decodeRawEd25519PublicKey(args.devicePublicKey);
+  if (!publicKey) {
+    return { ok: false, reason: "public_key_invalid" };
+  }
+
+  let signature: Buffer;
+  try {
+    signature = Buffer.from(args.recoveryProof.signature, "base64");
+  } catch {
+    return { ok: false, reason: "signature_invalid" };
+  }
+
+  if (signature.length === 0) {
+    return { ok: false, reason: "signature_invalid" };
+  }
+
+  const message = Buffer.from(
+    buildRouterReauthMessage(args.deviceIdentifier, args.recoveryProof.signedAt),
+    "utf8",
+  );
+
+  let verified = false;
+  try {
+    verified = cryptoVerify(null, message, publicKey, signature);
+  } catch {
+    return { ok: false, reason: "signature_invalid" };
+  }
+
+  if (!verified) {
+    return { ok: false, reason: "signature_invalid" };
+  }
+
+  return { ok: true };
+}
+
+/**
+ * Returns the device public key from the router's MOST RECENT credential row
+ * (revoked or not), which is what the agent's surviving keypair must match.
+ */
+async function getLatestDevicePublicKey(
+  routerId: string,
+): Promise<string | null> {
+  const [credential] = await db
+    .select({ devicePublicKey: routerCredentials.devicePublicKey })
+    .from(routerCredentials)
+    .where(eq(routerCredentials.routerId, routerId))
+    .orderBy(desc(routerCredentials.issuedAt))
+    .limit(1);
+
+  return credential?.devicePublicKey ?? null;
+}
+
+async function verifyRecoveryProofForRouter(args: {
+  routerId: string;
+  deviceIdentifier: string;
+  recoveryProof: { signedAt: string; signature: string };
+  now: Date;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const devicePublicKey = await getLatestDevicePublicKey(args.routerId);
+  if (!devicePublicKey) {
+    return { ok: false, reason: "no_stored_public_key" };
+  }
+
+  return verifyRouterReauthProof({
+    recoveryProof: args.recoveryProof,
+    deviceIdentifier: args.deviceIdentifier,
+    devicePublicKey,
+    now: args.now,
+  });
+}
+
 export async function registerRouter(
   input: unknown,
   options: RegisterRouterOptions = {},
@@ -912,24 +1072,51 @@ export async function registerRouter(
       authenticatedRouterId: options.authenticatedRouterId ?? null,
     })
   ) {
+    // Recovery path: a router that lost its bearer token but kept its ed25519
+    // device keypair can re-register by proving possession of the private key.
+    const recoveryVerification = parsed.recoveryProof
+      ? await verifyRecoveryProofForRouter({
+          routerId: existingRouter.id,
+          deviceIdentifier: parsed.inventory.deviceIdentifier,
+          recoveryProof: parsed.recoveryProof,
+          now,
+        })
+      : { ok: false as const, reason: "missing_proof" as const };
+
+    if (!recoveryVerification.ok) {
+      await db.insert(eventLog).values({
+        routerId: existingRouter.id,
+        type: "router.reregister_blocked",
+        severity: "warning",
+        message:
+          "Existing router re-registration was rejected because the request was not authenticated as that router.",
+        metadata: {
+          deviceIdentifier: parsed.inventory.deviceIdentifier,
+          authenticatedRouterId: options.authenticatedRouterId ?? null,
+          recoveryProofPresented: Boolean(parsed.recoveryProof),
+          recoveryProofRejectReason: recoveryVerification.reason,
+        },
+      });
+
+      throw Object.assign(
+        new Error(
+          "Existing router registration requires the current router token.",
+        ),
+        { status: 403 },
+      );
+    }
+
     await db.insert(eventLog).values({
       routerId: existingRouter.id,
-      type: "router.reregister_blocked",
-      severity: "warning",
+      type: "router.reregister_via_signature",
+      severity: "info",
       message:
-        "Existing router re-registration was rejected because the request was not authenticated as that router.",
+        "Existing router re-registered without a bearer token by proving possession of its device keypair.",
       metadata: {
         deviceIdentifier: parsed.inventory.deviceIdentifier,
-        authenticatedRouterId: options.authenticatedRouterId ?? null,
+        signedAt: parsed.recoveryProof?.signedAt ?? null,
       },
     });
-
-    throw Object.assign(
-      new Error(
-        "Existing router registration requires the current router token.",
-      ),
-      { status: 403 },
-    );
   }
 
   const nextStatus = deriveRouterStatus(

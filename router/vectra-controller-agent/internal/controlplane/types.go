@@ -181,6 +181,10 @@ type RegisterRequest struct {
 	ProtocolVersion string                 `json:"protocolVersion"`
 	Inventory       RouterInventory        `json:"inventory"`
 	PasswallImport  *PasswallImportedState `json:"passwallImport,omitempty"`
+	// RecoveryProof, when present, lets a router that lost its bearer token
+	// re-register by proving possession of its device private key. Optional;
+	// the normal token-authenticated path never sends it.
+	RecoveryProof *RecoveryProof `json:"recoveryProof,omitempty"`
 }
 
 type RegisterResponse struct {

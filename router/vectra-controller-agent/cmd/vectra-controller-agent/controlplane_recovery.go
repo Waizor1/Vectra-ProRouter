@@ -44,6 +44,13 @@ var controlPlaneReachabilityCache = struct {
 	entries: map[string]cachedReachabilityGroups{},
 }
 
+// recoveryProcessStartedAt anchors the no-contact-from-boot outage window for
+// routers that strand before they ever record a successful control-plane
+// contact (e.g. right after onboarding commits enabled=1 + a proxy
+// default_node). It is captured once at process start and only overridden by
+// tests.
+var recoveryProcessStartedAt = time.Now().UTC()
+
 var ruProbeTargets = []probeTarget{
 	{ID: "ya", Label: "ya.ru", URL: "https://ya.ru/"},
 	{ID: "vk", Label: "vk.com", URL: "https://vk.com/"},
@@ -56,15 +63,16 @@ var foreignProbeTargets = []probeTarget{
 }
 
 const (
-	controlPlaneRestartReason  = "Control plane unreachable for over one hour; scheduled local vectra-controller restart."
-	controlPlaneDirectReason   = "Control plane unreachable and proxy-dependent internet checks failed; router switched to direct mode."
-	controlPlaneRebootReason   = "Control plane still unreachable after direct fallback; scheduled one router reboot within recovery budget."
-	controlPlaneRetryReason    = "RU connectivity restored after reboot; retrying PassWall proxy path."
-	operatorAttentionReason    = "After auto-reboot and PassWall retry, foreign resources are still unavailable; router left in direct mode."
-	panelRecoveredDirectReason = "Control plane recovered only in direct mode; router is waiting for operator review."
-	autoProxyRetryReason       = "Control plane recovered after direct fallback; retrying PassWall proxy path before operator attention."
-	proxyNodeRecoveredReason   = "PassWall proxy node responded after retry; keeping proxy mode while service probes refresh."
-	wanRecoveredReason         = "Control plane and foreign connectivity recovered."
+	controlPlaneRestartReason    = "Control plane unreachable for over one hour; scheduled local vectra-controller restart."
+	controlPlaneDirectReason     = "Control plane unreachable and proxy-dependent internet checks failed; router switched to direct mode."
+	controlPlaneRebootReason     = "Control plane still unreachable after direct fallback; scheduled one router reboot within recovery budget."
+	controlPlaneRetryReason      = "RU connectivity restored after reboot; retrying PassWall proxy path."
+	operatorAttentionReason      = "After auto-reboot and PassWall retry, foreign resources are still unavailable; router left in direct mode."
+	panelRecoveredDirectReason   = "Control plane recovered only in direct mode; router is waiting for operator review."
+	autoProxyRetryReason         = "Control plane recovered after direct fallback; retrying PassWall proxy path before operator attention."
+	proxyNodeRecoveredReason     = "PassWall proxy node responded after retry; keeping proxy mode while service probes refresh."
+	wanRecoveredReason           = "Control plane and foreign connectivity recovered."
+	operatorAttentionRetryReason = "Still awaiting operator; auto-retrying PassWall proxy path before falling back to direct again."
 )
 
 func advanceControlPlaneRecovery(
@@ -98,12 +106,21 @@ func advanceControlPlaneRecovery(
 	runtimeStatus.ServerReachable = panelProbe != nil && panelProbe.Reachable
 
 	hasSuccessfulContact := !recovery.ParseTime(recoveryState.LastSuccessfulControlPlaneAt).IsZero()
-	if !hasSuccessfulContact {
-		return outcome, nil
-	}
 
 	if !panelProbe.Reachable && recovery.ParseTime(recoveryState.OutageStartedAt).IsZero() {
-		recoveryState.OutageStartedAt = recovery.FormatTime(now)
+		// A router that has never recorded a successful contact still has to fail
+		// safe to direct eventually. Anchor the outage to process/boot start so the
+		// existing bounded direct-fallback path arms once the no-contact-from-boot
+		// window exceeds the panel-outage threshold. The first few minutes after
+		// boot stay a no-op because controlPlaneOutageReady measures against this
+		// anchor.
+		outageStart := now
+		if !hasSuccessfulContact {
+			if bootStart := recoveryProcessStartedAt.UTC(); !bootStart.IsZero() && bootStart.Before(now) {
+				outageStart = bootStart
+			}
+		}
+		recoveryState.OutageStartedAt = recovery.FormatTime(outageStart)
 		if recoveryState.Phase == recovery.PhaseIdle {
 			recoveryState.Phase = recovery.PhaseMonitoring
 		}
@@ -150,6 +167,8 @@ func advanceControlPlaneRecovery(
 			}
 			recoveryState.Phase = recovery.PhaseMonitoring
 			runtimeStatus.RecoveryPhase = string(recoveryState.Phase)
+		} else if shouldResumeProxyAfterExternalDirect(now, cfg.Rescue, recoveryState, inventory, panelProbe) {
+			return resumeProxyAfterExternalDirect(ctx, backend, recoveryState, rescueState, persisted, runtimeStatus, now)
 		}
 	case recovery.PhaseMonitoring:
 		if !panelProbe.Reachable {
@@ -167,6 +186,8 @@ func advanceControlPlaneRecovery(
 					now,
 				)
 			}
+		} else if shouldResumeProxyAfterExternalDirect(now, cfg.Rescue, recoveryState, inventory, panelProbe) {
+			return resumeProxyAfterExternalDirect(ctx, backend, recoveryState, rescueState, persisted, runtimeStatus, now)
 		}
 	case recovery.PhaseControllerRestartWait:
 		if !panelProbe.Reachable {
@@ -352,6 +373,29 @@ func advanceControlPlaneRecovery(
 		outcome.SkipControlPlane = panelProbe == nil || !panelProbe.Reachable
 	case recovery.PhaseOperatorAttention:
 		outcome.SkipControlPlane = panelProbe == nil || !panelProbe.Reachable
+		// GAP-5: operator attention must never be a terminal park. While the panel
+		// is still unreachable and the router is parked in direct, re-attempt the
+		// proxy path once per RebootCooldown. The AwaitingOperator flag stays set
+		// for panel visibility, but auto-recovery keeps looping forever: the
+		// re-armed PhasePasswallRetryWait path re-disables PassWall on failure, so
+		// the router stays reachable in direct and never requires a human.
+		if (panelProbe == nil || !panelProbe.Reachable) &&
+			!inventory.PasswallEnabled &&
+			operatorAttentionRetryReady(now, cfg.Rescue, recoveryState) {
+			if err := resumeProxyMode(ctx, backend, rescueState, persisted, runtimeStatus, now); err != nil {
+				return outcome, err
+			}
+			recoveryState.LastPasswallRetryAt = recovery.FormatTime(now)
+			setControlPlaneRecoveryPhase(
+				recoveryState,
+				runtimeStatus,
+				recovery.PhasePasswallRetryWait,
+				operatorAttentionRetryReason,
+				true,
+			)
+			outcome.InventoryChanged = true
+			outcome.SkipControlPlane = true
+		}
 	}
 
 	runtimeStatus.RecoveryPhase = string(recoveryState.Phase)
@@ -377,8 +421,7 @@ func startControlPlaneRecovery(
 	case inventory.RUReachability != nil &&
 		inventory.RUReachability.Status == recovery.StatusReachable &&
 		(inventory.ForeignReachability == nil ||
-			inventory.ForeignReachability.Status == recovery.StatusHealthy ||
-			inventory.ForeignReachability.Status == recovery.StatusPartial):
+			inventory.ForeignReachability.Status == recovery.StatusHealthy):
 		restartedThisOutage := restartedDuringCurrentOutage(recoveryState)
 		setControlPlaneRecoveryPhase(
 			recoveryState,
@@ -485,7 +528,14 @@ func collectPanelReachability(
 		return nil, nil
 	}
 
-	prober := rescue.NewHTTPProber(probeTimeout(cfg.RequestTimeout))
+	// The panel probe must measure the SAME direct path the check-in uses: its
+	// sockets carry the control-plane fwmark so they bypass the PassWall2 tproxy
+	// via the nftables carve-out. Without this a dead-proxy router would probe
+	// the panel THROUGH the dead proxy, report it blocked, and needlessly enter
+	// recovery even though the (marked) check-in would have reached the panel.
+	// Only the panel probe is marked; the RU/foreign probes stay unmarked so they
+	// keep testing the real proxied client path.
+	prober := rescue.NewHTTPProberWithFwmark(probeTimeout(cfg.RequestTimeout), cfg.ControlPlaneFwmark)
 	results := make([]rescue.HTTPProbeResult, 0, len(urls))
 	for _, url := range urls {
 		if strings.TrimSpace(url) == "" {
@@ -700,8 +750,13 @@ func shouldTriggerDirectFallback(inventory *controlplane.RouterInventory) bool {
 		return false
 	}
 
+	// GAP-4: a controller restart never fixes a routing strand. Once the panel
+	// has been blocked past the outage threshold, any non-healthy foreign result
+	// (fully blocked OR only partial) means the proxy path cannot reliably carry
+	// panel/foreign traffic, so fail safe to direct rather than looping restarts.
 	return inventory.ForeignReachability != nil &&
-		inventory.ForeignReachability.Status == recovery.StatusBlocked
+		(inventory.ForeignReachability.Status == recovery.StatusBlocked ||
+			inventory.ForeignReachability.Status == recovery.StatusPartial)
 }
 
 func shouldTriggerReboot(inventory *controlplane.RouterInventory, recoveryState *recovery.State) bool {
@@ -718,6 +773,86 @@ func shouldTriggerReboot(inventory *controlplane.RouterInventory, recoveryState 
 func canScheduleAutoReboot(now time.Time, policy rescue.Policy, recoveryState *recovery.State) bool {
 	lastReboot := recovery.ParseTime(recoveryState.LastAutoRebootAt)
 	return lastReboot.IsZero() || now.Sub(lastReboot) >= policy.RebootCooldown
+}
+
+// operatorAttentionRetryReady gates how often the operator-attention loop
+// re-attempts the proxy path. It reuses the RebootCooldown budget so the retry
+// is slow and bounded per attempt (no PassWall thrashing) while remaining
+// unbounded overall, guaranteeing recovery never permanently stalls on a human.
+func operatorAttentionRetryReady(now time.Time, policy rescue.Policy, recoveryState *recovery.State) bool {
+	if recoveryState == nil {
+		return false
+	}
+	lastRetry := recovery.ParseTime(recoveryState.LastPasswallRetryAt)
+	return lastRetry.IsZero() || now.Sub(lastRetry) >= policy.RebootCooldown
+}
+
+// shouldResumeProxyAfterExternalDirect detects a PassWall-disabled state that
+// recovery did NOT cause — i.e. the cron watchdog's dead-man switch (or another
+// external actor) flipped the router to direct so the controller could reach the
+// panel. In that case check-in works again and recovery sits Idle/Monitoring,
+// which means the recovery state-machine's own resume-to-proxy phases
+// (PhaseDirectSettle etc.) are never entered and proxy would otherwise stay off
+// until an operator intervened — contradicting the watchdog's promise that the
+// agent's auto-resume re-enables proxy once contact is restored.
+//
+// It returns true only when the panel is healthy (this really is an
+// external/watchdog-induced direct, not a panel outage), PassWall is currently
+// disabled, and the bounded retry cooldown has elapsed. The actual re-enable is
+// routed through the EXISTING probe-gated PhasePasswallRetryWait path, so it is
+// flap-safe: a still-dead proxy is re-disabled after the warmup probe and the
+// cooldown prevents thrashing the enable/disable with the watchdog.
+func shouldResumeProxyAfterExternalDirect(
+	now time.Time,
+	policy rescue.Policy,
+	recoveryState *recovery.State,
+	inventory *controlplane.RouterInventory,
+	panelProbe *controlplane.RouterReachabilityProbe,
+) bool {
+	if recoveryState == nil || inventory == nil {
+		return false
+	}
+	// Only Idle/Monitoring reach here, but guard explicitly: never act while
+	// recovery owns PassWall (a recovery-driven direct runs its own machinery).
+	if recovery.PasswallOwnedByRecovery(recoveryState.Phase) {
+		return false
+	}
+	if inventory.PasswallEnabled {
+		return false
+	}
+	if panelProbe == nil || !panelProbe.Reachable {
+		return false
+	}
+	return operatorAttentionRetryReady(now, policy, recoveryState)
+}
+
+func resumeProxyAfterExternalDirect(
+	ctx context.Context,
+	backend passwall.UCIBackend,
+	recoveryState *recovery.State,
+	rescueState *rescue.State,
+	persisted *state.PersistedState,
+	runtimeStatus *state.RuntimeStatus,
+	now time.Time,
+) (controlPlaneRecoveryOutcome, error) {
+	outcome := controlPlaneRecoveryOutcome{}
+	if err := resumeProxyMode(ctx, backend, rescueState, persisted, runtimeStatus, now); err != nil {
+		return outcome, err
+	}
+	recoveryState.LastPasswallRetryAt = recovery.FormatTime(now)
+	setControlPlaneRecoveryPhase(
+		recoveryState,
+		runtimeStatus,
+		recovery.PhasePasswallRetryWait,
+		autoProxyRetryReason,
+		false,
+	)
+	outcome.InventoryChanged = true
+	// Pause control-plane work for this tick: PassWall just changed and the
+	// inventory must be recollected before the next check-in, exactly like the
+	// PhaseDirectSettle auto-retry.
+	outcome.SkipControlPlane = true
+	return outcome, nil
 }
 
 func effectiveControllerRestartSettle(cfg *config.Config) time.Duration {

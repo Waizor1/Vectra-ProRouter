@@ -1,0 +1,58 @@
+#!/bin/sh
+#
+# 30-vectra-controlplane-direct - re-apply the control-plane DIRECT carve-out on
+# every firewall (re)build. This is THE persistence mechanism for the carve-out.
+#
+# WHY THIS IS REQUIRED (the reboot-persistence bug it fixes)
+# ---------------------------------------------------------
+# The carve-out (nft `table inet vectra_controlplane` + the fw4 include file at
+# /var/etc/vectra-controlplane.include) lives entirely in volatile state:
+#   * the nft table is in-kernel  -> wiped on reboot / `fw4 reload`
+#   * the include file is on tmpfs -> gone on reboot
+# It used to be created ONLY by the uci-default 93_vectra_controlplane_direct.
+# OpenWrt runs each uci-default exactly ONCE and then DELETES it
+# (openwrt-24.10-src/package/base-files/files/lib/functions.sh:377 ->
+# `( . "$i" ) && rm -f "$i"`). So after the first boot the uci-default is gone
+# and NOTHING rebuilds the carve-out on subsequent reboots: the agent keeps
+# stamping its control-plane mark but no nft rule matches it, the check-in falls
+# back into the PassWall2 tproxy, and a dead default_node strands the router.
+#
+# fw4 fires the `firewall` hotplug subsystem on boot AND on every `fw4 reload`
+# (the same mechanism PassWall2 relies on via firewall.passwall2's script
+# include). hotplug-call (openwrt-24.10-src/.../sbin/hotplug-call) sources every
+# script in /etc/hotplug.d/firewall/* in a subshell. We hook that to re-run the
+# carve-out's idempotent `apply`, so the table + include are rebuilt every time
+# the ruleset is (re)built - including the first boot after a reboot.
+#
+# This does NOT depend on the include file surviving: `apply` rebuilds BOTH the
+# nft table directly (atomic `nft -f` replace) AND rewrites the include file, so
+# even if fw4 silently skips a stale include pointing at a missing file, this
+# hook restores everything from scratch.
+#
+# Idempotent, best-effort, and safe when PassWall2 is absent: a lone accept-rule
+# for a mark nobody sets simply never matches.
+#
+# POSIX/ash only. No bashisms (this file is `.`-sourced by hotplug-call, so it
+# runs under BusyBox ash - no `[[ ]]`, no `==`, no `$((10#..))`).
+
+# Canonical install path of the carve-out helper.
+VECTRA_CPD_SCRIPT="/usr/libexec/vectra-controller/controlplane-direct.sh"
+
+# Only act on real firewall (re)build events. fw4/fw3 set ACTION; when sourced
+# directly (e.g. boot hook calling us) ACTION may be empty, which we also honor.
+case "${ACTION:-}" in
+	add|reload|"") ;;
+	*) return 0 2>/dev/null || exit 0 ;;
+esac
+
+# Guard against the helper being absent (partial install / package being
+# removed). A missing helper must never make hotplug processing fail.
+if [ -x "$VECTRA_CPD_SCRIPT" ]; then
+	# Best-effort, fully idempotent: rebuilds the nft table and rewrites the
+	# fw4 include. Never let a failure here abort firewall hotplug processing.
+	"$VECTRA_CPD_SCRIPT" apply >/dev/null 2>&1 || true
+fi
+
+# `return` when sourced by hotplug-call; `exit` when run standalone. Either way,
+# success - this hook is advisory and must not break the firewall pipeline.
+return 0 2>/dev/null || exit 0

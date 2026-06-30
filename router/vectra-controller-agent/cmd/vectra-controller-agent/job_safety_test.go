@@ -320,8 +320,8 @@ func TestEvaluateJobSafetyWithResourceCollectorRetriesAfterDropCaches(t *testing
 }
 
 func TestEvaluateJobSafetyWithResourceCollectorSkipsDropCachesWhenDisabled(t *testing.T) {
-	// Inverse: when PreDropCaches=false, the collector is called exactly once
-	// regardless of the first reading.
+	// Inverse: for a NON-self-update storage job, when PreDropCaches=false the
+	// collector is called exactly once (no cache reclaim) regardless of reading.
 	calls := 0
 	collector := func() controlplane.RouterResources {
 		calls++
@@ -331,7 +331,7 @@ func TestEvaluateJobSafetyWithResourceCollectorSkipsDropCachesWhenDisabled(t *te
 	}
 
 	evaluateJobSafetyWithResourceCollector(
-		controlplane.Job{ID: "job-1", Type: "update_controller"},
+		controlplane.Job{ID: "job-1", Type: "update_passwall_packages"},
 		nil,
 		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
 		collector,
@@ -340,6 +340,36 @@ func TestEvaluateJobSafetyWithResourceCollectorSkipsDropCachesWhenDisabled(t *te
 
 	if calls != 1 {
 		t.Fatalf("expected collector to be called exactly once when PreDropCaches is off, got %d", calls)
+	}
+}
+
+func TestEvaluateJobSafetyAlwaysDropsCachesForControllerSelfUpdate(t *testing.T) {
+	// A controller self-update must ALWAYS attempt the lossless cache reclaim to
+	// keep the panel link alive — even when PreDropCaches is not configured. A
+	// starved AX3000T (48 MB < 64 MB floor) must still land the update once the
+	// drop frees enough headroom (second read 80 MB).
+	calls := 0
+	collector := func() controlplane.RouterResources {
+		calls++
+		if calls == 1 {
+			return controlplane.RouterResources{MemoryAvailableMB: 48, OverlayFreeMB: 40, TMPFreeMB: 80}
+		}
+		return controlplane.RouterResources{MemoryAvailableMB: 80, OverlayFreeMB: 40, TMPFreeMB: 80}
+	}
+
+	decision := evaluateJobSafetyWithResourceCollector(
+		controlplane.Job{ID: "job-1", Type: "update_controller"},
+		nil,
+		time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		collector,
+		JobSafetyTuning{}, // PreDropCaches deliberately NOT set
+	)
+
+	if calls < 2 {
+		t.Fatalf("controller self-update must pre-drop caches even when PreDropCaches is off; collector called %d", calls)
+	}
+	if decision.Blocked {
+		t.Fatalf("expected self-update to pass after cache reclaim lifted RAM to 80 MB, got %#v", decision)
 	}
 }
 

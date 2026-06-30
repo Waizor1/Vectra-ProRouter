@@ -91,6 +91,10 @@ func main() {
 		RouterID:   cfg.RouterID,
 		AgentToken: cfg.AgentToken,
 		Timeout:    cfg.RequestTimeout,
+		// Stamp SO_MARK on check-in sockets so control-plane traffic always
+		// bypasses the PassWall2 tproxy and reaches the panel directly, even when
+		// the active shunt routes the catch-all through a dead proxy.
+		Fwmark: cfg.ControlPlaneFwmark,
 	})
 
 	rescueState := persisted.Rescue.State
@@ -312,7 +316,7 @@ func runOnce(
 	}
 
 	if cfg.RouterID == "" || cfg.AgentToken == "" {
-		registerResponse, err := client.Register(ctx, controlplane.RegisterRequest{
+		registerResponse, err := registerWithRecovery(ctx, client, persisted, controlplane.RegisterRequest{
 			ProtocolVersion: controlplane.ProtocolVersion,
 			Inventory:       collectedInventory,
 			PasswallImport:  passwallImport,
@@ -331,6 +335,12 @@ func runOnce(
 		persisted.RouterID = registerResponse.RouterID
 		persisted.AgentToken = registerResponse.IssuedToken
 		client.SetCredentials(registerResponse.RouterID, registerResponse.IssuedToken)
+		// Persist the freshly issued credentials durably BEFORE any authenticated
+		// call, so a crash in this window cannot lose the token and loop back into
+		// a 403 register. state.Save also writes the separate credential mirror.
+		if saveErr := state.Save(cfg.StatePath, *persisted); saveErr != nil {
+			log.Printf("warning: failed to persist issued credentials immediately: %v", saveErr)
+		}
 		runtimeStatus.RouterID = registerResponse.RouterID
 		runtimeStatus.PendingApproval = registerResponse.PendingApproval
 		runtimeStatus.ImportState = registerResponse.ConfigSyncState.ImportState
