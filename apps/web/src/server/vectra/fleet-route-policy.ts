@@ -3,7 +3,7 @@ import {
   type PasswallDesiredConfig,
 } from "@vectra/contracts";
 
-export const FLEET_ROUTE_POLICY_VERSION = "2026-05-12-v1" as const;
+export const FLEET_ROUTE_POLICY_VERSION = "2026-07-02-v2" as const;
 
 export type FleetRoutePolicySlotId =
   | "WorldProxy"
@@ -103,7 +103,7 @@ export const canonicalFleetRoutePolicy = {
     {
       id: "WorldProxy",
       label: "WorldProxy",
-      expected: "RU-entry Germany",
+      expected: "RU-entry Poland",
     },
     {
       id: "YouTube",
@@ -210,18 +210,21 @@ function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
 
   switch (slot) {
     case "WorldProxy": {
-      const germany = includesAny(label, [
-        "германи",
-        "germany",
-        "deutsch",
-        "🇩🇪",
-      ]);
-      if (!germany) {
+      // Moved off the RU-entry German exit (host ru*:50052) to the RU-entry
+      // Poland exit (host ru*:50053) on 2026-07-02: the shared German
+      // WorldProxy exit was chronically overloaded. WorldProxy now
+      // intentionally resolves to the SAME RU-entry Poland node as
+      // DiscordVoiceUdp (the subscription provides exactly one ru*:50053
+      // node) — that is the accepted design, not a collision bug. Keep
+      // aligned with the controller scorer in
+      // router/vectra-controller-agent/internal/passwall/fleet_policy.go.
+      const poland = includesAny(label, ["польш", "poland", "🇵🇱"]);
+      if (!poland) {
         return 0;
       }
       let score = 60;
       if (ruEntry) score += 40;
-      if (node.port === 50052) score += 30;
+      if (node.port === 50053) score += 30;
       if (isGrpc) score += 20;
       return ruEntry ? score : 0;
     }

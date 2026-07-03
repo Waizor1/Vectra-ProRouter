@@ -963,9 +963,9 @@ function standardRouteConfig(): NonNullable<
       },
       routeNode(
         "node-world",
-        "🇩🇪 Germany YouTube RU entry",
-        "ru1.example.net",
-        50052,
+        "🇷🇺🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+        "ru4.nfnpx.online",
+        50053,
       ),
       routeNode(
         "node-youtube",

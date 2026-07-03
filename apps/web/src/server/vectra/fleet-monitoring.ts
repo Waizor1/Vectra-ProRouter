@@ -232,7 +232,7 @@ function normalizeFleetPolicyCompliance(
 ): FleetRoutePolicyCompliance {
   return (
     compliance ?? {
-      policyVersion: "2026-05-12-v1",
+      policyVersion: "2026-07-02-v2",
       status: "unknown",
       checked: false,
       exempt: false,

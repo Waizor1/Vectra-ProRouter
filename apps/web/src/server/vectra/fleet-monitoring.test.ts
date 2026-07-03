@@ -378,7 +378,7 @@ describe("pickFreshAlertsForBrowser", () => {
             lastCheckInAt: "2026-05-12T10:09:40.000Z",
           },
           fleetPolicyCompliance: {
-            policyVersion: "2026-05-12-v1",
+            policyVersion: "2026-07-02-v2",
             status: "violation",
             checked: true,
             exempt: false,
@@ -388,7 +388,7 @@ describe("pickFreshAlertsForBrowser", () => {
             mismatches: [
               {
                 slot: "WorldProxy",
-                expected: "RU-entry Germany",
+                expected: "RU-entry Poland",
                 actual: "🇷🇺🇺🇸 США | ru3.nfnpx.online:50058 | grpc",
                 reason: "wrong_target",
               },

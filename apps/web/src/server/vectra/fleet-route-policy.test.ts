@@ -33,7 +33,11 @@ function buildConfig(
     discord: overrides.nodeIds?.discord ?? "node-discord-1",
   };
   const bindings = {
-    WorldProxy: nodeIds.world,
+    // WorldProxy now canonically shares the RU-entry Poland node with
+    // DiscordVoiceUdp (DE→PL move, 2026-07-02). The node-world fixture below
+    // stays a now-inert Germany node; WorldProxy defaults onto the discord
+    // (RU-Poland) node so the default config is policy-compliant.
+    WorldProxy: nodeIds.discord,
     YouTube: nodeIds.youtube,
     Special: nodeIds.special,
     Tiktok: nodeIds.tiktok,
@@ -318,7 +322,7 @@ describe("fleet route policy", () => {
       result.config.basicSettings.shuntRules.find(
         (rule) => rule.id === "WorldProxy",
       )?.outboundNodeId,
-    ).toBe("node-world-1");
+    ).toBe("node-discord-1");
     const discordRule = result.config.basicSettings.shuntRules.find(
       (rule) => rule.id === "DiscordVoiceUdp",
     );
@@ -338,7 +342,7 @@ describe("fleet route policy", () => {
     expect(
       result.config.nodes.find((node) => node.id === "myshunt")?.extras,
     ).toMatchObject({
-      WorldProxy: "node-world-1",
+      WorldProxy: "node-discord-1",
       DiscordVoiceUdp: "node-discord-1",
     });
   });

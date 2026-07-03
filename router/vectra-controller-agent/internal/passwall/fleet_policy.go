@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const FleetRoutePolicyVersion = "2026-05-12-v1"
+const FleetRoutePolicyVersion = "2026-07-02-v2"
 
 type FleetRoutePolicyIdentity struct {
 	Name             string
@@ -28,7 +28,7 @@ var fleetRoutePolicyExceptionValues = map[string]struct{}{
 }
 
 var fleetRoutePolicySlots = []fleetRoutePolicySlot{
-	{ID: "WorldProxy", Expected: "RU-entry Germany"},
+	{ID: "WorldProxy", Expected: "RU-entry Poland"},
 	{ID: "YouTube", Expected: "RU Russia"},
 	{ID: "Special", Expected: "Netherlands"},
 	{ID: "Tiktok", Expected: "Belarus"},
@@ -175,14 +175,22 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 
 	switch slotID {
 	case "WorldProxy":
-		if !containsAny(label, "германи", "germany", "deutsch", "🇩🇪") {
+		// Moved off the RU-entry German exit (host ru*:50052) to the RU-entry
+		// Poland exit (host ru*:50053) on 2026-07-02: the shared German
+		// WorldProxy exit was chronically overloaded. WorldProxy now
+		// intentionally resolves to the SAME RU-entry Poland node as
+		// DiscordVoiceUdp (the subscription provides exactly one ru*:50053
+		// node) — that is the accepted design, not a collision bug. Keep this
+		// aligned with the panel-side scorer in
+		// apps/web/src/server/vectra/fleet-route-policy.ts.
+		if !containsAny(label, "польш", "poland", "🇵🇱") {
 			return 0
 		}
 		score := 60
 		if ruEntry {
 			score += 40
 		}
-		if node.Port == 50052 {
+		if node.Port == 50053 {
 			score += 30
 		}
 		if isGRPC {

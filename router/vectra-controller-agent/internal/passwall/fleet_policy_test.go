@@ -102,7 +102,7 @@ func TestFindFleetRoutePolicyTargetSelectsWorkingNodePerSlot(t *testing.T) {
 		slot      string
 		wantOneOf []string
 	}{
-		{"WorldProxy", []string{"WM3tsJ7I"}},
+		{"WorldProxy", []string{"QJjZqQRF"}},
 		{"YouTube", []string{"WM3tsJ7I", "IoUWHdPS", "QJjZqQRF"}},
 		{"Special", []string{"WuGHS4PD"}},
 		{"Tiktok", []string{"8EbKwZxy"}},
