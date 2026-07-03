@@ -11,6 +11,19 @@ import (
 	"time"
 )
 
+// Canonical compact geo-data sources for the Vectra fleet. These MUST stay in
+// lock-step with the controller runtime enforcement (cmd runtime_ensure) and the
+// panel onboarding defaults (apps/web router-auto-onboarding compactGeo*Url).
+// A drift here is what shipped a fresh unit the wrong ~10.5MB upstream geosite
+// (Loyalsoldier/v2ray-rules-dat, missing the RUSSIA-OUTSIDE category the shunt
+// references) → xray "no proxy mode". Used only as the fallback when a router's
+// live UCI carries no geo URLs; real fleet routers override these from their
+// global_rules section.
+const (
+	DefaultCompactGeoIPURL   = "https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat"
+	DefaultCompactGeoSiteURL = "https://github.com/itdoginfo/allow-domains/releases/latest/download/geosite.dat"
+)
+
 type Importer struct {
 	Backend UCIBackend
 }
@@ -99,8 +112,8 @@ func importDesiredConfig(sections []UCISection) DesiredConfig {
 			TargetVersions: TargetVersionConfig{},
 		},
 		RuleManage: RuleManageConfig{
-			GeoIPURL:       "https://github.com/Loyalsoldier/geoip/releases/latest/download/geoip.dat",
-			GeoSiteURL:     "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
+			GeoIPURL:       DefaultCompactGeoIPURL,
+			GeoSiteURL:     DefaultCompactGeoSiteURL,
 			AssetDirectory: "/usr/share/v2ray/",
 			ScheduleMode:   "daily",
 			EnabledAssets:  []string{"geoip", "geosite"},
