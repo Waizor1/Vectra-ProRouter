@@ -158,21 +158,19 @@ func TestShouldDeferExpensiveInventoryProbes(t *testing.T) {
 	}
 }
 
-func TestShouldCollectServiceReachabilityRequiresSafeRuntime(t *testing.T) {
-	safeInventory := controlplane.RouterInventory{
+func runningInventoryWithMemory(availableMB int) controlplane.RouterInventory {
+	return controlplane.RouterInventory{
 		PasswallEnabled: true,
 		Resources: controlplane.RouterResources{
-			MemoryAvailableMB: serviceReachabilityProbeFloorMB,
+			MemoryAvailableMB: availableMB,
 		},
 		ServiceHealth: controlplane.RouterServiceHealth{
 			Passwall: "running",
 		},
 	}
+}
 
-	if !shouldCollectServiceReachability(safeInventory) {
-		t.Fatalf("expected service reachability probes at the configured memory floor")
-	}
-
+func TestServiceReachabilityModeRequiresSafeRuntime(t *testing.T) {
 	tests := []struct {
 		name      string
 		inventory controlplane.RouterInventory
@@ -202,16 +200,8 @@ func TestShouldCollectServiceReachabilityRequiresSafeRuntime(t *testing.T) {
 			},
 		},
 		{
-			name: "low memory",
-			inventory: controlplane.RouterInventory{
-				PasswallEnabled: true,
-				Resources: controlplane.RouterResources{
-					MemoryAvailableMB: serviceReachabilityProbeFloorMB - 1,
-				},
-				ServiceHealth: controlplane.RouterServiceHealth{
-					Passwall: "running",
-				},
-			},
+			name:      "starved memory",
+			inventory: runningInventoryWithMemory(serviceReachabilityLeanFloorMB - 1),
 		},
 		{
 			name: "unknown memory",
@@ -226,10 +216,131 @@ func TestShouldCollectServiceReachabilityRequiresSafeRuntime(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if shouldCollectServiceReachability(tt.inventory) {
-				t.Fatalf("expected service reachability probes to be skipped")
+			if mode := serviceReachabilityModeFor(tt.inventory); mode != serviceReachabilityOff {
+				t.Fatalf("serviceReachabilityModeFor = %v, want off", mode)
 			}
 		})
+	}
+}
+
+func TestServiceReachabilityModeTiersByAvailableMemory(t *testing.T) {
+	tests := []struct {
+		name      string
+		available int
+		want      serviceReachabilityMode
+	}{
+		{
+			name:      "at full floor",
+			available: serviceReachabilityProbeFloorMB,
+			want:      serviceReachabilityFull,
+		},
+		{
+			name:      "just below full floor",
+			available: serviceReachabilityProbeFloorMB - 1,
+			want:      serviceReachabilityLean,
+		},
+		{
+			name:      "at lean floor",
+			available: serviceReachabilityLeanFloorMB,
+			want:      serviceReachabilityLean,
+		},
+		{
+			// The whole point of the lean tier: an AX3000T with 234 MB total
+			// never clears the full floor, and used to report nothing at all.
+			name:      "ax3000t fleet baseline",
+			available: 49,
+			want:      serviceReachabilityLean,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := serviceReachabilityModeFor(runningInventoryWithMemory(tt.available))
+			if got != tt.want {
+				t.Fatalf("serviceReachabilityModeFor(%d) = %v, want %v", tt.available, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLeanModeProbesOneTargetPerService(t *testing.T) {
+	if got := len(telegramTargetsFor(serviceReachabilityLean)); got != 1 {
+		t.Fatalf("lean telegram targets = %d, want 1", got)
+	}
+	if got := len(youtubeTargetsFor(serviceReachabilityLean)); got != 1 {
+		t.Fatalf("lean youtube targets = %d, want 1", got)
+	}
+	if got := len(instagramTargetsFor(serviceReachabilityLean)); got != 1 {
+		t.Fatalf("lean instagram targets = %d, want 1", got)
+	}
+
+	// Lean must stay strictly cheaper than full, otherwise dropping the memory
+	// floor would add load to exactly the boxes that could not afford it.
+	if len(telegramTargetsFor(serviceReachabilityFull)) != len(telegramProbeTargets) {
+		t.Fatalf("full mode must probe every telegram target")
+	}
+	if len(telegramProbeTargets) <= 1 {
+		t.Fatalf("expected the full telegram profile to be richer than the lean one")
+	}
+}
+
+func TestBlockedServiceReachabilityRetriesFastThenBacksOff(t *testing.T) {
+	blocked := &controlplane.RouterReachabilityProbe{Reachable: false, Status: "blocked"}
+	reachable := &controlplane.RouterReachabilityProbe{Reachable: true, Status: "reachable"}
+
+	streak := 0
+	for probeIndex := 1; probeIndex <= serviceReachabilityBlockedRetryBurst; probeIndex++ {
+		var ttl time.Duration
+		ttl, streak = nextServiceReachabilityCache(telegramProbeCacheTTL, blocked, streak)
+		if ttl != serviceReachabilityBlockedRetryTTL {
+			t.Fatalf("probe %d ttl = %s, want fast retry %s", probeIndex, ttl, serviceReachabilityBlockedRetryTTL)
+		}
+		if streak != probeIndex {
+			t.Fatalf("probe %d streak = %d, want %d", probeIndex, streak, probeIndex)
+		}
+	}
+
+	ttl, streak := nextServiceReachabilityCache(telegramProbeCacheTTL, blocked, streak)
+	if ttl != telegramProbeCacheTTL {
+		t.Fatalf("ttl after burst = %s, want steady-state %s", ttl, telegramProbeCacheTTL)
+	}
+
+	ttl, streak = nextServiceReachabilityCache(telegramProbeCacheTTL, reachable, streak)
+	if ttl != telegramProbeCacheTTL {
+		t.Fatalf("recovered ttl = %s, want steady-state %s", ttl, telegramProbeCacheTTL)
+	}
+	if streak != 0 {
+		t.Fatalf("recovered streak = %d, want 0", streak)
+	}
+
+	// A nil probe must not be mistaken for an outage.
+	if ttl, streak = nextServiceReachabilityCache(telegramProbeCacheTTL, nil, 3); ttl != telegramProbeCacheTTL || streak != 0 {
+		t.Fatalf("nil probe = (%s, %d), want (%s, 0)", ttl, streak, telegramProbeCacheTTL)
+	}
+}
+
+func TestBlockedRetryFitsThePanelEvidenceWindow(t *testing.T) {
+	// The panel opens a rescue case only after blockedSnapshotWindow (3)
+	// consecutive snapshots carrying DISTINCT checkedAt values. Check-ins run on
+	// a 60s poll, so the retry TTL has to expire before the next check-in —
+	// otherwise consecutive snapshots replay one cached checkedAt and the
+	// evidence window never fills.
+	const controllerPollInterval = 60 * time.Second
+	if serviceReachabilityBlockedRetryTTL >= controllerPollInterval {
+		t.Fatalf(
+			"serviceReachabilityBlockedRetryTTL = %s, must be below the %s poll interval",
+			serviceReachabilityBlockedRetryTTL,
+			controllerPollInterval,
+		)
+	}
+
+	const panelEvidenceWindow = 3
+	if serviceReachabilityBlockedRetryBurst < panelEvidenceWindow {
+		t.Fatalf(
+			"serviceReachabilityBlockedRetryBurst = %d, must cover the %d-snapshot panel window",
+			serviceReachabilityBlockedRetryBurst,
+			panelEvidenceWindow,
+		)
 	}
 }
 
