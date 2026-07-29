@@ -6,6 +6,7 @@ import {
 } from "@vectra/contracts";
 
 import {
+  canonicalFleetRoutePolicy,
   evaluateFleetRoutePolicy,
   normalizeFleetRoutePolicy,
 } from "./fleet-route-policy";
@@ -293,6 +294,30 @@ describe("fleet route policy", () => {
     expect(compliance.status).toBe("exempt");
     expect(compliance.exempt).toBe(true);
     expect(compliance.canNormalize).toBe(false);
+  });
+
+  it("exempts VagrandRouter, whose ISP blocks the RU-entry port range", () => {
+    // Its line filters ports 50051-50061, so every canonical RU-entry gRPC
+    // target is unreachable while :443 works. Reachability is not part of the
+    // scorer, so without this exception normalization rebinds the slots to a
+    // dead node on every check-in.
+    const compliance = evaluateFleetRoutePolicy(buildConfig(), {
+      hostname: "VagrandRouter",
+    });
+
+    expect(compliance.status).toBe("exempt");
+    expect(compliance.exempt).toBe(true);
+    expect(compliance.canNormalize).toBe(false);
+  });
+
+  it("keeps the panel exception list in sync with the on-router one", () => {
+    // The panel and the controller's self-heal both hold a hardcoded list. If
+    // they drift, one silently undoes the other every 60s check-in. This test
+    // fails whenever the panel list changes without the Go list following.
+    expect([...canonicalFleetRoutePolicy.exceptions].sort()).toEqual([
+      "hh",
+      "vagrandrouter",
+    ]);
   });
 
   it("normalizes only shunt bindings and Discord tuning while preserving subscription URLs", () => {

@@ -23,8 +23,22 @@ type fleetRoutePolicySlot struct {
 	RequiredNodeExtras map[string]string
 }
 
+// Routers excluded from fleet package normalization. Keep aligned with
+// exceptionIdentityValues in apps/web/src/server/vectra/fleet-route-policy.ts —
+// the panel and the on-router self-heal must agree, or one will keep undoing the
+// other every check-in.
+//
+//   - hh: operator-designated no-touch router.
+//   - vagrandrouter: its ISP filters the non-standard high ports (50051-50061)
+//     that every RU-entry gRPC node uses, so the canonical targets are
+//     unreachable from that line while port 443 works fine (verified
+//     2026-07-29: ru12.nfnpx.online:50053 connect fails, fin2/pl1:443 connect in
+//     0.61s). Reachability is not part of the scorer, so normalization kept
+//     rebinding the slots to a dead RU-entry node once a minute. This router
+//     runs on the vless/raw :443 node family instead.
 var fleetRoutePolicyExceptionValues = map[string]struct{}{
-	"hh": {},
+	"hh":            {},
+	"vagrandrouter": {},
 }
 
 var fleetRoutePolicySlots = []fleetRoutePolicySlot{

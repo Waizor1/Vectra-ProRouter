@@ -157,3 +157,80 @@ func TestFleetRoutePolicyScoreIgnoresDisabledAndShuntNodes(t *testing.T) {
 		t.Fatalf("shunt node scored %d for YouTube, want 0", got)
 	}
 }
+
+func TestFleetRoutePolicyExceptionsMatchPanelList(t *testing.T) {
+	// The panel holds the same list in
+	// apps/web/src/server/vectra/fleet-route-policy.ts. If the two drift, one
+	// silently undoes the other on every 60s check-in, so pin the contents here
+	// and update both sides together.
+	want := map[string]struct{}{
+		"hh":            {},
+		"vagrandrouter": {},
+	}
+
+	if len(fleetRoutePolicyExceptionValues) != len(want) {
+		t.Fatalf(
+			"exception list has %d entries, want %d",
+			len(fleetRoutePolicyExceptionValues),
+			len(want),
+		)
+	}
+	for value := range want {
+		if _, ok := fleetRoutePolicyExceptionValues[value]; !ok {
+			t.Fatalf("missing exception %q", value)
+		}
+	}
+}
+
+func TestExemptRouterKeepsUnreachableCanonicalBindingUntouched(t *testing.T) {
+	// VagrandRouter's ISP filters the RU-entry port range, so the canonical
+	// RU-entry Poland node still outscores everything (reachability is not part
+	// of the scorer) and normalization would rebind the slot to a dead node on
+	// every check-in. The exception must short-circuit before that happens.
+	identity := FleetRoutePolicyIdentity{Hostname: "VagrandRouter"}
+
+	if !IsFleetRoutePolicyExempt(identity) {
+		t.Fatalf("expected VagrandRouter to be exempt")
+	}
+
+	config := DesiredConfig{
+		Nodes: []NodeConfig{
+			{
+				ID:        "ru-entry-poland",
+				Label:     "🇷🇺🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+				Address:   "ru12.nfnpx.online",
+				Port:      50053,
+				Transport: "grpc",
+				Enabled:   true,
+			},
+			{
+				ID:        "direct-poland-443",
+				Label:     "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+				Address:   "pl1.nfnpx.online",
+				Port:      443,
+				Transport: "raw",
+				Enabled:   true,
+			},
+		},
+	}
+	config.BasicSettings.ShuntRules = []ShuntRule{
+		{ID: "WorldProxy", Label: "WorldProxy", OutboundNodeID: "direct-poland-443"},
+	}
+
+	normalized, changed := NormalizeFleetRoutePolicyConfig(config, identity)
+	if changed {
+		t.Fatalf("normalization must not touch an exempt router")
+	}
+	if got := normalized.BasicSettings.ShuntRules[0].OutboundNodeID; got != "direct-poland-443" {
+		t.Fatalf("WorldProxy rebound to %q, want direct-poland-443", got)
+	}
+
+	// Sanity: without the exception the dead RU-entry node would win.
+	_, changedUnexempt := NormalizeFleetRoutePolicyConfig(
+		config,
+		FleetRoutePolicyIdentity{Hostname: "some-other-router"},
+	)
+	if !changedUnexempt {
+		t.Fatalf("expected a non-exempt router to be normalized onto the RU-entry node")
+	}
+}
