@@ -30,7 +30,7 @@ import {
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
-import { and, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, lte, or } from "drizzle-orm";
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 
 import { env } from "~/env";
@@ -453,25 +453,41 @@ async function getRevisionSummaryWithDb(
     return null;
   }
 
-  const revisions = await client
+  // Fetch only the two rows this summary needs. The previous implementation
+  // selected EVERY revision for the router — with the full `config` and
+  // `raw_imported_snapshot` JSONB on each row — and then picked two out of the
+  // array in JS. On the check-in path that ran once per router per minute
+  // against a table averaging ~160 revisions per router at ~90 kB per row, so
+  // the panel allocated hundreds of MB a minute and repeatedly hit V8's
+  // ~1 GB heap limit ("Ineffective mark-compacts near heap limit"), crashing
+  // the container every 15-40 minutes.
+  const [current] = await client
     .select()
     .from(passwallDesiredRevisions)
-    .where(eq(passwallDesiredRevisions.routerId, routerId))
-    .orderBy(desc(passwallDesiredRevisions.revisionNumber));
-
-  const currentIndex = revisions.findIndex(
-    (revision) => revision.id === revisionId,
-  );
-  if (currentIndex === -1) {
-    return null;
-  }
-
-  const current = revisions[currentIndex];
+    .where(
+      and(
+        eq(passwallDesiredRevisions.routerId, routerId),
+        eq(passwallDesiredRevisions.id, revisionId),
+      ),
+    )
+    .limit(1);
   if (!current) {
     return null;
   }
 
-  const previous = revisions[currentIndex + 1] ?? null;
+  // "Previous" is the next lower revision number, which is what indexing one
+  // past the current row in a revisionNumber-descending list resolved to.
+  const [previous = null] = await client
+    .select()
+    .from(passwallDesiredRevisions)
+    .where(
+      and(
+        eq(passwallDesiredRevisions.routerId, routerId),
+        lt(passwallDesiredRevisions.revisionNumber, current.revisionNumber),
+      ),
+    )
+    .orderBy(desc(passwallDesiredRevisions.revisionNumber))
+    .limit(1);
   const [currentConfig, previousConfig] = await Promise.all([
     hydrateRevisionConfigWithDb(client, current),
     previous

@@ -230,26 +230,16 @@ export const fleetRouter = createTRPCRouter({
       const routerMap = new Map(routerRows.map((router) => [router.id, router]));
       const latestSnapshots = await loadLatestSnapshots(ctx.db, input.routerIds);
 
-      const revisionRows = await ctx.db
-        .select()
-        .from(passwallDesiredRevisions)
-        .where(inArray(passwallDesiredRevisions.routerId, input.routerIds))
-        .orderBy(desc(passwallDesiredRevisions.createdAt));
-      const latestLiveRevisionByRouter = new Map<
-        string,
-        typeof passwallDesiredRevisions.$inferSelect
-      >();
-      for (const revision of revisionRows) {
-        if (
-          revision.origin !== "router_import" &&
-          revision.origin !== "operator_reimport"
-        ) {
-          continue;
-        }
-        if (!latestLiveRevisionByRouter.has(revision.routerId)) {
-          latestLiveRevisionByRouter.set(revision.routerId, revision);
-        }
-      }
+      // Use the shared loader rather than selecting every revision for these
+      // routers and reducing in JS: a bare .select() pulls the full `config`
+      // and `raw_imported_snapshot` JSONB on every row (~90 kB each, ~160 rows
+      // per router), which is a large allocation for two fields. The loader
+      // applies the same "latest router_import/operator_reimport per router"
+      // rule with a lateral join and projects only the columns used below.
+      const latestLiveRevisionByRouter = await loadLatestFleetPolicyConfigRows(
+        ctx.db,
+        input.routerIds,
+      );
 
       const results = [];
       for (const routerId of input.routerIds) {
