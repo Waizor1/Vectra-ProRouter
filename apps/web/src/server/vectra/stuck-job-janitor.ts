@@ -33,7 +33,7 @@
 // sweep + threshold (≤70 min total). When per-job-type SLAs land in r31
 // this static threshold becomes per-type expiry.
 
-import { and, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
 
 import { eventLog, jobs } from "@vectra/db";
 
@@ -52,6 +52,42 @@ export type StuckJobJanitorResult = {
   // an operator can investigate; they'll be retried on the next sweep.
   failedJobIds: string[];
 };
+
+// Candidate filter for a sweep: jobs still in 'running' with no completedAt
+// whose reference time is older than `threshold`.
+//
+// Age comparison uses coalesce(deliveredAt, createdAt) — NOT createdAt
+// alone. A job can sit in state='queued' for an extended window
+// (deliver_after delay, router offline, panel backlog) before it
+// transitions to 'running'. Using createdAt would mistakenly cancel a
+// legitimately-running job whose queue time was large but whose actual
+// execution time is well within bounds. Falling back to createdAt is a
+// belt-and-suspenders guard for data drift where deliveredAt is null
+// even though state='running'.
+//
+// The threshold is bound as an explicit ISO string with a ::timestamptz
+// cast rather than passed to drizzle's `lt()` as a JS Date. When the left
+// operand is a raw `sql` fragment, drizzle has no column metadata to run
+// the value through the column's `mapToDriverValue`, so node-postgres
+// receives a bare Date and throws:
+//
+//   TypeError [ERR_INVALID_ARG_TYPE]: The "string" argument must be of type
+//   string or an instance of Buffer or ArrayBuffer. Received an instance of Date
+//
+// That threw on every tick in production. Because the janitor also sweeps
+// once on startup, the panel container crash-looped (RestartCount=154 by
+// 2026-07-31), surfacing fleet-wide as intermittent 502s and
+// `context deadline exceeded` on /api/router/check-in.
+//
+// Exported so the regression test can assert on `.toSQL()` params — the
+// janitor's unit tests run against a fake database client and therefore
+// never execute this SQL.
+export const buildStuckJobCandidateFilter = (threshold: Date): SQL =>
+  and(
+    eq(jobs.state, "running"),
+    isNull(jobs.completedAt),
+    sql`coalesce(${jobs.deliveredAt}, ${jobs.createdAt}) < ${threshold.toISOString()}::timestamptz`,
+  )!;
 
 const buildEmptyResult = (enabled: boolean): StuckJobJanitorResult => ({
   enabled,
@@ -89,15 +125,7 @@ export async function runStuckJobJanitorTick(
   // Find candidates first so we can return a list of what was cancelled. A
   // single combined UPDATE...RETURNING would be one round-trip, but the
   // intermediate read makes auditing / event-log writes straightforward.
-  //
-  // Age comparison uses coalesce(deliveredAt, createdAt) — NOT createdAt
-  // alone. A job can sit in state='queued' for an extended window
-  // (deliver_after delay, router offline, panel backlog) before it
-  // transitions to 'running'. Using createdAt would mistakenly cancel a
-  // legitimately-running job whose queue time was large but whose actual
-  // execution time is well within bounds. Falling back to createdAt is a
-  // belt-and-suspenders guard for data drift where deliveredAt is null
-  // even though state='running'.
+  // See buildStuckJobCandidateFilter for the age-comparison semantics.
   const candidates = await database
     .select({
       id: jobs.id,
@@ -108,16 +136,7 @@ export async function runStuckJobJanitorTick(
       payload: jobs.payload,
     })
     .from(jobs)
-    .where(
-      and(
-        eq(jobs.state, "running"),
-        isNull(jobs.completedAt),
-        lt(
-          sql`coalesce(${jobs.deliveredAt}, ${jobs.createdAt})`,
-          threshold,
-        ),
-      ),
-    );
+    .where(buildStuckJobCandidateFilter(threshold));
 
   if (candidates.length === 0) {
     return buildEmptyResult(true);
