@@ -27,15 +27,21 @@ export async function GET() {
     await db.execute(sql`select 1`);
     checks.dbRead = true;
     const probeId = crypto.randomUUID();
-    await db.execute(sql`
-      with inserted as (
+    // The insert and the delete must be SEPARATE statements. A data-modifying
+    // CTE and the outer statement share one snapshot, so a `delete` wrapped
+    // around `insert ... returning` never sees the row it just inserted and
+    // silently deletes nothing — that leaked one probe row per health check
+    // and grew vectra_event_log to millions of rows. The transaction keeps the
+    // pair atomic so a crash between them cannot leak a row either.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`
         insert into vectra_event_log (id, type, severity, message)
         values (${probeId}, 'health.db_write_probe', 'info', 'health route db write probe')
-        returning id
-      )
-      delete from vectra_event_log
-      where id in (select id from inserted)
-    `);
+      `);
+      await tx.execute(sql`
+        delete from vectra_event_log where id = ${probeId}
+      `);
+    });
     checks.dbWriteProbe = true;
 
     return Response.json(
