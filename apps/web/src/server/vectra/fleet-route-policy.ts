@@ -24,6 +24,13 @@ export type FleetRoutePolicyRouterIdentity = {
   displayName?: string | null;
   hostname?: string | null;
   deviceIdentifier?: string | null;
+  // Operator-controlled exemption, stored per router in the database. This is
+  // the supported way to add or retire an exemption: it takes effect on the
+  // router's next check-in with no code change, no controller rebuild and no
+  // fleet rollout. `true`/`false` both override the seed list below, so an
+  // operator can also un-exempt a router the seed list still names.
+  routePolicyExempt?: boolean | null;
+  routePolicyExemptReason?: string | null;
 };
 
 type PasswallNode = PasswallDesiredConfig["nodes"][number];
@@ -192,6 +199,22 @@ function identityValues(identity?: FleetRoutePolicyRouterIdentity | null) {
 export function getFleetRoutePolicyExceptionReason(
   identity?: FleetRoutePolicyRouterIdentity | null,
 ) {
+  // The per-router database flag wins over the seed list in both directions:
+  // it can exempt a router the list never named, and it can un-exempt one the
+  // list still carries. Only fall through to the seed list when the flag is
+  // unset (null/undefined), which is the state of every router until an
+  // operator touches it.
+  const override = identity?.routePolicyExempt;
+  if (typeof override === "boolean") {
+    if (!override) {
+      return null;
+    }
+    return (
+      identity?.routePolicyExemptReason?.trim() ??
+      "router is exempted from fleet package normalization by operator"
+    );
+  }
+
   const values = identityValues(identity);
   const matched = values.find((value) => exceptionIdentityValues.has(value));
   return matched
@@ -734,5 +757,77 @@ export function normalizeFleetRoutePolicy(
     before,
     after,
     changes,
+  };
+}
+
+/**
+ * Builds the route-policy directive handed to the controller on check-in.
+ *
+ * This is the mechanism that keeps route policy a panel concern. The controller
+ * binds exactly the node IDs named here rather than re-deriving them from its
+ * own compiled-in scorer, so retargeting a slot or exempting a router ships as a
+ * panel deploy instead of a controller rebuild plus a fleet-wide rollout.
+ *
+ * Returns null when there is nothing useful to say — no live config yet, or no
+ * slot resolved. Null (and an omitted field on the wire) means "panel has no
+ * instruction"; the controller then falls back to its built-in scorer, which
+ * remains the safety net for routers that cannot reach the panel.
+ *
+ * An exempt router still gets a directive, with `exempt: true` and no slots.
+ * That is deliberate: the exemption itself is the instruction, and sending it
+ * is how an operator-set exemption reaches a controller whose compiled-in list
+ * does not contain that router.
+ */
+export function buildFleetRoutePolicyDirective(
+  config: PasswallDesiredConfig | null | undefined,
+  identity?: FleetRoutePolicyRouterIdentity | null,
+): {
+  version: string;
+  exempt: boolean;
+  reason?: string;
+  slots: {
+    id: string;
+    nodeId: string;
+    fingerprint?: string;
+    ruleExtras?: Record<string, string>;
+    nodeExtras?: Record<string, string>;
+  }[];
+} | null {
+  const exceptionReason = getFleetRoutePolicyExceptionReason(identity);
+  if (exceptionReason) {
+    return {
+      version: FLEET_ROUTE_POLICY_VERSION,
+      exempt: true,
+      reason: exceptionReason,
+      slots: [],
+    };
+  }
+
+  const compliance = evaluateFleetRoutePolicy(config, identity);
+  if (!compliance.checked || compliance.matchedSlots.length === 0) {
+    return null;
+  }
+
+  const extrasBySlot = new Map(
+    canonicalFleetRoutePolicy.slots.map((slot) => [slot.id, slot]),
+  );
+
+  return {
+    version: FLEET_ROUTE_POLICY_VERSION,
+    exempt: false,
+    slots: compliance.matchedSlots.map((match) => {
+      const canonical = extrasBySlot.get(match.slot);
+      return {
+        id: match.slot,
+        nodeId: match.targetNodeId,
+        fingerprint: match.targetFingerprint,
+        ...(canonical && "requiredRuleExtras" in canonical
+          ? { ruleExtras: { ...canonical.requiredRuleExtras } }
+          : {}),
+        ...(canonical && "requiredNodeExtras" in canonical
+          ? { nodeExtras: { ...canonical.requiredNodeExtras } }
+          : {}),
+      };
+    }),
   };
 }

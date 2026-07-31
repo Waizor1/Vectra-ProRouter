@@ -41,6 +41,7 @@ import { isRouterRebootJob } from "~/lib/router-reboot-jobs";
 import { db } from "~/server/db";
 import { issueRouterCredential } from "~/server/vectra/auth";
 import { appendRescueRepairAttemptFromJobResult } from "~/server/vectra/auto-rescue";
+import { buildFleetRoutePolicyDirective } from "~/server/vectra/fleet-route-policy";
 import {
   resolveImportedConfigDigest,
   resolvePersistedConfigDigest,
@@ -1374,6 +1375,20 @@ export async function checkInRouter(routerId: string, input: unknown) {
     desiredRevision,
     jobs: deliverableJobs.map(serializeJob),
     operatorMessage: buildCheckInMessage(router, parsed.health.currentMode),
+    // Tell the controller which nodes to bind rather than letting it re-derive
+    // them from its own compiled-in scorer. Computed from the config the router
+    // just reported, so the node IDs are the ones currently on the device.
+    routePolicy: buildFleetRoutePolicyDirective(
+      parsed.passwallImport?.config ?? null,
+      {
+        id: router.id,
+        displayName: router.displayName,
+        hostname: router.hostname,
+        deviceIdentifier: router.deviceIdentifier,
+        routePolicyExempt: router.routePolicyExempt,
+        routePolicyExemptReason: router.routePolicyExemptReason,
+      },
+    ),
   });
 }
 

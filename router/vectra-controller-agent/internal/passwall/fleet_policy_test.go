@@ -234,3 +234,173 @@ func TestExemptRouterKeepsUnreachableCanonicalBindingUntouched(t *testing.T) {
 		t.Fatalf("expected a non-exempt router to be normalized onto the RU-entry node")
 	}
 }
+
+// --- Panel-authored directive ---------------------------------------------
+//
+// These cover the mechanism that removes the "ship a new controller for every
+// policy tweak" requirement: the panel names the node, the controller obeys.
+
+func directiveTestConfig() DesiredConfig {
+	config := DesiredConfig{
+		Nodes: []NodeConfig{
+			{ID: "ru-entry-poland", Label: "🇷🇺🇵🇱 ⚡️Польша", Address: "ru12.nfnpx.online", Port: 50053, Transport: "grpc", Enabled: true},
+			{ID: "direct-france-443", Label: "🇫🇷 Франция", Address: "fr2.nfnpx.online", Port: 443, Transport: "tcp", Enabled: true},
+			{ID: "myshunt", Protocol: "shunt", Enabled: true, Extras: map[string]any{"WorldProxy": "ru-entry-poland"}},
+		},
+	}
+	config.BasicSettings.ShuntRules = []ShuntRule{
+		{ID: "WorldProxy", Label: "WorldProxy", OutboundNodeID: "ru-entry-poland"},
+	}
+	return config
+}
+
+func TestDirectiveOverridesBuiltinScorer(t *testing.T) {
+	// The scorer would pick ru-entry-poland. The panel says France. The panel
+	// wins — that is the whole point of the directive.
+	directive := &FleetRoutePolicyDirective{
+		Version: "test-v1",
+		Slots: []FleetRoutePolicyDirectiveSlot{
+			{ID: "WorldProxy", NodeID: "direct-france-443"},
+		},
+	}
+
+	normalized, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		directiveTestConfig(), FleetRoutePolicyIdentity{Hostname: "kirill-msk"}, directive)
+
+	if !changed {
+		t.Fatalf("expected directive to rebind the slot")
+	}
+	if got := normalized.BasicSettings.ShuntRules[0].OutboundNodeID; got != "direct-france-443" {
+		t.Fatalf("WorldProxy bound to %q, want direct-france-443", got)
+	}
+	for _, node := range normalized.Nodes {
+		if node.Protocol != "shunt" {
+			continue
+		}
+		if got := stringify(node.Extras["WorldProxy"]); got != "direct-france-443" {
+			t.Fatalf("shunt extras WorldProxy=%q, want direct-france-443", got)
+		}
+	}
+}
+
+func TestDirectiveCanExemptRouterUnknownToBuiltinList(t *testing.T) {
+	// Adding an exemption must not require a controller rebuild.
+	identity := FleetRoutePolicyIdentity{Hostname: "kirill-msk"}
+	if IsFleetRoutePolicyExempt(identity) {
+		t.Fatalf("precondition: kirill-msk must not be in the built-in list")
+	}
+
+	directive := &FleetRoutePolicyDirective{Exempt: true, Reason: "operator hold"}
+	_, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		directiveTestConfig(), identity, directive)
+
+	if changed {
+		t.Fatalf("panel-declared exemption must short-circuit normalization")
+	}
+}
+
+func TestDirectiveCanUnExemptRouterInBuiltinList(t *testing.T) {
+	// The reverse direction: the panel must be able to retire a hardcoded
+	// exemption without a rebuild.
+	identity := FleetRoutePolicyIdentity{Hostname: "VagrandRouter"}
+	if !IsFleetRoutePolicyExempt(identity) {
+		t.Fatalf("precondition: VagrandRouter must be in the built-in list")
+	}
+
+	directive := &FleetRoutePolicyDirective{
+		Exempt: false,
+		Slots:  []FleetRoutePolicyDirectiveSlot{{ID: "WorldProxy", NodeID: "direct-france-443"}},
+	}
+	normalized, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		directiveTestConfig(), identity, directive)
+
+	if !changed {
+		t.Fatalf("panel must be able to un-exempt a locally-listed router")
+	}
+	if got := normalized.BasicSettings.ShuntRules[0].OutboundNodeID; got != "direct-france-443" {
+		t.Fatalf("WorldProxy bound to %q, want direct-france-443", got)
+	}
+}
+
+func TestDirectiveWithUnknownNodeLeavesBindingIntact(t *testing.T) {
+	// The subscription re-mints node IDs on refresh, so a directive computed one
+	// check-in ago can name an ID that no longer exists. Skip, never blank.
+	directive := &FleetRoutePolicyDirective{
+		Slots: []FleetRoutePolicyDirectiveSlot{{ID: "WorldProxy", NodeID: "node-that-was-rotated-away"}},
+	}
+
+	normalized, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		directiveTestConfig(), FleetRoutePolicyIdentity{Hostname: "kirill-msk"}, directive)
+
+	if changed {
+		t.Fatalf("unknown target node must not change anything")
+	}
+	if got := normalized.BasicSettings.ShuntRules[0].OutboundNodeID; got != "ru-entry-poland" {
+		t.Fatalf("binding became %q, want the untouched ru-entry-poland", got)
+	}
+}
+
+func TestEmptyDirectiveFallsBackToBuiltinScorer(t *testing.T) {
+	// Panel reachable but with nothing to say (no resolvable targets yet): the
+	// offline safety net must still run rather than leaving the slot adrift.
+	config := directiveTestConfig()
+	config.BasicSettings.ShuntRules[0].OutboundNodeID = "direct-france-443"
+
+	directive := &FleetRoutePolicyDirective{Version: "test-v1", Slots: nil}
+	normalized, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		config, FleetRoutePolicyIdentity{Hostname: "kirill-msk"}, directive)
+
+	if !changed {
+		t.Fatalf("expected built-in scorer to run when directive carries no slots")
+	}
+	if got := normalized.BasicSettings.ShuntRules[0].OutboundNodeID; got != "ru-entry-poland" {
+		t.Fatalf("scorer bound %q, want ru-entry-poland", got)
+	}
+}
+
+func TestDirectiveSkipsDisabledTargetNode(t *testing.T) {
+	config := directiveTestConfig()
+	for i := range config.Nodes {
+		if config.Nodes[i].ID == "direct-france-443" {
+			config.Nodes[i].Enabled = false
+		}
+	}
+
+	directive := &FleetRoutePolicyDirective{
+		Slots: []FleetRoutePolicyDirectiveSlot{{ID: "WorldProxy", NodeID: "direct-france-443"}},
+	}
+	_, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		config, FleetRoutePolicyIdentity{Hostname: "kirill-msk"}, directive)
+
+	if changed {
+		t.Fatalf("a disabled node must never be bound")
+	}
+}
+
+func TestDirectiveAppliesRequiredExtras(t *testing.T) {
+	directive := &FleetRoutePolicyDirective{
+		Slots: []FleetRoutePolicyDirectiveSlot{{
+			ID:         "WorldProxy",
+			NodeID:     "direct-france-443",
+			RuleExtras: map[string]string{"network": "udp"},
+			NodeExtras: map[string]string{"mux": "1"},
+		}},
+	}
+
+	normalized, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		directiveTestConfig(), FleetRoutePolicyIdentity{Hostname: "kirill-msk"}, directive)
+
+	if !changed {
+		t.Fatalf("expected extras to be applied")
+	}
+	if got := stringify(normalized.BasicSettings.ShuntRules[0].Extras["network"]); got != "udp" {
+		t.Fatalf("rule extras network=%q, want udp", got)
+	}
+	for _, node := range normalized.Nodes {
+		if node.ID == "direct-france-443" {
+			if got := stringify(node.Extras["mux"]); got != "1" {
+				t.Fatalf("node extras mux=%q, want 1", got)
+			}
+		}
+	}
+}

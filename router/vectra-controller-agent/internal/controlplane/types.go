@@ -175,6 +175,11 @@ type CheckInResponse struct {
 	Jobs                   []Job                  `json:"jobs"`
 	OperatorMessage        string                 `json:"operatorMessage"`
 	DesiredRevision        json.RawMessage        `json:"desiredRevision"`
+	// RoutePolicy is the panel-authored fleet route policy. Kept as RawMessage so
+	// an older controller ignores an evolving payload instead of failing to
+	// decode the whole check-in response. Absent means "panel said nothing" and
+	// the controller falls back to its built-in scorer.
+	RoutePolicy json.RawMessage `json:"routePolicy,omitempty"`
 }
 
 type RegisterRequest struct {

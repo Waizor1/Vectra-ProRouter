@@ -1065,6 +1065,30 @@ export const routerCheckInRequestSchema = z.object({
   }),
 });
 
+// Panel-authored route policy. The controller binds exactly what this names
+// instead of running its own semantic scorer, so changing a canonical exit or a
+// per-router exemption is a panel deploy rather than a controller rebuild plus
+// a fleet-wide controller rollout.
+//
+// Optional on purpose: a controller older than this field ignores it, and a
+// panel that cannot resolve targets for a router omits it. Both cases fall back
+// to the controller's built-in scorer, which stays as the offline safety net.
+export const fleetRoutePolicyDirectiveSlotSchema = z.object({
+  id: z.string().min(1),
+  nodeId: z.string().min(1),
+  // Advisory, operator-facing: "label | host:port | transport | protocol".
+  fingerprint: z.string().optional(),
+  ruleExtras: z.record(z.string(), z.string()).optional(),
+  nodeExtras: z.record(z.string(), z.string()).optional(),
+});
+
+export const fleetRoutePolicyDirectiveSchema = z.object({
+  version: z.string().min(1),
+  exempt: z.boolean(),
+  reason: z.string().optional(),
+  slots: z.array(fleetRoutePolicyDirectiveSlotSchema),
+});
+
 export const routerCheckInResponseSchema = z.object({
   protocolVersion: z.literal(VECTRA_PROTOCOL_VERSION),
   routerId: z.string().uuid(),
@@ -1076,6 +1100,7 @@ export const routerCheckInResponseSchema = z.object({
   desiredRevision: desiredRevisionSummarySchema.nullable(),
   jobs: z.array(routerJobSchema),
   operatorMessage: z.string().nullable(),
+  routePolicy: fleetRoutePolicyDirectiveSchema.nullish(),
 });
 
 export const incidentTransitionSchema = z.object({

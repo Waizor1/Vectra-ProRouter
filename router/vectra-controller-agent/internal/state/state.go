@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"vectra-controller-agent/internal/controlplane"
+	"vectra-controller-agent/internal/passwall"
 	"vectra-controller-agent/internal/recovery"
 	"vectra-controller-agent/internal/rescue"
 )
@@ -43,6 +44,13 @@ type PersistedState struct {
 	LastImportedConfigDigest string                               `json:"last_imported_config_digest,omitempty"`
 	LastDesiredRevision      *controlplane.DesiredRevisionSummary `json:"last_desired_revision,omitempty"`
 	RequestImport            bool                                 `json:"request_import,omitempty"`
+	// LastRoutePolicy is the most recent panel-authored route policy. It is
+	// persisted because route-policy self-heal runs BEFORE check-in in a
+	// run_once cycle, and because a router that cannot currently reach the panel
+	// must keep honouring the last instruction it was given (in particular an
+	// exemption) rather than reverting to the controller's built-in defaults.
+	// Nil means the panel has never sent one, and the built-in scorer applies.
+	LastRoutePolicy *passwall.FleetRoutePolicyDirective `json:"last_route_policy,omitempty"`
 	Rescue                   RescueSnapshot                       `json:"rescue,omitempty"`
 	ControlPlaneRecovery     recovery.State                       `json:"control_plane_recovery,omitempty"`
 	CurrentJob               CurrentJob                           `json:"current_job,omitempty"`

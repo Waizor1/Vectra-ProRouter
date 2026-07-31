@@ -6,8 +6,10 @@ import {
 } from "@vectra/contracts";
 
 import {
+  buildFleetRoutePolicyDirective,
   canonicalFleetRoutePolicy,
   evaluateFleetRoutePolicy,
+  FLEET_ROUTE_POLICY_VERSION,
   normalizeFleetRoutePolicy,
 } from "./fleet-route-policy";
 
@@ -445,5 +447,78 @@ describe("fleet route policy", () => {
     );
     expect(youtubeRule?.outboundNodeId).toBe("node-youtube-1");
     expect(youtubeRule?.outboundNodeId).not.toBe("node-uae");
+  });
+});
+
+// --- Panel-authored directive ---------------------------------------------
+//
+// The directive is what removes "rebuild the controller for every policy tweak".
+// These lock in the two properties that matter operationally: the panel can set
+// an exemption the controller has never heard of, and it names concrete nodes.
+
+describe("buildFleetRoutePolicyDirective", () => {
+  it("names concrete node ids for every resolved slot", () => {
+    const directive = buildFleetRoutePolicyDirective(buildConfig({}), {
+      hostname: "kirill-msk",
+    });
+
+    expect(directive).not.toBeNull();
+    expect(directive!.exempt).toBe(false);
+    expect(directive!.slots.length).toBeGreaterThan(0);
+    for (const slot of directive!.slots) {
+      expect(slot.nodeId).toBeTruthy();
+      expect(slot.id).toBeTruthy();
+    }
+  });
+
+  it("carries the UDP tuning extras on the DiscordVoiceUdp slot", () => {
+    const directive = buildFleetRoutePolicyDirective(buildConfig({}), {
+      hostname: "kirill-msk",
+    });
+    const discord = directive!.slots.find((s) => s.id === "DiscordVoiceUdp");
+
+    expect(discord?.ruleExtras).toMatchObject({ network: "udp" });
+    expect(discord?.nodeExtras).toMatchObject({ mux: "1" });
+  });
+
+  it("emits an exempt directive from the database flag alone", () => {
+    // The whole point: a router the controller's compiled-in list has never
+    // heard of can still be exempted, with no rebuild and no rollout.
+    const directive = buildFleetRoutePolicyDirective(buildConfig({}), {
+      hostname: "kirill-msk",
+      routePolicyExempt: true,
+      routePolicyExemptReason: "operator hold pending provider fix",
+    });
+
+    expect(directive).toEqual({
+      version: FLEET_ROUTE_POLICY_VERSION,
+      exempt: true,
+      reason: "operator hold pending provider fix",
+      slots: [],
+    });
+  });
+
+  it("lets the database flag retire a seed-list exemption", () => {
+    const directive = buildFleetRoutePolicyDirective(buildConfig({}), {
+      hostname: "VagrandRouter",
+      routePolicyExempt: false,
+    });
+
+    expect(directive?.exempt).toBe(false);
+    expect(directive?.slots.length).toBeGreaterThan(0);
+  });
+
+  it("still honours the seed list when no operator flag is set", () => {
+    const directive = buildFleetRoutePolicyDirective(buildConfig({}), {
+      hostname: "VagrandRouter",
+    });
+
+    expect(directive?.exempt).toBe(true);
+  });
+
+  it("returns null when there is no live config to reason about", () => {
+    expect(
+      buildFleetRoutePolicyDirective(null, { hostname: "kirill-msk" }),
+    ).toBeNull();
   });
 });

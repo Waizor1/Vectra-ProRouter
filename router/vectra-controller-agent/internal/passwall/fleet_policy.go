@@ -17,8 +17,11 @@ type FleetRoutePolicyIdentity struct {
 }
 
 type fleetRoutePolicySlot struct {
-	ID                 string
-	Expected           string
+	ID       string
+	Expected string
+	// TargetNodeID, when non-empty, pins this slot to an exact node and bypasses
+	// the semantic scorer. Only panel-authored directives set it.
+	TargetNodeID       string
 	RequiredRuleExtras map[string]string
 	RequiredNodeExtras map[string]string
 }
@@ -61,6 +64,57 @@ var fleetRoutePolicySlots = []fleetRoutePolicySlot{
 	},
 }
 
+// FleetRoutePolicyDirective is the panel-authored route policy delivered in the
+// check-in response. It exists so route-policy changes (a new canonical exit, a
+// per-router exemption) ship as a panel deploy instead of a controller rebuild
+// plus a fleet-wide controller rollout.
+//
+// Precedence inside NormalizeFleetRoutePolicyConfig:
+//
+//  1. directive.Exempt        -> normalization is skipped entirely.
+//  2. directive.Slots present -> bind exactly what the panel asked for. The
+//     built-in scorer is NOT consulted; the panel is authoritative.
+//  3. directive nil/empty     -> fall back to the built-in scorer below.
+//
+// Case 3 is deliberate and must stay: a router that cannot reach the panel, or
+// one talking to a panel older than this field, still self-heals its bindings
+// rather than drifting. The built-in scorer is the offline safety net, not the
+// source of truth.
+type FleetRoutePolicyDirective struct {
+	Version string                          `json:"version"`
+	Exempt  bool                            `json:"exempt"`
+	Reason  string                          `json:"reason,omitempty"`
+	Slots   []FleetRoutePolicyDirectiveSlot `json:"slots"`
+}
+
+type FleetRoutePolicyDirectiveSlot struct {
+	ID string `json:"id"`
+	// NodeID is the concrete node the panel wants bound to this slot. Node IDs
+	// are per-router (the subscription mints them), so the panel computes this
+	// per router from the same live config the router last imported.
+	NodeID string `json:"nodeId"`
+	// Fingerprint is advisory ("label | host:port | transport | protocol") and is
+	// only used for operator-facing logging.
+	Fingerprint string            `json:"fingerprint,omitempty"`
+	RuleExtras  map[string]string `json:"ruleExtras,omitempty"`
+	NodeExtras  map[string]string `json:"nodeExtras,omitempty"`
+}
+
+// HasBindings reports whether the directive carries at least one usable slot.
+// An empty slot list means the panel had nothing to say (e.g. it could not
+// resolve targets for this router yet) and must not blank existing bindings.
+func (d *FleetRoutePolicyDirective) HasBindings() bool {
+	if d == nil {
+		return false
+	}
+	for _, slot := range d.Slots {
+		if strings.TrimSpace(slot.ID) != "" && strings.TrimSpace(slot.NodeID) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 var nonIdentityChars = regexp.MustCompile(`[^a-zа-я0-9-]+`)
 var textSeparators = regexp.MustCompile(`[_|()\[\]{}:;,.]+`)
 
@@ -75,14 +129,34 @@ func IsFleetRoutePolicyExempt(identity FleetRoutePolicyIdentity) bool {
 }
 
 func NormalizeFleetRoutePolicyConfig(current DesiredConfig, identity FleetRoutePolicyIdentity) (DesiredConfig, bool) {
-	if IsFleetRoutePolicyExempt(identity) {
+	return NormalizeFleetRoutePolicyConfigWithDirective(current, identity, nil)
+}
+
+// NormalizeFleetRoutePolicyConfigWithDirective applies the panel-authored
+// directive when one is present and falls back to the built-in scorer when it
+// is not. See FleetRoutePolicyDirective for the precedence rules.
+func NormalizeFleetRoutePolicyConfigWithDirective(current DesiredConfig, identity FleetRoutePolicyIdentity, directive *FleetRoutePolicyDirective) (DesiredConfig, bool) {
+	// A panel directive overrides the local exemption list in BOTH directions:
+	// the panel can exempt a router the local list does not know about, and it
+	// can un-exempt one the local list still carries. That is the whole point —
+	// changing an exemption must not require shipping a new controller.
+	if directive != nil {
+		if directive.Exempt {
+			return current, false
+		}
+	} else if IsFleetRoutePolicyExempt(identity) {
 		return current, false
+	}
+
+	slots := fleetRoutePolicySlots
+	if directive.HasBindings() {
+		slots = directiveSlots(directive)
 	}
 
 	desired := cloneDesiredConfig(current)
 	changed := false
-	for _, slot := range fleetRoutePolicySlots {
-		target := findFleetRoutePolicyTarget(desired.Nodes, slot.ID)
+	for _, slot := range slots {
+		target := resolveFleetRoutePolicyTarget(desired.Nodes, slot)
 		if target == nil || target.ID == "" {
 			continue
 		}
@@ -138,10 +212,22 @@ func NormalizeFleetRoutePolicyConfig(current DesiredConfig, identity FleetRouteP
 }
 
 func ReconcileFleetRoutePolicy(ctx context.Context, backend UCIBackend, identity FleetRoutePolicyIdentity) (ShuntReconcileResult, error) {
+	return ReconcileFleetRoutePolicyWithDirective(ctx, backend, identity, nil)
+}
+
+// ReconcileFleetRoutePolicyWithDirective reconciles live UCI against the
+// panel-authored directive, falling back to the built-in scorer when the panel
+// sent nothing. Callers on the check-in path should pass the directive from the
+// latest CheckInResponse.
+func ReconcileFleetRoutePolicyWithDirective(ctx context.Context, backend UCIBackend, identity FleetRoutePolicyIdentity, directive *FleetRoutePolicyDirective) (ShuntReconcileResult, error) {
 	if backend == nil {
 		backend = ExecBackend{}
 	}
-	if IsFleetRoutePolicyExempt(identity) {
+	if directive != nil {
+		if directive.Exempt {
+			return ShuntReconcileResult{}, nil
+		}
+	} else if IsFleetRoutePolicyExempt(identity) {
 		return ShuntReconcileResult{}, nil
 	}
 
@@ -154,11 +240,56 @@ func ReconcileFleetRoutePolicy(ctx context.Context, backend UCIBackend, identity
 		return ShuntReconcileResult{}, err
 	}
 	currentConfig := importDesiredConfig(currentSections)
-	desired, changed := NormalizeFleetRoutePolicyConfig(currentConfig, identity)
+	desired, changed := NormalizeFleetRoutePolicyConfigWithDirective(currentConfig, identity, directive)
 	if !changed {
 		return ShuntReconcileResult{}, nil
 	}
 	return reconcileShuntBindingsFromCurrent(ctx, backend, currentConfig, desired)
+}
+
+// directiveSlots converts the panel directive into the internal slot shape.
+// Slots with a blank ID or NodeID are dropped: a half-specified slot must leave
+// the existing binding alone rather than clear it.
+func directiveSlots(directive *FleetRoutePolicyDirective) []fleetRoutePolicySlot {
+	slots := make([]fleetRoutePolicySlot, 0, len(directive.Slots))
+	for _, slot := range directive.Slots {
+		id := strings.TrimSpace(slot.ID)
+		nodeID := strings.TrimSpace(slot.NodeID)
+		if id == "" || nodeID == "" {
+			continue
+		}
+		slots = append(slots, fleetRoutePolicySlot{
+			ID:                 id,
+			Expected:           slot.Fingerprint,
+			TargetNodeID:       nodeID,
+			RequiredRuleExtras: slot.RuleExtras,
+			RequiredNodeExtras: slot.NodeExtras,
+		})
+	}
+	return slots
+}
+
+// resolveFleetRoutePolicyTarget picks the node a slot should bind to: the exact
+// node the panel named, or the scorer's pick when no directive is in play.
+//
+// A pinned node that is not in the live config yields nil, which skips the slot.
+// That case is real — the subscription re-mints node IDs on refresh, so a
+// directive computed one check-in earlier can name an ID that no longer exists.
+// Skipping preserves the current binding; blanking it would strand the slot.
+func resolveFleetRoutePolicyTarget(nodes []NodeConfig, slot fleetRoutePolicySlot) *NodeConfig {
+	if slot.TargetNodeID == "" {
+		return findFleetRoutePolicyTarget(nodes, slot.ID)
+	}
+	for i := range nodes {
+		if nodes[i].ID != slot.TargetNodeID {
+			continue
+		}
+		if nodes[i].Protocol == "shunt" || !nodes[i].Enabled {
+			return nil
+		}
+		return &nodes[i]
+	}
+	return nil
 }
 
 func findFleetRoutePolicyTarget(nodes []NodeConfig, slotID string) *NodeConfig {

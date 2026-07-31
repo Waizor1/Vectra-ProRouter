@@ -119,6 +119,13 @@ export const routers = createTable(
     lastCheckInAt: timestamp("last_check_in_at", { withTimezone: true }),
     lastDirectModeAt: timestamp("last_direct_mode_at", { withTimezone: true }),
     lastRescueReason: text("last_rescue_reason"),
+    // Per-router opt-out from fleet route-policy normalization, set by an
+    // operator. Nullable on purpose: null means "no operator opinion", and only
+    // then does the seed list in fleet-route-policy.ts apply. An explicit
+    // true/false overrides that list, so an exemption can be added or retired
+    // without a code change or a controller rollout.
+    routePolicyExempt: boolean("route_policy_exempt"),
+    routePolicyExemptReason: text("route_policy_exempt_reason"),
     ...timestamps,
   },
   (table) => [
