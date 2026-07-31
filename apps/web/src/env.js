@@ -110,6 +110,33 @@ export const env = createEnv({
       .int()
       .min(600)
       .default(3600),
+    // Inventory-snapshot retention. Every check-in writes a snapshot, so the
+    // table grows ~29k rows/day for a 30-router fleet with nothing pruning it
+    // (406k rows / 1.3 GB observed on 2026-07-31, the largest table by far).
+    //
+    // Retention keeps the most recent N per router REGARDLESS of age, then
+    // drops anything older than the window. The per-router floor is what makes
+    // this safe for long-offline routers: a router silent for weeks keeps its
+    // last known state instead of being erased by an age-only rule. The floor
+    // is 20 against a maximum of 5 read by any code path (editor-surface), so
+    // there is 4x headroom.
+    VECTRA_SNAPSHOT_RETENTION_ENABLED: booleanFlagSchema(true),
+    VECTRA_SNAPSHOT_RETENTION_INTERVAL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(300)
+      .max(86400)
+      .default(3600),
+    VECTRA_SNAPSHOT_RETENTION_HOURS: z.coerce
+      .number()
+      .int()
+      .min(24)
+      .default(72),
+    VECTRA_SNAPSHOT_RETENTION_KEEP_PER_ROUTER: z.coerce
+      .number()
+      .int()
+      .min(5)
+      .default(20),
     VECTRA_TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
     VECTRA_TELEGRAM_ALLOWED_CHAT_IDS: z.string().min(1).optional(),
     VECTRA_TELEGRAM_WEBHOOK_SECRET: z.string().min(16).optional(),
@@ -162,6 +189,14 @@ export const env = createEnv({
       process.env.VECTRA_STUCK_JOB_JANITOR_INTERVAL_SECONDS,
     VECTRA_STUCK_JOB_STALE_SECONDS:
       process.env.VECTRA_STUCK_JOB_STALE_SECONDS,
+    VECTRA_SNAPSHOT_RETENTION_ENABLED:
+      process.env.VECTRA_SNAPSHOT_RETENTION_ENABLED,
+    VECTRA_SNAPSHOT_RETENTION_INTERVAL_SECONDS:
+      process.env.VECTRA_SNAPSHOT_RETENTION_INTERVAL_SECONDS,
+    VECTRA_SNAPSHOT_RETENTION_HOURS:
+      process.env.VECTRA_SNAPSHOT_RETENTION_HOURS,
+    VECTRA_SNAPSHOT_RETENTION_KEEP_PER_ROUTER:
+      process.env.VECTRA_SNAPSHOT_RETENTION_KEEP_PER_ROUTER,
     VECTRA_TELEGRAM_BOT_TOKEN: process.env.VECTRA_TELEGRAM_BOT_TOKEN,
     VECTRA_TELEGRAM_ALLOWED_CHAT_IDS:
       process.env.VECTRA_TELEGRAM_ALLOWED_CHAT_IDS,
