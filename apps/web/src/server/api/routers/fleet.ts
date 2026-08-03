@@ -416,7 +416,7 @@ export const fleetRouter = createTRPCRouter({
       }
 
       return {
-        policyVersion: "2026-07-02-v2" as const,
+        policyVersion: "2026-08-03-v4" as const,
         mode: input.mode,
         results,
       };

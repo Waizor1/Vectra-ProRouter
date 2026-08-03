@@ -522,3 +522,172 @@ describe("buildFleetRoutePolicyDirective", () => {
     ).toBeNull();
   });
 });
+
+describe("WorldProxy canon (2026-08-02: direct Poland :443)", () => {
+  // The provider blackholed Telegram DCs and the Netflix OCA CDN on part of its
+  // RU-entry fleet (ru3/ru4/ru5:50053 dead, ru7-ru12 fine), so WorldProxy moved
+  // to the direct Poland exit. These assertions mirror
+  // TestFleetRoutePolicyScoreWorldProxyPrefersDirectPoland in
+  // router/vectra-controller-agent/internal/passwall/fleet_policy_test.go — the
+  // two scorers must agree or they undo each other every check-in.
+  function withPolandNodes(extra: Array<Record<string, unknown>>) {
+    const base = buildConfig({});
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [...base.nodes, ...extra],
+    });
+  }
+
+  const directPoland = {
+    id: "node-poland-direct",
+    label: "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+    protocol: "vless",
+    enabled: true,
+    group: "default",
+    address: "pl2.nfnpx.online",
+    port: 443,
+    transport: "tcp",
+    extras: {},
+  };
+  const extremePoland = {
+    ...directPoland,
+    id: "node-poland-extreme",
+    label: "⚡Extreme Польша 🇵🇱",
+    address: "pl1.nfnpx.online",
+  };
+  // The base fixture's `node-discord-1` IS the RU-entry Poland node
+  // (ru3.nfnpx.online:50053, grpc) — the shape this outage killed.
+  const ruEntryPolandId = "node-discord-1";
+
+  it("binds WorldProxy to the direct Poland :443 exit when one exists", () => {
+    const result = normalizeFleetRoutePolicy(
+      withPolandNodes([extremePoland, directPoland]),
+      { hostname: "kirill-msk" },
+    );
+
+    const world = result.after.matchedSlots.find(
+      (slot) => slot.slot === "WorldProxy",
+    );
+    expect(world?.targetNodeId).toBe("node-poland-direct");
+  });
+
+  // 2026-08-03: splitting DiscordVoiceUdp off WorldProxy killed voice
+  // fleet-wide. The WorldProxy rule outranks the Discord rule in the generated
+  // Xray chain and already carries the Discord prefixes with network=tcp,udp,
+  // so voice packets leave through the WorldProxy node no matter what this slot
+  // points at — leaving the slot on RU-entry stranded its mux/xudp tuning on a
+  // node no Discord packet reached. The two must move together.
+  it("binds DiscordVoiceUdp to the same node as WorldProxy", () => {
+    const result = normalizeFleetRoutePolicy(
+      withPolandNodes([extremePoland, directPoland]),
+      { hostname: "kirill-msk" },
+    );
+
+    const world = result.after.matchedSlots.find(
+      (slot) => slot.slot === "WorldProxy",
+    );
+    const discord = result.after.matchedSlots.find(
+      (slot) => slot.slot === "DiscordVoiceUdp",
+    );
+    expect(discord?.targetNodeId).toBe("node-poland-direct");
+    expect(discord?.targetNodeId).toBe(world?.targetNodeId);
+  });
+
+  it("keeps DiscordVoiceUdp with WorldProxy on the RU-entry fallback too", () => {
+    const result = normalizeFleetRoutePolicy(buildConfig({}), {
+      hostname: "kirill-msk",
+    });
+
+    const world = result.after.matchedSlots.find(
+      (slot) => slot.slot === "WorldProxy",
+    );
+    const discord = result.after.matchedSlots.find(
+      (slot) => slot.slot === "DiscordVoiceUdp",
+    );
+    expect(discord?.targetNodeId).toBe(ruEntryPolandId);
+    expect(discord?.targetNodeId).toBe(world?.targetNodeId);
+  });
+
+  it("falls back to RU-entry Poland when the subscription has no direct node", () => {
+    const result = normalizeFleetRoutePolicy(buildConfig({}), {
+      hostname: "kirill-msk",
+    });
+
+    const world = result.after.matchedSlots.find(
+      (slot) => slot.slot === "WorldProxy",
+    );
+    expect(world?.targetNodeId).toBe(ruEntryPolandId);
+  });
+});
+
+describe("WorldProxy strictPreferred", () => {
+  // Regression guard for the trap found during the 2026-08-02 rollout: the
+  // directive echoes matchedSlots, and the controller obeys the directive over
+  // its own scorer. If a slot parked on the RU-entry fallback counted as
+  // compliant, the panel would pin every router back onto the broken exit.
+  function withDirectPoland() {
+    const base = buildConfig({});
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: "node-poland-direct",
+          label: "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+          protocol: "vless",
+          enabled: true,
+          group: "default",
+          address: "pl2.nfnpx.online",
+          port: 443,
+          transport: "tcp",
+          extras: {},
+        },
+      ],
+    });
+  }
+
+  it("reports violation while parked on the RU-entry fallback", () => {
+    const compliance = evaluateFleetRoutePolicy(withDirectPoland(), {
+      hostname: "kirill-msk",
+    });
+
+    const world = compliance.mismatches.find(
+      (mismatch) => mismatch.slot === "WorldProxy",
+    );
+    expect(compliance.status).toBe("violation");
+    expect(world?.reason).toBe("wrong_target");
+    expect(world?.expectedNodeId).toBe("node-poland-direct");
+  });
+
+  it("never pins the fallback node through the check-in directive", () => {
+    const directive = buildFleetRoutePolicyDirective(withDirectPoland(), {
+      hostname: "kirill-msk",
+    });
+
+    const world = directive?.slots.find((slot) => slot.id === "WorldProxy");
+    // Either the directive names the canonical node, or it stays silent and
+    // lets the controller's own scorer pick it — never the stale fallback.
+    expect(world?.nodeId ?? "node-poland-direct").toBe("node-poland-direct");
+  });
+
+  it("is compliant once bound to the canonical direct exit", () => {
+    const config = withDirectPoland();
+    const normalized = normalizeFleetRoutePolicy(config, {
+      hostname: "kirill-msk",
+    });
+
+    expect(normalized.after.status).toBe("compliant");
+    const world = normalized.after.matchedSlots.find(
+      (slot) => slot.slot === "WorldProxy",
+    );
+    expect(world?.targetNodeId).toBe("node-poland-direct");
+  });
+
+  it("still accepts the RU-entry node when no direct exit exists", () => {
+    const compliance = evaluateFleetRoutePolicy(buildConfig({}), {
+      hostname: "kirill-msk",
+    });
+
+    expect(compliance.status).toBe("compliant");
+  });
+});

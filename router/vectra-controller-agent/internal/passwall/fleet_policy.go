@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const FleetRoutePolicyVersion = "2026-07-02-v2"
+const FleetRoutePolicyVersion = "2026-08-03-v4"
 
 type FleetRoutePolicyIdentity struct {
 	Name             string
@@ -45,13 +45,13 @@ var fleetRoutePolicyExceptionValues = map[string]struct{}{
 }
 
 var fleetRoutePolicySlots = []fleetRoutePolicySlot{
-	{ID: "WorldProxy", Expected: "RU-entry Poland"},
+	{ID: "WorldProxy", Expected: "Poland direct :443 (RU-entry Poland fallback)"},
 	{ID: "YouTube", Expected: "RU Russia"},
 	{ID: "Special", Expected: "Netherlands"},
 	{ID: "Tiktok", Expected: "Belarus"},
 	{
 		ID:       "DiscordVoiceUdp",
-		Expected: "RU-entry Poland + UDP/mux/xudp tuning",
+		Expected: "same node as WorldProxy + UDP/mux/xudp tuning",
 		RequiredRuleExtras: map[string]string{
 			"network": "udp",
 			"port":    "19294-19344,50000-50100",
@@ -320,28 +320,51 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 
 	switch slotID {
 	case "WorldProxy":
-		// Moved off the RU-entry German exit (host ru*:50052) to the RU-entry
-		// Poland exit (host ru*:50053) on 2026-07-02: the shared German
-		// WorldProxy exit was chronically overloaded. WorldProxy now
-		// intentionally resolves to the SAME RU-entry Poland node as
-		// DiscordVoiceUdp (the subscription provides exactly one ru*:50053
-		// node) — that is the accepted design, not a collision bug. Keep this
-		// aligned with the panel-side scorer in
+		// History: RU-entry Germany (ru*:50052) -> RU-entry Poland (ru*:50053)
+		// on 2026-07-02 because the shared German exit was overloaded.
+		//
+		// Moved again on 2026-08-02 to the DIRECT Poland exit (pl*:443). The
+		// provider blackholed a subset of prefixes — Telegram DCs and the
+		// Netflix OCA CDN — on part of its RU-entry fleet (ru3/ru4/ru5:50053
+		// dead, ru7-ru12 fine), which killed WorldProxy for 12 of 25 routers.
+		// Measured on one router at one moment: pl2:443 reached
+		// web.telegram.org 200 and pulled 200 KB of OCA video at ~583 KB/s
+		// while ru3:50053 returned 000 for both, with the SAME egress IP. The
+		// RU-entry hop, not the exit, was the fault domain.
+		//
+		// RU-entry Poland is kept as a scored fallback (120 < 140) so a router
+		// whose subscription carries no direct pl*:443 node is not stranded
+		// with an unbound slot.
+		//
+		// DiscordVoiceUdp deliberately resolves to this same node — see that
+		// slot's case below for why splitting them broke Discord voice. Keep
+		// this aligned with the panel-side scorer in
 		// apps/web/src/server/vectra/fleet-route-policy.ts.
 		if !containsAny(label, "польш", "poland", "🇵🇱") {
 			return 0
 		}
 		score := 60
+		if !ruEntry && node.Port == 443 {
+			// Canonical shape: direct foreign Poland exit on :443.
+			score += 80
+			if !containsAny(label, "extreme") {
+				// Deterministic tie-break. Subscriptions carry two direct
+				// Poland :443 nodes ("🇵🇱 ⚡️Польша YouTube 🚫Ad🚫" and
+				// "⚡Extreme Польша 🇵🇱"); without this they score equal and the
+				// winner depends on node order, which the subscription
+				// re-mints on every refresh.
+				score += 5
+			}
+			return score
+		}
 		if ruEntry {
 			score += 40
-		}
-		if node.Port == 50053 {
-			score += 30
-		}
-		if isGRPC {
-			score += 20
-		}
-		if ruEntry {
+			if node.Port == 50053 {
+				score += 15
+			}
+			if isGRPC {
+				score += 5
+			}
 			return score
 		}
 	case "YouTube":
@@ -418,22 +441,31 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 		}
 		return score
 	case "DiscordVoiceUdp":
-		if !containsAny(label, "польш", "poland", "🇵🇱") {
-			return 0
-		}
-		score := 60
-		if ruEntry {
-			score += 35
-		}
-		if node.Port == 50053 {
-			score += 35
-		}
-		if isGRPC {
-			score += 20
-		}
-		if ruEntry {
-			return score
-		}
+		// This slot MUST land on the same node as WorldProxy, so it scores
+		// with the WorldProxy scorer verbatim.
+		//
+		// Why: the generated Xray routing chain puts the WorldProxy rule ABOVE
+		// this one, and that rule already carries the Discord prefixes
+		// (66.22.192.0/18, 66.22.176.0/24, 66.22.188.0/22) with
+		// network=tcp,udp. Xray takes the first matching rule, so every
+		// Discord voice packet leaves through the WorldProxy node — this rule
+		// (network=udp, port=19294-19344,50000-50100, no domain/ip of its own)
+		// never sees them. The slot's only real effect is the mux/xudp tuning
+		// it stamps onto whichever node it resolves to.
+		//
+		// That held silently until 2026-08-02: WorldProxy and this slot both
+		// pointed at ru*:50053, so the tuning landed where the traffic
+		// actually went. Moving WorldProxy to the direct pl*:443 exit left
+		// this slot pinned to RU-entry, so the mux/xudp settings decorated a
+		// node no Discord packet reached, and the traffic ran over a node with
+		// no XUDP. Voice died fleet-wide the next day (operator report
+		// 2026-08-03).
+		//
+		// Delegating keeps the two in lockstep through any future canon move,
+		// including onto the RU-entry fallback. mux_concurrency=-1 disables
+		// TCP mux, so this costs the WorldProxy TCP path nothing; XTLS Vision
+		// rejects UDP/443 on its own, so QUIC behaviour is unchanged too.
+		return fleetRoutePolicyScore("WorldProxy", node)
 	}
 	return 0
 }

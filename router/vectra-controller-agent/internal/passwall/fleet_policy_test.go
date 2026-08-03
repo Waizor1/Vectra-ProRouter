@@ -93,6 +93,57 @@ func TestFleetRoutePolicyScoreYouTubeTiers(t *testing.T) {
 	}
 }
 
+// TestFleetRoutePolicyScoreWorldProxyPrefersDirectPoland pins the 2026-08-02
+// canon: the direct Poland :443 exit outranks RU-entry Poland, RU-entry stays
+// above the selection threshold as a fallback for subscriptions with no direct
+// node, and the "Extreme" twin loses a deterministic tie-break so the winner
+// does not depend on node order (the subscription re-mints it on refresh).
+func TestFleetRoutePolicyScoreWorldProxyPrefersDirectPoland(t *testing.T) {
+	direct := NodeConfig{ID: "d", Label: "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫", Protocol: "vless", Enabled: true, Address: "pl2.nfnpx.online", Port: 443, Transport: "tcp"}
+	extreme := NodeConfig{ID: "x", Label: "⚡Extreme Польша 🇵🇱", Protocol: "vless", Enabled: true, Address: "pl1.nfnpx.online", Port: 443, Transport: "tcp"}
+	ruEntry := NodeConfig{ID: "r", Label: "🇷🇺🇵🇱 ⚡️Польша YouTube 🚫Ad🚫", Protocol: "vless", Enabled: true, Address: "ru3.nfnpx.online", Port: 50053, Transport: "grpc"}
+
+	directScore := fleetRoutePolicyScore("WorldProxy", direct)
+	extremeScore := fleetRoutePolicyScore("WorldProxy", extreme)
+	ruScore := fleetRoutePolicyScore("WorldProxy", ruEntry)
+
+	if directScore <= ruScore {
+		t.Fatalf("direct Poland scored %d, RU-entry %d; direct must win", directScore, ruScore)
+	}
+	if extremeScore >= directScore {
+		t.Fatalf("Extreme twin scored %d, plain direct %d; plain must win the tie-break", extremeScore, directScore)
+	}
+	if ruScore < 100 {
+		t.Fatalf("RU-entry Poland scored %d, want >= 100 so it stays a usable fallback", ruScore)
+	}
+
+	// With both shapes present the direct exit is what actually gets bound.
+	target := findFleetRoutePolicyTarget([]NodeConfig{ruEntry, extreme, direct}, "WorldProxy")
+	if target == nil || target.ID != "d" {
+		t.Fatalf("selected %v, want the direct Poland :443 node", target)
+	}
+	// With no direct node at all the RU-entry fallback still binds.
+	fallback := findFleetRoutePolicyTarget([]NodeConfig{ruEntry}, "WorldProxy")
+	if fallback == nil || fallback.ID != "r" {
+		t.Fatalf("selected %v, want the RU-entry fallback when no direct node exists", fallback)
+	}
+	// DiscordVoiceUdp must resolve to the SAME node as WorldProxy (2026-08-03).
+	// The WorldProxy rule sits above the Discord rule in the generated Xray
+	// chain and already carries the Discord prefixes with network=tcp,udp, so
+	// voice packets leave through the WorldProxy node regardless. Splitting the
+	// two stranded the slot's mux/xudp tuning on a node no Discord packet
+	// reached and killed voice fleet-wide.
+	discord := findFleetRoutePolicyTarget([]NodeConfig{ruEntry, extreme, direct}, "DiscordVoiceUdp")
+	if discord == nil || discord.ID != target.ID {
+		t.Fatalf("DiscordVoiceUdp selected %v, want the same node as WorldProxy (%s)", discord, target.ID)
+	}
+	// The lockstep must survive a fall back onto RU-entry too.
+	discordFallback := findFleetRoutePolicyTarget([]NodeConfig{ruEntry}, "DiscordVoiceUdp")
+	if discordFallback == nil || discordFallback.ID != fallback.ID {
+		t.Fatalf("DiscordVoiceUdp fallback selected %v, want the same node as WorldProxy (%s)", discordFallback, fallback.ID)
+	}
+}
+
 // TestFindFleetRoutePolicyTargetSelectsWorkingNodePerSlot exercises the real
 // selection (threshold + order) against the live fleet for every category, and
 // asserts the dead UAE node is never chosen.
@@ -102,11 +153,16 @@ func TestFindFleetRoutePolicyTargetSelectsWorkingNodePerSlot(t *testing.T) {
 		slot      string
 		wantOneOf []string
 	}{
-		{"WorldProxy", []string{"QJjZqQRF"}},
+		// WorldProxy moved to the direct Poland :443 exit on 2026-08-02 after
+		// the provider blackholed Telegram and the Netflix OCA CDN on part of
+		// its RU-entry fleet. DiscordVoiceUdp followed it onto the same node on
+		// 2026-08-03 — the WorldProxy rule outranks the Discord rule in the
+		// generated chain, so the slot's mux/xudp tuning has to land there.
+		{"WorldProxy", []string{"UeUVz9He"}},
 		{"YouTube", []string{"WM3tsJ7I", "IoUWHdPS", "QJjZqQRF"}},
 		{"Special", []string{"WuGHS4PD"}},
 		{"Tiktok", []string{"8EbKwZxy"}},
-		{"DiscordVoiceUdp", []string{"QJjZqQRF"}},
+		{"DiscordVoiceUdp", []string{"UeUVz9He"}},
 	}
 	for _, tc := range cases {
 		target := findFleetRoutePolicyTarget(nodes, tc.slot)

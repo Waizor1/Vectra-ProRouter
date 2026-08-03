@@ -11,7 +11,7 @@ import {
 } from "./presentation";
 
 const unknownFleetPolicyCompliance = {
-  policyVersion: "2026-07-02-v2" as const,
+  policyVersion: "2026-08-03-v4" as const,
   status: "unknown" as const,
   checked: false,
   exempt: false,

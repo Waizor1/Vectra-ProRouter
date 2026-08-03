@@ -378,7 +378,7 @@ describe("pickFreshAlertsForBrowser", () => {
             lastCheckInAt: "2026-05-12T10:09:40.000Z",
           },
           fleetPolicyCompliance: {
-            policyVersion: "2026-07-02-v2",
+            policyVersion: "2026-08-03-v4",
             status: "violation",
             checked: true,
             exempt: false,
