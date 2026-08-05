@@ -32,10 +32,24 @@ REQUIRED_PACKAGES = [
     "luci-app-passwall2",
 ]
 OPTIONAL_PACKAGES = ["sing-box", "hysteria"]
+# Dependencies of luci-app-passwall2 that the OpenWrt feed provides, so we do not
+# have to mirror them ourselves. Every entry must be resolvable from
+# downloads.openwrt.org for the target arch -- the guard below refuses to publish
+# a release whose control file names anything outside this set plus
+# REQUIRED_PACKAGES.
+#
+# When upstream adds a dependency, this refresh fails on every timer tick until
+# the new name is verified and added here. That is deliberate (never publish a
+# bundle the routers cannot satisfy) but it is silent: 26.7.16-1 added
+# coreutils-timeout and lyaml on 2026-08-02 and the mirror sat frozen for days
+# with only a systemd unit failure to show for it.
 OPENWRT_FEED_DEPS = {
     "coreutils",
     "coreutils-base64",
     "coreutils-nohup",
+    # 26.7.16-1, verified present as coreutils-timeout_9.7-r1 in the 24.10.6
+    # aarch64_cortex-a53 packages feed.
+    "coreutils-timeout",
     "curl",
     "ip-full",
     "libc",
@@ -44,6 +58,9 @@ OPENWRT_FEED_DEPS = {
     "luci-compat",
     "luci-lib-jsonc",
     "luci-lua-runtime",
+    # 26.7.16-1, verified present as lyaml_6.2.7-r2 in the 24.10.6
+    # aarch64_cortex-a53 packages feed.
+    "lyaml",
     "resolveip",
     "unzip",
 }
