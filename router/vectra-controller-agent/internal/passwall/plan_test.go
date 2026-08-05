@@ -750,8 +750,12 @@ func TestReconcileFleetRoutePolicyRestoresPackageAndDiscordTuning(t *testing.T) 
 		t.Fatalf("expected two fleet policy changes, got %#v", result)
 	}
 	joinedBatch := strings.Join(backend.batchCommands, "\n")
+	// After the 2026-07-02 DE→PL move, WorldProxy shares the single RU-entry
+	// Poland node with DiscordVoiceUdp: the stale German good_world node no
+	// longer matches WorldProxy, so both managed slots restore onto
+	// good_discord (the ru*:50053 Poland node with UDP/mux tuning).
 	for _, needle := range []string{
-		"set passwall2.myshunt.WorldProxy='good_world'",
+		"set passwall2.myshunt.WorldProxy='good_discord'",
 		"set passwall2.myshunt.DiscordVoiceUdp='good_discord'",
 		"set passwall2.DiscordVoiceUdp.network='udp'",
 		"set passwall2.DiscordVoiceUdp.port='19294-19344,50000-50100'",

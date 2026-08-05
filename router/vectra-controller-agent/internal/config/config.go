@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"vectra-controller-agent/internal/controlplane"
@@ -24,6 +26,10 @@ type Config struct {
 	Inventory             controlplane.RouterInventory `json:"inventory"`
 	DryRunPasswallProfile *passwall.DesiredConfig      `json:"dry_run_passwall_profile,omitempty"`
 	JobSafety             JobSafetyConfig              `json:"job_safety,omitempty"`
+	// ControlPlaneFwmark is the SO_MARK stamped on the agent's sockets so its
+	// control-plane traffic bypasses the PassWall2 tproxy and always egresses
+	// directly. 0 disables marking. Parsed from the "0x…" string in config.json.
+	ControlPlaneFwmark uint `json:"-"`
 }
 
 // JobSafetyConfig lets operators tune the resource-guard floors that gate
@@ -77,6 +83,7 @@ type rawConfig struct {
 	Inventory             controlplane.RouterInventory `json:"inventory"`
 	DryRunPasswallProfile *passwall.DesiredConfig      `json:"dry_run_passwall_profile,omitempty"`
 	JobSafety             JobSafetyConfig              `json:"job_safety,omitempty"`
+	ControlPlaneFwmark    string                       `json:"control_plane_fwmark,omitempty"`
 }
 
 func defaultRescuePolicy() rescue.Policy {
@@ -90,7 +97,7 @@ func defaultRescuePolicy() rescue.Policy {
 		Cooldown:                 5 * time.Minute,
 		RequireDirectPathSuccess: true,
 		DirectModeReason:         "Subscription expired or upstream proxy unavailable",
-		PanelOutageThreshold:     time.Hour,
+		PanelOutageThreshold:     15 * time.Minute,
 		ProbeCacheTTL:            5 * time.Minute,
 		ControllerRestartSettle:  90 * time.Second,
 		DirectSettle:             45 * time.Second,
@@ -238,6 +245,14 @@ func Load(path string) (Config, error) {
 	cfg.Inventory = raw.Inventory
 	cfg.DryRunPasswallProfile = raw.DryRunPasswallProfile
 	cfg.JobSafety = raw.JobSafety
+
+	if trimmed := strings.TrimSpace(raw.ControlPlaneFwmark); trimmed != "" {
+		mark, parseErr := strconv.ParseUint(trimmed, 0, 32)
+		if parseErr != nil {
+			return Config{}, fmt.Errorf("decode control_plane_fwmark %q: %w", raw.ControlPlaneFwmark, parseErr)
+		}
+		cfg.ControlPlaneFwmark = uint(mark)
+	}
 
 	cfg.Rescue, err = mergeRescuePolicy(cfg.Rescue, raw.Rescue)
 	if err != nil {

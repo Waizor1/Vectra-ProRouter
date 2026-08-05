@@ -180,6 +180,110 @@ func TestLoadSalvagesCredentialsFromTruncatedState(t *testing.T) {
 	}
 }
 
+func TestSavePreservesCredentialsWhenSavingTokenlessState(t *testing.T) {
+	// Reproduces the 2026-06-29 brick: EnsureIdentity()+Save() persisting an
+	// identity-only struct (no token) must NOT erase the credentials already on
+	// disk. Otherwise the agent reboots into the register-403 loop forever.
+	path := filepath.Join(t.TempDir(), "state.json")
+	good := PersistedState{
+		RouterID:         "router-123",
+		AgentToken:       "token-abc",
+		DeviceIdentifier: "vectra-test",
+		DevicePublicKey:  "pub",
+		DevicePrivateKey: "priv",
+	}
+	if err := Save(path, good); err != nil {
+		t.Fatalf("save good state: %v", err)
+	}
+
+	tokenless := PersistedState{
+		DeviceIdentifier: "vectra-test",
+		DevicePublicKey:  "pub",
+		DevicePrivateKey: "priv",
+	}
+	if err := Save(path, tokenless); err != nil {
+		t.Fatalf("save tokenless state: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if got, want := loaded.AgentToken, "token-abc"; got != want {
+		t.Fatalf("agent token = %q, want %q (a tokenless Save must not erase credentials)", got, want)
+	}
+	if got, want := loaded.RouterID, "router-123"; got != want {
+		t.Fatalf("router id = %q, want %q", got, want)
+	}
+}
+
+func TestLoadRecoversCredentialsFromIdentityMirror(t *testing.T) {
+	// Reproduces D1: both the primary state and its last-good backup decode
+	// cleanly but have lost the credentials (one buffer wrote both). The
+	// separate, only-written-when-present identity mirror must restore them.
+	path := filepath.Join(t.TempDir(), "state.json")
+	good := PersistedState{
+		RouterID:         "router-123",
+		AgentToken:       "token-abc",
+		DeviceIdentifier: "vectra-test",
+		DevicePublicKey:  "pub",
+		DevicePrivateKey: "priv",
+	}
+	if err := Save(path, good); err != nil {
+		t.Fatalf("save good state: %v", err)
+	}
+
+	tokenless := []byte(`{"device_identifier":"vectra-test","device_public_key":"pub","device_private_key":"priv"}`)
+	if err := os.WriteFile(path, tokenless, 0o600); err != nil {
+		t.Fatalf("clobber primary state: %v", err)
+	}
+	if err := os.WriteFile(lastGoodPath(path), tokenless, 0o600); err != nil {
+		t.Fatalf("clobber last-good state: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if got, want := loaded.AgentToken, "token-abc"; got != want {
+		t.Fatalf("agent token = %q, want %q (must recover from identity mirror)", got, want)
+	}
+	if got, want := loaded.RouterID, "router-123"; got != want {
+		t.Fatalf("router id = %q, want %q", got, want)
+	}
+}
+
+func TestSaveDoesNotPersistTokenlessIdentityMirror(t *testing.T) {
+	// The mirror is the durable source of truth for credentials; it must only
+	// ever hold real credentials so it can never itself become a tokenless trap.
+	path := filepath.Join(t.TempDir(), "state.json")
+	preReg := PersistedState{
+		DeviceIdentifier: "vectra-test",
+		DevicePublicKey:  "pub",
+		DevicePrivateKey: "priv",
+	}
+	if err := Save(path, preReg); err != nil {
+		t.Fatalf("save pre-registration state: %v", err)
+	}
+	if _, err := os.Stat(identityMirrorPath(path)); err == nil {
+		t.Fatal("identity mirror must not be written before a token exists")
+	}
+
+	reg := PersistedState{
+		RouterID:         "router-123",
+		AgentToken:       "token-abc",
+		DeviceIdentifier: "vectra-test",
+		DevicePublicKey:  "pub",
+		DevicePrivateKey: "priv",
+	}
+	if err := Save(path, reg); err != nil {
+		t.Fatalf("save registered state: %v", err)
+	}
+	if _, err := os.Stat(identityMirrorPath(path)); err != nil {
+		t.Fatalf("identity mirror must exist once a token is issued: %v", err)
+	}
+}
+
 func TestLoadEmptyStateWithoutBackupStartsFresh(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {

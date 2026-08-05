@@ -1,6 +1,12 @@
+import { QueryBuilder } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
-import { runStuckJobJanitorTick } from "./stuck-job-janitor";
+import { jobs } from "@vectra/db";
+
+import {
+  buildStuckJobCandidateFilter,
+  runStuckJobJanitorTick,
+} from "./stuck-job-janitor";
 
 // Minimal fake DB sufficient for the janitor's query+transaction shape.
 // Each select returns the configured candidate list; each transaction
@@ -390,5 +396,49 @@ describe("runStuckJobJanitorTick", () => {
     expect(metrics.updateAttempts()).toBe(1);
     expect(metrics.updatesApplied()).toBe(0);
     expect(metrics.eventLogInserts()).toHaveLength(0);
+  });
+});
+
+// The tests above drive a fake database client, so the candidate WHERE
+// clause is never compiled or sent to a driver. That blind spot let a
+// Date-binding bug reach production: the threshold was passed to drizzle's
+// `lt()` with a raw `sql` fragment on the left, so no column mapper ran and
+// node-postgres received a bare Date, throwing ERR_INVALID_ARG_TYPE on
+// every tick and crash-looping the panel container.
+//
+// QueryBuilder compiles the real SQL without needing a connection, so these
+// assertions exercise exactly what the mock cannot.
+describe("buildStuckJobCandidateFilter", () => {
+  const THRESHOLD = new Date("2026-07-31T17:39:06.000Z");
+
+  const compile = () =>
+    new QueryBuilder()
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(buildStuckJobCandidateFilter(THRESHOLD))
+      .toSQL();
+
+  it("binds no raw Date params — every param must be driver-safe", () => {
+    const { params } = compile();
+
+    // The actual production failure: a Date reaching the pg driver.
+    expect(params.some((param) => param instanceof Date)).toBe(false);
+    expect(params).toContain(THRESHOLD.toISOString());
+  });
+
+  it("compares coalesce(deliveredAt, createdAt) against the threshold", () => {
+    const { sql: text } = compile();
+
+    expect(text).toContain("coalesce");
+    expect(text).toContain("delivered_at");
+    expect(text).toContain("created_at");
+    expect(text).toContain("::timestamptz");
+  });
+
+  it("restricts the sweep to running jobs with no completed_at", () => {
+    const { sql: text } = compile();
+
+    expect(text).toContain("completed_at");
+    expect(text).toContain("is null");
   });
 });

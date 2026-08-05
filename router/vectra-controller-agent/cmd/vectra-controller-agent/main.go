@@ -91,6 +91,10 @@ func main() {
 		RouterID:   cfg.RouterID,
 		AgentToken: cfg.AgentToken,
 		Timeout:    cfg.RequestTimeout,
+		// Stamp SO_MARK on check-in sockets so control-plane traffic always
+		// bypasses the PassWall2 tproxy and reaches the panel directly, even when
+		// the active shunt routes the catch-all through a dead proxy.
+		Fwmark: cfg.ControlPlaneFwmark,
 	})
 
 	rescueState := persisted.Rescue.State
@@ -267,10 +271,11 @@ func runOnce(
 		}
 	}
 	if importSource == "check_in" && !persisted.RequestImport {
-		policyResult, policyErr := passwall.ReconcileFleetRoutePolicy(
+		policyResult, policyErr := passwall.ReconcileFleetRoutePolicyWithDirective(
 			ctx,
 			passwall.ExecBackend{},
 			fleetRoutePolicyIdentity(collectedInventory),
+			persisted.LastRoutePolicy,
 		)
 		if policyErr != nil {
 			log.Printf("fleet route policy self-heal skipped: %v", policyErr)
@@ -312,7 +317,7 @@ func runOnce(
 	}
 
 	if cfg.RouterID == "" || cfg.AgentToken == "" {
-		registerResponse, err := client.Register(ctx, controlplane.RegisterRequest{
+		registerResponse, err := registerWithRecovery(ctx, client, persisted, controlplane.RegisterRequest{
 			ProtocolVersion: controlplane.ProtocolVersion,
 			Inventory:       collectedInventory,
 			PasswallImport:  passwallImport,
@@ -331,6 +336,12 @@ func runOnce(
 		persisted.RouterID = registerResponse.RouterID
 		persisted.AgentToken = registerResponse.IssuedToken
 		client.SetCredentials(registerResponse.RouterID, registerResponse.IssuedToken)
+		// Persist the freshly issued credentials durably BEFORE any authenticated
+		// call, so a crash in this window cannot lose the token and loop back into
+		// a 403 register. state.Save also writes the separate credential mirror.
+		if saveErr := state.Save(cfg.StatePath, *persisted); saveErr != nil {
+			log.Printf("warning: failed to persist issued credentials immediately: %v", saveErr)
+		}
 		runtimeStatus.RouterID = registerResponse.RouterID
 		runtimeStatus.PendingApproval = registerResponse.PendingApproval
 		runtimeStatus.ImportState = registerResponse.ConfigSyncState.ImportState
@@ -391,6 +402,16 @@ func runOnce(
 		persisted.LastImportedConfigDigest = collectedInventory.ConfigDigest
 	}
 	persisted.RequestImport = checkInResponse.ConfigSyncState.RequestImport
+
+	// Adopt the panel's route policy. A malformed payload is logged and ignored
+	// so the previously stored policy (or the built-in scorer) keeps applying —
+	// a bad deploy must not strand the fleet's bindings. An absent field leaves
+	// the stored policy untouched for the same reason.
+	if routePolicy, policyErr := decodeRoutePolicy(checkInResponse.RoutePolicy); policyErr != nil {
+		log.Printf("route policy decode failed, keeping previous: %v", policyErr)
+	} else if routePolicy != nil {
+		persisted.LastRoutePolicy = routePolicy
+	}
 
 	desiredRevision, decodeErr := decodeDesiredRevision(checkInResponse.DesiredRevision)
 	if decodeErr != nil {
@@ -508,6 +529,21 @@ func decodeDesiredRevision(raw json.RawMessage) (*controlplane.DesiredRevisionSu
 		return nil, err
 	}
 	return &revision, nil
+}
+
+// decodeRoutePolicy parses the panel-authored route policy from a check-in
+// response. A nil result means "panel sent nothing" — the caller keeps whatever
+// policy it already had rather than clearing it.
+func decodeRoutePolicy(raw json.RawMessage) (*passwall.FleetRoutePolicyDirective, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+
+	var directive passwall.FleetRoutePolicyDirective
+	if err := json.Unmarshal(raw, &directive); err != nil {
+		return nil, err
+	}
+	return &directive, nil
 }
 
 func persistCurrentJob(
@@ -906,10 +942,11 @@ func executeJobs(
 				}
 				persisted.LastDesiredRevision = desiredRevision
 			}
-			fleetPolicyReconcileResult, err := passwall.ReconcileFleetRoutePolicy(
+			fleetPolicyReconcileResult, err := passwall.ReconcileFleetRoutePolicyWithDirective(
 				ctx,
 				backend,
 				fleetRoutePolicyIdentity(collectedInventory),
+				persisted.LastRoutePolicy,
 			)
 			if err != nil {
 				if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, result.Stdout, result.Stderr, err.Error(), map[string]interface{}{"error": err.Error(), "command": result.Command}); submitErr != nil {

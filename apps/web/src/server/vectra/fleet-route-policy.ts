@@ -3,7 +3,7 @@ import {
   type PasswallDesiredConfig,
 } from "@vectra/contracts";
 
-export const FLEET_ROUTE_POLICY_VERSION = "2026-05-12-v1" as const;
+export const FLEET_ROUTE_POLICY_VERSION = "2026-08-03-v4" as const;
 
 export type FleetRoutePolicySlotId =
   | "WorldProxy"
@@ -24,6 +24,13 @@ export type FleetRoutePolicyRouterIdentity = {
   displayName?: string | null;
   hostname?: string | null;
   deviceIdentifier?: string | null;
+  // Operator-controlled exemption, stored per router in the database. This is
+  // the supported way to add or retire an exemption: it takes effect on the
+  // router's next check-in with no code change, no controller rebuild and no
+  // fleet rollout. `true`/`false` both override the seed list below, so an
+  // operator can also un-exempt a router the seed list still names.
+  routePolicyExempt?: boolean | null;
+  routePolicyExemptReason?: string | null;
 };
 
 type PasswallNode = PasswallDesiredConfig["nodes"][number];
@@ -36,6 +43,15 @@ type PolicySlot = {
   expected: string;
   requiredRuleExtras?: Record<string, string>;
   requiredNodeExtras?: Record<string, string>;
+  // When set, "compliant" means the slot is bound to the single best-scoring
+  // candidate, not merely to one that clears the 100-point bar. Without it a
+  // slot with a scored fallback shape (WorldProxy: direct Poland 145 vs
+  // RU-entry 120) would report compliant while parked on the fallback, and
+  // buildFleetRoutePolicyDirective — which echoes matchedSlots — would then pin
+  // the router to that fallback forever, overriding the controller's own
+  // scorer. That is exactly how the 2026-08-02 Telegram/Netflix outage would
+  // have survived the fix.
+  strictPreferred?: boolean;
 };
 
 export type FleetRoutePolicyMismatch = {
@@ -94,7 +110,21 @@ export type FleetRoutePolicyNormalizationResult = {
   changes: FleetRoutePolicyNormalizationChange[];
 };
 
-const exceptionIdentityValues = new Set(["hh"]);
+// Routers excluded from fleet package normalization. Keep aligned with
+// fleetRoutePolicyExceptionValues in
+// router/vectra-controller-agent/internal/passwall/fleet_policy.go — the panel
+// and the on-router self-heal must agree, or one will keep undoing the other
+// every check-in.
+//
+// - hh: operator-designated no-touch router.
+// - vagrandrouter: its ISP filters the non-standard high ports (50051-50061)
+//   that every RU-entry gRPC node uses, so the canonical targets are
+//   unreachable from that line while port 443 works fine (verified 2026-07-29:
+//   ru12.nfnpx.online:50053 connect fails, fin2/pl1:443 connect in 0.61s).
+//   Reachability is not part of the scorer, so normalization kept rebinding the
+//   slots to a dead RU-entry node once a minute. This router runs on the
+//   vless/raw :443 node family instead.
+const exceptionIdentityValues = new Set(["hh", "vagrandrouter"]);
 
 export const canonicalFleetRoutePolicy = {
   version: FLEET_ROUTE_POLICY_VERSION,
@@ -103,7 +133,8 @@ export const canonicalFleetRoutePolicy = {
     {
       id: "WorldProxy",
       label: "WorldProxy",
-      expected: "RU-entry Germany",
+      expected: "Poland direct :443 (RU-entry Poland fallback)",
+      strictPreferred: true,
     },
     {
       id: "YouTube",
@@ -123,7 +154,8 @@ export const canonicalFleetRoutePolicy = {
     {
       id: "DiscordVoiceUdp",
       label: "DiscordVoiceUdp",
-      expected: "RU-entry Poland + UDP/mux/xudp tuning",
+      expected: "same node as WorldProxy + UDP/mux/xudp tuning",
+      strictPreferred: true,
       requiredRuleExtras: {
         network: "udp",
         port: "19294-19344,50000-50100",
@@ -178,6 +210,22 @@ function identityValues(identity?: FleetRoutePolicyRouterIdentity | null) {
 export function getFleetRoutePolicyExceptionReason(
   identity?: FleetRoutePolicyRouterIdentity | null,
 ) {
+  // The per-router database flag wins over the seed list in both directions:
+  // it can exempt a router the list never named, and it can un-exempt one the
+  // list still carries. Only fall through to the seed list when the flag is
+  // unset (null/undefined), which is the state of every router until an
+  // operator touches it.
+  const override = identity?.routePolicyExempt;
+  if (typeof override === "boolean") {
+    if (!override) {
+      return null;
+    }
+    return (
+      identity?.routePolicyExemptReason?.trim() ??
+      "router is exempted from fleet package normalization by operator"
+    );
+  }
+
   const values = identityValues(identity);
   const matched = values.find((value) => exceptionIdentityValues.has(value));
   return matched
@@ -210,20 +258,48 @@ function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
 
   switch (slot) {
     case "WorldProxy": {
-      const germany = includesAny(label, [
-        "германи",
-        "germany",
-        "deutsch",
-        "🇩🇪",
-      ]);
-      if (!germany) {
+      // History: RU-entry Germany (ru*:50052) -> RU-entry Poland (ru*:50053)
+      // on 2026-07-02 because the shared German exit was overloaded.
+      //
+      // Moved again on 2026-08-02 to the DIRECT Poland exit (pl*:443). The
+      // provider blackholed a subset of prefixes — Telegram DCs and the
+      // Netflix OCA CDN — on part of its RU-entry fleet (ru3/ru4/ru5:50053
+      // dead, ru7-ru12 fine), which killed WorldProxy for 12 of 25 routers.
+      // Measured on one router at one moment: pl2:443 reached
+      // web.telegram.org 200 and pulled 200 KB of OCA video at ~583 KB/s while
+      // ru3:50053 returned 000 for both, with the SAME egress IP. The RU-entry
+      // hop, not the exit, was the fault domain.
+      //
+      // RU-entry Poland is kept as a scored fallback (120 < 140) so a router
+      // whose subscription carries no direct pl*:443 node is not stranded with
+      // an unbound slot.
+      //
+      // DiscordVoiceUdp deliberately resolves to this same node — see that
+      // slot's case below for why splitting them broke Discord voice. Keep
+      // aligned with the controller scorer in
+      // router/vectra-controller-agent/internal/passwall/fleet_policy.go.
+      const poland = includesAny(label, ["польш", "poland", "🇵🇱"]);
+      if (!poland) {
         return 0;
       }
       let score = 60;
-      if (ruEntry) score += 40;
-      if (node.port === 50052) score += 30;
-      if (isGrpc) score += 20;
-      return ruEntry ? score : 0;
+      if (!ruEntry && node.port === 443) {
+        // Canonical shape: direct foreign Poland exit on :443.
+        score += 80;
+        // Deterministic tie-break. Subscriptions carry two direct Poland :443
+        // nodes ("🇵🇱 ⚡️Польша YouTube 🚫Ad🚫" and "⚡Extreme Польша 🇵🇱");
+        // without this they score equal and the winner depends on node order,
+        // which the subscription re-mints on every refresh.
+        if (!includesAny(label, ["extreme"])) score += 5;
+        return score;
+      }
+      if (ruEntry) {
+        score += 40;
+        if (node.port === 50053) score += 15;
+        if (isGrpc) score += 5;
+        return score;
+      }
+      return 0;
     }
     case "YouTube": {
       // Subscription labels are an entry/exit flag pair: "🇷🇺🇩🇪 Германия
@@ -287,15 +363,30 @@ function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
       return score;
     }
     case "DiscordVoiceUdp": {
-      const poland = includesAny(label, ["польш", "poland", "🇵🇱"]);
-      if (!poland) {
-        return 0;
-      }
-      let score = 60;
-      if (ruEntry) score += 35;
-      if (node.port === 50053) score += 35;
-      if (isGrpc) score += 20;
-      return ruEntry ? score : 0;
+      // This slot MUST land on the same node as WorldProxy, so it scores with
+      // the WorldProxy scorer verbatim.
+      //
+      // Why: the generated Xray routing chain puts the WorldProxy rule ABOVE
+      // this one, and that rule already carries the Discord prefixes
+      // (66.22.192.0/18, 66.22.176.0/24, 66.22.188.0/22) with
+      // network=tcp,udp. Xray takes the first matching rule, so every Discord
+      // voice packet leaves through the WorldProxy node — this rule (network
+      // =udp, port=19294-19344,50000-50100, no domain/ip of its own) never
+      // sees them. The slot's only real effect is the mux/xudp tuning it
+      // stamps onto whichever node it resolves to.
+      //
+      // That held silently until 2026-08-02: WorldProxy and this slot both
+      // pointed at ru*:50053, so the tuning landed where the traffic actually
+      // went. Moving WorldProxy to the direct pl*:443 exit left this slot
+      // pinned to RU-entry, so the mux/xudp settings decorated a node no
+      // Discord packet reached, and the traffic ran over a node with no XUDP.
+      // Voice died fleet-wide the next day (operator report 2026-08-03).
+      //
+      // Delegating keeps the two in lockstep through any future canon move,
+      // including onto the RU-entry fallback. `mux_concurrency: -1` disables
+      // TCP mux, so this costs the WorldProxy TCP path nothing; XTLS Vision
+      // rejects UDP/443 on its own, so QUIC behaviour is unchanged too.
+      return semanticScore("WorldProxy", node);
     }
   }
 }
@@ -527,7 +618,12 @@ export function evaluateFleetRoutePolicy(
       continue;
     }
 
-    const actualMatches = semanticScore(slot.id, actualNode) >= 100;
+    const strictPreferred =
+      "strictPreferred" in slot && slot.strictPreferred === true;
+    const actualMatches =
+      strictPreferred && preferredTarget
+        ? actualNode.id === preferredTarget.id
+        : semanticScore(slot.id, actualNode) >= 100;
     if (!actualMatches) {
       mismatches.push({
         slot: slot.id,
@@ -717,5 +813,77 @@ export function normalizeFleetRoutePolicy(
     before,
     after,
     changes,
+  };
+}
+
+/**
+ * Builds the route-policy directive handed to the controller on check-in.
+ *
+ * This is the mechanism that keeps route policy a panel concern. The controller
+ * binds exactly the node IDs named here rather than re-deriving them from its
+ * own compiled-in scorer, so retargeting a slot or exempting a router ships as a
+ * panel deploy instead of a controller rebuild plus a fleet-wide rollout.
+ *
+ * Returns null when there is nothing useful to say — no live config yet, or no
+ * slot resolved. Null (and an omitted field on the wire) means "panel has no
+ * instruction"; the controller then falls back to its built-in scorer, which
+ * remains the safety net for routers that cannot reach the panel.
+ *
+ * An exempt router still gets a directive, with `exempt: true` and no slots.
+ * That is deliberate: the exemption itself is the instruction, and sending it
+ * is how an operator-set exemption reaches a controller whose compiled-in list
+ * does not contain that router.
+ */
+export function buildFleetRoutePolicyDirective(
+  config: PasswallDesiredConfig | null | undefined,
+  identity?: FleetRoutePolicyRouterIdentity | null,
+): {
+  version: string;
+  exempt: boolean;
+  reason?: string;
+  slots: {
+    id: string;
+    nodeId: string;
+    fingerprint?: string;
+    ruleExtras?: Record<string, string>;
+    nodeExtras?: Record<string, string>;
+  }[];
+} | null {
+  const exceptionReason = getFleetRoutePolicyExceptionReason(identity);
+  if (exceptionReason) {
+    return {
+      version: FLEET_ROUTE_POLICY_VERSION,
+      exempt: true,
+      reason: exceptionReason,
+      slots: [],
+    };
+  }
+
+  const compliance = evaluateFleetRoutePolicy(config, identity);
+  if (!compliance.checked || compliance.matchedSlots.length === 0) {
+    return null;
+  }
+
+  const extrasBySlot = new Map(
+    canonicalFleetRoutePolicy.slots.map((slot) => [slot.id, slot]),
+  );
+
+  return {
+    version: FLEET_ROUTE_POLICY_VERSION,
+    exempt: false,
+    slots: compliance.matchedSlots.map((match) => {
+      const canonical = extrasBySlot.get(match.slot);
+      return {
+        id: match.slot,
+        nodeId: match.targetNodeId,
+        fingerprint: match.targetFingerprint,
+        ...(canonical && "requiredRuleExtras" in canonical
+          ? { ruleExtras: { ...canonical.requiredRuleExtras } }
+          : {}),
+        ...(canonical && "requiredNodeExtras" in canonical
+          ? { nodeExtras: { ...canonical.requiredNodeExtras } }
+          : {}),
+      };
+    }),
   };
 }

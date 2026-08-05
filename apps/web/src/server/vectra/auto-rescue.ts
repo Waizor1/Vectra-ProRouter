@@ -17,6 +17,7 @@ import { env } from "~/env";
 import { db } from "~/server/db";
 import { buildRouterManagementTaskLog } from "~/server/vectra/editor-surface";
 import { loadFleetMonitoringSnapshot } from "~/server/vectra/fleet-monitoring-data";
+import { getFleetRoutePolicyExceptionReason } from "~/server/vectra/fleet-route-policy";
 import { isRouterReachable } from "~/server/vectra/router-presence";
 import {
   canRunDestructiveAction,
@@ -338,6 +339,52 @@ export function repairActionsForTrigger(trigger: RescueCaseTrigger) {
     case "stale_check_in":
       return [] as const;
   }
+}
+
+// Unattended auto-rescue narrows direct/proxy recovery to the single safe
+// reconnect step. The heavier restart/refresh sequence (restart_passwall,
+// restart_dnsmasq, refresh_rules, refresh_subscriptions) stays available for
+// OPERATOR-initiated repairs through repairActionsForTrigger, but running it
+// fleet-wide with no human in the loop risks subscription re-import churn and
+// slot re-mapping. A stale operator-attention park is cleared by resuming the
+// proxy on the already-selected node — the same effect as a manual
+// `rescue reconnect` — so that is all the monitor does on its own.
+// Reachability triggers escalate instead of repairing. Until the controller
+// gained a lean low-memory probe profile these could not fire at all on the
+// 234 MB fleet, so nobody had to decide what unattended recovery should mean for
+// them — they silently inherited the heavy operator sequence above. They must
+// not keep it. A blocked-service outage is typically upstream (shared exit,
+// provider, or the service itself) while the proxy stays up and every other
+// destination works, so no local repair fixes it. Worse, such outages arrive
+// fleet-wide: firing even reconnect_proxy would restart xray on every router at
+// once and turn a single-service blip into a total VPN outage. reconnect_proxy
+// is also redundant here — the direct_mode and proxy_outage triggers already
+// cover the stale-failsafe case it exists for. An empty list escalates the case
+// to the operator, which is the useful outcome.
+const escalateOnlyTriggers = [
+  "foreign_reachability_blocked",
+  "telegram_blocked",
+] as const;
+
+export function isEscalateOnlyTrigger(trigger: RescueCaseTrigger) {
+  return escalateOnlyTriggers.some((candidate) => candidate === trigger);
+}
+
+export function autoRepairActionsForTrigger(trigger: RescueCaseTrigger) {
+  if (trigger === "direct_mode" || trigger === "proxy_outage") {
+    return ["reconnect_proxy"] as const;
+  }
+  if (isEscalateOnlyTrigger(trigger)) {
+    return [] as const;
+  }
+  return repairActionsForTrigger(trigger);
+}
+
+export function noAutoRepairEscalationReason(trigger: RescueCaseTrigger) {
+  if (isEscalateOnlyTrigger(trigger)) {
+    return "Service reachability blocked while the proxy itself is up; unattended repair cannot fix an upstream outage. Escalated for operator review.";
+  }
+  return "Router is offline/stale; remote repair cannot be delivered.";
 }
 
 function isCaseActive(candidate: RescueCaseRow, now: Date) {
@@ -908,10 +955,10 @@ async function queueInitialCaseWork(
     return;
   }
 
-  const actions = repairActionsForTrigger(rescueCase.trigger);
+  const actions = autoRepairActionsForTrigger(rescueCase.trigger);
   if (actions.length === 0) {
     await escalateRescueCase(database, rescueCase, now, {
-      reason: "Router is offline/stale; remote repair cannot be delivered.",
+      reason: noAutoRepairEscalationReason(rescueCase.trigger),
     });
     return;
   }
@@ -919,6 +966,7 @@ async function queueInitialCaseWork(
   await queueRescueCaseSafeRepair(
     {
       caseId: rescueCase.id,
+      actions,
       requestedBy: "auto_rescue",
     },
     database,
@@ -1110,6 +1158,46 @@ async function escalateExpiredCases(database: DatabaseClient, now: Date) {
   return escalated;
 }
 
+// Routers explicitly excluded from fleet package normalization (e.g. hh) are
+// also no-touch for UNATTENDED auto-rescue: the monitor must never queue
+// repairs, escalations, or Telegram pages for them. Operator- and
+// Telegram-initiated repairs are unaffected because they start from an explicit
+// rescue case id rather than this monitor sweep.
+function isAutoRescueExemptRouter(router: RouterRow) {
+  return (
+    getFleetRoutePolicyExceptionReason({
+      id: router.id,
+      displayName: router.displayName,
+      hostname: router.hostname,
+      deviceIdentifier: router.deviceIdentifier,
+    }) !== null
+  );
+}
+
+async function filterOutAutoRescueExemptTriggers(
+  database: DatabaseClient,
+  triggers: CriticalTrigger[],
+) {
+  if (triggers.length === 0) {
+    return { triggers, skipped: [] as string[] };
+  }
+  const routerIds = [...new Set(triggers.map((trigger) => trigger.routerId))];
+  const routerRows = await database
+    .select()
+    .from(routers)
+    .where(inArray(routers.id, routerIds));
+  const exemptIds = new Set(
+    routerRows.filter(isAutoRescueExemptRouter).map((router) => router.id),
+  );
+  if (exemptIds.size === 0) {
+    return { triggers, skipped: [] as string[] };
+  }
+  return {
+    triggers: triggers.filter((trigger) => !exemptIds.has(trigger.routerId)),
+    skipped: [...exemptIds],
+  };
+}
+
 export async function runAutoRescueMonitorTick(
   now = new Date(),
   database: DatabaseClient = db,
@@ -1121,10 +1209,15 @@ export async function runAutoRescueMonitorTick(
       queued: 0,
       resolved: 0,
       escalated: 0,
+      skipped: 0,
     };
   }
 
-  const triggers = await detectCriticalTriggers(database, now);
+  const detectedTriggers = await detectCriticalTriggers(database, now);
+  const { triggers, skipped } = await filterOutAutoRescueExemptTriggers(
+    database,
+    detectedTriggers,
+  );
   let created = 0;
   let queued = 0;
   for (const trigger of triggers) {
@@ -1148,6 +1241,7 @@ export async function runAutoRescueMonitorTick(
     queued,
     resolved,
     escalated,
+    skipped: skipped.length,
   };
 }
 

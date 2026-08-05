@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vectra-controller-agent
 VECTRA_VERSION?=0.1.13
-VECTRA_RELEASE?=30
+VECTRA_RELEASE?=36
 PKG_VERSION:=$(VECTRA_VERSION)
 PKG_RELEASE:=$(VECTRA_RELEASE)
 
@@ -48,6 +48,9 @@ define Package/$(PKG_NAME)/postinst
 	if [ -x /etc/uci-defaults/91_vectra_low_mem_profile ]; then \
 		/etc/uci-defaults/91_vectra_low_mem_profile >/dev/null 2>&1 || true; \
 	fi; \
+	if [ -x /etc/uci-defaults/93_vectra_controlplane_direct ]; then \
+		/etc/uci-defaults/93_vectra_controlplane_direct >/dev/null 2>&1 || true; \
+	fi; \
 	if [ "$${VECTRA_SKIP_POSTINST_RESTART}" = "1" ] || [ -f /tmp/vectra-skip-postinst-restart ]; then \
 		exit 0; \
 	fi; \
@@ -90,12 +93,16 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_BIN) ./files/etc/uci-defaults/90_vectra_controller_defaults $(1)/etc/uci-defaults/90_vectra_controller_defaults
 	$(INSTALL_BIN) ./files/etc/uci-defaults/91_vectra_low_mem_profile $(1)/etc/uci-defaults/91_vectra_low_mem_profile
 	$(INSTALL_BIN) ./files/etc/uci-defaults/92_vectra_controller_watchdog $(1)/etc/uci-defaults/92_vectra_controller_watchdog
+	$(INSTALL_BIN) ./files/etc/uci-defaults/93_vectra_controlplane_direct $(1)/etc/uci-defaults/93_vectra_controlplane_direct
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/firewall
+	$(INSTALL_BIN) ./files/etc/hotplug.d/firewall/30-vectra-controlplane-direct $(1)/etc/hotplug.d/firewall/30-vectra-controlplane-direct
 	$(INSTALL_DIR) $(1)/etc/sysctl.d
 	$(INSTALL_DATA) ./files/etc/sysctl.d/99-vectra-lowmem.conf $(1)/etc/sysctl.d/99-vectra-lowmem.conf
 	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
 	$(INSTALL_DATA) ./files/lib/upgrade/keep.d/vectra-controller $(1)/lib/upgrade/keep.d/vectra-controller
 	$(INSTALL_DIR) $(1)/usr/libexec/vectra-controller
 	$(INSTALL_BIN) ./files/usr/libexec/vectra-controller/render-config.sh $(1)/usr/libexec/vectra-controller/render-config.sh
+	$(INSTALL_BIN) ./files/usr/libexec/vectra-controller/controlplane-direct.sh $(1)/usr/libexec/vectra-controller/controlplane-direct.sh
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) ./files/usr/sbin/vectra-oom-guard $(1)/usr/sbin/vectra-oom-guard
 	$(INSTALL_BIN) ./files/usr/sbin/vectra-xray-wrapper $(1)/usr/sbin/vectra-xray-wrapper

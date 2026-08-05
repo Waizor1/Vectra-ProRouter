@@ -37,6 +37,30 @@ const instagramProbeTimeout = 3 * time.Second
 const instagramProbeCacheTTL = 30 * time.Minute
 const lowMemoryExpensiveProbeFloorMB = 64
 const serviceReachabilityProbeFloorMB = 128
+
+// serviceReachabilityLeanFloorMB is the floor for the reduced probe profile.
+// The AX3000T fleet baseline is 234 MB total with 37-67 MB available, so it can
+// never clear serviceReachabilityProbeFloorMB — before the lean profile existed
+// those routers reported telegram/youtube/instagram reachability as null and the
+// panel's telegram_blocked auto-rescue trigger could never fire on them. Lean
+// mode probes a single endpoint per service, which is strictly cheaper per cycle
+// than the full profile it replaces, so it stays affordable that far down.
+const serviceReachabilityLeanFloorMB = 24
+
+// serviceReachabilityBlockedRetryTTL replaces the long cache as soon as a
+// service stops being reachable. The panel needs blockedSnapshotWindow (3)
+// consecutive snapshots carrying DISTINCT checkedAt values before it opens a
+// rescue case; at the 30-minute steady-state TTL that takes ~90 minutes of
+// continuous outage, so real outages lasting minutes were never detected. This
+// must stay comfortably below the 60s controller poll interval, otherwise
+// consecutive check-ins replay one cached checkedAt and the window collapses.
+const serviceReachabilityBlockedRetryTTL = 30 * time.Second
+
+// serviceReachabilityBlockedRetryBurst bounds the fast cadence. A few probes is
+// all the panel needs to arm the trigger; a permanently blocked service then
+// falls back to the steady-state TTL instead of probing a struggling box
+// forever.
+const serviceReachabilityBlockedRetryBurst = 5
 const safetyDiagnosticsCacheTTL = 10 * time.Minute
 const safetyDiagnosticsTimeout = 2 * time.Second
 const proxyRuntimeProbeTimeout = time.Second
@@ -90,21 +114,24 @@ var instagramProbeTargets = []instagramProbeTarget{
 }
 
 var telegramProbeCache = struct {
-	mu        sync.Mutex
-	result    *controlplane.RouterReachabilityProbe
-	expiresAt time.Time
+	mu            sync.Mutex
+	result        *controlplane.RouterReachabilityProbe
+	expiresAt     time.Time
+	blockedStreak int
 }{}
 
 var youtubeProbeCache = struct {
-	mu        sync.Mutex
-	result    *controlplane.RouterReachabilityProbe
-	expiresAt time.Time
+	mu            sync.Mutex
+	result        *controlplane.RouterReachabilityProbe
+	expiresAt     time.Time
+	blockedStreak int
 }{}
 
 var instagramProbeCache = struct {
-	mu        sync.Mutex
-	result    *controlplane.RouterReachabilityProbe
-	expiresAt time.Time
+	mu            sync.Mutex
+	result        *controlplane.RouterReachabilityProbe
+	expiresAt     time.Time
+	blockedStreak int
 }{}
 
 var safetyDiagnosticsCache = struct {
@@ -223,10 +250,10 @@ func (Collector) Collect(base controlplane.RouterInventory) controlplane.RouterI
 		DNSMasq:        serviceState("/etc/init.d/dnsmasq"),
 	}
 	inventory.SafetyEvents = collectSafetyEvents(inventory)
-	if shouldCollectServiceReachability(inventory) {
-		inventory.TelegramReachability = collectTelegramReachability()
-		inventory.YouTubeReachability = collectYouTubeReachability()
-		inventory.InstagramReachability = collectInstagramReachability()
+	if mode := serviceReachabilityModeFor(inventory); mode != serviceReachabilityOff {
+		inventory.TelegramReachability = collectTelegramReachability(mode)
+		inventory.YouTubeReachability = collectYouTubeReachability(mode)
+		inventory.InstagramReachability = collectInstagramReachability(mode)
 	}
 
 	return inventory
@@ -563,14 +590,81 @@ func shouldDeferExpensiveInventoryProbes(resources controlplane.RouterResources)
 	return resources.MemoryAvailableMB > 0 && resources.MemoryAvailableMB < lowMemoryExpensiveProbeFloorMB
 }
 
-func shouldCollectServiceReachability(inventory controlplane.RouterInventory) bool {
+// serviceReachabilityMode describes how much service probing a router can
+// afford right now.
+type serviceReachabilityMode int
+
+const (
+	// serviceReachabilityOff runs no service probes at all.
+	serviceReachabilityOff serviceReachabilityMode = iota
+	// serviceReachabilityLean probes one representative endpoint per service.
+	serviceReachabilityLean
+	// serviceReachabilityFull probes every endpoint of every service.
+	serviceReachabilityFull
+)
+
+func serviceReachabilityModeFor(
+	inventory controlplane.RouterInventory,
+) serviceReachabilityMode {
 	if !inventory.PasswallEnabled {
-		return false
+		return serviceReachabilityOff
 	}
 	if inventory.ServiceHealth.Passwall != "running" {
-		return false
+		return serviceReachabilityOff
 	}
-	return inventory.Resources.MemoryAvailableMB >= serviceReachabilityProbeFloorMB
+
+	switch available := inventory.Resources.MemoryAvailableMB; {
+	case available >= serviceReachabilityProbeFloorMB:
+		return serviceReachabilityFull
+	case available >= serviceReachabilityLeanFloorMB:
+		return serviceReachabilityLean
+	default:
+		// Includes an unknown (zero) reading: without a trusted memory figure we
+		// keep the old conservative behaviour and probe nothing.
+		return serviceReachabilityOff
+	}
+}
+
+// nextServiceReachabilityCache decides how long a probe result stays cached and
+// how many consecutive blocked results we have seen. While a service is
+// reachable the long steady-state TTL applies and the streak resets; once it is
+// not reachable we re-probe on the short retry cadence for a bounded burst so
+// the panel can accumulate its distinct-checkedAt evidence window.
+func nextServiceReachabilityCache(
+	base time.Duration,
+	probe *controlplane.RouterReachabilityProbe,
+	blockedStreak int,
+) (time.Duration, int) {
+	if probe == nil || probe.Reachable {
+		return base, 0
+	}
+
+	streak := blockedStreak + 1
+	if streak > serviceReachabilityBlockedRetryBurst {
+		return base, streak
+	}
+	return serviceReachabilityBlockedRetryTTL, streak
+}
+
+func telegramTargetsFor(mode serviceReachabilityMode) []telegramProbeTarget {
+	if mode == serviceReachabilityLean && len(telegramProbeTargets) > 0 {
+		return telegramProbeTargets[:1]
+	}
+	return telegramProbeTargets
+}
+
+func youtubeTargetsFor(mode serviceReachabilityMode) []youtubeProbeTarget {
+	if mode == serviceReachabilityLean && len(youtubeProbeTargets) > 0 {
+		return youtubeProbeTargets[:1]
+	}
+	return youtubeProbeTargets
+}
+
+func instagramTargetsFor(mode serviceReachabilityMode) []instagramProbeTarget {
+	if mode == serviceReachabilityLean && len(instagramProbeTargets) > 0 {
+		return instagramProbeTargets[:1]
+	}
+	return instagramProbeTargets
 }
 
 func collectSafetyEvents(inventory controlplane.RouterInventory) []controlplane.RouterSafetyEvent {
@@ -1188,7 +1282,9 @@ func serviceState(script string) string {
 	return "degraded"
 }
 
-func collectTelegramReachability() *controlplane.RouterReachabilityProbe {
+func collectTelegramReachability(
+	mode serviceReachabilityMode,
+) *controlplane.RouterReachabilityProbe {
 	now := time.Now().UTC()
 
 	telegramProbeCache.mu.Lock()
@@ -1197,11 +1293,13 @@ func collectTelegramReachability() *controlplane.RouterReachabilityProbe {
 		telegramProbeCache.mu.Unlock()
 		return cached
 	}
+	blockedStreak := telegramProbeCache.blockedStreak
 	telegramProbeCache.mu.Unlock()
 
+	targets := telegramTargetsFor(mode)
 	prober := rescue.NewHTTPProber(telegramProbeTimeout)
-	checks := make([]controlplane.RouterReachabilityProbe, 0, len(telegramProbeTargets))
-	for _, target := range telegramProbeTargets {
+	checks := make([]controlplane.RouterReachabilityProbe, 0, len(targets))
+	for _, target := range targets {
 		ctx, cancel := context.WithTimeout(context.Background(), telegramProbeTimeout)
 		result := prober.Probe(ctx, target.URL)
 		cancel()
@@ -1212,15 +1310,24 @@ func collectTelegramReachability() *controlplane.RouterReachabilityProbe {
 		return nil
 	}
 
+	ttl, streak := nextServiceReachabilityCache(
+		telegramProbeCacheTTL,
+		probe,
+		blockedStreak,
+	)
+
 	telegramProbeCache.mu.Lock()
 	telegramProbeCache.result = cloneTelegramReachability(probe)
-	telegramProbeCache.expiresAt = now.Add(telegramProbeCacheTTL)
+	telegramProbeCache.expiresAt = now.Add(ttl)
+	telegramProbeCache.blockedStreak = streak
 	telegramProbeCache.mu.Unlock()
 
 	return cloneTelegramReachability(probe)
 }
 
-func collectYouTubeReachability() *controlplane.RouterReachabilityProbe {
+func collectYouTubeReachability(
+	mode serviceReachabilityMode,
+) *controlplane.RouterReachabilityProbe {
 	now := time.Now().UTC()
 
 	youtubeProbeCache.mu.Lock()
@@ -1229,11 +1336,13 @@ func collectYouTubeReachability() *controlplane.RouterReachabilityProbe {
 		youtubeProbeCache.mu.Unlock()
 		return cached
 	}
+	blockedStreak := youtubeProbeCache.blockedStreak
 	youtubeProbeCache.mu.Unlock()
 
+	targets := youtubeTargetsFor(mode)
 	prober := rescue.NewHTTPProber(youtubeProbeTimeout)
-	checks := make([]controlplane.RouterReachabilityProbe, 0, len(youtubeProbeTargets))
-	for _, target := range youtubeProbeTargets {
+	checks := make([]controlplane.RouterReachabilityProbe, 0, len(targets))
+	for _, target := range targets {
 		ctx, cancel := context.WithTimeout(context.Background(), youtubeProbeTimeout)
 		result := prober.Probe(ctx, target.URL)
 		cancel()
@@ -1244,9 +1353,16 @@ func collectYouTubeReachability() *controlplane.RouterReachabilityProbe {
 		return nil
 	}
 
+	ttl, streak := nextServiceReachabilityCache(
+		youtubeProbeCacheTTL,
+		probe,
+		blockedStreak,
+	)
+
 	youtubeProbeCache.mu.Lock()
 	youtubeProbeCache.result = cloneYouTubeReachability(probe)
-	youtubeProbeCache.expiresAt = now.Add(youtubeProbeCacheTTL)
+	youtubeProbeCache.expiresAt = now.Add(ttl)
+	youtubeProbeCache.blockedStreak = streak
 	youtubeProbeCache.mu.Unlock()
 
 	return cloneYouTubeReachability(probe)
@@ -1418,7 +1534,9 @@ func cloneYouTubeReachability(
 	return &cloned
 }
 
-func collectInstagramReachability() *controlplane.RouterReachabilityProbe {
+func collectInstagramReachability(
+	mode serviceReachabilityMode,
+) *controlplane.RouterReachabilityProbe {
 	now := time.Now().UTC()
 
 	instagramProbeCache.mu.Lock()
@@ -1427,11 +1545,13 @@ func collectInstagramReachability() *controlplane.RouterReachabilityProbe {
 		instagramProbeCache.mu.Unlock()
 		return cached
 	}
+	blockedStreak := instagramProbeCache.blockedStreak
 	instagramProbeCache.mu.Unlock()
 
+	targets := instagramTargetsFor(mode)
 	prober := rescue.NewHTTPProber(instagramProbeTimeout)
-	checks := make([]controlplane.RouterReachabilityProbe, 0, len(instagramProbeTargets))
-	for _, target := range instagramProbeTargets {
+	checks := make([]controlplane.RouterReachabilityProbe, 0, len(targets))
+	for _, target := range targets {
 		ctx, cancel := context.WithTimeout(context.Background(), instagramProbeTimeout)
 		result := prober.Probe(ctx, target.URL)
 		cancel()
@@ -1442,9 +1562,16 @@ func collectInstagramReachability() *controlplane.RouterReachabilityProbe {
 		return nil
 	}
 
+	ttl, streak := nextServiceReachabilityCache(
+		instagramProbeCacheTTL,
+		probe,
+		blockedStreak,
+	)
+
 	instagramProbeCache.mu.Lock()
 	instagramProbeCache.result = cloneInstagramReachability(probe)
-	instagramProbeCache.expiresAt = now.Add(instagramProbeCacheTTL)
+	instagramProbeCache.expiresAt = now.Add(ttl)
+	instagramProbeCache.blockedStreak = streak
 	instagramProbeCache.mu.Unlock()
 
 	return cloneInstagramReachability(probe)

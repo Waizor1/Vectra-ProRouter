@@ -14,17 +14,37 @@
 #      situation. Don't try to download a replacement — we can't trust the
 #      router has network at this point, and a botched download would only
 #      make things worse.
-#   3. If init.d isn't installed: out of scope (router predates this
+#   3. Dead-man's switch (GAP-2): even when the agent process is alive and
+#      healthy, the router can be PERMANENTLY unreachable if PassWall2's
+#      transparent proxy routes the controller's own panel traffic through a
+#      DEAD proxy node (active shunt default_node is a proxy + mainSwitch=1).
+#      The agent can then never reach api.vectra-pro.net, never check in, and
+#      the panel can never push a fix — a NAT'd box with no inbound path. Two
+#      real routers were lost this way. This branch reads ONLY on-disk signals
+#      (no network call — the network is the broken thing) and, if the agent
+#      has had no SUCCESSFUL control-plane contact for longer than a
+#      threshold while PassWall2 is enabled, fails SAFE to direct
+#      (passwall2 disabled + restart). That restores the controller's direct
+#      path so it can check in again; the agent's own auto-resume re-enables
+#      proxy once contact is restored, so we never re-enable it here.
+#   4. If init.d isn't installed: out of scope (router predates this
 #      package), exit silently.
 #
-# Failure mode this script SOLVES: r27 incident on totchto-filiciy where a
-# binary-less .ipk was installed and procd exhausted its respawn retries
+# Failure mode this script SOLVES (1/2): r27 incident on totchto-filiciy where
+# a binary-less .ipk was installed and procd exhausted its respawn retries
 # (15s threshold × 5s wait × 20 retries = ~100s), leaving the router with
 # no controller and no remote recovery path.
 #
-# Failure mode this script does NOT solve: total network loss, hardware
-# failure, or a binary that crashes immediately on startup. For those the
-# operator still needs LAN/SSH access.
+# Failure mode this script SOLVES (3): the "proxy strand" — agent alive but
+# its panel traffic is black-holed through a dead proxy. Also covers the
+# abrupt-power-loss case: after an unclean reboot the box may come up
+# PassWall-enabled with a dead proxy before the agent re-contacts the panel;
+# state.json (in preserved /etc/vectra-controller) keeps last contact across
+# reboots, so "now - last_contact > threshold" still trips and frees the box.
+#
+# Failure mode this script does NOT solve: total network loss for reasons
+# OTHER than the proxy strand (dead WAN, hardware failure), or a binary that
+# crashes immediately on startup. For those the operator still needs LAN/SSH.
 
 set -u
 
@@ -33,11 +53,36 @@ INIT_SCRIPT="/etc/init.d/vectra-controller"
 AGENT_BIN="/usr/sbin/vectra-controller-agent"
 STATE_FILE="/var/run/vectra-controller-watchdog.state"
 LAST_RESTART_FILE="/var/run/vectra-controller-watchdog.last-restart"
+# Records the boot epoch the first time the dead-man's switch runs after a
+# reboot. Used to grant an onboarded box a grace window before treating a
+# missing/empty last-contact timestamp as "stale" (so we don't fight a
+# legitimate first-boot onboarding that simply hasn't checked in yet).
+DEADMAN_BOOT_MARKER="/var/run/vectra-controller-watchdog.boot-epoch"
 
 # Throttle restart attempts. If we just nudged the service in the past N
 # seconds, don't nudge again — give procd respawn a chance to actually do
 # its work without us thrashing on top of it.
 RESTART_THROTTLE_SECONDS=300
+
+# Dead-man's switch: how long the controller may go without a SUCCESSFUL
+# control-plane contact before we fail safe to direct. Default 15 min;
+# overridable via uci option `vectra-controller.main.deadman_threshold`
+# (seconds) or the VECTRA_DEADMAN_THRESHOLD_SECONDS env var. Chosen well
+# above the agent's poll cadence (45s) + rescue settle windows so a healthy
+# router never trips, while a truly stranded one recovers within ~3 cron
+# ticks. Set to 0 to disable the dead-man's switch entirely.
+DEADMAN_THRESHOLD_SECONDS=900
+
+# Grace window after boot before a missing/empty last-contact timestamp on an
+# already-onboarded router counts as "stale". Lets first-boot onboarding (and
+# post-reboot re-contact) complete before we would flip to direct on the
+# strength of an absent timestamp alone. A timestamp that EXISTS but is old is
+# trusted immediately (it survived reboot), so this only gates the empty case.
+DEADMAN_BOOT_GRACE_SECONDS=900
+
+# Path to the agent's persisted state. Default matches 90_vectra_controller_defaults
+# / render-config.sh; overridable via the same uci option the agent reads.
+STATE_JSON_DEFAULT="/etc/vectra-controller/state.json"
 
 log() {
 	# Use logger so the action surfaces in `logread` alongside other procd
@@ -66,6 +111,267 @@ mark_restart_attempt() {
 	mkdir -p "$(dirname "$LAST_RESTART_FILE")" 2>/dev/null || true
 	now_epoch > "$LAST_RESTART_FILE"
 }
+
+# --- Dead-man's switch helpers (GAP-2) -------------------------------------
+#
+# These are split into small, side-effect-free helpers so the decision logic
+# can be unit-tested off-router. The only impure pieces (reading state.json,
+# reading uci, restarting passwall2) are isolated in their own functions and
+# stubbed by the test harness.
+
+# Resolve the configured state.json path (operator may have moved it). Falls
+# back to the package default. uci absence is tolerated (fresh/odd builds).
+deadman_state_path() {
+	value="$(uci -q get vectra-controller.main.state_path 2>/dev/null || true)"
+	if [ -n "$value" ]; then
+		printf '%s' "$value"
+	else
+		printf '%s' "$STATE_JSON_DEFAULT"
+	fi
+}
+
+# Resolve the staleness threshold in seconds. Precedence: env override > uci
+# option > compile-time default. Non-numeric or negative values fall back to
+# the default so a typo can never silently disable the safety net.
+deadman_threshold_seconds() {
+	value="${VECTRA_DEADMAN_THRESHOLD_SECONDS:-}"
+	if [ -z "$value" ]; then
+		value="$(uci -q get vectra-controller.main.deadman_threshold 2>/dev/null || true)"
+	fi
+	case "$value" in
+	'' | *[!0-9]*)
+		printf '%s' "$DEADMAN_THRESHOLD_SECONDS"
+		;;
+	*)
+		printf '%s' "$value"
+		;;
+	esac
+}
+
+# Read a top-level or nested string field out of state.json via jsonfilter
+# (the OpenWrt idiom already used by render-config.sh). $1 is a jsonfilter
+# expression like '@.router_id' or '@.control_plane_recovery.last_successful_control_plane_at'.
+# Empty string when the file or field is absent. Never errors out the script.
+deadman_state_field() {
+	expression="$1"
+	state_file="$(deadman_state_path)"
+	[ -f "$state_file" ] || return 0
+	jsonfilter -i "$state_file" -e "$expression" 2>/dev/null || true
+}
+
+# Strip leading zeros from a numeric string so $(( )) never mis-parses it as
+# octal (e.g. "09"). Pure parameter expansion — no `10#` base prefix, which is
+# a bashism BusyBox ash / dash reject. "" -> "0", "00" -> "0", "09" -> "9".
+deadman_strip_leading_zeros() {
+	value="$1"
+	while :; do
+		case "$value" in
+		0[0-9]*) value="${value#0}" ;;
+		*) break ;;
+		esac
+	done
+	[ -n "$value" ] || value=0
+	printf '%s' "$value"
+}
+
+# Convert an RFC3339 timestamp (as written by the agent's recovery.FormatTime,
+# e.g. 2026-06-29T12:34:56Z, always UTC) to epoch seconds. Prints nothing on
+# failure (caller treats empty as "no usable timestamp"). BusyBox `date -d`
+# RFC3339 support is inconsistent across builds, so we first try it and fall
+# back to a fully deterministic pure-shell computation that needs no external
+# parsing. Only the UTC `Z` / `+00:00` form is produced by the agent, so we
+# normalise to UTC and ignore any offset.
+deadman_rfc3339_to_epoch() {
+	ts="$1"
+	[ -n "$ts" ] || return 0
+
+	# Fast path: let date parse it if this build can.
+	epoch="$(date -u -d "$ts" +%s 2>/dev/null || true)"
+	case "$epoch" in
+	'' | *[!0-9]*) : ;;
+	*)
+		printf '%s' "$epoch"
+		return 0
+		;;
+	esac
+
+	# Deterministic fallback. Strip a trailing zone designator (Z or +00:00 /
+	# -00:00 — the agent only ever emits UTC) and split the calendar fields.
+	core="${ts%Z}"
+	core="${core%+00:00}"
+	core="${core%-00:00}"
+	# Replace the date/time separators with spaces so `set --` can field-split
+	# without invoking a subshell tool. Expected shape: YYYY MM DD hh mm ss.
+	normalized="$(printf '%s' "$core" | tr 'T:-' '   ')"
+	# shellcheck disable=SC2086
+	set -- $normalized
+	[ "$#" -ge 6 ] || return 0
+	y="$1"; mo="$2"; d="$3"; h="$4"; mi="$5"; s="$6"
+	case "$y$mo$d$h$mi$s" in
+	'' | *[!0-9]*) return 0 ;;
+	esac
+
+	# Strip leading zeros portably (no octal mis-parse, no `10#` bashism).
+	y="$(deadman_strip_leading_zeros "$y")"
+	mo="$(deadman_strip_leading_zeros "$mo")"
+	d="$(deadman_strip_leading_zeros "$d")"
+	h="$(deadman_strip_leading_zeros "$h")"
+	mi="$(deadman_strip_leading_zeros "$mi")"
+	s="$(deadman_strip_leading_zeros "$s")"
+	[ "$mo" -ge 1 ] 2>/dev/null && [ "$mo" -le 12 ] 2>/dev/null || return 0
+
+	# Days from civil date (Howard Hinnant's algorithm), valid for all dates.
+	yy=$y
+	if [ "$mo" -le 2 ]; then
+		yy=$((yy - 1))
+	fi
+	# era = floor(yy/400). yy is always >= 0 for real RFC3339 years (>= 0001),
+	# but keep an explicit non-negative branch rather than relying on the C
+	# ternary operator, whose support in BusyBox ash is not guaranteed.
+	if [ "$yy" -ge 0 ]; then
+		era=$(( yy / 400 ))
+	else
+		era=$(( (yy - 399) / 400 ))
+	fi
+	yoe=$((yy - era * 400))
+	mp=$(( (mo + 9) % 12 ))
+	doy=$(( (153 * mp + 2) / 5 + d - 1 ))
+	doe=$(( yoe * 365 + yoe / 4 - yoe / 100 + doy ))
+	days=$(( era * 146097 + doe - 719468 ))
+	printf '%s' "$(( days * 86400 + h * 3600 + mi * 60 + s ))"
+}
+
+# Pure decision: should we fail safe to direct? All inputs are plain values so
+# this can be exercised by the test harness without touching the system.
+#
+#   $1 last_contact_epoch  epoch secs of last successful control-plane contact,
+#                          or empty string when there is no usable timestamp.
+#   $2 now_epoch           current epoch secs.
+#   $3 passwall_enabled    "1" when passwall2 is currently enabled, else "0".
+#   $4 is_onboarded        "1" when the router has credentials (router_id +
+#                          agent_token) in state.json, else "0".
+#   $5 boot_grace_ok       "1" when we are past the post-boot grace window
+#                          (only consulted for the empty-timestamp case).
+#
+# Returns 0 (fail safe) only when ALL hold:
+#   - passwall2 is enabled (nothing to do if already direct),
+#   - the router is onboarded (never disable proxy on a fresh box),
+#   - AND either: a timestamp exists and is older than the threshold, OR no
+#     timestamp exists but we are past the boot grace (onboarded box that has
+#     not managed a single contact long after boot == stranded).
+# Returns 1 otherwise. The threshold is read fresh here so callers/tests can
+# override it via env/uci.
+should_fail_safe_to_direct() {
+	last_contact_epoch="$1"
+	dm_now_epoch="$2"
+	passwall_enabled="$3"
+	is_onboarded="$4"
+	boot_grace_ok="$5"
+
+	threshold="$(deadman_threshold_seconds)"
+	# Threshold 0 means the dead-man's switch is disabled.
+	[ "$threshold" -gt 0 ] 2>/dev/null || return 1
+
+	# Guard (b): nothing to do if proxy is already off.
+	[ "$passwall_enabled" = "1" ] || return 1
+	# Guard (a): never touch a box that has not onboarded.
+	[ "$is_onboarded" = "1" ] || return 1
+
+	if [ -n "$last_contact_epoch" ]; then
+		case "$last_contact_epoch" in
+		*[!0-9]*) return 1 ;;
+		esac
+		age=$((dm_now_epoch - last_contact_epoch))
+		# Negative age (clock skew / time jump backwards) is not evidence of a
+		# strand; treat as fresh and wait for the next tick.
+		[ "$age" -lt 0 ] && return 1
+		[ "$age" -gt "$threshold" ] && return 0
+		return 1
+	fi
+
+	# No usable timestamp. Only treat as stranded once past the boot grace, so
+	# first-boot onboarding is not pre-empted.
+	[ "$boot_grace_ok" = "1" ] && return 0
+	return 1
+}
+
+# Record (once per boot) the epoch at which the dead-man's switch first saw
+# this boot, then report whether we are past the boot grace window. crond and
+# the marker both live under /var/run, which is cleared on reboot, so a fresh
+# boot starts the grace clock over.
+deadman_past_boot_grace() {
+	now="$1"
+	if [ ! -f "$DEADMAN_BOOT_MARKER" ]; then
+		mkdir -p "$(dirname "$DEADMAN_BOOT_MARKER")" 2>/dev/null || true
+		printf '%s' "$now" > "$DEADMAN_BOOT_MARKER" 2>/dev/null || true
+		# Just observed this boot; definitionally still inside the grace window.
+		return 1
+	fi
+	boot_epoch="$(cat "$DEADMAN_BOOT_MARKER" 2>/dev/null || echo "$now")"
+	case "$boot_epoch" in
+	'' | *[!0-9]*) boot_epoch="$now" ;;
+	esac
+	elapsed=$((now - boot_epoch))
+	[ "$elapsed" -ge "$DEADMAN_BOOT_GRACE_SECONDS" ] && return 0
+	return 1
+}
+
+# Impure action: fail safe to direct using the EXACT uci path the agent's own
+# rescue uses (setPasswallMainSwitch in rescue_runtime.go):
+#   set passwall2.@global[0].enabled='0'; commit passwall2; passwall2 restart.
+# Idempotent: only the caller decides whether to invoke this. We do NOT
+# re-enable proxy — the agent's auto-resume owns that once contact returns.
+deadman_fail_safe_to_direct() {
+	uci -q set passwall2.@global[0].enabled='0' 2>/dev/null || true
+	uci -q commit passwall2 2>/dev/null || true
+	if [ -x /etc/init.d/passwall2 ]; then
+		/etc/init.d/passwall2 restart >/dev/null 2>&1 || true
+	fi
+}
+
+# Orchestrates the dead-man's switch: gather on-disk signals, ask the pure
+# decision function, and act + log. Logs each decision for operator triage.
+# Safe to call unconditionally; it self-guards on every precondition.
+run_deadman_check() {
+	now="$(now_epoch)"
+
+	passwall_enabled="$(uci -q get passwall2.@global[0].enabled 2>/dev/null || printf 0)"
+	[ -n "$passwall_enabled" ] || passwall_enabled=0
+
+	router_id="$(deadman_state_field '@.router_id')"
+	agent_token="$(deadman_state_field '@.agent_token')"
+	is_onboarded=0
+	if [ -n "$router_id" ] && [ -n "$agent_token" ]; then
+		is_onboarded=1
+	fi
+
+	last_contact_raw="$(deadman_state_field '@.control_plane_recovery.last_successful_control_plane_at')"
+	last_contact_epoch="$(deadman_rfc3339_to_epoch "$last_contact_raw")"
+
+	# Establish/age the boot grace marker every tick.
+	if deadman_past_boot_grace "$now"; then
+		boot_grace_ok=1
+	else
+		boot_grace_ok=0
+	fi
+
+	if should_fail_safe_to_direct "$last_contact_epoch" "$now" "$passwall_enabled" "$is_onboarded" "$boot_grace_ok"; then
+		if [ -n "$last_contact_epoch" ]; then
+			age=$((now - last_contact_epoch))
+			log "DEAD-MAN: no successful control-plane contact for ${age}s (> $(deadman_threshold_seconds)s) while passwall2 enabled; failing safe to direct (uci disable passwall2 + restart) so the controller can reach the panel"
+		else
+			log "DEAD-MAN: onboarded router has no recorded control-plane contact and is past boot grace while passwall2 enabled; failing safe to direct (uci disable passwall2 + restart)"
+		fi
+		deadman_fail_safe_to_direct
+		echo deadman-direct > "$STATE_FILE"
+	fi
+}
+
+# When sourced for testing, stop here: expose the helpers/decision function
+# without running the watchdog's recovery flow or touching system state.
+if [ -n "${VECTRA_WATCHDOG_LIB_ONLY:-}" ]; then
+	return 0 2>/dev/null || exit 0
+fi
 
 # Quick sanity: is init.d/vectra-controller even installed?
 if [ ! -x "$INIT_SCRIPT" ]; then
@@ -120,9 +426,19 @@ if ! pgrep -f "$AGENT_BIN" >/dev/null 2>&1; then
 	exit 0
 fi
 
-# Branch 3: everything looks fine. Clear any prior state marker so the next
-# transition logs again.
-if [ -f "$STATE_FILE" ]; then
+# Branch 3: process is alive. The binary exists and a controller process is
+# running — but "process alive" does NOT mean "reaching the panel". This is
+# exactly where the proxy strand hides, so run the panel-independent
+# dead-man's switch (GAP-2) before declaring all-clear. It only acts when the
+# router is onboarded, passwall2 is enabled, and there has been no successful
+# control-plane contact for longer than the threshold; otherwise it is a
+# no-op.
+run_deadman_check
+
+# Clear any prior recovery marker so the next transition logs again — but do
+# not erase a dead-man marker we may have just written this tick (that marker
+# is informational and self-heals once the agent resumes proxy).
+if [ -f "$STATE_FILE" ] && [ "$(cat "$STATE_FILE" 2>/dev/null)" != "deadman-direct" ]; then
 	log "controller recovered; clearing watchdog state"
 	rm -f "$STATE_FILE"
 fi

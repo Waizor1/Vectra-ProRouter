@@ -93,6 +93,57 @@ func TestFleetRoutePolicyScoreYouTubeTiers(t *testing.T) {
 	}
 }
 
+// TestFleetRoutePolicyScoreWorldProxyPrefersDirectPoland pins the 2026-08-02
+// canon: the direct Poland :443 exit outranks RU-entry Poland, RU-entry stays
+// above the selection threshold as a fallback for subscriptions with no direct
+// node, and the "Extreme" twin loses a deterministic tie-break so the winner
+// does not depend on node order (the subscription re-mints it on refresh).
+func TestFleetRoutePolicyScoreWorldProxyPrefersDirectPoland(t *testing.T) {
+	direct := NodeConfig{ID: "d", Label: "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫", Protocol: "vless", Enabled: true, Address: "pl2.nfnpx.online", Port: 443, Transport: "tcp"}
+	extreme := NodeConfig{ID: "x", Label: "⚡Extreme Польша 🇵🇱", Protocol: "vless", Enabled: true, Address: "pl1.nfnpx.online", Port: 443, Transport: "tcp"}
+	ruEntry := NodeConfig{ID: "r", Label: "🇷🇺🇵🇱 ⚡️Польша YouTube 🚫Ad🚫", Protocol: "vless", Enabled: true, Address: "ru3.nfnpx.online", Port: 50053, Transport: "grpc"}
+
+	directScore := fleetRoutePolicyScore("WorldProxy", direct)
+	extremeScore := fleetRoutePolicyScore("WorldProxy", extreme)
+	ruScore := fleetRoutePolicyScore("WorldProxy", ruEntry)
+
+	if directScore <= ruScore {
+		t.Fatalf("direct Poland scored %d, RU-entry %d; direct must win", directScore, ruScore)
+	}
+	if extremeScore >= directScore {
+		t.Fatalf("Extreme twin scored %d, plain direct %d; plain must win the tie-break", extremeScore, directScore)
+	}
+	if ruScore < 100 {
+		t.Fatalf("RU-entry Poland scored %d, want >= 100 so it stays a usable fallback", ruScore)
+	}
+
+	// With both shapes present the direct exit is what actually gets bound.
+	target := findFleetRoutePolicyTarget([]NodeConfig{ruEntry, extreme, direct}, "WorldProxy")
+	if target == nil || target.ID != "d" {
+		t.Fatalf("selected %v, want the direct Poland :443 node", target)
+	}
+	// With no direct node at all the RU-entry fallback still binds.
+	fallback := findFleetRoutePolicyTarget([]NodeConfig{ruEntry}, "WorldProxy")
+	if fallback == nil || fallback.ID != "r" {
+		t.Fatalf("selected %v, want the RU-entry fallback when no direct node exists", fallback)
+	}
+	// DiscordVoiceUdp must resolve to the SAME node as WorldProxy (2026-08-03).
+	// The WorldProxy rule sits above the Discord rule in the generated Xray
+	// chain and already carries the Discord prefixes with network=tcp,udp, so
+	// voice packets leave through the WorldProxy node regardless. Splitting the
+	// two stranded the slot's mux/xudp tuning on a node no Discord packet
+	// reached and killed voice fleet-wide.
+	discord := findFleetRoutePolicyTarget([]NodeConfig{ruEntry, extreme, direct}, "DiscordVoiceUdp")
+	if discord == nil || discord.ID != target.ID {
+		t.Fatalf("DiscordVoiceUdp selected %v, want the same node as WorldProxy (%s)", discord, target.ID)
+	}
+	// The lockstep must survive a fall back onto RU-entry too.
+	discordFallback := findFleetRoutePolicyTarget([]NodeConfig{ruEntry}, "DiscordVoiceUdp")
+	if discordFallback == nil || discordFallback.ID != fallback.ID {
+		t.Fatalf("DiscordVoiceUdp fallback selected %v, want the same node as WorldProxy (%s)", discordFallback, fallback.ID)
+	}
+}
+
 // TestFindFleetRoutePolicyTargetSelectsWorkingNodePerSlot exercises the real
 // selection (threshold + order) against the live fleet for every category, and
 // asserts the dead UAE node is never chosen.
@@ -102,11 +153,16 @@ func TestFindFleetRoutePolicyTargetSelectsWorkingNodePerSlot(t *testing.T) {
 		slot      string
 		wantOneOf []string
 	}{
-		{"WorldProxy", []string{"WM3tsJ7I"}},
+		// WorldProxy moved to the direct Poland :443 exit on 2026-08-02 after
+		// the provider blackholed Telegram and the Netflix OCA CDN on part of
+		// its RU-entry fleet. DiscordVoiceUdp followed it onto the same node on
+		// 2026-08-03 — the WorldProxy rule outranks the Discord rule in the
+		// generated chain, so the slot's mux/xudp tuning has to land there.
+		{"WorldProxy", []string{"UeUVz9He"}},
 		{"YouTube", []string{"WM3tsJ7I", "IoUWHdPS", "QJjZqQRF"}},
 		{"Special", []string{"WuGHS4PD"}},
 		{"Tiktok", []string{"8EbKwZxy"}},
-		{"DiscordVoiceUdp", []string{"QJjZqQRF"}},
+		{"DiscordVoiceUdp", []string{"UeUVz9He"}},
 	}
 	for _, tc := range cases {
 		target := findFleetRoutePolicyTarget(nodes, tc.slot)
@@ -155,5 +211,252 @@ func TestFleetRoutePolicyScoreIgnoresDisabledAndShuntNodes(t *testing.T) {
 	shunt.Protocol = "shunt"
 	if got := fleetRoutePolicyScore("YouTube", shunt); got != 0 {
 		t.Fatalf("shunt node scored %d for YouTube, want 0", got)
+	}
+}
+
+func TestFleetRoutePolicyExceptionsMatchPanelList(t *testing.T) {
+	// The panel holds the same list in
+	// apps/web/src/server/vectra/fleet-route-policy.ts. If the two drift, one
+	// silently undoes the other on every 60s check-in, so pin the contents here
+	// and update both sides together.
+	want := map[string]struct{}{
+		"hh":            {},
+		"vagrandrouter": {},
+	}
+
+	if len(fleetRoutePolicyExceptionValues) != len(want) {
+		t.Fatalf(
+			"exception list has %d entries, want %d",
+			len(fleetRoutePolicyExceptionValues),
+			len(want),
+		)
+	}
+	for value := range want {
+		if _, ok := fleetRoutePolicyExceptionValues[value]; !ok {
+			t.Fatalf("missing exception %q", value)
+		}
+	}
+}
+
+func TestExemptRouterKeepsUnreachableCanonicalBindingUntouched(t *testing.T) {
+	// VagrandRouter's ISP filters the RU-entry port range, so the canonical
+	// RU-entry Poland node still outscores everything (reachability is not part
+	// of the scorer) and normalization would rebind the slot to a dead node on
+	// every check-in. The exception must short-circuit before that happens.
+	identity := FleetRoutePolicyIdentity{Hostname: "VagrandRouter"}
+
+	if !IsFleetRoutePolicyExempt(identity) {
+		t.Fatalf("expected VagrandRouter to be exempt")
+	}
+
+	config := DesiredConfig{
+		Nodes: []NodeConfig{
+			{
+				ID:        "ru-entry-poland",
+				Label:     "🇷🇺🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+				Address:   "ru12.nfnpx.online",
+				Port:      50053,
+				Transport: "grpc",
+				Enabled:   true,
+			},
+			{
+				ID:        "direct-poland-443",
+				Label:     "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+				Address:   "pl1.nfnpx.online",
+				Port:      443,
+				Transport: "raw",
+				Enabled:   true,
+			},
+		},
+	}
+	config.BasicSettings.ShuntRules = []ShuntRule{
+		{ID: "WorldProxy", Label: "WorldProxy", OutboundNodeID: "direct-poland-443"},
+	}
+
+	normalized, changed := NormalizeFleetRoutePolicyConfig(config, identity)
+	if changed {
+		t.Fatalf("normalization must not touch an exempt router")
+	}
+	if got := normalized.BasicSettings.ShuntRules[0].OutboundNodeID; got != "direct-poland-443" {
+		t.Fatalf("WorldProxy rebound to %q, want direct-poland-443", got)
+	}
+
+	// Sanity: without the exception the dead RU-entry node would win.
+	_, changedUnexempt := NormalizeFleetRoutePolicyConfig(
+		config,
+		FleetRoutePolicyIdentity{Hostname: "some-other-router"},
+	)
+	if !changedUnexempt {
+		t.Fatalf("expected a non-exempt router to be normalized onto the RU-entry node")
+	}
+}
+
+// --- Panel-authored directive ---------------------------------------------
+//
+// These cover the mechanism that removes the "ship a new controller for every
+// policy tweak" requirement: the panel names the node, the controller obeys.
+
+func directiveTestConfig() DesiredConfig {
+	config := DesiredConfig{
+		Nodes: []NodeConfig{
+			{ID: "ru-entry-poland", Label: "🇷🇺🇵🇱 ⚡️Польша", Address: "ru12.nfnpx.online", Port: 50053, Transport: "grpc", Enabled: true},
+			{ID: "direct-france-443", Label: "🇫🇷 Франция", Address: "fr2.nfnpx.online", Port: 443, Transport: "tcp", Enabled: true},
+			{ID: "myshunt", Protocol: "shunt", Enabled: true, Extras: map[string]any{"WorldProxy": "ru-entry-poland"}},
+		},
+	}
+	config.BasicSettings.ShuntRules = []ShuntRule{
+		{ID: "WorldProxy", Label: "WorldProxy", OutboundNodeID: "ru-entry-poland"},
+	}
+	return config
+}
+
+func TestDirectiveOverridesBuiltinScorer(t *testing.T) {
+	// The scorer would pick ru-entry-poland. The panel says France. The panel
+	// wins — that is the whole point of the directive.
+	directive := &FleetRoutePolicyDirective{
+		Version: "test-v1",
+		Slots: []FleetRoutePolicyDirectiveSlot{
+			{ID: "WorldProxy", NodeID: "direct-france-443"},
+		},
+	}
+
+	normalized, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		directiveTestConfig(), FleetRoutePolicyIdentity{Hostname: "kirill-msk"}, directive)
+
+	if !changed {
+		t.Fatalf("expected directive to rebind the slot")
+	}
+	if got := normalized.BasicSettings.ShuntRules[0].OutboundNodeID; got != "direct-france-443" {
+		t.Fatalf("WorldProxy bound to %q, want direct-france-443", got)
+	}
+	for _, node := range normalized.Nodes {
+		if node.Protocol != "shunt" {
+			continue
+		}
+		if got := stringify(node.Extras["WorldProxy"]); got != "direct-france-443" {
+			t.Fatalf("shunt extras WorldProxy=%q, want direct-france-443", got)
+		}
+	}
+}
+
+func TestDirectiveCanExemptRouterUnknownToBuiltinList(t *testing.T) {
+	// Adding an exemption must not require a controller rebuild.
+	identity := FleetRoutePolicyIdentity{Hostname: "kirill-msk"}
+	if IsFleetRoutePolicyExempt(identity) {
+		t.Fatalf("precondition: kirill-msk must not be in the built-in list")
+	}
+
+	directive := &FleetRoutePolicyDirective{Exempt: true, Reason: "operator hold"}
+	_, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		directiveTestConfig(), identity, directive)
+
+	if changed {
+		t.Fatalf("panel-declared exemption must short-circuit normalization")
+	}
+}
+
+func TestDirectiveCanUnExemptRouterInBuiltinList(t *testing.T) {
+	// The reverse direction: the panel must be able to retire a hardcoded
+	// exemption without a rebuild.
+	identity := FleetRoutePolicyIdentity{Hostname: "VagrandRouter"}
+	if !IsFleetRoutePolicyExempt(identity) {
+		t.Fatalf("precondition: VagrandRouter must be in the built-in list")
+	}
+
+	directive := &FleetRoutePolicyDirective{
+		Exempt: false,
+		Slots:  []FleetRoutePolicyDirectiveSlot{{ID: "WorldProxy", NodeID: "direct-france-443"}},
+	}
+	normalized, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		directiveTestConfig(), identity, directive)
+
+	if !changed {
+		t.Fatalf("panel must be able to un-exempt a locally-listed router")
+	}
+	if got := normalized.BasicSettings.ShuntRules[0].OutboundNodeID; got != "direct-france-443" {
+		t.Fatalf("WorldProxy bound to %q, want direct-france-443", got)
+	}
+}
+
+func TestDirectiveWithUnknownNodeLeavesBindingIntact(t *testing.T) {
+	// The subscription re-mints node IDs on refresh, so a directive computed one
+	// check-in ago can name an ID that no longer exists. Skip, never blank.
+	directive := &FleetRoutePolicyDirective{
+		Slots: []FleetRoutePolicyDirectiveSlot{{ID: "WorldProxy", NodeID: "node-that-was-rotated-away"}},
+	}
+
+	normalized, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		directiveTestConfig(), FleetRoutePolicyIdentity{Hostname: "kirill-msk"}, directive)
+
+	if changed {
+		t.Fatalf("unknown target node must not change anything")
+	}
+	if got := normalized.BasicSettings.ShuntRules[0].OutboundNodeID; got != "ru-entry-poland" {
+		t.Fatalf("binding became %q, want the untouched ru-entry-poland", got)
+	}
+}
+
+func TestEmptyDirectiveFallsBackToBuiltinScorer(t *testing.T) {
+	// Panel reachable but with nothing to say (no resolvable targets yet): the
+	// offline safety net must still run rather than leaving the slot adrift.
+	config := directiveTestConfig()
+	config.BasicSettings.ShuntRules[0].OutboundNodeID = "direct-france-443"
+
+	directive := &FleetRoutePolicyDirective{Version: "test-v1", Slots: nil}
+	normalized, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		config, FleetRoutePolicyIdentity{Hostname: "kirill-msk"}, directive)
+
+	if !changed {
+		t.Fatalf("expected built-in scorer to run when directive carries no slots")
+	}
+	if got := normalized.BasicSettings.ShuntRules[0].OutboundNodeID; got != "ru-entry-poland" {
+		t.Fatalf("scorer bound %q, want ru-entry-poland", got)
+	}
+}
+
+func TestDirectiveSkipsDisabledTargetNode(t *testing.T) {
+	config := directiveTestConfig()
+	for i := range config.Nodes {
+		if config.Nodes[i].ID == "direct-france-443" {
+			config.Nodes[i].Enabled = false
+		}
+	}
+
+	directive := &FleetRoutePolicyDirective{
+		Slots: []FleetRoutePolicyDirectiveSlot{{ID: "WorldProxy", NodeID: "direct-france-443"}},
+	}
+	_, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		config, FleetRoutePolicyIdentity{Hostname: "kirill-msk"}, directive)
+
+	if changed {
+		t.Fatalf("a disabled node must never be bound")
+	}
+}
+
+func TestDirectiveAppliesRequiredExtras(t *testing.T) {
+	directive := &FleetRoutePolicyDirective{
+		Slots: []FleetRoutePolicyDirectiveSlot{{
+			ID:         "WorldProxy",
+			NodeID:     "direct-france-443",
+			RuleExtras: map[string]string{"network": "udp"},
+			NodeExtras: map[string]string{"mux": "1"},
+		}},
+	}
+
+	normalized, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		directiveTestConfig(), FleetRoutePolicyIdentity{Hostname: "kirill-msk"}, directive)
+
+	if !changed {
+		t.Fatalf("expected extras to be applied")
+	}
+	if got := stringify(normalized.BasicSettings.ShuntRules[0].Extras["network"]); got != "udp" {
+		t.Fatalf("rule extras network=%q, want udp", got)
+	}
+	for _, node := range normalized.Nodes {
+		if node.ID == "direct-france-443" {
+			if got := stringify(node.Extras["mux"]); got != "1" {
+				t.Fatalf("node extras mux=%q, want 1", got)
+			}
+		}
 	}
 }

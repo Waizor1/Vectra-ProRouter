@@ -6,10 +6,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
+
+	"vectra-controller-agent/internal/netmark"
 )
+
+// StatusError is returned when the control plane responds with a non-2xx
+// status. It preserves the status code so callers can react to specific
+// outcomes (e.g. a 403 register rejection triggers keypair-signed recovery)
+// while keeping the original human-readable error string.
+type StatusError struct {
+	StatusCode int
+	Path       string
+	Body       string
+}
+
+func (e *StatusError) Error() string {
+	if e.Body != "" {
+		return fmt.Sprintf("unexpected status %d for %s: %s", e.StatusCode, e.Path, e.Body)
+	}
+	return fmt.Sprintf("unexpected status %d for %s", e.StatusCode, e.Path)
+}
 
 type Options struct {
 	BaseURL    string
@@ -17,6 +37,10 @@ type Options struct {
 	RouterID   string
 	AgentToken string
 	Timeout    time.Duration
+	// Fwmark, when non-zero, stamps SO_MARK on the agent's sockets so the
+	// control-plane traffic bypasses the PassWall2 tproxy and always egresses
+	// directly. Zero leaves dialing unchanged. Linux-only (no-op elsewhere).
+	Fwmark uint
 }
 
 type Client struct {
@@ -34,6 +58,12 @@ func NewClient(opts Options) *Client {
 	client := opts.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: timeout}
+		if control := netmark.Control(opts.Fwmark); control != nil {
+			dialer := &net.Dialer{Timeout: timeout, Control: control}
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			transport.DialContext = dialer.DialContext
+			client.Transport = transport
+		}
 	}
 	return &Client{
 		baseURL:    strings.TrimRight(opts.BaseURL, "/"),
@@ -106,27 +136,12 @@ func (c *Client) doJSON(ctx context.Context, method string, path string, payload
 	defer response.Body.Close()
 
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		bodyPreview, readErr := io.ReadAll(io.LimitReader(response.Body, 2048))
-		if readErr != nil {
-			return fmt.Errorf(
-				"unexpected status %d for %s (failed to read response body: %w)",
-				response.StatusCode,
-				path,
-				readErr,
-			)
+		bodyPreview, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
+		return &StatusError{
+			StatusCode: response.StatusCode,
+			Path:       path,
+			Body:       strings.TrimSpace(string(bodyPreview)),
 		}
-
-		trimmed := strings.TrimSpace(string(bodyPreview))
-		if trimmed != "" {
-			return fmt.Errorf(
-				"unexpected status %d for %s: %s",
-				response.StatusCode,
-				path,
-				trimmed,
-			)
-		}
-
-		return fmt.Errorf("unexpected status %d for %s", response.StatusCode, path)
 	}
 	if out == nil {
 		return nil

@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const FleetRoutePolicyVersion = "2026-05-12-v1"
+const FleetRoutePolicyVersion = "2026-08-03-v4"
 
 type FleetRoutePolicyIdentity struct {
 	Name             string
@@ -17,24 +17,41 @@ type FleetRoutePolicyIdentity struct {
 }
 
 type fleetRoutePolicySlot struct {
-	ID                 string
-	Expected           string
+	ID       string
+	Expected string
+	// TargetNodeID, when non-empty, pins this slot to an exact node and bypasses
+	// the semantic scorer. Only panel-authored directives set it.
+	TargetNodeID       string
 	RequiredRuleExtras map[string]string
 	RequiredNodeExtras map[string]string
 }
 
+// Routers excluded from fleet package normalization. Keep aligned with
+// exceptionIdentityValues in apps/web/src/server/vectra/fleet-route-policy.ts —
+// the panel and the on-router self-heal must agree, or one will keep undoing the
+// other every check-in.
+//
+//   - hh: operator-designated no-touch router.
+//   - vagrandrouter: its ISP filters the non-standard high ports (50051-50061)
+//     that every RU-entry gRPC node uses, so the canonical targets are
+//     unreachable from that line while port 443 works fine (verified
+//     2026-07-29: ru12.nfnpx.online:50053 connect fails, fin2/pl1:443 connect in
+//     0.61s). Reachability is not part of the scorer, so normalization kept
+//     rebinding the slots to a dead RU-entry node once a minute. This router
+//     runs on the vless/raw :443 node family instead.
 var fleetRoutePolicyExceptionValues = map[string]struct{}{
-	"hh": {},
+	"hh":            {},
+	"vagrandrouter": {},
 }
 
 var fleetRoutePolicySlots = []fleetRoutePolicySlot{
-	{ID: "WorldProxy", Expected: "RU-entry Germany"},
+	{ID: "WorldProxy", Expected: "Poland direct :443 (RU-entry Poland fallback)"},
 	{ID: "YouTube", Expected: "RU Russia"},
 	{ID: "Special", Expected: "Netherlands"},
 	{ID: "Tiktok", Expected: "Belarus"},
 	{
 		ID:       "DiscordVoiceUdp",
-		Expected: "RU-entry Poland + UDP/mux/xudp tuning",
+		Expected: "same node as WorldProxy + UDP/mux/xudp tuning",
 		RequiredRuleExtras: map[string]string{
 			"network": "udp",
 			"port":    "19294-19344,50000-50100",
@@ -45,6 +62,57 @@ var fleetRoutePolicySlots = []fleetRoutePolicySlot{
 			"xudp_concurrency": "16",
 		},
 	},
+}
+
+// FleetRoutePolicyDirective is the panel-authored route policy delivered in the
+// check-in response. It exists so route-policy changes (a new canonical exit, a
+// per-router exemption) ship as a panel deploy instead of a controller rebuild
+// plus a fleet-wide controller rollout.
+//
+// Precedence inside NormalizeFleetRoutePolicyConfig:
+//
+//  1. directive.Exempt        -> normalization is skipped entirely.
+//  2. directive.Slots present -> bind exactly what the panel asked for. The
+//     built-in scorer is NOT consulted; the panel is authoritative.
+//  3. directive nil/empty     -> fall back to the built-in scorer below.
+//
+// Case 3 is deliberate and must stay: a router that cannot reach the panel, or
+// one talking to a panel older than this field, still self-heals its bindings
+// rather than drifting. The built-in scorer is the offline safety net, not the
+// source of truth.
+type FleetRoutePolicyDirective struct {
+	Version string                          `json:"version"`
+	Exempt  bool                            `json:"exempt"`
+	Reason  string                          `json:"reason,omitempty"`
+	Slots   []FleetRoutePolicyDirectiveSlot `json:"slots"`
+}
+
+type FleetRoutePolicyDirectiveSlot struct {
+	ID string `json:"id"`
+	// NodeID is the concrete node the panel wants bound to this slot. Node IDs
+	// are per-router (the subscription mints them), so the panel computes this
+	// per router from the same live config the router last imported.
+	NodeID string `json:"nodeId"`
+	// Fingerprint is advisory ("label | host:port | transport | protocol") and is
+	// only used for operator-facing logging.
+	Fingerprint string            `json:"fingerprint,omitempty"`
+	RuleExtras  map[string]string `json:"ruleExtras,omitempty"`
+	NodeExtras  map[string]string `json:"nodeExtras,omitempty"`
+}
+
+// HasBindings reports whether the directive carries at least one usable slot.
+// An empty slot list means the panel had nothing to say (e.g. it could not
+// resolve targets for this router yet) and must not blank existing bindings.
+func (d *FleetRoutePolicyDirective) HasBindings() bool {
+	if d == nil {
+		return false
+	}
+	for _, slot := range d.Slots {
+		if strings.TrimSpace(slot.ID) != "" && strings.TrimSpace(slot.NodeID) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 var nonIdentityChars = regexp.MustCompile(`[^a-zа-я0-9-]+`)
@@ -61,14 +129,34 @@ func IsFleetRoutePolicyExempt(identity FleetRoutePolicyIdentity) bool {
 }
 
 func NormalizeFleetRoutePolicyConfig(current DesiredConfig, identity FleetRoutePolicyIdentity) (DesiredConfig, bool) {
-	if IsFleetRoutePolicyExempt(identity) {
+	return NormalizeFleetRoutePolicyConfigWithDirective(current, identity, nil)
+}
+
+// NormalizeFleetRoutePolicyConfigWithDirective applies the panel-authored
+// directive when one is present and falls back to the built-in scorer when it
+// is not. See FleetRoutePolicyDirective for the precedence rules.
+func NormalizeFleetRoutePolicyConfigWithDirective(current DesiredConfig, identity FleetRoutePolicyIdentity, directive *FleetRoutePolicyDirective) (DesiredConfig, bool) {
+	// A panel directive overrides the local exemption list in BOTH directions:
+	// the panel can exempt a router the local list does not know about, and it
+	// can un-exempt one the local list still carries. That is the whole point —
+	// changing an exemption must not require shipping a new controller.
+	if directive != nil {
+		if directive.Exempt {
+			return current, false
+		}
+	} else if IsFleetRoutePolicyExempt(identity) {
 		return current, false
+	}
+
+	slots := fleetRoutePolicySlots
+	if directive.HasBindings() {
+		slots = directiveSlots(directive)
 	}
 
 	desired := cloneDesiredConfig(current)
 	changed := false
-	for _, slot := range fleetRoutePolicySlots {
-		target := findFleetRoutePolicyTarget(desired.Nodes, slot.ID)
+	for _, slot := range slots {
+		target := resolveFleetRoutePolicyTarget(desired.Nodes, slot)
 		if target == nil || target.ID == "" {
 			continue
 		}
@@ -124,10 +212,22 @@ func NormalizeFleetRoutePolicyConfig(current DesiredConfig, identity FleetRouteP
 }
 
 func ReconcileFleetRoutePolicy(ctx context.Context, backend UCIBackend, identity FleetRoutePolicyIdentity) (ShuntReconcileResult, error) {
+	return ReconcileFleetRoutePolicyWithDirective(ctx, backend, identity, nil)
+}
+
+// ReconcileFleetRoutePolicyWithDirective reconciles live UCI against the
+// panel-authored directive, falling back to the built-in scorer when the panel
+// sent nothing. Callers on the check-in path should pass the directive from the
+// latest CheckInResponse.
+func ReconcileFleetRoutePolicyWithDirective(ctx context.Context, backend UCIBackend, identity FleetRoutePolicyIdentity, directive *FleetRoutePolicyDirective) (ShuntReconcileResult, error) {
 	if backend == nil {
 		backend = ExecBackend{}
 	}
-	if IsFleetRoutePolicyExempt(identity) {
+	if directive != nil {
+		if directive.Exempt {
+			return ShuntReconcileResult{}, nil
+		}
+	} else if IsFleetRoutePolicyExempt(identity) {
 		return ShuntReconcileResult{}, nil
 	}
 
@@ -140,11 +240,56 @@ func ReconcileFleetRoutePolicy(ctx context.Context, backend UCIBackend, identity
 		return ShuntReconcileResult{}, err
 	}
 	currentConfig := importDesiredConfig(currentSections)
-	desired, changed := NormalizeFleetRoutePolicyConfig(currentConfig, identity)
+	desired, changed := NormalizeFleetRoutePolicyConfigWithDirective(currentConfig, identity, directive)
 	if !changed {
 		return ShuntReconcileResult{}, nil
 	}
 	return reconcileShuntBindingsFromCurrent(ctx, backend, currentConfig, desired)
+}
+
+// directiveSlots converts the panel directive into the internal slot shape.
+// Slots with a blank ID or NodeID are dropped: a half-specified slot must leave
+// the existing binding alone rather than clear it.
+func directiveSlots(directive *FleetRoutePolicyDirective) []fleetRoutePolicySlot {
+	slots := make([]fleetRoutePolicySlot, 0, len(directive.Slots))
+	for _, slot := range directive.Slots {
+		id := strings.TrimSpace(slot.ID)
+		nodeID := strings.TrimSpace(slot.NodeID)
+		if id == "" || nodeID == "" {
+			continue
+		}
+		slots = append(slots, fleetRoutePolicySlot{
+			ID:                 id,
+			Expected:           slot.Fingerprint,
+			TargetNodeID:       nodeID,
+			RequiredRuleExtras: slot.RuleExtras,
+			RequiredNodeExtras: slot.NodeExtras,
+		})
+	}
+	return slots
+}
+
+// resolveFleetRoutePolicyTarget picks the node a slot should bind to: the exact
+// node the panel named, or the scorer's pick when no directive is in play.
+//
+// A pinned node that is not in the live config yields nil, which skips the slot.
+// That case is real — the subscription re-mints node IDs on refresh, so a
+// directive computed one check-in earlier can name an ID that no longer exists.
+// Skipping preserves the current binding; blanking it would strand the slot.
+func resolveFleetRoutePolicyTarget(nodes []NodeConfig, slot fleetRoutePolicySlot) *NodeConfig {
+	if slot.TargetNodeID == "" {
+		return findFleetRoutePolicyTarget(nodes, slot.ID)
+	}
+	for i := range nodes {
+		if nodes[i].ID != slot.TargetNodeID {
+			continue
+		}
+		if nodes[i].Protocol == "shunt" || !nodes[i].Enabled {
+			return nil
+		}
+		return &nodes[i]
+	}
+	return nil
 }
 
 func findFleetRoutePolicyTarget(nodes []NodeConfig, slotID string) *NodeConfig {
@@ -175,20 +320,51 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 
 	switch slotID {
 	case "WorldProxy":
-		if !containsAny(label, "германи", "germany", "deutsch", "🇩🇪") {
+		// History: RU-entry Germany (ru*:50052) -> RU-entry Poland (ru*:50053)
+		// on 2026-07-02 because the shared German exit was overloaded.
+		//
+		// Moved again on 2026-08-02 to the DIRECT Poland exit (pl*:443). The
+		// provider blackholed a subset of prefixes — Telegram DCs and the
+		// Netflix OCA CDN — on part of its RU-entry fleet (ru3/ru4/ru5:50053
+		// dead, ru7-ru12 fine), which killed WorldProxy for 12 of 25 routers.
+		// Measured on one router at one moment: pl2:443 reached
+		// web.telegram.org 200 and pulled 200 KB of OCA video at ~583 KB/s
+		// while ru3:50053 returned 000 for both, with the SAME egress IP. The
+		// RU-entry hop, not the exit, was the fault domain.
+		//
+		// RU-entry Poland is kept as a scored fallback (120 < 140) so a router
+		// whose subscription carries no direct pl*:443 node is not stranded
+		// with an unbound slot.
+		//
+		// DiscordVoiceUdp deliberately resolves to this same node — see that
+		// slot's case below for why splitting them broke Discord voice. Keep
+		// this aligned with the panel-side scorer in
+		// apps/web/src/server/vectra/fleet-route-policy.ts.
+		if !containsAny(label, "польш", "poland", "🇵🇱") {
 			return 0
 		}
 		score := 60
+		if !ruEntry && node.Port == 443 {
+			// Canonical shape: direct foreign Poland exit on :443.
+			score += 80
+			if !containsAny(label, "extreme") {
+				// Deterministic tie-break. Subscriptions carry two direct
+				// Poland :443 nodes ("🇵🇱 ⚡️Польша YouTube 🚫Ad🚫" and
+				// "⚡Extreme Польша 🇵🇱"); without this they score equal and the
+				// winner depends on node order, which the subscription
+				// re-mints on every refresh.
+				score += 5
+			}
+			return score
+		}
 		if ruEntry {
 			score += 40
-		}
-		if node.Port == 50052 {
-			score += 30
-		}
-		if isGRPC {
-			score += 20
-		}
-		if ruEntry {
+			if node.Port == 50053 {
+				score += 15
+			}
+			if isGRPC {
+				score += 5
+			}
 			return score
 		}
 	case "YouTube":
@@ -265,22 +441,31 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 		}
 		return score
 	case "DiscordVoiceUdp":
-		if !containsAny(label, "польш", "poland", "🇵🇱") {
-			return 0
-		}
-		score := 60
-		if ruEntry {
-			score += 35
-		}
-		if node.Port == 50053 {
-			score += 35
-		}
-		if isGRPC {
-			score += 20
-		}
-		if ruEntry {
-			return score
-		}
+		// This slot MUST land on the same node as WorldProxy, so it scores
+		// with the WorldProxy scorer verbatim.
+		//
+		// Why: the generated Xray routing chain puts the WorldProxy rule ABOVE
+		// this one, and that rule already carries the Discord prefixes
+		// (66.22.192.0/18, 66.22.176.0/24, 66.22.188.0/22) with
+		// network=tcp,udp. Xray takes the first matching rule, so every
+		// Discord voice packet leaves through the WorldProxy node — this rule
+		// (network=udp, port=19294-19344,50000-50100, no domain/ip of its own)
+		// never sees them. The slot's only real effect is the mux/xudp tuning
+		// it stamps onto whichever node it resolves to.
+		//
+		// That held silently until 2026-08-02: WorldProxy and this slot both
+		// pointed at ru*:50053, so the tuning landed where the traffic
+		// actually went. Moving WorldProxy to the direct pl*:443 exit left
+		// this slot pinned to RU-entry, so the mux/xudp settings decorated a
+		// node no Discord packet reached, and the traffic ran over a node with
+		// no XUDP. Voice died fleet-wide the next day (operator report
+		// 2026-08-03).
+		//
+		// Delegating keeps the two in lockstep through any future canon move,
+		// including onto the RU-entry fallback. mux_concurrency=-1 disables
+		// TCP mux, so this costs the WorldProxy TCP path nothing; XTLS Vision
+		// rejects UDP/443 on its own, so QUIC behaviour is unchanged too.
+		return fleetRoutePolicyScore("WorldProxy", node)
 	}
 	return 0
 }

@@ -3,11 +3,39 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestRegisterReturnsTypedStatusErrorOn403(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"Existing router registration requires the current router token."}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Options{BaseURL: server.URL})
+	_, err := client.Register(context.Background(), RegisterRequest{
+		Inventory: RouterInventory{DeviceIdentifier: "vectra-test"},
+	})
+	if err == nil {
+		t.Fatal("expected register to fail on 403")
+	}
+
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("expected a *StatusError, got %T: %v", err, err)
+	}
+	if statusErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("status code = %d, want 403", statusErr.StatusCode)
+	}
+	if !strings.Contains(statusErr.Body, "current router token") {
+		t.Fatalf("status body = %q, want the panel error text", statusErr.Body)
+	}
+}
 
 func TestCheckInUsesVectraHeaders(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

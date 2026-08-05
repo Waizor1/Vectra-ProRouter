@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  autoRepairActionsForTrigger,
   hasDistinctBlockedReachabilityEvidence,
+  noAutoRepairEscalationReason,
   planRepairActionsForRouterSafety,
   repairActionsForTrigger,
   resourceGuardReasonsForLogCollection,
@@ -41,6 +43,82 @@ describe("repairActionsForTrigger", () => {
     expect(allActions).not.toContain("update_passwall_packages");
     expect(allActions).not.toContain("switch_node");
     expect(allActions).not.toContain("run_terminal_command");
+  });
+});
+
+describe("autoRepairActionsForTrigger", () => {
+  it("narrows unattended direct/proxy recovery to reconnect-only", () => {
+    // Heavy re-import/refresh steps are reserved for operator-initiated repairs;
+    // the unattended monitor only resumes the proxy on the current node.
+    expect(autoRepairActionsForTrigger("direct_mode")).toEqual([
+      "reconnect_proxy",
+    ]);
+    expect(autoRepairActionsForTrigger("proxy_outage")).toEqual([
+      "reconnect_proxy",
+    ]);
+  });
+
+  it("never runs subscription/rule refresh unattended", () => {
+    const actions = [
+      ...autoRepairActionsForTrigger("direct_mode"),
+      ...autoRepairActionsForTrigger("proxy_outage"),
+    ];
+    expect(actions).not.toContain("refresh_subscriptions");
+    expect(actions).not.toContain("refresh_rules");
+    expect(actions).not.toContain("restart_passwall");
+  });
+
+  it("delegates non-direct triggers to the operator repair mapping", () => {
+    expect(autoRepairActionsForTrigger("server_unreachable")).toEqual(
+      repairActionsForTrigger("server_unreachable"),
+    );
+    expect(autoRepairActionsForTrigger("stale_check_in")).toEqual([]);
+  });
+
+  it("escalates reachability triggers instead of repairing them", () => {
+    // These fire fleet-wide when a shared exit or the service itself breaks.
+    // Running any repair then would restart xray on every router at once and
+    // turn a single-service blip into a total VPN outage, so the unattended
+    // monitor hands them to the operator untouched.
+    expect(autoRepairActionsForTrigger("telegram_blocked")).toEqual([]);
+    expect(autoRepairActionsForTrigger("foreign_reachability_blocked")).toEqual(
+      [],
+    );
+  });
+
+  it("keeps the heavy sequence available for operator-initiated repair", () => {
+    expect(repairActionsForTrigger("telegram_blocked")).toContain(
+      "refresh_subscriptions",
+    );
+    expect(repairActionsForTrigger("foreign_reachability_blocked")).toContain(
+      "refresh_subscriptions",
+    );
+  });
+
+  it("never runs subscription/rule refresh unattended for any trigger", () => {
+    const triggers = [
+      "direct_mode",
+      "proxy_outage",
+      "server_unreachable",
+      "stale_check_in",
+      "telegram_blocked",
+      "foreign_reachability_blocked",
+    ] as const;
+
+    for (const trigger of triggers) {
+      const actions = autoRepairActionsForTrigger(trigger);
+      expect(actions).not.toContain("refresh_subscriptions");
+      expect(actions).not.toContain("refresh_rules");
+    }
+  });
+
+  it("explains an escalation without claiming the router is offline", () => {
+    expect(noAutoRepairEscalationReason("telegram_blocked")).toContain(
+      "proxy itself is up",
+    );
+    expect(noAutoRepairEscalationReason("stale_check_in")).toContain(
+      "offline/stale",
+    );
   });
 });
 

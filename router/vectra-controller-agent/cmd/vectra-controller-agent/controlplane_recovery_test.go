@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
 	"vectra-controller-agent/internal/config"
 	"vectra-controller-agent/internal/controlplane"
+	"vectra-controller-agent/internal/netmark"
 	"vectra-controller-agent/internal/passwall"
 	"vectra-controller-agent/internal/recovery"
 	"vectra-controller-agent/internal/rescue"
@@ -1078,6 +1081,694 @@ func TestClearControlPlaneRecoveryOwnershipClearsStickyOperatorAttention(t *test
 	}
 	if runtimeStatus.AwaitingOperator {
 		t.Fatal("expected runtime awaitingOperator to be cleared")
+	}
+}
+
+func setRecoveryProcessStart(t *testing.T, started time.Time) {
+	t.Helper()
+
+	original := recoveryProcessStartedAt
+	recoveryProcessStartedAt = started
+	t.Cleanup(func() {
+		recoveryProcessStartedAt = original
+	})
+}
+
+// GAP-1: a router that strands BEFORE it ever records a successful contact
+// (e.g. right after onboarding commits enabled=1 + a proxy default_node) must
+// still eventually fail safe to direct once the no-contact-from-boot outage
+// exceeds the panel-outage threshold.
+func TestAdvanceControlPlaneRecoveryFailsSafeToDirectWhenNeverContacted(t *testing.T) {
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusServiceUnavailable})
+	defer panel.Close()
+	ru := newStatusServer(map[string]int{"/": http.StatusNoContent})
+	defer ru.Close()
+	blocked := newStatusServer(map[string]int{"/": http.StatusServiceUnavailable})
+	defer blocked.Close()
+
+	setRecoveryProbeTargets(t,
+		[]probeTarget{
+			{ID: "ya", Label: "ya.ru", URL: ru.URL},
+			{ID: "vk", Label: "vk.com", URL: ru.URL},
+		},
+		[]probeTarget{
+			{ID: "youtube", Label: "youtube", URL: blocked.URL},
+			{ID: "instagram", Label: "instagram", URL: blocked.URL},
+			{ID: "telegram", Label: "telegram", URL: blocked.URL},
+		},
+	)
+	// Boot happened long before the threshold, so the no-contact outage is ripe.
+	setRecoveryProcessStart(t, time.Now().Add(-70*time.Minute))
+
+	backend := &fakeRescueBackend{
+		runResults: map[string]passwall.CommandResult{
+			"/etc/init.d/passwall2 restart": {Stdout: "restarted"},
+		},
+	}
+	recoveryState := recovery.State{
+		Phase: recovery.PhaseIdle,
+	}
+	rescueState := rescue.State{Mode: rescue.ModeProxy}
+	persisted := state.PersistedState{ControlPlaneRecovery: recoveryState}
+	inventory := controlplane.RouterInventory{PasswallEnabled: true}
+	runtimeStatus := state.RuntimeStatus{}
+
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if !outcome.InventoryChanged {
+		t.Fatal("expected fail-safe direct switch to require inventory recollect when never contacted")
+	}
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhaseDirectSettle; got != want {
+		t.Fatalf("recovery phase = %q, want %q", got, want)
+	}
+	if got, want := rescueState.Mode, rescue.ModeDirect; got != want {
+		t.Fatalf("rescue mode = %q, want %q", got, want)
+	}
+	if !containsBatchLine(backend.batchCommands, "set passwall2.@global[0].enabled='0'") {
+		t.Fatalf("expected passwall disable batch, got %#v", backend.batchCommands)
+	}
+}
+
+// GAP-1 guard: during the first few minutes after boot (still no successful
+// contact) the machine must not act, so transient boot-time panel blips do not
+// flip a healthy router to direct.
+func TestAdvanceControlPlaneRecoveryWaitsDuringFirstBootGraceWhenNeverContacted(t *testing.T) {
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusServiceUnavailable})
+	defer panel.Close()
+	ru := newStatusServer(map[string]int{"/": http.StatusNoContent})
+	defer ru.Close()
+	blocked := newStatusServer(map[string]int{"/": http.StatusServiceUnavailable})
+	defer blocked.Close()
+
+	setRecoveryProbeTargets(t,
+		[]probeTarget{
+			{ID: "ya", Label: "ya.ru", URL: ru.URL},
+			{ID: "vk", Label: "vk.com", URL: ru.URL},
+		},
+		[]probeTarget{
+			{ID: "youtube", Label: "youtube", URL: blocked.URL},
+			{ID: "instagram", Label: "instagram", URL: blocked.URL},
+			{ID: "telegram", Label: "telegram", URL: blocked.URL},
+		},
+	)
+	// Boot only seconds ago — still inside the outage threshold window.
+	setRecoveryProcessStart(t, time.Now().Add(-30*time.Second))
+
+	backend := &fakeRescueBackend{}
+	recoveryState := recovery.State{
+		Phase: recovery.PhaseIdle,
+	}
+	rescueState := rescue.State{Mode: rescue.ModeProxy}
+	persisted := state.PersistedState{ControlPlaneRecovery: recoveryState}
+	inventory := controlplane.RouterInventory{PasswallEnabled: true}
+	runtimeStatus := state.RuntimeStatus{}
+
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if !outcome.SkipControlPlane {
+		t.Fatal("expected control-plane work to be skipped while panel is unreachable")
+	}
+	if outcome.InventoryChanged {
+		t.Fatal("did not expect any direct-mode switch during first-boot grace period")
+	}
+	if got, want := rescueState.Mode, rescue.ModeProxy; got != want {
+		t.Fatalf("rescue mode = %q, want %q", got, want)
+	}
+	if len(backend.batchCommands) != 0 {
+		t.Fatalf("expected no UCI writes during first-boot grace, got %#v", backend.batchCommands)
+	}
+	if len(backend.runCommands) != 0 {
+		t.Fatalf("expected no shell commands during first-boot grace, got %#v", backend.runCommands)
+	}
+}
+
+// GAP-4: when the panel is blocked for >= threshold but foreign reachability is
+// only partial (not fully blocked), the machine must still enter direct as long
+// as a working direct path exists — a controller restart never fixes a routing
+// strand.
+func TestAdvanceControlPlaneRecoveryEntersDirectWhenPanelBlockedAndForeignPartial(t *testing.T) {
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusServiceUnavailable})
+	defer panel.Close()
+	// RU reachable = a working direct path exists; previously this drove a
+	// controller-restart loop that never fixed the routing strand.
+	ruUp := newStatusServer(map[string]int{"/": http.StatusNoContent})
+	defer ruUp.Close()
+	foreignUp := newStatusServer(map[string]int{"/": http.StatusNoContent})
+	defer foreignUp.Close()
+	foreignDown := newStatusServer(map[string]int{"/": http.StatusServiceUnavailable})
+	defer foreignDown.Close()
+
+	setRecoveryProbeTargets(t,
+		[]probeTarget{
+			{ID: "ya", Label: "ya.ru", URL: ruUp.URL},
+			{ID: "vk", Label: "vk.com", URL: ruUp.URL},
+		},
+		// One of three foreign targets reachable -> StatusPartial, not StatusBlocked.
+		[]probeTarget{
+			{ID: "youtube", Label: "youtube", URL: foreignUp.URL},
+			{ID: "instagram", Label: "instagram", URL: foreignDown.URL},
+			{ID: "telegram", Label: "telegram", URL: foreignDown.URL},
+		},
+	)
+
+	backend := &fakeRescueBackend{
+		runResults: map[string]passwall.CommandResult{
+			"/etc/init.d/passwall2 restart": {Stdout: "restarted"},
+		},
+	}
+	recoveryState := recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(time.Now().Add(-2 * time.Hour)),
+		OutageStartedAt:              recovery.FormatTime(time.Now().Add(-70 * time.Minute)),
+		Phase:                        recovery.PhaseMonitoring,
+	}
+	rescueState := rescue.State{Mode: rescue.ModeProxy}
+	persisted := state.PersistedState{ControlPlaneRecovery: recoveryState}
+	inventory := controlplane.RouterInventory{PasswallEnabled: true}
+	runtimeStatus := state.RuntimeStatus{}
+
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if !outcome.InventoryChanged {
+		t.Fatal("expected direct switch to require inventory recollect when panel blocked + foreign partial")
+	}
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhaseDirectSettle; got != want {
+		t.Fatalf("recovery phase = %q, want %q", got, want)
+	}
+	if got, want := rescueState.Mode, rescue.ModeDirect; got != want {
+		t.Fatalf("rescue mode = %q, want %q", got, want)
+	}
+	if !containsBatchLine(backend.batchCommands, "set passwall2.@global[0].enabled='0'") {
+		t.Fatalf("expected passwall disable batch, got %#v", backend.batchCommands)
+	}
+	if containsCommand(backend.runCommands, "/etc/init.d/vectra-controller restart") {
+		t.Fatalf("did not expect a controller restart for a routing strand, got %#v", backend.runCommands)
+	}
+}
+
+// GAP-5: operator-attention must never be a terminal park. Each RebootCooldown
+// it re-attempts proxy; on failure it re-disables PassWall (staying reachable in
+// direct) and keeps looping, while still emitting AwaitingOperator for panel
+// visibility.
+func TestAdvanceControlPlaneRecoveryOperatorAttentionReattemptsProxy(t *testing.T) {
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusServiceUnavailable})
+	defer panel.Close()
+	ru := newStatusServer(map[string]int{"/": http.StatusNoContent})
+	defer ru.Close()
+	blocked := newStatusServer(map[string]int{"/": http.StatusServiceUnavailable})
+	defer blocked.Close()
+
+	setRecoveryProbeTargets(t,
+		[]probeTarget{
+			{ID: "ya", Label: "ya.ru", URL: ru.URL},
+			{ID: "vk", Label: "vk.com", URL: ru.URL},
+		},
+		[]probeTarget{
+			{ID: "youtube", Label: "youtube", URL: blocked.URL},
+			{ID: "instagram", Label: "instagram", URL: blocked.URL},
+			{ID: "telegram", Label: "telegram", URL: blocked.URL},
+		},
+	)
+
+	backend := &fakeRescueBackend{
+		runResults: map[string]passwall.CommandResult{
+			"/etc/init.d/passwall2 restart": {Stdout: "restarted"},
+		},
+	}
+	now := time.Now()
+	staleRetryAt := recovery.FormatTime(now.Add(-13 * time.Hour))
+	recoveryState := recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(now.Add(-6 * time.Hour)),
+		OutageStartedAt:              recovery.FormatTime(now.Add(-5 * time.Hour)),
+		Phase:                        recovery.PhaseOperatorAttention,
+		AwaitingOperator:             true,
+		LastActionReason:             operatorAttentionReason,
+		// Last retry well beyond RebootCooldown so a fresh attempt is due.
+		LastPasswallRetryAt: staleRetryAt,
+	}
+	rescueState := rescue.State{Mode: rescue.ModeDirect}
+	persisted := state.PersistedState{ControlPlaneRecovery: recoveryState}
+	// Parked in direct after a prior failed retry; the re-attempt must re-enable
+	// PassWall (proxy) and re-arm the bounded retry-wait machinery.
+	inventory := controlplane.RouterInventory{PasswallEnabled: false}
+	runtimeStatus := state.RuntimeStatus{}
+
+	// Tick 1: cooldown elapsed -> re-attempt proxy and re-arm retry-wait, while
+	// still surfacing AwaitingOperator for the panel.
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if !outcome.InventoryChanged {
+		t.Fatal("expected operator-attention re-attempt to re-enable PassWall (inventory changed)")
+	}
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhasePasswallRetryWait; got != want {
+		t.Fatalf("recovery phase = %q, want %q", got, want)
+	}
+	if got, want := rescueState.Mode, rescue.ModeProxy; got != want {
+		t.Fatalf("rescue mode = %q, want %q", got, want)
+	}
+	if !persisted.ControlPlaneRecovery.AwaitingOperator {
+		t.Fatal("expected AwaitingOperator to remain set for panel visibility")
+	}
+	if persisted.ControlPlaneRecovery.LastPasswallRetryAt == staleRetryAt {
+		t.Fatal("expected last passwall retry timestamp to advance on re-attempt")
+	}
+	if !containsBatchLine(backend.batchCommands, "set passwall2.@global[0].enabled='1'") {
+		t.Fatalf("expected passwall enable batch on re-attempt, got %#v", backend.batchCommands)
+	}
+
+	// Tick 2 (after warmup): proxy still cannot reach foreign, so the existing
+	// retry-wait path re-disables PassWall and loops back to operator attention --
+	// the router stays reachable in direct and never requires a human.
+	backend.batchCommands = nil
+	backend.runCommands = nil
+	inventory.PasswallEnabled = true
+	persisted.ControlPlaneRecovery.LastPasswallRetryAt = recovery.FormatTime(now.Add(-2 * time.Minute))
+
+	outcome, err = advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("second advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if !outcome.InventoryChanged {
+		t.Fatal("expected failed retry to re-disable PassWall (inventory changed)")
+	}
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhaseOperatorAttention; got != want {
+		t.Fatalf("recovery phase after failed retry = %q, want %q", got, want)
+	}
+	if got, want := rescueState.Mode, rescue.ModeDirect; got != want {
+		t.Fatalf("rescue mode after failed retry = %q, want %q", got, want)
+	}
+	if !persisted.ControlPlaneRecovery.AwaitingOperator {
+		t.Fatal("expected AwaitingOperator to stay set after failed retry")
+	}
+	if !containsBatchLine(backend.batchCommands, "set passwall2.@global[0].enabled='0'") {
+		t.Fatalf("expected passwall to be re-disabled after failed retry, got %#v", backend.batchCommands)
+	}
+}
+
+// GAP-5 guard: operator-attention must not re-attempt more often than the
+// RebootCooldown; a fresh-enough prior attempt keeps the router parked in direct
+// without thrashing PassWall.
+func TestAdvanceControlPlaneRecoveryOperatorAttentionRespectsRetryCooldown(t *testing.T) {
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusServiceUnavailable})
+	defer panel.Close()
+	ru := newStatusServer(map[string]int{"/": http.StatusNoContent})
+	defer ru.Close()
+	blocked := newStatusServer(map[string]int{"/": http.StatusServiceUnavailable})
+	defer blocked.Close()
+
+	setRecoveryProbeTargets(t,
+		[]probeTarget{
+			{ID: "ya", Label: "ya.ru", URL: ru.URL},
+			{ID: "vk", Label: "vk.com", URL: ru.URL},
+		},
+		[]probeTarget{
+			{ID: "youtube", Label: "youtube", URL: blocked.URL},
+			{ID: "instagram", Label: "instagram", URL: blocked.URL},
+			{ID: "telegram", Label: "telegram", URL: blocked.URL},
+		},
+	)
+
+	backend := &fakeRescueBackend{}
+	now := time.Now()
+	recoveryState := recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(now.Add(-6 * time.Hour)),
+		OutageStartedAt:              recovery.FormatTime(now.Add(-5 * time.Hour)),
+		Phase:                        recovery.PhaseOperatorAttention,
+		AwaitingOperator:             true,
+		LastActionReason:             operatorAttentionReason,
+		// Last retry just an hour ago — RebootCooldown (12h) has not elapsed.
+		LastPasswallRetryAt: recovery.FormatTime(now.Add(-1 * time.Hour)),
+	}
+	rescueState := rescue.State{Mode: rescue.ModeDirect}
+	persisted := state.PersistedState{ControlPlaneRecovery: recoveryState}
+	inventory := controlplane.RouterInventory{PasswallEnabled: false}
+	runtimeStatus := state.RuntimeStatus{}
+
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if outcome.InventoryChanged {
+		t.Fatal("did not expect a re-attempt before RebootCooldown elapsed")
+	}
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhaseOperatorAttention; got != want {
+		t.Fatalf("recovery phase = %q, want %q", got, want)
+	}
+	if !persisted.ControlPlaneRecovery.AwaitingOperator {
+		t.Fatal("expected AwaitingOperator to remain set while parked in direct")
+	}
+	if len(backend.batchCommands) != 0 {
+		t.Fatalf("expected no PassWall writes before retry cooldown elapses, got %#v", backend.batchCommands)
+	}
+	if !outcome.SkipControlPlane {
+		t.Fatal("expected control-plane work to stay skipped while panel is unreachable")
+	}
+}
+
+// BUG H1 regression: the panel-reachability probe must use the control-plane
+// fwmark so it measures the SAME direct path the check-in uses. With a fwmark
+// configured and the panel reachable on that direct path, the agent must NOT
+// enter recovery (it must allow control-plane work to proceed) — exactly the
+// divergence that previously made a dead-proxy router flip to direct because the
+// UNMARKED probe failed while the marked check-in would have succeeded.
+//
+// (On the non-Linux test host SO_MARK is a no-op, so the marked prober reaches
+// the same httptest server; the assertion here is that wiring the fwmark through
+// the panel probe does not break the reachable-panel path and keeps recovery
+// idle.)
+// skipUnlessFwmarkPermitted skips when this process cannot stamp SO_MARK on a
+// socket. The agent runs as root on OpenWrt, but setting SO_MARK needs
+// CAP_NET_ADMIN and CI containers do not have it: every marked dial there fails
+// with EPERM, so the probe below would report the panel unreachable and the
+// assertion would be measuring the sandbox instead of the code. On non-Linux
+// platforms netmark.Control is a no-op and the dial is unaffected.
+func skipUnlessFwmarkPermitted(t *testing.T, fwmark uint, address string) {
+	t.Helper()
+
+	control := netmark.Control(fwmark)
+	if control == nil {
+		return
+	}
+	conn, err := (&net.Dialer{Control: control}).Dial("tcp", address)
+	if err != nil {
+		t.Skipf("SO_MARK %#x is not permitted here (needs CAP_NET_ADMIN): %v", fwmark, err)
+	}
+	_ = conn.Close()
+}
+
+func TestAdvanceControlPlaneRecoveryPanelProbeUsesFwmarkAndStaysIdleWhenPanelReachable(t *testing.T) {
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusNoContent})
+	defer panel.Close()
+
+	panelURL, err := url.Parse(panel.URL)
+	if err != nil {
+		t.Fatalf("parse panel url: %v", err)
+	}
+	skipUnlessFwmarkPermitted(t, 0x564354, panelURL.Host)
+
+	backend := &fakeRescueBackend{}
+	now := time.Now()
+	recoveryState := recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(now.Add(-2 * time.Minute)),
+		Phase:                        recovery.PhaseIdle,
+	}
+	rescueState := rescue.State{Mode: rescue.ModeProxy}
+	persisted := state.PersistedState{ControlPlaneRecovery: recoveryState}
+	inventory := controlplane.RouterInventory{PasswallEnabled: true}
+	runtimeStatus := state.RuntimeStatus{}
+
+	cfg := baseControlPlaneRecoveryConfig(panel.URL)
+	cfg.ControlPlaneFwmark = 0x564354
+
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		cfg,
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if outcome.SkipControlPlane {
+		t.Fatal("expected control-plane work to proceed when the panel is reachable on the marked direct path")
+	}
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhaseIdle; got != want {
+		t.Fatalf("recovery phase = %q, want %q (must stay idle, not enter recovery)", got, want)
+	}
+	if got, want := persisted.ControlPlaneRecovery.LastPanelStatus, recovery.StatusReachable; got != want {
+		t.Fatalf("last panel status = %q, want %q", got, want)
+	}
+	if !runtimeStatus.ServerReachable {
+		t.Fatal("expected runtime status to report the panel reachable")
+	}
+}
+
+// BUG M1 regression: after the cron watchdog's dead-man switch disables PassWall
+// (router -> direct so the controller can reach the panel), the agent's check-in
+// works again and recovery sits Idle/Monitoring — a watchdog-induced direct does
+// NOT enter PhaseDirectSettle. The agent must therefore detect "PassWall disabled
+// while recovery is Idle/Monitoring AND the panel is healthy" and route into the
+// existing probe-gated, cooldown-bounded proxy re-attempt so the router
+// self-heals back to proxy, satisfying the watchdog header's promise that the
+// agent's own auto-resume re-enables proxy once contact is restored.
+func TestAdvanceControlPlaneRecoveryResumesProxyAfterWatchdogInducedDirect(t *testing.T) {
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusNoContent})
+	defer panel.Close()
+
+	backend := &fakeRescueBackend{
+		runResults: map[string]passwall.CommandResult{
+			"/etc/init.d/passwall2 restart": {Stdout: "restarted"},
+		},
+	}
+	now := time.Now()
+	// Healthy control-plane contact (check-in works in direct), recovery idle:
+	// this is a watchdog-induced direct, not a recovery-driven one.
+	recoveryState := recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(now.Add(-1 * time.Minute)),
+		Phase:                        recovery.PhaseIdle,
+	}
+	rescueState := rescue.State{
+		Mode:             rescue.ModeDirect,
+		LastTransitionAt: now.Add(-20 * time.Minute),
+	}
+	persisted := state.PersistedState{ControlPlaneRecovery: recoveryState}
+	// PassWall was disabled by the watchdog dead-man switch.
+	inventory := controlplane.RouterInventory{PasswallEnabled: false}
+	runtimeStatus := state.RuntimeStatus{}
+
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if !outcome.InventoryChanged {
+		t.Fatal("expected the watchdog-induced direct to trigger a proxy re-attempt (inventory changed)")
+	}
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhasePasswallRetryWait; got != want {
+		t.Fatalf("recovery phase = %q, want %q (must arm the bounded retry-wait path)", got, want)
+	}
+	if persisted.ControlPlaneRecovery.LastPasswallRetryAt == "" {
+		t.Fatal("expected last passwall retry timestamp to be set so the cooldown gate engages")
+	}
+	if got, want := rescueState.Mode, rescue.ModeProxy; got != want {
+		t.Fatalf("rescue mode = %q, want %q", got, want)
+	}
+	if !runtimeStatus.PasswallEnabled {
+		t.Fatal("expected runtime status to reflect PassWall re-enabled")
+	}
+	if !containsBatchLine(backend.batchCommands, "set passwall2.@global[0].enabled='1'") {
+		t.Fatalf("expected passwall enable batch, got %#v", backend.batchCommands)
+	}
+	if !containsCommand(backend.runCommands, "/etc/init.d/passwall2 restart") {
+		t.Fatalf("expected passwall restart command, got %#v", backend.runCommands)
+	}
+}
+
+// BUG M1 flap-safety: a watchdog-induced direct must NOT thrash PassWall when the
+// proxy is still dead. If a proxy re-attempt already happened within the cooldown
+// (RebootCooldown), the agent must leave PassWall disabled and wait — so it never
+// fights the watchdog by re-enabling a proxy that the watchdog will just disable
+// again.
+func TestAdvanceControlPlaneRecoveryDoesNotThrashWatchdogDirectWithinCooldown(t *testing.T) {
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusNoContent})
+	defer panel.Close()
+
+	backend := &fakeRescueBackend{}
+	now := time.Now()
+	recoveryState := recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(now.Add(-1 * time.Minute)),
+		Phase:                        recovery.PhaseIdle,
+		// A proxy re-attempt happened recently; RebootCooldown (12h) has not elapsed.
+		LastPasswallRetryAt: recovery.FormatTime(now.Add(-1 * time.Hour)),
+	}
+	rescueState := rescue.State{
+		Mode:             rescue.ModeDirect,
+		LastTransitionAt: now.Add(-1 * time.Hour),
+	}
+	persisted := state.PersistedState{ControlPlaneRecovery: recoveryState}
+	inventory := controlplane.RouterInventory{PasswallEnabled: false}
+	runtimeStatus := state.RuntimeStatus{}
+
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if outcome.InventoryChanged {
+		t.Fatal("did not expect a proxy re-attempt within the cooldown window")
+	}
+	if len(backend.batchCommands) != 0 {
+		t.Fatalf("expected no PassWall writes within cooldown, got %#v", backend.batchCommands)
+	}
+	if got, want := rescueState.Mode, rescue.ModeDirect; got != want {
+		t.Fatalf("rescue mode = %q, want %q (must stay direct within cooldown)", got, want)
+	}
+	if got := persisted.ControlPlaneRecovery.Phase; got != recovery.PhaseIdle && got != recovery.PhaseMonitoring {
+		t.Fatalf("recovery phase = %q, want idle/monitoring (no re-attempt)", got)
+	}
+}
+
+// BUG M1 isolation: the watchdog-direct self-heal must NOT interfere with a
+// normal recovery-driven direct. When recovery owns PassWall (e.g. it just
+// entered PhaseDirectSettle) the existing settle/retry machinery must run
+// unchanged — the self-heal only applies to Idle/Monitoring (recovery does not
+// own PassWall) phases.
+func TestAdvanceControlPlaneRecoveryDoesNotPreemptRecoveryDrivenDirectSettle(t *testing.T) {
+	// Panel still unreachable: a genuine recovery-driven direct that is mid-settle.
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusServiceUnavailable})
+	defer panel.Close()
+	ru := newStatusServer(map[string]int{"/": http.StatusNoContent})
+	defer ru.Close()
+	blocked := newStatusServer(map[string]int{"/": http.StatusServiceUnavailable})
+	defer blocked.Close()
+
+	setRecoveryProbeTargets(t,
+		[]probeTarget{
+			{ID: "ya", Label: "ya.ru", URL: ru.URL},
+			{ID: "vk", Label: "vk.com", URL: ru.URL},
+		},
+		[]probeTarget{
+			{ID: "youtube", Label: "youtube", URL: blocked.URL},
+			{ID: "instagram", Label: "instagram", URL: blocked.URL},
+			{ID: "telegram", Label: "telegram", URL: blocked.URL},
+		},
+	)
+
+	backend := &fakeRescueBackend{}
+	now := time.Now()
+	recoveryState := recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(now.Add(-2 * time.Hour)),
+		OutageStartedAt:              recovery.FormatTime(now.Add(-70 * time.Minute)),
+		Phase:                        recovery.PhaseDirectSettle,
+		LastPanelStatus:              recovery.StatusBlocked,
+		LastActionReason:             controlPlaneDirectReason,
+	}
+	// Inside the DirectSettle window so the existing path is a no-op this tick.
+	rescueState := rescue.State{
+		Mode:             rescue.ModeDirect,
+		LastTransitionAt: now.Add(-2 * time.Second),
+	}
+	persisted := state.PersistedState{ControlPlaneRecovery: recoveryState}
+	inventory := controlplane.RouterInventory{PasswallEnabled: false}
+	runtimeStatus := state.RuntimeStatus{}
+
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	// The recovery-driven DirectSettle must stay in DirectSettle (within window),
+	// untouched by the watchdog self-heal, and must NOT re-enable PassWall.
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhaseDirectSettle; got != want {
+		t.Fatalf("recovery phase = %q, want %q (self-heal must not pre-empt recovery-driven direct)", got, want)
+	}
+	if outcome.InventoryChanged {
+		t.Fatal("did not expect any PassWall change while recovery-driven DirectSettle is mid-window")
+	}
+	if containsBatchLine(backend.batchCommands, "set passwall2.@global[0].enabled='1'") {
+		t.Fatalf("self-heal must not re-enable PassWall during recovery-driven direct, got %#v", backend.batchCommands)
+	}
+	if got, want := rescueState.Mode, rescue.ModeDirect; got != want {
+		t.Fatalf("rescue mode = %q, want %q", got, want)
 	}
 }
 

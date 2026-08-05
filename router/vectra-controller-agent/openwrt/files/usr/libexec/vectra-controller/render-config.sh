@@ -144,6 +144,12 @@ if [ -z "$panel_url" ]; then
 fi
 poll_interval="$(uci_get_or_default poll_interval 45s)"
 request_timeout="$(uci_get_or_default request_timeout 10s)"
+# Firewall mark the agent stamps on its own control-plane sockets (SO_MARK) so
+# the carve-out installed by /etc/uci-defaults/93_vectra_controlplane_direct
+# forces that traffic DIRECT past the PassWall2 tproxy. Operator-overridable,
+# but the default MUST stay in lock-step with VECTRA_CONTROL_PLANE_FWMARK in
+# that uci-default script: both sides have to agree on the exact value.
+control_plane_fwmark="$(uci_get_or_default control_plane_fwmark 0x564354)"
 state_path="$(uci_get_or_default state_path /etc/vectra-controller/state.json)"
 status_path="$(uci_get_or_default status_path /var/run/vectra-controller/status.json)"
 controller_version="$(package_version vectra-controller-agent)"
@@ -190,6 +196,7 @@ json_add_string state_path "$state_path"
 json_add_string status_path "$status_path"
 json_add_string poll_interval "$poll_interval"
 json_add_string request_timeout "$request_timeout"
+json_add_string control_plane_fwmark "$control_plane_fwmark"
 
 json_add_object rescue_policy
 json_add_array health_urls
@@ -201,7 +208,7 @@ json_add_int recovery_success_count 2
 json_add_int cooldown 300000000000
 json_add_boolean require_direct_path_success 1
 json_add_string direct_mode_reason "Subscription expired or upstream proxy unavailable"
-json_add_string panel_outage_threshold "1h"
+json_add_string panel_outage_threshold "15m"
 json_add_string probe_cache_ttl "5m"
 json_add_string controller_restart_settle "90s"
 json_add_string direct_settle "45s"
@@ -222,7 +229,7 @@ job_safety_storage_overlay_floor_mb="$(uci_get_or_default job_safety_storage_ove
 job_safety_heavy_tmp_floor_mb="$(uci_get_or_default job_safety_heavy_tmp_floor_mb 0)"
 job_safety_storage_tmp_floor_mb="$(uci_get_or_default job_safety_storage_tmp_floor_mb 0)"
 job_safety_diagnostic_tmp_floor_mb="$(uci_get_or_default job_safety_diagnostic_tmp_floor_mb 0)"
-job_safety_pre_drop_caches="$(uci_get_or_default job_safety_pre_drop_caches 0)"
+job_safety_pre_drop_caches="$(uci_get_or_default job_safety_pre_drop_caches 1)"
 
 json_add_object job_safety
 json_add_int heavy_memory_floor_mb "${job_safety_heavy_memory_floor_mb:-0}"

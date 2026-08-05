@@ -129,8 +129,8 @@ func TestLoadKeepsDefaultRescuePolicyWhenConfigOmitsIt(t *testing.T) {
 	if !cfg.Rescue.RequireDirectPathSuccess {
 		t.Fatal("expected require direct path success to stay enabled by default")
 	}
-	if cfg.Rescue.PanelOutageThreshold != time.Hour {
-		t.Fatalf("panel outage threshold = %v, want %v", cfg.Rescue.PanelOutageThreshold, time.Hour)
+	if cfg.Rescue.PanelOutageThreshold != 15*time.Minute {
+		t.Fatalf("panel outage threshold = %v, want %v", cfg.Rescue.PanelOutageThreshold, 15*time.Minute)
 	}
 	if cfg.Rescue.ProbeCacheTTL != 5*time.Minute {
 		t.Fatalf("probe cache ttl = %v, want %v", cfg.Rescue.ProbeCacheTTL, 5*time.Minute)
@@ -177,6 +177,40 @@ func TestLoadMergesPartialRescuePolicyWithoutDroppingDefaultURLs(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsPanelOutageThresholdToFifteenMinutes(t *testing.T) {
+	path := writeConfigFixture(t, `{
+  "control_url": "https://api.vectra-pro.net",
+  "panel_url": "https://router.vectra-pro.net"
+}`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if got, want := cfg.Rescue.PanelOutageThreshold, 15*time.Minute; got != want {
+		t.Fatalf("panel outage threshold = %v, want %v", got, want)
+	}
+}
+
+func TestLoadStillAcceptsHourStylePanelOutageThreshold(t *testing.T) {
+	path := writeConfigFixture(t, `{
+  "control_url": "https://api.vectra-pro.net",
+  "rescue_policy": {
+    "panel_outage_threshold": "1h"
+  }
+}`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if got, want := cfg.Rescue.PanelOutageThreshold, time.Hour; got != want {
+		t.Fatalf("panel outage threshold = %v, want %v", got, want)
+	}
+}
+
 func TestLoadParsesExtendedRecoveryDurations(t *testing.T) {
 	path := writeConfigFixture(t, `{
   "control_url": "https://api.vectra-pro.net",
@@ -212,5 +246,34 @@ func TestLoadParsesExtendedRecoveryDurations(t *testing.T) {
 	}
 	if got, want := cfg.Rescue.RebootCooldown, 6*time.Hour; got != want {
 		t.Fatalf("reboot cooldown = %v, want %v", got, want)
+	}
+}
+
+func TestLoadParsesControlPlaneFwmark(t *testing.T) {
+	path := writeConfigFixture(t, `{"panel_url":"https://api.example","control_plane_fwmark":"0x564354"}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ControlPlaneFwmark != 0x564354 {
+		t.Fatalf("control plane fwmark = %#x, want 0x564354", cfg.ControlPlaneFwmark)
+	}
+}
+
+func TestLoadDefaultsControlPlaneFwmarkToZeroWhenAbsent(t *testing.T) {
+	path := writeConfigFixture(t, `{"panel_url":"https://api.example"}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ControlPlaneFwmark != 0 {
+		t.Fatalf("control plane fwmark = %#x, want 0 when absent", cfg.ControlPlaneFwmark)
+	}
+}
+
+func TestLoadRejectsInvalidControlPlaneFwmark(t *testing.T) {
+	path := writeConfigFixture(t, `{"panel_url":"https://api.example","control_plane_fwmark":"not-a-mark"}`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected an error for an unparseable control_plane_fwmark")
 	}
 }

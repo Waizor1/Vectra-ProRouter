@@ -3,8 +3,11 @@ package rescue
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
+
+	"vectra-controller-agent/internal/netmark"
 )
 
 type HTTPProbeResult struct {
@@ -19,14 +22,44 @@ type HTTPProber struct {
 	Client *http.Client
 }
 
+// NewHTTPProber builds an UNMARKED prober. It dials over whatever path the
+// router's routing currently provides — i.e. through the PassWall2 tproxy when
+// proxy mode is active. This is the correct behaviour for the RU/foreign/
+// Telegram/YouTube/Instagram reachability probes, which must measure the real
+// proxied client path so the rescue trigger reflects what users actually see.
 func NewHTTPProber(timeout time.Duration) HTTPProber {
+	return HTTPProber{Client: buildHTTPClient(timeout, 0)}
+}
+
+// NewHTTPProberWithFwmark builds a prober whose sockets carry SO_MARK == fwmark
+// (Linux only), so its traffic is matched by the nftables carve-out and egresses
+// DIRECTLY, bypassing the PassWall2 tproxy — the SAME path the control-plane
+// check-in uses. Only the panel-reachability probe may use this: it must measure
+// the direct path the check-in actually takes, otherwise a dead-proxy router
+// reports the panel as blocked (because the probe went through the dead proxy)
+// even though the marked check-in would have succeeded. A zero fwmark is
+// identical to NewHTTPProber (no marking).
+func NewHTTPProberWithFwmark(timeout time.Duration, fwmark uint) HTTPProber {
+	return HTTPProber{Client: buildHTTPClient(timeout, fwmark)}
+}
+
+// buildHTTPClient constructs an *http.Client with the given timeout. When fwmark
+// is non-zero (and the platform supports SO_MARK), it installs a custom
+// transport whose dialer stamps the mark; otherwise it leaves Transport nil so
+// the standard-library default is used and dialing is unchanged.
+func buildHTTPClient(timeout time.Duration, fwmark uint) *http.Client {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
 
-	return HTTPProber{
-		Client: &http.Client{Timeout: timeout},
+	client := &http.Client{Timeout: timeout}
+	if control := netmark.Control(fwmark); control != nil {
+		dialer := &net.Dialer{Timeout: timeout, Control: control}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.DialContext = dialer.DialContext
+		client.Transport = transport
 	}
+	return client
 }
 
 func (p HTTPProber) Probe(ctx context.Context, url string) HTTPProbeResult {

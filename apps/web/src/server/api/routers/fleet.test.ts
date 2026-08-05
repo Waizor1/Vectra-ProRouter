@@ -6,12 +6,16 @@ import { fleetRouter } from "./fleet";
 
 const ROUTER_ID = "f0f2437a-7786-4a3b-be38-5c02af2f4461";
 
+// The hostname here must NOT match a route-policy exception. It used to be
+// "vagrand-router", which silently started returning status "exempt" instead of
+// "unknown" the moment vagrandrouter was added to the exception list — a test
+// about revision metadata failing over an unrelated policy change.
 function createRouterRow() {
   return {
     id: ROUTER_ID,
     deviceIdentifier: "router-test-1",
-    displayName: "VagrandRouter",
-    hostname: "vagrand-router",
+    displayName: "FleetListFixture",
+    hostname: "fleet-list-fixture",
     panelDomain: "router.vectra-pro.net",
     model: "WR3000E",
     boardName: "cudy,wr3000e-v1",
@@ -45,7 +49,7 @@ function createSnapshotRow() {
       target: "mediatek/filogic",
       architecture: "aarch64_cortex-a53",
       openwrtRelease: "24.10.5",
-      hostname: "vagrand-router",
+      hostname: "fleet-list-fixture",
       configDigest: "digest-live",
       packageVersions: {
         "luci-app-passwall2": "26.4.10-r1",

@@ -14,8 +14,10 @@ const (
 	ensureRuntimeActionCompactGeodata = "compact_geodata"
 	ensureRuntimeActionDNSMasqFull    = "dnsmasq_full"
 
-	defaultCompactGeoIPURL   = "https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat"
-	defaultCompactGeoSiteURL = "https://github.com/itdoginfo/allow-domains/releases/latest/download/geosite.dat"
+	// Single source of truth lives in the passwall package so the import-time
+	// fallback and this runtime enforcement can never drift apart again.
+	defaultCompactGeoIPURL   = passwall.DefaultCompactGeoIPURL
+	defaultCompactGeoSiteURL = passwall.DefaultCompactGeoSiteURL
 	defaultPasswallAssetDir  = "/usr/share/v2ray/"
 )
 

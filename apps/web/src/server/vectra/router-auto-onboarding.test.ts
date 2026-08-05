@@ -937,9 +937,14 @@ function standardRouteConfig(): NonNullable<
         { id: "Special", label: "Special", outboundNodeId: "node-special" },
         { id: "Tiktok", label: "Tiktok", outboundNodeId: "node-tiktok" },
         {
+          // 2026-08-03 canon (v4): DiscordVoiceUdp rides the SAME node as
+          // WorldProxy. The WorldProxy rule sits above this one in the
+          // generated Xray chain and already carries the Discord prefixes with
+          // network=tcp,udp, so pointing this slot elsewhere stranded its
+          // mux/xudp tuning on a node no Discord packet ever reached.
           id: "DiscordVoiceUdp",
           label: "DiscordVoiceUdp",
-          outboundNodeId: "node-discord",
+          outboundNodeId: "node-world",
           extras: {
             network: "udp",
             port: "19294-19344,50000-50100",
@@ -958,28 +963,15 @@ function standardRouteConfig(): NonNullable<
           YouTube: "node-youtube",
           Special: "node-special",
           Tiktok: "node-tiktok",
-          DiscordVoiceUdp: "node-discord",
+          DiscordVoiceUdp: "node-world",
         },
       },
-      routeNode(
-        "node-world",
-        "🇩🇪 Germany YouTube RU entry",
-        "ru1.example.net",
-        50052,
-      ),
-      routeNode(
-        "node-youtube",
-        "🇷🇺 Russia YouTube RU entry",
-        "ru1.example.net",
-        50051,
-      ),
-      routeNode("node-special", "🇳🇱 Netherlands", "nl1.example.net", 443),
-      routeNode("node-tiktok", "🇧🇾 Belarus", "by1.example.net", 443),
       {
+        // Carries the UDP tuning because DiscordVoiceUdp binds here too.
         ...routeNode(
-          "node-discord",
-          "🇵🇱 Poland YouTube RU entry",
-          "ru2.example.net",
+          "node-world",
+          "🇷🇺🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+          "ru4.nfnpx.online",
           50053,
         ),
         extras: {
@@ -988,6 +980,14 @@ function standardRouteConfig(): NonNullable<
           xudp_concurrency: "16",
         },
       },
+      routeNode(
+        "node-youtube",
+        "🇷🇺 Russia YouTube RU entry",
+        "ru1.example.net",
+        50051,
+      ),
+      routeNode("node-special", "🇳🇱 Netherlands", "nl1.example.net", 443),
+      routeNode("node-tiktok", "🇧🇾 Belarus", "by1.example.net", 443),
     ],
     subscriptions: {
       filterKeywordMode: "0",
