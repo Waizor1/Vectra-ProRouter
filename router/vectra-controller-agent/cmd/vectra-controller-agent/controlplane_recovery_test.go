@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
 	"vectra-controller-agent/internal/config"
 	"vectra-controller-agent/internal/controlplane"
+	"vectra-controller-agent/internal/netmark"
 	"vectra-controller-agent/internal/passwall"
 	"vectra-controller-agent/internal/recovery"
 	"vectra-controller-agent/internal/rescue"
@@ -1500,9 +1503,35 @@ func TestAdvanceControlPlaneRecoveryOperatorAttentionRespectsRetryCooldown(t *te
 // the same httptest server; the assertion here is that wiring the fwmark through
 // the panel probe does not break the reachable-panel path and keeps recovery
 // idle.)
+// skipUnlessFwmarkPermitted skips when this process cannot stamp SO_MARK on a
+// socket. The agent runs as root on OpenWrt, but setting SO_MARK needs
+// CAP_NET_ADMIN and CI containers do not have it: every marked dial there fails
+// with EPERM, so the probe below would report the panel unreachable and the
+// assertion would be measuring the sandbox instead of the code. On non-Linux
+// platforms netmark.Control is a no-op and the dial is unaffected.
+func skipUnlessFwmarkPermitted(t *testing.T, fwmark uint, address string) {
+	t.Helper()
+
+	control := netmark.Control(fwmark)
+	if control == nil {
+		return
+	}
+	conn, err := (&net.Dialer{Control: control}).Dial("tcp", address)
+	if err != nil {
+		t.Skipf("SO_MARK %#x is not permitted here (needs CAP_NET_ADMIN): %v", fwmark, err)
+	}
+	_ = conn.Close()
+}
+
 func TestAdvanceControlPlaneRecoveryPanelProbeUsesFwmarkAndStaysIdleWhenPanelReachable(t *testing.T) {
 	panel := newStatusServer(map[string]int{"/api/health": http.StatusNoContent})
 	defer panel.Close()
+
+	panelURL, err := url.Parse(panel.URL)
+	if err != nil {
+		t.Fatalf("parse panel url: %v", err)
+	}
+	skipUnlessFwmarkPermitted(t, 0x564354, panelURL.Host)
 
 	backend := &fakeRescueBackend{}
 	now := time.Now()
