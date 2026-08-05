@@ -220,8 +220,7 @@ func TestFleetRoutePolicyExceptionsMatchPanelList(t *testing.T) {
 	// silently undoes the other on every 60s check-in, so pin the contents here
 	// and update both sides together.
 	want := map[string]struct{}{
-		"hh":            {},
-		"vagrandrouter": {},
+		"hh": {},
 	}
 
 	if len(fleetRoutePolicyExceptionValues) != len(want) {
@@ -238,15 +237,107 @@ func TestFleetRoutePolicyExceptionsMatchPanelList(t *testing.T) {
 	}
 }
 
-func TestExemptRouterKeepsUnreachableCanonicalBindingUntouched(t *testing.T) {
-	// VagrandRouter's ISP filters the RU-entry port range, so the canonical
-	// RU-entry Poland node still outscores everything (reachability is not part
-	// of the scorer) and normalization would rebind the slot to a dead node on
-	// every check-in. The exception must short-circuit before that happens.
+func TestVagrandRouterIsNoLongerExempt(t *testing.T) {
+	// Exempt from 2026-07-29 because its ISP filtered ports 50051-50061.
+	// Confirmed gone 2026-08-05 (its own Special slot runs on
+	// ru11.nfnpx.online:50055), so the exemption lost its cause and was
+	// removed. A hardcoded exemption that outlives its reason silently freezes
+	// a router on whatever bindings it happened to have, and nothing in the
+	// fleet reports it as a violation -- it just reads "exempt" forever.
+	for _, hostname := range []string{"VagrandRouter", "vagrandrouter", "vagrand-router"} {
+		if IsFleetRoutePolicyExempt(FleetRoutePolicyIdentity{Hostname: hostname}) {
+			t.Fatalf("%q must not be exempt any more", hostname)
+		}
+	}
+}
+
+// Normalization owns the slot bindings and nothing else. Two invariants that
+// have burned this fleet before:
+//
+//   - myshunt.default_node stays _direct. A proxy there routes the catch-all,
+//     including the _default slots, through that node.
+//   - the binding lives on the RULE (rule.outboundNodeId). Same-named keys in
+//     the shunt node's extras are dropped on apply, so a config that only
+//     carries extras applies "successfully" into a shunt with no bindings.
+func TestNormalizationLeavesShuntDefaultNodeAndWritesTheRule(t *testing.T) {
 	identity := FleetRoutePolicyIdentity{Hostname: "VagrandRouter"}
+	config := DesiredConfig{
+		Nodes: []NodeConfig{
+			{
+				ID:       "myshunt",
+				Label:    "Маршрутизатор BloopCat",
+				Protocol: "shunt",
+				Enabled:  true,
+				Extras: map[string]any{
+					"default_node": "_direct",
+					"Direct":       "_direct",
+					"China":        "_direct",
+					"GFW":          "_default",
+					"WorldProxy":   "extreme-poland-443",
+				},
+			},
+			{
+				ID:        "extreme-poland-443",
+				Label:     "⚡Extreme Польша 🇵🇱",
+				Address:   "pl1.nfnpx.online",
+				Port:      443,
+				Transport: "raw",
+				Enabled:   true,
+			},
+			{
+				ID:        "direct-poland-443",
+				Label:     "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+				Address:   "pl2.nfnpx.online",
+				Port:      443,
+				Transport: "raw",
+				Enabled:   true,
+			},
+		},
+	}
+	config.BasicSettings.ShuntRules = []ShuntRule{
+		{ID: "direct", Label: "direct", OutboundNodeID: "_direct"},
+		{ID: "WorldProxy", Label: "WorldProxy", OutboundNodeID: "extreme-poland-443"},
+	}
+
+	normalized, changed := NormalizeFleetRoutePolicyConfig(config, identity)
+	if !changed {
+		t.Fatal("expected the un-exempted router to be normalized")
+	}
+
+	var shunt *NodeConfig
+	for i := range normalized.Nodes {
+		if normalized.Nodes[i].ID == "myshunt" {
+			shunt = &normalized.Nodes[i]
+		}
+	}
+	if shunt == nil {
+		t.Fatal("shunt node disappeared from the normalized config")
+	}
+	if got := shunt.Extras["default_node"]; got != "_direct" {
+		t.Fatalf("myshunt.default_node = %v, want _direct", got)
+	}
+
+	rules := map[string]string{}
+	for _, rule := range normalized.BasicSettings.ShuntRules {
+		rules[rule.ID] = rule.OutboundNodeID
+	}
+	if got := rules["WorldProxy"]; got != "direct-poland-443" {
+		t.Fatalf("WorldProxy rule bound to %q, want direct-poland-443", got)
+	}
+	if got := rules["direct"]; got != "_direct" {
+		t.Fatalf("catch-all direct rule became %q, want _direct", got)
+	}
+}
+
+func TestExemptRouterKeepsUnreachableCanonicalBindingUntouched(t *testing.T) {
+	// An exempt router keeps whatever it is bound to, even when the scorer
+	// would prefer something else: reachability is not part of the scorer, so
+	// on a line where the canonical target is dead normalization would rebind
+	// the slot to it on every check-in. The exception must short-circuit first.
+	identity := FleetRoutePolicyIdentity{Hostname: "hh"}
 
 	if !IsFleetRoutePolicyExempt(identity) {
-		t.Fatalf("expected VagrandRouter to be exempt")
+		t.Fatalf("expected hh to be exempt")
 	}
 
 	config := DesiredConfig{
@@ -358,9 +449,9 @@ func TestDirectiveCanExemptRouterUnknownToBuiltinList(t *testing.T) {
 func TestDirectiveCanUnExemptRouterInBuiltinList(t *testing.T) {
 	// The reverse direction: the panel must be able to retire a hardcoded
 	// exemption without a rebuild.
-	identity := FleetRoutePolicyIdentity{Hostname: "VagrandRouter"}
+	identity := FleetRoutePolicyIdentity{Hostname: "hh"}
 	if !IsFleetRoutePolicyExempt(identity) {
-		t.Fatalf("precondition: VagrandRouter must be in the built-in list")
+		t.Fatalf("precondition: hh must be in the built-in list")
 	}
 
 	directive := &FleetRoutePolicyDirective{

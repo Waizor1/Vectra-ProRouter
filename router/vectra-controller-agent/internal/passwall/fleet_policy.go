@@ -32,16 +32,18 @@ type fleetRoutePolicySlot struct {
 // other every check-in.
 //
 //   - hh: operator-designated no-touch router.
-//   - vagrandrouter: its ISP filters the non-standard high ports (50051-50061)
-//     that every RU-entry gRPC node uses, so the canonical targets are
-//     unreachable from that line while port 443 works fine (verified
-//     2026-07-29: ru12.nfnpx.online:50053 connect fails, fin2/pl1:443 connect in
-//     0.61s). Reachability is not part of the scorer, so normalization kept
-//     rebinding the slots to a dead RU-entry node once a minute. This router
-//     runs on the vless/raw :443 node family instead.
+//
+// vagrandrouter was listed here from 2026-07-29 because its ISP filtered the
+// non-standard high ports (50051-50061) that every RU-entry gRPC node uses, so
+// the canonical targets were unreachable from that line while port 443 worked
+// fine. Reachability is not part of the scorer, so normalization kept rebinding
+// its slots to a dead RU-entry node once a minute. That filtering was confirmed
+// gone on 2026-08-05 and the router now runs its Special slot on
+// ru11.nfnpx.online:50055, a high port, so the exemption no longer has a cause
+// and was removed. A panel directive can already exempt or un-exempt any router
+// without a controller rebuild; this list is only the offline fallback.
 var fleetRoutePolicyExceptionValues = map[string]struct{}{
-	"hh":            {},
-	"vagrandrouter": {},
+	"hh": {},
 }
 
 var fleetRoutePolicySlots = []fleetRoutePolicySlot{
