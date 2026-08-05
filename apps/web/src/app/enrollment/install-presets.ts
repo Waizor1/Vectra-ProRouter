@@ -656,12 +656,19 @@ export const AX3000T_OPENWRT_FEED_PROVIDED_DEPENDENCIES = [
   "coreutils",
   "coreutils-base64",
   "coreutils-nohup",
+  // luci-app-passwall2 26.7.16-r1 added coreutils-timeout and lyaml. Both are
+  // OpenWrt-feed provided (verified in the 24.10.6 aarch64_cortex-a53 packages
+  // feed as coreutils-timeout_9.7-r1 and lyaml_6.2.7-r2), so they are covered
+  // here rather than mirrored. Keep aligned with OPENWRT_FEED_DEPS in
+  // deploy/scripts/refresh-passwall-mirror.py.
+  "coreutils-timeout",
   "curl",
   "ip-full",
   "libuci-lua",
   "lua",
   "luci-compat",
   "luci-lib-jsonc",
+  "lyaml",
   "resolveip",
   "unzip",
   "luci-lua-runtime",

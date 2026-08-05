@@ -49,6 +49,12 @@ const controlFixturePath = fileURLToPath(
     import.meta.url,
   ),
 );
+const latestControlFixturePath = fileURLToPath(
+  new URL(
+    "./__fixtures__/luci-app-passwall2-26.7.16-r1.control.txt",
+    import.meta.url,
+  ),
+);
 const bundleFixturePath = fileURLToPath(
   new URL(
     "./__fixtures__/passwall-bundle-26.4.5-1-aarch64_cortex-a53.txt",
@@ -514,16 +520,23 @@ describe("enrollment install preset", () => {
   });
 
   it("covers luci-app-passwall2 dependencies with mirrored packages or OpenWrt feed allowlist", () => {
-    const controlFixture = readFileSync(controlFixturePath, "utf8");
+    // Both the shipped tag and the newest upstream tag must be covered. The
+    // 26.7.16-r1 control file is the one that froze the production mirror: it
+    // added coreutils-timeout and lyaml, deploy/scripts/refresh-passwall-mirror.py
+    // refused to publish an uncovered dependency, and the artifact store sat at
+    // 2026-05-18 while the timer failed every six hours.
     const coveredDependencies = new Set<string>([
       ...AX3000T_OPENWRT_FEED_PROVIDED_DEPENDENCIES,
       ...AX3000T_REQUIRED_MIRRORED_PACKAGES.map(({ name }) => name),
     ]);
-    const missingDependencies = parseDependencyList(controlFixture).filter(
-      (dependency) => !coveredDependencies.has(dependency),
-    );
 
-    expect(missingDependencies).toEqual([]);
+    for (const fixturePath of [controlFixturePath, latestControlFixturePath]) {
+      const missingDependencies = parseDependencyList(
+        readFileSync(fixturePath, "utf8"),
+      ).filter((dependency) => !coveredDependencies.has(dependency));
+
+      expect(missingDependencies, `uncovered in ${fixturePath}`).toEqual([]);
+    }
   });
 
   it("keeps every required mirrored package present in the checked-in upstream bundle fixture", () => {
