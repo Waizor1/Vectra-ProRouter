@@ -981,7 +981,9 @@ describe("destructive route gating", () => {
     }
 
     expect(inserted.payload?.packageList).toEqual(["xray-core"]);
-    expect(inserted.payload?.strategy).toBe("xray-built-in-first");
+    // Scoped xray-core no longer forces the built-in updater: api.to_move()
+    // would overwrite the /usr/sbin/vectra-xray-wrapper heap-cap shim.
+    expect(inserted.payload?.strategy).toBe("managed-stack-package-first");
     expect(inserted.payload?.targetVersion).toBe("26.3.27-r1");
     expect(inserted.payload?.packageTargetVersion).toBe("26.3.27-r1");
     expect(inserted.payload?.runtimeTargetVersion).toBe("26.4.17");

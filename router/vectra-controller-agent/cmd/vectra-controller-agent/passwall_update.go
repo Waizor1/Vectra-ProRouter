@@ -478,6 +478,78 @@ func installPasswallPackageViaPackagePath(
 	return []passwall.CommandResult{result}, result, installErr
 }
 
+// passwallGuardManagedMarker is the only probe verdict that lets the built-in
+// updater run. Any other output -- including empty output from a shell that
+// failed without a non-zero exit -- keeps it switched off.
+const passwallGuardManagedMarker = "managed"
+
+// passwallManagedBinaryPath is where PassWall2 keeps every component's
+// default_path (com.lua: /usr/bin/{xray,sing-box,hysteria,geoview}). It is also
+// the only location opkg and our artifact fallbacks refresh, so it is the only
+// target the built-in updater may write to.
+func passwallManagedBinaryPath(componentName string) string {
+	return "/usr/bin/" + componentName
+}
+
+// builtInUpdaterTargetsManagedBinary reports whether PassWall2's built-in
+// component updater would land on the package-owned binary.
+//
+// api.to_move() moves the freshly downloaded binary to whatever
+// get_app_path() resolves to: passwall2.@global_app[0].<component>_file, or
+// com[<component>].default_path when that uci value is empty. On low-RAM boards
+// we point the uci value at /usr/sbin/vectra-xray-wrapper, a shell script that
+// applies GOMEMLIMIT/GOGC before exec'ing /usr/bin/xray. Letting the built-in
+// updater run there overwrites the wrapper with the raw binary: the heap caps
+// are silently lost, the real binary stays stale, and the overlay grows by a
+// second full-size copy -- all while the update still reports success.
+//
+// The probe is an allowlist, not a "does it look like a script" sniff: the
+// built-in updater is allowed only when the resolved path is the package-owned
+// /usr/bin/<component>. That also covers a wrapper that does not exist yet (the
+// updater would create it), a wrapper parked somewhere other than /usr/sbin,
+// and a wrapper that is not '#!'-prefixed. Everything else falls through to the
+// artifact-based paths, which write /usr/bin/<component> and leave the wrapper
+// alone.
+// passwallBuiltInGuardProbe takes the component name in $1 and the
+// package-owned path in $2, so the managed location stays defined in one place
+// (passwallManagedBinaryPath) instead of being duplicated in shell.
+const passwallBuiltInGuardProbe = `component="$1"
+expected="$2"
+key="$(printf '%s' "$component" | tr '-' '_')"
+path="$(uci -q get "passwall2.@global_app[0].${key}_file" 2>/dev/null)"
+# An empty uci value makes get_app_path() fall back to com[<component>].default_path,
+# which is exactly "$expected".
+[ -n "$path" ] || path="$expected"
+if [ "$path" != "$expected" ]; then
+  echo "unmanaged:$path"
+  exit 0
+fi
+if [ -f "$path" ] && [ "$(head -c 2 "$path" 2>/dev/null)" = '#!' ]; then
+  echo "unmanaged:$path"
+  exit 0
+fi
+echo managed`
+
+func builtInUpdaterTargetsManagedBinary(
+	ctx context.Context,
+	backend commandRunner,
+	componentName string,
+) (bool, passwall.CommandResult, error) {
+	result, err := backend.Run(
+		ctx,
+		"sh",
+		"-c",
+		passwallBuiltInGuardProbe,
+		"passwall-builtin-guard",
+		componentName,
+		passwallManagedBinaryPath(componentName),
+	)
+	if err != nil {
+		return false, result, err
+	}
+	return strings.TrimSpace(result.Stdout) == passwallGuardManagedMarker, result, nil
+}
+
 func tryBuiltInPasswallComponentFallback(
 	ctx context.Context,
 	backend commandRunner,
@@ -488,6 +560,19 @@ func tryBuiltInPasswallComponentFallback(
 	componentName, ok := passwallRuntimeKeyByPackage[packageName]
 	if !ok {
 		return nil, false, fmt.Errorf("runtime component mapping missing for %s", packageName), currentInventory
+	}
+
+	managed, guardResult, guardErr := builtInUpdaterTargetsManagedBinary(ctx, backend, componentName)
+	if guardErr != nil {
+		return []passwall.CommandResult{guardResult}, false, guardErr, currentInventory
+	}
+	if !managed {
+		return []passwall.CommandResult{guardResult}, false, fmt.Errorf(
+			"%s built-in updater skipped: api.to_move would write outside the package-owned %s (guard verdict %q)",
+			packageName,
+			passwallManagedBinaryPath(componentName),
+			strings.TrimSpace(guardResult.Stdout),
+		), currentInventory
 	}
 
 	command := `component="$1"

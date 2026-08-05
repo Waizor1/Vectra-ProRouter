@@ -755,6 +755,80 @@ describe("enrollment install preset", () => {
     }
   });
 
+  it("gates the built-in PassWall component updater on the package-owned binary path", () => {
+    // api.to_move() writes to get_app_path(component) -- the uci
+    // passwall2.@global_app[0].<component>_file, or /usr/bin/<component> when it
+    // is empty. The reuse lane runs on already-provisioned routers, where that
+    // uci value points at /usr/sbin/vectra-xray-wrapper (the GOMEMLIMIT/GOGC
+    // shim). Without this guard the built-in updater overwrites the wrapper with
+    // the raw binary, leaves /usr/bin/xray stale, and still reports success.
+    for (const script of [
+      buildAx3000tBootstrapScript({}),
+      buildFilogicBootstrapScript({}),
+    ]) {
+      expect(script).toContain(
+        "passwall_component_updater_targets_managed_binary() {",
+      );
+      expect(script).toContain(
+        "  passwall_component_updater_targets_managed_binary \"$component\" || return 1",
+      );
+
+      // The guard has to run before the lua heredoc that calls api.to_move.
+      const guardCall = script.indexOf(
+        "passwall_component_updater_targets_managed_binary \"$component\" || return 1",
+      );
+      const toMove = script.indexOf("local moved = api.to_move(component, file)");
+      expect(guardCall).toBeGreaterThan(-1);
+      expect(toMove).toBeGreaterThan(guardCall);
+
+      // Both callers must fall back to a path that writes /usr/bin/<component>.
+      expect(script).toContain(
+        "  if refresh_passwall_component_via_builtin_updater \"$pkg\"; then",
+      );
+      expect(script).toContain("  cp \"$extracted_binary\" /usr/bin/xray || return 1");
+    }
+  });
+
+  it("refuses the built-in updater when passwall2 points a component at a wrapper", () => {
+    // Execute the generated guard for real against a fake uci, so a regression in
+    // the shell itself (key derivation, quoting, comparison) fails the suite.
+    const script = buildAx3000tBootstrapScript({});
+    const guardStart = script.indexOf(
+      "passwall_component_updater_targets_managed_binary() {",
+    );
+    const guardEnd = script.indexOf(
+      "\n}",
+      script.indexOf("  return 0", guardStart),
+    );
+    expect(guardStart).toBeGreaterThan(-1);
+    expect(guardEnd).toBeGreaterThan(guardStart);
+    const guard = script.slice(guardStart, guardEnd + 2);
+
+    const runGuard = (configuredPath: string) => {
+      const fakeUci = [
+        "uci() {",
+        `  [ "$3" = 'passwall2.@global_app[0].xray_file' ] || return 1`,
+        `  [ -n '${configuredPath}' ] || return 1`,
+        `  printf '%s\\n' '${configuredPath}'`,
+        "}",
+        "log() { :; }",
+        guard,
+        "if passwall_component_updater_targets_managed_binary xray; then",
+        "  echo allowed",
+        "else",
+        "  echo blocked",
+        "fi",
+      ].join("\n");
+      return execFileSync("sh", [], { input: fakeUci }).toString().trim();
+    };
+
+    expect(runGuard("/usr/sbin/vectra-xray-wrapper")).toBe("blocked");
+    expect(runGuard("/root/xray-shim")).toBe("blocked");
+    expect(runGuard("/usr/bin/xray")).toBe("allowed");
+    // Empty uci value: PassWall2 falls back to com.xray.default_path.
+    expect(runGuard("")).toBe("allowed");
+  });
+
   it("marks controller-only fallback when a fresh install cannot fit PassWall", () => {
     const plan = planAx3000tManagedPackageOperations({
       overlayFreeBytes: 5_000_000,

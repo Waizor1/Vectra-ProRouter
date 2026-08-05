@@ -699,10 +699,15 @@ function resolvePasswallTargetMetadata(args: {
     updateScope === "scoped-package" && packageList.length === 1
       ? packageList[0]
       : null;
-  const strategy =
-    scopedPackageName === "xray-core"
-      ? ("xray-built-in-first" as const)
-      : ("managed-stack-package-first" as const);
+  // Scoped xray-core updates used to run PassWall2's built-in component updater
+  // first, because it fetches the newest xray straight from upstream. That path
+  // is unsafe on this fleet: api.to_move() writes to the uci xray_file, which we
+  // point at /usr/sbin/vectra-xray-wrapper (the GOMEMLIMIT/GOGC shim for 234 MB
+  // boards), so the built-in updater overwrites the wrapper with the raw binary
+  // and leaves the real /usr/bin/xray stale. Prefer the artifact-backed package
+  // path, which installs the pinned ipk and leaves the wrapper untouched; the
+  // agent keeps the built-in updater as a fallback and now guards it as well.
+  const strategy = "managed-stack-package-first" as const;
   const runtimeTarget =
     typeof scopedPackageName === "string"
       ? findPasswallRuntimeTarget(bundleMetadata, scopedPackageName)
