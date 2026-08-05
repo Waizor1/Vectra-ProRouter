@@ -117,14 +117,18 @@ export type FleetRoutePolicyNormalizationResult = {
 // every check-in.
 //
 // - hh: operator-designated no-touch router.
-// - vagrandrouter: its ISP filters the non-standard high ports (50051-50061)
-//   that every RU-entry gRPC node uses, so the canonical targets are
-//   unreachable from that line while port 443 works fine (verified 2026-07-29:
-//   ru12.nfnpx.online:50053 connect fails, fin2/pl1:443 connect in 0.61s).
-//   Reachability is not part of the scorer, so normalization kept rebinding the
-//   slots to a dead RU-entry node once a minute. This router runs on the
-//   vless/raw :443 node family instead.
-const exceptionIdentityValues = new Set(["hh", "vagrandrouter"]);
+//
+// vagrandrouter was listed here from 2026-07-29 because its ISP filtered the
+// non-standard high ports (50051-50061) that every RU-entry gRPC node uses, so
+// the canonical targets were unreachable from that line while port 443 worked
+// fine. Reachability is not part of the scorer, so normalization kept rebinding
+// its slots to a dead RU-entry node once a minute. That filtering was confirmed
+// gone on 2026-08-05 and the router now runs its Special slot on
+// ru11.nfnpx.online:50055, a high port, so the exemption no longer has a cause
+// and was removed. Per-router exemptions that are not permanent operator policy
+// belong in routers.routePolicyExempt, which the panel already reads and which
+// needs no controller rebuild.
+const exceptionIdentityValues = new Set(["hh"]);
 
 export const canonicalFleetRoutePolicy = {
   version: FLEET_ROUTE_POLICY_VERSION,

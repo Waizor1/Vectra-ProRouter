@@ -298,28 +298,31 @@ describe("fleet route policy", () => {
     expect(compliance.canNormalize).toBe(false);
   });
 
-  it("exempts VagrandRouter, whose ISP blocks the RU-entry port range", () => {
-    // Its line filters ports 50051-50061, so every canonical RU-entry gRPC
-    // target is unreachable while :443 works. Reachability is not part of the
-    // scorer, so without this exception normalization rebinds the slots to a
-    // dead node on every check-in.
+  it("no longer exempts VagrandRouter now that its ISP stopped filtering high ports", () => {
+    // Exempt from 2026-07-29 because its line filtered ports 50051-50061, so
+    // every canonical RU-entry gRPC target was unreachable while :443 worked.
+    // Confirmed gone 2026-08-05 — the router's own Special slot runs on
+    // ru11.nfnpx.online:50055 — so the exemption lost its cause. A hardcoded
+    // exemption that outlives its reason silently freezes a router on whatever
+    // bindings it happened to have.
     const compliance = evaluateFleetRoutePolicy(buildConfig(), {
       hostname: "VagrandRouter",
     });
 
-    expect(compliance.status).toBe("exempt");
-    expect(compliance.exempt).toBe(true);
-    expect(compliance.canNormalize).toBe(false);
+    expect(compliance.exempt).toBe(false);
+    expect(compliance.status).not.toBe("exempt");
+    // `checked` is the part that matters: an exempt router short-circuits
+    // before the slots are ever evaluated. (`canNormalize` stays false here
+    // only because this fixture is already compliant and has nothing to fix.)
+    expect(compliance.checked).toBe(true);
+    expect(compliance.exceptionReason).toBeNull();
   });
 
   it("keeps the panel exception list in sync with the on-router one", () => {
     // The panel and the controller's self-heal both hold a hardcoded list. If
     // they drift, one silently undoes the other every 60s check-in. This test
     // fails whenever the panel list changes without the Go list following.
-    expect([...canonicalFleetRoutePolicy.exceptions].sort()).toEqual([
-      "hh",
-      "vagrandrouter",
-    ]);
+    expect([...canonicalFleetRoutePolicy.exceptions].sort()).toEqual(["hh"]);
   });
 
   it("normalizes only shunt bindings and Discord tuning while preserving subscription URLs", () => {
@@ -500,7 +503,7 @@ describe("buildFleetRoutePolicyDirective", () => {
 
   it("lets the database flag retire a seed-list exemption", () => {
     const directive = buildFleetRoutePolicyDirective(buildConfig({}), {
-      hostname: "VagrandRouter",
+      hostname: "hh",
       routePolicyExempt: false,
     });
 
@@ -510,10 +513,23 @@ describe("buildFleetRoutePolicyDirective", () => {
 
   it("still honours the seed list when no operator flag is set", () => {
     const directive = buildFleetRoutePolicyDirective(buildConfig({}), {
-      hostname: "VagrandRouter",
+      hostname: "hh",
     });
 
     expect(directive?.exempt).toBe(true);
+  });
+
+  it("no longer seeds an exemption for VagrandRouter", () => {
+    // The seed list is the offline fallback. Now that vagrandrouter is out of
+    // it, the directive must carry real slots instead of exempt: true --
+    // otherwise the router would keep self-exempting whenever it falls back to
+    // its own scorer.
+    const directive = buildFleetRoutePolicyDirective(buildConfig({}), {
+      hostname: "VagrandRouter",
+    });
+
+    expect(directive?.exempt).toBe(false);
+    expect(directive?.slots.length).toBeGreaterThan(0);
   });
 
   it("returns null when there is no live config to reason about", () => {
