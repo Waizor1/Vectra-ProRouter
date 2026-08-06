@@ -39,6 +39,10 @@ XRAY_ZIP = "/tmp/xray.zip"
 # /tmp — это tmpfs, то есть RAM: хвосты стоят памяти на роутере с 234 MB.
 # Список закрывает ВСЕ файлы, которые драйвер создаёт, включая логи своих же
 # отвязанных стадий (vstage3.log оставался, пока его сюда не внесли).
+#
+# ТОЛЬКО явные имена, НИКАКИХ шаблонов. `/tmp/v*.log` цепляет чужое:
+# vectra-controller-recovery.log и vectra-controller-self-update.log принадлежат
+# контроллеру (проверено на AlexanderBabkin — ad hoc команда с этим глобом их снесла).
 STAGING = ["/tmp/xray.zip",
            "/tmp/vstage.sh", "/tmp/vstage.log",
            "/tmp/vstage3.sh", "/tmp/vstage3.log",
@@ -63,6 +67,12 @@ POLL_LOG = 6                   # опрос лога отвязанного ск
 POLL_JOB = 5                   # опрос состояния панельного джоба
 
 _print_lock = threading.Lock()
+
+# Состояние волны: счётчик провалов, чтобы не ломать парк подряд по одной причине.
+_wave = {"failures": 0}
+_wave_lock = threading.Lock()
+FAILURE_VERDICTS = {"СВОП УПАЛ", "ЗАВИСИМОСТИ", "APP УПАЛ", "APP НЕ ПОСТАВЛЕН",
+                    "МАЛО RAM", "ОШИБКА", "НЕТ АРТЕФАКТА", "ПРОВЕРИТЬ ВРУЧНУЮ"}
 
 
 # --------------------------------------------------------------------------- io
@@ -96,26 +106,25 @@ def drift_rows():
 
 
 class Log(object):
-    """Буфер вывода на роутер: при параллели строки не перемешиваются."""
+    """Живой вывод с префиксом хоста.
 
-    def __init__(self, host, live):
-        self.host, self.live, self.lines = host, live, []
+    Раньше при параллели строки буферизовались до конца прогона ради «чистых»
+    блоков — но волна идёт минутами, и наблюдателю всё это время не видно ничего
+    (проверено на волне из двух роутеров: файл вывода оставался пустым). Префикс
+    плюс общий лок дают и читаемость, и прогресс в реальном времени.
+    """
+
+    def __init__(self, host, live=True):
+        self.host, self.lines = host, []
 
     def __call__(self, msg):
-        line = "  %s" % msg
-        if self.live:
-            with _print_lock:
-                print("[%s] %s" % (self.host, msg))
-                sys.stdout.flush()
-        else:
-            self.lines.append(line)
+        self.lines.append("  %s" % msg)
+        with _print_lock:
+            print("[%s] %s" % (self.host, msg))
+            sys.stdout.flush()
 
     def flush(self):
-        if not self.live and self.lines:
-            with _print_lock:
-                print("== %s" % self.host)
-                print("\n".join(self.lines))
-                sys.stdout.flush()
+        return None
 
 
 # ------------------------------------------------------------------ lane choice
@@ -183,10 +192,20 @@ def wait_terminal(router_id, job_id, marker, budget_s=240):
     raise TimeoutError("нет результата job %s (%s)" % (job_id[:8], marker))
 
 
-def probe(router, command, marker, timeout=90, budget_s=240):
-    return wait_terminal(router["id"],
-                         queue_terminal(router["id"], command, timeout=timeout),
-                         marker, budget_s=budget_s)
+def probe(router, command, marker, timeout=90, budget_s=240, retries=1):
+    """Одна повторная попытка по умолчанию: доставка джоба привязана к чек-ину,
+    и при параллельном прогоне отдельные роутеры регулярно не укладывались в окно
+    (в свипе 2026-08-06 так потерялись два роутера из 22)."""
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            return wait_terminal(router["id"],
+                                 queue_terminal(router["id"], command, timeout=timeout),
+                                 marker, budget_s=budget_s)
+        except (TimeoutError, RuntimeError) as e:
+            last = e
+            time.sleep(POLL_JOB)
+    raise last
 
 
 def launch_detached(router, script_text, path, tag):
@@ -266,7 +285,15 @@ PREFLIGHT_CMD = (
     'echo "has_unzip=$(command -v unzip >/dev/null 2>&1 && echo yes || echo no)"; '
     'echo "tmp_mb=$(($(df -k /tmp | tail -1 | tr -s \' \' | cut -d\' \' -f4)/1024))"; '
     'echo "feed=$(wget -q -O /dev/null --timeout=12 https://downloads.openwrt.org/ && echo ok || echo fail)"; '
-    'echo "github=$(wget -q -O /dev/null --timeout=12 https://github.com/ && echo ok || echo fail)"'
+    'echo "github=$(wget -q -O /dev/null --timeout=12 https://github.com/ && echo ok || echo fail)"; '
+    # Загруженность меряем ЗДЕСЬ же, а не отдельным джобом: лишняя фаза стоит
+    # раунд-трипа (~40-60с), а 5 секунд внутри уже идущего джоба — бесплатны
+    'R1=$(cat /sys/class/net/br-lan/statistics/rx_bytes 2>/dev/null||echo 0); '
+    'T1=$(cat /sys/class/net/br-lan/statistics/tx_bytes 2>/dev/null||echo 0); sleep 5; '
+    'R2=$(cat /sys/class/net/br-lan/statistics/rx_bytes 2>/dev/null||echo 0); '
+    'T2=$(cat /sys/class/net/br-lan/statistics/tx_bytes 2>/dev/null||echo 0); '
+    'echo "lan_5s=$(( (R2-R1) + (T2-T1) ))"; '
+    'echo "conntrack=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)"'
 )
 
 def manual_app_script(app_url, geoview_url, install_geoview, asset_dir, app_target):
@@ -319,6 +346,7 @@ cmp -s /tmp/geobak/geosite.dat {a}geosite.dat || {{ cp /tmp/geobak/geosite.dat {
 echo "geo_now=$(wc -c < {a}geoip.dat)/$(wc -c < {a}geosite.dat)"
 rm -rf /tmp/geobak /tmp/vapp.sh
 echo "DONE $(date -u)"
+# /tmp/vapp.log НЕ трогаем — его читает драйвер после выхода скрипта
 """.format(a=a, app=app_url, geoview=geoview_block, tgt=app_target)
 
 
@@ -375,7 +403,12 @@ echo "mem_mb=$(($(grep MemAvailable /proc/meminfo | tr -s ' ' | cut -d' ' -f2)/1
 rm -f {staging}
 echo "DONE $(date -u)"
 """.format(ver=target_version, url=asset_url, zip=XRAY_ZIP,
-           staging=" ".join(STAGING + ["/tmp/vstage3.sh"]))
+           # СВОЙ лог здесь не удалять: драйвер читает его ПОСЛЕ выхода скрипта, и
+           # самоудаление означало, что DONE никто никогда не увидит — прогон висел
+           # до таймаута и падал в ОШИБКУ при фактически успешной работе
+           # (AlexanderBabkin 2026-08-06). Логи чистит драйвер после чтения.
+           staging=" ".join([p for p in STAGING + ["/tmp/vstage3.sh"]
+                             if p != "/tmp/vstage3.log"]))
 
 
 ACCEPT_CMD = (
@@ -568,9 +601,14 @@ def cmd_idle(args):
 
 def do_preflight(router, lane, log):
     kv = parse_kv(probe(router, PREFLIGHT_CMD, "MARKER_PREFLIGHT", timeout=90))
-    kv["_manual_lane"] = (lane["manualLaneRequired"]
-                          and "wrapper" in (kv.get("xray_file") or "")
-                          and lane["runtimeTarget"] not in (kv.get("xray_ver") or ""))
+    # Планка достижима ТОЛЬКО ручной заменой, пока runtimeTarget != версии ipk, —
+    # независимо от того, есть ли wrapper. Наличие wrapper'а решает лишь то,
+    # опасен ли панельный лейн (он затрёт wrapper), а не то, нужен ли своп.
+    # Ранняя версия завязывала своп на wrapper и молча оставляла xray позади на
+    # роутере с uci xray_file=/usr/bin/xray (AlexanderBabkin 2026-08-06).
+    kv["_has_wrapper"] = "wrapper" in (kv.get("xray_file") or "")
+    kv["_xray_below_target"] = lane["runtimeTarget"] not in (kv.get("xray_ver") or "")
+    kv["_manual_lane"] = lane["manualLaneRequired"] and kv["_xray_below_target"]
     # unzip ставим вместе с зависимостями app: ручной лейн xray без него невозможен,
     # а по парку он не гарантирован (на yuranrod-msk отсутствовал совсем)
     kv["_deps_to_install"] = []
@@ -593,14 +631,13 @@ def do_preflight(router, lane, log):
     # Своп xray отъедает ~10 MB RAM (бинарь крупнее), поэтому роутер, прошедший
     # ручной лейн, может провалиться под storage-пол уже НА ШАГЕ app. Считаем с запасом.
     need_app = kv.get("app") != (lane.get("appTarget") or "")
+    # RAM — ПРЕДУПРЕЖДЕНИЕ, а не блокер. Порог 64 взят из job_safety.go, но решает
+    # его сам агент, и перед решением он делает собственный сброс кэша. Ни одного
+    # отказа джоба ИМЕННО из-за RAM не наблюдалось (у yuranrod-msk джоб падал при
+    # 79 MB, и причина была в гео-зависимостях). Пред-блокировка по этому порогу
+    # ложно отсекала 15 роутеров из 22 — лечим по факту отказа, а не по прогнозу.
+    kv["_ram_tight"] = need_app and int(kv.get("mem_mb", 0) or 0) < MIN_MEM_MB_APP
     if need_app:
-        projected = int(kv.get("mem_mb", 0) or 0) - (10 if kv["_manual_lane"] else 0)
-        if projected < MIN_MEM_MB_APP:
-            blockers.append(
-                RAM_BLOCKER + " %s MB%s < %d — job_safety отобьёт апдейт app; нужен ребут"
-                % (kv.get("mem_mb"),
-                   " (после свопа станет ~%d)" % projected if kv["_manual_lane"] else "",
-                   MIN_MEM_MB_APP))
         if int(kv.get("tmp_mb", 0) or 0) and int(kv.get("tmp_mb")) < MIN_TMP_MB_APP:
             blockers.append("/tmp %s MB < %d" % (kv.get("tmp_mb"), MIN_TMP_MB_APP))
         # Гео-зависимости: различаем «нет регистрации» и «нет файла».
@@ -628,6 +665,13 @@ def do_preflight(router, lane, log):
                             % kv.get("overlay_mb"))
     if kv.get("default_node") != "_direct":
         blockers.append("default_node=%s, ожидается _direct" % kv.get("default_node"))
+    # Решающий признак — дельта трафика на br-lan. Conntrack сам по себе слабый:
+    # у AlexanderBabkin было 71 соединение при НУЛЕВОМ трафике (спящие устройства
+    # держат сессии), и он ложно помечался занятым. Учитываем его только как
+    # усилитель, когда трафик и так ненулевой.
+    _lan = int(kv.get("lan_5s", 0) or 0)
+    kv["_busy"] = _lan > IDLE_LAN_BYTES_5S or (
+        _lan > 0 and int(kv.get("conntrack", 0) or 0) > IDLE_CONNTRACK * 3)
     log("xray=%s app=%s mem=%sMB overlay=%sMB feed=%s github=%s лейн=%s" % (
         (kv.get("xray_ver") or "?").split(" ")[1] if kv.get("xray_ver") else "?",
         kv.get("app"), kv.get("mem_mb"), kv.get("overlay_mb"),
@@ -703,29 +747,25 @@ def rollout_one(router, lane, args):
     t0 = time.time()
     verdict = "ПРОПУЩЕН"
     try:
+        # Волна прекращается, если провалов больше порога: одна и та же причина
+        # обычно повторяется на всех, и лучше остановиться, чем ломать парк подряд.
+        if _wave.get("failures", 0) >= args.max_failures:
+            log("волна остановлена: провалов %d" % _wave["failures"])
+            return host, "ОТМЕНЁН", time.time() - t0, log
         kv, blockers = do_preflight(router, lane, log)
+        if kv.get("_busy") and args.only_idle:
+            log("занят (lan %s Б/5с, conntrack %s) — пропускаю по --only-idle"
+                % (kv.get("lan_5s"), kv.get("conntrack")))
+            return host, "ЗАНЯТ", time.time() - t0, log
+        if kv.get("_busy"):
+            log("ВНИМАНИЕ: роутер сейчас используется (lan %s Б/5с, conntrack %s) — "
+                "рестарты будут заметны пользователю"
+                % (kv.get("lan_5s"), kv.get("conntrack")))
         # Нехватка RAM — не приговор: она лечится ребутом (на парке это САМЫЙ частый
         # блокер, 15 из 22 при свипе 2026-08-06). Всё остальное требует человека.
-        if blockers and args.apply and args.reboot_if_needed \
-                and all(b.startswith(RAM_BLOCKER) for b in blockers):
-            log("RAM ниже порога — ребут и ожидание…")
-            trpc("update.queueBulkRouterReboot", {"routerIds": [router["id"]]},
-                 mutation=True)
-            deadline, back = time.time() + 420, False
-            time.sleep(45)
-            while time.time() < deadline:
-                snap = ((trpc("fleet.byId", {"routerId": router["id"]})
-                         .get("latestSnapshot") or {}).get("payload") or {})
-                mem = (snap.get("resources") or {}).get("memoryAvailableMb") or 0
-                if mem >= MIN_MEM_MB_APP + (10 if kv["_manual_lane"] else 0):
-                    log("  вернулся, RAM %s MB" % mem)
-                    back = True
-                    break
-                time.sleep(POLL_JOB * 3)
-            if not back:
-                log("ОСТАНОВ: после ребута RAM так и не поднялась")
-                return host, "МАЛО RAM", time.time() - t0, log
-            kv, blockers = do_preflight(router, lane, log)
+        if kv.get("_ram_tight"):
+            log("RAM %s MB ниже порога job_safety (%d) — не блокирую, решать будет "
+                "агент; при отказе включу лечение" % (kv.get("mem_mb"), MIN_MEM_MB_APP))
         if blockers:
             log("БЛОКЕР: %s" % "; ".join(blockers))
             return host, "БЛОКЕР", time.time() - t0, log
@@ -798,24 +838,42 @@ def rollout_one(router, lane, args):
                 return host, "APP УПАЛ", time.time() - t0, log
         # --- app панельным массовым лейном
         elif kv.get("app") != app_target:
+            # Лестница средств применяется ПО ФАКТУ отказа, а не по прогнозу RAM:
+            # попытка -> сброс кэша -> ребут. Агент сам решает, проходит ли он свой
+            # порог, и перед решением делает собственный reclaim.
             log("app -> %s…" % app_target)
-            res = trpc("update.queueBulkPasswallPackageUpdate",
-                       {"routerIds": [router["id"]], "artifactChannel": "stable",
-                        "packages": ["luci-app-passwall2"]}, mutation=True)
-            entry = (res.get("results") or [{}])[0]
-            if entry.get("status") != "queued":
-                log("джоб не поставлен: %s" % entry.get("reason"))
-                return host, "APP НЕ ПОСТАВЛЕН", time.time() - t0, log
-            jid, state, deadline = entry.get("jobId"), None, time.time() + 900
-            while time.time() < deadline:
-                byid = trpc("fleet.byId", {"routerId": router["id"]})
-                job = next((j for j in (byid.get("recentJobs") or [])
-                            if j.get("id") == jid), {})
-                state = job.get("state")
-                if state in ("succeeded", "failed"):
+            state = None
+            for attempt in range(3):
+                if attempt == 1:
+                    log("  отказ — сбрасываю кэш и повторяю")
+                    reclaim_memory(router, log)
+                elif attempt == 2:
+                    if not args.reboot_if_needed:
+                        log("  отказ повторился; ребут не разрешён (--reboot-if-needed)")
+                        break
+                    log("  снова отказ — ребут и повтор")
+                    if not reboot_and_wait(router, log, MIN_MEM_MB_APP):
+                        log("  после ребута RAM так и не поднялась")
+                        break
+                res = trpc("update.queueBulkPasswallPackageUpdate",
+                           {"routerIds": [router["id"]], "artifactChannel": "stable",
+                            "packages": ["luci-app-passwall2"]}, mutation=True)
+                entry = (res.get("results") or [{}])[0]
+                if entry.get("status") != "queued":
+                    log("джоб не поставлен: %s" % entry.get("reason"))
+                    return host, "APP НЕ ПОСТАВЛЕН", time.time() - t0, log
+                jid, state, deadline = entry.get("jobId"), None, time.time() + 900
+                while time.time() < deadline:
+                    byid = trpc("fleet.byId", {"routerId": router["id"]})
+                    job = next((j for j in (byid.get("recentJobs") or [])
+                                if j.get("id") == jid), {})
+                    state = job.get("state")
+                    if state in ("succeeded", "failed"):
+                        break
+                    time.sleep(POLL_JOB)
+                log("  job %s (попытка %d)" % (state, attempt + 1))
+                if state == "succeeded":
                     break
-                time.sleep(POLL_JOB)
-            log("  job %s" % state)
             if state != "succeeded":
                 return host, "APP УПАЛ", time.time() - t0, log
 
@@ -824,16 +882,28 @@ def rollout_one(router, lane, args):
                         "/tmp/vstage3.sh", "LAUNCHED_STAGE3")
         acc = wait_for_log(router, "/tmp/vstage3.log", "DONE")
         akv = parse_kv(acc)
+        # логи стадий удаляем ЗДЕСЬ: скрипты их не трогают, иначе DONE не прочитать
+        probe(router, "echo MARKER_RM; rm -f /tmp/vstage3.log /tmp/vapp.log; echo ok",
+              "MARKER_RM", timeout=30, budget_s=150)
         if akv.get("restore_needed") == "1":
             log("  ВНИМАНИЕ: апдейт app снёс xray, восстановлен из кэша "
                 "(pkg xray-core=%s)" % akv.get("pkg_xray_core"))
         probes = [l.split() for l in acc.splitlines() if l.startswith("probe ")]
         bad = [p for p in probes if not p[1].isdigit() or p[1] == "000" or int(p[1]) >= 400]
+        # GOMEMLIMIT спрашиваем ТОЛЬКО там, где uci реально смотрит на wrapper.
+        # На роутере с uci xray_file=/usr/bin/xray процесс идёт мимо wrapper'а, и
+        # требование переменной давало ложное «ПРОВЕРИТЬ ВРУЧНУЮ» при исправном
+        # роутере (AlexanderBabkin 2026-08-06).
         ok = (akv.get("app") == app_target
               and akv.get("exe") == "/usr/bin/xray"
               and akv.get("cfg") == "Configuration OK."
-              and akv.get("wrapper") == "1390"
-              and "GOMEMLIMIT" in acc and not bad)
+              and (not kv.get("_has_wrapper") or
+                   (akv.get("wrapper") == "1390" and "GOMEMLIMIT" in acc))
+              and not bad)
+        if not kv.get("_has_wrapper"):
+            log("NB: uci xray_file=%s — xray идёт МИМО wrapper'а, GOMEMLIMIT/GOGC "
+                "не применяются (дрейф конфигурации, не следствие апдейта)"
+                % kv.get("xray_file"))
         log("итог: app=%s xray=%s wrapper=%s cfg=%s"
             % (akv.get("app"), (akv.get("xray_ver") or "").split(" ")[1:2],
                akv.get("wrapper"), akv.get("cfg")))
@@ -845,6 +915,57 @@ def rollout_one(router, lane, args):
         log("ОШИБКА: %s" % str(e)[:200])
         verdict = "ОШИБКА"
     return host, verdict, time.time() - t0, log
+
+
+MEM_CMD = ('echo MARKER_MEM; '
+           'echo "mem_mb=$(($(grep MemAvailable /proc/meminfo | tr -s \' \' '
+           '| cut -d\' \' -f2)/1024))"')
+
+
+RECLAIM_CMD = ('echo MARKER_RECLAIM; sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; '
+               'sleep 2; '
+               'echo "mem_mb=$(($(grep MemAvailable /proc/meminfo | tr -s \' \' '
+               '| cut -d\' \' -f2)/1024))"')
+
+
+def reclaim_memory(router, log):
+    """Сбросить кэш и перемерить: дешевле ребута и часто достаточно.
+
+    На AndreyVK (netis NX31) при MemAvailable 59 MB в buff/cache лежало 58 MB —
+    то есть до порога не хватало ровно того, что освобождается за две секунды.
+    Ребут ради этого — лишний простой для пользователя.
+    """
+    try:
+        mem = int(parse_kv(probe(router, RECLAIM_CMD, "MARKER_RECLAIM",
+                                 timeout=40, budget_s=180)).get("mem_mb", 0) or 0)
+        log("  сброс кэша: RAM %s MB" % mem)
+        return mem
+    except (TimeoutError, RuntimeError):
+        return 0
+
+
+def reboot_and_wait(router, log, need_mb, budget_s=420):
+    """Ребут ради RAM: единственное лекарство от storage-пола job_safety."""
+    trpc("update.queueBulkRouterReboot", {"routerIds": [router["id"]]}, mutation=True)
+    deadline = time.time() + budget_s
+    time.sleep(45)
+    while time.time() < deadline:
+        snap = ((trpc("fleet.byId", {"routerId": router["id"]})
+                 .get("latestSnapshot") or {}).get("payload") or {})
+        mem = (snap.get("resources") or {}).get("memoryAvailableMb") or 0
+        if mem >= need_mb:
+            log("  вернулся, RAM %s MB" % mem)
+            return True
+        time.sleep(POLL_JOB * 3)
+    return False
+
+
+def rollout_guarded(router, lane, args):
+    res = rollout_one(router, lane, args)
+    if res[1] in FAILURE_VERDICTS:
+        with _wave_lock:
+            _wave["failures"] += 1
+    return res
 
 
 def cmd_rollout(args):
@@ -859,7 +980,7 @@ def cmd_rollout(args):
         print("DRY-RUN: изменений не будет, добавь --apply\n")
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=args.parallel) as ex:
-        results = list(ex.map(lambda r: rollout_one(r, lane, args), targets))
+        results = list(ex.map(lambda r: rollout_guarded(r, lane, args), targets))
     for _, _, _, log in results:
         log.flush()
     print("\n%-24s %-18s %s" % ("router", "итог", "время"))
@@ -889,6 +1010,11 @@ def main():
     p_r.add_argument("--reboot-if-needed", action="store_true",
                      help="перезагрузить роутер, если единственный блокер — RAM ниже "
                           "порога job_safety (самый частый случай на парке)")
+    p_r.add_argument("--only-idle", action="store_true",
+                     help="пропускать роутеры, которые сейчас используются "
+                          "(замер идёт внутри преф-лайта, лишнего джоба не стоит)")
+    p_r.add_argument("--max-failures", type=int, default=2,
+                     help="остановить волну после стольких провалов (по умолчанию 2)")
     args = ap.parse_args()
     {"triage": cmd_triage, "idle": cmd_idle,
      "preflight": cmd_preflight, "rollout": cmd_rollout}[args.cmd](args)
