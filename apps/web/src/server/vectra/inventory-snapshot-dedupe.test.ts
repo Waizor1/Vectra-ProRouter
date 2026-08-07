@@ -90,6 +90,93 @@ describe("materialInventoryFingerprint", () => {
     }
   });
 
+  it("ignores the live gauge smuggled inside a safety-event message", () => {
+    // Taken from production: the low_memory event restates the exact free-RAM
+    // figure in its prose, so fingerprinting the message re-imports the very
+    // jitter the resources rules exclude. This defeated the first deploy —
+    // 142 rows in 5 minutes, essentially the old rate.
+    const withEvent = (message: string, observedAt: string) =>
+      routerInventorySchema.parse({
+        ...baseInventory,
+        safetyEvents: [
+          {
+            type: "low_memory",
+            source: "resources",
+            severity: "warning",
+            message,
+            observedAt,
+          },
+        ],
+      });
+
+    expect(
+      materialInventoryFingerprint(
+        withEvent(
+          "available RAM is low: 50 MB available (21% of 234 MB)",
+          "2026-08-07T12:48:21.000Z",
+        ),
+      ),
+    ).toBe(
+      materialInventoryFingerprint(
+        withEvent(
+          "available RAM is low: 37 MB available (15% of 234 MB)",
+          "2026-08-07T12:47:36.000Z",
+        ),
+      ),
+    );
+  });
+
+  it("ignores safety events, which flap as memory dips and recovers", () => {
+    const none = routerInventorySchema.parse({
+      ...baseInventory,
+      safetyEvents: [],
+    });
+    const warn = routerInventorySchema.parse({
+      ...baseInventory,
+      safetyEvents: [
+        {
+          type: "low_memory",
+          source: "resources",
+          severity: "warning",
+          message: "available RAM is low: 50 MB available",
+          observedAt: "2026-08-07T12:00:00.000Z",
+        },
+      ],
+    });
+    const critical = routerInventorySchema.parse({
+      ...baseInventory,
+      safetyEvents: [
+        {
+          type: "low_memory",
+          source: "resources",
+          severity: "critical",
+          message: "available RAM is low: 50 MB available",
+          observedAt: "2026-08-07T12:00:00.000Z",
+        },
+      ],
+    });
+    const otherKind = routerInventorySchema.parse({
+      ...baseInventory,
+      safetyEvents: [
+        {
+          type: "low_overlay",
+          source: "resources",
+          severity: "warning",
+          message: "overlay is low",
+          observedAt: "2026-08-07T12:00:00.000Z",
+        },
+      ],
+    });
+
+    // low_memory firing and clearing is the resting state of a 234 MB router,
+    // not news. Real pressure is surfaced by health incidents and the safety
+    // guard from the live check-in.
+    const fp = materialInventoryFingerprint;
+    expect(fp(warn)).toBe(fp(none));
+    expect(fp(critical)).toBe(fp(warn));
+    expect(fp(otherKind)).toBe(fp(warn));
+  });
+
   it("reacts when zram changes the swap the device actually has", () => {
     const withZram = routerInventorySchema.parse({
       ...baseInventory,
@@ -115,7 +202,12 @@ describe("materialInventoryFingerprint", () => {
     );
   });
 
-  it("reacts when a reachability verdict actually flips", () => {
+  it("ignores reachability, which the agent probes intermittently", () => {
+    // Measured on 238 real snapshots: probe groups appear and vanish between
+    // consecutive check-ins because the agent does not run every probe every
+    // time, so fingerprinting them writes a row on every other sample.
+    // The heartbeat carries probe history instead; incidents and auto-rescue
+    // act on the live payload, not on this table.
     const blocked = routerInventorySchema.parse({
       ...baseInventory,
       panelReachability: {
@@ -125,8 +217,15 @@ describe("materialInventoryFingerprint", () => {
         reachableCount: 0,
       },
     });
+    const absent = routerInventorySchema.parse({
+      ...baseInventory,
+      panelReachability: undefined,
+    });
 
-    expect(materialInventoryFingerprint(blocked)).not.toBe(
+    expect(materialInventoryFingerprint(blocked)).toBe(
+      materialInventoryFingerprint(baseInventory),
+    );
+    expect(materialInventoryFingerprint(absent)).toBe(
       materialInventoryFingerprint(baseInventory),
     );
   });

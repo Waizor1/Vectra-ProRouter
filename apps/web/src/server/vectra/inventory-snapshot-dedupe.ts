@@ -41,27 +41,28 @@ import { stableStringify } from "./secrets";
 // facts, so a change means the device was re-provisioned or zram was switched
 // on — squarely material.
 
-// Probes are reduced to their verdict. `checkedAt` moves every check-in and
-// carries no information the row's own createdAt does not already have.
-function reachabilityVerdict(value: unknown) {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const probe = value as {
-    reachable?: boolean;
-    status?: string;
-    reachableCount?: number;
-    totalCount?: number;
-  };
-
-  return {
-    reachable: probe.reachable ?? null,
-    status: probe.status ?? null,
-    reachableCount: probe.reachableCount ?? null,
-    totalCount: probe.totalCount ?? null,
-  };
-}
+// Reachability probes and safety events are NOT fingerprinted, for the same
+// reason as the gauges above: they are intermittent, not just noisy.
+//
+// Measured against 238 real production snapshots, they were the entire
+// remaining churn. The agent does not run every probe on every check-in, so a
+// probe group present in one payload is simply absent in the next
+// (`[true,"reachable",2,2]` → `null`) — an appearance/disappearance cycle that
+// looks like change on every other sample while nothing about the router
+// changed. Safety events behave the same way: `low_memory` fires as RAM dips
+// and clears as it recovers, which on a 234 MB AX3000T is the normal resting
+// state, not an event.
+//
+// Nothing depends on this table for alerting. Health incidents, the safety
+// guard and auto-rescue all act on the live check-in payload in real time; a
+// sustained outage lasts far longer than one heartbeat and is captured anyway.
+// What is given up is sub-hourly probe history, which no reader asked for.
+//
+// The safety-event message deserves its own warning: it restates the live gauge
+// in prose — "available RAM is low: 50 MB available (21% of 234 MB)" — so
+// fingerprinting it re-imports the exact jitter the resource rules exclude,
+// through the back door. That one shipped: the first production deploy wrote
+// 142 rows in 5 minutes, essentially the pre-fix rate.
 
 export function materialInventoryFingerprint(inventory: RouterInventory) {
   const material = {
@@ -94,20 +95,19 @@ export function materialInventoryFingerprint(inventory: RouterInventory) {
 
     // Health.
     serviceHealth: inventory.serviceHealth,
-    lastRescue: inventory.lastRescue ?? null,
-    safetyEvents: inventory.safetyEvents ?? null,
+    lastRescue: inventory.lastRescue
+      ? {
+          mode: inventory.lastRescue.mode,
+          reason: inventory.lastRescue.reason,
+        }
+      : null,
 
+    // Hardware facts only — see the note above on why the free-space gauges
+    // are absent.
     resources: {
       memoryTotalMb: inventory.resources?.memoryTotalMb ?? null,
       swapTotalMb: inventory.resources?.swapTotalMb ?? null,
     },
-
-    panelReachability: reachabilityVerdict(inventory.panelReachability),
-    ruReachability: reachabilityVerdict(inventory.ruReachability),
-    foreignReachability: reachabilityVerdict(inventory.foreignReachability),
-    telegramReachability: reachabilityVerdict(inventory.telegramReachability),
-    youtubeReachability: reachabilityVerdict(inventory.youtubeReachability),
-    instagramReachability: reachabilityVerdict(inventory.instagramReachability),
   };
 
   return createHash("sha256").update(stableStringify(material)).digest("hex");
