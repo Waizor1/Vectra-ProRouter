@@ -137,6 +137,16 @@ export const env = createEnv({
       .int()
       .min(5)
       .default(20),
+    // A check-in that carries no material change writes nothing, so a stable
+    // router would otherwise leave no trace at all between config changes.
+    // This bounds how stale the newest snapshot — and the sampled telemetry
+    // inside it — can get, at one row per router per interval.
+    VECTRA_SNAPSHOT_HEARTBEAT_MINUTES: z.coerce
+      .number()
+      .int()
+      .min(5)
+      .max(1440)
+      .default(60),
     VECTRA_TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
     VECTRA_TELEGRAM_ALLOWED_CHAT_IDS: z.string().min(1).optional(),
     VECTRA_TELEGRAM_WEBHOOK_SECRET: z.string().min(16).optional(),
@@ -197,6 +207,8 @@ export const env = createEnv({
       process.env.VECTRA_SNAPSHOT_RETENTION_HOURS,
     VECTRA_SNAPSHOT_RETENTION_KEEP_PER_ROUTER:
       process.env.VECTRA_SNAPSHOT_RETENTION_KEEP_PER_ROUTER,
+    VECTRA_SNAPSHOT_HEARTBEAT_MINUTES:
+      process.env.VECTRA_SNAPSHOT_HEARTBEAT_MINUTES,
     VECTRA_TELEGRAM_BOT_TOKEN: process.env.VECTRA_TELEGRAM_BOT_TOKEN,
     VECTRA_TELEGRAM_ALLOWED_CHAT_IDS:
       process.env.VECTRA_TELEGRAM_ALLOWED_CHAT_IDS,

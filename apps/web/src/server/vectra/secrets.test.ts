@@ -1,3 +1,4 @@
+import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import { describe, expect, it, vi } from "vitest";
@@ -8,14 +9,16 @@ import {
 } from "@vectra/contracts";
 import { z } from "zod";
 
-import { productionSafeStringSchema } from "~/env";
+import { env, productionSafeStringSchema } from "~/env";
 
 import {
   createSecretPayload,
+  encryptJson,
   hydratePasswallConfig,
   restoreMaskedPasswallConfig,
   sanitizePasswallConfig,
   sanitizePasswallRawSnapshot,
+  stableStringify,
 } from "./secrets";
 
 const baseConfig = passwallDesiredConfigSchema.parse({
@@ -155,6 +158,60 @@ describe("hydratePasswallConfig", () => {
     const ciphertext = createSecretPayload(baseConfig);
 
     expect(hydratePasswallConfig(masked, ciphertext)).toEqual(baseConfig);
+  });
+});
+
+describe("secret blob compression", () => {
+  // Ciphertext is incompressible, so TOAST could not shrink these blobs: the
+  // table carried 954 MB of TOAST against 1160 kB of heap. Compressing before
+  // encrypting is the only place the redundancy is still visible.
+  it("writes v2 envelopes that compress the plaintext", () => {
+    const envelope = JSON.parse(encryptJson({ config: baseConfig })) as {
+      v: number;
+      data: string;
+    };
+
+    expect(envelope.v).toBe(2);
+  });
+
+  it("shrinks repetitive payloads well below their plaintext size", () => {
+    // A node list is highly repetitive — the same keys over and over — which is
+    // exactly the shape gzip collapses and AES-GCM does not.
+    const repetitive = {
+      nodes: Array.from({ length: 200 }, (_, index) => ({
+        id: `node-${index}`,
+        label: `Node number ${index}`,
+        protocol: "vless",
+        address: "example.nfnpx.online",
+        port: 50053,
+        extras: { flow: "xtls-rprx-vision", security: "reality" },
+      })),
+    };
+    const plaintextSize = JSON.stringify(repetitive).length;
+    const envelopeSize = encryptJson(repetitive).length;
+
+    expect(envelopeSize).toBeLessThan(plaintextSize / 3);
+  });
+
+  it("still decrypts legacy v1 blobs written before compression", () => {
+    // Hand-built the way encryptJson used to write: no gzip, v: 1.
+    const iv = randomBytes(12);
+    const key = createHash("sha256").update(env.VECTRA_SECRETS_KEY).digest();
+    const cipher = createCipheriv("aes-256-gcm", key, iv);
+    const plaintext = Buffer.from(
+      stableStringify({ config: baseConfig }),
+      "utf8",
+    );
+    const data = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+    const legacy = JSON.stringify({
+      v: 1,
+      iv: iv.toString("base64url"),
+      tag: cipher.getAuthTag().toString("base64url"),
+      data: data.toString("base64url"),
+    });
+
+    const masked = sanitizePasswallConfig(baseConfig);
+    expect(hydratePasswallConfig(masked, legacy)).toEqual(baseConfig);
   });
 });
 

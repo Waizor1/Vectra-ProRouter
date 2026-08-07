@@ -34,6 +34,8 @@ import { and, desc, eq, inArray, isNull, lt, lte, or } from "drizzle-orm";
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 
 import { env } from "~/env";
+
+import { shouldWriteInventorySnapshot } from "./inventory-snapshot-dedupe";
 import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
 import { isPasswallClearIpsetsJob } from "~/lib/passwall-clear-ipsets-jobs";
 import { isRouterHostnameUpdateTerminalPayload } from "~/lib/router-hostname-jobs";
@@ -366,6 +368,34 @@ async function insertInventorySnapshot(
   inventory: RouterInventory,
   source: string,
 ) {
+  // Check-ins arrive roughly every 45 seconds per router and used to write a
+  // row every time — ~50k rows/day fleet-wide, 459 MB standing. Registration
+  // is rare and marks a real lifecycle event, so it always writes.
+  if (source === "check_in") {
+    const [latest] = await db
+      .select({
+        payload: routerInventorySnapshots.payload,
+        createdAt: routerInventorySnapshots.createdAt,
+      })
+      .from(routerInventorySnapshots)
+      .where(eq(routerInventorySnapshots.routerId, routerId))
+      .orderBy(desc(routerInventorySnapshots.createdAt))
+      .limit(1);
+
+    const shouldWrite = shouldWriteInventorySnapshot({
+      inventory,
+      latest: latest
+        ? { payload: latest.payload, createdAt: latest.createdAt }
+        : null,
+      now: new Date(),
+      heartbeatMinutes: env.VECTRA_SNAPSHOT_HEARTBEAT_MINUTES,
+    });
+
+    if (!shouldWrite) {
+      return;
+    }
+  }
+
   return db.insert(routerInventorySnapshots).values({
     routerId,
     source,
