@@ -408,6 +408,18 @@ echo "uci_lines=$(uci show passwall2 2>/dev/null | wc -l)"
 cmp -s /tmp/geobak/geoip.dat {a}geoip.dat || {{ cp /tmp/geobak/geoip.dat {a}; echo "geo_restored=geoip"; }}
 cmp -s /tmp/geobak/geosite.dat {a}geosite.dat || {{ cp /tmp/geobak/geosite.dat {a}; echo "geo_restored=geosite"; }}
 echo "geo_now=$(wc -c < {a}geoip.dat)/$(wc -c < {a}geosite.dat)"
+# ОБЯЗАТЕЛЬНО перезапустить сервис. Панельный лейн делает это сам, ручной — нет,
+# и без рестарта новый app лежит установленным, а PassWall продолжает крутиться на
+# старом окружении: /tmp/etc/passwall2/acl/default/global.json не пересоздаётся и
+# весь проксируемый трафик уходит в 000. Так лёг totchto-filiciy (2026-08-07).
+/etc/init.d/passwall2 restart
+n=0
+while [ $n -lt 40 ]; do
+  pgrep -f "passwall2/bin/xray run" >/dev/null 2>&1 && break
+  n=$((n+1)); sleep 1
+done
+echo "restart_after=${{n}}s"
+echo "cfg_present=$([ -f /tmp/etc/passwall2/acl/default/global.json ] && echo yes || echo NO)"
 rm -rf /tmp/geobak /tmp/vapp.sh
 echo "DONE $(date -u)"
 # /tmp/vapp.log НЕ трогаем — его читает драйвер после выхода скрипта
