@@ -78,13 +78,37 @@ FAILURE_VERDICTS = {"СВОП УПАЛ", "ЗАВИСИМОСТИ", "APP УПАЛ
 # --------------------------------------------------------------------------- io
 
 
-def cli_json(args, stdin=None, what=""):
-    p = subprocess.run(CLI + args, input=stdin, capture_output=True, text=True)
-    try:
-        return json.loads(p.stdout)
-    except Exception:
-        raise RuntimeError("panel CLI не отдал JSON (%s): %s"
-                           % (what, (p.stdout or p.stderr)[-300:]))
+def _first_meaningful_line(text):
+    """Из простыни Node-стектрейса вытащить строку, которая что-то объясняет.
+
+    Раньше в лог уходил хвост в 300 символов — то есть кусок пути внутри
+    node_modules, по которому нельзя понять вообще ничего. Три роутера в волне
+    2026-08-07 упали с таким «сообщением».
+    """
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line and not line.startswith("at ") and "node_modules" not in line:
+            return line[:200]
+    return (text or "").strip()[:200]
+
+
+def cli_json(args, stdin=None, what="", attempts=3):
+    """Панельный CLI под параллелью периодически отдаёт не-JSON (истёкшая сессия,
+    гонка за кэшем куки, всплеск нагрузки). Это транзиент — повторяем, а на
+    последней попытке обновляем сессию принудительно."""
+    last = ""
+    for attempt in range(attempts):
+        argv = list(CLI)
+        if attempt == attempts - 1:
+            argv.append("--force-login")
+        p = subprocess.run(argv + args, input=stdin, capture_output=True, text=True)
+        try:
+            return json.loads(p.stdout)
+        except Exception:
+            last = _first_meaningful_line(p.stderr) or _first_meaningful_line(p.stdout)
+            time.sleep(2 + attempt * 3)
+    raise RuntimeError("panel CLI не отдал JSON (%s) за %d попыток: %s"
+                       % (what, attempts, last))
 
 
 def trpc(path, payload=None, mutation=False):
@@ -815,6 +839,7 @@ def rollout_one(router, lane, args):
 
         # --- app: ручная распаковка там, где opkg не резолвит гео-зависимости
         if kv.get("app") != app_target and kv.get("_manual_app"):
+            _wave["app_started_" + host] = True
             log("app -> %s ручной распаковкой (гео-пакеты не зарегистрированы%s)…"
                 % (app_target, ", доставляю geoview" if kv["_geoview_install"] else ""))
             urls = lane.get("packageUrls") or {}
@@ -842,6 +867,7 @@ def rollout_one(router, lane, args):
             # попытка -> сброс кэша -> ребут. Агент сам решает, проходит ли он свой
             # порог, и перед решением делает собственный reclaim.
             log("app -> %s…" % app_target)
+            _wave["app_started_" + host] = True
             state = None
             for attempt in range(3):
                 if attempt == 1:
@@ -914,6 +940,27 @@ def rollout_one(router, lane, args):
     except Exception as e:
         log("ОШИБКА: %s" % str(e)[:200])
         verdict = "ОШИБКА"
+        # СЕТЬ БЕЗОПАСНОСТИ. Если исключение случилось ПОСЛЕ того, как апдейт app
+        # был поставлен, роутер может остаться без /usr/bin/xray: апдейт сносит его
+        # примерно в половине случаев, а Фаза 6.5 до своего запуска не дошла. Именно
+        # так zhenya13911 остался без VPN на ~15 минут (2026-08-07). Пытаемся
+        # восстановить даже ценой ещё одной ошибки — хуже уже не будет.
+        if _wave.get("app_started_" + host):
+            try:
+                log("аварийное восстановление xray после сбоя драйвера…")
+                launch_detached(router,
+                                stage3_script(lane["runtimeTarget"], lane["assetUrl"]),
+                                "/tmp/vstage3.sh", "LAUNCHED_RESCUE")
+                rkv = parse_kv(wait_for_log(router, "/tmp/vstage3.log", "DONE",
+                                            budget_s=600))
+                log("  восстановление: xray=%s cfg=%s"
+                    % (rkv.get("xray_ver"), rkv.get("cfg")))
+                if rkv.get("cfg") == "Configuration OK.":
+                    verdict = "ВОССТАНОВЛЕН"
+            except Exception as e2:
+                log("  АВАРИЯ: восстановить не удалось (%s) — РОУТЕР МОЖЕТ БЫТЬ БЕЗ "
+                    "VPN, проверить руками!" % str(e2)[:120])
+                verdict = "ТРЕБУЕТ РУК"
     return host, verdict, time.time() - t0, log
 
 
@@ -978,6 +1025,9 @@ def cmd_rollout(args):
              "ДА" if lane["manualLaneRequired"] else "нет", len(targets), args.parallel))
     if not args.apply:
         print("DRY-RUN: изменений не будет, добавь --apply\n")
+    # Прогреваем сессию ДО пула: иначе несколько процессов CLI одновременно лезут
+    # обновлять кэш операторской куки и мешают друг другу.
+    subprocess.run(CLI + ["--force-login", "status"], capture_output=True, text=True)
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=args.parallel) as ex:
         results = list(ex.map(lambda r: rollout_guarded(r, lane, args), targets))
