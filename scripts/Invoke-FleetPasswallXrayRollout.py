@@ -62,6 +62,13 @@ MIN_OVERLAY_MB = 8
 IDLE_LAN_BYTES_5S = 4096
 IDLE_CONNTRACK = 60
 
+# Часть роутеров забирает джобы МЕДЛЕННО: у aleksandr-grigorievsky наблюдалась
+# доставка через 8 мин 19 с после постановки (сама команда потом отработала за 11 с),
+# у denisvitalievichmain — до 12 минут. При бюджете 240 с оба выглядели «не отвечает»
+# и валили волну, хотя роутеры полностью исправны. Преф-лайт — один джоб на роутер,
+# поэтому ждать его долго дешевле, чем ошибочно списать роутер.
+PREFLIGHT_BUDGET_S = 900
+
 POLL_TERMINAL = 3              # опрос terminal history
 POLL_LOG = 6                   # опрос лога отвязанного скрипта
 POLL_JOB = 5                   # опрос состояния панельного джоба
@@ -92,21 +99,42 @@ def _first_meaningful_line(text):
     return (text or "").strip()[:200]
 
 
+_login_lock = threading.Lock()
+_login_state = {"ts": 0.0}
+LOGIN_COOLDOWN_S = 90
+
+
+def _maybe_force_login():
+    """Принудительный логин — СЕРИАЛИЗОВАННО и не чаще раза в LOGIN_COOLDOWN_S.
+
+    CLI читает операторские креды с VPS по SSH. Ретрай с `--force-login` из
+    нескольких потоков сразу задолбил sshd, тот начал отбивать соединения
+    (`Connection closed by ... port 22`), панель отвалилась целиком — и это
+    стоило Vasily_Filicity простоя, потому что аварийная сеть тоже ходит через
+    панель. Лекарство не должно быть опаснее болезни.
+    """
+    with _login_lock:
+        if time.time() - _login_state["ts"] < LOGIN_COOLDOWN_S:
+            return False
+        subprocess.run(CLI + ["--force-login", "status"], capture_output=True, text=True)
+        _login_state["ts"] = time.time()
+        return True
+
+
 def cli_json(args, stdin=None, what="", attempts=3):
     """Панельный CLI под параллелью периодически отдаёт не-JSON (истёкшая сессия,
-    гонка за кэшем куки, всплеск нагрузки). Это транзиент — повторяем, а на
-    последней попытке обновляем сессию принудительно."""
+    гонка за кэшем куки, всплеск нагрузки). Это транзиент — повторяем, а сессию
+    обновляем отдельно, аккуратно и не из каждого потока."""
     last = ""
     for attempt in range(attempts):
-        argv = list(CLI)
-        if attempt == attempts - 1:
-            argv.append("--force-login")
-        p = subprocess.run(argv + args, input=stdin, capture_output=True, text=True)
+        p = subprocess.run(CLI + args, input=stdin, capture_output=True, text=True)
         try:
             return json.loads(p.stdout)
         except Exception:
             last = _first_meaningful_line(p.stderr) or _first_meaningful_line(p.stdout)
-            time.sleep(2 + attempt * 3)
+            if attempt == attempts - 2:
+                _maybe_force_login()
+            time.sleep(3 + attempt * 5)
     raise RuntimeError("panel CLI не отдал JSON (%s) за %d попыток: %s"
                        % (what, attempts, last))
 
@@ -308,8 +336,18 @@ PREFLIGHT_CMD = (
     # распаковать zip XTLS давала "sh: unzip: not found", что выглядело как битый архив
     'echo "has_unzip=$(command -v unzip >/dev/null 2>&1 && echo yes || echo no)"; '
     'echo "tmp_mb=$(($(df -k /tmp | tail -1 | tr -s \' \' | cut -d\' \' -f4)/1024))"; '
-    'echo "feed=$(wget -q -O /dev/null --timeout=12 https://downloads.openwrt.org/ && echo ok || echo fail)"; '
-    'echo "github=$(wget -q -O /dev/null --timeout=12 https://github.com/ && echo ok || echo fail)"; '
+    # Достижимость мерить ТОЛЬКО кодом ответа curl, никогда кодом возврата wget.
+    # Это записано в скилле как ловушка №4 — и я на неё же наступил: wget падал на
+    # github, который на самом деле отдавал 200, и два исправных роутера
+    # (aleksandr-grigorievsky, vladimirdrfilicity) были ложно заблокированы.
+    # ...и с ретраем: одиночный замер врёт. На aleksandr-grigorievsky curl то тянул
+    # 19 МБ за 2.7 с, то отдавал 000 — доступ к github там перемежающийся, и без
+    # повтора роутер ложно объявлялся заблокированным.
+    'reach(){ i=0; while [ $i -lt 3 ]; do '
+    '  C=$(curl -s -o /dev/null -w %{http_code} --connect-timeout 10 --max-time 25 "$1"); '
+    '  case "$C" in 2*|3*) echo "ok"; return;; esac; i=$((i+1)); sleep 4; done; echo "fail($C)"; }; '
+    'echo "feed=$(reach https://downloads.openwrt.org/)"; '
+    'echo "github=$(reach https://github.com/)"; '
     # Загруженность меряем ЗДЕСЬ же, а не отдельным джобом: лишняя фаза стоит
     # раунд-трипа (~40-60с), а 5 секунд внутри уже идущего джоба — бесплатны
     'R1=$(cat /sys/class/net/br-lan/statistics/rx_bytes 2>/dev/null||echo 0); '
@@ -337,7 +375,8 @@ def manual_app_script(app_url, geoview_url, install_geoview, asset_dir, app_targ
     geoview_block = ""
     if install_geoview:
         geoview_block = """echo "--- geoview ---"
-if wget -q -O /tmp/gv.ipk --timeout=60 "{gv}"; then
+if curl -fsSL -o /tmp/gv.ipk --connect-timeout 15 --max-time 120 "{gv}" \\
+   || wget -q -O /tmp/gv.ipk --timeout=90 "{gv}"; then
   opkg install /tmp/gv.ipk 2>&1 | tail -3
   rm -f /tmp/gv.ipk
 fi
@@ -351,7 +390,8 @@ mkdir -p /tmp/geobak
 cp {a}geoip.dat {a}geosite.dat /tmp/geobak/ 2>/dev/null
 echo "geobak=$(wc -c < /tmp/geobak/geoip.dat 2>/dev/null)/$(wc -c < /tmp/geobak/geosite.dat 2>/dev/null)"
 {geoview}echo "--- app: ручная распаковка ---"
-if ! wget -q -O /tmp/app.ipk --timeout=60 "{app}"; then echo "APP=DL_FAIL"; echo DONE; exit 1; fi
+if ! curl -fsSL -o /tmp/app.ipk --connect-timeout 15 --max-time 120 "{app}" \\
+   && ! wget -q -O /tmp/app.ipk --timeout=90 "{app}"; then echo "APP=DL_FAIL"; echo DONE; exit 1; fi
 rm -rf /tmp/ipkx /tmp/ctl; mkdir -p /tmp/ipkx /tmp/ctl
 ( cd /tmp/ipkx && gzip -dc /tmp/app.ipk | tar -x )
 if [ ! -f /tmp/ipkx/data.tar.gz ]; then echo "APP=BAD_IPK"; echo DONE; exit 1; fi
@@ -392,7 +432,8 @@ if [ $NEED -eq 0 ]; then
 fi
 echo "restore_needed=$NEED"
 if [ $NEED -eq 1 ]; then
-  [ -f {zip} ] || wget -q -O {zip} --timeout=60 "{url}"
+  [ -f {zip} ] || curl -fsSL -o {zip} --connect-timeout 15 --max-time 300 "{url}" \\
+    || wget -q -O {zip} --timeout=90 "{url}"
   if unzip -t {zip} >/dev/null 2>&1; then
     unzip -p {zip} xray > /usr/bin/xray
     chmod 0755 /usr/bin/xray
@@ -458,6 +499,20 @@ ACCEPT_CMD = (
 )
 
 
+
+def _dl(dest, url, fail_marker=None):
+    """Скачивание: curl первым, wget запасным.
+
+    На aleksandr-grigorievsky wget падал с `Failed to send request: Operation not
+    permitted`, тогда как curl тянул тот же файл за 2.7 с. Причина не в сети и не в
+    github — в самом wget, поэтому он больше не первичный способ.
+    """
+    line = ('if ! curl -fsSL -o {d} --connect-timeout 15 --max-time 300 "{u}"; then\n'
+            '  wget -q -O {d} --timeout=90 "{u}" || {{ {f}; }}\n'
+            'fi').format(d=dest, u=url,
+                         f=(fail_marker or "echo DL_FAIL; echo DONE; exit 1"))
+    return line
+
 def stage1_script(do_xray, do_deps, target_version, asset_url, deps=None):
     """Один отвязанный проход: доставить зависимости и свопнуть xray.
 
@@ -485,7 +540,7 @@ rm -rf /var/opkg-lists /tmp/opkg-lists 2>/dev/null
         parts.append("""echo "before=$(/usr/bin/xray version 2>&1 | head -1)"
 if ! command -v unzip >/dev/null 2>&1; then echo "XRAY=NO_UNZIP"; echo DONE; exit 1; fi
 rm -f {zip}
-if ! wget -q -O {zip} --timeout=60 "{url}"; then echo "XRAY=DOWNLOAD_FAIL"; echo DONE; exit 1; fi
+{dl}
 if ! unzip -t {zip} >/dev/null 2>&1; then echo "XRAY=ZIP_CORRUPT"; rm -f {zip}; echo DONE; exit 1; fi
 /etc/init.d/passwall2 stop; sleep 4
 killall -9 xray 2>/dev/null; sleep 1
@@ -509,7 +564,9 @@ echo "xray_up_after_s=$n"
 echo "after=$(/usr/bin/xray version 2>&1 | head -1)"
 echo "wrapper=$(wc -c < /usr/sbin/vectra-xray-wrapper 2>/dev/null)"
 echo "cfg=$(XRAY_LOCATION_ASSET=/usr/share/v2ray /usr/bin/xray -test -c /tmp/etc/passwall2/acl/default/global.json 2>&1 | tail -1)"
-""".format(zip=XRAY_ZIP, url=asset_url, ver=target_version))
+""".format(zip=XRAY_ZIP, url=asset_url, ver=target_version,
+           dl=_dl(XRAY_ZIP, asset_url,
+                  'echo "XRAY=DOWNLOAD_FAIL"; echo DONE; exit 1')))
     else:
         parts.append('echo "XRAY=SKIPPED"')
     parts.append('echo "DONE $(date -u)"')
@@ -624,7 +681,8 @@ def cmd_idle(args):
 
 
 def do_preflight(router, lane, log):
-    kv = parse_kv(probe(router, PREFLIGHT_CMD, "MARKER_PREFLIGHT", timeout=90))
+    kv = parse_kv(probe(router, PREFLIGHT_CMD, "MARKER_PREFLIGHT", timeout=90,
+                        budget_s=PREFLIGHT_BUDGET_S))
     # Планка достижима ТОЛЬКО ручной заменой, пока runtimeTarget != версии ipk, —
     # независимо от того, есть ли wrapper. Наличие wrapper'а решает лишь то,
     # опасен ли панельный лейн (он затрёт wrapper), а не то, нужен ли своп.
@@ -1027,7 +1085,7 @@ def cmd_rollout(args):
         print("DRY-RUN: изменений не будет, добавь --apply\n")
     # Прогреваем сессию ДО пула: иначе несколько процессов CLI одновременно лезут
     # обновлять кэш операторской куки и мешают друг другу.
-    subprocess.run(CLI + ["--force-login", "status"], capture_output=True, text=True)
+    _maybe_force_login()
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=args.parallel) as ex:
         results = list(ex.map(lambda r: rollout_guarded(r, lane, args), targets))
