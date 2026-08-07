@@ -139,14 +139,20 @@ export const env = createEnv({
       .default(20),
     // A check-in that carries no material change writes nothing, so a stable
     // router would otherwise leave no trace at all between config changes.
-    // This bounds how stale the newest snapshot — and the sampled telemetry
-    // inside it — can get, at one row per router per interval.
+    //
+    // This interval is not just a storage knob: the fleet monitoring view reads
+    // reachability, safetyEvents and the resource gauges straight out of the
+    // newest snapshot payload (fleet-monitoring-data.ts), and those are exactly
+    // the fields the fingerprint deliberately ignores. So the heartbeat is what
+    // bounds how stale the operator's telemetry can look. 15 minutes keeps that
+    // honest while still cutting writes ~19x (27 routers × 4/h ≈ 108 rows/h
+    // against the ~2085/h the fleet used to produce).
     VECTRA_SNAPSHOT_HEARTBEAT_MINUTES: z.coerce
       .number()
       .int()
       .min(5)
       .max(1440)
-      .default(60),
+      .default(15),
     // Revision retention. The window is far longer than the snapshot one: a
     // revision is an operator-visible audit record, not telemetry, so a week
     // of superseded auto-imports stays available for diagnosis before the

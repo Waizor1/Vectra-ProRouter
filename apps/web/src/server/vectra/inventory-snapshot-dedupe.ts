@@ -56,7 +56,13 @@ import { stableStringify } from "./secrets";
 // Nothing depends on this table for alerting. Health incidents, the safety
 // guard and auto-rescue all act on the live check-in payload in real time; a
 // sustained outage lasts far longer than one heartbeat and is captured anyway.
-// What is given up is sub-hourly probe history, which no reader asked for.
+//
+// The fleet monitoring view is the one reader that does surface these fields,
+// straight from the newest snapshot payload. That makes the heartbeat interval
+// the bound on how stale the operator's telemetry can look — which is why it
+// defaults to 15 minutes rather than an hour. Widening it trades operator
+// freshness for storage, so change it with that in mind, not as a pure size
+// knob.
 //
 // The safety-event message deserves its own warning: it restates the live gauge
 // in prose — "available RAM is low: 50 MB available (21% of 234 MB)" — so
