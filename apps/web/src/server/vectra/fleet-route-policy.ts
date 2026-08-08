@@ -211,6 +211,46 @@ function identityValues(identity?: FleetRoutePolicyRouterIdentity | null) {
     .filter((value) => value.length > 0);
 }
 
+// Build the identity every policy call site must pass.
+//
+// Why a shared builder rather than an object literal per call site: the panel
+// surfaces each hand-rolled their own literal and every one of them silently
+// dropped routePolicyExempt. Only the check-in path in router-control.ts
+// carried it, so the CONTROLLER honoured an operator's exemption while the
+// PANEL did not — kirill-msk read `status: "violation"`, `canNormalize: true`,
+// and one press of the normalize button would have rebound the slots away from
+// the hand-tuned node that took his handshake failures from 78/150 to 0/150.
+// The flag protected him from the automation but not from the operator.
+//
+// Fields are optional so partially-populated callers (onboarding fixtures) keep
+// working; what matters is that the exemption travels by construction.
+export function buildFleetRoutePolicyIdentity(
+  row: {
+    id?: string | null;
+    displayName?: string | null;
+    hostname?: string | null;
+    deviceIdentifier?: string | null;
+    routePolicyExempt?: boolean | null;
+    routePolicyExemptReason?: string | null;
+  },
+  overrides?: { name?: string | null; snapshotHostname?: string | null },
+): FleetRoutePolicyRouterIdentity {
+  return {
+    id: row.id ?? undefined,
+    name:
+      overrides?.name ??
+      row.displayName ??
+      overrides?.snapshotHostname ??
+      row.hostname ??
+      row.deviceIdentifier,
+    displayName: row.displayName,
+    hostname: overrides?.snapshotHostname ?? row.hostname,
+    deviceIdentifier: row.deviceIdentifier,
+    routePolicyExempt: row.routePolicyExempt,
+    routePolicyExemptReason: row.routePolicyExemptReason,
+  };
+}
+
 export function getFleetRoutePolicyExceptionReason(
   identity?: FleetRoutePolicyRouterIdentity | null,
 ) {

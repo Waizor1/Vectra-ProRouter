@@ -7,6 +7,7 @@ import {
 
 import {
   buildFleetRoutePolicyDirective,
+  buildFleetRoutePolicyIdentity,
   canonicalFleetRoutePolicy,
   evaluateFleetRoutePolicy,
   FLEET_ROUTE_POLICY_VERSION,
@@ -853,5 +854,86 @@ describe("exit spreading across equally good Poland nodes", () => {
       .filter((slot) => slot.slot === "WorldProxy")
       .map((slot) => slot.targetNodeId);
     expect(bound).not.toContain("node-nl");
+  });
+});
+
+describe("operator exemption survives into every panel surface", () => {
+  // The database flag used to reach only the check-in path: the controller
+  // honoured it while fleet.list / fleet.byId / fleet.normalizeRoutePolicy each
+  // built their own identity literal and dropped it. kirill-msk therefore read
+  // "violation" with canNormalize:true, and pressing normalize would have
+  // rebound his slots off the hand-tuned node that took his handshake failures
+  // from 78/150 to 0/150 — the flag protected him from the automation but not
+  // from the operator.
+  const exemptRow = {
+    id: "11111111-2222-3333-4444-555555555555",
+    displayName: "kirill-msk",
+    hostname: "kirill-msk",
+    deviceIdentifier: "vectra-aabbccddeeff",
+    routePolicyExempt: true,
+    routePolicyExemptReason: "CPU handshake saturation",
+  };
+
+  it("carries the flag and its reason into the identity", () => {
+    const identity = buildFleetRoutePolicyIdentity(exemptRow);
+
+    expect(identity.routePolicyExempt).toBe(true);
+    expect(identity.routePolicyExemptReason).toBe("CPU handshake saturation");
+  });
+
+  it("reports an exempt router as exempt, not as a violation", () => {
+    const compliance = evaluateFleetRoutePolicy(
+      buildConfig({}),
+      buildFleetRoutePolicyIdentity(exemptRow),
+    );
+
+    expect(compliance.status).toBe("exempt");
+    expect(compliance.canNormalize).toBe(false);
+    expect(compliance.exceptionReason).toBe("CPU handshake saturation");
+  });
+
+  it("makes normalization a no-op for an exempt router", () => {
+    const config = buildConfig({});
+    const result = normalizeFleetRoutePolicy(
+      config,
+      buildFleetRoutePolicyIdentity(exemptRow),
+    );
+
+    expect(result.changed).toBe(false);
+    expect(result.changes).toHaveLength(0);
+    expect(result.config).toEqual(config);
+  });
+
+  it("still normalizes a router whose flag is unset", () => {
+    // The flag is null for every router until an operator sets it, so the
+    // untouched fleet must keep behaving exactly as before.
+    const compliance = evaluateFleetRoutePolicy(
+      buildConfig({}),
+      buildFleetRoutePolicyIdentity({
+        ...exemptRow,
+        displayName: "artem-lutfulin",
+        hostname: "artem-lutfulin",
+        routePolicyExempt: null,
+        routePolicyExemptReason: null,
+      }),
+    );
+
+    expect(compliance.exempt).toBe(false);
+    expect(compliance.checked).toBe(true);
+  });
+
+  it("lets the flag un-exempt a router the seed list still names", () => {
+    const compliance = evaluateFleetRoutePolicy(
+      buildConfig({}),
+      buildFleetRoutePolicyIdentity({
+        ...exemptRow,
+        displayName: "hh",
+        hostname: "hh",
+        routePolicyExempt: false,
+        routePolicyExemptReason: null,
+      }),
+    );
+
+    expect(compliance.exempt).toBe(false);
   });
 });

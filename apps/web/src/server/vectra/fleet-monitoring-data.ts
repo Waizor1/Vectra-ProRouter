@@ -15,7 +15,10 @@ import type { db as appDb } from "~/server/db";
 import { formatControllerVersion } from "~/lib/controller-version";
 
 import { buildConfigTrustState } from "./config-trust";
-import { evaluateFleetRoutePolicy } from "./fleet-route-policy";
+import {
+  buildFleetRoutePolicyIdentity,
+  evaluateFleetRoutePolicy,
+} from "./fleet-route-policy";
 import { buildFleetMonitoringSnapshot } from "./fleet-monitoring";
 import { loadRevisionMetadata } from "./revision-metadata";
 import { isRouterReachable } from "./router-presence";
@@ -499,13 +502,10 @@ export async function loadFleetMonitoringSnapshot(
         },
         fleetPolicyCompliance: evaluateFleetRoutePolicy(
           policyConfigRows.get(router.id)?.config ?? null,
-          {
-            id: router.id,
+          buildFleetRoutePolicyIdentity(router, {
             name: routerName,
-            displayName: router.displayName,
-            hostname: payload?.hostname ?? router.hostname,
-            deviceIdentifier: router.deviceIdentifier,
-          },
+            snapshotHostname: payload?.hostname,
+          }),
         ),
         openIncident: incident
           ? {

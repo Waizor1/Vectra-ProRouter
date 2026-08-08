@@ -27,6 +27,7 @@ import {
 } from "~/server/vectra/fleet-monitoring-data";
 import { buildConfigTrustState } from "~/server/vectra/config-trust";
 import {
+  buildFleetRoutePolicyIdentity,
   evaluateFleetRoutePolicy,
   normalizeFleetRoutePolicy,
 } from "~/server/vectra/fleet-route-policy";
@@ -198,13 +199,10 @@ export const fleetRouter = createTRPCRouter({
         configTrust,
         fleetPolicyCompliance: evaluateFleetRoutePolicy(
           policyConfigRows.get(router.id)?.config ?? null,
-          {
-            id: router.id,
+          buildFleetRoutePolicyIdentity(router, {
             name: routerName,
-            displayName: router.displayName,
-            hostname: snapshot?.payload.hostname ?? router.hostname,
-            deviceIdentifier: router.deviceIdentifier,
-          },
+            snapshotHostname: snapshot?.payload.hostname,
+          }),
         ),
         support,
       };
@@ -263,13 +261,10 @@ export const fleetRouter = createTRPCRouter({
           snapshot?.payload.hostname ??
           router.hostname ??
           router.deviceIdentifier;
-        const identity = {
-          id: router.id,
+        const identity = buildFleetRoutePolicyIdentity(router, {
           name: routerName,
-          displayName: router.displayName,
-          hostname: snapshot?.payload.hostname ?? router.hostname,
-          deviceIdentifier: router.deviceIdentifier,
-        };
+          snapshotHostname: snapshot?.payload.hostname,
+        });
         if (!sourceRevision) {
           results.push({
             routerId: router.id,
@@ -558,13 +553,10 @@ export const fleetRouter = createTRPCRouter({
         ) ?? null;
       const fleetPolicyCompliance = evaluateFleetRoutePolicy(
         latestLiveRevision?.config ?? null,
-        {
-          id: router.id,
+        buildFleetRoutePolicyIdentity(router, {
           name: routerName,
-          displayName: router.displayName,
-          hostname: snapshots[0]?.payload.hostname ?? router.hostname,
-          deviceIdentifier: router.deviceIdentifier,
-        },
+          snapshotHostname: snapshots[0]?.payload.hostname,
+        }),
       );
 
       return {

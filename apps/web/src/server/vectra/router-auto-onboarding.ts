@@ -32,6 +32,7 @@ import {
 import { normalizeOnboardingVerifyPolicyForBaseline } from "~/lib/router-onboarding-policy";
 import { db } from "~/server/db";
 import {
+  buildFleetRoutePolicyIdentity,
   evaluateFleetRoutePolicy,
   normalizeFleetRoutePolicy,
 } from "~/server/vectra/fleet-route-policy";
@@ -102,7 +103,12 @@ export type RouterLike = Pick<
   | "activeRevisionId"
   | "approvedAt"
   | "lastSeenAt"
->;
+> &
+  // Optional so the existing test fixtures keep type-checking, but carried so
+  // an operator's per-router exemption survives into the policy identity here
+  // too — onboarding normalizes route policy, and a router exempted before it
+  // finished onboarding must not be rebound by that pass.
+  Partial<Pick<RouterRow, "routePolicyExempt" | "routePolicyExemptReason">>;
 
 export type SnapshotLike = Pick<SnapshotRow, "payload" | "createdAt">;
 
@@ -487,13 +493,10 @@ function withOnboardingSubscription(
 }
 
 function routePolicyIdentity(router: RouterLike, profile: ProfileLike) {
-  return {
-    id: router.id,
-    name: profile.displayName ?? router.displayName ?? router.hostname,
-    displayName: profile.displayName ?? router.displayName,
-    hostname: router.hostname,
-    deviceIdentifier: router.deviceIdentifier,
-  };
+  return buildFleetRoutePolicyIdentity(
+    { ...router, displayName: profile.displayName ?? router.displayName },
+    { name: profile.displayName ?? router.displayName ?? router.hostname },
+  );
 }
 
 function planCompletedLastJob(ctx: RouterOnboardingContext) {
