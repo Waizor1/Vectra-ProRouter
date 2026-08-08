@@ -707,3 +707,124 @@ describe("WorldProxy strictPreferred", () => {
     expect(compliance.status).toBe("compliant");
   });
 });
+
+describe("quarantined provider nodes", () => {
+  // pl1 carries the label that the WorldProxy tie-break rewards (`!extreme`
+  // => +5, so 145 vs pl2's 140). Before the quarantine it therefore won every
+  // time, which is exactly how 12 routers ended up pinned to a node that
+  // flapped four times in one day.
+  function withBothPolandExits(worldBinding?: string) {
+    const base = buildConfig(
+      worldBinding ? { bindings: { WorldProxy: worldBinding } } : {},
+    );
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: "node-pl1",
+          label: "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+          protocol: "vless",
+          enabled: true,
+          group: "default",
+          address: "pl1.nfnpx.online",
+          port: 443,
+          transport: "tcp",
+          extras: {},
+        },
+        {
+          id: "node-pl2",
+          label: "⚡Extreme Польша 🇵🇱",
+          protocol: "vless",
+          enabled: true,
+          group: "default",
+          address: "pl2.nfnpx.online",
+          port: 443,
+          transport: "tcp",
+          extras: {},
+        },
+      ],
+    });
+  }
+
+  function withOnlyQuarantinedPoland() {
+    const base = buildConfig({});
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: "node-pl1",
+          label: "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+          protocol: "vless",
+          enabled: true,
+          group: "default",
+          address: "pl1.nfnpx.online",
+          port: 443,
+          transport: "tcp",
+          extras: {},
+        },
+      ],
+    });
+  }
+
+  it("prefers the healthy direct exit over the quarantined one", () => {
+    const normalized = normalizeFleetRoutePolicy(withBothPolandExits(), {
+      hostname: "kirill-msk",
+    });
+
+    const world = normalized.after.matchedSlots.find(
+      (slot) => slot.slot === "WorldProxy",
+    );
+    expect(world?.targetNodeId).toBe("node-pl2");
+  });
+
+  it("keeps DiscordVoiceUdp on the same healthy node as WorldProxy", () => {
+    const normalized = normalizeFleetRoutePolicy(withBothPolandExits(), {
+      hostname: "kirill-msk",
+    });
+
+    const discord = normalized.after.matchedSlots.find(
+      (slot) => slot.slot === "DiscordVoiceUdp",
+    );
+    expect(discord?.targetNodeId).toBe("node-pl2");
+  });
+
+  it("never binds a quarantined node, whatever the slot", () => {
+    const normalized = normalizeFleetRoutePolicy(withBothPolandExits(), {
+      hostname: "kirill-msk",
+    });
+    const boundIds = [
+      ...normalized.after.matchedSlots.map((slot) => slot.targetNodeId),
+      ...normalized.after.mismatches.map((mismatch) => mismatch.actualNodeId),
+    ];
+
+    expect(boundIds).not.toContain("node-pl1");
+  });
+
+  it("leaves an existing binding alone when the only candidate is quarantined", () => {
+    // The dangerous failure mode would be unbinding the slot: traffic would
+    // fall through to the direct catch-all, which in Russia means Telegram and
+    // Instagram simply stop working. Keeping the current node is strictly
+    // better than that, so `findBestTarget` returning null must be a no-op.
+    const config = withOnlyQuarantinedPoland();
+    const before = config.basicSettings.shuntRules.find(
+      (rule) => rule.id === "WorldProxy",
+    )?.outboundNodeId;
+    const normalized = normalizeFleetRoutePolicy(config, {
+      hostname: "kirill-msk",
+    });
+    const after = normalized.config.basicSettings.shuntRules.find(
+      (rule) => rule.id === "WorldProxy",
+    )?.outboundNodeId;
+
+    expect(after).toBe(before);
+    expect(after).toBeTruthy();
+  });
+
+  it("publishes the quarantine list so an operator can see it", () => {
+    expect(canonicalFleetRoutePolicy.quarantinedNodeHosts).toContain(
+      "pl1.nfnpx.online",
+    );
+  });
+});

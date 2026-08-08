@@ -130,9 +130,31 @@ export type FleetRoutePolicyNormalizationResult = {
 // needs no controller rebuild.
 const exceptionIdentityValues = new Set(["hh"]);
 
+// Provider nodes the operator has pulled out of rotation. Every slot scores
+// them 0, so the policy picks its next-best candidate instead of pinning the
+// fleet to a node that cannot carry traffic.
+//
+// Matched by HOST, never by node id: the subscription re-mints node ids on
+// every refresh, so an id-based list would silently stop matching overnight.
+//
+// Why this exists rather than a liveness probe: evaluateFleetRoutePolicy only
+// receives the PassWall config and the router identity — it has no node-health
+// signal to consult, and plumbing one through every call site is a much larger
+// change. A short operator-owned list is the honest version of "this node is
+// known bad"; remove the entry to put the node back in rotation.
+//
+// pl1.nfnpx.online (2026-08-08): flapped all day — dead in the morning, alive
+// at 20:00, dead at 21:30, alive again at 21:50. Each outage took Telegram,
+// Instagram and Discord down for the 12 routers pinned to it, because the
+// WorldProxy tie-break below (`!extreme` => +5) scores pl1 at 145 against
+// pl2's 140 and therefore always prefers it. Manual rebinds did not survive:
+// the controller re-applies the panel directive on the next check-in.
+const quarantinedNodeHosts = new Set(["pl1.nfnpx.online"]);
+
 export const canonicalFleetRoutePolicy = {
   version: FLEET_ROUTE_POLICY_VERSION,
   exceptions: [...exceptionIdentityValues],
+  quarantinedNodeHosts: [...quarantinedNodeHosts],
   slots: [
     {
       id: "WorldProxy",
@@ -256,6 +278,14 @@ function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
 
   const label = normalizeText(node.label);
   const address = normalizeHost(node.address);
+
+  // Quarantined hosts are out of rotation for every slot, not just the one
+  // that exposed the problem: a node that cannot carry Telegram is not a
+  // better YouTube or Tiktok target either.
+  if (quarantinedNodeHosts.has(address)) {
+    return 0;
+  }
+
   const transport = normalizeText(node.transport);
   const ruEntry = hostLooksLikeRuEntry(address) || label.includes("🇷🇺");
   const isGrpc = transport === "grpc";
