@@ -937,3 +937,96 @@ describe("operator exemption survives into every panel surface", () => {
     expect(compliance.exempt).toBe(false);
   });
 });
+
+describe("no churn when already on the right exit", () => {
+  function polandNode(id: string, address: string, label: string) {
+    return {
+      id,
+      label,
+      protocol: "vless",
+      enabled: true,
+      group: "default",
+      address,
+      port: 443,
+      transport: "tcp",
+      extras: {},
+    };
+  }
+
+  // One host, two labels — the shape every real subscription hands out.
+  function twinLabelConfig(boundNodeId: string) {
+    const base = buildConfig({ bindings: { WorldProxy: boundNodeId } });
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [
+        ...base.nodes,
+        polandNode("node-adblock", "pl2.nfnpx.online", "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫"),
+        polandNode("node-extreme", "pl2.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+      ],
+    });
+  }
+
+  it("keeps a binding that is already on the chosen host", () => {
+    // Both labels are the same exit, so demanding one over the other is a
+    // rebind that changes no traffic — and it never sticks, because the
+    // subscription re-mints node ids nightly.
+    for (const bound of ["node-adblock", "node-extreme"]) {
+      const compliance = evaluateFleetRoutePolicy(twinLabelConfig(bound), {
+        deviceIdentifier: "vectra-aabbccddeeff",
+      });
+      const world = compliance.matchedSlots.find(
+        (slot) => slot.slot === "WorldProxy",
+      );
+
+      expect(world?.targetNodeId).toBe(bound);
+    }
+  });
+
+  it("reports such a router as compliant, not as a violation", () => {
+    const compliance = evaluateFleetRoutePolicy(twinLabelConfig("node-extreme"), {
+      deviceIdentifier: "vectra-aabbccddeeff",
+    });
+
+    expect(
+      compliance.mismatches.filter((mismatch) => mismatch.slot === "WorldProxy"),
+    ).toHaveLength(0);
+  });
+
+  it("normalization is a no-op for the WorldProxy slot in that case", () => {
+    const config = twinLabelConfig("node-extreme");
+    const result = normalizeFleetRoutePolicy(config, {
+      deviceIdentifier: "vectra-aabbccddeeff",
+    });
+
+    expect(
+      result.changes.filter((change) => change.slot === "WorldProxy"),
+    ).toHaveLength(0);
+  });
+
+  it("still moves a router that sits on the wrong host", () => {
+    // Stickiness must not become "never move": the whole point of the change
+    // is that a router on a host the hash did not choose gets relocated.
+    const base = buildConfig({ bindings: { WorldProxy: "node-pl1" } });
+    const config = passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [
+        ...base.nodes,
+        polandNode("node-pl1", "pl1.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+        polandNode("node-pl2", "pl2.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+      ],
+    });
+
+    const picks = new Set(
+      Array.from({ length: 40 }, (_, index) => {
+        const result = normalizeFleetRoutePolicy(config, {
+          deviceIdentifier: `vectra-device-${index}`,
+        });
+        return result.after.matchedSlots.find(
+          (slot) => slot.slot === "WorldProxy",
+        )?.targetNodeId;
+      }),
+    );
+
+    expect(picks).toEqual(new Set(["node-pl1", "node-pl2"]));
+  });
+});

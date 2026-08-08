@@ -537,6 +537,7 @@ function findBestTarget(
   config: PasswallDesiredConfig,
   slot: PolicySlot,
   identity?: FleetRoutePolicyRouterIdentity | null,
+  currentNodeId?: string | null,
 ) {
   let bestScore = 0;
   const scored: { node: PasswallNode; score: number }[] = [];
@@ -593,8 +594,26 @@ function findBestTarget(
   if (nodes.length === 1) {
     return nodes[0]!;
   }
-  // Within one host, order by label: node ids are re-minted on every
-  // subscription refresh and would make this pick flap nightly.
+
+  // Already parked on an equally-good node of the chosen host? Stay there.
+  //
+  // A subscription routinely carries one host twice under two labels
+  // ("🇵🇱 ⚡️Польша YouTube 🚫Ad🚫" and "⚡Extreme Польша 🇵🇱" are both pl2), and
+  // without this the policy demanded whichever label sorted first — a rebind
+  // to the same host, same port, same protocol that changes no traffic
+  // whatsoever. It also never converges in practice: the node ids are re-minted
+  // on every subscription refresh, so the router is flagged non-compliant again
+  // the next night. Observed 2026-08-08 on 1111111111 and AndreyVK, which sat
+  // at "violation" while already on the correct exit.
+  const keep = currentNodeId
+    ? nodes.find((node) => node.id === currentNodeId)
+    : undefined;
+  if (keep) {
+    return keep;
+  }
+
+  // Otherwise order by label, so a router arriving fresh gets a deterministic
+  // node rather than one that depends on subscription ordering.
   return [...nodes].sort((left, right) =>
     normalizeText(left.label).localeCompare(normalizeText(right.label)),
   )[0]!;
@@ -724,7 +743,12 @@ export function evaluateFleetRoutePolicy(
 
   for (const slot of canonicalFleetRoutePolicy.slots) {
     const rule = findRule(config, slot);
-    const preferredTarget = findBestTarget(config, slot, identity);
+    const preferredTarget = findBestTarget(
+      config,
+      slot,
+      identity,
+      rule ? readRuleBindingId(config, rule, slot) : null,
+    );
     if (!rule) {
       mismatches.push({
         slot: slot.id,
@@ -895,11 +919,6 @@ export function normalizeFleetRoutePolicy(
   }
 
   for (const slot of canonicalFleetRoutePolicy.slots) {
-    const target = findBestTarget(next, slot, identity);
-    if (!target) {
-      continue;
-    }
-
     const basicIndex = findRuleIndex(next.basicSettings.shuntRules, slot);
     if (basicIndex < 0) {
       continue;
@@ -907,6 +926,10 @@ export function normalizeFleetRoutePolicy(
 
     const rule = next.basicSettings.shuntRules[basicIndex]!;
     const previousBindingId = readRuleBindingId(next, rule, slot);
+    const target = findBestTarget(next, slot, identity, previousBindingId);
+    if (!target) {
+      continue;
+    }
     const previousNode = findNodeById(next, previousBindingId);
     const previousNodeId = previousNode?.id ?? previousBindingId ?? null;
     const previousFingerprint = fingerprint(previousNode);
