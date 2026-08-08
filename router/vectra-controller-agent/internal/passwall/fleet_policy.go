@@ -339,9 +339,25 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 		// with an unbound slot.
 		//
 		// DiscordVoiceUdp deliberately resolves to this same node — see that
-		// slot's case below for why splitting them broke Discord voice. Keep
-		// this aligned with the panel-side scorer in
-		// apps/web/src/server/vectra/fleet-route-policy.ts.
+		// slot's case below for why splitting them broke Discord voice.
+		//
+		// DIVERGED FROM THE PANEL ON 2026-08-08, deliberately. The panel scorer
+		// in apps/web/src/server/vectra/fleet-route-policy.ts dropped the
+		// `!extreme => +5` tie-break below and now spreads routers over every
+		// equally-scoring exit host by hashing the router identity, because the
+		// tie-break ranked pl1 above pl2 for the whole fleet and pinned 14 of 31
+		// routers to a single exit. It also matches a Poland exit by HOST as well
+		// as by label, since the provider re-maps its labels per router.
+		//
+		// This scorer is NOT the one that decides on a live router: whenever the
+		// panel sends a directive with bindings, resolveFleetRoutePolicyTarget
+		// takes the node id verbatim and never calls this function. It runs only
+		// as the bootstrap fallback for a router the panel has no matched slot
+		// for. Mirroring the spread here means reproducing the panel's FNV-1a
+		// hash, host sort and identity normalisation EXACTLY — a divergence would
+		// park such a router on an exit the panel then reports as a violation
+		// forever — so it is deliberately left for a change that ships with a
+		// controller rollout and a cross-language fixture.
 		if !containsAny(label, "польш", "poland", "🇵🇱") {
 			return 0
 		}

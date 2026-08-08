@@ -575,7 +575,7 @@ describe("WorldProxy canon (2026-08-02: direct Poland :443)", () => {
   // (ru3.nfnpx.online:50053, grpc) — the shape this outage killed.
   const ruEntryPolandId = "node-discord-1";
 
-  it("binds WorldProxy to the direct Poland :443 exit when one exists", () => {
+  it("binds WorldProxy to a direct Poland :443 exit when one exists", () => {
     const result = normalizeFleetRoutePolicy(
       withPolandNodes([extremePoland, directPoland]),
       { hostname: "kirill-msk" },
@@ -584,7 +584,13 @@ describe("WorldProxy canon (2026-08-02: direct Poland :443)", () => {
     const world = result.after.matchedSlots.find(
       (slot) => slot.slot === "WorldProxy",
     );
-    expect(world?.targetNodeId).toBe("node-poland-direct");
+    // Which of the two direct exits wins is deliberately per-router — see
+    // "exit spreading" below. The canon claim is only that the slot leaves the
+    // RU-entry tier whenever a direct :443 Poland exit is available.
+    expect(["node-poland-direct", "node-poland-extreme"]).toContain(
+      world?.targetNodeId,
+    );
+    expect(world?.targetNodeId).not.toBe(ruEntryPolandId);
   });
 
   // 2026-08-03: splitting DiscordVoiceUdp off WorldProxy killed voice
@@ -605,7 +611,9 @@ describe("WorldProxy canon (2026-08-02: direct Poland :443)", () => {
     const discord = result.after.matchedSlots.find(
       (slot) => slot.slot === "DiscordVoiceUdp",
     );
-    expect(discord?.targetNodeId).toBe("node-poland-direct");
+    expect(["node-poland-direct", "node-poland-extreme"]).toContain(
+      discord?.targetNodeId,
+    );
     expect(discord?.targetNodeId).toBe(world?.targetNodeId);
   });
 
@@ -708,70 +716,124 @@ describe("WorldProxy strictPreferred", () => {
   });
 });
 
-describe("quarantined provider nodes", () => {
-  // pl1 carries the label that the WorldProxy tie-break rewards (`!extreme`
-  // => +5, so 145 vs pl2's 140). Before the quarantine it therefore won every
-  // time, which is exactly how 12 routers ended up pinned to a node that
-  // flapped four times in one day.
-  function withBothPolandExits(worldBinding?: string) {
-    const base = buildConfig(
-      worldBinding ? { bindings: { WorldProxy: worldBinding } } : {},
+describe("exit spreading across equally good Poland nodes", () => {
+  function polandNode(id: string, address: string, label: string) {
+    return {
+      id,
+      label,
+      protocol: "vless",
+      enabled: true,
+      group: "default",
+      address,
+      port: 443,
+      transport: "tcp",
+      extras: {},
+    };
+  }
+
+  function withNodes(
+    nodes: ReturnType<typeof polandNode>[],
+    bindings?: Record<string, string>,
+  ) {
+    const base = buildConfig(bindings ? { bindings } : {});
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [...base.nodes, ...nodes],
+    });
+  }
+
+  const bothExits = () => [
+    polandNode("node-pl1", "pl1.nfnpx.online", "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫"),
+    polandNode("node-pl2", "pl2.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+  ];
+
+  function worldTargetFor(deviceIdentifier: string) {
+    const normalized = normalizeFleetRoutePolicy(withNodes(bothExits()), {
+      deviceIdentifier,
+    });
+    return normalized.after.matchedSlots.find(
+      (slot) => slot.slot === "WorldProxy",
+    )?.targetNodeId;
+  }
+
+  it("does not hand every router the same exit", () => {
+    // The whole point: before this, the label tie-break scored pl1 at 145 and
+    // pl2 at 140, so all 31 routers took pl1. One overloaded shared exit is
+    // what took Instagram down fleet-wide on 2026-07-31.
+    const picks = new Set(
+      Array.from({ length: 40 }, (_, index) =>
+        worldTargetFor(`vectra-device-${index}`),
+      ),
     );
-    return passwallDesiredConfigSchema.parse({
-      ...base,
-      nodes: [
-        ...base.nodes,
-        {
-          id: "node-pl1",
-          label: "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
-          protocol: "vless",
-          enabled: true,
-          group: "default",
-          address: "pl1.nfnpx.online",
-          port: 443,
-          transport: "tcp",
-          extras: {},
-        },
-        {
-          id: "node-pl2",
-          label: "⚡Extreme Польша 🇵🇱",
-          protocol: "vless",
-          enabled: true,
-          group: "default",
-          address: "pl2.nfnpx.online",
-          port: 443,
-          transport: "tcp",
-          extras: {},
-        },
-      ],
-    });
-  }
 
-  function withOnlyQuarantinedPoland() {
-    const base = buildConfig({});
-    return passwallDesiredConfigSchema.parse({
-      ...base,
-      nodes: [
-        ...base.nodes,
-        {
-          id: "node-pl1",
-          label: "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
-          protocol: "vless",
-          enabled: true,
-          group: "default",
-          address: "pl1.nfnpx.online",
-          port: 443,
-          transport: "tcp",
-          extras: {},
-        },
-      ],
-    });
-  }
+    expect(picks).toEqual(new Set(["node-pl1", "node-pl2"]));
+  });
 
-  it("prefers the healthy direct exit over the quarantined one", () => {
-    const normalized = normalizeFleetRoutePolicy(withBothPolandExits(), {
-      hostname: "kirill-msk",
-    });
+  it("gives one router the same exit on every evaluation", () => {
+    // A router that hops exits between check-ins would rewrite its config and
+    // drop connections every minute.
+    const picks = Array.from({ length: 8 }, () =>
+      worldTargetFor("vectra-aabbccddeeff"),
+    );
+
+    expect(new Set(picks).size).toBe(1);
+  });
+
+  it("keeps DiscordVoiceUdp on the same node as WorldProxy for every router", () => {
+    // These two slots MUST share a node: the generated Xray routing chain puts
+    // the WorldProxy rule above DiscordVoiceUdp, so voice packets leave through
+    // whatever WorldProxy resolved to regardless.
+    for (let index = 0; index < 40; index += 1) {
+      const normalized = normalizeFleetRoutePolicy(withNodes(bothExits()), {
+        deviceIdentifier: `vectra-device-${index}`,
+      });
+      const world = normalized.after.matchedSlots.find(
+        (slot) => slot.slot === "WorldProxy",
+      )?.targetNodeId;
+      const discord = normalized.after.matchedSlots.find(
+        (slot) => slot.slot === "DiscordVoiceUdp",
+      )?.targetNodeId;
+
+      expect(discord).toBe(world);
+    }
+  });
+
+  it("spreads by exit host, not by duplicate labels on one host", () => {
+    // Subscriptions routinely carry the same host twice under two labels.
+    // Splitting those would look like spreading while leaving the whole fleet
+    // on a single exit.
+    const picks = new Set(
+      Array.from({ length: 30 }, (_, index) => {
+        const normalized = normalizeFleetRoutePolicy(
+          withNodes([
+            polandNode("node-a", "pl2.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+            polandNode(
+              "node-b",
+              "pl2.nfnpx.online",
+              "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+            ),
+          ]),
+          { deviceIdentifier: `vectra-device-${index}` },
+        );
+        return normalized.after.matchedSlots.find(
+          (slot) => slot.slot === "WorldProxy",
+        )?.targetNodeId;
+      }),
+    );
+
+    expect(picks.size).toBe(1);
+  });
+
+  it("recognises a Poland exit whose label carries no Poland marker", () => {
+    // Measured 2026-08-08: the provider labels pl2 "⚡Extreme Авто EU 🇪🇺" on
+    // AlekseyHorev and vladimirdrfilicity. Label-only matching made that node
+    // invisible and dropped both routers to the RU-entry fallback.
+    const normalized = normalizeFleetRoutePolicy(
+      withNodes([
+        polandNode("node-pl2", "pl2.nfnpx.online", "⚡Extreme Авто EU 🇪🇺"),
+      ]),
+      { deviceIdentifier: "vectra-aabbccddeeff" },
+    );
 
     const world = normalized.after.matchedSlots.find(
       (slot) => slot.slot === "WorldProxy",
@@ -779,52 +841,17 @@ describe("quarantined provider nodes", () => {
     expect(world?.targetNodeId).toBe("node-pl2");
   });
 
-  it("keeps DiscordVoiceUdp on the same healthy node as WorldProxy", () => {
-    const normalized = normalizeFleetRoutePolicy(withBothPolandExits(), {
-      hostname: "kirill-msk",
-    });
-
-    const discord = normalized.after.matchedSlots.find(
-      (slot) => slot.slot === "DiscordVoiceUdp",
+  it("still refuses a node that is neither Poland-labelled nor a pl* host", () => {
+    const normalized = normalizeFleetRoutePolicy(
+      withNodes([
+        polandNode("node-nl", "nl3.nfnpx.online", "⚡Extreme Авто EU 🇪🇺"),
+      ]),
+      { deviceIdentifier: "vectra-aabbccddeeff" },
     );
-    expect(discord?.targetNodeId).toBe("node-pl2");
-  });
 
-  it("never binds a quarantined node, whatever the slot", () => {
-    const normalized = normalizeFleetRoutePolicy(withBothPolandExits(), {
-      hostname: "kirill-msk",
-    });
-    const boundIds = [
-      ...normalized.after.matchedSlots.map((slot) => slot.targetNodeId),
-      ...normalized.after.mismatches.map((mismatch) => mismatch.actualNodeId),
-    ];
-
-    expect(boundIds).not.toContain("node-pl1");
-  });
-
-  it("leaves an existing binding alone when the only candidate is quarantined", () => {
-    // The dangerous failure mode would be unbinding the slot: traffic would
-    // fall through to the direct catch-all, which in Russia means Telegram and
-    // Instagram simply stop working. Keeping the current node is strictly
-    // better than that, so `findBestTarget` returning null must be a no-op.
-    const config = withOnlyQuarantinedPoland();
-    const before = config.basicSettings.shuntRules.find(
-      (rule) => rule.id === "WorldProxy",
-    )?.outboundNodeId;
-    const normalized = normalizeFleetRoutePolicy(config, {
-      hostname: "kirill-msk",
-    });
-    const after = normalized.config.basicSettings.shuntRules.find(
-      (rule) => rule.id === "WorldProxy",
-    )?.outboundNodeId;
-
-    expect(after).toBe(before);
-    expect(after).toBeTruthy();
-  });
-
-  it("publishes the quarantine list so an operator can see it", () => {
-    expect(canonicalFleetRoutePolicy.quarantinedNodeHosts).toContain(
-      "pl1.nfnpx.online",
-    );
+    const bound = normalized.after.matchedSlots
+      .filter((slot) => slot.slot === "WorldProxy")
+      .map((slot) => slot.targetNodeId);
+    expect(bound).not.toContain("node-nl");
   });
 });

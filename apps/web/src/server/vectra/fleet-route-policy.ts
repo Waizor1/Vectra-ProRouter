@@ -45,7 +45,7 @@ type PolicySlot = {
   requiredNodeExtras?: Record<string, string>;
   // When set, "compliant" means the slot is bound to the single best-scoring
   // candidate, not merely to one that clears the 100-point bar. Without it a
-  // slot with a scored fallback shape (WorldProxy: direct Poland 145 vs
+  // slot with a scored fallback shape (WorldProxy: direct Poland 140 vs
   // RU-entry 120) would report compliant while parked on the fallback, and
   // buildFleetRoutePolicyDirective — which echoes matchedSlots — would then pin
   // the router to that fallback forever, overriding the controller's own
@@ -130,31 +130,9 @@ export type FleetRoutePolicyNormalizationResult = {
 // needs no controller rebuild.
 const exceptionIdentityValues = new Set(["hh"]);
 
-// Provider nodes the operator has pulled out of rotation. Every slot scores
-// them 0, so the policy picks its next-best candidate instead of pinning the
-// fleet to a node that cannot carry traffic.
-//
-// Matched by HOST, never by node id: the subscription re-mints node ids on
-// every refresh, so an id-based list would silently stop matching overnight.
-//
-// Why this exists rather than a liveness probe: evaluateFleetRoutePolicy only
-// receives the PassWall config and the router identity — it has no node-health
-// signal to consult, and plumbing one through every call site is a much larger
-// change. A short operator-owned list is the honest version of "this node is
-// known bad"; remove the entry to put the node back in rotation.
-//
-// pl1.nfnpx.online (2026-08-08): flapped all day — dead in the morning, alive
-// at 20:00, dead at 21:30, alive again at 21:50. Each outage took Telegram,
-// Instagram and Discord down for the 12 routers pinned to it, because the
-// WorldProxy tie-break below (`!extreme` => +5) scores pl1 at 145 against
-// pl2's 140 and therefore always prefers it. Manual rebinds did not survive:
-// the controller re-applies the panel directive on the next check-in.
-const quarantinedNodeHosts = new Set(["pl1.nfnpx.online"]);
-
 export const canonicalFleetRoutePolicy = {
   version: FLEET_ROUTE_POLICY_VERSION,
   exceptions: [...exceptionIdentityValues],
-  quarantinedNodeHosts: [...quarantinedNodeHosts],
   slots: [
     {
       id: "WorldProxy",
@@ -271,6 +249,12 @@ function hostLooksLikeRuEntry(host: string) {
   );
 }
 
+// The provider's exit hosts are named by country: pl1/pl2 are the Poland
+// exits, exactly like ru* marks an RU entry above.
+function hostLooksLikePolandExit(host: string) {
+  return /^pl\d*\./.test(host);
+}
+
 function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
   if (!node.enabled || node.protocol === "shunt") {
     return 0;
@@ -278,14 +262,6 @@ function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
 
   const label = normalizeText(node.label);
   const address = normalizeHost(node.address);
-
-  // Quarantined hosts are out of rotation for every slot, not just the one
-  // that exposed the problem: a node that cannot carry Telegram is not a
-  // better YouTube or Tiktok target either.
-  if (quarantinedNodeHosts.has(address)) {
-    return 0;
-  }
-
   const transport = normalizeText(node.transport);
   const ruEntry = hostLooksLikeRuEntry(address) || label.includes("🇷🇺");
   const isGrpc = transport === "grpc";
@@ -312,19 +288,33 @@ function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
       // slot's case below for why splitting them broke Discord voice. Keep
       // aligned with the controller scorer in
       // router/vectra-controller-agent/internal/passwall/fleet_policy.go.
-      const poland = includesAny(label, ["польш", "poland", "🇵🇱"]);
+      // Match the exit by HOST as well as by label. The provider re-maps its
+      // human labels per router: on artem-lutfulin "⚡Extreme Польша 🇵🇱" is
+      // pl2, on AlekseyHorev the same label is pl1 while pl2 arrives as
+      // "⚡Extreme Авто EU 🇪🇺" — no Poland marker at all. Label-only matching
+      // therefore made a perfectly good pl2 node invisible and dropped those
+      // routers to the RU-entry fallback tier; measured 2026-08-08 on 2 of the
+      // 26 routers that carry a pl2 host. The host is the routing fact, the
+      // label is provider ad copy.
+      const poland =
+        includesAny(label, ["польш", "poland", "🇵🇱"]) ||
+        (!ruEntry && hostLooksLikePolandExit(address));
       if (!poland) {
         return 0;
       }
       let score = 60;
       if (!ruEntry && node.port === 443) {
         // Canonical shape: direct foreign Poland exit on :443.
+        //
+        // Every such exit scores identically ON PURPOSE. This used to carry a
+        // label tie-break (+5 when the label lacked "extreme") to make the
+        // winner independent of node order, which the subscription re-mints on
+        // every refresh. That tie-break also ranked pl1 at 145 against pl2's
+        // 140 fleet-wide, so every router that could see pl1 took pl1 — the
+        // concentration findBestTarget now exists to break. Determinism is
+        // handled there instead, by hashing the router identity over the
+        // sorted host list, which is both order- and refresh-independent.
         score += 80;
-        // Deterministic tie-break. Subscriptions carry two direct Poland :443
-        // nodes ("🇵🇱 ⚡️Польша YouTube 🚫Ad🚫" and "⚡Extreme Польша 🇵🇱");
-        // without this they score equal and the winner depends on node order,
-        // which the subscription re-mints on every refresh.
-        if (!includesAny(label, ["extreme"])) score += 5;
         return score;
       }
       if (ruEntry) {
@@ -477,15 +467,97 @@ function readShuntBinding(config: PasswallDesiredConfig, slot: PolicySlot) {
   return null;
 }
 
-function findBestTarget(config: PasswallDesiredConfig, slot: PolicySlot) {
-  let best: { node: PasswallNode; score: number } | null = null;
+// Stable 32-bit FNV-1a. Used only to spread routers over equally-good exits,
+// never for anything security-sensitive.
+function stableHash(value: string) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+// The spread key must be stable for the lifetime of the router, or a router
+// would hop between exits on every refresh. deviceIdentifier is the most
+// durable of the identity fields (it survives an agent token loss and a
+// rename); id and hostname are fallbacks for callers that pass a partial
+// identity.
+function spreadKey(identity?: FleetRoutePolicyRouterIdentity | null) {
+  const raw =
+    identity?.deviceIdentifier ??
+    identity?.id ??
+    identity?.hostname ??
+    identity?.name ??
+    "";
+  return normalizeIdentity(raw);
+}
+
+function findBestTarget(
+  config: PasswallDesiredConfig,
+  slot: PolicySlot,
+  identity?: FleetRoutePolicyRouterIdentity | null,
+) {
+  let bestScore = 0;
+  const scored: { node: PasswallNode; score: number }[] = [];
   for (const node of config.nodes) {
     const score = semanticScore(slot.id, node);
-    if (score > (best?.score ?? 0)) {
-      best = { node, score };
+    if (score <= 0) {
+      continue;
+    }
+    scored.push({ node, score });
+    if (score > bestScore) {
+      bestScore = score;
     }
   }
-  return best && best.score >= 100 ? best.node : null;
+  if (bestScore < 100) {
+    return null;
+  }
+
+  // Spread the fleet across every exit that scores equally well instead of
+  // handing all 31 routers the single highest-scoring host.
+  //
+  // Why: a deterministic single winner is how the German exit ended up
+  // carrying 22 of 24 routers on 2026-07-31 and took Instagram down for all of
+  // them at once. The same shape reappeared on 2026-08-08 — 14 routers pinned
+  // to pl1 and 9 to pl2 — and a blanket "prefer pl2" would merely have moved
+  // the concentration, not removed it. Both Poland exits measured healthy from
+  // three client routers that day (5/5 TCP connects at 40-50ms, Telegram 200,
+  // YouTube 204), so the fleet has no reason to crowd onto either one.
+  //
+  // Grouping is by HOST, not by node: a subscription commonly carries the same
+  // host twice under two labels, and spreading between those two would split
+  // the label while leaving every router on one exit — no blast-radius gain.
+  //
+  // The pick is a pure function of (router identity, sorted host list), so it
+  // is stable across check-ins and identical for WorldProxy and
+  // DiscordVoiceUdp — that pair MUST resolve to the same node, and does,
+  // because DiscordVoiceUdp scores with the WorldProxy scorer verbatim.
+  const byHost = new Map<string, PasswallNode[]>();
+  for (const candidate of scored) {
+    if (candidate.score !== bestScore) {
+      continue;
+    }
+    const host = normalizeHost(candidate.node.address);
+    const nodes = byHost.get(host);
+    if (nodes) {
+      nodes.push(candidate.node);
+    } else {
+      byHost.set(host, [candidate.node]);
+    }
+  }
+
+  const hosts = [...byHost.keys()].sort();
+  const host = hosts[stableHash(spreadKey(identity)) % hosts.length]!;
+  const nodes = byHost.get(host)!;
+  if (nodes.length === 1) {
+    return nodes[0]!;
+  }
+  // Within one host, order by label: node ids are re-minted on every
+  // subscription refresh and would make this pick flap nightly.
+  return [...nodes].sort((left, right) =>
+    normalizeText(left.label).localeCompare(normalizeText(right.label)),
+  )[0]!;
 }
 
 function fingerprint(node: PasswallNode | null | undefined) {
@@ -612,7 +684,7 @@ export function evaluateFleetRoutePolicy(
 
   for (const slot of canonicalFleetRoutePolicy.slots) {
     const rule = findRule(config, slot);
-    const preferredTarget = findBestTarget(config, slot);
+    const preferredTarget = findBestTarget(config, slot, identity);
     if (!rule) {
       mismatches.push({
         slot: slot.id,
@@ -783,7 +855,7 @@ export function normalizeFleetRoutePolicy(
   }
 
   for (const slot of canonicalFleetRoutePolicy.slots) {
-    const target = findBestTarget(next, slot);
+    const target = findBestTarget(next, slot, identity);
     if (!target) {
       continue;
     }
