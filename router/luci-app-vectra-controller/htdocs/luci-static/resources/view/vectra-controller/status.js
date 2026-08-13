@@ -193,6 +193,16 @@ return view.extend({
 		option = section.option(form.Value, 'request_timeout', _('Таймаут запроса'));
 		option.placeholder = '10s';
 
+		option = section.option(form.Flag, 'manual_mode', _('Ручной выбор серверов'),
+			_('Контроллер перестанет сам менять серверы в правилах PassWall — выбирайте их сами на странице «PassWall 2». ' +
+				'Аварийные механизмы продолжат работать: при потере связи роутер по-прежнему может временно ' +
+				'перейти в прямой режим без VPN, чтобы не пропасть совсем. ' +
+				'Оператор может прислать настройки из панели — они перезапишут ваш выбор. ' +
+				'Обновление подписки тоже может заменить узлы, и тогда выбранный сервер придётся выставить ' +
+				'заново вручную: сам он больше не починится.'));
+		option.default = '0';
+		option.rmempty = false;
+
 		var statusTable = E('div', { 'class': 'cbi-section' }, [
 			E('h3', {}, [ _('Локальный статус') ]),
 			E('table', { 'class': 'table' }, [
@@ -202,6 +212,14 @@ return view.extend({
 					serviceBadge(status.passwallServiceState)),
 				renderStatusRow(_('Главный переключатель PassWall2'),
 					passwallBadge(status)),
+				// Reflects the config the running agent actually loaded, not the
+				// uci value: the two differ until the service restarts, and a row
+				// that reads uci would tell the owner the mode is on while the
+				// controller is still rebinding their slots.
+				renderStatusRow(_('Ручной выбор серверов'),
+					status.manualMode
+						? renderBadge(_('включён — контроллер не меняет серверы'), 'ok')
+						: renderBadge(_('выключен — серверами управляет контроллер'), 'warn')),
 				renderStatusRow(_('URL управляющего API'),
 					textOrFallback(status.controlUrl, _('не настроен'))),
 				renderStatusRow(_('URL панели'),

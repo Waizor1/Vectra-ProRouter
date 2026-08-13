@@ -470,6 +470,11 @@ export const routerInventorySchema = z.object({
   openwrtRelease: z.string().min(1),
   openwrtDescription: z.string().optional(),
   passwallEnabled: z.boolean(),
+  // Router owner opted out of automatic server reassignment from the Vectra
+  // page in LuCI. Optional because every controller below r37 predates the
+  // flag and will never send it; absent means "off", which is the behaviour
+  // the whole fleet has today.
+  manualMode: z.boolean().optional(),
   selectedNodeId: z.string().nullable().optional(),
   selectedNodeLabel: z.string().nullable().optional(),
   nodeCount: z.number().int().nonnegative(),

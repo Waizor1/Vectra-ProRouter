@@ -8,23 +8,28 @@ import (
 )
 
 type RuntimeStatus struct {
-	ControlURL                   string `json:"control_url,omitempty"`
-	PanelURL                     string `json:"panel_url,omitempty"`
-	RouterID                     string `json:"router_id,omitempty"`
-	ControllerVersion            string `json:"controller_version,omitempty"`
-	ServiceState                 string `json:"service_state,omitempty"`
-	RescueMode                   string `json:"rescue_mode,omitempty"`
-	SelectedNodeID               string `json:"selected_node_id,omitempty"`
-	SelectedNodeLabel            string `json:"selected_node_label,omitempty"`
-	ImportState                  string `json:"import_state,omitempty"`
-	ConfigDigest                 string `json:"config_digest,omitempty"`
-	AppliedRevisionID            string `json:"applied_revision_id,omitempty"`
-	LastRegisterAt               string `json:"last_register_at,omitempty"`
-	LastCheckInAt                string `json:"last_check_in_at,omitempty"`
-	LastOperatorMessage          string `json:"last_operator_message,omitempty"`
-	LastRescueReason             string `json:"last_rescue_reason,omitempty"`
-	LastRescueAt                 string `json:"last_rescue_at,omitempty"`
-	PasswallEnabled              bool   `json:"passwall_enabled,omitempty"`
+	ControlURL          string `json:"control_url,omitempty"`
+	PanelURL            string `json:"panel_url,omitempty"`
+	RouterID            string `json:"router_id,omitempty"`
+	ControllerVersion   string `json:"controller_version,omitempty"`
+	ServiceState        string `json:"service_state,omitempty"`
+	RescueMode          string `json:"rescue_mode,omitempty"`
+	SelectedNodeID      string `json:"selected_node_id,omitempty"`
+	SelectedNodeLabel   string `json:"selected_node_label,omitempty"`
+	ImportState         string `json:"import_state,omitempty"`
+	ConfigDigest        string `json:"config_digest,omitempty"`
+	AppliedRevisionID   string `json:"applied_revision_id,omitempty"`
+	LastRegisterAt      string `json:"last_register_at,omitempty"`
+	LastCheckInAt       string `json:"last_check_in_at,omitempty"`
+	LastOperatorMessage string `json:"last_operator_message,omitempty"`
+	LastRescueReason    string `json:"last_rescue_reason,omitempty"`
+	LastRescueAt        string `json:"last_rescue_at,omitempty"`
+	PasswallEnabled     bool   `json:"passwall_enabled,omitempty"`
+	// ManualMode is written by the agent itself, so the LuCI status row reads
+	// what the RUNNING process believes rather than what is merely on disk.
+	// Deliberately no omitempty: "false" has to be reported as false, not as an
+	// absent key that an older agent would also produce.
+	ManualMode                   bool   `json:"manual_mode"`
 	ServerReachable              bool   `json:"server_reachable"`
 	PublicReachable              bool   `json:"public_reachable"`
 	ProxyFailureCount            int    `json:"proxy_failure_count,omitempty"`

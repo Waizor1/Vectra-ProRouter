@@ -1,5 +1,9 @@
 config controller 'main'
 	option enabled '1'
+	# Router owner's opt-out from automatic server reassignment, toggled from
+	# the Vectra page in LuCI. 1 = the controller stops re-binding shunt slots
+	# on its own; operator applies pushed from the panel still land.
+	option manual_mode '0'
 	option control_url 'https://api.vectra-pro.net'
 	option panel_url 'https://router.vectra-pro.net'
 	option poll_interval '45s'

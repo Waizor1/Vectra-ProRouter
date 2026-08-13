@@ -26,6 +26,29 @@ type Config struct {
 	Inventory             controlplane.RouterInventory `json:"inventory"`
 	DryRunPasswallProfile *passwall.DesiredConfig      `json:"dry_run_passwall_profile,omitempty"`
 	JobSafety             JobSafetyConfig              `json:"job_safety,omitempty"`
+	// ManualMode is the router owner's opt-out from automatic server
+	// reassignment, set by them in the controller's LuCI page
+	// (`uci set vectra-controller.main.manual_mode=1`).
+	//
+	// When it is on, the agent stops re-binding shunt slots on its own: the
+	// per-check-in shunt self-heal, the per-check-in fleet route policy
+	// reconcile, and the reconcile that follows a subscription refresh all
+	// become no-ops. The owner is then free to pick nodes in PassWall and have
+	// the choice survive.
+	//
+	// It deliberately does NOT gate the apply_passwall_config job: an operator
+	// pushing a config from the panel is an explicit human decision and must
+	// still land. "The controller stops deciding" — not "the router stops
+	// listening".
+	//
+	// Trade-off, stated so nobody rediscovers it the hard way: a manual-mode
+	// router no longer self-heals. The subscription re-mints node ids nightly,
+	// so a slot can wake up pointing at a node that no longer exists and
+	// nothing will repair it — exactly how kirill-msk sat on an emergency node
+	// for five days in August 2026. That is the price of the opt-out and it is
+	// the owner's to pay; the panel still reports the drift, it just does not
+	// act on it.
+	ManualMode bool `json:"manual_mode,omitempty"`
 	// ControlPlaneFwmark is the SO_MARK stamped on the agent's sockets so its
 	// control-plane traffic bypasses the PassWall2 tproxy and always egresses
 	// directly. 0 disables marking. Parsed from the "0x…" string in config.json.
@@ -83,6 +106,7 @@ type rawConfig struct {
 	Inventory             controlplane.RouterInventory `json:"inventory"`
 	DryRunPasswallProfile *passwall.DesiredConfig      `json:"dry_run_passwall_profile,omitempty"`
 	JobSafety             JobSafetyConfig              `json:"job_safety,omitempty"`
+	ManualMode            bool                         `json:"manual_mode,omitempty"`
 	ControlPlaneFwmark    string                       `json:"control_plane_fwmark,omitempty"`
 }
 
@@ -245,6 +269,7 @@ func Load(path string) (Config, error) {
 	cfg.Inventory = raw.Inventory
 	cfg.DryRunPasswallProfile = raw.DryRunPasswallProfile
 	cfg.JobSafety = raw.JobSafety
+	cfg.ManualMode = raw.ManualMode
 
 	if trimmed := strings.TrimSpace(raw.ControlPlaneFwmark); trimmed != "" {
 		mark, parseErr := strconv.ParseUint(trimmed, 0, 32)

@@ -61,6 +61,16 @@ start_service() {
 	procd_close_instance
 }
 
+# Without this, "Save & Apply" in LuCI only runs `uci commit` and the running
+# agent keeps its old settings until the next reboot or self-update: the agent
+# reads config.json exactly once at startup, and procd_set_param file alone
+# only marks the file for change detection — it does not deliver the
+# config.change event. That gap made the manual-mode toggle a no-op from the
+# router owner's point of view.
+service_triggers() {
+	procd_add_reload_trigger "$CONF"
+}
+
 reload_service() {
 	[ "${VECTRA_SKIP_POSTINST_RESTART:-}" = "1" ] && return 0
 	stop

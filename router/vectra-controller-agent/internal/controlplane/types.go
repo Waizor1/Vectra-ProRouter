@@ -71,41 +71,45 @@ type LastRescue struct {
 }
 
 type RouterInventory struct {
-	ProtocolVersion          string                   `json:"protocolVersion"`
-	DeviceIdentifier         string                   `json:"deviceIdentifier"`
-	DevicePublicKey          string                   `json:"devicePublicKey"`
-	ControllerVersion        string                   `json:"controllerVersion"`
-	ControllerRuntimeVersion string                   `json:"controllerRuntimeVersion,omitempty"`
-	Hostname                 string                   `json:"hostname,omitempty"`
-	PanelDomain              string                   `json:"panelDomain,omitempty"`
-	Model                    string                   `json:"model"`
-	BoardName                string                   `json:"boardName"`
-	LayoutFamily             string                   `json:"layoutFamily,omitempty"`
-	Target                   string                   `json:"target"`
-	Architecture             string                   `json:"architecture"`
-	OpenWrtRelease           string                   `json:"openwrtRelease"`
-	OpenWrtDescription       string                   `json:"openwrtDescription,omitempty"`
-	PasswallEnabled          bool                     `json:"passwallEnabled"`
-	SelectedNodeID           string                   `json:"selectedNodeId,omitempty"`
-	SelectedNodeLabel        string                   `json:"selectedNodeLabel,omitempty"`
-	NodeCount                int                      `json:"nodeCount"`
-	SubscriptionCount        int                      `json:"subscriptionCount"`
-	PackageVersions          map[string]string        `json:"packageVersions"`
-	BinaryVersions           map[string]string        `json:"binaryVersions"`
-	RulesAssets              RouterRulesAssets        `json:"rulesAssets"`
-	Resources                RouterResources          `json:"resources"`
-	ServiceHealth            RouterServiceHealth      `json:"serviceHealth"`
-	SafetyEvents             []RouterSafetyEvent      `json:"safetyEvents,omitempty"`
-	LastRescue               *LastRescue              `json:"lastRescue,omitempty"`
-	PanelReachability        *RouterReachabilityProbe `json:"panelReachability,omitempty"`
-	RUReachability           *RouterReachabilityProbe `json:"ruReachability,omitempty"`
-	ForeignReachability      *RouterReachabilityProbe `json:"foreignReachability,omitempty"`
-	TelegramReachability     *RouterReachabilityProbe `json:"telegramReachability,omitempty"`
-	YouTubeReachability      *RouterReachabilityProbe `json:"youtubeReachability,omitempty"`
-	InstagramReachability    *RouterReachabilityProbe `json:"instagramReachability,omitempty"`
-	RawSnapshot              map[string]interface{}   `json:"rawSnapshot,omitempty"`
-	ConfigDigest             string                   `json:"configDigest,omitempty"`
-	AppliedRevisionID        string                   `json:"appliedRevisionId,omitempty"`
+	ProtocolVersion          string `json:"protocolVersion"`
+	DeviceIdentifier         string `json:"deviceIdentifier"`
+	DevicePublicKey          string `json:"devicePublicKey"`
+	ControllerVersion        string `json:"controllerVersion"`
+	ControllerRuntimeVersion string `json:"controllerRuntimeVersion,omitempty"`
+	Hostname                 string `json:"hostname,omitempty"`
+	PanelDomain              string `json:"panelDomain,omitempty"`
+	Model                    string `json:"model"`
+	BoardName                string `json:"boardName"`
+	LayoutFamily             string `json:"layoutFamily,omitempty"`
+	Target                   string `json:"target"`
+	Architecture             string `json:"architecture"`
+	OpenWrtRelease           string `json:"openwrtRelease"`
+	OpenWrtDescription       string `json:"openwrtDescription,omitempty"`
+	PasswallEnabled          bool   `json:"passwallEnabled"`
+	// ManualMode mirrors vectra-controller.main.manual_mode so the panel can
+	// show that this router's owner has opted out of automatic server
+	// reassignment. Reported only; the panel does not set it.
+	ManualMode            bool                     `json:"manualMode,omitempty"`
+	SelectedNodeID        string                   `json:"selectedNodeId,omitempty"`
+	SelectedNodeLabel     string                   `json:"selectedNodeLabel,omitempty"`
+	NodeCount             int                      `json:"nodeCount"`
+	SubscriptionCount     int                      `json:"subscriptionCount"`
+	PackageVersions       map[string]string        `json:"packageVersions"`
+	BinaryVersions        map[string]string        `json:"binaryVersions"`
+	RulesAssets           RouterRulesAssets        `json:"rulesAssets"`
+	Resources             RouterResources          `json:"resources"`
+	ServiceHealth         RouterServiceHealth      `json:"serviceHealth"`
+	SafetyEvents          []RouterSafetyEvent      `json:"safetyEvents,omitempty"`
+	LastRescue            *LastRescue              `json:"lastRescue,omitempty"`
+	PanelReachability     *RouterReachabilityProbe `json:"panelReachability,omitempty"`
+	RUReachability        *RouterReachabilityProbe `json:"ruReachability,omitempty"`
+	ForeignReachability   *RouterReachabilityProbe `json:"foreignReachability,omitempty"`
+	TelegramReachability  *RouterReachabilityProbe `json:"telegramReachability,omitempty"`
+	YouTubeReachability   *RouterReachabilityProbe `json:"youtubeReachability,omitempty"`
+	InstagramReachability *RouterReachabilityProbe `json:"instagramReachability,omitempty"`
+	RawSnapshot           map[string]interface{}   `json:"rawSnapshot,omitempty"`
+	ConfigDigest          string                   `json:"configDigest,omitempty"`
+	AppliedRevisionID     string                   `json:"appliedRevisionId,omitempty"`
 }
 
 type RouterHealth struct {

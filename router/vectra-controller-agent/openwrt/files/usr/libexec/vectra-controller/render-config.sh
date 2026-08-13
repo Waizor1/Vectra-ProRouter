@@ -150,6 +150,11 @@ request_timeout="$(uci_get_or_default request_timeout 10s)"
 # but the default MUST stay in lock-step with VECTRA_CONTROL_PLANE_FWMARK in
 # that uci-default script: both sides have to agree on the exact value.
 control_plane_fwmark="$(uci_get_or_default control_plane_fwmark 0x564354)"
+# Router owner's opt-out from automatic server reassignment (LuCI toggle).
+# config_get_bool, not a hand-rolled compare: it accepts the same spellings as
+# the `enabled` option next door (1/on/true/yes/enabled), so setting it over SSH
+# with `uci set ... manual_mode=on` does not silently leave the mode off.
+config_get_bool manual_mode "$SECTION" manual_mode 0
 state_path="$(uci_get_or_default state_path /etc/vectra-controller/state.json)"
 status_path="$(uci_get_or_default status_path /var/run/vectra-controller/status.json)"
 controller_version="$(package_version vectra-controller-agent)"
@@ -173,7 +178,10 @@ openwrt_release="$(json_field '@.release.version')"
 layout_family="$(detect_layout_family "$board_name")"
 [ -n "$layout_family" ] || layout_family="$(uci_get_or_default layout_family)"
 
-hostname_value="$(uci -q get system.@system[0].hostname)"
+# `|| true` because this script runs under `set -e` and `uci -q get` exits 1 on a
+# missing option: without it, a router with no hostname set would fail the render
+# and start_service would then never register the agent with procd at all.
+hostname_value="$(uci -q get system.@system[0].hostname || true)"
 passwall_enabled="$(uci -q get passwall2.@global[0].enabled || printf 0)"
 selected_node="$(uci -q get passwall2.@global[0].node || true)"
 selected_node_label="$(resolve_selected_node_label "$selected_node")"
@@ -197,6 +205,11 @@ json_add_string status_path "$status_path"
 json_add_string poll_interval "$poll_interval"
 json_add_string request_timeout "$request_timeout"
 json_add_string control_plane_fwmark "$control_plane_fwmark"
+if [ "${manual_mode:-0}" -eq 1 ] 2>/dev/null; then
+	json_add_boolean manual_mode 1
+else
+	json_add_boolean manual_mode 0
+fi
 
 json_add_object rescue_policy
 json_add_array health_urls

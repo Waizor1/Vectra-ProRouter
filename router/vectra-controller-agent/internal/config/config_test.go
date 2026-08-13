@@ -277,3 +277,37 @@ func TestLoadRejectsInvalidControlPlaneFwmark(t *testing.T) {
 		t.Fatal("expected an error for an unparseable control_plane_fwmark")
 	}
 }
+
+func TestLoadDefaultsManualModeOff(t *testing.T) {
+	// Every router in the field today ships a config.json without the key.
+	// Defaulting to anything but "off" would silently disable the fleet's
+	// self-heal on the whole park the moment this version rolls out.
+	path := writeConfigFixture(t, `{
+  "panel_url": "https://router.vectra-pro.net"
+}`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.ManualMode {
+		t.Fatalf("manual mode = true for a config that omits the key, want false")
+	}
+}
+
+func TestLoadReadsManualMode(t *testing.T) {
+	path := writeConfigFixture(t, `{
+  "panel_url": "https://router.vectra-pro.net",
+  "manual_mode": true
+}`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if !cfg.ManualMode {
+		t.Fatalf("manual mode = false, want true")
+	}
+}
