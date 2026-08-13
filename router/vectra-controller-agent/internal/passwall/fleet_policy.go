@@ -341,36 +341,37 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 		// DiscordVoiceUdp deliberately resolves to this same node — see that
 		// slot's case below for why splitting them broke Discord voice.
 		//
-		// DIVERGED FROM THE PANEL ON 2026-08-08, deliberately. The panel scorer
-		// in apps/web/src/server/vectra/fleet-route-policy.ts dropped the
-		// `!extreme => +5` tie-break below and now spreads routers over every
-		// equally-scoring exit host by hashing the router identity, because the
-		// tie-break ranked pl1 above pl2 for the whole fleet and pinned 14 of 31
-		// routers to a single exit. It also matches a Poland exit by HOST as well
-		// as by label, since the provider re-maps its labels per router.
+		// RE-ALIGNED WITH THE PANEL ON 2026-08-12. This scorer had diverged on
+		// 2026-08-08, when the panel replaced its `!extreme => +5` label
+		// tie-break with an identity-hashed spread over equally-scoring exit
+		// hosts; mirroring that here would have meant reproducing the panel's
+		// FNV-1a hash, host sort and identity normalisation exactly, so it was
+		// left alone. The operator's decision to converge the fleet on one
+		// declared exit removes that problem: a host comparison is trivially
+		// identical in both languages, so the divergence is gone.
 		//
-		// This scorer is NOT the one that decides on a live router: whenever the
-		// panel sends a directive with bindings, resolveFleetRoutePolicyTarget
-		// takes the node id verbatim and never calls this function. It runs only
-		// as the bootstrap fallback for a router the panel has no matched slot
-		// for. Mirroring the spread here means reproducing the panel's FNV-1a
-		// hash, host sort and identity normalisation EXACTLY — a divergence would
-		// park such a router on an exit the panel then reports as a violation
-		// forever — so it is deliberately left for a change that ships with a
-		// controller rollout and a cross-language fixture.
-		if !containsAny(label, "польш", "poland", "🇵🇱") {
+		// This scorer is still NOT the one that decides on a live router:
+		// whenever the panel sends a directive with bindings,
+		// resolveFleetRoutePolicyTarget takes the node id verbatim and never
+		// calls this function. It runs only as the bootstrap fallback for a
+		// router the panel has no matched slot for, which is why this file can
+		// land ahead of a controller rollout without stranding anyone.
+		//
+		// Poland is matched by HOST as well as by label, like the panel does:
+		// the provider ships this exit as "⚡Extreme Авто EU 🇪🇺" on some
+		// subscriptions, with no Poland marker in the label at all.
+		if !containsAny(label, "польш", "poland", "🇵🇱") &&
+			!(!ruEntry && hostLooksLikePolandExit(address)) {
 			return 0
 		}
 		score := 60
 		if !ruEntry && node.Port == 443 {
 			// Canonical shape: direct foreign Poland exit on :443.
 			score += 80
-			if !containsAny(label, "extreme") {
-				// Deterministic tie-break. Subscriptions carry two direct
-				// Poland :443 nodes ("🇵🇱 ⚡️Польша YouTube 🚫Ad🚫" and
-				// "⚡Extreme Польша 🇵🇱"); without this they score equal and the
-				// winner depends on node order, which the subscription
-				// re-mints on every refresh.
+			if isCanonicalPolandExit(address) {
+				// The operator's own exit wins the tie. Every other Poland :443
+				// exit stays at 140 so a subscription without this host lands
+				// on one of those instead of stranding the slot.
 				score += 5
 			}
 			return score
@@ -536,6 +537,25 @@ func normalizePolicyHost(value string) string {
 
 func hostLooksLikeRuEntry(host string) bool {
 	return (strings.HasPrefix(host, "ru") && strings.Contains(host, ".")) || strings.Contains(host, "ru-entry") || strings.Contains(host, "ru entry")
+}
+
+// The provider's exit hosts are named by country, exactly like ru* marks an RU
+// entry above. Mirrors hostLooksLikePolandExit in the panel scorer.
+func hostLooksLikePolandExit(host string) bool {
+	return polandExitHostPattern.MatchString(host)
+}
+
+var polandExitHostPattern = regexp.MustCompile(`^pl\d*\.`)
+
+// canonicalPolandExitHost mirrors the constant of the same name in
+// apps/web/src/server/vectra/fleet-route-policy.ts. Operator decision
+// 2026-08-12: the whole fleet converges on the exit the operator runs and has
+// verified, instead of being spread over every equally-scoring Poland exit.
+// Matched by host because the provider re-maps its labels per router.
+const canonicalPolandExitHost = "pl2.nfnpx.online"
+
+func isCanonicalPolandExit(host string) bool {
+	return normalizePolicyHost(host) == canonicalPolandExitHost
 }
 
 func containsAny(value string, needles ...string) bool {

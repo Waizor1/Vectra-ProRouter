@@ -295,6 +295,22 @@ function hostLooksLikePolandExit(host: string) {
   return /^pl\d*\./.test(host);
 }
 
+// The one exit the operator runs on their own router (1111111111) and has
+// verified end to end. Operator decision 2026-08-12, taken with the
+// concentration risk stated and accepted: the fleet converges here instead of
+// being spread over every equally-scoring Poland exit, so that "it works on
+// mine" is a statement about every router.
+//
+// Matched by HOST, never by label: the provider re-maps its human labels per
+// router, and this same host arrives as "⚡Extreme Польша 🇵🇱" on one
+// subscription and "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫" or "⚡Extreme Авто EU 🇪🇺" on
+// the next. The host is the routing fact.
+const canonicalPolandExitHost = "pl2.nfnpx.online";
+
+function isCanonicalPolandExit(host: string) {
+  return normalizeHost(host) === canonicalPolandExitHost;
+}
+
 function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
   if (!node.enabled || node.protocol === "shunt") {
     return 0;
@@ -345,16 +361,28 @@ function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
       let score = 60;
       if (!ruEntry && node.port === 443) {
         // Canonical shape: direct foreign Poland exit on :443.
-        //
-        // Every such exit scores identically ON PURPOSE. This used to carry a
-        // label tie-break (+5 when the label lacked "extreme") to make the
-        // winner independent of node order, which the subscription re-mints on
-        // every refresh. That tie-break also ranked pl1 at 145 against pl2's
-        // 140 fleet-wide, so every router that could see pl1 took pl1 — the
-        // concentration findBestTarget now exists to break. Determinism is
-        // handled there instead, by hashing the router identity over the
-        // sorted host list, which is both order- and refresh-independent.
         score += 80;
+        if (isCanonicalPolandExit(address)) {
+          // Operator decision 2026-08-12: converge the fleet on the exit the
+          // operator runs and has verified, rather than spreading it.
+          //
+          // This re-introduces a tie-break that was deliberately removed on
+          // 2026-08-08, so read that history before touching it. The removed
+          // one keyed off the LABEL (+5 when the label lacked "extreme"), which
+          // happened to rank pl1 fleet-wide and pinned 14 of 31 routers to one
+          // exit as a side effect nobody chose. This one keys off the HOST and
+          // names the intended exit outright: same concentration, but declared,
+          // reviewable, and moved by editing one constant.
+          //
+          // The concentration risk is real and was put to the operator: 22 of
+          // 24 routers once shared the overloaded German exit and Instagram
+          // died for all of them at once on 2026-07-31. Accepted knowingly.
+          //
+          // Any other Poland :443 exit still scores 140, so a subscription that
+          // carries no pl2 node lands on pl1 instead of stranding the slot —
+          // and findBestTarget still spreads those over whatever remains.
+          score += 5;
+        }
         return score;
       }
       if (ruEntry) {
@@ -561,10 +589,14 @@ function findBestTarget(
   // Why: a deterministic single winner is how the German exit ended up
   // carrying 22 of 24 routers on 2026-07-31 and took Instagram down for all of
   // them at once. The same shape reappeared on 2026-08-08 — 14 routers pinned
-  // to pl1 and 9 to pl2 — and a blanket "prefer pl2" would merely have moved
-  // the concentration, not removed it. Both Poland exits measured healthy from
-  // three client routers that day (5/5 TCP connects at 40-50ms, Telegram 200,
-  // YouTube 204), so the fleet has no reason to crowd onto either one.
+  // to pl1 and 9 to pl2. Both Poland exits measured healthy from three client
+  // routers that day (5/5 TCP connects at 40-50ms, Telegram 200, YouTube 204).
+  //
+  // For WorldProxy/DiscordVoiceUdp the operator has since chosen the opposite
+  // trade — one declared exit for the whole fleet, see canonicalPolandExitHost
+  // — so the top-scoring group there is normally a single host and this spread
+  // is inert. It still governs every other slot, and still covers WorldProxy on
+  // subscriptions that carry no pl2 node, which is why it stays.
   //
   // Grouping is by HOST, not by node: a subscription commonly carries the same
   // host twice under two labels, and spreading between those two would split

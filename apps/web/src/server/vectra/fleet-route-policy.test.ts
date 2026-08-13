@@ -757,17 +757,74 @@ describe("exit spreading across equally good Poland nodes", () => {
     )?.targetNodeId;
   }
 
-  it("does not hand every router the same exit", () => {
-    // The whole point: before this, the label tie-break scored pl1 at 145 and
-    // pl2 at 140, so all 31 routers took pl1. One overloaded shared exit is
-    // what took Instagram down fleet-wide on 2026-07-31.
+  it("hands every router the operator's exit when it is available", () => {
+    // Operator decision 2026-08-12, made with the concentration risk stated:
+    // the fleet converges on the exit the operator runs on 1111111111, so that
+    // "it works on mine" holds for every router rather than for a hash-picked
+    // half of them.
     const picks = new Set(
       Array.from({ length: 40 }, (_, index) =>
         worldTargetFor(`vectra-device-${index}`),
       ),
     );
 
-    expect(picks).toEqual(new Set(["node-pl1", "node-pl2"]));
+    expect(picks).toEqual(new Set(["node-pl2"]));
+  });
+
+  it("falls back to another Poland exit when the subscription has no pl2", () => {
+    // The convergence must not strand a slot. A subscription that carries no
+    // pl2 node still has to land on a working Poland exit rather than score
+    // below the 100 floor and leave WorldProxy unbound.
+    const onlyPl1 = [
+      polandNode("node-pl1", "pl1.nfnpx.online", "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫"),
+    ];
+    const normalized = normalizeFleetRoutePolicy(withNodes(onlyPl1), {
+      deviceIdentifier: "vectra-no-pl2",
+    });
+
+    expect(
+      normalized.after.matchedSlots.find((slot) => slot.slot === "WorldProxy")
+        ?.targetNodeId,
+    ).toBe("node-pl1");
+  });
+
+  it("still spreads routers over the remaining exits when pl2 is absent", () => {
+    // The spread is inert for WorldProxy only while the canonical host is
+    // present. Without it the fleet must not re-concentrate on one survivor.
+    const noCanonical = () => [
+      polandNode("node-pl1", "pl1.nfnpx.online", "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫"),
+      polandNode("node-pl3", "pl3.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+    ];
+    const picks = new Set(
+      Array.from({ length: 40 }, (_, index) => {
+        const normalized = normalizeFleetRoutePolicy(withNodes(noCanonical()), {
+          deviceIdentifier: `vectra-device-${index}`,
+        });
+        return normalized.after.matchedSlots.find(
+          (slot) => slot.slot === "WorldProxy",
+        )?.targetNodeId;
+      }),
+    );
+
+    expect(picks).toEqual(new Set(["node-pl1", "node-pl3"]));
+  });
+
+  it("picks the operator's exit by host even when its label says something else", () => {
+    // The provider re-maps labels per subscription: this same host arrives as
+    // "⚡Extreme Авто EU 🇪🇺" on some routers, with no Poland marker at all.
+    // Matching on the label would silently drop those to the pl1 tier.
+    const relabelled = [
+      polandNode("node-pl1", "pl1.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+      polandNode("node-pl2", "pl2.nfnpx.online", "⚡Extreme Авто EU 🇪🇺"),
+    ];
+    const normalized = normalizeFleetRoutePolicy(withNodes(relabelled), {
+      deviceIdentifier: "vectra-relabelled",
+    });
+
+    expect(
+      normalized.after.matchedSlots.find((slot) => slot.slot === "WorldProxy")
+        ?.targetNodeId,
+    ).toBe("node-pl2");
   });
 
   it("gives one router the same exit on every evaluation", () => {
@@ -1004,8 +1061,10 @@ describe("no churn when already on the right exit", () => {
   });
 
   it("still moves a router that sits on the wrong host", () => {
-    // Stickiness must not become "never move": the whole point of the change
-    // is that a router on a host the hash did not choose gets relocated.
+    // Stickiness must not become "never move". A router parked on pl1 while the
+    // operator's exit is available in its subscription has to be relocated —
+    // that is exactly the case that left kirill-msk rotting on an emergency
+    // node for five days on 2026-08-07.
     const base = buildConfig({ bindings: { WorldProxy: "node-pl1" } });
     const config = passwallDesiredConfigSchema.parse({
       ...base,
@@ -1027,6 +1086,6 @@ describe("no churn when already on the right exit", () => {
       }),
     );
 
-    expect(picks).toEqual(new Set(["node-pl1", "node-pl2"]));
+    expect(picks).toEqual(new Set(["node-pl2"]));
   });
 });
