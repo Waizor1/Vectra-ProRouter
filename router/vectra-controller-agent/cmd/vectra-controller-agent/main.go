@@ -940,10 +940,33 @@ func executeJobs(
 				return fmt.Errorf("submit apply result: %w", err)
 			}
 		case "refresh_subscriptions":
+			// Counted before the refresh so the verdict below can say what was
+			// lost, not merely what is missing.
+			nodesBefore, _, nodesBeforeErr := passwall.CountSubscriptionNodes(ctx, backend)
+			if nodesBeforeErr != nil {
+				nodesBefore = -1
+			}
 			result, err := backend.Run(ctx, "lua", "/usr/share/passwall2/subscribe.lua", "start", "all")
 			result = passwall.NormalizeCommandResult(result)
 			if err != nil {
 				if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, result.Stdout, result.Stderr, err.Error(), map[string]interface{}{"error": err.Error()}); submitErr != nil {
+					return submitErr
+				}
+				continue
+			}
+			// subscribe.lua exits 0 even when it crashes or imports a refusal
+			// placeholder, so the exit code above proves nothing. Judge the
+			// refresh by what it left behind, and stop here when it went wrong:
+			// the reconciles below would otherwise rebind the owner's slots
+			// against a node list that the refresh just destroyed.
+			refreshOutcome := passwall.VerifySubscriptionRefresh(ctx, backend, nodesBefore)
+			if !refreshOutcome.OK {
+				failureMessage := refreshOutcome.FailureMessage()
+				if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, result.Stdout, result.Stderr, failureMessage, map[string]interface{}{
+					"error":               failureMessage,
+					"command":             result.Command,
+					"subscriptionRefresh": refreshOutcome,
+				}); submitErr != nil {
 					return submitErr
 				}
 				continue
@@ -993,6 +1016,7 @@ func executeJobs(
 				Stderr:          result.Stderr,
 				Result: map[string]interface{}{
 					"command":              result.Command,
+					"subscriptionRefresh":  refreshOutcome,
 					"shuntReconcile":       reconcileResult,
 					"fleetPolicyReconcile": fleetPolicyReconcileResult,
 				},
