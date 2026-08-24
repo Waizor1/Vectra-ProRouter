@@ -301,6 +301,13 @@ export function startRouteHealthVerifier() {
     }
   };
 
+  // Sweep once on startup rather than waiting out the first interval, so a
+  // deploy does not leave the fleet 15 minutes without fresh node telemetry —
+  // and so the lane is observable right after it ships instead of looking
+  // inert. startRouteHealthVerifier is idempotent, so this runs once per
+  // process, not once per health check.
+  void run();
+
   globalForVerifier.__vectraRouteHealthVerifierTimer = setInterval(
     () => void run(),
     15 * 60 * 1000,
