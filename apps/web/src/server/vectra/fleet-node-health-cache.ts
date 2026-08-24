@@ -17,6 +17,10 @@ import {
   loadLatestFleetPolicyConfigRows,
   loadLatestSnapshots,
 } from "./fleet-monitoring-data";
+import {
+  loadLatestRouteVerifications,
+  routeVerificationToHealthSample,
+} from "./route-health-verifier";
 
 type DatabaseClient = typeof appDb;
 
@@ -77,9 +81,10 @@ async function rebuild(database: DatabaseClient): Promise<FleetPolicyContext> {
     return EMPTY;
   }
 
-  const [snapshots, policyConfigRows] = await Promise.all([
+  const [snapshots, policyConfigRows, routeVerifications] = await Promise.all([
     loadLatestSnapshots(database, routerIds),
     loadLatestFleetPolicyConfigRows(database, routerIds),
+    loadLatestRouteVerifications(database, routerIds),
   ]);
 
   const configByRouter = new Map<string, PasswallDesiredConfig>();
@@ -113,7 +118,28 @@ async function rebuild(database: DatabaseClient): Promise<FleetPolicyContext> {
     return sample ? [sample] : [];
   });
 
-  return { nodeHealth: buildFleetNodeHealth(samples), configByRouter };
+  // Direct per-node verdicts from the router's own url_test_node run. These
+  // are the only evidence that reaches Special and Tiktok — the destination
+  // probes above never touch those slots — so without them a dead Netherlands
+  // or Belarus host is invisible fleet-wide.
+  const verifiedSamples = routerIds.flatMap((routerId) => {
+    const verification = routeVerifications.get(routerId)?.verification;
+    const config = configByRouter.get(routerId);
+    if (!verification || !config) {
+      return [];
+    }
+    const sample = routeVerificationToHealthSample(
+      routerId,
+      config.nodes,
+      verification,
+    );
+    return sample ? [sample] : [];
+  });
+
+  return {
+    nodeHealth: buildFleetNodeHealth([...samples, ...verifiedSamples]),
+    configByRouter,
+  };
 }
 
 /**
