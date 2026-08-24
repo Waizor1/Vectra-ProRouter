@@ -5,6 +5,7 @@ import {
 
 import {
   isUnhealthyNodeHost,
+  nodeEndpointKey,
   type FleetNodeHealth,
   type FleetNodeHealthSample,
 } from "./fleet-node-health";
@@ -602,7 +603,7 @@ function findBestTarget(
     let best = 0;
     const candidates: { node: PasswallNode; score: number }[] = [];
     for (const node of config.nodes) {
-      if (skipUnhealthy && isUnhealthyNodeHost(options?.nodeHealth, node.address)) {
+      if (skipUnhealthy && isUnhealthyNodeHost(options?.nodeHealth, node.address, node.port)) {
         continue;
       }
       const score = semanticScore(slot.id, node);
@@ -821,7 +822,7 @@ export function collectFleetNodeHealthSample(
       return null;
     }
     const node = findNodeById(config, bindingId);
-    return node?.address ?? null;
+    return node ? nodeEndpointKey(node.address, node.port) : null;
   };
 
   // "partial" means some destinations answered through this node, so the node
@@ -948,7 +949,7 @@ export function evaluateFleetRoutePolicy(
     // to move to. Flagging a violation nobody can normalise just adds noise to
     // the panel while the router stays exactly where it was.
     const boundNodeIsDead =
-      isUnhealthyNodeHost(options?.nodeHealth, actualNode.address) &&
+      isUnhealthyNodeHost(options?.nodeHealth, actualNode.address, actualNode.port) &&
       Boolean(preferredTarget) &&
       preferredTarget!.id !== actualNode.id;
     const actualMatches =
@@ -1309,12 +1310,12 @@ export function findStrandedSlots(
     const bound = findNodeById(config, bindingId);
     // Only slots that are actually sitting on a dead node are stranded; a slot
     // on a healthy node needs nothing, however poor its alternatives.
-    if (!bound || !isUnhealthyNodeHost(options.nodeHealth, bound.address)) {
+    if (!bound || !isUnhealthyNodeHost(options.nodeHealth, bound.address, bound.port)) {
       continue;
     }
     const hasLiveCandidate = config.nodes.some(
       (node) =>
-        !isUnhealthyNodeHost(options.nodeHealth, node.address) &&
+        !isUnhealthyNodeHost(options.nodeHealth, node.address, node.port) &&
         semanticScore(slot.id, node) >= 100,
     );
     if (!hasLiveCandidate) {

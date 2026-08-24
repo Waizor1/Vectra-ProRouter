@@ -20,7 +20,16 @@
  */
 
 export type FleetNodeHealthObservation = {
-  /** Node host the probed traffic was routed through. */
+  /**
+   * Endpoint the probed traffic was routed through, as `host:port`.
+   *
+   * Port matters: the provider runs different services on different ports of
+   * the SAME host — 50051 is YouTube, 50053 Poland, 50055 Netherlands. Keying
+   * by host alone let a healthy ru7:50054 cancel out a dead ru7:50055 and the
+   * ledger stayed silent while the Netherlands slot was down fleet-wide
+   * (measured 2026-08-24). Node ids are re-minted nightly, but host:port is
+   * exactly as stable as the host and far more precise.
+   */
   host: string;
   outcome: "ok" | "fail";
 };
@@ -40,15 +49,28 @@ export function normalizeNodeHost(value: string | null | undefined) {
   return (value ?? "").trim().toLowerCase();
 }
 
+/** Ledger key: one provider service, not one machine. */
+export function nodeEndpointKey(
+  address: string | null | undefined,
+  port: number | null | undefined,
+) {
+  const host = normalizeNodeHost(address);
+  if (host.length === 0) {
+    return "";
+  }
+  return port ? `${host}:${port}` : host;
+}
+
 export function isUnhealthyNodeHost(
   health: FleetNodeHealth | null | undefined,
   host: string | null | undefined,
+  port?: number | null,
 ) {
   if (!health) {
     return false;
   }
-  const normalized = normalizeNodeHost(host);
-  return normalized.length > 0 && health.index.has(normalized);
+  const key = nodeEndpointKey(host, port);
+  return key.length > 0 && health.index.has(key);
 }
 
 /**
@@ -76,7 +98,7 @@ export function buildFleetNodeHealth(
   for (const sample of samples) {
     const hostsSeen = new Map<string, "ok" | "fail">();
     for (const observation of sample.observations) {
-      const host = normalizeNodeHost(observation.host);
+      const host = observation.host.trim().toLowerCase();
       if (host.length === 0) {
         continue;
       }

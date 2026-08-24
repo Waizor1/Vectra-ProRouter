@@ -4,7 +4,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import type { db as appDb } from "~/server/db";
 
 import type { FleetNodeHealthSample } from "./fleet-node-health";
-import { normalizeNodeHost } from "./fleet-node-health";
+import { nodeEndpointKey } from "./fleet-node-health";
 
 type DatabaseClient = typeof appDb;
 
@@ -107,7 +107,11 @@ type RouteVerification = {
   slots?: SlotResult[] | null;
 };
 
-type NodeLike = { id?: string | null; address?: string | null };
+type NodeLike = {
+  id?: string | null;
+  address?: string | null;
+  port?: number | null;
+};
 
 /**
  * Maps a verification result onto host-level evidence for the fleet ledger.
@@ -128,9 +132,9 @@ export function routeVerificationToHealthSample(
   const addressById = new Map<string, string>();
   for (const node of nodes) {
     const id = node.id?.trim();
-    const host = normalizeNodeHost(node.address);
-    if (id && host.length > 0) {
-      addressById.set(id, host);
+    const endpoint = nodeEndpointKey(node.address, node.port);
+    if (id && endpoint.length > 0) {
+      addressById.set(id, endpoint);
     }
   }
 

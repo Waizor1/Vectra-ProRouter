@@ -102,8 +102,8 @@ describe("selectRoutersForRouteHealthCheck", () => {
 
 describe("routeVerificationToHealthSample", () => {
   const nodes = [
-    { id: "node-nl", address: "nl3.nfnpx.online" },
-    { id: "node-pl", address: "pl2.nfnpx.online" },
+    { id: "node-nl", address: "nl3.nfnpx.online", port: 443 },
+    { id: "node-pl", address: "pl2.nfnpx.online", port: 443 },
   ];
 
   // The whole point of this lane: Special and Tiktok have no destination
@@ -120,8 +120,8 @@ describe("routeVerificationToHealthSample", () => {
     expect(sample).toEqual({
       routerId: "r1",
       observations: [
-        { host: "nl3.nfnpx.online", outcome: "fail" },
-        { host: "pl2.nfnpx.online", outcome: "ok" },
+        { host: "nl3.nfnpx.online:443", outcome: "fail" },
+        { host: "pl2.nfnpx.online:443", outcome: "ok" },
       ],
     });
   });

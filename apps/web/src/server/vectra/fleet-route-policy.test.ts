@@ -1186,8 +1186,8 @@ describe("dead provider hosts lose their slot", () => {
       {
         routerId: "kirill",
         observations: [
-          { host: "ru5.nfnpx.online", outcome: "fail" as const },
-          { host: "pl2.nfnpx.online", outcome: "ok" as const },
+          { host: "ru5.nfnpx.online:50051", outcome: "fail" as const },
+          { host: "pl2.nfnpx.online:443", outcome: "ok" as const },
         ],
       },
     ]),
@@ -1241,10 +1241,10 @@ describe("dead provider hosts lose their slot", () => {
         {
           routerId: "kirill",
           observations: [
-            { host: "ru3.nfnpx.online", outcome: "fail" as const },
-            { host: "ru4.nfnpx.online", outcome: "fail" as const },
-            { host: "ru5.nfnpx.online", outcome: "fail" as const },
-            { host: "pl2.nfnpx.online", outcome: "ok" as const },
+            { host: "ru3.nfnpx.online:50053", outcome: "fail" as const },
+            { host: "ru4.nfnpx.online:50052", outcome: "fail" as const },
+            { host: "ru5.nfnpx.online:50051", outcome: "fail" as const },
+            { host: "pl2.nfnpx.online:443", outcome: "ok" as const },
           ],
         },
       ]),

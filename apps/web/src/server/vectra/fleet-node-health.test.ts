@@ -94,3 +94,21 @@ describe("buildFleetNodeHealth", () => {
     expect(isUnhealthyNodeHost(null, "ru9.nfnpx.online")).toBe(false);
   });
 });
+
+describe("endpoint keying", () => {
+  // The provider runs several services on one machine, one per port: 50051 is
+  // YouTube, 50055 Netherlands. Keyed by host alone, a healthy ru7:50054 hid a
+  // dead ru7:50055 and the Netherlands slot stayed broken fleet-wide while the
+  // ledger reported nothing (measured 2026-08-24 on zhenya13911).
+  it("condemns one port of a host without sparing it for another", () => {
+    const health = buildFleetNodeHealth([
+      sample("zhenya", [
+        { host: "ru7.nfnpx.online:50055", outcome: "fail" },
+        { host: "ru7.nfnpx.online:50054", outcome: "ok" },
+      ]),
+    ]);
+
+    expect(isUnhealthyNodeHost(health, "ru7.nfnpx.online", 50055)).toBe(true);
+    expect(isUnhealthyNodeHost(health, "ru7.nfnpx.online", 50054)).toBe(false);
+  });
+});
