@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { db } from "~/server/db";
 import { startAutoRescueMonitor } from "~/server/vectra/auto-rescue";
 import { startBrowserPushMonitor } from "~/server/vectra/browser-push-monitor";
+import { startRevisionRetention } from "~/server/vectra/revision-retention";
 import { startSnapshotRetention } from "~/server/vectra/snapshot-retention";
 import { startStuckJobJanitor } from "~/server/vectra/stuck-job-janitor";
 
@@ -15,6 +16,7 @@ export async function GET() {
     autoRescueMonitor: false,
     stuckJobJanitor: false,
     snapshotRetention: false,
+    revisionRetention: false,
     dbRead: false,
     dbWriteProbe: false,
   };
@@ -28,6 +30,8 @@ export async function GET() {
     checks.stuckJobJanitor = true;
     startSnapshotRetention();
     checks.snapshotRetention = true;
+    startRevisionRetention();
+    checks.revisionRetention = true;
     await db.execute(sql`select 1`);
     checks.dbRead = true;
     const probeId = crypto.randomUUID();
