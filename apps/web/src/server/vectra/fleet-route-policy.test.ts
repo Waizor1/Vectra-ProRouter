@@ -13,6 +13,7 @@ import {
   FLEET_ROUTE_POLICY_VERSION,
   normalizeFleetRoutePolicy,
 } from "./fleet-route-policy";
+import { buildFleetNodeHealth } from "./fleet-node-health";
 
 function buildConfig(
   overrides: {
@@ -1087,5 +1088,176 @@ describe("no churn when already on the right exit", () => {
     );
 
     expect(picks).toEqual(new Set(["node-pl2"]));
+  });
+});
+
+describe("directive covers slots that have drifted", () => {
+  // 2026-08-24 root cause. buildFleetRoutePolicyDirective used to echo only
+  // matchedSlots, so a drifted slot got no instruction — and on the controller
+  // side a directive carrying ANY binding replaces the whole slot list, which
+  // silently switches off the router's own scorer for exactly the slot that
+  // needed it. The drift then survives forever. The directive must therefore
+  // name the node a slot should be on, never just the ones already correct.
+  function driftedWorldProxy() {
+    const base = buildConfig({});
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: "node-poland-direct",
+          label: "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+          protocol: "vless",
+          enabled: true,
+          group: "default",
+          address: "pl1.nfnpx.online",
+          port: 443,
+          transport: "tcp",
+          extras: {},
+        },
+      ],
+    });
+  }
+
+  it("names the canonical node for a drifted slot instead of staying silent", () => {
+    const config = driftedWorldProxy();
+    const compliance = evaluateFleetRoutePolicy(config, {
+      hostname: "nataliafilisiti",
+    });
+    expect(compliance.status).toBe("violation");
+
+    const directive = buildFleetRoutePolicyDirective(config, {
+      hostname: "nataliafilisiti",
+    });
+    const world = directive?.slots.find((slot) => slot.id === "WorldProxy");
+    const discord = directive?.slots.find(
+      (slot) => slot.id === "DiscordVoiceUdp",
+    );
+
+    expect(world?.nodeId).toBe("node-poland-direct");
+    // The pair must move together or Discord voice breaks, exactly as it did
+    // on 2026-08-03 when the two slots resolved to different nodes.
+    expect(discord?.nodeId).toBe("node-poland-direct");
+  });
+
+  it("still covers every canonical slot while it is drifting", () => {
+    const directive = buildFleetRoutePolicyDirective(driftedWorldProxy(), {
+      hostname: "nataliafilisiti",
+    });
+
+    expect(directive?.slots.map((slot) => slot.id)).toEqual([
+      "WorldProxy",
+      "YouTube",
+      "Special",
+      "Tiktok",
+      "DiscordVoiceUdp",
+    ]);
+  });
+});
+
+describe("dead provider hosts lose their slot", () => {
+  // The other half of 2026-08-24: the provider lost ru9-ru12 outright. Scoring
+  // by label/host/port cannot see that, so eleven routers read as "compliant"
+  // while bound to a node returning nothing, and the directive pinned them
+  // there. With the fleet ledger the dead host stops being a candidate.
+  function twoYoutubeNodes() {
+    const base = buildConfig({});
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: "node-youtube-live",
+          label: "🇷🇺⚡Россия YouTube 🚫Ad🚫",
+          protocol: "vless",
+          enabled: true,
+          group: "default",
+          address: "ru7.nfnpx.online",
+          port: 50051,
+          transport: "grpc",
+          extras: {},
+        },
+      ],
+    });
+  }
+
+  const deadRu5 = {
+    nodeHealth: buildFleetNodeHealth([
+      {
+        routerId: "kirill",
+        observations: [
+          { host: "ru5.nfnpx.online", outcome: "fail" as const },
+          { host: "pl2.nfnpx.online", outcome: "ok" as const },
+        ],
+      },
+    ]),
+  };
+
+  it("counts a binding to a dead host as a violation", () => {
+    const config = twoYoutubeNodes();
+
+    expect(evaluateFleetRoutePolicy(config, { hostname: "kirill-msk" }).status)
+      .toBe("compliant");
+    expect(
+      evaluateFleetRoutePolicy(config, { hostname: "kirill-msk" }, deadRu5)
+        .status,
+    ).toBe("violation");
+  });
+
+  it("points the directive at the live sibling", () => {
+    const directive = buildFleetRoutePolicyDirective(
+      twoYoutubeNodes(),
+      { hostname: "kirill-msk" },
+      deadRu5,
+    );
+
+    const youtube = directive?.slots.find((slot) => slot.id === "YouTube");
+    expect(youtube?.nodeId).toBe("node-youtube-live");
+  });
+
+  it("normalisation moves the slot off the dead host", () => {
+    const result = normalizeFleetRoutePolicy(
+      twoYoutubeNodes(),
+      { hostname: "kirill-msk" },
+      deadRu5,
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.after.status).toBe("compliant");
+    expect(
+      result.after.matchedSlots.find((slot) => slot.slot === "YouTube")
+        ?.targetNodeId,
+    ).toBe("node-youtube-live");
+  });
+
+  // Never strand a slot. A dead binding still recovers by itself when the
+  // provider brings the host back; an unbound slot dumps that traffic
+  // somewhere else entirely and nothing brings it back.
+  it("keeps the only candidate even when it is dead", () => {
+    // Every host that could carry the YouTube slot is condemned, so there is
+    // nowhere live to go.
+    const everythingDead = {
+      nodeHealth: buildFleetNodeHealth([
+        {
+          routerId: "kirill",
+          observations: [
+            { host: "ru3.nfnpx.online", outcome: "fail" as const },
+            { host: "ru4.nfnpx.online", outcome: "fail" as const },
+            { host: "ru5.nfnpx.online", outcome: "fail" as const },
+            { host: "pl2.nfnpx.online", outcome: "ok" as const },
+          ],
+        },
+      ]),
+    };
+    const compliance = evaluateFleetRoutePolicy(
+      buildConfig({}),
+      { hostname: "kirill-msk" },
+      everythingDead,
+    );
+
+    const youtube = compliance.matchedSlots.find(
+      (slot) => slot.slot === "YouTube",
+    );
+    expect(youtube?.targetNodeId).toBe("node-youtube-1");
   });
 });

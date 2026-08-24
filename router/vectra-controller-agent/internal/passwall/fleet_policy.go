@@ -150,10 +150,7 @@ func NormalizeFleetRoutePolicyConfigWithDirective(current DesiredConfig, identit
 		return current, false
 	}
 
-	slots := fleetRoutePolicySlots
-	if directive.HasBindings() {
-		slots = directiveSlots(directive)
-	}
+	slots := mergeDirectiveSlots(directive)
 
 	desired := cloneDesiredConfig(current)
 	changed := false
@@ -247,6 +244,63 @@ func ReconcileFleetRoutePolicyWithDirective(ctx context.Context, backend UCIBack
 		return ShuntReconcileResult{}, nil
 	}
 	return reconcileShuntBindingsFromCurrent(ctx, backend, currentConfig, desired)
+}
+
+// mergeDirectiveSlots layers the panel's pins on top of the built-in slot set
+// instead of replacing it.
+//
+// Replacing was a trap. The panel only ever named the slots it considered
+// correct, so a slot that had drifted got no pin — and because ANY pin used to
+// swap out the whole list, the unnamed slot also lost the local scorer that
+// would have repaired it. The one slot in trouble was the one slot nothing was
+// reconciling, and the drift became permanent (nataliafilisiti, 2026-08-24).
+//
+// Merging keeps the panel authoritative wherever it has an opinion, while a
+// slot the panel is silent about falls back to the scorer rather than to
+// nothing. Extras follow the same rule: a directive that carries none for a
+// slot keeps the compiled-in ones instead of blanking them.
+func mergeDirectiveSlots(directive *FleetRoutePolicyDirective) []fleetRoutePolicySlot {
+	if !directive.HasBindings() {
+		return fleetRoutePolicySlots
+	}
+
+	pinned := make(map[string]fleetRoutePolicySlot, len(directive.Slots))
+	for _, slot := range directiveSlots(directive) {
+		pinned[slot.ID] = slot
+	}
+
+	merged := make([]fleetRoutePolicySlot, 0, len(fleetRoutePolicySlots))
+	for _, base := range fleetRoutePolicySlots {
+		pin, ok := pinned[base.ID]
+		if !ok {
+			merged = append(merged, base)
+			continue
+		}
+		next := base
+		next.TargetNodeID = pin.TargetNodeID
+		if pin.Expected != "" {
+			next.Expected = pin.Expected
+		}
+		if len(pin.RequiredRuleExtras) > 0 {
+			next.RequiredRuleExtras = pin.RequiredRuleExtras
+		}
+		if len(pin.RequiredNodeExtras) > 0 {
+			next.RequiredNodeExtras = pin.RequiredNodeExtras
+		}
+		merged = append(merged, next)
+		delete(pinned, base.ID)
+	}
+
+	// A slot the panel knows about but this controller does not: carry it
+	// through so a new slot can ship as a panel deploy, exactly as before.
+	for _, slot := range directiveSlots(directive) {
+		if _, still := pinned[slot.ID]; still {
+			merged = append(merged, slot)
+			delete(pinned, slot.ID)
+		}
+	}
+
+	return merged
 }
 
 // directiveSlots converts the panel directive into the internal slot shape.

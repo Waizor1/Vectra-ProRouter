@@ -42,6 +42,7 @@ import { db } from "~/server/db";
 import { issueRouterCredential } from "~/server/vectra/auth";
 import { appendRescueRepairAttemptFromJobResult } from "~/server/vectra/auto-rescue";
 import { buildFleetRoutePolicyDirective } from "~/server/vectra/fleet-route-policy";
+import { fleetRoutePolicyOptions } from "~/server/vectra/fleet-node-health-cache";
 import {
   resolveImportedConfigDigest,
   resolvePersistedConfigDigest,
@@ -1378,7 +1379,10 @@ export async function checkInRouter(routerId: string, input: unknown) {
     queuedCandidates,
   );
 
-  const desiredRevision = await resolveDesiredRevision(router, deliverableJobs);
+  const [desiredRevision, nodeHealthOptions] = await Promise.all([
+    resolveDesiredRevision(router, deliverableJobs),
+    fleetRoutePolicyOptions(db),
+  ]);
 
   return routerCheckInResponseSchema.parse({
     protocolVersion: parsed.protocolVersion,
@@ -1404,6 +1408,10 @@ export async function checkInRouter(routerId: string, input: unknown) {
         routePolicyExempt: router.routePolicyExempt,
         routePolicyExemptReason: router.routePolicyExemptReason,
       },
+      // Cached fleet-wide, so this costs a map lookup on the check-in path.
+      // Without it the directive cannot tell a live node from one the provider
+      // has lost, and pins routers to dead hosts — see fleet-node-health.ts.
+      nodeHealthOptions,
     ),
   });
 }

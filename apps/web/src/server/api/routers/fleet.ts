@@ -31,6 +31,7 @@ import {
   evaluateFleetRoutePolicy,
   normalizeFleetRoutePolicy,
 } from "~/server/vectra/fleet-route-policy";
+import { fleetRoutePolicyOptions } from "~/server/vectra/fleet-node-health-cache";
 import {
   loadRevisionMetadata,
   type PasswallRevisionMetadataRow,
@@ -239,6 +240,11 @@ export const fleetRouter = createTRPCRouter({
         input.routerIds,
       );
 
+      // Same liveness ledger the check-in directive uses, so pressing the
+      // operator button cannot push a router onto a host the fleet has already
+      // proven dead — which is what a health-blind normalisation would do.
+      const nodeHealthOptions = await fleetRoutePolicyOptions(ctx.db);
+
       const results = [];
       for (const routerId of input.routerIds) {
         const router = routerMap.get(routerId);
@@ -280,7 +286,11 @@ export const fleetRouter = createTRPCRouter({
         const sourceConfig =
           (await getFullConfigForRevisionWithDb(ctx.db, sourceRevision.id)) ??
           sourceRevision.config;
-        const normalization = normalizeFleetRoutePolicy(sourceConfig, identity);
+        const normalization = normalizeFleetRoutePolicy(
+          sourceConfig,
+          identity,
+          nodeHealthOptions,
+        );
         if (normalization.before.status === "exempt") {
           results.push({
             routerId: router.id,

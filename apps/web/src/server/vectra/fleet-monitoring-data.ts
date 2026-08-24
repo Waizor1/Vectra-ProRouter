@@ -17,8 +17,10 @@ import { formatControllerVersion } from "~/lib/controller-version";
 import { buildConfigTrustState } from "./config-trust";
 import {
   buildFleetRoutePolicyIdentity,
+  collectFleetNodeHealthSample,
   evaluateFleetRoutePolicy,
 } from "./fleet-route-policy";
+import { buildFleetNodeHealth } from "./fleet-node-health";
 import { buildFleetMonitoringSnapshot } from "./fleet-monitoring";
 import { loadRevisionMetadata } from "./revision-metadata";
 import { isRouterReachable } from "./router-presence";
@@ -436,6 +438,28 @@ export async function loadFleetMonitoringSnapshot(
     ]);
   }
 
+  // Built from the rows already loaded above, so the monitoring page judges
+  // compliance against the same liveness facts the check-in directive uses.
+  // If these two disagreed, the panel would show "compliant" for a router the
+  // directive is actively moving — or the reverse.
+  const nodeHealthOptions = {
+    nodeHealth: buildFleetNodeHealth(
+      routerIds.flatMap((routerId) => {
+        const payload = snapshots.get(routerId)?.payload;
+        const sample = collectFleetNodeHealthSample(
+          routerId,
+          policyConfigRows.get(routerId)?.config ?? null,
+          {
+            telegram: payload?.telegramReachability ?? null,
+            youtube: payload?.youtubeReachability ?? null,
+            instagram: payload?.instagramReachability ?? null,
+          },
+        );
+        return sample ? [sample] : [];
+      }),
+    ),
+  };
+
   return buildFleetMonitoringSnapshot({
     now,
     openIncidentCount,
@@ -506,6 +530,7 @@ export async function loadFleetMonitoringSnapshot(
             name: routerName,
             snapshotHostname: payload?.hostname,
           }),
+          nodeHealthOptions,
         ),
         openIncident: incident
           ? {

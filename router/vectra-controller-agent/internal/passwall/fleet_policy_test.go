@@ -476,12 +476,12 @@ func TestDirectiveWithUnknownNodeLeavesBindingIntact(t *testing.T) {
 		Slots: []FleetRoutePolicyDirectiveSlot{{ID: "WorldProxy", NodeID: "node-that-was-rotated-away"}},
 	}
 
-	normalized, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+	normalized, _ := NormalizeFleetRoutePolicyConfigWithDirective(
 		directiveTestConfig(), FleetRoutePolicyIdentity{Hostname: "kirill-msk"}, directive)
 
-	if changed {
-		t.Fatalf("unknown target node must not change anything")
-	}
+	// The invariant is about THIS slot, not about the config as a whole: slots
+	// the directive says nothing about are now reconciled by the built-in
+	// scorer, so an unrelated slot moving is expected and correct.
 	if got := normalized.BasicSettings.ShuntRules[0].OutboundNodeID; got != "ru-entry-poland" {
 		t.Fatalf("binding became %q, want the untouched ru-entry-poland", got)
 	}
@@ -516,11 +516,50 @@ func TestDirectiveSkipsDisabledTargetNode(t *testing.T) {
 	directive := &FleetRoutePolicyDirective{
 		Slots: []FleetRoutePolicyDirectiveSlot{{ID: "WorldProxy", NodeID: "direct-france-443"}},
 	}
-	_, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+	normalized, _ := NormalizeFleetRoutePolicyConfigWithDirective(
 		config, FleetRoutePolicyIdentity{Hostname: "kirill-msk"}, directive)
 
-	if changed {
+	if got := normalized.BasicSettings.ShuntRules[0].OutboundNodeID; got == "direct-france-443" {
 		t.Fatalf("a disabled node must never be bound")
+	}
+	for _, node := range normalized.Nodes {
+		if node.Protocol != "shunt" {
+			continue
+		}
+		if got := stringify(node.Extras["WorldProxy"]); got == "direct-france-443" {
+			t.Fatalf("shunt extras bound the disabled node")
+		}
+	}
+}
+
+func TestDirectiveSilenceStillLetsScorerReconcileOtherSlots(t *testing.T) {
+	// 2026-08-24 root cause, controller half. A directive naming ANY slot used
+	// to replace the whole slot list, so every slot the panel stayed silent
+	// about lost its local reconciliation too — and the panel stayed silent
+	// precisely about slots that had drifted. Silence must mean "no opinion",
+	// never "stop reconciling".
+	config := directiveTestConfig()
+	config.BasicSettings.ShuntRules = append(config.BasicSettings.ShuntRules, ShuntRule{
+		ID: "DiscordVoiceUdp", Label: "DiscordVoiceUdp", OutboundNodeID: "direct-france-443",
+	})
+
+	directive := &FleetRoutePolicyDirective{
+		Slots: []FleetRoutePolicyDirectiveSlot{{ID: "WorldProxy", NodeID: "ru-entry-poland"}},
+	}
+	normalized, changed := NormalizeFleetRoutePolicyConfigWithDirective(
+		config, FleetRoutePolicyIdentity{Hostname: "kirill-msk"}, directive)
+
+	if !changed {
+		t.Fatalf("expected the unnamed slot to be reconciled by the built-in scorer")
+	}
+	var discord string
+	for _, rule := range normalized.BasicSettings.ShuntRules {
+		if rule.ID == "DiscordVoiceUdp" {
+			discord = rule.OutboundNodeID
+		}
+	}
+	if discord != "ru-entry-poland" {
+		t.Fatalf("DiscordVoiceUdp bound to %q, want the scorer's ru-entry-poland", discord)
 	}
 }
 

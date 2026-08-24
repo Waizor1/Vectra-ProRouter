@@ -3,7 +3,25 @@ import {
   type PasswallDesiredConfig,
 } from "@vectra/contracts";
 
+import {
+  isUnhealthyNodeHost,
+  type FleetNodeHealth,
+  type FleetNodeHealthSample,
+} from "./fleet-node-health";
+
 export const FLEET_ROUTE_POLICY_VERSION = "2026-08-03-v4" as const;
+
+/**
+ * Optional inputs the policy can use but must never require.
+ *
+ * `nodeHealth` is the fleet liveness ledger (see fleet-node-health.ts). It is
+ * optional on purpose: every call site that cannot cheaply produce it — tests,
+ * onboarding fixtures, one-off previews — keeps working and simply falls back
+ * to the label/host/port scoring the policy always had.
+ */
+export type FleetRoutePolicyOptions = {
+  nodeHealth?: FleetNodeHealth | null;
+};
 
 export type FleetRoutePolicySlotId =
   | "WorldProxy"
@@ -566,18 +584,42 @@ function findBestTarget(
   slot: PolicySlot,
   identity?: FleetRoutePolicyRouterIdentity | null,
   currentNodeId?: string | null,
+  options?: FleetRoutePolicyOptions | null,
 ) {
-  let bestScore = 0;
-  const scored: { node: PasswallNode; score: number }[] = [];
-  for (const node of config.nodes) {
-    const score = semanticScore(slot.id, node);
-    if (score <= 0) {
-      continue;
+  // Drop hosts the fleet has proven dead before scoring, not after.
+  //
+  // Scoring knows a node's label, host and port and nothing else, so on
+  // 2026-08-24 it happily kept eleven routers bound to ru9-ru12 after the
+  // provider lost those hosts: dead nodes still score 100+, still read as
+  // "compliant", and the check-in directive then pins them there. Excluding
+  // them up front is what lets the ordinary scorer pick a live sibling.
+  //
+  // The exclusion is skipped entirely when it would leave the slot with no
+  // candidate at all. An unbound slot sends that traffic somewhere else
+  // wholesale; a bound-but-dead slot at least recovers by itself the moment
+  // the provider brings the host back. Never trade the second for the first.
+  const scoreAll = (skipUnhealthy: boolean) => {
+    let best = 0;
+    const candidates: { node: PasswallNode; score: number }[] = [];
+    for (const node of config.nodes) {
+      if (skipUnhealthy && isUnhealthyNodeHost(options?.nodeHealth, node.address)) {
+        continue;
+      }
+      const score = semanticScore(slot.id, node);
+      if (score <= 0) {
+        continue;
+      }
+      candidates.push({ node, score });
+      if (score > best) {
+        best = score;
+      }
     }
-    scored.push({ node, score });
-    if (score > bestScore) {
-      bestScore = score;
-    }
+    return { best, candidates };
+  };
+
+  let { best: bestScore, candidates: scored } = scoreAll(true);
+  if (bestScore < 100) {
+    ({ best: bestScore, candidates: scored } = scoreAll(false));
   }
   if (bestScore < 100) {
     return null;
@@ -737,9 +779,87 @@ function summarizeCompliance(
     .join(", ")}.`;
 }
 
+/**
+ * Turns one router's check-in into liveness evidence about provider hosts.
+ *
+ * The reachability probes the controller already runs are per-destination, not
+ * per-node — but each destination has exactly one slot carrying it, and that
+ * slot has exactly one node. Attributing the verdict to the node's HOST is
+ * what makes the evidence comparable across routers whose subscriptions mint
+ * different node ids for the same machine.
+ *
+ * Destination-to-slot mapping is read off the live shunt rules, not assumed:
+ * WorldProxy carries geosite:TELEGRAM and geosite:META, YouTube carries
+ * geosite:YOUTUBE.
+ */
+export function collectFleetNodeHealthSample(
+  routerId: string,
+  config: PasswallDesiredConfig | null | undefined,
+  probes: {
+    telegram?: { status?: string | null } | null;
+    youtube?: { status?: string | null } | null;
+    instagram?: { status?: string | null } | null;
+  },
+): FleetNodeHealthSample | null {
+  if (!config) {
+    return null;
+  }
+
+  const hostForSlot = (slotId: FleetRoutePolicySlotId) => {
+    const slot = canonicalFleetRoutePolicy.slots.find(
+      (candidate) => candidate.id === slotId,
+    );
+    if (!slot) {
+      return null;
+    }
+    const rule = findRule(config, slot);
+    if (!rule) {
+      return null;
+    }
+    const bindingId = readRuleBindingId(config, rule, slot);
+    if (!bindingId) {
+      return null;
+    }
+    const node = findNodeById(config, bindingId);
+    return node?.address ?? null;
+  };
+
+  // "partial" means some destinations answered through this node, so the node
+  // is alive and the fault is narrower than the node. Only a clean sweep of
+  // failures counts against a host.
+  const outcomeOf = (status: string | null | undefined) => {
+    if (status === "blocked") {
+      return "fail" as const;
+    }
+    if (status === "reachable" || status === "healthy" || status === "partial") {
+      return "ok" as const;
+    }
+    return null;
+  };
+
+  const observations: FleetNodeHealthSample["observations"] = [];
+  const add = (
+    slotId: FleetRoutePolicySlotId,
+    status: string | null | undefined,
+  ) => {
+    const outcome = outcomeOf(status);
+    const host = outcome ? hostForSlot(slotId) : null;
+    if (outcome && host) {
+      observations.push({ host, outcome });
+    }
+  };
+
+  add("WorldProxy", probes.telegram?.status);
+  add("WorldProxy", probes.instagram?.status);
+  add("YouTube", probes.youtube?.status);
+
+  return observations.length > 0 ? { routerId, observations } : null;
+}
+
 export function evaluateFleetRoutePolicy(
   config: PasswallDesiredConfig | null | undefined,
   identity?: FleetRoutePolicyRouterIdentity | null,
+  options?: FleetRoutePolicyOptions | null,
 ): FleetRoutePolicyCompliance {
   const exceptionReason = getFleetRoutePolicyExceptionReason(identity);
   if (exceptionReason) {
@@ -780,6 +900,7 @@ export function evaluateFleetRoutePolicy(
       slot,
       identity,
       rule ? readRuleBindingId(config, rule, slot) : null,
+      options,
     );
     if (!rule) {
       mismatches.push({
@@ -822,10 +943,19 @@ export function evaluateFleetRoutePolicy(
 
     const strictPreferred =
       "strictPreferred" in slot && slot.strictPreferred === true;
+    // A node the fleet has proven dead is never a match, however well its
+    // label scores — but only call it a mismatch when there is somewhere live
+    // to move to. Flagging a violation nobody can normalise just adds noise to
+    // the panel while the router stays exactly where it was.
+    const boundNodeIsDead =
+      isUnhealthyNodeHost(options?.nodeHealth, actualNode.address) &&
+      Boolean(preferredTarget) &&
+      preferredTarget!.id !== actualNode.id;
     const actualMatches =
-      strictPreferred && preferredTarget
+      !boundNodeIsDead &&
+      (strictPreferred && preferredTarget
         ? actualNode.id === preferredTarget.id
-        : semanticScore(slot.id, actualNode) >= 100;
+        : semanticScore(slot.id, actualNode) >= 100);
     if (!actualMatches) {
       mismatches.push({
         slot: slot.id,
@@ -934,8 +1064,9 @@ function syncShuntNodeBinding(
 export function normalizeFleetRoutePolicy(
   config: PasswallDesiredConfig,
   identity?: FleetRoutePolicyRouterIdentity | null,
+  options?: FleetRoutePolicyOptions | null,
 ): FleetRoutePolicyNormalizationResult {
-  const before = evaluateFleetRoutePolicy(config, identity);
+  const before = evaluateFleetRoutePolicy(config, identity, options);
   const next = cloneConfig(config);
   const changes: FleetRoutePolicyNormalizationChange[] = [];
 
@@ -958,7 +1089,13 @@ export function normalizeFleetRoutePolicy(
 
     const rule = next.basicSettings.shuntRules[basicIndex]!;
     const previousBindingId = readRuleBindingId(next, rule, slot);
-    const target = findBestTarget(next, slot, identity, previousBindingId);
+    const target = findBestTarget(
+      next,
+      slot,
+      identity,
+      previousBindingId,
+      options,
+    );
     if (!target) {
       continue;
     }
@@ -1005,7 +1142,7 @@ export function normalizeFleetRoutePolicy(
 
   syncRuleManageShuntRules(next);
   const parsed = passwallDesiredConfigSchema.parse(next);
-  const after = evaluateFleetRoutePolicy(parsed, identity);
+  const after = evaluateFleetRoutePolicy(parsed, identity, options);
 
   return {
     policyVersion: FLEET_ROUTE_POLICY_VERSION,
@@ -1038,6 +1175,7 @@ export function normalizeFleetRoutePolicy(
 export function buildFleetRoutePolicyDirective(
   config: PasswallDesiredConfig | null | undefined,
   identity?: FleetRoutePolicyRouterIdentity | null,
+  options?: FleetRoutePolicyOptions | null,
 ): {
   version: string;
   exempt: boolean;
@@ -1060,31 +1198,78 @@ export function buildFleetRoutePolicyDirective(
     };
   }
 
-  const compliance = evaluateFleetRoutePolicy(config, identity);
-  if (!compliance.checked || compliance.matchedSlots.length === 0) {
+  const compliance = evaluateFleetRoutePolicy(config, identity, options);
+  if (!compliance.checked) {
+    return null;
+  }
+
+  // Name the node a slot SHOULD be on, not the one it happens to be on.
+  //
+  // This used to echo matchedSlots only, which meant a drifted slot got no
+  // instruction at all. Silence reads as neutral and is not: on the controller
+  // side any directive carrying bindings REPLACES the whole slot list, so the
+  // slots the panel omits are precisely the ones the router's own scorer stops
+  // reconciling. A drifted slot was therefore frozen by the very message meant
+  // to govern it — nataliafilisiti sat on a dead-shape RU-entry exit for a day
+  // that way, and eleven routers stayed pinned to hosts the provider had lost.
+  //
+  // Mismatches without an expectedNodeId are still omitted: there is nothing
+  // to point at, and pinning a slot to nothing would strand it.
+  const desiredSlots = [
+    ...compliance.matchedSlots.map((match) => ({
+      id: match.slot,
+      nodeId: match.targetNodeId,
+      fingerprint: match.targetFingerprint,
+    })),
+    ...compliance.mismatches.flatMap((mismatch) =>
+      mismatch.expectedNodeId
+        ? [
+            {
+              id: mismatch.slot,
+              nodeId: mismatch.expectedNodeId,
+              fingerprint: mismatch.expectedFingerprint ?? undefined,
+            },
+          ]
+        : [],
+    ),
+  ];
+  if (desiredSlots.length === 0) {
     return null;
   }
 
   const extrasBySlot = new Map(
     canonicalFleetRoutePolicy.slots.map((slot) => [slot.id, slot]),
   );
+  // Canonical order, so the wire form is stable regardless of whether a slot
+  // arrived via matchedSlots or mismatches.
+  const slotOrder = new Map(
+    canonicalFleetRoutePolicy.slots.map((slot, index) => [slot.id, index]),
+  );
 
   return {
     version: FLEET_ROUTE_POLICY_VERSION,
     exempt: false,
-    slots: compliance.matchedSlots.map((match) => {
-      const canonical = extrasBySlot.get(match.slot);
-      return {
-        id: match.slot,
-        nodeId: match.targetNodeId,
-        fingerprint: match.targetFingerprint,
-        ...(canonical && "requiredRuleExtras" in canonical
-          ? { ruleExtras: { ...canonical.requiredRuleExtras } }
-          : {}),
-        ...(canonical && "requiredNodeExtras" in canonical
-          ? { nodeExtras: { ...canonical.requiredNodeExtras } }
-          : {}),
-      };
-    }),
+    slots: desiredSlots
+      .sort(
+        (left, right) =>
+          (slotOrder.get(left.id as FleetRoutePolicySlotId) ?? 0) -
+          (slotOrder.get(right.id as FleetRoutePolicySlotId) ?? 0),
+      )
+      .map((desired) => {
+        const canonical = extrasBySlot.get(
+          desired.id as FleetRoutePolicySlotId,
+        );
+        return {
+          id: desired.id,
+          nodeId: desired.nodeId,
+          fingerprint: desired.fingerprint,
+          ...(canonical && "requiredRuleExtras" in canonical
+            ? { ruleExtras: { ...canonical.requiredRuleExtras } }
+            : {}),
+          ...(canonical && "requiredNodeExtras" in canonical
+            ? { nodeExtras: { ...canonical.requiredNodeExtras } }
+            : {}),
+        };
+      }),
   };
 }
