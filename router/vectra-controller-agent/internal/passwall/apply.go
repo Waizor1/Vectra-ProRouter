@@ -183,6 +183,7 @@ func renderGlobalCommands(config DesiredConfig) []string {
 	commands = append(commands, maybeSet("passwall2.vectra_global_subscribe.vless_type", config.Subscriptions.TypePreferences.Vless)...)
 	commands = append(commands, maybeSet("passwall2.vectra_global_subscribe.hysteria2_type", config.Subscriptions.TypePreferences.Hysteria2)...)
 	commands = append(commands, maybeSet("passwall2.vectra_global_subscribe.domain_strategy", encodeSubscriptionDomainStrategy(config.Subscriptions.DomainStrategy))...)
+	commands = append(commands, renderExtras("passwall2.vectra_global_subscribe", config.Subscriptions.Extras)...)
 	commands = append(commands, renderExtras("passwall2.vectra_global", config.BasicSettings.Main.Extras)...)
 	commands = append(commands, renderExtras("passwall2.vectra_global_rules", config.RuleManage.Extras)...)
 	commands = append(commands, renderExtras("passwall2.vectra_global_app", config.AppUpdate.Extras)...)

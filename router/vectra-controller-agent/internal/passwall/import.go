@@ -196,6 +196,11 @@ func importDesiredConfig(sections []UCISection) DesiredConfig {
 			Hysteria2:   optionString(subSection, "hysteria2_type"),
 		}
 		config.Subscriptions.DomainStrategy = mapSubscriptionDomainStrategy(optionStringDefault(subSection, "domain_strategy", ""))
+		config.Subscriptions.Extras = collectExtras(subSection, map[string]struct{}{
+			"filter_keyword_mode": {}, "filter_discard_list": {}, "filter_keep_list": {},
+			"ss_type": {}, "trojan_type": {}, "vmess_type": {}, "vless_type": {}, "hysteria2_type": {},
+			"domain_strategy": {},
+		})
 	}
 
 	shuntNode := findSelectedShuntNode(sectionByName, config.BasicSettings.Main.SelectedNodeID)

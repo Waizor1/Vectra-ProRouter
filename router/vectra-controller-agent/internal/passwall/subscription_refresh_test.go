@@ -185,3 +185,52 @@ func TestCountSubscriptionNodesSeparatesPlaceholders(t *testing.T) {
 		t.Fatalf("total/placeholders = %d/%d, want 3/1", total, placeholders)
 	}
 }
+
+// The panel's apply deletes every global_subscribe section and rewrites it from
+// the desired config. Options it does not model — the nightly refresh schedule
+// and the headers the provider authenticates on — must survive that round trip,
+// or every apply silently disarms the router's own subscription.
+func TestGlobalSubscribeExtrasSurviveImportApplyRoundTrip(t *testing.T) {
+	lines := []string{
+		"passwall2.vectra_global_subscribe=global_subscribe",
+		"passwall2.vectra_global_subscribe.filter_keyword_mode='1'",
+		"passwall2.vectra_global_subscribe.vless_type='xray'",
+		"passwall2.vectra_global_subscribe.user_agent='Passwall2/OpenWrt'",
+		"passwall2.vectra_global_subscribe.hwid='1'",
+		"passwall2.vectra_global_subscribe.auto_update='1'",
+		"passwall2.vectra_global_subscribe.update_week_mode='7'",
+		"passwall2.vectra_global_subscribe.update_time_mode='0:00'",
+	}
+
+	sections, err := ParseUCILines(lines)
+	if err != nil {
+		t.Fatalf("ParseUCILines() error = %v", err)
+	}
+	config := importDesiredConfig(sections)
+
+	for key, want := range map[string]string{
+		"user_agent":       "Passwall2/OpenWrt",
+		"hwid":             "1",
+		"auto_update":      "1",
+		"update_week_mode": "7",
+		"update_time_mode": "0:00",
+	} {
+		if got := config.Subscriptions.Extras[key]; got != want {
+			t.Fatalf("imported extras[%q] = %v, want %q", key, got, want)
+		}
+	}
+
+	commands := buildBatchCommands(sections, config)
+	rendered := strings.Join(commands, "\n")
+	for _, want := range []string{
+		"set passwall2.vectra_global_subscribe.user_agent='Passwall2/OpenWrt'",
+		"set passwall2.vectra_global_subscribe.hwid='1'",
+		"set passwall2.vectra_global_subscribe.auto_update='1'",
+		"set passwall2.vectra_global_subscribe.update_week_mode='7'",
+		"set passwall2.vectra_global_subscribe.update_time_mode='0:00'",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("apply commands must restore %q, got:\n%s", want, rendered)
+		}
+	}
+}
