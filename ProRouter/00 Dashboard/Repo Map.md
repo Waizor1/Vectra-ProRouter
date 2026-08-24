@@ -1,6 +1,6 @@
 ---
 type: generated
-updated: '2026-08-05 18:36:54 +03:00'
+updated: '2026-08-24 23:12:23 +03:00'
 generated-by: scripts/Sync-ProRouterVault.py
 tags:
   - generated
@@ -9,12 +9,12 @@ tags:
 
 # Repo Map
 
-Generated from the current workspace root `Vectra-ProRouter`.
+Generated from the current workspace root `agent-a1303b36493279ab0`.
 
 ## Snapshot
 
-- Generated at: `2026-08-05 18:36:54 +03:00`
-- Top-level directories: `11`
+- Generated at: `2026-08-24 23:12:23 +03:00`
+- Top-level directories: `10`
 - Top-level files: `15`
 - Tree depth: `3`
 
@@ -35,19 +35,10 @@ Generated from the current workspace root `Vectra-ProRouter`.
 
 ```text
 ./
-|- .claude/
-|  |- worktrees/
-|  |  |- agent-a1303b36493279ab0/
-|  |  |- agent-ad49332c64a9e262b/
-|  |  \- agent-ae2fb675ce82089a9/
-|  \- launch.json
 |- .github/
 |  \- workflows/
 |     \- ci.yml
 |- .omc/
-|  |- autopilot/
-|  |  |- cutover-runbook.md
-|  |  \- spec.md
 |  \- state/
 |     \- sessions/
 |- ai_docs/
@@ -168,8 +159,8 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |  |- go.mod
 |  |  \- README.md
 |  \- vectra-controller-pro/
-|     |- bin/
-|     \- vctl
+|     |- .omc/
+|     \- test/
 |- scripts/
 |  |- fixtures/
 |  |  \- xiaomi-ax3000t-openwrt24.txt
@@ -178,7 +169,6 @@ Generated from the current workspace root `Vectra-ProRouter`.
 |  |- Add-ProRouterStatusEntry.py
 |  |- ast-index.sh
 |  |- build-vectra-openwrt-feed.sh
-|  |- Build-VectraGeoAssets.py
 |  |- build-web-release-slice.sh
 |  |- Check-PasswallUpstreamParams.py
 |  |- ensure-sugar-memory-local-fallback.py
