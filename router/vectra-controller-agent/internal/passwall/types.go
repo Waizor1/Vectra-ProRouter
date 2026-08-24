@@ -99,12 +99,17 @@ type SubscriptionSettings struct {
 	Items             []SubscriptionEntry `json:"items,omitempty"`
 	// Extras carries the global_subscribe options the panel does not model.
 	// Apply deletes and rewrites this section wholesale, so anything not
-	// round-tripped here is destroyed on every apply — and the options living
-	// there are the ones that decide whether the subscription refreshes at all
-	// (`auto_update`, `update_week_mode`, `update_time_mode`) and whether the
-	// provider accepts the request (`user_agent`, `hwid`). The three sibling
-	// global sections have always round-tripped their extras; this one did not,
-	// which is how routers quietly lost their nightly refresh.
+	// round-tripped here is destroyed on every apply. The three sibling global
+	// sections have always preserved their extras; this one silently did not.
+	//
+	// Scope, measured on a live router 2026-08-24: the settings that actually
+	// drive a refresh are read per subscription entry, not from here —
+	// subscribe.lua takes `user_agent` and `hwid` from the subscribe_list
+	// section (`local ua = value.user_agent`), and app.sh builds the nightly
+	// cron by iterating subscribe_list for `update_week_mode` /
+	// `update_time_mode`. Entry extras already round-tripped, which is why
+	// those survived. What was lost here are the global defaults LuCI seeds
+	// new entries from, so this is consistency rather than an outage fix.
 	Extras map[string]any `json:"extras,omitempty"`
 }
 

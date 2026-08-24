@@ -187,9 +187,9 @@ func TestCountSubscriptionNodesSeparatesPlaceholders(t *testing.T) {
 }
 
 // The panel's apply deletes every global_subscribe section and rewrites it from
-// the desired config. Options it does not model — the nightly refresh schedule
-// and the headers the provider authenticates on — must survive that round trip,
-// or every apply silently disarms the router's own subscription.
+// the desired config, so options it does not model must survive the round trip
+// rather than being silently discarded — the same contract the three sibling
+// global sections already honoured.
 func TestGlobalSubscribeExtrasSurviveImportApplyRoundTrip(t *testing.T) {
 	lines := []string{
 		"passwall2.vectra_global_subscribe=global_subscribe",
