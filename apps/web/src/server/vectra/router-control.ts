@@ -49,7 +49,7 @@ import {
   isControlPlaneRecoveryIncident,
 } from "~/server/vectra/control-plane-recovery-incident";
 import { buildFleetRoutePolicyDirective } from "~/server/vectra/fleet-route-policy";
-import { fleetRoutePolicyOptions } from "~/server/vectra/fleet-node-health-cache";
+import { getFleetPolicyContext } from "~/server/vectra/fleet-node-health-cache";
 import {
   resolveImportedConfigDigest,
   resolvePersistedConfigDigest,
@@ -1388,10 +1388,16 @@ export async function checkInRouter(routerId: string, input: unknown) {
     queuedCandidates,
   );
 
-  const [desiredRevision, nodeHealthOptions] = await Promise.all([
+  const [desiredRevision, policyContext] = await Promise.all([
     resolveDesiredRevision(router, deliverableJobs),
-    fleetRoutePolicyOptions(db),
+    getFleetPolicyContext(db),
   ]);
+  // A steady router reports no config (the panel only asks when the digest has
+  // drifted), so computing the directive purely from this request would leave
+  // exactly the quiet, stuck routers without one. Fall back to the last config
+  // the panel stored for it.
+  const routePolicyConfig =
+    parsed.passwallImport?.config ?? policyContext.configByRouter.get(router.id) ?? null;
 
   return routerCheckInResponseSchema.parse({
     protocolVersion: parsed.protocolVersion,
@@ -1408,7 +1414,7 @@ export async function checkInRouter(routerId: string, input: unknown) {
     // them from its own compiled-in scorer. Computed from the config the router
     // just reported, so the node IDs are the ones currently on the device.
     routePolicy: buildFleetRoutePolicyDirective(
-      parsed.passwallImport?.config ?? null,
+      routePolicyConfig,
       {
         id: router.id,
         displayName: router.displayName,
@@ -1420,7 +1426,7 @@ export async function checkInRouter(routerId: string, input: unknown) {
       // Cached fleet-wide, so this costs a map lookup on the check-in path.
       // Without it the directive cannot tell a live node from one the provider
       // has lost, and pins routers to dead hosts — see fleet-node-health.ts.
-      nodeHealthOptions,
+      { nodeHealth: policyContext.nodeHealth },
     ),
   });
 }

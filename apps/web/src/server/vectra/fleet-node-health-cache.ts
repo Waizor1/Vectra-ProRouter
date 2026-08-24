@@ -1,6 +1,8 @@
 import { routers } from "@vectra/db";
 import { desc } from "drizzle-orm";
 
+import type { PasswallDesiredConfig } from "@vectra/contracts";
+
 import type { db as appDb } from "~/server/db";
 
 import {
@@ -31,17 +33,41 @@ type DatabaseClient = typeof appDb;
  */
 const TTL_MS = 5 * 60 * 1000;
 
-const EMPTY: FleetNodeHealth = { unhealthyHosts: [], index: new Set() };
+const EMPTY_HEALTH: FleetNodeHealth = { unhealthyHosts: [], index: new Set() };
 
-let cached: { value: FleetNodeHealth; expiresAt: number } | null = null;
-let inFlight: Promise<FleetNodeHealth> | null = null;
+/**
+ * Also carries each router's last known config.
+ *
+ * The check-in directive is computed from the config the router reports — but
+ * a router only reports one when its digest has drifted from the panel's, so a
+ * router quietly parked on a dead node reports nothing and would receive no
+ * directive at all. The self-heal would then only fire for routers that were
+ * already changing, which is the opposite of what it is for.
+ *
+ * Falling back to the stored config makes the directive unconditional. A node
+ * id that has since been re-minted simply fails to resolve on the router and
+ * the binding is left alone — and that re-mint changes the digest, which asks
+ * for a fresh import, so the two converge on their own.
+ */
+type FleetPolicyContext = {
+  nodeHealth: FleetNodeHealth;
+  configByRouter: Map<string, PasswallDesiredConfig>;
+};
+
+const EMPTY: FleetPolicyContext = {
+  nodeHealth: EMPTY_HEALTH,
+  configByRouter: new Map(),
+};
+
+let cached: { value: FleetPolicyContext; expiresAt: number } | null = null;
+let inFlight: Promise<FleetPolicyContext> | null = null;
 
 export function resetFleetNodeHealthCache() {
   cached = null;
   inFlight = null;
 }
 
-async function rebuild(database: DatabaseClient): Promise<FleetNodeHealth> {
+async function rebuild(database: DatabaseClient): Promise<FleetPolicyContext> {
   const routerRows = await database
     .select()
     .from(routers)
@@ -55,6 +81,14 @@ async function rebuild(database: DatabaseClient): Promise<FleetNodeHealth> {
     loadLatestSnapshots(database, routerIds),
     loadLatestFleetPolicyConfigRows(database, routerIds),
   ]);
+
+  const configByRouter = new Map<string, PasswallDesiredConfig>();
+  for (const routerId of routerIds) {
+    const config = policyConfigRows.get(routerId)?.config;
+    if (config) {
+      configByRouter.set(routerId, config);
+    }
+  }
 
   const samples = routerIds.flatMap((routerId) => {
     const payload = snapshots.get(routerId)?.payload as
@@ -79,17 +113,17 @@ async function rebuild(database: DatabaseClient): Promise<FleetNodeHealth> {
     return sample ? [sample] : [];
   });
 
-  return buildFleetNodeHealth(samples);
+  return { nodeHealth: buildFleetNodeHealth(samples), configByRouter };
 }
 
 /**
  * Never throws and never blocks a check-in on a bad read: a failure here means
  * "no health opinion", which is exactly the pre-existing behaviour.
  */
-export async function getFleetNodeHealth(
+export async function getFleetPolicyContext(
   database: DatabaseClient,
   now = Date.now(),
-): Promise<FleetNodeHealth> {
+): Promise<FleetPolicyContext> {
   if (cached && cached.expiresAt > now) {
     return cached.value;
   }
@@ -113,5 +147,5 @@ export async function getFleetNodeHealth(
 export async function fleetRoutePolicyOptions(
   database: DatabaseClient,
 ): Promise<FleetRoutePolicyOptions> {
-  return { nodeHealth: await getFleetNodeHealth(database) };
+  return { nodeHealth: (await getFleetPolicyContext(database)).nodeHealth };
 }
