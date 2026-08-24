@@ -1273,3 +1273,53 @@ export function buildFleetRoutePolicyDirective(
       }),
   };
 }
+
+/**
+ * Slots whose current node is dead AND that have nowhere live to go.
+ *
+ * This is the signal that the router's node list itself is exhausted rather
+ * than merely misbound: every candidate the policy would accept for the slot
+ * sits on a host the fleet has measured as dead. Rebinding cannot help — only
+ * a fresh subscription can, because the provider has to hand over new nodes.
+ *
+ * Measured 2026-08-24 on DmitryGubenko: Special bound to nl1 (url_test 000),
+ * the only other Netherlands node in his list was ru8:50055 (also 000), and
+ * the policy dutifully moved him from one dead node to the other. Detecting
+ * that state is what lets the system fix itself instead of shuffling corpses.
+ */
+export function findStrandedSlots(
+  config: PasswallDesiredConfig | null | undefined,
+  identity?: FleetRoutePolicyRouterIdentity | null,
+  options?: FleetRoutePolicyOptions | null,
+): FleetRoutePolicySlotId[] {
+  if (!config || !options?.nodeHealth) {
+    return [];
+  }
+  if (getFleetRoutePolicyExceptionReason(identity)) {
+    return [];
+  }
+
+  const stranded: FleetRoutePolicySlotId[] = [];
+  for (const slot of canonicalFleetRoutePolicy.slots) {
+    const rule = findRule(config, slot);
+    if (!rule) {
+      continue;
+    }
+    const bindingId = readRuleBindingId(config, rule, slot);
+    const bound = findNodeById(config, bindingId);
+    // Only slots that are actually sitting on a dead node are stranded; a slot
+    // on a healthy node needs nothing, however poor its alternatives.
+    if (!bound || !isUnhealthyNodeHost(options.nodeHealth, bound.address)) {
+      continue;
+    }
+    const hasLiveCandidate = config.nodes.some(
+      (node) =>
+        !isUnhealthyNodeHost(options.nodeHealth, node.address) &&
+        semanticScore(slot.id, node) >= 100,
+    );
+    if (!hasLiveCandidate) {
+      stranded.push(slot.id);
+    }
+  }
+  return stranded;
+}

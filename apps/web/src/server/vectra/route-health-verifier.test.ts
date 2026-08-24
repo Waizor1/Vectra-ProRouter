@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   routeVerificationToHealthSample,
   selectRoutersForRouteHealthCheck,
+  selectRoutersForSubscriptionRescue,
+  subscriptionHasHardwareId,
   type RouteHealthCandidate,
 } from "./route-health-verifier";
 
@@ -147,5 +149,95 @@ describe("routeVerificationToHealthSample", () => {
     });
 
     expect(sample).toBeNull();
+  });
+});
+
+describe("selectRoutersForSubscriptionRescue", () => {
+  const NOW2 = new Date("2026-08-24T18:00:00.000Z");
+  function rescue(
+    overrides: Partial<
+      import("./route-health-verifier").SubscriptionRescueCandidate
+    > & { routerId: string },
+  ) {
+    return {
+      strandedSlots: ["Special"],
+      hwidPresent: true,
+      lastRefreshAt: null,
+      queuedJobCount: 0,
+      ...overrides,
+    };
+  }
+
+  it("refreshes when a slot has no live node left to move to", () => {
+    expect(
+      selectRoutersForSubscriptionRescue([rescue({ routerId: "a" })], NOW2, {
+        limit: 5,
+        cooldownMs: 1000,
+      }),
+    ).toEqual(["a"]);
+  });
+
+  it("leaves alone a router that still has somewhere live to go", () => {
+    expect(
+      selectRoutersForSubscriptionRescue(
+        [rescue({ routerId: "a", strandedSlots: [] })],
+        NOW2,
+        { limit: 5, cooldownMs: 1000 },
+      ),
+    ).toEqual([]);
+  });
+
+  // Without the hardware id the provider returns a stub and PassWall wipes the
+  // node list. Refreshing there is not a repair, it is the outage.
+  it("never refreshes a subscription that carries no hardware id", () => {
+    expect(
+      selectRoutersForSubscriptionRescue(
+        [rescue({ routerId: "a", hwidPresent: false })],
+        NOW2,
+        { limit: 5, cooldownMs: 1000 },
+      ),
+    ).toEqual([]);
+  });
+
+  it("holds off while a previous refresh is still within its cooldown", () => {
+    expect(
+      selectRoutersForSubscriptionRescue(
+        [
+          rescue({
+            routerId: "a",
+            lastRefreshAt: new Date("2026-08-24T17:30:00.000Z"),
+          }),
+        ],
+        NOW2,
+        { limit: 5, cooldownMs: 6 * 60 * 60 * 1000 },
+      ),
+    ).toEqual([]);
+  });
+
+  it("does not step on a router that already has work queued", () => {
+    expect(
+      selectRoutersForSubscriptionRescue(
+        [rescue({ routerId: "a", queuedJobCount: 1 })],
+        NOW2,
+        { limit: 5, cooldownMs: 1000 },
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("subscriptionHasHardwareId", () => {
+  it("recognises the gate being set", () => {
+    expect(
+      subscriptionHasHardwareId({
+        subscriptions: { items: [{ extras: { hwid: "1" } }] },
+      }),
+    ).toBe(true);
+  });
+
+  it("treats a missing or unset gate as absent", () => {
+    expect(subscriptionHasHardwareId({ subscriptions: { items: [{}] } })).toBe(
+      false,
+    );
+    expect(subscriptionHasHardwareId(null)).toBe(false);
   });
 });

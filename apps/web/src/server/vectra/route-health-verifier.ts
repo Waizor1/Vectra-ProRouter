@@ -311,6 +311,17 @@ export function startRouteHealthVerifier() {
           result.queued,
         );
       }
+      const { runSubscriptionRescueTick } = await import(
+        "./subscription-rescue"
+      );
+      const rescued = await runSubscriptionRescueTick(db);
+      if (rescued.queued > 0) {
+        console.warn(
+          "[route-health] node list exhausted, refreshed subscription for %d router(s): %o",
+          rescued.queued,
+          rescued.routerIds,
+        );
+      }
     } catch (error) {
       console.error("[route-health]", error);
     } finally {
@@ -338,4 +349,71 @@ export function stopRouteHealthVerifierForTest() {
     globalForVerifier.__vectraRouteHealthVerifierTimer = undefined;
   }
   globalForVerifier.__vectraRouteHealthVerifierRunning = false;
+}
+
+export const SUBSCRIPTION_REFRESH_JOB_TYPE = "refresh_subscriptions" as const;
+
+export type SubscriptionRescueCandidate = {
+  routerId: string;
+  strandedSlots: string[];
+  /**
+   * The provider hands back a stub when the request carries no hardware id,
+   * and PassWall then wipes the node list. Refreshing without this is not a
+   * repair, it is the outage. Never automate past this gate.
+   */
+  hwidPresent: boolean;
+  lastRefreshAt: Date | null;
+  queuedJobCount: number;
+};
+
+export type SubscriptionRescueOptions = {
+  limit: number;
+  cooldownMs: number;
+};
+
+/**
+ * Picks routers whose node list has run out of live options for a slot.
+ *
+ * Rebinding cannot fix an exhausted list — every candidate is dead — so the
+ * only real repair is asking the provider for current nodes. This is the step
+ * that turns the lane from "detects and reports" into "fixes itself".
+ */
+export function selectRoutersForSubscriptionRescue(
+  candidates: SubscriptionRescueCandidate[],
+  now: Date,
+  options: SubscriptionRescueOptions,
+): string[] {
+  return candidates
+    .filter((candidate) => {
+      if (candidate.strandedSlots.length === 0) {
+        return false;
+      }
+      if (!candidate.hwidPresent) {
+        return false;
+      }
+      if (candidate.queuedJobCount > 0) {
+        return false;
+      }
+      // A refresh that did not help must not become a loop: the provider needs
+      // time to actually change what it serves.
+      if (
+        candidate.lastRefreshAt &&
+        now.getTime() - candidate.lastRefreshAt.getTime() < options.cooldownMs
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .slice(0, options.limit)
+    .map((candidate) => candidate.routerId);
+}
+
+export function subscriptionHasHardwareId(
+  config:
+    | { subscriptions?: { items?: { extras?: Record<string, unknown> }[] } }
+    | null
+    | undefined,
+): boolean {
+  const items = config?.subscriptions?.items ?? [];
+  return items.some((item) => String(item?.extras?.hwid ?? "") === "1");
 }
