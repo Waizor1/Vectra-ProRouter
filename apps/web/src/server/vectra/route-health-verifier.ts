@@ -8,6 +8,10 @@ import { normalizeNodeHost } from "./fleet-node-health";
 
 type DatabaseClient = typeof appDb;
 
+// Read-only surface: the monitoring loader passes a narrower client than the
+// full drizzle instance, and this function only ever selects.
+type ReadOnlyDatabase = Pick<DatabaseClient, "select">;
+
 /**
  * Periodic per-node route health, measured on the router itself.
  *
@@ -160,7 +164,7 @@ export function routeHealthDedupeKey(routerId: string) {
  * onboarding, an operator, or this lane. A fresh verdict is a fresh verdict.
  */
 export async function loadLatestRouteVerifications(
-  database: DatabaseClient,
+  database: ReadOnlyDatabase,
   routerIds: string[],
 ): Promise<Map<string, { verifiedAt: Date; verification: RouteVerification }>> {
   const latest = new Map<
@@ -171,40 +175,53 @@ export async function loadLatestRouteVerifications(
     return latest;
   }
 
-  // Newest-first, then keep the first hit per router. The result set is one
-  // row per completed verification and these are queued a couple per tick, so
-  // it stays small; no lateral join needed.
+  // Two plain selects instead of a join: the job rows carry the type, the
+  // result rows carry the payload. Keeps this readable and avoids depending on
+  // join support in every database shim the tests use.
+  // Telemetry must never break its caller: a client shim that does not return
+  // rows for these tables yields "no verdicts", not an exception.
+  const verifyJobs = await database
+    .select({ id: jobs.id, routerId: jobs.routerId })
+    .from(jobs)
+    .where(
+      and(
+        inArray(jobs.routerId, routerIds),
+        eq(jobs.type, ROUTE_HEALTH_JOB_TYPE),
+      ),
+    );
+  if (!Array.isArray(verifyJobs) || verifyJobs.length === 0) {
+    return latest;
+  }
+  const routerByJobId = new Map(verifyJobs.map((job) => [job.id, job.routerId]));
+
   const rows = await database
     .select({
-      routerId: jobResults.routerId,
+      jobId: jobResults.jobId,
       reportedAt: jobResults.reportedAt,
       payload: jobResults.payload,
     })
     .from(jobResults)
-    .innerJoin(jobs, eq(jobs.id, jobResults.jobId))
-    .where(
-      and(
-        inArray(jobResults.routerId, routerIds),
-        eq(jobs.type, ROUTE_HEALTH_JOB_TYPE),
-      ),
-    )
+    .where(inArray(jobResults.jobId, [...routerByJobId.keys()]))
     .orderBy(desc(jobResults.reportedAt));
+  if (!Array.isArray(rows)) {
+    return latest;
+  }
 
   for (const row of rows) {
-    if (latest.has(row.routerId)) {
+    const routerId = routerByJobId.get(row.jobId);
+    if (!routerId || latest.has(routerId)) {
       continue;
     }
     const payload = row.payload as {
       routeVerification?: RouteVerification | null;
     } & RouteVerification;
+    // A job emits an "accepted" receipt before the real result; only the one
+    // carrying slots is a verdict.
     const verification = payload?.routeVerification ?? payload ?? null;
     if (!verification || !Array.isArray(verification.slots)) {
       continue;
     }
-    latest.set(row.routerId, {
-      verifiedAt: row.reportedAt,
-      verification,
-    });
+    latest.set(routerId, { verifiedAt: row.reportedAt, verification });
   }
 
   return latest;

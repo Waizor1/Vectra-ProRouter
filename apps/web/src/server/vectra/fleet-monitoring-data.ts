@@ -21,6 +21,10 @@ import {
   evaluateFleetRoutePolicy,
 } from "./fleet-route-policy";
 import { buildFleetNodeHealth } from "./fleet-node-health";
+import {
+  loadLatestRouteVerifications,
+  routeVerificationToHealthSample,
+} from "./route-health-verifier";
 import { buildFleetMonitoringSnapshot } from "./fleet-monitoring";
 import { loadRevisionMetadata } from "./revision-metadata";
 import { isRouterReachable } from "./router-presence";
@@ -381,6 +385,7 @@ export async function loadFleetMonitoringSnapshot(
     queuedJobRows,
     revisionRows,
     policyConfigRows,
+    routeVerifications,
   ] =
     await Promise.all([
       loadLatestSnapshots(database, routerIds),
@@ -414,6 +419,7 @@ export async function loadFleetMonitoringSnapshot(
           })
         : Promise.resolve([]),
       loadLatestFleetPolicyConfigRows(database, routerIds),
+      loadLatestRouteVerifications(database, routerIds),
     ]);
 
   const incidentMap = new Map<string, typeof healthIncidents.$inferSelect>();
@@ -443,7 +449,20 @@ export async function loadFleetMonitoringSnapshot(
   // If these two disagreed, the panel would show "compliant" for a router the
   // directive is actively moving — or the reverse.
   const nodeHealthOptions = {
+    // Must include the SAME evidence the check-in directive uses. When this
+    // page built its ledger from destination probes alone it showed routers as
+    // compliant on a node the directive was already moving them off — the
+    // panel and the fleet disagreed about reality.
     nodeHealth: buildFleetNodeHealth(
+      routerIds.flatMap((routerId) => {
+        const verification = routeVerifications.get(routerId)?.verification;
+        const config = policyConfigRows.get(routerId)?.config;
+        const verified =
+          verification && config
+            ? routeVerificationToHealthSample(routerId, config.nodes, verification)
+            : null;
+        return verified ? [verified] : [];
+      }).concat(
       routerIds.flatMap((routerId) => {
         const payload = snapshots.get(routerId)?.payload;
         const sample = collectFleetNodeHealthSample(
@@ -456,7 +475,7 @@ export async function loadFleetMonitoringSnapshot(
           },
         );
         return sample ? [sample] : [];
-      }),
+      })),
     ),
   };
 
