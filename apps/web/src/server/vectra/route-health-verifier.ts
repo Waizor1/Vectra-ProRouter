@@ -36,6 +36,11 @@ export type RouteHealthCandidate = {
   lastVerifiedAt: Date | null;
   queuedJobCount: number;
   routePolicyExempt?: boolean | null;
+  /**
+   * When this router last had its proxy stack disturbed — a subscription
+   * refresh or a config apply. See `settleMs`.
+   */
+  lastDisruptionAt?: Date | null;
 };
 
 export type RouteHealthSelectionOptions = {
@@ -43,9 +48,22 @@ export type RouteHealthSelectionOptions = {
   staleAfterMs: number;
   /** A router quiet for longer than this is assumed unreachable. */
   reachableWithinMs?: number;
+  /**
+   * Grace period after a subscription refresh or apply before its nodes may
+   * be judged.
+   *
+   * url_test_node returns 000 while xray is still reloading, so probing right
+   * after a refresh manufactures failures. Measured 2026-08-24: a sweep run
+   * five minutes after refreshing ten subscriptions reported Special dead on
+   * zhenya13911, and a direct retest minutes later returned 204 twice on the
+   * same node. Verdicts from that window would have condemned healthy
+   * endpoints fleet-wide.
+   */
+  settleMs?: number;
 };
 
 const DEFAULT_REACHABLE_WITHIN_MS = 5 * 60 * 1000;
+const DEFAULT_SETTLE_MS = 20 * 60 * 1000;
 
 export function selectRoutersForRouteHealthCheck(
   candidates: RouteHealthCandidate[],
@@ -54,6 +72,7 @@ export function selectRoutersForRouteHealthCheck(
 ): string[] {
   const reachableWithin =
     options.reachableWithinMs ?? DEFAULT_REACHABLE_WITHIN_MS;
+  const settle = options.settleMs ?? DEFAULT_SETTLE_MS;
 
   const eligible = candidates.filter((candidate) => {
     if (candidate.status !== "active") {
@@ -75,6 +94,12 @@ export function selectRoutersForRouteHealthCheck(
       return false;
     }
     if (now.getTime() - candidate.lastSeenAt.getTime() > reachableWithin) {
+      return false;
+    }
+    if (
+      candidate.lastDisruptionAt &&
+      now.getTime() - candidate.lastDisruptionAt.getTime() < settle
+    ) {
       return false;
     }
     if (
@@ -240,13 +265,35 @@ export async function loadRouteHealthCandidates(
     return [];
   }
 
-  const [queuedRows, verifications] = await Promise.all([
+  const [queuedRows, verifications, disruptionRows] = await Promise.all([
     database
       .select({ routerId: jobs.routerId, id: jobs.id })
       .from(jobs)
       .where(and(inArray(jobs.routerId, routerIds), eq(jobs.state, "queued"))),
     loadLatestRouteVerifications(database, routerIds),
+    // A refresh or an apply restarts the proxy stack; nodes probed while it is
+    // still coming up answer 000 and would be condemned on false evidence.
+    database
+      .select({ routerId: jobs.routerId, createdAt: jobs.createdAt })
+      .from(jobs)
+      .where(
+        and(
+          inArray(jobs.routerId, routerIds),
+          inArray(jobs.type, [
+            SUBSCRIPTION_REFRESH_JOB_TYPE,
+            "apply_passwall_config",
+          ]),
+        ),
+      )
+      .orderBy(desc(jobs.createdAt)),
   ]);
+
+  const lastDisruptionByRouter = new Map<string, Date>();
+  for (const row of Array.isArray(disruptionRows) ? disruptionRows : []) {
+    if (!lastDisruptionByRouter.has(row.routerId)) {
+      lastDisruptionByRouter.set(row.routerId, row.createdAt);
+    }
+  }
 
   const queuedByRouter = new Map<string, number>();
   for (const row of queuedRows) {
@@ -261,6 +308,7 @@ export async function loadRouteHealthCandidates(
     lastVerifiedAt: verifications.get(router.id)?.verifiedAt ?? null,
     queuedJobCount: queuedByRouter.get(router.id) ?? 0,
     routePolicyExempt: router.routePolicyExempt,
+    lastDisruptionAt: lastDisruptionByRouter.get(router.id) ?? null,
   }));
 }
 
@@ -315,15 +363,28 @@ export function startRouteHealthVerifier() {
           result.queued,
         );
       }
-      const { runSubscriptionRescueTick } = await import(
+      // Detection only — the refresh itself stays an operator decision.
+      //
+      // 2026-08-24: refreshing yuranrod-msk WITH hwid=1 set returned a payload
+      // that left him with zero proxy nodes (≈20 hosts before, none after) and
+      // all five slots pointing at an id that no longer existed. The hardware
+      // id gate is necessary but NOT sufficient, so an unattended refresh can
+      // take a customer's node list away. Reporting the state is safe;
+      // automatically acting on it is not, until the wipe can be detected and
+      // undone.
+      const { collectSubscriptionRescueCandidates } = await import(
         "./subscription-rescue"
       );
-      const rescued = await runSubscriptionRescueTick(db);
-      if (rescued.queued > 0) {
+      const stranded = await collectSubscriptionRescueCandidates(db);
+      if (stranded.length > 0) {
         console.warn(
-          "[route-health] node list exhausted, refreshed subscription for %d router(s): %o",
-          rescued.queued,
-          rescued.routerIds,
+          "[route-health] node list exhausted for %d router(s), subscription refresh needed: %o",
+          stranded.length,
+          stranded.map((entry) => ({
+            routerId: entry.routerId,
+            slots: entry.strandedSlots,
+            canRefresh: entry.hwidPresent,
+          })),
         );
       }
     } catch (error) {
