@@ -1,6 +1,6 @@
 ---
 type: generated
-updated: '2026-08-24 23:12:23 +03:00'
+updated: '2026-08-25 15:11:23 +03:00'
 generated-by: scripts/Sync-ProRouterVault.py
 tags:
   - generated
@@ -13,8 +13,8 @@ Generated from the current workspace root `agent-a1303b36493279ab0`.
 
 ## Snapshot
 
-- Generated at: `2026-08-24 23:12:23 +03:00`
-- Top-level directories: `10`
+- Generated at: `2026-08-25 15:11:23 +03:00`
+- Top-level directories: `9`
 - Top-level files: `15`
 - Tree depth: `3`
 
@@ -38,9 +38,6 @@ Generated from the current workspace root `agent-a1303b36493279ab0`.
 |- .github/
 |  \- workflows/
 |     \- ci.yml
-|- .omc/
-|  \- state/
-|     \- sessions/
 |- ai_docs/
 |  \- develop/
 |     \- features/
@@ -58,7 +55,6 @@ Generated from the current workspace root `agent-a1303b36493279ab0`.
 |  |  |- sessions.go
 |  |  \- storage.go
 |  \- web/
-|     |- .omc/
 |     |- public/
 |     |- scripts/
 |     |- src/
@@ -152,14 +148,12 @@ Generated from the current workspace root `agent-a1303b36493279ab0`.
 |  |  |- root/
 |  |  \- Makefile
 |  |- vectra-controller-agent/
-|  |  |- .omc/
 |  |  |- cmd/
 |  |  |- internal/
 |  |  |- openwrt/
 |  |  |- go.mod
 |  |  \- README.md
 |  \- vectra-controller-pro/
-|     |- .omc/
 |     \- test/
 |- scripts/
 |  |- fixtures/
