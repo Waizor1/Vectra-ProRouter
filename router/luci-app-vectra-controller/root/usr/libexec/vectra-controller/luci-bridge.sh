@@ -197,7 +197,7 @@ write_status() {
 	local router_id rescue_mode selected_node selected_node_name import_state config_digest applied_revision_id
 	local last_register_at last_check_in_at last_operator_message last_error pending_approval jobs_available
 	local last_rescue_at server_reachable public_reachable proxy_failure_count proxy_success_count direct_success_count
-	local last_server_error last_public_error
+	local last_server_error last_public_error manual_mode
 	controller_service_state="$(service_state vectra-controller)"
 	passwall_service_state="$(service_state passwall2)"
 
@@ -270,6 +270,17 @@ write_status() {
 		controller_version="$(json_file_field "$AGENT_STATUS_FILE" '@.controller_version')"
 	fi
 
+	# Prefer the agent's own status file: it is written by the RUNNING process,
+	# so the row reflects what that process believes. The rendered config is only
+	# a fallback for the window before the agent has written a status yet —
+	# reading uci here would be the worst of the three, because `render` alone
+	# updates config.json without restarting the agent, and a hand-edited uci
+	# value would show green while the old process keeps rebinding slots.
+	manual_mode="$(json_file_bool "$AGENT_STATUS_FILE" '@.manual_mode')"
+	if [ ! -s "$AGENT_STATUS_FILE" ]; then
+		manual_mode="$(json_file_bool "$CONFIG_JSON" '@.manual_mode')"
+	fi
+
 	cat >"$LUCI_STATUS_FILE" <<EOF
 {
   "serviceState": "$controller_service_state",
@@ -300,7 +311,8 @@ write_status() {
   "lastPublicError": "$(json_escape "${last_public_error:-}")",
   "lastError": "$(json_escape "${last_error:-}")",
   "pendingApproval": ${pending_approval},
-  "jobsAvailable": ${jobs_available}
+  "jobsAvailable": ${jobs_available},
+  "manualMode": ${manual_mode}
 }
 EOF
 }

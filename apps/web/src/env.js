@@ -137,6 +137,43 @@ export const env = createEnv({
       .int()
       .min(5)
       .default(20),
+    // A check-in that carries no material change writes nothing, so a stable
+    // router would otherwise leave no trace at all between config changes.
+    //
+    // This interval is not just a storage knob: the fleet monitoring view reads
+    // reachability, safetyEvents and the resource gauges straight out of the
+    // newest snapshot payload (fleet-monitoring-data.ts), and those are exactly
+    // the fields the fingerprint deliberately ignores. So the heartbeat is what
+    // bounds how stale the operator's telemetry can look. 15 minutes keeps that
+    // honest while still cutting writes ~19x (27 routers × 4/h ≈ 108 rows/h
+    // against the ~2085/h the fleet used to produce).
+    VECTRA_SNAPSHOT_HEARTBEAT_MINUTES: z.coerce
+      .number()
+      .int()
+      .min(5)
+      .max(1440)
+      .default(15),
+    // Revision retention. The window is far longer than the snapshot one: a
+    // revision is an operator-visible audit record, not telemetry, so a week
+    // of superseded auto-imports stays available for diagnosis before the
+    // per-router floor takes over as the only guarantee.
+    VECTRA_REVISION_RETENTION_ENABLED: booleanFlagSchema(true),
+    VECTRA_REVISION_RETENTION_INTERVAL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(300)
+      .max(86400)
+      .default(21600),
+    VECTRA_REVISION_RETENTION_HOURS: z.coerce
+      .number()
+      .int()
+      .min(24)
+      .default(168),
+    VECTRA_REVISION_RETENTION_KEEP_PER_ROUTER: z.coerce
+      .number()
+      .int()
+      .min(5)
+      .default(20),
     VECTRA_TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
     VECTRA_TELEGRAM_ALLOWED_CHAT_IDS: z.string().min(1).optional(),
     VECTRA_TELEGRAM_WEBHOOK_SECRET: z.string().min(16).optional(),
@@ -197,6 +234,16 @@ export const env = createEnv({
       process.env.VECTRA_SNAPSHOT_RETENTION_HOURS,
     VECTRA_SNAPSHOT_RETENTION_KEEP_PER_ROUTER:
       process.env.VECTRA_SNAPSHOT_RETENTION_KEEP_PER_ROUTER,
+    VECTRA_SNAPSHOT_HEARTBEAT_MINUTES:
+      process.env.VECTRA_SNAPSHOT_HEARTBEAT_MINUTES,
+    VECTRA_REVISION_RETENTION_ENABLED:
+      process.env.VECTRA_REVISION_RETENTION_ENABLED,
+    VECTRA_REVISION_RETENTION_INTERVAL_SECONDS:
+      process.env.VECTRA_REVISION_RETENTION_INTERVAL_SECONDS,
+    VECTRA_REVISION_RETENTION_HOURS:
+      process.env.VECTRA_REVISION_RETENTION_HOURS,
+    VECTRA_REVISION_RETENTION_KEEP_PER_ROUTER:
+      process.env.VECTRA_REVISION_RETENTION_KEEP_PER_ROUTER,
     VECTRA_TELEGRAM_BOT_TOKEN: process.env.VECTRA_TELEGRAM_BOT_TOKEN,
     VECTRA_TELEGRAM_ALLOWED_CHAT_IDS:
       process.env.VECTRA_TELEGRAM_ALLOWED_CHAT_IDS,

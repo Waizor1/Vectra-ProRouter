@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 import {
   MASKED_SECRET_PLACEHOLDER,
@@ -74,15 +75,30 @@ export function computeConfigDigest(value: unknown) {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
 }
 
+// Envelope versions:
+//   v1 — plaintext JSON, then AES-256-GCM.
+//   v2 — plaintext JSON, then gzip, then AES-256-GCM.
+//
+// Ciphertext is incompressible, so a v1 blob defeats Postgres TOAST entirely:
+// the secret table carried 954 MB of TOAST against 1160 kB of heap while the
+// jsonb columns beside it compressed 3.3x. Config payloads are repetitive node
+// lists that gzip ~5x, but only while they are still plaintext — compressing
+// after encryption is worthless. Hence gzip first, encrypt second.
+//
+// v1 blobs are still read as-is: re-encrypting the existing rows would need the
+// whole table rewritten under the operator key for no benefit, since retention
+// ages them out anyway.
+const SECRET_ENVELOPE_VERSION = 2;
+
 export function encryptJson(payload: unknown) {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", deriveKey(), iv);
-  const plaintext = Buffer.from(stableStringify(payload), "utf8");
+  const plaintext = gzipSync(Buffer.from(stableStringify(payload), "utf8"));
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const tag = cipher.getAuthTag();
 
   return JSON.stringify({
-    v: 1,
+    v: SECRET_ENVELOPE_VERSION,
     iv: iv.toString("base64url"),
     tag: tag.toString("base64url"),
     data: ciphertext.toString("base64url"),
@@ -107,7 +123,9 @@ export function decryptJson<T>(ciphertext: string): T {
     decipher.final(),
   ]);
 
-  return JSON.parse(plaintext.toString("utf8")) as T;
+  const json = parsed.v >= 2 ? gunzipSync(plaintext) : plaintext;
+
+  return JSON.parse(json.toString("utf8")) as T;
 }
 
 function sanitizeExtras(extras: Record<string, string | number | boolean | string[] | null>) {

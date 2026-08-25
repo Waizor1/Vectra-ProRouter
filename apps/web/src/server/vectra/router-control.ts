@@ -34,6 +34,8 @@ import { and, desc, eq, inArray, isNull, lt, lte, or } from "drizzle-orm";
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 
 import { env } from "~/env";
+
+import { shouldWriteInventorySnapshot } from "./inventory-snapshot-dedupe";
 import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
 import { isPasswallClearIpsetsJob } from "~/lib/passwall-clear-ipsets-jobs";
 import { isRouterHostnameUpdateTerminalPayload } from "~/lib/router-hostname-jobs";
@@ -41,7 +43,13 @@ import { isRouterRebootJob } from "~/lib/router-reboot-jobs";
 import { db } from "~/server/db";
 import { issueRouterCredential } from "~/server/vectra/auth";
 import { appendRescueRepairAttemptFromJobResult } from "~/server/vectra/auto-rescue";
+import {
+  controlPlaneRecoveryIncidentOrigin,
+  hasControlPlaneRecoveryIncidentOrigin,
+  isControlPlaneRecoveryIncident,
+} from "~/server/vectra/control-plane-recovery-incident";
 import { buildFleetRoutePolicyDirective } from "~/server/vectra/fleet-route-policy";
+import { getFleetPolicyContext } from "~/server/vectra/fleet-node-health-cache";
 import {
   resolveImportedConfigDigest,
   resolvePersistedConfigDigest,
@@ -242,33 +250,7 @@ const unresolvedProxyRecoveryPhases = new Set([
   "passwall_retry_wait",
   "operator_attention",
 ]);
-const controlPlaneRecoveryIncidentOrigin = "control-plane-recovery";
-
-function hasControlPlaneRecoveryIncidentOrigin(
-  metadata: Record<string, unknown> | null | undefined,
-) {
-  return metadata?.origin === controlPlaneRecoveryIncidentOrigin;
-}
-
-export function isControlPlaneRecoveryIncident(
-  incident:
-    | Pick<NonNullable<OpenIncidentRow>, "type" | "metadata">
-    | null
-    | undefined,
-) {
-  if (!incident) {
-    return false;
-  }
-
-  if (
-    incident.type !== "server_unreachable" &&
-    incident.type !== "proxy_outage"
-  ) {
-    return false;
-  }
-
-  return hasControlPlaneRecoveryIncidentOrigin(incident.metadata ?? {});
-}
+export { isControlPlaneRecoveryIncident };
 
 function isControlPlaneRecoveryTransition(
   transition: RecoveryIncidentTransition,
@@ -366,6 +348,34 @@ async function insertInventorySnapshot(
   inventory: RouterInventory,
   source: string,
 ) {
+  // Check-ins arrive roughly every 45 seconds per router and used to write a
+  // row every time — ~50k rows/day fleet-wide, 459 MB standing. Registration
+  // is rare and marks a real lifecycle event, so it always writes.
+  if (source === "check_in") {
+    const [latest] = await db
+      .select({
+        payload: routerInventorySnapshots.payload,
+        createdAt: routerInventorySnapshots.createdAt,
+      })
+      .from(routerInventorySnapshots)
+      .where(eq(routerInventorySnapshots.routerId, routerId))
+      .orderBy(desc(routerInventorySnapshots.createdAt))
+      .limit(1);
+
+    const shouldWrite = shouldWriteInventorySnapshot({
+      inventory,
+      latest: latest
+        ? { payload: latest.payload, createdAt: latest.createdAt }
+        : null,
+      now: new Date(),
+      heartbeatMinutes: env.VECTRA_SNAPSHOT_HEARTBEAT_MINUTES,
+    });
+
+    if (!shouldWrite) {
+      return;
+    }
+  }
+
   return db.insert(routerInventorySnapshots).values({
     routerId,
     source,
@@ -1378,7 +1388,16 @@ export async function checkInRouter(routerId: string, input: unknown) {
     queuedCandidates,
   );
 
-  const desiredRevision = await resolveDesiredRevision(router, deliverableJobs);
+  const [desiredRevision, policyContext] = await Promise.all([
+    resolveDesiredRevision(router, deliverableJobs),
+    getFleetPolicyContext(db),
+  ]);
+  // A steady router reports no config (the panel only asks when the digest has
+  // drifted), so computing the directive purely from this request would leave
+  // exactly the quiet, stuck routers without one. Fall back to the last config
+  // the panel stored for it.
+  const routePolicyConfig =
+    parsed.passwallImport?.config ?? policyContext.configByRouter.get(router.id) ?? null;
 
   return routerCheckInResponseSchema.parse({
     protocolVersion: parsed.protocolVersion,
@@ -1395,7 +1414,7 @@ export async function checkInRouter(routerId: string, input: unknown) {
     // them from its own compiled-in scorer. Computed from the config the router
     // just reported, so the node IDs are the ones currently on the device.
     routePolicy: buildFleetRoutePolicyDirective(
-      parsed.passwallImport?.config ?? null,
+      routePolicyConfig,
       {
         id: router.id,
         displayName: router.displayName,
@@ -1404,6 +1423,10 @@ export async function checkInRouter(routerId: string, input: unknown) {
         routePolicyExempt: router.routePolicyExempt,
         routePolicyExemptReason: router.routePolicyExemptReason,
       },
+      // Cached fleet-wide, so this costs a map lookup on the check-in path.
+      // Without it the directive cannot tell a live node from one the provider
+      // has lost, and pins routers to dead hosts — see fleet-node-health.ts.
+      { nodeHealth: policyContext.nodeHealth },
     ),
   });
 }

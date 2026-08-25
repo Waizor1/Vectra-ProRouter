@@ -150,10 +150,7 @@ func NormalizeFleetRoutePolicyConfigWithDirective(current DesiredConfig, identit
 		return current, false
 	}
 
-	slots := fleetRoutePolicySlots
-	if directive.HasBindings() {
-		slots = directiveSlots(directive)
-	}
+	slots := mergeDirectiveSlots(directive)
 
 	desired := cloneDesiredConfig(current)
 	changed := false
@@ -249,6 +246,63 @@ func ReconcileFleetRoutePolicyWithDirective(ctx context.Context, backend UCIBack
 	return reconcileShuntBindingsFromCurrent(ctx, backend, currentConfig, desired)
 }
 
+// mergeDirectiveSlots layers the panel's pins on top of the built-in slot set
+// instead of replacing it.
+//
+// Replacing was a trap. The panel only ever named the slots it considered
+// correct, so a slot that had drifted got no pin — and because ANY pin used to
+// swap out the whole list, the unnamed slot also lost the local scorer that
+// would have repaired it. The one slot in trouble was the one slot nothing was
+// reconciling, and the drift became permanent (nataliafilisiti, 2026-08-24).
+//
+// Merging keeps the panel authoritative wherever it has an opinion, while a
+// slot the panel is silent about falls back to the scorer rather than to
+// nothing. Extras follow the same rule: a directive that carries none for a
+// slot keeps the compiled-in ones instead of blanking them.
+func mergeDirectiveSlots(directive *FleetRoutePolicyDirective) []fleetRoutePolicySlot {
+	if !directive.HasBindings() {
+		return fleetRoutePolicySlots
+	}
+
+	pinned := make(map[string]fleetRoutePolicySlot, len(directive.Slots))
+	for _, slot := range directiveSlots(directive) {
+		pinned[slot.ID] = slot
+	}
+
+	merged := make([]fleetRoutePolicySlot, 0, len(fleetRoutePolicySlots))
+	for _, base := range fleetRoutePolicySlots {
+		pin, ok := pinned[base.ID]
+		if !ok {
+			merged = append(merged, base)
+			continue
+		}
+		next := base
+		next.TargetNodeID = pin.TargetNodeID
+		if pin.Expected != "" {
+			next.Expected = pin.Expected
+		}
+		if len(pin.RequiredRuleExtras) > 0 {
+			next.RequiredRuleExtras = pin.RequiredRuleExtras
+		}
+		if len(pin.RequiredNodeExtras) > 0 {
+			next.RequiredNodeExtras = pin.RequiredNodeExtras
+		}
+		merged = append(merged, next)
+		delete(pinned, base.ID)
+	}
+
+	// A slot the panel knows about but this controller does not: carry it
+	// through so a new slot can ship as a panel deploy, exactly as before.
+	for _, slot := range directiveSlots(directive) {
+		if _, still := pinned[slot.ID]; still {
+			merged = append(merged, slot)
+			delete(pinned, slot.ID)
+		}
+	}
+
+	return merged
+}
+
 // directiveSlots converts the panel directive into the internal slot shape.
 // Slots with a blank ID or NodeID are dropped: a half-specified slot must leave
 // the existing binding alone rather than clear it.
@@ -339,22 +393,39 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 		// with an unbound slot.
 		//
 		// DiscordVoiceUdp deliberately resolves to this same node — see that
-		// slot's case below for why splitting them broke Discord voice. Keep
-		// this aligned with the panel-side scorer in
-		// apps/web/src/server/vectra/fleet-route-policy.ts.
-		if !containsAny(label, "польш", "poland", "🇵🇱") {
+		// slot's case below for why splitting them broke Discord voice.
+		//
+		// RE-ALIGNED WITH THE PANEL ON 2026-08-12. This scorer had diverged on
+		// 2026-08-08, when the panel replaced its `!extreme => +5` label
+		// tie-break with an identity-hashed spread over equally-scoring exit
+		// hosts; mirroring that here would have meant reproducing the panel's
+		// FNV-1a hash, host sort and identity normalisation exactly, so it was
+		// left alone. The operator's decision to converge the fleet on one
+		// declared exit removes that problem: a host comparison is trivially
+		// identical in both languages, so the divergence is gone.
+		//
+		// This scorer is still NOT the one that decides on a live router:
+		// whenever the panel sends a directive with bindings,
+		// resolveFleetRoutePolicyTarget takes the node id verbatim and never
+		// calls this function. It runs only as the bootstrap fallback for a
+		// router the panel has no matched slot for, which is why this file can
+		// land ahead of a controller rollout without stranding anyone.
+		//
+		// Poland is matched by HOST as well as by label, like the panel does:
+		// the provider ships this exit as "⚡Extreme Авто EU 🇪🇺" on some
+		// subscriptions, with no Poland marker in the label at all.
+		if !containsAny(label, "польш", "poland", "🇵🇱") &&
+			!(!ruEntry && hostLooksLikePolandExit(address)) {
 			return 0
 		}
 		score := 60
 		if !ruEntry && node.Port == 443 {
 			// Canonical shape: direct foreign Poland exit on :443.
 			score += 80
-			if !containsAny(label, "extreme") {
-				// Deterministic tie-break. Subscriptions carry two direct
-				// Poland :443 nodes ("🇵🇱 ⚡️Польша YouTube 🚫Ad🚫" and
-				// "⚡Extreme Польша 🇵🇱"); without this they score equal and the
-				// winner depends on node order, which the subscription
-				// re-mints on every refresh.
+			if isCanonicalPolandExit(address) {
+				// The operator's own exit wins the tie. Every other Poland :443
+				// exit stays at 140 so a subscription without this host lands
+				// on one of those instead of stranding the slot.
 				score += 5
 			}
 			return score
@@ -520,6 +591,25 @@ func normalizePolicyHost(value string) string {
 
 func hostLooksLikeRuEntry(host string) bool {
 	return (strings.HasPrefix(host, "ru") && strings.Contains(host, ".")) || strings.Contains(host, "ru-entry") || strings.Contains(host, "ru entry")
+}
+
+// The provider's exit hosts are named by country, exactly like ru* marks an RU
+// entry above. Mirrors hostLooksLikePolandExit in the panel scorer.
+func hostLooksLikePolandExit(host string) bool {
+	return polandExitHostPattern.MatchString(host)
+}
+
+var polandExitHostPattern = regexp.MustCompile(`^pl\d*\.`)
+
+// canonicalPolandExitHost mirrors the constant of the same name in
+// apps/web/src/server/vectra/fleet-route-policy.ts. Operator decision
+// 2026-08-12: the whole fleet converges on the exit the operator runs and has
+// verified, instead of being spread over every equally-scoring Poland exit.
+// Matched by host because the provider re-maps its labels per router.
+const canonicalPolandExitHost = "pl2.nfnpx.online"
+
+func isCanonicalPolandExit(host string) bool {
+	return normalizePolicyHost(host) == canonicalPolandExitHost
 }
 
 func containsAny(value string, needles ...string) bool {

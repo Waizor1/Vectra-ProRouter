@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   autoRepairActionsForTrigger,
   hasDistinctBlockedReachabilityEvidence,
+  isStaleControlPlaneRecoveryPark,
   noAutoRepairEscalationReason,
   planRepairActionsForRouterSafety,
   repairActionsForTrigger,
@@ -220,5 +221,156 @@ describe("planRepairActionsForRouterSafety", () => {
         },
       }).join("; "),
     ).toContain("available RAM 40 MB");
+  });
+});
+
+describe("isStaleControlPlaneRecoveryPark", () => {
+  // Shape copied from a real prod incident: the metadata is frozen at the
+  // moment the router parked itself, so its foreignStatus stays "blocked"
+  // forever even after the proxy path comes back.
+  const parkedIncident = {
+    type: "proxy_outage",
+    metadata: {
+      origin: "control-plane-recovery",
+      ruStatus: "reachable",
+      panelStatus: "reachable",
+      foreignStatus: "blocked",
+      recoveryPhase: "operator_attention",
+      awaitingOperator: true,
+    },
+  };
+  const healthySnapshot = {
+    foreignReachability: { status: "healthy" },
+    serviceHealth: { passwall: "running" },
+  };
+
+  it("judges the park by the live check-in, not the frozen incident metadata", () => {
+    // The incident still claims foreignStatus "blocked". The router's own
+    // latest snapshot is the authority, and it says the outage is over.
+    expect(
+      isStaleControlPlaneRecoveryPark({
+        incident: parkedIncident,
+        passwallEnabled: true,
+        snapshotPayload: healthySnapshot,
+      }),
+    ).toBe(true);
+  });
+
+  it("leaves a genuine outage alone", () => {
+    expect(
+      isStaleControlPlaneRecoveryPark({
+        incident: parkedIncident,
+        passwallEnabled: false,
+        snapshotPayload: { foreignReachability: { status: "blocked" } },
+      }),
+    ).toBe(false);
+  });
+
+  it("requires the proxy to be back up, not just foreign reachable", () => {
+    // Direct mode reaches foreign hosts for anything the censor allows, so
+    // reachability alone must never be read as "the proxy recovered".
+    expect(
+      isStaleControlPlaneRecoveryPark({
+        incident: parkedIncident,
+        passwallEnabled: false,
+        snapshotPayload: healthySnapshot,
+      }),
+    ).toBe(false);
+  });
+
+  it("ignores incidents the control plane recovery machine did not open", () => {
+    // Operator- or monitor-opened incidents are not parked behind the agent
+    // phase machine, so unparking them would be meaningless.
+    expect(
+      isStaleControlPlaneRecoveryPark({
+        incident: {
+          type: "proxy_outage",
+          metadata: { awaitingOperator: true },
+        },
+        passwallEnabled: true,
+        snapshotPayload: healthySnapshot,
+      }),
+    ).toBe(false);
+  });
+
+  it("only unparks incidents that are actually awaiting an operator", () => {
+    expect(
+      isStaleControlPlaneRecoveryPark({
+        incident: {
+          type: "proxy_outage",
+          metadata: {
+            origin: "control-plane-recovery",
+            recoveryPhase: "direct_settle",
+            awaitingOperator: false,
+          },
+        },
+        passwallEnabled: true,
+        snapshotPayload: healthySnapshot,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not trust the UCI switch when the stack itself is down", () => {
+    // passwallEnabled reads passwall2.@global[0].enabled -- a config flag, not
+    // a running process. A box whose xray died with the switch still on keeps
+    // reporting true and still reaches foreign hosts, because its traffic
+    // falls through to direct. Treating that as recovered would close a live
+    // outage.
+    expect(
+      isStaleControlPlaneRecoveryPark({
+        incident: parkedIncident,
+        passwallEnabled: true,
+        snapshotPayload: {
+          foreignReachability: { status: "healthy" },
+          serviceHealth: { passwall: "stopped" },
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("ignores a transient retry-wait phase that also awaits an operator", () => {
+    expect(
+      isStaleControlPlaneRecoveryPark({
+        incident: {
+          type: "proxy_outage",
+          metadata: {
+            origin: "control-plane-recovery",
+            recoveryPhase: "passwall_retry_wait",
+            awaitingOperator: true,
+          },
+        },
+        passwallEnabled: true,
+        snapshotPayload: healthySnapshot,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects every non-healthy foreign status, including 'reachable'", () => {
+    // "reachable" is a legal status in the contract but a weaker claim than
+    // "healthy"; only the latter means the whole probe group passed.
+    for (const status of ["reachable", "partial", "blocked", "unknown"]) {
+      expect(
+        isStaleControlPlaneRecoveryPark({
+          incident: parkedIncident,
+          passwallEnabled: true,
+          snapshotPayload: {
+            foreignReachability: { status },
+            serviceHealth: { passwall: "running" },
+          },
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("tolerates a missing or malformed snapshot payload", () => {
+    for (const snapshotPayload of [null, undefined, {}, "nonsense", 42]) {
+      expect(
+        isStaleControlPlaneRecoveryPark({
+          incident: parkedIncident,
+          passwallEnabled: true,
+          snapshotPayload,
+        }),
+      ).toBe(false);
+    }
   });
 });

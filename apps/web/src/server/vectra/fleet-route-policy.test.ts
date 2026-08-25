@@ -7,11 +7,13 @@ import {
 
 import {
   buildFleetRoutePolicyDirective,
+  buildFleetRoutePolicyIdentity,
   canonicalFleetRoutePolicy,
   evaluateFleetRoutePolicy,
   FLEET_ROUTE_POLICY_VERSION,
   normalizeFleetRoutePolicy,
 } from "./fleet-route-policy";
+import { buildFleetNodeHealth } from "./fleet-node-health";
 
 function buildConfig(
   overrides: {
@@ -575,7 +577,7 @@ describe("WorldProxy canon (2026-08-02: direct Poland :443)", () => {
   // (ru3.nfnpx.online:50053, grpc) — the shape this outage killed.
   const ruEntryPolandId = "node-discord-1";
 
-  it("binds WorldProxy to the direct Poland :443 exit when one exists", () => {
+  it("binds WorldProxy to a direct Poland :443 exit when one exists", () => {
     const result = normalizeFleetRoutePolicy(
       withPolandNodes([extremePoland, directPoland]),
       { hostname: "kirill-msk" },
@@ -584,7 +586,13 @@ describe("WorldProxy canon (2026-08-02: direct Poland :443)", () => {
     const world = result.after.matchedSlots.find(
       (slot) => slot.slot === "WorldProxy",
     );
-    expect(world?.targetNodeId).toBe("node-poland-direct");
+    // Which of the two direct exits wins is deliberately per-router — see
+    // "exit spreading" below. The canon claim is only that the slot leaves the
+    // RU-entry tier whenever a direct :443 Poland exit is available.
+    expect(["node-poland-direct", "node-poland-extreme"]).toContain(
+      world?.targetNodeId,
+    );
+    expect(world?.targetNodeId).not.toBe(ruEntryPolandId);
   });
 
   // 2026-08-03: splitting DiscordVoiceUdp off WorldProxy killed voice
@@ -605,7 +613,9 @@ describe("WorldProxy canon (2026-08-02: direct Poland :443)", () => {
     const discord = result.after.matchedSlots.find(
       (slot) => slot.slot === "DiscordVoiceUdp",
     );
-    expect(discord?.targetNodeId).toBe("node-poland-direct");
+    expect(["node-poland-direct", "node-poland-extreme"]).toContain(
+      discord?.targetNodeId,
+    );
     expect(discord?.targetNodeId).toBe(world?.targetNodeId);
   });
 
@@ -705,5 +715,549 @@ describe("WorldProxy strictPreferred", () => {
     });
 
     expect(compliance.status).toBe("compliant");
+  });
+});
+
+describe("exit spreading across equally good Poland nodes", () => {
+  function polandNode(id: string, address: string, label: string) {
+    return {
+      id,
+      label,
+      protocol: "vless",
+      enabled: true,
+      group: "default",
+      address,
+      port: 443,
+      transport: "tcp",
+      extras: {},
+    };
+  }
+
+  function withNodes(
+    nodes: ReturnType<typeof polandNode>[],
+    bindings?: Record<string, string>,
+  ) {
+    const base = buildConfig(bindings ? { bindings } : {});
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [...base.nodes, ...nodes],
+    });
+  }
+
+  const bothExits = () => [
+    polandNode("node-pl1", "pl1.nfnpx.online", "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫"),
+    polandNode("node-pl2", "pl2.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+  ];
+
+  function worldTargetFor(deviceIdentifier: string) {
+    const normalized = normalizeFleetRoutePolicy(withNodes(bothExits()), {
+      deviceIdentifier,
+    });
+    return normalized.after.matchedSlots.find(
+      (slot) => slot.slot === "WorldProxy",
+    )?.targetNodeId;
+  }
+
+  it("hands every router the operator's exit when it is available", () => {
+    // Operator decision 2026-08-12, made with the concentration risk stated:
+    // the fleet converges on the exit the operator runs on 1111111111, so that
+    // "it works on mine" holds for every router rather than for a hash-picked
+    // half of them.
+    const picks = new Set(
+      Array.from({ length: 40 }, (_, index) =>
+        worldTargetFor(`vectra-device-${index}`),
+      ),
+    );
+
+    expect(picks).toEqual(new Set(["node-pl2"]));
+  });
+
+  it("falls back to another Poland exit when the subscription has no pl2", () => {
+    // The convergence must not strand a slot. A subscription that carries no
+    // pl2 node still has to land on a working Poland exit rather than score
+    // below the 100 floor and leave WorldProxy unbound.
+    const onlyPl1 = [
+      polandNode("node-pl1", "pl1.nfnpx.online", "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫"),
+    ];
+    const normalized = normalizeFleetRoutePolicy(withNodes(onlyPl1), {
+      deviceIdentifier: "vectra-no-pl2",
+    });
+
+    expect(
+      normalized.after.matchedSlots.find((slot) => slot.slot === "WorldProxy")
+        ?.targetNodeId,
+    ).toBe("node-pl1");
+  });
+
+  it("still spreads routers over the remaining exits when pl2 is absent", () => {
+    // The spread is inert for WorldProxy only while the canonical host is
+    // present. Without it the fleet must not re-concentrate on one survivor.
+    const noCanonical = () => [
+      polandNode("node-pl1", "pl1.nfnpx.online", "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫"),
+      polandNode("node-pl3", "pl3.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+    ];
+    const picks = new Set(
+      Array.from({ length: 40 }, (_, index) => {
+        const normalized = normalizeFleetRoutePolicy(withNodes(noCanonical()), {
+          deviceIdentifier: `vectra-device-${index}`,
+        });
+        return normalized.after.matchedSlots.find(
+          (slot) => slot.slot === "WorldProxy",
+        )?.targetNodeId;
+      }),
+    );
+
+    expect(picks).toEqual(new Set(["node-pl1", "node-pl3"]));
+  });
+
+  it("picks the operator's exit by host even when its label says something else", () => {
+    // The provider re-maps labels per subscription: this same host arrives as
+    // "⚡Extreme Авто EU 🇪🇺" on some routers, with no Poland marker at all.
+    // Matching on the label would silently drop those to the pl1 tier.
+    const relabelled = [
+      polandNode("node-pl1", "pl1.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+      polandNode("node-pl2", "pl2.nfnpx.online", "⚡Extreme Авто EU 🇪🇺"),
+    ];
+    const normalized = normalizeFleetRoutePolicy(withNodes(relabelled), {
+      deviceIdentifier: "vectra-relabelled",
+    });
+
+    expect(
+      normalized.after.matchedSlots.find((slot) => slot.slot === "WorldProxy")
+        ?.targetNodeId,
+    ).toBe("node-pl2");
+  });
+
+  it("gives one router the same exit on every evaluation", () => {
+    // A router that hops exits between check-ins would rewrite its config and
+    // drop connections every minute.
+    const picks = Array.from({ length: 8 }, () =>
+      worldTargetFor("vectra-aabbccddeeff"),
+    );
+
+    expect(new Set(picks).size).toBe(1);
+  });
+
+  it("keeps DiscordVoiceUdp on the same node as WorldProxy for every router", () => {
+    // These two slots MUST share a node: the generated Xray routing chain puts
+    // the WorldProxy rule above DiscordVoiceUdp, so voice packets leave through
+    // whatever WorldProxy resolved to regardless.
+    for (let index = 0; index < 40; index += 1) {
+      const normalized = normalizeFleetRoutePolicy(withNodes(bothExits()), {
+        deviceIdentifier: `vectra-device-${index}`,
+      });
+      const world = normalized.after.matchedSlots.find(
+        (slot) => slot.slot === "WorldProxy",
+      )?.targetNodeId;
+      const discord = normalized.after.matchedSlots.find(
+        (slot) => slot.slot === "DiscordVoiceUdp",
+      )?.targetNodeId;
+
+      expect(discord).toBe(world);
+    }
+  });
+
+  it("spreads by exit host, not by duplicate labels on one host", () => {
+    // Subscriptions routinely carry the same host twice under two labels.
+    // Splitting those would look like spreading while leaving the whole fleet
+    // on a single exit.
+    const picks = new Set(
+      Array.from({ length: 30 }, (_, index) => {
+        const normalized = normalizeFleetRoutePolicy(
+          withNodes([
+            polandNode("node-a", "pl2.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+            polandNode(
+              "node-b",
+              "pl2.nfnpx.online",
+              "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+            ),
+          ]),
+          { deviceIdentifier: `vectra-device-${index}` },
+        );
+        return normalized.after.matchedSlots.find(
+          (slot) => slot.slot === "WorldProxy",
+        )?.targetNodeId;
+      }),
+    );
+
+    expect(picks.size).toBe(1);
+  });
+
+  it("recognises a Poland exit whose label carries no Poland marker", () => {
+    // Measured 2026-08-08: the provider labels pl2 "⚡Extreme Авто EU 🇪🇺" on
+    // AlekseyHorev and vladimirdrfilicity. Label-only matching made that node
+    // invisible and dropped both routers to the RU-entry fallback.
+    const normalized = normalizeFleetRoutePolicy(
+      withNodes([
+        polandNode("node-pl2", "pl2.nfnpx.online", "⚡Extreme Авто EU 🇪🇺"),
+      ]),
+      { deviceIdentifier: "vectra-aabbccddeeff" },
+    );
+
+    const world = normalized.after.matchedSlots.find(
+      (slot) => slot.slot === "WorldProxy",
+    );
+    expect(world?.targetNodeId).toBe("node-pl2");
+  });
+
+  it("still refuses a node that is neither Poland-labelled nor a pl* host", () => {
+    const normalized = normalizeFleetRoutePolicy(
+      withNodes([
+        polandNode("node-nl", "nl3.nfnpx.online", "⚡Extreme Авто EU 🇪🇺"),
+      ]),
+      { deviceIdentifier: "vectra-aabbccddeeff" },
+    );
+
+    const bound = normalized.after.matchedSlots
+      .filter((slot) => slot.slot === "WorldProxy")
+      .map((slot) => slot.targetNodeId);
+    expect(bound).not.toContain("node-nl");
+  });
+});
+
+describe("operator exemption survives into every panel surface", () => {
+  // The database flag used to reach only the check-in path: the controller
+  // honoured it while fleet.list / fleet.byId / fleet.normalizeRoutePolicy each
+  // built their own identity literal and dropped it. kirill-msk therefore read
+  // "violation" with canNormalize:true, and pressing normalize would have
+  // rebound his slots off the hand-tuned node that took his handshake failures
+  // from 78/150 to 0/150 — the flag protected him from the automation but not
+  // from the operator.
+  const exemptRow = {
+    id: "11111111-2222-3333-4444-555555555555",
+    displayName: "kirill-msk",
+    hostname: "kirill-msk",
+    deviceIdentifier: "vectra-aabbccddeeff",
+    routePolicyExempt: true,
+    routePolicyExemptReason: "CPU handshake saturation",
+  };
+
+  it("carries the flag and its reason into the identity", () => {
+    const identity = buildFleetRoutePolicyIdentity(exemptRow);
+
+    expect(identity.routePolicyExempt).toBe(true);
+    expect(identity.routePolicyExemptReason).toBe("CPU handshake saturation");
+  });
+
+  it("reports an exempt router as exempt, not as a violation", () => {
+    const compliance = evaluateFleetRoutePolicy(
+      buildConfig({}),
+      buildFleetRoutePolicyIdentity(exemptRow),
+    );
+
+    expect(compliance.status).toBe("exempt");
+    expect(compliance.canNormalize).toBe(false);
+    expect(compliance.exceptionReason).toBe("CPU handshake saturation");
+  });
+
+  it("makes normalization a no-op for an exempt router", () => {
+    const config = buildConfig({});
+    const result = normalizeFleetRoutePolicy(
+      config,
+      buildFleetRoutePolicyIdentity(exemptRow),
+    );
+
+    expect(result.changed).toBe(false);
+    expect(result.changes).toHaveLength(0);
+    expect(result.config).toEqual(config);
+  });
+
+  it("still normalizes a router whose flag is unset", () => {
+    // The flag is null for every router until an operator sets it, so the
+    // untouched fleet must keep behaving exactly as before.
+    const compliance = evaluateFleetRoutePolicy(
+      buildConfig({}),
+      buildFleetRoutePolicyIdentity({
+        ...exemptRow,
+        displayName: "artem-lutfulin",
+        hostname: "artem-lutfulin",
+        routePolicyExempt: null,
+        routePolicyExemptReason: null,
+      }),
+    );
+
+    expect(compliance.exempt).toBe(false);
+    expect(compliance.checked).toBe(true);
+  });
+
+  it("lets the flag un-exempt a router the seed list still names", () => {
+    const compliance = evaluateFleetRoutePolicy(
+      buildConfig({}),
+      buildFleetRoutePolicyIdentity({
+        ...exemptRow,
+        displayName: "hh",
+        hostname: "hh",
+        routePolicyExempt: false,
+        routePolicyExemptReason: null,
+      }),
+    );
+
+    expect(compliance.exempt).toBe(false);
+  });
+});
+
+describe("no churn when already on the right exit", () => {
+  function polandNode(id: string, address: string, label: string) {
+    return {
+      id,
+      label,
+      protocol: "vless",
+      enabled: true,
+      group: "default",
+      address,
+      port: 443,
+      transport: "tcp",
+      extras: {},
+    };
+  }
+
+  // One host, two labels — the shape every real subscription hands out.
+  function twinLabelConfig(boundNodeId: string) {
+    const base = buildConfig({ bindings: { WorldProxy: boundNodeId } });
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [
+        ...base.nodes,
+        polandNode("node-adblock", "pl2.nfnpx.online", "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫"),
+        polandNode("node-extreme", "pl2.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+      ],
+    });
+  }
+
+  it("keeps a binding that is already on the chosen host", () => {
+    // Both labels are the same exit, so demanding one over the other is a
+    // rebind that changes no traffic — and it never sticks, because the
+    // subscription re-mints node ids nightly.
+    for (const bound of ["node-adblock", "node-extreme"]) {
+      const compliance = evaluateFleetRoutePolicy(twinLabelConfig(bound), {
+        deviceIdentifier: "vectra-aabbccddeeff",
+      });
+      const world = compliance.matchedSlots.find(
+        (slot) => slot.slot === "WorldProxy",
+      );
+
+      expect(world?.targetNodeId).toBe(bound);
+    }
+  });
+
+  it("reports such a router as compliant, not as a violation", () => {
+    const compliance = evaluateFleetRoutePolicy(twinLabelConfig("node-extreme"), {
+      deviceIdentifier: "vectra-aabbccddeeff",
+    });
+
+    expect(
+      compliance.mismatches.filter((mismatch) => mismatch.slot === "WorldProxy"),
+    ).toHaveLength(0);
+  });
+
+  it("normalization is a no-op for the WorldProxy slot in that case", () => {
+    const config = twinLabelConfig("node-extreme");
+    const result = normalizeFleetRoutePolicy(config, {
+      deviceIdentifier: "vectra-aabbccddeeff",
+    });
+
+    expect(
+      result.changes.filter((change) => change.slot === "WorldProxy"),
+    ).toHaveLength(0);
+  });
+
+  it("still moves a router that sits on the wrong host", () => {
+    // Stickiness must not become "never move". A router parked on pl1 while the
+    // operator's exit is available in its subscription has to be relocated —
+    // that is exactly the case that left kirill-msk rotting on an emergency
+    // node for five days on 2026-08-07.
+    const base = buildConfig({ bindings: { WorldProxy: "node-pl1" } });
+    const config = passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [
+        ...base.nodes,
+        polandNode("node-pl1", "pl1.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+        polandNode("node-pl2", "pl2.nfnpx.online", "⚡Extreme Польша 🇵🇱"),
+      ],
+    });
+
+    const picks = new Set(
+      Array.from({ length: 40 }, (_, index) => {
+        const result = normalizeFleetRoutePolicy(config, {
+          deviceIdentifier: `vectra-device-${index}`,
+        });
+        return result.after.matchedSlots.find(
+          (slot) => slot.slot === "WorldProxy",
+        )?.targetNodeId;
+      }),
+    );
+
+    expect(picks).toEqual(new Set(["node-pl2"]));
+  });
+});
+
+describe("directive covers slots that have drifted", () => {
+  // 2026-08-24 root cause. buildFleetRoutePolicyDirective used to echo only
+  // matchedSlots, so a drifted slot got no instruction — and on the controller
+  // side a directive carrying ANY binding replaces the whole slot list, which
+  // silently switches off the router's own scorer for exactly the slot that
+  // needed it. The drift then survives forever. The directive must therefore
+  // name the node a slot should be on, never just the ones already correct.
+  function driftedWorldProxy() {
+    const base = buildConfig({});
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: "node-poland-direct",
+          label: "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+          protocol: "vless",
+          enabled: true,
+          group: "default",
+          address: "pl1.nfnpx.online",
+          port: 443,
+          transport: "tcp",
+          extras: {},
+        },
+      ],
+    });
+  }
+
+  it("names the canonical node for a drifted slot instead of staying silent", () => {
+    const config = driftedWorldProxy();
+    const compliance = evaluateFleetRoutePolicy(config, {
+      hostname: "nataliafilisiti",
+    });
+    expect(compliance.status).toBe("violation");
+
+    const directive = buildFleetRoutePolicyDirective(config, {
+      hostname: "nataliafilisiti",
+    });
+    const world = directive?.slots.find((slot) => slot.id === "WorldProxy");
+    const discord = directive?.slots.find(
+      (slot) => slot.id === "DiscordVoiceUdp",
+    );
+
+    expect(world?.nodeId).toBe("node-poland-direct");
+    // The pair must move together or Discord voice breaks, exactly as it did
+    // on 2026-08-03 when the two slots resolved to different nodes.
+    expect(discord?.nodeId).toBe("node-poland-direct");
+  });
+
+  it("still covers every canonical slot while it is drifting", () => {
+    const directive = buildFleetRoutePolicyDirective(driftedWorldProxy(), {
+      hostname: "nataliafilisiti",
+    });
+
+    expect(directive?.slots.map((slot) => slot.id)).toEqual([
+      "WorldProxy",
+      "YouTube",
+      "Special",
+      "Tiktok",
+      "DiscordVoiceUdp",
+    ]);
+  });
+});
+
+describe("dead provider hosts lose their slot", () => {
+  // The other half of 2026-08-24: the provider lost ru9-ru12 outright. Scoring
+  // by label/host/port cannot see that, so eleven routers read as "compliant"
+  // while bound to a node returning nothing, and the directive pinned them
+  // there. With the fleet ledger the dead host stops being a candidate.
+  function twoYoutubeNodes() {
+    const base = buildConfig({});
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: "node-youtube-live",
+          label: "🇷🇺⚡Россия YouTube 🚫Ad🚫",
+          protocol: "vless",
+          enabled: true,
+          group: "default",
+          address: "ru7.nfnpx.online",
+          port: 50051,
+          transport: "grpc",
+          extras: {},
+        },
+      ],
+    });
+  }
+
+  const deadRu5 = {
+    nodeHealth: buildFleetNodeHealth([
+      {
+        routerId: "kirill",
+        observations: [
+          { host: "ru5.nfnpx.online:50051", outcome: "fail" as const },
+          { host: "pl2.nfnpx.online:443", outcome: "ok" as const },
+        ],
+      },
+    ]),
+  };
+
+  it("counts a binding to a dead host as a violation", () => {
+    const config = twoYoutubeNodes();
+
+    expect(evaluateFleetRoutePolicy(config, { hostname: "kirill-msk" }).status)
+      .toBe("compliant");
+    expect(
+      evaluateFleetRoutePolicy(config, { hostname: "kirill-msk" }, deadRu5)
+        .status,
+    ).toBe("violation");
+  });
+
+  it("points the directive at the live sibling", () => {
+    const directive = buildFleetRoutePolicyDirective(
+      twoYoutubeNodes(),
+      { hostname: "kirill-msk" },
+      deadRu5,
+    );
+
+    const youtube = directive?.slots.find((slot) => slot.id === "YouTube");
+    expect(youtube?.nodeId).toBe("node-youtube-live");
+  });
+
+  it("normalisation moves the slot off the dead host", () => {
+    const result = normalizeFleetRoutePolicy(
+      twoYoutubeNodes(),
+      { hostname: "kirill-msk" },
+      deadRu5,
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.after.status).toBe("compliant");
+    expect(
+      result.after.matchedSlots.find((slot) => slot.slot === "YouTube")
+        ?.targetNodeId,
+    ).toBe("node-youtube-live");
+  });
+
+  // Never strand a slot. A dead binding still recovers by itself when the
+  // provider brings the host back; an unbound slot dumps that traffic
+  // somewhere else entirely and nothing brings it back.
+  it("keeps the only candidate even when it is dead", () => {
+    // Every host that could carry the YouTube slot is condemned, so there is
+    // nowhere live to go.
+    const everythingDead = {
+      nodeHealth: buildFleetNodeHealth([
+        {
+          routerId: "kirill",
+          observations: [
+            { host: "ru3.nfnpx.online:50053", outcome: "fail" as const },
+            { host: "ru4.nfnpx.online:50052", outcome: "fail" as const },
+            { host: "ru5.nfnpx.online:50051", outcome: "fail" as const },
+            { host: "pl2.nfnpx.online:443", outcome: "ok" as const },
+          ],
+        },
+      ]),
+    };
+    const compliance = evaluateFleetRoutePolicy(
+      buildConfig({}),
+      { hostname: "kirill-msk" },
+      everythingDead,
+    );
+
+    const youtube = compliance.matchedSlots.find(
+      (slot) => slot.slot === "YouTube",
+    );
+    expect(youtube?.targetNodeId).toBe("node-youtube-1");
   });
 });

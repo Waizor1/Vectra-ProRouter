@@ -1,4 +1,5 @@
 import {
+  eventLog,
   healthIncidents,
   jobResults,
   jobs,
@@ -11,14 +12,16 @@ import {
   collectRouterLogsJobPayloadSchema,
   runRescueRepairJobPayloadSchema,
 } from "@vectra/contracts";
-import { and, desc, eq, inArray, isNull, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 
 import { env } from "~/env";
 import { db } from "~/server/db";
+import { isControlPlaneRecoveryIncident } from "~/server/vectra/control-plane-recovery-incident";
 import { buildRouterManagementTaskLog } from "~/server/vectra/editor-surface";
 import { loadFleetMonitoringSnapshot } from "~/server/vectra/fleet-monitoring-data";
 import { getFleetRoutePolicyExceptionReason } from "~/server/vectra/fleet-route-policy";
 import { isRouterReachable } from "~/server/vectra/router-presence";
+import { loadLatestRouteVerifications } from "~/server/vectra/route-health-verifier";
 import {
   canRunDestructiveAction,
   describeEffectiveRouterSupport,
@@ -54,6 +57,11 @@ const heavyRescueRepairActions = [
   "refresh_subscriptions",
 ] as const;
 const proxyRuntimeRepairActions = ["restart_passwall", "reconnect_proxy"] as const;
+const logCollectionMaxPerWindow = 3;
+const logCollectionWindowMs = 6 * 60 * 60 * 1000;
+const unparkMaxAttempts = 2;
+const unparkMaxPerTick = 3;
+const unparkRetryCooldownMs = 15 * 60 * 1000;
 const heavyRepairMemoryFloorMb = 64;
 const heavyRepairOverlayFloorMb = 8;
 const heavyRepairTmpFloorMb = 16;
@@ -78,6 +86,107 @@ function latestResourceRecord(snapshotPayload: unknown) {
 function latestSafetyEventRecords(snapshotPayload: unknown) {
   const events = asRecord(snapshotPayload).safetyEvents;
   return Array.isArray(events) ? events.map(asRecord) : [];
+}
+
+function foreignReachabilityStatus(snapshotPayload: unknown) {
+  const status = asRecord(asRecord(snapshotPayload).foreignReachability).status;
+  return typeof status === "string" ? status : null;
+}
+
+function serviceHealthStatus(snapshotPayload: unknown, service: string) {
+  const status = asRecord(asRecord(snapshotPayload).serviceHealth)[service];
+  return typeof status === "string" ? status : null;
+}
+
+// A control-plane-recovery incident parked in operator_attention is a one-way
+// door, and the three locks reinforce each other:
+//   1. applyIncidentTransitions only ever closes an incident on a transition
+//      the ROUTER sends; the panel never resolves one on its own.
+//   2. the agent's PhaseOperatorAttention branch is gated on the panel being
+//      UNREACHABLE, so a router with a healthy panel link never leaves the
+//      phase and therefore never sends that transition. Every neighbouring
+//      phase has a "foreign healthy -> PhaseIdle" exit; this one does not.
+//   3. resolveRecoveredCases then reads that same open incident as proof the
+//      router is still sick, so the rescue case never resolves either, and
+//      escalateExpiredCases gives up on it after the escalation window.
+// Observed in prod as incidents open for 10-27 days on routers whose own
+// check-ins reported YouTube/Instagram/Telegram all reachable. The loop only
+// breaks if the panel queues the operator reconnect job itself, because that
+// handler is the one path that calls clearControlPlaneRecoveryOwnership and
+// emits the resolved transition.
+//
+// Detect the stale park by ignoring the incident metadata entirely -- it is
+// frozen at the moment the router parked and keeps claiming foreignStatus
+// "blocked" forever -- and trusting the router's own latest check-in instead.
+// PassWall must be back up as well: in direct mode a router still reaches
+// whatever the censor permits, so reachability alone would misread a genuine
+// outage as recovered.
+export function isStaleControlPlaneRecoveryPark(args: {
+  incident: { type: string; metadata: unknown } | null | undefined;
+  passwallEnabled: boolean;
+  snapshotPayload: unknown;
+  /**
+   * Measured proof that this router's own provider nodes still carry traffic:
+   * at least one slot answered its url_test probe in a recent
+   * verify_passwall_routes run. Only consulted for the direct-mode park below,
+   * where no signal from the router itself can say it.
+   */
+  proxyNodesHealthy?: boolean;
+}) {
+  if (!isControlPlaneRecoveryIncident(args.incident)) {
+    return false;
+  }
+
+  const metadata = asRecord(args.incident?.metadata);
+  if (metadata.awaitingOperator !== true) {
+    return false;
+  }
+
+  // awaitingOperator is also raised for passwall_retry_wait, a transient
+  // self-healing state rather than a park. That phase suppresses check-ins
+  // today so the panel never persists it, but pinning the phase keeps this
+  // honest if that ever changes.
+  if (metadata.recoveryPhase !== "operator_attention") {
+    return false;
+  }
+
+  // The park has two shapes, and until 2026-08-25 only the first was handled.
+  //
+  // Shape 2 -- the router was left in DIRECT: enterDirectModeForRecovery turns
+  // the PassWall switch off before parking, so passwallEnabled is false and
+  // every signal below is unusable. foreignReachability reads "healthy" in
+  // direct mode for the trivial reason that direct traffic is not proxied at
+  // all, and serviceHealth describes a stack that was deliberately stopped.
+  //
+  // Rejecting that shape outright is what deadlocked the fleet: the agent's
+  // own operator_attention retry is gated on the panel being UNREACHABLE, so a
+  // router with a healthy panel link waits for the panel, while the panel's
+  // sweep skipped it for having PassWall off. Neither side moved.
+  // aleksandr-grigorievsky sat in direct that way with all five slots probing
+  // 204 until an operator reconnected it by hand.
+  //
+  // So judge shape 2 on the one thing that is still measurable with the proxy
+  // stopped: whether the router's assigned nodes answer. url_test_node dials
+  // the node directly and works with PassWall off (measured on that router).
+  // A router whose nodes are genuinely dead -- sergeyavito, whose provider
+  // account is rejected and whose every slot probes 000 -- produces no such
+  // evidence and stays parked, which is correct: reconnecting it would only
+  // loop.
+  if (!args.passwallEnabled) {
+    return args.proxyNodesHealthy === true;
+  }
+
+  // Shape 1 -- the switch stayed on. passwallEnabled is the UCI switch, not a
+  // running stack. A router whose xray died while the switch stayed on still
+  // reports true AND still reaches foreign hosts, because its traffic falls
+  // through to direct -- so the switch on its own would read a live outage as
+  // recovered. serviceHealth comes from the service manager in the same
+  // check-in and closes that hole.
+  if (serviceHealthStatus(args.snapshotPayload, "passwall") !== "running") {
+    return false;
+  }
+
+  return foreignReachabilityStatus(args.snapshotPayload) === "healthy";
 }
 
 function resourceSafetyEventReasons(
@@ -422,6 +531,60 @@ async function loadLatestSnapshot(database: DatabaseClient, routerId: string) {
   return snapshot ?? null;
 }
 
+/**
+ * How recent a route verification has to be to authorise an unpark.
+ *
+ * The verifier's own per-router TTL is 6h, so anything older than this is the
+ * previous sweep and says nothing about now. A stale verdict is treated as no
+ * evidence rather than as evidence of health: the park stays, and the next
+ * verification either renews the claim or does not.
+ */
+const proxyNodeEvidenceMaxAgeMs = 6 * 60 * 60 * 1000;
+
+/**
+ * Positive, measured proof that this router still has a usable exit.
+ *
+ * Reads the latest verify_passwall_routes verdict and asks only whether some
+ * slot's node answered its probe. url_test_node dials the provider node
+ * directly, so this stays true while the proxy stack is stopped -- which is
+ * the whole point, because the router it judges was parked with PassWall off.
+ *
+ * Deliberately "any slot", not "all": one live exit is enough to justify
+ * resuming the proxy, and demanding all five would leave a router parked over
+ * a single retired host that the route policy would move it off anyway.
+ */
+async function hasRecentHealthyProxyNode(
+  database: DatabaseClient,
+  routerId: string,
+  now: Date,
+) {
+  try {
+    const verifications = await loadLatestRouteVerifications(database, [
+      routerId,
+    ]);
+    const latest = verifications.get(routerId);
+    if (!latest) {
+      return false;
+    }
+    if (
+      now.getTime() - latest.verifiedAt.getTime() >
+      proxyNodeEvidenceMaxAgeMs
+    ) {
+      return false;
+    }
+    const slots = latest.verification.slots;
+    return Array.isArray(slots) && slots.some((slot) => slot?.smokeOk === true);
+  } catch (error) {
+    // Evidence we cannot read is not evidence against, but it is not evidence
+    // for either -- and this path only ever unparks on evidence for.
+    console.error("[auto-rescue-monitor] proxy node evidence lookup failed", {
+      routerId,
+      error,
+    });
+    return false;
+  }
+}
+
 async function buildCompactEvidence(
   database: DatabaseClient,
   routerId: string,
@@ -738,6 +901,7 @@ async function ensureRescueCase(
 export async function queueRescueCaseLogCollection(
   caseId: string,
   database: DatabaseClient = db,
+  options: { unattended?: boolean; onInserted?: () => void } = {},
 ) {
   const rescueCase = await getRescueCaseOrThrow(caseId, database);
   const [existingJob] = await database
@@ -755,6 +919,37 @@ export async function queueRescueCaseLogCollection(
 
   if (existingJob) {
     return existingJob;
+  }
+
+  // Diagnostics are evidence gathering, not remediation: a few log dumps
+  // answer the question and repeating forever does not. The in-flight check
+  // above cannot bound this on its own, because resolveJobDedupeKeyAfterResult
+  // nulls dedupe_key on every terminal result -- a COMPLETED collection leaves
+  // nothing behind to match, so the monitor re-queued one per tick for as long
+  // as the case stayed open. Measured in prod: 1600-2700 jobs/day against a
+  // single stuck router and 456 MB of job results, driven by a case that can
+  // never resolve (a router parked in direct with an open incident fails the
+  // health test in resolveRecoveredCases forever). Operator- and
+  // Telegram-initiated collection is deliberately NOT capped -- a human asking
+  // for logs is answering a question, not looping.
+  if (options.unattended) {
+    const recentCollections = await database
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.routerId, rescueCase.routerId),
+          eq(jobs.type, "collect_router_logs"),
+          gte(
+            jobs.createdAt,
+            new Date(Date.now() - logCollectionWindowMs),
+          ),
+        ),
+      );
+
+    if (recentCollections.length >= logCollectionMaxPerWindow) {
+      return null;
+    }
   }
 
   const latestSnapshot = await loadLatestSnapshot(database, rescueCase.routerId);
@@ -782,6 +977,7 @@ export async function queueRescueCaseLogCollection(
     })
     .returning();
 
+  options.onInserted?.();
   return job;
 }
 
@@ -790,6 +986,7 @@ export async function queueRescueCaseSafeRepair(
     caseId: string;
     actions?: readonly string[];
     requestedBy: "auto_rescue" | "operator" | "telegram";
+    onInserted?: () => void;
   },
   database: DatabaseClient = db,
 ) {
@@ -867,6 +1064,8 @@ export async function queueRescueCaseSafeRepair(
     })
     .returning();
 
+  args.onInserted?.();
+
   await database
     .update(rescueCases)
     .set({
@@ -937,22 +1136,33 @@ async function getRescueCaseOrThrow(caseId: string, database: DatabaseClient) {
   return rescueCase;
 }
 
+// Returns how many jobs were actually INSERTED, which is not the same as how
+// many cases were looked at. The distinction matters: the tick used to report
+// only "cases processed", so a loop that queued a job every 60 seconds for
+// weeks produced a single log line and nobody saw it.
 async function queueInitialCaseWork(
   database: DatabaseClient,
   rescueCase: RescueCaseRow,
   now: Date,
 ) {
-  await queueRescueCaseLogCollection(rescueCase.id, database).catch(() => null);
+  let inserted = 0;
+
+  await queueRescueCaseLogCollection(rescueCase.id, database, {
+    unattended: true,
+    onInserted: () => {
+      inserted += 1;
+    },
+  }).catch(() => null);
 
   if (
     rescueCase.state === "silenced" &&
     rescueCase.silencedUntil &&
     rescueCase.silencedUntil > now
   ) {
-    return;
+    return inserted;
   }
   if (rescueCase.lastAttemptAt) {
-    return;
+    return inserted;
   }
 
   const actions = autoRepairActionsForTrigger(rescueCase.trigger);
@@ -960,7 +1170,7 @@ async function queueInitialCaseWork(
     await escalateRescueCase(database, rescueCase, now, {
       reason: noAutoRepairEscalationReason(rescueCase.trigger),
     });
-    return;
+    return inserted;
   }
 
   await queueRescueCaseSafeRepair(
@@ -968,6 +1178,9 @@ async function queueInitialCaseWork(
       caseId: rescueCase.id,
       actions,
       requestedBy: "auto_rescue",
+      onInserted: () => {
+        inserted += 1;
+      },
     },
     database,
   ).catch(async (error: unknown) => {
@@ -982,6 +1195,8 @@ async function queueInitialCaseWork(
       })
       .where(eq(rescueCases.id, rescueCase.id));
   });
+
+  return inserted;
 }
 
 function caseEscalationText(rescueCase: RescueCaseRow) {
@@ -1170,6 +1385,12 @@ function isAutoRescueExemptRouter(router: RouterRow) {
       displayName: router.displayName,
       hostname: router.hostname,
       deviceIdentifier: router.deviceIdentifier,
+      // The per-router DB flag is the authoritative exemption; the seed list
+      // is only the fallback for routers no operator has touched. Omitting
+      // these made every flag-only exemption invisible to the unattended
+      // paths, which is one operator SQL statement away from a real incident.
+      routePolicyExempt: router.routePolicyExempt,
+      routePolicyExemptReason: router.routePolicyExemptReason,
     }) !== null
   );
 }
@@ -1198,6 +1419,213 @@ async function filterOutAutoRescueExemptTriggers(
   };
 }
 
+// Break the deadlock documented on isStaleControlPlaneRecoveryPark by queueing
+// the same job an operator would run by hand.
+//
+// `reconnect` is deliberately the operator lever rather than this monitor's own
+// `reconnect_proxy` repair action. Both resume the proxy, but the repair
+// handler never calls clearControlPlaneRecoveryOwnership, so it leaves the
+// router sitting in PhaseOperatorAttention with awaitingOperator still set --
+// the runtime looks healed while the phase machine stays parked. Only the
+// `reconnect` handler resets the phase AND emits the resolved transition that
+// finally closes the incident.
+//
+// Two attempts is not arbitrary: a reconnect has been seen reporting success
+// while PassWall stayed down, needing a second pass. Beyond that the park is
+// not stale bookkeeping any more and belongs to a human, so the incident stays
+// open and visible instead of restarting xray on a loop.
+export async function clearStaleControlPlaneRecoveryParks(
+  database: DatabaseClient,
+  now: Date,
+) {
+  const openIncidents = await database
+    .select()
+    .from(healthIncidents)
+    .where(eq(healthIncidents.state, "open"))
+    // Oldest park first, so the per-tick budget is spent on the routers that
+    // have been stuck longest instead of on arbitrary DB return order.
+    .orderBy(healthIncidents.openedAt);
+
+  // Bucket by router. The reconnect job's transition carries no metadata,
+  // which is exactly why applyIncidentTransitions resolves it -- and that
+  // branch resolves EVERY open incident on the router, then flips
+  // routers.status. When an operator presses the button that breadth is their
+  // own choice; unattended it would silently erase signals (subscription
+  // degradation and friends) this path never examined. So only clear a park
+  // that is the single open incident on its router.
+  const openByRouter = new Map<string, typeof openIncidents>();
+  for (const incident of openIncidents) {
+    const bucket = openByRouter.get(incident.routerId) ?? [];
+    bucket.push(incident);
+    openByRouter.set(incident.routerId, bucket);
+  }
+
+  let unparked = 0;
+  for (const [routerId, incidents] of openByRouter) {
+    // Parks arrive fleet-wide (one panel outage parks everyone), and this
+    // file already argues 800 lines up that restarting xray everywhere at
+    // once turns a blip into a total outage. Cap the sweep and let the 60s
+    // tick spread the rest.
+    if (unparked >= unparkMaxPerTick) {
+      break;
+    }
+
+    const incident = incidents[0];
+    if (!incident || incidents.length !== 1) {
+      continue;
+    }
+
+    // Cheapest discriminator first: most open incidents are not parks at all,
+    // and everything below this line costs queries.
+    if (!isControlPlaneRecoveryIncident(incident)) {
+      continue;
+    }
+
+    try {
+      const [router] = await database
+        .select()
+        .from(routers)
+        .where(eq(routers.id, routerId))
+        .limit(1);
+
+      if (!router || isAutoRescueExemptRouter(router)) {
+        continue;
+      }
+
+      // An offline router cannot be handed a job. It gets unparked on the
+      // first tick after it checks in again, which is the earliest anything
+      // could have helped it anyway.
+      if (!isRouterReachable(router.lastSeenAt, now)) {
+        continue;
+      }
+
+      if (!(await canAutoRepairRouter(database, router))) {
+        continue;
+      }
+
+      const snapshot = await loadLatestSnapshot(database, routerId);
+      if (!snapshot) {
+        continue;
+      }
+
+      // Only fetched for the direct-mode park, and only for the one router
+      // being judged: the sweep runs every 60s and the overwhelming majority
+      // of ticks find nothing to unpark.
+      const proxyNodesHealthy = snapshot.passwallEnabled
+        ? false
+        : await hasRecentHealthyProxyNode(database, routerId, now);
+
+      if (
+        !isStaleControlPlaneRecoveryPark({
+          incident,
+          passwallEnabled: snapshot.passwallEnabled,
+          snapshotPayload: snapshot.payload,
+          proxyNodesHealthy,
+        })
+      ) {
+        continue;
+      }
+
+      // The attempt budget has to survive job completion, and a dedupe key
+      // does not: resolveJobDedupeKeyAfterResult nulls dedupe_key on every
+      // terminal result, success and failure alike. Counting by key would
+      // silently reset to zero after each attempt and the cap would never
+      // bind -- a router whose passwall2 restart keeps failing would be
+      // reconnected once a minute forever.
+      //
+      // Anchor the count to THIS incident rather than a rolling window. A
+      // rolling window is not a cap at all: the oldest attempt ages out and
+      // the loop resumes forever at the window's rate, which is the opposite
+      // of what the comment above promises. Counting since the incident opened
+      // means two attempts really are the end of it -- if the incident is
+      // still open after them, it belongs to a human. Operator reconnects
+      // count too, deliberately: if someone is already working the router by
+      // hand, the monitor should stay out of the way.
+      const priorAttempts = await database
+        .select({ id: jobs.id, state: jobs.state, createdAt: jobs.createdAt })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.routerId, routerId),
+            eq(jobs.type, "reconnect"),
+            gte(jobs.createdAt, incident.openedAt),
+          ),
+        )
+        .orderBy(desc(jobs.createdAt));
+
+      if (priorAttempts.length >= unparkMaxAttempts) {
+        continue;
+      }
+
+      // Job delivery is capped per check-in and exclusive jobs starve the
+      // rest, so an attempt can sit queued for a long while. Queueing a
+      // sibling next to it would hand the router two back-to-back PassWall
+      // restarts in one check-in.
+      if (
+        priorAttempts.some((attempt) =>
+          repairJobStates.some((state) => state === attempt.state),
+        )
+      ) {
+        continue;
+      }
+
+      const lastAttempt = priorAttempts[0];
+      if (
+        lastAttempt &&
+        now.getTime() - lastAttempt.createdAt.getTime() < unparkRetryCooldownMs
+      ) {
+        continue;
+      }
+
+      // No dedupe key: jobs.dedupe_key is globally unique and gets nulled on
+      // completion, so any generated key risks colliding with a surviving
+      // row. The in-flight check above is the real guard, and the operator
+      // lever queues reconnects without a key for the same reason.
+      await database.insert(jobs).values({
+        routerId,
+        type: "reconnect",
+        state: "queued",
+        payload: {
+          resumeProxy: true,
+          clearRescue: true,
+        },
+      });
+
+      // Count it the moment the job exists. If the audit insert below throws,
+      // the catch swallows it -- and with the increment after that point the
+      // per-tick cap would never bind, so a fleet-wide park could restart
+      // PassWall on every eligible router in a single tick.
+      unparked += 1;
+
+      // This restarts the proxy on a router the operator sees as healthy.
+      // Without a trail, a 60-second blip has nothing to correlate it to.
+      await database.insert(eventLog).values({
+        routerId,
+        type: "fleet.control_plane_park_cleared",
+        severity: "warning",
+        message: `Queued a reconnect to clear a stale operator_attention park (attempt ${priorAttempts.length + 1} of ${unparkMaxAttempts}).`,
+        metadata: {
+          incidentId: incident.id,
+          incidentType: incident.type,
+          incidentOpenedAt: incident.openedAt.toISOString(),
+          attempt: priorAttempts.length + 1,
+        },
+      });
+
+    } catch (error) {
+      // One bad router must not abort the sweep, nor the resolve and
+      // escalation passes that run after it in the same tick.
+      console.error(
+        "[auto-rescue-monitor] unpark failed",
+        { routerId, incidentId: incident.id },
+        error,
+      );
+    }
+  }
+
+  return unparked;
+}
+
 export async function runAutoRescueMonitorTick(
   now = new Date(),
   database: DatabaseClient = db,
@@ -1207,6 +1635,8 @@ export async function runAutoRescueMonitorTick(
       enabled: false,
       created: 0,
       queued: 0,
+      jobsQueued: 0,
+      unparked: 0,
       resolved: 0,
       escalated: 0,
       skipped: 0,
@@ -1220,6 +1650,7 @@ export async function runAutoRescueMonitorTick(
   );
   let created = 0;
   let queued = 0;
+  let jobsQueued = 0;
   for (const trigger of triggers) {
     const rescueCase = await ensureRescueCase(database, trigger, now);
     if (!rescueCase) {
@@ -1228,17 +1659,29 @@ export async function runAutoRescueMonitorTick(
     if (rescueCase.startedAt.getTime() === now.getTime()) {
       created += 1;
     }
-    await queueInitialCaseWork(database, rescueCase, now);
+    jobsQueued += await queueInitialCaseWork(database, rescueCase, now);
     queued += 1;
   }
 
   const resolved = await resolveRecoveredCases(database, now);
   const escalated = await escalateExpiredCases(database, now);
+  // Runs last and swallows its own failure: unparking is the newest and least
+  // proven step here, and it must never cost the tick its resolve/escalate
+  // passes.
+  const unparked = await clearStaleControlPlaneRecoveryParks(
+    database,
+    now,
+  ).catch((error: unknown) => {
+    console.error("[auto-rescue-monitor] unpark sweep failed", error);
+    return 0;
+  });
 
   return {
     enabled: true,
     created,
     queued,
+    jobsQueued,
+    unparked,
     resolved,
     escalated,
     skipped: skipped.length,
@@ -1266,7 +1709,22 @@ export function startAutoRescueMonitor() {
 
     globalForAutoRescue.__vectraAutoRescueMonitorRunning = true;
     try {
-      await runAutoRescueMonitorTick(new Date(), db);
+      const tick = await runAutoRescueMonitorTick(new Date(), db);
+      // The tick result was previously discarded, which made every failure
+      // mode in here invisible in production. Only speak up when the monitor
+      // actually did something, so a quiet fleet stays quiet in the logs.
+      // Deliberately NOT tick.queued: that counts cases LOOKED AT, so with any
+      // standing condition it is constant and prints every 60s forever, which
+      // is noise that would eventually mask real events. jobsQueued counts
+      // rows actually inserted, which is what an operator needs to see.
+      if (
+        tick.created > 0 ||
+        tick.jobsQueued > 0 ||
+        tick.unparked > 0 ||
+        tick.escalated > 0
+      ) {
+        console.info("[auto-rescue-monitor]", tick);
+      }
     } catch (error) {
       console.error("[auto-rescue-monitor]", error);
     } finally {

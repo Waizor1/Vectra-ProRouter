@@ -97,6 +97,20 @@ type SubscriptionSettings struct {
 	TypePreferences   SubscriptionTypes   `json:"typePreferences"`
 	DomainStrategy    string              `json:"domainStrategy,omitempty"`
 	Items             []SubscriptionEntry `json:"items,omitempty"`
+	// Extras carries the global_subscribe options the panel does not model.
+	// Apply deletes and rewrites this section wholesale, so anything not
+	// round-tripped here is destroyed on every apply. The three sibling global
+	// sections have always preserved their extras; this one silently did not.
+	//
+	// Scope, measured on a live router 2026-08-24: the settings that actually
+	// drive a refresh are read per subscription entry, not from here —
+	// subscribe.lua takes `user_agent` and `hwid` from the subscribe_list
+	// section (`local ua = value.user_agent`), and app.sh builds the nightly
+	// cron by iterating subscribe_list for `update_week_mode` /
+	// `update_time_mode`. Entry extras already round-tripped, which is why
+	// those survived. What was lost here are the global defaults LuCI seeds
+	// new entries from, so this is consistency rather than an outage fix.
+	Extras map[string]any `json:"extras,omitempty"`
 }
 
 type SubscriptionTypes struct {

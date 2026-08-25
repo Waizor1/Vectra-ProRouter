@@ -65,6 +65,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	// Logged once here rather than on every poll: the config is read exactly
+	// once per process, so this value cannot change while we run — a reload
+	// trigger restarts us instead (see service_triggers in the init script).
+	// The router's syslog ring buffer is 64 KiB by default; a per-cycle line at
+	// a 45s poll would scroll a day of history away on its own, on exactly the
+	// routers whose logs we later need.
+	if cfg.ManualMode {
+		log.Printf("manual mode is ON: the owner opted out of automatic server reassignment; shunt and route policy self-heal are disabled")
+	}
 
 	persisted, err := state.Load(cfg.StatePath)
 	if err != nil {
@@ -145,6 +154,9 @@ func runOnce(
 	persistedBefore := *persisted
 	collectedInventory := collectInventoryWithRuntimeVersion(cfg.Inventory)
 	collectedInventory.ProtocolVersion = controlplane.ProtocolVersion
+	// Sourced from the agent config rather than the rendered inventory block so
+	// the flag the agent ACTS on and the flag the panel SEES are the same value.
+	collectedInventory.ManualMode = cfg.ManualMode
 	collectedInventory.PanelDomain = cfg.PanelURL
 	if collectedInventory.PanelDomain == "" {
 		collectedInventory.PanelDomain = cfg.ControlURL
@@ -168,6 +180,7 @@ func runOnce(
 		SelectedNodeLabel: collectedInventory.SelectedNodeLabel,
 		LastRescueReason:  persisted.Rescue.LastReason,
 		PasswallEnabled:   collectedInventory.PasswallEnabled,
+		ManualMode:        cfg.ManualMode,
 		AppliedRevisionID: persisted.AppliedRevisionID,
 	}
 	persisted.ControlPlaneRecovery.Normalize()
@@ -258,7 +271,11 @@ func runOnce(
 	if cfg.RouterID == "" || cfg.AgentToken == "" {
 		importSource = "register"
 	}
-	if importSource == "check_in" && !persisted.RequestImport && persisted.LastDesiredRevision != nil {
+	// Both self-heals below rebind shunt slots without anyone asking. That is
+	// the behaviour the router owner turns off with manual mode, so it is
+	// gated here rather than inside the passwall package: the package still
+	// does exactly what it is told, it is just not told anymore.
+	if !cfg.ManualMode && importSource == "check_in" && !persisted.RequestImport && persisted.LastDesiredRevision != nil {
 		reconcileResult, reconcileErr := passwall.ReconcileShuntBindings(
 			ctx,
 			passwall.ExecBackend{},
@@ -270,7 +287,7 @@ func runOnce(
 			log.Printf("passwall shunt self-heal restored %d binding(s)", len(reconcileResult.Changes))
 		}
 	}
-	if importSource == "check_in" && !persisted.RequestImport {
+	if !cfg.ManualMode && importSource == "check_in" && !persisted.RequestImport {
 		policyResult, policyErr := passwall.ReconcileFleetRoutePolicyWithDirective(
 			ctx,
 			passwall.ExecBackend{},
@@ -923,6 +940,12 @@ func executeJobs(
 				return fmt.Errorf("submit apply result: %w", err)
 			}
 		case "refresh_subscriptions":
+			// Counted before the refresh so the verdict below can say what was
+			// lost, not merely what is missing.
+			nodesBefore, _, nodesBeforeErr := passwall.CountSubscriptionNodes(ctx, backend)
+			if nodesBeforeErr != nil {
+				nodesBefore = -1
+			}
 			result, err := backend.Run(ctx, "lua", "/usr/share/passwall2/subscribe.lua", "start", "all")
 			result = passwall.NormalizeCommandResult(result)
 			if err != nil {
@@ -931,8 +954,30 @@ func executeJobs(
 				}
 				continue
 			}
+			// subscribe.lua exits 0 even when it crashes or imports a refusal
+			// placeholder, so the exit code above proves nothing. Judge the
+			// refresh by what it left behind, and stop here when it went wrong:
+			// the reconciles below would otherwise rebind the owner's slots
+			// against a node list that the refresh just destroyed.
+			refreshOutcome := passwall.VerifySubscriptionRefresh(ctx, backend, nodesBefore)
+			if !refreshOutcome.OK {
+				failureMessage := refreshOutcome.FailureMessage()
+				if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, result.Stdout, result.Stderr, failureMessage, map[string]interface{}{
+					"error":               failureMessage,
+					"command":             result.Command,
+					"subscriptionRefresh": refreshOutcome,
+				}); submitErr != nil {
+					return submitErr
+				}
+				continue
+			}
+			// A subscription refresh re-mints node ids, which is precisely when
+			// the two reconciles below would drag the slots back to the fleet
+			// canon. Refreshing the subscription is what the job was asked to
+			// do; re-deciding the owner's bindings afterwards is not, so manual
+			// mode skips both and the job still reports success.
 			reconcileResult := passwall.ShuntReconcileResult{}
-			if desiredRevision != nil {
+			if !cfg.ManualMode && desiredRevision != nil {
 				reconcileResult, err = passwall.ReconcileShuntBindings(ctx, backend, desiredRevision.Config)
 				if err != nil {
 					if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, result.Stdout, result.Stderr, err.Error(), map[string]interface{}{"error": err.Error(), "command": result.Command}); submitErr != nil {
@@ -940,19 +985,27 @@ func executeJobs(
 					}
 					continue
 				}
+				// Paired with the reconcile above and skipped with it. Not a way
+				// to lose the revision: LastDesiredRevision is written
+				// unconditionally once per check-in further up, so when the owner
+				// turns manual mode back off the self-heal still runs against the
+				// panel's freshest revision.
 				persisted.LastDesiredRevision = desiredRevision
 			}
-			fleetPolicyReconcileResult, err := passwall.ReconcileFleetRoutePolicyWithDirective(
-				ctx,
-				backend,
-				fleetRoutePolicyIdentity(collectedInventory),
-				persisted.LastRoutePolicy,
-			)
-			if err != nil {
-				if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, result.Stdout, result.Stderr, err.Error(), map[string]interface{}{"error": err.Error(), "command": result.Command}); submitErr != nil {
-					return submitErr
+			fleetPolicyReconcileResult := passwall.ShuntReconcileResult{}
+			if !cfg.ManualMode {
+				fleetPolicyReconcileResult, err = passwall.ReconcileFleetRoutePolicyWithDirective(
+					ctx,
+					backend,
+					fleetRoutePolicyIdentity(collectedInventory),
+					persisted.LastRoutePolicy,
+				)
+				if err != nil {
+					if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, result.Stdout, result.Stderr, err.Error(), map[string]interface{}{"error": err.Error(), "command": result.Command}); submitErr != nil {
+						return submitErr
+					}
+					continue
 				}
-				continue
 			}
 			if err := submitJobResultNow(ctx, cfg, client, persisted, controlplane.JobResultRequest{
 				ProtocolVersion: controlplane.ProtocolVersion,
@@ -963,6 +1016,7 @@ func executeJobs(
 				Stderr:          result.Stderr,
 				Result: map[string]interface{}{
 					"command":              result.Command,
+					"subscriptionRefresh":  refreshOutcome,
 					"shuntReconcile":       reconcileResult,
 					"fleetPolicyReconcile": fleetPolicyReconcileResult,
 				},

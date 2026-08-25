@@ -311,6 +311,12 @@ export const passwallSubscriptionSettingsSchema = z.object({
     .enum(["auto", "prefer_ipv4", "prefer_ipv6", "ipv4_only", "ipv6_only"])
     .default("auto"),
   items: z.array(passwallSubscriptionSchema).default([]),
+  // Every sibling section carries its unmodelled UCI options through here;
+  // this one did not, so zod stripped them out of the imported config and the
+  // agent's apply — which deletes and rewrites the section — had nothing to
+  // restore them from. Whatever PassWall keeps in global_subscribe beyond the
+  // fields above was therefore discarded on every apply.
+  extras: passwallExtrasSchema.default({}),
 });
 
 export const passwallAppUpdateSchema = z.object({
