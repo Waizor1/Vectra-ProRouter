@@ -52,3 +52,10 @@ apps/install-helper/vectra-install-helper.exe
 
 # Local private memory. Do not commit credentials or DPAPI blobs.
 ProRouter/98 Local/
+
+# oh-my-claudecode runtime state. Operational artifacts written per session
+# (state, handoffs, plans, logs); .omc/skills/** is the intentional exception
+# and is re-added below so project-scoped skills stay committable.
+.omc/
+!.omc/skills/
+!.omc/skills/**

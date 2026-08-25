@@ -71,6 +71,7 @@ describe("summarizePasswallRevisionDiff", () => {
         typePreferences: {},
         domainStrategy: "auto" as const,
         items: [],
+        extras: {},
       },
       appUpdate: {
         binaryPaths: {
