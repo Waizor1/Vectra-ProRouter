@@ -21,6 +21,7 @@ import { buildRouterManagementTaskLog } from "~/server/vectra/editor-surface";
 import { loadFleetMonitoringSnapshot } from "~/server/vectra/fleet-monitoring-data";
 import { getFleetRoutePolicyExceptionReason } from "~/server/vectra/fleet-route-policy";
 import { isRouterReachable } from "~/server/vectra/router-presence";
+import { loadLatestRouteVerifications } from "~/server/vectra/route-health-verifier";
 import {
   canRunDestructiveAction,
   describeEffectiveRouterSupport,
@@ -124,6 +125,13 @@ export function isStaleControlPlaneRecoveryPark(args: {
   incident: { type: string; metadata: unknown } | null | undefined;
   passwallEnabled: boolean;
   snapshotPayload: unknown;
+  /**
+   * Measured proof that this router's own provider nodes still carry traffic:
+   * at least one slot answered its url_test probe in a recent
+   * verify_passwall_routes run. Only consulted for the direct-mode park below,
+   * where no signal from the router itself can say it.
+   */
+  proxyNodesHealthy?: boolean;
 }) {
   if (!isControlPlaneRecoveryIncident(args.incident)) {
     return false;
@@ -142,15 +150,38 @@ export function isStaleControlPlaneRecoveryPark(args: {
     return false;
   }
 
-  // passwallEnabled is the UCI switch, not a running stack. A router whose
-  // xray died while the switch stayed on still reports true AND still reaches
-  // foreign hosts, because its traffic falls through to direct -- so the
-  // switch on its own would read a live outage as recovered. serviceHealth
-  // comes from the service manager in the same check-in and closes that hole.
+  // The park has two shapes, and until 2026-08-25 only the first was handled.
+  //
+  // Shape 2 -- the router was left in DIRECT: enterDirectModeForRecovery turns
+  // the PassWall switch off before parking, so passwallEnabled is false and
+  // every signal below is unusable. foreignReachability reads "healthy" in
+  // direct mode for the trivial reason that direct traffic is not proxied at
+  // all, and serviceHealth describes a stack that was deliberately stopped.
+  //
+  // Rejecting that shape outright is what deadlocked the fleet: the agent's
+  // own operator_attention retry is gated on the panel being UNREACHABLE, so a
+  // router with a healthy panel link waits for the panel, while the panel's
+  // sweep skipped it for having PassWall off. Neither side moved.
+  // aleksandr-grigorievsky sat in direct that way with all five slots probing
+  // 204 until an operator reconnected it by hand.
+  //
+  // So judge shape 2 on the one thing that is still measurable with the proxy
+  // stopped: whether the router's assigned nodes answer. url_test_node dials
+  // the node directly and works with PassWall off (measured on that router).
+  // A router whose nodes are genuinely dead -- sergeyavito, whose provider
+  // account is rejected and whose every slot probes 000 -- produces no such
+  // evidence and stays parked, which is correct: reconnecting it would only
+  // loop.
   if (!args.passwallEnabled) {
-    return false;
+    return args.proxyNodesHealthy === true;
   }
 
+  // Shape 1 -- the switch stayed on. passwallEnabled is the UCI switch, not a
+  // running stack. A router whose xray died while the switch stayed on still
+  // reports true AND still reaches foreign hosts, because its traffic falls
+  // through to direct -- so the switch on its own would read a live outage as
+  // recovered. serviceHealth comes from the service manager in the same
+  // check-in and closes that hole.
   if (serviceHealthStatus(args.snapshotPayload, "passwall") !== "running") {
     return false;
   }
@@ -498,6 +529,60 @@ async function loadLatestSnapshot(database: DatabaseClient, routerId: string) {
     .orderBy(desc(routerInventorySnapshots.createdAt))
     .limit(1);
   return snapshot ?? null;
+}
+
+/**
+ * How recent a route verification has to be to authorise an unpark.
+ *
+ * The verifier's own per-router TTL is 6h, so anything older than this is the
+ * previous sweep and says nothing about now. A stale verdict is treated as no
+ * evidence rather than as evidence of health: the park stays, and the next
+ * verification either renews the claim or does not.
+ */
+const proxyNodeEvidenceMaxAgeMs = 6 * 60 * 60 * 1000;
+
+/**
+ * Positive, measured proof that this router still has a usable exit.
+ *
+ * Reads the latest verify_passwall_routes verdict and asks only whether some
+ * slot's node answered its probe. url_test_node dials the provider node
+ * directly, so this stays true while the proxy stack is stopped -- which is
+ * the whole point, because the router it judges was parked with PassWall off.
+ *
+ * Deliberately "any slot", not "all": one live exit is enough to justify
+ * resuming the proxy, and demanding all five would leave a router parked over
+ * a single retired host that the route policy would move it off anyway.
+ */
+async function hasRecentHealthyProxyNode(
+  database: DatabaseClient,
+  routerId: string,
+  now: Date,
+) {
+  try {
+    const verifications = await loadLatestRouteVerifications(database, [
+      routerId,
+    ]);
+    const latest = verifications.get(routerId);
+    if (!latest) {
+      return false;
+    }
+    if (
+      now.getTime() - latest.verifiedAt.getTime() >
+      proxyNodeEvidenceMaxAgeMs
+    ) {
+      return false;
+    }
+    const slots = latest.verification.slots;
+    return Array.isArray(slots) && slots.some((slot) => slot?.smokeOk === true);
+  } catch (error) {
+    // Evidence we cannot read is not evidence against, but it is not evidence
+    // for either -- and this path only ever unparks on evidence for.
+    console.error("[auto-rescue-monitor] proxy node evidence lookup failed", {
+      routerId,
+      error,
+    });
+    return false;
+  }
 }
 
 async function buildCompactEvidence(
@@ -1419,12 +1504,23 @@ export async function clearStaleControlPlaneRecoveryParks(
       }
 
       const snapshot = await loadLatestSnapshot(database, routerId);
+      if (!snapshot) {
+        continue;
+      }
+
+      // Only fetched for the direct-mode park, and only for the one router
+      // being judged: the sweep runs every 60s and the overwhelming majority
+      // of ticks find nothing to unpark.
+      const proxyNodesHealthy = snapshot.passwallEnabled
+        ? false
+        : await hasRecentHealthyProxyNode(database, routerId, now);
+
       if (
-        !snapshot ||
         !isStaleControlPlaneRecoveryPark({
           incident,
           passwallEnabled: snapshot.passwallEnabled,
           snapshotPayload: snapshot.payload,
+          proxyNodesHealthy,
         })
       ) {
         continue;

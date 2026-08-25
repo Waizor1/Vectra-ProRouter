@@ -1,7 +1,10 @@
 import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
-import { clearStaleControlPlaneRecoveryParks } from "./auto-rescue";
+import {
+  clearStaleControlPlaneRecoveryParks,
+  isStaleControlPlaneRecoveryPark,
+} from "./auto-rescue";
 
 const NOW = new Date("2026-08-22T16:00:00.000Z");
 const ROUTER_ID = "99c6599d-03f5-483f-aadc-a48776a4531a";
@@ -341,5 +344,130 @@ describe("clearStaleControlPlaneRecoveryParks", () => {
 
     await expect(clearStaleControlPlaneRecoveryParks(db, NOW)).resolves.toBe(0);
     expect(inserted).toEqual([]);
+  });
+});
+
+// --- Направление 2: парк «оставлен в direct» -------------------------------
+//
+// enterDirectModeForRecovery выключает PassWall перед парковкой, поэтому
+// passwallEnabled=false, и все сигналы с самого роутера бесполезны. Судим по
+// единственному, что ещё измеримо при остановленном прокси, — отвечают ли
+// узлы. Роутер aleksandr-grigorievsky простоял так с пятью слотами по 204,
+// пока оператор не вернул его руками.
+
+function directModePark(options: {
+  verifyJobs?: unknown[];
+  verifyResults?: unknown[];
+  attempts?: unknown[];
+} = {}) {
+  const snap = snapshot({ passwallEnabled: false, passwallService: "stopped" });
+  return [
+    [parkedIncident()],
+    [certifiedRouter()],
+    [snap],
+    [snap],
+    ...(options.verifyJobs === undefined
+      ? [[{ id: "verify-job-1", routerId: ROUTER_ID }]]
+      : [options.verifyJobs]),
+    ...(options.verifyJobs?.length === 0 ? [] : [options.verifyResults ?? []]),
+    options.attempts ?? [],
+  ];
+}
+
+function verificationRow(
+  slots: { smokeOk: boolean }[],
+  reportedAt: Date = NOW,
+) {
+  return {
+    jobId: "verify-job-1",
+    reportedAt,
+    payload: { routeVerification: { slots } },
+  };
+}
+
+describe("clearStaleControlPlaneRecoveryParks — парк в direct", () => {
+  it("возвращает роутер, когда хотя бы один узел доказанно отвечает", async () => {
+    const { db, inserted } = createMockDb(
+      directModePark({ verifyResults: [verificationRow([{ smokeOk: true }])] }),
+    );
+
+    await expect(clearStaleControlPlaneRecoveryParks(db, NOW)).resolves.toBe(1);
+    expect(inserted[0]).toEqual({
+      routerId: ROUTER_ID,
+      type: "reconnect",
+      state: "queued",
+      payload: { resumeProxy: true, clearRescue: true },
+    });
+  });
+
+  it("оставляет в парке роутер, у которого все узлы молчат", async () => {
+    // Это sergeyavito: провайдер отклоняет аккаунт, все слоты 000.
+    // Реконнект ему ничего не даст и зациклится.
+    const { db, inserted } = createMockDb(
+      directModePark({
+        verifyResults: [verificationRow([{ smokeOk: false }, { smokeOk: false }])],
+      }),
+    );
+
+    await expect(clearStaleControlPlaneRecoveryParks(db, NOW)).resolves.toBe(0);
+    expect(inserted).toHaveLength(0);
+  });
+
+  it("не считает доказательством протухшую проверку маршрутов", async () => {
+    const stale = new Date(NOW.getTime() - 7 * 60 * 60 * 1000);
+    const { db, inserted } = createMockDb(
+      directModePark({
+        verifyResults: [verificationRow([{ smokeOk: true }], stale)],
+      }),
+    );
+
+    await expect(clearStaleControlPlaneRecoveryParks(db, NOW)).resolves.toBe(0);
+    expect(inserted).toHaveLength(0);
+  });
+
+  it("оставляет в парке роутер, по которому проверок вообще нет", async () => {
+    // Отсутствие улик — не улика: молчание не повод перезапускать прокси.
+    const { db, inserted } = createMockDb(directModePark({ verifyJobs: [] }));
+
+    await expect(clearStaleControlPlaneRecoveryParks(db, NOW)).resolves.toBe(0);
+    expect(inserted).toHaveLength(0);
+  });
+});
+
+describe("isStaleControlPlaneRecoveryPark — две формы парка", () => {
+  it("при выключенном PassWall решает ТОЛЬКО живость узлов", () => {
+    const base = {
+      incident: parkedIncident(),
+      passwallEnabled: false,
+      // Намеренно «здоровые» показатели: в direct они врут, потому что
+      // прямой трафик вообще не проксируется.
+      snapshotPayload: {
+        foreignReachability: { status: "healthy" },
+        serviceHealth: { passwall: "running" },
+      },
+    };
+
+    expect(
+      isStaleControlPlaneRecoveryPark({ ...base, proxyNodesHealthy: true }),
+    ).toBe(true);
+    expect(
+      isStaleControlPlaneRecoveryPark({ ...base, proxyNodesHealthy: false }),
+    ).toBe(false);
+    expect(isStaleControlPlaneRecoveryPark(base)).toBe(false);
+  });
+
+  it("при включённом PassWall живость узлов ничего не меняет", () => {
+    const base = {
+      incident: parkedIncident(),
+      passwallEnabled: true,
+      snapshotPayload: {
+        foreignReachability: { status: "blocked" },
+        serviceHealth: { passwall: "running" },
+      },
+    };
+
+    expect(
+      isStaleControlPlaneRecoveryPark({ ...base, proxyNodesHealthy: true }),
+    ).toBe(false);
   });
 });
