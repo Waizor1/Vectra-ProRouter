@@ -85,15 +85,57 @@ describe("selectRoutersForRouteHealthCheck", () => {
     expect(picked).toEqual([]);
   });
 
-  it("skips routers that are not approved or not in proxy mode", () => {
+  it("skips routers that are not approved, exempt, or in an unprobeable state", () => {
     const picked = selectRoutersForRouteHealthCheck(
       [
         candidate({ routerId: "pending", importState: "awaiting_import" }),
-        candidate({ routerId: "rescued", status: "direct" }),
+        candidate({ routerId: "disabled", status: "disabled" }),
+        candidate({ routerId: "rescuing", status: "rescue" }),
         candidate({ routerId: "exempt", routePolicyExempt: true }),
       ],
       NOW,
       { limit: 5, staleAfterMs: 1000 },
+    );
+
+    expect(picked).toEqual([]);
+  });
+
+  // A router parked in direct is the one that most needs a verdict: the
+  // auto-rescue unpark will not touch it without recent proof that its nodes
+  // still answer, and nothing else in the system produces that proof. Skipping
+  // it here is what left DmitryGubenko in direct for 33 hours with four live
+  // nodes.
+  it("still probes a router parked in direct mode", () => {
+    const picked = selectRoutersForRouteHealthCheck(
+      [candidate({ routerId: "parked", status: "direct" })],
+      NOW,
+      { limit: 5, staleAfterMs: 1000 },
+    );
+
+    expect(picked).toEqual(["parked"]);
+  });
+
+  it("holds a parked router to the same guards as an active one", () => {
+    const picked = selectRoutersForRouteHealthCheck(
+      [
+        candidate({
+          routerId: "parked-offline",
+          status: "direct",
+          lastSeenAt: null,
+        }),
+        candidate({
+          routerId: "parked-busy",
+          status: "direct",
+          queuedJobCount: 1,
+        }),
+        candidate({
+          routerId: "parked-fresh",
+          status: "direct",
+          lastVerifiedAt: new Date("2026-08-24T17:30:00.000Z"),
+        }),
+      ],
+      NOW,
+      { limit: 5, staleAfterMs: 6 * 60 * 60 * 1000 },
     );
 
     expect(picked).toEqual([]);
@@ -128,7 +170,9 @@ describe("routeVerificationToHealthSample", () => {
 
   it("ignores slots whose node is not in the config", () => {
     const sample = routeVerificationToHealthSample("r1", nodes, {
-      slots: [{ slotId: "Special", boundNodeId: "rotated-away", smokeOk: false }],
+      slots: [
+        { slotId: "Special", boundNodeId: "rotated-away", smokeOk: false },
+      ],
     });
 
     expect(sample).toBeNull();

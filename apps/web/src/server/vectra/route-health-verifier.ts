@@ -65,6 +65,28 @@ export type RouteHealthSelectionOptions = {
 const DEFAULT_REACHABLE_WITHIN_MS = 5 * 60 * 1000;
 const DEFAULT_SETTLE_MS = 20 * 60 * 1000;
 
+/**
+ * Which router states may be probed.
+ *
+ * "direct" is here for the one consumer that needs it most. The auto-rescue
+ * unpark judges a router parked with PassWall off on exactly one signal — a
+ * recent verify_passwall_routes verdict with some slot answering
+ * (hasRecentHealthyProxyNode, evidence younger than 6h). Excluding "direct"
+ * here meant that evidence was only ever produced for routers that did not
+ * need it: the moment a router parked, its verdicts stopped, the last one
+ * aged out, and the unpark could never fire again.
+ *
+ * Measured on DmitryGubenko 2026-08-27: parked in direct on 08-26 08:13Z, last
+ * verdict 08-26 07:21Z, stale by 13:21Z, then 33 hours with zero reconnect
+ * attempts while all four of its bound nodes answered url_test in under 0.4s.
+ *
+ * Probing a parked router is sound: url_test_node dials the provider node
+ * directly and works with the proxy stack stopped, and buildFleetNodeHealth
+ * discards a router whose every probe failed (no control success), so a device
+ * parked for a genuinely broken uplink cannot condemn a healthy host.
+ */
+const PROBEABLE_ROUTER_STATUSES = new Set(["active", "direct"]);
+
 export function selectRoutersForRouteHealthCheck(
   candidates: RouteHealthCandidate[],
   now: Date,
@@ -75,7 +97,7 @@ export function selectRoutersForRouteHealthCheck(
   const settle = options.settleMs ?? DEFAULT_SETTLE_MS;
 
   const eligible = candidates.filter((candidate) => {
-    if (candidate.status !== "active") {
+    if (!PROBEABLE_ROUTER_STATUSES.has(candidate.status)) {
       return false;
     }
     if (candidate.importState !== "approved") {
@@ -221,7 +243,9 @@ export async function loadLatestRouteVerifications(
   if (!Array.isArray(verifyJobs) || verifyJobs.length === 0) {
     return latest;
   }
-  const routerByJobId = new Map(verifyJobs.map((job) => [job.id, job.routerId]));
+  const routerByJobId = new Map(
+    verifyJobs.map((job) => [job.id, job.routerId]),
+  );
 
   const rows = await database
     .select({
@@ -297,7 +321,10 @@ export async function loadRouteHealthCandidates(
 
   const queuedByRouter = new Map<string, number>();
   for (const row of queuedRows) {
-    queuedByRouter.set(row.routerId, (queuedByRouter.get(row.routerId) ?? 0) + 1);
+    queuedByRouter.set(
+      row.routerId,
+      (queuedByRouter.get(row.routerId) ?? 0) + 1,
+    );
   }
 
   return routerRows.map((router) => ({
@@ -372,9 +399,8 @@ export function startRouteHealthVerifier() {
       // take a customer's node list away. Reporting the state is safe;
       // automatically acting on it is not, until the wipe can be detected and
       // undone.
-      const { collectSubscriptionRescueCandidates } = await import(
-        "./subscription-rescue"
-      );
+      const { collectSubscriptionRescueCandidates } =
+        await import("./subscription-rescue");
       const stranded = await collectSubscriptionRescueCandidates(db);
       if (stranded.length > 0) {
         console.warn(
