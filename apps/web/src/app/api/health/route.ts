@@ -24,18 +24,21 @@ export async function GET() {
   };
 
   try {
-    startBrowserPushMonitor();
-    checks.browserPushMonitor = true;
-    startAutoRescueMonitor();
-    checks.autoRescueMonitor = true;
-    startStuckJobJanitor();
-    checks.stuckJobJanitor = true;
-    startSnapshotRetention();
-    checks.snapshotRetention = true;
-    startRevisionRetention();
-    checks.revisionRetention = true;
-    startRouteHealthVerifier();
-    checks.routeHealthVerifier = true;
+    // Each start* returns whether that lane is actually RUNNING, not merely
+    // whether the call returned. Every one of these no-ops when its feature
+    // flag is off, and this route used to set `true` straight after the call —
+    // so health reported a healthy auto-rescue monitor for a monitor that had
+    // never started. That is how VECTRA_AUTO_RESCUE_ENABLED went missing from
+    // docker-compose.yml on 2026-08-24 and stayed unnoticed until 08-28: the
+    // whole self-repair layer was dark while /api/health said it was up, and a
+    // customer sat in direct mode for two days waiting for an unpark sweep that
+    // could not run. A check that cannot report false is not a check.
+    checks.browserPushMonitor = startBrowserPushMonitor();
+    checks.autoRescueMonitor = startAutoRescueMonitor();
+    checks.stuckJobJanitor = startStuckJobJanitor();
+    checks.snapshotRetention = startSnapshotRetention();
+    checks.revisionRetention = startRevisionRetention();
+    checks.routeHealthVerifier = startRouteHealthVerifier();
     await db.execute(sql`select 1`);
     checks.dbRead = true;
     const probeId = crypto.randomUUID();

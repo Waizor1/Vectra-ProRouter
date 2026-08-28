@@ -97,10 +97,10 @@ const globalForRetention = globalThis as typeof globalThis & {
 // cannot overlap itself.
 export function startSnapshotRetention() {
   if (env.NODE_ENV === "test" || !env.VECTRA_SNAPSHOT_RETENTION_ENABLED) {
-    return;
+    return false;
   }
   if (globalForRetention.__vectraSnapshotRetentionTimer) {
-    return;
+    return true;
   }
 
   const run = async () => {
@@ -130,6 +130,7 @@ export function startSnapshotRetention() {
     env.VECTRA_SNAPSHOT_RETENTION_INTERVAL_SECONDS * 1000,
   );
   globalForRetention.__vectraSnapshotRetentionTimer.unref?.();
+  return true;
 }
 
 export function stopSnapshotRetentionForTest() {

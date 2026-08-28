@@ -56,7 +56,10 @@ const heavyRescueRepairActions = [
   "refresh_rules",
   "refresh_subscriptions",
 ] as const;
-const proxyRuntimeRepairActions = ["restart_passwall", "reconnect_proxy"] as const;
+const proxyRuntimeRepairActions = [
+  "restart_passwall",
+  "reconnect_proxy",
+] as const;
 const logCollectionMaxPerWindow = 3;
 const logCollectionWindowMs = 6 * 60 * 60 * 1000;
 const unparkMaxAttempts = 2;
@@ -196,8 +199,7 @@ function resourceSafetyEventReasons(
   const allowed = new Set(eventTypes);
   return latestSafetyEventRecords(snapshotPayload).flatMap((event) => {
     const type = typeof event.type === "string" ? event.type : null;
-    const severity =
-      typeof event.severity === "string" ? event.severity : null;
+    const severity = typeof event.severity === "string" ? event.severity : null;
     if (
       !type ||
       !allowed.has(type) ||
@@ -940,10 +942,7 @@ export async function queueRescueCaseLogCollection(
         and(
           eq(jobs.routerId, rescueCase.routerId),
           eq(jobs.type, "collect_router_logs"),
-          gte(
-            jobs.createdAt,
-            new Date(Date.now() - logCollectionWindowMs),
-          ),
+          gte(jobs.createdAt, new Date(Date.now() - logCollectionWindowMs)),
         ),
       );
 
@@ -952,7 +951,10 @@ export async function queueRescueCaseLogCollection(
     }
   }
 
-  const latestSnapshot = await loadLatestSnapshot(database, rescueCase.routerId);
+  const latestSnapshot = await loadLatestSnapshot(
+    database,
+    rescueCase.routerId,
+  );
   const guardReasons = latestSnapshot
     ? resourceGuardReasonsForLogCollection(latestSnapshot.payload)
     : ["latest router resource snapshot is unavailable"];
@@ -1011,7 +1013,10 @@ export async function queueRescueCaseSafeRepair(
 
   const requestedActions =
     args.actions ?? repairActionsForTrigger(rescueCase.trigger);
-  const latestSnapshot = await loadLatestSnapshot(database, rescueCase.routerId);
+  const latestSnapshot = await loadLatestSnapshot(
+    database,
+    rescueCase.routerId,
+  );
   const actionPlan = planRepairActionsForRouterSafety(
     requestedActions,
     latestSnapshot?.payload ?? null,
@@ -1611,7 +1616,6 @@ export async function clearStaleControlPlaneRecoveryParks(
           attempt: priorAttempts.length + 1,
         },
       });
-
     } catch (error) {
       // One bad router must not abort the sweep, nor the resolve and
       // escalation passes that run after it in the same tick.
@@ -1695,11 +1699,11 @@ const globalForAutoRescue = globalThis as typeof globalThis & {
 
 export function startAutoRescueMonitor() {
   if (env.NODE_ENV === "test" || !env.VECTRA_AUTO_RESCUE_ENABLED) {
-    return;
+    return false;
   }
 
   if (globalForAutoRescue.__vectraAutoRescueMonitorTimer) {
-    return;
+    return true;
   }
 
   const run = async () => {
@@ -1739,6 +1743,7 @@ export function startAutoRescueMonitor() {
     env.VECTRA_AUTO_RESCUE_MONITOR_INTERVAL_SECONDS * 1000,
   );
   globalForAutoRescue.__vectraAutoRescueMonitorTimer.unref?.();
+  return true;
 }
 
 export async function listRescueCases(database: DatabaseClient = db) {

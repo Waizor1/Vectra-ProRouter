@@ -89,7 +89,9 @@ export async function reconcileFleetPushAlerts(now = new Date()) {
     .from(operatorPushAlerts)
     .where(isNull(operatorPushAlerts.resolvedAt));
 
-  const activeKeys = new Set(candidates.map((candidate) => candidate.dedupeKey));
+  const activeKeys = new Set(
+    candidates.map((candidate) => candidate.dedupeKey),
+  );
   const unresolvedKeys = new Set(
     unresolvedAlerts.map((alert) => alert.dedupeKey),
   );
@@ -158,11 +160,11 @@ const globalForPushMonitor = globalThis as typeof globalThis & {
 
 export function startBrowserPushMonitor() {
   if (env.NODE_ENV === "test" || !isBrowserPushConfigured()) {
-    return;
+    return false;
   }
 
   if (globalForPushMonitor.__vectraBrowserPushMonitorTimer) {
-    return;
+    return true;
   }
 
   const run = async () => {
@@ -187,4 +189,5 @@ export function startBrowserPushMonitor() {
     env.VECTRA_WEB_PUSH_MONITOR_INTERVAL_SECONDS * 1000,
   );
   globalForPushMonitor.__vectraBrowserPushMonitorTimer.unref?.();
+  return true;
 }
