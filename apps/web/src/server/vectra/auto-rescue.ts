@@ -65,6 +65,25 @@ const logCollectionWindowMs = 6 * 60 * 60 * 1000;
 const unparkMaxAttempts = 2;
 const unparkMaxPerTick = 3;
 const unparkRetryCooldownMs = 15 * 60 * 1000;
+/**
+ * Auto-repair used to be one shot per case, for the life of the case: the tick
+ * queued a repair the first time it saw the trigger and then never again,
+ * because the only guard was `if (rescueCase.lastAttemptAt) return`.
+ *
+ * A single attempt is not a repair policy. A reconnect has been observed
+ * reporting `succeeded` while PassWall stayed off (totchto-filiciy, 2026-08-12,
+ * fixed by a SECOND reconnect), and a router mid-reboot or mid-subscription
+ * refresh can eat the one attempt it will ever get. After that the case sat
+ * until the escalation window expired, and escalation is mute without Telegram,
+ * so the outcome was a customer offline until a human noticed.
+ *
+ * Three attempts with a widening gap: retry soon enough to catch a transient
+ * miss, slowly enough that a router in a real outage is not restarted every
+ * minute. The gap is measured from the last attempt, so a long-running repair
+ * job does not consume its own backoff.
+ */
+const autoRepairMaxAttempts = 3;
+const autoRepairBackoffMs = [0, 10 * 60 * 1000, 30 * 60 * 1000] as const;
 const heavyRepairMemoryFloorMb = 64;
 const heavyRepairOverlayFloorMb = 8;
 const heavyRepairTmpFloorMb = 16;
@@ -847,6 +866,81 @@ async function hasActiveRepairJob(
   return Boolean(job);
 }
 
+/**
+ * Whether this case may be given another unattended repair right now.
+ *
+ * `exhausted` and `attempt: false` are different answers: the first means the
+ * budget is spent and the case belongs to a human, the second means the next
+ * attempt is simply not due yet. Collapsing them would either escalate a case
+ * that is still mid-backoff or retry one that has already given up.
+ */
+export function planAutoRepairRetry(args: {
+  attempts: number;
+  lastAttemptAt: Date | null;
+  now: Date;
+}): { attempt: boolean; exhausted: boolean } {
+  if (args.attempts >= autoRepairMaxAttempts) {
+    return { attempt: false, exhausted: true };
+  }
+  if (!args.lastAttemptAt) {
+    return { attempt: true, exhausted: false };
+  }
+  const backoff =
+    autoRepairBackoffMs[
+      Math.min(args.attempts, autoRepairBackoffMs.length - 1)
+    ] ?? 0;
+  const due = args.now.getTime() - args.lastAttemptAt.getTime() >= backoff;
+  return { attempt: due, exhausted: false };
+}
+
+/**
+ * How many unattended repairs this case has already been given.
+ *
+ * Counted from job rows since the case opened rather than from the dedupe key,
+ * for the same reason the unpark sweep counts that way:
+ * resolveJobDedupeKeyAfterResult nulls dedupe_key on every terminal result, so
+ * a count keyed on it silently resets to zero after each attempt and the cap
+ * would never bind. Operator-triggered repairs count too — if someone is
+ * already working the router by hand, the monitor should stay out of the way.
+ */
+async function countAutoRepairAttempts(
+  database: DatabaseClient,
+  rescueCase: RescueCaseRow,
+) {
+  const rows = await database
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.routerId, rescueCase.routerId),
+        eq(jobs.type, "run_rescue_repair"),
+        gte(jobs.createdAt, rescueCase.startedAt),
+      ),
+    );
+  return Array.isArray(rows) ? rows.length : 0;
+}
+
+/** True while the router is parked by its own control-plane recovery. */
+async function hasControlPlaneRecoveryPark(
+  database: DatabaseClient,
+  routerId: string,
+) {
+  const openIncidents = await database
+    .select()
+    .from(healthIncidents)
+    .where(
+      and(
+        eq(healthIncidents.routerId, routerId),
+        eq(healthIncidents.state, "open"),
+      ),
+    );
+  return openIncidents.some(
+    (incident) =>
+      isControlPlaneRecoveryIncident(incident) &&
+      asRecord(incident.metadata).awaitingOperator === true,
+  );
+}
+
 async function ensureRescueCase(
   database: DatabaseClient,
   trigger: CriticalTrigger,
@@ -1166,15 +1260,38 @@ async function queueInitialCaseWork(
   ) {
     return inserted;
   }
-  if (rescueCase.lastAttemptAt) {
-    return inserted;
-  }
 
   const actions = autoRepairActionsForTrigger(rescueCase.trigger);
   if (actions.length === 0) {
     await escalateRescueCase(database, rescueCase, now, {
       reason: noAutoRepairEscalationReason(rescueCase.trigger),
     });
+    return inserted;
+  }
+
+  // A router parked by its own control-plane recovery belongs to the unpark
+  // sweep, not to this lane. Both would resume the proxy, but only the sweep's
+  // operator `reconnect` job calls clearControlPlaneRecoveryOwnership; the
+  // `reconnect_proxy` repair action does not, so it would bring the proxy up
+  // and leave the router sitting in PhaseOperatorAttention, free to park again.
+  // Letting this lane go first would also burn the sweep's attempt budget on a
+  // repair that cannot finish the job.
+  if (await hasControlPlaneRecoveryPark(database, rescueCase.routerId)) {
+    return inserted;
+  }
+
+  const retry = planAutoRepairRetry({
+    attempts: await countAutoRepairAttempts(database, rescueCase),
+    lastAttemptAt: rescueCase.lastAttemptAt,
+    now,
+  });
+  if (retry.exhausted) {
+    await escalateRescueCase(database, rescueCase, now, {
+      reason: `Unattended repair did not hold after ${autoRepairMaxAttempts} attempts; this router needs a human.`,
+    });
+    return inserted;
+  }
+  if (!retry.attempt) {
     return inserted;
   }
 

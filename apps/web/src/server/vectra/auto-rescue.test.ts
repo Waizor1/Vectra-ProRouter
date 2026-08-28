@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  planAutoRepairRetry,
   autoRepairActionsForTrigger,
   hasDistinctBlockedReachabilityEvidence,
   isStaleControlPlaneRecoveryPark,
@@ -136,10 +137,7 @@ describe("hasDistinctBlockedReachabilityEvidence", () => {
     }));
 
     expect(
-      hasDistinctBlockedReachabilityEvidence(
-        snapshots,
-        "telegramReachability",
-      ),
+      hasDistinctBlockedReachabilityEvidence(snapshots, "telegramReachability"),
     ).toBe(false);
   });
 
@@ -155,10 +153,7 @@ describe("hasDistinctBlockedReachabilityEvidence", () => {
     }));
 
     expect(
-      hasDistinctBlockedReachabilityEvidence(
-        snapshots,
-        "telegramReachability",
-      ),
+      hasDistinctBlockedReachabilityEvidence(snapshots, "telegramReachability"),
     ).toBe(true);
   });
 });
@@ -372,5 +367,68 @@ describe("isStaleControlPlaneRecoveryPark", () => {
         }),
       ).toBe(false);
     }
+  });
+});
+
+describe("planAutoRepairRetry", () => {
+  const NOW = new Date("2026-08-28T02:00:00.000Z");
+
+  it("repairs immediately the first time a case is seen", () => {
+    expect(
+      planAutoRepairRetry({ attempts: 0, lastAttemptAt: null, now: NOW }),
+    ).toEqual({ attempt: true, exhausted: false });
+  });
+
+  // The hole this closes: a reconnect has reported `succeeded` while PassWall
+  // stayed off, and the old one-shot guard meant nothing ever tried again.
+  it("retries after the backoff has elapsed", () => {
+    expect(
+      planAutoRepairRetry({
+        attempts: 1,
+        lastAttemptAt: new Date("2026-08-28T01:45:00.000Z"),
+        now: NOW,
+      }),
+    ).toEqual({ attempt: true, exhausted: false });
+  });
+
+  it("holds off while the backoff is still running", () => {
+    expect(
+      planAutoRepairRetry({
+        attempts: 1,
+        lastAttemptAt: new Date("2026-08-28T01:55:00.000Z"),
+        now: NOW,
+      }),
+    ).toEqual({ attempt: false, exhausted: false });
+  });
+
+  it("widens the gap for the later attempt", () => {
+    // 20 minutes after attempt two: past the first gap, short of the second.
+    const args = {
+      attempts: 2,
+      lastAttemptAt: new Date("2026-08-28T01:40:00.000Z"),
+      now: NOW,
+    };
+    expect(planAutoRepairRetry(args)).toEqual({
+      attempt: false,
+      exhausted: false,
+    });
+    expect(
+      planAutoRepairRetry({
+        ...args,
+        lastAttemptAt: new Date("2026-08-28T01:25:00.000Z"),
+      }),
+    ).toEqual({ attempt: true, exhausted: false });
+  });
+
+  // Distinct from "not due yet": the case stops being the monitor's problem
+  // and escalates to a human instead of retrying forever.
+  it("gives up after the third attempt instead of looping", () => {
+    expect(
+      planAutoRepairRetry({
+        attempts: 3,
+        lastAttemptAt: new Date("2026-08-27T00:00:00.000Z"),
+        now: NOW,
+      }),
+    ).toEqual({ attempt: false, exhausted: true });
   });
 });
