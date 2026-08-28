@@ -129,7 +129,26 @@ describe("selectRoutersForRouteHealthCheck", () => {
           queuedJobCount: 1,
         }),
         candidate({
-          routerId: "parked-fresh",
+          routerId: "parked-disturbed",
+          status: "direct",
+          lastDisruptionAt: new Date("2026-08-24T17:55:00.000Z"),
+        }),
+      ],
+      NOW,
+      { limit: 5, staleAfterMs: 6 * 60 * 60 * 1000 },
+    );
+
+    expect(picked).toEqual([]);
+  });
+
+  // The fleet TTL is tuned for routine telemetry: two routers a tick means each
+  // one is judged about every four hours. A parked router waiting that long is
+  // a customer offline that long, because the verdict is what unparks it.
+  it("re-probes a parked router without waiting out the fleet TTL", () => {
+    const picked = selectRoutersForRouteHealthCheck(
+      [
+        candidate({
+          routerId: "parked",
           status: "direct",
           lastVerifiedAt: new Date("2026-08-24T17:30:00.000Z"),
         }),
@@ -138,7 +157,40 @@ describe("selectRoutersForRouteHealthCheck", () => {
       { limit: 5, staleAfterMs: 6 * 60 * 60 * 1000 },
     );
 
+    expect(picked).toEqual(["parked"]);
+  });
+
+  it("does not re-probe a parked router it just probed", () => {
+    const picked = selectRoutersForRouteHealthCheck(
+      [
+        candidate({
+          routerId: "parked",
+          status: "direct",
+          lastVerifiedAt: new Date("2026-08-24T17:58:00.000Z"),
+        }),
+      ],
+      NOW,
+      { limit: 5, staleAfterMs: 6 * 60 * 60 * 1000 },
+    );
+
     expect(picked).toEqual([]);
+  });
+
+  it("spends the tick budget on parked routers before routine telemetry", () => {
+    const picked = selectRoutersForRouteHealthCheck(
+      [
+        candidate({ routerId: "never-checked", lastVerifiedAt: null }),
+        candidate({
+          routerId: "parked",
+          status: "direct",
+          lastVerifiedAt: new Date("2026-08-24T17:30:00.000Z"),
+        }),
+      ],
+      NOW,
+      { limit: 1, staleAfterMs: 6 * 60 * 60 * 1000 },
+    );
+
+    expect(picked).toEqual(["parked"]);
   });
 });
 

@@ -60,10 +60,18 @@ export type RouteHealthSelectionOptions = {
    * endpoints fleet-wide.
    */
   settleMs?: number;
+  /**
+   * How stale a parked router's verdict may be before it is probed again.
+   *
+   * Far shorter than staleAfterMs on purpose — see PARKED_ROUTER_STATUS.
+   */
+  parkedStaleAfterMs?: number;
 };
 
 const DEFAULT_REACHABLE_WITHIN_MS = 5 * 60 * 1000;
 const DEFAULT_SETTLE_MS = 20 * 60 * 1000;
+/** One tick of the verifier, so a parked router is eligible on the next sweep. */
+const DEFAULT_PARKED_STALE_AFTER_MS = 10 * 60 * 1000;
 
 /**
  * Which router states may be probed.
@@ -87,6 +95,25 @@ const DEFAULT_SETTLE_MS = 20 * 60 * 1000;
  */
 const PROBEABLE_ROUTER_STATUSES = new Set(["active", "direct"]);
 
+/**
+ * A router in this state is not proxying at all, and its verdict is the only
+ * thing that can bring it back.
+ *
+ * Admitting parked routers (above) is not enough on its own. The fleet cadence
+ * is two routers per 15-minute tick, so with 33 routers each one is judged
+ * roughly every four hours — and a candidate is skipped entirely while its last
+ * verdict is younger than staleAfterMs. Measured 2026-08-27, right after that
+ * change shipped: every online router had been verified 2.1–3.9h earlier, so a
+ * router parked at that moment would have waited between two and four hours for
+ * the evidence that unparks it, with a customer offline the whole time.
+ *
+ * Routine telemetry can wait four hours. An outage cannot, so a parked router
+ * skips the queue and is re-probed every tick until it is back. The cost is one
+ * diagnostic job per tick, still bounded by `limit` fleet-wide, and the
+ * queuedJobCount guard keeps it from stacking on a router that is already busy.
+ */
+const PARKED_ROUTER_STATUS = "direct";
+
 export function selectRoutersForRouteHealthCheck(
   candidates: RouteHealthCandidate[],
   now: Date,
@@ -95,6 +122,10 @@ export function selectRoutersForRouteHealthCheck(
   const reachableWithin =
     options.reachableWithinMs ?? DEFAULT_REACHABLE_WITHIN_MS;
   const settle = options.settleMs ?? DEFAULT_SETTLE_MS;
+  const parkedStaleAfter =
+    options.parkedStaleAfterMs ?? DEFAULT_PARKED_STALE_AFTER_MS;
+  const isParked = (candidate: RouteHealthCandidate) =>
+    candidate.status === PARKED_ROUTER_STATUS;
 
   const eligible = candidates.filter((candidate) => {
     if (!PROBEABLE_ROUTER_STATUSES.has(candidate.status)) {
@@ -124,17 +155,24 @@ export function selectRoutersForRouteHealthCheck(
     ) {
       return false;
     }
+    const staleAfter = isParked(candidate)
+      ? Math.min(parkedStaleAfter, options.staleAfterMs)
+      : options.staleAfterMs;
     if (
       candidate.lastVerifiedAt &&
-      now.getTime() - candidate.lastVerifiedAt.getTime() < options.staleAfterMs
+      now.getTime() - candidate.lastVerifiedAt.getTime() < staleAfter
     ) {
       return false;
     }
     return true;
   });
 
-  // Never checked first, then longest since the last check.
+  // Parked routers first — they are an outage, the rest is telemetry. Within
+  // each group: never checked first, then longest since the last check.
   eligible.sort((left, right) => {
+    if (isParked(left) !== isParked(right)) {
+      return isParked(left) ? -1 : 1;
+    }
     const leftAt = left.lastVerifiedAt?.getTime() ?? -Infinity;
     const rightAt = right.lastVerifiedAt?.getTime() ?? -Infinity;
     return leftAt - rightAt;
