@@ -309,12 +309,25 @@ var shuntProxyProbeOptions = []string{
 	"default_node",
 }
 
+// Whether this router's own provider node still answers.
+//
+// Deliberately does NOT require PassWall to be enabled. url_test_node dials the
+// node through its own temporary socks instance, so it measures the node, not
+// the main switch: measured 2026-08-27/28 on DmitryGubenko and ar-filicity with
+// `passwall2.@global[0].enabled=0`, every bound slot answered 204 in under 0.4s.
+//
+// The old `!inventory.PasswallEnabled -> false` guard made this unanswerable in
+// the one state where the answer decides everything — a router parked in direct
+// — which is why PhaseOperatorAttention had no way to judge its own recovery and
+// waited for a human. It also silently blinded PhasePostRebootCheck: that path
+// calls resumeProxyMode and then probes in the same pass, while
+// inventory.PasswallEnabled still holds the pre-resume snapshot value of false.
 func proxyNodeReachableForRecovery(
 	ctx context.Context,
 	backend passwall.UCIBackend,
 	inventory *controlplane.RouterInventory,
 ) bool {
-	if inventory == nil || !inventory.PasswallEnabled {
+	if inventory == nil {
 		return false
 	}
 

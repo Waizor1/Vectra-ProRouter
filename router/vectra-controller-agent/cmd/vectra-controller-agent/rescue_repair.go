@@ -270,6 +270,15 @@ func runRescueRepairAction(
 		if err := resumeProxyMode(ctx, backend, rescueState, persisted, runtimeStatus, time.Now().UTC()); err != nil {
 			status = "failure"
 			errorText = err.Error()
+		} else {
+			// Resuming the proxy is only half of a reconnect. The operator
+			// `reconnect` job also clears the recovery ownership, and without
+			// that this action brought the proxy up while leaving the router in
+			// PhaseOperatorAttention with AwaitingOperator still set — free to
+			// park again on the next sweep, and reported as repaired either way.
+			// The panel worked around it by queueing the operator job instead;
+			// this makes the action itself complete.
+			clearControlPlaneRecoveryOwnership(persisted, runtimeStatus)
 		}
 	default:
 		status = "unsupported"

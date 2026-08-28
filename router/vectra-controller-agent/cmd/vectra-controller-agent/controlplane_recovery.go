@@ -379,9 +379,21 @@ func advanceControlPlaneRecovery(
 		// for panel visibility, but auto-recovery keeps looping forever: the
 		// re-armed PhasePasswallRetryWait path re-disables PassWall on failure, so
 		// the router stays reachable in direct and never requires a human.
-		if (panelProbe == nil || !panelProbe.Reachable) &&
-			!inventory.PasswallEnabled &&
-			operatorAttentionRetryReady(now, cfg.Rescue, recoveryState) {
+		// The panel-reachable case used to be excluded outright, on the theory
+		// that a live panel would decide. It did not: the panel only ever
+		// resolves a park on a transition the ROUTER sends, so both sides waited
+		// for each other and routers sat in direct for days (DmitryGubenko,
+		// 2026-08-26, 33 hours with every bound node answering 204).
+		//
+		// With a live panel this now retries only on positive proof that the
+		// node answers — measurable with the proxy stopped, see
+		// proxyNodeReachableForRecovery. With a dead panel the old blind retry
+		// stands: nobody else can help, so trying is strictly better than
+		// parking. Both stay behind the RebootCooldown.
+		if !inventory.PasswallEnabled &&
+			operatorAttentionRetryReady(now, cfg.Rescue, recoveryState) &&
+			(panelProbe == nil || !panelProbe.Reachable ||
+				proxyNodeReachableForRecovery(ctx, backend, inventory)) {
 			if err := resumeProxyMode(ctx, backend, rescueState, persisted, runtimeStatus, now); err != nil {
 				return outcome, err
 			}

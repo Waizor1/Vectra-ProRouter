@@ -1782,3 +1782,180 @@ func containsBatchLine(commands [][]string, expected string) bool {
 	}
 	return false
 }
+
+// The deadlock that kept DmitryGubenko in direct for 33 hours: parked in
+// operator attention with a HEALTHY panel, the agent refused to re-attempt
+// because it assumed the panel would act, while the panel only ever resolves a
+// park on a transition the router sends. Both sides waited.
+//
+// With the panel reachable the re-attempt is now allowed, but only on positive
+// proof that the node answers — which url_test_node can give with the proxy
+// stopped.
+func TestAdvanceControlPlaneRecoveryOperatorAttentionRetriesWithLivePanelWhenNodeAnswers(t *testing.T) {
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusNoContent})
+	defer panel.Close()
+	ru := newStatusServer(map[string]int{"/": http.StatusNoContent})
+	defer ru.Close()
+	blocked := newStatusServer(map[string]int{"/": http.StatusServiceUnavailable})
+	defer blocked.Close()
+
+	setRecoveryProbeTargets(t,
+		[]probeTarget{
+			{ID: "ya", Label: "ya.ru", URL: ru.URL},
+			{ID: "vk", Label: "vk.com", URL: ru.URL},
+		},
+		[]probeTarget{
+			{ID: "youtube", Label: "youtube", URL: blocked.URL},
+			{ID: "instagram", Label: "instagram", URL: blocked.URL},
+			{ID: "telegram", Label: "telegram", URL: blocked.URL},
+		},
+	)
+
+	backend := &fakeRescueBackend{
+		runResults: map[string]passwall.CommandResult{
+			"/usr/share/passwall2/test.sh url_test_node world-node": {Stdout: "204:0.29"},
+			"/etc/init.d/passwall2 restart":                         {Stdout: "restarted"},
+		},
+		protocols: map[string]string{
+			"passwall2.myshunt.protocol":     "_shunt",
+			"passwall2.myshunt.default_node": "_direct",
+			"passwall2.myshunt.WorldProxy":   "world-node",
+			"passwall2.world-node.protocol":  "vless",
+			"passwall2.myshunt.YouTube":      "_default",
+			"passwall2.myshunt.GooglePlay":   "_default",
+			"passwall2.myshunt.Proxy":        "_default",
+			"passwall2.myshunt.ProxyGame":    "_default",
+			"passwall2.myshunt.Tiktok":       "_default",
+			"passwall2.myshunt.Special":      "_default",
+		},
+	}
+	now := time.Now()
+	staleRetryAt := recovery.FormatTime(now.Add(-13 * time.Hour))
+	persisted := state.PersistedState{ControlPlaneRecovery: recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(now.Add(-6 * time.Hour)),
+		OutageStartedAt:              recovery.FormatTime(now.Add(-5 * time.Hour)),
+		Phase:                        recovery.PhaseOperatorAttention,
+		AwaitingOperator:             true,
+		LastActionReason:             operatorAttentionReason,
+		LastPasswallRetryAt:          staleRetryAt,
+	}}
+	rescueState := rescue.State{Mode: rescue.ModeDirect}
+	// Parked in direct: the proxy stack is stopped, which is exactly the state
+	// the old PasswallEnabled guard refused to judge.
+	inventory := controlplane.RouterInventory{
+		PasswallEnabled: false,
+		SelectedNodeID:  "myshunt",
+	}
+	runtimeStatus := state.RuntimeStatus{}
+
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if !outcome.InventoryChanged {
+		t.Fatal("expected the re-attempt to re-enable PassWall while the panel is reachable")
+	}
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhasePasswallRetryWait; got != want {
+		t.Fatalf("recovery phase = %q, want %q", got, want)
+	}
+	if got, want := rescueState.Mode, rescue.ModeProxy; got != want {
+		t.Fatalf("rescue mode = %q, want %q", got, want)
+	}
+	if !containsCommand(backend.runCommands, "/usr/share/passwall2/test.sh url_test_node world-node") {
+		t.Fatalf("expected the node to be probed with the proxy stopped, got %#v", backend.runCommands)
+	}
+	if !containsBatchLine(backend.batchCommands, "set passwall2.@global[0].enabled='1'") {
+		t.Fatalf("expected passwall enable batch on re-attempt, got %#v", backend.batchCommands)
+	}
+}
+
+// The other half: a live panel plus a node that does NOT answer must stay
+// parked. Retrying on no evidence is what turns a real outage into a restart
+// loop, and it is why the reachable-panel case was excluded in the first place.
+func TestAdvanceControlPlaneRecoveryOperatorAttentionStaysParkedWithLivePanelWhenNodeIsDead(t *testing.T) {
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusNoContent})
+	defer panel.Close()
+	ru := newStatusServer(map[string]int{"/": http.StatusNoContent})
+	defer ru.Close()
+	blocked := newStatusServer(map[string]int{"/": http.StatusServiceUnavailable})
+	defer blocked.Close()
+
+	setRecoveryProbeTargets(t,
+		[]probeTarget{
+			{ID: "ya", Label: "ya.ru", URL: ru.URL},
+			{ID: "vk", Label: "vk.com", URL: ru.URL},
+		},
+		[]probeTarget{
+			{ID: "youtube", Label: "youtube", URL: blocked.URL},
+			{ID: "instagram", Label: "instagram", URL: blocked.URL},
+			{ID: "telegram", Label: "telegram", URL: blocked.URL},
+		},
+	)
+
+	backend := &fakeRescueBackend{
+		runResults: map[string]passwall.CommandResult{
+			"/usr/share/passwall2/test.sh url_test_node world-node": {Stdout: "000:0.00"},
+			"/etc/init.d/passwall2 restart":                         {Stdout: "restarted"},
+		},
+		protocols: map[string]string{
+			"passwall2.myshunt.protocol":     "_shunt",
+			"passwall2.myshunt.default_node": "_direct",
+			"passwall2.myshunt.WorldProxy":   "world-node",
+			"passwall2.world-node.protocol":  "vless",
+			"passwall2.myshunt.YouTube":      "_default",
+			"passwall2.myshunt.GooglePlay":   "_default",
+			"passwall2.myshunt.Proxy":        "_default",
+			"passwall2.myshunt.ProxyGame":    "_default",
+			"passwall2.myshunt.Tiktok":       "_default",
+			"passwall2.myshunt.Special":      "_default",
+		},
+	}
+	now := time.Now()
+	persisted := state.PersistedState{ControlPlaneRecovery: recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(now.Add(-6 * time.Hour)),
+		OutageStartedAt:              recovery.FormatTime(now.Add(-5 * time.Hour)),
+		Phase:                        recovery.PhaseOperatorAttention,
+		AwaitingOperator:             true,
+		LastActionReason:             operatorAttentionReason,
+		LastPasswallRetryAt:          recovery.FormatTime(now.Add(-13 * time.Hour)),
+	}}
+	rescueState := rescue.State{Mode: rescue.ModeDirect}
+	inventory := controlplane.RouterInventory{
+		PasswallEnabled: false,
+		SelectedNodeID:  "myshunt",
+	}
+	runtimeStatus := state.RuntimeStatus{}
+
+	if _, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	); err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhaseOperatorAttention; got != want {
+		t.Fatalf("recovery phase = %q, want %q", got, want)
+	}
+	if got, want := rescueState.Mode, rescue.ModeDirect; got != want {
+		t.Fatalf("rescue mode = %q, want %q", got, want)
+	}
+	if containsBatchLine(backend.batchCommands, "set passwall2.@global[0].enabled='1'") {
+		t.Fatalf("must not resume the proxy with no evidence the node answers, got %#v", backend.batchCommands)
+	}
+}
