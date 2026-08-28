@@ -6,9 +6,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"vectra-controller-agent/internal/controlplane"
 	"vectra-controller-agent/internal/passwall"
+	"vectra-controller-agent/internal/recovery"
 	"vectra-controller-agent/internal/rescue"
 	"vectra-controller-agent/internal/state"
 )
@@ -160,5 +162,53 @@ func TestExecuteRescueRepairJobDoesNotClearRescueStateOnReconnectFailure(t *test
 	}
 	if rescueState.Mode != rescue.ModeDirect || runtimeStatus.PasswallEnabled {
 		t.Fatalf("failed reconnect must not clear direct state, got mode=%s passwall=%v", rescueState.Mode, runtimeStatus.PasswallEnabled)
+	}
+}
+
+// reconnect_proxy used to resume the proxy and stop there, leaving the router in
+// PhaseOperatorAttention with AwaitingOperator still set — so the monitor's own
+// repair reported success while the router stayed parked and could fall straight
+// back into direct. The operator `reconnect` job always cleared that ownership;
+// the repair action has to as well, or "repaired" is not true.
+func TestExecuteRescueRepairJobReconnectClearsControlPlaneRecoveryPark(t *testing.T) {
+	backend := &fakeRescueRepairBackend{}
+	rescueState := rescue.State{Mode: rescue.ModeDirect}
+	persisted := state.PersistedState{}
+	persisted.ControlPlaneRecovery.Phase = recovery.PhaseOperatorAttention
+	persisted.ControlPlaneRecovery.AwaitingOperator = true
+	persisted.ControlPlaneRecovery.LastActionReason = operatorAttentionReason
+	persisted.ControlPlaneRecovery.OutageStartedAt = recovery.FormatTime(time.Now().Add(-5 * time.Hour))
+	runtimeStatus := state.RuntimeStatus{PasswallEnabled: false, ServerReachable: true}
+
+	request, err := parseRunRescueRepairJob(map[string]interface{}{
+		"actions":     []interface{}{"reconnect_proxy"},
+		"requestedBy": "auto_rescue",
+	})
+	if err != nil {
+		t.Fatalf("parse repair job: %v", err)
+	}
+
+	if _, _, _, err := executeRescueRepairJob(
+		context.Background(),
+		backend,
+		request,
+		&rescueState,
+		&persisted,
+		&runtimeStatus,
+		func() controlplane.RouterInventory {
+			return controlplane.RouterInventory{PasswallEnabled: runtimeStatus.PasswallEnabled}
+		},
+	); err != nil {
+		t.Fatalf("execute repair job: %v", err)
+	}
+
+	if persisted.ControlPlaneRecovery.AwaitingOperator {
+		t.Fatal("expected reconnect_proxy to clear AwaitingOperator")
+	}
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhaseIdle; got != want {
+		t.Fatalf("recovery phase = %q, want %q", got, want)
+	}
+	if runtimeStatus.RecoveryPhase != string(recovery.PhaseIdle) {
+		t.Fatalf("runtime recovery phase = %q, want %q", runtimeStatus.RecoveryPhase, recovery.PhaseIdle)
 	}
 }
