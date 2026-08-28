@@ -261,10 +261,10 @@ const globalForJanitor = globalThis as typeof globalThis & {
 // concurrent sweeps.
 export function startStuckJobJanitor() {
   if (env.NODE_ENV === "test" || !env.VECTRA_STUCK_JOB_JANITOR_ENABLED) {
-    return;
+    return false;
   }
   if (globalForJanitor.__vectraStuckJobJanitorTimer) {
-    return;
+    return true;
   }
 
   const run = async () => {
@@ -299,6 +299,7 @@ export function startStuckJobJanitor() {
   );
   // Don't keep the process alive for the timer; Next.js owns the lifecycle.
   globalForJanitor.__vectraStuckJobJanitorTimer.unref?.();
+  return true;
 }
 
 // Stop hook for tests. Production code never calls this — the timer lives

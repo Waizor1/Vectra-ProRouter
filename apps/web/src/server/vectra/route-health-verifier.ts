@@ -411,7 +411,7 @@ const globalForVerifier = globalThis as unknown as {
 
 export function startRouteHealthVerifier() {
   if (globalForVerifier.__vectraRouteHealthVerifierTimer) {
-    return;
+    return true;
   }
 
   const run = async () => {
@@ -470,6 +470,7 @@ export function startRouteHealthVerifier() {
     15 * 60 * 1000,
   );
   globalForVerifier.__vectraRouteHealthVerifierTimer.unref?.();
+  return true;
 }
 
 export function stopRouteHealthVerifierForTest() {

@@ -109,10 +109,10 @@ const globalForRetention = globalThis as typeof globalThis & {
 // cannot overlap itself.
 export function startRevisionRetention() {
   if (env.NODE_ENV === "test" || !env.VECTRA_REVISION_RETENTION_ENABLED) {
-    return;
+    return false;
   }
   if (globalForRetention.__vectraRevisionRetentionTimer) {
-    return;
+    return true;
   }
 
   const run = async () => {
@@ -142,6 +142,7 @@ export function startRevisionRetention() {
     env.VECTRA_REVISION_RETENTION_INTERVAL_SECONDS * 1000,
   );
   globalForRetention.__vectraRevisionRetentionTimer.unref?.();
+  return true;
 }
 
 export function stopRevisionRetentionForTest() {
