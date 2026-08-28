@@ -440,6 +440,42 @@ systemctl status vectra-inventory-retention.timer --no-pager
 journalctl -u vectra-inventory-retention.service -n 100 --no-pager
 ```
 
+## 5.4. Self-repair layer and escalation
+
+The unattended repair lane is gated on `VECTRA_AUTO_RESCUE_ENABLED`. Setting it
+in `.env` is not enough on its own: `--env-file` only expands `${...}` inside
+`docker-compose.yml`, so a key must also appear in that file's `environment:`
+block or the container never receives it and falls back to the schema default
+(`false` for this one). The `deployment-env-contract` test fails if any server
+key in `apps/web/src/env.js` is missing from compose — keep it green rather than
+adding keys to `.env` alone.
+
+Verify the flag actually reached the process, not just the file:
+
+```bash
+docker compose --env-file .env exec -T web \
+  node -e "console.log(process.env.VECTRA_AUTO_RESCUE_ENABLED)"
+```
+
+`GET /api/health` reports each background lane as `true` only when its timer is
+really running, so `autoRescueMonitor: false` there means the lane is off.
+
+When automation exhausts its repair attempts it escalates, and escalation is
+delivered over Telegram. Without a bot token the escalation is recorded but
+nobody is paged — browser push still fires, but only while a panel tab is open.
+To page an operator on a phone, add to `.env` and restart the web service:
+
+```
+VECTRA_TELEGRAM_BOT_TOKEN=<token from @BotFather>
+VECTRA_TELEGRAM_ALLOWED_CHAT_IDS=<chat id, comma-separated for several>
+VECTRA_TELEGRAM_DRY_RUN=false
+```
+
+All three matter: the sender returns early while `VECTRA_TELEGRAM_DRY_RUN` is
+true (its default), and again when the token or the chat-id allowlist is empty.
+Get the chat id by messaging the bot and reading
+`https://api.telegram.org/bot<token>/getUpdates`.
+
 ## 6. Health checks
 
 Local container health:
