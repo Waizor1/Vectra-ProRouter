@@ -235,7 +235,13 @@ export function routeVerificationToHealthSample(
       // about a binding that no longer exists and says nothing about today.
       continue;
     }
-    observations.push({ host, outcome: slot.smokeOk ? "ok" : "fail" });
+    // The smoke test runs against this node, so the verdict is about the node
+    // — unlike a destination probe, which only assumes it went this way.
+    observations.push({
+      host,
+      outcome: slot.smokeOk ? "ok" : "fail",
+      source: "direct",
+    });
   }
 
   return observations.length > 0 ? { routerId, observations } : null;
