@@ -6,6 +6,7 @@ import {
   getYoutubeReachabilityChecks,
   getYoutubeReachabilityStatus,
   hasYoutubeReachabilityProblem,
+  isYoutubeVideoPathDown,
 } from "./youtube-reachability";
 
 describe("youtube reachability helpers", () => {
@@ -133,5 +134,85 @@ describe("youtube reachability helpers", () => {
     );
     expect(hasYoutubeReachabilityProblem(probe)).toBe(true);
     expect(getYoutubeReachabilityStatus(probe)).toBe("blocked");
+  });
+});
+
+describe("isYoutubeVideoPathDown", () => {
+  // The complaint "YouTube does not work" almost always means playback, not the
+  // page: the bytes come from googlevideo. A probe where the page answers and
+  // googlevideo does not is a total playback failure for that user, so it must
+  // not be softened into the same "partially degraded" bucket as a slow
+  // thumbnail host.
+  it("flags a probe whose googlevideo check failed while the page answered", () => {
+    expect(
+      isYoutubeVideoPathDown({
+        status: "partial",
+        checks: [
+          {
+            label: "googlevideo.com",
+            targetUrl: "https://www.googlevideo.com/generate_204",
+            reachable: false,
+            checkedAt: "2026-09-15T00:00:00Z",
+          },
+          {
+            label: "youtube.com",
+            targetUrl: "https://www.youtube.com/generate_204",
+            reachable: true,
+            checkedAt: "2026-09-15T00:00:00Z",
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not flag a partial probe whose googlevideo check passed", () => {
+    expect(
+      isYoutubeVideoPathDown({
+        status: "partial",
+        checks: [
+          {
+            label: "googlevideo.com",
+            targetUrl: "https://www.googlevideo.com/generate_204",
+            reachable: true,
+            checkedAt: "2026-09-15T00:00:00Z",
+          },
+          {
+            label: "i.ytimg.com",
+            targetUrl: "https://i.ytimg.com/generate_204",
+            reachable: false,
+            checkedAt: "2026-09-15T00:00:00Z",
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  // Older controllers ship a probe set without a googlevideo target at all.
+  // Absence of the check is not evidence of a healthy video path, but it is also
+  // not evidence of a broken one, so it must not manufacture a critical alert.
+  it("does not flag a probe that carries no googlevideo check", () => {
+    expect(
+      isYoutubeVideoPathDown({
+        status: "partial",
+        checks: [
+          {
+            label: "youtube.com",
+            targetUrl: "https://www.youtube.com/generate_204",
+            reachable: false,
+            checkedAt: "2026-09-15T00:00:00Z",
+          },
+          {
+            label: "i.ytimg.com",
+            targetUrl: "https://i.ytimg.com/generate_204",
+            reachable: true,
+            checkedAt: "2026-09-15T00:00:00Z",
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for an empty probe", () => {
+    expect(isYoutubeVideoPathDown(null)).toBe(false);
   });
 });

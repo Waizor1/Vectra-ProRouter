@@ -23,6 +23,7 @@ import {
 import {
   formatYoutubeReachabilityLabel,
   getYoutubeReachabilityStatus,
+  isYoutubeVideoPathDown,
 } from "~/lib/youtube-reachability";
 
 import type { ConfigSourceMode } from "./config-trust";
@@ -524,17 +525,24 @@ function buildAlerts(
       router.youtubeReachability,
     );
     if (youtubeStatus === "partial" || youtubeStatus === "blocked") {
+      // A failed googlevideo check means playback is dead even when the page
+      // still answers, so it is a critical outage for that user rather than the
+      // soft "partial" it would otherwise be filed as.
+      const videoPathDown = isYoutubeVideoPathDown(router.youtubeReachability);
       alerts.push({
         id: `youtube:${router.id}:${youtubeStatus}`,
         kind: "youtube_degraded",
-        severity: youtubeStatus === "blocked" ? "critical" : "warning",
+        severity:
+          youtubeStatus === "blocked" || videoPathDown ? "critical" : "warning",
         routerId: router.id,
         routerName: router.name,
         href,
         title:
           youtubeStatus === "blocked"
             ? "YouTube не отвечает"
-            : "YouTube частично деградировал",
+            : videoPathDown
+              ? "YouTube: видео не грузится"
+              : "YouTube частично деградировал",
         description: `YouTube ${formatYoutubeReachabilityLabel(router.youtubeReachability)}: сервисные probes уже не полностью зелёные.`,
         openedAt: router.youtubeReachability?.checkedAt ?? router.lastSeenAt,
         filters: {

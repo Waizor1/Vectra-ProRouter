@@ -31,6 +31,14 @@ const telegramProbeURL = "https://telegram.org/"
 const telegramProbeTimeout = 3 * time.Second
 const telegramProbeCacheTTL = 30 * time.Minute
 const youtubeProbeURL = "https://www.youtube.com/generate_204"
+
+// youtubeVideoProbeURL reaches the video CDN rather than the page. Host choice
+// matters: redirector.googlevideo.com answered 204 only intermittently when
+// measured from a known-good line (1 of 3 attempts), which would have painted the
+// whole fleet red, while www.googlevideo.com answered 204 on every attempt.
+// googlevideo.com is inside geosite:YOUTUBE, so this probe rides the same slot
+// the player does.
+const youtubeVideoProbeURL = "https://www.googlevideo.com/generate_204"
 const youtubeProbeTimeout = 3 * time.Second
 const youtubeProbeCacheTTL = 30 * time.Minute
 const instagramProbeTimeout = 3 * time.Second
@@ -97,6 +105,13 @@ type youtubeProbeTarget struct {
 }
 
 var youtubeProbeTargets = []youtubeProbeTarget{
+	// googlevideo carries the actual video bytes, and it is the limb users mean
+	// when they report "YouTube does not work": the page loads, thumbnails load,
+	// playback stalls. Probing only youtube.com reported that router green, so
+	// the complaint was invisible to the panel. It leads the list because nearly
+	// the whole AX3000T fleet runs the lean profile (see
+	// serviceReachabilityLeanFloorMB) and lean takes targets from the front.
+	{ID: "youtube-video", Label: "googlevideo.com", URL: youtubeVideoProbeURL},
 	{ID: "youtube-main", Label: "youtube.com", URL: youtubeProbeURL},
 	{ID: "youtube-img", Label: "i.ytimg.com", URL: "https://i.ytimg.com/generate_204"},
 	{ID: "youtube-api", Label: "youtubei.googleapis.com", URL: "https://youtubei.googleapis.com/generate_204"},
@@ -653,9 +668,17 @@ func telegramTargetsFor(mode serviceReachabilityMode) []telegramProbeTarget {
 	return telegramProbeTargets
 }
 
+// youtubeLeanTargetCount keeps both limbs of the YouTube path in the lean
+// profile — the video CDN and the page. One limb alone cannot separate "playback
+// is broken" from "YouTube is down", and that is the distinction every fleet
+// complaint turns on. The extra cost is one 3-second-timeout request per 30-minute
+// cache cycle, which the lean floor can afford; the richer i.ytimg/youtubei
+// targets stay behind the full profile.
+const youtubeLeanTargetCount = 2
+
 func youtubeTargetsFor(mode serviceReachabilityMode) []youtubeProbeTarget {
-	if mode == serviceReachabilityLean && len(youtubeProbeTargets) > 0 {
-		return youtubeProbeTargets[:1]
+	if mode == serviceReachabilityLean && len(youtubeProbeTargets) > youtubeLeanTargetCount {
+		return youtubeProbeTargets[:youtubeLeanTargetCount]
 	}
 	return youtubeProbeTargets
 }

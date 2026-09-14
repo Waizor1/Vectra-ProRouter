@@ -846,7 +846,10 @@ export function collectFleetNodeHealthSample(
     const outcome = outcomeOf(status);
     const host = outcome ? hostForSlot(slotId) : null;
     if (outcome && host) {
-      observations.push({ host, outcome });
+      // Inferred: the probe reached a destination, and this is merely the node
+      // the carrying slot was bound to. A route verification of the same
+      // endpoint outranks it — see FleetNodeHealthObservation.source.
+      observations.push({ host, outcome, source: "inferred" });
     }
   };
 

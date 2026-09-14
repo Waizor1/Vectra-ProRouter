@@ -267,9 +267,6 @@ func TestLeanModeProbesOneTargetPerService(t *testing.T) {
 	if got := len(telegramTargetsFor(serviceReachabilityLean)); got != 1 {
 		t.Fatalf("lean telegram targets = %d, want 1", got)
 	}
-	if got := len(youtubeTargetsFor(serviceReachabilityLean)); got != 1 {
-		t.Fatalf("lean youtube targets = %d, want 1", got)
-	}
 	if got := len(instagramTargetsFor(serviceReachabilityLean)); got != 1 {
 		t.Fatalf("lean instagram targets = %d, want 1", got)
 	}
@@ -281,6 +278,44 @@ func TestLeanModeProbesOneTargetPerService(t *testing.T) {
 	}
 	if len(telegramProbeTargets) <= 1 {
 		t.Fatalf("expected the full telegram profile to be richer than the lean one")
+	}
+}
+
+// YouTube is the one service whose failure mode splits in two: the page can load
+// while playback stalls, because the bytes come from googlevideo rather than from
+// youtube.com. Probing a single limb cannot tell "playback is broken" (the actual
+// user complaint) apart from "YouTube is down", so lean carries both. Every other
+// service stays at one target — see TestLeanModeProbesOneTargetPerService.
+func TestLeanYouTubeProbeCoversPageAndVideoPath(t *testing.T) {
+	lean := youtubeTargetsFor(serviceReachabilityLean)
+	if got := len(lean); got != 2 {
+		t.Fatalf("lean youtube targets = %d, want 2", got)
+	}
+
+	var hasVideo, hasPage bool
+	for _, target := range lean {
+		if strings.Contains(target.URL, "googlevideo.com") {
+			hasVideo = true
+		}
+		if target.URL == youtubeProbeURL {
+			hasPage = true
+		}
+	}
+	if !hasVideo {
+		t.Fatalf("lean youtube profile must probe googlevideo.com, got %+v", lean)
+	}
+	if !hasPage {
+		t.Fatalf("lean youtube profile must keep the youtube.com page probe, got %+v", lean)
+	}
+
+	// The video limb leads so a future narrowing of the lean profile keeps the
+	// signal that matters most rather than falling back to the page alone.
+	if !strings.Contains(lean[0].URL, "googlevideo.com") {
+		t.Fatalf("lean youtube[0] = %q, want the googlevideo target", lean[0].URL)
+	}
+
+	if len(youtubeTargetsFor(serviceReachabilityFull)) <= len(lean) {
+		t.Fatalf("full youtube profile must stay richer than the lean one")
 	}
 }
 
@@ -643,11 +678,13 @@ func TestBuildTelegramReachabilitySummaryBlocked(t *testing.T) {
 }
 
 func TestBuildYouTubeReachabilitySummaryUsesYouTubeTargets(t *testing.T) {
-	if got, want := youtubeProbeTargets[0].URL, youtubeProbeURL; got != want {
+	// The video CDN leads: it is the limb the lean profile can least afford to
+	// drop, and lean slices from the front.
+	if got, want := youtubeProbeTargets[0].URL, youtubeVideoProbeURL; got != want {
 		t.Fatalf("youtube primary target = %q, want %q", got, want)
 	}
-	if len(youtubeProbeTargets) < 3 {
-		t.Fatalf("len(youtubeProbeTargets) = %d, want at least 3", len(youtubeProbeTargets))
+	if len(youtubeProbeTargets) < 4 {
+		t.Fatalf("len(youtubeProbeTargets) = %d, want at least 4", len(youtubeProbeTargets))
 	}
 
 	checkedAt := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
@@ -677,7 +714,7 @@ func TestBuildYouTubeReachabilitySummaryUsesYouTubeTargets(t *testing.T) {
 	if got, want := summary.TotalCount, len(youtubeProbeTargets); got != want {
 		t.Fatalf("TotalCount = %d, want %d", got, want)
 	}
-	if got, want := summary.Checks[0].Label, "youtube.com"; got != want {
+	if got, want := summary.Checks[0].Label, "googlevideo.com"; got != want {
 		t.Fatalf("first check label = %q, want %q", got, want)
 	}
 }

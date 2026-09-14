@@ -214,8 +214,8 @@ describe("routeVerificationToHealthSample", () => {
     expect(sample).toEqual({
       routerId: "r1",
       observations: [
-        { host: "nl3.nfnpx.online:443", outcome: "fail" },
-        { host: "pl2.nfnpx.online:443", outcome: "ok" },
+        { host: "nl3.nfnpx.online:443", outcome: "fail", source: "direct" },
+        { host: "pl2.nfnpx.online:443", outcome: "ok", source: "direct" },
       ],
     });
   });

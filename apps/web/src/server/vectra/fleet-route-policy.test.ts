@@ -9,11 +9,12 @@ import {
   buildFleetRoutePolicyDirective,
   buildFleetRoutePolicyIdentity,
   canonicalFleetRoutePolicy,
+  collectFleetNodeHealthSample,
   evaluateFleetRoutePolicy,
   FLEET_ROUTE_POLICY_VERSION,
   normalizeFleetRoutePolicy,
 } from "./fleet-route-policy";
-import { buildFleetNodeHealth } from "./fleet-node-health";
+import { buildFleetNodeHealth, isUnhealthyNodeHost } from "./fleet-node-health";
 
 function buildConfig(
   overrides: {
@@ -1259,5 +1260,55 @@ describe("dead provider hosts lose their slot", () => {
       (slot) => slot.slot === "YouTube",
     );
     expect(youtube?.targetNodeId).toBe("node-youtube-1");
+  });
+});
+
+describe("collectFleetNodeHealthSample", () => {
+  // A destination probe never observed the node it gets attributed to — it
+  // observed a website. Tagging it says so, and is what lets a route
+  // verification of the same endpoint outrank it in the ledger.
+  it("tags destination probes as inferred evidence", () => {
+    const sample = collectFleetNodeHealthSample("r1", buildConfig(), {
+      youtube: { status: "blocked" },
+      telegram: { status: "reachable" },
+    });
+
+    expect(sample?.observations).toContainEqual({
+      host: "ru5.nfnpx.online:50051",
+      outcome: "fail",
+      source: "inferred",
+    });
+    expect(
+      sample?.observations.every((entry) => entry.source === "inferred"),
+    ).toBe(true);
+  });
+
+  // The 2026-09-06 outage end to end. galeevy-dom's YouTube slot was bound to
+  // a host its own url_test_node could not reach, yet youtube.com still came
+  // back "reachable" — the probe never crossed the slot. Ranked equally, that
+  // lone success spared the dead host for the entire fleet and six routers
+  // stayed pinned to it. The direct verdict has to win.
+  it("does not let a green destination probe shield a host the router's own node test condemns", () => {
+    const config = buildConfig();
+    const probeSaysFine = collectFleetNodeHealthSample("galeevy", config, {
+      youtube: { status: "reachable" },
+      telegram: { status: "reachable" },
+    })!;
+
+    const health = buildFleetNodeHealth([
+      {
+        routerId: "galeevy",
+        observations: [
+          ...probeSaysFine.observations,
+          {
+            host: "ru5.nfnpx.online:50051",
+            outcome: "fail",
+            source: "direct",
+          },
+        ],
+      },
+    ]);
+
+    expect(isUnhealthyNodeHost(health, "ru5.nfnpx.online", 50051)).toBe(true);
   });
 });
