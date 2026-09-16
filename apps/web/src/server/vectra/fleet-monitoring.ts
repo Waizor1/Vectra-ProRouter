@@ -21,6 +21,11 @@ import {
   getTelegramReachabilityStatus,
 } from "~/lib/telegram-reachability";
 import {
+  describeSubscriptionRisk,
+  hasSubscriptionGateRisk,
+  hasWipedNodeList,
+} from "~/lib/subscription-health";
+import {
   formatYoutubeReachabilityLabel,
   getYoutubeReachabilityStatus,
   isYoutubeVideoPathDown,
@@ -59,6 +64,8 @@ type MonitoringAlertKind =
   | "awaiting_import"
   | "low_memory"
   | "router_safety"
+  | "subscription_wiped"
+  | "subscription_gate_risk"
   | "blocked_support";
 
 type FleetMonitoringConfigTrust = {
@@ -75,6 +82,8 @@ type MonitoringServiceFilterValue =
   | "telegram_degraded"
   | "youtube_degraded"
   | "instagram_degraded"
+  | "subscription_wiped"
+  | "subscription_gate_risk"
   | "service_unknown";
 
 export type FleetMonitoringRouterInput = {
@@ -88,6 +97,11 @@ export type FleetMonitoringRouterInput = {
   passwallEnabled: boolean;
   nodeCount: number;
   subscriptionCount: number;
+  subscriptionHealth?: {
+    hwidEnabled: boolean;
+    scheduleEnabled: boolean;
+    placeholderNodes: number;
+  } | null;
   controllerVersion: string;
   passwallVersion: string;
   components: Record<string, string>;
@@ -176,6 +190,11 @@ type FleetMonitoringRouter = {
   statusLabel: string;
   nodeCount: number;
   subscriptionCount: number;
+  subscriptionHealth?: {
+    hwidEnabled: boolean;
+    scheduleEnabled: boolean;
+    placeholderNodes: number;
+  } | null;
   controllerVersion: string;
   passwallVersion: string;
   components: Record<string, string>;
@@ -521,6 +540,38 @@ function buildAlerts(
       });
     }
 
+    // The subscription can destroy a router overnight without anything else
+    // going red first, so it is judged before the service probes: a wiped node
+    // list is already an outage, and an open HWID gate is one midnight away.
+    const subscriptionHealth = router.subscriptionHealth;
+    if (hasWipedNodeList(subscriptionHealth)) {
+      alerts.push({
+        id: `subscription-wiped:${router.id}`,
+        kind: "subscription_wiped",
+        severity: "critical",
+        routerId: router.id,
+        routerName: router.name,
+        href,
+        title: "Узлы подписки подменены заглушкой",
+        description: describeSubscriptionRisk(subscriptionHealth),
+        openedAt: router.lastSeenAt,
+        filters: { ...routerFilters, service: "subscription_wiped" },
+      });
+    } else if (hasSubscriptionGateRisk(subscriptionHealth)) {
+      alerts.push({
+        id: `subscription-gate:${router.id}`,
+        kind: "subscription_gate_risk",
+        severity: "warning",
+        routerId: router.id,
+        routerName: router.name,
+        href,
+        title: "Подписка сотрёт узлы в ближайшую ночь",
+        description: describeSubscriptionRisk(subscriptionHealth),
+        openedAt: router.lastSeenAt,
+        filters: { ...routerFilters, service: "subscription_gate_risk" },
+      });
+    }
+
     const youtubeStatus = getYoutubeReachabilityStatus(
       router.youtubeReachability,
     );
@@ -856,6 +907,8 @@ export function buildFleetMonitoringSnapshot(args: {
     telegram_degraded: 0,
     youtube_degraded: 0,
     instagram_degraded: 0,
+    subscription_wiped: 0,
+    subscription_gate_risk: 0,
     service_unknown: 0,
   };
   const policyCounts: Record<FleetRoutePolicyStatus, number> = {

@@ -222,6 +222,7 @@ func (Collector) Collect(base controlplane.RouterInventory) controlplane.RouterI
 	inventory.SelectedNodeLabel = resolveSelectedNodeLabel(inventory.SelectedNodeID)
 	inventory.NodeCount = countPasswallSections("nodes")
 	inventory.SubscriptionCount = countPasswallSections("subscribe_list")
+	inventory.SubscriptionHealth = collectSubscriptionHealth()
 
 	if inventory.Hostname == "" {
 		inventory.Hostname = firstLine("hostname")
@@ -315,6 +316,77 @@ func readUCI(key string) string {
 	}
 
 	return strings.TrimSpace(string(output))
+}
+
+// subscriptionPlaceholderAddress is the address the provider hands back when it
+// refuses the request — currently because PassWall asked without a hardware id.
+// A node carrying it is not a node, it is the stub that replaced one.
+const subscriptionPlaceholderAddress = "0.0.0.0"
+
+func collectSubscriptionHealth() controlplane.RouterSubscriptionHealth {
+	output, err := exec.Command("uci", "-q", "show", "passwall2").Output()
+	if err != nil {
+		return controlplane.RouterSubscriptionHealth{}
+	}
+	return parseSubscriptionHealth(string(output))
+}
+
+// parseSubscriptionHealth reads the gate, the schedule and the placeholder count
+// out of a `uci show passwall2` dump.
+//
+// The subscribe_list section name differs across the fleet
+// (vectra_sub_subscribe_list_0, vectra_sub_sub_puoAF, ...), so options are
+// matched by suffix against whichever section declared itself a subscribe_list
+// rather than by a hardcoded path.
+func parseSubscriptionHealth(output string) controlplane.RouterSubscriptionHealth {
+	health := controlplane.RouterSubscriptionHealth{}
+
+	subscriptionSections := map[string]bool{}
+	nodeSections := map[string]bool{}
+	for _, line := range strings.Split(output, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		name, _, isOption := strings.Cut(strings.TrimPrefix(key, "passwall2."), ".")
+		if isOption {
+			continue
+		}
+		switch strings.Trim(value, `"'`) {
+		case "subscribe_list":
+			subscriptionSections[name] = true
+		case "nodes":
+			nodeSections[name] = true
+		}
+	}
+
+	for _, line := range strings.Split(output, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		section, option, isOption := strings.Cut(strings.TrimPrefix(key, "passwall2."), ".")
+		if !isOption {
+			continue
+		}
+		value = strings.Trim(value, `"'`)
+		switch {
+		case subscriptionSections[section] && option == "hwid":
+			if value == "1" {
+				health.HwidEnabled = true
+			}
+		case subscriptionSections[section] && option == "update_week_mode":
+			if strings.TrimSpace(value) != "" {
+				health.ScheduleEnabled = true
+			}
+		case nodeSections[section] && option == "address":
+			if value == subscriptionPlaceholderAddress {
+				health.PlaceholderNodes++
+			}
+		}
+	}
+
+	return health
 }
 
 func countPasswallSections(sectionType string) int {
