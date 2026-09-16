@@ -94,6 +94,7 @@ type RouterInventory struct {
 	SelectedNodeLabel     string                   `json:"selectedNodeLabel,omitempty"`
 	NodeCount             int                      `json:"nodeCount"`
 	SubscriptionCount     int                      `json:"subscriptionCount"`
+	SubscriptionHealth    RouterSubscriptionHealth `json:"subscriptionHealth"`
 	PackageVersions       map[string]string        `json:"packageVersions"`
 	BinaryVersions        map[string]string        `json:"binaryVersions"`
 	RulesAssets           RouterRulesAssets        `json:"rulesAssets"`
@@ -225,4 +226,25 @@ type JobResultRequest struct {
 type JobResultResponse struct {
 	ProtocolVersion string `json:"protocolVersion"`
 	Acknowledged    bool   `json:"acknowledged"`
+}
+
+
+// RouterSubscriptionHealth carries the three facts that decide whether a
+// router's node list will survive the next nightly subscription run.
+//
+// PassWall 26.7.16+ sends the hardware id only when `option hwid '1'` is set.
+// Without it the provider answers with a placeholder node and the cron replaces
+// every real node with it, which is how two routers lost their whole node list
+// on 2026-09-16. None of this was visible to the panel, so nothing could warn or
+// block on it.
+type RouterSubscriptionHealth struct {
+	// HwidEnabled is false both when the option is absent and when it is off:
+	// for this gate those are the same outcome.
+	HwidEnabled bool `json:"hwidEnabled"`
+	// ScheduleEnabled reports update_week_mode being set, which is what makes
+	// PassWall write the cron line at all.
+	ScheduleEnabled bool `json:"scheduleEnabled"`
+	// PlaceholderNodes counts nodes pointing at the provider's stub address.
+	// Any value above zero means the node list has already been replaced.
+	PlaceholderNodes int `json:"placeholderNodes"`
 }

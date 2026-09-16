@@ -50,6 +50,11 @@ export type RouterSummary = {
   statusLabel: string;
   nodeCount: number;
   subscriptionCount: number;
+  subscriptionHealth?: {
+    hwidEnabled: boolean;
+    scheduleEnabled: boolean;
+    placeholderNodes: number;
+  } | null;
   controllerVersion: string;
   passwallVersion: string;
   components: Record<string, string>;

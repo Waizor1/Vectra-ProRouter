@@ -749,3 +749,55 @@ func TestDetectLayoutFamilyLeavesUnknownBoardsEmptyOffDevice(t *testing.T) {
 		t.Fatalf("unknown Filogic board detected as %q off-device, want %q", got, want)
 	}
 }
+
+// The subscription is the one thing on a router that can destroy itself
+// overnight: without `option hwid '1'` PassWall 26.7.16+ asks the provider
+// without a hardware id, gets an "App not supported" placeholder back, and the
+// nightly cron REPLACES every real node with it. That wiped two routers on
+// 2026-09-16 and the panel could not see it coming, because none of this
+// reached the inventory. These three facts are what make it visible.
+func TestParseSubscriptionHealthReadsGateAndPlaceholders(t *testing.T) {
+	output := strings.Join([]string{
+		"passwall2.vectra_sub_subscribe_list_0=subscribe_list",
+		"passwall2.vectra_sub_subscribe_list_0.hwid='1'",
+		"passwall2.vectra_sub_subscribe_list_0.update_week_mode='7'",
+		"passwall2.nodeA=nodes",
+		"passwall2.nodeA.address='pl2.nfnpx.online'",
+		"passwall2.nodeB=nodes",
+		"passwall2.nodeB.address='0.0.0.0'",
+	}, "\n")
+
+	health := parseSubscriptionHealth(output)
+	if !health.HwidEnabled {
+		t.Fatalf("HwidEnabled = false, want true")
+	}
+	if !health.ScheduleEnabled {
+		t.Fatalf("ScheduleEnabled = false, want true")
+	}
+	if health.PlaceholderNodes != 1 {
+		t.Fatalf("PlaceholderNodes = %d, want 1", health.PlaceholderNodes)
+	}
+}
+
+// A router whose subscription lost the gate must report it as false rather than
+// as unknown: "we did not look" and "the gate is open" are the same value here,
+// and the alert exists precisely to fire before the next midnight cron.
+func TestParseSubscriptionHealthFlagsMissingGate(t *testing.T) {
+	output := strings.Join([]string{
+		"passwall2.vectra_sub_subscribe_list_0=subscribe_list",
+		"passwall2.vectra_sub_subscribe_list_0.url='https://example.invalid/sub'",
+		"passwall2.nodeA=nodes",
+		"passwall2.nodeA.address='0.0.0.0'",
+	}, "\n")
+
+	health := parseSubscriptionHealth(output)
+	if health.HwidEnabled {
+		t.Fatalf("HwidEnabled = true, want false for a config without the option")
+	}
+	if health.ScheduleEnabled {
+		t.Fatalf("ScheduleEnabled = true, want false without update_week_mode")
+	}
+	if health.PlaceholderNodes != 1 {
+		t.Fatalf("PlaceholderNodes = %d, want 1", health.PlaceholderNodes)
+	}
+}
