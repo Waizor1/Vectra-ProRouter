@@ -2,7 +2,7 @@ package main
 
 import (
 	"os"
-	"strings"
+	"regexp"
 	"testing"
 )
 
@@ -17,8 +17,10 @@ func TestOOMGuardShieldsPassWallDNSForwarderOnEveryLayout(t *testing.T) {
 		`guard "/tmp/etc/passwall2/bin/dnsmasq_default" -200`,
 		`guard "/tmp/etc/passwall2/bin/dnsmasq_acl_default" -200`,
 	} {
-		if !strings.Contains(string(script), line) {
-			t.Fatalf("vectra-oom-guard must keep %s", line)
+		// A whole active line: a commented-out guard must not satisfy this.
+		active := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(line) + `\s*$`)
+		if !active.Match(script) {
+			t.Fatalf("vectra-oom-guard must keep an active %s", line)
 		}
 	}
 }
