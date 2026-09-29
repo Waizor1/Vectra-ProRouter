@@ -206,6 +206,10 @@ func advanceControlPlaneRecovery(
 		}
 		if panelProbe.Reachable {
 			if shouldAutoRetryPasswallAfterDirectSettle(inventory, recoveryState) {
+				if holdRecoveryDirectForUnusableRuntime(recoveryState, runtimeStatus, inventory, cfg.Rescue, now) {
+					outcome.SkipControlPlane = false
+					break
+				}
 				if err := resumeProxyMode(ctx, backend, rescueState, persisted, runtimeStatus, now); err != nil {
 					return outcome, err
 				}
@@ -261,6 +265,10 @@ func advanceControlPlaneRecovery(
 		}
 		if inventory.RUReachability != nil && inventory.RUReachability.Status == recovery.StatusReachable {
 			if !inventory.PasswallEnabled {
+				if holdRecoveryDirectForUnusableRuntime(recoveryState, runtimeStatus, inventory, cfg.Rescue, now) {
+					outcome.SkipControlPlane = panelProbe == nil || !panelProbe.Reachable
+					break
+				}
 				if err := resumeProxyMode(ctx, backend, rescueState, persisted, runtimeStatus, now); err != nil {
 					return outcome, err
 				}
@@ -390,6 +398,16 @@ func advanceControlPlaneRecovery(
 		// proxyNodeReachableForRecovery. With a dead panel the old blind retry
 		// stands: nobody else can help, so trying is strictly better than
 		// parking. Both stay behind the RebootCooldown.
+		//
+		// Not while the runtime cannot run: the retry would only re-arm the black
+		// hole. Checked before proxyNodeReachableForRecovery, which spawns
+		// test.sh and an xray on every poll. LastPasswallRetryAt is left alone,
+		// so the retry is due the moment the block lapses.
+		if !inventory.PasswallEnabled &&
+			operatorAttentionRetryReady(now, cfg.Rescue, recoveryState) &&
+			holdRecoveryDirectForUnusableRuntime(recoveryState, runtimeStatus, inventory, cfg.Rescue, now) {
+			break
+		}
 		if !inventory.PasswallEnabled &&
 			operatorAttentionRetryReady(now, cfg.Rescue, recoveryState) &&
 			(panelProbe == nil || !panelProbe.Reachable ||
@@ -833,6 +851,11 @@ func shouldResumeProxyAfterExternalDirect(
 		return false
 	}
 	if panelProbe == nil || !panelProbe.Reachable {
+		return false
+	}
+	// The direct may well be our own fail-safe over a runtime that cannot run;
+	// resuming would re-arm the black hole it exists to prevent.
+	if _, blocked := proxyRuntimeBlocksAutoResume(inventory, policy, now); blocked {
 		return false
 	}
 	return operatorAttentionRetryReady(now, policy, recoveryState)

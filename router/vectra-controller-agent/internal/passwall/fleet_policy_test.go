@@ -158,11 +158,16 @@ func TestFindFleetRoutePolicyTargetSelectsWorkingNodePerSlot(t *testing.T) {
 		// its RU-entry fleet. DiscordVoiceUdp followed it onto the same node on
 		// 2026-08-03 — the WorldProxy rule outranks the Discord rule in the
 		// generated chain, so the slot's mux/xudp tuning has to land there.
-		{"WorldProxy", []string{"UeUVz9He"}},
+		//
+		// Operator decision 2026-09-27 moved both to the RU-entry Germany exit
+		// (WM3tsJ7I, ru5:50052): the auto tier the fleet had drifted onto did
+		// not carry Instagram — 24 of 27 routers on ru*:40051, Instagram
+		// reachable on 12 and blocked on 11, Telegram fine throughout.
+		{"WorldProxy", []string{"WM3tsJ7I"}},
 		{"YouTube", []string{"WM3tsJ7I", "IoUWHdPS", "QJjZqQRF"}},
 		{"Special", []string{"WuGHS4PD"}},
 		{"Tiktok", []string{"8EbKwZxy"}},
-		{"DiscordVoiceUdp", []string{"UeUVz9He"}},
+		{"DiscordVoiceUdp", []string{"WM3tsJ7I"}},
 	}
 	for _, tc := range cases {
 		target := findFleetRoutePolicyTarget(nodes, tc.slot)

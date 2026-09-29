@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   planAutoRepairRetry,
+  autoRepairActionsForCase,
   autoRepairActionsForTrigger,
   hasDistinctBlockedReachabilityEvidence,
   isStaleControlPlaneRecoveryPark,
@@ -430,5 +431,40 @@ describe("planAutoRepairRetry", () => {
         now: NOW,
       }),
     ).toEqual({ attempt: false, exhausted: true });
+  });
+});
+describe("autoRepairActionsForCase", () => {
+  const unusable = {
+    safetyEvents: [
+      {
+        type: "proxy_runtime_unusable",
+        severity: "critical",
+        source: "filesystem",
+        message: "xray binary /usr/bin/xray missing",
+      },
+    ],
+  };
+
+  it("does not reconnect a router whose xray cannot start", () => {
+    for (const trigger of ["direct_mode", "proxy_outage"] as const) {
+      const plan = autoRepairActionsForCase(trigger, unusable);
+      expect(plan.actions).toEqual([]);
+      expect(plan.escalationReason).toContain("xray binary /usr/bin/xray missing");
+      expect(plan.escalationReason).toContain("update xray-runtime");
+    }
+  });
+
+  it("keeps the unattended reconnect when the runtime is fine", () => {
+    for (const payload of [null, {}, { safetyEvents: [{ type: "proxy_runtime_missing" }] }]) {
+      const plan = autoRepairActionsForCase("direct_mode", payload);
+      expect(plan.actions).toEqual(["reconnect_proxy"]);
+      expect(plan.escalationReason).toBeNull();
+    }
+  });
+
+  it("leaves repairs that do not re-enable the proxy alone", () => {
+    const plan = autoRepairActionsForCase("server_unreachable", unusable);
+    expect(plan.actions).toEqual(autoRepairActionsForTrigger("server_unreachable"));
+    expect(plan.escalationReason).toBeNull();
   });
 });

@@ -52,6 +52,69 @@ func ReconcileShuntBindings(ctx context.Context, backend UCIBackend, desired Des
 	return reconcileShuntBindingsFromCurrent(ctx, backend, currentConfig, desired)
 }
 
+// ReconcileShuntBindingsYieldingTo is ReconcileShuntBindings for a router that
+// also receives the panel's route-policy directive. A slot the directive pins
+// belongs to the directive: the last desired revision only remembers where the
+// slot pointed when an operator last applied, and after the subscription
+// re-mints node IDs that memory can name a different exit than the panel now
+// wants. Letting both self-heals own the slot made them undo each other on
+// every check-in, each time with a PassWall restart (andrey-avito, 2026-09-28).
+//
+// A pin only counts while it names a node that is actually on the router and
+// usable. A directive computed before the subscription re-minted the IDs points
+// at nodes that no longer exist; the directive self-heal skips such a slot, so
+// yielding it as well would leave it with no owner and its traffic on the
+// shunt's default route. Slots the directive is silent about, or pins to a
+// node that is gone, stay with the desired revision.
+func ReconcileShuntBindingsYieldingTo(ctx context.Context, backend UCIBackend, desired DesiredConfig, directive *FleetRoutePolicyDirective) (ShuntReconcileResult, error) {
+	if backend == nil {
+		backend = ExecBackend{}
+	}
+
+	currentLines, err := backend.Show(ctx, "passwall2")
+	if err != nil {
+		return ShuntReconcileResult{}, err
+	}
+	currentSections, err := ParseUCILines(currentLines)
+	if err != nil {
+		return ShuntReconcileResult{}, err
+	}
+	currentConfig := importDesiredConfig(currentSections)
+	return reconcileShuntBindingsFromCurrent(ctx, backend, currentConfig, withoutDirectivePinnedSlots(desired, directive, currentConfig.Nodes))
+}
+
+func withoutDirectivePinnedSlots(desired DesiredConfig, directive *FleetRoutePolicyDirective, currentNodes []NodeConfig) DesiredConfig {
+	if directive == nil || directive.Exempt || !directive.HasBindings() {
+		return desired
+	}
+	pinned := make([]fleetRoutePolicySlot, 0, len(directive.Slots))
+	for _, slot := range directiveSlots(directive) {
+		if resolveFleetRoutePolicyTarget(currentNodes, slot) != nil {
+			pinned = append(pinned, slot)
+		}
+	}
+	if len(pinned) == 0 {
+		return desired
+	}
+	kept := make([]ShuntRule, 0, len(desired.BasicSettings.ShuntRules))
+	for i := range desired.BasicSettings.ShuntRules {
+		rule := desired.BasicSettings.ShuntRules[i]
+		owned := false
+		for _, slot := range pinned {
+			if samePolicySlot(&rule, slot.ID) {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			kept = append(kept, rule)
+		}
+	}
+	trimmed := desired
+	trimmed.BasicSettings.ShuntRules = kept
+	return trimmed
+}
+
 func reconcileShuntBindingsFromCurrent(ctx context.Context, backend UCIBackend, currentConfig DesiredConfig, desired DesiredConfig) (ShuntReconcileResult, error) {
 	desiredNodes := nodesByID(desired.Nodes)
 	currentNodes := nodesByID(currentConfig.Nodes)

@@ -510,6 +510,42 @@ export function autoRepairActionsForTrigger(trigger: RescueCaseTrigger) {
   return repairActionsForTrigger(trigger);
 }
 
+/**
+ * The unattended repair for one case, given what the router last reported.
+ *
+ * A router whose controller reports `proxy_runtime_unusable` has put itself in
+ * direct because xray cannot start there — the binary is gone, or the last
+ * PassWall start failed on it. `reconnect_proxy` is exactly what it must not
+ * receive: it re-enables PassWall over the broken runtime, re-arming the
+ * interception that black-holed every proxied domain on andrey-avito
+ * (2026-09-28), and auto-rescue would send it three times in half an hour. The
+ * fix there is a new xray (`update xray-runtime`), which is an operator call.
+ */
+export function autoRepairActionsForCase(
+  trigger: RescueCaseTrigger,
+  snapshotPayload: unknown,
+): { actions: readonly string[]; escalationReason: string | null } {
+  const actions: readonly string[] = autoRepairActionsForTrigger(trigger);
+  const unusable = latestSafetyEventRecords(snapshotPayload).find(
+    (event) => event.type === "proxy_runtime_unusable",
+  );
+  if (!unusable || !actions.includes("reconnect_proxy")) {
+    return { actions, escalationReason: null };
+  }
+  const remaining = actions.filter((action) => action !== "reconnect_proxy");
+  const evidence =
+    typeof unusable.message === "string" && unusable.message
+      ? unusable.message
+      : "xray cannot start";
+  return {
+    actions: remaining,
+    escalationReason:
+      remaining.length > 0
+        ? null
+        : `Proxy runtime cannot start on the router (${evidence}); reconnecting would re-arm PassWall over it. Reinstall xray (update xray-runtime) before resuming the proxy.`,
+  };
+}
+
 export function noAutoRepairEscalationReason(trigger: RescueCaseTrigger) {
   if (isEscalateOnlyTrigger(trigger)) {
     return "Service reachability blocked while the proxy itself is up; unattended repair cannot fix an upstream outage. Escalated for operator review.";
@@ -1261,10 +1297,14 @@ async function queueInitialCaseWork(
     return inserted;
   }
 
-  const actions = autoRepairActionsForTrigger(rescueCase.trigger);
+  const latestSnapshot = await loadLatestSnapshot(database, rescueCase.routerId);
+  const { actions, escalationReason } = autoRepairActionsForCase(
+    rescueCase.trigger,
+    latestSnapshot?.payload ?? null,
+  );
   if (actions.length === 0) {
     await escalateRescueCase(database, rescueCase, now, {
-      reason: noAutoRepairEscalationReason(rescueCase.trigger),
+      reason: escalationReason ?? noAutoRepairEscalationReason(rescueCase.trigger),
     });
     return inserted;
   }

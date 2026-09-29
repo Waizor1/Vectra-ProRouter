@@ -81,6 +81,15 @@ func maybeRestartPasswallWatchdog(
 		return false, nil
 	}
 
+	// A restart cannot bring back an xray that is missing or that refuses its
+	// config; it only re-arms PassWall's interception over it. On andrey-avito
+	// (2026-09-28) this loop kept the LAN black-holed one cooldown at a time.
+	// Every watchdog restart -- service, runtime or connectivity -- goes through
+	// here, so this is the one place that has to know.
+	if _, unusable := proxyRuntimeUnusable(inventory); unusable {
+		return false, nil
+	}
+
 	persisted.ControlPlaneRecovery.Normalize()
 	if recovery.PasswallOwnedByRecovery(persisted.ControlPlaneRecovery.Phase) {
 		return false, nil

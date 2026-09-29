@@ -414,6 +414,31 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 		// Poland is matched by HOST as well as by label, like the panel does:
 		// the provider ships this exit as "⚡Extreme Авто EU 🇪🇺" on some
 		// subscriptions, with no Poland marker in the label at all.
+		// Operator decision 2026-09-21, mirroring the panel: a router whose
+		// subscription carries no canonical Poland exit goes to the provider's
+		// RU-entry EU auto exit rather than to another Poland host or to the
+		// RU-entry Poland fallback. pl1.nfnpx.online:443 died outright that day
+		// — url_test_node returned 000 through it on AlexanderBabkin while the
+		// same router's ru3:40051 answered 204 in 0.19s — and none of the
+		// sixteen routers stranded on pl1 carried pl2 at all.
+		//
+		// 142 sits above any non-canonical Poland :443 (140) and below the
+		// canonical pl2 (145), so routers that do carry pl2 keep it.
+		// Operator decision 2026-09-27, mirroring the panel: the fleet goes to
+		// Germany through the RU bridge. Top tier.
+		//
+		// The auto tier below became the fleet's home once the provider stopped
+		// serving pl2, and it does not carry Instagram reliably — 24 of 27
+		// routers on ru*:40051 that morning, Instagram reachable on 12 and
+		// blocked on 11 while Telegram was fine everywhere. Measured before
+		// switching on eleven routers: Telegram 200 on 11 of 11, Instagram 200
+		// on 10 of 11, and the single 000 returned 200 on retest.
+		if isRuEntryGermanyExit(address, node.Port) {
+			return 160
+		}
+		if isRuEntryAutoExit(address, node.Port) {
+			return 142
+		}
 		if !containsAny(label, "польш", "poland", "🇵🇱") &&
 			!(!ruEntry && hostLooksLikePolandExit(address)) {
 			return 0
@@ -610,6 +635,27 @@ const canonicalPolandExitHost = "pl2.nfnpx.online"
 
 func isCanonicalPolandExit(host string) bool {
 	return normalizePolicyHost(host) == canonicalPolandExitHost
+}
+
+// ruEntryAutoExitPort mirrors the constant of the same name in the panel
+// scorer. The provider's RU-entry EU auto exit ("🇷🇺🇪🇺 Авто Самый стабильный")
+// is matched by port, not by label, because the label is ad copy the provider
+// re-maps per subscription; 40051 carried that label and nothing else across
+// every live config read on 2026-09-21.
+const ruEntryAutoExitPort = 40051
+
+func isRuEntryAutoExit(host string, port int) bool {
+	return port == ruEntryAutoExitPort && hostLooksLikeRuEntry(host)
+}
+
+// ruEntryGermanyExitPort mirrors the constant of the same name in the panel
+// scorer. The provider's Germany exit reached through its RU bridge, and the
+// operator's WorldProxy canon as of 2026-09-27. Matched by port: 50052 carried
+// that one label and nothing else across all 25 live configs read that day.
+const ruEntryGermanyExitPort = 50052
+
+func isRuEntryGermanyExit(host string, port int) bool {
+	return port == ruEntryGermanyExitPort && hostLooksLikeRuEntry(host)
 }
 
 func containsAny(value string, needles ...string) bool {

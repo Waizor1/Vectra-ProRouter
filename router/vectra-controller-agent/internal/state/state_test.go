@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"vectra-controller-agent/internal/controlplane"
+	"vectra-controller-agent/internal/inventory"
 	"vectra-controller-agent/internal/recovery"
 )
 
@@ -305,5 +306,35 @@ func TestLoadEmptyStateWithoutBackupStartsFresh(t *testing.T) {
 	}
 	if len(matches) == 0 {
 		t.Fatal("expected corrupt state backup")
+	}
+}
+
+// The start-failure memory is what keeps proxy_runtime_unusable standing
+// across a controller restart; a restart must neither drop it nor re-record it
+// against whatever binary happens to be installed then.
+func TestSaveAndLoadPreservesProxyRuntimeFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+
+	original := PersistedState{
+		RouterID:   "router-123",
+		AgentToken: "token-abc",
+		ProxyRuntimeFailure: inventory.ProxyRuntimeStartFailure{
+			Attempt:    "2026-09-28 23:34:23: Running complete!",
+			Evidence:   "Failed to start: main: failed to load config files",
+			Runtime:    "/usr/bin/xray size=31457280 mtime=2026-09-20T10:00:00Z; luci-app-passwall2 26.4.10-r1",
+			ObservedAt: "2026-09-28T20:35:00Z",
+			Retired:    true,
+		},
+	}
+	if err := Save(path, original); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if loaded.ProxyRuntimeFailure != original.ProxyRuntimeFailure {
+		t.Fatalf("ProxyRuntimeFailure = %+v, want %+v", loaded.ProxyRuntimeFailure, original.ProxyRuntimeFailure)
 	}
 }
