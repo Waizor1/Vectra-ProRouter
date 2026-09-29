@@ -611,6 +611,9 @@ export const inspectSubscriptionsJobPayloadSchema = z.object({}).passthrough();
 export const ensurePasswallRuntimeActionSchema = z.enum([
   "compact_geodata",
   "dnsmasq_full",
+  // Reinstalls the fleet's pinned official xray build. Opt-in only: never part
+  // of the default action set. Controllers older than 0.1.13-r41 reject it.
+  "xray_binary",
 ]);
 
 export const ensurePasswallRuntimeJobPayloadSchema = z
@@ -622,6 +625,19 @@ export const ensurePasswallRuntimeJobPayloadSchema = z
       .default(["compact_geodata", "dnsmasq_full"]),
     onboardingRunId: z.string().uuid().nullable().optional(),
     onboardingAttempt: z.number().int().nonnegative().nullable().optional(),
+    // Optional pin for "xray_binary"; the controller falls back to its
+    // compiled-in fleet build and refuses a version without its checksum.
+    xrayVersion: z
+      .string()
+      .regex(/^\d+\.\d+\.\d+$/)
+      .optional(),
+    xraySha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+    // When the overlay cannot hold old and new side by side, the controller
+    // only removes an xray that still runs if this is set.
+    xrayReplaceInPlace: z.boolean().optional(),
     assetDirectory: z.string().trim().min(1).default("/usr/share/v2ray/"),
     geoipUrl: z
       .string()

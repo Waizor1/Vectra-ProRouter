@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/url"
 	"path"
 	"strings"
@@ -107,6 +108,33 @@ func evaluateLocalRescue(
 	now := time.Now().UTC()
 	reconcileRescueStateWithInventory(rescueState, inventory)
 
+	// A runtime that provably cannot run is not something to probe, count
+	// failures of or restart: with PassWall enabled over it the LAN is at best
+	// unproxied and at worst black-holed (andrey-avito, 2026-09-28). Fall back
+	// to direct right away, with the same bookkeeping as the ModeDirect
+	// transition below, and before the watchdog gets a chance to re-arm it.
+	unusableEvent, runtimeUnusable := proxyRuntimeUnusable(inventory)
+	if runtimeUnusable && inventory.PasswallEnabled {
+		reason := proxyRuntimeUnusableDirectReason(unusableEvent)
+		if err := setPasswallMainSwitch(ctx, backend, false, mainSwitchOptions{
+			Reason: reason,
+		}); err != nil {
+			applyRescueMetadata(persisted, rescueState, inventory, runtimeStatus)
+			return false, buildRouterHealth(*rescueState, false), err
+		}
+		log.Printf("%s", reason)
+		rescueState.Mode = rescue.ModeDirect
+		rescueState.ProxyFailureCount = 0
+		rescueState.DirectSuccessCount = 0
+		rescueState.ProxySuccessCount = 0
+		rescueState.LastTransitionAt = now
+		persisted.Rescue.LastMode = string(rescue.ModeDirect)
+		persisted.Rescue.LastReason = reason
+		persisted.Rescue.HappenedAt = now.Format(time.RFC3339)
+		applyRescueMetadata(persisted, rescueState, inventory, runtimeStatus)
+		return true, buildRouterHealth(*rescueState, false), nil
+	}
+
 	if reason, ok := passwallWatchdogRestartReason(inventory); ok {
 		restarted, err := maybeRestartPasswallWatchdog(
 			ctx,
@@ -149,7 +177,14 @@ func evaluateLocalRescue(
 		if publicProbe.Reachable {
 			input.DirectSuccessIncrement = 1
 		}
-		if publicProbe.Reachable {
+		if _, blocked := proxyRuntimeBlocksAutoResume(inventory, cfg.Rescue, now); blocked {
+			// No way back to proxy while the runtime cannot run: no proxy credit is
+			// earned, and credit earned before it broke is void -- otherwise it
+			// could still trip the transition once the cooldown expires. A failed
+			// start stops blocking after one RebootCooldown, and the proxy probes
+			// below get their periodic say again.
+			input.State.ProxySuccessCount = 0
+		} else if publicProbe.Reachable {
 			if proxyReachable, _, _ := probeProxyPath(ctx, backend, inventory.SelectedNodeID); proxyReachable {
 				input.ProxySuccessIncrement = 1
 			}
@@ -183,7 +218,7 @@ func evaluateLocalRescue(
 				input.ProxyFailureIncrement = 1
 				if cfg.Rescue.RequireDirectPathSuccess &&
 					rescue.ShouldAttemptDirectFallback(now, cfg.Rescue, *rescueState) {
-					directReachable, err := validateDirectFallback(ctx, cfg, backend)
+					directReachable, err := validateDirectFallback(ctx, cfg, backend, inventory)
 					if err != nil {
 						applyRescueMetadata(persisted, rescueState, inventory, runtimeStatus)
 						return false, buildRouterHealth(*rescueState, serverReachable), err
@@ -274,10 +309,16 @@ func setPasswallMainSwitch(
 	return err
 }
 
+// validateDirectFallback briefly turns PassWall off to prove the direct path
+// works, then turns it back on. Turning it back on over a runtime that cannot
+// run would re-arm the black hole, so in that case PassWall stays off.
+// evaluateLocalRescue already falls back to direct before it can get here with
+// such a runtime; this guard only makes sure no future caller undoes that.
 func validateDirectFallback(
 	ctx context.Context,
 	cfg *config.Config,
 	backend passwall.UCIBackend,
+	collected *controlplane.RouterInventory,
 ) (bool, error) {
 	if err := setPasswallMainSwitch(ctx, backend, false, mainSwitchOptions{}); err != nil {
 		return false, fmt.Errorf("disable passwall for direct fallback probe: %w", err)
@@ -285,6 +326,10 @@ func validateDirectFallback(
 
 	prober := rescue.NewHTTPProber(probeTimeout(cfg.RequestTimeout))
 	result := rescue.ProbeAny(ctx, prober, cfg.Rescue.HealthURLs)
+
+	if _, unusable := proxyRuntimeUnusable(collected); unusable {
+		return result.Reachable, nil
+	}
 
 	if err := setPasswallMainSwitch(ctx, backend, true, mainSwitchOptions{}); err != nil {
 		return false, fmt.Errorf("restore passwall after direct fallback probe: %w", err)

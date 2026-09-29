@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"vectra-controller-agent/internal/controlplane"
+	"vectra-controller-agent/internal/inventory"
 	"vectra-controller-agent/internal/passwall"
 	"vectra-controller-agent/internal/recovery"
 	"vectra-controller-agent/internal/rescue"
@@ -64,6 +65,13 @@ type PersistedState struct {
 	// converts the success result to failure, lets the panel learn the
 	// outcome, and clears the journal locally — restoring check-in cadence.
 	PendingJobResultRetryCount int `json:"pending_job_result_retry_count,omitempty"`
+	// ProxyRuntimeFailure remembers the last failed PassWall start together with
+	// the runtime (xray binary identity + PassWall version) it failed on, so the
+	// proxy_runtime_unusable verdict ends by itself once that runtime is
+	// replaced, and survives the /tmp log being wiped by a reboot while it is
+	// not. See inventory.ProxyRuntimeStartFailure. A value, not a pointer:
+	// persistStateIfChanged compares states with ==.
+	ProxyRuntimeFailure inventory.ProxyRuntimeStartFailure `json:"proxy_runtime_failure,omitempty"`
 }
 
 // Load reads persisted state and guarantees that durable credentials are never

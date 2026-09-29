@@ -3,12 +3,16 @@ package inventory
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,7 +22,15 @@ import (
 	"vectra-controller-agent/internal/rescue"
 )
 
-type Collector struct{}
+type Collector struct {
+	// ProxyRuntimeFailure, when set, is the persisted memory behind the
+	// proxy_runtime_unusable verdict (see ProxyRuntimeStartFailure); Collect
+	// reads and updates it in place. Nil judges the PassWall log alone, which is
+	// fine for one-off snapshots but not for the run loop that acts on the
+	// verdict: without the memory a repaired router could stay condemned by a log
+	// line written about the binary it no longer has.
+	ProxyRuntimeFailure *ProxyRuntimeStartFailure
+}
 
 var semverLikePattern = regexp.MustCompile(`\b[vV]?\d+\.\d+(?:\.\d+)?(?:[-+._0-9A-Za-z]*)?\b`)
 var oomSafetyPattern = regexp.MustCompile(`(?i)(out of memory|oom-killer|invoked oom-killer|killed process|oom_reaper)`)
@@ -188,7 +200,7 @@ func NewCollector() Collector {
 	return Collector{}
 }
 
-func (Collector) Collect(base controlplane.RouterInventory) controlplane.RouterInventory {
+func (c Collector) Collect(base controlplane.RouterInventory) controlplane.RouterInventory {
 	inventory := base
 	inventory.PackageVersions = cloneMap(base.PackageVersions)
 	inventory.BinaryVersions = cloneMap(base.BinaryVersions)
@@ -265,7 +277,7 @@ func (Collector) Collect(base controlplane.RouterInventory) controlplane.RouterI
 		PasswallServer: serviceState("/etc/init.d/passwall2_server"),
 		DNSMasq:        serviceState("/etc/init.d/dnsmasq"),
 	}
-	inventory.SafetyEvents = collectSafetyEvents(inventory)
+	inventory.SafetyEvents = collectSafetyEvents(inventory, c.ProxyRuntimeFailure)
 	if mode := serviceReachabilityModeFor(inventory); mode != serviceReachabilityOff {
 		inventory.TelegramReachability = collectTelegramReachability(mode)
 		inventory.YouTubeReachability = collectYouTubeReachability(mode)
@@ -762,12 +774,15 @@ func instagramTargetsFor(mode serviceReachabilityMode) []instagramProbeTarget {
 	return instagramProbeTargets
 }
 
-func collectSafetyEvents(inventory controlplane.RouterInventory) []controlplane.RouterSafetyEvent {
+func collectSafetyEvents(
+	inventory controlplane.RouterInventory,
+	proxyRuntimeFailure *ProxyRuntimeStartFailure,
+) []controlplane.RouterSafetyEvent {
 	events := make([]controlplane.RouterSafetyEvent, 0, maxSafetyEvents)
 	now := time.Now().UTC()
 
 	events = append(events, resourceSafetyEvents(inventory.Resources, now)...)
-	events = append(events, serviceSafetyEvents(inventory, now)...)
+	events = append(events, serviceSafetyEvents(inventory, now, proxyRuntimeFailure)...)
 	if shouldCollectSafetyDiagnostics(inventory.Resources) {
 		events = append(events, collectCachedSafetyDiagnostics(now)...)
 	}
@@ -853,6 +868,7 @@ func resourceSafetyEvents(
 func serviceSafetyEvents(
 	inventory controlplane.RouterInventory,
 	observedAt time.Time,
+	proxyRuntimeFailure *ProxyRuntimeStartFailure,
 ) []controlplane.RouterSafetyEvent {
 	events := make([]controlplane.RouterSafetyEvent, 0, 4)
 
@@ -900,6 +916,10 @@ func serviceSafetyEvents(
 	}
 
 	if event, ok := proxyRuntimeSafetyEvent(inventory, observedAt, proxyRuntimeRunning); ok {
+		events = append(events, event)
+	}
+
+	if event, ok := proxyRuntimeUnusableSafetyEvent(inventory, observedAt, proxyRuntimeFailure); ok {
 		events = append(events, event)
 	}
 
@@ -1052,6 +1072,642 @@ func processCommandMatchesRuntimeConfig(cmdline []byte, component string, config
 		}
 	}
 	return false
+}
+
+// ProxyRuntimeUnusableEventType marks a proxy runtime that provably cannot run.
+// It is deliberately distinct from proxy_runtime_missing, which only says the
+// runtime process is not there right now and that a restart may bring it back.
+const ProxyRuntimeUnusableEventType = "proxy_runtime_unusable"
+
+// ProxyRuntimeStartFailureSource is the Source of a proxy_runtime_unusable
+// event that stands on a failed PassWall start, as opposed to "filesystem" (the
+// xray binary is missing). Consumers treat them differently: a missing binary
+// blocks until the file is back, while a failed start may still be retried now
+// and then, because a bad node, geosite code or applied config can be fixed in
+// ways no fingerprint sees.
+const ProxyRuntimeStartFailureSource = "passwall_log"
+
+// passwallLogTailBytes bounds how much of PassWall's own log is read per
+// collection. clean_log() empties the file once it passes 1000 lines, so the
+// whole log rarely exceeds this, and a few dozen lines already cover several
+// start attempts.
+const passwallLogTailBytes = 64 * 1024
+
+const xrayStartFailurePrefix = "Failed to start:"
+
+// passwallGlobalInstanceMarker identifies PassWall's global proxy instance in
+// its log. When the global xray fails its config test, app.sh logs "[Global]
+// process /tmp/etc/passwall2/acl/default/global.json error, skip this
+// transparent proxy!" and then appends xray's own test output. ACL instances
+// log the same message about their $TMP_ACL_PATH/<node>_TCP_UDP_DNS_<port>.json
+// and append their output to the same file -- a failed ACL does not stop the
+// global proxy and must not condemn the router. The message is translated, the
+// path is a format argument, so the path identifies the global instance in
+// every language.
+const passwallGlobalInstanceMarker = "/acl/default/global.json"
+
+// passwallLogStampLayout is echolog_date's `date "+%Y-%m-%d %H:%M:%S"` prefix.
+// PassWall's own lines carry it; the runtime output it appends does not (xray
+// stamps its own lines with slashes).
+const passwallLogStampLayout = "2006-01-02 15:04:05"
+
+const defaultV2rayAssetDirectory = "/usr/share/v2ray/"
+
+// passwallLogPath is PassWall2's own log (LOG_FILE in utils.sh). It lives in
+// /tmp, so the nightly reboot wipes it.
+var passwallLogPath = "/tmp/log/passwall2.log"
+
+// passwallConfigPath is the UCI file PassWall generates its xray config from.
+var passwallConfigPath = "/etc/config/passwall2"
+
+// xrayPackageBinaryPath is the binary the xray-core package owns, and the one
+// the Vectra wrapper execs.
+var xrayPackageBinaryPath = "/usr/bin/xray"
+
+// vectraXrayWrapperPath is where low-RAM boards point
+// passwall2.@global_app[0].xray_file: a shell script that sets GOMEMLIMIT/GOGC
+// and execs xrayPackageBinaryPath. Only while it IS that script, though:
+// PassWall's LuCI component updater overwrites whatever xray_file names, so
+// this path can just as well hold a raw xray binary.
+var vectraXrayWrapperPath = "/usr/sbin/vectra-xray-wrapper"
+
+// xrayFallbackBinaryPaths and singBoxFallbackBinaryPaths are where PassWall2's
+// first_type() looks when the configured *_file is not an executable absolute
+// path: /bin and /usr/bin explicitly, then `command -v` over the default PATH.
+var xrayFallbackBinaryPaths = []string{"/bin/xray", "/usr/bin/xray", "/usr/sbin/xray", "/sbin/xray"}
+var singBoxFallbackBinaryPaths = []string{"/bin/sing-box", "/usr/bin/sing-box", "/usr/sbin/sing-box", "/sbin/sing-box"}
+
+// readProxyRuntimeUCI is readUCI, swappable in tests.
+var readProxyRuntimeUCI = readUCI
+
+// PassWall2 writes its start/stop lines through log_i18n, so they follow the
+// LuCI language. These are the msgstr of every translation upstream ships
+// (po/ru, po/zh-cn, po/zh-tw, po/fa; zh_Hans/zh_Hant are symlinks). An
+// unrecognised language only means no start attempt is found, which fails
+// open (no event).
+var passwallStartCompleteMarkers = []string{
+	"Running complete!",
+	"Выполнение завершено!",
+	"运行完成！",
+	"運行完成！",
+	"اجرا کامل شد!",
+}
+
+var passwallNoProxyModeMarkers = []string{
+	"Running in no proxy mode",
+	"Работа в режиме без прокси",
+	"运行于非代理模式",
+	"運行於非代理模式",
+	"در حالت بدون پروکسی",
+}
+
+// ProxyRuntimeStartFailure is the controller's durable memory of the last
+// failed PassWall start, persisted in the agent state.
+//
+// The PassWall log alone is not enough to judge by. A failed start stays the
+// last proxy start in /tmp/log/passwall2.log until PassWall starts a proxy
+// again, and once the router has fallen back to direct nothing starts one:
+// judged by the log alone, a router whose xray was since replaced by an
+// operator or a repair job would stay condemned forever by a line written
+// about the old binary. So the first time a failed attempt is seen, the
+// runtime it failed on is fingerprinted (see snapshotProxyRuntime) and the
+// verdict only stands while that runtime is still the one installed. The
+// converse holds too: the nightly reboot wipes /tmp and clean_log() empties the
+// file, and neither repairs anything, so a remembered failure keeps standing
+// while the log holds no proxy start at all. A successful proxy start ends it;
+// a changed runtime retires it.
+type ProxyRuntimeStartFailure struct {
+	// Attempt is the "Running complete!" line that closed the failed start; its
+	// timestamp tells one attempt from the next.
+	Attempt string `json:"attempt,omitempty"`
+	// Evidence is the "Failed to start:" line xray printed for the global
+	// instance.
+	Evidence string `json:"evidence,omitempty"`
+	// Runtime fingerprints what the attempt failed on.
+	Runtime string `json:"runtime,omitempty"`
+	// ObservedAt is when the controller first saw the failure. Consumers time
+	// their periodic retry of a failed start from it.
+	ObservedAt string `json:"observed_at,omitempty"`
+	// Retired means the attempt says nothing about the installed runtime any
+	// more: the runtime changed after it (or before it was first seen). A
+	// retired memory is kept only so the same attempt is not judged again; it
+	// costs nothing per collection, where an active one costs two UCI reads
+	// and a fingerprint.
+	Retired bool `json:"retired,omitempty"`
+}
+
+// proxyRuntimeUnusableSafetyEvent reports a proxy runtime that provably cannot
+// run.
+//
+// andrey-avito (Cudy WR3000H, PassWall2 26.4.10, controller 0.1.13-r40,
+// 2026-09-28/29) is why. First /usr/bin/xray was an upstream 26.9.9 that
+// refuses the config PassWall 26.4.10 generates ("The feature outbound
+// proxySettings has been removed"): every start logged xray's "Failed to
+// start:" and fell back to no proxy mode. Later the binary vanished outright
+// while xray_file still pointed at the Vectra wrapper, so PassWall found an
+// executable, armed its nft/fakedns interception and then had no xray to hand
+// the traffic to: every proxied domain was black-holed for the LAN. The
+// watchdog saw proxy_runtime_missing and kept restarting PassWall, and every
+// restart re-armed the black hole. A restart cannot fix either condition; this
+// event says so, so that the controller stops trying and fails safe to direct.
+//
+// Two conditions qualify, and only while the selected node runs on xray:
+//   - the executable is missing: xray_file resolves (as PassWall's own
+//     first_type() resolves it) to nothing executable while no sing-box is
+//     there to run the node instead, or to the Vectra wrapper script while the
+//     /usr/bin/xray it execs is missing. This clears itself as soon as the file
+//     is back.
+//   - the last PassWall start that actually tried to run a proxy failed in the
+//     global xray instance, and the runtime it failed on is still the
+//     installed one (see ProxyRuntimeStartFailure).
+//
+// It is reported whether or not PassWall is enabled: once the router is back
+// in direct this event is what keeps the automatic paths from switching it on
+// again over the same broken runtime.
+//
+// Cost matters, this runs on every collection of a 234 MB router. The healthy
+// steady state -- /usr/bin/xray present, no unseen failed start in the log,
+// nothing active in memory -- is decided from one stat and one bounded read of
+// a /tmp file, without spawning anything. Only a suspect router pays for the
+// UCI reads and the fingerprint.
+func proxyRuntimeUnusableSafetyEvent(
+	inventory controlplane.RouterInventory,
+	observedAt time.Time,
+	memory *ProxyRuntimeStartFailure,
+) (controlplane.RouterSafetyEvent, bool) {
+	attempt, attempted := lastPasswallProxyStartAttempt(readLogTail(passwallLogPath, passwallLogTailBytes))
+	if attempted && attempt.Failure == "" && memory != nil {
+		// A proxy start has succeeded since: whatever failed before is fixed.
+		*memory = ProxyRuntimeStartFailure{}
+	}
+	unseenFailure := attempted && attempt.Failure != "" &&
+		(memory == nil || memory.Attempt != attempt.Closing)
+	activeMemory := memory != nil && memory.Attempt != "" && !memory.Retired
+	if !unseenFailure && !activeMemory && isExecutableFile(xrayPackageBinaryPath) {
+		return controlplane.RouterSafetyEvent{}, false
+	}
+
+	nodeID := strings.TrimSpace(inventory.SelectedNodeID)
+	if nodeID == "" {
+		return controlplane.RouterSafetyEvent{}, false
+	}
+	if normalizeProxyRuntimeType(readProxyRuntimeUCI("passwall2."+nodeID+".type")) != "xray" {
+		return controlplane.RouterSafetyEvent{}, false
+	}
+
+	executable := resolveXrayExecutable(readProxyRuntimeUCI("passwall2.@global_app[0].xray_file"))
+	if executable.Missing != "" && executable.Effective == "" &&
+		firstType(readProxyRuntimeUCI("passwall2.@global_app[0].sing_box_file"), singBoxFallbackBinaryPaths) != "" {
+		// app.sh prefers run_singbox when XRAY_BIN resolves to nothing, even for
+		// an xray-typed node: the node still runs, so nothing is missing.
+		executable.Missing = ""
+	}
+
+	// The start-failure memory is brought up to date even when the binary is
+	// missing: a failure first seen now is recorded against the runtime as it is
+	// now ("missing"), so the binary coming back counts as a change of runtime.
+	failure, startFailed := ProxyRuntimeStartFailure{}, false
+	if unseenFailure || activeMemory {
+		failure, startFailed = judgeProxyRuntimeStartFailure(
+			attempt,
+			attempted,
+			memory,
+			snapshotProxyRuntime(executable),
+			observedAt,
+		)
+	}
+
+	if executable.Missing != "" {
+		configured := executable.Configured
+		if configured == "" {
+			configured = "(unset)"
+		}
+		// The missing path leads, so evidence truncation can never drop it.
+		evidence := fmt.Sprintf(
+			"%s is missing or not executable; passwall2.@global_app[0].xray_file=%s and no xray at %s",
+			executable.Missing,
+			configured,
+			strings.Join(xrayFallbackBinaryPaths, ", "),
+		)
+		if executable.Effective == vectraXrayWrapperPath {
+			evidence = fmt.Sprintf(
+				"%s is missing or not executable; passwall2.@global_app[0].xray_file=%s is the Vectra wrapper, which execs it",
+				executable.Missing,
+				configured,
+			)
+		}
+		return buildSafetyEvent(
+			ProxyRuntimeUnusableEventType,
+			"critical",
+			"xray",
+			"filesystem",
+			fmt.Sprintf("xray binary %s missing", executable.Missing),
+			observedAt,
+			evidence,
+		), true
+	}
+
+	if !startFailed {
+		return controlplane.RouterSafetyEvent{}, false
+	}
+	message := "last PassWall proxy start failed in xray"
+	if !attempted || attempt.Failure == "" {
+		message = "last recorded PassWall proxy start failed in xray; the log no longer holds it"
+	}
+	event := buildSafetyEvent(
+		ProxyRuntimeUnusableEventType,
+		"critical",
+		"xray",
+		ProxyRuntimeStartFailureSource,
+		message,
+		observedAt,
+		failure.Evidence,
+	)
+	if failure.ObservedAt != "" {
+		// When the failure was first seen, not when it was last collected:
+		// consumers time their periodic retry from it.
+		event.ObservedAt = failure.ObservedAt
+	}
+	return event, true
+}
+
+// judgeProxyRuntimeStartFailure applies the ProxyRuntimeStartFailure memory to
+// what the log shows.
+//
+// A failed attempt the memory has not seen yet is recorded against the
+// current runtime and stands -- unless the runtime changed after the attempt
+// ran. That happens at rollout: the last attempt in a log can predate a manual
+// fix, and pinning it to the fixed runtime would strand a working router in
+// direct. Such an attempt is recorded as already retired.
+//
+// The attempt the memory already holds -- or, when the log holds no proxy
+// start at all, the remembered one -- stands only while the runtime is
+// unchanged; once it changes, the memory is retired. A nil memory trusts the
+// log as it is. Successful attempts are the caller's business: they never
+// stand.
+func judgeProxyRuntimeStartFailure(
+	attempt passwallStartAttempt,
+	attempted bool,
+	memory *ProxyRuntimeStartFailure,
+	runtime proxyRuntimeSnapshot,
+	observedAt time.Time,
+) (ProxyRuntimeStartFailure, bool) {
+	if attempted && attempt.Failure != "" && (memory == nil || memory.Attempt != attempt.Closing) {
+		observed := ProxyRuntimeStartFailure{
+			Attempt:    attempt.Closing,
+			Evidence:   attempt.Failure,
+			Runtime:    runtime.Fingerprint,
+			ObservedAt: observedAt.UTC().Format(time.RFC3339),
+		}
+		// The stamp has one-second resolution; anything changed within the
+		// attempt's own second is taken to predate it.
+		observed.Retired = !attempt.At.IsZero() && runtime.ChangedAt.After(attempt.At.Add(time.Second))
+		if memory != nil {
+			*memory = observed
+		}
+		if observed.Retired {
+			return ProxyRuntimeStartFailure{}, false
+		}
+		return observed, true
+	}
+	if memory == nil || memory.Attempt == "" || memory.Retired {
+		return ProxyRuntimeStartFailure{}, false
+	}
+	if memory.Runtime != runtime.Fingerprint {
+		memory.Retired = true
+		return ProxyRuntimeStartFailure{}, false
+	}
+	return *memory, true
+}
+
+type passwallStartAttempt struct {
+	// Closing is the "Running complete!" line that ended the attempt.
+	Closing string
+	// Failure is the "Failed to start:" line the global xray instance printed,
+	// empty when the attempt succeeded.
+	Failure string
+	// At is when the attempt ended, in UTC; zero when its stamp is unreadable.
+	At      time.Time
+	noProxy bool
+}
+
+// lastPasswallProxyStartAttempt finds the last PassWall start that actually
+// tried to run a proxy.
+//
+// app.sh start always ends with "Running complete!", so the log splits into
+// attempts at those lines. An attempt failed when the global xray instance
+// failed: PassWall's stamped "process .../acl/default/global.json error" line,
+// followed by the xray output it appends, which holds "Failed to start:". An
+// attempt that only says "Running in no proxy mode" is PassWall starting with
+// enabled=0 -- exactly what our own fallback to direct does -- so it says
+// nothing about the runtime and is skipped; judging by it would let the
+// fallback erase the evidence that justified it, and the router would flap
+// between direct and a black hole. A failed start also says "no proxy mode"
+// (PassWall drops the global ACL once xray refuses its config), so the failure
+// is what decides. Output after the last "Running complete!" belongs to a
+// start still in progress, or a stop, and is ignored.
+func lastPasswallProxyStartAttempt(logTail string, logModTime time.Time) (passwallStartAttempt, bool) {
+	last := passwallStartAttempt{}
+	found := false
+	current := passwallStartAttempt{}
+	inGlobalFailure := false
+	var lastStamp time.Time
+	for _, line := range strings.Split(strings.ReplaceAll(logTail, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		stamp, stamped := passwallLogStamp(trimmed)
+		if !stamped {
+			// Runtime output PassWall appended; it belongs to the stamped line
+			// before it.
+			if inGlobalFailure && current.Failure == "" && strings.HasPrefix(trimmed, xrayStartFailurePrefix) {
+				current.Failure = trimmed
+			}
+			continue
+		}
+		lastStamp = stamp
+		inGlobalFailure = strings.Contains(trimmed, passwallGlobalInstanceMarker)
+		switch {
+		case slices.ContainsFunc(passwallStartCompleteMarkers, func(marker string) bool {
+			return strings.HasSuffix(trimmed, marker)
+		}):
+			current.Closing = trimmed
+			current.At = stamp
+			if current.Failure != "" || !current.noProxy {
+				last = current
+				found = true
+			}
+			current = passwallStartAttempt{}
+		case slices.ContainsFunc(passwallNoProxyModeMarkers, func(marker string) bool {
+			return strings.Contains(trimmed, marker)
+		}):
+			current.noProxy = true
+		}
+	}
+	if found && !last.At.IsZero() {
+		last.At = last.At.Add(-passwallLogZoneOffset(lastStamp, logModTime))
+	}
+	return last, found
+}
+
+// passwallLogStamp parses echolog_date's prefix, taking the wall clock as if it
+// were UTC; passwallLogZoneOffset corrects it.
+func passwallLogStamp(line string) (time.Time, bool) {
+	if len(line) < len(passwallLogStampLayout)+2 || line[len(passwallLogStampLayout):len(passwallLogStampLayout)+2] != ": " {
+		return time.Time{}, false
+	}
+	stamp, err := time.Parse(passwallLogStampLayout, line[:len(passwallLogStampLayout)])
+	if err != nil {
+		return time.Time{}, false
+	}
+	return stamp, true
+}
+
+// passwallLogZoneOffset recovers the zone PassWall stamped its log in. busybox
+// `date` honours OpenWrt's /etc/TZ, which Go does not read, so the stamps are
+// wall-clock time in a zone the controller may not know (MSK on most of the
+// fleet). The last stamped line was written when the file was last modified,
+// so the difference between the two, rounded to the 15 minutes every zone
+// offset is a multiple of, is the zone offset.
+func passwallLogZoneOffset(lastStamp time.Time, logModTime time.Time) time.Duration {
+	if lastStamp.IsZero() || logModTime.IsZero() {
+		return 0
+	}
+	return lastStamp.Sub(logModTime.UTC()).Round(15 * time.Minute)
+}
+
+// readLogTail returns at most the last limit bytes of path, starting on a line
+// boundary, and the file's modification time. A missing or unreadable file
+// reads as empty.
+func readLogTail(path string, limit int64) (string, time.Time) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", time.Time{}
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return "", time.Time{}
+	}
+	offset := info.Size() - limit
+	if offset < 0 {
+		offset = 0
+	}
+	content, err := io.ReadAll(io.NewSectionReader(file, offset, info.Size()-offset))
+	if err != nil {
+		return "", time.Time{}
+	}
+	text := string(content)
+	if offset > 0 {
+		// The window starts mid-line; drop the fragment.
+		_, text, _ = strings.Cut(text, "\n")
+	}
+	return text, info.ModTime()
+}
+
+func isExecutableFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+}
+
+// firstType mirrors PassWall2's first_type(): the configured path wins when it
+// is absolute and executable, otherwise the first executable fallback does.
+func firstType(configured string, fallbacks []string) string {
+	configured = strings.TrimSpace(configured)
+	if strings.HasPrefix(configured, "/") && isExecutableFile(configured) {
+		return configured
+	}
+	for _, candidate := range fallbacks {
+		if isExecutableFile(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// isShellScript reports whether path starts with "#!".
+func isShellScript(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	head := make([]byte, 2)
+	n, _ := io.ReadFull(file, head)
+	return n == 2 && string(head) == "#!"
+}
+
+type xrayExecutable struct {
+	// Configured is passwall2.@global_app[0].xray_file as set, possibly empty.
+	Configured string
+	// Effective is what PassWall will exec, empty when nothing is runnable.
+	Effective string
+	// Binary is the real xray behind Effective: the wrapper script execs
+	// xrayPackageBinaryPath.
+	Binary string
+	// Missing names the path whose absence makes xray unrunnable.
+	Missing string
+}
+
+// resolveXrayExecutable mirrors PassWall2's `first_type $(xray_file) xray`: a
+// stale xray_file breaks nothing while /usr/bin/xray exists and must not be
+// reported as if it did. The one indirection PassWall cannot see through is
+// the Vectra wrapper script: it is perfectly executable, so PassWall picks it,
+// and it then execs /usr/bin/xray -- which is how andrey-avito armed its
+// interception with no xray behind it. The redirect applies only while the
+// wrapper path really holds that script: once PassWall's LuCI updater has
+// written a raw xray binary over it, the file at that path IS the runtime, and
+// a missing /usr/bin/xray is irrelevant.
+func resolveXrayExecutable(configured string) xrayExecutable {
+	resolved := xrayExecutable{Configured: strings.TrimSpace(configured)}
+	resolved.Effective = firstType(resolved.Configured, xrayFallbackBinaryPaths)
+
+	switch {
+	case resolved.Effective == "":
+		resolved.Binary = xrayPackageBinaryPath
+		if strings.HasPrefix(resolved.Configured, "/") && resolved.Configured != vectraXrayWrapperPath {
+			resolved.Binary = resolved.Configured
+		}
+		resolved.Missing = resolved.Binary
+	case resolved.Effective == vectraXrayWrapperPath && isShellScript(resolved.Effective):
+		resolved.Binary = xrayPackageBinaryPath
+		if !isExecutableFile(resolved.Binary) {
+			resolved.Missing = resolved.Binary
+		}
+	default:
+		resolved.Binary = resolved.Effective
+	}
+	return resolved
+}
+
+// proxyRuntimeSnapshot is what a PassWall proxy start depends on.
+type proxyRuntimeSnapshot struct {
+	// Fingerprint changes whenever something the start depends on does.
+	Fingerprint string
+	// ChangedAt is the latest modification among those inputs.
+	ChangedAt time.Time
+}
+
+// snapshotProxyRuntime fingerprints everything a PassWall proxy start runs on,
+// so that any repair -- not only a new binary -- retires a remembered failure:
+//   - the file PassWall execs and the binary behind it. When the wrapper path
+//     is in use it is always one of the two -- the script in front of
+//     /usr/bin/xray, or the raw binary the LuCI updater wrote over it -- so
+//     restoring the wrapper script over a clobbered binary is a change even
+//     when /usr/bin/xray is untouched;
+//   - luci-app-passwall2, which generates the config;
+//   - /etc/config/passwall2, which the config is generated from: a subscription
+//     refresh, a rules or route-policy apply can fix a node or shunt xray
+//     refused;
+//   - geosite.dat/geoip.dat in v2ray_location_asset: a missing geosite code is
+//     a "Failed to start:" that a rules refresh or compact_geodata fixes.
+//
+// The UCI file is fingerprinted by content, not mtime, with the switches that
+// flip on their own masked: our own fallback to direct commits enabled=0, and
+// PassWall's stop() rewrites dnsmasq_dns_redirect. Fingerprinting their mtime
+// would retire the verdict one cycle after we acted on it. ChangedAt does use
+// the raw mtime: it only matters for an attempt not recorded yet.
+//
+// Only stats, and reads of the UCI file and an opkg control file; no process
+// is spawned.
+func snapshotProxyRuntime(executable xrayExecutable) proxyRuntimeSnapshot {
+	snapshot := proxyRuntimeSnapshot{}
+	parts := make([]string, 0, 8)
+	noteFile := func(label string, path string) {
+		info, err := os.Stat(path)
+		if err != nil {
+			parts = append(parts, fmt.Sprintf("%s %s missing", label, path))
+			return
+		}
+		parts = append(parts, fmt.Sprintf(
+			"%s %s size=%d mtime=%s",
+			label,
+			path,
+			info.Size(),
+			info.ModTime().UTC().Format(time.RFC3339Nano),
+		))
+		if info.ModTime().After(snapshot.ChangedAt) {
+			snapshot.ChangedAt = info.ModTime()
+		}
+	}
+
+	if executable.Effective != "" && executable.Effective != executable.Binary {
+		noteFile("xray_file", executable.Effective)
+	}
+	noteFile("xray", executable.Binary)
+	noteFile("luci-app-passwall2 "+packageVersion("luci-app-passwall2"), filepath.Join(opkgInfoDir, "luci-app-passwall2.control"))
+
+	config := ""
+	if info, err := os.Stat(passwallConfigPath); err == nil {
+		if content, err := os.ReadFile(passwallConfigPath); err == nil {
+			config = string(content)
+		}
+		if info.ModTime().After(snapshot.ChangedAt) {
+			snapshot.ChangedAt = info.ModTime()
+		}
+	}
+	parts = append(parts, "passwall2 config "+passwallConfigDigest(config))
+
+	assetDirectory := uciFileOption(config, "global_rules", "v2ray_location_asset")
+	if assetDirectory == "" {
+		assetDirectory = defaultV2rayAssetDirectory
+	}
+	noteFile("geosite", filepath.Join(assetDirectory, "geosite.dat"))
+	noteFile("geoip", filepath.Join(assetDirectory, "geoip.dat"))
+
+	snapshot.Fingerprint = strings.Join(parts, "; ")
+	return snapshot
+}
+
+// passwallConfigDigest hashes a UCI file by its tokens, so libuci re-quoting or
+// re-indenting a file on commit does not count as a change, and leaves out the
+// options that flip without changing what xray is given (see
+// snapshotProxyRuntime).
+func passwallConfigDigest(content string) string {
+	hash := sha256.New()
+	for _, line := range strings.Split(content, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		if len(fields) >= 2 && fields[0] == "option" &&
+			(fields[1] == "enabled" || fields[1] == "dnsmasq_dns_redirect") {
+			continue
+		}
+		for index, field := range fields {
+			fields[index] = strings.Trim(field, `'"`)
+		}
+		hash.Write([]byte(strings.Join(fields, " ")))
+		hash.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(hash.Sum(nil))[:16]
+}
+
+// uciFileOption returns an option of the first section of sectionType in a UCI
+// file, the way `uci get <config>.@<sectionType>[0].<option>` would; read from
+// the text already in hand rather than by forking uci.
+func uciFileOption(content string, sectionType string, option string) string {
+	inSection := false
+	for _, line := range strings.Split(content, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "config":
+			if inSection {
+				return ""
+			}
+			inSection = len(fields) >= 2 && strings.Trim(fields[1], `'"`) == sectionType
+		case "option":
+			if inSection && len(fields) >= 3 && fields[1] == option {
+				return strings.Trim(strings.Join(fields[2:], " "), `'"`)
+			}
+		}
+	}
+	return ""
 }
 
 func shouldCollectSafetyDiagnostics(resources controlplane.RouterResources) bool {

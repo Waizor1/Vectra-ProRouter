@@ -8,6 +8,7 @@ import {
 } from "@vectra/db";
 import { checkPasswallUpgradePreflight } from "~/lib/passwall-upgrade-preflight";
 import {
+  ensurePasswallRuntimeJobPayloadSchema,
   passwallDesiredConfigSchema,
   updateControllerJobPayloadSchema,
   updatePasswallPackagesJobPayloadSchema,
@@ -29,6 +30,10 @@ import {
 } from "~/lib/controller-update-jobs";
 import { buildTerminalPasswallClearIpsetsPayload } from "~/lib/passwall-clear-ipsets-jobs";
 import { buildTerminalRouterRebootPayload } from "~/lib/router-reboot-jobs";
+import {
+  minimumXrayRuntimeRepairControllerVersion,
+  shouldReplaceXrayInPlace,
+} from "~/lib/xray-runtime-repair";
 import {
   PASSWALL_MANAGED_STACK_REQUIRED_PACKAGES,
   buildLatestPasswallArtifactMap,
@@ -1403,6 +1408,77 @@ export const updateRouter = createTRPCRouter({
           state: "queued",
           dedupeKey,
           payload: {},
+        })
+        .returning();
+
+      return job;
+    }),
+
+  // Puts the fleet's pinned xray build back on one router. For the failure the
+  // PassWall LuCI "update" button causes: it fetches the latest XTLS release,
+  // which can drop options this PassWall still generates (26.9.9 removed
+  // "proxySettings" and xray refused to start on andrey-avito, 2026-09-28), or
+  // leaves no binary at all when the download is swallowed by PassWall's own
+  // interception. The controller stops PassWall before fetching, verifies the
+  // checksum and leaves PassWall stopped if anything fails.
+  queueXrayRuntimeRepair: protectedProcedure
+    .input(
+      z.object({
+        routerId: z.string().uuid(),
+        // Allow removing an xray that still runs when the overlay is too small
+        // to hold both builds. Off by default: a working binary is kept — unless
+        // the router itself reports its runtime unusable.
+        replaceInPlace: z.boolean().default(false),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { snapshot } = await assertCertifiedRouter(ctx, input.routerId);
+      const controllerVersion = resolveInstalledControllerVersion({
+        controllerVersion: snapshot?.controllerVersion ?? null,
+        payload: snapshot?.payload ?? null,
+      });
+      if (
+        (compareControllerVersions(
+          controllerVersion,
+          minimumXrayRuntimeRepairControllerVersion,
+        ) ?? -1) < 0
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Починка xray доступна после обновления controller-agent до ${minimumXrayRuntimeRepairControllerVersion} или новее (сейчас ${controllerVersion ?? "версия неизвестна"}).`,
+        });
+      }
+
+      const dedupeKey = `ensure_passwall_runtime:xray_binary:${input.routerId}`;
+      const [existingJob] = await ctx.db
+        .select()
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.routerId, input.routerId),
+            eq(jobs.dedupeKey, dedupeKey),
+            inArray(jobs.state, ["queued", "delivered", "running"]),
+          ),
+        )
+        .limit(1);
+
+      if (existingJob) {
+        return existingJob;
+      }
+
+      const [job] = await ctx.db
+        .insert(jobs)
+        .values({
+          routerId: input.routerId,
+          type: "ensure_passwall_runtime",
+          state: "queued",
+          dedupeKey,
+          payload: ensurePasswallRuntimeJobPayloadSchema.parse({
+            actions: ["xray_binary"],
+            ...(shouldReplaceXrayInPlace(snapshot?.payload, input.replaceInPlace)
+              ? { xrayReplaceInPlace: true }
+              : {}),
+          }),
         })
         .returning();
 

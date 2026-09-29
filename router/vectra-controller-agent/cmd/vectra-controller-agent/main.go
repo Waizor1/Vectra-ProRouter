@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -152,7 +153,7 @@ func runOnce(
 	persisted *state.PersistedState,
 ) error {
 	persistedBefore := *persisted
-	collectedInventory := collectInventoryWithRuntimeVersion(cfg.Inventory)
+	collectedInventory := collectCycleInventory(cfg.Inventory, persisted)
 	collectedInventory.ProtocolVersion = controlplane.ProtocolVersion
 	// Sourced from the agent config rather than the rendered inventory block so
 	// the flag the agent ACTS on and the flag the panel SEES are the same value.
@@ -189,6 +190,27 @@ func runOnce(
 	health := buildRouterHealth(*rescueState, runtimeStatus.ServerReachable)
 	if recovery.PasswallOwnedByRecovery(persisted.ControlPlaneRecovery.Phase) {
 		reconcileRescueStateWithInventory(rescueState, &collectedInventory)
+		// evaluateLocalRescue, and its fail-safe, do not run in these phases, and
+		// recovery only acts on a disabled PassWall here: PassWall switched on
+		// over a runtime that cannot run would otherwise stay on.
+		switched, failSafeErr := failSafeUnusableRuntimeUnderRecovery(
+			ctx,
+			passwall.ExecBackend{},
+			rescueState,
+			persisted,
+			&collectedInventory,
+			&runtimeStatus,
+			time.Now().UTC(),
+		)
+		if failSafeErr != nil {
+			runtimeStatus.LastError = failSafeErr.Error()
+			_ = state.SaveRuntimeStatus(cfg.StatusPath, runtimeStatus)
+			if err := persistStateIfChanged(cfg.StatePath, persistedBefore, persisted); err != nil {
+				return err
+			}
+			return fmt.Errorf("proxy runtime fail-safe: %w", failSafeErr)
+		}
+		transitioned = switched
 		applyRescueMetadata(persisted, rescueState, &collectedInventory, &runtimeStatus)
 	} else {
 		var rescueErr error
@@ -211,7 +233,7 @@ func runOnce(
 		}
 	}
 	if transitioned {
-		collectedInventory = collectInventoryWithRuntimeVersion(collectedInventory)
+		collectedInventory = collectCycleInventory(collectedInventory, persisted)
 		collectedInventory.ProtocolVersion = controlplane.ProtocolVersion
 		collectedInventory.PanelDomain = cfg.PanelURL
 		if collectedInventory.PanelDomain == "" {
@@ -241,7 +263,7 @@ func runOnce(
 		return fmt.Errorf("advance control plane recovery: %w", recoveryErr)
 	}
 	if recoveryOutcome.InventoryChanged {
-		collectedInventory = collectInventoryWithRuntimeVersion(collectedInventory)
+		collectedInventory = collectCycleInventory(collectedInventory, persisted)
 		collectedInventory.ProtocolVersion = controlplane.ProtocolVersion
 		collectedInventory.PanelDomain = cfg.PanelURL
 		if collectedInventory.PanelDomain == "" {
@@ -276,10 +298,11 @@ func runOnce(
 	// gated here rather than inside the passwall package: the package still
 	// does exactly what it is told, it is just not told anymore.
 	if !cfg.ManualMode && importSource == "check_in" && !persisted.RequestImport && persisted.LastDesiredRevision != nil {
-		reconcileResult, reconcileErr := passwall.ReconcileShuntBindings(
+		reconcileResult, reconcileErr := passwall.ReconcileShuntBindingsYieldingTo(
 			ctx,
 			passwall.ExecBackend{},
 			lastDesiredConfig(persisted),
+			persisted.LastRoutePolicy,
 		)
 		if reconcileErr != nil {
 			log.Printf("passwall shunt self-heal skipped: %v", reconcileErr)
@@ -467,7 +490,7 @@ func runOnce(
 		return err
 	}
 	if len(checkInResponse.Jobs) > 0 {
-		collectedInventory = collectInventoryWithRuntimeVersion(collectedInventory)
+		collectedInventory = collectCycleInventory(collectedInventory, persisted)
 		collectedInventory.ProtocolVersion = controlplane.ProtocolVersion
 		collectedInventory.PanelDomain = cfg.PanelURL
 		if collectedInventory.PanelDomain == "" {
@@ -978,7 +1001,11 @@ func executeJobs(
 			// mode skips both and the job still reports success.
 			reconcileResult := passwall.ShuntReconcileResult{}
 			if !cfg.ManualMode && desiredRevision != nil {
-				reconcileResult, err = passwall.ReconcileShuntBindings(ctx, backend, desiredRevision.Config)
+				// Yields the slots the panel directive pins to nodes that exist
+				// after the refresh, exactly like the check-in self-heal: the
+				// directive reconcile below owns those, and letting both bind
+				// them cost two PassWall restarts per job.
+				reconcileResult, err = passwall.ReconcileShuntBindingsYieldingTo(ctx, backend, desiredRevision.Config, persisted.LastRoutePolicy)
 				if err != nil {
 					if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, result.Stdout, result.Stderr, err.Error(), map[string]interface{}{"error": err.Error(), "command": result.Command}); submitErr != nil {
 						return submitErr
@@ -1189,6 +1216,21 @@ func executeJobs(
 				}
 				continue
 			}
+			var reconnectRefused string
+			repairRequest.Actions, reconnectRefused = rescueRepairActionsForRuntime(repairRequest.Actions, &collectedInventory)
+			if reconnectRefused != "" {
+				log.Printf("run_rescue_repair %s: %s", job.ID, reconnectRefused)
+				if len(repairRequest.Actions) == 0 {
+					if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, "", "", reconnectRefused, map[string]interface{}{"error": reconnectRefused, "reconnectRefused": reconnectRefused}); submitErr != nil {
+						return submitErr
+					}
+					continue
+				}
+			}
+			proxyRuntimeWarning := ""
+			if slices.Contains(repairRequest.Actions, rescueRepairActionReconnectProxy) {
+				proxyRuntimeWarning = operatorProxyResumeWarning(&collectedInventory, "run_rescue_repair")
+			}
 			resultPayload, stdout, stderr, err := executeRescueRepairJob(
 				ctx,
 				backend,
@@ -1200,6 +1242,12 @@ func executeJobs(
 					return collectRescueRepairInventorySnapshot(ctx, backend, runtimeStatus)
 				},
 			)
+			if proxyRuntimeWarning != "" {
+				resultPayload["proxyRuntimeWarning"] = proxyRuntimeWarning
+			}
+			if reconnectRefused != "" {
+				resultPayload["reconnectRefused"] = reconnectRefused
+			}
 			incidentTransitions := []map[string]interface{}{}
 			if recovered, _ := resultPayload["recoveredProxy"].(bool); recovered {
 				incidentTransitions = append(incidentTransitions, map[string]interface{}{
@@ -1422,6 +1470,7 @@ func executeJobs(
 		case "reconnect":
 			if payloadBool(job.Payload, "resumeProxy") || payloadBool(job.Payload, "clearRescue") {
 				recoveryReason := "Proxy mode restored via operator job."
+				proxyRuntimeWarning := operatorProxyResumeWarning(&collectedInventory, "reconnect job")
 				if err := resumeProxyMode(
 					ctx,
 					backend,
@@ -1451,6 +1500,14 @@ func executeJobs(
 					continue
 				}
 				clearControlPlaneRecoveryOwnership(persisted, runtimeStatus)
+				reconnectResult := map[string]interface{}{
+					"message":        "Reconnect job restored proxy mode and cleared active rescue state.",
+					"recoveredProxy": true,
+					"reason":         recoveryReason,
+				}
+				if proxyRuntimeWarning != "" {
+					reconnectResult["proxyRuntimeWarning"] = proxyRuntimeWarning
+				}
 				if err := submitJobResultNow(ctx, cfg, client, persisted, controlplane.JobResultRequest{
 					ProtocolVersion: controlplane.ProtocolVersion,
 					RouterID:        cfg.RouterID,
@@ -1463,11 +1520,7 @@ func executeJobs(
 							"reason": recoveryReason,
 						},
 					},
-					Result: map[string]interface{}{
-						"message":        "Reconnect job restored proxy mode and cleared active rescue state.",
-						"recoveredProxy": true,
-						"reason":         recoveryReason,
-					},
+					Result: reconnectResult,
 				}, controlplane.RouterInventory{}); err != nil {
 					return fmt.Errorf("submit reconnect recovery result: %w", err)
 				}
