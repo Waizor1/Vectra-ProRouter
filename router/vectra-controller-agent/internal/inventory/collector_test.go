@@ -490,6 +490,49 @@ func TestProcessCommandMatchesEveryPassWallGlobalConfigLayout(t *testing.T) {
 	}
 }
 
+// The watchdog restarts PassWall whenever this returns false, so it is the
+// line that has to know every layout: on PassWall 26.9 it used to miss the
+// running xray and restart PassWall every five minutes.
+func TestProxyRuntimeRunningFindsEachPassWallGlobalLayoutInProcessTable(t *testing.T) {
+	previous := processTableRoot
+	t.Cleanup(func() { processTableRoot = previous })
+
+	writeProcess := func(root string, pid string, cmdline string) {
+		t.Helper()
+		dir := filepath.Join(root, pid)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "cmdline"), []byte(cmdline), 0o644); err != nil {
+			t.Fatalf("write %s cmdline: %v", pid, err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		dir     string
+		cmdline string
+		want    bool
+	}{
+		{"PassWall 26.8 and older", "4242", "/tmp/etc/passwall2/bin/xray\x00run\x00-c\x00/tmp/etc/passwall2/acl/default/global.json\x00", true},
+		{"PassWall 26.9", "4242", "/tmp/etc/passwall2/bin/xray\x00run\x00-c\x00/tmp/etc/passwall2/acl/acl_default.json\x00", true},
+		{"only an ACL instance runs", "4242", "/tmp/etc/passwall2/bin/xray\x00run\x00-c\x00/tmp/etc/passwall2/acl/acl_kidstv.json\x00", false},
+		{"argument only starts with the config path", "4242", "/tmp/etc/passwall2/bin/xray\x00run\x00-c\x00/tmp/etc/passwall2/acl/acl_default.json.bak\x00", false},
+		{"entry is not a process directory", "self", "/tmp/etc/passwall2/bin/xray\x00run\x00-c\x00/tmp/etc/passwall2/acl/acl_default.json\x00", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeProcess(root, "1", "/sbin/procd\x00")
+			writeProcess(root, tc.dir, tc.cmdline)
+			processTableRoot = root
+
+			if got := proxyRuntimeRunning("xray"); got != tc.want {
+				t.Fatalf("proxyRuntimeRunning(xray) = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestProxyRuntimeSafetyEventSkipsWhenRuntimePresentOrNotExpected(t *testing.T) {
 	inventory := controlplane.RouterInventory{
 		PasswallEnabled: true,

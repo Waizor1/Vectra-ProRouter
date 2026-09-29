@@ -262,7 +262,7 @@ func classifyOptimizationProcess(command string) string {
 		return "xray"
 	case strings.Contains(normalized, "sing-box"):
 		return "sing-box"
-	case strings.Contains(normalized, "dnsmasq_default"):
+	case strings.Contains(normalized, "dnsmasq_default"), strings.Contains(normalized, "dnsmasq_acl_default"):
 		return "passwall-dnsmasq"
 	case strings.Contains(normalized, "dnsmasq"):
 		return "dnsmasq"

@@ -1028,13 +1028,17 @@ func proxyRuntimeMissingEvidence(runtime string, nodeID string, rawType string) 
 	return fmt.Sprintf("pidof %s returned no pid; selected node %s type=%s", runtime, nodeID, strings.TrimSpace(rawType))
 }
 
+// processTableRoot is where the process table is read from; tests point it at
+// a fake tree.
+var processTableRoot = "/proc"
+
 func processTableHasRuntimeConfig(component string, configPaths []string) bool {
 	component = strings.TrimSpace(component)
 	if component == "" || len(configPaths) == 0 {
 		return false
 	}
 
-	entries, err := os.ReadDir("/proc")
+	entries, err := os.ReadDir(processTableRoot)
 	if err != nil {
 		return strings.TrimSpace(boundedCommandOutput(proxyRuntimeProbeTimeout, "pidof", component)) != ""
 	}
@@ -1043,7 +1047,7 @@ func processTableHasRuntimeConfig(component string, configPaths []string) bool {
 		if !entry.IsDir() || !isProcessDirectory(entry.Name()) {
 			continue
 		}
-		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		cmdline, err := os.ReadFile(filepath.Join(processTableRoot, entry.Name(), "cmdline"))
 		if err != nil || len(cmdline) == 0 {
 			continue
 		}
