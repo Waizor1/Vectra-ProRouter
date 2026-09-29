@@ -750,18 +750,21 @@ func TestReconcileFleetRoutePolicyRestoresPackageAndDiscordTuning(t *testing.T) 
 		t.Fatalf("expected two fleet policy changes, got %#v", result)
 	}
 	joinedBatch := strings.Join(backend.batchCommands, "\n")
-	// After the 2026-07-02 DE→PL move, WorldProxy shares the single RU-entry
-	// Poland node with DiscordVoiceUdp: the stale German good_world node no
-	// longer matches WorldProxy, so both managed slots restore onto
-	// good_discord (the ru*:50053 Poland node with UDP/mux tuning).
+	// The 2026-07-02 DE→PL move made the RU-entry Poland node the shared
+	// WorldProxy/DiscordVoiceUdp target and left good_world stale. The operator
+	// reversed that on 2026-09-27: RU-entry Germany (good_world, ru*:50052) is
+	// the canon again, so both managed slots restore onto it and the UDP/mux
+	// tuning follows them there — the WorldProxy rule outranks the Discord rule
+	// in the generated chain, so the tuning has to land on whichever node the
+	// pair resolves to.
 	for _, needle := range []string{
-		"set passwall2.myshunt.WorldProxy='good_discord'",
-		"set passwall2.myshunt.DiscordVoiceUdp='good_discord'",
+		"set passwall2.myshunt.WorldProxy='good_world'",
+		"set passwall2.myshunt.DiscordVoiceUdp='good_world'",
 		"set passwall2.DiscordVoiceUdp.network='udp'",
 		"set passwall2.DiscordVoiceUdp.port='19294-19344,50000-50100'",
-		"set passwall2.good_discord.mux='1'",
-		"set passwall2.good_discord.mux_concurrency='-1'",
-		"set passwall2.good_discord.xudp_concurrency='16'",
+		"set passwall2.good_world.mux='1'",
+		"set passwall2.good_world.mux_concurrency='-1'",
+		"set passwall2.good_world.xudp_concurrency='16'",
 		"commit passwall2",
 	} {
 		if !strings.Contains(joinedBatch, needle) {
