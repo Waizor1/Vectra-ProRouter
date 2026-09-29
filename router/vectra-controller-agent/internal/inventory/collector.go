@@ -84,7 +84,17 @@ const serviceReachabilityBlockedRetryBurst = 5
 const safetyDiagnosticsCacheTTL = 10 * time.Minute
 const safetyDiagnosticsTimeout = 2 * time.Second
 const proxyRuntimeProbeTimeout = time.Second
-const passwallGlobalRuntimeConfigPath = "/tmp/etc/passwall2/acl/default/global.json"
+
+// passwallGlobalRuntimeConfigPaths are the places PassWall writes the global
+// instance's runtime config: acl/default/global.json up to 26.8, and
+// acl/acl_default.json from 26.9 on. Knowing only the first made a live xray
+// look missing on andrey-avito (26.9.16, 2026-09-29), and the watchdog then
+// restarted PassWall every five minutes to "revive" it.
+var passwallGlobalRuntimeConfigPaths = []string{
+	"/tmp/etc/passwall2/acl/default/global.json",
+	"/tmp/etc/passwall2/acl/acl_default.json",
+}
+
 const safetyDiagnosticsMemoryFloorMB = 64
 const safetyLogLines = 160
 const maxSafetyEvents = 12
@@ -1000,7 +1010,7 @@ func proxyRuntimeRunning(component string) bool {
 	}
 	switch component {
 	case "xray", "sing-box":
-		return processTableHasRuntimeConfig(component, passwallGlobalRuntimeConfigPath)
+		return processTableHasRuntimeConfig(component, passwallGlobalRuntimeConfigPaths)
 	}
 	return strings.TrimSpace(boundedCommandOutput(proxyRuntimeProbeTimeout, "pidof", component)) != ""
 }
@@ -1010,7 +1020,7 @@ func proxyRuntimeMissingEvidence(runtime string, nodeID string, rawType string) 
 		return fmt.Sprintf(
 			"process table has no %s using %s; selected node %s type=%s",
 			runtime,
-			passwallGlobalRuntimeConfigPath,
+			strings.Join(passwallGlobalRuntimeConfigPaths, " or "),
 			nodeID,
 			strings.TrimSpace(rawType),
 		)
@@ -1018,14 +1028,17 @@ func proxyRuntimeMissingEvidence(runtime string, nodeID string, rawType string) 
 	return fmt.Sprintf("pidof %s returned no pid; selected node %s type=%s", runtime, nodeID, strings.TrimSpace(rawType))
 }
 
-func processTableHasRuntimeConfig(component string, configPath string) bool {
+// processTableRoot is where the process table is read from; tests point it at
+// a fake tree.
+var processTableRoot = "/proc"
+
+func processTableHasRuntimeConfig(component string, configPaths []string) bool {
 	component = strings.TrimSpace(component)
-	configPath = strings.TrimSpace(configPath)
-	if component == "" || configPath == "" {
+	if component == "" || len(configPaths) == 0 {
 		return false
 	}
 
-	entries, err := os.ReadDir("/proc")
+	entries, err := os.ReadDir(processTableRoot)
 	if err != nil {
 		return strings.TrimSpace(boundedCommandOutput(proxyRuntimeProbeTimeout, "pidof", component)) != ""
 	}
@@ -1034,11 +1047,11 @@ func processTableHasRuntimeConfig(component string, configPath string) bool {
 		if !entry.IsDir() || !isProcessDirectory(entry.Name()) {
 			continue
 		}
-		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		cmdline, err := os.ReadFile(filepath.Join(processTableRoot, entry.Name(), "cmdline"))
 		if err != nil || len(cmdline) == 0 {
 			continue
 		}
-		if processCommandMatchesRuntimeConfig(cmdline, component, configPath) {
+		if processCommandMatchesAnyRuntimeConfig(cmdline, component, configPaths) {
 			return true
 		}
 	}
@@ -1056,6 +1069,16 @@ func isProcessDirectory(name string) bool {
 		}
 	}
 	return true
+}
+
+func processCommandMatchesAnyRuntimeConfig(cmdline []byte, component string, configPaths []string) bool {
+	for _, configPath := range configPaths {
+		if configPath = strings.TrimSpace(configPath); configPath != "" &&
+			processCommandMatchesRuntimeConfig(cmdline, component, configPath) {
+			return true
+		}
+	}
+	return false
 }
 
 func processCommandMatchesRuntimeConfig(cmdline []byte, component string, configPath string) bool {
@@ -1095,16 +1118,17 @@ const passwallLogTailBytes = 64 * 1024
 
 const xrayStartFailurePrefix = "Failed to start:"
 
-// passwallGlobalInstanceMarker identifies PassWall's global proxy instance in
+// passwallGlobalInstanceMarkers identify PassWall's global proxy instance in
 // its log. When the global xray fails its config test, app.sh logs "[Global]
 // process /tmp/etc/passwall2/acl/default/global.json error, skip this
-// transparent proxy!" and then appends xray's own test output. ACL instances
-// log the same message about their $TMP_ACL_PATH/<node>_TCP_UDP_DNS_<port>.json
-// and append their output to the same file -- a failed ACL does not stop the
-// global proxy and must not condemn the router. The message is translated, the
-// path is a format argument, so the path identifies the global instance in
-// every language.
-const passwallGlobalInstanceMarker = "/acl/default/global.json"
+// transparent proxy!" (acl/acl_default.json from 26.9 on) and then appends
+// xray's own test output. ACL instances log the same message about their own
+// config -- $TMP_ACL_PATH/<node>_TCP_UDP_DNS_<port>.json, or acl_<rule>.json
+// from 26.9 -- and append their output to the same file; a failed ACL does not
+// stop the global proxy and must not condemn the router. The message is
+// translated, the path is a format argument, so the path identifies the global
+// instance in every language.
+var passwallGlobalInstanceMarkers = []string{"/acl/default/global.json", "/acl/acl_default.json"}
 
 // passwallLogStampLayout is echolog_date's `date "+%Y-%m-%d %H:%M:%S"` prefix.
 // PassWall's own lines carry it; the runtime output it appends does not (xray
@@ -1427,7 +1451,9 @@ func lastPasswallProxyStartAttempt(logTail string, logModTime time.Time) (passwa
 			continue
 		}
 		lastStamp = stamp
-		inGlobalFailure = strings.Contains(trimmed, passwallGlobalInstanceMarker)
+		inGlobalFailure = slices.ContainsFunc(passwallGlobalInstanceMarkers, func(marker string) bool {
+			return strings.Contains(trimmed, marker)
+		})
 		switch {
 		case slices.ContainsFunc(passwallStartCompleteMarkers, func(marker string) bool {
 			return strings.HasSuffix(trimmed, marker)

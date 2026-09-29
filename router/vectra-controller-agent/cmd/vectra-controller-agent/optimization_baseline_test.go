@@ -45,6 +45,24 @@ func TestParseOptimizationProcessLinesClassifiesProxyProcesses(t *testing.T) {
 	}
 }
 
+func TestParseOptimizationProcessLinesClassifiesPassWall269Processes(t *testing.T) {
+	processes := parseOptimizationProcessLines(
+		"123\t49680\t1361952\t10\t/tmp/etc/passwall2/bin/xray run -c /tmp/etc/passwall2/acl/acl_default.json\n" +
+			"456\t1024\t2048\t2\t/tmp/etc/passwall2/bin/dnsmasq_acl_default -C /tmp/etc/passwall2/acl/acl_default_dnsmasq.conf -x /tmp/etc/passwall2/acl/acl_default_dnsmasq.pid\n" +
+			"789\t900\t1800\t1\t/usr/sbin/dnsmasq -C /var/etc/dnsmasq.conf.cfg01411c -k -x /var/run/dnsmasq/dnsmasq.cfg01411c.pid\n",
+	)
+
+	want := []string{"xray", "passwall-dnsmasq", "dnsmasq"}
+	if len(processes) != len(want) {
+		t.Fatalf("len(processes) = %d, want %d: %#v", len(processes), len(want), processes)
+	}
+	for i, role := range want {
+		if got := processes[i]["role"]; got != role {
+			t.Fatalf("process %d role = %v, want %s", i, got, role)
+		}
+	}
+}
+
 func TestOptimizationProcessScanSkipsDiagnosticShell(t *testing.T) {
 	if !strings.Contains(optimizationProcessScanCommand, `[ "$pid" = "$$" ] && continue`) {
 		t.Fatalf("optimization process scan must skip its own shell command so the embedded xray match pattern is not reported as an xray process")

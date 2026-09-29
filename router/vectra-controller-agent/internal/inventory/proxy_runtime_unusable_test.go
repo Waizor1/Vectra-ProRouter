@@ -225,6 +225,25 @@ func aclFailedPasswallStart(at string) string {
 		at + ": Running complete!\n\n"
 }
 
+// PassWall 26.9 moved the global instance's config from acl/default/global.json
+// to acl/acl_default.json, and names ACL instances acl_<rule>.json next to it
+// (andrey-avito ran 26.9.16 from 2026-09-28 23:55 MSK).
+func failedPasswallStart269(at string) string {
+	return at + ": Clearing and closing related programs and cache complete.\n" +
+		at + ": [Global] process /tmp/etc/passwall2/acl/acl_default.json error, skip this transparent proxy!\n" +
+		"Failed to start: main: failed to load config files: [/tmp/etc/passwall2/acl/acl_default.json] > infra/conf: failed to build outbound config with tag dns-out\n" +
+		at + ": Running in no proxy mode, it only allows scheduled tasks for starting and stopping services.\n" +
+		at + ": Running complete!\n\n"
+}
+
+func aclFailedPasswallStart269(at string) string {
+	return at + ": Clearing and closing related programs and cache complete.\n" +
+		at + ":     - [kids-tv] process /tmp/etc/passwall2/acl/acl_kidstv.json error, skip this transparent proxy!\n" +
+		"Failed to start: main: failed to load config files: [/tmp/etc/passwall2/acl/acl_kidstv.json] > infra/conf: invalid domain rule: geosite:no-such-code\n" +
+		at + ": nftables firewall rules load complete!\n" +
+		at + ": Running complete!\n\n"
+}
+
 // The translated lines below are the po/ru and po/fa msgstr, byte for byte.
 func russianFailedPasswallStart(at string) string {
 	return at + ": 【Глобальный режим】 ошибка процесса /tmp/etc/passwall2/acl/default/global.json, этот прозрачный прокси пропускается!\n" +
@@ -369,6 +388,23 @@ func TestProxyRuntimeUnusableSafetyEvent(t *testing.T) {
 			setup: func(t *testing.T, f *proxyRuntimeFixture) {
 				f.installXray(t, "xray 26.7.28")
 				f.writeLog(t, aclFailedPasswallStart("2026-09-28 23:34:23"))
+			},
+		},
+		{
+			name: "PassWall 26.9 global instance failing is detected",
+			setup: func(t *testing.T, f *proxyRuntimeFixture) {
+				f.installXray(t, "xray 26.9.9")
+				f.writeLog(t, failedPasswallStart269("2026-09-29 13:34:38"))
+			},
+			wantEvent:    true,
+			wantSource:   ProxyRuntimeStartFailureSource,
+			wantEvidence: "Failed to start:",
+		},
+		{
+			name: "PassWall 26.9 ACL instance failing does not condemn the router",
+			setup: func(t *testing.T, f *proxyRuntimeFixture) {
+				f.installXray(t, "xray 26.7.28")
+				f.writeLog(t, aclFailedPasswallStart269("2026-09-29 13:34:38"))
 			},
 		},
 		{

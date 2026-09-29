@@ -39,5 +39,8 @@ while true; do
 	guard "/tmp/etc/passwall2/bin/xray run" -500
 	guard "/tmp/etc/passwall2/bin/chinadns-ng" -300
 	guard "/tmp/etc/passwall2/bin/dnsmasq_default" -200
+	# PassWall 26.9 names the global instance acl_default, so its DNS
+	# forwarder is dnsmasq_acl_default; neither pattern matches the other.
+	guard "/tmp/etc/passwall2/bin/dnsmasq_acl_default" -200
 	sleep "$INTERVAL"
 done
