@@ -466,6 +466,30 @@ func TestProcessCommandMatchesRuntimeConfig(t *testing.T) {
 	}
 }
 
+// andrey-avito, 2026-09-29: PassWall 26.9.16 runs the global xray with
+// acl/acl_default.json. Looking only for acl/default/global.json made the
+// controller report a live xray as missing, and the watchdog restarted PassWall
+// every five minutes.
+func TestProcessCommandMatchesEveryPassWallGlobalConfigLayout(t *testing.T) {
+	for _, cmdline := range []string{
+		"/tmp/etc/passwall2/bin/xray\x00run\x00-c\x00/tmp/etc/passwall2/acl/default/global.json\x00",
+		"/tmp/etc/passwall2/bin/xray\x00run\x00-c\x00/tmp/etc/passwall2/acl/acl_default.json\x00",
+	} {
+		if !processCommandMatchesAnyRuntimeConfig([]byte(cmdline), "xray", passwallGlobalRuntimeConfigPaths) {
+			t.Fatalf("expected the global xray to be recognised: %q", cmdline)
+		}
+	}
+	for _, cmdline := range []string{
+		"/tmp/etc/passwall2/bin/xray\x00run\x00-c\x00/tmp/etc/passwall2/acl/acl_kidstv.json\x00",
+		"/tmp/etc/passwall2/bin/xray\x00run\x00-c\x00/tmp/etc/passwall2/global_dns_remote.json\x00",
+		"/tmp/etc/passwall2/bin/sing-box\x00run\x00-c\x00/tmp/etc/passwall2/acl/acl_default.json\x00",
+	} {
+		if processCommandMatchesAnyRuntimeConfig([]byte(cmdline), "xray", passwallGlobalRuntimeConfigPaths) {
+			t.Fatalf("did not expect %q to count as the global xray", cmdline)
+		}
+	}
+}
+
 func TestProxyRuntimeSafetyEventSkipsWhenRuntimePresentOrNotExpected(t *testing.T) {
 	inventory := controlplane.RouterInventory{
 		PasswallEnabled: true,

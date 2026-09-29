@@ -337,7 +337,7 @@ const optimizationPasswallConfigCommand = `
   uci -q show passwall2.@global_xray[0]
   uci -q show passwall2.@global_rules[0]
   printf 'generated_global_json_bytes='
-  wc -c < /tmp/etc/passwall2/acl/default/global.json 2>/dev/null || printf '0\n'
+  wc -c < /tmp/etc/passwall2/acl/default/global.json 2>/dev/null || wc -c < /tmp/etc/passwall2/acl/acl_default.json 2>/dev/null || printf '0\n'
   printf 'dns_listeners=\n'
   netstat -lnup 2>/dev/null | grep -E '(:53|:15353)' || true
 } 2>/dev/null || true
