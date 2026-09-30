@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"vectra-controller-pro/internal/agentcfg"
@@ -146,5 +147,31 @@ func TestTheSelfUpdateRestartOutlivesVctl(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(cmd.Args, " "), "/etc/init.d/vectra-controller-pro restart") {
 		t.Fatalf("args %v", cmd.Args)
+	}
+}
+
+// The artifact is fetched over https only, redirects included: a redirect to
+// plain http is refused before anything is asked of it.
+func TestTheArtifactDownloadRefusesARedirectToPlainHTTP(t *testing.T) {
+	var plainHits atomic.Int32
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plainHits.Add(1)
+		_, _ = w.Write([]byte("not an ipk"))
+	}))
+	defer plain.Close()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+r.URL.Path, http.StatusFound)
+	}))
+	defer srv.Close()
+	prev := updateHTTPClient
+	updateHTTPClient = func() *http.Client { return srv.Client() }
+	t.Cleanup(func() { updateHTTPClient = prev })
+
+	_, err := downloadFile(context.Background(), srv.URL+"/vectra-controller-pro_0.6.0-r37_aarch64_cortex-a53.ipk", filepath.Join(t.TempDir(), "u.ipk"))
+	if err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("a redirect to plain http = %v, want a refusal", err)
+	}
+	if n := plainHits.Load(); n > 0 {
+		t.Fatalf("the redirect was followed %d time(s)", n)
 	}
 }

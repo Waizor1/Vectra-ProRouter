@@ -1033,6 +1033,10 @@ func tail(s string, max int) string {
 // response cannot fill /tmp.
 const maxArtifactBytes = 64 << 20
 
+// updateHTTPClient is the self-update's HTTP client; tests trust their own
+// server with it.
+var updateHTTPClient = func() *http.Client { return &http.Client{Timeout: 120 * time.Second} }
+
 func downloadFile(ctx context.Context, rawURL, dest string) (string, error) {
 	if err := requireHTTPS(rawURL); err != nil {
 		return "", err
@@ -1041,8 +1045,8 @@ func downloadFile(ctx context.Context, rawURL, dest string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	hc := &http.Client{Timeout: 120 * time.Second}
-	resp, err := hc.Do(req)
+	// https all the way: a redirect to plain http is refused, not followed.
+	resp, err := subscription.HTTPSOnlyRedirects(updateHTTPClient()).Do(req)
 	if err != nil {
 		return "", err
 	}
