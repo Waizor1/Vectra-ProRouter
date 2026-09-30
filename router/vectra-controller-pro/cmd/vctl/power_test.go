@@ -353,7 +353,7 @@ func TestPowerStatus(t *testing.T) {
 // config, so no panel lock.
 func powerCfg(t *testing.T) agentcfg.Config {
 	t.Helper()
-	cfg, err := agentcfg.Parse([]byte(`{"controlUrl":"unused"}`))
+	cfg, err := agentcfg.Parse([]byte(`{"controlUrl":"https://api.vectra-pro.net"}`))
 	if err != nil {
 		t.Fatal(err)
 	}

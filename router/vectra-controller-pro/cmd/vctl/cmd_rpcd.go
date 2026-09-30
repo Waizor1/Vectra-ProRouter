@@ -97,7 +97,7 @@ func rpcdConfig() agentcfg.Config {
 	if c, err := agentcfg.Load(rpcdAgentConfig); err == nil {
 		return c
 	}
-	c, _ := agentcfg.Parse([]byte(`{"controlUrl":"unused"}`))
+	c, _ := agentcfg.Parse([]byte(`{"controlUrl":"https://api.vectra-pro.net"}`))
 	return c
 }
 

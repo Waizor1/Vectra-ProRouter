@@ -153,7 +153,7 @@ func newWizardRouter(t *testing.T) *wizardRouter {
 			return nil, errors.New("Command failed: Not found")
 		},
 	}
-	cfg, err := agentcfg.Parse([]byte(`{"controlUrl":"unused"}`))
+	cfg, err := agentcfg.Parse([]byte(`{"controlUrl":"https://api.vectra-pro.net"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
