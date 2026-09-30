@@ -199,6 +199,32 @@ function Frame(p: {
   );
 }
 
+/** An IPv4 address, dotted: the only thing put in a link to the router's own address. */
+const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+
+/**
+ * Where this page opens. dnsmasq answers the router's names on the LAN, Vectra
+ * on or off: my.vectra-pro.net first — a browser opens a real top-level
+ * domain as an address — then vectra.lan as it must be typed (a bare
+ * `vectra.lan` is a search to a browser). A device with a VPN app or a
+ * private DNS asks neither of the router: the router's own address, which
+ * always works, when the router says it. `links`: each is a link.
+ */
+export function WayIn({ ip, links }: { ip: string | null | undefined; links?: boolean }) {
+  const { t } = useApp();
+  const addr = ip && IPV4.test(ip) ? ip : null;
+  const at = (text: string, host: string) =>
+    links ? (
+      <a class="lnk" href={'http://' + host + '/'}>
+        {text}
+      </a>
+    ) : (
+      <b class="nw">{text}</b>
+    );
+  const names = [at('my.vectra-pro.net', 'my.vectra-pro.net'), at('http://vectra.lan', 'vectra.lan')];
+  return addr ? around(t('s.lanIp', { a: SLOT, b: SLOT, ip: SLOT }), ...names, at(addr, addr)) : around(t('s.lan', { a: SLOT, b: SLOT }), ...names);
+}
+
 /** The way to Vectra's support: the bot the router knows (from the panel, or set when the box was prepared). */
 function Support({ bot }: { bot: string | null }) {
   const { t } = useApp();
@@ -1150,8 +1176,14 @@ export function Setup({ onClose, start = 'welcome' }: { onClose: (tour: boolean)
             </h2>
           </div>
           <p>{t(allOk ? 'w.done.d' : 'w.done.part.d')}</p>
-          {/* Where to find this page again: the router answers vectra.lan since the version with Vectra's switch. */}
-          {st && st.power.enabled !== null ? <p class="hint">{around(t('s.lan', { addr: SLOT }), <b>vectra.lan</b>)}</p> : null}
+          {/* Where to find this page again — named, not linked: a click would leave the
+              wizard before it has noted it is done. The router answers its names since
+              the version with Vectra's switch. */}
+          {st && st.power.enabled !== null ? (
+            <p class="hint">
+              <WayIn ip={s.lan.ipv4} />
+            </p>
+          ) : null}
           {list('warn')}
           <div class="row wz-foot">
             <Button kind="p" icon="arrow" busy={pending === 'finish'} disabled={!!pending} onClick={() => finish(true)}>

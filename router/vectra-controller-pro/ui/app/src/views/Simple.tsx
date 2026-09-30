@@ -19,9 +19,8 @@ import { Badge, Button, Note, Skeleton, Spinner } from '../ui/kit';
 import { MySites } from './MySites';
 import { PasswordDialog, PasswordNote } from './Password';
 import { Services } from './Services';
-import { around, SLOT } from './Nodes';
 import { face, groupServers } from '../lib/servers';
-import { CONFIG_SLOW_MS, needsSetup, owned, Setup, useLate, type Screen } from './Setup';
+import { CONFIG_SLOW_MS, needsSetup, owned, Setup, useLate, WayIn, type Screen } from './Setup';
 import { Tour, tourSeen } from './Tour';
 
 const ICON: Record<SimpleVerdict['tone'], IconName> = { ok: 'ok', info: 'info', warn: 'warn', fail: 'fail', mute: 'power' };
@@ -618,15 +617,10 @@ export function Simple() {
             {t('s.pw.offBtn')}
           </Button>
         ) : null}
-        {/* The router answers vectra.lan since the version that has the switch. */}
+        {/* The router answers its names since the version that has the switch. */}
         {s.power.enabled !== null ? (
           <span class="sv-lan">
-            {around(
-              t('s.lan', { addr: SLOT }),
-              <a class="lnk" href="http://vectra.lan/">
-                vectra.lan
-              </a>,
-            )}
+            <WayIn ip={setup.data?.lan.ipv4} links />
           </span>
         ) : null}
       </footer>

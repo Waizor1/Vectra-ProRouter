@@ -197,8 +197,11 @@ describe('the setup wizard', () => {
     expect(app.calls.find(([m]) => m === 'select_entry')?.[1]).toEqual({ index: 1 });
     expect(await until(() => app.verdict() === 'Всё готово', 5000)).toBe(true);
 
-    // Done, then a short tour of the main screen, once.
+    // Done, then a short tour of the main screen, once. Where to find this page again:
+    // named, not linked — a click would leave the wizard before it has noted it is done.
     expect(app.badges()).toEqual(['задан', 'работает', 'на максимуме', 'подписка есть', 'выбран']);
+    expect(read(app.$('.wz-card p.hint'))).toBe('Этот экран открывается по адресу my.vectra-pro.net или http://vectra.lan, а если не выходит — по адресу 192.168.1.1.');
+    expect(app.all('.wz-card p.hint a')).toEqual([]);
     app.button('На главный экран')!.click();
     await tick(3000);
     expect(app.$('.wz')).toBeNull();

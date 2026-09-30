@@ -715,7 +715,13 @@ export const S = {
   ],
   's.restartQ': ['Перезапустить VPN?', 'Restart the VPN?', '重启 VPN？'],
   's.lockedNote': ['Режим Pro отключён оператором.', 'Pro mode is turned off by the operator.', '运营方已关闭专业模式。'],
-  's.lan': ['Этот экран всегда открывается по адресу {addr}', 'This page always opens at {addr}', '本页面始终可通过 {addr} 打开'],
+  // Where this page opens ({a}, {b}: the router's names; {ip}: its own address), in this order in every language.
+  's.lan': ['Этот экран открывается по адресу {a} или {b}.', 'This page opens at {a} or {b}.', '本页面可通过 {a} 或 {b} 打开。'],
+  's.lanIp': [
+    'Этот экран открывается по адресу {a} или {b}, а если не выходит — по адресу {ip}.',
+    'This page opens at {a} or {b}; if neither works, at {ip}.',
+    '本页面可通过 {a} 或 {b} 打开；如都打不开，请访问 {ip}。',
+  ],
 
   // ── simple view: action results ────────────────────────────────────────
   's.a.xray_restarted': ['VPN перезапущен', 'VPN restarted', 'VPN 已重启'],
