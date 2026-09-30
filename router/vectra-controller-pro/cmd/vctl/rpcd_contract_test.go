@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -474,6 +475,22 @@ func TestRPCDACLMatchesTheMethods(t *testing.T) {
 	}
 	if len(granted) != len(rpcdSignatures) {
 		t.Errorf("ACL lists %d methods, rpcd offers %d", len(granted), len(rpcdSignatures))
+	}
+	// Beyond vectra, exactly LuCI's own password change: the UI sets the
+	// router's password with it (contract README, "Router password") — vctl
+	// never handles a password. Nothing else of LuCI's, and nothing to read.
+	for obj, methods := range g.Read.Ubus {
+		if obj != "vectra" {
+			t.Errorf("the ACL lets the UI read %s %v", obj, methods)
+		}
+	}
+	for obj, methods := range g.Write.Ubus {
+		if obj != "vectra" && (obj != "luci" || !slices.Equal(methods, []string{"setPassword"})) {
+			t.Errorf("the ACL lets the UI change %s %v", obj, methods)
+		}
+	}
+	if !slices.Equal(g.Write.Ubus["luci"], []string{"setPassword"}) {
+		t.Errorf("the ACL does not grant luci.setPassword: %v", g.Write.Ubus["luci"])
 	}
 	// And the contract README documents the same set.
 	readme := string(readContract(t, "README.md"))

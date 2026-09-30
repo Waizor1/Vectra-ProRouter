@@ -4,6 +4,8 @@ The router UI never talks to xray, nftables or the filesystem. It calls ONE ubus
 object, `vectra`, through LuCI's authenticated `rpc` layer. `vectra` is an rpcd
 exec plugin (`/usr/libexec/rpcd/vectra`) that execs `vctl rpcd`, so every answer
 is produced by Go code that is unit-tested against the fixtures in this folder.
+The one call beyond it is LuCI's own: the router's password (see Router
+password) — vctl never handles a password.
 
 Both sides test against the SAME files:
 
@@ -119,6 +121,30 @@ internet goes out directly, without a VPN.
   console); nothing changed.
 - `invalid_params` for anything but `{"on": true|false}`; `apply_failed`
   when the change could not be started — nothing changed; `internal`.
+
+## Router password
+
+Everything on this page is behind LuCI's login, and LuCI's login is root's
+password. OpenWrt ships without one: rpcd then lets anyone on the LAN in.
+`setup.passwordSet` says whether there is one (see Setup wizard); the UI sets
+and changes it with LuCI's own call, the one System → Administration makes:
+
+    luci.setPassword {"username": "root", "password": "…"}  →  {"result": true|false}
+
+- It is luci-base's rpcd plugin (`/usr/share/rpcd/ucode/luci`): it pipes the
+  password, shell-quoted, twice to busybox `passwd root`; `result` is
+  whether `passwd` took it. The rpcd session stays valid: nobody is logged
+  out, and the next login asks for the new password.
+- This package's ACL grants exactly `luci.setPassword` beside `vectra`
+  (`write`), so the page works without luci-mod-system too
+  (`TestRPCDACLMatchesTheMethods` pins it).
+- The LuCI view hands it to the app as `mount(host, {call, setPassword,
+  lang})`: `setPassword(password)` resolves `true` only when LuCI answers
+  `result: true`, `false` otherwise; a ubus or network failure rejects (the
+  same `reject`/`nobatch` as `vectra`). A host that hands none gets no
+  password step and no password actions.
+- The UI asks for at least 8 characters, twice; it shows what went wrong
+  next to the fields, keeps nothing and logs nothing.
 
 ## My sites
 

@@ -36,6 +36,13 @@ export type ActionMethod = Exclude<Method, ReadMethod>;
 /** The transport the host page hands to mount(): LuCI rpc in production, fixtures in dev. */
 export type CallFn = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
 
+/**
+ * LuCI's own change of root's password (`luci.setPassword`), as the host page
+ * hands it to mount(): true when LuCI took the password, false when it did
+ * not; a transport failure rejects. vctl never sees a password.
+ */
+export type SetPasswordFn = (password: string) => Promise<boolean>;
+
 export type EngineState = Open<
   'running' | 'starting' | 'reloading' | 'backoff' | 'exited' | 'stopped' | 'failed' | 'idle' | 'unknown'
 >;

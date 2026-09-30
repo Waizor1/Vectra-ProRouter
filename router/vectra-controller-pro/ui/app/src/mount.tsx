@@ -1,15 +1,17 @@
-// window.VectraApp.mount(host, { call, lang }) → unmount.
+// window.VectraApp.mount(host, { call, setPassword, lang }) → unmount.
 // Everything renders into an open shadow root: LuCI's theme cannot leak in and
 // our styles cannot leak out. Dialogs and toasts live in the same root.
 
 import { render } from 'preact';
-import type { CallFn } from './api/types';
+import type { CallFn, SetPasswordFn } from './api/types';
 import { App } from './app/App';
 import css from './styles/app.css?inline';
 
 export interface MountOptions {
   /** Transport to the `vectra` ubus object: (method, params) → Promise<object>. */
   call: CallFn;
+  /** LuCI's own change of the router's password; without it the app offers none. */
+  setPassword?: SetPasswordFn;
   /** The host page's language (LuCI: document.documentElement.lang). */
   lang?: string;
 }
@@ -51,7 +53,8 @@ export function mount(host: HTMLElement, opts: MountOptions): () => void {
   shadow.appendChild(style);
   shadow.appendChild(container);
 
-  render(<App call={opts.call} lang={opts.lang} root={shadow} />, container);
+  const setPassword = typeof opts.setPassword === 'function' ? opts.setPassword : null;
+  render(<App call={opts.call} setPassword={setPassword} lang={opts.lang} root={shadow} />, container);
 
   let done = false;
   const unmount = () => {
