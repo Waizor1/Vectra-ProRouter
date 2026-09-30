@@ -1,0 +1,22 @@
+{
+	"active": 0,
+	"panelIndex": 0,
+	"source": "panel",
+	"overrideStale": false,
+	"fetchedAt": "2026-09-27T17:52:28Z",
+	"cached": true,
+	"entries": [
+		{
+			"index": 0,
+			"remark": "🧪 Stand A",
+			"nodeCount": 3,
+			"balancerCount": 3
+		},
+		{
+			"index": 1,
+			"remark": "🧪 Stand B",
+			"nodeCount": 1,
+			"balancerCount": 3
+		}
+	]
+}

@@ -1,0 +1,7 @@
+# A clock step — ntpd's first sync after a long power cut can jump hours —
+# can put the hold on the legacy agent's cron watchdog in the past at once,
+# and that watchdog would start the agent next to vctl. Held off again here,
+# at the step, not up to a minute later by cron (deadman.sh).
+[ "$ACTION" = step ] || exit 0
+[ -x /usr/libexec/vectra-controller-pro/deadman.sh ] || exit 0
+/usr/libexec/vectra-controller-pro/deadman.sh hold

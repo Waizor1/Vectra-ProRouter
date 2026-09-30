@@ -1,0 +1,68 @@
+{
+	"observedAt": "2026-09-27T17:54:34Z",
+	"nodes": [
+		{
+			"tag": "node-a",
+			"protocol": "vless",
+			"transport": "tcp",
+			"security": "none",
+			"address": "10.44.0.2",
+			"port": 2001,
+			"countryHint": null,
+			"alive": true,
+			"delayMs": 28,
+			"lastSeen": null,
+			"lastTry": null,
+			"traffic": {
+				"upBytes": 0,
+				"downBytes": 208
+			},
+			"balancers": [
+				"BL-MAIN",
+				"BL-PING"
+			]
+		},
+		{
+			"tag": "node-b",
+			"protocol": "vless",
+			"transport": "tcp",
+			"security": "none",
+			"address": "10.44.0.2",
+			"port": 2002,
+			"countryHint": null,
+			"alive": true,
+			"delayMs": 46,
+			"lastSeen": null,
+			"lastTry": null,
+			"traffic": {
+				"upBytes": 0,
+				"downBytes": 208
+			},
+			"balancers": [
+				"BL-MAIN",
+				"BL-PING",
+				"BL-BACKUP"
+			]
+		},
+		{
+			"tag": "node-dead",
+			"protocol": "vless",
+			"transport": "tcp",
+			"security": "none",
+			"address": "10.44.0.2",
+			"port": 2003,
+			"countryHint": null,
+			"alive": false,
+			"delayMs": null,
+			"lastSeen": null,
+			"lastTry": null,
+			"traffic": {
+				"upBytes": 0,
+				"downBytes": 0
+			},
+			"balancers": [
+				"BL-MAIN"
+			]
+		}
+	]
+}

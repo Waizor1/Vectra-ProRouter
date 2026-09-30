@@ -1,0 +1,100 @@
+{
+	"apiReachable": true,
+	"probe": {
+		"intervalSec": 600,
+		"providerIntervalSec": 43200,
+		"source": "default",
+		"sampling": 2,
+		"timeoutSec": 3,
+		"destination": "http://44.44.44.44:8081/probe"
+	},
+	"balancers": [
+		{
+			"tag": "BL-MAIN",
+			"role": "main",
+			"strategy": "leastLoad",
+			"expected": 1,
+			"selector": [
+				"node-"
+			],
+			"members": [
+				"node-a",
+				"node-b",
+				"node-dead"
+			],
+			"fallback": {
+				"tag": "stage-backup",
+				"balancer": "BL-BACKUP"
+			},
+			"selected": [
+				"node-a"
+			],
+			"pinned": null,
+			"matchers": [
+				{
+					"kind": "all",
+					"network": "tcp,udp",
+					"sample": [
+						
+					],
+					"total": 0
+				}
+			]
+		},
+		{
+			"tag": "BL-PING",
+			"role": "routed",
+			"strategy": "leastPing",
+			"expected": null,
+			"selector": [
+				"node-a",
+				"node-b"
+			],
+			"members": [
+				"node-a",
+				"node-b"
+			],
+			"fallback": {
+				"tag": "DIRECT",
+				"balancer": null
+			},
+			"selected": [
+				"node-a"
+			],
+			"pinned": null,
+			"matchers": [
+				{
+					"kind": "domain",
+					"network": null,
+					"sample": [
+						"domain:example.org"
+					],
+					"total": 1
+				}
+			]
+		},
+		{
+			"tag": "BL-BACKUP",
+			"role": "reserve",
+			"strategy": "leastPing",
+			"expected": null,
+			"selector": [
+				"node-b"
+			],
+			"members": [
+				"node-b"
+			],
+			"fallback": {
+				"tag": "DIRECT",
+				"balancer": null
+			},
+			"selected": [
+				"node-b"
+			],
+			"pinned": null,
+			"matchers": [
+				
+			]
+		}
+	]
+}

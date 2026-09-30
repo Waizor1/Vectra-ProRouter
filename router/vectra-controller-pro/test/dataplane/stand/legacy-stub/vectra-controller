@@ -1,0 +1,19 @@
+#!/bin/sh /etc/rc.common
+# STAND STUB — stands in for the legacy vectra-controller agent.
+#
+# The real agent is deliberately NOT installed here: it would check in against
+# the production control plane with a real router identity. All the hand-back
+# logic in vectra-controller-pro's init script needs is a service that can be
+# enabled, disabled, started and stopped, so that is all this provides.
+#
+# It has no network access of any kind: the command below only sleeps.
+START=94
+STOP=21
+USE_PROCD=1
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /stand/legacy-stub/legacy-agent-loop.sh
+	procd_set_param respawn 15 5 20
+	procd_close_instance
+}

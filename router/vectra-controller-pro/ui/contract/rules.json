@@ -1,0 +1,41 @@
+{
+  "direct": [
+    "sberbank.ru",
+    "госуслуги.рф",
+    "1.2.3.0/24"
+  ],
+  "proxy": [
+    "example.org"
+  ],
+  "max": 100,
+  "catalog": [
+    "anime",
+    "block",
+    "category-gov-ru",
+    "category-ru",
+    "cloudflare",
+    "cloudfront",
+    "digitalocean",
+    "discord",
+    "geoblock",
+    "google-ai",
+    "google-meet",
+    "google-play",
+    "hdrezka",
+    "hetzner",
+    "hodca",
+    "meta",
+    "news",
+    "ovh",
+    "porn",
+    "roblox",
+    "russia-inside",
+    "russia-outside",
+    "telegram",
+    "tiktok",
+    "twitter",
+    "ukraine-inside",
+    "youtube"
+  ],
+  "missing": []
+}

@@ -1,0 +1,669 @@
+#!/bin/sh
+# Vectra on an OpenWrt router: one installer for every architecture.
+#
+#   wget -qO /tmp/vectra.sh https://router.vectra-pro.net/install.sh && sh /tmp/vectra.sh
+#
+#   sh vectra.sh              install, or update what is installed
+#   sh vectra.sh --standby    install, but leave Vectra off: whatever carries the
+#                             traffic now (PassWall2, the old Vectra agent) keeps
+#                             it until `vectra on`
+#   sh vectra.sh --check      only the checks: nothing on the router changes
+#   sh vectra.sh --uninstall  remove Vectra (add --purge to forget the router's
+#                             Vectra identity and settings too)
+#   --yes                     do not ask (a router with PassWall2: Vectra takes
+#                             over the traffic; stopping Vectra gives it back)
+#   --force                   go on below the memory floor (tests only: the
+#                             router may run out of memory)
+#
+# OpenWrt 23.05 or 24.10 with opkg. OpenWrt 25 (apk) is not supported yet.
+#
+# Nothing changes before every check has passed: the router, its memory and
+# storage, the clock, the network, the feeds, other proxy stacks. Then: the
+# signed Vectra feed is added (its key is baked into this file), dnsmasq is
+# replaced by dnsmasq-full without a moment the network has no DHCP or DNS
+# (both packages are downloaded first; if dnsmasq-full does not come up, the old
+# dnsmasq is put back), and vectra-controller-pro is installed with xray-core
+# and the geo data. The end is checked, not assumed: the service runs, the
+# "vectra" ubus object answers, xray accepts the geo data, LuCI serves the page.
+# Everything opkg says goes to /tmp/vectra-install.log.
+#
+# This file is a template until scripts/sign-pro-feed.sh bakes the block below
+# (the feed, its key, the architectures and versions it holds). For tests the
+# VECTRA_FEED, VECTRA_FEED_KEY, VECTRA_FEED_KEY_ID, VECTRA_ARCHS,
+# VECTRA_VERSION and VECTRA_XRAY_MIN variables stand in for it.
+
+# >>> baked by sign-pro-feed.sh
+BAKED_FEED_URL=''
+BAKED_FEED_KEY=''
+BAKED_FEED_KEY_ID=''
+BAKED_ARCHS=''
+BAKED_VERSION=''
+BAKED_XRAY_MIN=''
+# <<< baked
+
+FEED_URL="${VECTRA_FEED:-$BAKED_FEED_URL}"
+FEED_KEY="${VECTRA_FEED_KEY:-$BAKED_FEED_KEY}"
+FEED_KEY_ID="${VECTRA_FEED_KEY_ID:-$BAKED_FEED_KEY_ID}"
+ARCHS="${VECTRA_ARCHS:-$BAKED_ARCHS}"
+VERSION="${VECTRA_VERSION:-$BAKED_VERSION}"
+XRAY_MIN="${VECTRA_XRAY_MIN:-$BAKED_XRAY_MIN}"
+# OpenWrt's own feeds through Vectra's caching proxy, for a router that cannot
+# reach downloads.openwrt.org (a broken ISP IPv6 is the usual cause).
+OPENWRT_MIRROR="${VECTRA_OPENWRT_MIRROR:-}"
+
+# 256 MB routers report 230-250 MB. Below that xray and vctl run the router out
+# of memory, and the owner is left without internet.
+MIN_RAM_KB="${VECTRA_MIN_RAM_KB:-196608}"
+# opkg downloads into /tmp (RAM): the largest package, xray, is about 10 MB.
+MIN_TMP_KB=24576
+# Storage left over after the install, for configs, logs and updates.
+MARGIN_KB=4096
+# Official indexes carry no Installed-Size; an unpacked package takes about
+# three times its download (a gzipped tar).
+UNPACK_FACTOR=3
+# TLS needs a clock later than this (2026-01-01).
+CLOCK_FLOOR=1767225600
+
+PKG=vectra-controller-pro
+FEED_NAME=vectra_pro
+CUSTOMFEEDS=/etc/opkg/customfeeds.conf
+DISTFEEDS=/etc/opkg/distfeeds.conf
+LOG=/tmp/vectra-install.log
+WORK=/tmp/vectra-install
+KEYS=/etc/opkg/keys
+SELF_COPY=/etc/vectra-controller-pro/vectra-install.sh
+GEO_OWN=/usr/share/vectra-controller-pro/geo
+
+# Other proxy stacks: two transparent proxies fight over the same traffic.
+# PassWall2 is the one vctl knows how to take over (and give back).
+CONFLICTS="podkop luci-app-podkop openclash luci-app-openclash homeproxy luci-app-homeproxy v2raya luci-app-v2raya nikki luci-app-nikki mihomo luci-app-mihomo ssclash luci-app-ssclash luci-app-passwall"
+# DPI helpers do not proxy, but they rewrite the same traffic.
+DPI_TOOLS="zapret luci-app-zapret youtubeUnblock luci-app-youtubeUnblock byedpi"
+
+MODE=install
+STANDBY=0
+YES=0
+FORCE=0
+PURGE=0
+
+# ----------------------------------------------------------------- output ----
+
+say() { printf '%s\n' "$*"; printf '%s\n' "$*" >> "$LOG"; }
+step() { say ""; say "==> $*"; }
+ok() { say "    + $*"; }
+note() { say "    - $*"; }
+warn() { say "    ! $*"; }
+refuse() { # nothing was changed
+	say ""
+	say "Установка не выполнена: $*"
+	say "На роутере ничего не изменено. Подробности: $LOG"
+	cleanup
+	exit 2
+}
+fail() { # something was changed; say what state the router is in
+	say ""
+	say "ОШИБКА: $*"
+	say "Подробности: $LOG"
+	cleanup
+	exit 1
+}
+run() { # a command whose output goes to the log only
+	printf '$ %s\n' "$*" >> "$LOG"
+	"$@" >> "$LOG" 2>&1
+}
+
+# ---------------------------------------------------------------- helpers ----
+
+# a.b.c[-rN] compared numerically, part by part: 0 if $1 >= $2.
+version_ge() {
+	awk -v a="$1" -v b="$2" 'BEGIN {
+		n = split(a, x, /[^0-9]+/); m = split(b, y, /[^0-9]+/)
+		k = n > m ? n : m
+		for (i = 1; i <= k; i++) {
+			p = (i <= n && x[i] != "") ? x[i] + 0 : 0
+			q = (i <= m && y[i] != "") ? y[i] + 0 : 0
+			if (p > q) exit 0
+			if (p < q) exit 1
+		}
+		exit 0
+	}'
+}
+
+installed() { opkg list-installed "$1" 2>/dev/null | grep -q "^$1 - "; }
+installed_version() { opkg list-installed "$1" 2>/dev/null | sed -n "s/^$1 - //p" | head -n 1; }
+available() { opkg list "$1" 2>/dev/null | grep -q "^$1 - "; }
+field() { opkg info "$1" 2>/dev/null | sed -n "s/^$2: //p" | head -n 1; }
+# A field of a package in the Vectra feed's own list (opkg info lists every
+# feed's version of a package, in no order that says which is which). opkg keeps
+# the list as it downloaded it: gzipped.
+feed_field() {
+	l="/var/opkg-lists/$FEED_NAME"
+	{ zcat "$l" 2> /dev/null || cat "$l" 2> /dev/null; } | awk -v p="$1" -v f="$2" '
+		/^Package: / { cur = substr($0, 10) }
+		cur == p && index($0, f ": ") == 1 { print substr($0, length(f) + 3); exit }
+	'
+}
+
+free_kb() { df -k "$1" 2>/dev/null | awk 'NR == 2 { print $4; exit }'; }
+# Where packages land: /overlay on a squashfs router, / otherwise.
+storage_path() {
+	if grep -q ' /overlay ' /proc/mounts 2>/dev/null; then echo /overlay; else echo /; fi
+}
+
+service_running() { [ -x "/etc/init.d/$1" ] && "/etc/init.d/$1" running > /dev/null 2>&1; }
+
+wait_for() { # <seconds> <command...>
+	n="$1"
+	shift
+	while [ "$n" -gt 0 ]; do
+		"$@" > /dev/null 2>&1 && return 0
+		sleep 1
+		n=$((n - 1))
+	done
+	return 1
+}
+
+fetch() { # <url> <file>: uclient-fetch (wget) with TLS, as opkg itself fetches
+	wget -q -T 20 -O "$2" "$1" >> "$LOG" 2>&1
+}
+
+xray_version() { xray version 2>/dev/null | awk 'NR == 1 { print $2; exit }'; }
+
+lan_address() {
+	a="$(uci -q get network.lan.ipaddr)"
+	echo "${a%%/*}"
+}
+
+# --------------------------------------------------------------- cleanup ----
+
+DISTFEEDS_SWAPPED=0
+FEED_ADDED=0
+KEY_ADDED=0
+INSTALLED_SOMETHING=0
+
+cleanup() {
+	# OpenWrt's own feeds go back to their mirrors: the proxy was for this run.
+	if [ "$DISTFEEDS_SWAPPED" = 1 ] && [ -f "$WORK/distfeeds.conf.orig" ]; then
+		cp "$WORK/distfeeds.conf.orig" "$DISTFEEDS" && DISTFEEDS_SWAPPED=0
+	fi
+	# A run that installed nothing leaves no trace of the Vectra feed either.
+	if [ "$INSTALLED_SOMETHING" = 0 ]; then
+		[ "$FEED_ADDED" = 1 ] && remove_feed
+		[ "$KEY_ADDED" = 1 ] && rm -f "$KEYS/$FEED_KEY_ID"
+	fi
+	rm -rf "$WORK/pkgs"
+}
+
+remove_feed() {
+	[ -f "$CUSTOMFEEDS" ] || return 0
+	grep -v "^src/gz $FEED_NAME " "$CUSTOMFEEDS" > "$WORK/customfeeds.conf" 2>/dev/null
+	cat "$WORK/customfeeds.conf" > "$CUSTOMFEEDS"
+}
+
+# ---------------------------------------------------------------- checks ----
+
+ARCH=""
+RELEASE=""
+STORE=""
+TAKEOVER=""
+
+check_router() {
+	step "Роутер"
+	[ "$(id -u 2>/dev/null)" = 0 ] || refuse "запустите установщик от root."
+	[ -f /etc/openwrt_release ] || refuse "это не OpenWrt (нет /etc/openwrt_release)."
+	# shellcheck disable=SC1091
+	. /etc/openwrt_release
+	RELEASE="${DISTRIB_RELEASE:-?}"
+	ok "${DISTRIB_DESCRIPTION:-OpenWrt $RELEASE}, ${DISTRIB_TARGET:-?}"
+	if ! command -v opkg > /dev/null 2>&1; then
+		command -v apk > /dev/null 2>&1 && refuse "OpenWrt $RELEASE использует apk. Эта версия установщика работает с opkg (OpenWrt 23.05 и 24.10); поддержка apk будет позже."
+		refuse "на роутере нет opkg."
+	fi
+	case "$RELEASE" in
+	23.05* | 24.10*) ;;
+	SNAPSHOT*) refuse "это снапшот OpenWrt: поддерживаются выпуски 23.05 и 24.10." ;;
+	*) refuse "OpenWrt $RELEASE не поддерживается: нужен 23.05 или 24.10 (nftables и dnsmasq с nftset)." ;;
+	esac
+	[ -x /sbin/fw4 ] || refuse "нет firewall4 (nftables): Vectra работает только с ним."
+
+	# The first architecture opkg prefers that the feed has.
+	for a in $(opkg print-architecture 2>/dev/null | awk '$1 == "arch" && $2 != "all" && $2 != "noarch" { print $3, $2 }' | sort -rn | awk '{ print $2 }'); do
+		for b in $ARCHS; do
+			[ "$a" = "$b" ] && { ARCH="$a"; break 2; }
+		done
+	done
+	[ -n "$ARCH" ] || refuse "архитектура роутера ($(opkg print-architecture 2>/dev/null | awk '$2 != "all" && $2 != "noarch" { printf "%s ", $2 }')) не поддерживается: для неё нет сборки Vectra."
+	ok "архитектура $ARCH"
+
+	mem="$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo)"
+	if [ "${mem:-0}" -lt "$MIN_RAM_KB" ]; then
+		[ "$FORCE" = 1 ] || refuse "оперативной памяти $((mem / 1024)) МБ, нужно не меньше $((MIN_RAM_KB / 1024)) МБ (роутер на 256 МБ): иначе xray и Vectra исчерпают память и интернет пропадёт."
+		warn "памяти $((mem / 1024)) МБ, ниже порога $((MIN_RAM_KB / 1024)) МБ — продолжаю по --force"
+	else
+		ok "память $((mem / 1024)) МБ"
+	fi
+	tmp="$(free_kb /tmp)"
+	[ "${tmp:-0}" -ge "$MIN_TMP_KB" ] || refuse "в /tmp свободно $((${tmp:-0} / 1024)) МБ, нужно $((MIN_TMP_KB / 1024)) МБ для загрузки пакетов."
+	STORE="$(storage_path)"
+}
+
+check_clock() {
+	now="$(date +%s)"
+	if [ "$now" -lt "$CLOCK_FLOOR" ]; then
+		note "часы роутера отстают ($(date)); синхронизирую"
+		for p in 0.openwrt.pool.ntp.org 1.openwrt.pool.ntp.org time.google.com; do
+			run ntpd -n -q -p "$p" && break
+		done
+		now="$(date +%s)"
+		[ "$now" -ge "$CLOCK_FLOOR" ] || refuse "часы роутера показывают $(date) и не синхронизируются по NTP: без верного времени не работает TLS."
+	fi
+	ok "часы: $(date)"
+}
+
+check_conflicts() {
+	step "Другие прокси на роутере"
+	if installed vectra-controller-agent && [ "$STANDBY" != 1 ]; then
+		refuse "роутер уже управляется Vectra (контроллер vectra-controller-agent). Поставьте с --standby: новый контроллер встанет рядом выключенным, старый продолжит работать."
+	fi
+	found=""
+	for p in $CONFLICTS; do installed "$p" && found="$found $p"; done
+	for s in sing-box xray; do
+		# The package alone is harmless: OpenWrt's xray-core and sing-box enable
+		# an init script that starts nothing until configured (PassWall and
+		# podkop run the binary themselves). A service that runs is not.
+		service_running "$s" && found="$found $s(служба)"
+	done
+	[ -z "$found" ] || refuse "установлено:$found. Два прозрачных прокси на одном роутере мешают друг другу. Удалите или выключите их и запустите установщик снова."
+	for p in $DPI_TOOLS; do
+		installed "$p" && warn "$p установлен: он меняет тот же трафик; если сайты перестанут открываться, выключите его"
+	done
+	if [ "$STANDBY" = 1 ]; then
+		ok "режим --standby: Vectra встанет выключенной, трафик никто не забирает"
+	elif installed luci-app-passwall2 || [ -x /etc/init.d/passwall2 ]; then
+		TAKEOVER=passwall2
+		say "    PassWall2: Vectra заберёт у него трафик (PassWall2 остановится)."
+		say "    Вернуть как было: /etc/init.d/$PKG stop — PassWall2 запустится снова."
+		say "    До привязки к аккаунту Vectra интернет пойдёт напрямую, без VPN."
+		if [ "$YES" != 1 ]; then
+			[ -t 0 ] || refuse "на роутере PassWall2. Запустите с --yes, если Vectra должна забрать у него трафик."
+			printf '    Продолжить? [y/N] '
+			read -r answer
+			case "$answer" in y | Y | yes | д | Д | да) ;; *) refuse "отменено." ;; esac
+		fi
+	else
+		ok "не найдено"
+	fi
+}
+
+# ----------------------------------------------------------------- feeds ----
+
+add_feed() {
+	step "Фиды"
+	[ -n "$FEED_URL" ] && [ -n "$FEED_KEY" ] && [ -n "$FEED_KEY_ID" ] || refuse "этот файл — шаблон без ключа фида. Скачайте установщик с router.vectra-pro.net."
+	mkdir -p "$KEYS" "$WORK"
+	if [ -f "$KEYS/$FEED_KEY_ID" ]; then
+		[ "$(sed -n 2p "$KEYS/$FEED_KEY_ID")" = "$FEED_KEY" ] || refuse "в $KEYS уже лежит другой ключ с номером $FEED_KEY_ID."
+	else
+		printf 'untrusted comment: Vectra Pro feed\n%s\n' "$FEED_KEY" > "$KEYS/$FEED_KEY_ID"
+		KEY_ADDED=1
+	fi
+	line="src/gz $FEED_NAME $FEED_URL/$ARCH"
+	touch "$CUSTOMFEEDS"
+	if ! grep -qx "$line" "$CUSTOMFEEDS"; then
+		remove_feed
+		echo "$line" >> "$CUSTOMFEEDS"
+		FEED_ADDED=1
+	fi
+	fetch "$FEED_URL/$ARCH/Packages.sig" "$WORK/Packages.sig" || refuse "фид Vectra недоступен ($FEED_URL). Проверьте интернет и DNS роутера: nslookup ${FEED_URL#*://}"
+
+	note "opkg update (до минуты)"
+	run opkg update
+	# Vectra's feed must be there, and verified: opkg drops a list whose
+	# signature does not check out.
+	available "$PKG" || refuse "фид Vectra не прошёл проверку подписи или пуст (opkg update, см. лог)."
+	ok "фид Vectra $FEED_URL/$ARCH, подпись ключом $FEED_KEY_ID"
+	if ! available dnsmasq-full; then
+		use_openwrt_mirror || refuse "фиды OpenWrt недоступны (downloads.openwrt.org не отвечает) и прокси Vectra тоже. Проверьте DNS и IPv6 на WAN."
+	fi
+	ok "фиды OpenWrt"
+}
+
+use_openwrt_mirror() {
+	[ -f "$DISTFEEDS" ] && grep -q 'downloads.openwrt.org' "$DISTFEEDS" || return 1
+	mirror="$OPENWRT_MIRROR"
+	[ -n "$mirror" ] || mirror="$(echo "$FEED_URL" | sed -n 's#^\(https\{0,1\}://[^/]*\)/.*#\1#p')/openwrt-cache"
+	note "downloads.openwrt.org недоступен; беру фиды OpenWrt через $mirror"
+	cp "$DISTFEEDS" "$WORK/distfeeds.conf.orig" || return 1
+	DISTFEEDS_SWAPPED=1
+	sed -e "s#https\{0,1\}://downloads.openwrt.org#$mirror#g" "$WORK/distfeeds.conf.orig" > "$DISTFEEDS" || return 1
+	run opkg update
+	available dnsmasq-full
+}
+
+# ------------------------------------------------------------------ plan ----
+
+check_storage() {
+	step "Место"
+	need=0
+	# Vectra's own packages state their Installed-Size; the rest is estimated.
+	for p in $PKG xray-core vectra-geodata; do
+		v="$(feed_field "$p" Version)"
+		iv="$(installed_version "$p")"
+		[ -n "$iv" ] && version_ge "$iv" "$v" && continue
+		s="$(feed_field "$p" Installed-Size)"
+		need=$((need + ${s:-0} / 1024))
+	done
+	for p in dnsmasq-full kmod-nft-tproxy kmod-nft-socket kmod-nft-nat rpcd-mod-iwinfo procd-ujail jsonfilter jshn ca-bundle luci-base; do
+		installed "$p" && continue
+		s="$(field "$p" Size)"
+		need=$((need + ${s:-0} * UNPACK_FACTOR / 1024))
+	done
+	[ "$LUCI" = 1 ] && need=$((need + 2048))
+	have="$(free_kb "$STORE")"
+	if [ "${have:-0}" -lt $((need + MARGIN_KB)) ]; then
+		refuse "на $STORE свободно $((${have:-0} / 1024)) МБ, нужно около $(((need + MARGIN_KB) / 1024)) МБ (xray — самый большой пакет, около 30 МБ)."
+	fi
+	ok "нужно около $((need / 1024)) МБ, свободно $((have / 1024)) МБ на $STORE"
+}
+
+# --------------------------------------------------------------- install ----
+
+swap_dnsmasq() {
+	installed dnsmasq-full && { ok "dnsmasq-full уже стоит"; return 0; }
+	step "dnsmasq -> dnsmasq-full"
+	rm -rf "$WORK/pkgs"
+	mkdir -p "$WORK/pkgs"
+	# Its libraries first: they do not clash with dnsmasq.
+	deps="$(field dnsmasq-full Depends | tr ',' '\n' | sed 's/ *(.*//; s/^ *//; s/ *$//' | grep -v '^libc$')"
+	for d in $deps; do
+		installed "$d" || run opkg install "$d" || fail "не удалось поставить $d (зависимость dnsmasq-full). dnsmasq не тронут."
+	done
+	INSTALLED_SOMETHING=1
+	# Both packages on the router before anything is removed: the swap and the
+	# way back need no network.
+	( cd "$WORK/pkgs" && run opkg download dnsmasq-full ) || fail "не удалось скачать dnsmasq-full. dnsmasq не тронут."
+	if installed dnsmasq; then
+		( cd "$WORK/pkgs" && run opkg download dnsmasq ) || fail "не удалось скачать dnsmasq (для отката). dnsmasq не тронут."
+	fi
+	full=""
+	old=""
+	for f in "$WORK"/pkgs/dnsmasq-full_*.ipk; do [ -f "$f" ] && full="$f"; done
+	for f in "$WORK"/pkgs/dnsmasq_*.ipk; do [ -f "$f" ] && old="$f"; done
+	[ -n "$full" ] || fail "dnsmasq-full не скачался. dnsmasq не тронут."
+	[ -f /etc/config/dhcp ] && cp /etc/config/dhcp "$WORK/dhcp.before"
+	# What "works" means here is what worked before: a dnsmasq that answered
+	# must answer again; one that only hands out addresses (another DNS server
+	# on the router) must run again.
+	DNS_CHECK=dnsmasq_runs
+	dns_answers && DNS_CHECK=dns_answers
+
+	installed dnsmasq && { run opkg remove dnsmasq || fail "opkg remove dnsmasq не прошёл. dnsmasq не тронут."; }
+	if run opkg install "$full" && restore_dhcp && run /etc/init.d/dnsmasq restart && wait_for 15 "$DNS_CHECK"; then
+		ok "dnsmasq-full $(installed_version dnsmasq-full): DHCP и DNS работают"
+		return 0
+	fi
+	warn "dnsmasq-full не поднялся; возвращаю прежний dnsmasq"
+	installed dnsmasq-full && run opkg remove dnsmasq-full
+	if [ -n "$old" ] && run opkg install "$old" && restore_dhcp && run /etc/init.d/dnsmasq restart && wait_for 15 "$DNS_CHECK"; then
+		fail "dnsmasq-full не заработал; прежний dnsmasq возвращён и работает. Vectra не установлена."
+	fi
+	fail "dnsmasq-full не заработал, и прежний dnsmasq не вернулся: у устройств в сети может не быть DHCP/DNS. Подключитесь кабелем и выполните: opkg install $old && /etc/init.d/dnsmasq restart"
+}
+
+restore_dhcp() {
+	if [ -f "$WORK/dhcp.before" ]; then
+		cp "$WORK/dhcp.before" /etc/config/dhcp
+	fi
+	rm -f /etc/config/dhcp-opkg
+	return 0
+}
+
+dnsmasq_runs() { pgrep -x dnsmasq > /dev/null; }
+# dnsmasq answers from /etc/hosts itself: no upstream (a WAN whose DNS is down)
+# can make this fail. An answer has a Name: line; the Server: header alone,
+# printed even when nothing answers, does not count.
+dns_answers() {
+	dnsmasq_runs || return 1
+	nslookup localhost 127.0.0.1 2>/dev/null | grep -q '^Name:'
+}
+
+LUCI=0
+install_packages() {
+	if [ "$LUCI" = 1 ]; then
+		step "LuCI (веб-интерфейс роутера)"
+		run opkg install luci || fail "не удалось поставить LuCI."
+		INSTALLED_SOMETHING=1
+		ok "LuCI $(installed_version luci-base)"
+	fi
+	step "Vectra"
+	was="$(installed_version "$PKG")"
+	INSTALLED_SOMETHING=1
+	# --standby: the package's postinst neither enables nor starts it — on an
+	# upgrade of a copy already there as much as on a first install — and it is
+	# off in UCI too, so neither a reboot nor procd's config trigger brings it up
+	# before `vectra on`.
+	[ "$STANDBY" = 1 ] && export VECTRA_SKIP_POSTINST_RESTART=1
+	if [ -n "$was" ]; then
+		note "обновляю $was -> $(feed_field "$PKG" Version)"
+		# Not xray-core: on a router with PassWall2 it is PassWall's too (often
+		# with a binary swapped in by hand), and `opkg upgrade` would take the
+		# newest from ANY feed. The package's own Depends, xray-core (>= the
+		# minimum), upgrades it only when it is too old.
+		run opkg upgrade "$PKG" vectra-geodata vectra-reporter
+		installed vectra-geodata || run opkg install vectra-geodata
+		installed vectra-reporter || run opkg install vectra-reporter
+	fi
+	run opkg install "$PKG" || fail "opkg install $PKG не прошёл (см. лог). Интернет роутера работает как прежде."
+	if [ "$STANDBY" = 1 ]; then
+		unset VECTRA_SKIP_POSTINST_RESTART
+		run uci set "$PKG.main.enabled=0"
+		# A router that already runs (PassWall2, the old agent) is set up: the
+		# wizard does not open by itself — its Wi-Fi boost would retune a home
+		# network that works. It stays one click away in the page's footer.
+		# (The package's own config ships setup_done '0'.)
+		[ "$(uci -q get "$PKG.main.setup_done")" = 1 ] || run uci set "$PKG.main.setup_done=1"
+		run uci commit "$PKG"
+		run "/etc/init.d/$PKG" disable
+	fi
+	ok "$PKG $(installed_version "$PKG"), xray-core $(installed_version xray-core), vectra-geodata $(installed_version vectra-geodata)"
+}
+
+# The geo data xray reads: Vectra's own (vectra-geodata, $GEO_OWN) unless uci
+# geo_asset_dir names another directory — the fleet's old /usr/share/v2ray,
+# PassWall's packages', reads as Vectra's own, as vctl reads it. It must hold
+# every category the provider routes by; another directory that does not
+# gets Vectra's own instead, and its files stay untouched.
+geo_dir() {
+	d="$(uci -q get "$PKG.main.geo_asset_dir")"
+	case "${d%/}" in
+	"" | /usr/share/v2ray) echo "$GEO_OWN" ;;
+	*) echo "${d%/}" ;;
+	esac
+}
+geo_ok() { [ -f "$GEO_OWN/check.json" ] && run env XRAY_LOCATION_ASSET="$1" xray run -test -c "$GEO_OWN/check.json"; }
+setup_geo() {
+	d="$(geo_dir)"
+	geo_ok "$d" && return 0
+	[ "$d" != "$GEO_OWN" ] && geo_ok "$GEO_OWN" || return 0
+	run uci set "$PKG.main.geo_asset_dir=$GEO_OWN"
+	run uci commit "$PKG"
+	note "гео-данные в $d не подходят маршрутам Vectra (их поставил другой пакет); Vectra берёт свои из $GEO_OWN"
+}
+
+# ----------------------------------------------------------------- check ----
+
+verify() {
+	step "Проверка"
+	bad=0
+	v="$(installed_version "$PKG")"
+	if [ -n "$VERSION" ] && [ "$v" != "$VERSION" ]; then
+		warn "установлена версия $v, в фиде $VERSION"
+		bad=1
+	fi
+	xv="$(xray_version)"
+	if [ -n "$xv" ] && version_ge "$xv" "$XRAY_MIN"; then
+		ok "xray $xv"
+	else
+		warn "xray ${xv:-не запускается}, нужен $XRAY_MIN или новее"
+		bad=1
+	fi
+	if geo_ok "$(geo_dir)"; then
+		ok "гео-данные ($(geo_dir)): все категории маршрутов на месте"
+	else
+		warn "xray не принимает гео-данные в $(geo_dir): маршруты по странам и сервисам не заработают"
+		bad=1
+	fi
+	if [ "$STANDBY" = 1 ]; then
+		if "/etc/init.d/$PKG" running > /dev/null 2>&1; then
+			warn "служба $PKG запущена, хотя должна стоять выключенной"
+			bad=1
+		else
+			ok "служба $PKG выключена, как и задумано"
+		fi
+	elif wait_for 30 "/etc/init.d/$PKG" running; then
+		ok "служба $PKG запущена"
+	else
+		warn "служба $PKG не запустилась: logread -e vctl"
+		bad=1
+	fi
+	if wait_for 20 ubus call vectra status; then
+		ok "ubus: vectra отвечает"
+	else
+		warn "ubus-объект vectra не отвечает (rpcd): /etc/init.d/rpcd restart"
+		bad=1
+	fi
+	if [ -f /www/luci-static/resources/view/vectra/app.js ] && wait_for 10 fetch http://127.0.0.1/luci-static/vectra/vectra-app.js "$WORK/app.js"; then
+		ok "LuCI отдаёт страницу Vectra"
+	else
+		warn "LuCI не отдаёт страницу Vectra: /etc/init.d/uhttpd restart"
+		bad=1
+	fi
+	return "$bad"
+}
+
+finish() {
+	ip="$(lan_address)"
+	say ""
+	if [ "$STANDBY" = 1 ]; then
+		say "Vectra установлена и выключена: трафик идёт как раньше."
+		if [ -x /usr/sbin/vectra ]; then
+			say "  Включить: vectra on    Выключить: vectra off    Состояние: vectra status"
+		else
+			say "  Включить: uci set $PKG.main.enabled=1; uci commit $PKG; /etc/init.d/$PKG enable; /etc/init.d/$PKG start"
+			say "  Выключить: /etc/init.d/$PKG stop; /etc/init.d/$PKG disable"
+		fi
+		say "  Интерфейс: http://${ip:-192.168.1.1}/cgi-bin/luci/admin/vectra"
+		if [ -f "$0" ] && mkdir -p /etc/vectra-controller-pro && cp "$0" "$SELF_COPY" 2>/dev/null; then
+			say "  Удалить: sh $SELF_COPY --uninstall"
+		fi
+		return 0
+	fi
+	say "Vectra установлена."
+	say "  Откройте http://${ip:-192.168.1.1}/cgi-bin/luci/admin/vectra — мастер настройки"
+	say "  проверит интернет, прокачает Wi-Fi и привяжет роутер к аккаунту Vectra."
+	# The claim code, when the router already reached Vectra.
+	code=""
+	i=0
+	while [ $i -lt 20 ]; do
+		code="$(ubus call vectra setup 2>/dev/null | jsonfilter -q -e '@.vectra.claim.code' 2>/dev/null)"
+		[ -n "$code" ] && break
+		sleep 1
+		i=$((i + 1))
+	done
+	[ -n "$code" ] && say "  Код привязки: $code (в приложении Vectra: Роутер -> Привязать)"
+	[ "$TAKEOVER" = passwall2 ] && say "  PassWall2 остановлен. Вернуть: /etc/init.d/$PKG stop"
+	if [ -f "$0" ] && mkdir -p /etc/vectra-controller-pro && cp "$0" "$SELF_COPY" 2>/dev/null; then
+		say "  Удалить: sh $SELF_COPY --uninstall"
+	fi
+}
+
+# ------------------------------------------------------------- uninstall ----
+
+uninstall() {
+	step "Удаление Vectra"
+	[ "$(id -u 2>/dev/null)" = 0 ] || refuse "запустите от root."
+	installed "$PKG" || note "$PKG не установлен"
+	if installed "$PKG"; then
+		# prerm stops the service: the data plane is unloaded and PassWall2, if
+		# Vectra took it over, is given back.
+		run opkg remove --autoremove "$PKG" || fail "opkg remove $PKG не прошёл."
+		ok "$PKG удалён; служба остановлена"
+	fi
+	installed vectra-geodata && run opkg remove vectra-geodata
+	installed vectra-reporter && run opkg remove vectra-reporter
+	installed xray-core && note "xray-core остаётся: он был на роутере до Vectra или нужен другому пакету"
+	mkdir -p "$WORK"
+	remove_feed
+	[ -n "$FEED_KEY_ID" ] && rm -f "$KEYS/$FEED_KEY_ID"
+	ok "фид Vectra убран из opkg"
+	if [ "$PURGE" = 1 ]; then
+		rm -rf /etc/vectra-controller-pro /etc/config/vectra-controller-pro
+		ok "настройки и ключ устройства Vectra удалены"
+	else
+		note "настройки и ключ устройства остались в /etc/vectra-controller-pro (удалить: --uninstall --purge)"
+	fi
+	note "dnsmasq-full остаётся: он заменяет dnsmasq полностью"
+	say ""
+	say "Vectra удалена."
+}
+
+# ------------------------------------------------------------------ main ----
+
+main() {
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--check) MODE=check ;;
+		--standby) STANDBY=1 ;;
+		--uninstall) MODE=uninstall ;;
+		--purge) PURGE=1 ;;
+		--yes | -y) YES=1 ;;
+		--force) FORCE=1 ;;
+		-h | --help)
+			sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+			exit 0
+			;;
+		*)
+			echo "неизвестный параметр: $1 (см. --help)"
+			exit 3
+			;;
+		esac
+		shift
+	done
+	: > "$LOG"
+	mkdir -p "$WORK"
+	say "Vectra для OpenWrt${VERSION:+ $VERSION} — $(date)"
+
+	if [ "$MODE" = uninstall ]; then
+		uninstall
+		exit 0
+	fi
+
+	check_router
+	check_clock
+	check_conflicts
+	installed luci-base || LUCI=1
+	add_feed
+	check_storage
+
+	if [ "$MODE" = check ]; then
+		cleanup
+		say ""
+		say "Проверки пройдены: Vectra можно ставить на этот роутер. Ничего не изменено."
+		exit 0
+	fi
+
+	swap_dnsmasq
+	install_packages
+	setup_geo
+	cleanup
+	if verify; then
+		finish
+		exit 0
+	fi
+	say ""
+	say "Vectra установлена, но проверка нашла проблемы (выше). Подробности: $LOG"
+	exit 1
+}
+
+# Sourced by the tests for its functions; run otherwise.
+[ -n "${VECTRA_INSTALL_LIB:-}" ] || main "$@"

@@ -1,0 +1,15 @@
+{
+	"vectra-controller-pro": {
+		"description": "Vectra Controller Pro: router UI",
+		"read": {
+			"ubus": {
+				"vectra": [ "status", "balancers", "nodes", "entries", "diagnostics", "logs", "rules", "services", "setup", "wan_check", "wifi_scan" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"vectra": [ "select_entry", "reset_entry", "pin_balancer", "unpin_balancer", "set_probe_interval", "set_rules", "set_service", "restart_xray", "set_wifi", "optimize_wifi", "finish_setup", "set_power" ]
+			}
+		}
+	}
+}

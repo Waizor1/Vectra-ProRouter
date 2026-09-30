@@ -1,0 +1,7 @@
+#!/bin/sh
+# rpcd exec plugin: the router UI's ubus object "vectra".
+#
+# rpcd runs it as `vectra list` (method signatures) and `vectra call <method>`
+# (params on stdin, answer on stdout); both are implemented by `vctl rpcd`.
+# Access is governed by /usr/share/rpcd/acl.d/vectra-controller-pro.json.
+exec /usr/sbin/vctl rpcd "$@"

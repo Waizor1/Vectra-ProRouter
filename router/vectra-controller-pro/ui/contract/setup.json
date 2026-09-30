@@ -1,0 +1,75 @@
+{
+  "done": false,
+  "wan": {
+    "proto": "dhcp",
+    "link": true,
+    "ipv4": "100.64.12.7",
+    "gateway": "100.64.12.1",
+    "dns": [
+      "100.64.12.1"
+    ]
+  },
+  "wifi": {
+    "radios": [
+      {
+        "device": "radio0",
+        "band": "2g",
+        "channel": 11,
+        "auto": false,
+        "htmode": "HE20",
+        "width": 20,
+        "country": "PA",
+        "txpower": null,
+        "maxPower": true,
+        "ssid": "Vectra-6D39",
+        "secured": true,
+        "enabled": true,
+        "ap": true,
+        "mesh": false,
+        "up": true
+      },
+      {
+        "device": "radio1",
+        "band": "5g",
+        "channel": 149,
+        "auto": false,
+        "htmode": "HE80",
+        "width": 80,
+        "country": "PA",
+        "txpower": null,
+        "maxPower": true,
+        "ssid": "Vectra-6D39",
+        "secured": true,
+        "enabled": true,
+        "ap": true,
+        "mesh": false,
+        "up": true
+      }
+    ],
+    "tuned": true,
+    "tunable": true,
+    "suggested": "Vectra-6D39",
+    "apply": {
+      "state": "ok",
+      "at": "2026-09-28T07:03:10Z",
+      "detail": null,
+      "radios": {
+        "radio0": true,
+        "radio1": true
+      }
+    }
+  },
+  "vectra": {
+    "linked": false,
+    "botUsername": "VectraBot",
+    "owner": null,
+    "claim": {
+      "state": "unclaimed",
+      "code": "7ZKNPGS6",
+      "qr": "VECTRA:R1:AZFLppw9fsgETyBtq5qzT43OPUfl6UEWmgHCO0ZPVhJgEq4creWHa5nRCfK8DH2zuw8OetHTPah97-EzlDN_bmXcvVbkf9XEVfw2nIYihNir95mfSx_iA4KIxR84L8BBSkfwa4qnR5sSWC-Nl_2f3-PiJAJEih2WYtUdWulQCR7OwzV-K9F2hrYku5CJvbKDeK5grSZwNMAxtOniDSKV73G85CHcyf7Vydy51gvsDbJDhyxAsUIC-CleeayJMOHAf4lCBlI4ORZkuoRg4jORXX8obw7OGxKhOf_F_atGbQ",
+      "expiresAt": "2026-09-28T07:12:00Z",
+      "botUrl": "https://t.me/VectraBot?start=rt_7ZKNPGS6",
+      "owner": null
+    }
+  }
+}

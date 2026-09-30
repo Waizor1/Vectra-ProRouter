@@ -1,0 +1,781 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=20
+USE_PROCD=1
+
+CONF="vectra-controller-pro"
+SECTION="main"
+RENDERER="/usr/libexec/vectra-controller-pro/render-xray-config.sh"
+# Rendered daemon config lives on tmpfs and is regenerated from UCI + board
+# state on every boot, mirroring the vectra-controller-agent pattern. The
+# binary's compiled-in default is /etc/vectra-controller-pro/agent.json, so we
+# pass the rendered path explicitly with -config.
+AGENT_JSON="/var/run/vectra-controller-pro/agent.json"
+# GoPackage installs cmd/vctl as /usr/sbin/vctl (binary name = last path
+# component of GO_PKG_BUILD_PKG). Keep this path in lockstep with the Makefile.
+VCTL_BIN="/usr/sbin/vctl"
+# The legacy agent's init script. A variable only so the packaging tests can
+# drive the real hand-over against a stand-in; cmd/vctl's legacyInitScript is
+# the same path.
+LEGACY_INIT="/etc/init.d/vectra-controller"
+LEGACY_MARKER_DIR="/etc/vectra-controller-pro"
+LEGACY_MARKER="$LEGACY_MARKER_DIR/.legacy-agent-disabled-by-vctl"
+PASSWALL_MARKER="$LEGACY_MARKER_DIR/.passwall-disabled-by-vctl"
+# PassWall has a switch of its own, uci <config>.@global[0].enabled — its
+# config is named like its init script — and its own restarts obey that one,
+# not the rc.d link: subscribe.lua ends every run but a manual one, the nightly
+# cron's included, with `/etc/init.d/passwall2 restart &`, and saving its LuCI
+# page restarts it too. So a PassWall stopped and disabled here came back at
+# midnight, its whole stack next to vctl's (seen on the test router). The
+# takeover turns that switch off as well, noted by this breadcrumb, and the
+# hand-back turns it on again.
+PASSWALL_SWITCH_MARKER="$LEGACY_MARKER_DIR/.passwall-switch-off-by-vctl"
+# A trial notes it on tmpfs, but the switch lives in /etc/config, which a
+# reboot keeps: this snippet turns it on again at the next boot, before
+# PassWall starts. The boot's uci_apply_defaults (S10) sources each file here
+# in a subshell and deletes those that exit 0; PassWall starts at S99. The
+# hand-back deletes it, and so does `vectra keep`.
+PASSWALL_SWITCH_SNIPPET="/etc/uci-defaults/99-vectra-trial-passwall-switch"
+# What 0.6.0-r7 left of the LAN's DNS (restore_dns): it pointed dnsmasq at
+# public resolvers in UCI, with a note here and, in a trial, a snippet that
+# undid it at the next boot. That did not work — the ISP forges answers for
+# blocked names in flight, to 8.8.8.8 and 1.1.1.1 as much as to its own
+# resolver — and DNS now goes through the tunnel instead, redirected inside
+# vctl's own nft table (vctl, dns_steer.go), so it comes and goes with the data
+# plane and nothing in UCI changes. The note is still undone wherever found.
+DNS_MARKER="$LEGACY_MARKER_DIR/.dnsmasq-resolv-by-vctl"
+DNS_SNIPPET="/etc/uci-defaults/98-vectra-trial-dnsmasq"
+DNSMASQ_INIT="${DNSMASQ_INIT:-/etc/init.d/dnsmasq}"
+DATAPLANE_TEARDOWN="/usr/libexec/vectra-controller-pro/dataplane-teardown.sh"
+# The daemon's commit-confirm sentinel (cmd/vctl: firewall.NewCommitConfirmer):
+# present, a pending auto-revert does nothing.
+FW_CONFIRM="${FW_CONFIRM:-/var/run/vectra-controller-pro/fw-confirm}"
+
+# A TRIAL takeover (`vectra on --trial`) is one a reboot undoes. While this
+# file exists, start_service takes the traffic as it always does but leaves
+# every boot link as it is: the legacy agent and PassWall are stopped, not
+# disabled, vctl gets none, and it runs even with the UCI switch off. The file
+# lives on tmpfs, so no boot ever sees it, and a power cycle brings back
+# exactly what ran before. Its breadcrumbs go to TRIAL_MARKER_DIR, on tmpfs
+# too: `stop` gives everything back at any moment, and after a reboot nothing
+# on /etc says a hand-back is owed. Only `vctl power` writes the file
+# (internal/power), and a detached deadman of its own ends the trial.
+TRIAL_FILE="/tmp/vectra-trial.json"
+TRIAL_MARKER_DIR="/tmp/vectra-trial.d"
+
+# The kernel's free-page reserve (vm.min_free_kbytes). The previous agent's
+# package keeps 24 MB (LOWMEMCONF): 8 MB more than OpenWrt's own for a router
+# of 64 MB and up (16 MB, /etc/init.d/sysctl's), taken from what xray and the
+# rest can use — on a 234 MB router MemAvailable went from 63 to 86 MB with
+# OpenWrt's back, and the kernel reported no page allocation failure since.
+# vctl puts OpenWrt's back while it holds the router (MEMCONF, read after the
+# agent's file at boot) and the agent's with the router: take_memory_reserve,
+# restore_memory_reserve. A standby install changes nothing.
+MEMCONF="${MEMCONF:-/etc/sysctl.d/99-vectra-pro-memory.conf}"
+LOWMEMCONF="${LOWMEMCONF:-/etc/sysctl.d/99-vectra-lowmem.conf}"
+MEMINFO="${MEMINFO:-/proc/meminfo}"
+
+# incident <code> <key> <title>: one line of JSON into the reporter's inbox
+# (vectra-reporter, ADR-0007), which it sends as a bug report. Never more than
+# 32 files there, and never a failure of what called it. Words only: no quotes
+# or backslashes in the arguments.
+INCIDENT_DIR="${INCIDENT_DIR:-/var/run/vectra-reporter/inbox}"
+incident() {
+	local f
+	mkdir -p "$INCIDENT_DIR" 2>/dev/null || return 0
+	[ "$(ls "$INCIDENT_DIR" 2>/dev/null | wc -l)" -lt 32 ] || return 0
+	f="$INCIDENT_DIR/$(date +%s)000000000-$1-$$.json"
+	printf '{"code":"%s","key":"%s","title":"%s","at":"%s","source":"%s"}\n' \
+		"$1" "$2" "$3" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${INCIDENT_SOURCE:-init}" > "$f.tmp" 2>/dev/null &&
+		mv "$f.tmp" "$f" 2>/dev/null
+	rm -f "$f.tmp" 2>/dev/null
+	return 0
+}
+
+trial() {
+	[ -f "$TRIAL_FILE" ]
+}
+
+# marker <breadcrumb> is where this takeover notes it: /etc, or tmpfs for a
+# trial. The hand-back reads both.
+marker() {
+	if trial; then
+		echo "$TRIAL_MARKER_DIR/${1##*/}"
+	else
+		echo "$1"
+	fi
+}
+
+# The legacy agent's package runs a cron watchdog every 5 minutes
+# (/usr/sbin/vectra-controller-watchdog) that enables and starts the agent
+# whenever no agent process runs — whatever stopped it, disabled or not; the
+# agent then brings PassWall back too. It holds itself off for 5 minutes after
+# a restart it made, by this stamp on tmpfs: it skips while the stamp is less
+# than 300 s old. The takeover holds it off the same way, the stamp
+# AGENT_WATCHDOG_HOLD seconds ahead — and only that far: deadman.sh sets it
+# again every minute while procd runs vctl, and on a clock step (NTP), so a
+# vctl gone for good frees the watchdog within 15 minutes, whatever else
+# fails. The hand-back takes a stamp that is still ahead away
+# (restore_legacy_controller); one the watchdog wrote is its own business.
+AGENT_WATCHDOG_STAMP="/var/run/vectra-controller-watchdog.last-restart"
+AGENT_WATCHDOG_HOLD=600
+
+hold_agent_watchdog() {
+	{ echo "$(($(date +%s) + AGENT_WATCHDOG_HOLD))" > "$AGENT_WATCHDOG_STAMP"; } 2>/dev/null || true
+}
+
+# Both spellings are probed because the package name has not been stable:
+# luci-app-passwall2 installs /etc/init.d/passwall2, older builds shipped
+# /etc/init.d/passwall. Guessing one and silently doing nothing on the other is
+# how a mutual exclusion turns into a no-op on half a fleet.
+#
+# A variable rather than a literal list so the packaging tests can drive the
+# REAL probe against a temp directory. Asserting on the source text instead was
+# tried and was worthless: "/etc/init.d/passwall" is a PREFIX of
+# "/etc/init.d/passwall2", so a grep for both spellings passed with the second
+# candidate deleted.
+PASSWALL_INIT_CANDIDATES="${PASSWALL_INIT_CANDIDATES:-/etc/init.d/passwall2 /etc/init.d/passwall}"
+
+# passwall_init echoes the PassWall2 init script this router has, or nothing.
+passwall_init() {
+	local p
+	# Unquoted on purpose: the candidate list is word-split into paths.
+	for p in $PASSWALL_INIT_CANDIDATES; do
+		[ -x "$p" ] && { echo "$p"; return 0; }
+	done
+	return 1
+}
+
+# passwall_running <init script> tells whether the PassWall stack is up: 0 it
+# runs, 1 it does not, 2 this router cannot tell.
+#
+# `running` is not a question every PassWall can answer. rc.common adds that
+# verb for procd services only, and luci-app-passwall2's own init script is not
+# one: asked `running`, rc.common prints its usage and exits 0 — "still
+# running", however long the stack has been down (checked against the rc.common
+# of OpenWrt 24.10 and the upstream init script). A procd build is asked; any
+# other is judged the way its app.sh judges itself before a start: something
+# runs from its temp bin directory, /tmp/etc/<name>/bin.
+passwall_running() {
+	if grep -qs '^USE_PROCD=1' "$1"; then
+		"$1" running >/dev/null 2>&1 && return 0
+		return 1
+	fi
+	command -v pgrep >/dev/null 2>&1 || return 2
+	pgrep -f "/tmp/etc/${1##*/}/bin" >/dev/null 2>&1 && return 0
+	return 1
+}
+
+# passwall_settle <init script> waits, up to 30 s, for a start, stop or
+# restart of PassWall already in flight: subscribe.lua's `restart &` at
+# midnight, its hotplug on an interface coming up, one the legacy agent
+# spawned before it was stopped. Its init holds a lock, <dir>/<name>.lock, for
+# as long as it runs, and a restart stops the stack first: stopped under it,
+# the stack came back after the takeover. The lock is only looked at, never
+# held — PassWall's own stop takes it, and gives up at once when it cannot.
+PASSWALL_LOCK_DIR="/var/lock"
+passwall_settle() {
+	local lock="$PASSWALL_LOCK_DIR/${1##*/}.lock" i=0
+	command -v flock >/dev/null 2>&1 || return 0
+	while [ -f "$lock" ] && ! flock -n "$lock" true >/dev/null 2>&1; do
+		if [ "$i" -ge 30 ]; then
+			logger -t vectra-controller-pro "PassWall's own lock $lock is still held after 30 s; stopping it all the same"
+			return 0
+		fi
+		i=$((i + 1))
+		sleep 1
+	done
+}
+
+# unload_dataplane removes the `inet vctl` nft table and the fwmark policy
+# route. See the script itself for why leaving them loaded with no xray behind
+# them kills the router's own egress (and, with the kill switch on, the LAN).
+#
+# It is shell on purpose: `stop` has to work when /usr/sbin/vctl is missing
+# (opkg remove), mid-upgrade, or crash-looping.
+unload_dataplane() {
+	# Absent is legitimate: upgrading from a build that predates the teardown
+	# helper. Present-but-not-executable is NOT — that is a packaging accident,
+	# and returning 0 there would leave the data plane loaded while every log
+	# line said the stop succeeded. Run it through sh rather than skipping, and
+	# say so, because a silent no-op here black-holes the router's own egress.
+	if [ -x "$DATAPLANE_TEARDOWN" ]; then
+		"$DATAPLANE_TEARDOWN" >/dev/null 2>&1 || true
+	elif [ -f "$DATAPLANE_TEARDOWN" ]; then
+		logger -t vectra-controller-pro "dataplane teardown not executable; running it via sh"
+		sh "$DATAPLANE_TEARDOWN" >/dev/null 2>&1 || true
+	else
+		logger -t vectra-controller-pro "dataplane teardown helper missing; nft table and policy route may survive this stop"
+	fi
+	# ...and the commit-confirm sleeper of the last ruleset load, if one is
+	# still counting, is disarmed: its revert would otherwise run up to 90 s
+	# later, after whatever took the router back, and `ip rule del fwmark 0x1
+	# lookup 100` is a rule older PassWall builds set up for themselves.
+	mkdir -p "${FW_CONFIRM%/*}" 2>/dev/null
+	true > "$FW_CONFIRM" 2>/dev/null || true
+}
+
+# release_locks lets go of procd's lock for this service (procd_lock, fd 1000)
+# before a hand-back starts anything. luci-app-passwall2 is no procd service:
+# its daemons are children of this shell, inherited the descriptor, and held
+# the lock for as long as they ran — every later verb of this init script
+# (`vectra on/off`, `status`) and every minute's dead-man blocked on it until
+# PassWall happened to restart. Where this runs, only the hand-back is left.
+#
+# Closed, not only unlocked: a child that inherits the descriptor re-locks it —
+# every procd init it runs (dnsmasq's restart, cron, the agent's own) starts
+# with procd_lock's `flock -n 1000` on the inherited fd, which is this very
+# lock file — and PassWall's daemons kept it held long after. The eval keeps a
+# shell that has no descriptors above 9 (dash, on a build machine) from
+# choking on it; busybox ash, the router's, closes it.
+release_locks() {
+	flock -u 1000 >/dev/null 2>&1 || true
+	( eval 'exec 1000>&-' ) 2>/dev/null && eval 'exec 1000>&-'
+	return 0
+}
+
+# kill_orphan_xray ends an xray that runs vctl's render with no vctl above it
+# (its parent is init): a vctl killed outright — kill -9, the OOM killer —
+# leaves its xray behind, in its own process group, holding the tproxy port.
+# The next vctl's xray then cannot bind, and the LAN runs through the old
+# config with nobody supervising it; a hand-back would run it next to
+# PassWall's. An xray whose vctl is alive is that vctl's business.
+kill_orphan_xray() {
+	local pid
+	command -v pgrep >/dev/null 2>&1 || return 0
+	for pid in $(pgrep -P 1 -f "run -c ${AGENT_JSON%/*}/" 2>/dev/null); do
+		logger -t vectra-controller-pro "an xray of a vctl that is gone (pid $pid) still runs; ending it"
+		kill "$pid" 2>/dev/null
+	done
+	return 0
+}
+
+# restore_dns undoes what 0.6.0-r7 changed in dnsmasq's UCI (see DNS_MARKER):
+# its note says the section and the servers it added. The note goes once the
+# commit holds. Nothing to do on a router that never ran r7.
+restore_dns() {
+	local m d added s
+	for m in "$DNS_MARKER" "$TRIAL_MARKER_DIR/${DNS_MARKER##*/}"; do
+		[ -f "$m" ] || continue
+		d="" added=""
+		{ read -r d; read -r added; } < "$m"
+		if [ -z "$d" ]; then
+			rm -f "$m"
+			continue
+		fi
+		uci -q delete "dhcp.$d.noresolv"
+		for s in $added; do uci -q del_list "dhcp.$d.server=$s"; done
+		if uci -q commit dhcp; then
+			rm -f "$m" "$DNS_SNIPPET"
+			logger -t vectra-controller-pro "the LAN's DNS asks the ISP's resolvers again"
+			"$DNSMASQ_INIT" reload >/dev/null 2>&1 || true
+		fi
+	done
+	return 0
+}
+
+# take_memory_reserve: OpenWrt's reserve while vctl holds a router the agent
+# reserved 24 MB on (see MEMCONF). A trial changes nothing a reboot would
+# keep: only the running value.
+take_memory_reserve() {
+	local kb
+	[ -f "$LOWMEMCONF" ] || return 0
+	kb="$(awk '/^MemTotal:/ {print $2}' "$MEMINFO" 2>/dev/null)"
+	[ "${kb:-0}" -gt 65536 ] 2>/dev/null || return 0
+	if trial; then
+		sysctl -q -w vm.min_free_kbytes=16384 >/dev/null 2>&1
+		return 0
+	fi
+	if [ ! -e "$MEMCONF" ]; then
+		# Whole or not at all: an empty file left by a full flash would carry
+		# no marker, and nothing would write or take it away after.
+		if ! { printf '%s\n' \
+			"# vectra-controller-pro: OpenWrt's own reserve for a router of this size" \
+			"# (/etc/init.d/sysctl), not the previous agent's 24 MB, while vctl holds it." \
+			"vm.min_free_kbytes = 16384" > "$MEMCONF.tmp" && mv -f "$MEMCONF.tmp" "$MEMCONF"; } 2>/dev/null; then
+			rm -f "$MEMCONF.tmp"
+			return 0
+		fi
+	fi
+	sysctl -q -p "$MEMCONF" >/dev/null 2>&1
+	return 0
+}
+
+# restore_memory_reserve: the agent's reserve back with the router — vctl's
+# file gone, the agent's applied.
+restore_memory_reserve() {
+	[ -f "$LOWMEMCONF" ] || return 0
+	if grep -q '^# vectra-controller-pro:' "$MEMCONF" 2>/dev/null; then
+		rm -f "$MEMCONF"
+	fi
+	sysctl -q -p "$LOWMEMCONF" >/dev/null 2>&1
+	return 0
+}
+
+# restore_legacy_controller hands the router back to vectra-controller-agent.
+#
+# start_service() disables the legacy agent so two daemons never check in with
+# the same identity. Nothing used to undo that: once vctl had started, stopping
+# or removing it left the router with no controller whatsoever. Recovery then
+# needs physical access, which on a customer router is a site visit.
+#
+# Guarded by the marker written at disable time, so an agent the operator
+# disabled on purpose is never silently switched back on.
+restore_legacy_controller() {
+	local stamp
+	release_locks
+	# Whatever is owed, the takeover's hold on the agent's cron watchdog goes:
+	# the watchdog is how an agent that does not come back comes back after
+	# all. Only a stamp still ahead is the hold — the watchdog writes the time
+	# of its own restarts, which is its business.
+	stamp="$(cat "$AGENT_WATCHDOG_STAMP" 2>/dev/null)"
+	case "$stamp" in
+	'' | *[!0-9]*) ;;
+	*) [ "$stamp" -gt "$(date +%s)" ] && rm -f "$AGENT_WATCHDOG_STAMP" ;;
+	esac
+	[ -f "$LEGACY_MARKER" ] || [ -f "$TRIAL_MARKER_DIR/${LEGACY_MARKER##*/}" ] || return 0
+	[ -x "$LEGACY_INIT" ] || return 0
+	logger -t vectra-controller-pro "restoring legacy vectra-controller (vctl no longer owns this router)"
+	"$LEGACY_INIT" enable >/dev/null 2>&1 || true
+	"$LEGACY_INIT" start >/dev/null 2>&1 || true
+	# Consumed once it is back enabled, not before — PassWall's rule: an
+	# `enable` that could not write its link must leave a later stop, prerm or
+	# boot something to retry. Kept too while the agent is not installed:
+	# owed, not given.
+	if "$LEGACY_INIT" enabled >/dev/null 2>&1; then
+		rm -f "$LEGACY_MARKER" "$TRIAL_MARKER_DIR/${LEGACY_MARKER##*/}"
+	else
+		logger -t vectra-controller-pro \
+			"the legacy agent did not come back enabled; keeping $LEGACY_MARKER so a later hand-back retries"
+	fi
+}
+
+# stop_passwall_stack takes the OTHER proxy stack off the router.
+#
+# Disabling the legacy agent is not enough, and assuming it was is how the first
+# canary produced two xray processes and two `ip rule` fwmark entries at once.
+# PassWall2 is an INDEPENDENT service: it has its own /etc/rc.d symlink, starts
+# at boot without the agent, runs its own xray and installs its own nftables
+# rules and fwmark policy route. Stopping the agent stops the thing that
+# RECONFIGURES PassWall; it does not stop PassWall.
+#
+# Two stacks on one router is not a degraded state, it is a broken one: both
+# claim the same traffic, and on a 234 MB unit two xray processes is also how
+# the OOM killer gets involved.
+#
+# Order is load-bearing. The agent is stopped and disabled BEFORE this runs, so
+# its watchdog is gone by the time PassWall goes down — otherwise the watchdog
+# simply starts it again in the gap, which is exactly what was observed live.
+#
+# Marker-guarded like the agent: only a PassWall that WE disabled is ever
+# switched back on.
+# Returns non-zero when the stack is still up afterwards, so the caller can
+# refuse to take a router it could not take cleanly.
+stop_passwall_stack() {
+	local pw i m cfg downs
+	pw="$(passwall_init)" || return 0
+	cfg="${pw##*/}"
+
+	logger -t vectra-controller-pro "stopping the PassWall stack ($pw): one proxy stack per router"
+
+	# A trial kept (`vectra keep`) is this takeover once more, without the
+	# trial's file. The switch the trial turned off stays off, for good now:
+	# its breadcrumb moves to /etc, and the snippet that would turn it on at
+	# the next boot goes.
+	if ! trial && [ -f "$TRIAL_MARKER_DIR/${PASSWALL_SWITCH_MARKER##*/}" ]; then
+		if ! { mkdir -p "${PASSWALL_SWITCH_MARKER%/*}" && true > "$PASSWALL_SWITCH_MARKER"; }; then
+			logger -t vectra-controller-pro \
+				"cannot write $PASSWALL_SWITCH_MARKER; refusing to keep PassWall's switch off rather than strand it"
+			return 1
+		fi
+		rm -f "$TRIAL_MARKER_DIR/${PASSWALL_SWITCH_MARKER##*/}" "$PASSWALL_SWITCH_SNIPPET"
+	fi
+
+	# Its own switch (see PASSWALL_SWITCH_MARKER), whether or not its rc.d link
+	# is on: its restarts ask neither. Only a switch that is on — one an
+	# operator turned off stays theirs — and noted before it goes off, the
+	# write checked like the link's below. A trial takes it only once the
+	# snippet that turns it on at the next boot is written.
+	if [ "$(uci -q get "$cfg.@global[0].enabled")" = 1 ]; then
+		m="$(marker "$PASSWALL_SWITCH_MARKER")"
+		if ! { mkdir -p "${m%/*}" && true > "$m"; }; then
+			logger -t vectra-controller-pro \
+				"cannot write $m; refusing to turn PassWall's switch off rather than strand it"
+			return 1
+		fi
+		if trial && ! { mkdir -p "${PASSWALL_SWITCH_SNIPPET%/*}" && printf '%s\n' \
+			"# vectra-controller-pro: a trial turned PassWall's switch off, and the reboot that ends it turns it on." \
+			"uci -q set '$cfg.@global[0].enabled=1'" "uci -q commit '$cfg'" "exit 0" > "$PASSWALL_SWITCH_SNIPPET"; }; then
+			rm -f "$m" "$PASSWALL_SWITCH_SNIPPET"
+			logger -t vectra-controller-pro \
+				"cannot write $PASSWALL_SWITCH_SNIPPET, which turns PassWall's switch on again at the next boot; no trial"
+			return 1
+		fi
+		if ! { uci -q set "$cfg.@global[0].enabled=0" && uci -q commit "$cfg"; }; then
+			logger -t vectra-controller-pro \
+				"cannot turn PassWall's switch off; its own restarts would bring it back next to vctl"
+			return 1
+		fi
+	fi
+
+	# The breadcrumb goes in BEFORE the disable, and the write is CHECKED. An
+	# unwritable /etc (full or read-only overlay — a documented state on this
+	# fleet) would otherwise leave PassWall disabled with nothing recording that
+	# we are the ones who owe it a restore: permanently stranded, silently.
+	# `true`, not `:`: a failed redirection on a special builtin such as `:`
+	# ends the whole script in busybox ash (and dash) instead of failing the
+	# check.
+	if "$pw" enabled >/dev/null 2>&1; then
+		m="$(marker "$PASSWALL_MARKER")"
+		if ! { mkdir -p "${m%/*}" && true > "$m"; }; then
+			logger -t vectra-controller-pro \
+				"cannot write $m; refusing to disable PassWall rather than strand it"
+			return 1
+		fi
+	fi
+	# A trial leaves it enabled: the next boot starts it again.
+	trial || "$pw" disable >/dev/null 2>&1 || true
+	# After whatever it is doing already (see passwall_settle): its switch is
+	# off by now, so a restart in flight comes back with nothing, or comes
+	# back before the stop below.
+	passwall_settle "$pw"
+	"$pw" stop >/dev/null 2>&1 || true
+
+	# VERIFY, do not assume. procd's stop is asynchronous — SIGTERM, then up to
+	# term_timeout before SIGKILL — so it returns while the service may still be
+	# alive. And a legacy agent that is somehow still breathing starts it
+	# straight back up, its switch included.
+	# Either way the answer is the same: this is the two-stack state, and the
+	# caller must not proceed. Only a stack seen down passes — three times in a
+	# row, a second apart, so a stack on its way back up is seen coming — and
+	# one this router cannot tell about counts as running.
+	i=0
+	downs=0
+	while [ "$i" -lt 15 ]; do
+		passwall_running "$pw"
+		if [ $? -eq 1 ]; then
+			downs=$((downs + 1))
+			if [ "$downs" -ge 3 ]; then
+				# What its stop leaves in the kernel goes too: its nft table.
+				# Its base chains stay hooked on every packet — on the test
+				# router one rule in them, left once per start, marked every
+				# packet of xray's connections — and its sets (its copy of
+				# geoip:DIRECT among them) hold kernel memory that every nft
+				# set command then reads back. Its start makes the table anew.
+				nft delete table inet "$cfg" >/dev/null 2>&1
+				return 0
+			fi
+		else
+			downs=0
+		fi
+		i=$((i + 1))
+		sleep 1
+	done
+	logger -t vectra-controller-pro "the PassWall stack is STILL running after stop; not taking this router"
+	return 1
+}
+
+# restore_passwall_stack is the other half of the hand-back. It runs BEFORE the
+# legacy agent is restored so the agent finds a stack that is already up rather
+# than racing its own watchdog against it.
+restore_passwall_stack() {
+	local pw cfg on='' owed=''
+	pw="$(passwall_init)" || return 0
+	cfg="${pw##*/}"
+	release_locks
+
+	# Its own switch first — a start with it off starts nothing — and whether
+	# or not its rc.d link was ours to give back. Set and committed every time
+	# its breadcrumb is there, never judged by `uci get`: that answers with a
+	# change only staged in /tmp/.uci, and a commit that failed once leaves
+	# exactly that — a switch that reads on and is off on flash. The
+	# breadcrumb goes, with a trial's snippet, only once a commit has
+	# succeeded; kept otherwise, so a later hand-back retries. `on`: the
+	# switch was just turned on, and a PassWall running now came up without
+	# it.
+	if [ -f "$PASSWALL_SWITCH_MARKER" ] || [ -f "$TRIAL_MARKER_DIR/${PASSWALL_SWITCH_MARKER##*/}" ]; then
+		logger -t vectra-controller-pro "turning PassWall's switch back on ($cfg)"
+		if uci -q set "$cfg.@global[0].enabled=1" && uci -q commit "$cfg"; then
+			on=1
+			rm -f "$PASSWALL_SWITCH_MARKER" "$TRIAL_MARKER_DIR/${PASSWALL_SWITCH_MARKER##*/}" "$PASSWALL_SWITCH_SNIPPET"
+		else
+			logger -t vectra-controller-pro \
+				"could not turn PassWall's switch back on; keeping $PASSWALL_SWITCH_MARKER so a later hand-back retries"
+		fi
+	fi
+	{ [ -f "$PASSWALL_MARKER" ] || [ -f "$TRIAL_MARKER_DIR/${PASSWALL_MARKER##*/}" ]; } && owed=1
+	[ -n "$owed$on" ] || return 0
+
+	if [ -n "$owed" ]; then
+		logger -t vectra-controller-pro "restoring the PassWall stack ($pw)"
+		"$pw" enable >/dev/null 2>&1 || true
+	fi
+	# A stack that runs already is not started again. What luci-app-passwall2's
+	# start does to a running stack depends on its build: its app.sh start runs
+	# its stop first, and that stop ends in `exit 0` — older builds run it bare,
+	# so the start only stops the stack; 26.8.10 runs it in a subshell, so the
+	# start restarts all of it. A breadcrumb can find it running: something
+	# brought it back while vctl held the router. One that came up while its
+	# switch was off, though, came up without it: with the switch just turned
+	# on it is restarted — `restart` is a stop and a start in every build; one
+	# the operator turned on meanwhile restarts for nothing, briefly — and so
+	# is one this router cannot tell about, when it is ours to start.
+	passwall_running "$pw"
+	case "$?" in
+	0) [ -z "$on" ] || "$pw" restart >/dev/null 2>&1 || true ;;
+	1) [ -z "$owed" ] || "$pw" start >/dev/null 2>&1 || true ;;
+	*) [ -z "$owed" ] || "$pw" restart >/dev/null 2>&1 || true ;;
+	esac
+	[ -n "$owed" ] || return 0
+
+	# The breadcrumb is consumed only once the restore has actually happened.
+	# Removing it first meant that a PassWall which was momentarily absent (an
+	# opkg upgrade of luci-app-passwall2, a half-unpacked overlay) or an `enable`
+	# that could not write its symlink destroyed the only record that a restore
+	# was owed — and no later stop, prerm or enabled=0 boot could ever bring the
+	# stack back.
+	if "$pw" enabled >/dev/null 2>&1; then
+		rm -f "$PASSWALL_MARKER" "$TRIAL_MARKER_DIR/${PASSWALL_MARKER##*/}"
+	else
+		logger -t vectra-controller-pro \
+			"PassWall did not come back enabled; keeping $PASSWALL_MARKER so a later hand-back retries"
+	fi
+}
+
+start_service() {
+	local enabled m
+	[ "${VECTRA_SKIP_POSTINST_RESTART:-}" = "1" ] && return 0
+	# Whatever this start ends in — vctl again, or the router given back — an
+	# xray a killed vctl left behind must not carry on beside it.
+	kill_orphan_xray
+
+	config_load "$CONF"
+	config_get_bool enabled "$SECTION" enabled 1
+	# A trial runs whatever the switch says (see TRIAL_FILE): it changes
+	# nothing a reboot would keep, the switch included.
+	if [ "$enabled" -ne 1 ] && ! trial; then
+		# SAY SO. There are two independent switches — `/etc/init.d/... enable`
+		# (the rc.d symlink) and this UCI option — and only this one gates the
+		# daemon. opkg preserves /etc/config/vectra-controller-pro across an
+		# upgrade as a conffile, so a unit that was ever set to enabled=0 keeps
+		# it, and `enable && start` then completes with status 0 having started
+		# nothing. Without this line the only trace is a marker file that was
+		# never written, which is an absence an operator has to already suspect
+		# to go looking for.
+		logger -t vectra-controller-pro \
+			"not starting: uci vectra-controller-pro.$SECTION.enabled=0 (the init.d enable symlink does not override it); handing the router back if we hold it"
+
+		# Disabled means "vctl does not own this router", NOT "this router has
+		# no controller". Returning early here left it with neither.
+		#
+		# reload_service is `VCTL_RELOADING=1 stop` + `start`, and that stop
+		# deliberately skips the hand-back so a reload cannot flap two daemons.
+		# So on a reload with enabled=0 the old code stopped vctl, left the
+		# legacy agent disabled and left the marker in place: no controller at
+		# all, remotely unrecoverable — exactly what 834c267 set out to prevent.
+		# procd watches /etc/config/vectra-controller-pro, so flipping `enabled`
+		# is itself enough to take that path.
+		#
+		# Both restores are marker-guarded, so this is a no-op unless WE took
+		# those services down. PassWall first: the agent's watchdog should find a
+		# stack that is already up rather than race it.
+		restore_dns
+		restore_memory_reserve
+		restore_passwall_stack
+		restore_legacy_controller
+		return 0
+	fi
+
+	# EVERYTHING THAT CAN FAIL COMES FIRST, and only then does anything get
+	# taken away from the router.
+	#
+	# The hand-over below is destructive: it stops the legacy agent and the
+	# PassWall stack. Doing that before these checks meant a packaging accident
+	# — a missing renderer, a missing binary, a render that errors — left the
+	# router with no controller AND no proxy, from a `start` that reported
+	# nothing.
+	#
+	# hand_back_and_fail, not a bare `return 1`, because the disabled state is
+	# PERSISTENT: after one successful hand-over both services have no rc.d
+	# symlink and both markers live in /etc (kept across sysupgrade). From the
+	# second boot onward, a start that bails here would leave a router with no
+	# vctl, no PassWall and no agent — and no stop runs at boot, so nothing
+	# would undo it. Both restores are marker-guarded, so this only ever gives
+	# back what we took.
+	hand_back_and_fail() {
+		incident HANDBACK "$1" "vctl handed the router back: $1"
+		logger -t vectra-controller-pro "$1; handing the router back rather than leaving it with no proxy"
+		restore_dns
+		restore_memory_reserve
+		restore_passwall_stack
+		restore_legacy_controller
+		return 1
+	}
+	[ -x "$RENDERER" ] || hand_back_and_fail "renderer missing at $RENDERER" || return 1
+	[ -x "$VCTL_BIN" ] || hand_back_and_fail "controller binary missing at $VCTL_BIN" || return 1
+
+	# Derived from AGENT_JSON rather than hardcoded: the two were the same path
+	# by convention only, and a test that overrides AGENT_JSON was creating
+	# /var/run/vectra-controller-pro on whatever machine ran it.
+	mkdir -p "$(dirname "$AGENT_JSON")"
+	"$RENDERER" "$AGENT_JSON" || hand_back_and_fail "render of $AGENT_JSON failed" || return 1
+
+	# Mutual exclusion: exactly one controller owns a router. If the legacy
+	# vectra-controller agent is present (canary cutover, where vctl adopts the
+	# same router identity), stop and disable it so the two daemons never check
+	# in concurrently with the same id/token.
+	if [ -x "$LEGACY_INIT" ]; then
+		logger -t vectra-controller-pro "stopping legacy vectra-controller (xray-direct takes over)"
+		# Breadcrumb so a stop or the prerm can hand the router back. Without it
+		# a stopped or removed vctl leaves the router with NO controller at all
+		# — unmanageable remotely, which on a customer router means a site
+		# visit. Only restore what WE disabled: if the operator had already
+		# disabled the legacy agent, leave it that way.
+		#
+		# Checked like PassWall's, and before anything is taken: an agent
+		# disabled with nothing noting it would be stranded. `true`, not `:`
+		# (see stop_passwall_stack).
+		if "$LEGACY_INIT" enabled >/dev/null 2>&1; then
+			m="$(marker "$LEGACY_MARKER")"
+			if ! { mkdir -p "${m%/*}" && true > "$m"; }; then
+				hand_back_and_fail "cannot write $m; refusing to disable the legacy agent rather than strand it" || return 1
+			fi
+		fi
+		# Its package's cron watchdog would have it back within 5 minutes, and
+		# PassWall with it: held off for as long as vctl holds the router (see
+		# AGENT_WATCHDOG_STAMP).
+		hold_agent_watchdog
+		# A trial leaves it enabled: the next boot starts it again.
+		trial || "$LEGACY_INIT" disable >/dev/null 2>&1 || true
+		"$LEGACY_INIT" stop >/dev/null 2>&1 || true
+	fi
+
+	# ...and then the stack itself. The agent is already gone above, so nothing
+	# is left to restart PassWall behind our back. See stop_passwall_stack for
+	# why disabling the agent alone left two proxy stacks on the router.
+	#
+	# It VERIFIES, and a failure here is not survivable: proceeding would put a
+	# second proxy stack on the router, which is the state the first canary was
+	# rolled back from. Give the router back instead.
+	stop_passwall_stack || hand_back_and_fail "could not take the PassWall stack down" || return 1
+	# r7 pointed dnsmasq at public resolvers; DNS now goes through the tunnel
+	# (vctl redirects dnsmasq's upstream while its data plane is loaded).
+	restore_dns
+	take_memory_reserve
+
+	procd_open_instance
+	procd_set_param command "$VCTL_BIN" agent -config "$AGENT_JSON"
+	# The controller holds a ~485 KB subscription array while it parses and
+	# caches it; on a 234 MB router its heap should give memory back rather
+	# than double before the next GC. Soft limits: GC works harder near them,
+	# nothing is killed. xray has its own (vctl-xray-wrapper).
+	procd_set_param env GOGC=50 GOMEMLIMIT=32MiB
+	procd_set_param respawn 15 5 20
+	procd_set_param stderr 1
+	procd_set_param stdout 1
+	procd_set_param file /etc/config/vectra-controller-pro
+	procd_close_instance
+}
+
+# vctl_alive: vctl's daemon, or the xray it runs, is still there — exactly
+# those two (`vctl agent …`, `… run -c <vctl's runtime dir>/…`). Not anything
+# that merely names vctl's runtime directory: the commit-confirm sleeper does
+# (`sleep 90; if [ ! -f …/fw-confirm ]`), lives for 90 s after every ruleset
+# load, and made every hand-back in that window wait its full 15 s with no
+# proxy at all. PassWall's run from /tmp/etc. A router without pgrep cannot
+# tell, and does not wait.
+vctl_alive() {
+	command -v pgrep >/dev/null 2>&1 || return 1
+	pgrep -f "$VCTL_BIN agent" >/dev/null 2>&1 && return 0
+	pgrep -f "run -c ${AGENT_JSON%/*}/" >/dev/null 2>&1
+}
+
+# rc.common's stop is stop_service, then procd_kill — procd's SIGTERM, and
+# its SIGKILL up to 5 s later, which it does not wait for — then
+# service_stopped. So stop_service only takes vctl's data plane away, and the
+# hand-back waits for service_stopped and for vctl to be gone: handed back
+# from stop_service, PassWall and the legacy agent came up while vctl and its
+# xray still ran — two proxy stacks on a router with ~45 MB free, and the
+# agent checking in next to a vctl still alive with the same identity.
+stop_service() {
+	# UNCONDITIONALLY first, including on reload. A loaded data plane with no
+	# xray behind it is never correct, and it must go BEFORE the hand-back: the
+	# legacy agent sets no SO_MARK, so the output chain's CtlMark exemption does
+	# not cover it and the controller we are restoring could not reach the panel
+	# through a live vctl ruleset.
+	unload_dataplane
+}
+
+service_stopped() {
+	local i=0
+	# A reload is stop+start, not a hand-back: restoring here would briefly
+	# start the legacy agent and let two daemons check in with the same
+	# identity before start_service disables it again. The same applies to the
+	# PassWall stack — bringing it up for the few seconds of a reload would put
+	# two proxy stacks on the router for exactly as long.
+	[ "${VCTL_RELOADING:-}" = "1" ] && return 0
+	# vctl and its xray gone first, for up to 15 s: an xray left behind by a
+	# killed vctl (its own process group) does not hold up the hand-back for
+	# longer — it is ended at once (kill_orphan_xray), and again each second.
+	kill_orphan_xray
+	while vctl_alive; do
+		kill_orphan_xray
+		if [ "$i" -ge 15 ]; then
+			logger -t vectra-controller-pro "vctl or its xray still runs 15 s after the stop; handing the router back all the same"
+			break
+		fi
+		i=$((i + 1))
+		sleep 1
+	done
+	# PassWall before the agent: the agent's watchdog should find a stack that
+	# is already up, not race its own start against ours.
+	restore_dns
+	restore_memory_reserve
+	restore_passwall_stack
+	restore_legacy_controller
+}
+
+reload_service() {
+	[ "${VECTRA_SKIP_POSTINST_RESTART:-}" = "1" ] && return 0
+	VCTL_RELOADING=1 stop
+	start
+}
+
+# A RESTART IS NOT A HAND-BACK EITHER, and rc.common does not know that.
+#
+# Its restart() is `trap '' TERM; stop; trap - TERM; start` — verified against
+# the shipped /etc/rc.common on OpenWrt 24.10.8 — and there is no
+# `restart_service` hook to override; the USE_PROCD block redefines
+# start/stop/reload and leaves restart alone. So every `restart` ran the
+# hand-back UNGUARDED (then in stop_service, now in service_stopped): PassWall
+# enabled and started, the legacy agent enabled and started, and then
+# start_service taking both away again a second later.
+#
+# That is not a rare path. The controller self-update runs
+# `/etc/init.d/vectra-controller-pro restart` (cmd_agent_jobs.go), the packaged
+# postinst restarts a service that is already running, and `vctl apply-local`
+# prints it as the step that makes a config live. On a real unit each cycle
+# brings PassWall's own nftables ruleset and fwmark policy route up and back
+# down, next to vctl's — with procd's stop being asynchronous, briefly at the
+# same time as the outgoing daemon.
+#
+# rc.common sources this script BEFORE the procd block, and that block does not
+# define restart, so this definition is the one that runs.
+restart() {
+	VCTL_RELOADING=1 stop
+	start
+}
+
+# A SHUTDOWN IS NOT A HAND-BACK EITHER. rc.common's shutdown is `stop` — the
+# K20 link at every reboot, the fleet's daily one at 04:30 among them — so
+# every reboot handed the router back on its way down: the legacy agent and
+# PassWall enabled and started, PassWall's switch committed on, vctl's kernel
+# reserve given back; and at the next boot the agent (S95vectra-controller)
+# started before vctl (S95vectra-controller-pro) took the router again. vctl
+# is enabled: the boot starts it again, and the dead-man hands the router back
+# if it does not come up. A trial's reboot gives the router back by the
+# boot's own means (no boot links, its uci-defaults snippets), not this.
+shutdown() {
+	VCTL_RELOADING=1 stop
+}

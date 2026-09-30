@@ -1,0 +1,36 @@
+#!/bin/sh /etc/rc.common
+# STAND STUB — stands in for luci-app-passwall2's /etc/init.d/passwall2.
+#
+# The real PassWall2 is not installed here and does not need to be: what the
+# hand-over has to get right is the SERVICE lifecycle, not PassWall's proxy
+# behaviour. (MODE=passwall-real installs the real one.) This provides exactly
+# the properties that matter and nothing else:
+#
+#   * it is an INDEPENDENT service with its own /etc/rc.d symlink, so it starts
+#     at boot whether or not the legacy vectra-controller agent exists. That
+#     independence is the whole reason disabling the agent was not enough;
+#   * it owns a process the stand can see, so "is the other proxy stack running"
+#     is an observation rather than an assumption;
+#   * it can be enabled, disabled, started and stopped, which is the surface the
+#     init script's stop_passwall_stack / restore_passwall_stack drive;
+#   * like the real one it has a switch of its own, uci
+#     passwall2.@global[0].enabled, and a start with it off starts nothing:
+#     luci-app-passwall2's app.sh starts no proxy then, whoever asked — its
+#     subscription's nightly restart, its LuCI page, the agent's watchdog. The
+#     stands that use this stub give it /etc/config/passwall2 from
+#     passwall2.config (switch on).
+#
+# It opens no sockets and touches no rules — a second REAL proxy stack inside
+# the stand would fight the one under test for the same traffic, which is the
+# bug, not the harness.
+START=90
+STOP=25
+USE_PROCD=1
+
+start_service() {
+	[ "$(uci -q get passwall2.@global[0].enabled)" = 1 ] || return 0
+	procd_open_instance
+	procd_set_param command /stand/legacy-stub/passwall-loop.sh
+	procd_set_param respawn 15 5 20
+	procd_close_instance
+}

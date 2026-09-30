@@ -1,0 +1,11 @@
+# Preserve Vectra Controller Pro identity, issued credentials, operator desired
+# xray config, applied-revision state, and the retry-safe job journal across
+# OpenWrt sysupgrade.
+/etc/config/vectra-controller-pro
+/etc/vectra-controller-pro/
+# A trial's note that PassWall's own switch is owed back on (see
+# PASSWALL_SWITCH_SNIPPET in the init script): a sysupgrade mid-trial ends the
+# trial like a reboot does, and must give the switch back the same way.
+/etc/uci-defaults/99-vectra-trial-passwall-switch
+# ...and a trial's note that dnsmasq is owed the ISP's resolvers back (DNS_SNIPPET).
+/etc/uci-defaults/98-vectra-trial-dnsmasq

@@ -1,0 +1,91 @@
+{
+	"checkedAt": "2026-09-27T17:54:35Z",
+	"checks": [
+		{
+			"id": "dead_nodes",
+			"status": "warn",
+			"params": {
+				"count": 1,
+				"tags": [
+					"node-dead"
+				]
+			}
+		},
+		{
+			"id": "controller_running",
+			"status": "ok",
+			"params": {
+				"pid": 657
+			}
+		},
+		{
+			"id": "xray_running",
+			"status": "ok",
+			"params": {
+				"pid": 1326,
+				"uptimeSec": 115
+			}
+		},
+		{
+			"id": "xray_api",
+			"status": "ok",
+			"params": {
+				"listen": "127.0.0.1:10085"
+			}
+		},
+		{
+			"id": "dataplane_loaded",
+			"status": "ok",
+			"params": {
+				"tproxyHits": 30
+			}
+		},
+		{
+			"id": "no_leak",
+			"status": "ok",
+			"params": {
+				"wouldLeak": 0
+			}
+		},
+		{
+			"id": "single_stack",
+			"status": "ok",
+			"params": {
+				"agentEnabled": false,
+				"passwallRunning": false
+			}
+		},
+		{
+			"id": "panel_link",
+			"status": "ok",
+			"params": {
+				"lastCheckInAgoSec": 5
+			}
+		},
+		{
+			"id": "subscription_ua",
+			"status": "ok",
+			"params": {
+				
+			}
+		},
+		{
+			"id": "memory",
+			"status": "ok",
+			"params": {
+				"availableMiB": 3476,
+				"totalMiB": 3905,
+				"xrayMiB": 31
+			}
+		},
+		{
+			"id": "balancer_fallback",
+			"status": "ok",
+			"params": {
+				"balancers": [
+					
+				]
+			}
+		}
+	]
+}

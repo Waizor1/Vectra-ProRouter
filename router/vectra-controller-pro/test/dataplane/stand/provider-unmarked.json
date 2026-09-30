@@ -1,0 +1,28 @@
+{
+  "remarks": "vctl-dataplane-stand-unmarked",
+  "log": { "loglevel": "info" },
+  "stats": {},
+  "inbounds": [
+    { "tag": "socks", "port": 10808, "protocol": "socks", "settings": { "udp": true } },
+    { "tag": "http", "port": 10809, "protocol": "http", "settings": {} }
+  ],
+  "outbounds": [
+    {
+      "tag": "proxy",
+      "protocol": "freedom",
+      "settings": { "domainStrategy": "AsIs" },
+      "streamSettings": { "sockopt": { "mark": 0 } }
+    },
+    { "tag": "block", "protocol": "blackhole", "settings": { "response": { "type": "http" } } }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      { "type": "field", "ip": ["geoip:private"], "outboundTag": "proxy" },
+      { "type": "field", "network": "tcp,udp", "outboundTag": "proxy" }
+    ]
+  },
+  "policy": {
+    "levels": { "0": { "handshake": 4, "connIdle": 300 } }
+  }
+}

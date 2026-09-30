@@ -1,0 +1,55 @@
+{
+  "radios": [
+    {
+      "device": "radio0",
+      "band": "2g",
+      "current": 1,
+      "recommended": 11,
+      "networks": 14,
+      "channels": [
+        {
+          "channel": 1,
+          "networks": 6,
+          "strongest": -48
+        },
+        {
+          "channel": 3,
+          "networks": 1,
+          "strongest": -83
+        },
+        {
+          "channel": 6,
+          "networks": 5,
+          "strongest": -52
+        },
+        {
+          "channel": 11,
+          "networks": 2,
+          "strongest": -79
+        }
+      ],
+      "error": null
+    },
+    {
+      "device": "radio1",
+      "band": "5g",
+      "current": 36,
+      "recommended": 149,
+      "networks": 4,
+      "channels": [
+        {
+          "channel": 36,
+          "networks": 3,
+          "strongest": -61
+        },
+        {
+          "channel": 44,
+          "networks": 1,
+          "strongest": -77
+        }
+      ],
+      "error": null
+    }
+  ],
+  "scannedAt": "2026-09-28T07:01:00Z"
+}

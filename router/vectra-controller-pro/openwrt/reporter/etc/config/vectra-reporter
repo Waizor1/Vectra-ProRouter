@@ -1,0 +1,3 @@
+config reporter 'main'
+	option enabled '1'
+	option url 'https://api-app.vectra-pro.net/errors/router'

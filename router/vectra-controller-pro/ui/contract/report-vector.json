@@ -1,0 +1,19 @@
+{
+  "body": "{\"schema\":1,\"reportId\":\"0f8d3c2e-6a51-4c1e-9d0b-7f3e2a1c9b44\",\"code\":\"VCTL_PANIC\",\"severity\":\"critical\",\"fingerprint\":\"d9ea13d34fd03413d95f5cb7d5510483dce989304beee2011deb7beeafb9cafa\",\"title\":\"vctl crashed: panic: runtime error: index out of range [3] with length 3\",\"firstAt\":\"2026-09-29T21:03:11Z\",\"lastAt\":\"2026-09-29T21:03:11Z\",\"count\":1,\"router\":{\"deviceId\":\"vectra-0123456789ab\",\"model\":\"Xiaomi Mi Router AX3000T\",\"arch\":\"aarch64_cortex-a53\",\"openwrt\":\"24.10.6\",\"vctl\":\"0.6.0-r19\"},\"evidence\":{\"stack\":\"panic: runtime error: index out of range [3] with length 3\\n\\ngoroutine 1 [running]:\\n\"}}",
+  "comment": "A router's report request (docs/CONNECT-BUG-REPORTS.md), made with fixed keys: open the token with vectraPrivateKey (kid 1) and devicePublicKey for target, and check b = sha256(body).",
+  "devicePublicKey": "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=",
+  "headers": {
+    "Content-Type": "application/json",
+    "User-Agent": "VectraRouter/0.6.0-r19 vr1.AVCmFAmx3dAyXpsWtwDnGel3LAcACxvXeG6QfGU9IEldBQUFBQUFBQUFBQUFkSwwixPduIctlo-IwmEAOAO17e7jCiW4SuflIfNMEA4LijL9f-7llrk-LQDAg7poYij4V4yKjGGWFWJtEIWnGON4bK0t37C2UhaNhY652UDVec9NUzRyxPhYBYYQTxDyThV62ATrf_pF",
+    "x-device-model": "Xiaomi Mi Router AX3000T",
+    "x-device-os": "OpenWrt",
+    "x-hwid": "4f8e0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7",
+    "x-vectra-report-id": "0f8d3c2e-6a51-4c1e-9d0b-7f3e2a1c9b44",
+    "x-ver-os": "24.10.6"
+  },
+  "method": "POST",
+  "now": "2026-09-29T21:03:11Z",
+  "target": "/errors/router?b=499e34a66816d0ed3d15fd952f50b1b3044b1bf3d49bfc515c162dd312873d18",
+  "url": "https://api-app.vectra-pro.net/errors/router?b=499e34a66816d0ed3d15fd952f50b1b3044b1bf3d49bfc515c162dd312873d18",
+  "vectraPrivateKey": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk="
+}

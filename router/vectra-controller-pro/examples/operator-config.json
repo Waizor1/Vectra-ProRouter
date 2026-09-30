@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "instance": {
+    "name": "test-router",
+    "logLevel": "info"
+  },
+  "process": {
+    "xrayBinary": "/usr/sbin/vctl-xray-wrapper",
+    "workDir": "/var/run/vectra-controller-pro",
+    "memorySoftMiB": 128,
+    "oomScoreAdj": -100,
+    "restartBackoff": {
+      "initialMs": 500,
+      "factor": 2.0,
+      "maxMs": 60000,
+      "reset": "60s"
+    }
+  },
+  "inbounds": {
+    "tproxy": {
+      "listenIP": "0.0.0.0",
+      "port": 12345,
+      "fwmark": 1,
+      "udpEnabled": true,
+      "tag": "tproxy-in",
+      "killSwitch": false,
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"],
+        "routeOnly": false
+      }
+    }
+  },
+  "geo": {
+    "assetDir": "/usr/share/v2ray",
+    "geoipUrl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
+    "geositeUrl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
+    "updateOnStart": false
+  },
+  "subscriptions": [
+    {
+      "id": "provider",
+      "remark": "provider subscription (complete Xray configs)",
+      "url": "https://sub.example.invalid/subscription-token",
+      "enabled": true,
+      "userAgent": "v2rayNG/1.9.5",
+      "mode": "json",
+      "entryIndex": 0
+    }
+  ]
+}

@@ -1,0 +1,149 @@
+package passwall2
+
+config global_forwarding 'global_forwarding1'
+	option accept_icmp '0'
+	option ipv6_tproxy '0'
+	option prefer_nft '1'
+	option tcp_no_redir_ports 'disable'
+	option tcp_proxy_way 'redirect'
+	option tcp_redir_ports '1:65535'
+	option udp_no_redir_ports 'disable'
+	option udp_redir_ports '1:65535'
+
+config global_xray 'global_xray1'
+	option buffer_size '0'
+	option fragment '0'
+	option noise '0'
+	option sniffing_override_dest '0'
+
+config global_other 'global_other1'
+	option auto_detection_time 'tcping'
+	option show_node_info '1'
+
+config global 'vectra_global'
+	option enabled '0'
+	option node 'myshunt'
+	option localhost_proxy '1'
+	option client_proxy '1'
+	option node_socks_port '1070'
+	option socks_enabled '0'
+	option direct_dns_query_strategy 'UseIP'
+	option remote_dns_protocol 'doh'
+	option remote_dns_doh 'https://dns.google/dns-query'
+	option remote_dns_detour 'direct'
+	option remote_dns_query_strategy 'UseIPv4'
+	option dns_hosts 'dns.google 8.8.8.8
+dns.google.com 8.8.8.8'
+	option dns_redirect '1'
+	option log_node '0'
+	option loglevel 'error'
+
+config global_rules 'vectra_global_rules'
+	option v2ray_location_asset '/usr/share/v2ray/'
+	option auto_update '0'
+
+config global_subscribe 'vectra_global_subscribe'
+	option filter_keyword_mode '1'
+	list filter_discard_list 'Guise'
+	option vless_type 'xray'
+
+config shunt_rules 'direct'
+	option remarks 'direct'
+	option domain_list 'geosite:russia-outside
+domain:gosuslugi.example
+domain:bank.example
+full:direct.example
+regexp:^cdn[0-9]+\.direct\.example$'
+	option ip_list 'geoip:DIRECT'
+
+config shunt_rules 'WorldProxy'
+	option remarks 'WorldProxy'
+	option network 'tcp,udp'
+	option domain_list 'geosite:META
+geosite:TELEGRAM
+geosite:DISCORD
+domain:world.example
+full:api.world.example'
+	option ip_list '91.108.4.0/22
+91.108.56.0/22
+149.154.160.0/20
+2001:67c:4e8::/48
+203.0.113.7'
+
+config shunt_rules 'YouTube'
+	option remarks 'YouTube'
+	option domain_list 'geosite:YOUTUBE'
+
+config shunt_rules 'Special'
+	option remarks 'Special'
+	option network 'tcp,udp'
+	option domain_list 'domain:special-one.example
+domain:special-two.example
+full:x.special.example'
+
+config shunt_rules 'Tiktok'
+	option remarks 'Tiktok'
+	option domain_list 'geosite:TIKTOK'
+
+config shunt_rules 'DiscordVoiceUdp'
+	option remarks 'DiscordVoiceUdp'
+	option network 'udp'
+	option port '19294-19344,50000-50100'
+
+config nodes 'myshunt'
+	option remarks 'Маршрутизатор '
+	option enabled '1'
+	option group 'default'
+	option type 'Xray'
+	option protocol '_shunt'
+	option direct '_direct'
+	option WorldProxy 'nodeBY01'
+	option YouTube 'nodeBY01'
+	option Special 'nodeBY01'
+	option Tiktok 'nodeBY01'
+	option DiscordVoiceUdp 'nodeBY01'
+	option China '_direct'
+	option QUIC '_blackhole'
+	option GFW '_default'
+	option Special_fakedns '1'
+	option Tiktok_fakedns '1'
+	option WorldProxy_fakedns '1'
+	option YouTube_fakedns '1'
+	option domainMatcher 'hybrid'
+	option domainStrategy 'IPOnDemand'
+	option enable_geoview_ip '1'
+	option fakedns '1'
+	option write_ipset_direct '1'
+
+config subscribe_list 'sub1'
+	option remark 'Sub'
+	option url '/tmp/refresh-feed.txt'
+	option enabled '1'
+	option add_mode '2'
+	option access_mode 'direct'
+	option allowInsecure '1'
+	option filter_keyword_mode '5'
+	option hwid '1'
+	option ss_type 'global'
+	option trojan_type 'global'
+	option vless_type 'global'
+	option vmess_type 'global'
+	option hysteria2_type 'global'
+	option domain_strategy 'global'
+	option md5 'd30327562743390b22d292e3a6df86dd'
+
+config nodes 'PLCA3Kh8'
+	option tls '0'
+	option uuid '00000000-0000-4000-8000-000000000000'
+	option timeout '60'
+	option encryption 'none'
+	option group 'Sub'
+	option type 'Xray'
+	option port '1'
+	option protocol 'vless'
+	option address '0.0.0.0'
+	option remarks 'App not supported'
+	option tcp_guise 'none'
+	option transport 'raw'
+	option add_mode '2'
+

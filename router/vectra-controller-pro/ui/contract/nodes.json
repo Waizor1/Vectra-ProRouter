@@ -1,0 +1,394 @@
+{
+  "observedAt": "2026-09-27T11:59:40Z",
+  "nodes": [
+    {
+      "tag": "bridge-pl5",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "ru12.provider.invalid",
+      "port": 40053,
+      "countryHint": "PL",
+      "alive": true,
+      "delayMs": 148,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-MAIN"
+      ]
+    },
+    {
+      "tag": "bridge-de5",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "ru11.provider.invalid",
+      "port": 40052,
+      "countryHint": "DE",
+      "alive": true,
+      "delayMs": 96,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": {
+        "upBytes": 51338112,
+        "downBytes": 1902114220
+      },
+      "balancers": [
+        "BL-MAIN"
+      ]
+    },
+    {
+      "tag": "bridge-fin5",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "ru9.provider.invalid",
+      "port": 40054,
+      "countryHint": "FI",
+      "alive": true,
+      "delayMs": 131,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-MAIN"
+      ]
+    },
+    {
+      "tag": "bridge-fr5",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "ru11.provider.invalid",
+      "port": 40057,
+      "countryHint": "FR",
+      "alive": false,
+      "delayMs": null,
+      "lastSeen": "2026-09-27T09:12:40Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-MAIN"
+      ]
+    },
+    {
+      "tag": "bridge-nl5",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "ru8.provider.invalid",
+      "port": 40055,
+      "countryHint": "NL",
+      "alive": true,
+      "delayMs": 112,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": {
+        "upBytes": 40112004,
+        "downBytes": 1220550918
+      },
+      "balancers": [
+        "BL-MAIN"
+      ]
+    },
+    {
+      "tag": "bridge-us5",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "ru8.provider.invalid",
+      "port": 40058,
+      "countryHint": "US",
+      "alive": true,
+      "delayMs": 214,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-MAIN"
+      ]
+    },
+    {
+      "tag": "bridge-tr5",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "ru4.provider.invalid",
+      "port": 40060,
+      "countryHint": "TR",
+      "alive": true,
+      "delayMs": 187,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-MAIN"
+      ]
+    },
+    {
+      "tag": "bridge-ae5",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "ru9.provider.invalid",
+      "port": 40061,
+      "countryHint": "AE",
+      "alive": false,
+      "delayMs": null,
+      "lastSeen": "2026-09-27T09:12:40Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-MAIN"
+      ]
+    },
+    {
+      "tag": "bridge-ru-tcp",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "ru11.provider.invalid",
+      "port": 40051,
+      "countryHint": "RU",
+      "alive": true,
+      "delayMs": 38,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": {
+        "upBytes": 8220144,
+        "downBytes": 301442871
+      },
+      "balancers": [
+        "BL-RU"
+      ]
+    },
+    {
+      "tag": "whitelist-lv2",
+      "protocol": "vless",
+      "transport": "xhttp",
+      "security": "tls",
+      "address": "46.42.188.61",
+      "port": 443,
+      "countryHint": null,
+      "alive": true,
+      "delayMs": 71,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-WL-LV2"
+      ]
+    },
+    {
+      "tag": "whitelist-lv3",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "81.163.22.153",
+      "port": 443,
+      "countryHint": null,
+      "alive": true,
+      "delayMs": 66,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": {
+        "upBytes": 0,
+        "downBytes": 0
+      },
+      "balancers": [
+        "BL-WL-LV3"
+      ]
+    },
+    {
+      "tag": "whitelist-lv3-2",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "81.163.22.153",
+      "port": 443,
+      "countryHint": null,
+      "alive": true,
+      "delayMs": 69,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-WL-LV3"
+      ]
+    },
+    {
+      "tag": "whitelist-lv3-3",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "81.163.22.153",
+      "port": 443,
+      "countryHint": null,
+      "alive": true,
+      "delayMs": 74,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-WL-LV3"
+      ]
+    },
+    {
+      "tag": "whitelist-lv3-4",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "81.163.22.153",
+      "port": 443,
+      "countryHint": null,
+      "alive": null,
+      "delayMs": null,
+      "lastSeen": null,
+      "lastTry": null,
+      "traffic": null,
+      "balancers": [
+        "BL-WL-LV3"
+      ]
+    },
+    {
+      "tag": "whitelist-lv3-5",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "81.163.22.153",
+      "port": 443,
+      "countryHint": null,
+      "alive": true,
+      "delayMs": 81,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-WL-LV3"
+      ]
+    },
+    {
+      "tag": "whitelist-lv3-6",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "37.9.4.231",
+      "port": 443,
+      "countryHint": null,
+      "alive": true,
+      "delayMs": 90,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-WL-LV3"
+      ]
+    },
+    {
+      "tag": "whitelist-lv3-7",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "37.9.4.231",
+      "port": 443,
+      "countryHint": null,
+      "alive": true,
+      "delayMs": 88,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-WL-LV3"
+      ]
+    },
+    {
+      "tag": "whitelist-lv3-8",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "37.9.4.231",
+      "port": 443,
+      "countryHint": null,
+      "alive": true,
+      "delayMs": 93,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-WL-LV3"
+      ]
+    },
+    {
+      "tag": "bridge-by-tcp",
+      "protocol": "vless",
+      "transport": "tcp",
+      "security": "reality",
+      "address": "ru10.provider.invalid",
+      "port": 40059,
+      "countryHint": "BY",
+      "alive": true,
+      "delayMs": 61,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": {
+        "upBytes": 3004188,
+        "downBytes": 88120455
+      },
+      "balancers": [
+        "BL-TK"
+      ]
+    },
+    {
+      "tag": "hy2-de5",
+      "protocol": "hysteria",
+      "transport": "hysteria",
+      "security": "tls",
+      "address": "ru4.provider.invalid",
+      "port": 50052,
+      "countryHint": "DE",
+      "alive": true,
+      "delayMs": 104,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-MAIN-BACKUP"
+      ]
+    },
+    {
+      "tag": "hy2-fin5",
+      "protocol": "hysteria",
+      "transport": "hysteria",
+      "security": "tls",
+      "address": "ru10.provider.invalid",
+      "port": 50054,
+      "countryHint": "FI",
+      "alive": true,
+      "delayMs": 129,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-MAIN-BACKUP"
+      ]
+    },
+    {
+      "tag": "hy2-nl5",
+      "protocol": "hysteria",
+      "transport": "hysteria",
+      "security": "tls",
+      "address": "ru4.provider.invalid",
+      "port": 50055,
+      "countryHint": "NL",
+      "alive": true,
+      "delayMs": 118,
+      "lastSeen": "2026-09-27T11:58:02Z",
+      "lastTry": "2026-09-27T11:58:02Z",
+      "traffic": null,
+      "balancers": [
+        "BL-MAIN-BACKUP"
+      ]
+    }
+  ]
+}

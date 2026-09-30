@@ -1,0 +1,1 @@
+A test vector made by OpenWrt's own usign (24.10 userland): usign -G (usign-test.sec/.pub), usign -S over Packages (Packages.sig), usign -F (usign-test.fingerprint). A throwaway key that signs nothing anywhere — feedtool_test.go checks feedtool writes byte for byte what usign writes.
