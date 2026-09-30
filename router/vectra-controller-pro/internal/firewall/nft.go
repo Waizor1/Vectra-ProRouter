@@ -264,12 +264,26 @@ type Spec struct {
 	// time instead of choking xray, the node and the connection table.
 	// 0 = off.
 	AdmitRate, AdmitBurst int
+	// AdmitTotalRate/AdmitTotalBurst: new connections per second into xray
+	// from every device together, and the burst — the router's whole door,
+	// sized to what its CPU carries (each is a Reality handshake to a node).
+	// Checked after each device's own door, so a device held there spends
+	// none of it. 0 = off (the default: set from what the router measures).
+	AdmitTotalRate, AdmitTotalBurst int
 	// PaceRate/PaceBurst: xray's own new TCP connections per second to one
 	// address and port (a node), and the burst. More are held back by the
 	// kernel (the SYN dropped here is sent again): hundreds of handshakes a
 	// second to one foreign address is what got it cut off. DNS is not
 	// paced. 0 = off.
 	PaceRate, PaceBurst int
+	// DNSRate/DNSBurst: a device's DNS queries per second to the router's
+	// resolver, and the burst (r35). Every query dnsmasq forwards is a session
+	// in xray (DNSRedirectPort): 100 unique names a second from one device
+	// grew xray by 2 MB a second on 1111. More are dropped at the router's
+	// door — the device's resolver asks again. Only the LAN's (@bypass4/6)
+	// are counted: never the router's own lookups, never the internet's.
+	// TCP counts its connections. 0 = off.
+	DNSRate, DNSBurst int
 
 	// DNSRedirectPort, when set, sends the router's resolver through the
 	// tunnel: dnsmasq's upstream queries — the ones it sends as DNSResolverUIDs
@@ -356,7 +370,13 @@ const CounterDirectNew = "vctl_direct_new"
 const (
 	CounterP2PDirect = "vctl_p2p_direct"
 	CounterAdmitHeld = "vctl_admit_held"
-	CounterPaced     = "vctl_paced"
+	// CounterAdmitTotalHeld counts new connections held at the router's
+	// whole door (Spec.AdmitTotalRate).
+	CounterAdmitTotalHeld = "vctl_admit_total_held"
+	CounterPaced          = "vctl_paced"
+	// CounterDNSHeld counts the DNS queries a device sent over its rate
+	// (Spec.DNSRate).
+	CounterDNSHeld = "vctl_dns_held"
 	// CounterIPv6Refused counts the LAN's IPv6 refused (Spec.RefuseIPv6).
 	CounterIPv6Refused = "vctl_ipv6_refused"
 	// A device is let less than a node takes, so one device can never fill a
@@ -366,6 +386,11 @@ const (
 	defaultAdmitBurst = 60
 	defaultPaceRate   = 40
 	defaultPaceBurst  = 160
+	// A device asks A, AAAA and HTTPS for every name: a heavy page is a few
+	// hundred queries at once, a restored browser session a thousand and more,
+	// and a Pi-hole asks for a whole network. Only a storm waits.
+	defaultDNSRate  = 100
+	defaultDNSBurst = 2000
 )
 
 // DefaultSpec returns a sensible baseline matching the project's fleet contour.
@@ -397,6 +422,8 @@ func DefaultSpec(tproxyPort, fwmark int) Spec {
 		AdmitBurst:   defaultAdmitBurst,
 		PaceRate:     defaultPaceRate,
 		PaceBurst:    defaultPaceBurst,
+		DNSRate:      defaultDNSRate,
+		DNSBurst:     defaultDNSBurst,
 		// xray's API and metrics (xray.DefaultAPIListen / DefaultMetricsListen;
 		// cmd/vctl tests keep the two in lockstep).
 		GuardPorts: []int{10085, 10086, 10087},
@@ -469,6 +496,16 @@ table inet {{ .TableName }} {
   set vctl_admit4 { type ipv4_addr; flags dynamic, timeout; timeout 1m; size 1024; }
 {{- if .IPv6Enabled }}
   set vctl_admit6 { type ipv6_addr; flags dynamic, timeout; timeout 1m; size 1024; }
+{{- end }}
+{{- end }}
+{{- if .AdmitTotalRate }}
+  counter {{ .CounterAdmitTotalHeld }} { }
+{{- end }}
+{{- if .DNSRate }}
+  counter {{ .CounterDNSHeld }} { }
+  set vctl_dns4 { type ipv4_addr; flags dynamic, timeout; timeout 1m; size 1024; }
+{{- if .IPv6Enabled }}
+  set vctl_dns6 { type ipv6_addr; flags dynamic, timeout; timeout 1m; size 1024; }
 {{- end }}
 {{- end }}
 {{- if and .PaceRate .SockMark }}
@@ -572,6 +609,11 @@ table inet {{ .TableName }} {
 {{- if .IPv6Enabled }}
     iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit6 { ip6 saddr limit rate over {{ .AdmitRate }}/second burst {{ .AdmitBurst }} packets } counter name "{{ .CounterAdmitHeld }}" drop
 {{- end }}
+{{- end }}
+{{- if .AdmitTotalRate }}
+    # Every device together (Spec.AdmitTotalRate): one rule for both
+    # families, so they share the rate.
+    iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } limit rate over {{ .AdmitTotalRate }}/second burst {{ .AdmitTotalBurst }} packets counter name "{{ .CounterAdmitTotalHeld }}" drop
 {{- end }}
     meta l4proto { tcp, udp } counter name "{{ .CounterTproxyHits }}" tproxy to :{{ .TproxyPort }} meta mark set 0x{{ printf "%x" .FwMark }} accept
 {{- if .KillSwitch }}
@@ -766,6 +808,22 @@ table inet {{ .TableName }} {
     oifname "lo" tcp dport { {{ joinInts .GuardPorts ", " }} } meta skuid != 0 counter name "{{ .CounterLocalGuard }}" reject with tcp reset
   }
 {{- end }}
+{{- if .DNSRate }}
+
+  # A device's DNS storm waits at the router's door (see Spec.DNSRate): its
+  # queries to the router's resolver, and those the hijack sends there. Ahead
+  # of fw4's input chain; the router's own lookups (lo) and the internet's
+  # (not @bypass) are never counted.
+  chain dns_guard {
+    type filter hook input priority filter - 5; policy accept;
+    iif != "lo" ip saddr @bypass4 udp dport 53 update @vctl_dns4 { ip saddr limit rate over {{ .DNSRate }}/second burst {{ .DNSBurst }} packets } counter name "{{ .CounterDNSHeld }}" drop
+    iif != "lo" ip saddr @bypass4 tcp dport 53 tcp flags & (syn | ack) == syn update @vctl_dns4 { ip saddr limit rate over {{ .DNSRate }}/second burst {{ .DNSBurst }} packets } counter name "{{ .CounterDNSHeld }}" drop
+{{- if .IPv6Enabled }}
+    iif != "lo" ip6 saddr @bypass6 udp dport 53 update @vctl_dns6 { ip6 saddr limit rate over {{ .DNSRate }}/second burst {{ .DNSBurst }} packets } counter name "{{ .CounterDNSHeld }}" drop
+    iif != "lo" ip6 saddr @bypass6 tcp dport 53 tcp flags & (syn | ack) == syn update @vctl_dns6 { ip6 saddr limit rate over {{ .DNSRate }}/second burst {{ .DNSBurst }} packets } counter name "{{ .CounterDNSHeld }}" drop
+{{- end }}
+  }
+{{- end }}
 {{- if .SteersDNS }}
 
   # The router's resolver asks through the tunnel (see Spec.DNSRedirectPort).
@@ -829,7 +887,9 @@ type tmplData struct {
 	CounterDirectNew      string
 	CounterP2PDirect      string
 	CounterAdmitHeld      string
+	CounterAdmitTotalHeld string
 	CounterPaced          string
+	CounterDNSHeld        string
 	CounterIPv6Refused    string
 	// P2P: Spec.P2PBypass is in force — it rides DirectCtMark.
 	P2P bool
@@ -884,7 +944,9 @@ func Render(s Spec) (string, error) {
 		CounterDirectNew:      CounterDirectNew,
 		CounterP2PDirect:      CounterP2PDirect,
 		CounterAdmitHeld:      CounterAdmitHeld,
+		CounterAdmitTotalHeld: CounterAdmitTotalHeld,
 		CounterPaced:          CounterPaced,
+		CounterDNSHeld:        CounterDNSHeld,
 		CounterIPv6Refused:    CounterIPv6Refused,
 		P2P:                   s.P2PBypass && s.DirectCtMark != 0 && !s.KillSwitch,
 		RefuseV6:              s.RefuseIPv6 && s.IPv6Enabled,

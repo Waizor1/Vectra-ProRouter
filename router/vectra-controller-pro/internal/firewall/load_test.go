@@ -74,6 +74,33 @@ func TestADevicesStormWaitsAtTheDoorBeforeXray(t *testing.T) {
 	}
 }
 
+// The router's whole door (r35): new connections into xray from every device
+// together, sized to what its CPU carries (each is a Reality handshake to a
+// node). After each device's own door, so a device held there spends none of
+// it; before TPROXY. Off unless set (UCI admit_total_rate).
+func TestTheWholeDoorHoldsEveryDeviceTogether(t *testing.T) {
+	if out := mustRender(t, DefaultSpec(12345, 1)); strings.Contains(out, "vctl_admit_total") {
+		t.Fatal("the whole door is on by default")
+	}
+	s := DefaultSpec(12345, 1)
+	s.AdmitTotalRate, s.AdmitTotalBurst = 30, 120
+	out := mustRender(t, s)
+	rules := rulesOf(chainNamed(t, out, "prerouting"))
+	want := `iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } limit rate over 30/second burst 120 packets counter name "vctl_admit_total_held" drop`
+	i := indexOf(rules, want)
+	tproxy := indexOf(rules, "meta l4proto { tcp, udp } counter name \"vctl_tproxy_hits\" tproxy")
+	dev6 := indexOf(rules, `iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit6`)
+	if i < 0 || tproxy < 0 || dev6 < 0 || i < dev6 || i > tproxy {
+		t.Fatalf("whole door at %d (device door %d, tproxy %d):\n  %s\nrules:\n%s", i, dev6, tproxy, want, strings.Join(rules, "\n"))
+	}
+	if strings.Count(out, "limit rate over 30/second burst 120 packets") != 1 {
+		t.Error("one rule, both families: the two would each get the whole rate")
+	}
+	if !strings.Contains(out, "counter vctl_admit_total_held { }") {
+		t.Error("the whole door's counter is not declared")
+	}
+}
+
 func TestXraysDialsToOneNodeArePaced(t *testing.T) {
 	out := mustRender(t, DefaultSpec(12345, 1))
 	chain := chainNamed(t, out, "pace")
@@ -94,11 +121,53 @@ func TestXraysDialsToOneNodeArePaced(t *testing.T) {
 	}
 }
 
+// A device's DNS storm waits at the router's door too (r35). Every query
+// dnsmasq forwards is a session in xray (dns_steer), and 100 unique names a
+// second from one device grew xray by 2 MB a second on 1111. The queries to
+// the router's own resolver — and those the hijack sends there — over a
+// device's rate are dropped, and its resolver asks again; the router's own
+// lookups never are, and nothing from outside the LAN is counted (review of
+// r35: the internet's scanners would fill the sets and open the door). The
+// burst is a page's worth and more: a device asks A, AAAA and HTTPS for every
+// name, and a Pi-hole asks for a whole network.
+func TestADevicesDNSStormWaitsAtTheRoutersDoor(t *testing.T) {
+	out := mustRender(t, DefaultSpec(12345, 1))
+	chain := chainNamed(t, out, "dns_guard")
+	if chain == "" {
+		t.Fatalf("no dns_guard chain:\n%s", out)
+	}
+	for _, want := range []string{
+		"type filter hook input priority filter - 5; policy accept;",
+		`iif != "lo" ip saddr @bypass4 udp dport 53 update @vctl_dns4 { ip saddr limit rate over 100/second burst 2000 packets } counter name "vctl_dns_held" drop`,
+		`iif != "lo" ip saddr @bypass4 tcp dport 53 tcp flags & (syn | ack) == syn update @vctl_dns4 { ip saddr limit rate over 100/second burst 2000 packets } counter name "vctl_dns_held" drop`,
+		`iif != "lo" ip6 saddr @bypass6 udp dport 53 update @vctl_dns6 { ip6 saddr limit rate over 100/second burst 2000 packets } counter name "vctl_dns_held" drop`,
+		`iif != "lo" ip6 saddr @bypass6 tcp dport 53 tcp flags & (syn | ack) == syn update @vctl_dns6 { ip6 saddr limit rate over 100/second burst 2000 packets } counter name "vctl_dns_held" drop`,
+	} {
+		if !strings.Contains(chain, want) {
+			t.Errorf("dns_guard lacks:\n  %s\nchain:\n%s", want, chain)
+		}
+	}
+	for _, decl := range []string{
+		"counter vctl_dns_held { }",
+		"set vctl_dns4 { type ipv4_addr; flags dynamic, timeout; timeout 1m; size 1024; }",
+		"set vctl_dns6 { type ipv6_addr; flags dynamic, timeout; timeout 1m; size 1024; }",
+	} {
+		if !strings.Contains(out, decl) {
+			t.Errorf("missing %q", decl)
+		}
+	}
+	s := DefaultSpec(12345, 1)
+	s.IPv6Enabled = false
+	if out := mustRender(t, s); strings.Contains(out, "vctl_dns6") || !strings.Contains(out, "vctl_dns4") {
+		t.Error("without IPv6: want the v4 door alone")
+	}
+}
+
 func TestNoLoadGuardsWhenSwitchedOff(t *testing.T) {
 	s := DefaultSpec(12345, 1)
-	s.AdmitRate, s.PaceRate, s.P2PBypass = 0, 0, false
+	s.AdmitRate, s.PaceRate, s.P2PBypass, s.DNSRate = 0, 0, false, 0
 	out := mustRender(t, s)
-	for _, name := range []string{"vctl_admit", "vctl_pace", "vctl_p2p", "chain pace"} {
+	for _, name := range []string{"vctl_admit", "vctl_pace", "vctl_p2p", "chain pace", "vctl_dns4", "vctl_dns_held", "chain dns_guard"} {
 		if strings.Contains(out, name) {
 			t.Errorf("%q rendered while switched off", name)
 		}

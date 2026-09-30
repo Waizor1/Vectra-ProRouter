@@ -143,6 +143,38 @@ func CriticalKB(totalKB uint64) uint64 {
 	return v
 }
 
+// Critical is whether the router is about to start killing: MemAvailable
+// below CriticalKB — or, with swap, the swap all but full (below SwapLowKB)
+// and MemAvailable below twice CriticalKB. MemAvailable counts no swap: while
+// zram (the fleet's) has room, the kernel keeps it up by compressing programs'
+// pages into it, and once zram is full it falls at once (1111 under load,
+// 2026-09-30: SwapFree down to 2 MB with MemAvailable still at 12 MB). A swap
+// under swapMinKB is too small to matter.
+func Critical(in Info) bool {
+	c := CriticalKB(in.TotalKB)
+	if in.AvailableKB < c {
+		return true
+	}
+	return in.SwapTotalKB >= swapMinKB && in.SwapFreeKB < SwapLowKB(in.SwapTotalKB) && in.AvailableKB < 2*c
+}
+
+// swapMinKB is the smallest swap Critical counts.
+const swapMinKB = 32 * 1024
+
+// SwapLowKB is the SwapFree below which a swap is all but full: 15% of it, at
+// least 16 MiB — but never more than a quarter of it.
+func SwapLowKB(swapTotalKB uint64) uint64 {
+	floor := uint64(16 * 1024)
+	if q := swapTotalKB / 4; q < floor {
+		floor = q
+	}
+	v := swapTotalKB * 15 / 100
+	if v < floor {
+		v = floor
+	}
+	return v
+}
+
 // HeavyFloorKB is the MemAvailable a heavy transient (a configuration check,
 // a large nft load) needs to be started at all: 24 MiB, or 10% of RAM.
 func HeavyFloorKB(totalKB uint64) uint64 {
@@ -189,10 +221,15 @@ func ElementBudget(in Info) int {
 	return n
 }
 
-// ReadRSS reads a process's resident memory split, in kB: its own (anon)
-// pages and the file pages it maps (the binary, shared and reclaimable).
+// ReadRSS reads a process's memory split, in kB: its own (anon) pages,
+// resident or in swap — zram's are still the router's RAM — and the file pages
+// it maps (the binary, shared and reclaimable).
 func ReadRSS(pid int) (anonKB, fileKB uint64, err error) {
-	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	return readRSSFrom(fmt.Sprintf("/proc/%d/status", pid))
+}
+
+func readRSSFrom(path string) (anonKB, fileKB uint64, err error) {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -204,8 +241,8 @@ func ReadRSS(pid int) (anonKB, fileKB uint64, err error) {
 		}
 		v, _ := strconv.ParseUint(f[1], 10, 64)
 		switch f[0] {
-		case "RssAnon:":
-			anonKB = v
+		case "RssAnon:", "VmSwap:":
+			anonKB += v
 		case "RssFile:":
 			fileKB = v
 		}

@@ -96,10 +96,18 @@ MUSTFAIL_passwall_real_no_switch="pw_trial_switch_off pw_midnight_restart pw_mid
 # The router before the failover watchdog: the main balancer's node stops
 # answering and nothing but the provider's observatory (300 s) moves it.
 MUSTFAIL_failover_no_watchdog="failover_recovers_in_10s"
+# The router before r35: the DNS inbound and outbound on the provider's level,
+# every query's session alive for minutes after its answer.
+MUSTFAIL_dns_sessions_provider_idle="dns_sessions_die_in_seconds"
+# The router before r35 after a reboot: xray's first round ran with the nodes'
+# names resolving nowhere, and the nodes wait for its next random probe.
+MUSTFAIL_reprobe_no_watchdog="reprobe_alive_in_40s"
+# No DNS door (UCI dns_rate '0'): one device's DNS storm reaches xray whole.
+MUSTFAIL_dns_door_off="dns_door_holds_a_storm"
 
 ALL_MODES=(full no-routing no-mark procd procd-no-restore procd-no-passwall-stop ipv6 ipv6-no-v6-route ipv6-dual ipv6-killswitch ipv6-no-ct-return ipv6-refused ipv6-refused-off ipv6-refused-nolan
 	killswitch killswitch-disarmed killswitch-shadow killswitch-no-routing killswitch-policydrop
-	apply-local ui setup passwall-real passwall-real-no-switch reports failover failover-no-watchdog failover-stage services ru-kernel exitcheck
+	apply-local ui setup passwall-real passwall-real-no-switch reports failover failover-no-watchdog failover-stage services ru-kernel exitcheck dns-sessions dns-sessions-provider-idle dns-door-off reprobe reprobe-no-watchdog
 	real-egress real-egress-no-routing real-egress-own)
 
 # macOS ships bash 3.2, which has no associative arrays. Plain case statements.
@@ -128,6 +136,11 @@ short_of() {
 	failover-stage)         echo fo-stage ;;
 	services)               echo svc ;;
 	ru-kernel)              echo ru-k ;;
+	dns-sessions)           echo dns-s ;;
+	dns-sessions-provider-idle) echo dns-s-pi ;;
+	dns-door-off)           echo dns-nodoor ;;
+	reprobe)                echo reprobe ;;
+	reprobe-no-watchdog)    echo reprobe-nowd ;;
 	exitcheck)              echo exit ;;
 	passwall-real-no-switch) echo pw-nosw ;;
 	real-egress)            echo real ;;
@@ -169,6 +182,11 @@ explain_of() {
 	services)               echo "a server per service: TikTok through a chosen country in the router UI, the rest untouched; a dead country falls back to TikTok's own path" ;;
 	exitcheck)              echo "the router's own check of its exits: an exit that carries no blocked site leaves BL-MAIN within a round, stays out across a restart, is never judged without a witness, and comes back after two clean rounds" ;;
 	ru-kernel)              echo "Russian networks by the kernel: a geoip:ru address leaves without xray, the bridge's own address keeps the bridge, a proxied name with a Russian address gets a FakeDNS answer and the node" ;;
+	dns-sessions)           echo "DNS sessions live seconds: a burst of unique names through the router's dnsmasq, every one answered, xray back to its baseline within 20 s; one device's DNS storm (1000 names a second) held at the router's door" ;;
+	dns-door-off)           echo "DNS door control: UCI dns_rate '0' — one device's storm reaches xray whole" ;;
+	dns-sessions-provider-idle) echo "DNS sessions control: the DNS inbound and outbound on the provider's level — still alive 20 s later" ;;
+	reprobe)                echo "the nodes' names come back: xray started with them resolving nowhere holds both nodes dead; the watchdog restarts it once and both are alive within 40 s" ;;
+	reprobe-no-watchdog)    echo "reprobe control: the watchdog off — the nodes wait for xray's own next probe" ;;
 	setup-hold)             echo "gap 7, an unboxed router held open for a browser on 127.0.0.1:\${STAND_UI_PORT:-8080}" ;;
 	passwall-real)          echo "gap 8: the REAL PassWall2 26.8.10 next to vctl — trial, off, keep, deadman, midnight, WAN ifup, the agent's watchdog, reboots" ;;
 	passwall-real-no-switch) echo "gap 8 control: the takeover leaves PassWall's own switch on — two stacks at midnight" ;;

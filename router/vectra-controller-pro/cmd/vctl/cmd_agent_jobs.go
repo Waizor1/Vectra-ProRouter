@@ -984,8 +984,9 @@ func (d *daemon) applyRescueTransition(ctx context.Context, dec rescue.Decision)
 }
 
 // withLoadGuards applies the owner's switches for the load guards (UCI
-// p2p_bypass, admit_rate, pace_rate) and for IPv6 (UCI ipv6) to a firewall
-// spec; a rate's burst is four seconds of it.
+// p2p_bypass, admit_rate, admit_total_rate, pace_rate, dns_rate) and for IPv6
+// (UCI ipv6) to a firewall spec; a rate's burst is four seconds of it — the
+// DNS door's twenty: DNS comes in page loads.
 func withLoadGuards(spec firewall.Spec, ac agentcfg.Config) firewall.Spec {
 	spec.RefuseIPv6 = !ac.IPv6
 	if ac.NoP2PBypass {
@@ -996,6 +997,12 @@ func withLoadGuards(spec firewall.Spec, ac agentcfg.Config) firewall.Spec {
 	}
 	if v := ac.PaceRate; v != nil && *v >= 0 {
 		spec.PaceRate, spec.PaceBurst = *v, 4**v
+	}
+	if v := ac.AdmitTotalRate; v != nil && *v >= 0 {
+		spec.AdmitTotalRate, spec.AdmitTotalBurst = *v, 4**v
+	}
+	if v := ac.DNSRate; v != nil && *v >= 0 {
+		spec.DNSRate, spec.DNSBurst = *v, 20**v
 	}
 	return spec
 }

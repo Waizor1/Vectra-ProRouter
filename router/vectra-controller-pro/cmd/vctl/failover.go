@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"sort"
 	"time"
 
 	"vectra-controller-pro/internal/api"
@@ -32,6 +33,16 @@ var (
 	failoverEvery          = 2 * time.Second
 	failoverEndpointsEvery = 5 * time.Minute
 	failoverDownAfter      = 60 * time.Second
+	// While some node's name does not resolve, a few of those names — never
+	// the ones that resolve — are asked again this soon, then half as often
+	// each time none comes back, up to the endpoints' pace (reprobe).
+	failoverRemapEvery = 15 * time.Second
+	failoverFastBatch  = 4
+	// Each lookup's own budget: a name that hangs does not use up the rest's.
+	failoverLookupEach = 2 * time.Second
+	// reprobeGap is the least time between two restarts of xray for names
+	// that came back.
+	reprobeGap = 10 * time.Minute
 
 	failoverConntrack = conntrack.Read
 	failoverBalancers = api.GetBalancerInfo
@@ -100,6 +111,31 @@ type failoverWatch struct {
 	// changes; refused is the moves xray refused, said once each.
 	trouble string
 	refused map[string]bool
+	// The nodes' names (reprobe): which did not resolve when last asked; when
+	// each was last seen resolving; which the observatory held alive when
+	// their name went (lost: gone at this look, to be judged); which went in
+	// an outage — more than half of the render's named nodes gone at once;
+	// which came back since cameBackAt, and whether the observatory's verdict
+	// on each predates its name (stale). named: how many the render has.
+	unresolved   map[string]bool
+	seenResolved map[string]time.Time
+	aliveLost    map[string]bool
+	lostInOutage map[string]bool
+	lost         []string
+	cameBack     map[string]bool
+	cameBackAt   time.Time
+	named        int
+	// The fast look at the names that failed: when, how soon again, where in
+	// them it goes on.
+	fastAt    time.Time
+	fastDelay time.Duration
+	fastNext  int
+	// xrayStarted is when the running xray started (startSeen: as last
+	// seen); restart restarts it.
+	lastReprobe time.Time
+	restart     func(ctx context.Context) error
+	xrayStarted func() time.Time
+	startSeen   time.Time
 }
 
 func newFailoverWatch() *failoverWatch {
@@ -130,6 +166,10 @@ func (d *daemon) watchFailover(ctx context.Context) {
 		return
 	}
 	w := newFailoverWatch()
+	if d.sup != nil {
+		w.restart = func(context.Context) error { return d.sup.Reload(d.supCtx) }
+		w.xrayStarted = func() time.Time { return d.sup.Status().StartedAt }
+	}
 	t := time.NewTicker(failoverEvery)
 	defer t.Stop()
 	for {
@@ -174,18 +214,53 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 	if w.view == nil || w.view.APIListen == "" || len(w.view.Balancers) == 0 {
 		return
 	}
+	if w.xrayStarted != nil {
+		if st := w.xrayStarted(); !st.Equal(w.startSeen) {
+			// Another xray: its first round is under way. Its nodes' names
+			// are asked now, so what it probes with is what is seen here.
+			w.startSeen, w.eps = st, nil
+		}
+	}
 	if w.eps == nil || now.Sub(w.epsAt) >= failoverEndpointsEvery {
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		eps, unresolved := failover.MapEndpoints(lctx, w.view.Outbounds, failoverLookup)
+		eps, unresolved := failover.MapEndpoints(lctx, w.view.Outbounds, lookupEach)
 		cancel()
 		w.eps, w.epsAt = eps, now
-		if said := fmt.Sprintf("%d/%d", len(eps), unresolved); said != w.epsSaid {
+		w.namesResolved(namedTags(w.view.Outbounds), unresolved, now, true)
+		if said := fmt.Sprintf("%d/%d", len(eps), len(unresolved)); said != w.epsSaid {
 			w.epsSaid = said
-			if unresolved > 0 {
-				logging.L().Warn("failover watchdog: some nodes' names did not resolve; those nodes are not judged", "endpoints", len(eps), "unresolved", unresolved)
+			if len(unresolved) > 0 {
+				logging.L().Warn("failover watchdog: some nodes' names did not resolve; those nodes are not judged", "endpoints", len(eps), "unresolved", len(unresolved))
 			} else {
 				logging.L().Info("failover watchdog: watching the nodes' endpoints", "endpoints", len(eps))
 			}
+		}
+	} else if len(w.unresolved) > 0 && now.Sub(w.fastAt) >= w.fastDelay {
+		batch := w.fastBatch()
+		var outs []xrayview.Outbound
+		for _, t := range batch {
+			if o := w.view.Outbound(t); o != nil {
+				outs = append(outs, *o)
+			}
+		}
+		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		eps, unresolved := failover.MapEndpoints(lctx, outs, lookupEach)
+		cancel()
+		for ep, tags := range eps {
+			for _, t := range tags {
+				if !contains(w.eps[ep], t) {
+					w.eps[ep] = append(w.eps[ep], t)
+				}
+			}
+		}
+		w.fastAt = now
+		if w.namesResolved(batch, unresolved, now, false) == 0 {
+			w.fastDelay *= 2
+			if w.fastDelay > failoverEndpointsEvery {
+				w.fastDelay = failoverEndpointsEvery
+			}
+		} else {
+			w.fastDelay = failoverRemapEvery
 		}
 	}
 	local, err := failoverLocalAddrs()
@@ -223,6 +298,7 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 		}
 		cancel()
 	}
+	w.reprobe(ctx, health, now)
 	ov, _ := localctl.LoadOverrides(d.cfg.OverridesPath)
 	unfit := d.exits.Unfit()
 	main := ""
@@ -266,6 +342,155 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 	} else {
 		delete(w.downReported, main)
 	}
+}
+
+// lookupEach looks a node's name up within its own budget.
+func lookupEach(ctx context.Context, host string) ([]netip.Addr, error) {
+	lctx, cancel := context.WithTimeout(ctx, failoverLookupEach)
+	defer cancel()
+	return failoverLookup(lctx, host)
+}
+
+// namedTags are the nodes a render dials by name.
+func namedTags(outs []xrayview.Outbound) []string {
+	var tags []string
+	for _, o := range outs {
+		if o.Dials && o.Address != "" {
+			if _, err := netip.ParseAddr(o.Address); err != nil {
+				tags = append(tags, o.Tag)
+			}
+		}
+	}
+	return tags
+}
+
+// fastBatch is the next few names that did not resolve, in turn.
+func (w *failoverWatch) fastBatch() []string {
+	tags := make([]string, 0, len(w.unresolved))
+	for t := range w.unresolved {
+		tags = append(tags, t)
+	}
+	sort.Strings(tags)
+	n := failoverFastBatch
+	if n > len(tags) {
+		n = len(tags)
+	}
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, tags[(w.fastNext+i)%len(tags)])
+	}
+	w.fastNext = (w.fastNext + n) % len(tags)
+	return out
+}
+
+// namesResolved takes a look at the names asked (all the render's when
+// full): those that failed and had not are lost; those that failed before and
+// resolve now came back — stale when they went in an outage (more than half
+// of the names at once: a reboot, the WAN down) and the running xray never
+// saw them resolve (it started while they were gone) or the observatory held
+// them alive when they went. One name that comes and goes on its own — the
+// watchdog's resolvers disagree about it (1111, 30.09: 8.8.8.8 NXDOMAIN,
+// 77.88.8.8 an address) — is no outage, and no reason to restart. It says how
+// many came back.
+func (w *failoverWatch) namesResolved(asked, unresolved []string, now time.Time, full bool) int {
+	if w.unresolved == nil {
+		w.unresolved, w.seenResolved, w.aliveLost, w.lostInOutage, w.cameBack = map[string]bool{}, map[string]time.Time{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
+	}
+	failed := map[string]bool{}
+	for _, t := range unresolved {
+		failed[t] = true
+	}
+	if full {
+		w.named = len(asked)
+		// Names the render no longer has are nobody's to wait for.
+		for t := range w.unresolved {
+			if !contains(asked, t) {
+				delete(w.unresolved, t)
+				delete(w.aliveLost, t)
+				delete(w.lostInOutage, t)
+			}
+		}
+	}
+	back := 0
+	for _, t := range asked {
+		if failed[t] {
+			if !w.unresolved[t] {
+				w.unresolved[t] = true
+				w.lost = append(w.lost, t)
+				w.fastAt, w.fastDelay = now, failoverRemapEvery
+			}
+			continue
+		}
+		if w.unresolved[t] {
+			delete(w.unresolved, t)
+			w.cameBack[t] = w.lostInOutage[t] && (w.seenResolved[t].Before(w.startSeen) || w.aliveLost[t])
+			w.cameBackAt = now
+			delete(w.aliveLost, t)
+			delete(w.lostInOutage, t)
+			back++
+		}
+		w.seenResolved[t] = now
+	}
+	if len(w.unresolved)*2 > w.named {
+		for t := range w.unresolved {
+			w.lostInOutage[t] = true
+		}
+	}
+	return back
+}
+
+// reprobe: xray's observatory probes every node once as it starts, then a few
+// times in a window of minutes (1111: twice in every ten). Started before the
+// router's DNS worked — a reboot — its first round found the nodes whose names
+// did not resolve dead, and holds them dead until the next random probe: 5-8
+// minutes on 1111 after a reboot, their balancers on a fallback meanwhile; the
+// same after an outage long enough to lose the names. When such a name
+// resolves again and the observatory still holds its node dead on a verdict
+// from before (stale: see namesResolved), xray is restarted once, so its first
+// round runs with the names resolving. At most once in reprobeGap. A node dead
+// before its name went, a name that never failed, a node held alive: left
+// alone — a restart drops every proxied connection.
+func (w *failoverWatch) reprobe(ctx context.Context, health map[string]failover.Health, now time.Time) {
+	if len(w.lost) > 0 {
+		// What the observatory held as the names went.
+		for _, t := range w.lost {
+			if h, ok := health[t]; ok && h.Alive {
+				w.aliveLost[t] = true
+			}
+		}
+		w.lost = nil
+	}
+	if len(w.cameBack) == 0 || w.restart == nil {
+		return
+	}
+	if len(health) == 0 {
+		// No observatory to read yet: ask again at the next look, for a while.
+		if now.Sub(w.cameBackAt) > time.Minute {
+			w.cameBack = map[string]bool{}
+		}
+		return
+	}
+	var dead []string
+	for t, stale := range w.cameBack {
+		if h, ok := health[t]; ok && !h.Alive && stale {
+			dead = append(dead, t)
+		}
+	}
+	sort.Strings(dead)
+	w.cameBack = map[string]bool{}
+	if len(dead) == 0 {
+		return
+	}
+	if !w.lastReprobe.IsZero() && now.Sub(w.lastReprobe) < reprobeGap {
+		logging.L().Info("failover watchdog: nodes' names resolve again and xray still holds them dead from before; restarted for this less than the gap ago, its own probes will find them", "nodes", dead, "gap", reprobeGap.String())
+		return
+	}
+	logging.L().Warn("failover watchdog: the nodes' names resolve again and xray's observatory still holds them dead from before: restarting xray so it probes them now", "nodes", dead)
+	if err := w.restart(ctx); err != nil {
+		logging.L().Warn("failover watchdog: could not restart xray", "err", err.Error())
+		return
+	}
+	w.lastReprobe = now
 }
 
 // publishRoute tells the owner's server card where the main traffic goes and

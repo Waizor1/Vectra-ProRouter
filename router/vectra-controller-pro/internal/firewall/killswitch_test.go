@@ -384,8 +384,10 @@ func TestForwardCountsWhatTproxyCapturedAndStillForwarded(t *testing.T) {
 // reply direction left alone in prerouting and forward, so a port forward's
 // server can answer (TestRenderLeavesRepliesAlone) — and for the load guards
 // of 2026-09-30: a P2P host's peers sent out by the kernel, a device's storm
-// held at the door, xray's dials to one node paced (load_test.go). With the
-// switch, what is dropped is unchanged.
+// held at the door, xray's dials to one node paced (load_test.go) — and for
+// the DNS door of r35: one counter, two sets and the dns_guard chain
+// (TestADevicesDNSStormWaitsAtTheRoutersDoor). With the switch, what is
+// dropped is unchanged.
 func TestKillSwitchArmedRulesetIsUnchanged(t *testing.T) {
 	want, err := os.ReadFile(filepath.Join("testdata", "killswitch-on.nft"))
 	if err != nil {

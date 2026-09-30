@@ -190,3 +190,31 @@ func TestAdaptPassWallLeavesTheGeoDirectoryToVctl(t *testing.T) {
 		}
 	}
 }
+
+// PassWall's generator — and vctl's own, route_source native — writes level 0
+// with booleans (statsUserUplink false). The DNS level's self-check reads the
+// policy as xray does, so such a render splices (review of r35: it refused
+// every passwall and native render).
+func TestAGeneratedPolicyWithBooleansSplicesWithDNS(t *testing.T) {
+	for _, f := range []string{"fleet.gen-26.7.28.json", "fleet-variant.gen-26.7.28.json", "fleet.gen-26.3.27.json"} {
+		raw, err := os.ReadFile("../../routepolicy/testdata/" + f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), `"statsUserUplink": false`) && !strings.Contains(string(raw), `"statsUserUplink":false`) {
+			t.Fatalf("%s: the fixture no longer carries a boolean in its policy", f)
+		}
+		doc, res, err := xray.AdaptPassWall(raw, "tproxy-in")
+		if err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		tp := testTproxy()
+		tp.Sniffing = res.Sniffing
+		opts := xray.SpliceOptions{DNS: &xray.DNSOptions{Listen: xray.DefaultDNSListen, DirectResolvers: xray.DefaultDirectResolvers, AllowFakeDNS: true}}
+		if _, sres, err := xray.Splice(doc, tp, opts); err != nil {
+			t.Errorf("%s: %v", f, err)
+		} else if sres.DNS.Listen == "" {
+			t.Errorf("%s: DNS not steered: %+v", f, sres.DNS)
+		}
+	}
+}

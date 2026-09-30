@@ -169,7 +169,7 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 	// rules: traffic sent back must never meet its service's rule again.
 	rules = append(rules, sp.backRules...)
 	rules = append(rules, sp.rules...)
-	seenDNS := false
+	seenDNS, seenPolicy := false, false
 	ruTag := ""
 	if opts.RussiaDirect {
 		ruTag = directOutboundTag(providerRaw)
@@ -249,7 +249,7 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 			if dp.on {
 				// Last, like the direct one: the first outbound stays xray's
 				// default.
-				if raw, err = appendToArray(raw, dnsOutboundJSON()); err != nil {
+				if raw, err = appendToArray(raw, dnsOutboundJSON(dp.level)); err != nil {
 					return nil, res, err
 				}
 			}
@@ -312,6 +312,15 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 				return nil, res, err
 			}
 			raw = rewritten
+		}
+		if dp.on && foldKey(key) == foldKey(PolicyKey) {
+			seenPolicy = true
+			rewritten, err := withDNSLevel(nullAsObject(raw), dp.level)
+			if err != nil {
+				return nil, res, err
+			}
+			out.Write(rewritten)
+			continue
 		}
 		if dp.on && foldKey(key) == foldKey(DNSKey) {
 			seenDNS = true
@@ -437,6 +446,16 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 		out.WriteByte(':')
 		out.Write(addedDNSObject(dp.servers, opts.DNS.IPv4Only))
 	}
+	if dp.on && !seenPolicy {
+		policy, err := withDNSLevel(json.RawMessage("{}"), dp.level)
+		if err != nil {
+			return nil, res, err
+		}
+		out.WriteByte(',')
+		writeJSONString(&out, PolicyKey)
+		out.WriteByte(':')
+		out.Write(policy)
+	}
 	if fakeOn {
 		out.WriteByte(',')
 		writeJSONString(&out, FakeDNSKey)
@@ -559,6 +578,9 @@ func checkSpliced(spliced []byte, t *config.TproxyInbound, opts SpliceOptions, p
 		if port, ok := RenderDNSListen(spliced); !ok || strconv.Itoa(port) != portOf(opts.DNS.Listen) {
 			return fmt.Errorf("xray splice: the result's DNS inbound does not listen on %s — refusing", opts.DNS.Listen)
 		}
+		if err := checkDNSLevel(spliced, dp.level); err != nil {
+			return err
+		}
 	}
 	if opts.APIListen != "" && (got.API == nil || got.API.Listen != opts.APIListen) {
 		return fmt.Errorf("xray splice: the result's api does not listen on %s — refusing", opts.APIListen)
@@ -656,6 +678,10 @@ func checkSpliced(spliced []byte, t *config.TproxyInbound, opts SpliceOptions, p
 
 // DNSKey is the top-level key DNS through the tunnel adds its servers to.
 const DNSKey = "dns"
+
+// PolicyKey is xray's session policy; the DNS level is added to it
+// (dnsLevelPolicy).
+const PolicyKey = "policy"
 
 // portOf is the port of a host:port, "" when there is none.
 func portOf(hostport string) string {

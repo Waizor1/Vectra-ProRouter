@@ -95,10 +95,14 @@ dns_hijack="$(uci_get_or_default dns_hijack 1)"
 # never enter xray, unless direct_bypass is '0' (then xray carries them all).
 direct_bypass="$(uci_get_or_default direct_bypass 1)"
 # The load guards (firewall.Spec): a P2P host's peers by the kernel, a
-# device's new connections a second into xray, xray's to one node.
+# device's new connections a second into xray (and every device's together,
+# admit_total_rate: off unless set), xray's to one node, a device's DNS
+# queries a second to the router's resolver.
 p2p_bypass="$(uci_get_or_default p2p_bypass 1)"
 admit_rate="$(uci_get_or_default admit_rate "")"
+admit_total_rate="$(uci_get_or_default admit_total_rate "")"
 pace_rate="$(uci_get_or_default pace_rate "")"
+dns_rate="$(uci_get_or_default dns_rate "")"
 # The provider's nodes carry no IPv6: the LAN's IPv6 is refused at once, the
 # devices take IPv4 — unless ipv6 is '1' (nodes that carry it).
 ipv6="$(uci_get_or_default ipv6 0)"
@@ -155,6 +159,8 @@ if [ "$p2p_bypass" = "0" ] || [ "$p2p_bypass" = "false" ]; then
 	json_add_boolean noP2PBypass 1
 fi
 case "$admit_rate" in '' | *[!0-9]*) ;; *) json_add_int admitRate "$admit_rate" ;; esac
+case "$admit_total_rate" in '' | *[!0-9]*) ;; *) json_add_int admitTotalRate "$admit_total_rate" ;; esac
+case "$dns_rate" in '' | *[!0-9]*) ;; *) json_add_int dnsRate "$dns_rate" ;; esac
 case "$pace_rate" in '' | *[!0-9]*) ;; *) json_add_int paceRate "$pace_rate" ;; esac
 if [ "$ipv6" = "1" ] || [ "$ipv6" = "true" ]; then
 	json_add_boolean ipv6 1

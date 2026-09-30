@@ -85,3 +85,55 @@ func TestOOMKills(t *testing.T) {
 		t.Fatal("no oom_kill line must be ok=false")
 	}
 }
+
+// With swap (zram on the fleet) MemAvailable stays up while the kernel
+// compresses programs' pages into it: the router is out of memory once the
+// swap is all but full, before MemAvailable crosses the line (1111 under load,
+// 2026-09-30: SwapFree down to 2 MB with MemAvailable still at 12 MB).
+func TestCriticalCountsAFullSwap(t *testing.T) {
+	const total, swap = 239720, 119804
+	for _, c := range []struct {
+		name string
+		in   Info
+		want bool
+	}{
+		{"at rest", Info{TotalKB: total, AvailableKB: 45 * 1024, SwapTotalKB: swap, SwapFreeKB: 110 * 1024}, false},
+		{"below the line, swap free", Info{TotalKB: total, AvailableKB: 11 * 1024, SwapTotalKB: swap, SwapFreeKB: 110 * 1024}, true},
+		{"swap all but full, memory low", Info{TotalKB: total, AvailableKB: 20 * 1024, SwapTotalKB: swap, SwapFreeKB: 10 * 1024}, true},
+		{"swap all but full, memory fine", Info{TotalKB: total, AvailableKB: 40 * 1024, SwapTotalKB: swap, SwapFreeKB: 10 * 1024}, false},
+		{"swap half used, memory low", Info{TotalKB: total, AvailableKB: 20 * 1024, SwapTotalKB: swap, SwapFreeKB: 60 * 1024}, false},
+		{"no swap, memory low", Info{TotalKB: total, AvailableKB: 20 * 1024}, false},
+		{"a token swap, full", Info{TotalKB: total, AvailableKB: 20 * 1024, SwapTotalKB: 8 * 1024}, false},
+	} {
+		if got := Critical(c.in); got != c.want {
+			t.Errorf("%s: Critical = %v, want %v", c.name, got, c.want)
+		}
+	}
+	if got := MiB(SwapLowKB(swap)); got != 17 {
+		t.Fatalf("the full-swap line on 1111's zram = %d MiB, want 17", got)
+	}
+}
+
+// A small swap is "all but full" in proportion: its floor never passes a
+// quarter of it (review of r35: 16 MiB of a 32 MiB swap was half of it).
+func TestSwapLowScalesForSmallSwaps(t *testing.T) {
+	for _, c := range []struct{ swapMiB, want uint64 }{{32, 8}, {64, 16}, {117, 17}, {512, 76}} {
+		if got := MiB(SwapLowKB(c.swapMiB * 1024)); got != c.want {
+			t.Errorf("swap %d MiB: all but full below %d MiB, want %d", c.swapMiB, got, c.want)
+		}
+	}
+}
+
+// A process's own memory counts what it has in swap too: with zram all but
+// full, xray's pages sit there, compressed but still the router's RAM, and a
+// resident-only count would call a fat xray thin (review of r35).
+func TestReadRSSCountsSwappedPages(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "status")
+	if err := os.WriteFile(p, []byte("Name:\txray\nVmRSS:\t  30000 kB\nRssAnon:\t  22000 kB\nRssFile:\t   8000 kB\nVmSwap:\t  25000 kB\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	anon, file, err := readRSSFrom(p)
+	if err != nil || anon != 47000 || file != 8000 {
+		t.Fatalf("anon %d file %d err %v, want 47000 (22000 resident + 25000 swapped) and 8000", anon, file, err)
+	}
+}

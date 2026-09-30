@@ -471,3 +471,227 @@ func TestTheCardKeepsNoUnfitExitTheMainTrafficWasMovedOff(t *testing.T) {
 		t.Fatalf("held on an unfit server, kept %+v", r)
 	}
 }
+
+// namedDNS is the router's DNS as the watchdog's lookups meet it: up or not,
+// names that never resolve, and how often each name was asked.
+type namedDNS struct {
+	up      bool
+	gone    map[string]bool
+	lookups map[string]int
+}
+
+// namedRender is failoverRender with its nodes by name (nl5, pl5), and a
+// lookup that answers them as dns says.
+func namedRender(t *testing.T, d *daemon) *namedDNS {
+	t.Helper()
+	named := strings.NewReplacer(`"address":"203.0.113.5"`, `"address":"nl5.provider.invalid"`,
+		`"address":"203.0.113.7"`, `"address":"pl5.provider.invalid"`).Replace(failoverRender)
+	if err := os.WriteFile(d.cfg.XrayRenderPath, []byte(named), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dns := &namedDNS{gone: map[string]bool{}, lookups: map[string]int{}}
+	ol := failoverLookup
+	t.Cleanup(func() { failoverLookup = ol })
+	failoverLookup = func(_ context.Context, host string) ([]netip.Addr, error) {
+		dns.lookups[host]++
+		if !dns.up || dns.gone[host] {
+			return nil, errors.New("no such host")
+		}
+		switch host {
+		case "nl5.provider.invalid":
+			return []netip.Addr{netip.MustParseAddr("203.0.113.5")}, nil
+		case "pl5.provider.invalid":
+			return []netip.Addr{netip.MustParseAddr("203.0.113.7")}, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	return dns
+}
+
+var (
+	bothDead  = map[string]api.Observation{"bridge-nl5": {Alive: false}, "bridge-pl5": {Alive: false}}
+	bothAlive = map[string]api.Observation{"bridge-nl5": {Alive: true, DelayMs: 40}, "bridge-pl5": {Alive: true, DelayMs: 60}}
+)
+
+// xray started before the router's DNS worked (a reboot): its observatory's
+// first round found every node whose name did not resolve dead, and holds them
+// dead until its next random probe — 5-8 minutes on 1111 after a reboot,
+// BL-RU on its fallback meanwhile. When those names resolve again, the
+// watchdog restarts xray once, so its first round runs with them resolving.
+// Later, a WAN outage long enough to lose the names: nodes the observatory
+// held alive when their names went and dead when they are back were judged
+// in the outage — restarted too, but not twice within reprobeGap.
+func TestTheWatchdogRestartsXrayWhenTheNodesNamesComeBack(t *testing.T) {
+	f := &failoverFakes{info: map[string]api.BalancerInfo{"BL-MAIN": {Principle: []string{"bridge-nl5"}}}, obs: bothDead}
+	f.install(t)
+	d := failoverDaemon(t)
+	dns := namedRender(t, d)
+	restarts := 0
+	w := newFailoverWatch()
+	w.restart = func(context.Context) error { restarts++; return nil }
+	now := time.Now()
+	started := now
+	w.xrayStarted = func() time.Time { return started }
+	tick := func(dt time.Duration) { now = now.Add(dt); d.failoverTick(context.Background(), w, now) }
+
+	for i := 0; i < 3; i++ {
+		tick(failoverEvery)
+	}
+	if restarts != 0 {
+		t.Fatalf("restarted xray %d times while no name resolved", restarts)
+	}
+	// The names are asked again well before the endpoints' five minutes.
+	dns.up = true
+	tick(failoverRemapEvery)
+	if restarts != 1 {
+		t.Fatalf("names back, their nodes held dead since xray started: %d restarts, want 1", restarts)
+	}
+	for i := 0; i < 5; i++ {
+		tick(failoverEvery)
+	}
+	if restarts != 1 {
+		t.Fatalf("restarted again for the same return: %d", restarts)
+	}
+	// The restarted xray finds them alive.
+	started, f.obs = now, bothAlive
+	tick(failoverEvery)
+	// A WAN outage within the gap: judged dead in it, not restarted again.
+	dns.up = false
+	tick(failoverEndpointsEvery)
+	f.obs = bothDead
+	dns.up = true
+	tick(failoverRemapEvery)
+	if restarts != 1 {
+		t.Fatalf("restarted again within %v: %d", reprobeGap, restarts)
+	}
+	// After the gap, the same outage: restarted.
+	f.obs = bothAlive
+	tick(reprobeGap)
+	dns.up = false
+	tick(failoverEndpointsEvery)
+	f.obs = bothDead
+	dns.up = true
+	tick(failoverRemapEvery)
+	if restarts != 2 {
+		t.Fatalf("nodes judged dead while their names were gone, after the gap: %d restarts, want 2", restarts)
+	}
+}
+
+// Nothing to fix: names that came back to nodes the observatory holds alive,
+// and dead nodes whose names never failed, leave xray alone.
+func TestTheWatchdogLeavesXrayAloneWhenNothingIsStale(t *testing.T) {
+	f := &failoverFakes{info: map[string]api.BalancerInfo{"BL-MAIN": {Principle: []string{"bridge-nl5"}}}}
+	f.install(t)
+	d := failoverDaemon(t)
+	dns := namedRender(t, d)
+	restarts := 0
+	w := newFailoverWatch()
+	w.restart = func(context.Context) error { restarts++; return nil }
+	now := time.Now()
+	start := now
+	w.xrayStarted = func() time.Time { return start }
+	tick := func(dt time.Duration) { now = now.Add(dt); d.failoverTick(context.Background(), w, now) }
+	tick(failoverEvery)
+	dns.up = true
+	tick(failoverRemapEvery)
+	if restarts != 0 {
+		t.Fatalf("names back to live nodes: %d restarts", restarts)
+	}
+	f.obs = bothDead
+	for i := 0; i < 3; i++ {
+		tick(failoverEndpointsEvery)
+	}
+	if restarts != 0 {
+		t.Fatalf("dead nodes whose names never failed: %d restarts", restarts)
+	}
+}
+
+// A DNS blip long after xray started, and a node dead for real: the verdict
+// comes from probes made while its name resolved, and it was dead before the
+// blip — no restart; every proxied connection would drop for nothing (review
+// of r35).
+func TestTheWatchdogLeavesARealDeadNodeAloneAfterADNSBlip(t *testing.T) {
+	f := &failoverFakes{info: map[string]api.BalancerInfo{"BL-MAIN": {Principle: []string{"bridge-nl5"}}},
+		obs: map[string]api.Observation{"bridge-nl5": {Alive: true, DelayMs: 40}, "bridge-pl5": {Alive: false}}}
+	f.install(t)
+	d := failoverDaemon(t)
+	dns := namedRender(t, d)
+	dns.up = true
+	restarts := 0
+	w := newFailoverWatch()
+	w.restart = func(context.Context) error { restarts++; return nil }
+	now := time.Now()
+	started := now.Add(-time.Hour)
+	w.xrayStarted = func() time.Time { return started }
+	tick := func(dt time.Duration) { now = now.Add(dt); d.failoverTick(context.Background(), w, now) }
+	tick(failoverEvery)
+	dns.up = false
+	tick(failoverEndpointsEvery)
+	dns.up = true
+	tick(failoverRemapEvery)
+	for i := 0; i < 5; i++ {
+		tick(failoverEvery)
+	}
+	if restarts != 0 {
+		t.Fatalf("a blip and a node dead before it: %d restarts, want 0", restarts)
+	}
+}
+
+// While one name does not resolve, only it is asked again, less and less
+// often; the names that resolve are asked at the endpoints' pace — no
+// lookups to spare on the watchdog's own look (review of r35).
+func TestTheFastRemapAsksOnlyTheNamesThatFailed(t *testing.T) {
+	f := &failoverFakes{info: map[string]api.BalancerInfo{"BL-MAIN": {Principle: []string{"bridge-nl5"}}}}
+	f.install(t)
+	d := failoverDaemon(t)
+	dns := namedRender(t, d)
+	dns.up = true
+	dns.gone["pl5.provider.invalid"] = true
+	w := newFailoverWatch()
+	w.restart = func(context.Context) error { return nil }
+	now := time.Now()
+	start := now
+	w.xrayStarted = func() time.Time { return start }
+	for elapsed := time.Duration(0); elapsed < 10*time.Minute; elapsed += failoverEvery {
+		now = now.Add(failoverEvery)
+		d.failoverTick(context.Background(), w, now)
+	}
+	t.Logf("lookups in 10 minutes: %v", dns.lookups)
+	if n := dns.lookups["nl5.provider.invalid"]; n > 3 {
+		t.Errorf("a name that resolves was asked %d times in 10 minutes, want the endpoints' pace (<=3)", n)
+	}
+	if n := dns.lookups["pl5.provider.invalid"]; n < 4 || n > 10 {
+		t.Errorf("the name that never resolves was asked %d times in 10 minutes, want 4-10 (backing off)", n)
+	}
+}
+
+// One name that flaps — the watchdog's resolvers answer it one time and not
+// the next (1111, 30.09: 8.8.8.8 says NXDOMAIN for a node 77.88.8.8 knows) —
+// to a node dead for real, right after xray started: not an outage, and no
+// restart. A restart would bring the same first look again, and the same
+// flap: xray restarted every reprobeGap for nothing.
+func TestTheWatchdogLeavesXrayAloneForOneNameThatFlaps(t *testing.T) {
+	f := &failoverFakes{info: map[string]api.BalancerInfo{"BL-MAIN": {Principle: []string{"bridge-nl5"}}},
+		obs: map[string]api.Observation{"bridge-nl5": {Alive: true, DelayMs: 40}, "bridge-pl5": {Alive: false}}}
+	f.install(t)
+	d := failoverDaemon(t)
+	dns := namedRender(t, d)
+	dns.up = true
+	dns.gone["pl5.provider.invalid"] = true
+	restarts := 0
+	w := newFailoverWatch()
+	w.restart = func(context.Context) error { restarts++; return nil }
+	now := time.Now()
+	start := now
+	w.xrayStarted = func() time.Time { return start }
+	tick := func(dt time.Duration) { now = now.Add(dt); d.failoverTick(context.Background(), w, now) }
+	tick(failoverEvery)
+	delete(dns.gone, "pl5.provider.invalid")
+	tick(failoverRemapEvery)
+	for i := 0; i < 5; i++ {
+		tick(failoverEvery)
+	}
+	if restarts != 0 {
+		t.Fatalf("one flapping name to a dead node, just after xray started: %d restarts, want 0", restarts)
+	}
+}

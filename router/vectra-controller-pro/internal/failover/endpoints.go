@@ -39,11 +39,11 @@ func transports(o xrayview.Outbound) []string {
 }
 
 // MapEndpoints maps the endpoints of every node of a render, names resolved
-// through lookup, and counts the names that did not resolve: without an
+// through lookup, and names the nodes whose names did not resolve: without an
 // address there is no evidence, and such a node is never judged.
-func MapEndpoints(ctx context.Context, outs []xrayview.Outbound, lookup Lookup) (Endpoints, int) {
+func MapEndpoints(ctx context.Context, outs []xrayview.Outbound, lookup Lookup) (Endpoints, []string) {
 	eps := Endpoints{}
-	unresolved := 0
+	var unresolved []string
 	for _, o := range outs {
 		if !o.Dials || o.Address == "" || o.Port <= 0 || o.Port > 65535 {
 			continue
@@ -57,7 +57,7 @@ func MapEndpoints(ctx context.Context, outs []xrayview.Outbound, lookup Lookup) 
 			}
 		}
 		if len(addrs) == 0 {
-			unresolved++
+			unresolved = append(unresolved, o.Tag)
 			continue
 		}
 		for _, a := range addrs {
