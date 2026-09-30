@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -34,6 +35,12 @@ type Result struct {
 	Error     error
 }
 
+// plainName is what an asset's file may be called: a plain file name — no
+// directory, no dot first, no space or control character. The name comes from
+// the operator config the panel delivers and the file is written as root, so
+// "../../etc/crontabs/root" would be a shell for whoever sent it.
+var plainName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
 // UpdateOne downloads one asset into dir. On success, the file at
 // dir/asset.Filename is the new bytes (or unchanged if hash matched what's
 // already there).
@@ -41,6 +48,10 @@ func UpdateOne(ctx context.Context, dir string, a Asset, hc *http.Client) Result
 	r := Result{Asset: a}
 	start := time.Now()
 	defer func() { r.Took = time.Since(start) }()
+	if !plainName.MatchString(a.Filename) || a.Filename != filepath.Base(a.Filename) {
+		r.Error = fmt.Errorf("refusing geo asset name %q: not a plain file name", a.Filename)
+		return r
+	}
 	// Pin HTTPS so an on-path attacker can't serve cleartext routing data.
 	if u, err := url.Parse(a.URL); err != nil || !strings.EqualFold(u.Scheme, "https") {
 		r.Error = fmt.Errorf("refusing non-https geo url: %s", a.URL)
