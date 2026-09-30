@@ -1,0 +1,3058 @@
+/* Vectra router UI, in Vectra Connect's design language (Vectra_Frontend:
+   src/theme/designTokens.ts, theme.ts, components/rw/RwPrimitives.tsx) — the
+   same palette, type, radii and surfaces the router's owner already knows from
+   the Vectra app. It lives in a shadow root: nothing here reaches LuCI, and
+   nothing from LuCI reaches here beyond what :host resets.
+
+   Roles → Vectra tokens: --bg bgDeep #0D1117 · --bg-app bgApp #161B22 ·
+   --surface #21262D · --line-2 border #484F58 · --line borderMuted ·
+   --line-s borderStrong · --ac cyan #3BC9DB · --ac-l cyanLight #66D9E8 ·
+   --btn-p cyanDarker #0C8599 · --vi violet #9775FA · success teal #12B886 ·
+   warning #F08C00 · danger #E03131. Radii: 8 (cards, buttons, badges),
+   16 (the big status surfaces, dialogs), 999 (pills). Type: Montserrat,
+   shipped with the package (see mount.tsx). The light theme redefines the
+   roles, never the components. */
+
+:host {
+  all: initial;
+  display: block;
+}
+
+.vx {
+  --font: "Vectra Montserrat", Montserrat, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --bg: #0d1117;
+  --bg-app: #161b22;
+  --bg-el: #161b22;
+  --surface: #21262d;
+  --raised: #30363d;
+  --card: rgba(22, 27, 34, 0.96);
+  --panel: linear-gradient(135deg, #21262d 0%, #161b22 100%);
+  --sunk: rgba(13, 17, 23, 0.72);
+  --line: rgba(139, 148, 158, 0.2);
+  --line-2: #484f58;
+  --line-s: rgba(59, 201, 219, 0.38);
+  --hover: rgba(59, 201, 219, 0.06);
+  --track: rgba(139, 148, 158, 0.16);
+  --tx: #ffffff;
+  --tx-2: #c9d1d9;
+  --tx-3: #8b949e;
+  --ac: #3bc9db;
+  --ac-l: #66d9e8;
+  --ac-f: #15aabf;
+  --ac-bg: rgba(59, 201, 219, 0.12);
+  --ac-ln: rgba(59, 201, 219, 0.38);
+  --ac-soft: linear-gradient(135deg, rgba(21, 170, 191, 0.15) 0%, rgba(16, 152, 173, 0.1) 100%);
+  --vi: #b197fc;
+  --vi-f: #9775fa;
+  --vi-bg: rgba(151, 117, 250, 0.14);
+  --vi-ln: rgba(151, 117, 250, 0.4);
+  --ok: #38d9a9;
+  --ok-f: #12b886;
+  --ok-bg: rgba(18, 184, 134, 0.14);
+  --ok-ln: rgba(18, 184, 134, 0.4);
+  --warn: #ffa94d;
+  --warn-f: #f08c00;
+  --warn-bg: rgba(240, 140, 0, 0.14);
+  --warn-ln: rgba(240, 140, 0, 0.42);
+  --fail: #ff8787;
+  --fail-f: #e03131;
+  --fail-bg: rgba(250, 82, 82, 0.14);
+  --fail-ln: rgba(224, 49, 49, 0.48);
+  --sh-lg: 0 16px 36px rgba(0, 0, 0, 0.34);
+  --sh-md: none;
+  --btn-p: #0b7285;
+  --btn-p-h: #095c6b;
+  --wm-fill: linear-gradient(90deg, #39b8ca 0%, #6cdce7 85%, #e3fcff 100%);
+  --scrim: rgba(1, 4, 9, 0.66);
+  --app-bg: radial-gradient(820px 540px at 8% 0%, rgba(6, 182, 212, 0.1) 0%, rgba(6, 182, 212, 0.035) 36%, rgba(6, 182, 212, 0) 68%),
+    radial-gradient(720px 460px at 100% 8%, rgba(121, 80, 242, 0.1) 0%, rgba(121, 80, 242, 0.035) 38%, rgba(121, 80, 242, 0) 70%),
+    linear-gradient(rgba(139, 148, 158, 0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(139, 148, 158, 0.035) 1px, transparent 1px),
+    linear-gradient(180deg, #161b22 0%, #0d1117 100%);
+  position: relative;
+  box-sizing: border-box;
+  padding: 18px 20px 22px;
+  border: 1px solid #30363d;
+  border-radius: 16px;
+  background: var(--app-bg);
+  background-size: auto, auto, 52px 52px, 52px 52px, auto;
+  color: var(--tx-2);
+  font: 500 14px/1.45 var(--font);
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+  text-align: left;
+  color-scheme: dark;
+}
+
+.vx[data-theme="light"] {
+  --bg: #f6f8fa;
+  --bg-app: #ffffff;
+  --bg-el: #ffffff;
+  --surface: #ffffff;
+  --raised: #f6f8fa;
+  --card: #ffffff;
+  --panel: linear-gradient(135deg, #ffffff 0%, #f6f8fa 100%);
+  --sunk: #f6f8fa;
+  --line: rgba(31, 35, 40, 0.1);
+  --line-2: #d0d7de;
+  --line-s: rgba(12, 133, 153, 0.45);
+  --hover: rgba(12, 133, 153, 0.06);
+  --track: rgba(31, 35, 40, 0.08);
+  --tx: #1f2328;
+  --tx-2: #31363c;
+  --tx-3: #59636e;
+  --ac: #0b7285;
+  --ac-l: #0b7285;
+  --ac-f: #0c8599;
+  --ac-bg: rgba(12, 133, 153, 0.1);
+  --ac-ln: rgba(12, 133, 153, 0.4);
+  --ac-soft: linear-gradient(135deg, rgba(12, 133, 153, 0.1) 0%, rgba(12, 133, 153, 0.06) 100%);
+  --vi: #6741d9;
+  --vi-f: #7950f2;
+  --vi-bg: rgba(121, 80, 242, 0.1);
+  --vi-ln: rgba(121, 80, 242, 0.36);
+  --ok: #087f5b;
+  --ok-f: #12b886;
+  --ok-bg: rgba(18, 184, 134, 0.1);
+  --ok-ln: rgba(18, 184, 134, 0.4);
+  --warn: #a15c07;
+  --warn-f: #f08c00;
+  --warn-bg: rgba(240, 140, 0, 0.1);
+  --warn-ln: rgba(240, 140, 0, 0.42);
+  --fail: #c92a2a;
+  --fail-f: #e03131;
+  --fail-bg: rgba(224, 49, 49, 0.08);
+  --fail-ln: rgba(224, 49, 49, 0.4);
+  --sh-lg: 0 1px 2px rgba(31, 35, 40, 0.06), 0 12px 28px rgba(31, 35, 40, 0.08);
+  --btn-p: #0b7285;
+  --btn-p-h: #095c6b;
+  --wm-fill: linear-gradient(90deg, #0b7285 0%, #0c8599 70%, #15aabf 100%);
+  --scrim: rgba(31, 35, 40, 0.42);
+  --app-bg: radial-gradient(820px 540px at 8% 0%, rgba(21, 170, 191, 0.1) 0%, rgba(21, 170, 191, 0) 64%),
+    radial-gradient(720px 460px at 100% 8%, rgba(121, 80, 242, 0.07) 0%, rgba(121, 80, 242, 0) 66%),
+    linear-gradient(rgba(31, 35, 40, 0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(31, 35, 40, 0.04) 1px, transparent 1px),
+    linear-gradient(180deg, #ffffff 0%, #f6f8fa 100%);
+  border-color: #d0d7de;
+  color-scheme: light;
+}
+
+.vx *,
+.vx ::before,
+.vx ::after {
+  box-sizing: border-box;
+}
+/* Element resets carry no class: in the shadow root they reach only this app,
+   and a component's own class (.note, .wz-list, .btn) must win over them. */
+h2,
+h3,
+h4,
+p,
+ul,
+ol,
+dl,
+dd {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* No class here: in the shadow root an element selector reaches only this app,
+   and a button's own class (.btn, .bp, .tab) must win over the reset. */
+button,
+textarea {
+  margin: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+}
+code,
+.mono,
+time {
+  /* Technical values (tags, addresses, versions, times): the app's own face
+     with digits of equal width. A system monospace sat squashed and wide next
+     to Montserrat's tall letters; the journal's columns come from its grid. */
+  font-family: var(--font);
+  font-size: 0.92em;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+.vx ::selection {
+  background: rgba(59, 201, 219, 0.28);
+}
+.vx :focus-visible {
+  outline: 2px solid rgba(59, 201, 219, 0.58);
+  outline-offset: 2px;
+}
+/* Headings wrap into even lines ("Роутер подключён / к Vectra", not a lone
+   "к" at a line's end); sentences avoid a single word on their last line. */
+h2,
+h3,
+.verdict {
+  text-wrap: balance;
+}
+.lede,
+.hint,
+.note span,
+.wz-body > p,
+.wz-card > p {
+  text-wrap: pretty;
+}
+/* A heading or panel the page moves focus to (a new step, a new tab) is not a
+   control: it takes the focus for a screen reader, without a ring around it. */
+.vx [tabindex="-1"]:focus {
+  outline: none;
+}
+/* A value a person copies or types elsewhere: a network name, a password, a
+   code. The app's own face, digits of equal width. */
+.val {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+}
+.vx :focus:not(:focus-visible) {
+  outline: 0;
+}
+.vx.full {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 850; /* above LuCI's header (800), below its modal layer (900) */
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+  padding: 20px max(24px, env(safe-area-inset-right)) 32px max(24px, env(safe-area-inset-left));
+}
+.full .vx-in {
+  max-width: 1880px;
+  margin: 0 auto;
+}
+
+/* ── utilities ─────────────────────────────────────────────────────────── */
+.sr,
+[data-w="s"] .tab:not([aria-selected="true"]) span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.mu,
+.hint,
+.kv dt {
+  color: var(--tx-3);
+}
+.sm,
+.hint,
+.kv dt {
+  font-size: 12.5px;
+}
+.hint {
+  display: block;
+}
+.clip {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.tx-ok {
+  color: var(--ok);
+}
+.tx-warn {
+  color: var(--warn);
+}
+.tx-fail {
+  color: var(--fail);
+}
+.row,
+.toolbar,
+.hdr,
+.tools,
+.brand {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.toolbar {
+  gap: 10px 12px;
+}
+.push,
+.vx .push {
+  margin-left: auto;
+}
+.stack,
+.grid {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.stack > *,
+.grid > * {
+  min-width: 0;
+}
+.lede {
+  max-width: 76ch;
+  color: var(--tx-2);
+}
+.k,
+.tbl th,
+.chk-s {
+  color: var(--tx-3);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.ic {
+  flex: none;
+  display: block;
+}
+
+/* ── header & tabs ─────────────────────────────────────────────────────── */
+.hdr {
+  gap: 10px 14px;
+  padding-bottom: 16px;
+}
+.brand {
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+/* The official Vectra wordmark is a mask, filled with the brand gradient
+   (Vectra_Frontend BrandBootVisual). Without mask support the word stays. */
+.wm {
+  display: none;
+  flex: none;
+  width: 124px;
+  aspect-ratio: 960 / 132;
+  background: var(--wm-fill);
+  -webkit-mask: url("/luci-static/vectra/vectra-wordmark.png") center / contain no-repeat;
+  mask: url("/luci-static/vectra/vectra-wordmark.png") center / contain no-repeat;
+}
+.word {
+  color: var(--tx);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.26em;
+}
+@supports (mask-image: url("x.png")) or (-webkit-mask-image: url("x.png")) {
+  .wm {
+    display: block;
+  }
+  .word {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+.host {
+  max-width: 220px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line-2);
+  color: var(--tx-2);
+  font-size: 12.5px;
+}
+.ver {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--tx-3);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 11px 0 9px;
+  border: 1px solid var(--c-ln);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.pill i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px var(--c-bg);
+}
+.tools {
+  margin-left: auto;
+}
+.upd {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--tx-3);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+[data-w="s"] .brand {
+  flex: 1;
+}
+[data-w="s"] .tools {
+  width: 100%;
+  margin: 0;
+}
+/* A phone: the logo and the verdict on one line, the switches on the next.
+   The router's name, the refresh clock and "full screen" are desk matters. */
+[data-w="s"] .upd,
+[data-w="s"] .ver,
+[data-w="s"] .host,
+[data-w="s"] .to-full {
+  display: none;
+}
+[data-w="s"] .tools > .bi:not(.to-full) {
+  margin-left: auto;
+}
+@media (pointer: coarse) {
+  .seg-s button {
+    height: 36px;
+  }
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 18px;
+  padding: 4px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunk);
+  scrollbar-width: none;
+}
+.tab {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--tx-3);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.16s, background-color 0.16s, border-color 0.16s;
+}
+.tab[aria-selected="true"],
+.seg [aria-checked="true"] {
+  border-color: var(--ac-ln);
+  background: var(--ac-soft);
+  color: var(--tx);
+}
+.tab[aria-selected="true"] .ic {
+  color: var(--ac);
+}
+[data-w="s"] .tabs {
+  justify-content: space-between;
+}
+[data-w="s"] .tab {
+  padding: 0 11px;
+}
+
+/* ── surfaces ──────────────────────────────────────────────────────────── */
+/* RwCard: the panel gradient on the solid card colour, a 1px border, no shadow. */
+.card {
+  position: relative;
+  padding: 16px 18px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background-color: var(--card);
+  background-image: var(--panel);
+  box-shadow: var(--sh-md);
+  animation: vx-card-in 250ms ease-out both;
+}
+.card > .btn {
+  margin-top: 14px;
+}
+.card-h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 24px;
+  margin-bottom: 10px;
+}
+.kv div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 14px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+.kv div:first-child {
+  padding-top: 2px;
+  border: 0;
+}
+.kv dd {
+  flex: 1;
+  min-width: 0;
+  color: var(--tx);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.meter {
+  display: block;
+  height: 6px;
+  margin-top: 7px;
+  overflow: hidden;
+  border-radius: 9px;
+  background: var(--track);
+}
+.meter span {
+  display: block;
+  height: 100%;
+  background: var(--c-f);
+}
+
+/* Tones set --c (text), --c-f (fill), --c-bg, --c-ln; components pick. */
+.t-ok {
+  --c: var(--ok);
+  --c-f: var(--ok-f);
+  --c-bg: var(--ok-bg);
+  --c-ln: var(--ok-ln);
+}
+.t-warn {
+  --c: var(--warn);
+  --c-f: var(--warn-f);
+  --c-bg: var(--warn-bg);
+  --c-ln: var(--warn-ln);
+}
+.t-fail {
+  --c: var(--fail);
+  --c-f: var(--fail-f);
+  --c-bg: var(--fail-bg);
+  --c-ln: var(--fail-ln);
+}
+.t-info {
+  --c: var(--ac);
+  --c-f: var(--ac-f);
+  --c-bg: var(--ac-bg);
+  --c-ln: var(--ac-ln);
+}
+/* Vectra's "featured" tone (violet): pins and other hand-made choices. */
+.t-warm {
+  --c: var(--vi);
+  --c-f: var(--vi-f);
+  --c-bg: var(--vi-bg);
+  --c-ln: var(--vi-ln);
+}
+.t-mute {
+  --c: var(--tx-2);
+  --c-f: var(--tx-3);
+  --c-bg: var(--hover);
+  --c-ln: var(--line-2);
+}
+.bd,
+.pill,
+.sicon,
+.note,
+.err,
+.chip.ck,
+.ll b {
+  background: var(--c-bg);
+  color: var(--c);
+}
+/* Small tone text keeps AA on any surface: the tint sits on an opaque base,
+   not on whatever gradient happens to be behind it. */
+.bd,
+.pill,
+.ll b {
+  background: linear-gradient(var(--c-bg), var(--c-bg)), var(--bg-el);
+}
+/* RwBadge: 11px bold capitals on the tone's soft fill. */
+.bd {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--c-ln);
+  border-radius: 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 20px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.sicon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+}
+/* MuiAlert, filled: the tone washes in from the left. */
+.note,
+.err {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--c-ln);
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--c-bg) 0%, transparent 100%), var(--sunk);
+  font-size: 13px;
+}
+.note .ic,
+.err > .ic {
+  color: var(--c);
+}
+/* A note with its one action at the end (it wraps under the text when narrow). */
+.note-act {
+  flex-wrap: wrap;
+  align-items: center;
+  row-gap: 6px;
+}
+.note-act > span {
+  flex: 1 1 220px;
+}
+.note-act > .btn {
+  margin-left: auto;
+}
+.note span,
+.err > div {
+  color: var(--tx);
+}
+
+/* ── controls ──────────────────────────────────────────────────────────── */
+/* RwButton. Default: cyan-light text on the soft cyan fill. .bp: the filled
+   cyanDarker primary. .bg: text only. A hover lifts by 1px and sweeps a
+   diagonal sheen; a press sinks. */
+.btn {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 16px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--ac-soft);
+  color: var(--ac-l);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.16s, border-color 0.16s, color 0.16s;
+}
+.btn::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  background: linear-gradient(135deg, transparent 0%, rgba(6, 182, 212, 0.14) 50%, transparent 100%);
+  transition: opacity 0.16s;
+  pointer-events: none;
+}
+.bp {
+  background: var(--btn-p);
+  color: #fff;
+}
+.bg {
+  background: none;
+  color: var(--ac);
+}
+.bg:not(.bi) {
+  padding-inline: 2px;
+  overflow: visible;
+}
+.bg:not(.bi)::before {
+  inset: 0 -10px;
+}
+.bs {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+  gap: 6px;
+}
+.bi {
+  width: 40px;
+  padding: 0;
+  background: none;
+  color: var(--tx-3);
+}
+.bi.bs {
+  width: 30px;
+  min-height: 30px;
+}
+.bi[aria-pressed="true"] {
+  color: var(--ac);
+}
+.btn:active:not(:disabled):not([aria-busy]) {
+  transform: translateY(0) scale(0.975);
+  transition-duration: 70ms;
+}
+.btn:disabled,
+.btn[aria-busy="true"],
+.seg :disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.bp:disabled:not([aria-busy]) {
+  opacity: 1;
+  background: var(--track);
+  color: var(--tx-3);
+}
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover:not(:disabled):not([aria-busy]) {
+    transform: translateY(-1px);
+    border-color: var(--line-s);
+  }
+  .btn:hover:not(:disabled):not([aria-busy])::before {
+    opacity: 1;
+  }
+  .bp:hover:not(:disabled):not([aria-busy]) {
+    background: var(--btn-p-h);
+    border-color: transparent;
+  }
+  .bg:hover:not(:disabled):not([aria-busy]),
+  .bi:hover:not(:disabled):not([aria-busy]) {
+    border-color: transparent;
+    background: var(--hover);
+    color: var(--ac);
+  }
+  .bg:not(.bi):hover:not(:disabled):not([aria-busy]) {
+    background: none;
+  }
+  .bg:not(.bi):hover:not(:disabled):not([aria-busy])::before {
+    background: var(--hover);
+  }
+  .tab:hover,
+  .upd:hover,
+  .seg button:hover {
+    color: var(--tx);
+  }
+  .mem .pin {
+    opacity: 0;
+  }
+  .mem:hover .pin,
+  .mem .pin:focus-visible {
+    opacity: 1;
+  }
+}
+@media (pointer: coarse) {
+  .btn {
+    min-height: 44px;
+  }
+  .bs {
+    min-height: 38px;
+  }
+}
+.seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunk);
+}
+.seg button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--tx-3);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.16s, background-color 0.16s, border-color 0.16s;
+}
+.seg-s button {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+.cnt {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--track);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.sw {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 36px;
+  border: 0;
+  background: none;
+  color: var(--tx-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sw i {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: var(--track);
+}
+.sw i::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--tx-3);
+  transition: transform 0.18s;
+}
+.sw[aria-checked="true"] i {
+  border-color: var(--ac-ln);
+  background: var(--ac-bg);
+}
+.sw[aria-checked="true"] i::after {
+  transform: translateX(14px);
+  background: var(--ac);
+}
+.chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.chip {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0 7px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--hover);
+  color: var(--tx-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip.ck {
+  --c: var(--tx);
+  --c-bg: var(--ac-bg);
+  border-color: var(--ac-ln);
+}
+
+/* ── feedback ──────────────────────────────────────────────────────────── */
+.spin {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: vx-spin 0.8s linear infinite;
+}
+@keyframes vx-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+.skel {
+  display: grid;
+  gap: 12px;
+}
+.skel span {
+  position: relative;
+  height: 64px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunk);
+}
+/* rw-shimmer */
+.skel span::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(59, 201, 219, 0.06), transparent);
+  animation: vx-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes vx-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+.empty {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 36px 20px;
+  border: 1px dashed var(--line-2);
+  border-radius: 8px;
+  color: var(--tx-3);
+  text-align: center;
+}
+.err {
+  --c: var(--fail);
+  --c-f: var(--fail-f);
+  --c-bg: var(--fail-bg);
+  --c-ln: var(--fail-ln);
+  padding: 14px 16px;
+  font-size: 14px;
+}
+.err > div {
+  flex: 1;
+  min-width: 0;
+}
+.err b {
+  color: var(--tx);
+  font-weight: 700;
+}
+.err code {
+  display: block;
+  margin-top: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--sunk);
+  color: var(--tx-2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.err.big {
+  flex-direction: column;
+  align-items: center;
+  max-width: 560px;
+  margin: 24px auto;
+  padding: 32px 28px;
+  border-radius: 16px;
+  text-align: center;
+}
+.err.big b {
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+.banner {
+  margin-bottom: 16px;
+}
+[data-w="s"] .err {
+  flex-wrap: wrap;
+}
+
+/* ── overview ──────────────────────────────────────────────────────────── */
+/* The big status surfaces: an RwCard in the verdict's tone, radius lg (16),
+   the tone washing in from the corner and a hairline of it along the top. */
+.hero,
+.sv-st {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--c-ln);
+  border-radius: 16px;
+  background-color: var(--card);
+  background-image: radial-gradient(420px 220px at 0% 0%, var(--c-bg), transparent 72%), linear-gradient(135deg, var(--c-bg) 0%, transparent 55%), var(--panel);
+  box-shadow: var(--sh-lg);
+  animation: vx-card-in 250ms ease-out both;
+}
+.hero::before,
+.sv-st::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--c-f), transparent);
+  opacity: 0.85;
+}
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px 28px;
+  padding: 22px 24px;
+}
+.hero-m {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  min-width: 0;
+}
+.beacon {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border: 1px solid var(--c-ln);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 35%, var(--c-bg), transparent 70%), var(--sunk);
+  color: var(--c);
+  box-shadow: 0 0 0 6px var(--c-bg), 0 0 28px var(--c-bg);
+}
+.verdict {
+  color: var(--tx);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+}
+.hero-m p {
+  margin-top: 6px;
+  color: var(--tx-2);
+}
+.loc {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px 14px;
+  width: 340px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunk);
+}
+.loc .btn {
+  grid-column: 1 / -1;
+}
+.flag {
+  display: grid;
+  place-items: center;
+  min-width: 52px;
+  height: 52px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunk);
+  color: var(--tx-3);
+  font-size: 28px;
+  line-height: 1;
+}
+.loc b {
+  display: block;
+  margin: 2px 0;
+  color: var(--tx);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+}
+.hero-n {
+  grid-column: 1 / -1;
+}
+[data-w="s"] .hero,
+[data-w="m"] .hero {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 18px;
+}
+[data-w="s"] .loc,
+[data-w="m"] .loc {
+  width: auto;
+}
+[data-w="s"] .verdict {
+  font-size: 23px;
+}
+.g4 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-areas: "x d r" "x p r";
+}
+.a-x {
+  grid-area: x;
+}
+.a-d {
+  grid-area: d;
+}
+.a-p {
+  grid-area: p;
+}
+.a-r {
+  grid-area: r;
+}
+[data-w="x"] .g4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-areas: "x d p r";
+}
+[data-w="m"] .g4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas: "x r" "d p";
+}
+[data-w="s"] .g4 {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "x" "d" "p" "r";
+}
+.checks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  column-gap: 28px;
+}
+.chk {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.chk > span:nth-child(2) {
+  padding-top: 2px;
+  color: var(--tx);
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
+.chk.ok > span:nth-child(2) {
+  color: var(--tx-2);
+}
+.chk-s {
+  padding-top: 5px;
+}
+.chk .t-warn,
+.chk .t-fail {
+  color: var(--c);
+}
+[data-w="s"] .checks {
+  grid-template-columns: minmax(0, 1fr);
+}
+.hero-m .btn {
+  margin-top: 12px;
+}
+/* The key facts under the verdict: a tone dot, the word, what it means. */
+.facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+[data-w="m"] .facts,
+[data-w="s"] .facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+[data-w="s"] .facts {
+  gap: 8px;
+}
+.fact {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  padding: 12px 14px;
+}
+.fact b {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--tx);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.fact b i {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c-f);
+  box-shadow: 0 0 0 3px var(--c-bg);
+}
+.tech .g4 {
+  margin-top: 4px;
+}
+
+/* ── routes ────────────────────────────────────────────────────────────── */
+.bals {
+  columns: 2 370px;
+  column-gap: 16px;
+}
+.bals > * {
+  margin-bottom: 16px;
+  break-inside: avoid;
+}
+.probe .row {
+  margin: 12px 0 10px;
+}
+.rt {
+  display: grid;
+  gap: 12px;
+}
+.rt.bad {
+  border-color: var(--fail-ln);
+}
+.rt-h,
+.stop-t {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.rt-h h3 {
+  color: var(--tx);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+}
+.rt-h .bd,
+.stop-t .bd {
+  margin-left: auto;
+}
+/* The provider's tag, kept beside every plain name for support. */
+.tg {
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--tx-3);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+/* The chain: a rail down the left with a dot per stop; the dot where the traffic is glows. */
+.stop {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 12px;
+  padding-bottom: 16px;
+}
+.stop:last-child {
+  padding-bottom: 0;
+}
+.stop:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  top: 26px;
+  bottom: 2px;
+  left: 10px;
+  width: 2px;
+  background: var(--line-2);
+}
+.stop.skip:not(:last-child)::before {
+  background: repeating-linear-gradient(180deg, var(--fail-ln) 0 5px, transparent 0 9px);
+}
+.stop > i {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--line-s);
+  border-radius: 50%;
+  background: var(--bg-el);
+}
+.stop.here > i {
+  border-color: var(--ac);
+  background: radial-gradient(circle, var(--ac) 0 4px, transparent 5px), var(--bg-el);
+  box-shadow: 0 0 0 5px var(--ac-bg);
+}
+.stop.skip > i {
+  border: 2px dashed var(--fail-ln);
+}
+.stop.unknown > i {
+  border-style: dashed;
+}
+.stop > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.stop-t b {
+  color: var(--tx);
+  font-weight: 600;
+}
+.then {
+  font-size: 10.5px;
+}
+.ctry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  color: var(--tx-2);
+  font-size: 12.5px;
+}
+.now {
+  color: var(--tx);
+  font-weight: 600;
+}
+.down {
+  color: var(--fail);
+  font-size: 13px;
+}
+.lvls li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+  color: var(--tx-2);
+}
+.lvls .here {
+  color: var(--tx);
+  font-weight: 600;
+}
+/* A disclosure: cyan text and a chevron that turns when it opens. */
+.more > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  color: var(--ac);
+  font-size: 13px;
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+.more > summary::-webkit-details-marker {
+  display: none;
+}
+.more > summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin: 0 2px;
+  border: solid;
+  border-width: 0 2px 2px 0;
+  transform: rotate(-45deg);
+  transition: transform 0.16s;
+}
+.more[open] > summary::before {
+  transform: rotate(45deg);
+}
+.more[open] > summary {
+  margin-bottom: 6px;
+}
+.more > .hint {
+  margin-bottom: 8px;
+}
+@media (pointer: coarse) {
+  .more > summary {
+    min-height: 40px;
+  }
+}
+.mems {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.mem {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px 6px 4px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+.mem:first-child {
+  border: 0;
+}
+.mem.on {
+  background: var(--ac-bg);
+}
+.mem .nn {
+  flex-wrap: wrap;
+  gap: 0 8px;
+  min-width: 0;
+}
+.mem-b {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 84px;
+}
+[data-w="s"] .mem {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 8px 10px;
+}
+[data-w="s"] .mem-b {
+  grid-column: 2 / -1;
+  justify-content: flex-start;
+}
+.fl {
+  flex: none;
+  font-size: 16px;
+  line-height: 1;
+}
+/* A flag inside a line of text ("🇵🇱 Польша"): a space of its own, since a
+   typed one collapses when the line is a flex item. */
+.fl-i {
+  margin-inline-end: 0.45em;
+  font-size: 1.15em;
+  vertical-align: -0.12em;
+}
+
+/* Delay: bars + number, so colour is never the only cue. */
+.dl-good {
+  color: var(--ok);
+}
+.dl-ok {
+  color: var(--warn);
+}
+.dl-slow {
+  color: var(--fail);
+}
+.dly {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: 12.5px var(--font);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+.bars i {
+  width: 3px;
+  height: 5px;
+  border-radius: 1px;
+  background: var(--track);
+}
+.bars i + i {
+  height: 8px;
+}
+.bars i + i + i {
+  height: 12px;
+}
+.bars .on {
+  background: currentColor;
+}
+.ndot {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.nd-ok {
+  background: var(--ok-f);
+  box-shadow: 0 0 0 3px var(--ok-bg);
+}
+.nd-none {
+  border: 2px solid var(--tx-3);
+}
+.nd-dead::before,
+.nd-dead::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: -1px;
+  width: 12px;
+  height: 2px;
+  background: var(--fail-f);
+  transform: rotate(45deg);
+}
+.nd-dead::after {
+  transform: rotate(-45deg);
+}
+
+/* ── nodes ─────────────────────────────────────────────────────────────── */
+.tbl-w {
+  padding: 4px 6px;
+  overflow-x: auto;
+}
+.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.tbl th {
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid var(--line-2);
+  letter-spacing: 0.06em;
+  text-align: left;
+}
+.tbl td {
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.tbl tr:last-child td {
+  border: 0;
+}
+.tbl .num {
+  text-align: right;
+}
+/* A kind of node, as a heading row: "Мосты 9 — сначала в Россию…". */
+.tbl .grp th {
+  padding: 18px 10px 8px;
+  color: var(--tx);
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.grp b {
+  margin-right: 6px;
+}
+.grp .hint {
+  display: inline;
+  margin-left: 8px;
+  font-weight: 500;
+}
+.dead td:first-child {
+  box-shadow: inset 3px 0 0 var(--fail-f);
+}
+[data-w="s"] .tbl tr.dead {
+  border-color: var(--fail-ln);
+  box-shadow: inset 3px 0 0 var(--fail-f);
+}
+[data-w="s"] .tbl tr.dead td:first-child {
+  box-shadow: none;
+}
+[data-w="s"] .nd-bar > .seg:first-child {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+}
+[data-w="s"] .c-proto .chip {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--tx-3);
+  font-weight: 500;
+}
+[data-w="s"] .c-proto .chip + .chip::before {
+  content: "· ";
+}
+.nn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.nn b {
+  color: var(--tx);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.nn small {
+  color: var(--fail);
+  font-size: 11.5px;
+}
+.unprobed .nn small {
+  color: var(--tx-3);
+}
+.addr {
+  max-width: 280px;
+  margin-top: 2px;
+  font-size: 11.5px;
+}
+.trf {
+  display: grid;
+  white-space: nowrap;
+}
+[data-w="s"] .tbl-w {
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+[data-w="s"] table,
+[data-w="s"] tbody {
+  display: block;
+}
+[data-w="s"] thead {
+  display: none;
+}
+[data-w="s"] .tbl tr {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 10px;
+  margin-bottom: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+[data-w="s"] .tbl td {
+  padding: 0;
+  border: 0;
+}
+[data-w="s"] .tbl tr.grp {
+  display: block;
+  margin: 18px 0 8px;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+}
+[data-w="s"] .tbl .grp th {
+  display: block;
+  padding: 0;
+  border: 0;
+}
+[data-w="s"] .grp .hint {
+  display: block;
+  margin: 2px 0 0;
+}
+[data-w="s"] .tbl .c-st {
+  padding-top: 4px;
+}
+[data-w="s"] .tbl .c-dly {
+  grid-area: 1 / 3;
+}
+[data-w="s"] .tbl .c-proto,
+[data-w="s"] .tbl .c-bal {
+  grid-column: 2 / -1;
+}
+[data-w="s"] .tbl .c-chk {
+  grid-column: 2;
+}
+
+/* ── servers ───────────────────────────────────────────────────────────── */
+.srv {
+  display: grid;
+  gap: 10px;
+}
+.locs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+}
+.locs.top {
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+.lc {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-content: start;
+  gap: 2px 12px;
+  width: 100%;
+  height: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.lc .fl {
+  grid-row: span 3;
+  min-width: 32px;
+  font-size: 26px;
+  text-align: center;
+}
+.lc b {
+  color: var(--tx);
+  font-weight: 700;
+  line-height: 1.3;
+}
+.lc .bd {
+  justify-self: start;
+  margin-top: 6px;
+}
+.lc.on {
+  border-color: var(--ac-ln);
+  background: linear-gradient(var(--ac-bg), transparent), var(--card);
+  box-shadow: inset 0 0 0 1px var(--ac-ln);
+  cursor: default;
+}
+/* "Auto" leads: a bigger card in the accent. */
+.top .lc {
+  padding: 16px 18px;
+  border-color: var(--ac-ln);
+  background: var(--ac-soft), var(--card);
+}
+.top .lc .fl {
+  font-size: 32px;
+}
+.top .lc b {
+  font-size: 17px;
+  letter-spacing: -0.02em;
+}
+/* A country: its own server, then its variants ("Hysteria2", "прямой") as chips. */
+.lc-g {
+  display: grid;
+  align-content: start;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+.lc-g.on {
+  border-color: var(--ac-ln);
+  box-shadow: inset 0 0 0 1px var(--ac-ln);
+}
+.lc-g .lc {
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.lc-v {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px 12px;
+}
+.lcv {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--sunk);
+  color: var(--tx-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.lcv.on {
+  border-color: var(--ac-ln);
+  background: var(--ac-bg);
+  color: var(--tx);
+}
+.lcv .bd {
+  min-height: 18px;
+  padding: 0 5px;
+  line-height: 16px;
+}
+.lc[aria-disabled="true"],
+.lcv[aria-disabled="true"] {
+  cursor: default;
+}
+@media (hover: hover) {
+  .lc:hover:not([aria-disabled="true"]),
+  .lcv:hover:not([aria-disabled="true"]) {
+    border-color: var(--line-s);
+  }
+  .lc-g .lc:hover:not([aria-disabled="true"]) {
+    background: var(--hover);
+  }
+}
+@media (pointer: coarse) {
+  .lcv {
+    min-height: 40px;
+  }
+}
+[data-w="s"] .locs {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* ── journal ───────────────────────────────────────────────────────────── */
+.log {
+  max-height: min(62vh, 680px);
+  padding: 8px 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunk);
+  font: 12.5px/1.6 var(--font);
+  font-variant-numeric: tabular-nums;
+}
+.full .log {
+  max-height: calc(100vh - 260px);
+}
+.ll {
+  display: grid;
+  grid-template-columns: 64px 44px 40px minmax(0, 1fr);
+  gap: 10px;
+  padding: 2px 16px;
+  color: var(--tx-3);
+}
+.ll b {
+  align-self: start;
+  margin-top: 2px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  line-height: 16px;
+  text-align: center;
+}
+.ll span:first-of-type {
+  align-self: start;
+  margin-top: 2px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  font-size: 10.5px;
+  line-height: 14px;
+  text-align: center;
+}
+.ll span:last-child {
+  color: var(--tx-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ll.t-fail span:last-child {
+  color: var(--fail);
+}
+.ll.t-mute span:last-child {
+  color: var(--tx-3);
+}
+[data-w="s"] .ll {
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 2px 8px;
+  padding: 5px 12px;
+}
+[data-w="s"] .ll span:last-child {
+  grid-column: 1 / -1;
+}
+
+/* ── simple view ───────────────────────────────────────────────────────── */
+.m-simple .vx-in {
+  max-width: 1080px;
+  margin: 0 auto;
+}
+/* The wizard and the "no link" screen are one focused column; with the
+   wizard open the header narrows with it. */
+.m-simple .sv:not(.sv-home) {
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+}
+.m-simple .vx-in:has(.wz) {
+  max-width: 780px;
+}
+/* A monitor: the verdict across the top; the server and "My sites" on the
+   left, what to do if something does not open on the right. */
+.sv-home > * {
+  grid-column: 1 / -1;
+}
+[data-w="l"] .sv-home,
+[data-w="x"] .sv-home {
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  grid-auto-flow: row dense;
+  align-items: start;
+}
+.sv-col {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
+}
+[data-w="l"] .sv-home > .sv-col,
+[data-w="x"] .sv-home > .sv-col {
+  grid-column: 1;
+}
+[data-w="l"] .sv-home > .sv-help,
+[data-w="x"] .sv-home > .sv-help {
+  grid-column: 2;
+}
+/* In that column a step's button goes under its text, as on a phone. */
+[data-w="l"] .sv-home .sv-steps li,
+[data-w="x"] .sv-home .sv-steps li {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+}
+[data-w="l"] .sv-home .sv-steps li > .btn,
+[data-w="x"] .sv-home .sv-steps li > .btn {
+  grid-column: 2;
+  justify-self: start;
+}
+/* The verdict on the left, what to do and "checked" on the right. */
+[data-w="l"] .sv-st-split .sv-st-m,
+[data-w="x"] .sv-st-split .sv-st-m {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 28px;
+}
+[data-w="l"] .sv-st-split .sv-acts,
+[data-w="x"] .sv-st-split .sv-acts {
+  flex-direction: column;
+  align-items: flex-end;
+  margin-top: 0;
+}
+.sv {
+  display: grid;
+  gap: 14px;
+}
+.sv:focus {
+  outline: 0;
+}
+.sv-st {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 20px;
+  padding: 24px 20px 20px;
+}
+.sv-st .beacon {
+  width: 64px;
+  height: 64px;
+}
+/* A live connection breathes: one soft ring every 2.4 s, off with reduced motion. */
+.sv-st.t-ok .beacon::after,
+.sv-st.t-info .beacon::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 2px solid var(--c-f);
+  border-radius: 50%;
+  opacity: 0;
+  animation: vx-pulse 2.4s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+@keyframes vx-pulse {
+  from {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  to {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+.sv-st .verdict {
+  font-size: 30px;
+}
+.sv-st p {
+  max-width: 62ch;
+  margin-top: 6px;
+  color: var(--tx-2);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.sv-acts {
+  gap: 10px 14px;
+  margin-top: 18px;
+}
+.sv-chk {
+  gap: 4px;
+  margin-left: auto;
+}
+/* Nothing to do: "checked" starts the line instead of floating to its end. */
+.sv-acts > .sv-chk:first-child {
+  margin-left: 0;
+}
+.sv-raw {
+  margin-top: 14px;
+  color: var(--tx-3);
+  font-size: 12.5px;
+}
+.sv-raw summary {
+  cursor: pointer;
+}
+.sv-raw code {
+  display: block;
+  margin-top: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--sunk);
+  overflow-wrap: anywhere;
+}
+.sv-loc {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px;
+}
+.sv-loc-m {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+.sv-loc-m b {
+  display: block;
+  margin-top: 4px;
+  color: var(--tx);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  overflow-wrap: break-word;
+}
+.sv-loc-m .hint {
+  margin-top: 2px;
+}
+.sv-list-e {
+  gap: 10px;
+}
+.sv-list-e .note {
+  flex: 1 1 260px;
+}
+.sv-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+.sv-li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunk);
+  color: var(--tx-2);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.16s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.16s, background-color 0.16s;
+}
+/* The flag spans the name and, under it, the badge: a badge never squeezes a name. */
+.sv-li .fl {
+  grid-row: auto;
+  min-width: 28px;
+  font-size: 22px;
+  text-align: center;
+}
+/* "Авто" and what it does, under it. */
+.sv-li .nm-sub {
+  display: block;
+  color: var(--tx-3);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+/* With a badge under the name, the flag stands by both lines. */
+.sv-li.has-bd .fl {
+  grid-row: span 2;
+}
+.sv-li .nm {
+  color: var(--tx);
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: break-word;
+}
+.sv-li .bd {
+  justify-self: start;
+}
+.sv-li .bds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sv-li.on {
+  border-color: var(--ac-ln);
+  background: var(--ac-soft), var(--card);
+  box-shadow: inset 0 0 0 1px var(--ac-ln);
+}
+.sv-li[aria-disabled="true"] {
+  cursor: default;
+}
+/* A phone lists the countries one under another: a compact row, still a full finger high. */
+[data-w="s"] .sv-li {
+  min-height: 46px;
+  padding: 8px 12px;
+}
+[data-w="s"] .wz-body .sv-list:not(.auto) {
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+[data-w="s"] .wz-body .sv-list:not(.auto) .sv-li {
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+}
+[data-w="s"] .wz-body .sv-list:not(.auto) li:first-child .sv-li {
+  border-top: 0;
+}
+/* The automatic server is one wide card; countries fill the grid under it. */
+.sv-list.auto {
+  grid-template-columns: minmax(0, 1fr);
+}
+.sv-servers,
+.wz-body .sv-list {
+  display: grid;
+  gap: 8px;
+}
+.sv-servers .k,
+.wz-body h3.k {
+  margin: 10px 0 2px;
+}
+
+/* ── Wi-Fi at full power ─────────────────────────────────────────────── */
+.bands {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+.band {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunk);
+}
+.band.up {
+  border-color: var(--ok-ln);
+}
+.band-h {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.band-h .sicon {
+  --c: var(--tx-3);
+  --c-bg: var(--track);
+  width: 28px;
+  height: 28px;
+}
+.band.up .band-h .sicon {
+  --c: var(--ok);
+  --c-bg: var(--ok-bg);
+}
+.band-h .bd {
+  margin-left: auto;
+}
+.band-h b {
+  color: var(--tx);
+  font-size: 16px;
+}
+.band-h .mono {
+  color: var(--tx-3);
+  font-size: 12px;
+}
+/* How busy each channel is: a bar per channel, the chosen one green. */
+.air {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 72px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.air li {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 22px;
+  height: 100%;
+}
+.air .bar {
+  flex: none;
+  width: 100%;
+  max-width: 30px;
+  border-radius: 6px 6px 2px 2px;
+  background: var(--line-2);
+}
+.air li.best .bar {
+  background: var(--ok);
+}
+.air b {
+  color: var(--tx-3);
+  font-size: 11px;
+}
+.air li.best b {
+  color: var(--ok);
+}
+.names {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.names legend {
+  margin-bottom: 8px;
+}
+
+/* ── the tour of the main screen ─────────────────────────────────────── */
+.tour {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+}
+/* The card being shown stays lit; everything else dims. */
+.tour-spot {
+  position: fixed;
+  border-radius: 20px;
+  box-shadow: 0 0 0 200vmax rgba(3, 7, 13, 0.68);
+  outline: 2px solid var(--ac);
+  pointer-events: none;
+  transition: top 0.25s ease, left 0.25s ease, width 0.25s ease, height 0.25s ease;
+}
+.tour-bub {
+  position: fixed;
+  display: grid;
+  gap: 8px;
+  width: min(380px, calc(100vw - 24px));
+  padding: 16px 18px;
+  border: 1px solid var(--ac-ln);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+.tour-bub h2 {
+  margin: 0;
+  color: var(--tx);
+  font-size: 17px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.tour-bub p {
+  margin: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-spot {
+    transition: none;
+  }
+}
+@media (hover: hover) and (pointer: fine) {
+  .sv-li:hover:not([aria-disabled="true"]) {
+    transform: translateY(-1px);
+    border-color: var(--line-s);
+  }
+}
+.sv-help {
+  padding: 18px 20px 8px;
+}
+/* The card that matters when something breaks gets a title, not a caption. */
+.sv-help > .k {
+  color: var(--tx);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-transform: none;
+}
+/* A link inside a sentence: the accent, no underline until hovered. */
+.lnk {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ac);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.lnk:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.sv-steps {
+  counter-reset: step;
+}
+.sv-steps li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 14px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+  counter-increment: step;
+}
+/* The step's button sits level with its text block. */
+.sv-steps li > .btn {
+  align-self: center;
+}
+.sv-steps li:first-child {
+  border-top: 0;
+}
+.sv-steps li::before {
+  content: counter(step);
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  /* Centred on the title's line, not on the whole step. */
+  margin-top: -5px;
+  border: 1px solid var(--ac-ln);
+  border-radius: 50%;
+  background: var(--ac-soft);
+  color: var(--ac);
+  font-size: 13px;
+  font-weight: 700;
+}
+.sv-steps b {
+  display: block;
+  color: var(--tx);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.sv-steps .hint {
+  margin-top: 2px;
+  font-size: 13px;
+}
+.sv-manual {
+  display: grid;
+  gap: 10px;
+  margin: 4px 0 12px;
+}
+.sv-manual textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--sunk);
+  color: var(--tx);
+  font: 12.5px/1.5 var(--font);
+  resize: vertical;
+}
+.sv-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 2px 18px;
+  padding: 4px 0 0;
+  color: var(--tx-3);
+  font-size: 12px;
+  text-align: center;
+}
+.sv-dev,
+.sv-lan {
+  flex-basis: 100%;
+}
+.nw {
+  white-space: nowrap;
+}
+/* A phone: the sign beside the verdict, not on a row of its own. */
+[data-w="s"] .sv-st {
+  column-gap: 14px;
+  row-gap: 14px;
+  padding: 20px 16px;
+}
+[data-w="s"] .sv-st .beacon {
+  width: 44px;
+  height: 44px;
+}
+[data-w="s"] .sv-st .verdict {
+  font-size: 24px;
+}
+[data-w="s"] .sv-acts .bp {
+  width: 100%;
+}
+[data-w="s"] .sv-chk {
+  margin-left: 0;
+}
+[data-w="s"] .sv-loc,
+[data-w="s"] .sv-help {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+[data-w="s"] .sv-loc-m {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+[data-w="s"] .sv-loc-m .btn {
+  grid-column: 1 / -1;
+}
+[data-w="s"] .sv-steps li {
+  grid-template-columns: auto minmax(0, 1fr);
+  /* The number stands by its title, not halfway down to the button. */
+  align-items: start;
+}
+/* The step's action goes under its text, as wide as the other buttons. */
+[data-w="s"] .sv-steps li > .btn {
+  grid-column: 2;
+  justify-self: stretch;
+}
+
+/* ── forms (Vectra TextField) ──────────────────────────────────────────── */
+.in {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--sunk);
+  color: var(--tx);
+  font: 500 14px var(--font);
+  letter-spacing: -0.01em;
+  transition: border-color 0.16s, box-shadow 0.16s;
+}
+.in::placeholder {
+  color: var(--tx-3);
+}
+.in:focus {
+  outline: 0;
+  border-color: var(--ac);
+  box-shadow: 0 0 0 3px var(--ac-bg);
+}
+.in[aria-invalid="true"] {
+  border-color: var(--fail-f);
+}
+@media (hover: hover) and (pointer: fine) {
+  .in:hover:not(:focus) {
+    border-color: var(--line-s);
+  }
+}
+.fld {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+}
+.fld label {
+  color: var(--tx-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+.fld-err,
+.ms-err {
+  color: var(--fail);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.fld-g {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px 16px;
+  margin: 14px 0 6px;
+}
+.chkbx {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--tx-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+.chkbx input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--ac-f);
+}
+a.btn {
+  text-decoration: none;
+}
+
+/* ── the setup wizard ──────────────────────────────────────────────────── */
+.wz {
+  display: grid;
+  gap: 14px;
+}
+.wz-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunk);
+}
+.wz-steps button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--tx-3);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.wz-steps i {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line-2);
+  border-radius: 50%;
+  font: 700 11.5px/1 var(--font);
+  font-style: normal;
+}
+.wz-steps .ok i {
+  border-color: var(--ok-ln);
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.wz-steps .on button {
+  border-color: var(--ac-ln);
+  background: var(--ac-soft);
+  color: var(--tx);
+}
+.wz-steps .on i {
+  border-color: var(--ac);
+  color: var(--ac);
+}
+.wz-card {
+  display: grid;
+  gap: 12px;
+  padding: 24px;
+  border-color: var(--c-ln);
+  border-radius: 16px;
+  background-image: linear-gradient(135deg, var(--c-bg) 0%, transparent 45%), var(--panel);
+}
+.wz-card > p:not(.hint),
+.wz-body > p:not(.hint) {
+  color: var(--tx-2);
+  font-size: 15px;
+}
+.wz-hello {
+  --c-ln: var(--ac-ln);
+  --c-bg: var(--ac-bg);
+  padding: 30px 28px;
+}
+.wz-hello .verdict {
+  font-size: 32px;
+}
+.wz-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.wz-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.wz-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin-top: 6px;
+}
+/* A step's foot: "Back" on the left; "Skip this step" and the step's own
+   buttons on the right, the main one last — at the far right, as in the
+   dialogs, and last for the keyboard too (a phone puts it on top, below).
+   It stays at the bottom of the screen while a long step scrolls under it. */
+.wz-back {
+  margin-right: auto;
+}
+.wz-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.wz-card > .wz-foot,
+.wz-card > .wz-form > .wz-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 6px -24px -24px;
+  padding: 14px 24px 16px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 15px 15px;
+  background: var(--bg-app);
+}
+.wz-hello > .wz-foot {
+  margin: 10px -28px -30px;
+  padding: 16px 28px 18px;
+}
+.wz-list {
+  display: grid;
+  gap: 8px;
+  margin: 6px 0;
+}
+.wz-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunk);
+}
+.wz-list .sicon {
+  --c: var(--ac);
+  --c-bg: var(--ac-bg);
+  width: 30px;
+  height: 30px;
+}
+.wz-list li.ok .sicon {
+  --c: var(--ok);
+  --c-bg: var(--ok-bg);
+}
+.wz-list b {
+  color: var(--tx);
+  font-weight: 700;
+}
+/* A step whose fields and buttons are one form: the form adds no box of its own. */
+.wz-form {
+  display: contents;
+}
+.wz-qr {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 20px;
+}
+.qr {
+  display: block;
+  padding: 0;
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px var(--line-2), 0 10px 26px rgba(0, 0, 0, 0.3);
+}
+.wz-howto {
+  display: grid;
+  gap: 6px;
+  counter-reset: how;
+  color: var(--tx-2);
+}
+.wz-howto li {
+  display: grid;
+  grid-template-columns: 1.4em minmax(0, 1fr);
+  counter-increment: how;
+}
+.wz-howto li::before {
+  content: counter(how) ".";
+  color: var(--tx-3);
+  font-variant-numeric: tabular-nums;
+}
+/* Linking: the QR beside how to use it, the code, Telegram (see Setup.tsx). */
+.wz-link {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: "qr how" "qr code" "qr tg";
+  align-content: start;
+  gap: 14px 24px;
+}
+.wz-link.no-qr {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "how" "code" "tg";
+}
+.wz-link-qr {
+  grid-area: qr;
+}
+.wz-link-how {
+  grid-area: how;
+}
+.wz-link-code {
+  grid-area: code;
+}
+.wz-link-other {
+  display: none;
+  grid-area: other;
+  margin-top: 8px;
+}
+[data-w="s"] .wz-link-other {
+  display: block;
+}
+.wz-link-tg {
+  display: grid;
+  grid-area: tg;
+  justify-items: start;
+  gap: 6px;
+}
+[data-w="s"] .wz-link {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "tg" "code" "other" "how" "qr";
+}
+[data-w="s"] .wz-link-qr {
+  justify-self: center;
+}
+[data-w="s"] .wz-link-tg .btn {
+  width: 100%;
+}
+.wz-code {
+  gap: 10px;
+  margin: 4px 0 6px;
+}
+.wz-code b {
+  color: var(--tx);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.wz-qr .btn.bp {
+  margin-top: 10px;
+}
+.wz-wait {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--ac);
+  font-weight: 600;
+}
+/* The spinner stands by the first line of a sentence that wraps. */
+.wz-wait > .spin {
+  flex: none;
+  margin-top: 0.2em;
+}
+[data-w="s"] .wz-steps span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+/* On a phone the steps are numbers; the one you are on keeps its name. */
+[data-w="s"] .wz-steps {
+  display: flex;
+}
+[data-w="s"] .wz-steps li {
+  flex: 1 1 0;
+  min-width: 0;
+}
+[data-w="s"] .wz-steps li.on {
+  flex-grow: 2.6;
+}
+[data-w="s"] .wz-steps .on span:not(.sr) {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: hidden;
+  clip: auto;
+  text-overflow: ellipsis;
+}
+[data-w="s"] .wz-card {
+  padding: 20px 16px;
+}
+[data-w="s"] .wz-qr {
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: start;
+}
+/* A phone: the step's buttons across the width on top, the main one first; "Back" and "Skip" under them. */
+[data-w="s"] .wz-foot .btn:not(.wz-back):not(.wz-skip) {
+  width: 100%;
+}
+[data-w="s"] .wz-card > .wz-foot,
+[data-w="s"] .wz-card > .wz-form > .wz-foot {
+  margin: 6px -16px -20px;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+}
+[data-w="s"] .wz-bar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "main main" "back skip";
+  gap: 8px 12px;
+}
+[data-w="s"] .wz-main {
+  grid-area: main;
+  flex-direction: column-reverse;
+  align-items: stretch;
+}
+[data-w="s"] .wz-back {
+  grid-area: back;
+  justify-self: start;
+}
+[data-w="s"] .wz-skip {
+  grid-area: skip;
+  justify-self: end;
+}
+
+/* ── services: a country of their own ────────────────────────────────── */
+.sv-svc {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px;
+}
+.sv-svc .hint {
+  margin-top: 6px;
+  font-size: 13.5px;
+}
+.sv-svc-l {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sv-svc-r {
+  display: grid;
+  grid-template-columns: minmax(5.5em, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 14px;
+}
+.sv-svc-n {
+  font-weight: 600;
+  color: var(--tx);
+}
+/* On a phone the name goes above: the select keeps the whole width for
+   "По умолчанию · 🇷🇺 Россия". */
+[data-w="s"] .sv-svc-r {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.sv-svc-w {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--warn);
+}
+/* The select wears the TextField; its arrow is drawn in the theme's own ink. */
+.sel {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+.sel .in {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 36px;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+.sel .in:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.sel::after {
+  content: "";
+  position: absolute;
+  top: calc(50% - 6px);
+  right: 15px;
+  width: 7px;
+  height: 7px;
+  border: solid var(--tx-3);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+/* ── my sites ──────────────────────────────────────────────────────────── */
+.sv-sites {
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px;
+}
+.sv-sites .card-h {
+  margin: 0;
+}
+.sv-sites-m {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+.sv-sites-m .hint {
+  margin-top: 6px;
+  font-size: 13.5px;
+}
+.ms-tabs {
+  gap: 10px;
+}
+.ms-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+.ms-add .btn {
+  min-height: 42px;
+}
+.ms-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 6px;
+}
+.ms-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 4px 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunk);
+  color: var(--tx);
+}
+/* «+ сервис»: the picker under the site field; the chosen service is a list
+   entry like a site, with a small word saying it is a whole service. */
+.ms-svc {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+.ms-svc-p {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+.ms-svc-l {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ms-svc-r {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunk);
+  color: var(--tx);
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.ms-svc-r:hover:not(:disabled) {
+  border-color: var(--ac-ln);
+  background: var(--hover);
+}
+.ms-svc-r:focus-visible {
+  outline: 2px solid var(--ac);
+  outline-offset: 2px;
+}
+.ms-tag {
+  color: var(--tx-3);
+  font-size: 12px;
+}
+.ms-none {
+  padding: 14px;
+  border: 1px dashed var(--line-2);
+  border-radius: 8px;
+  color: var(--tx-3);
+  text-align: center;
+}
+.ms-bar {
+  position: sticky;
+  bottom: 8px;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--ac-ln);
+  border-radius: 8px;
+  background: var(--ac-soft), var(--bg-el);
+  color: var(--tx);
+  font-weight: 600;
+  box-shadow: var(--sh-lg);
+}
+[data-w="s"] .sv-sites {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+[data-w="s"] .sv-sites-m {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-w="s"] .ms-add {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* ── overlays ──────────────────────────────────────────────────────────── */
+.scrim {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 870;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: vx-in 0.16s;
+}
+.dlg {
+  width: 100%;
+  max-width: 440px;
+  padding: 22px;
+  border: 1px solid var(--line-2);
+  border-radius: 16px;
+  background-color: var(--card);
+  background-image: var(--panel);
+  box-shadow: var(--sh-lg);
+  animation: vx-pop 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.dlg h2 {
+  color: var(--tx);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+.dlg p {
+  margin: 8px 0 20px;
+  color: var(--tx-2);
+}
+.dlg .row {
+  justify-content: flex-end;
+}
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 880;
+  display: grid;
+  gap: 8px;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+}
+/* A phone: at the top, clear of the wizard's buttons pinned to the bottom. */
+[data-w="s"] .toasts {
+  top: 12px;
+  right: 12px;
+  bottom: auto;
+  left: 12px;
+  width: auto;
+}
+/* MuiAlert, filled (Vectra theme.ts): the tone over near-black glass. */
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 10px 12px 14px;
+  border: 1px solid var(--c-ln);
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--c-bg) 0%, transparent 100%), var(--bg-el);
+  box-shadow: var(--sh-lg), inset 0 0 0 1px var(--c-bg);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  animation: vx-pop 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.toast > .ic {
+  color: var(--c);
+}
+.toast div {
+  flex: 1;
+  min-width: 0;
+  color: var(--tx);
+  font-size: 13.5px;
+}
+.toast small {
+  display: block;
+  margin-top: 3px;
+  color: var(--tx-3);
+  font: 11.5px/1.45 var(--font);
+  overflow-wrap: anywhere;
+}
+@keyframes vx-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes vx-pop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+}
+/* rw-card-fade-in */
+@keyframes vx-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vx * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+@media (forced-colors: active) {
+  .tab[aria-selected="true"],
+  .seg [aria-checked="true"],
+  .lc.on,
+  .lcv.on,
+  .sv-li.on {
+    outline: 2px solid;
+  }
+}

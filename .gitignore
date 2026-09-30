@@ -13,6 +13,14 @@ Thumbs.db
 *.log
 *.tmp
 *.bak
+# Agent runtime state (sessions, notepad, plans, logs, handoffs). AGENTS.md
+# calls these ignored operational artifacts, but nothing ignored them, so they
+# showed up as untracked in every worktree and got staged by a `git add <dir>`
+# more than once. Not anchored to the root: they appear per package too
+# (apps/web/.omc, router/vectra-controller-pro/.omc, and inside the data-plane
+# stand). `.omc/skills/**` is the documented committable exception — force-add
+# it with `git add -f` if a project-scoped skill is ever kept here.
+.omc/
 .codex-runtime/
 .playwright-cli/
 .playwright-mcp/

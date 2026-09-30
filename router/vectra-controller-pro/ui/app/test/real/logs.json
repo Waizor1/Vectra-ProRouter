@@ -1,0 +1,124 @@
+{
+	"lines": [
+		{
+			"time": "2026-09-27T17:52:34Z",
+			"level": "info",
+			"source": "xray",
+			"message": "infra/conf/serial: Reading config: &{Name:/var/run/vectra-controller-pro/xray.json Format:json}"
+		},
+		{
+			"time": "2026-09-27T17:52:34Z",
+			"level": "warn",
+			"source": "xray",
+			"message": "core: Xray 26.3.27 started"
+		},
+		{
+			"time": "2026-09-27T17:52:36Z",
+			"level": "warn",
+			"source": "xray",
+			"message": "app/observatory/burst: error ping http://44.44.44.44:8081/probe with node-dead: Get \"http://44.44.44.44:8081/probe\": io: read/write on closed pipe"
+		},
+		{
+			"time": null,
+			"level": "unknown",
+			"source": "xray",
+			"message": "Xray 26.3.27 (Xray, Penetrates Everything.) d2758a0 (go1.26.1 linux/arm64)"
+		},
+		{
+			"time": null,
+			"level": "unknown",
+			"source": "xray",
+			"message": "A unified platform for anti-censorship."
+		},
+		{
+			"time": "2026-09-27T17:52:36Z",
+			"level": "info",
+			"source": "xray",
+			"message": "infra/conf/serial: Reading config: &{Name:/var/run/vectra-controller-pro/xray.json Format:json}"
+		},
+		{
+			"time": "2026-09-27T17:52:36Z",
+			"level": "warn",
+			"source": "xray",
+			"message": "core: Xray 26.3.27 started"
+		},
+		{
+			"time": null,
+			"level": "unknown",
+			"source": "xray",
+			"message": "Xray 26.3.27 (Xray, Penetrates Everything.) d2758a0 (go1.26.1 linux/arm64)"
+		},
+		{
+			"time": null,
+			"level": "unknown",
+			"source": "xray",
+			"message": "A unified platform for anti-censorship."
+		},
+		{
+			"time": "2026-09-27T17:52:39Z",
+			"level": "info",
+			"source": "xray",
+			"message": "infra/conf/serial: Reading config: &{Name:/var/run/vectra-controller-pro/xray.json Format:json}"
+		},
+		{
+			"time": "2026-09-27T17:52:39Z",
+			"level": "warn",
+			"source": "xray",
+			"message": "core: Xray 26.3.27 started"
+		},
+		{
+			"time": null,
+			"level": "unknown",
+			"source": "xray",
+			"message": "Xray 26.3.27 (Xray, Penetrates Everything.) d2758a0 (go1.26.1 linux/arm64)"
+		},
+		{
+			"time": null,
+			"level": "unknown",
+			"source": "xray",
+			"message": "A unified platform for anti-censorship."
+		},
+		{
+			"time": "2026-09-27T17:52:39Z",
+			"level": "info",
+			"source": "xray",
+			"message": "infra/conf/serial: Reading config: &{Name:/var/run/vectra-controller-pro/xray.json Format:json}"
+		},
+		{
+			"time": "2026-09-27T17:52:39Z",
+			"level": "warn",
+			"source": "xray",
+			"message": "core: Xray 26.3.27 started"
+		},
+		{
+			"time": null,
+			"level": "unknown",
+			"source": "xray",
+			"message": "Xray 26.3.27 (Xray, Penetrates Everything.) d2758a0 (go1.26.1 linux/arm64)"
+		},
+		{
+			"time": null,
+			"level": "unknown",
+			"source": "xray",
+			"message": "A unified platform for anti-censorship."
+		},
+		{
+			"time": "2026-09-27T17:52:39Z",
+			"level": "info",
+			"source": "xray",
+			"message": "infra/conf/serial: Reading config: &{Name:/var/run/vectra-controller-pro/xray.json Format:json}"
+		},
+		{
+			"time": "2026-09-27T17:52:39Z",
+			"level": "warn",
+			"source": "xray",
+			"message": "core: Xray 26.3.27 started"
+		},
+		{
+			"time": "2026-09-27T17:52:41Z",
+			"level": "warn",
+			"source": "xray",
+			"message": "app/observatory/burst: error ping http://44.44.44.44:8081/probe with node-dead: Get \"http://44.44.44.44:8081/probe\": io: read/write on closed pipe"
+		}
+	]
+}

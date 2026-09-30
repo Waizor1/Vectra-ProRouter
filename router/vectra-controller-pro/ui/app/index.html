@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vectra — dev (mock router)</title>
+    <style>
+      /* A rough stand-in for LuCI's bootstrap chrome, so the app is reviewed where it will live. */
+      :root { color-scheme: light dark; }
+      body { margin: 0; font: 13px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background: #f2f4f6; color: #333; }
+      .luci-head { position: sticky; top: 0; z-index: 800; display: flex; align-items: center; gap: 18px; padding: 0 20px; height: 44px; background: #fff; border-bottom: 1px solid #dde1e6; }
+      .luci-head b { font-size: 15px; }
+      .luci-head span { color: #666; }
+      .luci-main { max-width: 940px; margin: 0 auto; padding: 16px 12px 48px; }
+      .luci-main h2 { font-size: 20px; font-weight: 500; margin: 8px 0 14px; }
+      .dev { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 0 0 12px; font: 12px ui-monospace, Menlo, monospace; color: #666; }
+      .dev a { color: #1a6fd1; text-decoration: none; padding: 2px 6px; border-radius: 4px; }
+      .dev a[aria-current] { background: #1a6fd1; color: #fff; }
+      body.bare { background: #12161d; }
+      body.bare .luci-head, body.bare .luci-main > h2 { display: none; }
+      body.bare .luci-main { max-width: none; padding: 0; }
+      body.bare .dev { margin: 0; padding: 6px 12px; background: #0d1117; border-bottom: 1px solid #30363d; color: #8b949e; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #1b1f23; color: #ccc; }
+        .luci-head { background: #24292e; border-color: #30363d; }
+        .luci-head span { color: #999; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="luci-head"><b>OpenWrt</b><span>Status</span><span>System</span><span>Services</span><span>Network</span></header>
+    <div class="luci-main" id="maincontent">
+      <h2>Vectra</h2>
+      <nav class="dev" id="dev-scenarios" aria-label="Mock scenarios">scenario:</nav>
+      <div id="vectra-host"></div>
+    </div>
+    <script type="module" src="/src/dev.tsx"></script>
+  </body>
+</html>

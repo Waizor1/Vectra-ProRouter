@@ -1,0 +1,182 @@
+[
+ {
+  "remarks": "Stand: Russian networks by the kernel",
+  "dns": {
+   "servers": [
+    "44.44.44.53"
+   ],
+   "queryStrategy": "UseIPv4"
+  },
+  "log": {
+   "loglevel": "warning"
+  },
+  "stats": {},
+  "policy": {
+   "system": {
+    "statsOutboundUplink": true,
+    "statsOutboundDownlink": true
+   }
+  },
+  "inbounds": [
+   {
+    "tag": "socks",
+    "port": 10808,
+    "protocol": "socks",
+    "settings": {
+     "udp": true
+    }
+   }
+  ],
+  "outbounds": [
+   {
+    "tag": "sticky-de1",
+    "protocol": "vless",
+    "settings": {
+     "vnext": [
+      {
+       "address": "10.44.0.2",
+       "port": 2001,
+       "users": [
+        {
+         "id": "5f0c2b4e-7d1a-4c3b-9e8f-0a1b2c3d4e5f",
+         "encryption": "none"
+        }
+       ]
+      }
+     ]
+    },
+    "streamSettings": {
+     "network": "tcp",
+     "security": "none"
+    }
+   },
+   {
+    "tag": "sticky-by1",
+    "protocol": "vless",
+    "settings": {
+     "vnext": [
+      {
+       "address": "10.44.0.2",
+       "port": 2002,
+       "users": [
+        {
+         "id": "5f0c2b4e-7d1a-4c3b-9e8f-0a1b2c3d4e5f",
+         "encryption": "none"
+        }
+       ]
+      }
+     ]
+    },
+    "streamSettings": {
+     "network": "tcp",
+     "security": "none"
+    }
+   },
+   {
+    "tag": "sticky-nl1",
+    "protocol": "vless",
+    "settings": {
+     "vnext": [
+      {
+       "address": "10.44.0.2",
+       "port": 2004,
+       "users": [
+        {
+         "id": "5f0c2b4e-7d1a-4c3b-9e8f-0a1b2c3d4e5f",
+         "encryption": "none"
+        }
+       ]
+      }
+     ]
+    },
+    "streamSettings": {
+     "network": "tcp",
+     "security": "none"
+    }
+   },
+   {
+    "tag": "DIRECT",
+    "protocol": "freedom"
+   },
+   {
+    "tag": "BLOCK",
+    "protocol": "blackhole"
+   }
+  ],
+  "routing": {
+   "domainStrategy": "IPIfNonMatch",
+   "rules": [
+    {
+     "protocol": [
+      "bittorrent"
+     ],
+     "outboundTag": "DIRECT"
+    },
+    {
+     "domain": [
+      "domain:blocked.origin.stand"
+     ],
+     "balancerTag": "BL-MAIN"
+    },
+    {
+     "domain": [
+      "domain:ru",
+      "geosite:category-ru"
+     ],
+     "balancerTag": "BL-RU"
+    },
+    {
+     "ip": [
+      "geoip:ru",
+      "44.44.44.44/32"
+     ],
+     "balancerTag": "BL-RU"
+    },
+    {
+     "ip": [
+      "geoip:private"
+     ],
+     "outboundTag": "DIRECT"
+    },
+    {
+     "network": "tcp,udp",
+     "balancerTag": "BL-MAIN"
+    }
+   ],
+   "balancers": [
+    {
+     "tag": "BL-MAIN",
+     "selector": [
+      "sticky-de1"
+     ],
+     "strategy": {
+      "type": "leastPing"
+     },
+     "fallbackTag": "DIRECT"
+    },
+    {
+     "tag": "BL-RU",
+     "selector": [
+      "sticky-by1"
+     ],
+     "strategy": {
+      "type": "leastPing"
+     },
+     "fallbackTag": "DIRECT"
+    }
+   ]
+  },
+  "burstObservatory": {
+   "subjectSelector": [
+    "sticky-"
+   ],
+   "pingConfig": {
+    "destination": "http://44.44.44.44:8081/probe",
+    "interval": "300s",
+    "sampling": 1,
+    "timeout": "10s",
+    "httpMethod": "GET"
+   }
+  }
+ }
+]

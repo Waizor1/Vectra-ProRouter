@@ -1,0 +1,102 @@
+{
+  "version": "0.4.0-r1",
+  "power": {
+    "enabled": true,
+    "running": true,
+    "holder": "vectra",
+    "handBack": "passwall2"
+  },
+  "controller": {
+    "running": true,
+    "pid": 3012,
+    "uptimeSec": 38470
+  },
+  "engine": {
+    "state": "running",
+    "xrayVersion": "26.3.27",
+    "pid": 4127,
+    "uptimeSec": 38461,
+    "rssMiB": 61.4,
+    "memoryLimitMiB": 80,
+    "restarts": 1,
+    "lastExit": {
+      "at": "2026-09-27T01:18:03Z",
+      "code": -1,
+      "error": "signal: killed"
+    }
+  },
+  "api": {
+    "listen": "127.0.0.1:10085",
+    "reachable": true
+  },
+  "metrics": {
+    "listen": "127.0.0.1:10086",
+    "reachable": true
+  },
+  "dataplane": {
+    "loaded": true,
+    "killSwitch": false,
+    "counters": {
+      "vctl_tproxy_hits": 184213,
+      "vctl_egress_exempt": 402117,
+      "vctl_output_marked": 1180,
+      "vctl_would_leak": 0
+    }
+  },
+  "controlPlane": {
+    "reachable": true,
+    "lastCheckIn": "2026-09-27T11:59:30Z",
+    "routerId": "00000000-0000-4000-8000-000000000001"
+  },
+  "subscription": {
+    "entryIndex": 0,
+    "entryRemark": "🇷🇺🇪🇺 Авто Самый стабильный",
+    "entryCount": 26,
+    "fetchedAt": "2026-09-27T00:04:11Z",
+    "source": "panel",
+    "overrideStale": false
+  },
+  "probe": {
+    "intervalSec": 300,
+    "source": "default"
+  },
+  "pins": {
+    "BL-MAIN": "bridge-nl5"
+  },
+  "legacy": {
+    "agentEnabled": false,
+    "passwallRunning": false
+  },
+  "router": {
+    "hostname": "vectra-ax3000t",
+    "model": "Xiaomi Mi Router AX3000T",
+    "release": "OpenWrt 24.10.6",
+    "memTotalMiB": 234,
+    "memAvailableMiB": 88,
+    "overlayFreeMiB": 19,
+    "tmpFreeMiB": 96,
+    "load": [
+      0.31,
+      0.24,
+      0.18
+    ],
+    "uptimeSec": 93211
+  },
+  "ui": {
+    "locked": false
+  },
+  "route": {
+    "nodes": [
+      {
+        "tag": "bridge-fin5",
+        "country": "FI",
+        "egress": null
+      }
+    ],
+    "movedFrom": null,
+    "movedAt": null,
+    "reason": null,
+    "unfit": [],
+    "unfitKept": []
+  }
+}

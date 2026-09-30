@@ -1,0 +1,13 @@
+{
+	"admin/vectra": {
+		"title": "Vectra",
+		"order": 1,
+		"action": {
+			"type": "view",
+			"path": "vectra/app"
+		},
+		"depends": {
+			"acl": [ "vectra-controller-pro" ]
+		}
+	}
+}

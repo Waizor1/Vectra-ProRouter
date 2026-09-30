@@ -1,0 +1,12 @@
+#!/bin/sh
+[ -n "${IPKG_INSTROOT}" ] && exit 0
+[ "${PKG_UPGRADE:-0}" = 1 ] && exit 0
+[ "${1:-}" = upgrade ] && exit 0
+CRONTAB="${CRONTAB:-/etc/crontabs/root}"
+if grep -qxF '# >>> vectra-reporter (managed) >>>' "$CRONTAB" 2>/dev/null &&
+	sed '/^# >>> vectra-reporter (managed) >>>$/,/^# <<< vectra-reporter (managed) <<<$/d' "$CRONTAB" > "$CRONTAB.vectra-reporter" &&
+	mv "$CRONTAB.vectra-reporter" "$CRONTAB"; then
+	/etc/init.d/cron restart >/dev/null 2>&1
+fi
+/etc/init.d/vectra-reporter disable >/dev/null 2>&1
+exit 0

@@ -1,0 +1,75 @@
+{
+	"version": "dataplane-stand",
+	"controller": {
+		"running": true,
+		"pid": 657,
+		"uptimeSec": 124
+	},
+	"engine": {
+		"state": "running",
+		"xrayVersion": "26.3.27",
+		"pid": 1326,
+		"uptimeSec": 114,
+		"rssMiB": 31.200000,
+		"memoryLimitMiB": 32,
+		"restarts": 0,
+		"lastExit": null
+	},
+	"api": {
+		"listen": "127.0.0.1:10085",
+		"reachable": true
+	},
+	"metrics": {
+		"listen": "127.0.0.1:10086",
+		"reachable": true
+	},
+	"dataplane": {
+		"loaded": true,
+		"killSwitch": false,
+		"counters": {
+			"vctl_egress_exempt": 142,
+			"vctl_output_marked": 0,
+			"vctl_tproxy_hits": 30,
+			"vctl_would_leak": 0
+		}
+	},
+	"controlPlane": {
+		"reachable": true,
+		"lastCheckIn": "2026-09-27T17:54:29Z",
+		"routerId": "r-ui-stand"
+	},
+	"subscription": {
+		"entryIndex": 0,
+		"entryRemark": "🧪 Stand A",
+		"entryCount": 2,
+		"fetchedAt": "2026-09-27T17:52:28Z",
+		"source": "panel",
+		"overrideStale": false
+	},
+	"probe": {
+		"intervalSec": 600,
+		"source": "default"
+	},
+	"pins": {
+		
+	},
+	"legacy": {
+		"agentEnabled": false,
+		"passwallRunning": false
+	},
+	"router": {
+		"hostname": "0ad063b9c8b9",
+		"model": "Vectra UI Stand (synthetic)",
+		"release": "OpenWrt 24.10.8 r29233-443ec4032a",
+		"memTotalMiB": 3905,
+		"memAvailableMiB": 3485,
+		"overlayFreeMiB": 23952,
+		"tmpFreeMiB": 23952,
+		"load": [
+			0.200000,
+			0.340000,
+			0.400000
+		],
+		"uptimeSec": 1703
+	}
+}

@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "instance": {
+    "name": "golden-router",
+    "logLevel": "warning"
+  },
+  "process": {
+    "xrayBinary": "/usr/bin/xray",
+    "workDir": "/var/run/vectra-controller-pro",
+    "memorySoftMiB": 80,
+    "oomScoreAdj": -500,
+    "restartBackoff": {
+      "initialMs": 500,
+      "factor": 2,
+      "maxMs": 60000,
+      "reset": "60s"
+    },
+    "reloadGrace": "5s",
+    "startTimeout": "15s"
+  },
+  "inbounds": {
+    "tproxy": {
+      "listenIP": "0.0.0.0",
+      "port": 12345,
+      "fwmark": 1,
+      "udpEnabled": true,
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "routeOnly": true
+      },
+      "tag": "tproxy-in"
+    }
+  },
+  "geo": {
+    "assetDir": "/usr/share/v2ray",
+    "geoipUrl": "https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat",
+    "geositeUrl": "https://github.com/itdoginfo/allow-domains/releases/latest/download/geosite.dat",
+    "updateOnStart": false
+  },
+  "subscriptions": [
+    {
+      "id": "primary",
+      "url": "https://subscription.example.test/api/sub/GOLDEN_TOKEN",
+      "enabled": true,
+      "userAgent": "v2rayNG/1.9.5",
+      "mode": "json",
+      "entryIndex": 0
+    }
+  ]
+}

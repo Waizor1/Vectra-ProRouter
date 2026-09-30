@@ -1,0 +1,303 @@
+{
+  "apiReachable": true,
+  "probe": {
+    "intervalSec": 300,
+    "providerIntervalSec": 43200,
+    "source": "default",
+    "sampling": 2,
+    "timeoutSec": 10,
+    "destination": "https://cp.cloudflare.com/generate_204"
+  },
+  "defaultOutbound": "bridge-pl5",
+  "balancers": [
+    {
+      "tag": "BL-MAIN",
+      "role": "main",
+      "strategy": "leastLoad",
+      "expected": 2,
+      "selector": [
+        "bridge-pl5",
+        "bridge-de5",
+        "bridge-fin5",
+        "bridge-fr5",
+        "bridge-nl5",
+        "bridge-us5",
+        "bridge-tr5",
+        "bridge-ae5"
+      ],
+      "members": [
+        "bridge-pl5",
+        "bridge-de5",
+        "bridge-fin5",
+        "bridge-fr5",
+        "bridge-nl5",
+        "bridge-us5",
+        "bridge-tr5",
+        "bridge-ae5"
+      ],
+      "fallback": {
+        "tag": "stage-main-backup",
+        "balancer": "BL-MAIN-BACKUP"
+      },
+      "selected": [
+        "bridge-de5",
+        "bridge-nl5"
+      ],
+      "pinned": "bridge-nl5",
+      "matchers": [
+        {
+          "kind": "domain",
+          "network": null,
+          "sample": [
+            "domain:chatgpt.com",
+            "domain:openai.com",
+            "domain:oaistatic.com",
+            "domain:oaiusercontent.com",
+            "domain:claude.ai",
+            "domain:anthropic.com"
+          ],
+          "total": 41
+        },
+        {
+          "kind": "domain",
+          "network": null,
+          "sample": [
+            "domain:knst.me",
+            "domain:canva.com",
+            "domain:canva.com.ru",
+            "domain:cdninstagram.com",
+            "domain:igcdn.com",
+            "domain:fbcdn.net"
+          ],
+          "total": 57
+        },
+        {
+          "kind": "all",
+          "network": "tcp,udp",
+          "sample": [],
+          "total": 0
+        }
+      ]
+    },
+    {
+      "tag": "BL-MAIN-BACKUP",
+      "role": "reserve",
+      "strategy": "leastLoad",
+      "expected": 2,
+      "selector": [
+        "hy2-de5",
+        "hy2-fin5",
+        "hy2-nl5"
+      ],
+      "members": [
+        "hy2-de5",
+        "hy2-fin5",
+        "hy2-nl5"
+      ],
+      "fallback": {
+        "tag": "stage-wl",
+        "balancer": "BL-WL-LV1"
+      },
+      "selected": [
+        "hy2-de5",
+        "hy2-nl5"
+      ],
+      "pinned": null,
+      "matchers": []
+    },
+    {
+      "tag": "BL-RU",
+      "role": "routed",
+      "strategy": "leastLoad",
+      "expected": 6,
+      "selector": [
+        "bridge-ru-tcp"
+      ],
+      "members": [
+        "bridge-ru-tcp"
+      ],
+      "fallback": {
+        "tag": "stage-main",
+        "balancer": "BL-MAIN"
+      },
+      "selected": [
+        "bridge-ru-tcp"
+      ],
+      "pinned": null,
+      "matchers": [
+        {
+          "kind": "domain",
+          "network": null,
+          "sample": [
+            "geosite:youtube",
+            "domain:googlevideo.com",
+            "domain:ytimg.com",
+            "domain:ggpht.com"
+          ],
+          "total": 4
+        },
+        {
+          "kind": "domain",
+          "network": null,
+          "sample": [
+            "geosite:category-gov-ru",
+            "domain:gosuslugi.ru",
+            "domain:gu-st.ru",
+            "domain:gosuslugi.app",
+            "domain:nalog.ru",
+            "domain:nalog.gov.ru"
+          ],
+          "total": 66
+        },
+        {
+          "kind": "domain",
+          "network": null,
+          "sample": [
+            "domain:ru",
+            "domain:xn--p1ai",
+            "domain:by",
+            "domain:nnmclub.to",
+            "domain:kinozal.tv",
+            "keyword:nnmclub"
+          ],
+          "total": 69
+        },
+        {
+          "kind": "ip",
+          "network": null,
+          "sample": [
+            "geoip:ru"
+          ],
+          "total": 1
+        }
+      ]
+    },
+    {
+      "tag": "BL-TK",
+      "role": "routed",
+      "strategy": "leastPing",
+      "expected": null,
+      "selector": [
+        "bridge-by-tcp"
+      ],
+      "members": [
+        "bridge-by-tcp"
+      ],
+      "fallback": {
+        "tag": "stage-main",
+        "balancer": "BL-MAIN"
+      },
+      "selected": [
+        "bridge-by-tcp"
+      ],
+      "pinned": null,
+      "matchers": [
+        {
+          "kind": "domain",
+          "network": null,
+          "sample": [
+            "geosite:tiktok",
+            "domain:tiktok.com",
+            "domain:tiktokv.com",
+            "domain:tiktokv.eu",
+            "domain:tiktokv.us",
+            "domain:tiktokw.eu"
+          ],
+          "total": 25
+        },
+        {
+          "kind": "domain",
+          "network": null,
+          "sample": [
+            "geosite:telegram",
+            "domain:telegram.org",
+            "domain:t.me",
+            "domain:telegram.me",
+            "domain:telegram-cdn.org",
+            "domain:cdn-telegram.org"
+          ],
+          "total": 20
+        },
+        {
+          "kind": "ip",
+          "network": null,
+          "sample": [
+            "geoip:telegram",
+            "91.108.0.0/16",
+            "149.154.0.0/16",
+            "95.161.64.0/20",
+            "185.76.151.0/24",
+            "2001:b28:f23c::/48"
+          ],
+          "total": 10
+        }
+      ]
+    },
+    {
+      "tag": "BL-WL-LV1",
+      "role": "reserve",
+      "strategy": "leastPing",
+      "expected": null,
+      "selector": [
+        "whitelist-lv1"
+      ],
+      "members": [],
+      "fallback": {
+        "tag": "stage-wl-lv2",
+        "balancer": "BL-WL-LV2"
+      },
+      "selected": [],
+      "pinned": null,
+      "matchers": []
+    },
+    {
+      "tag": "BL-WL-LV2",
+      "role": "reserve",
+      "strategy": "leastPing",
+      "expected": null,
+      "selector": [
+        "whitelist-lv2"
+      ],
+      "members": [
+        "whitelist-lv2"
+      ],
+      "fallback": {
+        "tag": "stage-wl-lv3",
+        "balancer": "BL-WL-LV3"
+      },
+      "selected": [
+        "whitelist-lv2"
+      ],
+      "pinned": null,
+      "matchers": []
+    },
+    {
+      "tag": "BL-WL-LV3",
+      "role": "reserve",
+      "strategy": "leastPing",
+      "expected": null,
+      "selector": [
+        "whitelist-lv3"
+      ],
+      "members": [
+        "whitelist-lv3",
+        "whitelist-lv3-2",
+        "whitelist-lv3-3",
+        "whitelist-lv3-4",
+        "whitelist-lv3-5",
+        "whitelist-lv3-6",
+        "whitelist-lv3-7",
+        "whitelist-lv3-8"
+      ],
+      "fallback": {
+        "tag": "whitelist-lv3",
+        "balancer": null
+      },
+      "selected": [
+        "whitelist-lv3"
+      ],
+      "pinned": null,
+      "matchers": []
+    }
+  ]
+}

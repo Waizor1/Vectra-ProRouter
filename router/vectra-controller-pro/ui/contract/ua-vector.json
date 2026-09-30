@@ -1,0 +1,17 @@
+{
+  "note": "Test vector for the router User-Agent token (internal/uatoken). Throwaway keys: nothing trusts them.",
+  "serverPrivateKey": "KpR6Ve6DRGi7lscFcFV3Dd0HZozFJ0cfnW9KmonboiA=",
+  "serverPublicKey": "is/mXBP6gCx/6HUjMJdB7wDSkQd3UEwFhNex8F9AJB0=",
+  "kid": 1,
+  "deviceSeed": "aiX/ZdOqYQ5DKnyikO2YDRErDSdBoOc7icofRrjN7Hg=",
+  "devicePublicKey": "U4YPyqhftXJhRYbQLdQBSRB3DQtqIskvmMW0Yh91E2o=",
+  "deviceId": "vectra-3f9a2c7e11d4",
+  "version": "0.5.0-r1",
+  "hwid": "b61c3ccda575ea9ddfac42b6f8035218db23732ec75c6165c2afa472fec23830",
+  "url": "https://sub.example.invalid/api/sub/AbCdEf123",
+  "requestTarget": "/api/sub/AbCdEf123",
+  "now": 1790000000,
+  "ephemeralSeed": "hvI1MDeXKNdwR4xYF4QEfuT/Vb1GXNLkLxUw/PWjbv4=",
+  "nonce": "Xn9lozWjLECXi9Wy",
+  "userAgent": "VectraRouter/0.5.0-r1 vr1.AWNDW2eLXAxYBdHg9VeHgRmtamtRjHwOSb9EHMCL9Q0gXn9lozWjLECXi9Wy60_evimVwj1vJIEYhNSaDKZvxdMGXizPhAGfjzLHpydgaKsD7LTlf4q1_5hi3mD7q4nqeK2ljrrWS5FeCiOUDoHYxKocZqo5qCC14Km0ouMMpxeZ1dO6-cxBGl6hNW041HNpJziUpBQ_"
+}

@@ -1,0 +1,51 @@
+{
+  "log": {"loglevel": "warning"},
+  "dns": {
+    "tag": "dns-global",
+    "hosts": {"dns.google": "8.8.8.8"},
+    "servers": [
+      {"address": "77.37.251.33", "port": 53, "queryStrategy": "UseIP", "tag": "dns-in-default"},
+      {"address": "fakedns", "domains": ["geosite:META", "domain:instagram.com"], "tag": "dns-in-WorldProxy"},
+      {"address": "fakedns", "domains": ["geosite:YOUTUBE"], "tag": "dns-in-YouTube"},
+      {"address": "localhost", "domains": ["full:ru17.provider.invalid", "full:by2.provider.invalid"], "tag": "dns-in-vpslist"}
+    ],
+    "queryStrategy": "UseIP"
+  },
+  "policy": {"levels": {"0": {"handshake": 4, "connIdle": 300}}},
+  "inbounds": [
+    {"tag": "dns-in", "listen": "127.0.0.1", "port": 10053, "protocol": "dokodemo-door", "settings": {"address": "77.37.251.33", "port": 53, "network": "tcp,udp"}},
+    {"tag": "tcp_redir", "port": 12345, "protocol": "dokodemo-door", "settings": {"network": "tcp", "followRedirect": true},
+     "streamSettings": {"sockopt": {"tproxy": "tproxy"}},
+     "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic", "fakedns"], "metadataOnly": false, "routeOnly": true}},
+    {"tag": "udp_redir", "port": 12345, "protocol": "dokodemo-door", "settings": {"network": "udp", "followRedirect": true},
+     "streamSettings": {"sockopt": {"tproxy": "tproxy"}},
+     "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic", "fakedns"], "metadataOnly": false, "routeOnly": true}}
+  ],
+  "outbounds": [
+    {"tag": "direct", "protocol": "freedom", "settings": {"domainStrategy": "UseIP"}, "streamSettings": {"sockopt": {"mark": 255}}},
+    {"tag": "WorldProxy:NL", "protocol": "vless",
+     "settings": {"vnext": [{"address": "ru17.provider.invalid", "port": 50055, "users": [{"id": "00000000-0000-4000-8000-000000000000", "encryption": "none"}]}]},
+     "streamSettings": {"network": "tcp", "security": "reality", "sockopt": {"mark": 255},
+       "realitySettings": {"serverName": "example.com", "fingerprint": "chrome", "publicKey": "2VrZ4X4n8Vf0k8uS7J6dOq0pX8oQ9mJ3HtzZyw5cY0A", "shortId": "00000000000000"}}},
+    {"tag": "Tiktok:BY", "protocol": "vless",
+     "settings": {"vnext": [{"address": "by2.provider.invalid", "port": 443, "users": [{"id": "00000000-0000-4000-8000-000000000000", "encryption": "none"}]}]},
+     "streamSettings": {"network": "tcp", "security": "reality", "sockopt": {"mark": 255, "tcpFastOpen": true},
+       "realitySettings": {"serverName": "example.com", "fingerprint": "chrome", "publicKey": "2VrZ4X4n8Vf0k8uS7J6dOq0pX8oQ9mJ3HtzZyw5cY0A", "shortId": "00000000000000"}}},
+    {"tag": "dns-out", "protocol": "dns", "settings": {"address": "77.37.251.33", "port": 53, "network": "udp"}, "proxySettings": {"tag": "direct"}},
+    {"tag": "blackhole", "protocol": "blackhole"}
+  ],
+  "fakedns": [{"ipPool": "198.18.0.0/16", "poolSize": 65535}],
+  "env": {"XRAY_LOCATION_ASSET": "/usr/share/v2ray/"},
+  "routing": {
+    "domainStrategy": "IPOnDemand",
+    "domainMatcher": "hybrid",
+    "rules": [
+      {"inboundTag": ["dns-in-default"], "outboundTag": "direct"},
+      {"inboundTag": ["dns-in"], "outboundTag": "dns-out"},
+      {"ruleTag": "WorldProxy Domains", "inboundTag": ["tcp_redir", "udp_redir"], "network": "tcp,udp", "domains": ["geosite:META", "domain:instagram.com"], "outboundTag": "WorldProxy:NL"},
+      {"ruleTag": "Tiktok Domains", "inboundTag": ["tcp_redir", "udp_redir"], "network": "tcp,udp", "domains": ["geosite:TIKTOK"], "outboundTag": "Tiktok:BY"},
+      {"ruleTag": "default", "network": "tcp,udp", "outboundTag": "direct"}
+    ]
+  },
+  "version": {"min": "26.3.27"}
+}

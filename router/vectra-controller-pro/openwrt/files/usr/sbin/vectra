@@ -1,0 +1,4 @@
+#!/bin/sh
+# vectra on | off | keep | status: Vectra's own switch, for a person at the
+# router's console. It is `vctl power`; `vectra --help` says what each does.
+exec /usr/sbin/vctl power "$@"

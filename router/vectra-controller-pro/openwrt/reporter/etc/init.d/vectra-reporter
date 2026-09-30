@@ -1,0 +1,13 @@
+#!/bin/sh /etc/rc.common
+# vectra-reporter's marks around a boot (ADR-0007): a boot after no clean
+# shutdown is an incident. Its work is cron's, every minute.
+START=12
+STOP=05
+
+start() {
+	/usr/sbin/vectra-reporter boot >/dev/null 2>&1 &
+}
+
+stop() {
+	/usr/sbin/vectra-reporter shutdown >/dev/null 2>&1
+}

@@ -1,0 +1,29 @@
+{
+  "format": "VECTRA:R1 — see internal/claim/claim.go and the Setup wizard section of ui/contract/README.md. Every binary value here is standard base64; exp is unix seconds.",
+  "server": {
+    "kid": 1,
+    "privateKey": "pATWGRsFpKSt5JTFouMEBRppnE4JVW7nRgjOLS9YmsA=",
+    "publicKey": "dsTt0kkqBdr7emCqoixBS+iz/r9Y86jyAxEzzKARNBs="
+  },
+  "ephemeral": {
+    "privateKey": "NvX8xtXuksiLAICWzI2JIfZ9WZaBfWSPvX99g7zjR+0=",
+    "publicKey": "kUumnD1+yARPIG2rmrNPjc49R+XpQRaaAcI7Rk9WEmA="
+  },
+  "gcmNonce": "Eq4creWHa5nRCfK8",
+  "device": {
+    "seed": "ZlBt8Ox1rHZ6M54Da0z/IHTfRqq5GpV2nImxnW/nbxI=",
+    "publicKey": "42vuGfF/uCWnx9pgYHp2WC+BVp6k/seiTPZf2L/naRA=",
+    "deviceIdentifier": "vectra-07bf0887f662",
+    "model": "Xiaomi Mi Router AX3000T"
+  },
+  "nonce": "4TSeuVnbqURjg1OEDSy4JQ==",
+  "exp": 1790579520,
+  "code": "7ZKNPGS6",
+  "codeHash": "287cc1f914dceb7bdec32a2bbb72632815b82bcb4fe25046c8f4fd8fd1247c1b",
+  "sharedSecret": "qjvxtehALmfrziDFctLhIS4NaV9ecsrHu0/sTP5NUC0=",
+  "key": "Nt1z33CAm04XI69U/aJoDMTDgrFcVORYhVDicw8tve4=",
+  "aad": "VkVDVFJBOlIxAQ==",
+  "plaintext": "AWq6E0DhNJ65WdupRGODU4QNLLgl42vuGfF/uCWnx9pgYHp2WC+BVp6k/seiTPZf2L/naRATdmVjdHJhLTA3YmYwODg3ZjY2MhhYaWFvbWkgTWkgUm91dGVyIEFYMzAwMFRPhjxr6r8iRBoy1HaT6AycivMTZbmStonHvAOGBeNHt4ioHuyVwRmcsv/FFtjaQX6V7yJpEtyRnjyPqmbrMDoN",
+  "signature": "T4Y8a+q/IkQaMtR2k+gMnIrzE2W5kraJx7wDhgXjR7eIqB7slcEZnLL/xRbY2kF+le8iaRLckZ48j6pm6zA6DQ==",
+  "qr": "VECTRA:R1:AZFLppw9fsgETyBtq5qzT43OPUfl6UEWmgHCO0ZPVhJgEq4creWHa5nRCfK8DH2zuw8OetHTPah97-EzlDN_bmXcvVbkf9XEVfw2nIYihNir95mfSx_iA4KIxR84L8BBSkfwa4qnR5sSWC-Nl_2f3-PiJAJEih2WYtUdWulQCR7OwzV-K9F2hrYku5CJvbKDeK5grSZwNMAxtOniDSKV73G85CHcyf7Vydy51gvsDbJDhyxAsUIC-CleeayJMOHAf4lCBlI4ORZkuoRg4jORXX8obw7OGxKhOf_F_atGbQ"
+}

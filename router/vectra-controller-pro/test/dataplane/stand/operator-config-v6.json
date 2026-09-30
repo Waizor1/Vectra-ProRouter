@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "instance": {
+    "name": "dataplane-stand-v6",
+    "logLevel": "info"
+  },
+  "process": {
+    "xrayBinary": "/usr/sbin/vctl-xray-wrapper",
+    "workDir": "/var/run/vectra-controller-pro",
+    "memorySoftMiB": 128,
+    "oomScoreAdj": -100,
+    "restartBackoff": {
+      "initialMs": 500,
+      "factor": 2.0,
+      "maxMs": 60000,
+      "reset": "60s"
+    }
+  },
+  "inbounds": {
+    "tproxy": {
+      "listenIP": "::",
+      "port": 12345,
+      "fwmark": 1,
+      "udpEnabled": true,
+      "tag": "tproxy-in",
+      "killSwitch": false,
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"],
+        "routeOnly": false
+      }
+    }
+  },
+  "geo": {
+    "assetDir": "/usr/share/v2ray",
+    "geoipUrl": "https://api.vectra-pro.net/artifacts/canary/vctl/geoip.dat",
+    "geositeUrl": "https://api.vectra-pro.net/artifacts/canary/vctl/geosite.dat",
+    "updateOnStart": false
+  }
+}

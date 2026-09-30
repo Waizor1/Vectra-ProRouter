@@ -1,0 +1,21 @@
+#!/bin/sh
+[ -n "${IPKG_INSTROOT}" ] && exit 0
+# Every minute from root's crontab, in a block of its own; cron told only
+# when the block changed.
+CRONTAB="${CRONTAB:-/etc/crontabs/root}"
+tmp="$CRONTAB.vectra-reporter"
+mkdir -p "${CRONTAB%/*}" && { [ -f "$CRONTAB" ] || true >> "$CRONTAB"; }
+{ sed '/^# >>> vectra-reporter (managed) >>>$/,/^# <<< vectra-reporter (managed) <<<$/d' "$CRONTAB" &&
+	printf '%s\n' "# >>> vectra-reporter (managed) >>>" \
+		"* * * * * /usr/sbin/vectra-reporter run >/dev/null 2>&1" \
+		"# <<< vectra-reporter (managed) <<<"; } > "$tmp"
+if cmp -s "$tmp" "$CRONTAB"; then
+	rm -f "$tmp"
+elif mv "$tmp" "$CRONTAB"; then
+	/etc/init.d/cron enable >/dev/null 2>&1
+	/etc/init.d/cron restart >/dev/null 2>&1
+fi
+rm -f "$tmp"
+mkdir -p /etc/vectra-reporter/spool /var/run/vectra-reporter/inbox /var/run/vectra-reporter/crash
+/etc/init.d/vectra-reporter enable >/dev/null 2>&1
+exit 0

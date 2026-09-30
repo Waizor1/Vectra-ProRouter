@@ -1,0 +1,65 @@
+{
+  "available": true,
+  "services": [
+    {
+      "id": "youtube",
+      "choice": null,
+      "defaultCountry": "RU",
+      "countries": [
+        "AE",
+        "BY",
+        "DE",
+        "FI",
+        "FR",
+        "NL",
+        "PL",
+        "RU",
+        "TR",
+        "US"
+      ],
+      "active": false,
+      "stale": false,
+      "egress": {}
+    },
+    {
+      "id": "tiktok",
+      "choice": "DE",
+      "defaultCountry": "BY",
+      "countries": [
+        "AE",
+        "BY",
+        "DE",
+        "FI",
+        "FR",
+        "NL",
+        "PL",
+        "RU",
+        "TR",
+        "US"
+      ],
+      "active": true,
+      "stale": false,
+      "egress": {}
+    },
+    {
+      "id": "telegram",
+      "choice": null,
+      "defaultCountry": "BY",
+      "countries": [
+        "AE",
+        "BY",
+        "DE",
+        "FI",
+        "FR",
+        "NL",
+        "PL",
+        "RU",
+        "TR",
+        "US"
+      ],
+      "active": false,
+      "stale": false,
+      "egress": {}
+    }
+  ]
+}

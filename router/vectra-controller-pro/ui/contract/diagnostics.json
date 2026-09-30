@@ -1,0 +1,103 @@
+{
+  "checkedAt": "2026-09-27T11:59:41Z",
+  "checks": [
+    {
+      "id": "dead_nodes",
+      "status": "warn",
+      "params": {
+        "count": 2,
+        "tags": [
+          "bridge-fr5",
+          "bridge-ae5"
+        ]
+      }
+    },
+    {
+      "id": "controller_running",
+      "status": "ok",
+      "params": {
+        "pid": 3012
+      }
+    },
+    {
+      "id": "xray_running",
+      "status": "ok",
+      "params": {
+        "pid": 4127,
+        "uptimeSec": 38461
+      }
+    },
+    {
+      "id": "xray_api",
+      "status": "ok",
+      "params": {
+        "listen": "127.0.0.1:10085"
+      }
+    },
+    {
+      "id": "dataplane_loaded",
+      "status": "ok",
+      "params": {
+        "tproxyHits": 184213
+      }
+    },
+    {
+      "id": "no_leak",
+      "status": "ok",
+      "params": {
+        "wouldLeak": 0,
+        "sinceStart": 0,
+        "escaped": 0,
+        "killSwitch": false,
+        "other": 12
+      }
+    },
+    {
+      "id": "single_stack",
+      "status": "ok",
+      "params": {
+        "passwallRunning": false,
+        "agentEnabled": false
+      }
+    },
+    {
+      "id": "panel_link",
+      "status": "ok",
+      "params": {
+        "lastCheckInAgoSec": 11
+      }
+    },
+    {
+      "id": "subscription_ua",
+      "status": "ok",
+      "params": {}
+    },
+    {
+      "id": "memory",
+      "status": "ok",
+      "params": {
+        "availableMiB": 88,
+        "totalMiB": 234,
+        "xrayMiB": 61
+      }
+    },
+    {
+      "id": "balancer_fallback",
+      "status": "ok",
+      "params": {
+        "balancers": [],
+        "main": false,
+        "mainBlocked": false,
+        "mainDirect": false,
+        "blocked": false,
+        "blockedBalancers": [],
+        "warming": false
+      }
+    },
+    {
+      "id": "pinned_node_dead",
+      "status": "ok",
+      "params": {}
+    }
+  ]
+}

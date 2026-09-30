@@ -1,0 +1,166 @@
+{
+  "active": 0,
+  "panelIndex": 0,
+  "source": "panel",
+  "overrideStale": false,
+  "fetchedAt": "2026-09-27T00:04:11Z",
+  "cached": true,
+  "entries": [
+    {
+      "index": 0,
+      "remark": "🇷🇺🇪🇺 Авто Самый стабильный",
+      "nodeCount": 22,
+      "balancerCount": 7
+    },
+    {
+      "index": 1,
+      "remark": "🇩🇪 Германия",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 2,
+      "remark": "🇵🇱 Польша",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 3,
+      "remark": "🇫🇮 Финляндия",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 4,
+      "remark": "🇳🇱 Нидерланды",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 5,
+      "remark": "🇫🇷 Франция",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 6,
+      "remark": "🇺🇸 США",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 7,
+      "remark": "🇹🇷 Турция",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 8,
+      "remark": "🇦🇪 ОАЭ",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 9,
+      "remark": "🇷🇺 Россия",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 10,
+      "remark": "🇧🇾 Беларусь",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 11,
+      "remark": "⚪ Белые списки · Уровень 1",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 12,
+      "remark": "⚪ Белые списки · Уровень 2",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 13,
+      "remark": "🇩🇪 Германия · Hysteria2",
+      "nodeCount": 3,
+      "balancerCount": 2
+    },
+    {
+      "index": 14,
+      "remark": "🇫🇮 Финляндия · Hysteria2",
+      "nodeCount": 3,
+      "balancerCount": 2
+    },
+    {
+      "index": 15,
+      "remark": "🇳🇱 Нидерланды · Hysteria2",
+      "nodeCount": 3,
+      "balancerCount": 2
+    },
+    {
+      "index": 16,
+      "remark": "🇩🇪 Германия · прямой",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 17,
+      "remark": "🇵🇱 Польша · прямой",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 18,
+      "remark": "🇰🇿 Казахстан",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 19,
+      "remark": "🇬🇧 Великобритания",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 20,
+      "remark": "🇸🇪 Швеция",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 21,
+      "remark": "🇯🇵 Япония",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 22,
+      "remark": "🇸🇬 Сингапур",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 23,
+      "remark": "🇦🇲 Армения",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 24,
+      "remark": "🇬🇪 Грузия",
+      "nodeCount": 4,
+      "balancerCount": 2
+    },
+    {
+      "index": 25,
+      "remark": "🇮🇹 Италия",
+      "nodeCount": 4,
+      "balancerCount": 2
+    }
+  ]
+}

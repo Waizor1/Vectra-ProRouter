@@ -1,0 +1,59 @@
+{
+  "claim": {
+    "codeHash": "287cc1f914dceb7bdec32a2bbb72632815b82bcb4fe25046c8f4fd8fd1247c1b",
+    "expiresAt": "2026-09-28T07:12:00Z"
+  },
+  "health": {
+    "currentMode": "proxy",
+    "directConnectivitySuccesses": 0,
+    "proxyConnectivitySuccesses": 0,
+    "publicConnectivityFailures": 1,
+    "serverReachable": false
+  },
+  "inventory": {
+    "architecture": "aarch64_cortex-a53",
+    "binaryVersions": {
+      "xray": "26.7.28"
+    },
+    "boardName": "xiaomi,mi-router-ax3000t",
+    "controllerRuntimeVersion": "dev",
+    "controllerVersion": "0.1.0-alpha",
+    "deviceIdentifier": "vectra-07bf0887f662",
+    "devicePublicKey": "bGVnYWN5LWRldmljZS1wdWJsaWMta2V5",
+    "engineMode": "xray-direct",
+    "hostname": "1111111111",
+    "model": "Xiaomi Mi Router AX3000T",
+    "nodeCount": 0,
+    "openwrtRelease": "24.10.6",
+    "panelReachability": {
+      "checkedAt": "2026-08-05T00:00:00Z",
+      "reachable": false
+    },
+    "passwallEnabled": false,
+    "protocolVersion": "2026-04-v1",
+    "resources": {
+      "memoryAvailableMb": 96,
+      "memoryTotalMb": 234,
+      "overlayFreeMb": 18,
+      "swapFreeMb": 0,
+      "swapTotalMb": 0,
+      "tmpFreeMb": 58
+    },
+    "rulesAssets": {
+      "assetDirectory": "/usr/share/xray"
+    },
+    "serviceHealth": {
+      "controller": "running",
+      "dnsmasq": "stopped",
+      "passwall": "stopped",
+      "passwallServer": "stopped",
+      "xray": "stopped"
+    },
+    "subscriptionCount": 0,
+    "target": "mediatek/filogic",
+    "xrayEnabled": false,
+    "xrayVersion": "26.7.28"
+  },
+  "protocolVersion": "2026-04-v1",
+  "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf"
+}

@@ -1,0 +1,138 @@
+#!/bin/sh
+
+set -eu
+
+changed=0
+
+set_if_empty() {
+	local option="$1"
+	local value="$2"
+	local current
+
+	[ -n "$value" ] || return 0
+	current="$(uci -q get "vectra-controller-pro.main.$option" || true)"
+	[ -n "$current" ] && return 0
+	uci -q set "vectra-controller-pro.main.$option=$value"
+	changed=1
+}
+
+# Ensure the named section exists before seeding options.
+if ! uci -q get vectra-controller-pro.main >/dev/null 2>&1; then
+	uci -q set vectra-controller-pro.main=controller
+	changed=1
+fi
+
+set_if_empty enabled "1"
+set_if_empty control_url "https://api.vectra-pro.net"
+set_if_empty panel_url "https://router.vectra-pro.net"
+set_if_empty poll_interval "45"
+set_if_empty request_timeout "10"
+set_if_empty state_path "/etc/vectra-controller-pro/state.json"
+set_if_empty status_path "/var/run/vectra-controller-pro/status.json"
+set_if_empty xray_config_path "/etc/vectra-controller-pro/xray-desired.json"
+set_if_empty xray_render_path "/var/run/vectra-controller-pro/xray.json"
+set_if_empty xray_binary "/usr/sbin/vctl-xray-wrapper"
+set_if_empty legacy_state_path "/etc/vectra-controller/state.json"
+set_if_empty job_safety_heavy_memory_floor_mb "0"
+set_if_empty job_safety_storage_memory_floor_mb "0"
+set_if_empty job_safety_diagnostic_memory_floor_mb "0"
+set_if_empty job_safety_heavy_overlay_floor_mb "0"
+set_if_empty job_safety_storage_overlay_floor_mb "0"
+set_if_empty job_safety_heavy_tmp_floor_mb "0"
+set_if_empty job_safety_storage_tmp_floor_mb "0"
+set_if_empty job_safety_diagnostic_tmp_floor_mb "0"
+set_if_empty job_safety_pre_drop_caches "0"
+# support_bot is deliberately not seeded: it is empty until boxes are prepared
+# (uci set vectra-controller-pro.main.support_bot=<bot>; uci commit), and an
+# absent option reads the same as an empty one.
+
+if [ "$changed" -eq 1 ]; then
+	uci commit vectra-controller-pro
+fi
+
+# Geo data. vectra-geodata before 2026.9.28-r2 linked its files into an
+# empty /usr/share/v2ray, where vctl before 0.6.0-r18 read them; this vctl
+# reads them in vectra-geodata's own directory. The links go here, with the
+# vctl that no longer needs them, and not with the data package: an upgrade
+# of the one without the other would leave an older vctl reading links that
+# are gone. The directory goes with them when nothing else is in it.
+# Not where PassWall2 is installed: its own xray may read them (a PassWall
+# without its geo packages), and it is what a hand-back gives the router to.
+geolegacy="${GEOLEGACY:-/usr/share/v2ray}"
+geoown="${GEOOWN:-/usr/share/vectra-controller-pro/geo}"
+if [ ! -e "${PASSWALL_INIT:-/etc/init.d/passwall2}" ]; then
+	for f in geoip.dat geosite.dat; do
+		if [ "$(readlink "$geolegacy/$f" 2>/dev/null || true)" = "$geoown/$f" ]; then
+			rm -f "$geolegacy/$f"
+		fi
+	done
+	rmdir "$geolegacy" 2>/dev/null || true
+fi
+
+# The setup wizard is for a router a customer has just unboxed. One that
+# already works was set up before it existed — the fleet, being upgraded — and
+# never sees it: vctl marks it done when it has an operator config, or a WAN
+# address, a secured Wi-Fi access point and a root password.
+if [ -x /usr/sbin/vctl ]; then
+	/usr/sbin/vctl setup mark-done-if-working >/dev/null 2>&1 || true
+fi
+
+# vectra.lan: the router's own name on the LAN, so this page is always at
+# http://vectra.lan — with Vectra on or off, since dnsmasq answers it, not
+# vctl. dnsmasq's init turns the `interface_name` list of the LAN's `config
+# dhcp` section into --interface-name=vectra.lan,<the LAN's device>, so the
+# name follows the LAN's address wherever it is moved. The section is the one
+# serving the LAN (option interface 'lan'), whatever it is called. Removing
+# the package takes the name away again (postrm). DNSMASQ_INIT is a variable
+# only so the packaging tests can stand dnsmasq in.
+DNSMASQ_INIT="${DNSMASQ_INIT:-/etc/init.d/dnsmasq}"
+lan_dhcp=""
+for s in $(uci -q -X show dhcp 2>/dev/null | sed -n "s/^dhcp\.\([^.=]*\)\.interface='lan'\$/\1/p"); do
+	if [ "$(uci -q get "dhcp.$s" || true)" = "dhcp" ]; then
+		lan_dhcp="$s"
+		break
+	fi
+done
+if [ -n "$lan_dhcp" ]; then
+	case " $(uci -q get "dhcp.$lan_dhcp.interface_name" || true) " in
+	*" vectra.lan "*) ;;
+	*)
+		if uci -q add_list "dhcp.$lan_dhcp.interface_name=vectra.lan" && uci -q commit dhcp; then
+			if [ -x "$DNSMASQ_INIT" ] && "$DNSMASQ_INIT" running >/dev/null 2>&1; then
+				"$DNSMASQ_INIT" reload >/dev/null 2>&1 || true
+			fi
+		fi
+		;;
+	esac
+fi
+
+# The dead-man (/usr/libexec/vectra-controller-pro/deadman.sh), every minute
+# from root's crontab, in a managed block written whole: installed or brought
+# up to date on every install and upgrade — nothing rewritten when it is
+# already so — and taken away by the postrm on a removal. cron is told only
+# when the block changed. CRONTAB and CRON_INIT are variables only so the
+# packaging tests can stand them in.
+CRONTAB="${CRONTAB:-/etc/crontabs/root}"
+CRON_INIT="${CRON_INIT:-/etc/init.d/cron}"
+cron_tmp="$CRONTAB.vectra-controller-pro"
+if mkdir -p "${CRONTAB%/*}" && { [ -f "$CRONTAB" ] || true >> "$CRONTAB"; } &&
+	{ sed '/^# >>> vectra-controller-pro (managed) >>>$/,/^# <<< vectra-controller-pro (managed) <<<$/d' "$CRONTAB" &&
+		printf '%s\n' "# >>> vectra-controller-pro (managed) >>>" \
+			"* * * * * /usr/libexec/vectra-controller-pro/deadman.sh >/dev/null 2>&1" \
+			"# <<< vectra-controller-pro (managed) <<<"; } > "$cron_tmp"; then
+	if cmp -s "$cron_tmp" "$CRONTAB"; then
+		rm -f "$cron_tmp"
+	elif mv "$cron_tmp" "$CRONTAB" && [ -x "$CRON_INIT" ]; then
+		"$CRON_INIT" enable >/dev/null 2>&1 || true
+		if "$CRON_INIT" running >/dev/null 2>&1; then
+			"$CRON_INIT" restart >/dev/null 2>&1 || true
+		else
+			"$CRON_INIT" start >/dev/null 2>&1 || true
+		fi
+	fi
+fi
+rm -f "$cron_tmp"
+
+rm -f /etc/config/vectra-controller-pro-opkg
+
+exit 0

@@ -1,0 +1,30 @@
+// Turning Vectra on and off (set_power), the same from both views: a dialog
+// that says where the internet goes, then the router's own `vectra on|off`,
+// watched until status.power shows it.
+
+import type { Status } from '../api/types';
+import type { Key, T } from '../i18n';
+import { own } from '../lib/own';
+import type { RunOpts } from './ctx';
+
+/** A change hands the router between two stacks: allow for a PassWall slow to stop. */
+const POWER_WAIT_MS = 90_000;
+
+// What the dialog says: who takes the traffic, by what the router reports.
+const ON_BODY: Record<string, Key> = { passwall2: 's.pw.onBody.passwall2', agent: 's.pw.onBody.agent' };
+const OFF_BODY: Record<string, Key> = { passwall2: 's.pw.offBody.passwall2', agent: 's.pw.offBody.agent' };
+const pick = (m: Record<string, Key>, holder: string | null, other: Key): Key => (holder !== null && own(m, holder)) || other;
+
+export function powerOpts(t: T, s: Status, on: boolean): RunOpts {
+  const p = s.power;
+  return {
+    key: on ? 'power:on' : 'power:off',
+    confirm: on
+      ? { title: t('s.pw.onQ'), body: t(pick(ON_BODY, p.holder, 's.pw.onBody')), ok: t('s.pw.on') }
+      : { title: t('s.pw.offQ'), body: t(pick(OFF_BODY, p.handBack, 's.pw.offBody')), ok: t('s.pw.off') },
+    landed: (n) => n.power.enabled === on && n.power.running === on,
+    done: on ? 'power_on' : 'power_off',
+    waitMs: POWER_WAIT_MS,
+    fail: { busy: 's.pw.busy' },
+  };
+}
