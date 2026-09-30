@@ -111,9 +111,10 @@ function Stepper(p: { s: SetupData; st: Status | null; at: Screen; wan: WanCheck
       {p.steps.map((id, i) => {
         const ok = stepOk(s, id, wan, st);
         const on = at === id;
+        const locked = shut && id !== 'password';
         return (
-          <li key={id} class={(on ? 'on ' : '') + (ok ? 'ok' : '')}>
-            <button type="button" aria-current={on ? 'step' : undefined} disabled={!!pending || (shut && id !== 'password')} onClick={() => go(id)}>
+          <li key={id} class={(on ? 'on ' : '') + (ok ? 'ok' : '') + (locked ? ' shut' : '')}>
+            <button type="button" aria-current={on ? 'step' : undefined} disabled={!!pending || locked} onClick={() => go(id)}>
               <i aria-hidden="true">{ok ? <Icon name="ok" size={14} /> : i + 1}</i>
               <span>{t(('w.step.' + id) as Key)}</span>
               <span class="sr">: {t(badge(s, id, ok, wan, st))}</span>

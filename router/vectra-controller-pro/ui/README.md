@@ -64,7 +64,7 @@ call from a stateful mock built on `contract/*.json` (~300 ms per call):
 | `&lang=ru\|en\|zh` | the host page's language (what LuCI puts in `<html lang>`) |
 | `&frame=0` | no LuCI chrome |
 | `&locked=1` | the operator's lock: simple view only, Pro methods refused |
-| `&pw=refused\|denied\|offline` | LuCI's password change does not take it / the session expired / the connection drops |
+| `&pwfail=refused\|denied\|offline` | LuCI's password change does not take it / the session expired / the connection drops |
 | `&latency=0` | answer instantly |
 
 Mutations change the mock's state: `select_entry` answers `pending` and lands

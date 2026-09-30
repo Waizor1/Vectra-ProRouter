@@ -2489,6 +2489,11 @@ a.btn {
   border-color: var(--ac);
   color: var(--ac);
 }
+/* Past the password, until there is one. */
+.wz-steps .shut button {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .wz-card {
   display: grid;
   gap: 12px;

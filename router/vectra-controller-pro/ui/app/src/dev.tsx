@@ -3,7 +3,7 @@
 //   ?locked=1 (the operator's lock: simple view only)
 //   ?wifiDown=radio1 (a radio that does not come back after a Wi-Fi change)   ?wifiEnd=unverified|failed
 //   ?scenario=off&holder=passwall2|agent|direct (Vectra switched off: who carries the traffic)
-//   ?pw=refused|denied|offline (LuCI's password change fails so)
+//   ?pwfail=refused|denied|offline (LuCI's password change fails so)
 import { createMock } from './mock/transport';
 import { SCENARIOS, type Scenario } from './mock/scenarios';
 import { mount } from './mount';
@@ -29,7 +29,7 @@ if (bar) {
 
 const wifiEnd = q.get('wifiEnd');
 const holder = q.get('holder');
-const pw = q.get('pw');
+const pw = q.get('pwfail');
 const mock = createMock({
   scenario,
   latencyMs: Number(q.get('latency') ?? 300),

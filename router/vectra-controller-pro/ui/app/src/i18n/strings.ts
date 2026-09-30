@@ -1092,7 +1092,12 @@ export const S = {
   'pw.set.t': ['Пароль задан', 'A password is set', '已设置密码'],
   'pw.set.d': ['Роутер спрашивает его при входе в настройки.', 'The router asks for it when you sign in to its settings.', '登录路由器设置时需要输入该密码。'],
   'pw.none.t': ['Пароль роутера не задан.', 'The router has no password.', '路由器未设置密码。'],
-  'pw.none.d': ['Его настройки может открыть любой в вашей сети — например, дети.', 'Anyone on your network, children included, can open its settings.', '您网络中的任何人（包括孩子）都能打开它的设置。'],
+  // {b}: 'pw.none.t', in bold.
+  'pw.none.d': [
+    '{b} Его настройки может открыть любой в вашей сети — например, дети.',
+    '{b} Anyone on your network, children included, can open its settings.',
+    '{b}您网络中的任何人（包括孩子）都能打开它的设置。',
+  ],
   'pw.set': ['Задать пароль', 'Set a password', '设置密码'],
   'pw.change': ['Сменить пароль', 'Change the password', '更改密码'],
   'pw.change.t': ['Новый пароль роутера', 'A new router password', '新的路由器密码'],

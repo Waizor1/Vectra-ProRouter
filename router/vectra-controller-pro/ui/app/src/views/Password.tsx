@@ -9,6 +9,7 @@ import { describeError } from '../api/errors';
 import { useApp } from '../app/ctx';
 import type { Key } from '../i18n';
 import { Button, Field, Note } from '../ui/kit';
+import { around, SLOT } from './Nodes';
 
 /** The shortest password the page takes. */
 export const PW_MIN = 8;
@@ -115,7 +116,7 @@ export function PasswordNote({ onSet }: { onSet: () => void }) {
           </Button>
         }
       >
-        <b>{t('pw.none.t')}</b> {t('pw.none.d')}
+        {around(t('pw.none.d', { b: SLOT }), <b>{t('pw.none.t')}</b>)}
       </Note>
     </div>
   );
@@ -140,7 +141,8 @@ export function PasswordDialog({ first, onClose }: { first: boolean; onClose: ()
     const dlg = ref.current!;
     const r = root as ShadowRoot;
     const back = (r.activeElement as HTMLElement | null) ?? null;
-    const start = () => dlg.querySelector<HTMLElement>('input, button')?.focus();
+    // The dialog is fixed on screen: moving the focus into it must not scroll the page behind.
+    const start = () => dlg.querySelector<HTMLElement>('input, button')?.focus({ preventScroll: true });
     start();
     // Browsers without `inert`, and a click on the page behind, could take the focus out.
     const trap = (e: Event) => void (dlg.contains(e.target as Node) || start());
@@ -150,14 +152,14 @@ export function PasswordDialog({ first, onClose }: { first: boolean; onClose: ()
       // Back to the control that opened it once the dialog is gone — or, when it
       // went too (the note of a router that now has a password), to the panel.
       setTimeout(() =>
-        back && back.isConnected ? back.focus() : (r.querySelector?.('#vx-panel') as HTMLElement | null)?.focus({ preventScroll: true }),
+        back && back.isConnected ? back.focus({ preventScroll: true }) : (r.querySelector?.('#vx-panel') as HTMLElement | null)?.focus({ preventScroll: true }),
       );
     };
   }, []);
 
   // Saved: the fields are gone; the focus goes to the way out.
   useEffect(() => {
-    if (done) ref.current?.querySelector<HTMLElement>('.row .bp')?.focus();
+    if (done) ref.current?.querySelector<HTMLElement>('.row .bp')?.focus({ preventScroll: true });
   }, [done]);
 
   const onKey = (e: KeyboardEvent) => {
