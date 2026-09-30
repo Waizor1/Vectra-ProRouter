@@ -1,5 +1,6 @@
 {
   "done": false,
+  "passwordSet": false,
   "wan": {
     "proto": "dhcp",
     "link": true,
@@ -8,6 +9,9 @@
     "dns": [
       "100.64.12.1"
     ]
+  },
+  "lan": {
+    "ipv4": "192.168.1.1"
   },
   "wifi": {
     "radios": [

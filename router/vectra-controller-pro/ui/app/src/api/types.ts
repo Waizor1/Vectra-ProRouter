@@ -250,6 +250,8 @@ export interface Owner {
 
 export interface Setup {
   done: boolean | null;
+  /** Root has a password, so LuCI's login asks for one; null: the router cannot tell. */
+  passwordSet: boolean | null;
   /** Read-only: the router sets its internet connection up itself. */
   wan: {
     proto: WanProto | null;
@@ -258,6 +260,8 @@ export interface Setup {
     gateway: string | null;
     dns: string[];
   };
+  /** How the home network reaches the router: `ipv4` is where this page always opens. */
+  lan: { ipv4: string | null };
   /**
    * One radio per band. `tuned`: every enabled 2.4/5 GHz radio runs at full
    * power on a fixed channel (null when the router cannot be tuned).

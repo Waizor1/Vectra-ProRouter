@@ -362,10 +362,20 @@ refuses it.
   config, or a WAN address, Wi-Fi on and secured on every radio that is on,
   and a root password — is marked done when the package is installed: the
   fleet never sees the wizard.
+- `passwordSet`: root has a password, so LuCI's login asks for one — the
+  second field of root's line in `/etc/shadow` is not empty (rpcd lets anyone
+  in on an empty one; a locked `!` lets nobody in). `false` out of the box;
+  `null` when the router cannot tell (no shadow file, no root in it). Never
+  the password or its hash.
 - `wan` (read-only): `proto` `dhcp`, `pppoe`, `static` or `other`; `link` a
   cable in the WAN port (`null`: the router cannot tell); `ipv4`, `gateway`,
   `dns` what the router has now (`null` / `[]` when none). No credential of the
   connection is ever in it.
+- `lan.ipv4`: the LAN's IPv4 address as netifd has it up (`ubus call
+  network.interface.lan status`, the first one), `null` when netifd cannot
+  say: where this page opens on a device that does not ask the router's DNS
+  (a VPN app, private DNS), which the names (`my.vectra-pro.net`,
+  `vectra.lan`) need.
 - `wifi.radios`: one entry per radio (UCI `wifi-device`), in file order:
   `device` (its UCI name, the key `set_wifi` and `optimize_wifi` take);
   `band` `2g`, `5g`, `6g`, `60g` or `null`; `channel` a number, or `null`

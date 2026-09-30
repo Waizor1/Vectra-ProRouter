@@ -135,9 +135,12 @@ function unboxed(w: ReadData): void {
   empty(w);
   w.setup = {
     done: false,
+    // OpenWrt ships without a root password: anyone on the LAN can sign in.
+    passwordSet: false,
     // The cable is in and the router is still getting its address: the mock
     // brings the internet up by itself a few seconds later, as a router does.
     wan: { proto: 'dhcp', link: true, ipv4: null, gateway: null, dns: [] },
+    lan: { ipv4: '192.168.1.1' },
     // OpenWrt's defaults: both radios off, open, channel picked by the radio, the regulatory default.
     wifi: {
       radios: [
@@ -166,12 +169,14 @@ function unboxed(w: ReadData): void {
 }
 
 /**
- * A box as it ships (docs/LAUNCH.md): the Wi-Fi from the card on the air and
- * secured, each radio picking its own channel, the regulatory default — the
- * person joins it and opens the wizard over Wi-Fi.
+ * A box as it ships (docs/LAUNCH.md): the Wi-Fi and the router's password
+ * from the card, the Wi-Fi on the air and secured, each radio picking its own
+ * channel, the regulatory default — the person joins it and opens the wizard
+ * over Wi-Fi.
  */
 function boxed(w: ReadData): void {
   unboxed(w);
+  w.setup.passwordSet = true;
   w.setup.wifi.radios = [
     radio('2g', { channel: null, auto: true, country: null }),
     radio('5g', { channel: null, auto: true, country: null }),

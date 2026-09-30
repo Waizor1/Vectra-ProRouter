@@ -177,7 +177,9 @@ const SPECS: Record<ReadMethod, Spec> = {
   logs: { lines: [{ time: 's', level: 's:unknown', source: 's', message: 's:' }] },
   setup: {
     done: 'b',
+    passwordSet: 'b',
     wan: { proto: 's', link: 'b', ipv4: 's', gateway: 's', dns: 'S' },
+    lan: { ipv4: 's' },
     wifi: {
       radios: [
         {
