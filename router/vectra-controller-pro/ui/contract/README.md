@@ -364,13 +364,15 @@ may grow checks before the UI learns their sentences.
 
 ## Setup wizard
 
-What a customer runs after unboxing, on the Vectra page in LuCI: a look at the
-internet connection → the Wi-Fi, tuned and each band's network optionally
-renamed → linking the router to their Vectra account (ADR-0006) → done. The
+What a customer runs after unboxing, on the Vectra page in LuCI: the router's
+password, when it has none (`passwordSet: false`) → a look at the internet
+connection → the Wi-Fi, tuned and each band's network optionally renamed →
+linking the router to their Vectra account (ADR-0006) → a server → done. The
 router sets its internet connection up itself: the wizard shows it and checks
-it, and never changes it. The router's password is not the wizard's: LuCI's
-own banner asks for one. It is the simple view: the operator's lock never
-refuses it.
+it, and never changes it. The password goes to LuCI's own change, never to
+vctl (see Router password); it is the one step that cannot be skipped, and the
+wizard opens by itself on a router that was never set up and has none. It is
+the simple view: the operator's lock never refuses it.
 
 | method | params | answer |
 |---|---|---|

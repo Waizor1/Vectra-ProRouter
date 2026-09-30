@@ -2440,7 +2440,8 @@ a.btn {
 }
 .wz-steps {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
   gap: 6px;
   padding: 4px;
   border: 1px solid var(--line);

@@ -2,12 +2,14 @@
 
 The customer's and the operator's window into vctl on the router, in two views:
 
-- **Setup wizard** (on a router that was never set up): the internet (the
+- **Setup wizard** (on a router that was never set up): the router's password
+  first, when it has none (anyone on the LAN can open its settings until then;
+  LuCI's own change, the one step that cannot be skipped), the internet (the
   router connects by itself; the step only checks it and says when the cable
-  is missing), Wi-Fi (a unique name, a generated password, a QR to join), the
-  router password, and linking to the owner's Vectra account (QR for the
-  Vectra app, a code, or a Telegram deep link). Every step checks itself
-  first, so a router the operator prepared goes straight through.
+  is missing), Wi-Fi (a unique name, a generated password, a QR to join),
+  linking to the owner's Vectra account (QR for the Vectra app, a code, or a
+  Telegram deep link), and a server. Every step checks itself first, so a
+  router the operator prepared goes straight through.
 - **Simple** (what it opens with): does the VPN work, in plain words; the
   location and a list to switch it; "My sites" (always without / always
   through the VPN); restart, another location, a report for support. No

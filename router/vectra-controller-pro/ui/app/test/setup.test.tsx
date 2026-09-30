@@ -27,11 +27,16 @@ type Answer = Record<string, unknown>;
 /** Rewrites what the mock router answers, to put it in a state it would not reach by itself. */
 type Twist = (method: string, answer: Answer, params?: Record<string, unknown>) => Answer | Error | void;
 
-/** `delay`: how long a method's answer takes to arrive (a router that listens to the air, a slow switch). */
-function start(opts: { scenario?: Scenario; twist?: Twist; mock?: Partial<MockOptions>; delay?: (m: string) => number } = {}) {
+/**
+ * `delay`: how long a method's answer takes to arrive (a router that listens to the air, a slow switch).
+ * `pw`: the page hands over LuCI's password change, as the LuCI view does — the wizard then asks an
+ * unboxed router for a password first (test/password.test.tsx); without it, the steps below are the others.
+ */
+function start(opts: { scenario?: Scenario; twist?: Twist; mock?: Partial<MockOptions>; delay?: (m: string) => number; pw?: boolean } = {}) {
   localStorage.setItem('vectra.ui.lang', 'ru');
   const mock: Mock = createMock({ scenario: opts.scenario ?? 'unboxed', latencyMs: 0, live: false, applyMs: 10, ...opts.mock });
   const calls: [string, Record<string, unknown> | undefined][] = [];
+  const passwords: string[] = [];
   const call: CallFn = async (m, p) => {
     calls.push([m, p]);
     const r = (await mock.call(m, p)) as Answer;
@@ -41,9 +46,10 @@ function start(opts: { scenario?: Scenario; twist?: Twist; mock?: Partial<MockOp
     if (out instanceof Error) throw out;
     return out ?? r;
   };
+  const setPassword = opts.pw ? (pw: string) => (passwords.push(pw), mock.setPassword(pw)) : undefined;
   const host = document.createElement('div');
   document.body.appendChild(host);
-  const unmount = mount(host, { call, lang: 'ru' });
+  const unmount = mount(host, { call, setPassword, lang: 'ru' });
   cleanup.push(() => {
     unmount();
     mock.dispose();
@@ -64,7 +70,7 @@ function start(opts: { scenario?: Scenario; twist?: Twist; mock?: Partial<MockOp
   };
   const confirm = () => $('[role="alertdialog"]')!.querySelectorAll('button')[1].click();
   const badges = () => all('.wz-list .bd, .band-h .bd').map(read);
-  return { root, $, all, text, verdict, button, type, confirm, calls, badges };
+  return { root, $, all, text, verdict, button, type, confirm, calls, badges, passwords };
 }
 
 // The UI decides what to re-read by the age of its data: the clock moves with the timers.
@@ -95,21 +101,33 @@ const offline =
   };
 
 describe('the setup wizard', () => {
-  it('walks an unboxed router to set up: internet by itself, Wi-Fi at full power, Vectra, a server, then a tour', async () => {
+  it('walks an unboxed router to set up: a password, internet by itself, Wi-Fi at full power, Vectra, a server, then a tour', async () => {
     fake();
-    const app = start();
+    const app = start({ pw: true });
     await tick(200);
-    // Welcome: what will be set up; the internet says what the router sees. No router password step.
+    // Welcome: what will be set up; the internet says what the router sees. OpenWrt
+    // ships without a password: that comes first.
     expect(app.verdict()).toBe('Настроим роутер');
-    expect(app.all('.wz-list li').map(read)).toEqual(['Интернет: пока нет', 'Wi-Fi: не настроено', 'Vectra: не настроено', 'Сервер: не настроено']);
+    expect(app.all('.wz-list li').map(read)).toEqual(['Пароль: не задан', 'Интернет: пока нет', 'Wi-Fi: не настроено', 'Vectra: не настроено', 'Сервер: не настроено']);
     app.button('Начать')!.click();
+    await tick(200);
+
+    // The router's password, to LuCI's own change (test/password.test.tsx has the rest).
+    expect(app.verdict()).toBe('Задайте пароль роутера');
+    await app.type('#vx-pw-1', 'correct horse');
+    await app.type('#vx-pw-2', 'correct horse');
+    app.button('Сохранить пароль')!.click();
+    await tick(200);
+    expect(app.passwords).toEqual(['correct horse']);
+    expect(app.verdict()).toBe('Пароль сохранён');
+    app.button('Далее')!.click();
     await tick(200);
 
     // Internet: the router connects by itself — no form, no button, nothing technical.
     expect(app.verdict()).toBe('Интернета пока нет');
     expect(app.$('.wz-card input')).toBeNull();
-    await tick(5000); // the mock router gets its address
-    expect(app.verdict()).toBe('Интернет работает');
+    // The mock router gets its address; the step sees it at its next look (every 3.5 s).
+    expect(await until(() => app.verdict() === 'Интернет работает', 10000)).toBe(true);
     expect(app.text()).not.toMatch(/DHCP|PPPoE|100\.64/);
     app.button('Далее')!.click();
     await tick(200);
@@ -147,7 +165,7 @@ describe('the setup wizard', () => {
     expect(app.text()).toContain(key);
     // Done is done: the step's own "Next", nothing left to skip.
     await tick(3000);
-    expect(app.all('.wz-steps li')[1].classList.contains('ok')).toBe(true);
+    expect(app.all('.wz-steps li')[2].classList.contains('ok')).toBe(true);
     expect(app.button('Пропустить шаг')).toBeUndefined();
     app.button('Далее')!.click();
     await tick(200);
@@ -180,7 +198,7 @@ describe('the setup wizard', () => {
     expect(await until(() => app.verdict() === 'Всё готово', 5000)).toBe(true);
 
     // Done, then a short tour of the main screen, once.
-    expect(app.badges()).toEqual(['работает', 'на максимуме', 'подписка есть', 'выбран']);
+    expect(app.badges()).toEqual(['задан', 'работает', 'на максимуме', 'подписка есть', 'выбран']);
     app.button('На главный экран')!.click();
     await tick(3000);
     expect(app.$('.wz')).toBeNull();
@@ -197,7 +215,9 @@ describe('the setup wizard', () => {
     await tick(100);
     expect(app.$('.tour')).toBeNull();
     expect(localStorage.getItem('vectra.ui.tour')).toBe('done');
+    // The password went to LuCI alone: vctl has no password method, and heard none.
     expect(app.calls.map(([m]) => m)).not.toContain('set_admin_password');
+    expect(JSON.stringify(app.calls)).not.toContain('correct horse');
   });
 
   /** From a fresh page to the Wi-Fi step, the internet up by then. */

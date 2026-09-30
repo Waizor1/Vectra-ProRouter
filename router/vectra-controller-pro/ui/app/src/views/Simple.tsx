@@ -433,7 +433,7 @@ function ManualCopy({ text }: { text: string }) {
 }
 
 export function Simple() {
-  const { t, f, run, toast, store, root, locked, pending } = useApp();
+  const { t, f, run, toast, store, root, locked, pending, setPassword } = useApp();
   const st = useRes('status');
   const dg = useRes('diagnostics');
   const setup = useRes('setup');
@@ -447,7 +447,7 @@ export function Simple() {
   // router could not note that the setup was finished.
   const [dismissed, setDismissed] = useState(false);
   // Switched off on purpose: the wizard sets Vectra up, and would not open by itself on that.
-  const need = needsSetup(setup.data) && !dismissed && st.data?.power.enabled !== false;
+  const need = needsSetup(setup.data, !!setPassword) && !dismissed && st.data?.power.enabled !== false;
   useEffect(() => {
     if (need) setWizard('welcome');
   }, [need]);
