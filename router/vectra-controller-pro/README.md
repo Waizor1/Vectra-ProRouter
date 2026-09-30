@@ -228,8 +228,12 @@ backoff (1, 2, 5, 10, 15 minutes, then every 15). Only where PassWall2 or the
 old agent is owed back, after 10 minutes down, does it turn Vectra off and
 give the router back. `logread -e vectra-controller-pro-deadman`.
 
-The router answers **vectra.lan** on the LAN, Vectra on or off: this page is
-always at http://vectra.lan.
+The router answers **my.vectra-pro.net** and **vectra.lan** on the LAN,
+Vectra on or off (dnsmasq, not vctl): this page is always at
+http://my.vectra-pro.net and http://vectra.lan — typed with `http://`, since a
+browser takes a bare `vectra.lan` for a search. A device that asks another
+DNS (a VPN app, private DNS) gets neither name; it reaches the page at the
+LAN's own address, 192.168.1.1 out of the box, which the page names too.
 
 ## Testing on a router
 

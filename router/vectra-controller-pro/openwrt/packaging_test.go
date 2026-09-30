@@ -1772,38 +1772,62 @@ func stockDHCP() []uciSection {
 
 const defaultsScript = "files/etc/uci-defaults/90_vectra_controller_pro_defaults"
 
-// The uci-defaults script names the router vectra.lan on the LAN's dhcp
-// section — once, however often it runs — and has dnsmasq take it up.
-func TestUCIDefaultsNameTheRouterVectraLan(t *testing.T) {
+// The router's own names on the LAN, as the uci-defaults script adds them.
+var routerNames = []string{"vectra.lan", "my.vectra-pro.net"}
+
+// The uci-defaults script names the router vectra.lan and my.vectra-pro.net
+// on the LAN's dhcp section — once, however often it runs — and has dnsmasq
+// take them up with one commit and one reload.
+func TestUCIDefaultsNameTheRouter(t *testing.T) {
 	t.Parallel()
 	r := newLanRouter(t, stockDHCP(), true)
 	calls := strings.Join(r.run(defaultsScript), "\n")
-	if got := r.names("home"); !reflect.DeepEqual(got, []string{"vectra.lan"}) {
+	if got := r.names("home"); !reflect.DeepEqual(got, routerNames) {
 		t.Fatalf("home.interface_name = %v\n%s", got, calls)
 	}
-	for _, want := range []string{"uci -q add_list dhcp.home.interface_name=vectra.lan", "uci -q commit dhcp", "dnsmasq reload"} {
+	for _, want := range []string{"uci -q add_list dhcp.home.interface_name=vectra.lan", "uci -q add_list dhcp.home.interface_name=my.vectra-pro.net",
+		"uci -q commit dhcp", "dnsmasq reload"} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("did not run %q:\n%s", want, calls)
 		}
+	}
+	if n := strings.Count(calls, "commit dhcp"); n != 1 || strings.Count(calls, "dnsmasq reload") != 1 {
+		t.Errorf("%d commits for the two names, and reloads:\n%s", n, calls)
 	}
 	if strings.Contains(calls, "dhcp.wan.interface_name") {
 		t.Errorf("named the WAN:\n%s", calls)
 	}
 	// Again (every upgrade's postinst, the first boot): nothing more.
 	calls = strings.Join(r.run(defaultsScript), "\n")
-	if got := r.names("home"); !reflect.DeepEqual(got, []string{"vectra.lan"}) || strings.Contains(calls, "add_list") ||
+	if got := r.names("home"); !reflect.DeepEqual(got, routerNames) || strings.Contains(calls, "add_list") ||
 		strings.Contains(calls, "commit dhcp") || strings.Contains(calls, "dnsmasq") {
 		t.Fatalf("a second run added or reloaded: %v\n%s", got, calls)
 	}
 }
 
+// A router upgraded from a version that named it vectra.lan only gets
+// my.vectra-pro.net beside it — and vectra.lan is not added twice.
+func TestUCIDefaultsAddTheNewNameOnAnUpgrade(t *testing.T) {
+	t.Parallel()
+	dhcp := stockDHCP()
+	dhcp[1].Lists = map[string][]string{"interface_name": {"vectra.lan"}}
+	r := newLanRouter(t, dhcp, true)
+	calls := strings.Join(r.run(defaultsScript), "\n")
+	if got := r.names("home"); !reflect.DeepEqual(got, routerNames) {
+		t.Fatalf("home.interface_name = %v\n%s", got, calls)
+	}
+	if strings.Contains(calls, "interface_name=vectra.lan") || !strings.Contains(calls, "dnsmasq reload") {
+		t.Fatalf("calls:\n%s", calls)
+	}
+}
+
 // With dnsmasq not running yet (the first boot runs uci-defaults before it
-// starts) nothing is reloaded; dnsmasq reads the name when it starts.
+// starts) nothing is reloaded; dnsmasq reads the names when it starts.
 func TestUCIDefaultsDoNotStartDnsmasq(t *testing.T) {
 	t.Parallel()
 	r := newLanRouter(t, stockDHCP(), false)
 	calls := strings.Join(r.run(defaultsScript), "\n")
-	if !reflect.DeepEqual(r.names("home"), []string{"vectra.lan"}) || strings.Contains(calls, "dnsmasq reload") {
+	if !reflect.DeepEqual(r.names("home"), routerNames) || strings.Contains(calls, "dnsmasq reload") {
 		t.Fatalf("calls:\n%s", calls)
 	}
 }
@@ -1816,7 +1840,7 @@ func TestUCIDefaultsKeepWhatIsThere(t *testing.T) {
 	dhcp[1].Lists = map[string][]string{"interface_name": {"nas.lan"}}
 	r := newLanRouter(t, dhcp, true)
 	r.run(defaultsScript)
-	if got := r.names("home"); !reflect.DeepEqual(got, []string{"nas.lan", "vectra.lan"}) {
+	if got := r.names("home"); !reflect.DeepEqual(got, append([]string{"nas.lan"}, routerNames...)) {
 		t.Fatalf("interface_name = %v", got)
 	}
 	none := newLanRouter(t, []uciSection{{Name: "wan", Type: "dhcp", Opts: map[string]string{"interface": "wan"}}}, true)
@@ -1848,19 +1872,20 @@ func makefileScript(t *testing.T, name string) string {
 	return p
 }
 
-// Removing the package takes vectra.lan away; an upgrade — whose old postrm
-// opkg runs as `postrm upgrade <version>` with PKG_UPGRADE=1 — keeps it.
-func TestPostrmTakesVectraLanAwayOnRemovalOnly(t *testing.T) {
+// Removing the package takes vectra.lan and my.vectra-pro.net away; an
+// upgrade — whose old postrm opkg runs as `postrm upgrade <version>` with
+// PKG_UPGRADE=1 — keeps them.
+func TestPostrmTakesTheNamesAwayOnRemovalOnly(t *testing.T) {
 	t.Parallel()
 	postrm := makefileScript(t, "postrm")
 	named := stockDHCP()
-	named[1].Lists = map[string][]string{"interface_name": {"nas.lan", "vectra.lan"}}
+	named[1].Lists = map[string][]string{"interface_name": {"nas.lan", "vectra.lan", "my.vectra-pro.net"}}
 
 	up := newLanRouter(t, named, true)
 	up.env = append(up.env, "PKG_UPGRADE=1")
 	calls := strings.Join(up.run(postrm, "upgrade", "0.6.0-r1"), "\n")
-	if got := up.names("home"); !reflect.DeepEqual(got, []string{"nas.lan", "vectra.lan"}) || strings.Contains(calls, "del_list") {
-		t.Fatalf("an upgrade took vectra.lan away: %v\n%s", got, calls)
+	if got := up.names("home"); !reflect.DeepEqual(got, []string{"nas.lan", "vectra.lan", "my.vectra-pro.net"}) || strings.Contains(calls, "del_list") {
+		t.Fatalf("an upgrade took a name away: %v\n%s", got, calls)
 	}
 	if !strings.Contains(calls, "killall -HUP rpcd") {
 		t.Errorf("the upgrade's postrm no longer tells rpcd:\n%s", calls)
@@ -1876,6 +1901,9 @@ func TestPostrmTakesVectraLanAwayOnRemovalOnly(t *testing.T) {
 		if !strings.Contains(calls, want) {
 			t.Errorf("removal did not run %q:\n%s", want, calls)
 		}
+	}
+	if strings.Count(calls, "commit dhcp") != 1 || strings.Count(calls, "dnsmasq reload") != 1 {
+		t.Errorf("one commit and one reload for both names:\n%s", calls)
 	}
 	// Nothing named: nothing committed, nothing reloaded.
 	calls = strings.Join(gone.run(postrm, "remove"), "\n")
