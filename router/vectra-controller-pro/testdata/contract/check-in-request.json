@@ -31,6 +31,7 @@
     },
     "passwallEnabled": false,
     "protocolVersion": "2026-04-v1",
+    "remoteShell": false,
     "resources": {
       "memoryAvailableMb": 96,
       "memoryTotalMb": 234,

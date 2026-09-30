@@ -372,7 +372,7 @@ func TestUCIsAnswerIsReadForWhatItIs(t *testing.T) {
 func TestEveryMethodIsPlacedUnderTheLock(t *testing.T) {
 	simple := map[string]bool{"status": true, "entries": true, "diagnostics": true, "select_entry": true,
 		"reset_entry": true, "restart_xray": true, "unpin_balancer": true, "rules": true, "set_rules": true,
-		"set_power": true, "services": true, "set_service": true}
+		"set_power": true, "services": true, "set_service": true, "set_remote_shell": true}
 	for m := range rpcdSetupSignatures { // the setup wizard is the simple view
 		simple[m] = true
 	}

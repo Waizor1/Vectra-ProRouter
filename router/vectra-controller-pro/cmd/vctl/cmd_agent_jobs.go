@@ -610,7 +610,11 @@ func (d *daemon) jobReconnect(ctx context.Context, job controlplane.Job) error {
 func (d *daemon) jobRunTerminal(ctx context.Context, job controlplane.Job) error {
 	// The command is operator-authored shell delivered by the authenticated
 	// panel over HTTPS (token-gated) — the same trust model as the legacy
-	// agent's run_terminal_command. It is not untrusted external input.
+	// agent's run_terminal_command. It is root on the router, so it runs only
+	// where the router's owner allows the support shell (remote_shell.go).
+	if !remoteShellAllowed() {
+		return d.submitFailure(ctx, job, remoteShellOff)
+	}
 	cmdStr, _ := job.Payload["command"].(string)
 	if strings.TrimSpace(cmdStr) == "" {
 		return d.submitFailure(ctx, job, "run_terminal_command: empty command")

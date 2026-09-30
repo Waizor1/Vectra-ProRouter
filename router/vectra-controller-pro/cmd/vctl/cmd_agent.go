@@ -601,6 +601,7 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	inv := d.collector.Collect(ctx, d.sup.Status(), nodeCount, subCount)
 	inv.AppliedRevisionID = d.st.AppliedRevisionID
 	inv.ConfigDigest = d.st.ConfigDigest
+	inv.RemoteShell = remoteShellAllowed()
 	// The panel erases field names from its 400, so name them here. Still send:
 	// the panel is authoritative and a rejected report is no worse than a
 	// skipped one, but now the router log says exactly which field is empty.

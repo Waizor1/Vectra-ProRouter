@@ -1742,6 +1742,44 @@ func (r *lanRouter) run(script string, args ...string) []string {
 	return strings.Split(strings.TrimSpace(string(raw)), "\n")
 }
 
+// seed puts a section of config pkg in the uci stand-in's store.
+func (r *lanRouter) seed(pkg string, sec uciSection) {
+	r.t.Helper()
+	st := r.store()
+	st[pkg] = append(st[pkg], sec)
+	raw, err := json.Marshal(st)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	if err := os.WriteFile(r.state, raw, 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// option is an option's value in the uci stand-in's store ("" when unset).
+func (r *lanRouter) option(pkg, section, opt string) string {
+	r.t.Helper()
+	for _, s := range r.store()[pkg] {
+		if s.Name == section {
+			return s.Opts[opt]
+		}
+	}
+	return ""
+}
+
+func (r *lanRouter) store() map[string][]uciSection {
+	r.t.Helper()
+	raw, err := os.ReadFile(r.state)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	var st map[string][]uciSection
+	if err := json.Unmarshal(raw, &st); err != nil {
+		r.t.Fatal(err)
+	}
+	return st
+}
+
 func (r *lanRouter) names(section string) []string {
 	r.t.Helper()
 	raw, err := os.ReadFile(r.state)
@@ -2051,5 +2089,77 @@ func TestTheMemoryReserveFollowsTheRouter(t *testing.T) {
 	r.env = append(r.env, "MEMINFO="+s.path("meminfo"))
 	if calls := strings.Join(r.run(defaultsScript), "\n"); strings.Contains(calls, "sysctl") || mine() != "" {
 		t.Fatalf("the package's defaults set the reserve:\n%s", calls)
+	}
+}
+
+// The support shell (vectra-controller-pro.main.remote_shell) is decided once,
+// by the uci-defaults script: a router an older vctl already ran on — its
+// state is there — keeps the shell it had ('1'); a new one starts without it
+// ('0'). What is set — by this script or the owner — is never changed again.
+func TestUCIDefaultsDecideTheSupportShellOnce(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name  string
+		state bool
+		set   string
+		want  string
+	}{
+		{"a new router", false, "", "0"},
+		{"a router upgraded from a vctl without the switch", true, "", "1"},
+		{"the owner turned it off", true, "0", "0"},
+		{"the owner turned it on", false, "1", "1"},
+	} {
+		r := newLanRouter(t, stockDHCP(), true)
+		statePath := filepath.Join(r.dir, "etc", "state.json")
+		if c.state {
+			if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(statePath, []byte(`{"router_id":"r-1","agent_token":"x"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		opts := map[string]string{"state_path": statePath, "enabled": "1"}
+		if c.set != "" {
+			opts["remote_shell"] = c.set
+		}
+		r.seed("vectra-controller-pro", uciSection{Name: "main", Type: "controller", Opts: opts})
+		r.run(defaultsScript)
+		if got := r.option("vectra-controller-pro", "main", "remote_shell"); got != c.want {
+			t.Errorf("%s: remote_shell = %q, want %q", c.name, got, c.want)
+		}
+		// Again (every upgrade's postinst): nothing changes, whatever the
+		// state says by then.
+		if !c.state {
+			if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(statePath, []byte(`{"router_id":"r-1"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r.run(defaultsScript)
+		if got := r.option("vectra-controller-pro", "main", "remote_shell"); got != c.want {
+			t.Errorf("%s, run again: remote_shell = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// The package's config file does not name remote_shell: a conffile opkg puts
+// in place of an untouched one on an upgrade would decide for the router,
+// before the uci-defaults script could tell a new router from an old one.
+func TestTheConffileLeavesTheSupportShellToTheUCIDefaults(t *testing.T) {
+	raw, err := os.ReadFile("files/etc/config/vectra-controller-pro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := uci.Parse(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if main := f.Named("main"); main == nil {
+		t.Fatal("no main section")
+	} else if v, ok := main.Options["remote_shell"]; ok {
+		t.Fatalf("the conffile sets remote_shell %q", v)
 	}
 }

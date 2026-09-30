@@ -312,6 +312,7 @@ var guardParams = map[string]string{
 	"set_wifi":           `{"radios":{"radio1":{"ssid":"Home-5G"}}}`,
 	"optimize_wifi":      `{"channels":{"radio1":36}}`,
 	"set_power":          `{"on":true}`,
+	"set_remote_shell":   `{"on":false}`,
 }
 
 func TestNoAnswerCarriesACredential(t *testing.T) {

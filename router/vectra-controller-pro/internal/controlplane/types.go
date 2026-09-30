@@ -115,6 +115,10 @@ type RouterInventory struct {
 	ForeignReachability *RouterReachabilityProbe `json:"foreignReachability,omitempty"`
 	ConfigDigest        string                   `json:"configDigest,omitempty"`
 	AppliedRevisionID   string                   `json:"appliedRevisionId,omitempty"`
+	// RemoteShell: the router's owner allows the panel's support shell here
+	// (run_terminal_command; UCI vectra-controller-pro.main.remote_shell). Off,
+	// the router refuses it.
+	RemoteShell bool `json:"remoteShell"`
 }
 
 // MissingRequiredFields returns the JSON names of the inventory fields the

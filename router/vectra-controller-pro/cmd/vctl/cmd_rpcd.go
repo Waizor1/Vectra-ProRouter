@@ -18,6 +18,7 @@ import (
 	"vectra-controller-pro/internal/api"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/setup"
 	"vectra-controller-pro/internal/sites"
 	"vectra-controller-pro/internal/uci"
 	"vectra-controller-pro/internal/uiapi"
@@ -210,6 +211,7 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 	case "status":
 		in := rpcdGather(ctx, env, uiapi.NeedStatus)
 		in.UILocked = locked
+		in.RemoteShell = setup.RemoteShell(rpcdSetupEnv())
 		in.Power = rpcdPower(ctx, in.Runtime != nil, in.TableLoaded)
 		return uiapi.BuildStatus(in)
 	case "balancers":
@@ -246,6 +248,8 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 		return rpcdMutate(ctx, cfg, method, params)
 	case "set_power":
 		return rpcdSetPower(ctx, params)
+	case "set_remote_shell":
+		return rpcdSetRemoteShell(ctx, params)
 	}
 	return action(false, "invalid_params", "unknown method "+method)
 }

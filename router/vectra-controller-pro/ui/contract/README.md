@@ -36,6 +36,7 @@ Change a shape here first, then both sides.
 | `services` | — | `services.json` |
 | `set_service` | `{"id": "tiktok", "country": "DE"}` (`""` = the entry's own path) | `action.json` |
 | `set_power` | `{"on": true}` (`false` turns Vectra off — see Power) | `action.json` |
+| `set_remote_shell` | `{"on": false}` (`true` lets support in — see Support shell) | `action.json` |
 
 `select_entry`, `reset_entry`, `set_probe_interval`, `set_rules` and
 `restart_xray` restart xray: client connections drop for a few seconds. The UI
@@ -63,7 +64,8 @@ call — nothing restarts.
 - Still served: `status`, `entries`, `diagnostics`, `select_entry`,
   `reset_entry`, `restart_xray`, `rules` and `set_rules` (My sites is the
   simple view's), `services` and `set_service` (a service's country is the
-  owner's choice too), `set_power` (turning Vectra on and off is the owner's), and
+  owner's choice too), `set_power` (turning Vectra on and off is the owner's),
+  `set_remote_shell` (whether support may run commands here is the owner's), and
   `unpin_balancer` (it only hands a balancer back to the provider's own
   choice; the simple view needs it to undo a pin made earlier in Pro).
 - It is a product policy, not a security boundary: root on the router can
@@ -119,6 +121,27 @@ internet goes out directly, without a VPN.
   console); nothing changed.
 - `invalid_params` for anything but `{"on": true|false}`; `apply_failed`
   when the change could not be started — nothing changed; `internal`.
+
+## Support shell
+
+The panel can run a command on the router as root (its job
+`run_terminal_command`): support's console, and — were the panel or an
+operator's login ever stolen — root on every router at once. So the router
+runs it only where its owner allows it: UCI
+`vectra-controller-pro.main.remote_shell` `1`. Refused, the panel is told
+`support shell access is off on this router`, and nothing runs. A new router
+starts with it off; one upgraded from a vctl that had no such switch keeps the
+shell it had (`1`, written once by the package). Every check-in reports it
+(`inventory.remoteShell`).
+
+- `status.remoteShell`: `true` while the router runs the panel's commands.
+  Anything but a yes in UCI — the option absent, a config the router cannot
+  read — is `false`: what the router does.
+- `set_remote_shell`: `{"on": true}` or `{"on": false}`, through uci and
+  committed: the next job sees it, nothing restarts. Answers
+  `remote_shell_set` (read `status` for the state), `invalid_params` for
+  anything but `{"on": true|false}`, `internal` when uci failed (nothing
+  changed). The simple view's: the operator's lock never refuses it.
 
 ## My sites
 
@@ -241,6 +264,7 @@ The router answers in CODES, never in prose, so the UI can speak ru, en and zh.
 - `action.code` on success: `entry_selected`, `entry_reset`, `balancer_pinned`,
   `balancer_unpinned`, `probe_interval_set`, `rules_set`, `service_set`, `xray_restarted`,
   `wifi_set`, `wifi_optimized`, `setup_finished`, `power_on`, `power_off`,
+  `remote_shell_set`,
   `pending` (the controller accepted the request and is still applying it; it
   is remembered only if it succeeds — poll `status`, or `rules`, to see it
   land).
