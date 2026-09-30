@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { describeError } from '../api/errors';
 import { useApp } from '../app/ctx';
 import type { Key } from '../i18n';
-import { Field } from '../ui/kit';
+import { Button, Field, Note } from '../ui/kit';
 
 /** The shortest password the page takes. */
 export const PW_MIN = 8;
@@ -98,6 +98,120 @@ export function PasswordFields({ f, ids }: { f: PwForm; ids: readonly [string, s
           {f.errs.call}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** The main screen, on a router without a password: calm, and the one thing to do about it. */
+export function PasswordNote({ onSet }: { onSet: () => void }) {
+  const { t } = useApp();
+  return (
+    <div class="sv-pw">
+      <Note
+        tone="warn"
+        action={
+          <Button small icon="lock" onClick={onSet}>
+            {t('pw.set')}
+          </Button>
+        }
+      >
+        <b>{t('pw.none.t')}</b> {t('pw.none.d')}
+      </Note>
+    </div>
+  );
+}
+
+const DLG_IDS = ['vx-pwd-1', 'vx-pwd-2'] as const;
+
+/**
+ * A small dialog to set the password (`first`: there is none) or change it.
+ * Keyboard focus starts in the first field and stays inside; Esc and
+ * "Cancel" leave the password as it was — not while LuCI is taking it — and
+ * give the focus back to the control that opened it.
+ */
+export function PasswordDialog({ first, onClose }: { first: boolean; onClose: () => void }) {
+  const { t, root } = useApp();
+  const [done, setDone] = useState(false);
+  const f = usePasswordForm(DLG_IDS, () => setDone(true));
+  const ref = useRef<HTMLDivElement>(null);
+  const shut = () => !f.busy && onClose();
+
+  useEffect(() => {
+    const dlg = ref.current!;
+    const r = root as ShadowRoot;
+    const back = (r.activeElement as HTMLElement | null) ?? null;
+    const start = () => dlg.querySelector<HTMLElement>('input, button')?.focus();
+    start();
+    // Browsers without `inert`, and a click on the page behind, could take the focus out.
+    const trap = (e: Event) => void (dlg.contains(e.target as Node) || start());
+    r.addEventListener('focusin', trap);
+    return () => {
+      r.removeEventListener('focusin', trap);
+      // Back to the control that opened it once the dialog is gone — or, when it
+      // went too (the note of a router that now has a password), to the panel.
+      setTimeout(() =>
+        back && back.isConnected ? back.focus() : (r.querySelector?.('#vx-panel') as HTMLElement | null)?.focus({ preventScroll: true }),
+      );
+    };
+  }, []);
+
+  // Saved: the fields are gone; the focus goes to the way out.
+  useEffect(() => {
+    if (done) ref.current?.querySelector<HTMLElement>('.row .bp')?.focus();
+  }, [done]);
+
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      return shut();
+    }
+    if (e.key !== 'Tab') return;
+    const keys = Array.from(ref.current!.querySelectorAll<HTMLElement>('input, button:not([disabled])'));
+    const at = keys.indexOf((root as ShadowRoot).activeElement as HTMLElement);
+    const to = e.shiftKey ? (at > 0 ? -1 : keys.length - 1) : at < 0 || at === keys.length - 1 ? 0 : -1;
+    if (to >= 0) {
+      e.preventDefault();
+      keys[to].focus();
+    }
+  };
+
+  return (
+    <div class="scrim">
+      <div ref={ref} class="dlg dlg-pw" role="dialog" aria-modal="true" aria-labelledby="vx-pwd-t" aria-describedby="vx-pwd-d" onKeyDown={onKey}>
+        <h2 id="vx-pwd-t">{t(done ? 'pw.saved.t' : first ? 'pw.t' : 'pw.change.t')}</h2>
+        {done ? (
+          <>
+            <p id="vx-pwd-d" role="status">
+              {t('pw.saved.d')}
+            </p>
+            <div class="row">
+              <Button kind="p" onClick={onClose}>
+                {t('close')}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <form
+            noValidate
+            onSubmit={(e) => {
+              e.preventDefault();
+              f.save();
+            }}
+          >
+            <p id="vx-pwd-d">{t(first ? 'pw.d' : 'pw.change.d')}</p>
+            <PasswordFields f={f} ids={DLG_IDS} />
+            <div class="row">
+              <Button disabled={f.busy} onClick={shut}>
+                {t('cancel')}
+              </Button>
+              <Button kind="p" icon="lock" type="submit" busy={f.busy}>
+                {t('pw.save')}
+              </Button>
+            </div>
+          </form>
+        )}
+      </div>
     </div>
   );
 }

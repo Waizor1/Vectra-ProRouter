@@ -44,7 +44,8 @@ function start(opts: { scenario?: Scenario; lang?: Lang; call?: CallFn; locked?:
   const base = opts.call ?? mock.call;
   const host = document.createElement('div');
   document.body.appendChild(host);
-  const unmount = mount(host, { call: (m, p) => (calls.push(m), base(m, p)), lang: 'ru' });
+  // As the LuCI view mounts it: with LuCI's own password change.
+  const unmount = mount(host, { call: (m, p) => (calls.push(m), base(m, p)), setPassword: mock.setPassword, lang: 'ru' });
   cleanup.push(() => {
     unmount();
     mock.dispose();

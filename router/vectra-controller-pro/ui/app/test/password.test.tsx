@@ -5,6 +5,7 @@
 // (luci.setPassword, handed over by the LuCI view) — never to vctl.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CallFn, SetPasswordFn, Setup } from '../src/api/types';
+import type { Lang } from '../src/i18n';
 import type { Scenario } from '../src/mock/scenarios';
 import { createMock, type MockOptions } from '../src/mock/transport';
 import { mount } from '../src/mount';
@@ -29,8 +30,8 @@ type Twist = (method: string, answer: Answer) => Answer | void;
  * The app on a mock router, with LuCI's password change handed over as the
  * LuCI view does (`setPassword: null`: a host page that hands none).
  */
-function start(opts: { scenario?: Scenario; twist?: Twist; mock?: Partial<MockOptions>; setPassword?: SetPasswordFn | null } = {}) {
-  localStorage.setItem('vectra.ui.lang', 'ru');
+function start(opts: { scenario?: Scenario; twist?: Twist; mock?: Partial<MockOptions>; setPassword?: SetPasswordFn | null; lang?: Lang } = {}) {
+  localStorage.setItem('vectra.ui.lang', opts.lang ?? 'ru');
   const mock = createMock({ scenario: opts.scenario ?? 'unboxed', latencyMs: 0, live: false, applyMs: 10, ...opts.mock });
   const calls: [string, Record<string, unknown> | undefined][] = [];
   const passwords: string[] = [];
@@ -232,5 +233,134 @@ describe('the wizard’s password step', () => {
     await tick(200);
     expect(unlinked.verdict()).toBe('Задайте пароль роутера');
     expect(unlinked.all('.wz-steps li')[0].classList.contains('on')).toBe(true);
+  });
+});
+
+/** A set-up router whose password is gone (a reset, a fresh flash): `setup` says none until LuCI takes one. */
+function withoutPassword(): { twist: Twist; setPassword: SetPasswordFn } {
+  let has = false;
+  const mock = createMock({ latencyMs: 0, live: false });
+  cleanup.push(mock.dispose);
+  return {
+    twist: (m, r) => (m === 'setup' && !has ? { ...r, passwordSet: false } : undefined),
+    setPassword: async (pw) => (has = await mock.setPassword(pw)),
+  };
+}
+
+describe('the main screen and the router’s password', () => {
+  it('says calmly that anyone on the network can open the settings, and sets a password in a small dialog', async () => {
+    fake();
+    const app = start({ scenario: 'healthy', ...withoutPassword() });
+    await tick(300);
+    expect(app.$('.wz')).toBeNull();
+    expect(read(app.$('.sv-pw'))).toContain('Пароль роутера не задан.');
+    expect(read(app.$('.sv-pw'))).toContain('например, дети');
+    // One way to it: the note's; the footer offers no change of a password that is not there.
+    expect(app.button('Сменить пароль')).toBeUndefined();
+    const opener = app.button('Задать пароль')!;
+    opener.focus();
+    opener.click();
+    await tick(50);
+
+    const dlg = app.$('[role="dialog"]')!;
+    expect(dlg.getAttribute('aria-modal')).toBe('true');
+    expect(read(app.$('#' + dlg.getAttribute('aria-labelledby')))).toBe('Задайте пароль роутера');
+    expect((app.root.activeElement as HTMLElement | null)?.id).toBe('vx-pwd-1');
+    await app.type('#vx-pwd-1', 'correct horse');
+    await app.type('#vx-pwd-2', 'correct horsee');
+    app.submit('[role="dialog"] form');
+    await tick(50);
+    expect(app.errors()).toEqual(['Пароли не совпадают.']);
+    expect(app.passwords).toEqual([]);
+    await app.type('#vx-pwd-2', 'correct horse');
+    app.button('Сохранить пароль')!.click();
+    await tick(200);
+    expect(app.passwords).toEqual(['correct horse']);
+    expect(read(app.$('[role="dialog"] h2'))).toBe('Пароль сохранён');
+    expect(read(app.$('[role="dialog"]'))).toContain('Теперь роутер будет спрашивать этот пароль при входе в настройки.');
+    expect(app.$('#vx-pwd-1')).toBeNull();
+    // Behind it the router says so: the note is gone, the footer offers a change.
+    expect(app.$('.sv-pw')).toBeNull();
+    expect(app.button('Сменить пароль')).toBeDefined();
+    app.button('Закрыть')!.click();
+    await tick(50);
+    expect(app.$('[role="dialog"]')).toBeNull();
+    expect(JSON.stringify(app.calls)).not.toContain('correct horse');
+  });
+
+  it('always offers to change it; Esc and "Cancel" leave it as it was, and the focus goes back', async () => {
+    fake();
+    const app = start({ scenario: 'healthy' });
+    await tick(300);
+    expect(app.$('.sv-pw')).toBeNull();
+    const open = async () => {
+      const b = app.button('Сменить пароль')!;
+      b.focus();
+      b.click();
+      await tick(50);
+      return b;
+    };
+    let opener = await open();
+    expect(read(app.$('[role="dialog"] h2'))).toBe('Новый пароль роутера');
+    app.$('[role="dialog"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await tick(50);
+    expect(app.$('[role="dialog"]')).toBeNull();
+    expect(app.root.activeElement).toBe(opener);
+    opener = await open();
+    await app.type('#vx-pwd-1', 'correct horse');
+    app.button('Отмена')!.click();
+    await tick(50);
+    expect(app.$('[role="dialog"]')).toBeNull();
+    expect(app.root.activeElement).toBe(opener);
+    expect(app.passwords).toEqual([]);
+    // Reopened, it starts empty: nothing typed is kept.
+    await open();
+    expect(app.$<HTMLInputElement>('#vx-pwd-1')!.value).toBe('');
+    await app.type('#vx-pwd-1', 'battery staple');
+    await app.type('#vx-pwd-2', 'battery staple');
+    app.button('Сохранить пароль')!.click();
+    await tick(200);
+    expect(app.passwords).toEqual(['battery staple']);
+    expect(read(app.$('[role="dialog"] h2'))).toBe('Пароль сохранён');
+  });
+
+  it('says in the dialog, beside the fields, when LuCI does not take it — and keeps the dialog open', async () => {
+    fake();
+    const app = start({ scenario: 'healthy', mock: { passwordFails: 'refused' } });
+    await tick(300);
+    app.button('Сменить пароль')!.click();
+    await tick(50);
+    await app.type('#vx-pwd-1', 'correct horse');
+    await app.type('#vx-pwd-2', 'correct horse');
+    app.button('Сохранить пароль')!.click();
+    await tick(200);
+    expect(read(app.$('[role="dialog"] [role="alert"]'))).toBe('Роутер не принял пароль. Попробуйте ещё раз.');
+    expect(read(app.$('[role="dialog"] h2'))).toBe('Новый пароль роутера');
+    expect(app.$<HTMLInputElement>('#vx-pwd-2')!.value).toBe('correct horse');
+  });
+
+  it('offers nothing where the page cannot set a password, and no warning when the router cannot tell', async () => {
+    fake();
+    const none = start({ scenario: 'healthy', setPassword: null, twist: (m, r) => (m === 'setup' ? { ...r, passwordSet: false } : undefined) });
+    await tick(300);
+    expect(none.$('.sv-pw')).toBeNull();
+    expect(none.button('Сменить пароль')).toBeUndefined();
+    expect(none.button('Задать пароль')).toBeUndefined();
+    cleanup.forEach((fn) => fn());
+    cleanup = [];
+    const unknown = start({ scenario: 'healthy', twist: (m, r) => (m === 'setup' ? { ...r, passwordSet: null } : undefined) });
+    await tick(300);
+    expect(unknown.$('.sv-pw')).toBeNull();
+    expect(unknown.button('Сменить пароль')).toBeDefined();
+  });
+
+  it.each(['en', 'zh'] as const)('speaks %s in the note and the dialog, without a Cyrillic letter', async (lang) => {
+    fake();
+    const app = start({ scenario: 'healthy', ...withoutPassword(), lang });
+    await tick(300);
+    expect(read(app.$('.sv-pw'))).not.toMatch(/[Ѐ-ӿ]|undefined|null/);
+    app.$<HTMLButtonElement>('.sv-pw button')!.click();
+    await tick(50);
+    expect(read(app.$('[role="dialog"]'))).not.toMatch(/[Ѐ-ӿ]|undefined|null/);
   });
 });

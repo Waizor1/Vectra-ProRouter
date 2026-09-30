@@ -17,6 +17,7 @@ import { copyText } from '../lib/storage';
 import { Icon, type IconName } from '../ui/icons';
 import { Badge, Button, Note, Skeleton, Spinner } from '../ui/kit';
 import { MySites } from './MySites';
+import { PasswordDialog, PasswordNote } from './Password';
 import { Services } from './Services';
 import { around, SLOT } from './Nodes';
 import { face, groupServers } from '../lib/servers';
@@ -466,6 +467,8 @@ export function Simple() {
   // 0 closed · 1 opened by its toggle · 2 opened from elsewhere (focus moves to the list)
   const [open, setOpen] = useState<0 | 1 | 2>(0);
   const [manual, setManual] = useState<string | null>(null);
+  // The router's password dialog: to set the first one, or to change it.
+  const [pwDialog, setPwDialog] = useState<'set' | 'change' | null>(null);
   const locRef = useRef<HTMLElement>(null);
 
   // Fresh locations every time the list opens: the subscription may have changed.
@@ -551,6 +554,8 @@ export function Simple() {
         <Note tone="warn">{t('s.dgStale')}</Note>
       ) : null}
       <StatusCard v={v} checkedAt={checkedAt} acts={acts} />
+      {/* No password: anyone on the LAN can open the settings. LuCI's change sets one. */}
+      {setPassword && setup.data?.passwordSet === false ? <PasswordNote onSet={() => setPwDialog('set')} /> : null}
       {/* A router without settings has no location to show and nothing to try:
           the status card already says so and offers the report. */}
       {!off && (hasSubscription(s) || up) ? (
@@ -599,6 +604,12 @@ export function Simple() {
             {t('tour.replay')}
           </Button>
         ) : null}
+        {/* The note above sets a first password; this changes one. */}
+        {setPassword && setup.data?.passwordSet !== false ? (
+          <Button kind="g" small icon="lock" onClick={() => setPwDialog('change')}>
+            {t('pw.change')}
+          </Button>
+        ) : null}
         {/* Quiet on purpose: the way back to PassWall, or to no VPN at all — also
             while Vectra still runs switched off: a change in flight answers busy,
             one that stopped half way is tried again. */}
@@ -620,6 +631,7 @@ export function Simple() {
         ) : null}
       </footer>
       {tour ? <Tour onDone={() => setTour(false)} /> : null}
+      {pwDialog ? <PasswordDialog first={pwDialog === 'set'} onClose={() => setPwDialog(null)} /> : null}
     </div>
   );
 }

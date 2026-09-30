@@ -2976,6 +2976,21 @@ a.btn {
 .dlg .row {
   justify-content: flex-end;
 }
+/* The router's password: the two fields and the switch under them, in the
+   wizard's step and in the main screen's dialog. */
+.pw-f {
+  display: grid;
+  gap: 10px;
+}
+.pw-f > .fld-g {
+  margin: 4px 0 0;
+}
+.pw-f > .chkbx {
+  justify-self: start;
+}
+.dlg-pw form > .row {
+  margin-top: 18px;
+}
 .toasts {
   position: fixed;
   right: 16px;
