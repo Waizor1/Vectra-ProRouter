@@ -98,6 +98,34 @@ func TestMemWatchRestartsAFatXrayOnlyWhenMemoryStaysCritical(t *testing.T) {
 	}
 }
 
+// A full swap is critical before MemAvailable says so: the watchdog restarts
+// a fat xray on it, after three samples in a row like any other.
+func TestMemWatchActsOnAFullSwap(t *testing.T) {
+	const total, swap = 239720, 119804
+	in := memguard.Info{TotalKB: total, AvailableKB: 20 * 1024, SwapTotalKB: swap, SwapFreeKB: 90 * 1024}
+	sup := &fakeSup{st: supervisor.Status{State: supervisor.StateRunning, PID: 4242}}
+	w := &memWatch{
+		read:  func() (memguard.Info, error) { return in, nil },
+		rss:   func(int) (uint64, uint64, error) { return 60 * 1024, 18 * 1024, nil },
+		kills: func() (uint64, bool) { return 0, true },
+		sup:   sup,
+	}
+	now := time.Unix(1_800_000_000, 0)
+	step := func() bool { now = now.Add(memWatchEvery); return w.step(context.Background(), now) }
+	for i := 0; i < 5; i++ {
+		if step() {
+			t.Fatal("restarted xray with 20 MiB available and the swap three-quarters free")
+		}
+	}
+	in.SwapFreeKB = 2 * 1024
+	if step() || step() {
+		t.Fatal("restarted before three samples in a row")
+	}
+	if !step() || sup.reloads != 1 {
+		t.Fatalf("third sample with the swap full: reloads %d, want 1", sup.reloads)
+	}
+}
+
 // The ledger in the watchdog: a snapshot a minute; an hourly review that,
 // with six hours and more of samples, names a floor that rose and writes the
 // report — and says so again only when it rose further.

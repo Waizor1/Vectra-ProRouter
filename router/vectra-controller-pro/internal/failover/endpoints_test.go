@@ -30,8 +30,8 @@ func TestEndpointsResolveNamesAndSkipWhatDoesNotResolve(t *testing.T) {
 		{Proto: "tcp", Addr: netip.MustParseAddrPort("203.0.113.6:50055")}: {"bridge-nl5"},
 		{Proto: "tcp", Addr: netip.MustParseAddrPort("203.0.113.9:443")}:   {"direct-de5"},
 	}
-	if !reflect.DeepEqual(got, want) || unresolved != 1 {
-		t.Fatalf("%v (unresolved %d)", got, unresolved)
+	if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(unresolved, []string{"hy2-nl5"}) {
+		t.Fatalf("%v (unresolved %v)", got, unresolved)
 	}
 }
 

@@ -15,7 +15,8 @@ import (
 // The memory watchdog: vctl's answer to the router running out of memory,
 // before the kernel's.
 //
-// When MemAvailable stays below memguard.CriticalKB the kernel is already
+// When memory stays critical (memguard.Critical: MemAvailable below
+// memguard.CriticalKB, or the swap all but full) the kernel is already
 // reclaiming the pages of running programs — the router slows to a crawl for
 // minutes before the OOM killer acts, and then it takes whatever scores
 // highest. If xray is what holds the memory (every connection it carries is
@@ -125,7 +126,7 @@ func (w *memWatch) step(ctx context.Context, now time.Time) bool {
 		}
 		w.killsSeen, w.killsKnown = n, true
 	}
-	critical := in.AvailableKB < memguard.CriticalKB(in.TotalKB)
+	critical := memguard.Critical(in)
 	if critical {
 		w.low++
 	} else {
@@ -159,7 +160,7 @@ func (w *memWatch) step(ctx context.Context, now time.Time) bool {
 		return false
 	}
 	logging.L().Warn("the router is running out of memory: restarting xray to give back what it holds",
-		"available_mib", memguard.MiB(in.AvailableKB), "xray_mib", memguard.MiB(anon))
+		"available_mib", memguard.MiB(in.AvailableKB), "swap_free_mib", memguard.MiB(in.SwapFreeKB), "xray_mib", memguard.MiB(anon))
 	if err := w.sup.Reload(ctx); err != nil {
 		logging.L().Warn("could not restart xray for memory", "err", err.Error())
 		return false

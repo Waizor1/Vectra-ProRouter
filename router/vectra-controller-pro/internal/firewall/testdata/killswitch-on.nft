@@ -31,6 +31,9 @@ table inet vctl {
   counter vctl_admit_held { }
   set vctl_admit4 { type ipv4_addr; flags dynamic, timeout; timeout 1m; size 1024; }
   set vctl_admit6 { type ipv6_addr; flags dynamic, timeout; timeout 1m; size 1024; }
+  counter vctl_dns_held { }
+  set vctl_dns4 { type ipv4_addr; flags dynamic, timeout; timeout 1m; size 1024; }
+  set vctl_dns6 { type ipv6_addr; flags dynamic, timeout; timeout 1m; size 1024; }
   counter vctl_paced { }
   set vctl_pace4 { type ipv4_addr . inet_service; flags dynamic, timeout; timeout 30s; size 1024; }
   set vctl_pace6 { type ipv6_addr . inet_service; flags dynamic, timeout; timeout 30s; size 1024; }
@@ -209,6 +212,18 @@ table inet vctl {
     meta mark 0x5644 ip daddr 127.0.0.0/8 tcp dport { 10085, 10086, 10087 } counter name "vctl_local_guard" reject with tcp reset
     meta mark 0x5644 ip6 daddr ::1 tcp dport { 10085, 10086, 10087 } counter name "vctl_local_guard" reject with tcp reset
     oifname "lo" tcp dport { 10085, 10086, 10087 } meta skuid != 0 counter name "vctl_local_guard" reject with tcp reset
+  }
+
+  # A device's DNS storm waits at the router's door (see Spec.DNSRate): its
+  # queries to the router's resolver, and those the hijack sends there. Ahead
+  # of fw4's input chain; the router's own lookups (lo) and the internet's
+  # (not @bypass) are never counted.
+  chain dns_guard {
+    type filter hook input priority filter - 5; policy accept;
+    iif != "lo" ip saddr @bypass4 udp dport 53 update @vctl_dns4 { ip saddr limit rate over 100/second burst 2000 packets } counter name "vctl_dns_held" drop
+    iif != "lo" ip saddr @bypass4 tcp dport 53 tcp flags & (syn | ack) == syn update @vctl_dns4 { ip saddr limit rate over 100/second burst 2000 packets } counter name "vctl_dns_held" drop
+    iif != "lo" ip6 saddr @bypass6 udp dport 53 update @vctl_dns6 { ip6 saddr limit rate over 100/second burst 2000 packets } counter name "vctl_dns_held" drop
+    iif != "lo" ip6 saddr @bypass6 tcp dport 53 tcp flags & (syn | ack) == syn update @vctl_dns6 { ip6 saddr limit rate over 100/second burst 2000 packets } counter name "vctl_dns_held" drop
   }
 }
 

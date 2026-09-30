@@ -148,7 +148,7 @@ Same branch, uncommitted until this entry's commit; nothing on a live router.
   phone connected during the boost, and a forced bad channel to see the
   rollback — gate 5a in `docs/LAUNCH.md`.
 
-## 2026-09-30 — 1111: load guards, Russian networks by the kernel, the exit check, «+ Сервис», IPv6 off, real egress, watchdog (r23–r34)
+## 2026-09-30 — 1111: load guards, Russian networks by the kernel, the exit check, «+ Сервис», IPv6 off, real egress, watchdog, live campaign, merge (r23–r34)
 
 - **r23/r25 load guards** (torrent/any download): P2P peers by the kernel,
   a device's new connections 15/s (burst 60), xray's dials to one node
@@ -231,8 +231,86 @@ Same branch, uncommitted until this entry's commit; nothing on a live router.
   all 9753 v4 ranges now fit); the card keeps no unfit server main was moved
   off; Russian matchers case-insensitive past the prefix; one flag+country
   helper in the UI. Live 16:05: `oifname "br-lan" return` before the refusal.
-- Open: Wi-Fi on real radios (gate 5a), push blocked until c624ad8/b74ee98
-  are rewritten.
+- **Live test campaign on 1111, 30.09 evening** (owner: «протестировать на
+  1111 … и стресс тесты»), through a LAN client (a netns on br-lan): DNS,
+  Russian direct, services on their paths, pins, «Мои сайты» both ways, the
+  P2P guard (DHT by the kernel, web stays in the VPN), 174 Mbit/s through
+  the tunnel, failover drill (one dead server off in ~5 s, both main servers
+  in ~13 s), Wi-Fi boost on live radios (gate 5a: clients back in 28 s;
+  a forced invalid channel refused; the runtime rollback cannot be forced on
+  1111 without breaking hostapd), reboot (all up by itself, egress restored
+  at once). Stress: ~16 new HTTPS conn/s from one device saturates the CPU;
+  100 unique DNS qps grows xray ~2 MB/s; the memory guard restarted xray at
+  11 MB, no OOM kill — but only after zram swap was nearly full. After boot
+  the observatory's first round runs before DNS: some nodes «dead» for
+  ~5–8 min.
+- **Merged to main** as one commit (PR Waizor1/Vectra-ProRouter#46): the
+  vctl module with vault/docs/scripts; the panel changes the branch carried
+  and the fleet feed script are left for their own merge; provider hostnames,
+  the fixture's Reality key and a test subscription path scrubbed; eight
+  scripts committed executable. The feature branch's history stays local.
+- Open then (all done in r35–r36 below): the swap-aware memory guard, an
+  observatory re-probe after boot, a per-device DNS rate into xray, an
+  admission limit sized to this CPU. Still open: the panel's own merge and
+  deploy.
+
+## 2026-09-30 night — r35/r36: the most out of the AX3000T (owner: «выжать максимум из железа и дать топовое соединение которое не будет падать и рваться клиентам»)
+
+- **Profiling first** (1111, idle, a LAN-client netns): ~18–21 ms of xray CPU
+  per new proxied connection, half of it the provider's Reality/X25519
+  handshake (not ours to touch), a quarter GC, most of GC scanning goroutine
+  stacks. The goroutines: every dnsmasq upstream query is its own session of
+  vctl-dns-in/vctl-dns-out (a new source port each) and lived the provider's
+  connIdle — an idle household kept ~250 of them (750 of xray's 788
+  goroutines).
+- **DNS sessions on a level of their own** (r35): the DNS inbound and outbound
+  run on the first free policy level ≥16 — idle 8 s, uplinkOnly/downlinkOnly
+  0, no buffer; merged into the provider's policy, bytes kept; the splice
+  refuses a result off it; the splice key names the level, so an upgraded
+  router re-renders at start. xray looks at idleness once per connIdle, so a
+  session lives 8–16 s after its last packet (the provider's level:
+  120–240 s). Stand dns-sessions: 29 → 1448 → 29 goroutines within 20 s;
+  control (the provider's level) keeps them. **Live** (1111, 40 queries/s for
+  60 s): goroutines plateau at ~2150 within 15 s instead of growing for
+  minutes, back to ~190 20 s after; 200 queries/s for 30 s: MemAvailable
+  bottomed at 23 MB, swap untouched, no restart (r34: zram full, xray
+  restarted at 11 MB).
+- **Memory guard counts swap** (r35): critical also when a swap ≥32 MiB is all
+  but full (SwapFree < max(16 MiB ≤ ¼ of it, 15%)) and MemAvailable < 24 MB;
+  xray's size for a restart counts its swapped pages.
+- **Servers back after a reboot** (r35, narrowed r36): the failover watchdog
+  asks the names that failed again (a batch of 4, 2 s each, doubling backoff
+  from 15 s); when names come back after an outage (more than half gone at
+  once) and xray holds such a node dead on a verdict from before (the
+  running xray never saw the name resolve, or the node was alive when its
+  name went) it restarts xray once, at most once in 10 min. r36: one name
+  that flaps between the watchdog's public resolvers (1111: 8.8.8.8 NXDOMAIN,
+  77.88.8.8 an address, for a node dead for real) would have looked like an
+  outage's end after every xray start — now it is not. **Live reboot** (r36,
+  20:50): first look 18/20 names unresolved → restart ~40 s later → at +70 s
+  only the 6 nodes dead before the reboot are dead, BL-RU on its own nodes
+  (r34: its fallback for 5–8 min).
+- **The DNS door** (r35): per LAN source (@bypass4/6), 100 queries/s, 2000 at
+  once (a device asks A, AAAA and HTTPS per name; a Pi-hole is one source),
+  UCI dns_rate (burst 20×). Stand: 10 000 queries at 1000/s → 7072 held, the
+  router's own lookup answered, the device answered 4 s later; control holds
+  none. Live 200 q/s: 1576 held after the burst.
+- **The whole door** (r35, off): one prerouting rule after the device doors,
+  UCI admit_total_rate; stand: 40 connections at once past a rate of 5 all
+  answered. Off: ~21 ms of xray CPU per new proxied connection (~37% of a
+  core at 17/s), ~95/s would fill both cores — a household with the device
+  door (15/s) gets there only with 5+ devices storming; admit_total_rate 60
+  if one does.
+- **GC measured, not tuned**: GC 25.9% → 23.0% of xray's CPU under the same
+  HTTP load (stack scanning 13.7% → 10.1%); GOGC 50 vs 30 A/B on 1111: −9%
+  CPU, +4 MB peak RSS, −5 MB MemAvailable → GOGC stays 30 (RAM, not CPU, is
+  what runs out). Idle xray: 788 goroutines on r34, 135–199 on r36.
+- **The review** (fresh reviewer, opus) found what the tests had not: the
+  level's self-check refused every PassWall/native render (booleans in
+  generated policies) — fixed, stand passwall-real proves those modes carry
+  with DNS on; a DNS blip would restart xray for a node dead for real —
+  fixed; the fast re-map asked every name every 15 s — fixed; the door was
+  tight for real browsers — widened.
 
 ## Risks / gated (do not run without explicit sign-off)
 

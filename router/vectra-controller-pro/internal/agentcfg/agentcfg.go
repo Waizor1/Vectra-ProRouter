@@ -79,6 +79,14 @@ type Config struct {
 	// product's (firewall.DefaultSpec).
 	AdmitRate *int `json:"admitRate,omitempty"`
 	PaceRate  *int `json:"paceRate,omitempty"`
+	// AdmitTotalRate opens the router's whole door, new connections a second
+	// into xray from every device together (UCI admit_total_rate); nil or 0:
+	// off.
+	AdmitTotalRate *int `json:"admitTotalRate,omitempty"`
+	// DNSRate is the DNS door's rate, a device's queries a second to the
+	// router's resolver (UCI dns_rate; '0' switches it off); nil: the
+	// product's.
+	DNSRate *int `json:"dnsRate,omitempty"`
 	// IPv6: the provider's nodes carry IPv6, so the LAN's IPv6 goes through
 	// them (UCI ipv6 '1'). By default it is refused at once — they do not
 	// (firewall.Spec.RefuseIPv6; the owner, 2026-09-30).

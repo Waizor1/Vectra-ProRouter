@@ -41,10 +41,10 @@ import (
 const (
 	// DNSInboundTag is the loopback inbound dnsmasq's redirected queries land on.
 	DNSInboundTag = "vctl-dns-in"
-	// DNSOutboundTag hands a query to xray's built-in DNS. Without settings,
-	// every xray from 26.3.27 answers A/AAAA from the built-in DNS and every
-	// other type at once (an empty answer or a refusal), never over the open
-	// path.
+	// DNSOutboundTag hands a query to xray's built-in DNS. With no settings
+	// but its level, every xray from 26.3.27 answers A/AAAA from the built-in
+	// DNS and every other type at once (an empty answer or a refusal), never
+	// over the open path.
 	DNSOutboundTag = "vctl-dns-out"
 	// DefaultDNSListen is the inbound's address. Nothing else on an OpenWrt
 	// router uses it; PassWall2 (stopped while vctl carries) uses 15353 and
@@ -95,6 +95,9 @@ func (o *DNSOptions) key() string {
 		return ""
 	}
 	k := ";dns=" + o.Listen + "|" + strings.Join(o.DirectResolvers, ",") + "|" + strings.Join(o.DirectDomains, ",")
+	// The DNS sessions' level: a render made before it (or with another) is
+	// made again at start (reconcileRender), not at the provider's next change.
+	k += "|lvl" + strconv.Itoa(dnsLevelConnIdle)
 	if o.AllowFakeDNS {
 		k += "|fakedns"
 	}
@@ -157,7 +160,9 @@ type DNSResult struct {
 	NodeHosts int
 	// AddedDNS: the document had no "dns"; one was added.
 	AddedDNS bool
-	Skipped  string
+	// Level is the policy level the DNS sessions run on (dnsLevelPolicy).
+	Level   uint32
+	Skipped string
 }
 
 // dnsPlan is what DNS through the tunnel becomes in one provider document.
@@ -166,7 +171,74 @@ type dnsPlan struct {
 	inbound []byte            // the DNS inbound
 	rule    json.RawMessage   // for the top of routing.rules
 	servers []json.RawMessage // for the front of dns.servers
+	level   uint32            // the DNS sessions' policy level (dnsLevelPolicy)
 	res     DNSResult
+}
+
+// DNS sessions live seconds, not the provider's minutes. dnsmasq asks from a
+// new port for every query, so each is a session of the DNS inbound and of
+// the DNS outbound — and they lived the provider's connIdle (1111: 120 s).
+// 600 lookups left 2136 sessions and 6400 goroutines behind; an ordinary
+// browsing burst left hundreds (AAAA answers, empty under IPv4Only, are never
+// cached by dnsmasq), each a buffer and stacks the GC walks. The two get a
+// level of their own: idle 8 s — above a slow answer's 4 s; xray looks once
+// per connIdle, so a session ends 8-16 s after its last packet (the provider's:
+// 120-240 s) — closed as soon as a side is done, no buffer.
+const (
+	dnsLevelBase     = 16 // the first number tried: below it the provider's own
+	dnsLevelConnIdle = 8
+)
+
+// dnsLevelPolicy is the DNS level's policy (xray's policy.levels entry).
+func dnsLevelPolicy() json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"handshake":4,"connIdle":%d,"uplinkOnly":0,"downlinkOnly":0,"bufferSize":0}`, dnsLevelConnIdle))
+}
+
+// freeLevel is the first level from dnsLevelBase the document neither defines
+// in policy.levels nor names as a "level"/"userLevel" anywhere — a level the
+// provider's users are on would get the DNS sessions' timeouts.
+func freeLevel(raw []byte) uint32 {
+	used := map[uint64]bool{}
+	var doc interface{}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	if d.Decode(&doc) == nil {
+		var walk func(v interface{})
+		walk = func(v interface{}) {
+			switch x := v.(type) {
+			case map[string]interface{}:
+				for k, vv := range x {
+					switch foldKey(k) {
+					case foldKey("level"), foldKey("userLevel"):
+						if n, ok := vv.(json.Number); ok {
+							if u, err := strconv.ParseUint(n.String(), 10, 32); err == nil {
+								used[u] = true
+							}
+						}
+					case foldKey("levels"):
+						if m, ok := vv.(map[string]interface{}); ok {
+							for lk := range m {
+								if u, err := strconv.ParseUint(lk, 10, 32); err == nil {
+									used[u] = true
+								}
+							}
+						}
+					}
+					walk(vv)
+				}
+			case []interface{}:
+				for _, vv := range x {
+					walk(vv)
+				}
+			}
+		}
+		walk(doc)
+	}
+	l := uint64(dnsLevelBase)
+	for used[l] {
+		l++
+	}
+	return uint32(l)
 }
 
 // planDNS decides whether this document can resolve through the tunnel and
@@ -224,23 +296,27 @@ func planDNS(providerRaw []byte, o *DNSOptions) (dnsPlan, error) {
 		}{"tcp+local://" + r, domains, true}))
 	}
 
+	plan.level = freeLevel(providerRaw)
+	plan.res.Level = plan.level
 	plan.inbound = marshalNoEscape(struct {
 		Tag      string `json:"tag"`
 		Listen   string `json:"listen"`
 		Port     int    `json:"port"`
 		Protocol string `json:"protocol"`
 		Settings struct {
-			Address string `json:"address"`
-			Port    int    `json:"port"`
-			Network string `json:"network"`
+			Address   string `json:"address"`
+			Port      int    `json:"port"`
+			Network   string `json:"network"`
+			UserLevel uint32 `json:"userLevel"`
 		} `json:"settings"`
 	}{
 		Tag: DNSInboundTag, Listen: host, Port: port, Protocol: "dokodemo-door",
 		Settings: struct {
-			Address string `json:"address"`
-			Port    int    `json:"port"`
-			Network string `json:"network"`
-		}{dnsInboundTarget, 53, "tcp,udp"},
+			Address   string `json:"address"`
+			Port      int    `json:"port"`
+			Network   string `json:"network"`
+			UserLevel uint32 `json:"userLevel"`
+		}{dnsInboundTarget, 53, "tcp,udp", plan.level},
 	})
 	plan.rule = marshalNoEscape(userRule{Type: "field", InboundTag: []string{DNSInboundTag}, OutboundTag: DNSOutboundTag})
 	plan.on = true
@@ -419,12 +495,45 @@ func hostName(h string) bool {
 	return true
 }
 
-// dnsOutboundJSON is the DNS outbound, with no settings (see DNSOutboundTag).
-func dnsOutboundJSON() []byte {
+// dnsOutboundJSON is the DNS outbound on the DNS level (see DNSOutboundTag).
+func dnsOutboundJSON(level uint32) []byte {
 	return marshalNoEscape(struct {
 		Tag      string `json:"tag"`
 		Protocol string `json:"protocol"`
-	}{DNSOutboundTag, "dns"})
+		Settings struct {
+			UserLevel uint32 `json:"userLevel"`
+		} `json:"settings"`
+	}{DNSOutboundTag, "dns", struct {
+		UserLevel uint32 `json:"userLevel"`
+	}{level}})
+}
+
+// withDNSLevel adds the DNS level to a policy object, every other byte of it
+// as it was; levels found as xray finds the key.
+func withDNSLevel(policy json.RawMessage, level uint32) (json.RawMessage, error) {
+	field := "levels"
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(policy, &obj); err != nil {
+		return nil, fmt.Errorf("xray splice: policy is not an object: %w", err)
+	}
+	levels := map[string]json.RawMessage{}
+	for k, v := range obj {
+		if foldKey(k) == foldKey(field) {
+			field = k
+			if !isJSONNull(v) {
+				if err := json.Unmarshal(v, &levels); err != nil {
+					return nil, fmt.Errorf("xray splice: policy.levels is not an object: %w", err)
+				}
+			}
+		}
+	}
+	key := strconv.FormatUint(uint64(level), 10)
+	if _, taken := levels[key]; taken {
+		return nil, fmt.Errorf("xray splice: policy level %s is the provider's — refusing", key)
+	}
+	levels[key] = dnsLevelPolicy()
+	out, _, err := rewriteObjectField(policy, field, marshalNoEscape(levels))
+	return out, err
 }
 
 // hasDNSServers: the provider's "dns" names at least one server. Without one
@@ -526,4 +635,55 @@ func RenderDNSListen(render []byte) (port int, ok bool) {
 		return ib.Port, true
 	}
 	return 0, false
+}
+
+// checkDNSLevel: the DNS inbound and outbound both run on level, and level is
+// dnsLevelPolicy — read as xray reads the result.
+func checkDNSLevel(spliced []byte, level uint32) error {
+	type withLevel struct {
+		Tag      string `json:"tag"`
+		Settings struct {
+			UserLevel *uint32 `json:"userLevel"`
+		} `json:"settings"`
+	}
+	var got struct {
+		Inbounds  []withLevel `json:"inbounds"`
+		Outbounds []withLevel `json:"outbounds"`
+		// The other levels as they are: a generator writes booleans in them
+		// (statsUserUplink), and only the DNS level is judged here.
+		Policy struct {
+			Levels map[string]json.RawMessage `json:"levels"`
+		} `json:"policy"`
+	}
+	if err := json.Unmarshal(spliced, &got); err != nil {
+		return fmt.Errorf("xray splice: re-read the result: %w", err)
+	}
+	on := func(obs []withLevel, tag string) bool {
+		for _, o := range obs {
+			if o.Tag == tag {
+				return o.Settings.UserLevel != nil && *o.Settings.UserLevel == level
+			}
+		}
+		return false
+	}
+	if !on(got.Inbounds, DNSInboundTag) || !on(got.Outbounds, DNSOutboundTag) {
+		return fmt.Errorf("xray splice: the DNS inbound and outbound are not both on level %d — refusing", level)
+	}
+	var want map[string]json.Number
+	if err := json.Unmarshal(dnsLevelPolicy(), &want); err != nil {
+		return err
+	}
+	var have map[string]json.Number
+	if raw, ok := got.Policy.Levels[strconv.FormatUint(uint64(level), 10)]; !ok || json.Unmarshal(raw, &have) != nil {
+		return fmt.Errorf("xray splice: policy level %d is not the DNS sessions' — refusing", level)
+	}
+	if len(have) != len(want) {
+		return fmt.Errorf("xray splice: policy level %d is not the DNS sessions' — refusing", level)
+	}
+	for k, v := range want {
+		if have[k] != v {
+			return fmt.Errorf("xray splice: policy level %d is not the DNS sessions' — refusing", level)
+		}
+	}
+	return nil
 }

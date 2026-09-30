@@ -558,6 +558,14 @@ ru-kernel)
 	. "$STAND/mode-rukernel.sh"
 	run_rukernel_mode
 	;;
+dns-sessions|dns-sessions-provider-idle|dns-door-off)
+	. "$STAND/mode-dnssessions.sh"
+	run_dnssessions_mode
+	;;
+reprobe|reprobe-no-watchdog)
+	. "$STAND/mode-reprobe.sh"
+	run_reprobe_mode
+	;;
 exitcheck)
 	. "$STAND/mode-exitcheck.sh"
 	run_exitcheck_mode

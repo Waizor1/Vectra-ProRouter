@@ -1,5 +1,47 @@
 # Changelog
 
+## vctl 0.6.0-r36 — no restart for one name that comes and goes
+
+### Fixed
+- **xray is restarted for servers' names only after an outage.** On the test
+  router one server's name resolves at one public resolver and not at the
+  other, so the watchdog saw it come and go, and that server is dead for
+  real. Right after xray started, r35 would have taken its return for the
+  end of an outage and restarted xray — and again after every restart, every
+  ten minutes. Now it restarts only when more than half of the servers'
+  names went at once (a reboot, the WAN down).
+
+## vctl 0.6.0-r35 — the most out of the hardware: DNS in seconds, swap counted, servers back after a reboot, a door for storms
+
+### Improved
+- **DNS no longer piles up in xray.** Every name the router looked up was a
+  session in xray that lived two to four minutes after its answer: an idle
+  household kept ~250 of them on the test router (750 of xray's 788
+  goroutines), and the garbage collector walked them all on every cycle.
+  They now close 8–16 s after their answer. On the stand, 240 names left
+  xray at 1460 goroutines for minutes; now it is back to 29 within 20 s.
+- **The memory guard counts swap.** It acted only once free memory fell
+  below 12 MB, by which time zram was full (2 MB left under load on the test
+  router). It now also acts when the swap is all but full and less than
+  24 MB is free.
+- **Servers are back within seconds after a reboot or a long outage.** xray
+  probed every server before the router's internet came up, found them dead
+  and kept them dead until its next probe — 5–8 minutes, the Russian bridge
+  on its fallback meanwhile. The watchdog now watches the servers' names;
+  once they resolve again and xray still holds a server dead on a probe made
+  while its name was gone, it restarts xray once, so it probes them at once
+  (on the stand: alive 17 s after the name resolved). A server dead for
+  real is left to xray's own probes — a restart would drop every
+  connection for nothing.
+- **One device's DNS storm waits at the door.** A LAN device asking the
+  router for more than 100 names a second (2000 at once — a heavy page or a
+  restored browser session passes) has the rest dropped, and its resolver
+  asks again; every other device, and the router itself, are answered. UCI
+  `dns_rate` ('0' off).
+- **The router's whole door** (UCI `admit_total_rate`): a limit on new
+  connections into xray from every device together. Off until it is sized
+  on the router itself.
+
 ## vctl 0.6.0-r34 — the review's last eight: IPv6 off only outward, the exit country kept
 
 ### Fixed

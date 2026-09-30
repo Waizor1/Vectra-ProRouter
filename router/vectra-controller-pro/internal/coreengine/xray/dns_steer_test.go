@@ -339,3 +339,88 @@ func TestTheResolverAnswersIPv4OnlyWhenIPv6IsRefused(t *testing.T) {
 		t.Fatal("the splice key ignores IPv4Only")
 	}
 }
+
+// dnsLevelDoc is what the DNS session level touches in a spliced document.
+type dnsLevelDoc struct {
+	Inbounds []struct {
+		Tag      string                     `json:"tag"`
+		Settings map[string]json.RawMessage `json:"settings"`
+	} `json:"inbounds"`
+	Outbounds []struct {
+		Tag      string                     `json:"tag"`
+		Settings map[string]json.RawMessage `json:"settings"`
+	} `json:"outbounds"`
+	Policy struct {
+		Levels map[string]map[string]json.RawMessage `json:"levels"`
+		System json.RawMessage                       `json:"system"`
+	} `json:"policy"`
+}
+
+func dnsLevelOf(t *testing.T, raw []byte) (in, out string, d dnsLevelDoc) {
+	t.Helper()
+	if err := json.Unmarshal(raw, &d); err != nil {
+		t.Fatal(err)
+	}
+	for _, ib := range d.Inbounds {
+		if ib.Tag == xray.DNSInboundTag {
+			in = string(ib.Settings["userLevel"])
+		}
+	}
+	for _, ob := range d.Outbounds {
+		if ob.Tag == xray.DNSOutboundTag {
+			out = string(ob.Settings["userLevel"])
+		}
+	}
+	return in, out, d
+}
+
+// 1111, 2026-09-30 (the stress test): every query dnsmasq forwards comes from
+// a port of its own, so each is a session of the DNS inbound — and it lived
+// the provider's connIdle, 120 s. 600 lookups left 2136 sessions and 6400
+// goroutines; an ordinary browsing burst left hundreds (AAAA answers, empty
+// under IPv4Only, are never cached by dnsmasq). The DNS inbound and outbound
+// get a level of their own: idle 8 s — above a slow answer's 4 s, far below
+// 120 — closed as soon as a side is done, no buffer.
+func TestDNSSessionsLiveSecondsNotTheProvidersMinutes(t *testing.T) {
+	spliced, _, err := xray.Splice(providerFixture(t), testTproxy(), xray.SpliceOptions{DNS: dnsOptions()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, out, d := dnsLevelOf(t, spliced)
+	if in == "" || in != out {
+		t.Fatalf("DNS inbound level %q, outbound level %q: want the same level on both", in, out)
+	}
+	lvl := d.Policy.Levels[in]
+	want := map[string]string{"connIdle": "8", "handshake": "4", "uplinkOnly": "0", "downlinkOnly": "0", "bufferSize": "0"}
+	for k, v := range want {
+		if string(lvl[k]) != v {
+			t.Fatalf("level %s = %v, want %v", in, lvl, want)
+		}
+	}
+	// The provider's own levels and system stay as they were: level 0, and 8
+	// its users name, are not ours to take.
+	if in == "0" || in == "8" {
+		t.Fatalf("the DNS level %s is one the provider uses", in)
+	}
+	if string(d.Policy.Levels["0"]["connIdle"]) != "120" || len(d.Policy.System) == 0 {
+		t.Fatalf("the provider's policy changed: %+v", d.Policy)
+	}
+}
+
+// A provider with no policy at all gets one holding the DNS level alone —
+// every other level keeps xray's defaults.
+func TestDNSLevelWhenTheProviderHasNoPolicy(t *testing.T) {
+	provider := []byte(`{"outbounds":[{"tag":"node","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"00000000-0000-4000-8000-000000000000","level":16}]}]}}],
+"routing":{"rules":[{"network":"tcp,udp","outboundTag":"node"}]},"dns":{"servers":["1.1.1.1"]}}`)
+	spliced, _, err := xray.Splice(provider, testTproxy(), xray.SpliceOptions{DNS: dnsOptions()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, out, d := dnsLevelOf(t, spliced)
+	if in == "" || in != out || in == "16" {
+		t.Fatalf("DNS level in %q out %q (16 is the provider's users')", in, out)
+	}
+	if len(d.Policy.Levels) != 1 || string(d.Policy.Levels[in]["connIdle"]) != "8" {
+		t.Fatalf("policy levels %v", d.Policy.Levels)
+	}
+}
