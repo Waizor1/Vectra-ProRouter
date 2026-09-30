@@ -265,6 +265,11 @@ func Scrub(s, rawURL string) string {
 	return s
 }
 
+// SecretParts are the substrings of rawURL that carry its secret — the URL
+// whole, without its scheme, its path and query, its user info — longest
+// first; nothing for a URL that is only a scheme and a host.
+func SecretParts(rawURL string) []string { return secretNeedles(rawURL) }
+
 // secretNeedles lists the substrings of rawURL that must never appear in
 // operator-visible output, longest first so a replacement can never leave a
 // shorter needle's remnant behind.

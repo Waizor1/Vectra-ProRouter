@@ -61,7 +61,7 @@ func cmdRPCD(args []string) error {
 			return fmt.Errorf("rpcd: call needs a method")
 		}
 		params, _ := io.ReadAll(io.LimitReader(os.Stdin, 64<<10))
-		out := rpcdCall(context.Background(), rpcdConfig(), args[1], params)
+		out := rpcdAnswer(context.Background(), rpcdConfig(), args[1], params)
 		return writeJSON(os.Stdout, out)
 	}
 	return fmt.Errorf("rpcd: unknown verb %q", args[0])

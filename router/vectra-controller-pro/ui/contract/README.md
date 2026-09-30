@@ -334,7 +334,17 @@ may grow checks before the UI learns their sentences.
   is `null` whenever the tag does not name a country unambiguously
   (`whitelist-lv3` is whitelist LEVEL 3, not Latvia).
 - Node addresses and ports are shown; credentials (UUIDs, keys, passwords,
-  short IDs, subscription URLs) are NEVER in any response.
+  short IDs, subscription URLs) are NEVER in any response. Every answer goes
+  through the router's scrub on its way out (`cmd/vctl/rpcd_scrub.go`), so
+  what the router quotes — a log line, `lastExit.error`, an action's `detail`
+  — has them replaced: `<redacted>` (the router's own secrets, a value under a
+  secret's name), `<uuid>`, `<link>` (a share link), `<secret>` (a long bare
+  token, in quoted text only). A web address keeps its host:
+  `https://sub.example.com/<redacted>`. Kept exactly, and not credentials:
+  `status.controlPlane.routerId` (the router's id in the panel — support asks
+  for it; the panel takes nothing from a router without its token beside it),
+  `setup`'s claim `code`, `qr` and `botUrl` (shown to link the router), the
+  owner's own sites (`rules`) and Wi-Fi names.
 
 ## Setup wizard
 
