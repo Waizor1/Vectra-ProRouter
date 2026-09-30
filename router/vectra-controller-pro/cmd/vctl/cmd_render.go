@@ -51,5 +51,5 @@ func cmdRender(args []string) error {
 		_, err = os.Stdout.Write(append(data, '\n'))
 		return err
 	}
-	return os.WriteFile(*out, data, 0o600)
+	return writePrivate(*out, data)
 }

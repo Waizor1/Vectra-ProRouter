@@ -166,6 +166,25 @@ func TestSaveRawIsByteExact(t *testing.T) {
 	}
 }
 
+// What SaveRaw writes — the operator config with the subscription's URL, the
+// provider document with every credential — is root's alone, even when a
+// temp file a crash left behind was readable to all: its mode is not kept.
+func TestSaveRawIsReadableOnlyByRoot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "provider-config.json")
+	if err := os.WriteFile(path+".tmp", []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path+".tmp", 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveRaw(path, []byte(`{"outbounds":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v, %v; want 0600", st.Mode().Perm(), err)
+	}
+}
+
 func TestXrayAssetEnvReplacesInheritedValue(t *testing.T) {
 	env := []string{"PATH=/usr/bin", XrayAssetEnvKey + "=/usr/share/xray", "HOME=/root"}
 	out := XrayAssetEnv(env, "/usr/share/v2ray")

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/state"
 	"vectra-controller-pro/internal/subscription"
 )
@@ -99,7 +100,7 @@ func subscribeFetch(args []string) error {
 	case "-":
 		_, _ = os.Stdout.Write(res.Body)
 	default:
-		if err := os.WriteFile(*out, res.Body, 0o600); err != nil {
+		if err := writePrivate(*out, res.Body); err != nil {
 			return fmt.Errorf("write %s: %w", *out, err)
 		}
 		fmt.Fprintf(os.Stderr, "wrote %d bytes to %s\n", len(res.Body), *out)
@@ -149,7 +150,7 @@ func subscribeParse(args []string) error {
 			_, err = os.Stdout.Write(raw)
 			return err
 		}
-		return os.WriteFile(*out, raw, 0o600)
+		return writePrivate(*out, raw)
 	}
 	if !*verbose {
 		for i := range pr.Nodes {
@@ -157,16 +158,15 @@ func subscribeParse(args []string) error {
 			pr.Nodes[i].UnknownParams = nil
 		}
 	}
-	w := os.Stdout
 	if *out != "-" {
-		f, err := os.Create(*out)
+		// The nodes carry their user ids and passwords.
+		b, err := json.MarshalIndent(pr, "", "  ")
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		w = f
+		return writePrivate(*out, append(b, '\n'))
 	}
-	enc := json.NewEncoder(w)
+	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(pr)
 }
@@ -219,4 +219,12 @@ func readAll(f *os.File) ([]byte, error) {
 		}
 	}
 	return []byte(sb.String()), nil
+}
+
+// writePrivate writes what carries credentials — a provider's document, its
+// nodes, a render — for root alone: a new file, 0600, put in place of
+// whatever path was, so neither a file readable to all nor a link someone
+// left in /tmp to a file of theirs gets it.
+func writePrivate(path string, data []byte) error {
+	return localctl.WriteFileAtomic(path, data, 0o600)
 }

@@ -66,3 +66,37 @@ func TestChildEnvDropsTheControllersGoTuning(t *testing.T) {
 		t.Fatalf("childEnv = %v, want %s", got, want)
 	}
 }
+
+// xray's log is root's alone: its errors quote the config they choke on — a
+// user id, a password — and a log a previous version left readable to all
+// (0644) is made root's too.
+func TestCappedLogIsReadableOnlyByRoot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "xray.log")
+	for _, p := range []string{path, path + ".1"} {
+		if err := os.WriteFile(p, []byte("old\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := newCappedLog(path, 1000)
+	_, _ = c.Write([]byte("new\n"))
+	for _, p := range []string{path, path + ".1"} {
+		if st, err := os.Stat(p); err != nil || st.Mode().Perm() != 0o600 {
+			t.Errorf("%s: mode %v, %v; want 0600", filepath.Base(p), st.Mode().Perm(), err)
+		}
+	}
+	// A fresh log, and each generation rotation makes, is root's alone too.
+	fresh := filepath.Join(t.TempDir(), "xray.log")
+	c = newCappedLog(fresh, 100)
+	for i := 0; i < 30; i++ {
+		_, _ = c.Write([]byte(strings.Repeat("x", 9) + "\n"))
+	}
+	for _, p := range []string{fresh, fresh + ".1"} {
+		if st, err := os.Stat(p); err != nil || st.Mode().Perm() != 0o600 {
+			t.Errorf("%s: mode %v, %v; want 0600", filepath.Base(p), st.Mode().Perm(), err)
+		}
+	}
+}
