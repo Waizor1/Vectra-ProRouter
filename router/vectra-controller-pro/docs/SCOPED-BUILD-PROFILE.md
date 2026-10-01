@@ -56,7 +56,8 @@ Source and reproducible inputs reconstruct Garble's reverse mappings; no runtime
 secret export or special router debug access is needed. Never add source/tool or
 trace bundles to IPK or ordinary support exports.
 
-Synthetic exact-profile diagnostic proof (state panic before any file read):
+Synthetic exact-profile diagnostic proof (vault validator callback panic before
+key creation, only a private temporary synthetic JSON file):
 
 ```
 scripts/profile-scoped.sh build -trimpath -buildvcs=false -o /private/output/probe ./scripts/testdata/scoped-diagnostics
@@ -67,7 +68,11 @@ scripts/profile-scoped.sh reverse ./scripts/testdata/scoped-diagnostics /private
 Reverse omits unsupported build-only-trimpath flag. Retain identical source,
 seed,scope,tool and Go. Testdata fixture is developer-only, never packaged. Existing
 production raw traceback suppression remains; successful synthetic reverse does
-not promise automatic production crash capture. Sensitive traces need redaction.
+not promise automatic production crash capture. Sensitive traces need redaction. `probe nil` also captures a nil-dereference
+example: reverse recovers function/file, but non-call-site fallback line numbers
+can be inaccurate. This is an upstream documented limitation; never treat a
+fallback line as exact. Retain a private `-debugdir` transformed/original source
+bundle for manual diagnosis. Call-site panic recovery is tested separately.
 
 ## Gates
 
