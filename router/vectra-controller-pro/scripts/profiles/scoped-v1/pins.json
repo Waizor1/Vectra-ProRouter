@@ -1,0 +1,25 @@
+{
+  "profile": "scoped-v1",
+  "goVersion": "go1.26.3",
+  "toolModule": "mvdan.cc/garble",
+  "toolVersion": "v0.17.0",
+  "toolSourceCommit": "39c484d3007e9a608ac8692dab0b9bb5f71dfc2a",
+  "moduleSum": "h1:XJ6jJhlT8HTEU9Dd02nLDUciuyPDXGRopwy/Cuoo/0M=",
+  "goModSum": "h1:LooTuz3tMwLVoqYPdt3aFxU75PC1lkrrRmUI+wqtmjs=",
+  "toolSha256": "64d8bb3101f672c62b6e701e1292f5be17307a0516bc4e125d22ecb6f69accf9",
+  "patchSha256": "2ddfb52d510db0ccc1e51e331f9bddcdc716d645f52ab920c260434f71c49375",
+  "regressionSha256": "17857e996a4610fc743ed17284854c037277102de1c3f2480b7d76e39ca332a2",
+  "seedBase64": "dmVjdHJhLWx=",
+  "packages": [
+    "vectra-controller-pro/internal/vault",
+    "vectra-controller-pro/internal/state",
+    "vectra-controller-pro/internal/logging"
+  ],
+  "toolHost": "darwin/arm64",
+  "toolBuildFlags": [
+    "CGO_ENABLED=0",
+    "-trimpath",
+    "-buildvcs=false",
+    "-ldflags=-s -w -buildid="
+  ]
+}

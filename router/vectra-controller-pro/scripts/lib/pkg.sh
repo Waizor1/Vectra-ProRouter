@@ -70,6 +70,15 @@ pkg_build_vctl() { # <out-binary> <GOARCH> [GOARM] [GOMIPS]: a static vctl, stam
 	commit="$(git -C "$PKG_MODULE" rev-parse --short HEAD 2>/dev/null || echo dev)"
 	git -C "$PKG_MODULE" diff --quiet HEAD -- . 2>/dev/null || dirty="-dirty"
 	built="$(TZ=UTC git -C "$PKG_MODULE" log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo dev)"
+	case "${VECTRA_BUILD_PROFILE:-plain}" in
+	plain) ;;
+	scoped-v1)
+		. "$PKG_MODULE/scripts/lib/scoped-profile.sh"
+		pkg_build_scoped_vctl "$out" "$goarch" "$goarm" "$gomips" "$full" "$commit$dirty" "$built" || return
+		chmod 0755 "$out"
+		return ;;
+	*) echo 'unknown VECTRA_BUILD_PROFILE' >&2; return 1 ;;
+	esac
 	( cd "$PKG_MODULE" && GOOS=linux GOARCH="$goarch" GOARM="$goarm" GOMIPS="$gomips" GOMIPS64="$gomips" CGO_ENABLED=0 \
 		go build -trimpath -buildvcs=false \
 		-ldflags "-s -w -buildid= -X main.Version=$full -X main.runtimeVersion=$full -X main.Commit=$commit$dirty -X main.BuildDate=$built" \
