@@ -19,6 +19,12 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
+	// mode, whatever a temp file a crash left behind was.
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)

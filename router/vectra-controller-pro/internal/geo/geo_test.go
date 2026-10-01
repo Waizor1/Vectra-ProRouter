@@ -89,3 +89,34 @@ func toHex(b []byte) []byte {
 
 // Compile-time sanity: ensure encoding/hex would produce identical output.
 var _ = hex.EncodeToString
+
+// An asset's name is a plain file name in the asset directory, nothing else:
+// the name comes from the operator config the panel delivers, and the file is
+// written as root — "../../etc/crontabs/root" would be the panel's shell on
+// the router. Such a name is refused before anything is fetched or written.
+func TestUpdateOne_RefusesANameThatIsNotAPlainFileName(t *testing.T) {
+	hits := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write([]byte("* * * * * reboot\n"))
+	}))
+	defer srv.Close()
+	root := t.TempDir()
+	dir := filepath.Join(root, "geo")
+	for _, name := range []string{"../escape.dat", "../../etc/crontabs/root", "/etc/crontabs/root", "sub/geoip.dat", `..\x.dat`,
+		"..", ".", "", " ", "geo\x00ip.dat", "geoip.dat\n", ".hidden"} {
+		r := UpdateOne(context.Background(), dir, Asset{Filename: name, URL: srv.URL + "/x"}, srv.Client())
+		if r.Error == nil {
+			t.Errorf("name %q was accepted", name)
+		}
+	}
+	if hits > 0 {
+		t.Fatalf("a refused name was still fetched %d time(s)", hits)
+	}
+	if _, err := os.Stat(filepath.Join(root, "escape.dat")); !os.IsNotExist(err) {
+		t.Fatalf("a file was written outside the asset directory: %v", err)
+	}
+	if r := UpdateOne(context.Background(), dir, Asset{Filename: "geoip-ru.dat", URL: srv.URL + "/x"}, srv.Client()); r.Error != nil || !r.Updated {
+		t.Fatalf("a plain name was refused: %+v", r)
+	}
+}

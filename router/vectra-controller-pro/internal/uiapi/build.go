@@ -61,6 +61,9 @@ type Inputs struct {
 	// UILocked is the operator's lock on the router UI (UCI ui_lock); rpcd
 	// reads it at every call.
 	UILocked bool
+	// RemoteShell is the owner's switch for the panel's support shell (UCI
+	// remote_shell); rpcd reads it at every status call.
+	RemoteShell bool
 
 	// Power is whether Vectra is switched on and who carries the traffic;
 	// rpcd reads it at every status call, the daemon up or not.
@@ -163,6 +166,7 @@ func BuildStatus(in Inputs) Status {
 		Subscription: SubscriptionState{Source: "panel"},
 		Probe:        ProbeState{Source: "provider"},
 		UI:           UIPolicy{Locked: in.UILocked},
+		RemoteShell:  in.RemoteShell,
 		Power: Power{Enabled: in.Power.On(), Running: in.Power.Running, Holder: in.Power.Holder(),
 			HandBack: strPtr(in.Power.HandBack())},
 	}

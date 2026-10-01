@@ -46,6 +46,24 @@ set_if_empty job_safety_pre_drop_caches "0"
 # (uci set vectra-controller-pro.main.support_bot=<bot>; uci commit), and an
 # absent option reads the same as an empty one.
 
+# The support shell: the panel's run_terminal_command runs any command as
+# root, so vctl runs it only where the router's owner allows it
+# (remote_shell '1', switched in the router UI: «Доступ поддержки к
+# роутеру»). Decided once, here, and never again: a router an older vctl
+# already ran on — its state is there — keeps the shell it had; a new one
+# starts without it. The package's config file does not name the option, so
+# that an upgrade's copy of it cannot decide first.
+if [ -z "$(uci -q get vectra-controller-pro.main.remote_shell || true)" ]; then
+	state="$(uci -q get vectra-controller-pro.main.state_path || true)"
+	[ -n "$state" ] || state=/etc/vectra-controller-pro/state.json
+	if [ -s "$state" ]; then
+		uci -q set vectra-controller-pro.main.remote_shell=1
+	else
+		uci -q set vectra-controller-pro.main.remote_shell=0
+	fi
+	changed=1
+fi
+
 if [ "$changed" -eq 1 ]; then
 	uci commit vectra-controller-pro
 fi

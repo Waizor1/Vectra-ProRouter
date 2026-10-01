@@ -102,6 +102,7 @@ func Fetch(ctx context.Context, opts FetchOptions) (*FetchResult, error) {
 	if client == nil {
 		client = &http.Client{Timeout: opts.MaxTimeout}
 	}
+	client = HTTPSOnlyRedirects(client)
 
 	hwid := opts.HWID
 	if hwid == "" && opts.MAC != "" && opts.Model != "" {
@@ -202,6 +203,28 @@ func Fetch(ctx context.Context, opts FetchOptions) (*FetchResult, error) {
 	return nil, fmt.Errorf("subscription.Fetch: after %d attempts: %w", opts.Retries+1, Sanitize(lastErr, opts.URL))
 }
 
+// HTTPSOnlyRedirects is c refusing to follow a redirect to anything but
+// https: the request carries a secret — a subscription's token in its URL, the
+// device's identity in x-hwid — that a redirect to plain http would send in the
+// clear. c's own redirect policy, if any, still has its say after.
+func HTTPSOnlyRedirects(c *http.Client) *http.Client {
+	cp := *c
+	prev := c.CheckRedirect
+	cp.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if !strings.EqualFold(req.URL.Scheme, "https") {
+			return fmt.Errorf("refusing a redirect to %s: not https", RedactURL(req.URL.String()))
+		}
+		if prev != nil {
+			return prev(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &cp
+}
+
 // RedactURL returns a loggable form of rawURL: scheme + host only.
 //
 // Everything after the host — path, query, fragment and userinfo — is dropped,
@@ -264,6 +287,11 @@ func Scrub(s, rawURL string) string {
 	}
 	return s
 }
+
+// SecretParts are the substrings of rawURL that carry its secret — the URL
+// whole, without its scheme, its path and query, its user info — longest
+// first; nothing for a URL that is only a scheme and a host.
+func SecretParts(rawURL string) []string { return secretNeedles(rawURL) }
 
 // secretNeedles lists the substrings of rawURL that must never appear in
 // operator-visible output, longest first so a replacement can never leave a

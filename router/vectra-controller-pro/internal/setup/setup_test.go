@@ -432,6 +432,47 @@ func TestFinishAndMarkDoneIfWorking(t *testing.T) {
 	}
 }
 
+// The support shell (the panel's run_terminal_command: any command, as root)
+// runs only where the owner allows it: vectra-controller-pro.main.remote_shell
+// '1'. Anything else — the option absent, a file that cannot be read — is no.
+func TestRemoteShellIsOnOnlyWhereTheOwnerSaysSo(t *testing.T) {
+	r := newRouter(t)
+	if RemoteShell(r.env) {
+		t.Fatal("no config file, and the shell is on")
+	}
+	for body, want := range map[string]bool{
+		"config controller 'main'\n\toption remote_shell '1'\n":   true,
+		"config controller 'main'\n\toption remote_shell 'on'\n":  true,
+		"config controller 'main'\n\toption remote_shell '0'\n":   false,
+		"config controller 'main'\n\toption enabled '1'\n":        false,
+		"config controller 'main'\n\toption remote_shell 'yes":    false, // uci cannot read it
+		"config controller 'other'\n\toption remote_shell '1'\n":  false,
+		"config controller 'main'\n\toption remote_shell ' 1 '\n": true,
+	} {
+		r.write(t, r.env.VectraConfig, body)
+		if got := RemoteShell(r.env); got != want {
+			t.Errorf("%q: %v, want %v", body, got, want)
+		}
+	}
+
+	// Switched through uci, one argv per value, and committed: the next job
+	// reads it, nothing restarts.
+	for on, want := range map[bool]string{
+		true:  "uci set vectra-controller-pro.main=controller\nuci set vectra-controller-pro.main.remote_shell=1\nuci commit vectra-controller-pro",
+		false: "uci set vectra-controller-pro.main=controller\nuci set vectra-controller-pro.main.remote_shell=0\nuci commit vectra-controller-pro",
+	} {
+		r := newRouter(t)
+		if err := SetRemoteShell(context.Background(), r.env, on); err != nil || strings.Join(r.commands(), "\n") != want {
+			t.Errorf("on=%v: %v\n%s", on, err, strings.Join(r.commands(), "\n"))
+		}
+	}
+	r = newRouter(t)
+	r.fail = func(args []string) bool { return len(args) > 1 && args[1] == "commit" }
+	if err := SetRemoteShell(context.Background(), r.env, true); err == nil {
+		t.Error("a commit that failed was a success")
+	}
+}
+
 func TestCheckerLooksWithinItsBudget(t *testing.T) {
 	probe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/generate_204" {

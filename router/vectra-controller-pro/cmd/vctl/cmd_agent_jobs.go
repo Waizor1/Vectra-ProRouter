@@ -524,8 +524,15 @@ func (d *daemon) jobUpdateAssets(ctx context.Context, job controlplane.Job) erro
 		return d.submitFailure(ctx, job, "update_assets: with route_source 'passwall' xray reads PassWall2's geo files; vctl does not replace them")
 	}
 	dir := d.runningAssetDir()
-	if dir == config.LegacyGeoAssetDir {
+	switch {
+	case dir == config.LegacyGeoAssetDir:
 		return d.submitFailure(ctx, job, "update_assets: xray reads PassWall2's geo files in "+dir+" (vectra-geodata is not installed); vctl does not replace them — install vectra-geodata")
+	case dir != config.DefaultGeoAssetDir:
+		// The directory is the operator config's to name, and the files are
+		// written as root: anywhere else — /etc/crontabs, with an asset
+		// called "root" — the panel's geo update would be a shell on the
+		// router.
+		return d.submitFailure(ctx, job, "update_assets: vctl writes geo data only into its own directory "+config.DefaultGeoAssetDir+"; the config names "+dir)
 	}
 	cfg, err := d.loadDesiredConfig()
 	if err != nil {
@@ -603,7 +610,11 @@ func (d *daemon) jobReconnect(ctx context.Context, job controlplane.Job) error {
 func (d *daemon) jobRunTerminal(ctx context.Context, job controlplane.Job) error {
 	// The command is operator-authored shell delivered by the authenticated
 	// panel over HTTPS (token-gated) — the same trust model as the legacy
-	// agent's run_terminal_command. It is not untrusted external input.
+	// agent's run_terminal_command. It is root on the router, so it runs only
+	// where the router's owner allows the support shell (remote_shell.go).
+	if !remoteShellAllowed() {
+		return d.submitFailure(ctx, job, remoteShellOff)
+	}
 	cmdStr, _ := job.Payload["command"].(string)
 	if strings.TrimSpace(cmdStr) == "" {
 		return d.submitFailure(ctx, job, "run_terminal_command: empty command")
@@ -1033,6 +1044,10 @@ func tail(s string, max int) string {
 // response cannot fill /tmp.
 const maxArtifactBytes = 64 << 20
 
+// updateHTTPClient is the self-update's HTTP client; tests trust their own
+// server with it.
+var updateHTTPClient = func() *http.Client { return &http.Client{Timeout: 120 * time.Second} }
+
 func downloadFile(ctx context.Context, rawURL, dest string) (string, error) {
 	if err := requireHTTPS(rawURL); err != nil {
 		return "", err
@@ -1041,8 +1056,8 @@ func downloadFile(ctx context.Context, rawURL, dest string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	hc := &http.Client{Timeout: 120 * time.Second}
-	resp, err := hc.Do(req)
+	// https all the way: a redirect to plain http is refused, not followed.
+	resp, err := subscription.HTTPSOnlyRedirects(updateHTTPClient()).Do(req)
 	if err != nil {
 		return "", err
 	}

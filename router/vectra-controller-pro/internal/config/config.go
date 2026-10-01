@@ -85,6 +85,12 @@ func SaveRaw(path string, data []byte) error {
 	if err != nil {
 		return fmt.Errorf("open tmp: %w", err)
 	}
+	// Root's alone, whatever a temp file a crash left behind was.
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("chmod tmp: %w", err)
+	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)

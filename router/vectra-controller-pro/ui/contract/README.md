@@ -38,6 +38,7 @@ Change a shape here first, then both sides.
 | `services` | — | `services.json` |
 | `set_service` | `{"id": "tiktok", "country": "DE"}` (`""` = the entry's own path) | `action.json` |
 | `set_power` | `{"on": true}` (`false` turns Vectra off — see Power) | `action.json` |
+| `set_remote_shell` | `{"on": false}` (`true` lets support in — see Support shell) | `action.json` |
 
 `select_entry`, `reset_entry`, `set_probe_interval`, `set_rules` and
 `restart_xray` restart xray: client connections drop for a few seconds. The UI
@@ -65,7 +66,8 @@ call — nothing restarts.
 - Still served: `status`, `entries`, `diagnostics`, `select_entry`,
   `reset_entry`, `restart_xray`, `rules` and `set_rules` (My sites is the
   simple view's), `services` and `set_service` (a service's country is the
-  owner's choice too), `set_power` (turning Vectra on and off is the owner's), and
+  owner's choice too), `set_power` (turning Vectra on and off is the owner's),
+  `set_remote_shell` (whether support may run commands here is the owner's), and
   `unpin_balancer` (it only hands a balancer back to the provider's own
   choice; the simple view needs it to undo a pin made earlier in Pro).
 - It is a product policy, not a security boundary: root on the router can
@@ -145,6 +147,27 @@ and changes it with LuCI's own call, the one System → Administration makes:
   password step and no password actions.
 - The UI asks for at least 8 characters, twice; it shows what went wrong
   next to the fields, keeps nothing and logs nothing.
+
+## Support shell
+
+The panel can run a command on the router as root (its job
+`run_terminal_command`): support's console, and — were the panel or an
+operator's login ever stolen — root on every router at once. So the router
+runs it only where its owner allows it: UCI
+`vectra-controller-pro.main.remote_shell` `1`. Refused, the panel is told
+`support shell access is off on this router`, and nothing runs. A new router
+starts with it off; one upgraded from a vctl that had no such switch keeps the
+shell it had (`1`, written once by the package). Every check-in reports it
+(`inventory.remoteShell`).
+
+- `status.remoteShell`: `true` while the router runs the panel's commands.
+  Anything but a yes in UCI — the option absent, a config the router cannot
+  read — is `false`: what the router does.
+- `set_remote_shell`: `{"on": true}` or `{"on": false}`, through uci and
+  committed: the next job sees it, nothing restarts. Answers
+  `remote_shell_set` (read `status` for the state), `invalid_params` for
+  anything but `{"on": true|false}`, `internal` when uci failed (nothing
+  changed). The simple view's: the operator's lock never refuses it.
 
 ## My sites
 
@@ -267,6 +290,7 @@ The router answers in CODES, never in prose, so the UI can speak ru, en and zh.
 - `action.code` on success: `entry_selected`, `entry_reset`, `balancer_pinned`,
   `balancer_unpinned`, `probe_interval_set`, `rules_set`, `service_set`, `xray_restarted`,
   `wifi_set`, `wifi_optimized`, `setup_finished`, `power_on`, `power_off`,
+  `remote_shell_set`,
   `pending` (the controller accepted the request and is still applying it; it
   is remembered only if it succeeds — poll `status`, or `rules`, to see it
   land).
@@ -360,7 +384,17 @@ may grow checks before the UI learns their sentences.
   is `null` whenever the tag does not name a country unambiguously
   (`whitelist-lv3` is whitelist LEVEL 3, not Latvia).
 - Node addresses and ports are shown; credentials (UUIDs, keys, passwords,
-  short IDs, subscription URLs) are NEVER in any response.
+  short IDs, subscription URLs) are NEVER in any response. Every answer goes
+  through the router's scrub on its way out (`cmd/vctl/rpcd_scrub.go`), so
+  what the router quotes — a log line, `lastExit.error`, an action's `detail`
+  — has them replaced: `<redacted>` (the router's own secrets, a value under a
+  secret's name), `<uuid>`, `<link>` (a share link), `<secret>` (a long bare
+  token, in quoted text only). A web address keeps its host:
+  `https://sub.example.com/<redacted>`. Kept exactly, and not credentials:
+  `status.controlPlane.routerId` (the router's id in the panel — support asks
+  for it; the panel takes nothing from a router without its token beside it),
+  `setup`'s claim `code`, `qr` and `botUrl` (shown to link the router), the
+  owner's own sites (`rules`) and Wi-Fi names.
 
 ## Setup wizard
 

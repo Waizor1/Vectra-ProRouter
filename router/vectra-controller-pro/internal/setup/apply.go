@@ -63,6 +63,19 @@ func Finish(ctx context.Context, env Env) error {
 	})
 }
 
+// SetRemoteShell switches the support shell (RemoteShell) on or off.
+func SetRemoteShell(ctx context.Context, env Env, on bool) error {
+	v := "0"
+	if on {
+		v = "1"
+	}
+	return env.apply(ctx, []step{
+		{args: []string{"set", "vectra-controller-pro.main=controller"}},
+		set("vectra-controller-pro.main.remote_shell", v),
+		{args: []string{"commit", "vectra-controller-pro"}},
+	})
+}
+
 // Working reports whether the router was set up before the wizard existed —
 // the fleet being upgraded: it is linked (it has an operator config), or it
 // has a WAN address, Wi-Fi that is on and secured on every enabled radio, and

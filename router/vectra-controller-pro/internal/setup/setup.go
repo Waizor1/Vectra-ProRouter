@@ -139,6 +139,20 @@ func Done(env Env) bool {
 	return main != nil && uciTrue(main.Get("setup_done"))
 }
 
+// RemoteShell reports vectra-controller-pro.main.remote_shell: the router's
+// owner lets the panel's support shell run here (run_terminal_command — any
+// command, as root). Only a yes allows it: the option absent, or a file uci
+// could not read, is no. It is read at every use, so the owner's switch
+// applies to the next job, and nothing restarts.
+func RemoteShell(env Env) bool {
+	f, err := uci.Load(env.VectraConfig)
+	if err != nil {
+		return false
+	}
+	main := f.Named("main")
+	return main != nil && uciTrue(main.Get("remote_shell"))
+}
+
 // SupportBot is vectra-controller-pro.main.support_bot: the Telegram bot (no
 // "@") a box is prepared with, so that one that has never been online — the
 // panel names its bot only at the first register or check-in — can still

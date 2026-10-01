@@ -8,8 +8,11 @@ package agentcfg
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"vectra-controller-pro/internal/config"
@@ -190,7 +193,28 @@ func (c Config) Validate() error {
 	if c.ControlURL == "" {
 		return fmt.Errorf("agentcfg: controlUrl is required")
 	}
-	return nil
+	u, err := url.Parse(c.ControlURL)
+	if err != nil || u.Hostname() == "" {
+		return fmt.Errorf("agentcfg: controlUrl %q is not a URL", c.ControlURL)
+	}
+	// The router's token travels in every call to the panel: https only.
+	// Plain http only to the router itself — a panel stand-in on loopback,
+	// where nothing leaves the box.
+	switch {
+	case strings.EqualFold(u.Scheme, "https"):
+		return nil
+	case strings.EqualFold(u.Scheme, "http") && loopback(u.Hostname()):
+		return nil
+	}
+	return fmt.Errorf("agentcfg: controlUrl %q must be https: the router's token travels in every call", c.ControlURL)
+}
+
+func loopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Load reads, defaults, and validates the daemon config from disk.

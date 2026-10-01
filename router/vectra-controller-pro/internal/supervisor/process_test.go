@@ -180,3 +180,21 @@ func TestShutdownIsNoCrash(t *testing.T) {
 		t.Fatalf("state after shutdown = %v, want %v", s, StateStopped)
 	}
 }
+
+// The render xray runs holds every credential of the provider's: root's
+// alone, even when a temp file a crash left behind was readable to all.
+func TestTheRenderIsReadableOnlyByRoot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "xray.json")
+	if err := os.WriteFile(path+".tmp", []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path+".tmp", 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(path, []byte(`{"outbounds":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v, %v; want 0600", st.Mode().Perm(), err)
+	}
+}

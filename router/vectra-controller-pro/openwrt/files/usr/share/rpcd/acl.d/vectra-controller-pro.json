@@ -8,7 +8,7 @@
 		},
 		"write": {
 			"ubus": {
-				"vectra": [ "select_entry", "reset_entry", "pin_balancer", "unpin_balancer", "set_probe_interval", "set_rules", "set_service", "restart_xray", "set_wifi", "optimize_wifi", "finish_setup", "set_power" ],
+				"vectra": [ "select_entry", "reset_entry", "pin_balancer", "unpin_balancer", "set_probe_interval", "set_rules", "set_service", "restart_xray", "set_wifi", "optimize_wifi", "finish_setup", "set_power", "set_remote_shell" ],
 				"luci": [ "setPassword" ]
 			}
 		}

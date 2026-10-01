@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/power"
 	"vectra-controller-pro/internal/setup"
 	"vectra-controller-pro/internal/uiapi"
 )
@@ -153,7 +155,7 @@ func newWizardRouter(t *testing.T) *wizardRouter {
 			return nil, errors.New("Command failed: Not found")
 		},
 	}
-	cfg, err := agentcfg.Parse([]byte(`{"controlUrl":"unused"}`))
+	cfg, err := agentcfg.Parse([]byte(`{"controlUrl":"https://api.vectra-pro.net"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -897,5 +899,52 @@ func TestThePanelCanLockTheRouterToo(t *testing.T) {
 		if st.UI.Locked != tc.locked || (string(out) == lockedAnswer) != tc.locked {
 			t.Errorf("%s: ui.locked=%v nodes=%s, want locked=%v", tc.name, st.UI.Locked, out, tc.locked)
 		}
+	}
+}
+
+// The owner's switch for the support shell (remote_shell.go): status says
+// what the router does, set_remote_shell {"on": bool} changes it through uci
+// — the simple view's, so the operator's lock never refuses it.
+func TestTheOwnerSwitchesTheSupportShell(t *testing.T) {
+	w := newWizardRouter(t)
+	withRuntime(t, nil)
+	prevPower := rpcdPower
+	rpcdPower = func(context.Context, bool, bool) power.Facts { return power.Facts{UCI: true, Boot: true} }
+	t.Cleanup(func() { rpcdPower = prevPower })
+	shell := func() bool {
+		t.Helper()
+		st, ok := w.call("status", "").(uiapi.Status)
+		if !ok {
+			t.Fatal("status did not answer a status")
+		}
+		return st.RemoteShell
+	}
+	if shell() {
+		t.Fatal("no remote_shell option, and status says the shell is on")
+	}
+	w.write(t, w.env.VectraConfig, "config controller 'main'\n\toption remote_shell '1'\n")
+	if !shell() {
+		t.Fatal("remote_shell '1', and status says the shell is off")
+	}
+
+	fakeUILock(t, "1", nil)
+	for on, v := range map[bool]string{false: "0", true: "1"} {
+		w.forget()
+		a, ok := w.call("set_remote_shell", fmt.Sprintf(`{"on":%v}`, on)).(uiapi.Action)
+		want := "uci set vectra-controller-pro.main=controller\nuci set vectra-controller-pro.main.remote_shell=" + v + "\nuci commit vectra-controller-pro"
+		if !ok || !a.OK || a.Code != "remote_shell_set" || w.commands() != want {
+			t.Errorf("set_remote_shell on=%v under the lock = %+v\n%s", on, a, w.commands())
+		}
+	}
+	for _, p := range []string{``, `{}`, `{"on":1}`, `{"on":"yes"}`, `{"on":true,"for":"ever"}`, `[true]`} {
+		w.forget()
+		if a, _ := w.call("set_remote_shell", p).(uiapi.Action); a.OK || a.Code != "invalid_params" || w.commands() != "" {
+			t.Errorf("%q = %+v, ran %q", p, a, w.commands())
+		}
+	}
+	w.forget()
+	w.fail = func(cmd string) bool { return strings.HasPrefix(cmd, "uci commit") }
+	if a, _ := w.call("set_remote_shell", `{"on":true}`).(uiapi.Action); a.OK || a.Code != "internal" {
+		t.Errorf("a commit that failed = %+v", a)
 	}
 }

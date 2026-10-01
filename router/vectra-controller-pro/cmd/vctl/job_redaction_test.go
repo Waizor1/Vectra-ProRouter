@@ -177,6 +177,7 @@ func renderValue(v interface{}) string {
 // (routerTerminalResultPayloadSchema): without its required fields the panel
 // dropped the whole payload and showed every answer from vctl as empty.
 func TestTerminalAnswerHasThePanelsShape(t *testing.T) {
+	fakeRemoteShell(t, true) // a router whose owner allows the support shell
 	dir := t.TempDir()
 	panel := newPanelStub(t, nil)
 	d, _ := deadProviderDaemon(t, dir, panel)

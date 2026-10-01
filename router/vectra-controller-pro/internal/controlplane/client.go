@@ -42,7 +42,7 @@ func NewClient(opts Options) *Client {
 	}
 	client := opts.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: timeout, Transport: markedTransport(opts.SocketMark)}
+		client = &http.Client{Timeout: timeout, Transport: markedTransport(opts.SocketMark), CheckRedirect: noRedirect}
 	}
 	return &Client{
 		baseURL:    strings.TrimRight(opts.BaseURL, "/"),
@@ -172,11 +172,17 @@ func (c *Client) doJSON(ctx context.Context, method string, path string, payload
 	return nil
 }
 
+// noRedirect answers a redirect with the redirect itself: an answer from
+// anywhere but the endpoint is no answer, and following one would carry the
+// router's token (x-vectra-router-token) to wherever it points — another
+// host, or plain http.
+func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
 // MarkedHTTPClient is an HTTP client on the control plane's path: SO_MARK =
 // mark on every socket, names resolved on the same path, and no redirect
-// followed — an answer from anywhere but the endpoint is no answer.
+// followed (noRedirect).
 func MarkedHTTPClient(mark int, timeout time.Duration) *http.Client {
-	c := &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	c := &http.Client{Timeout: timeout, CheckRedirect: noRedirect}
 	if t := markedTransport(mark); t != nil {
 		c.Transport = t
 	}

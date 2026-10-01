@@ -28,6 +28,9 @@ type Status struct {
 	Legacy       Legacy            `json:"legacy"`
 	Router       Router            `json:"router"`
 	UI           UIPolicy          `json:"ui"`
+	// RemoteShell: the router's owner lets the panel's support shell run here
+	// (UCI remote_shell; ui/contract/README.md, "Support shell").
+	RemoteShell bool `json:"remoteShell"`
 	// Route is where the main traffic goes now and what the failover
 	// watchdog moved it off (spec decision 6); null before its first look.
 	Route *RouteView `json:"route"`

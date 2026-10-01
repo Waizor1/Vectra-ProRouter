@@ -78,7 +78,7 @@ func newLockStand(t *testing.T) *lockStand {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	cfg, err := agentcfg.Parse([]byte(`{"controlUrl":"unused"}`))
+	cfg, err := agentcfg.Parse([]byte(`{"controlUrl":"https://api.vectra-pro.net"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +372,7 @@ func TestUCIsAnswerIsReadForWhatItIs(t *testing.T) {
 func TestEveryMethodIsPlacedUnderTheLock(t *testing.T) {
 	simple := map[string]bool{"status": true, "entries": true, "diagnostics": true, "select_entry": true,
 		"reset_entry": true, "restart_xray": true, "unpin_balancer": true, "rules": true, "set_rules": true,
-		"set_power": true, "services": true, "set_service": true}
+		"set_power": true, "services": true, "set_service": true, "set_remote_shell": true}
 	for m := range rpcdSetupSignatures { // the setup wizard is the simple view
 		simple[m] = true
 	}
@@ -392,5 +392,18 @@ func TestEveryMethodIsPlacedUnderTheLock(t *testing.T) {
 		if !strings.Contains(section, "`"+m+"`") {
 			t.Errorf("the contract's Operator lock section does not place %s", m)
 		}
+	}
+}
+
+// Before the daemon ever rendered its config, rpcd reads the router's
+// defaults — its files, and the panel's address wan_check asks — never an
+// empty config.
+func TestRPCDConfigBeforeTheDaemonStarted(t *testing.T) {
+	if _, err := os.Stat(rpcdAgentConfig); err == nil {
+		t.Skip("this machine has a daemon config")
+	}
+	c := rpcdConfig()
+	if c.ControlURL != "https://api.vectra-pro.net" || c.UISocketPath != localctl.DefaultSocketPath || c.StatePath == "" {
+		t.Fatalf("rpcd config = %+v", c)
 	}
 }

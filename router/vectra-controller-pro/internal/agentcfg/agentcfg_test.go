@@ -64,3 +64,20 @@ func TestUIPathsFollowTheStateAndStatusDirs(t *testing.T) {
 		t.Fatalf("derived = %s %s %s", c.OverridesPath, c.EntriesPath, c.UISocketPath)
 	}
 }
+
+// The panel is reached over https: the router's token travels in every call.
+// Plain http is refused — anywhere but the router itself, where nothing
+// leaves the box (a panel stand-in on loopback).
+func TestParseRejectsAControlURLThatIsNotHTTPS(t *testing.T) {
+	for _, u := range []string{"http://api.vectra-pro.net", "http://10.0.0.5:3000", "ftp://api.vectra-pro.net", "api.vectra-pro.net",
+		"unused", "https://", "https:///api", "http://127.0.0.1.evil.test"} {
+		if _, err := Parse([]byte(`{"controlUrl":"` + u + `"}`)); err == nil {
+			t.Errorf("controlUrl %q was accepted", u)
+		}
+	}
+	for _, u := range []string{"https://api.vectra-pro.net", "HTTPS://api.vectra-pro.net/", "http://127.0.0.1:18080", "http://[::1]:1", "http://localhost:3000"} {
+		if _, err := Parse([]byte(`{"controlUrl":"` + u + `"}`)); err != nil {
+			t.Errorf("controlUrl %q: %v", u, err)
+		}
+	}
+}
