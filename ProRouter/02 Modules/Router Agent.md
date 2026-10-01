@@ -399,3 +399,8 @@ tags:
 - **The proxy stayed dead after a fully compliant apply.** `proxy_runtime_missing` persisted and every proxied probe was `blocked`. `/tmp/log/passwall2.log`: `illegal domain rule: geosite:GOOGLE-MEET > failed to check code GOOGLE-MEET from geosite.dat` → xray `Failed to start` → `Running in no proxy mode` → no `inet passwall2` nft table. The unit's baked-in assets were geosite `88958` / geoip `348832` (both 2026-02-15) against the fleet standard `94770` / `424886`.
 - **Diagnostic lesson:** route-policy `compliant` and a `succeeded` apply say nothing about whether xray actually started. When `proxy_runtime_missing` survives an apply, read the passwall log for a `geosite:<CODE>` load failure before touching the config — a *stale but correctly-sourced* geosite is a distinct failure from the wrong-source Loyalsoldier file in [[reference_geosite_noproxy_fresh_unit]], and the fix is different: the UCI URLs were already canonical (itdoginfo + roscomvpn), so a single `update rules` job (`refresh_rules`) resolved it with no config change.
 - Post-fix proof: 2 `xray run` processes, nft table `inet passwall2` PRESENT, 5/5 slots `url_test_node` = `204`, and through the WorldProxy node (`pl2.nfnpx.online:443`) `telegram.org` `200`, YouTube `generate_204` `204`, `instagram.com` `200`, egress `144.31.5.220`. Panel: `compliant` `2026-08-02-v3`, `live-import`, no safety events.
+
+
+## r37 local candidate — 2026-10-01
+
+A/C/D integrated with login/support-shell work in `vctl/r37`. Security failure-path regressions fixed; local verification recorded in `router/vectra-controller-pro/docs/R37-VERIFICATION.md`. Unsigned feed only; panel Connect contract extensions and live validation remain separate.

@@ -255,6 +255,17 @@ type daemon struct {
 	// claim is the router's side of being claimed by a Vectra account
 	// (ADR-0006) until it is linked.
 	claim *claimer
+
+	// PassWall2's retirement (retire_passwall.go): the loop's next look, the
+	// next try after a removal that failed, and the last refusal said. Seams
+	// for tests: xray running, `ip` show, the router's resources (nil: the
+	// supervisor, the ip command, the collector).
+	retireNextAt      time.Time
+	retireFailedUntil time.Time
+	retireSaid        string
+	xrayRunning       func() bool
+	ipOutput          func(ctx context.Context, args ...string) ([]byte, error)
+	retireResources   func() controlplane.RouterResources
 }
 
 // xrayGOGC is xray's GC target: collect when the heap has grown 30% since
@@ -494,6 +505,8 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 		go d.watchMemory(ctx)
 		go d.watchFailover(ctx)
 		go d.watchExits(ctx)
+		// The router's tune (cmd_tune.go): in the background, never in the way.
+		go d.tuneAtStart(ctx)
 	}
 	// PassWall-compatible routing renders from PassWall2's configuration, as
 	// it is now; the document on /etc (resumeRender) only when that fails.
@@ -545,6 +558,7 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 		d.maybeSyncPassWall(ctx)
 		d.maybeLoadDirect(ctx)
 		d.maybeRefreshSubscription(ctx, time.Now())
+		d.maybeRetirePassWall(ctx, time.Now())
 		d.publishRuntime()
 		// Between polls the loop serves the router UI's changes, so they run
 		// here, serialized with the jobs, never beside them.

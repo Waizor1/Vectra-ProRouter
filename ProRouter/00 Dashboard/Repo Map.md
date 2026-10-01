@@ -1,6 +1,6 @@
 ---
 type: generated
-updated: '2026-08-25 15:11:23 +03:00'
+updated: '2026-10-01 16:27:56 +03:00'
 generated-by: scripts/Sync-ProRouterVault.py
 tags:
   - generated
@@ -9,11 +9,11 @@ tags:
 
 # Repo Map
 
-Generated from the current workspace root `agent-a1303b36493279ab0`.
+Generated from the current workspace root `r37`.
 
 ## Snapshot
 
-- Generated at: `2026-08-25 15:11:23 +03:00`
+- Generated at: `2026-10-01 16:27:56 +03:00`
 - Top-level directories: `9`
 - Top-level files: `15`
 - Tree depth: `3`
@@ -127,13 +127,17 @@ Generated from the current workspace root `agent-a1303b36493279ab0`.
 |  |  |- Shared Contracts.md
 |  |  |- Shared Database.md
 |  |  |- Source Mirrors.md
-|  |  \- Web Control Plane.md
+|  |  |- Web Control Plane.md
+|  |  \- Xray-Direct Controller.md
 |  |- 03 Decisions/
 |  |  |- ADR Index.md
 |  |  |- ADR-0001-obsidian-project-vault.md
 |  |  |- ADR-0002-panel-owned-auto-onboarding.md
 |  |  |- ADR-0003-filogic-universalization.md
-|  |  \- ADR-0004-router-connectivity-health-checks.md
+|  |  |- ADR-0004-router-connectivity-health-checks.md
+|  |  |- ADR-0005-standalone-xray-direct-controller.md
+|  |  |- ADR-0006-qr-onboarding.md
+|  |  \- ADR-0007-router-bug-reports.md
 |  |- 04 Sessions/
 |  |  |- Daily/
 |  |  \- Handoffs/
@@ -154,7 +158,23 @@ Generated from the current workspace root `agent-a1303b36493279ab0`.
 |  |  |- go.mod
 |  |  \- README.md
 |  \- vectra-controller-pro/
-|     \- test/
+|     |- cmd/
+|     |- docs/
+|     |- examples/
+|     |- install/
+|     |- internal/
+|     |- openwrt/
+|     |- scripts/
+|     |- test/
+|     |- testdata/
+|     |- tools/
+|     |- ui/
+|     |- .gitignore
+|     |- ARCHITECTURE.md
+|     |- CHANGELOG.md
+|     |- go.mod
+|     |- Makefile
+|     \- README.md
 |- scripts/
 |  |- fixtures/
 |  |  \- xiaomi-ax3000t-openwrt24.txt
@@ -162,8 +182,10 @@ Generated from the current workspace root `agent-a1303b36493279ab0`.
 |  |- Add-ProRouterStatusEntry.ps1
 |  |- Add-ProRouterStatusEntry.py
 |  |- ast-index.sh
+|  |- build-vctl-canary-ipk.sh
 |  |- build-vectra-openwrt-feed.sh
 |  |- build-web-release-slice.sh
+|  |- Capture-XrayParityCorpus.sh
 |  |- Check-PasswallUpstreamParams.py
 |  |- ensure-sugar-memory-local-fallback.py
 |  |- Get-OpenWrtRouterInventory.ps1

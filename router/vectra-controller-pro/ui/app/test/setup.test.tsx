@@ -236,11 +236,16 @@ describe('the setup wizard', () => {
     fake();
     const app = start({ scenario: 'boxed' });
     await toWifi(app);
-    expect(app.verdict()).toBe('Прокачаем Wi-Fi');
+    // The card's network works as it is (channels on auto, the regulatory
+    // default): fine, not "to do" — and the boost one click away all the same.
+    expect(app.verdict()).toBe('Wi-Fi в порядке');
+    expect(app.all('.wz-steps li')[1].classList.contains('ok')).toBe(true);
+    expect(app.button('Далее')).toBeDefined();
     // The card's network, on and secured: nothing to name, and nothing heard before the boost.
+    // Its power is said as it is: the boost is offered, not under way.
     expect(app.$('.names')).toBeNull();
     expect(app.$('.air')).toBeNull();
-    expect(app.all('.band .kv dd').map(read)).toEqual(['Vectra-4E2A', 'авто', 'станет максимальной', 'Vectra-4E2A', 'авто', 'станет максимальной']);
+    expect(app.all('.band .kv dd').map(read)).toEqual(['Vectra-4E2A', 'авто', 'в норме', 'Vectra-4E2A', 'авто', 'в норме']);
     app.button('Прокачать Wi-Fi')!.click();
     await tick(100);
     app.confirm();
@@ -291,9 +296,11 @@ describe('the setup wizard', () => {
     expect(app.verdict()).toBe('Wi-Fi вернули как было');
     app.button('Изменить ещё раз')!.click();
     await tick(200);
-    expect(app.verdict()).toBe('Прокачаем Wi-Fi');
+    // The old settings work: fine as they are, the boost still there to try again.
+    expect(app.verdict()).toBe('Wi-Fi в порядке');
     expect(app.text()).toContain('В прошлый раз Wi-Fi не поднялся с новыми настройками, и роутер вернул прежние.');
-    expect(app.button('Пропустить шаг')).toBeDefined();
+    expect(app.button('Прокачать Wi-Fi')).toBeDefined();
+    expect(app.button('Далее')).toBeDefined();
   });
 
   it('a second change starts as "checking", never with the result of the last one', async () => {
@@ -395,14 +402,197 @@ describe('the setup wizard', () => {
 
   it('explains a busy router: another change, or LuCI changes not applied', async () => {
     fake();
-    const app = start({ scenario: 'boxed', twist: (m) => (m === 'optimize_wifi' ? { ok: false, code: 'busy', detail: 'uncommitted changes in /tmp/.uci/wireless' } : undefined) });
+    // Refused, the router changed nothing: its Wi-Fi stays as it was.
+    let was: Answer | null = null;
+    const app = start({
+      scenario: 'boxed',
+      twist: (m, r) => {
+        if (m === 'optimize_wifi') return { ok: false, code: 'busy', detail: 'uncommitted changes in /tmp/.uci/wireless' };
+        if (m === 'setup') {
+          if (was) r.wifi = JSON.parse(JSON.stringify(was));
+          else was = JSON.parse(JSON.stringify(r.wifi));
+        }
+      },
+    });
     await toWifi(app);
     app.button('Прокачать Wi-Fi')!.click();
     await tick(100);
     app.confirm();
     await tick(300);
     expect(app.text()).toContain('в LuCI остались непримененные изменения Wi-Fi');
-    expect(app.verdict()).toBe('Прокачаем Wi-Fi');
+    expect(app.verdict()).toBe('Wi-Fi в порядке');
+  });
+
+  // The owner's point: our tuning never hurt a good Wi-Fi of theirs, but the
+  // wizard nagged it. The router's verdict decides; the boost stays in reach.
+  it('suggests the boost only where there is more to get: 2.4 GHz between the channels that do not overlap', async () => {
+    fake();
+    const app = start({
+      scenario: 'boxed',
+      twist: (m, r) => {
+        if (m !== 'setup') return;
+        Object.assign(((r.wifi as Answer).radios as Answer[])[0], { channel: 3, auto: false });
+        (r.wifi as Answer).verdict = 'boost';
+      },
+    });
+    await toWifi(app);
+    expect(app.verdict()).toBe('Из Wi-Fi можно выжать больше');
+    expect(app.text()).toContain('2,4\u00a0ГГц на канале 3 — он мешает соседним.');
+    expect(app.all('.wz-steps li')[1].classList.contains('ok')).toBe(false);
+    expect(app.button('Прокачать Wi-Fi')).toBeDefined();
+  });
+
+  it('says when a band is down, and suggests the boost', async () => {
+    fake();
+    const app = start({
+      scenario: 'boxed',
+      twist: (m, r) => {
+        if (m !== 'setup') return;
+        Object.assign(((r.wifi as Answer).radios as Answer[])[1], { up: false });
+        (r.wifi as Answer).verdict = 'boost';
+      },
+    });
+    await toWifi(app);
+    expect(app.verdict()).toBe('Из Wi-Fi можно выжать больше');
+    expect(app.text()).toContain('5\u00a0ГГц сейчас не работает.');
+  });
+
+  it('leaves the owner\'s own choice alone: a radar channel is theirs, never "to do"', async () => {
+    fake();
+    const app = start({
+      scenario: 'boxed',
+      twist: (m, r) => {
+        if (m !== 'setup') return;
+        Object.assign(((r.wifi as Answer).radios as Answer[])[1], { channel: 100, auto: false, country: 'RU' });
+        (r.wifi as Answer).verdict = 'manual';
+      },
+    });
+    await toWifi(app);
+    expect(app.verdict()).toBe('Wi-Fi настроен вручную');
+    expect(app.text()).toContain('Роутер оставляет ваши настройки как есть.');
+    expect(app.all('.wz-steps li')[1].classList.contains('ok')).toBe(true);
+    expect(app.badges()).toEqual([]);
+    expect(app.button('Прокачать Wi-Fi')).toBeDefined();
+    expect(app.button('Пропустить шаг')).toBeUndefined();
+  });
+
+  it('says at the end what the router\'s tune set up, in plain words', async () => {
+    fake();
+    const app = start({ scenario: 'healthy' });
+    await tick(300);
+    app.button('Открыть мастер настройки')!.click();
+    await tick(200);
+    app.button('Начать')!.click(); // everything is fine: straight to the last step
+    await tick(300);
+    app.button('Далее')!.click();
+    expect(await until(() => app.verdict() === 'Всё готово', 5000)).toBe(true);
+    await tick(300);
+    expect(read(app.$('.wz-tune h3'))).toBe('Роутер настроен на максимум');
+    expect(app.all('.wz-tune li').map(read)).toEqual([
+      'сжатая подкачка 117 МБ',
+      'память настроена под сжатую подкачку',
+      'все ядра обрабатывают сеть',
+      'ускоренная пересылка трафика',
+    ]);
+  });
+
+  it('says nothing of a tune a router does not report', async () => {
+    fake();
+    const app = start({ scenario: 'healthy', twist: (m, r) => void (m === 'status' && (r.tune = null)) });
+    await tick(300);
+    app.button('Открыть мастер настройки')!.click();
+    await tick(200);
+    app.button('Начать')!.click();
+    await tick(300);
+    app.button('Далее')!.click();
+    expect(await until(() => app.verdict() === 'Всё готово', 5000)).toBe(true);
+    await tick(300);
+    expect(app.$('.wz-tune')).toBeNull();
+  });
+
+  it('claims the router is tuned to the maximum only when the tune has nothing left to do', async () => {
+    fake();
+    // The zram swap did not come up at the last run: it is tried again, and not claimed.
+    const app = start({
+      scenario: 'healthy',
+      twist: (m, r) => {
+        if (m !== 'status') return;
+        const zram = ((r.tune as Answer).items as Answer[]).find((x) => x.id === 'zram')!;
+        Object.assign(zram, { state: 'pending', value: null, reason: 'failed' });
+      },
+    });
+    await tick(300);
+    app.button('Открыть мастер настройки')!.click();
+    await tick(200);
+    app.button('Начать')!.click();
+    await tick(300);
+    app.button('Далее')!.click();
+    expect(await until(() => app.verdict() === 'Всё готово', 5000)).toBe(true);
+    await tick(300);
+    expect(read(app.$('.wz-tune h3'))).toBe('Разгон роутера');
+    // The memory settings are there for the swap: without it they are not worth a word.
+    expect(app.all('.wz-tune li').map(read)).toEqual(['все ядра обрабатывают сеть', 'ускоренная пересылка трафика']);
+  });
+
+  // The verdicts as the mock router judges them (dev: `&wifi=`), from what is on the air.
+  it('calls a working Wi-Fi with more to get what it is, never "not set up"', async () => {
+    fake();
+    const app = start({ scenario: 'boxed', mock: { wifi: 'overlap' } });
+    await tick(200);
+    expect(app.all('.wz-list li').map(read)).toContain('Wi-Fi: можно лучше');
+    await toWifi(app);
+    expect(app.verdict()).toBe('Из Wi-Fi можно выжать больше');
+    expect(app.text()).toContain('2,4 ГГц на канале 3 — он мешает соседним.');
+    expect(read(app.all('.wz-steps li')[1].querySelector('.sr'))).toBe(': можно лучше');
+    expect(app.button('Прокачать Wi-Fi')).toBeDefined();
+  });
+
+  it('says a band is down from the router\'s own verdict, and suggests the boost', async () => {
+    fake();
+    const app = start({ scenario: 'boxed', mock: { wifi: 'down' } });
+    await toWifi(app);
+    expect(app.verdict()).toBe('Из Wi-Fi можно выжать больше');
+    expect(app.text()).toContain('5 ГГц сейчас не работает.');
+    expect(read(app.all('.wz-steps li')[1].querySelector('.sr'))).toBe(': можно лучше');
+  });
+
+  it('says why 2.4 GHz on channel 12 or 13 is worth a boost: not every device sees it', async () => {
+    fake();
+    const app = start({
+      scenario: 'boxed',
+      twist: (m, r) => {
+        if (m !== 'setup') return;
+        Object.assign(((r.wifi as Answer).radios as Answer[])[0], { channel: 13, auto: false });
+        (r.wifi as Answer).verdict = 'boost';
+      },
+    });
+    await toWifi(app);
+    expect(app.verdict()).toBe('Из Wi-Fi можно выжать больше');
+    expect(app.text()).toContain('2,4 ГГц на канале 13 — его видят не все устройства.');
+    expect(app.text()).not.toContain('мешает соседним');
+  });
+
+  /** Each band's power as its card says it. */
+  const power = (app: ReturnType<typeof start>) =>
+    app.all('.band .kv div').filter((d) => read(d.querySelector('dt')) === 'Мощность').map((d) => read(d.querySelector('dd')));
+
+  it('shows the power of a Wi-Fi that works as it is: "goes to maximum" only where the boost is suggested', async () => {
+    fake();
+    // The card's network: the regulatory default, nothing set by hand.
+    const app = start({ scenario: 'boxed' });
+    await toWifi(app);
+    expect(app.verdict()).toBe('Wi-Fi в порядке');
+    expect(power(app)).toEqual(['в норме', 'в норме']);
+  });
+
+  it('shows the owner\'s own power as theirs', async () => {
+    fake();
+    // 5 GHz on a radar channel at a power the owner set: the router's verdict is "manual".
+    const app = start({ scenario: 'boxed', mock: { wifi: 'manual' } });
+    await toWifi(app);
+    expect(app.verdict()).toBe('Wi-Fi настроен вручную');
+    expect(power(app)).toEqual(['в норме', 'задана вручную']);
+    expect(app.text()).not.toContain('станет максимальной');
   });
 
   it('only names the networks on a router with 6 GHz: no channel, no power, no boost', async () => {

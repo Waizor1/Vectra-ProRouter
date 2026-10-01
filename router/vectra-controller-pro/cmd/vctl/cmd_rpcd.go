@@ -213,6 +213,7 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 		in.UILocked = locked
 		in.RemoteShell = setup.RemoteShell(rpcdSetupEnv())
 		in.Power = rpcdPower(ctx, in.Runtime != nil, in.TableLoaded)
+		in.PassWall, in.PassWallRetiredAt = retireEnv().State()
 		return uiapi.BuildStatus(in)
 	case "balancers":
 		return uiapi.BuildBalancers(rpcdGather(ctx, env, uiapi.NeedBalancers))

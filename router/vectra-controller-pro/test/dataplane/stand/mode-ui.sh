@@ -160,10 +160,12 @@ ui_isolate() {
 	ip -n "$INET_NS" addr add "$UI_PANEL_IP/32" dev lo
 	ip route add "$UI_PANEL_IP/32" via "$INET_PEER_IP" dev vinet
 	: > /tmp/ui-panel.log
-	in_inet socat "TCP-LISTEN:$UI_PANEL_PORT,bind=$UI_PANEL_IP,fork,reuseaddr" "SYSTEM:$UI_DIR/panel-ok.sh" >/dev/null 2>&1 &
+	in_inet socat "TCP-LISTEN:18080,bind=127.0.0.1,fork,reuseaddr" "SYSTEM:$UI_DIR/panel-ok.sh" >/dev/null 2>&1 &
 	in_inet socat "TCP-LISTEN:$UI_PROBE_PORT,bind=$ORIGIN_IP,fork,reuseaddr" "SYSTEM:$STAND/http-reply.sh" >/dev/null 2>&1 &
-	uci set vectra-controller-pro.main.control_url="http://$UI_PANEL_IP:$UI_PANEL_PORT"
-	uci set vectra-controller-pro.main.panel_url="http://$UI_PANEL_IP:$UI_PANEL_PORT"
+	in_inet /usr/bin/stand-tlsproxy -listen "$UI_PANEL_IP:$UI_PANEL_PORT" \
+		-upstream http://127.0.0.1:18080 >/tmp/stand-panel-tls.log 2>&1 &
+	uci set vectra-controller-pro.main.control_url="https://$UI_PANEL_IP:$UI_PANEL_PORT"
+	uci set vectra-controller-pro.main.panel_url="https://$UI_PANEL_IP:$UI_PANEL_PORT"
 	uci set vectra-controller-pro.main.poll_interval=10
 	uci commit vectra-controller-pro
 	info "default route removed; the panel is a stub at $UI_PANEL_IP:$UI_PANEL_PORT that accepts check-ins"

@@ -61,6 +61,7 @@ call from a stateful mock built on `contract/*.json` (~300 ms per call):
 | `?scenario=unboxed` | straight out of the box: the setup wizard, the router's password first (OpenWrt ships without one; the router comes online by itself a few seconds after the page opens, and gets linked a few seconds after the Vectra step shows its code) |
 | `?scenario=boxed` | a box as it ships: Wi-Fi and the router's password from the card, so no password step |
 | `?scenario=off` | Vectra switched off (`vectra off`): PassWall2 carries the traffic — `&holder=agent\|direct` for the others |
+| `&wifi=manual\|overlap\|down` | the Wi-Fi as an owner may have it, for the wizard's verdicts: a country of their own with 5 GHz on a radar channel at a power they set (left alone); 2.4 GHz on channel 3; 5 GHz on and not up (both suggest the boost) |
 | `&lang=ru\|en\|zh` | the host page's language (what LuCI puts in `<html lang>`) |
 | `&frame=0` | no LuCI chrome |
 | `&locked=1` | the operator's lock: simple view only, Pro methods refused |

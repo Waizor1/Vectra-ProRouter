@@ -23,6 +23,9 @@ const (
 	OpRuntime     = "runtime"      // read the daemon's live state
 	OpReapply     = "reapply"      // re-render from the cache under the current overrides
 	OpRestartXray = "restart_xray" // restart xray on the installed config
+	// OpRetirePassWall takes PassWall2 off the router now, when every
+	// condition holds (`vctl retire-passwall`, internal/retire).
+	OpRetirePassWall = "retire_passwall"
 )
 
 // SocketRequest is one call.
@@ -33,6 +36,9 @@ type SocketRequest struct {
 	// queued when the caller gives up waiting, never sits on disk as a choice
 	// the router is not running.
 	Change *Change `json:"change,omitempty"`
+	// Now is OpRetirePassWall's --now: the stability window is not waited
+	// out; every other condition still holds.
+	Now bool `json:"now,omitempty"`
 }
 
 // Change is one edit to the router's local choices.

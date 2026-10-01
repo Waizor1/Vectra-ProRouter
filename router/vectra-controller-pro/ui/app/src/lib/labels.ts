@@ -5,6 +5,7 @@ import type { Key, T } from '../i18n';
 import type { Check } from '../api/types';
 import type { Fmt } from './format';
 import { own } from './own';
+import { tuneWords } from './tune';
 
 const known = (t: T, k: string): k is Key => t.has(k);
 
@@ -126,6 +127,15 @@ function resolve(t: T, f: Fmt, id: string, p: Record<string, unknown>, good: boo
       return [p.main === true ? 'main' : 'bad', { list: list(p.balancers) }];
     case 'pinned_node_dead':
       return [g, { node: s(p.node) ?? '—', balancer: s(p.balancer) ?? '—' }];
+    case 'tune': {
+      // warn: a small router without its compressed swap.
+      if (!good) return ['bad'];
+      if (p.enabled === false) return ['off'];
+      const ids = Array.isArray(p.items) ? p.items.filter((x): x is string => typeof x === 'string') : [];
+      const words = tuneWords(t, f, ids, n(p.zramMiB), true);
+      // Chinese enumerates with its own comma.
+      return words.length ? ['ok', { list: words.join(t.lang === 'zh' ? '、' : ', ') }] : ['none'];
+    }
   }
   return [g];
 }

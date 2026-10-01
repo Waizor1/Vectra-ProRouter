@@ -4,6 +4,8 @@
 
 > Locally-runnable test build. Not deployed to live routers. Not feature-complete vs. Xray's full surface — see [CHANGELOG / status](#status) for what's done and what's deferred.
 
+r37 is a locally verified candidate: first-login password setup, reversible PassWall retirement, router tuning and Wi-Fi verdicts, owner-controlled support shell, and signed-feed update validation. See [r37 verification](docs/R37-VERIFICATION.md) for evidence and integration limits.
+
 ## Why
 
 PassWall2 is a Lua + shell control surface on top of Xray. Every config push forks `subscribe.lua` + `rule_update.lua` + `app.sh` + nftables.sh + dnsmasq helpers. On low-RAM routers we have seen OOMs caused by exactly those forks. PassWall2 also silently normalizes operator-set values (e.g. uTLS `fp=firefox` → `fingerprint=chrome`), which is brittle.

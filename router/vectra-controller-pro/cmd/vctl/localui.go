@@ -291,6 +291,8 @@ func (d *daemon) handleUIRequest(ctx context.Context, op string, change *localct
 		return d.restartXray(ctx)
 	case opRerender:
 		return d.rerenderRunning(ctx)
+	case localctl.OpRetirePassWall, opRetirePassWallNow:
+		return d.retirePassWall(ctx, retireEnv(), time.Now(), op == opRetirePassWallNow)
 	}
 	return localctl.SocketResponse{Code: "invalid_params", Detail: "unknown operation " + op}
 }
@@ -302,17 +304,26 @@ func (d *daemon) serveUI(ctx context.Context) {
 		switch req.Op {
 		case localctl.OpRuntime:
 			return localctl.SocketResponse{OK: true, Runtime: d.liveRuntime()}
-		case localctl.OpReapply, localctl.OpRestartXray:
+		case localctl.OpReapply, localctl.OpRestartXray, localctl.OpRetirePassWall:
+			op, wait := req.Op, uiReplyWait
+			if req.Op == localctl.OpRetirePassWall {
+				// A person at the console waits for opkg and PassWall2's own
+				// stop, not a UI poll.
+				wait = retireReplyWait
+				if req.Now {
+					op = opRetirePassWallNow
+				}
+			}
 			reply := make(chan localctl.SocketResponse, 1)
 			select {
-			case d.uiReqs <- uiRequest{op: req.Op, change: req.Change, reply: reply}:
+			case d.uiReqs <- uiRequest{op: op, change: req.Change, reply: reply}:
 			default:
 				return localctl.SocketResponse{Code: "busy", Detail: "another change made on the router is still being applied"}
 			}
 			select {
 			case r := <-reply:
 				return r
-			case <-time.After(uiReplyWait):
+			case <-time.After(wait):
 				return localctl.SocketResponse{OK: true, Code: "pending"}
 			case <-hctx.Done():
 				return localctl.SocketResponse{Code: "internal", Detail: "the controller is shutting down"}

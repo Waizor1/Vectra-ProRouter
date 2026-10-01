@@ -496,3 +496,18 @@ func TestTheRouteSaysWhereAnExitReallyLeaves(t *testing.T) {
 		t.Fatalf("route %s", b)
 	}
 }
+
+// PassWall2 on the router (internal/retire): installed — the takeover's way
+// back — retired, with when, or absent; null when it was not looked at.
+func TestStatusSaysWhatBecameOfPassWall(t *testing.T) {
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	st := BuildStatus(Inputs{Now: time.Now(), PassWall: "retired", PassWallRetiredAt: at})
+	b, _ := json.Marshal(st.Legacy)
+	if want := `{"agentEnabled":false,"passwallRunning":false,"passwall":"retired","passwallRetiredAt":"2026-10-01T12:00:00Z"}`; string(b) != want {
+		t.Fatalf("legacy = %s, want %s", b, want)
+	}
+	b, _ = json.Marshal(BuildStatus(Inputs{Now: time.Now()}).Legacy)
+	if want := `{"agentEnabled":false,"passwallRunning":false,"passwall":null,"passwallRetiredAt":null}`; string(b) != want {
+		t.Fatalf("legacy = %s, want %s", b, want)
+	}
+}

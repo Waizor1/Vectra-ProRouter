@@ -135,10 +135,18 @@ Ratified, intentional decisions for the canary stage:
 - **Self-update is fail-closed and engine-scoped.** `update_controller` refuses any
   artifact whose name/URL isn't `vectra-controller-pro`, requires a `sha256`
   (no checksum → refuse), caps the download, and only fetches over HTTPS.
+  It installs only a package the **signed Vectra feed** publishes: before
+  anything is downloaded, the feed's index (the `vectra_pro` line the installer
+  wrote to `/etc/opkg/customfeeds.conf`) must carry a usign signature by a key
+  in `/etc/opkg/keys` and list `vectra-controller-pro` with the job's `sha256`,
+  built for the router's `DISTRIB_ARCH`, of the version the job names
+  (`cmd/vctl/signed_feed.go`, `internal/feedverify`). The panel cannot sign.
 - **All external fetches are HTTPS-pinned** (controller artifact, geo assets,
   subscriptions) — a downgraded link can't deliver cleartext config/binaries.
 - **`run_terminal_command` runs operator-authored shell** from the authenticated
-  panel (HTTPS + per-router token) — same trust model as the legacy agent.
+  panel (HTTPS + per-router token), and only where the router's owner allows it
+  (UCI `remote_shell`: off on a new router, kept on where vctl or the old agent
+  ran before). What the router protects and what it cannot: `docs/SECURITY.md`.
 - **nftables is fail-open-to-direct** (`policy accept`): a broken ruleset or a dead
   Xray lets traffic egress *direct* rather than black-holing the router. This
   matches PassWall2 and is acceptable for canary because PassWall2 remains the

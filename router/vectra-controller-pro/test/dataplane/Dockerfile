@@ -46,6 +46,7 @@ COPY build/geosite.dat /usr/share/v2ray/geosite.dat
 COPY build/pkg         /stand/pkg
 COPY build/pkg-control /stand/pkg-control
 
+COPY build/tlsproxy /usr/bin/stand-tlsproxy
 COPY stand/ /stand/
 
 RUN chmod +x /usr/sbin/vctl /usr/bin/xray /usr/sbin/vctl-xray-wrapper \
@@ -62,7 +63,7 @@ RUN chmod +x /usr/sbin/vctl /usr/bin/xray /usr/sbin/vctl-xray-wrapper \
       /stand/pkg-control/postinst /stand/pkg-control/prerm /stand/pkg-control/postrm \
  && openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
       -keyout /stand/tls/key.pem -out /stand/tls/cert.pem \
-      -subj /CN=origin.stand -addext subjectAltName=IP:44.44.44.44 2>/dev/null \
+      -subj /CN=origin.stand -addext subjectAltName=IP:44.44.44.44,IP:44.44.44.81,IP:44.44.44.82 2>/dev/null \
  && /etc/uci-defaults/90_vectra_controller_pro_defaults >/dev/null 2>&1 || true
 
 ENTRYPOINT ["/stand/stand.sh"]

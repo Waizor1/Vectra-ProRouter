@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"vectra-controller-pro/internal/feedverify"
 )
 
 func read(t *testing.T, p string) []byte {
@@ -282,6 +284,51 @@ func TestIndex(t *testing.T) {
 	}
 	if _, err := buildIndex(feed, "aarch64_generic"); err == nil || !strings.Contains(err.Error(), "one version per package") {
 		t.Fatalf("two versions of one package: %v", err)
+	}
+}
+
+// What a router checks before vctl updates itself is what feedtool publishes:
+// a key feedtool makes, filed as the installer files it, verifies feedtool's
+// signature over the index feedtool builds (internal/feedverify, the router's
+// side), Packages.gz unpacks to what was signed, and the index reads there as
+// feedtool wrote it.
+func TestTheRouterVerifiesWhatFeedtoolSigns(t *testing.T) {
+	pub, sec, err := generateKey(bytes.NewReader(bytes.Repeat([]byte{5}, 64)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed := t.TempDir()
+	data, ctrl := payload(t, "aarch64_cortex-a53")
+	pkg := filepath.Join(feed, "vectra-controller-pro_0.5.0-r1_aarch64_cortex-a53.ipk")
+	if err := buildIpk(data, ctrl, pkg, time.Unix(0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildIndex(feed, "aarch64_cortex-a53"); err != nil {
+		t.Fatal(err)
+	}
+	index := read(t, filepath.Join(feed, "Packages"))
+	sig := sign(sec, index)
+
+	// install/install.sh: printf 'untrusted comment: Vectra Pro feed\n%s\n' "$FEED_KEY" > "$KEYS/$FEED_KEY_ID"
+	keys := t.TempDir()
+	write(t, filepath.Join(keys, fingerprintHex(pub.Fingerprint)), string(armor("Vectra Pro feed", pub.marshal())), 0o644)
+	n, err := feedverify.VerifyWithKeys(keys, index, sig)
+	if err != nil || n.String() != fingerprintHex(pub.Fingerprint) {
+		t.Fatalf("the router does not verify feedtool's signature: %v %v", n, err)
+	}
+	unpacked, err := feedverify.Feed{Gzip: true}.Unpack(read(t, filepath.Join(feed, "Packages.gz")), 1<<20)
+	if err != nil || !bytes.Equal(unpacked, index) {
+		t.Fatalf("Packages.gz does not unpack to what was signed: %v", err)
+	}
+	pkgs, err := feedverify.ParseIndex(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(read(t, pkg))
+	want := feedverify.Package{Name: "vectra-controller-pro", Version: "0.5.0-r1", Architecture: "aarch64_cortex-a53",
+		Filename: filepath.Base(pkg), SHA256: hex.EncodeToString(sum[:])}
+	if len(pkgs) != 1 || pkgs[0] != want {
+		t.Fatalf("the router reads the index as\n%+v\nwant\n%+v", pkgs, want)
 	}
 }
 

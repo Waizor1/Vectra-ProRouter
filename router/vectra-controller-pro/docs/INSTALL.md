@@ -13,7 +13,7 @@ wget -qO /tmp/vectra.sh https://api.vectra-pro.net/artifacts/openwrt/<channel>/i
 | *(none)* | install, or update what is installed; Vectra takes the traffic |
 | `--standby` | install next to what carries the traffic now (PassWall2, the old Vectra agent) and leave Vectra **off**; upgrades an older copy the same way; marks the router set up (the wizard does not open by itself) |
 | `--check` | every check, nothing changed |
-| `--yes` | on a router with PassWall2: Vectra takes the traffic (PassWall2 stops, and comes back when Vectra stops) |
+| `--yes` | on a router with PassWall2: Vectra takes the traffic (PassWall2 stops; `vectra off` gives it back — until Vectra removes PassWall2, a day after it carries the traffic: see [PassWall2 after the install](#passwall2-after-the-install)) |
 | `--uninstall [--purge]` | remove Vectra (dnsmasq-full stays); `--purge` also forgets the router's Vectra identity |
 | `--force` | go on below the memory floor (tests only) |
 
@@ -36,8 +36,8 @@ Nothing changes until every check has passed:
    ssclash, PassWall v1, a *running* xray or sing-box service — refused (two
    transparent proxies fight). OpenWrt's xray-core and sing-box packages alone
    are fine: their init script starts nothing until configured. PassWall2 is
-   taken over only with `--yes` (reversibly); the old Vectra agent only next to
-   `--standby`.
+   taken over only with `--yes` (reversibly for a day, then Vectra removes it:
+   below); the old Vectra agent only next to `--standby`.
 6. **The feeds**: the Vectra feed's key goes to `/etc/opkg/keys/<id>` (baked
    into the installer at signing), the feed to `customfeeds.conf`, then
    `opkg update` — a list that fails its signature is dropped by opkg and the
@@ -69,6 +69,66 @@ Then:
     xray accepting every geo category, the service running (off in
     `--standby`), `ubus call vectra status`, and LuCI serving the page. The
     claim code is printed when the router already reached Vectra.
+
+## PassWall2 after the install
+
+Vectra's routers end without PassWall2 (the owner's decision): a new install
+never brings it, and one over PassWall2 removes it once Vectra has proven
+itself on that router.
+
+- **The takeover** (`--yes`): PassWall2 stopped and disabled, its own switch
+  (`passwall2.@global[0].enabled`) off, and breadcrumbs in
+  `/etc/vectra-controller-pro` saying so. It stays installed, as the way back.
+- **The first day**: `vectra off` gives the traffic back to PassWall2. Not
+  `/etc/init.d/vectra-controller-pro stop`: with Vectra switched on, the
+  dead-man (cron, every minute) starts a bare stop again.
+- **The retirement**: once Vectra has carried the traffic, switched on for
+  good, for a day (UCI `passwall_retire_after`, seconds, default 86400; the
+  clock starts at the first look that finds vctl carrying it, and every
+  `vectra off` starts it over), vctl removes PassWall2 with opkg:
+  `luci-app-passwall2`, its translations, and of its helpers (`chinadns-ng`,
+  `geoview`, `tcping`, `v2ray-geoip`, `v2ray-geosite`) what nothing else on
+  the router needs — never xray-core, dnsmasq-full or anything the router
+  runs on. First its configuration (`/etc/config/passwall2`,
+  `passwall2_server`) goes into
+  `/etc/vectra-controller-pro/backup/passwall2-<unix time>.tar.gz` (0600, in
+  a 0700 directory, the newest three kept), and the record
+  `/etc/vectra-controller-pro/.passwall-retired-by-vctl` says when and what.
+  It waits while a trial runs, while vctl carries nothing (no account yet,
+  the rescue's direct mode), while PassWall2 runs, with too little room for
+  opkg; it never goes with `route_source 'passwall'`, nor with `'native'`
+  before vctl's own store and geo files are in place. A removal opkg refuses
+  leaves PassWall2 whole, and is tried again 6 hours later.
+- **After it**: `vectra off` leaves the router on plain internet — there is
+  nothing to give back — and the dead-man never gives anything back either;
+  `ubus call vectra status` says `legacy.passwall: "retired"` and when.
+- **A router whose PassWall2 packages were removed by hand** (as this
+  project's docs once said to) is tidied the same way: after the same day,
+  counted while PassWall2 is gone, its configuration is backed up and taken,
+  and nothing says it is owed back.
+
+For an operator:
+
+```sh
+vctl retire-passwall --now          # at once: only the day is skipped; it says why not, if not
+uci set vectra-controller-pro.main.retire_passwall=0   # PassWall2 stays (then a restart)
+uci set vectra-controller-pro.main.passwall_retire_after=3600
+uci commit vectra-controller-pro && /etc/init.d/vectra-controller-pro restart   # a restart is no hand-back
+```
+
+PassWall2 back by hand, if someone really wants it — Vectra off first, so
+that two proxies never hold the router at once:
+
+```sh
+vectra off
+opkg install luci-app-passwall2   # from PassWall2's own feed or its release's .ipk files, with its helpers
+tar -xzf /etc/vectra-controller-pro/backup/passwall2-<unix time>.tar.gz -C /
+uci set passwall2.@global[0].enabled=1 && uci commit passwall2   # the takeover turned it off
+/etc/init.d/passwall2 enable && /etc/init.d/passwall2 start
+```
+
+Before `vectra on` again, `retire_passwall '0'` keeps it for good; otherwise
+the takeover and the day begin anew.
 
 ## The feed
 
@@ -112,7 +172,7 @@ nothing about uncommitted work.
 ## The stand
 
 ```sh
-DOCKER_CONTEXT=colima ./test/install/run.sh                 # 18 scenarios on aarch64_generic
+DOCKER_CONTEXT=colima ./test/install/run.sh                 # 19 scenarios on aarch64_generic
 INSTALL_ARCHS="x86_64 arm_cortex-a15_neon-vfpv4 mips_24kc" ./test/install/run.sh lifecycle
 ```
 
@@ -130,8 +190,9 @@ leave the router byte for byte as it was (packages, feeds, keys, `/etc/config`,
 | `check` | `--check` changes nothing |
 | `standby` | next to PassWall2 and the old agent: installed, off, both still running |
 | `standby-upgrade` | the owner's router as it is: an old copy off, PassWall2's newer xray-core and a feed offering an even newer one — upgraded, still off, PassWall2 and the agent never interrupted, xray-core untouched, PassWall's old-style `fwmark 0x1 / table 100` route surviving the upgrade and a removal |
-| `passwall` | refused without `--yes`; with it: taken over, official xray-core upgraded to the minimum, Vectra's own geo data, PassWall2 back on stop |
+| `passwall` | refused without `--yes`; with it: taken over, official xray-core upgraded to the minimum, Vectra's own geo data, PassWall2 back on `vectra off` |
 | `passwall-upgrade` | taken over from PassWall2, then upgraded: vctl restarted in place, and PassWall2 never ran for the file swap (an upgrade is no hand-back) |
+| `passwall-retire` | taken over from PassWall2 as opkg has it; refused while vctl carries nothing and with `retire_passwall '0'`; then carrying (the data-plane stand's operator config, a freedom outbound) and `vctl retire-passwall --now`: PassWall2's packages gone, xray-core and dnsmasq-full kept, its configuration in a 0600 backup, nothing owed, status `retired`; a bare stop restarted by the dead-man; `vectra off` leaves plain internet, a minute later too |
 | `dnsmasq-rollback` | a dnsmasq-full that never runs: the old dnsmasq back and answering |
 | `mirror` | downloads.openwrt.org unreachable: through a mirror, `distfeeds.conf` restored |
 | `refuse-*` | arch, apk, release, memory, storage, conflict, fleet, signature, feed-down |

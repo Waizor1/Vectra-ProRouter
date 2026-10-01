@@ -1,9 +1,14 @@
 package agentcfg
 
 import (
+	"os"
+	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
+	"vectra-controller-pro/internal/jobsafety"
 	"vectra-controller-pro/internal/localctl"
 )
 
@@ -78,6 +83,57 @@ func TestParseRejectsAControlURLThatIsNotHTTPS(t *testing.T) {
 	for _, u := range []string{"https://api.vectra-pro.net", "HTTPS://api.vectra-pro.net/", "http://127.0.0.1:18080", "http://[::1]:1", "http://localhost:3000"} {
 		if _, err := Parse([]byte(`{"controlUrl":"` + u + `"}`)); err != nil {
 			t.Errorf("controlUrl %q: %v", u, err)
+		}
+	}
+}
+
+// PassWall2's retirement (internal/retire): on unless UCI retire_passwall is
+// '0' (render-xray-config.sh: noRetirePassWall), after a day unless
+// passwall_retire_after says otherwise (passWallRetireAfterSec).
+func TestPassWallsRetirementFollowsUCI(t *testing.T) {
+	c, err := Parse([]byte(`{"controlUrl":"https://x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.NoRetirePassWall || c.PassWallRetireAfter() != 24*time.Hour {
+		t.Fatalf("defaults: off %v, after %v", c.NoRetirePassWall, c.PassWallRetireAfter())
+	}
+	c, err = Parse([]byte(`{"controlUrl":"https://x","noRetirePassWall":true,"passWallRetireAfterSec":600}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.NoRetirePassWall || c.PassWallRetireAfter() != 10*time.Minute {
+		t.Fatalf("set: off %v, after %v", c.NoRetirePassWall, c.PassWallRetireAfter())
+	}
+}
+
+// Every key render-xray-config.sh writes is one this package reads: a key
+// spelled otherwise is an option the router silently ignores.
+func TestTheRenderScriptWritesOnlyKnownKeys(t *testing.T) {
+	raw, err := os.ReadFile("../../openwrt/files/usr/libexec/vectra-controller-pro/render-xray-config.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	known := map[string]bool{}
+	for _, typ := range []reflect.Type{reflect.TypeOf(Config{}), reflect.TypeOf(jobsafety.Config{})} {
+		for i := 0; i < typ.NumField(); i++ {
+			if tag, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ","); tag != "" {
+				known[tag] = true
+			}
+		}
+	}
+	keys := regexp.MustCompile(`json_add_(?:string|int|boolean|array|object) ([A-Za-z0-9]+)`).FindAllStringSubmatch(string(raw), -1)
+	if len(keys) < 20 {
+		t.Fatalf("found only %d keys: the pattern no longer reads the script", len(keys))
+	}
+	for _, k := range keys {
+		if !known[k[1]] {
+			t.Errorf("render-xray-config.sh writes %q, which agentcfg does not read", k[1])
+		}
+	}
+	for _, want := range []string{"noRetirePassWall", "passWallRetireAfterSec"} {
+		if !strings.Contains(string(raw), " "+want+" ") {
+			t.Errorf("render-xray-config.sh does not write %s", want)
 		}
 	}
 }

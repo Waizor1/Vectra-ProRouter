@@ -42,6 +42,7 @@ set_if_empty job_safety_heavy_tmp_floor_mb "0"
 set_if_empty job_safety_storage_tmp_floor_mb "0"
 set_if_empty job_safety_diagnostic_tmp_floor_mb "0"
 set_if_empty job_safety_pre_drop_caches "0"
+set_if_empty tune "1"
 # support_bot is deliberately not seeded: it is empty until boxes are prepared
 # (uci set vectra-controller-pro.main.support_bot=<bot>; uci commit), and an
 # absent option reads the same as an empty one.
@@ -50,13 +51,17 @@ set_if_empty job_safety_pre_drop_caches "0"
 # root, so vctl runs it only where the router's owner allows it
 # (remote_shell '1', switched in the router UI: «Доступ поддержки к
 # роутеру»). Decided once, here, and never again: a router an older vctl
-# already ran on — its state is there — keeps the shell it had; a new one
-# starts without it. The package's config file does not name the option, so
-# that an upgrade's copy of it cannot decide first.
+# already ran on — its state is there — keeps the shell it had, and so does
+# one the old Vectra agent (vectra-controller-agent) ran on, which had the
+# shell through it — its state is legacy_state_path; a router that had
+# neither starts without it. The package's config file does not name the
+# option, so that an upgrade's copy of it cannot decide first.
 if [ -z "$(uci -q get vectra-controller-pro.main.remote_shell || true)" ]; then
 	state="$(uci -q get vectra-controller-pro.main.state_path || true)"
 	[ -n "$state" ] || state=/etc/vectra-controller-pro/state.json
-	if [ -s "$state" ]; then
+	legacy="$(uci -q get vectra-controller-pro.main.legacy_state_path || true)"
+	[ -n "$legacy" ] || legacy=/etc/vectra-controller/state.json
+	if [ -s "$state" ] || [ -s "$legacy" ]; then
 		uci -q set vectra-controller-pro.main.remote_shell=1
 	else
 		uci -q set vectra-controller-pro.main.remote_shell=0

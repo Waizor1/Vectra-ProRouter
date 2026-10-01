@@ -18,10 +18,11 @@ const VIEW = resolve(WWW, 'luci-static/resources/view/vectra/app.js');
 // Two views ship in one bundle (simple + Pro), with a sentence in ru/en/zh for
 // every router state the owner can meet; since 0.5.0 also the setup wizard,
 // "My sites" and a QR encoder; since then the Wi-Fi step for both bands, the
-// server step, the tour and Pro in plain words (~165 KB, ~80 KB gzip). Still
+// server step, the tour, password/support controls and tune verdicts in plain
+// words (~195 KB, ~94 KB gzip). Still
 // under 0.7 % of the xray binary it sits next to on flash; the budget is here
 // to catch creep — a dependency pulled in by accident — not to cut copy.
-const BUDGET = 180 * 1024;
+const BUDGET = 200 * 1024;
 
 /**
  * After the bundle is written: report its size, fail over budget, and stamp the

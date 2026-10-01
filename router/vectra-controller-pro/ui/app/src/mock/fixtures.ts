@@ -45,6 +45,7 @@ const setup: Setup = {
     radios: [radio('2g'), radio('5g')],
     tuned: true,
     tunable: true,
+    verdict: 'fine',
     suggested: 'Vectra-4E2A',
     apply: { state: 'ok', at: diagnostics.checkedAt, detail: null, radios: { radio0: true, radio1: true } },
   },

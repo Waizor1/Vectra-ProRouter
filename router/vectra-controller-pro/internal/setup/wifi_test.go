@@ -199,6 +199,107 @@ func TestTunableAndTuned(t *testing.T) {
 
 func boolp(b bool) *bool { return &b }
 
+// The verdict judges the Wi-Fi a person has, not the tuning's own recipe: a
+// setup of the owner's that works is fine — any country, a channel of their
+// choosing on either band, the power a little down — and the boost is
+// suggested only where there is more to get: 2.4 GHz on a channel between the
+// three that do not overlap, or a radio that is on and not up. A radar
+// channel, or the power cut hard, is the owner's own choice: left alone,
+// never nagged about.
+func TestTheVerdictLeavesAWorkingSetupAlone(t *testing.T) {
+	up, down := boolp(true), boolp(false)
+	cut := func(db int) *int { return &db }
+	on := func(band string, ch int, htmode string, powerCut *int, isUp *bool) Radio {
+		return Radio{Band: band, Enabled: true, Channel: ch, HTMode: htmode, Width: widthOf(htmode), Country: "RU", PowerCut: powerCut, Up: isUp}
+	}
+	good5 := on("5g", 36, "HE80", cut(0), up)
+	for _, tc := range []struct {
+		name   string
+		radios []Radio
+		want   string
+	}{
+		{"the tuning's own", []Radio{{Band: "2g", Enabled: true, Channel: 11, HTMode: "HE20", Width: 20, Country: "PA", MaxPower: true, PowerCut: cut(0), Up: up},
+			{Band: "5g", Enabled: true, Channel: 149, HTMode: "HE80", Width: 80, Country: "PA", MaxPower: true, PowerCut: cut(0), Up: up}}, VerdictFine},
+		{"both on auto", []Radio{on("2g", 0, "HE20", cut(0), up), on("5g", 0, "HE80", cut(0), up)}, VerdictFine},
+		{"2.4 GHz on 1, 6 and 11", []Radio{on("2g", 1, "HE20", cut(0), up), on("2g", 6, "HE40", cut(0), up), on("2g", 11, "HT20", cut(0), up), good5}, VerdictFine},
+		{"5 GHz on the upper block", []Radio{on("5g", 161, "HE80", cut(0), up), on("5g", 165, "HE20", cut(0), up)}, VerdictFine},
+		{"5 GHz at 160 MHz on 36", []Radio{on("5g", 36, "HE160", cut(0), up)}, VerdictFine},
+		{"power 6 dB down", []Radio{on("2g", 6, "HE20", cut(6), up), good5}, VerdictFine},
+		{"power the router cannot tell", []Radio{on("2g", 6, "HE20", nil, up)}, VerdictFine},
+		{"up the router cannot tell", []Radio{on("2g", 6, "HE20", cut(0), nil)}, VerdictFine},
+		{"a radio that is off", []Radio{on("2g", 11, "HE20", cut(0), up), {Band: "5g", Channel: 100, Up: down}}, VerdictFine},
+		{"a mesh radio keeps its peers' channel", []Radio{{Band: "2g", Enabled: true, Mesh: true, Channel: 3, PowerCut: cut(0), Up: up}}, VerdictFine},
+		{"no radios", nil, VerdictFine},
+
+		{"2.4 GHz on 3", []Radio{on("2g", 3, "HE20", cut(0), up), good5}, VerdictBoost},
+		{"2.4 GHz on 9", []Radio{on("2g", 9, "HE20", cut(0), up)}, VerdictBoost},
+		{"2.4 GHz on 13", []Radio{on("2g", 13, "HE20", cut(0), up)}, VerdictBoost},
+		{"a radio that does not come up", []Radio{on("2g", 11, "HE20", cut(0), up), on("5g", 36, "HE80", cut(0), down)}, VerdictBoost},
+		{"a mesh radio down", []Radio{{Band: "2g", Enabled: true, Mesh: true, Channel: 3, PowerCut: cut(0), Up: down}}, VerdictBoost},
+		{"a boost wins over a radar channel", []Radio{on("2g", 4, "HE20", cut(0), up), on("5g", 100, "HE80", cut(0), up)}, VerdictBoost},
+
+		{"5 GHz on a radar channel", []Radio{on("2g", 11, "HE20", cut(0), up), on("5g", 100, "HE80", cut(0), up)}, VerdictManual},
+		{"5 GHz on 149 at 160 MHz", []Radio{on("5g", 149, "HE160", cut(0), up)}, VerdictManual},
+		{"the power cut by 7 dB", []Radio{on("2g", 11, "HE20", cut(7), up), good5}, VerdictManual},
+
+		{"a 6 GHz radio", []Radio{on("2g", 3, "HE20", cut(0), up), {Band: "6g", Enabled: true, Channel: 37, Up: up}}, ""},
+	} {
+		if got := (Wifi{Radios: tc.radios}).Verdict(); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// How far a radio's power is cut below the most its driver offers: its
+// txpower, or an access point's lower vif_txpower, against iwinfo's list less
+// the txpower offset. Asked only where something is set; unknown when iwinfo
+// cannot say.
+func TestReadWifiKnowsHowFarThePowerIsCut(t *testing.T) {
+	r := newRouter(t)
+	r.write(t, r.env.WirelessConfig, strings.Replace(strings.Replace(wirelessTwo, "\toption disabled '1'\n", "", 1),
+		"\toption ieee80211w '1'\n", "\toption ieee80211w '1'\n\toption vif_txpower '12'\n", 1))
+	r.answers = map[string]string{
+		"call network.wireless status":                  statusUp("radio0", "radio1"),
+		`call iwinfo txpowerlist {"device":"phy0-ap0"}`: `{"results":[{"dbm":0,"mw":1},{"dbm":20,"mw":100}]}`,
+		`call iwinfo info {"device":"phy0-ap0"}`:        `{"txpower_offset":0}`,
+		`call iwinfo txpowerlist {"device":"phy1-ap0"}`: `{"results":[{"dbm":23,"mw":199}]}`,
+		`call iwinfo info {"device":"phy1-ap0"}`:        `{"txpower_offset":0}`,
+	}
+	w := ReadWifi(context.Background(), r.env)
+	if c := w.Radios[0].PowerCut; c == nil || *c != 3 {
+		t.Errorf("radio0 (17 of 20 dBm): cut %v, want 3", c)
+	}
+	if c := w.Radios[1].PowerCut; c == nil || *c != 11 {
+		t.Errorf("radio1 (an access point at 12 of 23 dBm): cut %v, want 11", c)
+	}
+	if w.Radios[1].MaxPower {
+		t.Error("a vif_txpower counted as full power")
+	}
+
+	// Nothing set: at the driver's most, and iwinfo is not asked.
+	r2 := newRouter(t)
+	r2.write(t, r2.env.WirelessConfig, strings.Replace(wirelessTwo, "\toption txpower '17'\n", "", 1))
+	r2.answers = map[string]string{"call network.wireless status": statusUp("radio0", "radio1")}
+	for _, radio := range ReadWifi(context.Background(), r2.env).Radios {
+		if radio.PowerCut == nil || *radio.PowerCut != 0 {
+			t.Errorf("%s: cut %v, want 0", radio.Device, radio.PowerCut)
+		}
+	}
+	for _, a := range r2.asked {
+		if strings.Contains(a, "iwinfo") {
+			t.Errorf("asked %q with nothing set", a)
+		}
+	}
+
+	// iwinfo cannot say: unknown.
+	r3 := newRouter(t)
+	r3.write(t, r3.env.WirelessConfig, wirelessTwo)
+	r3.answers = map[string]string{"call network.wireless status": statusUp("radio0", "radio1")}
+	if c := ReadWifi(context.Background(), r3.env).Radios[0].PowerCut; c != nil {
+		t.Errorf("no txpower list, cut %d", *c)
+	}
+}
+
 // ---- channel rules ---------------------------------------------------------
 
 func TestChannelRulesFollowTheWidth(t *testing.T) {

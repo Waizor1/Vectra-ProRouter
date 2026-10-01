@@ -187,7 +187,7 @@ describe('the wizard’s password step', () => {
     fake();
     const boxed = start({ scenario: 'boxed' });
     await tick(200);
-    expect(boxed.all('.wz-list li').map(read)).toEqual(['Интернет: пока нет', 'Wi-Fi: не настроено', 'Vectra: не настроено', 'Сервер: не настроено']);
+    expect(boxed.all('.wz-list li').map(read)).toEqual(['Интернет: пока нет', 'Wi-Fi: настроен', 'Vectra: не настроено', 'Сервер: не настроено']);
     cleanup.forEach((fn) => fn());
     cleanup = [];
     const noLuci = start({ setPassword: null });

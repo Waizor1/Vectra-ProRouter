@@ -52,6 +52,7 @@
     ],
     "tuned": true,
     "tunable": true,
+    "verdict": "fine",
     "suggested": "Vectra-6D39",
     "apply": {
       "state": "ok",

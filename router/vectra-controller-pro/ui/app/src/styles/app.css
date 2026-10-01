@@ -251,6 +251,10 @@ h3,
 .hint {
   display: block;
 }
+/* A hint with a tone says something is wrong (a band that is not working): in its colour. */
+.hint.t-warn {
+  color: var(--c);
+}
 .clip {
   display: inline-block;
   max-width: 100%;
@@ -2542,6 +2546,12 @@ a.btn {
   gap: 12px;
   min-width: 0;
 }
+/* A text-only button in a step ("Change the network name and password") wraps
+   on a phone rather than push the whole step past the screen's edge. */
+.wz-body .bg:not(.bi) {
+  white-space: normal;
+  text-align: start;
+}
 .wz-foot {
   display: flex;
   flex-wrap: wrap;
@@ -2605,6 +2615,53 @@ a.btn {
 .wz-list b {
   color: var(--tx);
   font-weight: 700;
+}
+/* What the router's tune set up, at the end: one panel under the steps, its
+   heading by a gauge and a short checklist — two columns where it is wide. */
+.wz-tune {
+  display: grid;
+  gap: 12px;
+  margin-top: 4px;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--ok-ln);
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--ok-bg) 0%, transparent 60%), var(--sunk);
+}
+.wz-tune-h {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.wz-tune-h .sicon {
+  --c: var(--ok);
+  --c-bg: var(--ok-bg);
+  width: 30px;
+  height: 30px;
+}
+.wz-tune h3 {
+  color: var(--tx);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.wz-tune ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 8px 20px;
+}
+.wz-tune li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  color: var(--tx-2);
+  font-size: 14px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+.wz-tune li .ic {
+  margin-top: 1px;
+  color: var(--ok);
 }
 /* A step whose fields and buttons are one form: the form adds no box of its own. */
 .wz-form {

@@ -718,8 +718,9 @@ func (d *daemon) jobCollectLogs(ctx context.Context, job controlplane.Job) error
 	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"logSections": sections})
 }
 
-// jobUpdateController self-updates the controller package and schedules a
-// restart so the init system brings up the new binary.
+// jobUpdateController self-updates the controller package — only one the
+// signed Vectra feed publishes (signed_feed.go) — and schedules a restart so
+// the init system brings up the new binary.
 const proPackageName = "vectra-controller-pro"
 
 func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) error {
@@ -733,7 +734,12 @@ func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) 
 	if sha == "" {
 		sha, _ = job.Payload["checksumSha256"].(string)
 	}
+	// The panel's contract names the version artifactVersion
+	// (updateControllerJobPayloadSchema); vctl read `version` first.
 	version, _ := job.Payload["version"].(string)
+	if version == "" {
+		version, _ = job.Payload["artifactVersion"].(string)
+	}
 	pkgName, _ := job.Payload["name"].(string)
 
 	// Identity guard: the controller-update lane is engine-agnostic and could
@@ -746,6 +752,13 @@ func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) 
 	if sha == "" {
 		return d.submitFailure(ctx, job, "update_controller: missing sha256 (refusing unverified install)")
 	}
+	// Only a package the signed Vectra feed publishes (signed_feed.go), and
+	// that before anything is downloaded. The feed's entry has the job's
+	// sha256, and the download must have it too: what opkg installs is the
+	// package the feed's key vouched for.
+	if _, err := signedFeedPackage(ctx, sha, version); err != nil {
+		return d.submitFailure(ctx, job, notInSignedFeed+": "+err.Error())
+	}
 
 	dest := filepath.Join(os.TempDir(), "vectra-controller-pro-update.ipk")
 	gotSha, err := downloadFile(ctx, artifactURL, dest)
@@ -757,7 +770,7 @@ func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) 
 	}
 
 	installCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
-	out, err := controllerInstallCommand(installCtx, dest).CombinedOutput()
+	out, err := runControllerInstall(installCtx, dest)
 	cancel()
 	if err != nil {
 		return d.submitFailure(ctx, job, "opkg install: "+err.Error()+": "+tail(string(out), 1000))
@@ -1048,23 +1061,52 @@ const maxArtifactBytes = 64 << 20
 // server with it.
 var updateHTTPClient = func() *http.Client { return &http.Client{Timeout: 120 * time.Second} }
 
-func downloadFile(ctx context.Context, rawURL, dest string) (string, error) {
+// getHTTPS is the self-update's GET: an https URL only, https all the way (a
+// redirect to plain http is refused, not followed), and anything but a 200
+// refused.
+func getHTTPS(ctx context.Context, rawURL string) (*http.Response, error) {
 	if err := requireHTTPS(rawURL); err != nil {
-		return "", err
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	// https all the way: a redirect to plain http is refused, not followed.
 	resp, err := subscription.HTTPSOnlyRedirects(updateHTTPClient()).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != 200 {
+		resp.Body.Close()
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	return resp, nil
+}
+
+// fetchHTTPS reads an https URL whole with getHTTPS; an answer longer than max
+// is refused, not cut.
+func fetchHTTPS(ctx context.Context, rawURL string, max int64) ([]byte, error) {
+	resp, err := getHTTPS(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > max {
+		return nil, fmt.Errorf("longer than %d bytes", max)
+	}
+	return b, nil
+}
+
+func downloadFile(ctx context.Context, rawURL, dest string) (string, error) {
+	resp, err := getHTTPS(ctx, rawURL)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("http %d", resp.StatusCode)
-	}
 	f, err := os.Create(dest)
 	if err != nil {
 		return "", err
@@ -1107,9 +1149,16 @@ func controllerInstallCommand(ctx context.Context, dest string) *exec.Cmd {
 	return cmd
 }
 
+// runControllerInstall runs the self-update's opkg (controllerInstallCommand)
+// and returns what it said; tests stand it in.
+var runControllerInstall = func(ctx context.Context, dest string) ([]byte, error) {
+	return controllerInstallCommand(ctx, dest).CombinedOutput()
+}
+
 // scheduleControllerRestart restarts the controller service shortly after we
-// exit, detached so the dying process does not take it down.
-func scheduleControllerRestart() {
+// exit, detached so the dying process does not take it down. Tests stand it
+// in.
+var scheduleControllerRestart = func() {
 	if err := controllerRestartCommand().Start(); err != nil {
 		// procd's respawn (5 s) still brings the new binary up.
 		logging.L().Error("could not schedule the restart after the self-update", "err", err.Error())

@@ -689,3 +689,8 @@ tags:
 - Panel deployed (two-file scp with backup, image rebuild, container healthy). Live confirmation: VagrandRouter and hh both report `exempt` with `canNormalize=false`, so the operator normalize action can no longer undo this. No fleet regression — the problem-router list is identical before and after the deploy.
 - The r34/r35 low-memory probe fix is now field-proven: VagrandRouter at 46 MB available (the old floor was 128 MB) reports `telegramReachability=reachable`, `youtube=reachable`, `instagram=blocked`, `connectivityVerdict=partial`. Before this, any router in that class reported null and the panel's `telegram_blocked` trigger could never fire.
 - Open for the operator: DmitryGubenko and arenfilicity sit in direct mode (they entered it before this deploy); yuranrod-msk lost Telegram with the cause not isolated — the earlier "egress 144.31.3.104 blocks Telegram" lead is disproven, since VagrandRouter serves Telegram 200 through that same egress.
+
+
+## r37 local candidate — 2026-10-01
+
+A/C/D integrated with login/support-shell work in `vctl/r37`. Security failure-path regressions fixed; local verification recorded in `router/vectra-controller-pro/docs/R37-VERIFICATION.md`. Unsigned feed only; panel Connect contract extensions and live validation remain separate.

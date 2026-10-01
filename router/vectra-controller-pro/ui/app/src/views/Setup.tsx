@@ -10,13 +10,14 @@
 
 import { createContext, type ComponentChildren } from 'preact';
 import { useContext, useEffect, useRef, useState } from 'preact/hooks';
-import type { Entry, Setup as SetupData, Status, WanCheck, WifiRadio, WifiScanRadio } from '../api/types';
+import type { Entry, Setup as SetupData, Status, Tune, WanCheck, WifiRadio, WifiScanRadio } from '../api/types';
 import { useApp, useRes } from '../app/ctx';
 import type { Key } from '../i18n';
 import { parseTime } from '../lib/format';
 import { hasSubscription } from '../lib/health';
 import { face, groupServers } from '../lib/servers';
 import { copyText } from '../lib/storage';
+import { tuneInPlace, tuneWords } from '../lib/tune';
 import { Icon, type IconName } from '../ui/icons';
 import { Button, Field, Note, Skeleton, Spinner } from '../ui/kit';
 import { Qr } from '../ui/Qr';
@@ -73,13 +74,15 @@ const ICON: Record<StepId, IconName> = { password: 'lock', internet: 'globe', wi
 
 /**
  * A step's badge: what the router shows, in so many words — the internet
- * works, the Wi-Fi runs at full power, the subscription is on the router.
+ * works, the Wi-Fi runs at full power (or works, with more to get), the
+ * subscription is on the router.
  */
 function badge(s: SetupData, id: StepId, ok: boolean, wan: WanCheck | null, st: Status | null): Key {
   if (id === 'password') return ok ? 'w.ok.pw' : 'w.pw.todo';
   if (id === 'internet') return ok ? 'w.works' : !wan ? 'w.checking' : wan.link === false ? 'w.nocable' : 'w.noinet';
-  if (!ok) return 'w.todo';
-  if (id === 'wifi') return !s.wifi.radios.some(hasAp) ? 'w.ok.noWifi' : s.wifi.tunable === false ? 'w.ok.wifiSet' : 'w.ok.wifi';
+  if (!ok) return id === 'wifi' && wifiMore(s.wifi) ? 'w.more' : 'w.todo';
+  // "At full power" only where the tuning is in place; a working Wi-Fi of the owner's own is "set up".
+  if (id === 'wifi') return !s.wifi.radios.some(hasAp) ? 'w.ok.noWifi' : s.wifi.tunable !== false && s.wifi.tuned === true ? 'w.ok.wifi' : 'w.ok.wifiSet';
   if (id === 'vectra') return st && hasSubscription(st) ? 'w.ok.sub' : 'w.ok.linked';
   return 'w.ok.server';
 }
@@ -352,18 +355,36 @@ const hasAp = (r: WifiRadio) => r.ap === true;
 const UNSETTLED = ['applying', 'partial', 'failed'];
 
 /**
+ * The router suggests the boost: its verdict says there is more to get (a band
+ * down, 2.4 GHz on a channel that overlaps). A router older than the verdict
+ * says only whether its own tuning is in place (`tuned`).
+ */
+export const moreToGet = (w: SetupData['wifi']) => (w.verdict != null ? w.verdict === 'boost' : w.tuned !== true);
+
+/**
+ * The Wi-Fi works — a network is on, and every one that is on has a password —
+ * and the router sees more to get (its verdict `boost`): a suggestion, not a
+ * step left undone.
+ */
+export function wifiMore(w: SetupData['wifi']): boolean {
+  const on = w.radios.filter((r) => hasAp(r) && r.enabled === true);
+  return w.tunable !== false && w.verdict === 'boost' && on.length > 0 && on.every((r) => r.secured === true);
+}
+
+/**
  * The Wi-Fi is set up: at least one network is on, every network that is on
- * has a password, where the router can tune it it says every band runs at full
- * power on a fixed channel (`tuned`), and the last change came back whole — no
- * restart still under way, no band left down. A router without an access point
- * has nothing to set up here.
+ * has a password, where the router can tune it its verdict suggests no boost —
+ * a working setup of the owner's own is set up, whatever its country, channel
+ * or power — and the last change came back whole — no restart still under way,
+ * no band left down. A router without an access point has nothing to set up
+ * here.
  */
 export function wifiOk(w: SetupData['wifi']): boolean {
   const aps = w.radios.filter(hasAp);
   if (!aps.length) return true;
   const on = aps.filter((r) => r.enabled === true);
   if (!on.length || !on.every((r) => r.secured === true)) return false;
-  if (w.tunable !== false && w.tuned !== true) return false;
+  if (w.tunable !== false && moreToGet(w)) return false;
   if (w.apply && UNSETTLED.indexOf(w.apply.state ?? '') >= 0) return false;
   return !on.some((r) => r.up === false);
 }
@@ -409,11 +430,15 @@ function Heard({ scan, r }: { scan: WifiScanRadio; r: WifiRadio }) {
   );
 }
 
-/** One band as it is now, before the boost. */
-function BandCard({ r, tunable, heard, ago }: { r: WifiRadio; tunable: boolean; heard: WifiScanRadio | undefined; ago: string | null }) {
+/**
+ * One band as it is now, before the boost. `ok`: the Wi-Fi works as it is —
+ * its power is said as it is, not as the boost would set it.
+ */
+function BandCard({ r, tunable, ok, heard, ago }: { r: WifiRadio; tunable: boolean; ok: boolean; heard: WifiScanRadio | undefined; ago: string | null }) {
   const { t } = useApp();
   const channel = r.auto === true || r.channel === null ? t('w.wifi.chAuto') : String(r.channel);
   const full = r.maxPower === true && r.country === 'PA';
+  const power: Key = full ? 'w.wifi.powerMax' : !ok ? 'w.wifi.powerUp' : r.maxPower === false ? 'w.wifi.powerOwn' : 'w.wifi.powerOk';
   const state =
     r.enabled !== true ? t(r.secured !== true ? 'w.wifi.offOpen' : 'w.wifi.off') : r.up === false ? t('w.wifi.down') : r.mesh === true ? t('w.wifi.mesh') : null;
   return (
@@ -442,7 +467,7 @@ function BandCard({ r, tunable, heard, ago }: { r: WifiRadio; tunable: boolean; 
         {tunable ? (
           <div>
             <dt>{t('w.wifi.power')}</dt>
-            <dd>{t(full ? 'w.wifi.powerMax' : 'w.wifi.powerUp')}</dd>
+            <dd>{t(power)}</dd>
           </div>
         ) : null}
       </dl>
@@ -723,12 +748,31 @@ function Wifi({ s, next, result, onResult }: { s: SetupData; next: () => void; r
   const set = (id: string, k: keyof Net) => (v: string) =>
     id === 'all' ? setShared((p) => ({ ...p, [k]: v })) : setPer((p) => ({ ...p, [id]: { ...p[id], [k]: v } }));
   const last = s.wifi.apply?.state;
+  // How the Wi-Fi is, in the router's words: its own tuning in place, a working
+  // setup of the owner's (fine, or theirs by hand), or more to get — a band down,
+  // 2.4 GHz on a channel that overlaps, or on 12-13 that some devices do not
+  // see. The boost is in reach whatever it says.
+  const tuned = s.wifi.tuned === true;
+  const manual = s.wifi.verdict === 'manual';
+  const more = wifiMore(s.wifi);
+  const down = radios.find((r) => r.enabled === true && r.up === false);
+  const odd = radios.find((r) => r.enabled === true && r.band === '2g' && r.mesh !== true && r.auto !== true && r.channel !== null && [1, 6, 11].indexOf(r.channel) < 0);
+  const title: Key = !tunable ? 'w.wifi.t' : ok ? (tuned ? 'w.wifi.tuned' : manual ? 'w.wifi.manual' : 'w.wifi.fine') : more ? 'w.wifi.more' : 'w.wifi.boost.t';
+  const lede = !tunable
+    ? t('w.wifi.untunable')
+    : ok
+      ? t(tuned ? 'w.wifi.tuned.d' : manual ? 'w.wifi.manual.d' : 'w.wifi.fine.d')
+      : more && down
+        ? t('w.wifi.more.down', { band: bandName(t, down.band) })
+        : more && odd
+          ? t(odd.channel! > 11 ? 'w.wifi.more.edge' : 'w.wifi.more.ch', { ch: odd.channel! })
+          : t('w.wifi.boost.d');
 
   return (
     <Frame
       icon={ok ? 'ok' : 'wifi'}
       tone={ok ? 'ok' : 'info'}
-      title={t(!tunable ? 'w.wifi.t' : ok ? 'w.wifi.tuned' : 'w.wifi.boost.t')}
+      title={t(title)}
       onSubmit={() => void save(!ok)}
       onward={ok && !edit}
       foot={
@@ -736,7 +780,7 @@ function Wifi({ s, next, result, onResult }: { s: SetupData; next: () => void; r
           <>
             {tunable ? (
               <Button icon="wifi" onClick={() => void save(true)} busy={pending === 'wifi'} disabled={!!pending}>
-                {t('w.wifi.again')}
+                {t(tuned ? 'w.wifi.again' : 'w.wifi.boost')}
               </Button>
             ) : null}
             <Button kind="p" icon="arrow" onClick={next}>
@@ -763,11 +807,11 @@ function Wifi({ s, next, result, onResult }: { s: SetupData; next: () => void; r
         )
       }
     >
-      <p class="lede">{t(!tunable ? 'w.wifi.untunable' : ok ? 'w.wifi.tuned.d' : 'w.wifi.boost.d')}</p>
+      <p class="lede">{lede}</p>
       {last === 'rolled_back' ? <Note tone="warn">{t('w.wifi.lastBack')}</Note> : last === 'partial' || last === 'failed' ? <Note tone="warn">{t(APPLY_NOTE[last])}</Note> : null}
       <div class="bands">
         {radios.map((r) => (
-          <BandCard key={r.device} r={r} tunable={tunable} heard={byDev.get(r.device)} ago={ago} />
+          <BandCard key={r.device} r={r} tunable={tunable} ok={ok} heard={byDev.get(r.device)} ago={ago} />
         ))}
       </div>
       {edit ? (
@@ -1035,6 +1079,37 @@ function Vectra({ s, st, wan, next }: { s: SetupData; st: Status | null; wan: Wa
   );
 }
 
+/**
+ * What the router's tune set up (contract: Tune), in plain words, at the end
+ * of the wizard. "At the maximum" once the tune has nothing left to do; until
+ * then (switched off, or a change still to come) it only names what is set.
+ */
+function TuneDone({ tune }: { tune: Tune }) {
+  const { t, f } = useApp();
+  const { ids, zramMiB } = tuneInPlace(tune);
+  const words = tuneWords(t, f, ids, zramMiB);
+  if (!words.length) return null;
+  const max = tune.enabled !== false && !tune.items.some((it) => it.state === 'pending');
+  return (
+    <div class="wz-tune">
+      <div class="wz-tune-h">
+        <span class="sicon" aria-hidden="true">
+          <Icon name="gauge" size={18} />
+        </span>
+        <h3 id="vx-wz-tune">{t(max ? 'w.tune.t' : 'd.tune.t')}</h3>
+      </div>
+      <ul aria-labelledby="vx-wz-tune">
+        {words.map((w) => (
+          <li key={w}>
+            <Icon name="ok" size={16} />
+            <span>{w}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ── the wizard ──────────────────────────────────────────────────────────────
 
 /** `onClose(tour)`: tour — the person went through to the end, show them around the main screen. */
@@ -1074,6 +1149,8 @@ export function Setup({ onClose, start = 'welcome' }: { onClose: (tour: boolean)
       if (screen !== 'wifi' && screen !== 'server') void store.fetch('wan_check', online(store.get('wan_check').data) ? 30_000 : 3500);
       // Linked, the subscription on its way: `status` says when it has arrived.
       if ((screen === 'vectra' || screen === 'server') && store.get('setup').data?.vectra.linked) void store.fetch('status', 2500);
+      // At the end, what the router's tune set up: `status` says, once.
+      if (screen === 'done') void store.fetch('status', 60_000);
     };
     poll();
     const id = setInterval(poll, 1000);
@@ -1186,6 +1263,7 @@ export function Setup({ onClose, start = 'welcome' }: { onClose: (tour: boolean)
             </p>
           ) : null}
           {list('warn')}
+          {st?.tune ? <TuneDone tune={st.tune} /> : null}
           <div class="row wz-foot">
             <Button kind="p" icon="arrow" busy={pending === 'finish'} disabled={!!pending} onClick={() => finish(true)}>
               {t('w.done.go')}

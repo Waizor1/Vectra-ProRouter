@@ -296,6 +296,22 @@ export const S = {
     'Pinned node {node} in {balancer} is down: that traffic does not get through',
     '{balancer} 中固定的节点 {node} 无响应，这部分流量无法通过',
   ],
+  'd.tune.t': ['Разгон роутера', 'Router tuning', '路由器优化'],
+  'd.tune.ok': ['Разгон роутера: {list}', 'Router tuning: {list}', '路由器优化：{list}'],
+  'd.tune.none': ['Разгон роутера: ничего не включено', 'Router tuning: nothing switched on', '路由器优化：未启用任何项'],
+  'd.tune.off': ['Разгон роутера выключен', 'Router tuning is off', '路由器优化已关闭'],
+  'd.tune.bad': [
+    'Сжатая подкачка не работает — под нагрузкой памяти хватит меньше',
+    'Compressed swap is not running: under load the memory runs out sooner',
+    '压缩交换未运行：高负载时内存会更快耗尽',
+  ],
+
+  // ── the router's tune: what it set, in plain words ─────────────────────
+  'tune.zram': ['сжатая подкачка {size}', 'compressed swap, {size}', '压缩交换空间 {size}'],
+  'tune.zram0': ['сжатая подкачка', 'compressed swap', '压缩交换空间'],
+  'tune.memory': ['память настроена под сжатую подкачку', 'memory tuned for the compressed swap', '内存已针对压缩交换优化'],
+  'tune.packet_steering': ['все ядра обрабатывают сеть', 'every CPU core handles the network', '所有 CPU 核心共同处理网络'],
+  'tune.flow_offloading': ['ускоренная пересылка трафика', 'faster traffic forwarding', '更快的流量转发'],
 
   // ── routes (Pro; the tab was "Balancing") ──────────────────────────────
   // A route is a balancer and its fallback chain, named by what it carries
@@ -770,6 +786,7 @@ export const S = {
   'w.ok.pw': ['задан', 'set', '已设置'],
   'w.todo': ['не настроено', 'not set up', '未设置'],
   'w.pw.todo': ['не задан', 'not set', '未设置'],
+  'w.more': ['можно лучше', 'can do more', '可优化'],
   'w.works': ['работает', 'working', '正常'],
   'w.req': ['Заполните это поле.', 'Fill in this field.', '请填写此项。'],
   'w.checking': ['проверяем', 'checking', '检查中'],
@@ -824,6 +841,34 @@ export const S = {
     '路由器会侦听周围信号，为 2.4 GHz 和 5 GHz 选择最空闲的信道，并开到最大功率。',
   ],
   'w.wifi.tuned': ['Wi-Fi работает на полную мощность', 'Wi-Fi runs at full power', 'Wi-Fi 已全功率运行'],
+  'w.wifi.fine': ['Wi-Fi в порядке', 'The Wi-Fi is fine', 'Wi-Fi 状态良好'],
+  'w.wifi.fine.d': [
+    'Каналы и мощность в норме — прокачивать не обязательно. Прокачка послушает эфир, выберет самые свободные каналы и включит полную мощность.',
+    'The channels and the power are fine: a boost is optional. It listens to the air, picks the least busy channels and turns the power up to full.',
+    '信道和功率均正常，可不优化。优化会侦听周围信号，选择最空闲的信道并开到最大功率。',
+  ],
+  'w.wifi.manual': ['Wi-Fi настроен вручную', 'The Wi-Fi is set by hand', 'Wi-Fi 为手动设置'],
+  'w.wifi.manual.d': [
+    'Роутер оставляет ваши настройки как есть. Прокачка поставила бы свободный канал без радаров и полную мощность.',
+    'The router leaves your settings as they are. A boost would take a free channel without radar detection, at full power.',
+    '路由器保留您的设置。优化会选择无需雷达检测的空闲信道，并开到最大功率。',
+  ],
+  'w.wifi.more': ['Из Wi-Fi можно выжать больше', 'The Wi-Fi can do more', 'Wi-Fi 还能更好'],
+  'w.wifi.more.ch': [
+    '2,4 ГГц на канале {ch} — он мешает соседним. Прокачка поставит самый свободный из 1, 6 и 11 и включит полную мощность.',
+    '2.4 GHz is on channel {ch}, which overlaps its neighbours. A boost takes the least busy of 1, 6 and 11, at full power.',
+    '2.4 GHz 位于信道 {ch}，会与相邻信道重叠。优化会在 1、6、11 中选择最空闲的信道，并开到最大功率。',
+  ],
+  'w.wifi.more.edge': [
+    '2,4 ГГц на канале {ch} — его видят не все устройства. Прокачка поставит самый свободный из 1, 6 и 11 и включит полную мощность.',
+    '2.4 GHz is on channel {ch}, which some devices cannot see. A boost takes the least busy of 1, 6 and 11, at full power.',
+    '2.4 GHz 位于信道 {ch}，部分设备无法识别。优化会在 1、6、11 中选择最空闲的信道，并开到最大功率。',
+  ],
+  'w.wifi.more.down': [
+    '{band} сейчас не работает. Прокачка перезапустит Wi-Fi на свободных каналах с полной мощностью.',
+    '{band} is not working right now. A boost restarts the Wi-Fi on free channels at full power.',
+    '{band} 当前未运行。优化会以最大功率在空闲信道上重启 Wi-Fi。',
+  ],
   'w.wifi.tuned.d': [
     'Каналы выбраны по загрузке эфира, мощность максимальная. Можно прокачать ещё раз или сменить имя и пароль сети.',
     'The channels were picked by how busy the air is, at maximum power. You can boost it again or change the network name and password.',
@@ -868,6 +913,8 @@ export const S = {
   'w.wifi.power': ['Мощность', 'Power', '功率'],
   'w.wifi.powerMax': ['максимальная', 'maximum', '最大'],
   'w.wifi.powerUp': ['станет максимальной', 'goes to maximum', '将调至最大'],
+  'w.wifi.powerOk': ['в норме', 'normal', '正常'],
+  'w.wifi.powerOwn': ['задана вручную', 'set by hand', '手动设置'],
   'w.wifi.boost': ['Прокачать Wi-Fi', 'Boost Wi-Fi', '优化 Wi-Fi'],
   'w.wifi.boostQ': ['Прокачать Wi-Fi?', 'Boost the Wi-Fi?', '优化 Wi-Fi？'],
   'w.wifi.boostD': [
@@ -1046,6 +1093,7 @@ export const S = {
     '连接代码尚未就绪：路由器仍在启动 Vectra。请稍候一分钟；如果仍未出现代码，请联系客服。',
   ],
   'w.done.t': ['Всё готово', 'All set', '设置完成'],
+  'w.tune.t': ['Роутер настроен на максимум', 'The router is tuned for the most it can do', '路由器已调至最佳性能'],
   'w.done.d': ['Роутер настроен. Дальше он работает сам.', 'The router is set up and runs on its own from here.', '路由器已设置完成，之后会自动运行。'],
   'w.done.part.t': ['Почти готово', 'Almost done', '即将完成'],
   'w.done.part.d': [

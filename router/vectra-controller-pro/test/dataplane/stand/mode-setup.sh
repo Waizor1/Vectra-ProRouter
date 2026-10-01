@@ -56,10 +56,12 @@ setup_isolate() {
 	ip route add "$SETUP_PANEL_IP/32" via "$INET_PEER_IP" dev vinet
 	: > "$SETUP_PANEL_LOG"
 	rm -f "$SETUP_PANEL_OWNER" "$SETUP_PANEL_RELEASED"
-	in_inet socat "TCP-LISTEN:$SETUP_PANEL_PORT,bind=$SETUP_PANEL_IP,fork,reuseaddr" \
+	in_inet socat "TCP-LISTEN:18080,bind=127.0.0.1,fork,reuseaddr" \
 		"SYSTEM:sh $STAND/setup/panel-claim.sh" >/dev/null 2>&1 &
-	uci set vectra-controller-pro.main.control_url="http://$SETUP_PANEL_IP:$SETUP_PANEL_PORT"
-	uci set vectra-controller-pro.main.panel_url="http://$SETUP_PANEL_IP:$SETUP_PANEL_PORT"
+	in_inet /usr/bin/stand-tlsproxy -listen "$SETUP_PANEL_IP:$SETUP_PANEL_PORT" \
+		-upstream http://127.0.0.1:18080 >/tmp/stand-panel-tls.log 2>&1 &
+	uci set vectra-controller-pro.main.control_url="https://$SETUP_PANEL_IP:$SETUP_PANEL_PORT"
+	uci set vectra-controller-pro.main.panel_url="https://$SETUP_PANEL_IP:$SETUP_PANEL_PORT"
 	uci set vectra-controller-pro.main.poll_interval=5
 	# A person at the browser gets the real 10 minutes.
 	[ "$MODE" = setup ] && uci set vectra-controller-pro.main.claim_rotate_sec="$SETUP_ROTATE"

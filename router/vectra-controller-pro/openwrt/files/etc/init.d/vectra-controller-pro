@@ -37,6 +37,16 @@ PASSWALL_SWITCH_MARKER="$LEGACY_MARKER_DIR/.passwall-switch-off-by-vctl"
 # in a subshell and deletes those that exit 0; PassWall starts at S99. The
 # hand-back deletes it, and so does `vectra keep`.
 PASSWALL_SWITCH_SNIPPET="/etc/uci-defaults/99-vectra-trial-passwall-switch"
+# PassWall2's retirement (the daemon, internal/retire): once vctl has carried
+# the traffic, switched on for good, for a day, it removes PassWall2's
+# packages and writes this record first — or, where a person had removed
+# them, tidies what they left and writes it (by=hand). Nothing is owed to a
+# PassWall2 gone that way: the hand-back forgets its breadcrumbs, and the
+# router is left on plain internet. The window's clock is the daemon's too;
+# every hand-back takes it away, so the next takeover waits out a whole
+# window again.
+PASSWALL_RETIRED="$LEGACY_MARKER_DIR/.passwall-retired-by-vctl"
+PASSWALL_RETIRE_CLOCK="$LEGACY_MARKER_DIR/.passwall-retire-clock"
 # What 0.6.0-r7 left of the LAN's DNS (restore_dns): it pointed dnsmasq at
 # public resolvers in UCI, with a note here and, in a trial, a snippet that
 # undid it at the next boot. That did not work — the ISP forges answers for
@@ -481,7 +491,18 @@ stop_passwall_stack() {
 # than racing its own watchdog against it.
 restore_passwall_stack() {
 	local pw cfg on='' owed=''
-	pw="$(passwall_init)" || return 0
+	rm -f "$PASSWALL_RETIRE_CLOCK"
+	if ! pw="$(passwall_init)"; then
+		# Gone. Retired by vctl (its record): nothing is owed it, and what
+		# said it was goes. Gone otherwise — an opkg upgrade of it in flight,
+		# a half-unpacked overlay — what is owed it stays owed (see below).
+		if [ -f "$PASSWALL_RETIRED" ]; then
+			rm -f "$PASSWALL_MARKER" "$PASSWALL_SWITCH_MARKER" \
+				"$TRIAL_MARKER_DIR/${PASSWALL_MARKER##*/}" "$TRIAL_MARKER_DIR/${PASSWALL_SWITCH_MARKER##*/}" \
+				"$PASSWALL_SWITCH_SNIPPET"
+		fi
+		return 0
+	fi
 	cfg="${pw##*/}"
 	release_locks
 

@@ -8,6 +8,9 @@
 #   /fixtures/install.sh   the installer, baked for the stand's feed and key
 #   /fixtures/*.ipk        fake packages that stand in for other stacks
 #   /fixtures/rogue.pub    a key the feed is NOT signed with
+#   /fixtures/operator-config.json, provider-config.json
+#                          the data-plane stand's operator config and provider
+#                          document (a freedom outbound), for passwall-retire
 #   /stub/                 PassWall2 and legacy-agent service stubs (test/dataplane)
 #
 # SCENARIO names the path; see the case at the bottom.
@@ -207,6 +210,61 @@ refused() { # <name> <expected text> -> the installer refused, said why, changed
 	assert_unchanged "$1_unchanged" "$1"
 }
 
+# ------------------------------------------------- PassWall2's retirement ----
+
+# The PassWall2 of passwall-retire, as opkg has it: the package, its
+# translation and the helpers it brought.
+PW2_PACKAGES="luci-app-passwall2 luci-i18n-passwall2-ru geoview tcping chinadns-ng"
+VCTL_ETC=/etc/vectra-controller-pro
+
+# One field of `ubus call vectra status` (a jsonfilter path).
+status_of() { ubus call vectra status 2> /dev/null | jsonfilter -e "$1" 2> /dev/null; }
+# vctl carries the traffic as the retirement asks it to: the holder is Vectra
+# (its table loaded), xray runs, its policy rule and route are in the kernel.
+carrying() {
+	[ "$(status_of '@.power.holder')" = vectra ] && [ "$(status_of '@.engine.state')" = running ] &&
+		ip rule show | grep -q 'fwmark 0x1 lookup 100' && ip route show table 100 | grep -q '^local default'
+}
+all_installed() { for p in "$@"; do installed "$p" || return 1; done; }
+none_installed() { for p in "$@"; do ! installed "$p" || return 1; done; }
+# PassWall2's configuration kept: one archive, only root reads it, in a
+# directory only root enters, with /etc/config/passwall2 in it. (ls for the
+# modes: OpenWrt's busybox has no stat.)
+# shellcheck disable=SC2010
+backup_kept() {
+	set -- "$VCTL_ETC"/backup/passwall2-*.tar.gz
+	[ $# = 1 ] && [ -f "$1" ] || return 1
+	ls -l "$1" | grep -q '^-rw-------' || return 1
+	ls -ld "$VCTL_ETC/backup" | grep -q '^drwx------' || return 1
+	tar -tzf "$1" | grep -qx 'etc/config/passwall2'
+}
+# Nothing on the router says PassWall2 is owed back, and the record says why.
+nothing_owed() {
+	[ ! -e "$VCTL_ETC/.passwall-disabled-by-vctl" ] && [ ! -e "$VCTL_ETC/.passwall-switch-off-by-vctl" ] &&
+		grep -q '^removed=.*luci-app-passwall2' "$VCTL_ETC/.passwall-retired-by-vctl"
+}
+retired_in_status() {
+	[ "$(status_of '@.legacy.passwall')" = retired ] && [ -n "$(status_of '@.legacy.passwallRetiredAt')" ] &&
+		[ "$(status_of '@.power.handBack')" = direct ]
+}
+# PassWall2 nowhere: no init script, no process (bracketed: a pgrep -f run
+# from a shell whose command line names it would find that shell).
+no_passwall() { [ ! -e /etc/init.d/passwall2 ] && ! pgrep -f '[p]asswall-loop.sh' > /dev/null; }
+# Vectra off for good, the traffic straight out: no table, no policy rule.
+vectra_off() {
+	! running "$PKG" && ! enabled "$PKG" && [ "$(uci -q get "$PKG.main.enabled")" = 0 ] &&
+		! nft list table inet vctl > /dev/null 2>&1 && ! ip rule show | grep -q 'fwmark 0x1 lookup 100'
+}
+# `vctl retire-passwall [--now]` -> RETIRE_RC, its output in /tmp/retire.out
+retire_passwall() {
+	vctl retire-passwall "$@" > /tmp/retire.out 2>&1
+	RETIRE_RC=$?
+	sed 's/^/     | /' /tmp/retire.out
+}
+# The dead-man, as cron runs it every minute (the stand runs no cron); not
+# held off by the uptime of a docker host that has just booted.
+deadman() { BOOT_SETTLE=0 /usr/libexec/vectra-controller-pro/deadman.sh; }
+
 # ------------------------------------------------------------- scenarios ----
 
 cp /etc/opkg/distfeeds.conf /tmp/distfeeds.before
@@ -222,6 +280,8 @@ lifecycle)
 	check fresh_sized "sizes the install from the feed's own list (xray alone is ~34 MB)" \
 		sh -c "grep -q 'нужно около [1-9][0-9] МБ' /tmp/installer.out"
 	assert_installed_and_on fresh
+	check fresh_no_shell "a new router: the support shell is off (remote_shell '$(uci -q get $PKG.main.remote_shell)')" \
+		test "$(uci -q get $PKG.main.remote_shell)" = 0
 	check fresh_geodata "vectra-geodata $(version_of vectra-geodata) keeps its data in Vectra's own directory, nothing of it in /usr/share/v2ray" \
 		sh -c '[ -s /usr/share/vectra-controller-pro/geo/geoip.dat ] && [ -s /usr/share/vectra-controller-pro/geo/geosite.dat ] && [ ! -L /usr/share/v2ray/geoip.dat ] && [ ! -L /usr/share/v2ray/geosite.dat ]'
 	check fresh_reporter "vectra-reporter $(version_of vectra-reporter): cron runs it every minute, and it answers" \
@@ -310,6 +370,10 @@ standby-upgrade)
 	# UCI enabled=0 — off. The upgrade must leave it off and PassWall2 running.
 	stubs
 	install_fixture vectra-controller-agent
+	# The old agent has run here: its state file is there, as on every router
+	# it ran (a stand-in with no identity in it, so nothing ever adopts one).
+	mkdir -p /etc/vectra-controller
+	echo '{"device_identifier":"install-stand"}' > /etc/vectra-controller/state.json
 	install_fixture luci-app-passwall2
 	for s in passwall2 vectra-controller; do "/etc/init.d/$s" enable; "/etc/init.d/$s" start; done
 	opkg update > /dev/null 2>&1
@@ -321,6 +385,9 @@ standby-upgrade)
 	opkg install /fixtures/vectra-controller-pro-old.ipk > /dev/null 2>&1 || die "the old vctl did not install"
 	unset VECTRA_SKIP_POSTINST_RESTART
 	uci set $PKG.main.enabled=0
+	# The old vctl is one from before the support shell's switch (r36 and
+	# earlier): no remote_shell, for the upgrade to decide.
+	uci -q delete $PKG.main.remote_shell
 	uci commit $PKG
 	/etc/init.d/$PKG disable
 	wait_for 10 running passwall2 || die "the PassWall2 stub never started"
@@ -345,6 +412,8 @@ standby-upgrade)
 		sh -c "[ \"\$(pgrep -f legacy-agent-loop.sh | head -n 1)\" = '$agent_pid' ] && /etc/init.d/vectra-controller enabled"
 	check upgrade_no_markers "no hand-over markers written" sh -c "! ls /etc/vectra-controller-pro/.*-by-vctl > /dev/null 2>&1"
 	check upgrade_no_wizard "a working router: setup_done=1, the wizard does not open by itself" test "$(uci -q get $PKG.main.setup_done)" = 1
+	check upgrade_shell_kept "the old agent ran here: the support shell stays on (remote_shell '$(uci -q get $PKG.main.remote_shell)')" \
+		test "$(uci -q get $PKG.main.remote_shell)" = 1
 	check upgrade_ubus "the UI answers with Vectra off" sh -c 'ubus call vectra status | grep -q "\"version\""'
 	check upgrade_xray_untouched "xray-core left to its owner: $xray_before before, $(version_of xray-core) after" \
 		test "$(version_of xray-core)" = "$xray_before"
@@ -369,6 +438,13 @@ passwall-upgrade)
 	installer --yes
 	check pwup_taken "taken over first: exit $INSTALL_RC, vctl runs, PassWall2 stopped" \
 		sh -c "[ '$INSTALL_RC' = 0 ] && /etc/init.d/$PKG running && ! /etc/init.d/passwall2 running"
+	check pwup_shell_new "a new router, PassWall2 or not: the support shell is off (remote_shell '$(uci -q get $PKG.main.remote_shell)')" \
+		test "$(uci -q get $PKG.main.remote_shell)" = 0
+	# The vctl this upgrade replaces is one from before the support shell's
+	# switch (r36 and earlier): no remote_shell. It has run here, so its state
+	# is there.
+	uci -q delete $PKG.main.remote_shell
+	uci commit $PKG
 	was="$(version_of $PKG)"
 	pid1="$(pgrep -f '[/]usr/sbin/vctl agent' | head -n 1)"
 	rm -f /tmp/upgrade.seen /tmp/upgrade.done /tmp/upgrade.looks
@@ -395,6 +471,8 @@ passwall-upgrade)
 	check pwup_no_handback "no hand-back for the upgrade: $(sort -u /tmp/upgrade.seen 2> /dev/null | tr '\n' ';')" test ! -s /tmp/upgrade.seen
 	check pwup_still_taken "PassWall2 still off, the marker to give it back kept" \
 		sh -c "! /etc/init.d/passwall2 running && ! /etc/init.d/passwall2 enabled && [ -f /etc/vectra-controller-pro/.passwall-disabled-by-vctl ]"
+	check pwup_shell_kept "upgraded from a vctl without the switch that ran here: the support shell stays on (remote_shell '$(uci -q get $PKG.main.remote_shell)')" \
+		sh -c "[ -s /etc/vectra-controller-pro/state.json ] && [ \"\$(uci -q get $PKG.main.remote_shell)\" = 1 ]"
 	;;
 
 passwall)
@@ -432,6 +510,111 @@ passwall)
 	check passwall_given_back "vectra off starts PassWall2 again (exit $?)" wait_for 30 running passwall2
 	check passwall_off_stays "a minute later Vectra is still off and PassWall2 still runs" \
 		sh -c "sleep 65; ! /etc/init.d/$PKG running && ! /etc/init.d/$PKG enabled && /etc/init.d/passwall2 running"
+	;;
+
+passwall-retire)
+	# PassWall2 as opkg has it on a fleet router (run.sh: its package owns its
+	# init script and its configuration), with the official xray-core. Vectra
+	# takes it with --yes and, once vctl carries the traffic, retires it — as
+	# the daemon does by itself after a day; `vctl retire-passwall --now`
+	# skips only the day. From then on `vectra off` leaves plain internet.
+	mkdir -p /stand
+	cp -R /stub /stand/legacy-stub
+	chmod +x /stand/legacy-stub/*
+	opkg update > /dev/null 2>&1
+	opkg install xray-core > /dev/null 2>&1 || die "the official xray-core did not install"
+	for p in geoview tcping chinadns-ng luci-app-passwall2-full luci-i18n-passwall2-ru; do install_fixture "$p"; done
+	/etc/init.d/passwall2 enable
+	/etc/init.d/passwall2 start
+	wait_for 10 running passwall2 || die "the PassWall2 stub never started"
+	installer --yes
+	check retire_taken_over "taken over with --yes: exit $INSTALL_RC, vctl runs, PassWall2 stopped and disabled" \
+		sh -c "[ '$INSTALL_RC' = 0 ] && /etc/init.d/$PKG running && ! /etc/init.d/passwall2 running && ! /etc/init.d/passwall2 enabled"
+	check retire_installer_says "the installer names vectra off as the way back, says PassWall2 goes after a day and where its configuration is kept" \
+		sh -c "grep -q 'vectra off' /tmp/installer.out && grep -q 'сутки' /tmp/installer.out && grep -q '$VCTL_ETC/backup' /tmp/installer.out && ! grep -q 'init.d/$PKG stop' /tmp/installer.out"
+	check retire_owed_at_first "PassWall2 installed, and vectra off would give it the traffic back (status: $(status_of '@.legacy.passwall'), hand-back $(status_of '@.power.handBack'))" \
+		test "$(status_of '@.legacy.passwall')/$(status_of '@.power.handBack')" = installed/passwall2
+
+	# Not bound to an account, vctl carries nothing: PassWall2 stays, and the
+	# command says why.
+	retire_passwall --now
+	check retire_refused_unconfigured "no operator config yet: refused (exit $RETIRE_RC), PassWall2 kept" \
+		sh -c "[ $RETIRE_RC != 0 ] && grep -q 'operator config' /tmp/retire.out && [ -x /etc/init.d/passwall2 ]"
+	# UCI retire_passwall '0' keeps it, --now or not.
+	uci set "$PKG.main.retire_passwall=0"
+	uci commit "$PKG"
+	/etc/init.d/$PKG restart
+	wait_for 30 running "$PKG" || die "vctl did not come back after its restart"
+	wait_for 30 sh -c "vctl retire-passwall --now > /tmp/retire.out 2>&1; ! grep -q 'does not run' /tmp/retire.out"
+	sed 's/^/     | /' /tmp/retire.out
+	check retire_refused_switch "UCI retire_passwall '0': refused, PassWall2 kept" \
+		sh -c "grep -q \"retire_passwall is '0'\" /tmp/retire.out && [ -x /etc/init.d/passwall2 ]"
+	# shellcheck disable=SC2086
+	check retire_refusals_kept_packages "after both refusals: $PW2_PACKAGES all installed" all_installed $PW2_PACKAGES
+	check retire_refusals_kept_owed "after both refusals: the takeover's breadcrumbs and PassWall2's configuration there, no record" \
+		sh -c "[ -e $VCTL_ETC/.passwall-disabled-by-vctl ] && [ -e /etc/config/passwall2 ] && [ ! -e $VCTL_ETC/.passwall-retired-by-vctl ]"
+	uci delete "$PKG.main.retire_passwall"
+	uci commit "$PKG"
+
+	# A router bound to an account has the operator config and the provider's
+	# document on /etc; `vctl apply-local` and a restart make them live. The
+	# panel is out of reach here, so nothing would confirm the firewall's
+	# commit and it would revert after 90 s: the sentinel is kept, as a
+	# reachable panel's check-in keeps it.
+	cp /fixtures/operator-config.json "$VCTL_ETC/xray-desired.json"
+	cp /fixtures/provider-config.json "$VCTL_ETC/provider-config.json"
+	chmod 0600 "$VCTL_ETC/xray-desired.json" "$VCTL_ETC/provider-config.json"
+	vctl apply-local -config /var/run/vectra-controller-pro/agent.json > /tmp/apply-local.out 2>&1 || apply_rc=$?
+	sed 's/^/     | /' /tmp/apply-local.out
+	[ -z "${apply_rc:-}" ] || die "vctl apply-local did not install the operator config (exit $apply_rc)"
+	(while :; do touch /var/run/vectra-controller-pro/fw-confirm 2> /dev/null; sleep 2; done) &
+	CONFIRMER=$!
+	/etc/init.d/$PKG restart
+	if ! wait_for 90 carrying; then
+		info "status: $(ubus call vectra status 2>&1 | tr -s ' \n' ' ' | cut -c1-600)"
+		info "nft: $(nft list tables 2>&1 | tr '\n' ' '); ip rule: $(ip rule show 2>&1 | tr '\n' ' ')"
+		logread -e vctl 2> /dev/null | tail -n 30 | sed 's/^/     | /'
+		die "vctl never carried the traffic: the retirement cannot be shown"
+	fi
+	check retire_carrying "vctl carries the traffic: holder vectra, xray running, fwmark 0x1 / table 100 in the kernel" carrying
+
+	retire_passwall --now
+	check retire_done "vctl retire-passwall --now: exit $RETIRE_RC, PassWall2 retired, and it says what vectra off does now" \
+		sh -c "[ $RETIRE_RC = 0 ] && grep -q 'PassWall2 retired' /tmp/retire.out && grep -q 'vectra off' /tmp/retire.out"
+	# shellcheck disable=SC2086
+	check retire_packages_gone "removed: $PW2_PACKAGES" none_installed $PW2_PACKAGES
+	check retire_router_kept "kept: xray-core $(version_of xray-core), dnsmasq-full $(version_of dnsmasq-full), $PKG" \
+		all_installed xray-core dnsmasq-full "$PKG"
+	check retire_backup "its configuration in one archive, 0600, in a 0700 $VCTL_ETC/backup: $(ls "$VCTL_ETC"/backup 2> /dev/null | tr '\n' ' ')" backup_kept
+	check retire_config_gone "/etc/config/passwall2, the conffile opkg kept, is gone: it is in the backup" test ! -e /etc/config/passwall2
+	check retire_nothing_owed "the takeover's breadcrumbs gone, the record there: $(tr '\n' ' ' 2> /dev/null < "$VCTL_ETC/.passwall-retired-by-vctl")" nothing_owed
+	check retire_no_passwall "PassWall2's init script went with its package; nothing of it runs" no_passwall
+	check retire_still_carrying "vctl still runs and carries the traffic" carrying
+	check retire_status "ubus: legacy.passwall $(status_of '@.legacy.passwall') at $(status_of '@.legacy.passwallRetiredAt'), hand-back $(status_of '@.power.handBack')" \
+		retired_in_status
+
+	# A bare stop with Vectra on is no way out: the dead-man starts vctl
+	# again. With PassWall2 retired nothing is owed it — no hand-back to it.
+	/etc/init.d/$PKG stop
+	wait_for 30 not running "$PKG"
+	deadman
+	check retire_deadman_restarts "a bare stop: the dead-man starts vctl again, Vectra stays switched on, PassWall2 stays gone" \
+		sh -c "/etc/init.d/$PKG enabled && [ \"\$(uci -q get $PKG.main.enabled)\" != 0 ] && [ ! -e /etc/init.d/passwall2 ]"
+	check retire_deadman_running "vctl runs again" wait_for 30 running "$PKG"
+
+	vectra off --foreground > /tmp/vectra-off.out 2>&1
+	off_rc=$?
+	sed 's/^/     | /' /tmp/vectra-off.out
+	kill "$CONFIRMER" 2> /dev/null
+	check retire_off "vectra off (exit $off_rc) says the traffic goes directly, without a VPN" \
+		sh -c "[ $off_rc = 0 ] && grep -q 'directly' /tmp/vectra-off.out"
+	check retire_off_plain "off and disabled, the router on plain internet: no vctl table, no fwmark 0x1 rule" vectra_off
+	check retire_off_no_passwall "PassWall2 does not come back" no_passwall
+	deadman
+	sleep 60
+	deadman
+	check retire_off_stays "a minute later, the dead-man run as cron runs it: Vectra still off, PassWall2 still gone" \
+		sh -c "! /etc/init.d/$PKG running && ! /etc/init.d/$PKG enabled && [ ! -e /etc/init.d/passwall2 ] && ! pgrep -f '[p]asswall-loop.sh'"
 	;;
 
 refuse-arch)

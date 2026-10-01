@@ -290,7 +290,8 @@ func TestSetupAnswersWhatTheRouterHas(t *testing.T) {
 		*st.Wifi.Radios[0].SSID != "OpenWrt" || st.Wifi.Radios[0].Secured || st.Wifi.Radios[0].Enabled || !st.Wifi.Radios[0].Auto ||
 		st.Wifi.Radios[0].Channel != nil || !st.Wifi.Radios[0].MaxPower || st.Wifi.Radios[0].Width != nil || !st.Wifi.Radios[0].AP ||
 		st.Wifi.Radios[0].Mesh || st.Wifi.Radios[0].Up != nil || !st.Wifi.Tunable || st.Wifi.Tuned == nil || !*st.Wifi.Tuned || st.Wifi.Apply != nil ||
-		*st.Wifi.Suggested != "Vectra-3F2A" || st.Vectra.Linked || *st.Vectra.BotUsername != "VectraBot" || st.Vectra.Owner != nil {
+		*st.Wifi.Suggested != "Vectra-3F2A" || st.Vectra.Linked || *st.Vectra.BotUsername != "VectraBot" || st.Vectra.Owner != nil ||
+		st.Wifi.Verdict == nil || *st.Wifi.Verdict != "fine" {
 		t.Fatalf("setup = %s", b)
 	}
 	c := st.Vectra.Claim
@@ -700,7 +701,7 @@ func TestOptimizeWifiRefusesARouterItCannotTune(t *testing.T) {
 		t.Fatalf("wifi_scan after a refusal = %+v", sc)
 	}
 	st := w.call("setup", "").(uiapi.Setup)
-	if b, _ := json.Marshal(st.Wifi); st.Wifi.Tunable || st.Wifi.Tuned != nil || !strings.Contains(string(b), `"tuned":null,"tunable":false`) {
+	if b, _ := json.Marshal(st.Wifi); st.Wifi.Tunable || st.Wifi.Tuned != nil || !strings.Contains(string(b), `"tuned":null,"tunable":false,"verdict":null`) {
 		t.Fatalf("setup.wifi = %s", b)
 	}
 	if a := w.call("set_wifi", `{"radios":{"radio2":{"ssid":"Дом-6"}}}`).(uiapi.Action); !a.OK || a.Code != "wifi_set" ||

@@ -276,6 +276,7 @@ echo "  vectra-reporter, reportsink, standkey: cross-compiling"
 ( cd "$MODULE" && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.Version=stand" -o "$BUILD/vectra-reporter" ./cmd/vectra-reporter )
 ( cd "$MODULE" && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o "$BUILD/reportsink" ./test/dataplane/reportsink )
 ( cd "$MODULE" && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o "$BUILD/standkey" ./test/dataplane/standkey )
+( cd "$MODULE" && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o "$BUILD/tlsproxy" ./test/dataplane/tlsproxy )
 rm -rf "$BUILD/reporter-etc" && cp -R "$MODULE/openwrt/reporter/etc" "$BUILD/reporter-etc"
 
 if [[ ! -x "$BUILD/xray" ]]; then

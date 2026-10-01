@@ -36,13 +36,17 @@ type SetupWan struct {
 }
 
 // SetupWifi is every radio, whether the tuning can apply and is in place,
-// the router's own network name, and the last change's restart.
+// the wizard's verdict on the Wi-Fi as it is, the router's own network name,
+// and the last change's restart.
 type SetupWifi struct {
-	Radios    []SetupRadio `json:"radios"`
-	Tuned     *bool        `json:"tuned"`
-	Tunable   bool         `json:"tunable"`
-	Suggested *string      `json:"suggested"`
-	Apply     *SetupApply  `json:"apply"`
+	Radios  []SetupRadio `json:"radios"`
+	Tuned   *bool        `json:"tuned"`
+	Tunable bool         `json:"tunable"`
+	// Verdict: fine, boost or manual (setup.Wifi.Verdict); nil when the
+	// router cannot be tuned.
+	Verdict   *string     `json:"verdict"`
+	Suggested *string     `json:"suggested"`
+	Apply     *SetupApply `json:"apply"`
 }
 
 // SetupRadio is one radio and its first access point — never a key.
@@ -114,7 +118,8 @@ func BuildWifiScan(scan *setup.ScanResult) WifiScan {
 }
 
 func buildWifi(w setup.Wifi) SetupWifi {
-	out := SetupWifi{Radios: make([]SetupRadio, 0, len(w.Radios)), Tuned: w.Tuned(), Tunable: w.Tunable(), Suggested: strPtr(w.Suggested)}
+	out := SetupWifi{Radios: make([]SetupRadio, 0, len(w.Radios)), Tuned: w.Tuned(), Tunable: w.Tunable(), Verdict: strPtr(w.Verdict()),
+		Suggested: strPtr(w.Suggested)}
 	for _, r := range w.Radios {
 		out.Radios = append(out.Radios, SetupRadio{Device: r.Device, Band: strPtr(r.Band), Channel: intPtr(r.Channel),
 			Auto: r.Channel == 0, HTMode: strPtr(r.HTMode), Width: intPtr(r.Width), Country: strPtr(r.Country), TxPower: r.TxPower,
