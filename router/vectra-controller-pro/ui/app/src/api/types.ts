@@ -28,7 +28,8 @@ export type Method =
   | 'set_rules'
   | 'services'
   | 'set_service'
-  | 'set_power';
+  | 'set_power'
+  | 'set_remote_shell';
 
 export type ReadMethod = 'status' | 'balancers' | 'nodes' | 'entries' | 'diagnostics' | 'logs' | 'setup' | 'wan_check' | 'rules' | 'wifi_scan' | 'services';
 export type ActionMethod = Exclude<Method, ReadMethod>;
@@ -93,6 +94,8 @@ export interface Status {
   legacy: { agentEnabled: boolean | null; passwallRunning: boolean | null };
   /** `locked`: the operator allows only the simple view here; the router refuses the Pro methods itself. */
   ui: { locked: boolean | null };
+  /** The panel's support may run commands on the router (the owner's switch); null: a router without the switch. */
+  remoteShell: boolean | null;
   router: {
     hostname: string | null;
     model: string | null;

@@ -19,6 +19,7 @@ import { Badge, Button, Note, Skeleton, Spinner } from '../ui/kit';
 import { MySites } from './MySites';
 import { PasswordDialog, PasswordNote } from './Password';
 import { Services } from './Services';
+import { SupportAccess } from './SupportAccess';
 import { face, groupServers } from '../lib/servers';
 import { CONFIG_SLOW_MS, needsSetup, owned, Setup, useLate, WayIn, type Screen } from './Setup';
 import { Tour, tourSeen } from './Tour';
@@ -623,6 +624,8 @@ export function Simple() {
             <WayIn ip={setup.data?.lan.ipv4} links />
           </span>
         ) : null}
+        {/* Whether support may run commands here is the owner's (a router older than the switch says nothing). */}
+        {typeof s.remoteShell === 'boolean' ? <SupportAccess on={s.remoteShell} /> : null}
       </footer>
       {tour ? <Tour onDone={() => setTour(false)} /> : null}
       {pwDialog ? <PasswordDialog first={pwDialog === 'set'} onClose={() => setPwDialog(null)} /> : null}

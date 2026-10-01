@@ -495,6 +495,7 @@ export const S = {
   ],
   'a.power_on': ['Vectra включена', 'Vectra turned on', 'Vectra 已开启'],
   'a.power_off': ['Vectra выключена', 'Vectra turned off', 'Vectra 已关闭'],
+  'a.remote_shell_set': ['Доступ поддержки изменён', 'Support access changed', '支持人员访问已更改'],
 
   // ── simple view: the verdict ───────────────────────────────────────────
   's.ok.t': ['Всё работает', 'Everything works', '一切正常'],
@@ -1106,6 +1107,22 @@ export const S = {
     'The router will ask for the new password when you sign in to its settings.',
     '登录路由器设置时将需要输入新密码。',
   ],
+  // Support access: the panel's support may run commands on the router (contract: "Support shell").
+  'sa.t': ['Доступ поддержки к роутеру', 'Support access to the router', '支持人员访问路由器'],
+  'sa.d': [
+    'Поддержка Vectra сможет выполнять команды на роутере, чтобы разобраться с неполадкой. Включайте, когда об этом попросит поддержка.',
+    'Vectra support can run commands on the router to sort out a problem. Turn it on when support asks you to.',
+    'Vectra 支持人员可以在路由器上执行命令来排查故障。请在支持人员要求时开启。',
+  ],
+  'sa.onQ': ['Открыть доступ поддержке?', 'Give support access?', '向支持人员开放访问？'],
+  'sa.onQ.d': [
+    'Поддержка Vectra сможет выполнять на роутере любые команды. Закрыть доступ можно здесь же в любой момент.',
+    'Vectra support will be able to run any command on the router. You can close the access here at any time.',
+    'Vectra 支持人员将能在路由器上执行任何命令。您可以随时在这里关闭访问。',
+  ],
+  'sa.onBtn': ['Открыть доступ', 'Give access', '开放访问'],
+  'sa.on.done': ['Доступ поддержки открыт', 'Support access is on', '已向支持人员开放访问'],
+  'sa.off.done': ['Доступ поддержки закрыт', 'Support access is off', '已关闭支持人员访问'],
   'tour.1.t': ['Здесь видно, работает ли VPN', 'This tells you whether the VPN works', '这里显示 VPN 是否正常'],
   'tour.1.d': [
     'Зелёный — всё хорошо. Если что-то не так, здесь же будет написано, что сделать.',

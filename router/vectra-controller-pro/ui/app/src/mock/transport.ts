@@ -440,6 +440,14 @@ export function createMock(opts: MockOptions = {}): Mock {
         });
         return ok('pending');
       }
+      // Like `vctl rpcd`: uci set + commit, nothing restarts; the next job reads it.
+      case 'set_remote_shell': {
+        const on = p.on;
+        if (typeof on !== 'boolean' || Object.keys(p).some((k) => k !== 'on')) return fail('invalid_params', 'params must be {"on": true} or {"on": false}');
+        s.remoteShell = on;
+        log(on ? 'support shell on' : 'support shell off');
+        return ok('remote_shell_set');
+      }
       case 'set_service': {
         if (typeof p.id !== 'string' || typeof p.country !== 'string') return fail('invalid_params', 'id and country are both required; "" is the entry\'s own path');
         const row = w.services.services.find((x) => x.id === p.id);

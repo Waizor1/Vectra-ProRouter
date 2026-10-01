@@ -53,6 +53,7 @@ const DONE_CODE: Record<ActionMethod, string> = {
   set_rules: 'rules_set',
   set_service: 'service_set',
   set_power: 'power_on',
+  set_remote_shell: 'remote_shell_set',
 };
 const LEVEL_TONE: Record<Level, string> = { ok: 'ok', warn: 'warn', fail: 'fail', setup: 'info', unknown: 'mute', off: 'mute' };
 

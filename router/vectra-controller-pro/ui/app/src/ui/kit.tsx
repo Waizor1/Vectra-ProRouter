@@ -233,8 +233,21 @@ export function Seg<V extends string | number>(p: { label: string; value: V | nu
   );
 }
 
-export const Switch = ({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) => (
-  <button type="button" role="switch" class="sw" aria-checked={checked} onClick={() => onChange(!checked)}>
+export const Switch = ({
+  label,
+  checked,
+  onChange,
+  disabled,
+  describedBy,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+  /** The id of the sentence that says what the switch does. */
+  describedBy?: string;
+}) => (
+  <button type="button" role="switch" class="sw" aria-checked={checked} aria-describedby={describedBy} disabled={disabled} onClick={() => onChange(!checked)}>
     <i aria-hidden="true" />
     {label}
   </button>

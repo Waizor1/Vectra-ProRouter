@@ -102,6 +102,7 @@ const SPECS: Record<ReadMethod, Spec> = {
     pins: 'M',
     legacy: { agentEnabled: 'b', passwallRunning: 'b' },
     ui: { locked: 'b' },
+    remoteShell: 'b',
     router: {
       hostname: 's',
       model: 's',

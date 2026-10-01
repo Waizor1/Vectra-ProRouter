@@ -2319,6 +2319,23 @@ h3,
 .sv-lan {
   flex-basis: 100%;
 }
+/* Support access: a quiet switch of the owner's, the sentence of what it allows under it. */
+.sv-sa {
+  flex-basis: 100%;
+  display: grid;
+  justify-items: center;
+  margin-top: 6px;
+}
+.sv-sa .hint {
+  max-width: 56ch;
+  margin: 0;
+  font-size: 12px;
+  text-wrap: pretty;
+}
+.sw:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
 .nw {
   white-space: nowrap;
 }
