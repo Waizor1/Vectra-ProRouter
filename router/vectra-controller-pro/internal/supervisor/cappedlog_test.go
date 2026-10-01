@@ -44,7 +44,7 @@ func TestCappedLogResumesFromTheExistingSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := newCappedLog(path, 1000)
-	_, _ = c.Write([]byte(strings.Repeat("z", 200)))
+	_, _ = c.Write([]byte(strings.Repeat("z", 199) + "\n"))
 	if st, _ := os.Stat(path); st.Size() != 200 {
 		t.Fatalf("size = %d; the pre-existing 900 bytes were not counted", st.Size())
 	}
@@ -98,5 +98,46 @@ func TestCappedLogIsReadableOnlyByRoot(t *testing.T) {
 		if st, err := os.Stat(p); err != nil || st.Mode().Perm() != 0o600 {
 			t.Errorf("%s: mode %v, %v; want 0600", filepath.Base(p), st.Mode().Perm(), err)
 		}
+	}
+}
+
+func TestCappedLogRedactsAcrossWriteBoundaries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "xray.log")
+	c := newCappedLog(path, 1000)
+	for _, p := range []string{`config: {"password":"short-`, `pass"} user 11111111-2222-`, "3333-4444-555555555555\n"} {
+		_, _ = c.Write([]byte(p))
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "short-pass") || strings.Contains(string(b), "11111111") {
+		t.Fatalf("secret persisted: %s", b)
+	}
+	if !strings.Contains(string(b), "config") {
+		t.Fatal("lost error context")
+	}
+}
+func TestCappedLogOversizedLineIsBoundedAndOmitted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "xray.log")
+	c := newCappedLog(path, 1000)
+	_, _ = c.Write([]byte(strings.Repeat("s", 20000)))
+	if len(c.pending) != 0 {
+		t.Fatal("oversized pending retained")
+	}
+	_, _ = c.Write([]byte("\nnext line\n"))
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "ssss") || !strings.Contains(string(b), "next line") {
+		t.Fatalf("unsafe output %s", b)
+	}
+}
+
+func TestCappedLogOmitsMultilinePrivateKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "xray.log")
+	c := newCappedLog(path, 1000)
+	_, _ = c.Write([]byte("-----BEGIN PRIVATE KEY-----\nALLLETTERSECRETBASEMATERIAL\n-----END PRIVATE KEY-----\nstartup refused\n"))
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "ALLLETTER") || !strings.Contains(string(b), "startup refused") {
+		t.Fatalf("unsafe output %s", b)
 	}
 }

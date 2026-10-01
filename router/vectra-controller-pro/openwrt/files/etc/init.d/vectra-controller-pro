@@ -251,10 +251,16 @@ release_locks() {
 # The next vctl's xray then cannot bind, and the LAN runs through the old
 # config with nobody supervising it; a hand-back would run it next to
 # PassWall's. An xray whose vctl is alive is that vctl's business.
+# Private stdin children carry a Vectra-specific argv[0]. Never match a
+# generic xray using stdin, which may belong to another service.
+vctl_xray_pattern() {
+ printf '%s' "run -c ${AGENT_JSON%/*}/|(^|/)(vctl-xray-wrapper|vctl-xray-private) run -c stdin:($| )"
+}
+
 kill_orphan_xray() {
 	local pid
 	command -v pgrep >/dev/null 2>&1 || return 0
-	for pid in $(pgrep -P 1 -f "run -c ${AGENT_JSON%/*}/" 2>/dev/null); do
+	for pid in $(pgrep -P 1 -f "$(vctl_xray_pattern)" 2>/dev/null); do
 		logger -t vectra-controller-pro "an xray of a vctl that is gone (pid $pid) still runs; ending it"
 		kill "$pid" 2>/dev/null
 	done
@@ -692,8 +698,11 @@ start_service() {
 	# than double before the next GC. Soft limits: GC works harder near them,
 	# nothing is killed. xray has its own (vctl-xray-wrapper).
 	procd_set_param env GOGC=50 GOMEMLIMIT=32MiB
-	procd_set_param respawn 15 5 20
-	procd_set_param stderr 1
+	# Service-scoped core limit, inherited by Xray. No global core policy changes.
+ procd_set_param limits core="0 0"
+ procd_set_param respawn 15 5 20
+	# Runtime panic strings bypass slog; safe application logs use stdout.
+ procd_set_param stderr 0
 	procd_set_param stdout 1
 	procd_set_param file /etc/config/vectra-controller-pro
 	procd_close_instance
@@ -709,7 +718,7 @@ start_service() {
 vctl_alive() {
 	command -v pgrep >/dev/null 2>&1 || return 1
 	pgrep -f "$VCTL_BIN agent" >/dev/null 2>&1 && return 0
-	pgrep -f "run -c ${AGENT_JSON%/*}/" >/dev/null 2>&1
+	pgrep -f "$(vctl_xray_pattern)" >/dev/null 2>&1
 }
 
 # rc.common's stop is stop_service, then procd_kill — procd's SIGTERM, and

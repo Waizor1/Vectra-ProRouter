@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/apply"
 	"vectra-controller-pro/internal/config"
@@ -248,7 +249,7 @@ func (d *daemon) jobApplyXrayConfig(ctx context.Context, job controlplane.Job, r
 	}
 	operatorChanged := d.desired == nil || !sameOperatorConfig(d.desired, cfg)
 	d.desired = cfg
-	if err := config.Save(d.cfg.XrayConfigPath, cfg); err != nil {
+	if err := config.SaveSecret(d.cfg.XrayConfigPath, cfg); err != nil {
 		return d.submitFailure(ctx, job, "persist operator config: "+err.Error())
 	}
 	d.rebuildApplier()
@@ -399,8 +400,10 @@ func (d *daemon) maybeRefreshSubscription(ctx context.Context, now time.Time) {
 // providerDocument returns the last-good provider document from disk, or
 // fetches a fresh one when there is none yet.
 func (d *daemon) providerDocument(ctx context.Context, cfg *config.Config) ([]byte, string, error) {
-	if raw, err := os.ReadFile(d.cfg.ProviderConfigPath); err == nil && len(raw) > 0 {
+	if raw, err := vault.ReadFile(d.cfg.ProviderConfigPath); err == nil && len(raw) > 0 {
 		return raw, "cache", nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, "", errors.New("provider vault unavailable")
 	}
 	raw, _, err := d.fetchProviderDocument(ctx, cfg)
 	if err != nil {
@@ -818,7 +821,7 @@ func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) 
 // ---- helpers --------------------------------------------------------------
 
 func (d *daemon) loadDesiredConfig() (*config.Config, error) {
-	raw, err := os.ReadFile(d.cfg.XrayConfigPath)
+	raw, err := vault.ReadFile(d.cfg.XrayConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("read desired config: %w", err)
 	}

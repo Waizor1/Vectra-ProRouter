@@ -22,6 +22,7 @@ import (
 	"vectra-controller-pro/internal/power"
 	"vectra-controller-pro/internal/tune"
 	"vectra-controller-pro/internal/uaguard"
+	"vectra-controller-pro/internal/vault"
 	"vectra-controller-pro/internal/xrayview"
 )
 
@@ -78,22 +79,26 @@ func Gather(ctx context.Context, env Env, need Need) Inputs {
 		cancel()
 	}
 	if need.View || need.Reach || need.Metrics || need.Balancers {
-		if raw, err := os.ReadFile(env.Cfg.XrayRenderPath); err == nil {
+		if raw, err := vault.ReadFile(env.Cfg.XrayRenderPath); err == nil {
 			in.View, _ = xrayview.Parse(raw)
+			clear(raw)
 		}
 	}
 	if need.Local {
 		in.Overrides, _ = localctl.LoadOverrides(env.Cfg.OverridesPath)
 		in.Index, _ = localctl.LoadEntriesIndex(env.Cfg.EntriesIndexPath)
 		if in.Runtime == nil || in.Runtime.Probe == nil {
-			if raw, err := os.ReadFile(env.Cfg.ProviderConfigPath); err == nil {
+			if raw, err := vault.ReadFile(env.Cfg.ProviderConfigPath); err == nil {
 				in.ProviderProbeInterval, _, _ = xray.ProviderProbeInterval(raw)
+				clear(raw)
 			}
 		}
 	}
 	if need.Operator {
-		if raw, err := os.ReadFile(env.Cfg.XrayConfigPath); err == nil {
-			if c, err := config.Unmarshal(raw); err == nil {
+		if raw, err := vault.ReadFile(env.Cfg.XrayConfigPath); err == nil {
+			c, parseErr := config.Unmarshal(raw)
+			clear(raw)
+			if parseErr == nil {
 				for _, s := range c.Subscriptions {
 					if !s.Enabled {
 						continue

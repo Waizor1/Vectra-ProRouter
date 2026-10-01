@@ -196,7 +196,7 @@ func newReleaseRouter(t *testing.T, owner bool) *releaseRouter {
 		r.d.st.LastDesiredRevision == nil || (r.d.st.ClaimOwner != nil) != owner {
 		t.Fatalf("not configured as the test needs: %+v", r.d.st)
 	}
-	cfg, err := config.Load(r.d.cfg.XrayConfigPath)
+	cfg, err := config.LoadSecret(r.d.cfg.XrayConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}

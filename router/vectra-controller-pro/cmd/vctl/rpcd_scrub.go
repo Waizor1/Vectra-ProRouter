@@ -1,10 +1,10 @@
 package main
 
 import (
+ "vectra-controller-pro/internal/vault"
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/config"
@@ -113,7 +113,7 @@ var rpcdSecretKeys = map[string]bool{
 // and the provider document it came from). What cannot be read adds nothing.
 func rpcdSecrets(cfg agentcfg.Config) redact.Known {
 	var vals []string
-	if raw, err := os.ReadFile(cfg.StatePath); err == nil {
+	if raw, err := vault.ReadFile(cfg.StatePath); err == nil {
 		var st struct {
 			AgentToken       string `json:"agent_token"`
 			DevicePrivateKey string `json:"device_private_key"`
@@ -122,7 +122,7 @@ func rpcdSecrets(cfg agentcfg.Config) redact.Known {
 			vals = append(vals, st.AgentToken, st.DevicePrivateKey)
 		}
 	}
-	if raw, err := os.ReadFile(cfg.XrayConfigPath); err == nil {
+	if raw, err := vault.ReadFile(cfg.XrayConfigPath); err == nil {
 		if c, err := config.Unmarshal(raw); err == nil {
 			for _, s := range c.Subscriptions {
 				vals = append(vals, subscription.SecretParts(s.URL)...)
@@ -130,7 +130,7 @@ func rpcdSecrets(cfg agentcfg.Config) redact.Known {
 		}
 	}
 	for _, p := range []string{cfg.XrayRenderPath, cfg.ProviderConfigPath} {
-		raw, err := os.ReadFile(p)
+		raw, err := vault.ReadFile(p)
 		if err != nil {
 			continue
 		}

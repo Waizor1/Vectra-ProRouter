@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/config"
@@ -174,10 +175,10 @@ func newGuardRouter(t *testing.T) *guardRouter {
 	if _, err := config.Unmarshal(operator); err != nil || bytes.Equal(operator, golden) {
 		t.Fatalf("the operator config does not carry the subscription: %v", err)
 	}
-	mustWrite(t, cfg.XrayConfigPath, operator)
+	mustWriteSecret(t, cfg.XrayConfigPath, operator)
 
 	provider := guardProvider(t, g.creds)
-	mustWrite(t, cfg.ProviderConfigPath, provider)
+	mustWriteSecret(t, cfg.ProviderConfigPath, provider)
 	// xray's API and metrics answer nothing: the answers say so, as they do
 	// with xray down.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -199,11 +200,11 @@ func newGuardRouter(t *testing.T) *guardRouter {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, cfg.XrayRenderPath, render)
+	mustWriteSecret(t, cfg.XrayRenderPath, render)
 
 	state, _ := json.Marshal(map[string]any{"router_id": guardRouterID, "agent_token": guardAgentToken,
 		"device_identifier": "vectra-0123456789ab", "device_private_key": devKey, "bot_username": "VectraBot"})
-	mustWrite(t, cfg.StatePath, state)
+	mustWriteSecret(t, cfg.StatePath, state)
 	idx, _ := json.Marshal(localctl.EntriesIndex{SubscriptionID: "primary", FetchedAt: time.Now().UTC(), Entries: []localctl.EntrySummary{
 		{Index: 0, Remark: "🇷🇺🇪🇺 Авто Самый стабильный", NodeCount: 31, BalancerCount: 7}, {Index: 1, Remark: "🇩🇪 Германия", NodeCount: 4},
 	}})
@@ -425,5 +426,12 @@ func TestTheScrubKeepsWhatTheUIShowsVerbatim(t *testing.T) {
 	out, _ := json.Marshal(rpcdScrub("entries", uiapi.Entries{Entries: []uiapi.Entry{{Remark: guardRouterID + " " + guardClaimQR}}}, nil))
 	if bytes.Contains(out, []byte(guardRouterID)) {
 		t.Errorf("a UUID outside status.controlPlane.routerId was kept: %s", out)
+	}
+}
+
+func mustWriteSecret(t *testing.T, path string, body []byte) {
+	t.Helper()
+	if err := vault.WriteFile(path, body); err != nil {
+		t.Fatal(err)
 	}
 }

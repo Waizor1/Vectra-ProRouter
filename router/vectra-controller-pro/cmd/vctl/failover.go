@@ -1,6 +1,7 @@
 package main
 
 import (
+ "vectra-controller-pro/internal/vault"
 	"context"
 	"fmt"
 	"net"
@@ -194,7 +195,7 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 		return
 	}
 	if stamp := fmt.Sprintf("%d/%d", fi.ModTime().UnixNano(), fi.Size()); stamp != w.viewStamp {
-		raw, err := os.ReadFile(d.cfg.XrayRenderPath)
+		raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
 		if err != nil {
 			w.blind("cannot read the render", err)
 			return

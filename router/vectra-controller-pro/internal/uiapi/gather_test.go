@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/power"
+	"vectra-controller-pro/internal/vault"
 )
 
 func write(t *testing.T, path, body string) {
@@ -167,5 +169,35 @@ func TestXrayBannerIsNotAJournalLine(t *testing.T) {
 	}
 	if isXrayBanner("2026/09/27 17:52:39.155186 [Warning] core: Xray 26.3.27 started") {
 		t.Error("the 'started' log line was taken for the banner")
+	}
+}
+
+func TestGatherReadsEncryptedRuntimeView(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.json")
+	raw := []byte(`{"outbounds":[{"tag":"fake-node","protocol":"vless","settings":{"vnext":[{"address":"example.test","port":443,"users":[{"id":"11111111-2222-3333-4444-555555555555"}]}]}}]}`)
+	if err := vault.WriteFile(path, raw); err != nil {
+		t.Fatal(err)
+	}
+	env := Env{Cfg: agentcfg.Config{XrayRenderPath: path}, CallTime: time.Second}
+	in := Gather(context.Background(), env, Need{View: true})
+	if in.View == nil || len(in.View.Outbounds) != 1 || in.View.Outbounds[0].Tag != "fake-node" {
+		t.Fatalf("encrypted view unavailable: %+v", in.View)
+	}
+	b, _ := os.ReadFile(path)
+	b[len(b)-1] ^= 1
+	_ = os.WriteFile(path, b, 0600)
+	if in := Gather(context.Background(), env, Need{View: true}); in.View != nil {
+		t.Fatal("corrupt view accepted")
+	}
+}
+
+func TestGatherReadsEncryptedOperator(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "operator.json")
+	if err := vault.WriteFile(path, []byte(`{"schema":1,"subscriptions":[{"id":"fake","enabled":true,"url":"https://example.test/fake-only","entryRemark":"test entry"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	in := Gather(context.Background(), Env{Cfg: agentcfg.Config{XrayConfigPath: path}, CallTime: time.Second}, Need{Operator: true})
+	if !in.HasOperatorConfig || in.PanelRemark != "test entry" {
+		t.Fatalf("operator view missing: %+v", in)
 	}
 }

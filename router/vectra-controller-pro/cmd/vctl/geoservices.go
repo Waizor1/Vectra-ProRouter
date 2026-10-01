@@ -1,6 +1,7 @@
 package main
 
 import (
+ "vectra-controller-pro/internal/vault"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -77,7 +78,7 @@ func servicesOf(lists ...[]string) []string {
 // state.json keeps it — read, never written: the daemon owns that file —
 // else the configured one.
 func rpcdGeoDir(cfg agentcfg.Config) string {
-	if raw, err := os.ReadFile(cfg.StatePath); err == nil {
+	if raw, err := vault.ReadFile(cfg.StatePath); err == nil {
 		var st struct {
 			RenderAssetDir string `json:"render_asset_dir"`
 		}

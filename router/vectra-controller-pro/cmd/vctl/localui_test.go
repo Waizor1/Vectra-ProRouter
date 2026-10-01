@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/apply"
 	"vectra-controller-pro/internal/config"
@@ -133,7 +134,7 @@ func TestLocalReapplySwitchesLocationWithoutFetching(t *testing.T) {
 	if d.st.ConfigDigest != apply.Digest(entries[1]) {
 		t.Fatal("the installed document is not the chosen location")
 	}
-	onDisk, _ := os.ReadFile(d.cfg.ProviderConfigPath)
+	onDisk, _ := vault.ReadFile(d.cfg.ProviderConfigPath)
 	if !bytes.Equal(onDisk, entries[1]) {
 		t.Fatal("the persisted provider document is not the chosen location, byte for byte")
 	}
@@ -157,7 +158,7 @@ func TestRenderCarriesTheRouterRuntimeAndTheProbeInterval(t *testing.T) {
 	if _, err := d.applyProvider(ctx, entries[0], false); err != nil {
 		t.Fatal(err)
 	}
-	render, _ := os.ReadFile(d.cfg.XrayRenderPath)
+	render, _ := vault.ReadFile(d.cfg.XrayRenderPath)
 	for _, want := range []string{`"listen":"127.0.0.1:10085"`, `"listen":"127.0.0.1:10086"`, `"interval":"600s"`} {
 		if !strings.Contains(string(render), want) {
 			t.Errorf("render lacks %s", want)
@@ -180,7 +181,7 @@ func TestRenderCarriesTheRouterRuntimeAndTheProbeInterval(t *testing.T) {
 	if !res.Changed || d.st.SpliceKey == key {
 		t.Fatal("a new probe interval did not re-render an unchanged provider document")
 	}
-	render, _ = os.ReadFile(d.cfg.XrayRenderPath)
+	render, _ = vault.ReadFile(d.cfg.XrayRenderPath)
 	if !strings.Contains(string(render), `"interval":"120s"`) || d.probe.Source != "local" {
 		t.Fatalf("probe = %+v", d.probe)
 	}
@@ -203,14 +204,14 @@ func TestReconcileRenderAddsTheAPIToAnOldRender(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.st.ConfigDigest, d.st.SpliceKey = res.AppliedDigest, ""
-	if err := os.WriteFile(d.cfg.ProviderConfigPath, entries[0], 0o600); err != nil {
+	if err := vault.WriteFile(d.cfg.ProviderConfigPath, entries[0]); err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(d.cfg.XrayRenderPath); strings.Contains(string(b), "10085") {
+	if b, _ := vault.ReadFile(d.cfg.XrayRenderPath); strings.Contains(string(b), "10085") {
 		t.Fatal("precondition: the old render already has the API")
 	}
 	d.reconcileRender(ctx)
-	if b, _ := os.ReadFile(d.cfg.XrayRenderPath); !strings.Contains(string(b), `"listen":"127.0.0.1:10085"`) {
+	if b, _ := vault.ReadFile(d.cfg.XrayRenderPath); !strings.Contains(string(b), `"listen":"127.0.0.1:10085"`) {
 		t.Fatal("reconcileRender left the old render in place")
 	}
 	if d.st.SpliceKey == "" {
@@ -291,7 +292,7 @@ func TestReapplyPinsParksAPinToAnExitTheCheckLeftOut(t *testing.T) {
 	if _, err := d.applyProvider(context.Background(), entries[0], false); err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := os.ReadFile(d.cfg.XrayRenderPath)
+	raw, _ := vault.ReadFile(d.cfg.XrayRenderPath)
 	if v, err := xrayview.Parse(raw); err != nil || v.CanPin("BL-MAIN", "bridge-us5") == nil {
 		t.Fatalf("precondition: the render still lets BL-MAIN pin bridge-us5 (%v)", err)
 	}

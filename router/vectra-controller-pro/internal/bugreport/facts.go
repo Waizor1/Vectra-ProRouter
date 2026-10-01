@@ -54,7 +54,7 @@ func Facts(e FactsEnv) (Router, []string) {
 			}
 		}
 	}
-	if c, err := config.Load(p("etc/vectra-controller-pro/xray-desired.json")); err == nil && c.Inbounds.Tproxy != nil {
+	if c, err := config.LoadSecret(p("etc/vectra-controller-pro/xray-desired.json")); err == nil && c.Inbounds.Tproxy != nil {
 		ks := c.Inbounds.Tproxy.KillSwitch
 		r.KillSwitch = &ks
 	}

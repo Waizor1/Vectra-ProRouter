@@ -18,6 +18,7 @@ import (
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/subscription"
+	"vectra-controller-pro/internal/vault"
 )
 
 // Production device vector (see internal/subscription/device_test.go).
@@ -111,6 +112,7 @@ func writeFakeXray(t *testing.T, dir string) string {
 		"  version) echo 'Xray 26.7.28 (fake)'; exit 0;;\n" +
 		"  run)\n" +
 		"    shift\n" +
+		"    case \" $* \" in *\" stdin: \"*) cat >/dev/null;; *) exit 43;; esac\n" +
 		"    for a in \"$@\"; do [ \"$a\" = '-test' ] && exit 0; done\n" +
 		"    exec sleep 300;;\n" +
 		"  *) exec sleep 300;;\n" +
@@ -243,7 +245,7 @@ func TestAgentEndToEnd(t *testing.T) {
 	}
 
 	// xray.json must exist and be the SPLICED provider document.
-	rendered, err := os.ReadFile(filepath.Join(dir, "xray.json"))
+	rendered, err := readEncryptedTestFile(t, filepath.Join(dir, "xray.json"))
 	if err != nil || !json.Valid(rendered) {
 		t.Fatalf("xray.json not written/invalid: err=%v bytes=%d", err, len(rendered))
 	}
@@ -283,14 +285,18 @@ func TestAgentEndToEnd(t *testing.T) {
 
 	// The provider document must be persisted verbatim, and NOT in the
 	// operator-config file.
-	persisted, err := os.ReadFile(filepath.Join(dir, "provider-config.json"))
+	persisted, err := readEncryptedTestFile(t, filepath.Join(dir, "provider-config.json"))
 	if err != nil {
 		t.Fatalf("provider config not persisted: %v", err)
 	}
 	if string(persisted) != string(providerEntry(t)) {
 		t.Error("persisted provider document is not byte-identical to what the provider served")
 	}
-	if _, err := config.Load(filepath.Join(dir, "operator.json")); err != nil {
+	opRaw, opErr := readEncryptedTestFile(t, filepath.Join(dir, "operator.json"))
+	if opErr != nil {
+		t.Fatal(opErr)
+	}
+	if _, err := config.Unmarshal(opRaw); err != nil {
 		t.Errorf("operator config should still be a valid operator config: %v", err)
 	}
 
@@ -407,4 +413,18 @@ func TestDaemonFetchRefusesDegradedLinkList(t *testing.T) {
 	if !strings.Contains(err.Error(), "v2rayNG/1.9.5") {
 		t.Errorf("error should point at a JSON user agent: %v", err)
 	}
+}
+
+// Assert at-rest ciphertext before inspecting semantic contents. Fixtures use
+// only fake credentials; this helper must never silently accept plaintext.
+func readEncryptedTestFile(t *testing.T, path string) ([]byte, error) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if json.Valid(raw) {
+		t.Fatalf("plaintext JSON artifact at %s", path)
+	}
+	return vault.ReadFile(path)
 }

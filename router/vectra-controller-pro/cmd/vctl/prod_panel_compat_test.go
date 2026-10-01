@@ -203,7 +203,7 @@ func TestAgainstDeployedPanelAPassWallRevisionIsNotAdopted(t *testing.T) {
 			d.st.LastDesiredRevision.ID, d.st.LastDesiredRevision.EngineMode)
 	}
 	// And it must not be on disk either — state.json survives restarts.
-	raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	raw, err := readEncryptedTestFile(t, filepath.Join(dir, "state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

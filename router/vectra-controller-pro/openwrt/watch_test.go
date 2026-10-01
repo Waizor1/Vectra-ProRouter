@@ -24,7 +24,7 @@ func TestTheHandBackWaitsForVctlToBeGone(t *testing.T) {
 	s.write("vctl.linger", "3") // vctl and its xray still there for three more looks
 	events, out := s.run("1", "stop\n")
 	got := withoutLogs(events)
-	look := "pgrep -f run -c " + s.path("run") + "/"
+	look := "pgrep -f run -c " + s.path("run") + "/|(^|/)(vctl-xray-wrapper|vctl-xray-private) run -c stdin:($| )"
 	kill, enable := indexOf(got, "procd_kill"), indexOf(got, "passwall enable")
 	if kill < 0 || enable < 0 || kill > enable || countLine(got, look) != 4 || indexOf(got, "teardown") > kill {
 		t.Fatalf("want the teardown, procd_kill, four looks at vctl (three alive), then the hand-back:\n  %s\n%s", strings.Join(got, "\n  "), out)
@@ -47,7 +47,7 @@ func TestTheHandBackWaitsNoLongerThanFifteenSeconds(t *testing.T) {
 	s.run("1", "start_service\n")
 	s.write("vctl.linger", "1000")
 	events, _ := s.run("1", "stop\n")
-	if n := countLine(events, "pgrep -f run -c "+s.path("run")+"/"); n != 16 || !containsLine(events, "passwall enable") ||
+	if n := countLine(events, "pgrep -f run -c "+s.path("run")+"/|(^|/)(vctl-xray-wrapper|vctl-xray-private) run -c stdin:($| )"); n != 16 || !containsLine(events, "passwall enable") ||
 		!strings.Contains(strings.Join(events, "\n"), "still runs 15 s after the stop") {
 		t.Fatalf("%d looks:\n%s", n, strings.Join(events, "\n"))
 	}

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/supervisor"
@@ -61,7 +62,7 @@ func TestLeakBaselineIsTakenAfterEachXrayStartAndServed(t *testing.T) {
 			c.Close()
 		}
 	}()
-	if err := os.WriteFile(d.cfg.XrayRenderPath, []byte(`{"api":{"listen":"`+ln.Addr().String()+`"}}`), 0o600); err != nil {
+	if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(`{"api":{"listen":"`+ln.Addr().String()+`"}}`)); err != nil {
 		t.Fatal(err)
 	}
 	// The table is still loading for the first two reads.

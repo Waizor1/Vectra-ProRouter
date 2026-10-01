@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/localctl"
@@ -241,7 +242,13 @@ func (w *wizardRouter) write(t *testing.T, path, body string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	var err error
+	if path == w.cfg.StatePath || path == w.cfg.XrayConfigPath {
+		err = vault.WriteFile(path, []byte(body))
+	} else {
+		err = os.WriteFile(path, []byte(body), 0o600)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -891,7 +898,7 @@ func TestThePanelCanLockTheRouterToo(t *testing.T) {
 	} {
 		os.Remove(s.cfg.XrayConfigPath)
 		if tc.config != nil {
-			if err := os.WriteFile(s.cfg.XrayConfigPath, tc.config, 0o600); err != nil {
+			if err := vault.WriteFile(s.cfg.XrayConfigPath, tc.config); err != nil {
 				t.Fatal(err)
 			}
 		}

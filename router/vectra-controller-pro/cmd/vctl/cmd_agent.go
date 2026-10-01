@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/apply"
@@ -56,7 +57,7 @@ func cmdAgent(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	setupLogging(*logLevel)
+	logging.SetDefault(logging.New(*logLevel, os.Stdout, "text"))
 	// A crash of the daemon goes to the reporter too (ADR-0007).
 	captureCrashes()
 
@@ -274,6 +275,9 @@ type daemon struct {
 const xrayGOGC = 30
 
 func newDaemon(cfg agentcfg.Config) (*daemon, error) {
+	if err := migrateSecrets(cfg); err != nil {
+		return nil, fmt.Errorf("secret storage migration: %w", err)
+	}
 	st, err := state.Load(cfg.StatePath)
 	if err != nil {
 		return nil, fmt.Errorf("load state: %w", err)
@@ -368,6 +372,7 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 	// Every start — the first, a reload, a crash restart — must get the
 	// router's pins back (xray keeps balancer overrides in memory only) and a
 	// fresh leak baseline (see takeLeakBaseline).
+	sup.SetConfigSource(func() ([]byte, error) { return vault.ReadFile(cfg.XrayRenderPath) })
 	sup.SetOnStart(d.onXrayStart)
 	d.incidents = incident.NewRecorder(incident.Dir, 10*time.Minute)
 	sup.SetOnExit(func(code int, err error, ran time.Duration) { d.noteXrayExit(code, err, ran, time.Now()) })
@@ -378,7 +383,7 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 	}
 	// Best-effort: adopt any previously-applied operator config so the tproxy
 	// inbound (and therefore the applier) is usable before the first check-in.
-	if c, err := config.Load(cfg.XrayConfigPath); err == nil {
+	if c, err := config.LoadSecret(cfg.XrayConfigPath); err == nil {
 		d.desired = c
 	}
 	d.claim = newClaimer(st, d.device.Model, cfg.ClaimRotate())
@@ -432,15 +437,17 @@ func (d *daemon) rebuildApplier() {
 			tproxy = &t
 		}
 	}
+	d.sup.SetConfigSource(func() ([]byte, error) { return vault.ReadFile(d.cfg.XrayRenderPath) })
 	d.applier = &apply.Applier{
-		Tproxy:       tproxy,
-		ProviderPath: d.documentPath(),
+		Tproxy:        tproxy,
+		ProviderPath:  d.documentPath(),
+		SecretStorage: true,
 		// xray reads its geo files where the xray -test gate checked the
 		// render it runs: the directory moves with a render written, never
 		// before — a config the gate refused leaves the running render its
 		// own directory for every restart after.
 		WriteXray: func(b []byte) error {
-			if err := d.sup.WriteXrayConfig(b); err != nil {
+			if err := vault.WriteFile(d.cfg.XrayRenderPath, b); err != nil {
 				return err
 			}
 			d.sup.SetAssetDir(assetDir)
@@ -483,7 +490,7 @@ func (d *daemon) geoAssetDir() string {
 
 // refreshNodeCount recounts the provider document's outbounds from disk.
 func (d *daemon) refreshNodeCount() {
-	raw, err := os.ReadFile(d.documentPath())
+	raw, err := vault.ReadFile(d.documentPath())
 	if err != nil {
 		return
 	}

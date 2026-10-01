@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/controlplane"
@@ -111,7 +112,7 @@ func TestFreshInstallAdoptsLegacyDeviceIdentity(t *testing.T) {
 	}
 
 	// The adopted identity must also survive to disk, or the next boot re-mints.
-	raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	raw, err := vault.ReadFile(filepath.Join(dir, "state.json"))
 	if err != nil {
 		t.Fatalf("read state.json: %v", err)
 	}

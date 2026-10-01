@@ -76,9 +76,7 @@ func cmdSupervise(args []string) error {
 		return err
 	}
 	proc := supervisor.NewProcessWithAssetDir(c.Process, assetDir)
-	if err := proc.WriteXrayConfig(data); err != nil {
-		return fmt.Errorf("write xray config: %w", err)
-	}
+	proc.SetConfigSource(func() ([]byte, error) { return append([]byte(nil), data...), nil })
 	log.Info("spliced provider config",
 		"path", c.Process.ConfigFile, "bytes", len(data),
 		"keptKeys", len(spliceRes.TopLevelKeys)-1, "droppedInbounds", spliceRes.DroppedInbounds)

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/routepolicy"
 )
@@ -67,7 +68,7 @@ func nativeDaemon(t *testing.T, feed *feedStub) *daemon {
 	provider := newProviderStub(t, providerEntry(t))
 	panel := newPanelStub(t, operatorConfigPointingAt(t, provider.URL))
 	d := newTestDaemon(t, dir, panel, provider)
-	if err := os.WriteFile(d.cfg.XrayConfigPath, operatorConfigPointingAt(t, provider.URL), 0o600); err != nil {
+	if err := vault.WriteFile(d.cfg.XrayConfigPath, operatorConfigPointingAt(t, provider.URL)); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := d.loadDesiredConfig()

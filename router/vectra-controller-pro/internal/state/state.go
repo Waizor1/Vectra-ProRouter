@@ -14,11 +14,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
-	"time"
 
 	"vectra-controller-pro/internal/controlplane"
+	"vectra-controller-pro/internal/vault"
 )
 
 // RescueSnapshot captures the local rescue mode across restarts. Plain
@@ -87,36 +86,72 @@ type ExitEgress struct {
 // Load reads persisted state, recovering from a last-good copy or salvaging
 // identity fields from a corrupt file rather than losing the router's token.
 func Load(path string) (PersistedState, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			if recovered, ok := loadLastGood(path); ok {
-				_ = Save(path, recovered)
-				return recovered, nil
-			}
+	raw, err := vault.ReadFile(path)
+	if err == nil {
+		defer clear(raw)
+		persisted, e := decode(raw)
+		if e == nil {
+			return persisted, nil
+		}
+		err = e
+	}
+	if recovered, ok := loadLastGood(path); ok {
+		if e := Save(path, recovered); e != nil {
+			return PersistedState{}, fmt.Errorf("restore encrypted state: %w", e)
+		}
+		return recovered, nil
+	}
+	if os.IsNotExist(err) {
+		// A missing primary with an existing backup is not a fresh enrollment.
+		if _, e := os.Stat(lastGoodPath(path)); os.IsNotExist(e) {
 			return PersistedState{}, nil
 		}
-		return PersistedState{}, fmt.Errorf("read state: %w", err)
+	}
+	return PersistedState{}, fmt.Errorf("read persisted state: %w", err)
+}
+
+// Migrate explicitly seals valid legacy state and its last-good copy. Corrupt
+// plaintext is never salvaged or copied into diagnostic backups.
+func Migrate(path string) error {
+	// Seal older raw crash artifacts as opaque recovery documents. They are
+	// never parsed or salvaged into identity.
+	artifacts, err := filepath.Glob(path + ".corrupt-*")
+	if err != nil {
+		return err
+	}
+	oldTemps, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".vctl-state-*.tmp"))
+	if err != nil {
+		return err
+	}
+	artifacts = append(artifacts, oldTemps...)
+	artifacts = append(artifacts, path+".tmp")
+	for _, artifact := range artifacts {
+		if err := vault.MigrateFile(artifact, func([]byte) error { return nil }); err != nil {
+			return err
+		}
 	}
 
-	persisted, err := decode(raw)
-	if err == nil {
-		return persisted, nil
+	validate := func(raw []byte) error { _, err := decode(raw); return err }
+	// Last-good first gives interrupted upgrades an encrypted recovery copy.
+	if err := vault.MigrateFile(lastGoodPath(path), validate); err != nil {
+		// A damaged backup must not prevent booting an authenticated primary.
+		if raw, e := vault.ReadFile(path); e == nil {
+			defer clear(raw)
+			if recovered, e := decode(raw); e == nil {
+				return Save(path, recovered)
+			}
+		}
+		return err
 	}
-
-	backupCorrupted(path, raw)
-
-	if recovered, ok := loadLastGood(path); ok {
-		fmt.Fprintf(os.Stderr, "warning: recovered persisted state from %s after %v\n", lastGoodPath(path), err)
-		_ = Save(path, recovered)
-		return recovered, nil
+	if err := vault.MigrateFile(path, validate); err != nil {
+		// The normal loader can restore a corrupt primary from the authenticated
+		// backup. Never salvage fields out of unauthenticated bytes.
+		if recovered, ok := loadLastGood(path); ok {
+			return Save(path, recovered)
+		}
+		return err
 	}
-	if recovered, ok := salvage(raw); ok {
-		fmt.Fprintf(os.Stderr, "warning: salvaged partial persisted state from %s after %v\n", path, err)
-		return recovered, nil
-	}
-	fmt.Fprintf(os.Stderr, "warning: ignoring unreadable persisted state %s after %v; a new state will be created\n", path, err)
-	return PersistedState{}, nil
+	return nil
 }
 
 func decode(raw []byte) (PersistedState, error) {
@@ -132,62 +167,17 @@ func decode(raw []byte) (PersistedState, error) {
 
 func lastGoodPath(path string) string { return path + ".last-good" }
 
-func corruptPath(path string) string {
-	return fmt.Sprintf("%s.corrupt-%s", path, time.Now().UTC().Format("20060102T150405Z"))
-}
-
 func loadLastGood(path string) (PersistedState, bool) {
-	raw, err := os.ReadFile(lastGoodPath(path))
+	raw, err := vault.ReadFile(lastGoodPath(path))
 	if err != nil {
 		return PersistedState{}, false
 	}
+	defer clear(raw)
 	persisted, err := decode(raw)
 	if err != nil {
 		return PersistedState{}, false
 	}
 	return persisted, true
-}
-
-func backupCorrupted(path string, raw []byte) {
-	if path == "" {
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return
-	}
-	if err := os.WriteFile(corruptPath(path), raw, 0o600); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to back up corrupted state %s: %v\n", path, err)
-	}
-}
-
-func salvage(raw []byte) (PersistedState, bool) {
-	persisted := PersistedState{
-		RouterID:          salvageString(raw, "router_id"),
-		AgentToken:        salvageString(raw, "agent_token"),
-		DeviceIdentifier:  salvageString(raw, "device_identifier"),
-		DevicePublicKey:   salvageString(raw, "device_public_key"),
-		DevicePrivateKey:  salvageString(raw, "device_private_key"),
-		AppliedRevisionID: salvageString(raw, "applied_revision_id"),
-		ConfigDigest:      salvageString(raw, "config_digest"),
-	}
-	if persisted.RouterID == "" && persisted.AgentToken == "" && persisted.DeviceIdentifier == "" &&
-		persisted.DevicePublicKey == "" && persisted.DevicePrivateKey == "" {
-		return PersistedState{}, false
-	}
-	return persisted, true
-}
-
-func salvageString(raw []byte, field string) string {
-	re := regexp.MustCompile(`"` + regexp.QuoteMeta(field) + `"\s*:\s*("(?:\\.|[^"\\])*")`)
-	match := re.FindSubmatch(raw)
-	if len(match) != 2 {
-		return ""
-	}
-	var value string
-	if err := json.Unmarshal(match[1], &value); err != nil {
-		return ""
-	}
-	return value
 }
 
 // Save writes state atomically and updates the last-good backup.
@@ -199,58 +189,14 @@ func Save(path string, persisted PersistedState) error {
 	if err != nil {
 		return fmt.Errorf("encode state: %w", err)
 	}
-	if err := writeAtomic(path, raw, 0o600); err != nil {
+	defer clear(raw)
+	if err := vault.WriteFile(path, raw); err != nil {
 		return err
 	}
-	if err := writeAtomic(lastGoodPath(path), raw, 0o600); err != nil {
+	if err := vault.WriteFile(lastGoodPath(path), raw); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to update last-good state backup %s: %v\n", lastGoodPath(path), err)
 	}
 	return nil
-}
-
-func writeAtomic(path string, raw []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create state dir: %w", err)
-	}
-	tempFile, err := os.CreateTemp(filepath.Dir(path), ".vctl-state-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp state file: %w", err)
-	}
-	tempPath := tempFile.Name()
-	if _, err := tempFile.Write(raw); err != nil {
-		tempFile.Close()
-		_ = os.Remove(tempPath)
-		return fmt.Errorf("write temp state: %w", err)
-	}
-	if err := tempFile.Chmod(perm); err != nil {
-		tempFile.Close()
-		_ = os.Remove(tempPath)
-		return fmt.Errorf("chmod temp state: %w", err)
-	}
-	if err := tempFile.Sync(); err != nil {
-		tempFile.Close()
-		_ = os.Remove(tempPath)
-		return fmt.Errorf("sync temp state: %w", err)
-	}
-	if err := tempFile.Close(); err != nil {
-		_ = os.Remove(tempPath)
-		return fmt.Errorf("close temp state: %w", err)
-	}
-	if err := os.Rename(tempPath, path); err != nil {
-		_ = os.Remove(tempPath)
-		return fmt.Errorf("replace state: %w", err)
-	}
-	syncDir(filepath.Dir(path))
-	return nil
-}
-
-func syncDir(path string) {
-	dir, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer dir.Close()
-	_ = dir.Sync()
 }
 
 // EnsureIdentity generates a device identifier + ed25519 keypair if missing.
@@ -291,13 +237,14 @@ func ImportLegacyIdentity(persisted *PersistedState, legacyStatePath string) (bo
 	if legacyStatePath == "" || persisted.RouterID != "" || persisted.AgentToken != "" {
 		return false, nil
 	}
-	raw, err := os.ReadFile(legacyStatePath)
+	raw, err := vault.ReadFile(legacyStatePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
 		return false, fmt.Errorf("read legacy state: %w", err)
 	}
+	defer clear(raw)
 	var legacy legacyAgentState
 	if err := json.Unmarshal(raw, &legacy); err != nil {
 		return false, fmt.Errorf("decode legacy state: %w", err)

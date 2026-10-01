@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"vectra-controller-pro/internal/rescue"
+	"vectra-controller-pro/internal/vault"
 )
 
 // refreshRouter is a daemon running a data plane from an operator config on
@@ -20,7 +21,7 @@ func refreshRouter(t *testing.T, providerURL string, age time.Duration) *daemon 
 	provider := newProviderStub(t, providerEntry(t))
 	panel := newPanelStub(t, operatorConfigPointingAt(t, provider.URL))
 	d := newTestDaemon(t, dir, panel, provider)
-	if err := os.WriteFile(d.cfg.XrayConfigPath, operatorConfigPointingAt(t, providerURL), 0o600); err != nil {
+	if err := vault.WriteFile(d.cfg.XrayConfigPath, operatorConfigPointingAt(t, providerURL)); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := d.loadDesiredConfig()

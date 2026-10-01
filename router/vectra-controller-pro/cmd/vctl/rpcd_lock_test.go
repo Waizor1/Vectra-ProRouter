@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/localctl"
@@ -111,7 +112,7 @@ func newLockStand(t *testing.T) *lockStand {
 		`{"tag":"node-b","protocol":"vless","settings":{"vnext":[{"address":"10.44.0.2","port":2002}]}}],`+
 		`"routing":{"rules":[{"balancerTag":"BL-MAIN","network":"tcp,udp"}],"balancers":[{"tag":"BL-MAIN","selector":["node-"]}]}}`,
 		ln.Addr().String())
-	if err := os.WriteFile(cfg.XrayRenderPath, []byte(render), 0o600); err != nil {
+	if err := vault.WriteFile(cfg.XrayRenderPath, []byte(render)); err != nil {
 		t.Fatal(err)
 	}
 	idx, _ := json.Marshal(localctl.EntriesIndex{FetchedAt: time.Now().UTC(), Entries: []localctl.EntrySummary{

@@ -1,9 +1,9 @@
 package main
 
 import (
+ "vectra-controller-pro/internal/vault"
 	"context"
 	"encoding/json"
-	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -171,7 +171,7 @@ func (d *daemon) exitRound(ctx context.Context, w *exitWatch, now time.Time) {
 	if !d.exitCheckOn() {
 		return
 	}
-	raw, err := os.ReadFile(d.cfg.XrayRenderPath)
+	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
 	if err != nil {
 		return
 	}
@@ -271,7 +271,7 @@ func (d *daemon) rerenderRunning(ctx context.Context) localctl.SocketResponse {
 	if d.desired == nil || d.applier == nil || d.applier.Tproxy == nil {
 		return localctl.SocketResponse{Code: "apply_failed", Detail: "this router has no operator config yet"}
 	}
-	raw, err := os.ReadFile(d.documentPath())
+	raw, err := vault.ReadFile(d.documentPath())
 	if err != nil || len(raw) == 0 {
 		return localctl.SocketResponse{Code: "apply_failed", Detail: "no running document to render again"}
 	}

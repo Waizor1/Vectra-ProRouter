@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/vault"
 )
 
 // Files in Env.MarkerDir: the record of the retirement (RetiredName) and the
@@ -232,17 +233,30 @@ func (e Env) owes() bool {
 	return e.Snippet != "" && exists(e.Snippet)
 }
 
-// Backup writes PassWall2's configuration — the files of Env.Configs that
-// are there — into BackupDir/passwall2-<unix>.tar.gz, readable by root alone
-// (it holds the nodes' credentials), paths relative to / so that
-// `tar -xzf <it> -C /` puts them back; only the newest BackupKeep stay. No
-// configuration at all is no backup and no error: there is nothing to lose.
+// MaxArchiveBytes bounds the plaintext archive in memory on small routers.
+const MaxArchiveBytes int64 = 32 << 20
+
+// Backup preserves recovery in an authenticated encrypted archive. Older
+// plaintext backups are left intact; only encrypted generations are rotated.
 func (e Env) Backup(now time.Time) (string, error) {
 	var files []string
+	var total int64
 	for _, c := range e.Configs {
-		if _, err := os.Lstat(c); err == nil {
-			files = append(files, c)
+		st, err := os.Stat(c)
+		if os.IsNotExist(err) {
+			continue
 		}
+		if err != nil {
+			return "", err
+		}
+		if !st.Mode().IsRegular() {
+			return "", fmt.Errorf("configuration is not a regular file")
+		}
+		total += st.Size()
+		if total > MaxArchiveBytes {
+			return "", fmt.Errorf("configuration archive exceeds size limit")
+		}
+		files = append(files, c)
 	}
 	if len(files) == 0 {
 		return "", nil
@@ -253,45 +267,28 @@ func (e Env) Backup(now time.Time) (string, error) {
 	if err := os.Chmod(e.BackupDir, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(e.BackupDir, fmt.Sprintf("passwall2-%d.tar.gz", now.Unix()))
-	tmp, err := os.CreateTemp(e.BackupDir, ".passwall2-*.tmp")
-	if err != nil {
-		return "", err
-	}
-	name := tmp.Name()
-	fail := func(err error) (string, error) {
-		_ = tmp.Close()
-		_ = os.Remove(name)
-		return "", err
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		return fail(err)
-	}
-	gz := gzip.NewWriter(tmp)
+	path := filepath.Join(e.BackupDir, fmt.Sprintf("passwall2-%d.tar.gz.vault", now.Unix()))
+	var body bytes.Buffer
+	defer func() { clear(body.Bytes()) }()
+	gz := gzip.NewWriter(&body)
 	tw := tar.NewWriter(gz)
 	for _, f := range files {
 		if err := addFile(tw, f); err != nil {
-			return fail(fmt.Errorf("backing up %s: %w", f, err))
+			return "", fmt.Errorf("backing up configuration: %w", err)
 		}
 	}
 	if err := tw.Close(); err != nil {
-		return fail(err)
+		return "", err
 	}
 	if err := gz.Close(); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(name)
 		return "", err
 	}
-	if err := os.Rename(name, path); err != nil {
-		_ = os.Remove(name)
+	if int64(body.Len()) > MaxArchiveBytes+(1<<20) {
+		return "", fmt.Errorf("configuration archive exceeds size limit")
+	}
+	if err := vault.WriteFile(path, body.Bytes()); err != nil {
 		return "", err
 	}
-	syncDir(e.BackupDir)
 	e.rotate()
 	return path, nil
 }
@@ -338,10 +335,10 @@ func (e Env) rotate() {
 	for _, d := range ents {
 		n := d.Name()
 		s, ok := strings.CutPrefix(n, "passwall2-")
-		if !ok || !strings.HasSuffix(s, ".tar.gz") || d.IsDir() {
+		if !ok || !strings.HasSuffix(s, ".tar.gz.vault") || d.IsDir() {
 			continue
 		}
-		stamp, err := strconv.ParseInt(strings.TrimSuffix(s, ".tar.gz"), 10, 64)
+		stamp, err := strconv.ParseInt(strings.TrimSuffix(s, ".tar.gz.vault"), 10, 64)
 		if err != nil {
 			continue
 		}

@@ -1,6 +1,7 @@
 package main
 
 import (
+ "vectra-controller-pro/internal/vault"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -87,7 +88,7 @@ func (d *daemon) maybeLoadDirect(ctx context.Context) {
 	if d.directLoaded != "" && stamp == d.directStamp && !d.directUpgradeDue() {
 		return
 	}
-	render, err := os.ReadFile(d.cfg.XrayRenderPath)
+	render, err := vault.ReadFile(d.cfg.XrayRenderPath)
 	if err != nil {
 		return
 	}

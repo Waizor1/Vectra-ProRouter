@@ -2,6 +2,7 @@ package retire
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"vectra-controller-pro/internal/vault"
 )
 
 // testEnv is a router in a temp dir: PassWall2's config there, its package
@@ -104,7 +106,7 @@ func TestTheBackupKeepsPassWallsConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(e.BackupDir, "passwall2-1790769600.tar.gz"); path != want {
+	if want := filepath.Join(e.BackupDir, "passwall2-1790769600.tar.gz.vault"); path != want {
 		t.Fatalf("backup at %s, want %s", path, want)
 	}
 	if st, _ := os.Stat(path); st == nil || st.Mode().Perm() != 0o600 {
@@ -143,7 +145,7 @@ func TestTheBackupsAreRotated(t *testing.T) {
 		names = append(names, d.Name())
 	}
 	sort.Strings(names)
-	want := []string{"notes.txt", "passwall2-1790780400.tar.gz", "passwall2-1790784000.tar.gz", "passwall2-1790805600.tar.gz"}
+	want := []string{".vault", "notes.txt", "passwall2-1790780400.tar.gz.vault", "passwall2-1790784000.tar.gz.vault", "passwall2-1790805600.tar.gz.vault"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("backups %v, want %v", names, want)
 	}
@@ -184,7 +186,7 @@ func TestTheRecordIsReadBack(t *testing.T) {
 	if _, ok := e.ReadRecord(); ok {
 		t.Fatal("a record before any retirement")
 	}
-	r := Record{At: t0, Removed: []string{App, "geoview"}, Kept: []string{"tcping"}, Backup: "/etc/vectra-controller-pro/backup/passwall2-1.tar.gz"}
+	r := Record{At: t0, Removed: []string{App, "geoview"}, Kept: []string{"tcping"}, Backup: "/etc/vectra-controller-pro/backup/passwall2-1.tar.gz.vault"}
 	if err := e.writeRecord(r); err != nil {
 		t.Fatal(err)
 	}
@@ -259,12 +261,12 @@ func TestForgetTakesWhatIsOwedPassWallAway(t *testing.T) {
 
 func untar(t *testing.T, path string) map[string]string {
 	t.Helper()
-	f, err := os.Open(path)
+	raw, err := vault.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-	gz, err := gzip.NewReader(f)
+	defer clear(raw)
+	gz, err := gzip.NewReader(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,4 +291,42 @@ func mapKeys(m map[string]string) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func TestEncryptedBackupsPreserveLegacyAndRejectOversized(t *testing.T) {
+	e := testEnv(t)
+	write(t, e.Configs[0], "fake-password-retirement\n", 0600)
+	legacy := filepath.Join(e.BackupDir, "passwall2-1.tar.gz")
+	write(t, legacy, "legacy recovery data", 0600)
+	for i := 0; i < 5; i++ {
+		if _, err := e.Backup(t0.Add(time.Duration(i) * time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b, err := os.ReadFile(legacy); err != nil || string(b) != "legacy recovery data" {
+		t.Fatal("legacy backup removed or modified")
+	}
+	ents, _ := os.ReadDir(e.BackupDir)
+	for _, entry := range ents {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), ".vault") {
+			b, _ := os.ReadFile(filepath.Join(e.BackupDir, entry.Name()))
+			if bytes.Contains(b, []byte("fake-password-retirement")) {
+				t.Fatal("plaintext backup")
+			}
+		}
+	}
+	f, err := os.OpenFile(e.Configs[0], os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Truncate(MaxArchiveBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if _, err = e.Backup(t0.Add(10 * time.Hour)); err == nil {
+		t.Fatal("oversized configuration accepted")
+	}
 }

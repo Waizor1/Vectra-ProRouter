@@ -1,6 +1,7 @@
 package main
 
 import (
+ "vectra-controller-pro/internal/vault"
 	"context"
 	"encoding/json"
 	"errors"
@@ -364,7 +365,7 @@ func (d *daemon) retireRestore(ctx context.Context) error {
 // takes it out since 0.6.0-r18).
 func (d *daemon) retireGeoDirs() []string {
 	dirs := []string{d.runningAssetDir(), d.geoAssetDir(), config.ResolveGeoAssetDir(d.cfg.GeoAssetDir)}
-	if raw, err := os.ReadFile(d.cfg.XrayRenderPath); err == nil {
+	if raw, err := vault.ReadFile(d.cfg.XrayRenderPath); err == nil {
 		var doc struct {
 			Env map[string]string `json:"env"`
 		}

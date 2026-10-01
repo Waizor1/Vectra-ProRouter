@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"vectra-controller-pro/internal/vault"
 )
 
 // Load reads a config from disk, validates it, and applies defaults.
@@ -19,6 +21,30 @@ func Load(path string) (*Config, error) {
 	defer f.Close()
 	return Read(f, path)
 }
+
+// LoadSecret reads an encrypted operator configuration. Legacy conversion is
+// explicit at startup via vault.MigrateFile, never a plaintext read fallback.
+func LoadSecret(path string) (*Config, error) {
+	data, err := vault.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read secret config: %w", err)
+	}
+	defer clear(data)
+	return Read(bytes.NewReader(data), path)
+}
+
+func SaveSecret(path string, c *Config) error {
+	data, err := Marshal(c)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	defer clear(data)
+	return vault.WriteFile(path, data)
+}
+
+// SaveSecretRaw preserves the exact provider bytes inside an encrypted envelope.
+func SaveSecretRaw(path string, data []byte) error { return vault.WriteFile(path, data) }
 
 // Read parses a config from any io.Reader.
 func Read(r io.Reader, source string) (*Config, error) {
@@ -76,6 +102,7 @@ func Save(path string, c *Config) error {
 // persist the PROVIDER document, whose sha256 is the config digest: a single
 // appended byte would change the digest on the next reload.
 func SaveRaw(path string, data []byte) error {
+ if err := vault.RefusePlaintextWrite(path);err!=nil{return err}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)

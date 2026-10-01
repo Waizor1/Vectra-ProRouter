@@ -1055,7 +1055,7 @@ func TestTheTakeoverTakesARouterWithLuciAppPasswall2(t *testing.T) {
 	}
 	// Down three times in a row before vctl runs.
 	want := []string{
-		"pgrep -P 1 -f run -c " + s.path("run") + "/",
+		"pgrep -P 1 -f run -c " + s.path("run") + "/|(^|/)(vctl-xray-wrapper|vctl-xray-private) run -c stdin:($| )",
 		"agent enabled", "agent disable", "agent stop",
 		"uci -q set passwall2.@global[0].enabled=0", "uci -q commit passwall2",
 		"passwall enabled", "passwall disable", "passwall stop",
@@ -1145,7 +1145,7 @@ func TestATrialTakesTheRouterWithoutDisablingAnything(t *testing.T) {
 		t.Fatalf("a trial with the switch off did not start:\n%s\n%s", strings.Join(events, "\n"), out)
 	}
 	want := []string{
-		"pgrep -P 1 -f run -c " + s.path("run") + "/",
+		"pgrep -P 1 -f run -c " + s.path("run") + "/|(^|/)(vctl-xray-wrapper|vctl-xray-private) run -c stdin:($| )",
 		"agent enabled", "agent stop",
 		"uci -q set passwall2.@global[0].enabled=0", "uci -q commit passwall2",
 		"passwall enabled", "passwall stop",
@@ -2398,5 +2398,28 @@ func TestUCIDefaultsSeedTheTuneSwitch(t *testing.T) {
 		if strings.Contains(c, "main.tune") && strings.Contains(c, " set ") {
 			t.Fatalf("an operator's tune '0' was overwritten: %s", c)
 		}
+	}
+}
+
+func TestPrivateStdinXrayOwnershipPatternIsScoped(t *testing.T) {
+	s := newStack(t)
+	_, out := s.run("1", "vctl_xray_pattern\n")
+	pattern, err := regexp.Compile(strings.TrimSpace(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"/usr/sbin/vctl-xray-wrapper run -c stdin:", "vctl-xray-private run -c stdin:", "/usr/bin/xray run -c " + s.path("run") + "/old.json"} {
+		if !pattern.MatchString(cmd) {
+			t.Errorf("owned child not recognized: %s", cmd)
+		}
+	}
+	for _, cmd := range []string{"/usr/bin/xray run -c stdin:", "/tmp/fake-vctl-xray-wrapper run -c stdin:", "vctl-xray-private run -c stdin:other", "sleep 90; test -f " + s.path("run") + "/fw-confirm"} {
+		if pattern.MatchString(cmd) {
+			t.Errorf("unowned process recognized: %s", cmd)
+		}
+	}
+	events, _ := s.run("1", "kill_orphan_xray\n")
+	if len(events) != 1 || !strings.Contains(events[0], "pgrep -P 1 -f ") {
+		t.Fatalf("orphan query lacks parent scope: %v", events)
 	}
 }

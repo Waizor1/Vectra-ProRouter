@@ -181,7 +181,7 @@ func TestTheRecordIsWrittenBeforeOpkgRuns(t *testing.T) {
 		if _, ok := r.env.ReadRecord(); !ok {
 			t.Error("opkg runs before the record is written")
 		}
-		if ents, _ := os.ReadDir(r.env.BackupDir); len(ents) != 1 {
+		if rec, ok := r.env.ReadRecord(); !ok || !exists(rec.Backup) {
 			t.Error("opkg runs before the backup is made")
 		}
 		return remove(ctx, args...)

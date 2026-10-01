@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"vectra-controller-pro/internal/vault"
 )
 
 func tree(t *testing.T, files map[string]string) string {
@@ -33,6 +34,12 @@ func TestFactsReadTheRouter(t *testing.T) {
 		"etc/config/vectra-controller-pro":                "config controller 'main'\n\toption route_source 'native'\n",
 		"etc/vectra-controller-pro/xray-desired.json":     `{"schema":1,"inbounds":{"tproxy":{"listenIP":"0.0.0.0","port":12345,"killSwitch":true}}}`,
 	})
+	for _, name := range []string{"etc/vectra-controller-pro/state.json", "etc/vectra-controller-pro/xray-desired.json"} {
+		path := filepath.Join(root, name)
+		if err := vault.MigrateFile(path, func([]byte) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
 	r, log := Facts(FactsEnv{Root: root, Reporter: "1.0.0-r1",
 		XrayVersion: func() string { return "26.7.28" },
 		Logread: func() []string {

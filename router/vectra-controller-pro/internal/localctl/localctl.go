@@ -23,6 +23,7 @@ import (
 	"sort"
 	"syscall"
 	"time"
+	"vectra-controller-pro/internal/vault"
 )
 
 // Default locations. /etc survives reboots and sysupgrade (the package's
@@ -163,6 +164,9 @@ func withLock(path string, fn func() error) error {
 // WriteFileAtomic writes data via tmp + fsync + rename, then fsyncs the
 // directory, so a power cut leaves either the old file or the new one.
 func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if err := vault.RefusePlaintextWrite(path); err != nil {
+		return err
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err

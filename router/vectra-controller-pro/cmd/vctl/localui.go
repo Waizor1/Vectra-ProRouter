@@ -1,6 +1,7 @@
 package main
 
 import (
+ "vectra-controller-pro/internal/vault"
 	"context"
 	"encoding/json"
 	"errors"
@@ -259,7 +260,7 @@ func (d *daemon) localReapplyOnce(ctx context.Context, change *localctl.Change) 
 	default:
 		// No cache and no location involved (a probe interval): the document
 		// on disk is the one running.
-		raw, rerr := os.ReadFile(d.cfg.ProviderConfigPath)
+		raw, rerr := vault.ReadFile(d.cfg.ProviderConfigPath)
 		if rerr != nil {
 			return localctl.SocketResponse{Code: "no_entries_cache", Detail: rerr.Error()}
 		}
@@ -465,7 +466,7 @@ func (d *daemon) startBudget() time.Duration {
 // the budget runs out. No API to ask, or an xray replaced first: no baseline,
 // and no_leak says it cannot tell rather than guess.
 func (d *daemon) takeLeakBaseline(pid int) {
-	raw, err := os.ReadFile(d.cfg.XrayRenderPath)
+	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
 	if err != nil {
 		return
 	}
@@ -553,7 +554,7 @@ func (d *daemon) reapplyPins(pid int) {
 	if err != nil || len(ov.Pins) == 0 {
 		return
 	}
-	raw, err := os.ReadFile(d.cfg.XrayRenderPath)
+	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
 	if err != nil {
 		return
 	}
@@ -623,7 +624,7 @@ func (d *daemon) reconcileRender(ctx context.Context) {
 	if d.desired == nil || d.applier == nil || d.applier.Tproxy == nil {
 		return
 	}
-	raw, err := os.ReadFile(d.documentPath())
+	raw, err := vault.ReadFile(d.documentPath())
 	if err != nil || len(raw) == 0 {
 		return
 	}
@@ -681,7 +682,7 @@ func (d *daemon) resumeRender(ctx context.Context) {
 	if fileExists(d.cfg.XrayRenderPath) || d.desired == nil || d.applier == nil || d.applier.Tproxy == nil || d.st.ConfigDigest == "" {
 		return
 	}
-	raw, err := os.ReadFile(d.documentPath())
+	raw, err := vault.ReadFile(d.documentPath())
 	if err != nil || len(raw) == 0 {
 		logging.L().Warn("no render to run and no last-good provider document to rebuild it from; the data plane waits for an apply",
 			"provider", d.documentPath())
@@ -763,7 +764,7 @@ func (d *daemon) localReapplyPassWall(ctx context.Context, change *localctl.Chan
 	if change != nil {
 		change.ApplyTo(&ov)
 	}
-	raw, err := os.ReadFile(d.documentPath())
+	raw, err := vault.ReadFile(d.documentPath())
 	if err != nil {
 		return localctl.SocketResponse{Code: "apply_failed", Detail: err.Error()}
 	}

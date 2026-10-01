@@ -122,10 +122,20 @@ that two proxies never hold the router at once:
 ```sh
 vectra off
 opkg install luci-app-passwall2   # from PassWall2's own feed or its release's .ipk files, with its helpers
-tar -xzf /etc/vectra-controller-pro/backup/passwall2-<unix time>.tar.gz -C /
+vctl restore-passwall -backup /etc/vectra-controller-pro/backup/passwall2-<unix time>.tar.gz.vault
 uci set passwall2.@global[0].enabled=1 && uci commit passwall2   # the takeover turned it off
 /etc/init.d/passwall2 enable && /etc/init.d/passwall2 start
 ```
+
+New retirement archives are encrypted and tied to their original path and local
+vault key. Restore with `vctl restore-passwall`: it authenticates and validates
+the archive, then feeds tar through stdin, without writing a plaintext archive.
+Preserve the original archive path and its `backup/.vault` transaction metadata and separate
+`/etc/vectra-controller-pro-vault-keys/` key store for
+recovery. Losing that key makes the archive unreadable. This is an explicit
+operator recovery action and restores plaintext UCI files for PassWall itself.
+Older `.tar.gz` backups stay intact and require the original explicit
+`tar -xzf <archive> -C /` recovery path; they still contain credentials.
 
 Before `vectra on` again, `retire_passwall '0'` keeps it for good; otherwise
 the takeover and the day begin anew.

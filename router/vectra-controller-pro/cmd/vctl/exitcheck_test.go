@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/config"
@@ -54,7 +55,7 @@ func exitRender(t *testing.T, leaveOut ...string) string {
 		t.Fatal(err)
 	}
 	p := filepath.Join(t.TempDir(), "xray.json")
-	if err := os.WriteFile(p, out, 0o644); err != nil {
+	if err := vault.WriteFile(p, out); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -200,7 +201,7 @@ func TestABusyLoopIsAskedAgainAtTheNextRound(t *testing.T) {
 func TestNoRoundWithoutTheProbeInTheRunningRender(t *testing.T) {
 	asked := fakeExitRound(t, filteredUS)
 	p := filepath.Join(t.TempDir(), "xray.json")
-	if err := os.WriteFile(p, exitDoc(t), 0o644); err != nil {
+	if err := vault.WriteFile(p, exitDoc(t)); err != nil {
 		t.Fatal(err)
 	}
 	d := &daemon{cfg: agentcfg.Config{XrayRenderPath: p}}
@@ -261,7 +262,7 @@ func TestTheExitCheckRendersTheRunningDocumentNotTheCache(t *testing.T) {
 	if resp := d.handleUIRequest(ctx, opRerender, nil); !resp.OK {
 		t.Fatalf("the check's render: %+v", resp)
 	}
-	raw, _ := os.ReadFile(d.cfg.XrayRenderPath)
+	raw, _ := vault.ReadFile(d.cfg.XrayRenderPath)
 	probed, left, _ := renderExits(raw)
 	if !contains(probed, "bridge-us5") || !reflect.DeepEqual(left, []string{"bridge-us5"}) {
 		t.Fatalf("the running document was not rendered with the leave-out: probed %v left %v", probed, left)

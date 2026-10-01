@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/logging"
@@ -55,7 +56,11 @@ func (d *daemon) release(ctx context.Context) {
 		{"the locations cache", d.cfg.EntriesPath},
 		{"the locations index", d.cfg.EntriesIndexPath},
 	} {
-		switch err := os.Remove(f.path); {
+		remove := vault.RemoveFile
+		if f.path == d.cfg.EntriesIndexPath {
+			remove = os.Remove
+		}
+		switch err := remove(f.path); {
 		case err == nil:
 			removed = append(removed, f.what)
 		case !errors.Is(err, os.ErrNotExist):

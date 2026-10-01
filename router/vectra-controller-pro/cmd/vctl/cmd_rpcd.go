@@ -1,6 +1,7 @@
 package main
 
 import (
+ "vectra-controller-pro/internal/vault"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -238,7 +239,7 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 	case "services":
 		// The running render: what the countries are is what runs, choice
 		// included.
-		raw, _ := os.ReadFile(cfg.XrayRenderPath)
+		raw, _ := vault.ReadFile(cfg.XrayRenderPath)
 		ov, _ := localctl.LoadOverrides(cfg.OverridesPath)
 		var egress map[string]string
 		if in := rpcdGather(ctx, env, uiapi.Need{Runtime: true}); in.Runtime != nil {
@@ -374,7 +375,7 @@ func rpcdMutate(ctx context.Context, cfg agentcfg.Config, method string, params 
 		}
 		cc := strings.ToUpper(strings.TrimSpace(*sp.Country))
 		if cc != "" {
-			raw, err := os.ReadFile(cfg.XrayRenderPath)
+			raw, err := vault.ReadFile(cfg.XrayRenderPath)
 			if err != nil {
 				return action(false, "apply_failed", "no running config yet")
 			}
@@ -422,7 +423,7 @@ func rpcdPin(ctx context.Context, cfg agentcfg.Config, pin bool, balancer, node 
 	if balancer == "" || (pin && node == "") {
 		return action(false, "invalid_params", "balancer (and node, to pin) are required")
 	}
-	raw, err := os.ReadFile(cfg.XrayRenderPath)
+	raw, err := vault.ReadFile(cfg.XrayRenderPath)
 	if err != nil {
 		return action(false, "xray_api_unavailable", "no installed xray config")
 	}
