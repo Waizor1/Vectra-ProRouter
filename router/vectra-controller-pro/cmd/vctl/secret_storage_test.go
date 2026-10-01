@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"vectra-controller-pro/internal/agentcfg"
@@ -126,5 +129,108 @@ func TestHardeningSyntheticArtifactExport(t *testing.T) {
 	}
 	if e := os.WriteFile(filepath.Join(out, ".synthetic-audit-artifacts"), []byte("synthetic encrypted-only export; local keys intentionally excluded\n"), 0600); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestLegacyVaultUpgradeRecoveryAndKeyFreeExport(t *testing.T) {
+	manifest, err := os.ReadFile("../../openwrt/files/lib/upgrade/keep.d/vectra-controller-pro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/etc/vectra-controller/", "/etc/vectra-controller.vault-keys/", "/etc/vectra-controller-pro/", "/etc/vectra-controller-pro-vault-keys/"} {
+		if !strings.Contains("\n"+string(manifest), "\n"+p+"\n") {
+			t.Fatalf("recovery manifest lacks %s", p)
+		}
+	}
+	key, _ := vault.KeyPath("/etc/vectra-controller/state.json")
+	if key != "/etc/vectra-controller.vault-keys/key" {
+		t.Fatal("legacy manifest/key mapping changed")
+	}
+	root := t.TempDir()
+	legacy := filepath.Join(root, "legacy", "state.json")
+	c := agentcfg.Config{StatePath: filepath.Join(root, "pro", "state.json"), LegacyStatePath: legacy, XrayConfigPath: filepath.Join(root, "pro", "operator"), ProviderConfigPath: filepath.Join(root, "pro", "provider"), EntriesPath: filepath.Join(root, "pro", "entries"), XrayRenderPath: filepath.Join(root, "run", "xray")}
+	c.Defaults()
+	const token = "SYNTHETIC-LEGACY-RECOVERY-TOKEN"
+	os.MkdirAll(filepath.Dir(legacy), 0700)
+	os.WriteFile(legacy, []byte(`{"router_id":"synthetic-router","agent_token":"`+token+`","device_identifier":"synthetic-device"}`), 0600)
+	if err := migrateSecrets(c); err != nil {
+		t.Fatal(err)
+	}
+	var st state.PersistedState
+	if imported, err := state.ImportLegacyIdentity(&st, legacy); err != nil || !imported || st.AgentToken != token {
+		t.Fatalf("legacy import: %v", err)
+	}
+	if err := state.Save(c.StatePath, st); err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.WriteFile(c.ProviderConfigPath, []byte(`{"synthetic":"`+token+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "ordinary.tgz")
+	if err := exportConfigSnapshot(c, out); err != nil {
+		t.Fatal(err)
+	}
+
+	exported, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(exported))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := io.ReadAll(zr)
+	zr.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyKey, _ := vault.KeyPath(legacy)
+	keyBytes, err := os.ReadFile(legacyKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(decoded, []byte(token)) || bytes.Contains(decoded, keyBytes) || bytes.Contains(decoded, []byte("state.json")) {
+		t.Fatal("ordinary export leaked legacy secret/key/identity")
+	}
+	// Simulate preservation/restoration at original absolute paths. Full recovery
+	// intentionally holds keys in memory here; ordinary export is tested separately.
+	saved := map[string][]byte{}
+	dirs := []string{filepath.Dir(legacy), filepath.Dir(c.StatePath)}
+	for _, base := range append(append([]string{}, dirs...), dirs[0]+".vault-keys", dirs[1]+".vault-keys") {
+		if err := filepath.WalkDir(base, func(p string, d os.DirEntry, e error) error {
+			if e != nil {
+				return e
+			}
+			if !d.IsDir() {
+				b, e := os.ReadFile(p)
+				if e != nil {
+					return e
+				}
+				saved[p] = b
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(base); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p, b := range saved {
+		os.MkdirAll(filepath.Dir(p), 0700)
+		if err := os.WriteFile(p, b, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateSecrets(c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := state.Load(c.StatePath)
+	if err != nil || got.AgentToken != token {
+		t.Fatalf("new state recovery: %v", err)
+	}
+	var recovered state.PersistedState
+	if imported, err := state.ImportLegacyIdentity(&recovered, legacy); err != nil || !imported || recovered.AgentToken != token {
+		t.Fatalf("legacy recovery: %v", err)
 	}
 }

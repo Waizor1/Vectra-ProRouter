@@ -6,6 +6,10 @@
 # Privileged full-device recovery intentionally pairs ciphertext with keys.
 # Ordinary export-config/support snapshots exclude this separate private store.
 /etc/vectra-controller-pro-vault-keys/
+# Startup also seals legacy identity; preserve both data and its sibling key
+# even when vectra-controller-agent no longer supplies its own keep.d file.
+/etc/vectra-controller/
+/etc/vectra-controller.vault-keys/
 # A trial's note that PassWall's own switch is owed back on (see
 # PASSWALL_SWITCH_SNIPPET in the init script): a sysupgrade mid-trial ends the
 # trial like a reboot does, and must give the switch back the same way.
