@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"vectra-controller-pro/internal/memguard"
 )
@@ -78,5 +79,27 @@ func TestValidatorActualXrayPrivateStdin(t *testing.T) {
 	}
 	if err := v.Test(context.Background(), []byte(`{"synthetic-private-secret"`)); err == nil || strings.Contains(err.Error(), "synthetic-private-secret") {
 		t.Fatalf("unsafe rejection: %v", err)
+	}
+}
+
+func TestValidatorCancellationAndNonreadingChild(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "fake")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\nexec /bin/sleep 2\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, canceled := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		if canceled {
+			cancel()
+		}
+		start := time.Now()
+		err := (Validator{Binary: p, Timeout: 100 * time.Millisecond}).Test(ctx, []byte(strings.Repeat("synthetic", 200000)))
+		cancel()
+		if err == nil || time.Since(start) > time.Second {
+			t.Fatalf("unbounded/accepted: %v", err)
+		}
+		if !canceled && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("deadline missing: %v", err)
+		}
 	}
 }

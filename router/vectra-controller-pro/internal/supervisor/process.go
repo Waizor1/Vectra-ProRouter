@@ -40,13 +40,15 @@ type Process struct {
 	// childEnv is added to every xray's environment (SetChildEnv).
 	childEnv []string
 
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	cancel    context.CancelFunc
-	done      chan struct{} // closed exactly once after the active cmd's Wait returns
-	status    atomic.Pointer[Status]
-	backoff   *BackoffState
-	startedAt time.Time
+	mu          sync.Mutex
+	cmd         *exec.Cmd
+	configWrite *os.File
+	configDone  chan struct{}
+	cancel      context.CancelFunc
+	done        chan struct{} // closed exactly once after the active cmd's Wait returns
+	status      atomic.Pointer[Status]
+	backoff     *BackoffState
+	startedAt   time.Time
 
 	stopping     atomic.Bool // true after Stop has been called
 	expectedExit atomic.Bool // true when a controlled restart (Reload/Stop) signalled
@@ -304,6 +306,7 @@ func (p *Process) startOnce(ctx context.Context) error {
 		configArg = "stdin:"
 	}
 	cmd := exec.CommandContext(subCtx, p.binary, "run", "-c", configArg)
+	cmd.WaitDelay = 100 * time.Millisecond
 	var configRead, configWrite *os.File
 	if source != nil {
 		var err error
@@ -313,6 +316,8 @@ func (p *Process) startOnce(ctx context.Context) error {
 			return errors.New("supervisor: private configuration pipe unavailable")
 		}
 		cmd.Stdin = configRead
+		originalCancel := cmd.Cancel
+		cmd.Cancel = func() error { _ = configWrite.Close(); return originalCancel() }
 		// Public ownership marker for init orphan cleanup. The production shell
 		// wrapper retains its own argv so its scoped cleanup pattern still works.
 		if filepath.Base(p.binary) != "vctl-xray-wrapper" {
@@ -352,11 +357,15 @@ func (p *Process) startOnce(ctx context.Context) error {
 		cancel()
 		return err
 	}
+	var configDone chan struct{}
 	if configRead != nil {
+		configDone = make(chan struct{})
 		_ = configRead.Close()
 		// A real OS pipe avoids exec retaining a Reader and the plaintext snapshot
 		// throughout the child's lifetime. EOF terminates Xray's config read.
 		go func(data []byte) {
+			defer close(configDone)
+			defer clear(data)
 			_, _ = configWrite.Write(data)
 			_ = configWrite.Close()
 		}(candidate)
@@ -364,6 +373,8 @@ func (p *Process) startOnce(ctx context.Context) error {
 	doneCh := make(chan struct{})
 	p.mu.Lock()
 	p.cmd = cmd
+	p.configWrite = configWrite
+	p.configDone = configDone
 	p.cancel = cancel
 	p.done = doneCh
 	p.startedAt = time.Now()
@@ -391,16 +402,22 @@ func (p *Process) waitOnce() (error, time.Duration) {
 	cmd := p.cmd
 	startedAt := p.startedAt
 	doneCh := p.done
+	configWrite, configDone := p.configWrite, p.configDone
 	p.mu.Unlock()
 	if cmd == nil {
 		return errors.New("supervisor: nil cmd in waitOnce"), 0
 	}
 	err := cmd.Wait()
+	if configWrite != nil {
+		_ = configWrite.Close()
+		<-configDone
+	}
 	p.mu.Lock()
 	if p.cancel != nil {
 		p.cancel()
 	}
 	p.cmd = nil
+	p.configWrite, p.configDone = nil, nil
 	p.done = nil
 	p.mu.Unlock()
 	close(doneCh)

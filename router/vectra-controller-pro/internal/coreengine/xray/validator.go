@@ -67,6 +67,8 @@ func (v Validator) Test(ctx context.Context, candidate []byte) error {
 	cmd := exec.CommandContext(runCtx, v.Binary, "run", "-test", "-c", "stdin:")
 	cmd.Env = config.XrayAssetEnv(os.Environ(), v.AssetDir)
 	cmd.Stdin = bytes.NewReader(candidate)
+	// Bound exec's stdin copier when a descendant retains the read end.
+	cmd.WaitDelay = 100 * time.Millisecond
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("xray validate: start %s: %w", v.Binary, err)
@@ -74,10 +76,12 @@ func (v Validator) Test(ctx context.Context, candidate []byte) error {
 	if v.OOMScoreAdj != 0 {
 		_ = memguard.SetOOMScoreAdj(cmd.Process.Pid, v.OOMScoreAdj)
 	}
-	if err := cmd.Wait(); err != nil {
-		if runCtx.Err() != nil {
-			return fmt.Errorf("xray validate: check canceled or timed out: %w", runCtx.Err())
-		}
+	err := cmd.Wait()
+	// Even a successful child exit must not turn expired validation into success.
+	if runCtx.Err() != nil {
+		return fmt.Errorf("xray validate: check canceled or timed out: %w", runCtx.Err())
+	}
+	if err != nil {
 		return fmt.Errorf("xray validate: configuration rejected: %w", err)
 	}
 	return nil

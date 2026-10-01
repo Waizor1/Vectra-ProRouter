@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"vectra-controller-pro/internal/config"
@@ -95,7 +98,16 @@ func TestPrivateConfigActualXrayRestart(t *testing.T) {
 		err, _ := p.waitOnce()
 		cancel()
 		if err != nil {
-			t.Fatalf("actual Xray start/restart: %v", err)
+			// Explicit Reload may arrive before Xray registers its graceful handler.
+			// Only the exact requested termination signal is acceptable here.
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) {
+				t.Fatalf("actual Xray start/restart: %v", err)
+			}
+			status, ok := exit.Sys().(syscall.WaitStatus)
+			if !ok || !status.Signaled() || status.Signal() != syscall.SIGTERM {
+				t.Fatalf("actual Xray start/restart: %v", err)
+			}
 		}
 	}
 	if n != 2 {
@@ -103,5 +115,37 @@ func TestPrivateConfigActualXrayRestart(t *testing.T) {
 	}
 	if _, err := os.Stat(p.configFile); !os.IsNotExist(err) {
 		t.Fatalf("runtime artifact: %v", err)
+	}
+}
+
+func TestPrivateConfigWriterJoinedAfterDescendantExit(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "xray")
+	// Shell child exits immediately while its bounded descendant retains stdin.
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n/bin/sleep 2 <&0 >/dev/null 2>&1 &\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProcess(config.Process{XrayBinary: script})
+	data := []byte(strings.Repeat("synthetic", 200000))
+	p.SetConfigSource(func() ([]byte, error) { return data, nil })
+	if err := p.startOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	writerDone := p.configDone
+	start := time.Now()
+	if err, _ := p.waitOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("descendant retained writer")
+	}
+	select {
+	case <-writerDone:
+	default:
+		t.Fatal("writer not joined")
+	}
+	for _, b := range data {
+		if b != 0 {
+			t.Fatal("snapshot retained after writer exit")
+		}
 	}
 }
