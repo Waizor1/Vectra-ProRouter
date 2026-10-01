@@ -19,6 +19,7 @@ import (
 	"vectra-controller-pro/internal/apply"
 	"vectra-controller-pro/internal/claim"
 	"vectra-controller-pro/internal/config"
+	"vectra-controller-pro/internal/connectactions"
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/exitcheck"
@@ -611,6 +612,7 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	// Journal recovery first: flush any result a crash left pending.
 	d.recoverJournal(ctx)
 
+	d.publishConnectTelemetry(ctx, d.connectCapabilities())
 	nodeCount, subCount := d.currentCounts()
 	inv := d.collector.Collect(ctx, d.sup.Status(), nodeCount, subCount)
 	inv.AppliedRevisionID = d.st.AppliedRevisionID
@@ -636,6 +638,7 @@ func (d *daemon) runOnce(ctx context.Context) error {
 		return d.register(ctx, inv)
 	}
 
+	d.enrichConnectCheckin(&inv)
 	d.claim.setLinked(d.desired != nil)
 	resp, err := d.client.CheckIn(ctx, controlplane.CheckInRequest{
 		ProtocolVersion: controlplane.ProtocolVersion,
@@ -648,12 +651,24 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("check-in: %w", err)
 	}
+	if resp.RouterID != "" && resp.RouterID != d.st.RouterID {
+		return fmt.Errorf("check-in target mismatch")
+	}
 	d.lastCheckIn = time.Now().UTC()
 	if d.adoptClaimInfo(ctx, resp.ClaimInfo) {
 		// The rest of the answer that released the router was meant for the
 		// owner who just left: its desired revision is not kept and its jobs
 		// are not run (they stay the panel's to cancel or send again).
 		return d.persist()
+	}
+	if err := d.persist(); err != nil {
+		return fmt.Errorf("persist adopted claim: %w", err)
+	}
+	if err := d.connectMaintenanceAfterCheckin(ctx, d.connectBinding().OwnerRef); err != nil {
+		if errors.Is(err, errControllerRestartRequested) {
+			return err
+		}
+		logging.L().Warn("connect maintenance unavailable")
 	}
 
 	// A successful check-in proves the panel link is healthy, so (re)write the
@@ -873,7 +888,26 @@ func (d *daemon) storeRescueState(s rescue.State, reason string) {
 // mid-flight as failed, so the panel is never left waiting.
 func (d *daemon) recoverJournal(ctx context.Context) {
 	if d.st.PendingJobResult != nil {
+		if expected := d.st.CurrentJob.ExpectedControllerVersion; expected != "" && d.st.PendingJobResult.Status == "success" {
+			ok, err := maintenanceConfirmVersion(ctx, expected)
+			if err != nil {
+				return
+			}
+			if !ok {
+				d.st.PendingJobResult.Status = "failure"
+				d.st.PendingJobResult.Result = map[string]interface{}{"code": "update_version_unverified"}
+				if d.persist() != nil {
+					return
+				}
+			}
+		}
+		if d.persist() != nil {
+			return
+		}
 		if _, err := d.client.SubmitJobResult(ctx, *d.st.PendingJobResult); err == nil {
+			if d.connectRecoverDelivered(d.st.PendingJobResult.JobID, d.st.PendingJobResult.Status) != nil {
+				return
+			}
 			d.st.PendingJobResult = nil
 			d.st.CurrentJob = state.CurrentJob{}
 			_ = d.persist()
@@ -881,15 +915,36 @@ func (d *daemon) recoverJournal(ctx context.Context) {
 		return
 	}
 	if d.st.CurrentJob.JobID != "" {
-		_, _ = d.client.SubmitJobResult(ctx, controlplane.JobResultRequest{
-			ProtocolVersion: controlplane.ProtocolVersion,
-			RouterID:        d.st.RouterID,
-			JobID:           d.st.CurrentJob.JobID,
-			Status:          "failure",
-			Result:          map[string]interface{}{"error": "controller restarted before job completed"},
-		})
-		d.st.CurrentJob = state.CurrentJob{}
-		_ = d.persist()
+		job := controlplane.Job{ID: d.st.CurrentJob.JobID, Type: d.st.CurrentJob.JobType}
+		status, code := "failure", "controller_restarted"
+		if job.Type == "connect_router_action" {
+			binding := d.connectBinding()
+			journal, err := connectactions.OpenJournal(d.cfg.StatePath + ".connect-actions.json")
+			if err != nil {
+				return
+			}
+			record, found, err := journal.Lookup(binding, job.ID)
+			if err != nil {
+				return
+			}
+			if found {
+				switch record.Status {
+				case connectactions.Succeeded:
+					status, code = "success", "recovered_terminal"
+				case connectactions.Failed:
+					code = "recovered_terminal"
+				}
+				if record.Action == "reboot" && d.maintenancePendingReboot(binding.OwnerRef, job.ID) {
+					status, code = "accepted", "reboot_pending"
+				}
+			}
+		}
+		if d.finishJob(ctx, job, status, "", "", map[string]interface{}{"code": code}) == nil && job.Type == "connect_router_action" {
+			if d.connectRecoverDelivered(job.ID, status) != nil {
+				d.st.PendingJobResult = &controlplane.JobResultRequest{ProtocolVersion: controlplane.ProtocolVersion, RouterID: d.st.RouterID, JobID: job.ID, Status: status, Result: map[string]interface{}{"code": code}}
+				_ = d.persist()
+			}
+		}
 	}
 }
 

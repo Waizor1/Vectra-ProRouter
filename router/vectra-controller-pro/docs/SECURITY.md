@@ -112,3 +112,13 @@
   оттуда — ту же, утёкшую.
 - **Терминал поддержки** просить у владельца включить на время работы и
   выключить после.
+
+## Connect r37
+
+Typed jobs validate router, adopted ownerRef and actionId before mutation. Strict per-action schemas reject unknown, duplicate or malformed fields. Journal receipts carry hashes and outcomes, never Wi-Fi passwords. Secret readback needs a verified successful Wi-Fi action, matching current owner and AP identity, no pending/orphan setup; release or owner reassignment removes the marker. Only the confidential cloned HTTPS check-in includes this value; panel authorization and encryption remain a separate boundary.
+
+Subscription redirects may remain only on the original HTTPS origin, with the same effective port and without userinfo. This prevents custom headers/HWID escaping to another server; the caller policy can restrict redirects further. These controls do not hide runtime VPN credentials from root: Xray must consume them, and root can read its config and memory. Root-extraction/upstream revocation audit is a separate release gate; no custom crypto or root-proof promise is introduced.
+
+OpenWrt keep.d preserves /etc/vectra-controller-pro, including device identity, panel token and last-good recovery state. Exported root backups therefore need the same secret custody and revocation policy as the original device; ordinary file permissions and encrypted panel storage do not protect these copies from their privileged holder. This local work exports no live backup.
+
+Normal raw update_controller jobs require a signed package at least as new as the installed controller before artifact download. Unknown installed version or comparison failure refuses the update; equal reinstall remains possible. No downgrade bypass was added. Explicit recovery policy would require separate authorization/design.

@@ -203,16 +203,18 @@ func Fetch(ctx context.Context, opts FetchOptions) (*FetchResult, error) {
 	return nil, fmt.Errorf("subscription.Fetch: after %d attempts: %w", opts.Retries+1, Sanitize(lastErr, opts.URL))
 }
 
-// HTTPSOnlyRedirects is c refusing to follow a redirect to anything but
-// https: the request carries a secret — a subscription's token in its URL, the
-// device's identity in x-hwid — that a redirect to plain http would send in the
-// clear. c's own redirect policy, if any, still has its say after.
+// HTTPSOnlyRedirects permits only same-origin HTTPS redirects without userinfo.
+// Custom subscription headers and device identity must never reach another
+// origin. The caller's policy remains an additional restriction.
 func HTTPSOnlyRedirects(c *http.Client) *http.Client {
 	cp := *c
 	prev := c.CheckRedirect
 	cp.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if !strings.EqualFold(req.URL.Scheme, "https") {
 			return fmt.Errorf("refusing a redirect to %s: not https", RedactURL(req.URL.String()))
+		}
+		if req.URL.User != nil || len(via) == 0 || !sameHTTPSOrigin(req.URL, via[0].URL) {
+			return errors.New("refusing subscription redirect outside original HTTPS origin")
 		}
 		if prev != nil {
 			return prev(req, via)
@@ -223,6 +225,17 @@ func HTTPSOnlyRedirects(c *http.Client) *http.Client {
 		return nil
 	}
 	return &cp
+}
+
+// An omitted HTTPS port and explicit 443 identify the same origin.
+func sameHTTPSOrigin(a, b *url.URL) bool {
+	port := func(u *url.URL) string {
+		if u.Port() == "" {
+			return "443"
+		}
+		return u.Port()
+	}
+	return strings.EqualFold(a.Scheme, "https") && strings.EqualFold(b.Scheme, "https") && strings.EqualFold(a.Hostname(), b.Hostname()) && port(a) == port(b)
 }
 
 // RedactURL returns a loggable form of rawURL: scheme + host only.

@@ -152,6 +152,9 @@ func (c *Client) doJSON(ctx context.Context, method string, path string, payload
 	defer response.Body.Close()
 
 	if response.StatusCode < 200 || response.StatusCode > 299 {
+		if path == "/api/router/check-in" {
+			return fmt.Errorf("unexpected status %d for check-in", response.StatusCode)
+		}
 		bodyPreview, readErr := io.ReadAll(io.LimitReader(response.Body, 2048))
 		if readErr != nil {
 			return fmt.Errorf("unexpected status %d for %s (failed to read response body: %w)",
@@ -167,6 +170,9 @@ func (c *Client) doJSON(ctx context.Context, method string, path string, payload
 		return nil
 	}
 	if err := json.NewDecoder(response.Body).Decode(out); err != nil {
+		if path == "/api/router/check-in" {
+			return fmt.Errorf("invalid check-in response")
+		}
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil

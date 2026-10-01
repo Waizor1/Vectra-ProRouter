@@ -108,6 +108,9 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 	if err != nil {
 		return nil, res, err
 	}
+	if err := addConnectServices(&sp, providerRaw, opts.ServiceEntries, inboundTagOf(t)); err != nil {
+		return nil, res, err
+	}
 	res.Services = sp.res
 	ep, err := planExitProbe(providerRaw, opts.ExitProbeListen)
 	if err != nil {

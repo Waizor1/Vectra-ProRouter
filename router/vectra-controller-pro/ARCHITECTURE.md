@@ -166,3 +166,11 @@ Tracked fast-follows (not canary blockers):
   delivery to creation order (asc) so queued applies run in order.
 - **Native gRPC** Observatory/Handler hot-reload (today: shell-out `xray api` +
   active-probe health).
+
+## Connect owner actions (r37)
+
+Authenticated native `connect_router_action` jobs carry origin, actionId, ownerRef, action and strict params. The adopted claim ownerRef and router ID bound the job before a durable secret-free receipt is started. Native restart/refresh jobs retain their existing paths. Entry selection and per-service routing use exact provider entry digests and imported namespaced outbound graphs; no country approximation is used. The catalogue includes all supported service IDs even without an override.
+
+A root-only journal keeps 1024 active receipts and durable hash-sharded archives with a 64 MiB fail-closed budget. Recovery preserves durable terminal truth, including a crash before pending-result persistence. Wi-Fi uses existing synchronous setup verification; its owner/AP marker contains no password. Confidential readback enriches a clone of check-in only after verified owner-bound Wi-Fi apply. Normal inventory, journal, action result and logs omit the secret.
+
+Reboot remains accepted until a changed boot ID proves it. Updates verify the installed trusted signed feed, package and runtime versions. Auto-update state is scoped to the adopted owner, uses durable bounded retries and signed feed observations. All local validation uses fake OS/providers or synthetic isolated stands. See docs/R37-CONNECT-VERIFICATION.md for evidence and limits.

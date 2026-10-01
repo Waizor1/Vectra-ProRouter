@@ -109,6 +109,14 @@ type signedFeedStand struct {
 
 func newSignedFeedStand(t *testing.T) *signedFeedStand {
 	t.Helper()
+	oldCommand := maintenanceCommand
+	t.Cleanup(func() { maintenanceCommand = oldCommand })
+	maintenanceCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "opkg" || len(args) != 2 || args[0] != "status" || args[1] != proPackageName {
+			return nil, errors.New("unexpected fake opkg command")
+		}
+		return []byte("Version: " + feedVersion + "\n"), nil
+	}
 	s := &signedFeedStand{key: newFeedKey(7), hits: map[string]int{}}
 	s.ipk = []byte("stands in for vectra-controller-pro " + feedVersion)
 	s.sha = sha256Hex(s.ipk)
@@ -333,6 +341,81 @@ func TestUpdateControllerRefusesWhatTheSignedFeedDoesNotPublish(t *testing.T) {
 			}
 			if n := s.hit(artifact); n != 0 {
 				t.Fatalf("the package was downloaded %d time(s) before the feed vouched for it", n)
+			}
+		})
+	}
+}
+
+func TestRawUpdateControllerRefusesSignedDowngrade(t *testing.T) {
+	results := map[string][]controlplane.JobResultRequest{}
+	mu := &sync.Mutex{}
+	d := buildGuardTestDaemon(t, results, mu)
+	s := newSignedFeedStand(t)
+	old := maintenanceCommand
+	t.Cleanup(func() { maintenanceCommand = old })
+	maintenanceCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "opkg" {
+			t.Fatal(name)
+		}
+		if len(args) == 2 && args[0] == "status" && args[1] == proPackageName {
+			return []byte("Version: 0.6.0-r38\n"), nil
+		}
+		if len(args) != 4 || args[0] != "compare-versions" || args[1] != "0.6.0-r38" || args[2] != ">" || args[3] != feedVersion {
+			t.Fatal(args)
+		}
+		return nil, nil
+	}
+	err := d.executeJob(context.Background(), s.job("raw-downgrade", nil), controlplane.CheckInResponse{})
+	if errors.Is(err, errControllerRestartRequested) {
+		t.Fatal("signed older package installed")
+	}
+	r, ok := lastResult(results, mu, "raw-downgrade")
+	if !ok || r.Status != "failure" {
+		t.Fatal("downgrade not refused", r, ok)
+	}
+	if len(s.installed) != 0 || s.restarts != 0 || s.hit(artifact) != 0 {
+		t.Fatal("downgrade downloaded/installed/restarted", s.installed, s.restarts, s.hits)
+	}
+}
+
+func TestRawUpdateControllerVersionFloorFailureAndUpgrade(t *testing.T) {
+	for _, tc := range []struct {
+		name, installed string
+		comparisonErr   bool
+		wantFailure     bool
+	}{{"unknown installed version", "", false, true}, {"comparison unavailable", "0.6.0-r36", true, true}, {"signed upgrade", "0.6.0-r36", false, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			results := map[string][]controlplane.JobResultRequest{}
+			mu := &sync.Mutex{}
+			d := buildGuardTestDaemon(t, results, mu)
+			s := newSignedFeedStand(t)
+			oldCompare := signedFloorNewer
+			t.Cleanup(func() { signedFloorNewer = oldCompare })
+			maintenanceCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name != "opkg" || len(args) != 2 || args[0] != "status" || args[1] != proPackageName {
+					t.Fatal(name, args)
+				}
+				return []byte("Version: " + tc.installed + "\n"), nil
+			}
+			signedFloorNewer = func(_ context.Context, installed, candidate string) (bool, error) {
+				if installed != tc.installed || candidate != feedVersion {
+					t.Fatal(installed, candidate)
+				}
+				if tc.comparisonErr {
+					return false, errors.New("fake comparison unavailable")
+				}
+				return false, nil
+			}
+			e := d.executeJob(context.Background(), s.job("floor-test", nil), controlplane.CheckInResponse{})
+			if tc.wantFailure {
+				if len(s.installed) != 0 || s.restarts != 0 || s.hit(artifact) != 0 {
+					t.Fatal("refused floor mutated router")
+				}
+				if _, ok := lastResult(results, mu, "floor-test"); !ok {
+					t.Fatal("missing failure")
+				}
+			} else if !errors.Is(e, errControllerRestartRequested) || len(s.installed) != 1 || s.restarts != 1 {
+				t.Fatal("upgrade refused", e)
 			}
 		})
 	}

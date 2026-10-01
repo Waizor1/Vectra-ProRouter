@@ -48,8 +48,9 @@ const DirectTag = "vctl-direct"
 // The splice parses every entry again, so an overrides file edited by hand
 // cannot put anything but sites into the render.
 type UserRules struct {
-	Direct []string
-	Proxy  []string
+	Connect bool
+	Direct  []string
+	Proxy   []string
 }
 
 func (r UserRules) empty() bool { return len(r.Direct) == 0 && len(r.Proxy) == 0 }
@@ -65,7 +66,11 @@ func (r UserRules) key() string {
 		}
 		h.Write([]byte{1})
 	}
-	return "v1:" + hex.EncodeToString(h.Sum(nil))[:16]
+	version := "v1:"
+	if r.Connect {
+		version = "connect1:"
+	}
+	return version + hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // UserRulesResult is what the owner's sites became in one render.
@@ -197,8 +202,16 @@ func (o providerOutbound) dials() bool {
 // can never keep the provider's next config from being installed.
 func planUserRules(providerRaw []byte, r UserRules, inboundTag string) (rulesPlan, error) {
 	var plan rulesPlan
-	direct, dropped := parseSites(r.Direct, nil)
-	proxy, droppedProxy := parseSites(r.Proxy, direct) // a site in both goes direct
+	limit := sites.Max
+	if r.Connect {
+		limit = 300
+	}
+	direct, dropped := parseSites(r.Direct, nil, limit, r.Connect)
+	proxyLimit := limit
+	if r.Connect {
+		proxyLimit -= len(direct)
+	}
+	proxy, droppedProxy := parseSites(r.Proxy, direct, proxyLimit, r.Connect) // a site in both goes direct
 	plan.res.Dropped = dropped + droppedProxy
 
 	var top map[string]json.RawMessage
@@ -266,14 +279,17 @@ func planUserRules(providerRaw []byte, r UserRules, inboundTag string) (rulesPla
 
 // parseSites parses a list as the splice renders it: every entry through
 // sites.Parse, each site once, none already in exclude, at most sites.Max.
-func parseSites(entries []string, exclude []sites.Site) (out []sites.Site, dropped int) {
+func parseSites(entries []string, exclude []sites.Site, limit int, connect bool) (out []sites.Site, dropped int) {
 	seen := map[string]bool{}
 	for _, s := range exclude {
 		seen[s.Display] = true
 	}
 	for _, e := range entries {
 		s, err := sites.Parse(e)
-		if err != nil || seen[s.Display] || len(out) >= sites.Max {
+		if connect {
+			s, err = sites.ParseConnectDomain(e)
+		}
+		if err != nil || seen[s.Display] || len(out) >= limit {
 			dropped++
 			continue
 		}

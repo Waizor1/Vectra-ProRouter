@@ -118,6 +118,8 @@ func routeProvider(w io.Writer, cfg agentcfg.Config, remark string, apply bool) 
 	}
 	after := ov
 	after.Proxy = proxy
+	// Native carry may include IP/CIDR sites: preserve the legacy parser.
+	after.ConnectRules = false
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	render, checkErr := routeCheck(ctx, cfg, entryIndex, after)
@@ -167,6 +169,8 @@ func routeProvider(w io.Writer, cfg agentcfg.Config, remark string, apply bool) 
 			return err
 		}
 		o.Proxy = p
+		o.ConnectRules = false
+		o.EntryDigest = ""
 		o.EntryRemark = remark
 		i := entryIndex
 		o.EntryIndex = &i
@@ -204,8 +208,10 @@ var routeCheck = func(ctx context.Context, cfg agentcfg.Config, entryIndex int, 
 		return "", fmt.Errorf("entry #%d is not among the %d cached", entryIndex, len(cache.Entries))
 	}
 	raw := cache.Entries[entryIndex]
-	opts, _ := spliceOptionsFor(raw, ov, !cfg.NoRussiaDirect)
-	opts = d.withRuntime(opts, raw)
+	opts, err := routePreviewOptions(d, raw, ov)
+	if err != nil {
+		return "", err
+	}
 	spliced, res, err := xray.Splice(raw, desired.Inbounds.Tproxy, opts)
 	if err != nil {
 		return "", err
@@ -409,4 +415,16 @@ func routeInside(in []netip.Prefix, p netip.Prefix) bool {
 		}
 	}
 	return false
+}
+
+// routePreviewOptions preserves the running owner's exact service overlays;
+// missing cache entries refuse the preview before any persistent change.
+func routePreviewOptions(d *daemon, raw []byte, ov localctl.Overrides) (xray.SpliceOptions, error) {
+	opts, _ := spliceOptionsFor(raw, ov, !d.cfg.NoRussiaDirect)
+	entries, err := d.connectServiceOptions(ov)
+	if err != nil {
+		return opts, err
+	}
+	opts.ServiceEntries = entries
+	return d.withRuntime(opts, raw), nil
 }

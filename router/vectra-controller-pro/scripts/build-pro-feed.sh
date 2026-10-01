@@ -281,7 +281,7 @@ go_build_once() { # <go-target> -> the cached binary
 	bin="$CACHE/go/vctl-$VERSION-${target//:/-}"
 	# A cached binary is reused only for the same commit and a clean tree.
 	if [[ ! -x "$bin" || "$COMMIT" == *-dirty || "$(cat "$bin.commit" 2>/dev/null)" != "$COMMIT" ]]; then
-		pkg_build_vctl "$bin" "$goarch" "$goarm" "$gomips" >&2
+		pkg_build_vctl "$bin" "$goarch" "$goarm" "$gomips" >&2 || die "build vctl for $target"
 		echo "$COMMIT" > "$bin.commit"
 	fi
 	echo "$bin"

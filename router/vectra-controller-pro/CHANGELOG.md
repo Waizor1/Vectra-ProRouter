@@ -3,6 +3,10 @@
 ## vctl 0.6.0-r37 — the router’s password, PassWall2 retirement, signed updates and automatic tuning
 
 ### Added
+- Owner-bound Connect actions select exact provider entries, route services and
+  domains, change Wi-Fi, reboot, request verified updates and control auto-update.
+  Measured telemetry advertises capabilities; verified Wi-Fi readback reaches
+  only the bound owner through confidential HTTPS check-in.
 - The setup wizard requires the router’s password when none is set, using
   LuCI’s password change. The main page warns while none is set and offers
   a password change. The page opens at my.vectra-pro.net, http://vectra.lan,
@@ -19,6 +23,11 @@
   `vctl tune plan|apply|undo` exposes and reverses the tune’s own changes.
 
 ### Security
+- Connect action receipts survive reboot and retry without repeating mutations.
+  Reboot completion needs a changed boot ID; update completion verifies the
+  installed package and runtime. Raw updates refuse signed downgrades.
+  Subscription redirects stay on their original
+  HTTPS origin, keeping custom headers and device identity off other servers.
 - UI responses redact credentials; credential-bearing files use root-only
   permissions. The panel uses HTTPS without redirects; subscription and
   update downloads reject redirects to HTTP. Geo updates stay in the geo directory.

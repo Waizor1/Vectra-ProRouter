@@ -1,6 +1,6 @@
 ---
 type: generated
-updated: '2026-10-01 16:27:56 +03:00'
+updated: '2026-10-01 18:17:54 +03:00'
 generated-by: scripts/Sync-ProRouterVault.py
 tags:
   - generated
@@ -13,7 +13,7 @@ Generated from the current workspace root `r37`.
 
 ## Snapshot
 
-- Generated at: `2026-10-01 16:27:56 +03:00`
+- Generated at: `2026-10-01 18:17:54 +03:00`
 - Top-level directories: `9`
 - Top-level files: `15`
 - Tree depth: `3`

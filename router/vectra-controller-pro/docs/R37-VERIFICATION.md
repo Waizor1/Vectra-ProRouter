@@ -13,7 +13,11 @@ Security regressions use red-to-green tests: persist tuning backup before mutati
 - OpenWrt 24.10.8 aarch64_generic installer full suite: 165/165 assertions; earlier focused lifecycle/standby/PassWall upgrade/retire suite: 76/76.
 - Unsigned local r37 feed built for 31 architectures excluding the `i386` feed target; dist/r37-verified-feed. No i386 publication.
 
-## Panel contract and remaining limits
+## Historical panel checkpoint (superseded)
+
+The paragraphs below describe the original recovered r37 checkpoint. The locally authorized Connect extension now supersedes these gaps; see [R37-CONNECT-VERIFICATION.md](R37-CONNECT-VERIFICATION.md).
+
+### Original contract and limits
 
 Remote dispatch supports apply_xray_config, refresh_xray_subscriptions, update_xray_assets, reload_xray_outbound, update_controller, run_terminal_command, collect_router_logs, enter_direct_mode, reconnect. Unknown job types fail closed. Support shell is separately owner-controlled; it is not a substitute for Connect action APIs.
 

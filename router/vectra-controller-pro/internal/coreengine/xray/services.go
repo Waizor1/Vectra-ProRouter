@@ -219,7 +219,7 @@ type servicePlan struct {
 	res       ServicesResult
 }
 
-func (p servicePlan) empty() bool { return len(p.balancers) == 0 }
+func (p servicePlan) empty() bool { return len(p.balancers) == 0 && len(p.rules) == 0 }
 
 // planServices resolves the owner's choices against the document.
 func planServices(providerRaw []byte, choices map[string]string, inboundTag string) (servicePlan, error) {

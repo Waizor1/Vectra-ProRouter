@@ -3,7 +3,7 @@ type: module
 path: router/vectra-controller-pro
 stage: beta
 confidence: medium
-last-reviewed: 2026-06-01
+last-reviewed: 2026-10-01
 tags:
   - module
   - go
@@ -333,3 +333,7 @@ Same branch, uncommitted until this entry's commit; nothing on a live router.
   on ONE healthy volunteer (non-`hh`, non-low-RAM) with PassWall2 as rollback.
 - Capture live canary proof: 5-slot `url_test=204`, Discord-UDP, DNS, RAM/overlay
   delta vs the PassWall2 baseline.
+
+## 2026-10-01 — local r37 Connect candidate
+
+Owner-bound typed actions, exact entry/service/domain routing, verified Wi-Fi apply and owner-only confidential readback, reboot proof, signed updates/owner-scoped auto-update and measured telemetry integrated in vctl/r37. Durable archived receipts/recovery preserve outcomes and suppress duplicate mutations. Generic subscription redirects cannot leave the original HTTPS origin. Go/vet/race, UI and fake dispatcher checks pass; exact stand/feed evidence in router/vectra-controller-pro/docs/R37-CONNECT-VERIFICATION.md. Production rollout and root-custody/per-device revocation audit remain separate gates.

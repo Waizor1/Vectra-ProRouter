@@ -694,3 +694,7 @@ tags:
 ## r37 local candidate — 2026-10-01
 
 A/C/D integrated with login/support-shell work in `vctl/r37`. Security failure-path regressions fixed; local verification recorded in `router/vectra-controller-pro/docs/R37-VERIFICATION.md`. Unsigned feed only; panel Connect contract extensions and live validation remain separate.
+
+## r37 Connect local candidate — 2026-10-01
+
+Direct local authorization completed typed owner actions and confidential telemetry, with fake-provider regressions and independent security approvals. The original panel gaps in R37-VERIFICATION.md are historical; R37-CONNECT-VERIFICATION.md records the current candidate. Production release, live verification and root-custody/upstream revocation audit remain gated separately.

@@ -60,18 +60,21 @@ type Change struct {
 type ServiceChoice struct {
 	ID      string `json:"id"`
 	Country string `json:"country"`
+	EntryID string `json:"entryId,omitempty"`
 }
 
 // Rules are the owner's own sites ("My sites"): Direct always without the
 // VPN, Proxy always through it.
 type Rules struct {
-	Direct []string `json:"direct"`
-	Proxy  []string `json:"proxy"`
+	Connect bool     `json:"connect,omitempty"`
+	Direct  []string `json:"direct"`
+	Proxy   []string `json:"proxy"`
 }
 
 // EntryChoice names a location by remark, and by index to tell apart two
 // locations the provider gave the same remark.
 type EntryChoice struct {
+	Digest string `json:"digest,omitempty"`
 	Remark string `json:"remark"`
 	Index  int    `json:"index"`
 }
@@ -83,20 +86,30 @@ func (c Change) TouchesEntry() bool { return c.SetEntry != nil || c.ResetEntry }
 func (c Change) ApplyTo(o *Overrides) {
 	switch {
 	case c.SetEntry != nil:
+		o.EntryDigest = c.SetEntry.Digest
 		o.EntryRemark = c.SetEntry.Remark
 		i := c.SetEntry.Index
 		o.EntryIndex = &i
 	case c.ResetEntry:
+		o.EntryDigest = ""
 		o.EntryRemark, o.EntryIndex = "", nil
 	}
 	if c.ProbeIntervalSec != nil {
 		o.ProbeIntervalSec = *c.ProbeIntervalSec
 	}
 	if c.SetRules != nil {
+		o.ConnectRules = c.SetRules.Connect
 		o.Direct = append([]string(nil), c.SetRules.Direct...)
 		o.Proxy = append([]string(nil), c.SetRules.Proxy...)
 	}
 	if s := c.SetService; s != nil {
+		delete(o.ServiceEntries, s.ID)
+		if s.EntryID != "" {
+			if o.ServiceEntries == nil {
+				o.ServiceEntries = map[string]string{}
+			}
+			o.ServiceEntries[s.ID] = s.EntryID
+		}
 		if s.Country == "" {
 			delete(o.Services, s.ID)
 		} else {

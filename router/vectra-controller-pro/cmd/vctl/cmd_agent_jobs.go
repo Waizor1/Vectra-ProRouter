@@ -25,6 +25,7 @@ import (
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/geo"
 	"vectra-controller-pro/internal/jobsafety"
+	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/memguard"
 	"vectra-controller-pro/internal/rescue"
@@ -36,6 +37,9 @@ func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // executeJob acknowledges, resource-gates, and dispatches a single job.
 func (d *daemon) executeJob(ctx context.Context, job controlplane.Job, resp controlplane.CheckInResponse) error {
+	if job.Type == "connect_router_action" {
+		return d.jobConnectAction(ctx, job, resp.RouterID)
+	}
 	d.ackJob(ctx, job)
 	d.st.CurrentJob = state.CurrentJob{JobID: job.ID, JobType: job.Type, AcceptedAt: nowRFC3339()}
 	_ = d.persist()
@@ -100,7 +104,9 @@ func (d *daemon) finishJob(ctx context.Context, job controlplane.Job, status, ap
 	// Journal the result before sending so a crash/blip is recoverable.
 	d.st.PendingJobResult = &req
 	d.st.CurrentJob = state.CurrentJob{}
-	_ = d.persist()
+	if err := d.persist(); err != nil {
+		return errors.New("job result journal unavailable")
+	}
 
 	if _, err := d.client.SubmitJobResult(ctx, req); err != nil {
 		logging.L().Warn("job result submit failed; will retry next loop", "jobId", job.ID, "err", err.Error())
@@ -472,6 +478,13 @@ func (d *daemon) fetchProviderDocument(ctx context.Context, cfg *config.Config) 
 	// The router's own choice (by remark) wins while the provider still
 	// offers it; otherwise the panel's.
 	idx, local, stale, err := d.resolveEntry(fr.Remarks, sub)
+	if ov, oerr := localctl.LoadOverrides(d.cfg.OverridesPath); oerr == nil && ov.EntryDigest != "" {
+		idx, err = connectDigestIndex(fr.Entries, ov.EntryDigest)
+		if err != nil {
+			return nil, meta, errConnectStaleEntry
+		}
+		local, stale = true, false
+	}
 	if err != nil {
 		return nil, meta, fmt.Errorf("subscription %s: select entry: %w", sub.ID, err)
 	}
@@ -756,8 +769,12 @@ func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) 
 	// that before anything is downloaded. The feed's entry has the job's
 	// sha256, and the download must have it too: what opkg installs is the
 	// package the feed's key vouched for.
-	if _, err := signedFeedPackage(ctx, sha, version); err != nil {
+	verifiedPackage, err := signedFeedPackage(ctx, sha, version)
+	if err != nil {
 		return d.submitFailure(ctx, job, notInSignedFeed+": "+err.Error())
+	}
+	if err := signedControllerVersionFloor(ctx, verifiedPackage.Version); err != nil {
+		return d.submitFailure(ctx, job, "update_controller: "+err.Error()+" (nothing installed)")
 	}
 
 	dest := filepath.Join(os.TempDir(), "vectra-controller-pro-update.ipk")
@@ -790,7 +807,9 @@ func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) 
 			"sha256":            gotSha,
 		},
 	}
-	_ = d.persist()
+	if err := d.persist(); err != nil {
+		return errors.New("update journal unavailable")
+	}
 
 	scheduleControllerRestart()
 	return errControllerRestartRequested

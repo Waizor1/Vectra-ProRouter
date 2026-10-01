@@ -60,6 +60,10 @@ func (d *daemon) spliceOptions(providerRaw []byte) (xray.SpliceOptions, localctl
 		logging.L().Warn("local overrides unreadable; rendering with defaults", "err", err.Error())
 	}
 	opts, probe := spliceOptionsFor(providerRaw, ov, !d.cfg.NoRussiaDirect)
+	opts.ServiceEntries, err = d.connectServiceOptions(ov)
+	if err != nil {
+		opts.ServiceEntries = map[string]json.RawMessage{"stale": json.RawMessage(`{}`)}
+	}
 	opts = d.withRuntime(opts, providerRaw)
 	return opts, probe
 }
@@ -67,7 +71,7 @@ func (d *daemon) spliceOptions(providerRaw []byte) (xray.SpliceOptions, localctl
 // spliceOptionsFor is spliceOptions under the given overrides.
 func spliceOptionsFor(providerRaw []byte, ov localctl.Overrides, russiaDirect bool) (xray.SpliceOptions, localctl.Probe) {
 	opts := xray.SpliceOptions{APIListen: xray.DefaultAPIListen, MetricsListen: xray.DefaultMetricsListen, NoAccessLog: true,
-		Rules: xray.UserRules{Direct: ov.Direct, Proxy: ov.Proxy}, Services: ov.Services,
+		Rules: xray.UserRules{Direct: ov.Direct, Proxy: ov.Proxy, Connect: ov.ConnectRules}, Services: ov.Services,
 		// Only a document that has the provider's Russian bridge: the others
 		// keep their splice key, so an upgrade re-renders nothing there.
 		RussiaDirect: russiaDirect && xray.HasRussianBalancer(providerRaw)}
@@ -234,6 +238,19 @@ func (d *daemon) localReapplyOnce(ctx context.Context, change *localctl.Change) 
 			// than install the panel's and report success.
 			return localctl.SocketResponse{Code: "unknown_entry", Detail: "the chosen location is not in the cached subscription"}
 		}
+		if ov.EntryDigest != "" {
+			found := false
+			for _, e := range localctl.Summarize(cache) {
+				if e.Digest == ov.EntryDigest {
+					idx = e.Index
+					found = true
+					break
+				}
+			}
+			if !found {
+				return localctl.SocketResponse{Code: "unknown_entry"}
+			}
+		}
 		providerRaw = cache.Entries[idx]
 	case (change != nil && change.TouchesEntry()) || ov.HasEntry():
 		// Without the array neither a location nor "back to the panel's" can
@@ -250,6 +267,11 @@ func (d *daemon) localReapplyOnce(ctx context.Context, change *localctl.Change) 
 	}
 
 	opts, probe := spliceOptionsFor(providerRaw, ov, !d.cfg.NoRussiaDirect)
+	serviceEntries, serviceErr := d.connectServiceOptions(ov)
+	if serviceErr != nil {
+		return localctl.SocketResponse{Code: "unknown_entry"}
+	}
+	opts.ServiceEntries = serviceEntries
 	opts = d.withRuntime(opts, providerRaw)
 	res, err := d.applyProviderWith(ctx, providerRaw, false, opts, probe)
 	if err != nil {

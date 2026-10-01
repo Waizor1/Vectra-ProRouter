@@ -51,39 +51,9 @@ const (
 // a version, of that version.
 func signedFeedPackage(ctx context.Context, sha, version string) (feedverify.Package, error) {
 	var none feedverify.Package
-	arch, err := routerArch(openwrtReleasePath)
-	if err != nil {
-		return none, fmt.Errorf("cannot tell this router's architecture: %w", err)
-	}
-	conf, err := os.ReadFile(vectraFeedConf)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return none, err
-	}
-	feed, ok := feedverify.FindFeed(conf, vectraFeedName)
-	if !ok {
-		return none, fmt.Errorf("no %s feed in %s (the Vectra installer adds it, with its key)", vectraFeedName, vectraFeedConf)
-	}
-	if err := requireHTTPS(feed.URL); err != nil {
-		return none, fmt.Errorf("the %s feed %s: %w", vectraFeedName, feed.URL, err)
-	}
-	raw, err := fetchHTTPS(ctx, feed.IndexURL(), maxFeedIndexBytes)
-	if err != nil {
-		return none, fmt.Errorf("%s: %w", path.Base(feed.IndexURL()), err)
-	}
-	index, err := feed.Unpack(raw, maxFeedIndexBytes)
+	arch, _, pkgs, err := trustedFeedIndex(ctx)
 	if err != nil {
 		return none, err
-	}
-	sig, err := fetchHTTPS(ctx, feed.SignatureURL(), maxFeedSignatureBytes)
-	if err != nil {
-		return none, fmt.Errorf("Packages.sig: %w", err)
-	}
-	if _, err := feedverify.VerifyWithKeys(opkgKeysDir, index, sig); err != nil {
-		return none, fmt.Errorf("Packages.sig of %s: %w", feed.URL, err)
-	}
-	pkgs, err := feedverify.ParseIndex(index)
-	if err != nil {
-		return none, fmt.Errorf("Packages of %s: %w", feed.URL, err)
 	}
 	var has []string
 	for _, p := range pkgs {
@@ -123,4 +93,62 @@ func routerArch(file string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%s names no DISTRIB_ARCH", file)
+}
+
+// trustedFeedIndex verifies before any candidate is selected.
+func trustedFeedIndex(ctx context.Context) (string, feedverify.Feed, []feedverify.Package, error) {
+	arch, err := routerArch(openwrtReleasePath)
+	if err != nil {
+		return "", feedverify.Feed{}, nil, fmt.Errorf("cannot tell this router's architecture: %w", err)
+	}
+	conf, err := os.ReadFile(vectraFeedConf)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", feedverify.Feed{}, nil, err
+	}
+	feed, ok := feedverify.FindFeed(conf, vectraFeedName)
+	if !ok {
+		return "", feedverify.Feed{}, nil, fmt.Errorf("no %s feed in %s (the Vectra installer adds it, with its key)", vectraFeedName, vectraFeedConf)
+	}
+	if err := requireHTTPS(feed.URL); err != nil {
+		return "", feedverify.Feed{}, nil, fmt.Errorf("the %s feed %s: %w", vectraFeedName, feed.URL, err)
+	}
+	raw, err := fetchHTTPS(ctx, feed.IndexURL(), maxFeedIndexBytes)
+	if err != nil {
+		return "", feedverify.Feed{}, nil, fmt.Errorf("%s: %w", path.Base(feed.IndexURL()), err)
+	}
+	index, err := feed.Unpack(raw, maxFeedIndexBytes)
+	if err != nil {
+		return "", feedverify.Feed{}, nil, err
+	}
+	sig, err := fetchHTTPS(ctx, feed.SignatureURL(), maxFeedSignatureBytes)
+	if err != nil {
+		return "", feedverify.Feed{}, nil, fmt.Errorf("Packages.sig: %w", err)
+	}
+	if _, err := feedverify.VerifyWithKeys(opkgKeysDir, index, sig); err != nil {
+		return "", feedverify.Feed{}, nil, fmt.Errorf("Packages.sig of %s: %w", feed.URL, err)
+	}
+	pkgs, err := feedverify.ParseIndex(index)
+	if err != nil {
+		return "", feedverify.Feed{}, nil, fmt.Errorf("Packages of %s: %w", feed.URL, err)
+	}
+	return arch, feed, pkgs, nil
+}
+
+// The raw panel update lane has the same installed-version floor as automatic
+// discovery. A valid old feed signature is not permission to roll back root code.
+var signedFloorNewer = newerMaintenanceVersion
+
+func signedControllerVersionFloor(ctx context.Context, candidate string) error {
+	installed, e := installedMaintenanceVersion(ctx)
+	if e != nil {
+		return errors.New("installed controller version unavailable")
+	}
+	older, e := signedFloorNewer(ctx, installed, candidate)
+	if e != nil {
+		return errors.New("controller version comparison unavailable")
+	}
+	if older {
+		return errors.New("refusing signed controller downgrade")
+	}
+	return nil
 }

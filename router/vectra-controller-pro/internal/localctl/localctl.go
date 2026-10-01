@@ -40,6 +40,7 @@ type Overrides struct {
 	// against the provider's "remarks". The remark, not the index, is what is
 	// honoured: the provider reorders its array, and an index would silently
 	// land on a different country. EntryIndex is kept for display only.
+	EntryDigest string `json:"entryDigest,omitempty"`
 	EntryRemark string `json:"entryRemark,omitempty"`
 	EntryIndex  *int   `json:"entryIndex,omitempty"`
 	// Pins maps a balancer tag to the outbound tag it is pinned to.
@@ -50,12 +51,14 @@ type Overrides struct {
 	// Direct and Proxy are the owner's own sites ("My sites"), in the
 	// canonical form of internal/sites: always without the VPN, always
 	// through it. Part of every render (xray.SpliceOptions.Rules).
-	Direct []string `json:"direct,omitempty"`
-	Proxy  []string `json:"proxy,omitempty"`
+	ConnectRules bool     `json:"connectRules,omitempty"`
+	Direct       []string `json:"direct,omitempty"`
+	Proxy        []string `json:"proxy,omitempty"`
 	// Services are the owner's country per service ("tiktok": "DE"); a
 	// service not named runs on the entry's own path.
-	Services  map[string]string `json:"services,omitempty"`
-	UpdatedAt time.Time         `json:"updatedAt,omitempty"`
+	ServiceEntries map[string]string `json:"serviceEntries,omitempty"`
+	Services       map[string]string `json:"services,omitempty"`
+	UpdatedAt      time.Time         `json:"updatedAt,omitempty"`
 }
 
 // HasEntry reports whether a location was chosen on the router.

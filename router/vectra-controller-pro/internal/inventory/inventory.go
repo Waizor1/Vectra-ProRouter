@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"vectra-controller-pro/internal/config"
+	"vectra-controller-pro/internal/connecttelemetry"
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/supervisor"
 )
@@ -43,11 +44,13 @@ type Options struct {
 // Collector gathers inventory. Command execution and file reads are injectable
 // so the assembly logic is unit-testable without a router.
 type Collector struct {
-	opts     Options
-	run      func(ctx context.Context, name string, args ...string) (string, error)
-	readFile func(path string) ([]byte, error)
-	statfsMB func(path string) int
-	hostname func() (string, error)
+	connectMu       sync.Mutex
+	connectSnapshot connecttelemetry.Snapshot
+	opts            Options
+	run             func(ctx context.Context, name string, args ...string) (string, error)
+	readFile        func(path string) ([]byte, error)
+	statfsMB        func(path string) int
+	hostname        func() (string, error)
 
 	verMu    sync.Mutex
 	verKey   string // size/mtime of the xray binary the cached version came from
@@ -142,6 +145,9 @@ func (c *Collector) Collect(ctx context.Context, xrayStatus supervisor.Status, n
 		PasswallServer: "stopped",
 	}
 	inv.RulesAssets = c.geoAssets()
+	c.connectMu.Lock()
+	inv.Connect = connecttelemetry.Build(c.readFile, time.Now(), c.connectSnapshot)
+	c.connectMu.Unlock()
 	return inv
 }
 
@@ -328,4 +334,14 @@ func statfsFreeMB(path string) int {
 	}
 	free := uint64(st.Bavail) * uint64(st.Bsize)
 	return int(free / (1024 * 1024))
+}
+
+// SetConnect supplies fresh measured daemon state and applied owner settings.
+// Call before Collect; unavailable fields must remain nil/empty.
+func (c *Collector) SetConnect(snapshot connecttelemetry.Snapshot) {
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
+	// Build clones mutable slices/maps and clears stale observations.
+	telemetry := connecttelemetry.Build(func(string) ([]byte, error) { return nil, os.ErrNotExist }, time.Now(), snapshot)
+	c.connectSnapshot = connecttelemetry.Snapshot{Telemetry: *telemetry, ObservedAt: snapshot.ObservedAt}
 }

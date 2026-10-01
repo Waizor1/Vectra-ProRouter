@@ -36,6 +36,9 @@ import (
 // ui_lock. The subscription URL is never logged: the one line says what was
 // removed, by name.
 func (d *daemon) release(ctx context.Context) {
+	if err := connectForgetWifiOwner(d.cfg); err != nil {
+		logging.L().Warn("connect Wi-Fi eligibility unavailable")
+	}
 	var removed []string
 	if d.desired != nil && d.unloadDataPlane(ctx, d.desired) {
 		removed = append(removed, "the data plane")
@@ -71,6 +74,8 @@ func (d *daemon) release(ctx context.Context) {
 	d.st.AppliedRevisionID, d.st.ConfigDigest, d.st.SpliceKey = "", "", ""
 	d.st.LastDesiredRevision = nil
 	d.st.Rescue = state.RescueSnapshot{}
+	d.st.CurrentJob = state.CurrentJob{}
+	d.st.PendingJobResult = nil
 	d.st.ClaimOwner = nil
 
 	d.desired = nil
