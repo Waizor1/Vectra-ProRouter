@@ -2,7 +2,7 @@
 // tests. It answers with the contract fixtures, waits like a small router, and
 // applies mutations so every flow can be exercised without hardware.
 
-import type { Action, CallFn, Holder, ReadData, ReadMethod, WifiRadio, WifiScanRadio } from '../api/types';
+import type { Action, CallFn, Holder, ReadData, ReadMethod, SetPasswordFn, WifiRadio, WifiScanRadio } from '../api/types';
 import { FIXTURE_NOW, FIXTURES } from './fixtures';
 import { normalizeSite } from '../lib/sites';
 import { buildWorld, clone, off, type Scenario } from './scenarios';
@@ -25,10 +25,14 @@ export interface MockOptions {
   wifiEnd?: 'unverified' | 'failed';
   /** Who carries the traffic in the `off` scenario (PassWall2 unless said). */
   holder?: Holder;
+  /** LuCI's password change does not take it (`refused`), refuses the session (`denied`), or the connection drops (`offline`). */
+  passwordFails?: 'refused' | 'denied' | 'offline';
 }
 
 export interface Mock {
   call: CallFn;
+  /** LuCI's own password change (the LuCI view hands the app `luci.setPassword`): the router then has one. */
+  setPassword: SetPasswordFn;
   dispose(): void;
 }
 
@@ -499,8 +503,23 @@ export function createMock(opts: MockOptions = {}): Mock {
     return mutate(method, params || {});
   };
 
+  // LuCI's, not vctl's: it works on a router whose Vectra plugin is missing too.
+  const setPassword: SetPasswordFn = async (password) => {
+    await wait();
+    if (opts.passwordFails === 'denied') {
+      const e = new Error('RPC call to luci/setPassword failed with ubus code 6: Permission denied');
+      e.name = 'RPCError';
+      throw e;
+    }
+    if (opts.passwordFails === 'offline') throw new Error('XHR request aborted by browser');
+    if (opts.passwordFails === 'refused' || !password) return false;
+    if (world) world.setup.passwordSet = true;
+    return true;
+  };
+
   return {
     call,
+    setPassword,
     dispose() {
       timers.forEach((id) => clearTimeout(id));
       timers.clear();

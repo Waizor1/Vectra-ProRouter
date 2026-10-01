@@ -265,6 +265,9 @@ func TestSetupAnswersWhatTheRouterHas(t *testing.T) {
 	w.write(t, filepath.Join(w.env.SysClassNet, "wan", "carrier"), "1\n")
 	w.write(t, filepath.Join(w.env.SysClassNet, "wan", "address"), "a4:39:b3:12:3f:2a\n")
 	w.write(t, w.cfg.StatePath, `{"device_identifier":"vectra-1","bot_username":"VectraBot","agent_token":"tok-secret"}`)
+	// Out of the box: no root password, the LAN at OpenWrt's address.
+	w.write(t, w.env.Shadow, "root::0:0:99999:7:::\n")
+	w.ubus = map[string]string{"call network.interface.lan status": `{"up":true,"device":"br-lan","ipv4-address":[{"address":"192.168.1.1","mask":24}]}`}
 	exp := time.Date(2026, 9, 28, 7, 12, 0, 0, time.UTC)
 	withRuntime(t, &localctl.Runtime{Claim: &localctl.Claim{State: "unclaimed", Code: "7ZKNPGS6", QR: "VECTRA:R1:AAAA", ExpiresAt: exp}})
 
@@ -277,6 +280,9 @@ func TestSetupAnswersWhatTheRouterHas(t *testing.T) {
 		if strings.Contains(string(b), secret) {
 			t.Fatalf("%s reached the answer: %s", secret, b)
 		}
+	}
+	if st.PasswordSet == nil || *st.PasswordSet || st.Lan.IPv4 == nil || *st.Lan.IPv4 != "192.168.1.1" {
+		t.Fatalf("password and LAN = %s", b)
 	}
 	if st.Done || st.Wan.Proto != "pppoe" || *st.Wan.IPv4 != "100.64.12.7" || !*st.Wan.Link || len(st.Wifi.Radios) != 1 ||
 		*st.Wifi.Radios[0].SSID != "OpenWrt" || st.Wifi.Radios[0].Secured || st.Wifi.Radios[0].Enabled || !st.Wifi.Radios[0].Auto ||
@@ -297,13 +303,23 @@ func TestSetupAnswersWhatTheRouterHas(t *testing.T) {
 	}
 
 	// Linked: no claim, the bot still named (support), and whose it is — the
-	// owner the daemon kept.
+	// owner the daemon kept. The password set: only that it is, never its hash.
 	w.write(t, w.cfg.StatePath, `{"device_identifier":"vectra-1","bot_username":"VectraBot","agent_token":"tok-secret","claim_owner":{"label":"Иван П."}}`)
 	w.write(t, w.cfg.XrayConfigPath, string(mustOperatorConfig(t, false)))
+	w.write(t, w.env.Shadow, "root:$6$salt$shadow-hash-never-shown:0:0:99999:7:::\n")
 	st = w.call("setup", "").(uiapi.Setup)
 	if b, _ := json.Marshal(st.Vectra); !st.Vectra.Linked || st.Vectra.Claim != nil || *st.Vectra.BotUsername != "VectraBot" ||
 		st.Vectra.Owner == nil || st.Vectra.Owner.Label != "Иван П." || strings.Contains(string(b), "tok-secret") {
 		t.Fatalf("linked setup = %s", b)
+	}
+	if b, _ := json.Marshal(st); st.PasswordSet == nil || !*st.PasswordSet || strings.Contains(string(b), "shadow-hash") || strings.Contains(string(b), "$6$") {
+		t.Fatalf("a password set = %s", b)
+	}
+	// Neither known: null, never a guess.
+	os.Remove(w.env.Shadow)
+	w.ubus = nil
+	if st := w.call("setup", "").(uiapi.Setup); st.PasswordSet != nil || st.Lan.IPv4 != nil {
+		t.Fatalf("unknown password and LAN = %+v, %+v", st.PasswordSet, st.Lan)
 	}
 	// The daemon down: no claim to show, and no guess; the owner is still known.
 	os.Remove(w.cfg.XrayConfigPath)

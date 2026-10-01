@@ -7,9 +7,9 @@
  *
  * The UI is one self-contained bundle, /luci-static/vectra/vectra-app.js,
  * built from router/vectra-controller-pro/ui/app. This view only loads it,
- * hands it a transport to the `vectra` ubus object, and stays out of the way:
- * the app renders into its own shadow root, speaks ru/en/zh itself and polls
- * on its own.
+ * hands it a transport to the `vectra` ubus object and LuCI's own password
+ * change, and stays out of the way: the app renders into its own shadow root,
+ * speaks ru/en/zh itself and polls on its own.
  */
 
 var APP_SRC = '/luci-static/vectra/vectra-app.js';
@@ -47,6 +47,36 @@ function callVectra(method, params) {
 			});
 
 		return declared[sig].apply(null, keys.map(function(k) { return args[k]; }));
+	});
+}
+
+var callSetPassword = null;
+
+/*
+ * setPassword(password) -> Promise<boolean>.
+ *
+ * The router's password is LuCI's: this is LuCI's own change for root
+ * (`luci.setPassword`, luci-base's rpcd plugin — the call System →
+ * Administration makes), granted by this package's ACL; vctl never sees a
+ * password. True only when LuCI says the password was taken; a ubus or
+ * JSON-RPC failure rejects, as a call to vectra does (`reject`, `nobatch`:
+ * see above).
+ */
+function setPassword(password) {
+	return Promise.resolve().then(function() {
+		if (!callSetPassword)
+			callSetPassword = rpc.declare({
+				object: 'luci',
+				method: 'setPassword',
+				params: [ 'username', 'password' ],
+				expect: { result: false },
+				reject: true,
+				nobatch: true
+			});
+
+		return callSetPassword('root', String(password));
+	}).then(function(ok) {
+		return ok === true;
 	});
 }
 
@@ -112,6 +142,7 @@ return view.extend({
 		try {
 			this.unmount = loaded.app.mount(host, {
 				call: callVectra,
+				setPassword: setPassword,
 				lang: document.documentElement.lang || ''
 			});
 		}

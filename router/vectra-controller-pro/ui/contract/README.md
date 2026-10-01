@@ -4,6 +4,8 @@ The router UI never talks to xray, nftables or the filesystem. It calls ONE ubus
 object, `vectra`, through LuCI's authenticated `rpc` layer. `vectra` is an rpcd
 exec plugin (`/usr/libexec/rpcd/vectra`) that execs `vctl rpcd`, so every answer
 is produced by Go code that is unit-tested against the fixtures in this folder.
+The one call beyond it is LuCI's own: the router's password (see Router
+password) — vctl never handles a password.
 
 Both sides test against the SAME files:
 
@@ -119,6 +121,30 @@ internet goes out directly, without a VPN.
   console); nothing changed.
 - `invalid_params` for anything but `{"on": true|false}`; `apply_failed`
   when the change could not be started — nothing changed; `internal`.
+
+## Router password
+
+Everything on this page is behind LuCI's login, and LuCI's login is root's
+password. OpenWrt ships without one: rpcd then lets anyone on the LAN in.
+`setup.passwordSet` says whether there is one (see Setup wizard); the UI sets
+and changes it with LuCI's own call, the one System → Administration makes:
+
+    luci.setPassword {"username": "root", "password": "…"}  →  {"result": true|false}
+
+- It is luci-base's rpcd plugin (`/usr/share/rpcd/ucode/luci`): it pipes the
+  password, shell-quoted, twice to busybox `passwd root`; `result` is
+  whether `passwd` took it. The rpcd session stays valid: nobody is logged
+  out, and the next login asks for the new password.
+- This package's ACL grants exactly `luci.setPassword` beside `vectra`
+  (`write`), so the page works without luci-mod-system too
+  (`TestRPCDACLMatchesTheMethods` pins it).
+- The LuCI view hands it to the app as `mount(host, {call, setPassword,
+  lang})`: `setPassword(password)` resolves `true` only when LuCI answers
+  `result: true`, `false` otherwise; a ubus or network failure rejects (the
+  same `reject`/`nobatch` as `vectra`). A host that hands none gets no
+  password step and no password actions.
+- The UI asks for at least 8 characters, twice; it shows what went wrong
+  next to the fields, keeps nothing and logs nothing.
 
 ## My sites
 
@@ -338,13 +364,15 @@ may grow checks before the UI learns their sentences.
 
 ## Setup wizard
 
-What a customer runs after unboxing, on the Vectra page in LuCI: a look at the
-internet connection → the Wi-Fi, tuned and each band's network optionally
-renamed → linking the router to their Vectra account (ADR-0006) → done. The
+What a customer runs after unboxing, on the Vectra page in LuCI: the router's
+password, when it has none (`passwordSet: false`) → a look at the internet
+connection → the Wi-Fi, tuned and each band's network optionally renamed →
+linking the router to their Vectra account (ADR-0006) → a server → done. The
 router sets its internet connection up itself: the wizard shows it and checks
-it, and never changes it. The router's password is not the wizard's: LuCI's
-own banner asks for one. It is the simple view: the operator's lock never
-refuses it.
+it, and never changes it. The password goes to LuCI's own change, never to
+vctl (see Router password); it is the one step that cannot be skipped, and the
+wizard opens by itself on a router that was never set up and has none. It is
+the simple view: the operator's lock never refuses it.
 
 | method | params | answer |
 |---|---|---|
@@ -362,10 +390,20 @@ refuses it.
   config, or a WAN address, Wi-Fi on and secured on every radio that is on,
   and a root password — is marked done when the package is installed: the
   fleet never sees the wizard.
+- `passwordSet`: root has a password, so LuCI's login asks for one — the
+  second field of root's line in `/etc/shadow` is not empty (rpcd lets anyone
+  in on an empty one; a locked `!` lets nobody in). `false` out of the box;
+  `null` when the router cannot tell (no shadow file, no root in it). Never
+  the password or its hash.
 - `wan` (read-only): `proto` `dhcp`, `pppoe`, `static` or `other`; `link` a
   cable in the WAN port (`null`: the router cannot tell); `ipv4`, `gateway`,
   `dns` what the router has now (`null` / `[]` when none). No credential of the
   connection is ever in it.
+- `lan.ipv4`: the LAN's IPv4 address as netifd has it up (`ubus call
+  network.interface.lan status`, the first one), `null` when netifd cannot
+  say: where this page opens on a device that does not ask the router's DNS
+  (a VPN app, private DNS), which the names (`my.vectra-pro.net`,
+  `vectra.lan`) need.
 - `wifi.radios`: one entry per radio (UCI `wifi-device`), in file order:
   `device` (its UCI name, the key `set_wifi` and `optimize_wifi` take);
   `band` `2g`, `5g`, `6g`, `60g` or `null`; `channel` a number, or `null`

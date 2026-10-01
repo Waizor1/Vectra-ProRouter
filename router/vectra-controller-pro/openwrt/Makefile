@@ -112,10 +112,11 @@ define Package/$(PKG_NAME)/postrm
 # LuCI forget the menu entry. SIGHUP makes rpcd re-exec itself with its
 # sessions kept, so nobody is logged out of LuCI.
 #
-# vectra.lan goes with the package (the uci-defaults script added it) — on a
-# removal only. opkg runs the OLD package's postrm on every upgrade too, as
-# `postrm upgrade <version>` with PKG_UPGRADE=1 (libopkg/opkg_install.c), and
-# an upgrade keeps the name. So does the dead-man's block in root's crontab.
+# vectra.lan and my.vectra-pro.net go with the package (the uci-defaults
+# script added them) — on a removal only. opkg runs the OLD package's postrm
+# on every upgrade too, as `postrm upgrade <version>` with PKG_UPGRADE=1
+# (libopkg/opkg_install.c), and an upgrade keeps the names. So does the
+# dead-man's block in root's crontab.
 [ -n "$${IPKG_INSTROOT}" ] || { \
 	rm -f /tmp/luci-indexcache* 2>/dev/null; \
 	rm -rf /tmp/luci-modulecache/ 2>/dev/null; \
@@ -129,8 +130,12 @@ define Package/$(PKG_NAME)/postrm
 			[ -x "$$cron" ] && "$$cron" running >/dev/null 2>&1 && "$$cron" restart >/dev/null 2>&1; \
 		fi; \
 		named=""; \
-		for s in $$(uci -q -X show dhcp 2>/dev/null | sed -n "s/^dhcp\.\([^.=]*\)\.interface_name=.*'vectra\.lan'.*/\1/p"); do \
-			uci -q del_list "dhcp.$$s.interface_name=vectra.lan" && named=1; \
+		for s in $$(uci -q -X show dhcp 2>/dev/null | sed -n "s/^dhcp\.\([^.=]*\)\.interface_name=.*/\1/p"); do \
+			for n in vectra.lan my.vectra-pro.net; do \
+				case " $$(uci -q get "dhcp.$$s.interface_name") " in \
+				*" $$n "*) uci -q del_list "dhcp.$$s.interface_name=$$n" && named=1 ;; \
+				esac; \
+			done; \
 		done; \
 		if [ -n "$$named" ] && uci -q commit dhcp; then \
 			dnsmasq="$${DNSMASQ_INIT:-/etc/init.d/dnsmasq}"; \

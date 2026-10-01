@@ -1,8 +1,9 @@
 // Package setup is the router side of the setup wizard a customer runs after
 // unboxing: the Wi-Fi — tuned, and each band's network optionally renamed —
-// then done. The internet connection is the router's own business, and so is
-// its password (LuCI's own banner asks for one): the wizard only shows the
-// first and checks it. The package reads what the router has, validates what
+// then done. The internet connection is the router's own business: the wizard
+// only shows it and checks it. The router's password is LuCI's: the wizard
+// sets it through LuCI's own `luci.setPassword`, and this package only says
+// whether root has one. The package reads what the router has, validates what
 // the wizard asks for, and changes the router only through the uci command
 // (one argv per value — nothing the browser sends can become a statement) and
 // the router's own tools.
@@ -15,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,10 +90,18 @@ func outputCommand(ctx context.Context, name string, args ...string) ([]byte, er
 // Facts is what the wizard shows about the router.
 type Facts struct {
 	Done bool
-	Wan  Wan
-	Wifi Wifi
+	// Password: root has a password (Password); nil = cannot tell.
+	Password *bool
+	Wan      Wan
+	Lan      Lan
+	Wifi     Wifi
 	// SupportBot is the support bot the box was prepared with (SupportBot).
 	SupportBot string
+}
+
+// Lan is how the home network reaches the router.
+type Lan struct {
+	IPv4 string // the LAN's address, where this page always opens; "" = unknown
 }
 
 // Wan is the router's internet connection, as it is: the wizard never
@@ -111,7 +121,9 @@ func Read(ctx context.Context, env Env) Facts {
 	wifi.Suggested = SuggestedSSID(env, device)
 	return Facts{
 		Done:       Done(env),
+		Password:   Password(env),
 		Wan:        wan,
+		Lan:        ReadLan(ctx, env),
 		Wifi:       wifi,
 		SupportBot: SupportBot(env),
 	}
@@ -167,9 +179,9 @@ func uciTrue(v string) bool {
 	return false
 }
 
-// wanStatus is what netifd says about the wan interface
-// (`ubus call network.interface.wan status`).
-type wanStatus struct {
+// ifaceStatus is what netifd says about an interface
+// (`ubus call network.interface.<name> status`).
+type ifaceStatus struct {
 	Up       bool   `json:"up"`
 	Device   string `json:"device"`
 	L3Device string `json:"l3_device"`
@@ -184,18 +196,31 @@ type wanStatus struct {
 	DNS []string `json:"dns-server"`
 }
 
-func readWanStatus(ctx context.Context, env Env) *wanStatus {
+func readIfaceStatus(ctx context.Context, env Env, name string) *ifaceStatus {
 	c, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	out, err := env.Output(c, "ubus", "call", "network.interface.wan", "status")
+	out, err := env.Output(c, "ubus", "call", "network.interface."+name, "status")
 	if err != nil {
 		return nil
 	}
-	var st wanStatus
+	var st ifaceStatus
 	if json.Unmarshal(out, &st) != nil {
 		return nil
 	}
 	return &st
+}
+
+// ReadLan reads the LAN's IPv4 address as netifd has it up: the first one,
+// and only a real IPv4 address — the UI puts it in a link.
+func ReadLan(ctx context.Context, env Env) Lan {
+	st := readIfaceStatus(ctx, env, "lan")
+	if st == nil || len(st.IPv4) == 0 {
+		return Lan{}
+	}
+	if a, err := netip.ParseAddr(st.IPv4[0].Address); err == nil && a.Is4() {
+		return Lan{IPv4: a.String()}
+	}
+	return Lan{}
 }
 
 // ReadWan reads the WAN: its protocol from UCI, its address, gateway and DNS
@@ -221,7 +246,7 @@ func readWan(ctx context.Context, env Env) (Wan, string) {
 			}
 		}
 	}
-	if st := readWanStatus(ctx, env); st != nil {
+	if st := readIfaceStatus(ctx, env, "wan"); st != nil {
 		if len(st.IPv4) > 0 {
 			w.IPv4 = st.IPv4[0].Address
 		}
@@ -285,17 +310,28 @@ func SuggestedSSID(env Env, wanDevice string) string {
 	return ""
 }
 
-// PasswordSet reports whether root has a password: the second field of its
-// /etc/shadow line is not empty. Only the install-time guess (Working) asks.
-func PasswordSet(env Env) bool {
+// Password reports whether root has a password — whether LuCI's login asks
+// for one: the second field of root's /etc/shadow line is not empty. rpcd
+// lets anyone in on an empty one (session.c, rpc_login_test_password), and
+// nobody without the password otherwise, a locked "!" included. nil when it
+// cannot tell: no shadow file to read, or no root in it.
+func Password(env Env) *bool {
 	b, err := os.ReadFile(env.Shadow)
 	if err != nil {
-		return false
+		return nil
 	}
 	for _, line := range bytes.Split(b, []byte("\n")) {
 		if f := bytes.SplitN(line, []byte(":"), 3); len(f) >= 2 && string(f[0]) == "root" {
-			return len(f[1]) > 0
+			set := len(f[1]) > 0
+			return &set
 		}
 	}
-	return false
+	return nil
+}
+
+// PasswordSet reports whether root has a password; one it cannot tell is
+// none. Only the install-time guess (Working) asks.
+func PasswordSet(env Env) bool {
+	p := Password(env)
+	return p != nil && *p
 }

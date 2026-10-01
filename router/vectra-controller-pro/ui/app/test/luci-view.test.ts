@@ -55,8 +55,10 @@ async function mounted(opts: Parameters<typeof setup>[0] = {}) {
   env.win.VectraApp = { mount };
   env.head.children[0].onload!();
   const host = env.cls.render(await loading);
-  const [[mountHost, mountOpts]] = mount.mock.calls as unknown as [[FakeEl, { call: (m: string, p?: object) => Promise<unknown>; lang: string }]];
-  return { ...env, host, mountHost, call: mountOpts.call, lang: mountOpts.lang };
+  const [[mountHost, mountOpts]] = mount.mock.calls as unknown as [
+    [FakeEl, { call: (m: string, p?: object) => Promise<unknown>; setPassword: (pw: string) => Promise<boolean>; lang: string }],
+  ];
+  return { ...env, host, mountHost, call: mountOpts.call, setPassword: mountOpts.setPassword, lang: mountOpts.lang };
 }
 
 describe('LuCI view', () => {
@@ -150,5 +152,34 @@ describe('LuCI view', () => {
       },
     });
     await expect(call('status')).rejects.toThrow('Access denied');
+  });
+
+  // The router's password is LuCI's: the view hands the app LuCI's own
+  // change (the call System → Administration makes), for root. vctl never
+  // sees a password.
+  it('hands the app LuCI’s password change: luci.setPassword for root, declared once, on first use', async () => {
+    const { setPassword, declared, invoked } = await mounted({ rpcImpl: (o) => Promise.resolve(o.object === 'luci' ? true : {}) });
+    expect(typeof setPassword).toBe('function');
+    expect(declared).toEqual([]);
+    expect(await setPassword('correct horse')).toBe(true);
+    expect(await setPassword('battery staple')).toBe(true);
+    expect(declared).toEqual([
+      { object: 'luci', method: 'setPassword', params: ['username', 'password'], expect: { result: false }, reject: true, nobatch: true },
+    ]);
+    expect(invoked).toEqual([
+      ['root', 'correct horse'],
+      ['root', 'battery staple'],
+    ]);
+  });
+
+  it('says the password took only when LuCI says so, and hands a failure over as a rejection', async () => {
+    let answer: unknown = false;
+    const { setPassword } = await mounted({ rpcImpl: () => (answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer)) });
+    expect(await setPassword('correct horse')).toBe(false);
+    answer = 'yes';
+    expect(await setPassword('correct horse')).toBe(false);
+    answer = new Error('RPC call to luci/setPassword failed with ubus code 6: Permission denied');
+    const err = await setPassword('correct horse').catch((e: unknown) => e);
+    expect(describeError(err).kind).toBe('access');
   });
 });

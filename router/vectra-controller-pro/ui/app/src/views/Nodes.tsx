@@ -31,16 +31,17 @@ const groupOf = (tag: string): Kind => {
 /** Stands for markup in a translated sentence; `around` puts the markup back in its place. */
 export const SLOT = '\u0001';
 
-/** A translated sentence with markup where its placeholder was, whatever the language's word order. */
-export function around(text: string, inner: ComponentChildren) {
-  const [a, b] = text.split(SLOT);
-  return (
-    <>
-      {a}
-      {inner}
-      {b}
-    </>
-  );
+/**
+ * A translated sentence with markup where its placeholders were, whatever the
+ * language's word order around them; several go back in the order they stand.
+ */
+export function around(text: string, ...inner: ComponentChildren[]) {
+  const out: ComponentChildren[] = [];
+  text.split(SLOT).forEach((part, i) => {
+    out.push(part);
+    if (i < inner.length) out.push(inner[i]);
+  });
+  return <>{out}</>;
 }
 
 /** Node names with their tags: "Мост → 🇫🇷 Франция bridge-fr5, …". A tag names its country as the router's hint does. */

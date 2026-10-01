@@ -2,24 +2,30 @@
 
 The customer's and the operator's window into vctl on the router, in two views:
 
-- **Setup wizard** (on a router that was never set up): the internet (the
+- **Setup wizard** (on a router that was never set up): the router's password
+  first, when it has none (anyone on the LAN can open its settings until then;
+  LuCI's own change, the one step that cannot be skipped), the internet (the
   router connects by itself; the step only checks it and says when the cable
-  is missing), Wi-Fi (a unique name, a generated password, a QR to join), the
-  router password, and linking to the owner's Vectra account (QR for the
-  Vectra app, a code, or a Telegram deep link). Every step checks itself
-  first, so a router the operator prepared goes straight through.
+  is missing), Wi-Fi (a unique name, a generated password, a QR to join),
+  linking to the owner's Vectra account (QR for the Vectra app, a code, or a
+  Telegram deep link), and a server. Every step checks itself first, so a
+  router the operator prepared goes straight through.
 - **Simple** (what it opens with): does the VPN work, in plain words; the
   location and a list to switch it; "My sites" (always without / always
-  through the VPN); restart, another location, a report for support. No
-  xray, balancers, nodes or addresses.
+  through the VPN); restart, another location, a report for support; the
+  router's password (a calm note while there is none, "Change the password"
+  in the footer); where this page opens. No xray, balancers, nodes or server
+  addresses.
 - **Pro**: an honest verdict, xray balancers and the fallback chain, nodes,
   locations and the journal.
 
 The operator can lock a router to the simple view (`ui_lock`, see
 [`contract/`](contract/README.md#operator-lock)); vctl then refuses the Pro
-methods itself. It runs inside LuCI, talks to exactly one ubus object
-(`vectra`), speaks ru, en and zh, and wears Vectra Connect's design language
-(palette, wordmark, Montserrat — see `src/styles/app.css`).
+methods itself. It runs inside LuCI, talks to one ubus object (`vectra`) —
+and, for the router's password, to LuCI's own `luci.setPassword`
+([contract](contract/README.md#router-password)) — speaks ru, en and zh, and
+wears Vectra Connect's design language (palette, wordmark, Montserrat — see
+`src/styles/app.css`).
 
 ```
 ui/
@@ -52,11 +58,13 @@ call from a stateful mock built on `contract/*.json` (~300 ms per call):
 | `?scenario=degraded` | xray in backoff, API unreachable, `selected: null`, nodes unprobed, failing checks, an `other` matcher, a `malformed_happ` subscription |
 | `?scenario=down` | every call rejects like LuCI does when the rpcd plugin is missing (`ubus code 4`) |
 | `?scenario=empty` | a fresh router: no subscription, no balancers, no nodes |
-| `?scenario=unboxed` | straight out of the box: the setup wizard (the router comes online by itself a few seconds after the page opens, and gets linked a few seconds after the Vectra step shows its code) |
+| `?scenario=unboxed` | straight out of the box: the setup wizard, the router's password first (OpenWrt ships without one; the router comes online by itself a few seconds after the page opens, and gets linked a few seconds after the Vectra step shows its code) |
+| `?scenario=boxed` | a box as it ships: Wi-Fi and the router's password from the card, so no password step |
 | `?scenario=off` | Vectra switched off (`vectra off`): PassWall2 carries the traffic — `&holder=agent\|direct` for the others |
 | `&lang=ru\|en\|zh` | the host page's language (what LuCI puts in `<html lang>`) |
 | `&frame=0` | no LuCI chrome |
 | `&locked=1` | the operator's lock: simple view only, Pro methods refused |
+| `&pwfail=refused\|denied\|offline` | LuCI's password change does not take it / the session expired / the connection drops |
 | `&latency=0` | answer instantly |
 
 Mutations change the mock's state: `select_entry` answers `pending` and lands
@@ -124,8 +132,8 @@ Commit the two files under `openwrt/files/www/` together with the sources.
    and resolves once `window.VectraApp` exists (a failed load renders a plain
    LuCI alert instead of throwing).
 2. `render()` creates a host `<div>` and calls
-   `window.VectraApp.mount(host, { call, lang })`, where `lang` is
-   `document.documentElement.lang` and `call(method, params)` is
+   `window.VectraApp.mount(host, { call, setPassword, lang })`, where `lang`
+   is `document.documentElement.lang` and `call(method, params)` is
    `rpc.declare({ object: 'vectra', method, params: Object.keys(params),
    expect: { '': {} }, reject: true, nobatch: true })` applied to the values.
    - `reject: true`: without it LuCI resolves a failed ubus call ("Object not
@@ -133,9 +141,13 @@ Commit the two files under `openwrt/files/www/` together with the sources.
      router instead of the error.
    - `nobatch: true`: LuCI holds batched calls until the next
      `requestAnimationFrame`, which browsers pause in background tabs.
+   - `setPassword(password)` is LuCI's own `luci.setPassword` for root (the
+     call System → Administration makes), declared on first use the same way,
+     `expect: { result: false }`: `true` only when LuCI took the password. A
+     host that hands none gets no password step and no password actions.
 3. `handleSave`, `handleSaveApply` and `handleReset` are `null`: no footer.
 
-`mount(host, { call, lang })` returns `unmount()`. The app renders into
+`mount(host, { call, setPassword, lang })` returns `unmount()`. The app renders into
 `host.attachShadow({ mode: 'open' })`; all styles, dialogs and toasts live in
 that shadow root, `:host` resets what LuCI's theme would otherwise inherit. Full
 screen is a fixed overlay at z-index 850 — above LuCI's header (800), below

@@ -36,6 +36,13 @@ export type ActionMethod = Exclude<Method, ReadMethod>;
 /** The transport the host page hands to mount(): LuCI rpc in production, fixtures in dev. */
 export type CallFn = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
 
+/**
+ * LuCI's own change of root's password (`luci.setPassword`), as the host page
+ * hands it to mount(): true when LuCI took the password, false when it did
+ * not; a transport failure rejects. vctl never sees a password.
+ */
+export type SetPasswordFn = (password: string) => Promise<boolean>;
+
 export type EngineState = Open<
   'running' | 'starting' | 'reloading' | 'backoff' | 'exited' | 'stopped' | 'failed' | 'idle' | 'unknown'
 >;
@@ -250,6 +257,8 @@ export interface Owner {
 
 export interface Setup {
   done: boolean | null;
+  /** Root has a password, so LuCI's login asks for one; null: the router cannot tell. */
+  passwordSet: boolean | null;
   /** Read-only: the router sets its internet connection up itself. */
   wan: {
     proto: WanProto | null;
@@ -258,6 +267,8 @@ export interface Setup {
     gateway: string | null;
     dns: string[];
   };
+  /** How the home network reaches the router: `ipv4` is where this page always opens. */
+  lan: { ipv4: string | null };
   /**
    * One radio per band. `tuned`: every enabled 2.4/5 GHz radio runs at full
    * power on a fixed channel (null when the router cannot be tuned).

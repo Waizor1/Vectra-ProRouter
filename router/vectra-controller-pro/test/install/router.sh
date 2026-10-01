@@ -54,20 +54,25 @@ dns_ok() {
 }
 not() { ! "$@"; }
 # /etc/config/dhcp as it was before the install, byte for byte, but for the
-# one line the package adds (its uci-defaults): vectra.lan on the LAN's dhcp
-# section. `dhcp_as_before vectra.lan` wants that line there exactly once, on
-# the section whose interface is lan; `dhcp_as_before` wants it gone.
+# two lines the package adds (its uci-defaults): vectra.lan and
+# my.vectra-pro.net on the LAN's dhcp section. `dhcp_as_before named` wants
+# each line there exactly once, on the section whose interface is lan;
+# `dhcp_as_before` wants them gone.
 VECTRA_LAN_LINE="$(printf "\tlist interface_name 'vectra.lan'")"
-dhcp_as_before() { # [vectra.lan]
+VECTRA_NET_LINE="$(printf "\tlist interface_name 'my.vectra-pro.net'")"
+dhcp_as_before() { # [named]
 	vl_count="$(grep -cxF "$VECTRA_LAN_LINE" /etc/config/dhcp)"
-	if [ "$1" = vectra.lan ]; then
-		[ "$vl_count" = 1 ] || return 1
+	vn_count="$(grep -cxF "$VECTRA_NET_LINE" /etc/config/dhcp)"
+	if [ "$1" = named ]; then
+		[ "$vl_count" = 1 ] && [ "$vn_count" = 1 ] || return 1
 		vl_lan="$(uci -q -X show dhcp | sed -n "s/^dhcp\.\([^.=]*\)\.interface='lan'\$/\1/p" | head -n 1)"
-		uci -q get "dhcp.$vl_lan.interface_name" | tr ' ' '\n' | grep -qx 'vectra\.lan' || return 1
+		vl_names="$(uci -q get "dhcp.$vl_lan.interface_name" | tr ' ' '\n')"
+		printf '%s\n' "$vl_names" | grep -qx 'vectra\.lan' || return 1
+		printf '%s\n' "$vl_names" | grep -qx 'my\.vectra-pro\.net' || return 1
 	else
-		[ "$vl_count" = 0 ] || return 1
+		[ "$vl_count" = 0 ] && [ "$vn_count" = 0 ] || return 1
 	fi
-	grep -vxF "$VECTRA_LAN_LINE" /etc/config/dhcp | cmp -s - /tmp/dhcp.before
+	grep -vxF -e "$VECTRA_LAN_LINE" -e "$VECTRA_NET_LINE" /etc/config/dhcp | cmp -s - /tmp/dhcp.before
 }
 
 # ------------------------------------------------------------------ boot ----
@@ -184,7 +189,7 @@ assert_installed_and_on() { # <prefix>
 	check "${p}_ubus" "ubus call vectra status answers" sh -c 'ubus call vectra status | grep -q "\"version\""'
 	check "${p}_luci" "uhttpd serves the Vectra bundle" wget -q -O /dev/null http://127.0.0.1/luci-static/vectra/vectra-app.js
 	check "${p}_distfeeds" "OpenWrt's distfeeds.conf left as it was" cmp -s /etc/opkg/distfeeds.conf /tmp/distfeeds.before
-	check "${p}_dhcp_config" "/etc/config/dhcp kept (the swap restores it), plus vectra.lan on the LAN" dhcp_as_before vectra.lan
+	check "${p}_dhcp_config" "/etc/config/dhcp kept (the swap restores it), plus vectra.lan and my.vectra-pro.net on the LAN" dhcp_as_before named
 }
 
 assert_unchanged() { # <name> <what>
@@ -244,7 +249,7 @@ lifecycle)
 	check uninstall_feed "the feed line and the key are gone" \
 		sh -c "! grep -q '^src/gz vectra_pro ' /etc/opkg/customfeeds.conf && ls /etc/opkg/keys | cmp -s - /tmp/keys.before"
 	check uninstall_dns "dnsmasq-full stays and still answers" sh -c "opkg list-installed dnsmasq-full | grep -q . && pgrep -x dnsmasq && { [ \"\${DNS:-answers}\" = runs ] || nslookup localhost 127.0.0.1 | grep -q '^Name:'; }"
-	check uninstall_dhcp_config "/etc/config/dhcp as before the install: vectra.lan gone with the package" dhcp_as_before
+	check uninstall_dhcp_config "/etc/config/dhcp as before the install: vectra.lan and my.vectra-pro.net gone with the package" dhcp_as_before
 	check uninstall_keeps_identity "without --purge the router's Vectra identity stays" test -d /etc/vectra-controller-pro
 	sh /etc/vectra-controller-pro/vectra-install.sh --uninstall --purge < /dev/null > /dev/null 2>&1
 	check uninstall_purge "--purge removes /etc/vectra-controller-pro" test ! -e /etc/vectra-controller-pro
