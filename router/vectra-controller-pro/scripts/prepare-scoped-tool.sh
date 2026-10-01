@@ -29,7 +29,7 @@ shutil.copyfile(pins/'garble_regression.go.txt',source/'partial_import_test.go')
 PY
 patch -p1 -d "$ROOT/tool-source" < "$PINS/garble.patch"
 cd "$ROOT/tool-source"
-go build -trimpath -buildvcs=false -ldflags '-s -w -buildid=' -o "$ROOT/tools/garble-partial-race-trial" .
+go build -trimpath -buildvcs=false -ldflags '-s -w' -o "$ROOT/tools/garble-partial-race-trial" .
 python3 - "$ROOT/tools/garble-partial-race-trial" "$PINS/pins.json" <<'PY'
 import sys,pathlib,json,hashlib
 binary,pins=map(pathlib.Path,sys.argv[1:]);assert hashlib.sha256(binary.read_bytes()).hexdigest()==json.loads(pins.read_text())['toolSha256'],'tool hash drift'

@@ -20,7 +20,9 @@ Run `scripts/prepare-scoped-tool.sh` in a fresh private tool root. It defaults
 to offline cached registry data; `VECTRA_SCOPED_ALLOW_DOWNLOADS=1` explicitly
 permits checksum-verified Go registry downloads. Source sums/commit/patch/tool
 hash are checked. The reviewed host is darwin/arm64; Go1.26.3/CGO0/trimpath and
-fixed linker flags reproduce the tool across source directories. This tool hash
+fixed linker flags reproduce the tool across source directories. Preserve the
+tool build ID: Garble uses it for toolexec identity; clearing it fails before
+compilation. Clearing the target vctl build ID remains supported. This tool hash
 differs from the previous review binary because build metadata is stripped;
 source patch remains identical. Global installation/signing is not required. Set both variables explicitly:
 

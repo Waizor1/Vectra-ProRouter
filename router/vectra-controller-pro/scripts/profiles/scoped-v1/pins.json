@@ -6,7 +6,7 @@
   "toolSourceCommit": "39c484d3007e9a608ac8692dab0b9bb5f71dfc2a",
   "moduleSum": "h1:XJ6jJhlT8HTEU9Dd02nLDUciuyPDXGRopwy/Cuoo/0M=",
   "goModSum": "h1:LooTuz3tMwLVoqYPdt3aFxU75PC1lkrrRmUI+wqtmjs=",
-  "toolSha256": "64d8bb3101f672c62b6e701e1292f5be17307a0516bc4e125d22ecb6f69accf9",
+  "toolSha256": "91845fe3eb004874972082e94e3792fd010dc1e4fdc2576471608c6ae5b9fa83",
   "patchSha256": "2ddfb52d510db0ccc1e51e331f9bddcdc716d645f52ab920c260434f71c49375",
   "regressionSha256": "17857e996a4610fc743ed17284854c037277102de1c3f2480b7d76e39ca332a2",
   "seedBase64": "dmVjdHJhLWx=",
@@ -20,6 +20,6 @@
     "CGO_ENABLED=0",
     "-trimpath",
     "-buildvcs=false",
-    "-ldflags=-s -w -buildid="
+    "-ldflags=-s -w"
   ]
 }
