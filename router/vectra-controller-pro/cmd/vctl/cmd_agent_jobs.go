@@ -740,6 +740,17 @@ func (d *daemon) jobCollectLogs(ctx context.Context, job controlplane.Job) error
 const proPackageName = "vectra-controller-pro"
 
 func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) error {
+	err := d.updateController(ctx, job)
+	if errors.Is(err, errControllerUpToDate) {
+		return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"controllerUpdated": false, "upToDate": true})
+	}
+	return err
+}
+
+// updateController installs the job's signed package. A package already
+// installed is errControllerUpToDate, before anything is downloaded; every
+// other outcome is reported here.
+func (d *daemon) updateController(ctx context.Context, job controlplane.Job) error {
 	artifactURL, _ := job.Payload["artifactUrl"].(string)
 	if artifactURL == "" {
 		return d.submitFailure(ctx, job, "update_controller: missing artifactUrl")
@@ -776,7 +787,9 @@ func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) 
 	if err != nil {
 		return d.submitFailure(ctx, job, notInSignedFeed+": "+err.Error())
 	}
-	if err := signedControllerVersionFloor(ctx, verifiedPackage.Version); err != nil {
+	if err := signedControllerVersionFloor(ctx, verifiedPackage.Version); errors.Is(err, errControllerUpToDate) {
+		return err
+	} else if err != nil {
 		return d.submitFailure(ctx, job, "update_controller: "+err.Error()+" (nothing installed)")
 	}
 

@@ -120,6 +120,15 @@ func (d *daemon) applyProviderWith(ctx context.Context, providerRaw []byte, forc
 	d.applier.Splice = opts
 	fresh := !force && fileExists(d.cfg.XrayRenderPath) && d.st.SpliceKey == d.renderKey(opts)
 	res, err := d.applier.Apply(ctx, providerRaw, d.st.ConfigDigest, fresh)
+	if without, ok := d.withoutAIDefault(opts); err != nil && ok {
+		// The trial cannot run xray -test: a default the router's xray still
+		// refuses is dropped, never the render it joined.
+		logging.L().Warn("the render with the «Нейросети» default was refused; rendering without it", "err", err.Error())
+		opts = without
+		d.applier.Splice = opts
+		fresh = !force && fileExists(d.cfg.XrayRenderPath) && d.st.SpliceKey == d.renderKey(opts)
+		res, err = d.applier.Apply(ctx, providerRaw, d.st.ConfigDigest, fresh)
+	}
 	if err != nil {
 		d.lastApplyErr = err.Error()
 		d.noteApplyErr(err)
@@ -133,6 +142,32 @@ func (d *daemon) applyProviderWith(ctx context.Context, providerRaw []byte, forc
 	d.st.UnfitExits = unfitStamps(d.exits.Snapshot(d.exits.Unfit()))
 	d.probe = &probe
 	return res, nil
+}
+
+// withoutAIDefault is opts without «Нейросети», when they carry them only as
+// the router's own default (the owner chose nothing for them).
+func (d *daemon) withoutAIDefault(opts xray.SpliceOptions) (xray.SpliceOptions, bool) {
+	if opts.ServiceEntries["ai"] == nil {
+		return opts, false
+	}
+	ov, err := localctl.LoadOverrides(d.cfg.OverridesPath)
+	if err != nil {
+		return opts, false
+	}
+	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" {
+		return opts, false
+	}
+	entries := map[string]json.RawMessage{}
+	for id, raw := range opts.ServiceEntries {
+		if id != "ai" {
+			entries[id] = raw
+		}
+	}
+	if len(entries) == 0 {
+		entries = nil
+	}
+	opts.ServiceEntries = entries
+	return opts, true
 }
 
 // reloadAfterApply brings xray onto a freshly written render.

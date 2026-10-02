@@ -150,5 +150,13 @@ func signedControllerVersionFloor(ctx context.Context, candidate string) error {
 	if older {
 		return errors.New("refusing signed controller downgrade")
 	}
+	if installed == candidate {
+		// opkg would print "up to date" and exit 0: nothing to install, and
+		// nothing to report as installed.
+		return errControllerUpToDate
+	}
 	return nil
 }
+
+// errControllerUpToDate: the feed's package is the version already installed.
+var errControllerUpToDate = errors.New("controller already at the feed's version")

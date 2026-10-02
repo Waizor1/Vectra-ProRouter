@@ -21,6 +21,7 @@ import (
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/setup"
 	"vectra-controller-pro/internal/sites"
+	"vectra-controller-pro/internal/state"
 	"vectra-controller-pro/internal/uci"
 	"vectra-controller-pro/internal/uiapi"
 	"vectra-controller-pro/internal/xrayview"
@@ -246,7 +247,8 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 			egress = in.Runtime.Egress
 		}
 		res := uiapi.BuildServices(cfg.RouteSource == "", raw, ov, egress)
-		_, applied := aiDefaultApplied(cfg, ov)
+		st, _ := state.LoadReadOnly(cfg.StatePath)
+		_, applied := aiDefaultApplied(cfg, ov, st.SpliceKey)
 		markAIDefault(&res, applied)
 		return res
 	case "select_entry", "reset_entry", "pin_balancer", "unpin_balancer", "set_probe_interval", "set_rules", "set_service", "restart_xray":

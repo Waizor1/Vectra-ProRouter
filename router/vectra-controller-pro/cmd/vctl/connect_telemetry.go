@@ -50,7 +50,7 @@ func (d *daemon) publishConnectTelemetry(ctx context.Context, features map[strin
 		in.Overrides = overrides
 	}
 	t := connectSettings(in, connectSetup(ctx))
-	if id, ok := aiDefaultApplied(d.cfg, overrides); ok && settingsErr == nil && t.Services != nil {
+	if id, ok := aiDefaultApplied(d.cfg, overrides, d.st.SpliceKey); ok && settingsErr == nil && t.Services != nil {
 		setConnectServiceEntry(*t.Services, "ai", id, t.Entries) // «Нейросети» through their default
 	}
 	if settingsErr != nil {

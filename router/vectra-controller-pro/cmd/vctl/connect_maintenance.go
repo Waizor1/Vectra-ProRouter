@@ -52,7 +52,7 @@ var maintenanceBootID = func() (string, error) {
 }
 var maintenanceNow = time.Now
 var maintenancePersist = func(d *daemon) error { return d.persist() }
-var maintenanceUpdate = func(d *daemon, ctx context.Context, j controlplane.Job) error { return d.jobUpdateController(ctx, j) }
+var maintenanceUpdate = func(d *daemon, ctx context.Context, j controlplane.Job) error { return d.updateController(ctx, j) }
 
 // Persisted preferences and reboot receipt contain no credentials. A changed
 // adopted owner never inherits an old owner's automatic-update preference.
@@ -187,6 +187,9 @@ func (d *daemon) connectMaintenance(ctx context.Context, j controlplane.Job, own
 		}
 		j.Payload = map[string]interface{}{"name": proPackageName, "artifactUrl": candidate.URL, "sha256": candidate.Package.SHA256, "artifactVersion": candidate.Package.Version}
 		err := maintenanceUpdate(d, ctx, j)
+		if errors.Is(err, errControllerUpToDate) {
+			return d.maintenanceFinish(ctx, j, "success", map[string]interface{}{"controllerUpdated": false, "upToDate": true})
+		}
 		if err == nil {
 			return errMaintenanceActionFailed
 		}

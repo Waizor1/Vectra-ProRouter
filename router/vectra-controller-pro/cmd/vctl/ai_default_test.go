@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/uiapi"
 	"vectra-controller-pro/internal/vault"
@@ -165,31 +166,29 @@ func TestAnAIDefaultThatWouldGoDirectOrNotImportIsSkipped(t *testing.T) {
 	}
 }
 
-// The router UI and the Connect inventory say «Kazakhstan» only for a default
-// the installed render carries.
+// The router UI and the Connect inventory say «Kazakhstan» only for the
+// default the installed render took (its splice key names it by digest), or
+// when the router runs that location itself.
 func TestTheAIDefaultIsReportedOnlyWhenTheRenderCarriesIt(t *testing.T) {
 	d, c := aiTestCache(t, "🇷🇺🇪🇺 Авто", "🇷🇺🇰🇿 Казахстан")
-	dir := t.TempDir()
-	d.cfg.ProviderConfigPath = filepath.Join(dir, "provider.json")
-	d.cfg.XrayRenderPath = filepath.Join(dir, "xray.json")
+	sum := localctl.Summarize(c)
+	d.cfg.ProviderConfigPath = filepath.Join(t.TempDir(), "provider.json")
 	if err := vault.WriteFile(d.cfg.ProviderConfigPath, c.Entries[0]); err != nil {
 		t.Fatal(err)
 	}
+	took := "v1;svcEntries=ai=" + sum[1].Digest + ";exitprobe=x"
 	for _, tc := range []struct {
-		render string
-		ov     localctl.Overrides
-		want   bool
+		key  string
+		ov   localctl.Overrides
+		want bool
 	}{
-		{`{"routing":{"balancers":[{"tag":"vctl-connect-ai-x"}]}}`, localctl.Overrides{}, true},
-		{`{"routing":{"balancers":[]}}`, localctl.Overrides{}, false}, // the render refused it
-		{`{"routing":{"balancers":[{"tag":"vctl-connect-ai-x"}]}}`, localctl.Overrides{ServiceEntries: map[string]string{"ai": localctl.ServiceMainPath}}, false},
+		{took, localctl.Overrides{}, true},
+		{"v1;svc=ai:KZ", localctl.Overrides{}, false}, // the render refused it: nothing taken
+		{took, localctl.Overrides{ServiceEntries: map[string]string{"ai": localctl.ServiceMainPath}}, false},
 	} {
-		if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(tc.render)); err != nil {
-			t.Fatal(err)
-		}
-		id, ok := aiDefaultApplied(d.cfg, tc.ov)
-		if ok != tc.want || (ok && id != localctl.Summarize(c)[1].Digest) {
-			t.Fatalf("render %s, %+v: %q %v", tc.render, tc.ov, id, ok)
+		id, ok := aiDefaultApplied(d.cfg, tc.ov, tc.key)
+		if ok != tc.want || (ok && id != sum[1].Digest) {
+			t.Fatalf("key %s, %+v: %q %v", tc.key, tc.ov, id, ok)
 		}
 		res := uiapi.Services{Services: []uiapi.ServiceInfo{{ID: "youtube"}, {ID: "ai"}}}
 		markAIDefault(&res, ok)
@@ -197,8 +196,39 @@ func TestTheAIDefaultIsReportedOnlyWhenTheRenderCarriesIt(t *testing.T) {
 			t.Fatalf("UI: %+v", res.Services)
 		}
 	}
+	// A router that runs the cascade itself takes it with no overlay.
+	if err := vault.WriteFile(d.cfg.ProviderConfigPath, c.Entries[1]); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok := aiDefaultApplied(d.cfg, localctl.Overrides{}, "v1"); !ok || id != sum[1].Digest {
+		t.Fatalf("running the cascade itself: %q %v", id, ok)
+	}
 	d.cfg.RouteSource = "passwall" // a router on another engine renders no services
-	if _, ok := aiDefaultApplied(d.cfg, localctl.Overrides{}); ok {
+	if _, ok := aiDefaultApplied(d.cfg, localctl.Overrides{}, took); ok {
 		t.Fatal("reported a default on a router that renders no services")
+	}
+}
+
+// A render the router's xray refuses with the «Нейросети» default is tried
+// again without it; an owner's own choice is never dropped.
+func TestARefusedRenderDropsOnlyTheUnchosenAIDefault(t *testing.T) {
+	d, _ := aiTestCache(t, "🇷🇺🇪🇺 Авто")
+	d.cfg.OverridesPath = filepath.Join(t.TempDir(), "overrides.json")
+	opts := xray.SpliceOptions{ServiceEntries: map[string]json.RawMessage{"ai": json.RawMessage(`{}`), "youtube": json.RawMessage(`{}`)}}
+	without, ok := d.withoutAIDefault(opts)
+	if !ok || without.ServiceEntries["ai"] != nil || without.ServiceEntries["youtube"] == nil {
+		t.Fatalf("default not dropped: %v %v", without.ServiceEntries, ok)
+	}
+	if _, ok := d.withoutAIDefault(xray.SpliceOptions{ServiceEntries: map[string]json.RawMessage{"youtube": json.RawMessage(`{}`)}}); ok {
+		t.Fatal("dropped something with no AI default")
+	}
+	if _, err := localctl.UpdateOverrides(d.cfg.OverridesPath, func(o *localctl.Overrides) error {
+		o.ServiceEntries = map[string]string{"ai": "x"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.withoutAIDefault(opts); ok {
+		t.Fatal("dropped the owner's own AI location")
 	}
 }

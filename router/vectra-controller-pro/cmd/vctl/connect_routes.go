@@ -251,21 +251,47 @@ func remarkFlags(remark string) []string {
 }
 
 // aiDefaultApplied is the location «Нейросети» run through while the owner
-// has made no choice, as the router runs it: the default, when the installed
-// render carries it (or the router runs that location itself). The Connect
+// has made no choice, as the router runs it: the one the installed render
+// carries (spliceKey, the render's options, names it by digest), or the
+// location the router runs itself when it is the default. The Connect
 // inventory and the router UI report this, never a default a render refused.
-func aiDefaultApplied(cfg agentcfg.Config, ov localctl.Overrides) (string, bool) {
-	// The check-in asks every minute; the answer only changes with these files
-	// and the owner's choice, so it is kept until one of them does.
-	key := aiAppliedKey(cfg, ov)
+func aiDefaultApplied(cfg agentcfg.Config, ov localctl.Overrides, spliceKey string) (string, bool) {
+	if cfg.RouteSource != "" {
+		return "", false
+	}
+	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" {
+		return "", false
+	}
+	if id := spliceKeyEntry(spliceKey, "ai"); id != "" {
+		return id, true
+	}
+	// No overlay: the router may run the default itself. The check-in asks
+	// every minute; the answer only changes with these files, so it is kept
+	// until one of them does.
+	key := aiAppliedKey(cfg)
 	aiApplied.Lock()
 	defer aiApplied.Unlock()
 	if key != "" && key == aiApplied.key {
 		return aiApplied.id, aiApplied.ok
 	}
-	id, ok := aiDefaultAppliedNow(cfg, ov)
+	id, ok := aiRunsDefault(cfg, ov)
 	aiApplied.key, aiApplied.id, aiApplied.ok = key, id, ok
 	return id, ok
+}
+
+// spliceKeyEntry is the digest of the location the render took for service.
+func spliceKeyEntry(spliceKey, service string) string {
+	_, rest, ok := strings.Cut(spliceKey, ";svcEntries=")
+	if !ok {
+		return ""
+	}
+	rest, _, _ = strings.Cut(rest, ";")
+	for _, kv := range strings.Split(rest, ",") {
+		if id, found := strings.CutPrefix(kv, service+"="); found && validConnectEntryID(id) {
+			return id
+		}
+	}
+	return ""
 }
 
 var aiApplied struct {
@@ -274,9 +300,9 @@ var aiApplied struct {
 	ok      bool
 }
 
-func aiAppliedKey(cfg agentcfg.Config, ov localctl.Overrides) string {
-	k := fmt.Sprintf("%s|%q|%q|", cfg.RouteSource, ov.ServiceEntries["ai"], ov.Services["ai"])
-	for _, p := range []string{cfg.EntriesPath, cfg.ProviderConfigPath, cfg.XrayRenderPath} {
+func aiAppliedKey(cfg agentcfg.Config) string {
+	k := ""
+	for _, p := range []string{cfg.EntriesPath, cfg.ProviderConfigPath} {
 		st, err := os.Stat(p)
 		if err != nil {
 			return ""
@@ -286,7 +312,7 @@ func aiAppliedKey(cfg agentcfg.Config, ov localctl.Overrides) string {
 	return k
 }
 
-func aiDefaultAppliedNow(cfg agentcfg.Config, ov localctl.Overrides) (string, bool) {
+func aiRunsDefault(cfg agentcfg.Config, ov localctl.Overrides) (string, bool) {
 	cache, err := localctl.LoadEntries(cfg.EntriesPath)
 	if err != nil {
 		return "", false
@@ -296,14 +322,7 @@ func aiDefaultAppliedNow(cfg agentcfg.Config, ov localctl.Overrides) (string, bo
 		return "", false
 	}
 	id, raw, ok := aiDefault(ov, cfg.RouteSource, cache, running)
-	if !ok {
-		return "", false
-	}
-	if bytes.Equal(raw, running) {
-		return id, true
-	}
-	render, err := vault.ReadFile(cfg.XrayRenderPath)
-	return id, err == nil && bytes.Contains(render, []byte(`"vctl-connect-ai-`))
+	return id, ok && bytes.Equal(raw, running)
 }
 
 func connectDigestIndex(entries []json.RawMessage, id string) (int, error) {

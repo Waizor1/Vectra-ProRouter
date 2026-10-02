@@ -57,8 +57,10 @@ func (k feedKey) signAs(number [8]byte, msg []byte) []byte {
 const (
 	feedArch    = "aarch64_cortex-a53"
 	feedVersion = "0.6.0-r37"
-	feedPath    = "/artifacts/openwrt/pro-canary/" + feedArch
-	artifact    = "/artifacts/vectra-controller-pro_" + feedVersion + "_" + feedArch + ".ipk"
+	// standInstalledVersion is what the stand's router runs before an update.
+	standInstalledVersion = "0.6.0-r36"
+	feedPath              = "/artifacts/openwrt/pro-canary/" + feedArch
+	artifact              = "/artifacts/vectra-controller-pro_" + feedVersion + "_" + feedArch + ".ipk"
 )
 
 // feedStanza is a package of the index as feedtool index writes it.
@@ -109,13 +111,17 @@ type signedFeedStand struct {
 
 func newSignedFeedStand(t *testing.T) *signedFeedStand {
 	t.Helper()
-	oldCommand := maintenanceCommand
-	t.Cleanup(func() { maintenanceCommand = oldCommand })
+	oldCommand, oldCompare := maintenanceCommand, signedFloorNewer
+	t.Cleanup(func() { maintenanceCommand, signedFloorNewer = oldCommand, oldCompare })
+	// The router runs the release before the feed's: an update is an upgrade.
 	maintenanceCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		if name != "opkg" || len(args) != 2 || args[0] != "status" || args[1] != proPackageName {
 			return nil, errors.New("unexpected fake opkg command")
 		}
-		return []byte("Version: " + feedVersion + "\n"), nil
+		return []byte("Version: " + standInstalledVersion + "\n"), nil
+	}
+	signedFloorNewer = func(_ context.Context, installed, candidate string) (bool, error) {
+		return installed == feedVersion && candidate == standInstalledVersion, nil
 	}
 	s := &signedFeedStand{key: newFeedKey(7), hits: map[string]int{}}
 	s.ipk = []byte("stands in for vectra-controller-pro " + feedVersion)
@@ -351,6 +357,7 @@ func TestRawUpdateControllerRefusesSignedDowngrade(t *testing.T) {
 	mu := &sync.Mutex{}
 	d := buildGuardTestDaemon(t, results, mu)
 	s := newSignedFeedStand(t)
+	signedFloorNewer = newerMaintenanceVersion // the real comparison, through opkg
 	old := maintenanceCommand
 	t.Cleanup(func() { maintenanceCommand = old })
 	maintenanceCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -418,5 +425,34 @@ func TestRawUpdateControllerVersionFloorFailureAndUpgrade(t *testing.T) {
 				t.Fatal("upgrade refused", e)
 			}
 		})
+	}
+}
+
+// The feed's package already installed: nothing is downloaded or installed,
+// and the result says so instead of «controllerUpdated» (opkg would have
+// printed "up to date" and exited 0).
+func TestRawUpdateControllerSameVersionIsUpToDate(t *testing.T) {
+	results := map[string][]controlplane.JobResultRequest{}
+	mu := &sync.Mutex{}
+	d := buildGuardTestDaemon(t, results, mu)
+	s := newSignedFeedStand(t)
+	maintenanceCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("Version: " + feedVersion + "\n"), nil
+	}
+	if e := d.executeJob(context.Background(), s.job("same-version", nil), controlplane.CheckInResponse{}); e != nil {
+		t.Fatal(e)
+	}
+	if len(s.installed) != 0 || s.restarts != 0 || s.hit(artifact) != 0 {
+		t.Fatal("same version downloaded/installed/restarted", s.installed, s.restarts, s.hits)
+	}
+	mu.Lock()
+	got := results["same-version"]
+	mu.Unlock()
+	last := controlplane.JobResultRequest{}
+	if len(got) > 0 {
+		last = got[len(got)-1]
+	}
+	if last.Status != "success" || last.Result["controllerUpdated"] != false || last.Result["upToDate"] != true {
+		t.Fatalf("results %+v", got)
 	}
 }
