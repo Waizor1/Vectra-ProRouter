@@ -16,6 +16,7 @@ import { buildTerminalRouterHostnameUpdatePayload } from "~/lib/router-hostname-
 import * as dbModule from "~/server/db";
 
 import {
+  buildRouterReauthMessage,
   checkInRouter,
   recordJobResult,
   registerRouter,
@@ -231,6 +232,65 @@ describe("registerRouter", () => {
     });
   });
 
+  describe("device key pinning of an owned router", () => {
+    const owned = () => routerRow({ownerRef: "acct-42", approvedAt: new Date("2026-09-28T09:30:00.000Z"), importState: "approved", status: "active"});
+    const onRecord = deviceKeyPair();
+    const reauthProof = (privateKey: KeyObject, deviceIdentifier = "vectra-07bf0887f662") => {
+      const signedAt = new Date().toISOString();
+      return {signedAt, signature: sign(null, Buffer.from(buildRouterReauthMessage(deviceIdentifier, signedAt), "utf8"), privateKey).toString("base64")};
+    };
+
+    it("refuses a token re-registration that swaps the key of an owned router", async () => {
+      const record = owned();
+      fake.reset({selects: [[routers, [[record]]], [routerCredentials, [[{devicePublicKey: onRecord.publicKey}]]]], updateReturns: [[routers, [[record]]]]});
+
+      await expect(registerRouter({protocolVersion: "2026-04-v1", inventory: inventory({devicePublicKey: DEVICE_KEY})}, {authenticatedRouterId: ROUTER_ID})).rejects.toMatchObject({status: 403});
+
+      expect(fake.updates(routers)).toEqual([]);
+      expect(fake.inserts(routerCredentials)).toEqual([]);
+      expect(fake.inserts(eventLog)).toHaveLength(1);
+      expect(fake.inserts(eventLog)[0]).toMatchObject({type: "router.device_key_change_blocked", metadata: {recoveryProofRejectReason: "missing_proof"}});
+    });
+
+    it("refuses a key swap whose proof is signed by the NEW key, not the one on record", async () => {
+      const record = owned();
+      const intruder = deviceKeyPair();
+      fake.reset({selects: [[routers, [[record]]], [routerCredentials, [[{devicePublicKey: onRecord.publicKey}]]]], updateReturns: [[routers, [[record]]]]});
+
+      await expect(registerRouter({protocolVersion: "2026-04-v1", inventory: inventory({devicePublicKey: intruder.publicKey}), recoveryProof: reauthProof(intruder.privateKey)}, {authenticatedRouterId: ROUTER_ID})).rejects.toMatchObject({status: 403});
+      expect(fake.inserts(routerCredentials)).toEqual([]);
+    });
+
+    it("lets an owned router rotate its key with a proof signed by the key on record", async () => {
+      const record = owned();
+      const next = deviceKeyPair();
+      fake.reset({selects: [[routers, [[record]]], [routerCredentials, [[{devicePublicKey: onRecord.publicKey}]]]], updateReturns: [[routers, [[record]]]]});
+
+      const response = await registerRouter({protocolVersion: "2026-04-v1", inventory: inventory({devicePublicKey: next.publicKey}), recoveryProof: reauthProof(onRecord.privateKey)}, {authenticatedRouterId: ROUTER_ID});
+
+      expect(response.routerId).toBe(ROUTER_ID);
+      expect(fake.inserts(routerCredentials)).toEqual([expect.objectContaining({devicePublicKey: next.publicKey})]);
+    });
+
+    it("re-registers an owned router that keeps its key without any proof", async () => {
+      const record = owned();
+      fake.reset({selects: [[routers, [[record]]], [routerCredentials, [[{devicePublicKey: onRecord.publicKey}]]]], updateReturns: [[routers, [[record]]]]});
+
+      await registerRouter({protocolVersion: "2026-04-v1", inventory: inventory({devicePublicKey: onRecord.publicKey})}, {authenticatedRouterId: ROUTER_ID});
+
+      expect(fake.inserts(routerCredentials)).toEqual([expect.objectContaining({devicePublicKey: onRecord.publicKey})]);
+    });
+
+    it("does not pin the key of a router nobody owns", async () => {
+      const record = routerRow();
+      fake.reset({selects: [[routers, [[record]]], [routerCredentials, [[{devicePublicKey: onRecord.publicKey}]]]], updateReturns: [[routers, [[record]]]]});
+
+      await registerRouter({protocolVersion: "2026-04-v1", inventory: inventory({devicePublicKey: DEVICE_KEY})}, {authenticatedRouterId: ROUTER_ID});
+
+      expect(fake.inserts(routerCredentials)).toEqual([expect.objectContaining({devicePublicKey: DEVICE_KEY})]);
+    });
+  });
+
   const preclaimed = () =>
     routerRow({
       lastSeenAt: null,
@@ -424,6 +484,26 @@ describe("checkInRouter claim", () => {
     fake.reset({selects: [[routers, [[owner]]], [healthIncidents, [[]]], [jobs, [[{id: JOB_ID, routerId: ROUTER_ID, type: "connect_router_action", state: "queued", desiredRevisionId: null, payload, createdAt: new Date()}]]]], updateReturns: [[routers, [[owner], [owner], [owner]]]]});
     const response = await checkInRouter(ROUTER_ID, checkInPayload());
     expect(response.jobs[0]?.payload).toEqual({origin: "partner_action", ownerRef: "acct-42", actionId: JOB_ID, action: "set_wifi", params: {ssid: "Fake guest", password: "fake-guest-pass-123"}});
+    expect(JSON.stringify(fake.calls.map(({table: _table, ...call}) => call))).not.toContain("fake-guest-pass-123");
+  });
+
+  it("fails one undecryptable owner job and still delivers the rest of the check-in", async () => {
+    const {protectPartnerParams} = await import("./partner-router-secrets");
+    const owner = routerRow({ownerRef: "acct-42", approvedAt: new Date(), importState: "approved", status: "active"});
+    const BROKEN_ID = "2e3d4c5b-6a7f-4e8d-8c9b-1a0f2e3d4c5b";
+    const good = {id: JOB_ID, routerId: ROUTER_ID, type: "connect_router_action", state: "queued", desiredRevisionId: null, createdAt: new Date(), payload: {origin: "partner_action", ownerRef: "acct-42", actionId: JOB_ID, action: "set_wifi", ...protectPartnerParams("set_wifi", {ssid: "Fake guest", password: "fake-guest-pass-123"}, {routerId: ROUTER_ID, ownerRef: "acct-42", actionId: JOB_ID})}};
+    // A ciphertext that no longer opens (key rotated, row corrupted).
+    const broken = {id: BROKEN_ID, routerId: ROUTER_ID, type: "connect_router_action", state: "queued", desiredRevisionId: null, createdAt: new Date(), payload: {origin: "partner_action", ownerRef: "acct-42", actionId: BROKEN_ID, action: "set_wifi", paramsCiphertext: "{\"v\":2,\"iv\":\"AAAA\",\"tag\":\"AAAA\",\"data\":\"AAAA\"}"}};
+    fake.reset({selects: [[routers, [[owner]]], [healthIncidents, [[]]], [jobs, [[broken, good]]]], updateReturns: [[routers, [[owner], [owner], [owner], [owner]]], [jobs, [[{...broken, state: "failed"}]]]]});
+
+    const response = await checkInRouter(ROUTER_ID, checkInPayload());
+
+    expect(response.jobs.map(job => job.id)).toEqual([JOB_ID]);
+    expect(fake.updates(jobs)).toHaveLength(1);
+    expect(fake.updates(jobs)[0]).toMatchObject({state: "failed"});
+    expect(fake.updates(jobs)[0]?.completedAt).toBeInstanceOf(Date);
+    expect(fake.inserts(eventLog)).toEqual(expect.arrayContaining([expect.objectContaining({type: "job.undeliverable", metadata: {jobId: BROKEN_ID, jobType: "connect_router_action", code: "payload_unavailable"}})]));
+    expect(fake.inserts(partnerWebhooks).map(row => row.payload)).toEqual(expect.arrayContaining([expect.objectContaining({event: "router.action", ownerRef: "acct-42", detail: {actionId: BROKEN_ID, state: "failed", detail: "payload_unavailable"}})]));
     expect(JSON.stringify(fake.calls.map(({table: _table, ...call}) => call))).not.toContain("fake-guest-pass-123");
   });
 

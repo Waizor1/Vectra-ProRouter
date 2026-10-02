@@ -1287,6 +1287,8 @@ export async function registerRouter(
         })
       : null;
   const adoptingPreclaimedRouter = adoption?.adopt === true;
+  // Set once a recovery proof verified against the STORED device key.
+  let provenByStoredKey = false;
 
   if (existingRouter && tokenRequired && !adoptingPreclaimedRouter) {
     // Recovery path: a router that lost its bearer token but kept its ed25519
@@ -1327,6 +1329,7 @@ export async function registerRouter(
       );
     }
 
+    provenByStoredKey = true;
     await db.insert(eventLog).values({
       routerId: existingRouter.id,
       type: "router.reregister_via_signature",
@@ -1338,6 +1341,54 @@ export async function registerRouter(
         signedAt: parsed.recoveryProof?.signedAt ?? null,
       },
     });
+  }
+
+  // A router a Connect account owns keeps its device key: the bearer token
+  // alone (which a re-registration also accepts) must not be able to swap in
+  // another key and so take the owner's confidential telemetry and Wi-Fi jobs
+  // to a different device. A key change needs a recovery proof signed by the
+  // key on record. A pre-claimed adoption already proved the partner-verified
+  // key and is not a change.
+  if (
+    existingRouter?.ownerRef &&
+    !existingRouter.releasedAt &&
+    !adoptingPreclaimedRouter &&
+    !provenByStoredKey
+  ) {
+    const storedKey = await getLatestDevicePublicKey(existingRouter.id);
+    if (
+      storedKey &&
+      !devicePublicKeysMatch(storedKey, parsed.inventory.devicePublicKey)
+    ) {
+      const keyChangeProof = parsed.recoveryProof
+        ? verifyRouterReauthProof({
+            recoveryProof: parsed.recoveryProof,
+            deviceIdentifier: parsed.inventory.deviceIdentifier,
+            devicePublicKey: storedKey,
+            now,
+          })
+        : ({ ok: false, reason: "missing_proof" } as const);
+      if (!keyChangeProof.ok) {
+        await db.insert(eventLog).values({
+          routerId: existingRouter.id,
+          type: "router.device_key_change_blocked",
+          severity: "warning",
+          message:
+            "Re-registration of an owned router with a different device key was rejected: no proof signed by the key on record.",
+          metadata: {
+            deviceIdentifier: parsed.inventory.deviceIdentifier,
+            recoveryProofPresented: Boolean(parsed.recoveryProof),
+            recoveryProofRejectReason: keyChangeProof.reason,
+          },
+        });
+        throw Object.assign(
+          new Error(
+            "An owned router's device key can only change with a proof signed by its current key.",
+          ),
+          { status: 403 },
+        );
+      }
+    }
   }
 
   const nextStatus = deriveRouterStatus(
@@ -1644,13 +1695,32 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
   // the panel stored for it.
   const routePolicyConfig =
     parsed.passwallImport?.config ?? policyContext.configByRouter.get(router.id) ?? null;
-  const serializedJobs = deliverableJobs.some(job => job.payload.origin === "partner_action")
+  // Serialized one by one: a job that cannot be hydrated (a stored ciphertext
+  // that no longer decrypts or binds) is failed on its own instead of throwing
+  // the whole check-in away — and with it every other job for this router.
+  const serializeEach = (candidates: JobRow[], ownerRef: string | null) => {
+    const delivered: ReturnType<typeof serializeJob>[] = [];
+    const undeliverable: JobRow[] = [];
+    for (const job of candidates) {
+      try {
+        delivered.push(serializeJob(job, ownerRef));
+      } catch {
+        undeliverable.push(job);
+      }
+    }
+    return { delivered, undeliverable, ownerRef };
+  };
+  const serialization = deliverableJobs.some(job => job.payload.origin === "partner_action")
     ? await db.transaction(async tx => {
       const [current] = await tx.update(routers).set({updatedAt: now}).where(eq(routers.id, router.id)).returning();
-      if (!current || current.releasedAt || !current.ownerRef || current.status === "disabled" || current.importState !== "approved" || current.engineMode !== "xray-direct") return [];
-      return deliverableJobs.filter(job => job.payload.origin !== "partner_action" || job.payload.ownerRef === current.ownerRef).map(job => serializeJob(job, current.ownerRef));
+      if (!current || current.releasedAt || !current.ownerRef || current.status === "disabled" || current.importState !== "approved" || current.engineMode !== "xray-direct") return serializeEach([], null);
+      return serializeEach(deliverableJobs.filter(job => job.payload.origin !== "partner_action" || job.payload.ownerRef === current.ownerRef), current.ownerRef);
     })
-    : deliverableJobs.map(job => serializeJob(job));
+    : serializeEach(deliverableJobs, null);
+  if (serialization.undeliverable.length > 0) {
+    await failUndeliverableJobs(router.id, serialization.undeliverable, serialization.ownerRef, now);
+  }
+  const serializedJobs = serialization.delivered;
 
   return routerCheckInResponseSchema.parse({
     protocolVersion: parsed.protocolVersion,
@@ -1683,6 +1753,50 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     ),
     ...buildRouterClaimResponseFields(router),
   });
+}
+
+const UNDELIVERABLE_JOB_CODE = "payload_unavailable";
+
+/**
+ * Fail jobs a check-in could not serialize. The reason is a fixed code: the
+ * underlying error may come from decrypting a payload that carries a Wi-Fi
+ * password and is never echoed anywhere. An owner's action ends as a failed
+ * router.action, so the Connect app shows a final result instead of waiting.
+ */
+async function failUndeliverableJobs(
+  routerId: string,
+  undeliverable: JobRow[],
+  ownerRef: string | null,
+  now: Date,
+) {
+  for (const job of undeliverable) {
+    const [failed] = await db
+      .update(jobs)
+      .set({ state: "failed", completedAt: now })
+      .where(and(eq(jobs.id, job.id), eq(jobs.state, "queued")))
+      .returning();
+    if (!failed) {
+      continue;
+    }
+    await db.insert(eventLog).values({
+      routerId,
+      type: "job.undeliverable",
+      severity: "warning",
+      message: `Job ${job.id} (${job.type}) could not be prepared for delivery and was failed.`,
+      metadata: { jobId: job.id, jobType: job.type, code: UNDELIVERABLE_JOB_CODE },
+    });
+    try {
+      await notifyPartnerActionResultWithDb(db, {
+        job,
+        ownerRef,
+        status: "failure",
+        code: UNDELIVERABLE_JOB_CODE,
+      });
+      schedulePartnerWebhookDelivery();
+    } catch (error) {
+      console.error("[partner-webhooks] undeliverable job event failed", error);
+    }
+  }
 }
 
 export async function recordJobResult(routerId: string, input: unknown) {
