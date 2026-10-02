@@ -193,3 +193,37 @@ func TestADeviceCannotFillANodesPace(t *testing.T) {
 		t.Fatalf("admit %d/%d, pace %d/%d", s.AdmitRate, s.AdmitBurst, s.PaceRate, s.PaceBurst)
 	}
 }
+
+// UDP 50000-65535 stays with xray for voice (Discord, Telegram), so a
+// torrenting host's uTP and DHT to peers on those ports went through the
+// tunnel, where the exit's UDP is not a peer's: a magnet stalls at "getting
+// the files' data" (Xiaomi Pad on 1111, 2026-10-01). Only for a host already
+// known to be one of P2P, and only a first packet that says it is BitTorrent:
+// a uTP SYN (type 4, version 1) or a DHT message (bencoded "d1:"). Voice
+// never starts so (RTP 0x80/0x90, STUN 0x00/0x01).
+func TestAP2PHostsUTPAndDHTOnVoicePortsGoByTheKernel(t *testing.T) {
+	out := mustRender(t, DefaultSpec(12345, 1))
+	rules := rulesOf(chainNamed(t, out, "prerouting"))
+	tproxy := indexOf(rules, "meta l4proto { tcp, udp } counter name \"vctl_tproxy_hits\" tproxy")
+	for _, want := range []string{
+		`iif != "lo" ct state new ct original packets 1 ip saddr @vctl_p2p4 meta l4proto udp udp dport 50000-65535 @th,64,8 0x41 update @vctl_p2p4 { ip saddr timeout 5m } ct mark set ct mark or 0x10000000 counter name "vctl_p2p_direct" return`,
+		`iif != "lo" ct state new ct original packets 1 ip saddr @vctl_p2p4 meta l4proto udp udp dport 50000-65535 @th,64,24 0x64313a update @vctl_p2p4 { ip saddr timeout 5m } ct mark set ct mark or 0x10000000 counter name "vctl_p2p_direct" return`,
+		`iif != "lo" ct state new ct original packets 1 ip6 saddr @vctl_p2p6 meta l4proto udp udp dport 50000-65535 @th,64,8 0x41 update @vctl_p2p6 { ip6 saddr timeout 5m } ct mark set ct mark or 0x10000000 counter name "vctl_p2p_direct" return`,
+		`iif != "lo" ct state new ct original packets 1 ip6 saddr @vctl_p2p6 meta l4proto udp udp dport 50000-65535 @th,64,24 0x64313a update @vctl_p2p6 { ip6 saddr timeout 5m } ct mark set ct mark or 0x10000000 counter name "vctl_p2p_direct" return`,
+	} {
+		i := indexOf(rules, want)
+		if i < 0 {
+			t.Errorf("prerouting lacks:\n  %s", want)
+			continue
+		}
+		if tproxy < 0 || i > tproxy {
+			t.Errorf("after xray takes it (%d, tproxy %d): %s", i, tproxy, want)
+		}
+	}
+	// A host not known to be P2P keeps every voice port with xray.
+	for _, r := range rules {
+		if strings.Contains(r, "@th,64") && !strings.Contains(r, "saddr @vctl_p2p") {
+			t.Errorf("payload match outside a known P2P host: %s", r)
+		}
+	}
+}

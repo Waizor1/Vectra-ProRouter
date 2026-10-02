@@ -153,3 +153,67 @@ func TestConnectBalancerDefaultStaysSelectedEntry(t *testing.T) {
 	}
 	t.Fatal("selected balancer missing")
 }
+
+// A one-country location (the provider's «🇩🇪 Германия») has no rule of its
+// own for YouTube, TikTok or Telegram: everything that is not Russian goes
+// down its main path. Choosing it for a service in the Vectra app means that
+// path (1111, 2026-10-02: every choice was refused service_path_unavailable).
+const oneCountryEntry = `{
+ "outbounds":[
+  {"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u"}]}]}},
+  {"tag":"DIRECT","protocol":"freedom"},
+  {"tag":"BLOCK","protocol":"blackhole"}
+ ],
+ "routing":{"rules":[
+  {"domain":["geosite:category-ru"],"outboundTag":"DIRECT"},
+  {"network":"tcp,udp","outboundTag":"de-1"}
+ ]}
+}`
+
+func TestConnectServiceTakesTheMainPathOfALocationWithoutItsOwnRule(t *testing.T) {
+	noCatchAll := strings.Replace(oneCountryEntry, `,
+  {"network":"tcp,udp","outboundTag":"de-1"}`, "", 1)
+	for name, entry := range map[string]string{"catch-all rule": oneCountryEntry, "default outbound": noCatchAll} {
+		t.Run(name, func(t *testing.T) {
+			for _, id := range []string{"youtube", "telegram"} {
+				if err := xray.ValidateConnectServiceEntry([]byte(entry), id); err != nil {
+					t.Fatalf("%s refused: %v", id, err)
+				}
+			}
+			_, r, res := spliceServices(t, xray.SpliceOptions{ServiceEntries: map[string]json.RawMessage{
+				"youtube": json.RawMessage(entry), "telegram": json.RawMessage(entry)}})
+			if len(res.Services.Applied) != 2 {
+				t.Fatalf("applied %v", res.Services.Applied)
+			}
+			got := map[string]bool{}
+			for _, rule := range r.Routing.Rules {
+				if !strings.HasPrefix(rule.OutboundTag, "vctl-connect-") {
+					continue
+				}
+				for _, d := range append(rule.Domain, rule.IP...) {
+					got[d+"→"+rule.OutboundTag] = true
+				}
+			}
+			for _, want := range []string{"geosite:youtube→vctl-connect-youtube-de-1", "geosite:telegram→vctl-connect-telegram-de-1", "geoip:telegram→vctl-connect-telegram-de-1"} {
+				if !got[want] {
+					t.Fatalf("missing %s in %v", want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestConnectServiceRefusesALocationWhoseMainPathIsNotATunnel(t *testing.T) {
+	for name, entry := range map[string]string{
+		"direct catch-all":              strings.Replace(oneCountryEntry, `{"network":"tcp,udp","outboundTag":"de-1"}`, `{"network":"tcp,udp","outboundTag":"DIRECT"}`, 1),
+		"blocked catch-all":             strings.Replace(oneCountryEntry, `{"network":"tcp,udp","outboundTag":"de-1"}`, `{"network":"tcp,udp","outboundTag":"BLOCK"}`, 1),
+		"freedom default":               `{"outbounds":[{"tag":"DIRECT","protocol":"freedom"},{"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u"}]}]}}],"routing":{"rules":[{"domain":["geosite:google"],"outboundTag":"de-1"}]}}`,
+		"tcp-only rule, direct default": `{"outbounds":[{"tag":"DIRECT","protocol":"freedom"},{"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u"}]}]}}],"routing":{"rules":[{"network":"tcp","outboundTag":"de-1"}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := xray.ValidateConnectServiceEntry([]byte(entry), "youtube"); err == nil {
+				t.Fatal("a location whose main path is no tunnel was accepted")
+			}
+		})
+	}
+}

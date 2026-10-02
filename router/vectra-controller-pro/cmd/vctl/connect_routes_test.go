@@ -15,11 +15,14 @@ import (
 
 func TestConnectRouteChanges(t *testing.T) {
 	raw := json.RawMessage(`{"outbounds":[{"tag":"test","protocol":"vless"}],"routing":{"rules":[{"domain":["geosite:youtube"],"outboundTag":"test"}]}}`)
-	cache := &localctl.EntriesCache{Remarks: []string{"one"}, Entries: []json.RawMessage{raw}}
+	// A location whose main path goes direct carries no service.
+	directEntry := json.RawMessage(`{"outbounds":[{"tag":"direct","protocol":"freedom"}],"routing":{"rules":[]}}`)
+	cache := &localctl.EntriesCache{Remarks: []string{"one", "direct"}, Entries: []json.RawMessage{raw, directEntry}}
 	id := localctl.Summarize(cache)[0].Digest
+	directID := localctl.Summarize(cache)[1].Digest
 	for _, tc := range []struct{ action, params, code string }{
 		{"select_entry", fmt.Sprintf(`{"entryId":%q}`, id), ""}, {"select_entry", `{"entryId":null}`, ""}, {"select_entry", `{"entryId":"bad"}`, "unknown_entry"},
-		{"set_service", fmt.Sprintf(`{"service":"youtube","entryId":%q}`, id), ""}, {"set_service", fmt.Sprintf(`{"service":"telegram","entryId":%q}`, id), "service_path_unavailable"}, {"set_service", `{"service":"shell","entryId":null}`, "unknown_service"},
+		{"set_service", fmt.Sprintf(`{"service":"youtube","entryId":%q}`, id), ""}, {"set_service", fmt.Sprintf(`{"service":"telegram","entryId":%q}`, id), ""}, {"set_service", fmt.Sprintf(`{"service":"telegram","entryId":%q}`, directID), "service_path_unavailable"}, {"set_service", `{"service":"shell","entryId":null}`, "unknown_service"},
 		{"set_rules", `{"direct":["Example.COM","*.example.org",".example.net","тест.рф"],"vpn":[]}`, ""}, {"set_rules", `{"direct":["x.example"],"vpn":["X.example"]}`, "invalid_params"}, {"set_rules", `{"direct":["https://example.org"],"vpn":[]}`, "invalid_params"}, {"set_rules", `{"direct":["1.2.3.4"],"vpn":[]}`, "invalid_params"},
 	} {
 		t.Run(tc.action+tc.params, func(t *testing.T) {

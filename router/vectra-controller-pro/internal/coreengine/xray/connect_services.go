@@ -34,10 +34,66 @@ func ValidateConnectServiceEntry(raw []byte, id string) error {
 	if err != nil {
 		return errors.New("invalid_entry")
 	}
-	if _, ok := servicePath(providerRules(raw), v, s); !ok {
+	if _, ok := connectServicePath(raw, v, s); !ok {
 		return errors.New("service_path_unavailable")
 	}
 	return nil
+}
+
+// connectServicePath is where a location chosen in the Vectra app sends a
+// service. The location's own rule for it decides, as in the router's own
+// service choice. A one-country location has none — everything that is not
+// Russian goes down its main path — and choosing it for YouTube means that
+// path: its catch-all rule (every network, nothing else), or else xray's
+// default handler. Only a tunnel is a path: a main path that goes direct, is
+// blocked, or is missing refuses the choice instead of quietly unproxying the
+// service.
+func connectServicePath(raw []byte, v *xrayview.View, s Service) (servicePathOf, bool) {
+	rules := providerRules(raw)
+	if p, ok := servicePath(rules, v, s); ok {
+		return p, true
+	}
+	p := servicePathOf{domains: s.Domains, ips: s.IPs}
+	if target, balancer, found := catchAllRule(rules); found {
+		p.target, p.isBalancer = target, balancer
+	} else if v.Default != nil && v.Default.Tag != "" {
+		p.target = v.Default.Tag
+	} else {
+		return servicePathOf{}, false
+	}
+	if p.isBalancer {
+		return p, v.Balancer(p.target) != nil
+	}
+	o := v.Outbound(p.target)
+	return p, o != nil && o.Dials
+}
+
+// catchAllRule is the first rule that matches all traffic: no condition but
+// a network naming both tcp and udp. Rules after it are never reached.
+func catchAllRule(rules []map[string]json.RawMessage) (target string, balancer bool, found bool) {
+	for _, r := range rules {
+		network := ""
+		other := false
+		for k, val := range r {
+			switch foldKey(k) {
+			case foldKey("type"), foldKey("outboundTag"), foldKey("balancerTag"), foldKey("ruleTag"):
+			case foldKey("network"):
+				network = strings.ToLower(jsonString(val))
+			default:
+				if !emptyJSON(val) {
+					other = true
+				}
+			}
+		}
+		if other || !strings.Contains(network, "tcp") || !strings.Contains(network, "udp") {
+			continue
+		}
+		if t := jsonString(ruleField(r, "balancerTag")); t != "" {
+			return t, true, true
+		}
+		return jsonString(ruleField(r, "outboundTag")), false, true
+	}
+	return "", false, false
 }
 
 func addConnectServices(p *servicePlan, base []byte, entries map[string]json.RawMessage, inbound string) error {
@@ -60,7 +116,7 @@ func addConnectServices(p *servicePlan, base []byte, entries map[string]json.Raw
 		}
 		svc, _ := ServiceByID(id)
 		v, _ := xrayview.Parse(raw)
-		path, _ := servicePath(providerRules(raw), v, svc)
+		path, _ := connectServicePath(raw, v, svc)
 		var doc struct {
 			Outbounds []map[string]json.RawMessage `json:"outbounds"`
 			Routing   struct {
