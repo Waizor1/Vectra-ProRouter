@@ -483,7 +483,9 @@ describe("checkInRouter claim", () => {
     const {protectPartnerParams} = await import("./partner-router-secrets");
     const owner = routerRow({ownerRef: "acct-42", approvedAt: new Date(), importState: "approved", status: "active"});
     const payload = {origin: "partner_action", ownerRef: "acct-42", actionId: JOB_ID, action: "set_wifi", ...protectPartnerParams("set_wifi", {ssid: "Fake guest", password: "fake-guest-pass-123"}, {routerId: ROUTER_ID, ownerRef: "acct-42", actionId: JOB_ID})};
-    fake.reset({selects: [[routers, [[owner]]], [healthIncidents, [[]]], [jobs, [[{id: JOB_ID, routerId: ROUTER_ID, type: "connect_router_action", state: "queued", desiredRevisionId: null, payload, createdAt: new Date()}]]]], updateReturns: [[routers, [[owner], [owner], [owner]]]]});
+    const job = {id: JOB_ID, routerId: ROUTER_ID, type: "connect_router_action", state: "queued", desiredRevisionId: null, payload, createdAt: new Date()};
+    // The second read is the re-read under the router lock.
+    fake.reset({selects: [[routers, [[owner]]], [healthIncidents, [[]]], [jobs, [[job], [job]]]], updateReturns: [[routers, [[owner], [owner], [owner]]]]});
     const response = await checkInRouter(ROUTER_ID, checkInPayload());
     expect(response.jobs[0]?.payload).toEqual({origin: "partner_action", ownerRef: "acct-42", actionId: JOB_ID, action: "set_wifi", params: {ssid: "Fake guest", password: "fake-guest-pass-123"}});
     expect(JSON.stringify(fake.calls.map(({table: _table, ...call}) => call))).not.toContain("fake-guest-pass-123");
@@ -498,15 +500,18 @@ describe("checkInRouter claim", () => {
     const broken = {id: BROKEN_ID, routerId: ROUTER_ID, type: "connect_router_action", state: "queued", desiredRevisionId: null, createdAt: new Date(), payload: {origin: "partner_action", ownerRef: "acct-42", actionId: BROKEN_ID, action: "set_wifi", paramsCiphertext: "{\"v\":2,\"iv\":\"AAAA\",\"tag\":\"AAAA\",\"data\":\"AAAA\"}"}};
     // The failure is recorded through the router's own result path, which
     // reads the job and the router again.
-    fake.reset({selects: [[routers, [[owner], [owner]]], [healthIncidents, [[]]], [jobs, [[broken, good], [{...broken, state: "running"}]]]], updateReturns: [[routers, [[owner], [owner], [owner], [owner]]], [jobs, [[{...broken, state: "running"}]]]]});
+    fake.reset({selects: [[routers, [[owner], [owner]]], [healthIncidents, [[]]], [jobs, [[broken, good], [broken, good], [{...broken, state: "running"}]]]], updateReturns: [[routers, [[owner], [owner], [owner], [owner]]], [jobs, [[{...broken, state: "running"}]]]]});
 
     const response = await checkInRouter(ROUTER_ID, checkInPayload());
 
     expect(response.jobs.map(job => job.id)).toEqual([JOB_ID]);
-    expect(fake.updates(jobs)).toHaveLength(2);
-    expect(fake.updates(jobs)[0]).toEqual({state: "running"});
-    expect(fake.updates(jobs)[1]).toMatchObject({state: "failed"});
-    expect(fake.updates(jobs)[1]?.completedAt).toBeInstanceOf(Date);
+    // Only the delivered job is stamped; the broken one goes to the result path.
+    expect(fake.updates(jobs).map(({deliveredAt, ...rest}) => ({...rest, stamped: deliveredAt instanceof Date}))).toEqual([
+      {stamped: true},
+      {state: "running", stamped: false},
+      expect.objectContaining({state: "failed", stamped: true}),
+    ]);
+    expect(fake.updates(jobs)[2]?.completedAt).toBeInstanceOf(Date);
     expect(fake.inserts(eventLog)).toEqual(expect.arrayContaining([expect.objectContaining({type: "job.undeliverable", metadata: {jobId: BROKEN_ID, jobType: "connect_router_action", code: "payload_unavailable"}})]));
     expect(fake.inserts(partnerWebhooks).map(row => row.payload)).toEqual(expect.arrayContaining([expect.objectContaining({event: "router.action", ownerRef: "acct-42", detail: {actionId: BROKEN_ID, state: "failed", detail: "payload_unavailable"}})]));
     expect(JSON.stringify(fake.calls.map(({table: _table, ...call}) => call))).not.toContain("fake-guest-pass-123");
@@ -546,6 +551,59 @@ describe("checkInRouter claim", () => {
     expect(described).toEqual({error: "ZodError", issuePaths: ["password", "nested.ssid"]});
     expect(JSON.stringify(described)).not.toMatch(/fake-guest-pass-123|Fake guest|Expected/);
     expect(describeUndeliverableError(new TypeError("fake-guest-pass-123"))).toEqual({error: "TypeError"});
+  });
+
+  // Review 2026-10-02 (HIGH): check-in never recorded a delivery, so a
+  // partner's cancel could cancel a job the router had already received and
+  // run. Now the delivery is stamped (the job stays queued for redelivery)
+  // and the cancel sees it.
+  it("stamps a delivered owner action without leaving queued, and the cancel then refuses it", async () => {
+    const {cancelPartnerActionWithDb} = await import("./partner-routers");
+    const owner = routerRow({ownerRef: "acct-42", approvedAt: new Date(), importState: "approved", status: "active"});
+    const job = {id: JOB_ID, routerId: ROUTER_ID, type: "reload_xray_outbound", state: "queued", deliveredAt: null, desiredRevisionId: null, dedupeKey: "partner-action:rb7-key", createdAt: new Date(), payload: {origin: "partner_action", ownerRef: "acct-42", actionId: JOB_ID, action: "restart_vpn", idempotencyKey: "rb7-key"}};
+    fake.reset({selects: [[routers, [[owner]]], [healthIncidents, [[]]], [jobs, [[job], [job]]]], updateReturns: [[routers, [[owner], [owner], [owner]]]]});
+
+    const response = await checkInRouter(ROUTER_ID, checkInPayload());
+
+    expect(response.jobs.map(item => item.id)).toEqual([JOB_ID]);
+    const stamps = fake.updates(jobs);
+    expect(stamps).toHaveLength(1);
+    expect(stamps[0]).not.toHaveProperty("state");
+    expect(stamps[0]?.deliveredAt).toBeInstanceOf(Date);
+
+    // The cancel reads the job as the stamp left it.
+    const stamped = {...job, ...stamps[0]};
+    fake.reset({selects: [[jobs, [[stamped]]]], updateReturns: [[routers, [[owner]]]]});
+    expect(await cancelPartnerActionWithDb(fake.db as never, {routerId: ROUTER_ID, ownerRef: "acct-42", idempotencyKey: "rb7-key"})).toMatchObject({status: 409, body: {state: "delivered"}});
+    expect(fake.updates(jobs)).toEqual([]);
+  });
+
+  it("does not hand out an owner action cancelled after the candidates were read", async () => {
+    const owner = routerRow({ownerRef: "acct-42", approvedAt: new Date(), importState: "approved", status: "active"});
+    const job = {id: JOB_ID, routerId: ROUTER_ID, type: "reload_xray_outbound", state: "queued", deliveredAt: null, desiredRevisionId: null, createdAt: new Date(), payload: {origin: "partner_action", ownerRef: "acct-42", actionId: JOB_ID, action: "restart_vpn"}};
+    // Under the lock the job is no longer queued.
+    fake.reset({selects: [[routers, [[owner]]], [healthIncidents, [[]]], [jobs, [[job], []]]], updateReturns: [[routers, [[owner], [owner], [owner]]]]});
+
+    const response = await checkInRouter(ROUTER_ID, checkInPayload());
+
+    expect(response.jobs).toEqual([]);
+    expect(fake.updates(jobs)).toEqual([]);
+  });
+
+  it("still tells the backend when an undeliverable job's result path itself fails", async () => {
+    const {protectPartnerParams} = await import("./partner-router-secrets");
+    const owner = routerRow({ownerRef: "acct-42", approvedAt: new Date(), importState: "approved", status: "active"});
+    const BROKEN_ID = "2e3d4c5b-6a7f-4e8d-8c9b-1a0f2e3d4c5b";
+    const broken = {id: BROKEN_ID, routerId: ROUTER_ID, type: "connect_router_action", state: "queued", desiredRevisionId: null, createdAt: new Date(), payload: {origin: "partner_action", ownerRef: "acct-42", actionId: BROKEN_ID, action: "set_wifi", ...protectPartnerParams("set_wifi", {ssid: "Fake guest", password: "fake-guest-pass-123"}, {routerId: ROUTER_ID, ownerRef: "acct-42", actionId: "other-action"})}};
+    // recordJobResult finds no router (only the check-in's own read is scripted) and throws.
+    fake.reset({selects: [[routers, [[owner]]], [healthIncidents, [[]]], [jobs, [[broken], [broken], [{...broken, state: "running"}]]]], updateReturns: [[routers, [[owner], [owner], [owner], [owner], [owner]]], [jobs, [[{...broken, state: "running"}], [{...broken, state: "failed"}]]]]});
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await checkInRouter(ROUTER_ID, checkInPayload());
+
+    expect(fake.updates(jobs).map(update => update.state)).toEqual(["running", "failed"]);
+    expect(fake.inserts(partnerWebhooks).map(row => row.payload)).toEqual(expect.arrayContaining([expect.objectContaining({event: "router.action", detail: expect.objectContaining({actionId: BROKEN_ID, state: "failed", detail: "payload_unavailable"})})]));
+    errors.mockRestore();
   });
 
   it("stores the latest claim the router reports", async () => {
@@ -703,6 +761,30 @@ describe("recordJobResult reports a claim's first apply to the backend", () => {
     await recordJobResult(ROUTER_ID, result("failure", {stdout: "fake-secret-echo-123", stderr: "fake-secret-echo-123", result: {password: "fake-secret-echo-123"}}));
     expect(JSON.stringify(fake.calls.map(({table: _table, ...call}) => call))).not.toContain("fake-secret-echo-123");
     expect(fake.inserts(partnerWebhooks).map(row => row.payload)).toEqual([expect.objectContaining({event: "router.action", detail: {actionId: JOB_ID, state: "failed"}})]);
+  });
+
+  // Review 2026-10-02: a result for a cancelled owner action was dropped
+  // silently. It cannot happen once deliveries are stamped, but if a router
+  // runs one anyway its owner hears the real result.
+  it("reports a result that arrives for a cancelled owner action and logs that it ran", async () => {
+    const router = routerRow({ownerRef: "acct-42", approvedAt: new Date(), importState: "approved", status: "active"});
+    fake.reset({
+      selects: [
+        [jobs, [[{id: JOB_ID, routerId: ROUTER_ID, type: "connect_router_action", state: "cancelled", desiredRevisionId: null, dedupeKey: "partner-action:rb7-key", payload: {origin: "partner_action", actionId: JOB_ID, ownerRef: "acct-42", action: "reboot", idempotencyKey: "rb7-key", cancelledBy: "partner"}, createdAt: new Date()}]]],
+        [routers, [[router]]],
+      ],
+      updateReturns: [[routers, [[router]]]],
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const answer = await recordJobResult(ROUTER_ID, result("failure", {result: {code: "no_route"}}));
+
+    expect(answer.acknowledged).toBe(true);
+    expect(warn).toHaveBeenCalledWith("[router-control] cancelled job ran", expect.objectContaining({jobId: JOB_ID}));
+    expect(fake.inserts(partnerWebhooks).map(row => row.payload)).toEqual([expect.objectContaining({event: "router.action", detail: {actionId: JOB_ID, idempotencyKey: "rb7-key", state: "failed", detail: "no_route"}})]);
+    // The job itself stays cancelled.
+    expect(fake.updates(jobs)).toEqual([]);
+    warn.mockRestore();
   });
 
   it("queues router.ready when it succeeded", async () => {

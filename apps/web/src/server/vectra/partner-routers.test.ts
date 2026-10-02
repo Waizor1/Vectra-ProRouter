@@ -17,6 +17,7 @@ import {
 } from "@vectra/db";
 import { routerConnectTelemetrySchema } from "@vectra/contracts";
 import { createFakeDb } from "./testing/fake-db";
+import { keyedDigest } from "./secrets";
 import { buildPartnerRequestHeaders } from "./partner-request-signature";
 import { type PartnerApiDeps } from "./partner-api";
 import { createMemoryIdempotency } from "./testing/memory-idempotency";
@@ -84,6 +85,9 @@ function action(overrides = {}) {
     params: {},
     ...overrides,
   };
+}
+function keyedDigestOf(input: unknown) {
+  return keyedDigest("partner-action-v1", JSON.stringify(input));
 }
 function deps(): PartnerRoutersDeps {
   const memory = createMemoryIdempotency();
@@ -803,31 +807,35 @@ describe("negotiated full typed management", () => {
 });
 
 // Review 2026-10-02: a command the backend gave up on was never cancelled, so
-// "try again" could run it twice. The partner cancels it — but only while it
-// still waits for the router; a delivered command is not claimed undone.
-describe("cancelling an owner's queued action", () => {
+// "try again" could run it twice. The partner cancels it by its own key — but
+// only while the router has never been handed it. A check-in leaves the job
+// `queued` (a lost answer must redeliver it) and stamps deliveredAt instead.
+describe("cancelling an owner's action by the partner's key", () => {
+  const KEY = "rb7-key";
   function ownJob(overrides: Record<string, unknown> = {}) {
     return {
       id: JOB,
       routerId: ID,
       type: "connect_router_action",
       state: "queued",
-      dedupeKey: "partner-action:rb7-key",
+      deliveredAt: null,
+      dedupeKey: `partner-action:${KEY}`,
       payload: {
         origin: "partner_action",
         ownerRef: "acct-42",
         actionId: JOB,
         action: "reboot",
+        idempotencyKey: KEY,
       },
       ...overrides,
     };
   }
   function cancelInput(overrides = {}) {
-    return { routerId: ID, ownerRef: "acct-42", actionId: JOB, ...overrides };
+    return { routerId: ID, ownerRef: "acct-42", idempotencyKey: KEY, ...overrides };
   }
-  function cancelRequest(body: unknown = cancelInput(), id = ID, job = JOB, key = "cancel-key") {
+  function cancelRequest(body: unknown = cancelInput(), id = ID, key = "cancel-key") {
     const raw = JSON.stringify(body);
-    const url = `https://fake.example/api/partner/routers/${id}/actions/${job}/cancel`;
+    const url = `https://fake.example/api/partner/routers/${id}/actions/cancel`;
     return new Request(url, {
       method: "POST",
       body: raw,
@@ -837,29 +845,61 @@ describe("cancelling an owner's queued action", () => {
       },
     });
   }
-
-  it("cancels a still-queued job: it will never be delivered", async () => {
-    const job = ownJob();
-    const fake = createFakeDb({
-      selects: [[jobs, [[job]]]],
+  type Row = Record<string, unknown>;
+  function cancelDb(job: Row | undefined, extra: { row?: Row } = {}) {
+    return createFakeDb({
+      selects: [[jobs, [job ? [job] : []]]],
       updateReturns: [
-        [routers, [[router()]]],
+        [routers, [[extra.row ?? (router() as unknown as Row)]]],
         [jobs, [[{ ...job, state: "cancelled" }]]],
       ],
     });
+  }
+
+  it("cancels a job the router was never handed, and tags the cancel as the partner's", async () => {
+    const fake = cancelDb(ownJob());
     const result = await cancelPartnerActionWithDb(fake.db as never, cancelInput(), NOW);
     expect(result).toEqual({ ok: true, status: 200, body: { actionId: JOB, state: "cancelled" } });
-    expect(fake.updates(jobs)).toEqual([expect.objectContaining({ state: "cancelled", completedAt: NOW })]);
+    expect(fake.updates(jobs)).toEqual([
+      expect.objectContaining({
+        state: "cancelled",
+        completedAt: NOW,
+        payload: expect.objectContaining({ cancelledBy: "partner", actionId: JOB }),
+      }),
+    ]);
   });
 
-  it("does not cancel a delivered or running job and says what it is", async () => {
-    for (const state of ["delivered", "running", "succeeded", "failed"]) {
-      const fake = createFakeDb({
-        selects: [[jobs, [[ownJob({ state })]]]],
-        updateReturns: [[routers, [[router()]]]],
-      });
+  it("answers not_found (never queued) when no action of this owner on this router has the key", async () => {
+    for (const job of [
+      undefined,
+      ownJob({ routerId: OTHER }),
+      ownJob({ payload: { origin: "operator", ownerRef: "acct-42" } }),
+      ownJob({ payload: { origin: "partner_action", ownerRef: "foreign", actionId: JOB } }),
+    ]) {
+      const fake = cancelDb(job);
       expect(await cancelPartnerActionWithDb(fake.db as never, cancelInput(), NOW)).toEqual({
-        ok: false,
+        ok: true,
+        status: 200,
+        body: { state: "not_found" },
+      });
+      expect(fake.updates(jobs)).toEqual([]);
+    }
+  });
+
+  it("does not cancel a queued job the router was already handed: 409 delivered", async () => {
+    const fake = cancelDb(ownJob({ deliveredAt: new Date(NOW.getTime() - 5_000) }));
+    expect(await cancelPartnerActionWithDb(fake.db as never, cancelInput(), NOW)).toEqual({
+      ok: false,
+      status: 409,
+      body: { error: "not_cancellable", actionId: JOB, state: "delivered" },
+    });
+    expect(fake.updates(jobs)).toEqual([]);
+  });
+
+  it("does not cancel a running or finished job and says what it is", async () => {
+    for (const state of ["running", "succeeded", "failed"]) {
+      const fake = cancelDb(ownJob({ state, deliveredAt: NOW }));
+      expect(await cancelPartnerActionWithDb(fake.db as never, cancelInput(), NOW)).toMatchObject({
         status: 409,
         body: { error: "not_cancellable", state },
       });
@@ -867,9 +907,9 @@ describe("cancelling an owner's queued action", () => {
     }
   });
 
-  it("reports the delivered state when a check-in wins the race", async () => {
+  it("reports delivered when a check-in stamped the job between the read and the cancel", async () => {
     const fake = createFakeDb({
-      selects: [[jobs, [[ownJob()], [ownJob({ state: "delivered" })]]]],
+      selects: [[jobs, [[ownJob()], [ownJob({ deliveredAt: NOW })]]]],
       updateReturns: [
         [routers, [[router()]]],
         [jobs, [[]]],
@@ -877,64 +917,88 @@ describe("cancelling an owner's queued action", () => {
     });
     expect(await cancelPartnerActionWithDb(fake.db as never, cancelInput(), NOW)).toMatchObject({
       status: 409,
-      body: { error: "not_cancellable", state: "delivered" },
+      body: { state: "delivered" },
     });
   });
 
-  it("repeats a cancel of an already cancelled job as cancelled", async () => {
-    const fake = createFakeDb({
-      selects: [[jobs, [[ownJob({ state: "cancelled" })]]]],
-      updateReturns: [[routers, [[router()]]]],
-    });
-    expect(await cancelPartnerActionWithDb(fake.db as never, cancelInput(), NOW)).toMatchObject({
+  it("repeats 200 only for the partner's own cancel; a job cancelled by anyone else is 409", async () => {
+    const own = cancelDb(ownJob({ state: "cancelled", payload: { ...ownJob().payload, cancelledBy: "partner" } }));
+    expect(await cancelPartnerActionWithDb(own.db as never, cancelInput(), NOW)).toMatchObject({
       status: 200,
       body: { state: "cancelled" },
     });
-    expect(fake.updates(jobs)).toEqual([]);
+    // The stuck-job janitor or an operator cancelled it — maybe after it ran.
+    const other = cancelDb(ownJob({ state: "cancelled", deliveredAt: NOW }));
+    expect(await cancelPartnerActionWithDb(other.db as never, cancelInput(), NOW)).toEqual({
+      ok: false,
+      status: 409,
+      body: { error: "not_cancellable", actionId: JOB, state: "cancelled", by: "other" },
+    });
+    expect(own.updates(jobs)).toEqual([]);
+    expect(other.updates(jobs)).toEqual([]);
   });
 
-  it("never cancels a foreign owner's, an operator's or another router's job", async () => {
-    for (const [row, job, status] of [
-      [router({ ownerRef: "foreign" }), ownJob(), 404],
-      [router({ releasedAt: NOW }), ownJob(), 404],
-      [router(), ownJob({ payload: { origin: "operator", ownerRef: "acct-42" } }), 404],
-      [router(), ownJob({ payload: { origin: "partner_action", ownerRef: "foreign", actionId: JOB } }), 404],
-      [router(), ownJob({ routerId: OTHER }), 404],
-      [router(), undefined, 404],
-    ] as const) {
-      const fake = createFakeDb({
-        selects: [[jobs, [job ? [job] : []]]],
-        updateReturns: [[routers, [[row]]]],
-      });
-      expect((await cancelPartnerActionWithDb(fake.db as never, cancelInput(), NOW)).status).toBe(status);
+  it("never touches a foreign owner's or a released router", async () => {
+    for (const row of [router({ ownerRef: "foreign" }), router({ releasedAt: NOW })]) {
+      const fake = cancelDb(ownJob(), { row });
+      expect((await cancelPartnerActionWithDb(fake.db as never, cancelInput(), NOW)).status).toBe(404);
       expect(fake.updates(jobs)).toEqual([]);
     }
   });
 
-  it("is signed v2, needs an Idempotency-Key and binds both path ids into the body", async () => {
+  it("is signed v2, needs an Idempotency-Key and binds the path router into the body", async () => {
     const d = deps();
-    expect((await handlePartnerRouterActionCancel(cancelRequest(), ID, JOB, d)).status).toBe(200);
+    expect((await handlePartnerRouterActionCancel(cancelRequest(), ID, d)).status).toBe(200);
     expect(d.cancel).toHaveBeenCalledWith(cancelInput());
     const other = deps();
-    expect(
-      (
-        await handlePartnerRouterActionCancel(
-          cancelRequest(cancelInput({ actionId: OTHER }), ID, JOB),
-          ID,
-          JOB,
-          other,
-        )
-      ).status,
-    ).toBe(400);
-    expect((await handlePartnerRouterActionCancel(cancelRequest(cancelInput(), ID, JOB, ""), ID, JOB, other)).status).toBe(400);
+    expect((await handlePartnerRouterActionCancel(cancelRequest(cancelInput({ routerId: OTHER }), ID, "k-2"), ID, other)).status).toBe(400);
+    expect((await handlePartnerRouterActionCancel(cancelRequest(cancelInput({ idempotencyKey: "bad key" }), ID, "k-3"), ID, other)).status).toBe(400);
+    expect((await handlePartnerRouterActionCancel(cancelRequest(cancelInput(), ID, ""), ID, other)).status).toBe(400);
     const r = cancelRequest();
     const tampered = new Request(r.url, {
       method: "POST",
       headers: r.headers,
       body: JSON.stringify(cancelInput({ ownerRef: "foreign" })),
     });
-    expect((await handlePartnerRouterActionCancel(tampered, ID, JOB, other)).status).toBe(401);
+    expect((await handlePartnerRouterActionCancel(tampered, ID, other)).status).toBe(401);
     expect(other.cancel).not.toHaveBeenCalled();
+  });
+});
+
+// Review 2026-10-02: a same-key retry was validated again before the dedupe
+// lookup, so an action queued while the router was ready turned into
+// not_ready / not_supported / invalid_params on its retry.
+describe("a same-key retry is answered from its job before any validation", () => {
+  it("replays the queued action even when the router is no longer ready or capable", async () => {
+    const queued = { id: JOB, payload: { requestHash: keyedDigestOf(action()) } };
+    for (const row of [
+      router({ lastAppliedRevisionId: null }),
+      router({ engineMode: "passwall" }),
+    ]) {
+      const fake = createFakeDb({
+        selects: [
+          [jobs, [[queued]]],
+          [routerInventorySnapshots, [[]]],
+        ],
+        updateReturns: [[routers, [[row]]]],
+      });
+      expect(await queuePartnerActionWithDb(fake.db as never, action(), "key", NOW)).toEqual({
+        ok: true,
+        status: 202,
+        body: { actionId: JOB, state: "queued" },
+      });
+      expect(fake.inserts(jobs)).toEqual([]);
+    }
+  });
+
+  it("still refuses another body under the same key before validating it", async () => {
+    const fake = createFakeDb({
+      selects: [[jobs, [[{ id: JOB, payload: { requestHash: keyedDigestOf(action()) } }]]]],
+      updateReturns: [[routers, [[router({ lastAppliedRevisionId: null })]]]],
+    });
+    expect(
+      await queuePartnerActionWithDb(fake.db as never, action({ params: { bad: 1 } }), "key", NOW),
+    ).toMatchObject({ status: 422, body: { error: "idempotency_key_mismatch" } });
   });
 });
 

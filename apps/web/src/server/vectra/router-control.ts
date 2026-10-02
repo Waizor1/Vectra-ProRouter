@@ -1719,15 +1719,35 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     }
     return { delivered, undeliverable, ownerRef };
   };
-  const serialization = deliverableJobs.some(job => job.payload.origin === "partner_action")
+  const isPartnerJob = (job: JobRow) => job.payload.origin === "partner_action";
+  const serialization = deliverableJobs.some(isPartnerJob)
     ? await db.transaction(async tx => {
+      // The router row lock a partner's cancel takes as well: a delivery and
+      // a cancel of the same job are serialized, never interleaved.
       const [current] = await tx.update(routers).set({updatedAt: now}).where(eq(routers.id, router.id)).returning();
       if (!current || current.releasedAt || !current.ownerRef || current.status === "disabled" || current.importState !== "approved" || current.engineMode !== "xray-direct") return serializeEach([], null);
-      return serializeEach(deliverableJobs.filter(job => job.payload.origin !== "partner_action" || job.payload.ownerRef === current.ownerRef), current.ownerRef);
+      const owned = deliverableJobs.filter(job => !isPartnerJob(job) || job.payload.ownerRef === current.ownerRef);
+      // Re-read under the lock: a partner job cancelled after the candidates
+      // were read must not be handed out.
+      const partnerIds = owned.filter(isPartnerJob).map(job => job.id);
+      const stillQueued = new Set(
+        partnerIds.length > 0
+          ? (await tx.select().from(jobs).where(and(inArray(jobs.id, partnerIds), eq(jobs.state, "queued")))).map(row => row.id)
+          : [],
+      );
+      const serialized = serializeEach(owned.filter(job => !isPartnerJob(job) || stillQueued.has(job.id)), current.ownerRef);
+      // Delivery is recorded (deliveredAt) without leaving `queued`: a lost
+      // check-in answer still redelivers the job, but from now on a cancel
+      // knows the router may already have it.
+      const handedOut = serialized.delivered.map(job => job.id).filter(id => stillQueued.has(id));
+      if (handedOut.length > 0) {
+        await tx.update(jobs).set({deliveredAt: now}).where(and(inArray(jobs.id, handedOut), isNull(jobs.deliveredAt)));
+      }
+      return serialized;
     })
     : serializeEach(deliverableJobs, null);
   if (serialization.undeliverable.length > 0) {
-    await failUndeliverableJobs(router.id, serialization.undeliverable, now);
+    await failUndeliverableJobs(router.id, serialization.undeliverable, serialization.ownerRef, now);
   }
   const serializedJobs = serialization.delivered;
 
@@ -1787,6 +1807,7 @@ export function describeUndeliverableError(error: unknown) {
 async function failUndeliverableJobs(
   routerId: string,
   undeliverable: JobRow[],
+  ownerRef: string | null,
   now: Date,
 ) {
   for (const job of undeliverable) {
@@ -1820,11 +1841,44 @@ async function failUndeliverableJobs(
         jobId: job.id,
         ...describeUndeliverableError(error),
       });
-      await db
+      const [failed] = await db
         .update(jobs)
         .set({ state: "failed", completedAt: now })
-        .where(and(eq(jobs.id, job.id), eq(jobs.state, "running")));
+        .where(and(eq(jobs.id, job.id), eq(jobs.state, "running")))
+        .returning();
+      // The result path did not run: the backend still hears the failure.
+      if (failed) {
+        await notifyUndeliverableFailure(job, ownerRef);
+      }
     }
+  }
+}
+
+async function notifyUndeliverableFailure(job: JobRow, ownerRef: string | null) {
+  try {
+    const owner =
+      ownerRef ??
+      (await db.select().from(routers).where(eq(routers.id, job.routerId)).limit(1))[0]?.ownerRef ??
+      null;
+    if (!owner) return;
+    if (isPartnerClaimApplyJob(job)) {
+      await enqueuePartnerWebhookWithDb(db, {
+        event: "router.failed",
+        routerId: job.routerId,
+        ownerRef: owner,
+        detail: UNDELIVERABLE_JOB_CODE,
+      });
+    } else {
+      await notifyPartnerActionResultWithDb(db, {
+        job,
+        ownerRef: owner,
+        status: "failure",
+        code: UNDELIVERABLE_JOB_CODE,
+      });
+    }
+    schedulePartnerWebhookDelivery();
+  } catch (error) {
+    console.error("[partner-webhooks] undeliverable job event failed", describeUndeliverableError(error));
   }
 }
 
@@ -1852,6 +1906,29 @@ export async function recordJobResult(routerId: string, input: unknown) {
   }
 
   const terminalJobStates = new Set(["succeeded", "failed", "cancelled"]);
+  if (job.state === "cancelled" && job.payload.origin === "partner_action") {
+    // A cancelled owner action must never run; if the router ran it anyway,
+    // its owner hears the real result instead of it being dropped.
+    console.warn("[router-control] cancelled job ran", {
+      jobId: job.id,
+      jobType: job.type,
+      status: parsed.status,
+    });
+    if (parsed.status !== "accepted") {
+      const code =
+        typeof parsed.result?.code === "string" && /^[a-z][a-z0-9_]{0,47}$/.test(parsed.result.code)
+          ? parsed.result.code
+          : null;
+      try {
+        await notifyPartnerActionResultWithDb(db, {
+          job, ownerRef: router.ownerRef, status: parsed.status, code,
+        });
+        schedulePartnerWebhookDelivery();
+      } catch (error) {
+        console.error("[partner-webhooks] cancelled job result event failed", describeUndeliverableError(error));
+      }
+    }
+  }
   if (
     (parsed.status === "accepted" &&
       (job.state === "running" || terminalJobStates.has(job.state))) ||

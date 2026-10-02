@@ -35,6 +35,9 @@ type Client = Pick<typeof db, "select" | "insert" | "update" | "transaction">;
 type Router = typeof routers.$inferSelect;
 type Inventory = typeof routerInventorySnapshots.$inferSelect;
 export const PARTNER_ACTION_ORIGIN = "partner_action";
+export const PARTNER_ACTION_DEDUPE_PREFIX = "partner-action:";
+/** payload.cancelledBy of a job the partner itself cancelled. */
+export const PARTNER_CANCELLED_BY = "partner";
 const ownerSchema = partnerOwnerRefSchema;
 export const partnerActionRequestSchema = z
   .object({
@@ -212,6 +215,37 @@ export async function queuePartnerActionWithDb(
       .returning();
     if (router?.ownerRef !== input.ownerRef || router.releasedAt)
       return { ok: false, status: 404, body: { error: "not_found" } };
+    const dedupeKey = `${PARTNER_ACTION_DEDUPE_PREFIX}${key}`;
+    // Keyed: the input of set_wifi carries the Wi-Fi password, and this hash
+    // is stored in the job row for as long as the job is kept.
+    const hashes = {
+      requestHash: keyedDigest("partner-action-v1", JSON.stringify(input)),
+      legacyHash: createHash("sha256")
+        .update(JSON.stringify(input))
+        .digest("hex"),
+    };
+    const requestHash = hashes.requestHash;
+    // A retry of an action already queued is answered from that job BEFORE
+    // anything is validated again: the router may have gone offline, lost
+    // a capability or an entry since, and the same key must still name the
+    // same action instead of turning into a refusal.
+    const [existing] = await tx
+      .select()
+      .from(jobs)
+      .where(eq(jobs.dedupeKey, dedupeKey))
+      .limit(1);
+    if (existing)
+      return partnerHashMatches(existing.payload.requestHash, hashes)
+        ? {
+            ok: true,
+            status: 202,
+            body: { actionId: existing.id, state: "queued" },
+          }
+        : {
+            ok: false,
+            status: 422,
+            body: { error: "idempotency_key_mismatch" },
+          };
     if (!router.lastAppliedRevisionId)
       return { ok: false, status: 409, body: { error: "not_ready" } };
     const inventory = await latestInventory(tx, router.id);
@@ -235,33 +269,6 @@ export async function queuePartnerActionWithDb(
       !snapshot.services?.some((service) => service.id === params.service)
     )
       return { ok: false, status: 400, body: { error: "invalid_params" } };
-    const dedupeKey = `partner-action:${key}`;
-    // Keyed: the input of set_wifi carries the Wi-Fi password, and this hash
-    // is stored in the job row for as long as the job is kept.
-    const hashes = {
-      requestHash: keyedDigest("partner-action-v1", JSON.stringify(input)),
-      legacyHash: createHash("sha256")
-        .update(JSON.stringify(input))
-        .digest("hex"),
-    };
-    const requestHash = hashes.requestHash;
-    const [existing] = await tx
-      .select()
-      .from(jobs)
-      .where(eq(jobs.dedupeKey, dedupeKey))
-      .limit(1);
-    if (existing)
-      return partnerHashMatches(existing.payload.requestHash, hashes)
-        ? {
-            ok: true,
-            status: 202,
-            body: { actionId: existing.id, state: "queued" },
-          }
-        : {
-            ok: false,
-            status: 422,
-            body: { error: "idempotency_key_mismatch" },
-          };
     const pending = await tx
       .select()
       .from(jobs)
@@ -330,19 +337,26 @@ export async function queuePartnerActionWithDb(
 
 export const partnerActionCancelRequestSchema = z
   .object({
-    // The signature covers the body: bind both path ids into it.
+    // The signature covers the body: bind the path router into it.
     routerId: z.string().uuid(),
     ownerRef: ownerSchema,
-    actionId: z.string().uuid(),
+    // The Idempotency-Key the partner queued the action with.
+    idempotencyKey: z.string().regex(/^[\x21-\x7e]{1,200}$/),
   })
   .strict();
 
 /**
- * Cancel an owner's action ONLY while it still waits for the router: a
- * queued job never reached the router, so cancelling it means it will never
- * run and the partner may honestly say "did not run, try again". Once
- * delivered (or running, or finished) it is not cancelled: the answer is a
- * 409 with the job's state, and the partner keeps waiting for its result.
+ * Cancel the owner's action queued under the partner's Idempotency-Key — only
+ * while the router has never been handed it. Check-in stamps deliveredAt on
+ * every partner job it returns (under this same router row lock), and a job
+ * stays `queued` until the router acks it, so `queued` alone does not mean
+ * "not received": a stamped job may already be running.
+ *
+ *   200 {state:"not_found"}        no action under this key: never queued
+ *   200 {actionId, state:"cancelled"} cancelled by the partner (also on repeat)
+ *   409 {error:"not_cancellable", state} handed to the router (state
+ *       "delivered"/"running") or finished ("succeeded"/"failed"), or
+ *       cancelled by someone else (state "cancelled", by "other")
  */
 export async function cancelPartnerActionWithDb(
   client: Client,
@@ -350,7 +364,7 @@ export async function cancelPartnerActionWithDb(
   now = new Date(),
 ) {
   return client.transaction(async (tx) => {
-    // Same ownership lock as queueing: a release cannot race the cancel.
+    // The lock check-in takes before it stamps a delivery.
     const [router] = await tx
       .update(routers)
       .set({ updatedAt: now })
@@ -367,47 +381,61 @@ export async function cancelPartnerActionWithDb(
     const [job] = await tx
       .select()
       .from(jobs)
-      .where(and(eq(jobs.id, input.actionId), eq(jobs.routerId, router.id)))
+      .where(
+        eq(jobs.dedupeKey, `${PARTNER_ACTION_DEDUPE_PREFIX}${input.idempotencyKey}`),
+      )
       .limit(1);
-    // Only this owner's own partner action: an operator job, or another
-    // owner's, is not the partner's to cancel and is not even confirmed.
+    // Only this owner's own action on this router counts; anything else under
+    // the key is not something that will run for this owner here.
     if (
       !job ||
       job.routerId !== router.id ||
       job.payload.origin !== PARTNER_ACTION_ORIGIN ||
       job.payload.ownerRef !== input.ownerRef
     )
-      return { ok: false, status: 404, body: { error: "action_not_found" } };
+      return { ok: true, status: 200, body: { state: "not_found" } };
     const cancelled = {
       ok: true,
       status: 200,
       body: { actionId: job.id, state: "cancelled" },
     };
-    if (job.state === "cancelled") return cancelled;
-    if (job.state === "queued") {
-      const [updated] = await tx
-        .update(jobs)
-        .set({ state: "cancelled", completedAt: now })
-        .where(and(eq(jobs.id, job.id), eq(jobs.state, "queued")))
-        .returning();
-      if (updated) return cancelled;
-      // A check-in delivered it in between: report what it is now.
-      const [current] = await tx
-        .select()
-        .from(jobs)
-        .where(eq(jobs.id, job.id))
-        .limit(1);
-      return {
-        ok: false,
-        status: 409,
-        body: { error: "not_cancellable", state: current?.state ?? "delivered" },
-      };
-    }
-    return {
+    const refuse = (state: string, extra: Record<string, string> = {}) => ({
       ok: false,
       status: 409,
-      body: { error: "not_cancellable", state: job.state },
-    };
+      body: { error: "not_cancellable", actionId: job.id, state, ...extra },
+    });
+    if (job.state === "cancelled")
+      return job.payload.cancelledBy === PARTNER_CANCELLED_BY
+        ? cancelled
+        : refuse("cancelled", { by: "other" });
+    if (job.state === "queued" && job.deliveredAt) return refuse("delivered");
+    if (job.state !== "queued") return refuse(job.state);
+    const [updated] = await tx
+      .update(jobs)
+      .set({
+        state: "cancelled",
+        completedAt: now,
+        payload: { ...job.payload, cancelledBy: PARTNER_CANCELLED_BY },
+      })
+      .where(
+        and(
+          eq(jobs.id, job.id),
+          eq(jobs.state, "queued"),
+          isNull(jobs.deliveredAt),
+        ),
+      )
+      .returning();
+    if (updated) return cancelled;
+    const [current] = await tx
+      .select()
+      .from(jobs)
+      .where(eq(jobs.id, job.id))
+      .limit(1);
+    return refuse(
+      !current || (current.state === "queued" && current.deliveredAt)
+        ? "delivered"
+        : current.state,
+    );
   });
 }
 
@@ -491,16 +519,12 @@ export async function handlePartnerRouterAction(
 }
 
 /**
- * POST /api/partner/routers/:routerId/actions/:actionId/cancel
- *
- * 200 {actionId, state: "cancelled"} — it will never run (also on a repeat);
- * 409 {error: "not_cancellable", state} — already delivered/running/finished;
- * 404 {error: "action_not_found"} — no such action of this owner on the router.
+ * POST /api/partner/routers/:routerId/actions/cancel
+ * {routerId, ownerRef, idempotencyKey} — see cancelPartnerActionWithDb.
  */
 export async function handlePartnerRouterActionCancel(
   request: Request,
   routerId: string,
-  actionId: string,
   deps = defaults(),
 ) {
   const key = parseIdempotencyKey(request.headers.get("Idempotency-Key"));
@@ -513,14 +537,10 @@ export async function handlePartnerRouterActionCancel(
     request,
     deps: deps.api,
     method: "POST",
-    path: `/api/partner/routers/${routerId}/actions/${actionId}/cancel`,
+    path: `/api/partner/routers/${routerId}/actions/cancel`,
     run: async (body) => {
       const parsed = partnerActionCancelRequestSchema.safeParse(body);
-      if (
-        !parsed.success ||
-        parsed.data.routerId !== routerId ||
-        parsed.data.actionId !== actionId
-      )
+      if (!parsed.success || parsed.data.routerId !== routerId)
         return partnerJson({ error: "invalid" }, 400);
       return deps.cancel(parsed.data);
     },
