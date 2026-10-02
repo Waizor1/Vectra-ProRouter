@@ -104,3 +104,20 @@ func TestConnectInitialServiceCatalogueMatchesExecutor(t *testing.T) {
 		}
 	}
 }
+
+// xray's burst observatory (healthCheck) reports alive/delay per outbound but
+// no probe time: every verdict on 1111 stayed unknown and the Vectra app
+// showed the router's VPN as "unknown" (2026-10-02). With no probe time, the
+// live scrape (Inputs.Now) is the observation.
+func TestConnectVerdictTakesABurstObservationWithoutAProbeTime(t *testing.T) {
+	now := time.Now()
+	in := measuredConnectInputs(now)
+	in.Metrics.Observatory["bridge-pl5"] = api.Observation{Alive: true}
+	if v, _ := connectVerdict(in, nil); v != "ok" {
+		t.Fatalf("alive burst observation: %q", v)
+	}
+	in.Metrics.Observatory["bridge-pl5"] = api.Observation{Alive: false}
+	if v, _ := connectVerdict(in, nil); v != "down" {
+		t.Fatalf("dead burst observation: %q", v)
+	}
+}

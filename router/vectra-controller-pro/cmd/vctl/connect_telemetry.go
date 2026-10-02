@@ -173,7 +173,12 @@ func connectVerdict(in uiapi.Inputs, egress map[string]exitcheck.Located) (strin
 	}
 	for _, tag := range nodes {
 		ob, ok := in.Metrics.Observatory[tag]
-		if !ok || !freshConnect(time.Unix(ob.LastTry, 0), in.Now, connecttelemetry.MaxObservationAge) {
+		if !ok {
+			return "", nil
+		}
+		// The classic observatory dates its probe; xray's burst observatory
+		// (healthCheck) does not, and then this live scrape is the observation.
+		if ob.LastTry > 0 && !freshConnect(time.Unix(ob.LastTry, 0), in.Now, connecttelemetry.MaxObservationAge) {
 			return "", nil
 		}
 		if !ob.Alive {
