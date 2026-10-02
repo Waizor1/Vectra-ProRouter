@@ -1,6 +1,6 @@
 import type { PartnerWebhookEvent, RouterInventory } from "@vectra/contracts";
 import { type jobs, routers, routerInventorySnapshots } from "@vectra/db";
-import { and, desc, eq, isNull, lt, ne } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, lt, ne } from "drizzle-orm";
 import type { db } from "~/server/db";
 import { enqueuePartnerWebhookWithDb } from "./partner-webhooks";
 
@@ -94,6 +94,8 @@ export async function sweepPartnerOfflineWithDb(
         ne(routers.status, "offline"),
         ne(routers.status, "disabled"),
         isNull(routers.releasedAt),
+        // Only owned routers have an owner to tell; the fleet is not read.
+        isNotNull(routers.ownerRef),
       ),
     );
   for (const router of stale) {

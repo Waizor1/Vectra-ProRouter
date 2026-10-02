@@ -1,8 +1,19 @@
 {
 	email {$ACME_EMAIL}
+	# The default logger also carries reverse_proxy errors, request and all:
+	# the same redaction as the access logs (a router-sub token in the path,
+	# a router token or a sealed router User-Agent in a header).
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Vectra-Router-Token delete
+				request>headers>X-Vectra-Install-Session delete
+				request>headers>User-Agent delete
+				request>uri regexp "^/router-sub/[^/?]+" "/router-sub/REDACTED"
+			}
+		}
 	}
 }
 
@@ -77,6 +88,7 @@
 			fields {
 				request>headers>X-Vectra-Router-Token delete
 				request>headers>X-Vectra-Install-Session delete
+				request>headers>User-Agent delete
 				request>uri regexp "^/router-sub/[^/?]+" "/router-sub/REDACTED"
 			}
 		}
@@ -128,6 +140,10 @@
 		}
 		reverse_proxy https://api-app.vectra-pro.net {
 			header_up Host api-app.vectra-pro.net
+			transport http {
+				dial_timeout 10s
+				response_header_timeout 30s
+			}
 		}
 	}
 

@@ -1537,8 +1537,12 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
   }
 
   try {
-    await notifyPartnerCheckInWithDb(db, existingRouter, parsed.inventory, now);
-    schedulePartnerWebhookDelivery();
+    // Only a router a Vectra account owns has partner events; waking the
+    // dispatcher on every check-in of the whole fleet cost a query each.
+    if (existingRouter.ownerRef && !existingRouter.releasedAt) {
+      await notifyPartnerCheckInWithDb(db, existingRouter, parsed.inventory, now);
+      schedulePartnerWebhookDelivery();
+    }
   } catch (error) {
     console.error("[partner-webhooks] check-in event failed", error);
   }
