@@ -1914,11 +1914,17 @@ export async function recordJobResult(routerId: string, input: unknown) {
       jobType: job.type,
       status: parsed.status,
     });
-    // Once per job: a router retrying its finish must not announce it again.
-    const [claimed] =
-      parsed.status === "accepted"
-        ? []
-        : await db
+    if (parsed.status !== "accepted") {
+      const code =
+        typeof parsed.result?.code === "string" && /^[a-z][a-z0-9_]{0,47}$/.test(parsed.result.code)
+          ? parsed.result.code
+          : null;
+      try {
+        // Once per job, and in one transaction with the event: a router
+        // retrying its finish must not announce it again, and a failed
+        // enqueue leaves it unclaimed for the next retry.
+        const reported = await db.transaction(async (tx) => {
+          const [claimed] = await tx
             .update(jobs)
             .set({ payload: { ...job.payload, cancelledRunReported: true } })
             .where(
@@ -1929,16 +1935,13 @@ export async function recordJobResult(routerId: string, input: unknown) {
               ),
             )
             .returning({ id: jobs.id });
-    if (claimed) {
-      const code =
-        typeof parsed.result?.code === "string" && /^[a-z][a-z0-9_]{0,47}$/.test(parsed.result.code)
-          ? parsed.result.code
-          : null;
-      try {
-        await notifyPartnerActionResultWithDb(db, {
-          job, ownerRef: router.ownerRef, status: parsed.status, code,
+          if (!claimed) return false;
+          await notifyPartnerActionResultWithDb(tx, {
+            job, ownerRef: router.ownerRef, status: parsed.status, code,
+          });
+          return true;
         });
-        schedulePartnerWebhookDelivery();
+        if (reported) schedulePartnerWebhookDelivery();
       } catch (error) {
         console.error("[partner-webhooks] cancelled job result event failed", describeUndeliverableError(error));
       }
