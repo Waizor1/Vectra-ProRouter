@@ -20,6 +20,9 @@ var (
 	// A value under a secret's name, in JSON and as key=value / key: value.
 	reJSONKV = regexp.MustCompile(`(?i)"(\w*(?:password|passwd|token|secret|auth|pbk|psk|key|hwid)|pass|sid|shortId|uuid)"\s*:\s*"[^"]*"`)
 	reKV     = regexp.MustCompile(`(?i)\b(\w*(?:password|passwd|token|secret|auth|pbk|psk|key|hwid)|pass|sid|uuid)(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&"']+)`)
+	// The same names as a UCI option: `option password 'x'` (PassWall2's
+	// nodes, Wi-Fi's key) has neither = nor :.
+	reUCI = regexp.MustCompile(`(?i)\b(option\s+(?:\w*(?:password|passwd|token|secret|auth|pbk|psk|key|hwid)|pass|sid|uuid|short_id|public_key)\s+)("[^"]*"|'[^']*'|\S+)`)
 	// A UUID is what VLESS, VMess and TUIC take as the user's id.
 	reUUID = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 	reLong = regexp.MustCompile(`[A-Za-z0-9+=_-]{32,}`)
@@ -54,6 +57,7 @@ func URLs(s string) string { return reURL.ReplaceAllStringFunc(s, redactURL) }
 // token=…, pbk=…, sid: ….
 func KeyValues(s string) string {
 	s = reJSONKV.ReplaceAllString(s, `"$1":"<redacted>"`)
+	s = reUCI.ReplaceAllString(s, "$1<redacted>")
 	return reKV.ReplaceAllString(s, "$1$2<redacted>")
 }
 

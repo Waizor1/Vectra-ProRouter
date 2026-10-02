@@ -1,6 +1,9 @@
 package redact
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Credentials takes out what is a credential by its shape and keeps what a
 // diagnosis needs: hosts, addresses, ports, node tags, times.
@@ -68,5 +71,22 @@ func TestKnown(t *testing.T) {
 	k = NewKnown("abcdefgh", "xxabcdefghyy")
 	if got := k.Redact("xxabcdefghyy"); got != "<redacted>" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// UCI writes a secret as `option name 'value'`: PassWall2's nodes and Wi-Fi's
+// key. Neither = nor : — the key=value rule missed them.
+func TestUCIOptionsLoseTheirSecrets(t *testing.T) {
+	in := "config nodes 'n1'\n\toption address 'pl5.example.net'\n\toption uuid 'synthetic-uuid-value'\n\toption password 'synthetic-node-pass'\n\toption public_key 'synthetic-reality-pbk'\n\toption short_id 'abcd'\nwifi-iface\n\toption key 'synthetic-wifi-key'\n\toption ssid 'Home'\n"
+	out := Credentials(in)
+	for _, secret := range []string{"synthetic-uuid-value", "synthetic-node-pass", "synthetic-reality-pbk", "synthetic-wifi-key", "'abcd'"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("%q left in %q", secret, out)
+		}
+	}
+	for _, kept := range []string{"pl5.example.net", "'Home'", "config nodes"} {
+		if !strings.Contains(out, kept) {
+			t.Fatalf("%q lost from %q", kept, out)
+		}
 	}
 }

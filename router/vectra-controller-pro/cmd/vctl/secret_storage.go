@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/config"
+	"vectra-controller-pro/internal/incident"
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/state"
 	"vectra-controller-pro/internal/vault"
 )
@@ -22,10 +25,12 @@ func migrateSecrets(c agentcfg.Config) error {
 		return err
 	}
 	// The old agent's state is its own: a failure to seal it is not a reason
-	// to refuse vctl's start (the dead-man would hand the router back to it).
+	// to refuse vctl's start (the dead-man would hand the router back to it),
+	// but it is never silent: the log and the reporter's inbox say that the
+	// old agent's credentials are still in plaintext.
 	if c.LegacyStatePath != "" {
-		if err := state.MigrateLegacy(c.LegacyStatePath); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: legacy state left as it is: %v\n", err)
+		if err := state.MigrateLegacy(c.LegacyStatePath, legacyReadsSealed()); err != nil {
+			reportLegacyUnsealed(err)
 		}
 	}
 	validateJSON := func(b []byte) error {
@@ -54,6 +59,38 @@ func migrateSecrets(c agentcfg.Config) error {
 		}
 	}
 	return nil
+}
+
+// legacyAgentVaultMarker is installed by the old agent from the release that
+// reads files vctl sealed (its own key, /etc/vectra-controller.vault-keys).
+var legacyAgentVaultMarker = "/usr/share/vectra-controller/vault-read-v1"
+
+// legacyAgentControl is opkg's record of the old agent's package.
+var legacyAgentControl = "/usr/lib/opkg/info/vectra-controller-agent.control"
+
+// legacyReadsSealed: the old agent's identity mirror may be sealed — the old
+// agent reads sealed files, or it is not installed at all. An old agent that
+// reads only plaintext keeps its mirror: sealing it would leave a hand-back
+// without credentials, and the old agent would mint a new identity.
+func legacyReadsSealed() bool {
+	if _, err := os.Stat(legacyAgentVaultMarker); err == nil {
+		return true
+	}
+	_, err := os.Stat(legacyAgentControl)
+	return os.IsNotExist(err)
+}
+
+// reportLegacyUnsealed says, without secrets, that the old agent's state was
+// left as it was: on stdout (procd keeps it, unlike stderr) and in the
+// reporter's inbox.
+func reportLegacyUnsealed(err error) {
+	logging.L().Warn("the old agent's state was left unsealed", "err", err.Error())
+	incident.NewRecorder(incident.Dir, time.Hour).Record(incident.Incident{
+		Code: "legacy_state_unsealed", Severity: "warning", Key: "legacy-state",
+		Title: "the old agent's credentials were left in plaintext",
+		At:    time.Now(), Source: "vctl",
+		Details: map[string]any{"error": err.Error()},
+	})
 }
 
 func init() {

@@ -294,7 +294,10 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 	// fresh install — the router kept the legacy routerId/token (adopted
 	// unconditionally) but reported a freshly minted deviceIdentifier.
 	if imported, err := state.ImportLegacyIdentity(&st, cfg.LegacyStatePath); err != nil {
-		logging.L().Warn("legacy identity import", "err", err.Error())
+		// The panel already knows this router by the old agent's identity;
+		// minting another would split it in two records. Not starting hands
+		// the router back to the old agent, which still has it.
+		return nil, fmt.Errorf("legacy identity unreadable; not minting a new one: %w", err)
 	} else if imported {
 		logging.L().Info("adopted legacy router identity for xray-direct canary", "routerId", st.RouterID)
 	}

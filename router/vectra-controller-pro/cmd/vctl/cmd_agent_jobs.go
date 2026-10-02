@@ -29,6 +29,7 @@ import (
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/memguard"
+	"vectra-controller-pro/internal/redact"
 	"vectra-controller-pro/internal/rescue"
 	"vectra-controller-pro/internal/state"
 	"vectra-controller-pro/internal/subscription"
@@ -145,7 +146,7 @@ func (d *daemon) subscriptionURLs() []string {
 		// The operator config is normally loaded at startup; fall back to disk
 		// so a result produced before the first check-in is scrubbed too.
 		var err error
-		if cfg, err = config.Load(d.cfg.XrayConfigPath); err != nil {
+		if cfg, err = config.LoadSecret(d.cfg.XrayConfigPath); err != nil {
 			return nil
 		}
 	}
@@ -674,8 +675,8 @@ func (d *daemon) jobRunTerminal(ctx context.Context, job controlplane.Job) error
 		"completedAt":     completed.Format(terminalTimeLayout),
 		"durationMs":      completed.Sub(started).Milliseconds(),
 		"timedOut":        errors.Is(runCtx.Err(), context.DeadlineExceeded),
-		"stdout":          stdout.String(),
-		"stderr":          stderr.String(),
+		"stdout":          d.redactSupport(stdout.String()),
+		"stderr":          d.redactSupport(stderr.String()),
 		"stdoutTruncated": stdout.truncated,
 		"stderrTruncated": stderr.truncated,
 	}
@@ -690,6 +691,24 @@ func (d *daemon) jobRunTerminal(ctx context.Context, job controlplane.Job) error
 		return d.finishJob(ctx, job, "failure", "", "", result)
 	}
 	return d.finishJob(ctx, job, "success", "", "", result)
+}
+
+// redactSupport takes the router's credentials out of support output before
+// it goes to the panel's database: the values vctl knows (its panel token,
+// its device key, the subscriptions' addresses) wherever they appear, and
+// whatever is a credential by its shape (share links, UUIDs, a URL's path
+// and query, a secret's value in JSON, key=value or a UCI option — PassWall2's
+// nodes, Wi-Fi's key). Hashes and digests stay: support compares them.
+func (d *daemon) redactSupport(s string) string {
+	for _, known := range []string{d.st.AgentToken, d.st.DevicePrivateKey, d.cfg.AgentToken} {
+		if len(known) >= 8 {
+			s = strings.ReplaceAll(s, known, "<redacted>")
+		}
+	}
+	for _, u := range d.subscriptionURLs() {
+		s = subscription.Scrub(s, u)
+	}
+	return redact.Credentials(s)
 }
 
 // terminalOutputMax caps each stream of a terminal command's answer.
@@ -729,7 +748,7 @@ func (d *daemon) jobCollectLogs(ctx context.Context, job controlplane.Job) error
 		runCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		out, _ := exec.CommandContext(runCtx, args[0], args[1:]...).CombinedOutput()
 		cancel()
-		sections[name] = tail(string(out), 8000)
+		sections[name] = d.redactSupport(tail(string(out), 8000))
 	}
 	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"logSections": sections})
 }

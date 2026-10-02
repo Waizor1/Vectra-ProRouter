@@ -274,7 +274,7 @@ func TestMigrateLegacyResealsWhatTheOldAgentWroteBack(t *testing.T) {
 	if err := os.WriteFile(p, []byte(`{"router_id":"r-legacy","agent_token":"t"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := MigrateLegacy(p); err != nil {
+	if err := MigrateLegacy(p, true); err != nil {
 		t.Fatal(err)
 	}
 	// The old agent, after a hand-back: a copy, then plaintext over both paths.
@@ -285,7 +285,7 @@ func TestMigrateLegacyResealsWhatTheOldAgentWroteBack(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := MigrateLegacy(p); err != nil {
+	if err := MigrateLegacy(p, true); err != nil {
 		t.Fatalf("MigrateLegacy after the old agent wrote back: %v", err)
 	}
 	if b, _ := os.ReadFile(p); !bytes.HasPrefix(b, []byte("VCTLVAULT")) {
@@ -296,5 +296,112 @@ func TestMigrateLegacyResealsWhatTheOldAgentWroteBack(t *testing.T) {
 	}
 	if left, _ := filepath.Glob(p + ".corrupt-*"); len(left) != 0 {
 		t.Fatalf("the old agent's copy of the sealed state is still there: %v", left)
+	}
+}
+
+// The old agent's identity mirror holds its token and device private key in
+// plaintext. vctl seals it when the installed old agent reads sealed files,
+// keeps it when it does not (a hand-back would otherwise mint a new
+// identity), and still imports the identity from it either way.
+func TestMigrateLegacySealsTheIdentityMirrorOnlyWhenTheOldAgentCanReadIt(t *testing.T) {
+	const marker = "synthetic-mirror-private-key"
+	mirror := []byte(`{"router_id":"r-legacy","agent_token":"synthetic-mirror-token","device_private_key":"` + marker + `"}`)
+	for _, seal := range []bool{false, true} {
+		p := filepath.Join(t.TempDir(), "legacy", "state.json")
+		_ = os.MkdirAll(filepath.Dir(p), 0o700)
+		_ = os.WriteFile(p, []byte(`{"router_id":"r-legacy","agent_token":"synthetic-mirror-token"}`), 0o600)
+		_ = os.WriteFile(p+".identity", mirror, 0o600)
+		_ = os.WriteFile(filepath.Join(filepath.Dir(p), ".vectra-state-1.tmp"), mirror, 0o600)
+		if err := MigrateLegacy(p, seal); err != nil {
+			t.Fatalf("seal=%v: %v", seal, err)
+		}
+		raw, _ := os.ReadFile(p + ".identity")
+		if got := bytes.Contains(raw, []byte(marker)); got == seal {
+			t.Fatalf("seal=%v: mirror plaintext=%v", seal, got)
+		}
+		tmp, _ := os.ReadFile(filepath.Join(filepath.Dir(p), ".vectra-state-1.tmp"))
+		if seal && bytes.Contains(tmp, []byte(marker)) {
+			t.Fatal("the old agent's crash-left temp file stayed plaintext")
+		}
+		// The old agent rewrites its mirror after a hand-back: sealed again.
+		if seal {
+			_ = os.WriteFile(p+".identity", mirror, 0o600)
+			if err := MigrateLegacy(p, true); err != nil {
+				t.Fatal(err)
+			}
+			if raw, _ := os.ReadFile(p + ".identity"); bytes.Contains(raw, []byte(marker)) {
+				t.Fatal("the rewritten mirror stayed plaintext")
+			}
+		}
+		var st PersistedState
+		if ok, err := ImportLegacyIdentity(&st, p); err != nil || !ok || st.AgentToken != "synthetic-mirror-token" {
+			t.Fatalf("seal=%v: import %v %v", seal, ok, err)
+		}
+	}
+}
+
+// vctl adopts the router's identity from whichever of the old agent's files
+// holds it: plaintext the old agent wrote back over a sealed copy, or its
+// mirror alone. A legacy file that exists but cannot be read is an error,
+// never "no legacy identity" — that would mint a second router record.
+func TestImportLegacyIdentityNeverMintsOverAnUnreadableLegacyIdentity(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "legacy", "state.json")
+	_ = os.MkdirAll(filepath.Dir(p), 0o700)
+	_ = os.WriteFile(p, []byte(`{"router_id":"r-legacy","agent_token":"t1"}`), 0o600)
+	if err := MigrateLegacy(p, true); err != nil {
+		t.Fatal(err)
+	}
+	// Hand-back: plaintext over the sealed state (a vault "downgrade").
+	_ = os.WriteFile(p, []byte(`{"router_id":"r-legacy","agent_token":"t2"}`), 0o600)
+	var st PersistedState
+	if ok, err := ImportLegacyIdentity(&st, p); err != nil || !ok || st.AgentToken != "t2" {
+		t.Fatalf("plaintext written back by the old agent: %v %v %q", ok, err, st.AgentToken)
+	}
+	// Only the mirror holds credentials (the state was lost).
+	q := filepath.Join(t.TempDir(), "legacy", "state.json")
+	_ = os.MkdirAll(filepath.Dir(q), 0o700)
+	_ = os.WriteFile(q+".identity", []byte(`{"router_id":"r-mirror","agent_token":"t3"}`), 0o600)
+	st = PersistedState{}
+	if ok, err := ImportLegacyIdentity(&st, q); err != nil || !ok || st.RouterID != "r-mirror" {
+		t.Fatalf("mirror only: %v %v", ok, err)
+	}
+	// Sealed, and the key lost: unreadable, not absent.
+	r := filepath.Join(t.TempDir(), "legacy", "state.json")
+	_ = os.MkdirAll(filepath.Dir(r), 0o700)
+	_ = os.WriteFile(r, []byte(`{"router_id":"r-sealed","agent_token":"t4"}`), 0o600)
+	if err := MigrateLegacy(r, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Dir(r) + ".vault-keys"); err != nil {
+		t.Fatal(err)
+	}
+	st = PersistedState{}
+	if ok, err := ImportLegacyIdentity(&st, r); err == nil || ok {
+		t.Fatalf("an unreadable legacy identity was taken for none: %v %v", ok, err)
+	}
+	// Nothing there at all: a fresh enrollment.
+	st = PersistedState{}
+	if ok, err := ImportLegacyIdentity(&st, filepath.Join(t.TempDir(), "absent.json")); err != nil || ok {
+		t.Fatalf("absent: %v %v", ok, err)
+	}
+}
+
+// A damaged last-good copy must not block sealing a valid plaintext primary
+// (it used to: the recovery read the primary through the vault, which refuses
+// plaintext that was never sealed, and every start failed).
+func TestMigrateSealsAValidPrimaryPastADamagedLastGood(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "state.json")
+	_ = os.WriteFile(p, []byte(`{"router_id":"r-1","agent_token":"synthetic-primary-token"}`), 0o600)
+	_ = os.WriteFile(p+".last-good", []byte(`{"router_id":`), 0o600)
+	if err := Migrate(p); err != nil {
+		t.Fatalf("migration blocked by a damaged backup: %v", err)
+	}
+	for _, f := range []string{p, p + ".last-good"} {
+		if raw, _ := os.ReadFile(f); bytes.Contains(raw, []byte("synthetic-primary-token")) {
+			t.Fatalf("%s left plaintext", filepath.Base(f))
+		}
+	}
+	if got, err := Load(p); err != nil || got.RouterID != "r-1" {
+		t.Fatalf("load: %v %v", got.RouterID, err)
 	}
 }

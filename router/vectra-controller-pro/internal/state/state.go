@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -136,11 +137,16 @@ func Migrate(path string) error {
 	validate := func(raw []byte) error { _, err := decode(raw); return err }
 	// Last-good first gives interrupted upgrades an encrypted recovery copy.
 	if err := vault.MigrateFile(lastGoodPath(path), validate); err != nil {
-		// A damaged backup must not prevent booting an authenticated primary.
-		if raw, e := vault.ReadFile(path); e == nil {
-			defer clear(raw)
-			if recovered, e := decode(raw); e == nil {
-				return Save(path, recovered)
+		// A damaged backup must not prevent booting a valid primary: seal the
+		// primary first (it may still be the old plaintext — reading it
+		// through the vault before that refused it), then rewrite the backup
+		// from it.
+		if e := vault.MigrateFile(path, validate); e == nil {
+			if raw, e := vault.ReadFile(path); e == nil {
+				defer clear(raw)
+				if recovered, e := decode(raw); e == nil {
+					return Save(path, recovered)
+				}
 			}
 		}
 		return err
@@ -161,14 +167,48 @@ func Migrate(path string) error {
 // hand-back the old agent cannot read its sealed state, recovers its
 // credentials from its own identity mirror and saves the state as plaintext.
 // That is the owner's legitimate write, not a downgrade: it is sealed again.
-func MigrateLegacy(path string) error {
+//
+// sealIdentity also seals the old agent's identity mirror (router id, agent
+// token, device private key), when the installed old agent reads sealed
+// files: an old agent that reads only plaintext recovers from that mirror
+// after a hand-back, and without it would mint a new identity.
+func MigrateLegacy(path string, sealIdentity bool) error {
 	validate := func(raw []byte) error { _, err := decode(raw); return err }
 	for _, p := range []string{lastGoodPath(path), path} {
 		if err := vault.ResealRewritten(p, validate); err != nil {
 			return err
 		}
 	}
-	return Migrate(path)
+	if err := Migrate(path); err != nil {
+		return err
+	}
+	if !sealIdentity {
+		return nil
+	}
+	identity := path + ".identity"
+	credentials := func(raw []byte) error {
+		var legacy legacyAgentState
+		if err := json.Unmarshal(raw, &legacy); err != nil {
+			return err
+		}
+		if legacy.RouterID == "" || legacy.AgentToken == "" {
+			return errors.New("identity mirror without credentials")
+		}
+		return nil
+	}
+	if err := vault.ResealRewritten(identity, credentials); err != nil {
+		return err
+	}
+	artifacts, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".vectra-state-*.tmp"))
+	if err != nil {
+		return err
+	}
+	for _, artifact := range artifacts {
+		if err := vault.MigrateArtifact(artifact); err != nil {
+			return err
+		}
+	}
+	return vault.MigrateFile(identity, credentials)
 }
 
 func decode(raw []byte) (PersistedState, error) {
@@ -249,38 +289,64 @@ type legacyAgentState struct {
 
 // ImportLegacyIdentity copies identity from a legacy agent state file into
 // persisted IF persisted has no identity yet. Returns true if it imported.
-// Missing/unreadable legacy file is not an error (fresh enrollment path).
+// The old agent keeps its credentials in three files (its state, the
+// last-good copy, the identity mirror); the first that holds router_id and
+// agent_token wins. No legacy file is not an error (fresh enrollment). A
+// legacy file that is there but cannot be read is: the panel already knows
+// this router, and minting a new identity would split it in two records.
 func ImportLegacyIdentity(persisted *PersistedState, legacyStatePath string) (bool, error) {
 	if legacyStatePath == "" || persisted.RouterID != "" || persisted.AgentToken != "" {
 		return false, nil
 	}
-	raw, err := vault.ReadFile(legacyStatePath)
-	if err != nil {
+	var unreadable error
+	for _, p := range []string{legacyStatePath, legacyStatePath + ".identity", lastGoodPath(legacyStatePath)} {
+		raw, err := ReadLegacy(p)
 		if os.IsNotExist(err) {
-			return false, nil
+			continue
 		}
-		return false, fmt.Errorf("read legacy state: %w", err)
+		if err != nil {
+			unreadable = fmt.Errorf("read legacy state: %w", err)
+			continue
+		}
+		var legacy legacyAgentState
+		err = json.Unmarshal(raw, &legacy)
+		clear(raw)
+		if err != nil {
+			unreadable = fmt.Errorf("decode legacy state: %w", err)
+			continue
+		}
+		if legacy.RouterID == "" || legacy.AgentToken == "" {
+			continue
+		}
+		persisted.RouterID = legacy.RouterID
+		persisted.AgentToken = legacy.AgentToken
+		if persisted.DeviceIdentifier == "" {
+			persisted.DeviceIdentifier = legacy.DeviceIdentifier
+		}
+		if persisted.DevicePublicKey == "" {
+			persisted.DevicePublicKey = legacy.DevicePublicKey
+		}
+		if persisted.DevicePrivateKey == "" {
+			persisted.DevicePrivateKey = legacy.DevicePrivateKey
+		}
+		return true, nil
 	}
-	defer clear(raw)
-	var legacy legacyAgentState
-	if err := json.Unmarshal(raw, &legacy); err != nil {
-		return false, fmt.Errorf("decode legacy state: %w", err)
+	return false, unreadable
+}
+
+// ReadLegacy reads one of the old agent's files: sealed by vctl, or the
+// plaintext the old agent itself writes (it has no vault, and after a
+// hand-back it rewrites its files over the sealed copies — its legitimate
+// write, not a downgrade).
+func ReadLegacy(path string) ([]byte, error) {
+	raw, err := vault.ReadFile(path)
+	if err == nil {
+		return raw, nil
 	}
-	if legacy.RouterID == "" || legacy.AgentToken == "" {
-		return false, nil
+	if errors.Is(err, vault.ErrDowngrade) || vault.Unsealed(path) {
+		return os.ReadFile(path)
 	}
-	persisted.RouterID = legacy.RouterID
-	persisted.AgentToken = legacy.AgentToken
-	if persisted.DeviceIdentifier == "" {
-		persisted.DeviceIdentifier = legacy.DeviceIdentifier
-	}
-	if persisted.DevicePublicKey == "" {
-		persisted.DevicePublicKey = legacy.DevicePublicKey
-	}
-	if persisted.DevicePrivateKey == "" {
-		persisted.DevicePrivateKey = legacy.DevicePrivateKey
-	}
-	return true, nil
+	return nil, err
 }
 
 // LoadReadOnly is a reader's load (vectra-reporter): it never saves state —

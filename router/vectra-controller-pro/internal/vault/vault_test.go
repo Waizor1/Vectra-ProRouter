@@ -2,6 +2,8 @@ package vault
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -398,5 +400,32 @@ func TestMigrateArtifactDeletesOnlyProvenCopies(t *testing.T) {
 		if _, err := os.Stat(a); err != nil {
 			t.Fatalf("%s deleted without proof it is a copy: %v", filepath.Base(a), err)
 		}
+	}
+}
+
+// The old Vectra agent (a separate module) opens what this vault seals with
+// the standard library only: "VCTLVAULT1\n" | 12-byte nonce | AES-256-GCM,
+// the header and the absolute path as additional data, the 32-byte key at
+// <dir>.vault-keys/key. This pins that format.
+func TestSealedFilesOpenWithTheStandardLibraryAsTheOldAgentDoes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "vectra-controller")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "state.json.identity")
+	if err := WriteFile(path, []byte(`{"agent_token":"synthetic"}`)); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	key, err := os.ReadFile(filepath.Join(dir+".vault-keys", "key"))
+	if err != nil || len(key) != 32 {
+		t.Fatalf("key at <dir>.vault-keys/key: %v", err)
+	}
+	block, _ := aes.NewCipher(key)
+	aead, _ := cipher.NewGCM(block)
+	body := raw[len("VCTLVAULT1\n"):]
+	plain, err := aead.Open(nil, body[:12], body[12:], []byte("VCTLVAULT1\n"+path))
+	if err != nil || string(plain) != `{"agent_token":"synthetic"}` {
+		t.Fatalf("format drifted from what the old agent reads: %v", err)
 	}
 }
