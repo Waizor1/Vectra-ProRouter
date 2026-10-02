@@ -159,7 +159,7 @@ func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte)
 		}
 		out[svc] = raw
 	}
-	if _, raw, ok := aiDefault(ov, d.cfg.RouteSource, cache, running); ok && !bytes.Equal(raw, running) {
+	if _, raw, ok := aiDefault(ov, d.cfg.RouteSource, cache, running, d.aiRefused); ok && !bytes.Equal(raw, running) {
 		out["ai"] = raw
 	}
 	if len(out) == 0 {
@@ -182,7 +182,7 @@ func connectEntryRaw(cache *localctl.EntriesCache, id string) json.RawMessage {
 // render would and never goes direct. One that does not is skipped — an
 // unchosen default never refuses a render, never unproxies a service. A
 // router that runs the location itself takes its own rule.
-func aiDefault(ov localctl.Overrides, routeSource string, cache *localctl.EntriesCache, running []byte) (string, json.RawMessage, bool) {
+func aiDefault(ov localctl.Overrides, routeSource string, cache *localctl.EntriesCache, running []byte, refused string) (string, json.RawMessage, bool) {
 	if routeSource != "" || cache == nil || running == nil {
 		return "", nil, false
 	}
@@ -194,7 +194,13 @@ func aiDefault(ov localctl.Overrides, routeSource string, cache *localctl.Entrie
 		if raw == nil {
 			continue
 		}
-		if bytes.Equal(raw, running) || xray.TrialConnectService(running, raw, "ai") == nil {
+		if bytes.Equal(raw, running) {
+			return id, raw, true
+		}
+		if refused != "" && aiRefusedKey(raw, running) == refused {
+			continue // xray refused it on this document
+		}
+		if xray.TrialConnectService(running, raw, "ai") == nil {
 			return id, raw, true
 		}
 	}
@@ -321,7 +327,7 @@ func aiRunsDefault(cfg agentcfg.Config, ov localctl.Overrides) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	id, raw, ok := aiDefault(ov, cfg.RouteSource, cache, running)
+	id, raw, ok := aiDefault(ov, cfg.RouteSource, cache, running, "")
 	return id, ok && bytes.Equal(raw, running)
 }
 
@@ -347,4 +353,10 @@ func markAIDefault(res *uiapi.Services, applied bool) {
 			res.Services[i].DefaultCountry = &kz
 		}
 	}
+}
+
+// aiRefusedKey names a default location on the document it joined.
+func aiRefusedKey(entry, document []byte) string {
+	a, b := sha256.Sum256(entry), sha256.Sum256(document)
+	return hex.EncodeToString(a[:]) + ":" + hex.EncodeToString(b[:])
 }

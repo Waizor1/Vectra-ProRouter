@@ -56,6 +56,12 @@ const uiReplyWait = 12 * time.Second
 // spliceOptions are the router-side options for rendering providerRaw, and
 // the probe state they imply.
 func (d *daemon) spliceOptions(providerRaw []byte) (xray.SpliceOptions, localctl.Probe) {
+	opts, probe, _ := d.spliceOptionsOv(providerRaw)
+	return opts, probe
+}
+
+// spliceOptionsOv is spliceOptions and the overrides they were made from.
+func (d *daemon) spliceOptionsOv(providerRaw []byte) (xray.SpliceOptions, localctl.Probe, localctl.Overrides) {
 	ov, err := localctl.LoadOverrides(d.cfg.OverridesPath)
 	if err != nil {
 		logging.L().Warn("local overrides unreadable; rendering with defaults", "err", err.Error())
@@ -66,7 +72,7 @@ func (d *daemon) spliceOptions(providerRaw []byte) (xray.SpliceOptions, localctl
 		opts.ServiceEntries = map[string]json.RawMessage{"stale": json.RawMessage(`{}`)}
 	}
 	opts = d.withRuntime(opts, providerRaw)
-	return opts, probe
+	return opts, probe, ov
 }
 
 // spliceOptionsFor is spliceOptions under the given overrides.
@@ -112,23 +118,14 @@ func clampProbe(d time.Duration) time.Duration {
 // render is redone when the provider bytes changed, when the options it was
 // made with changed (SpliceKey), when force is set, or when there is none.
 func (d *daemon) applyProvider(ctx context.Context, providerRaw []byte, force bool) (apply.ApplyResult, error) {
-	opts, probe := d.spliceOptions(providerRaw)
-	return d.applyProviderWith(ctx, providerRaw, force, opts, probe)
+	opts, probe, ov := d.spliceOptionsOv(providerRaw)
+	return d.applyRendering(ctx, providerRaw, force, opts, probe, ov)
 }
 
 func (d *daemon) applyProviderWith(ctx context.Context, providerRaw []byte, force bool, opts xray.SpliceOptions, probe localctl.Probe) (apply.ApplyResult, error) {
 	d.applier.Splice = opts
 	fresh := !force && fileExists(d.cfg.XrayRenderPath) && d.st.SpliceKey == d.renderKey(opts)
 	res, err := d.applier.Apply(ctx, providerRaw, d.st.ConfigDigest, fresh)
-	if without, ok := d.withoutAIDefault(opts); err != nil && ok {
-		// The trial cannot run xray -test: a default the router's xray still
-		// refuses is dropped, never the render it joined.
-		logging.L().Warn("the render with the «Нейросети» default was refused; rendering without it", "err", err.Error())
-		opts = without
-		d.applier.Splice = opts
-		fresh = !force && fileExists(d.cfg.XrayRenderPath) && d.st.SpliceKey == d.renderKey(opts)
-		res, err = d.applier.Apply(ctx, providerRaw, d.st.ConfigDigest, fresh)
-	}
 	if err != nil {
 		d.lastApplyErr = err.Error()
 		d.noteApplyErr(err)
@@ -144,14 +141,30 @@ func (d *daemon) applyProviderWith(ctx context.Context, providerRaw []byte, forc
 	return res, nil
 }
 
-// withoutAIDefault is opts without «Нейросети», when they carry them only as
-// the router's own default (the owner chose nothing for them).
-func (d *daemon) withoutAIDefault(opts xray.SpliceOptions) (xray.SpliceOptions, bool) {
-	if opts.ServiceEntries["ai"] == nil {
-		return opts, false
+// applyRendering is applyProviderWith under ov, the overrides opts were made
+// from. TrialConnectService cannot run xray -test: a render xray refuses
+// while it carries «Нейросети» only as the router's own default (ov names no
+// choice for them) is made again without them, and that default is not tried
+// again on this document (aiRefused). An owner's choice is never dropped.
+func (d *daemon) applyRendering(ctx context.Context, providerRaw []byte, force bool, opts xray.SpliceOptions, probe localctl.Probe, ov localctl.Overrides) (apply.ApplyResult, error) {
+	res, err := d.applyProviderWith(ctx, providerRaw, force, opts, probe)
+	if err == nil || !errors.Is(err, apply.ErrRefused) {
+		return res, err
 	}
-	ov, err := localctl.LoadOverrides(d.cfg.OverridesPath)
-	if err != nil {
+	without, ok := withoutAIDefault(opts, ov)
+	if !ok {
+		return res, err
+	}
+	d.aiRefused = aiRefusedKey(opts.ServiceEntries["ai"], providerRaw)
+	logging.L().Warn("xray refused the render with the «Нейросети» default; rendering without it", "err", err.Error())
+	return d.applyProviderWith(ctx, providerRaw, force, without, probe)
+}
+
+// withoutAIDefault is opts without «Нейросети», when they carry them only as
+// the router's own default: ov, the overrides opts were made from, names no
+// choice for them.
+func withoutAIDefault(opts xray.SpliceOptions, ov localctl.Overrides) (xray.SpliceOptions, bool) {
+	if opts.ServiceEntries["ai"] == nil {
 		return opts, false
 	}
 	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" {
@@ -309,7 +322,7 @@ func (d *daemon) localReapplyOnce(ctx context.Context, change *localctl.Change) 
 	}
 	opts.ServiceEntries = serviceEntries
 	opts = d.withRuntime(opts, providerRaw)
-	res, err := d.applyProviderWith(ctx, providerRaw, false, opts, probe)
+	res, err := d.applyRendering(ctx, providerRaw, false, opts, probe, ov)
 	if err != nil {
 		return localctl.SocketResponse{Code: "apply_failed", Detail: err.Error()}
 	}

@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/apply"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/uiapi"
@@ -55,7 +59,7 @@ func TestTheAIServiceDefaultsToTheKazakhCascade(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			d, c := aiTestCache(t, tc.remarks...)
-			id, _, ok := aiDefault(localctl.Overrides{}, d.cfg.RouteSource, c, []byte(`{"outbounds":[{"tag":"main","protocol":"vless"}]}`))
+			id, _, ok := aiDefault(localctl.Overrides{}, d.cfg.RouteSource, c, []byte(`{"outbounds":[{"tag":"main","protocol":"vless"}]}`), "")
 			if tc.want < 0 {
 				if ok {
 					t.Fatalf("picked %s with no Kazakh location", id)
@@ -210,25 +214,66 @@ func TestTheAIDefaultIsReportedOnlyWhenTheRenderCarriesIt(t *testing.T) {
 }
 
 // A render the router's xray refuses with the «Нейросети» default is tried
-// again without it; an owner's own choice is never dropped.
+// again without it — decided by the overrides the render was made from, so
+// an owner's choice being applied right now is never taken for the default.
 func TestARefusedRenderDropsOnlyTheUnchosenAIDefault(t *testing.T) {
-	d, _ := aiTestCache(t, "🇷🇺🇪🇺 Авто")
-	d.cfg.OverridesPath = filepath.Join(t.TempDir(), "overrides.json")
 	opts := xray.SpliceOptions{ServiceEntries: map[string]json.RawMessage{"ai": json.RawMessage(`{}`), "youtube": json.RawMessage(`{}`)}}
-	without, ok := d.withoutAIDefault(opts)
+	without, ok := withoutAIDefault(opts, localctl.Overrides{})
 	if !ok || without.ServiceEntries["ai"] != nil || without.ServiceEntries["youtube"] == nil {
 		t.Fatalf("default not dropped: %v %v", without.ServiceEntries, ok)
 	}
-	if _, ok := d.withoutAIDefault(xray.SpliceOptions{ServiceEntries: map[string]json.RawMessage{"youtube": json.RawMessage(`{}`)}}); ok {
+	if _, ok := withoutAIDefault(xray.SpliceOptions{ServiceEntries: map[string]json.RawMessage{"youtube": json.RawMessage(`{}`)}}, localctl.Overrides{}); ok {
 		t.Fatal("dropped something with no AI default")
 	}
-	if _, err := localctl.UpdateOverrides(d.cfg.OverridesPath, func(o *localctl.Overrides) error {
-		o.ServiceEntries = map[string]string{"ai": "x"}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := d.withoutAIDefault(opts); ok {
+	if _, ok := withoutAIDefault(opts, localctl.Overrides{ServiceEntries: map[string]string{"ai": "x"}}); ok {
 		t.Fatal("dropped the owner's own AI location")
 	}
+}
+
+// A default xray refused on a document is not tried again there: the next
+// candidate is, and a new document tries it afresh.
+func TestARefusedAIDefaultIsSkippedOnThatDocument(t *testing.T) {
+	d, c := aiTestCache(t, "🇷🇺🇪🇺 Авто", "🇷🇺🇰🇿 Казахстан", "🇰🇿 Казахстан")
+	running := c.Entries[0]
+	d.aiRefused = aiRefusedKey(c.Entries[1], running)
+	got, err := d.connectServiceOptionsFor(localctl.Overrides{}, running)
+	if err != nil || string(got["ai"]) != string(c.Entries[2]) {
+		t.Fatalf("took %s (%v), want the next Kazakh location", got["ai"], err)
+	}
+	other := json.RawMessage(`{"outbounds":[{"tag":"other","protocol":"vless"}]}`)
+	if got, _ := d.connectServiceOptionsFor(localctl.Overrides{}, other); string(got["ai"]) != string(c.Entries[1]) {
+		t.Fatalf("a new document did not try the cascade again: %s", got["ai"])
+	}
+}
+
+// An owner's AI location the router's xray refuses is refused to the owner:
+// not taken for the default and dropped, and not saved (review of 259654e).
+func TestAnOwnersRefusedAIChoiceIsNeitherDroppedNorSaved(t *testing.T) {
+	d, _, entries, _ := newLocalUIDaemon(t)
+	ctx := context.Background()
+	raw, _, err := d.fetchProviderDocument(ctx, d.desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.applyProvider(ctx, raw, false); err != nil {
+		t.Fatal(err)
+	}
+	d.applier.Validate = refuseAI{d.applier.Validate}
+	resp := d.localReapply(ctx, &localctl.Change{SetService: &localctl.ServiceChoice{ID: "ai", EntryID: apply.Digest(entries[1])}})
+	if resp.OK {
+		t.Fatal("an AI location xray refused was reported applied")
+	}
+	if ov, _ := localctl.LoadOverrides(d.cfg.OverridesPath); ov.ServiceEntries["ai"] != "" {
+		t.Fatalf("saved a choice the router could not run: %+v", ov.ServiceEntries)
+	}
+}
+
+// refuseAI is xray -test refusing any render with an AI location.
+type refuseAI struct{ next apply.Validator }
+
+func (r refuseAI) Test(ctx context.Context, cfg []byte) error {
+	if bytes.Contains(cfg, []byte(`"vctl-connect-ai-`)) {
+		return errors.New("fake xray refuses the AI location")
+	}
+	return r.next.Test(ctx, cfg)
 }
