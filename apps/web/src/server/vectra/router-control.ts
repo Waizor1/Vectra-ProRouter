@@ -211,6 +211,11 @@ export function selectDeliverableJobsForCheckIn(
   importState: RouterRow["importState"],
   queuedCandidates: JobRow[],
   engineMode: RouterRow["engineMode"] = "passwall",
+  // Which controller is checking in: vctl reports engineMode "xray-direct";
+  // a legacy agent that woke up on an xray router (a dead-man hand-back)
+  // does not, and cannot run the xray engine's jobs or an owner's actions —
+  // they wait for vctl instead of failing on the wrong controller.
+  reportingController: "xray-direct" | "other" = "xray-direct",
 ) {
   // Engine isolation: a router only ever receives jobs for its own engine.
   // passwall routers (the default, all 18 live devices) never see xray jobs
@@ -231,10 +236,14 @@ export function selectDeliverableJobsForCheckIn(
   const applyGateJobType =
     engineMode === "xray-direct" ? "apply_xray_config" : "apply_passwall_config";
 
+  const controllerJobs =
+    engineMode === "xray-direct" && reportingController !== "xray-direct"
+      ? engineScopedJobs.filter((job) => !isXrayEngineJob(job))
+      : engineScopedJobs;
   const allowedJobs =
     importState === "approved"
-      ? engineScopedJobs
-      : engineScopedJobs.filter((job) => job.type !== applyGateJobType && job.type !== "connect_router_action");
+      ? controllerJobs
+      : controllerJobs.filter((job) => job.type !== applyGateJobType && job.type !== "connect_router_action");
 
   const exclusiveJob = allowedJobs.find((job) =>
     isEngineAgnosticExclusiveJob(job),
@@ -1367,7 +1376,8 @@ export async function registerRouter(
           lastConfigDigest: resolvePersistedConfigDigest({
             previousDigest: existingRouter.lastConfigDigest,
             reportedDigest: parsed.inventory.configDigest,
-            hasPasswallImport: Boolean(parsed.passwallImport),
+            hasPasswallImport:
+              Boolean(parsed.passwallImport) && !isConnectOwnedXrayRouter(existingRouter),
           }),
         })
         .where(eq(routers.id, existingRouter.id))
@@ -1449,7 +1459,9 @@ export async function registerRouter(
     issuedToken: issued.token,
     pollingIntervalSeconds: Number(env.VECTRA_POLLING_INTERVAL_SECONDS),
     pendingApproval: !router.approvedAt || router.importState !== "approved",
-    configSyncState: buildConfigSyncState(router),
+    configSyncState: buildConfigSyncState(router, {
+      requestImport: !isConnectOwnedXrayRouter(router) && router.importState === "awaiting_import",
+    }),
     rescuePolicy: createDefaultRescuePolicy(),
     updatePolicy: createDefaultUpdatePolicy(),
     operatorMessage: buildRegisterMessage(router),
@@ -1527,7 +1539,10 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
       lastConfigDigest: resolvePersistedConfigDigest({
         previousDigest: existingRouter.lastConfigDigest,
         reportedDigest: parsed.inventory.configDigest,
-        hasPasswallImport: Boolean(parsed.passwallImport),
+        // An ignored PassWall baseline (createImportedBaselineRevision) is
+        // not the digest of an owner's router.
+        hasPasswallImport:
+          Boolean(parsed.passwallImport) && !isConnectOwnedXrayRouter(existingRouter),
       }),
       // ADR-0006: the one-time claim code the router shows (keyed hash +
       // expiry), and the one it just replaced until that one's own expiry;
@@ -1616,6 +1631,7 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     router.importState,
     queuedCandidates,
     router.engineMode,
+    parsed.inventory.engineMode === "xray-direct" ? "xray-direct" : "other",
   );
 
   const [desiredRevision, policyContext] = await Promise.all([

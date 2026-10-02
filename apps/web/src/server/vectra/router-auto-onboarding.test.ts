@@ -245,6 +245,19 @@ describe("router auto-onboarding planner", () => {
     ).toEqual({ action: "skip", reason: "feature flag disabled" });
   });
 
+  it("leaves a Vectra Connect owner's router alone: it runs vctl, not PassWall", () => {
+    expect(
+      planNextOnboardingAction(
+        context({ router: router({ ownerRef: "owner-1", releasedAt: null, engineMode: "xray-direct" }) }),
+      ),
+    ).toMatchObject({ action: "skip" });
+    expect(
+      planNextOnboardingAction(
+        context({ router: router({ ownerRef: null, releasedAt: null, engineMode: "xray-direct" }), run: null }),
+      ),
+    ).toMatchObject({ action: "create_run" });
+  });
+
   it("loads completed runs so an enabled profile does not start again after done", () => {
     expect(onboardingRunResumeStatuses).toContain("done");
     expect(

@@ -41,6 +41,7 @@ import {
   createOperatorDraftRevisionWithDb,
   getFullConfigForRevisionWithDb,
 } from "~/server/vectra/router-control";
+import { isConnectOwnedXrayRouter } from "~/server/vectra/config-sync";
 import { describeEffectiveRouterSupport } from "~/server/vectra/support";
 
 import { decryptJson, encryptJson } from "./secrets";
@@ -108,7 +109,10 @@ export type RouterLike = Pick<
   // an operator's per-router exemption survives into the policy identity here
   // too — onboarding normalizes route policy, and a router exempted before it
   // finished onboarding must not be rebound by that pass.
-  Partial<Pick<RouterRow, "routePolicyExempt" | "routePolicyExemptReason">>;
+  Partial<Pick<RouterRow, "routePolicyExempt" | "routePolicyExemptReason">> &
+  // A Vectra Connect owner's router runs vctl (isConnectOwnedXrayRouter):
+  // there is no PassWall onboarding for it.
+  Partial<Pick<RouterRow, "ownerRef" | "releasedAt" | "engineMode">>;
 
 export type SnapshotLike = Pick<SnapshotRow, "payload" | "createdAt">;
 
@@ -761,6 +765,16 @@ export function planNextOnboardingAction(
 
   if (!ctx.router) {
     return { action: "skip", reason: "router not found" };
+  }
+
+  if (
+    isConnectOwnedXrayRouter({
+      ownerRef: ctx.router.ownerRef ?? null,
+      releasedAt: ctx.router.releasedAt ?? null,
+      engineMode: ctx.router.engineMode ?? "passwall",
+    })
+  ) {
+    return { action: "skip", reason: "a Vectra Connect owner's router runs vctl, not PassWall" };
   }
 
   if (!ctx.profile?.enabled) {

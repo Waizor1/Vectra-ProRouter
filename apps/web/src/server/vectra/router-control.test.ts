@@ -180,6 +180,22 @@ describe("resolveJobDedupeKeyAfterResult", () => {
 });
 
 describe("selectDeliverableJobsForCheckIn", () => {
+  // A legacy agent that woke up on an xray router (a dead-man hand-back)
+  // reports no engineMode: the xray engine's jobs and the owner's actions
+  // wait for vctl; an engine-agnostic controller update still reaches it.
+  it("keeps xray and owner jobs for vctl when another controller checks in", () => {
+    const queued = [
+      { id: "owner-action", type: "connect_router_action", state: "queued", payload: {} },
+      { id: "xray-apply", type: "apply_xray_config", state: "queued", payload: {} },
+    ];
+    expect(
+      selectDeliverableJobsForCheckIn("approved", queued as never, "xray-direct", "other"),
+    ).toHaveLength(0);
+    expect(
+      selectDeliverableJobsForCheckIn("approved", queued as never, "xray-direct", "xray-direct").map((job) => job.id),
+    ).toContain("owner-action");
+  });
+
   it("treats controller self-update terminal jobs as exclusive", () => {
     const deliverable = selectDeliverableJobsForCheckIn("approved", [
       {
