@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("~/env", () => ({
   env: {
@@ -17,7 +18,8 @@ import {
 import { routerConnectTelemetrySchema } from "@vectra/contracts";
 import { createFakeDb } from "./testing/fake-db";
 import { buildPartnerRequestHeaders } from "./partner-request-signature";
-import { type PartnerApiDeps, type IdempotencyRecord } from "./partner-api";
+import { type PartnerApiDeps } from "./partner-api";
+import { createMemoryIdempotency } from "./testing/memory-idempotency";
 import {
   handlePartnerRouterAction,
   handlePartnerRoutersRead,
@@ -81,7 +83,7 @@ function action(overrides = {}) {
   };
 }
 function deps(): PartnerRoutersDeps {
-  const records = new Map<string, IdempotencyRecord>();
+  const memory = createMemoryIdempotency();
   const nonces = new Set<string>();
   const api: PartnerApiDeps = {
     secret: SECRET,
@@ -93,11 +95,8 @@ function deps(): PartnerRoutersDeps {
     now: () => NOW,
     claim: vi.fn(),
     unbind: vi.fn(),
-    findIdempotent: async (key) => records.get(key) ?? null,
-    storeIdempotent: async (key, record) => {
-      records.set(key, record);
-      return record;
-    },
+    reserveIdempotent: memory.reserveIdempotent,
+    finishIdempotent: memory.finishIdempotent,
   };
   return {
     api,
@@ -127,9 +126,19 @@ function request(body: unknown = action(), id = ID, key = "test-key") {
     },
   });
 }
+// The router reports what it supports for its current owner; the panel never
+// assumes a capability (see the "nothing reported" snapshot test).
+function reportingInventory() {
+  return inventory({
+    connect: {
+      ownerRef: "acct-42",
+      capabilities: ["restart_vpn", "refresh_subscription"],
+    },
+  });
+}
 function queueDb(row = router()) {
   return createFakeDb({
-    selects: [[routerInventorySnapshots, [[inventory()]]]],
+    selects: [[routerInventorySnapshots, [[reportingInventory()]]]],
     updateReturns: [[routers, [[row]]]],
   });
 }
@@ -141,10 +150,8 @@ describe("partner snapshot ownership and measured truth", () => {
     expect(snapshot.verdict).toBeNull();
     expect(snapshot.exitCountry).toBeNull();
     expect(snapshot.lanClients).toBeNull();
-    expect(snapshot.capabilities).toEqual([
-      "restart_vpn",
-      "refresh_subscription",
-    ]);
+    // Nothing reported = nothing supported: the panel never invents actions.
+    expect(snapshot.capabilities).toEqual([]);
   });
   it("only projects validated measurements and never raw credentials", () => {
     const connect = routerConnectTelemetrySchema.parse({
@@ -543,20 +550,23 @@ describe("HTTP to native job to signed fake-provider webhook", () => {
       ...outbox.inserts(partnerWebhooks)[0],
     } as unknown as typeof partnerWebhooks.$inferSelect;
     const { deliverPartnerWebhook } = await import("./partner-webhooks");
-    const { verifyPartnerSignature } = await import("./partner-signature");
-    const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+    const { verifyPartnerRequest } = await import(
+      "./partner-request-signature"
+    );
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
       if (typeof init?.body !== "string")
         throw new Error("Expected JSON string body");
       expect(
-        verifyPartnerSignature({
+        verifyPartnerRequest({
+          request: new Request(url, { method: "POST", headers, body: init.body }),
           secret: "fake-webhook-secret",
-          timestamp: headers.get("X-Vectra-Partner-Timestamp"),
-          signature: headers.get("X-Vectra-Partner-Signature"),
-          rawBody: init.body,
+          rawBody: new TextEncoder().encode(init.body),
           nowMs: NOW.getTime(),
+          method: "POST",
+          path: "/hooks",
         }),
-      ).toEqual({ ok: true });
+      ).toMatchObject({ ok: true, requestId: row.id });
       expect(JSON.parse(init.body)).toMatchObject({
         event: "router.action",
         ownerRef: "acct-42",
@@ -688,7 +698,17 @@ describe("negotiated full typed management", () => {
   it("keeps old firmware truthful and rejects forged owner/unknown selected identities", async () => {
     expect(
       projectPartnerRouter(router(), inventory(), NOW).capabilities,
-    ).toEqual(["restart_vpn", "refresh_subscription"]);
+    ).toEqual([]);
+    // A capability list reported for a former owner is not the current one's.
+    expect(
+      projectPartnerRouter(
+        router(),
+        inventory({
+          connect: { ownerRef: "foreign", capabilities: ["restart_vpn"] },
+        }),
+        NOW,
+      ).capabilities,
+    ).toEqual([]);
     expect(
       projectPartnerRouter(
         router(),
@@ -737,6 +757,39 @@ describe("negotiated full typed management", () => {
         )
       ).status,
     ).toBe(422);
+    expect(fake.inserts(jobs)).toEqual([]);
+  });
+  it("stores a keyed hash of a set_wifi request, never the bare sha256 of the password-bearing input", async () => {
+    const fake = createFakeDb({
+      selects: [[routerInventorySnapshots, [[negotiated()]]]],
+      updateReturns: [[routers, [[router()]]]],
+    });
+    const input = action({
+      action: "set_wifi",
+      params: { ssid: "Fake guest", password: "fake-guest-pass-123" },
+    });
+    expect(
+      (await queuePartnerActionWithDb(fake.db as never, input, "wifi-key", NOW))
+        .status,
+    ).toBe(202);
+    const stored = (fake.inserts(jobs)[0] as { payload: { requestHash: string } })
+      .payload.requestHash;
+    expect(stored).toMatch(/^hmac1:[0-9a-f]{64}$/);
+    const bare = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+    expect(JSON.stringify(fake.calls.map(({ table: _t, ...call }) => call))).not.toContain(bare);
+  });
+  it("still recognises a retry of a job queued before the keyed hash (legacy sha256)", async () => {
+    const input = action({ action: "reboot" });
+    const legacy = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+    const fake = createFakeDb({
+      selects: [
+        [routerInventorySnapshots, [[negotiated()]]],
+        [jobs, [[{ id: OTHER, payload: { requestHash: legacy } }]]],
+      ],
+      updateReturns: [[routers, [[router()]]]],
+    });
+    const result = await queuePartnerActionWithDb(fake.db as never, input, "key", NOW);
+    expect(result).toEqual({ ok: true, status: 202, body: { actionId: OTHER, state: "queued" } });
     expect(fake.inserts(jobs)).toEqual([]);
   });
 });

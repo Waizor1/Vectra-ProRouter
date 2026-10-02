@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { partnerIdempotencyKeys } from "@vectra/db";
+
 import {
   handleRouterClaimRequest,
   handleRouterUnbindRequest,
+  hashPartnerRequest,
   IDEMPOTENT_REPLAY_HEADER,
-  type IdempotencyRecord,
   MAX_BODY_BYTES,
   type PartnerApiDeps,
   readRawBody,
+  reserveIdempotencyKeyWithDb,
 } from "./partner-api";
+import { createFakeDb } from "./testing/fake-db";
+import { createMemoryIdempotency } from "./testing/memory-idempotency";
 
 import { buildPartnerRequestHeaders } from "./partner-request-signature";
 // Every dependency is injected; the real database is never reached.
@@ -60,7 +65,8 @@ function signedRequest(
 }
 
 function createDeps(overrides: Partial<PartnerApiDeps> = {}) {
-  const store = new Map<string, IdempotencyRecord>();
+  const memory = createMemoryIdempotency();
+  const store = memory.store;
   const nonces = new Set<string>();
   const deps: PartnerApiDeps = {
     secret: SECRET,
@@ -87,15 +93,8 @@ function createDeps(overrides: Partial<PartnerApiDeps> = {}) {
       status: 200 as const,
       body: { routerId: ROUTER_ID, state: "unclaimed" as const },
     })),
-    findIdempotent: vi.fn(async (key: string) => store.get(key) ?? null),
-    storeIdempotent: vi.fn(async (key: string, record: IdempotencyRecord) => {
-      const existing = store.get(key);
-      if (existing) {
-        return existing;
-      }
-      store.set(key, record);
-      return record;
-    }),
+    reserveIdempotent: vi.fn(memory.reserveIdempotent),
+    finishIdempotent: vi.fn(memory.finishIdempotent),
     ...overrides,
   };
   return { deps, store };
@@ -438,20 +437,22 @@ describe("POST /api/partner/router-claims — Idempotency-Key", () => {
     });
   });
 
-  it("does not store a failure, so a retry with the key can still succeed", async () => {
+  it("does not keep a failure as the answer, so a retry with the key can still succeed", async () => {
     const { deps, store } = createDeps();
     deps.claim = vi.fn(async () => ({
       ok: false as const,
       status: 404 as const,
       body: { error: "unknown_code" as const },
     }));
-    await claim(
+    const first = await claim(
       signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
         key: "k-3",
       }),
       deps,
     );
-    expect(store.has("k-3")).toBe(false);
+    expect(first.status).toBe(404);
+    // Bound to its body, released, no final answer.
+    expect(store.get("k-3")).toMatchObject({ statusCode: 0, locked: false });
 
     deps.claim = createDeps().deps.claim;
     const retry = await claim(
@@ -464,47 +465,139 @@ describe("POST /api/partner/router-claims — Idempotency-Key", () => {
     expect(store.get("k-3")).toMatchObject({ statusCode: 200 });
   });
 
-  it("answers with what a concurrent twin stored first", async () => {
-    const { deps, store } = createDeps();
-    // A twin with the same key and body finished between our lookup and store.
-    deps.findIdempotent = vi.fn(async () => null);
-    const twinAnswer = {
-      routerId: ROUTER_ID,
-      state: "claimed",
-      alreadyClaimed: false,
-      deviceIdentifier: "vectra-test",
-      devicePublicKey: null,
-      model: null,
-    };
-    const first = await claim(
-      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
-        key: "k-4",
-      }),
-      deps,
-    );
-    expect(await first.json()).toEqual(twinAnswer);
+  it("refuses another body under a key whose first attempt failed (422, never run)", async () => {
+    const { deps } = createDeps();
     deps.claim = vi.fn(async () => ({
-      ok: true as const,
-      status: 200 as const,
-      body: {
-        routerId: ROUTER_ID,
-        state: "claimed" as const,
-        alreadyClaimed: true,
-        deviceIdentifier: "vectra-test",
-        devicePublicKey: null,
-        model: null,
-      },
+      ok: false as const,
+      status: 404 as const,
+      body: { error: "unknown_code" as const },
     }));
+    await claim(
+      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+        key: "k-5",
+      }),
+      deps,
+    );
+    deps.claim = vi.fn();
 
-    const second = await claim(
+    const response = await claim(
+      signedRequest(
+        "POST",
+        "/api/partner/router-claims",
+        { ...CLAIM_BODY, code: "8KQ4M9XD" },
+        { key: "k-5" },
+      ),
+      deps,
+    );
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({
+      error: "idempotency_key_mismatch",
+    });
+    expect(deps.claim).not.toHaveBeenCalled();
+  });
+
+  it("runs only one of two concurrent first attempts; the twin is told to retry", async () => {
+    const { deps } = createDeps();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const claimed = vi.fn(async () => {
+      await gate;
+      return {
+        ok: true as const,
+        status: 200 as const,
+        body: {
+          routerId: ROUTER_ID,
+          state: "claimed" as const,
+          alreadyClaimed: false,
+          deviceIdentifier: "vectra-test",
+          devicePublicKey: null,
+          model: null,
+        },
+      };
+    });
+    deps.claim = claimed;
+
+    const first = claim(
       signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
         key: "k-4",
       }),
       deps,
     );
+    // Let the first attempt reserve the key and enter the claim.
+    await vi.waitFor(() => expect(claimed).toHaveBeenCalledTimes(1));
+    const twin = await claim(
+      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+        key: "k-4",
+      }),
+      deps,
+    );
+    expect(twin.status).toBe(503);
+    expect(await twin.json()).toEqual({ error: "idempotency_in_progress" });
+    expect(twin.headers.get("retry-after")).toBe("2");
 
-    expect(await second.json()).toEqual(twinAnswer);
-    expect(store.size).toBe(1);
+    release();
+    expect((await first).status).toBe(200);
+    expect(claimed).toHaveBeenCalledTimes(1);
+
+    const replay = await claim(
+      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+        key: "k-4",
+      }),
+      deps,
+    );
+    expect(replay.status).toBe(200);
+    expect(replay.headers.get(IDEMPOTENT_REPLAY_HEADER)).toBe("true");
+    expect(claimed).toHaveBeenCalledTimes(1);
+  });
+
+  it("stores a keyed hash, never the bare sha256 of the body", async () => {
+    const { deps, store } = createDeps();
+    await claim(
+      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+        key: "k-6",
+      }),
+      deps,
+    );
+    const raw = new TextEncoder().encode(JSON.stringify(CLAIM_BODY));
+    const hashes = hashPartnerRequest(
+      "POST",
+      "/api/partner/router-claims",
+      raw,
+    );
+    const stored = store.get("k-6")?.requestHash;
+    expect(stored).toBe(hashes.requestHash);
+    expect(stored).toMatch(/^hmac1:[0-9a-f]{64}$/);
+    expect(stored).not.toBe(hashes.legacyHash);
+  });
+
+  it("still replays a row stored before the keyed hash (legacy sha256)", async () => {
+    const { deps, store } = createDeps();
+    const raw = new TextEncoder().encode(JSON.stringify(CLAIM_BODY));
+    const { legacyHash } = hashPartnerRequest(
+      "POST",
+      "/api/partner/router-claims",
+      raw,
+    );
+    store.set("k-7", {
+      requestHash: legacyHash,
+      statusCode: 200,
+      response: { routerId: ROUTER_ID, state: "claimed" },
+      locked: false,
+    });
+
+    const replay = await claim(
+      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+        key: "k-7",
+      }),
+      deps,
+    );
+
+    expect(replay.status).toBe(200);
+    expect(replay.headers.get(IDEMPOTENT_REPLAY_HEADER)).toBe("true");
+    expect(deps.claim).not.toHaveBeenCalled();
   });
 
   it("refuses a malformed signed key before executing", async () => {
@@ -611,5 +704,97 @@ describe("DELETE /api/partner/router-claims/:routerId", () => {
 
     expect(response.status).toBe(401);
     expect(deps.unbind).not.toHaveBeenCalled();
+  });
+});
+
+describe("reserveIdempotencyKeyWithDb", () => {
+  const hashes = hashPartnerRequest(
+    "POST",
+    "/api/partner/router-claims",
+    new TextEncoder().encode("{}"),
+  );
+  const pending = (overrides: Record<string, unknown> = {}) => ({
+    key: "k",
+    requestHash: hashes.requestHash,
+    statusCode: 0,
+    response: {},
+    lockedUntil: new Date(NOW.getTime() + 30_000),
+    createdAt: NOW,
+    ...overrides,
+  });
+
+  it("reserves a new key by inserting it as pending before anything runs", async () => {
+    const fake = createFakeDb();
+    const result = await reserveIdempotencyKeyWithDb(
+      fake.db as never,
+      "k",
+      hashes,
+      NOW,
+    );
+    expect(result).toEqual({ kind: "run" });
+    expect(fake.inserts(partnerIdempotencyKeys)[0]).toMatchObject({
+      key: "k",
+      requestHash: hashes.requestHash,
+      statusCode: 0,
+    });
+  });
+
+  it("answers busy while another attempt holds the key", async () => {
+    const fake = createFakeDb({
+      insertConflicts: [partnerIdempotencyKeys],
+      selects: [[partnerIdempotencyKeys, [[pending()]]]],
+      updateReturns: [[partnerIdempotencyKeys, [[]]]],
+    });
+    expect(
+      await reserveIdempotencyKeyWithDb(fake.db as never, "k", hashes, NOW),
+    ).toEqual({ kind: "busy" });
+  });
+
+  it("takes over a released key for the same body", async () => {
+    const fake = createFakeDb({
+      insertConflicts: [partnerIdempotencyKeys],
+      selects: [[partnerIdempotencyKeys, [[pending({ lockedUntil: null })]]]],
+      updateReturns: [[partnerIdempotencyKeys, [[pending()]]]],
+    });
+    expect(
+      await reserveIdempotencyKeyWithDb(fake.db as never, "k", hashes, NOW),
+    ).toEqual({ kind: "run" });
+  });
+
+  it("refuses another body under a pending key", async () => {
+    const fake = createFakeDb({
+      insertConflicts: [partnerIdempotencyKeys],
+      selects: [
+        [
+          partnerIdempotencyKeys,
+          [[pending({ requestHash: "hmac1:" + "0".repeat(64) })]],
+        ],
+      ],
+    });
+    expect(
+      await reserveIdempotencyKeyWithDb(fake.db as never, "k", hashes, NOW),
+    ).toEqual({ kind: "mismatch" });
+  });
+
+  it("replays a final answer", async () => {
+    const fake = createFakeDb({
+      insertConflicts: [partnerIdempotencyKeys],
+      selects: [
+        [
+          partnerIdempotencyKeys,
+          [[pending({ statusCode: 202, response: { actionId: "a" } })]],
+        ],
+      ],
+    });
+    expect(
+      await reserveIdempotencyKeyWithDb(fake.db as never, "k", hashes, NOW),
+    ).toEqual({
+      kind: "replay",
+      record: {
+        requestHash: hashes.requestHash,
+        statusCode: 202,
+        response: { actionId: "a" },
+      },
+    });
   });
 });

@@ -20,10 +20,12 @@ import {
   authenticatePartnerRequest,
   executePartnerRequest,
   parseIdempotencyKey,
+  partnerHashMatches,
   partnerJson,
   readRawBody,
   type PartnerApiDeps,
 } from "./partner-api";
+import { keyedDigest } from "./secrets";
 import {
   canRunDestructiveAction,
   describeEffectiveRouterSupport,
@@ -33,7 +35,6 @@ type Client = Pick<typeof db, "select" | "insert" | "update" | "transaction">;
 type Router = typeof routers.$inferSelect;
 type Inventory = typeof routerInventorySnapshots.$inferSelect;
 export const PARTNER_ACTION_ORIGIN = "partner_action";
-const SUPPORTED_ACTIONS = ["restart_vpn", "refresh_subscription"] as const;
 const ownerSchema = partnerOwnerRefSchema;
 export const partnerActionRequestSchema = z
   .object({
@@ -111,13 +112,17 @@ export function projectPartnerRouter(
     memory: payload?.resources
       ? `${payload.resources.memoryAvailableMb}/${payload.resources.memoryTotalMb} MB`
       : null,
-    capabilities: capable
-      ? measured?.capabilities && measured.ownerRef === router.ownerRef
+    // Only what the router itself reported for its CURRENT owner. A router
+    // that reports nothing (an older controller, a snapshot from before the
+    // claim) supports nothing through Connect — never a guessed default.
+    capabilities:
+      capable &&
+      measured?.capabilities &&
+      measured.ownerRef === router.ownerRef
         ? CONNECT_ACTION_NAMES.filter((action) =>
             measured.capabilities!.includes(action),
           )
-        : [...SUPPORTED_ACTIONS]
-      : [],
+        : [],
   };
 }
 
@@ -231,16 +236,22 @@ export async function queuePartnerActionWithDb(
     )
       return { ok: false, status: 400, body: { error: "invalid_params" } };
     const dedupeKey = `partner-action:${key}`;
-    const requestHash = createHash("sha256")
-      .update(JSON.stringify(input))
-      .digest("hex");
+    // Keyed: the input of set_wifi carries the Wi-Fi password, and this hash
+    // is stored in the job row for as long as the job is kept.
+    const hashes = {
+      requestHash: keyedDigest("partner-action-v1", JSON.stringify(input)),
+      legacyHash: createHash("sha256")
+        .update(JSON.stringify(input))
+        .digest("hex"),
+    };
+    const requestHash = hashes.requestHash;
     const [existing] = await tx
       .select()
       .from(jobs)
       .where(eq(jobs.dedupeKey, dedupeKey))
       .limit(1);
     if (existing)
-      return existing.payload.requestHash === requestHash
+      return partnerHashMatches(existing.payload.requestHash, hashes)
         ? {
             ok: true,
             status: 202,
@@ -297,7 +308,7 @@ export async function queuePartnerActionWithDb(
         .from(jobs)
         .where(eq(jobs.dedupeKey, dedupeKey))
         .limit(1);
-      if (winner?.payload.requestHash !== requestHash)
+      if (!partnerHashMatches(winner?.payload.requestHash, hashes))
         return {
           ok: false,
           status: 422,
@@ -306,7 +317,7 @@ export async function queuePartnerActionWithDb(
       return {
         ok: true,
         status: 202,
-        body: { actionId: winner.id, state: "queued" },
+        body: { actionId: winner!.id, state: "queued" },
       };
     }
     return { ok: true, status: 202, body: { actionId, state: "queued" } };

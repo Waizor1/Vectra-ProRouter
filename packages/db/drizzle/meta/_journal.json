@@ -155,6 +155,13 @@
       "when": 1790877600000,
       "tag": "0021_partner_request_nonces",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1790956800000,
+      "tag": "0022_partner_idempotency_reservation",
+      "breakpoints": true
     }
   ]
 }

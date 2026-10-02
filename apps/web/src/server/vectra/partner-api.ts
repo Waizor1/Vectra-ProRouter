@@ -6,12 +6,13 @@ import {
   partnerRouterUnbindRequestSchema,
 } from "@vectra/contracts";
 import { partnerIdempotencyKeys, partnerRequestNonces } from "@vectra/db";
-import { eq, lt } from "drizzle-orm";
+import { and, eq, isNull, lt, or } from "drizzle-orm";
 import type { ZodError } from "zod";
 
 import { env } from "~/env";
 import { db } from "~/server/db";
 import { verifyPartnerRequest } from "./partner-request-signature";
+import { keyedDigest } from "./secrets";
 import {
   claimRouterWithDb,
   type RouterClaimOutcome,
@@ -31,16 +32,49 @@ export const PARTNER_CLAIMS_PATH = "/api/partner/router-claims";
 
 export const MAX_BODY_BYTES = 16 * 1024;
 const IDEMPOTENCY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+// A first attempt holds its key this long; a crashed attempt's key frees itself.
+const IDEMPOTENCY_LEASE_MS = 60_000;
+// status_code of a key that is reserved but has no final answer (yet).
+const IDEMPOTENCY_PENDING = 0;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const LEGACY_REQUEST_HASH = /^[0-9a-f]{64}$/;
 
-type IdempotencyDatabase = Pick<typeof db, "select" | "insert" | "delete">;
+type IdempotencyDatabase = Pick<
+  typeof db,
+  "select" | "insert" | "update" | "delete"
+>;
 
 export type IdempotencyRecord = {
   requestHash: string;
   statusCode: number;
   response: Record<string, unknown>;
 };
+
+/**
+ * What a request is bound to under its Idempotency-Key. `requestHash` is a
+ * keyed HMAC (the body may carry a Wi-Fi password); `legacyHash` is the bare
+ * sha256 rows written before that carry. It is only ever COMPARED, never
+ * stored, so a legacy row keeps replaying until its retention expires.
+ */
+export type PartnerRequestHashes = { requestHash: string; legacyHash: string };
+
+export function partnerHashMatches(
+  stored: unknown,
+  hashes: PartnerRequestHashes,
+) {
+  return (
+    typeof stored === "string" &&
+    (stored === hashes.requestHash ||
+      (LEGACY_REQUEST_HASH.test(stored) && stored === hashes.legacyHash))
+  );
+}
+
+export type IdempotencyReservation =
+  | { kind: "run" }
+  | { kind: "replay"; record: IdempotencyRecord }
+  | { kind: "mismatch" }
+  | { kind: "busy" };
 
 export type PartnerApiDeps = {
   secret: string | null | undefined;
@@ -55,39 +89,32 @@ export type PartnerApiDeps = {
     routerId: string;
     ownerRef?: string | null;
   }) => Promise<RouterUnbindOutcome>;
-  findIdempotent: (key: string) => Promise<IdempotencyRecord | null>;
-  /** Store a first answer; returns what is stored (a concurrent twin's wins). */
-  storeIdempotent: (
+  /**
+   * Bind the key to this request BEFORE running it: the first attempt runs,
+   * a concurrent twin is told to retry (busy), the same key with another body
+   * is a mismatch for as long as the key is kept, a final answer is replayed.
+   */
+  reserveIdempotent: (
     key: string,
-    record: IdempotencyRecord,
-  ) => Promise<IdempotencyRecord>;
+    hashes: PartnerRequestHashes,
+  ) => Promise<IdempotencyReservation>;
+  /**
+   * Store the final (2xx) answer, or with null release the key for a retry:
+   * a 404/410 is re-evaluated, but only for the same body.
+   */
+  finishIdempotent: (
+    key: string,
+    requestHash: string,
+    record: IdempotencyRecord | null,
+  ) => Promise<void>;
 };
 
-export async function findIdempotencyRecordWithDb(
+export async function reserveIdempotencyKeyWithDb(
   client: IdempotencyDatabase,
   key: string,
-): Promise<IdempotencyRecord | null> {
-  const [row] = await client
-    .select()
-    .from(partnerIdempotencyKeys)
-    .where(eq(partnerIdempotencyKeys.key, key))
-    .limit(1);
-
-  return row
-    ? {
-        requestHash: row.requestHash,
-        statusCode: row.statusCode,
-        response: row.response,
-      }
-    : null;
-}
-
-export async function storeIdempotencyRecordWithDb(
-  client: IdempotencyDatabase,
-  key: string,
-  record: IdempotencyRecord,
+  hashes: PartnerRequestHashes,
   now = new Date(),
-): Promise<IdempotencyRecord> {
+): Promise<IdempotencyReservation> {
   await client
     .delete(partnerIdempotencyKeys)
     .where(
@@ -97,16 +124,89 @@ export async function storeIdempotencyRecordWithDb(
       ),
     );
 
+  const lockedUntil = new Date(now.getTime() + IDEMPOTENCY_LEASE_MS);
   const [inserted] = await client
     .insert(partnerIdempotencyKeys)
-    .values({ key, ...record })
+    .values({
+      key,
+      requestHash: hashes.requestHash,
+      statusCode: IDEMPOTENCY_PENDING,
+      response: {},
+      lockedUntil,
+    })
     .onConflictDoNothing({ target: partnerIdempotencyKeys.key })
     .returning();
   if (inserted) {
-    return record;
+    return { kind: "run" };
   }
 
-  return (await findIdempotencyRecordWithDb(client, key)) ?? record;
+  const [row] = await client
+    .select()
+    .from(partnerIdempotencyKeys)
+    .where(eq(partnerIdempotencyKeys.key, key))
+    .limit(1);
+  if (!row) {
+    // Expired between the insert and the read: the caller retries.
+    return { kind: "busy" };
+  }
+  if (!partnerHashMatches(row.requestHash, hashes)) {
+    return { kind: "mismatch" };
+  }
+  if (row.statusCode !== IDEMPOTENCY_PENDING) {
+    return {
+      kind: "replay",
+      record: {
+        requestHash: row.requestHash,
+        statusCode: row.statusCode,
+        response: row.response,
+      },
+    };
+  }
+
+  // A released key (an earlier non-2xx) or an expired lease is taken over by
+  // compare-and-swap: of concurrent retries exactly one runs.
+  const [taken] = await client
+    .update(partnerIdempotencyKeys)
+    .set({ lockedUntil })
+    .where(
+      and(
+        eq(partnerIdempotencyKeys.key, key),
+        eq(partnerIdempotencyKeys.statusCode, IDEMPOTENCY_PENDING),
+        eq(partnerIdempotencyKeys.requestHash, row.requestHash),
+        or(
+          isNull(partnerIdempotencyKeys.lockedUntil),
+          lt(partnerIdempotencyKeys.lockedUntil, now),
+        ),
+      ),
+    )
+    .returning();
+  return taken ? { kind: "run" } : { kind: "busy" };
+}
+
+export async function finishIdempotencyKeyWithDb(
+  client: IdempotencyDatabase,
+  key: string,
+  requestHash: string,
+  record: IdempotencyRecord | null,
+) {
+  await client
+    .update(partnerIdempotencyKeys)
+    .set(
+      record
+        ? {
+            statusCode: record.statusCode,
+            response: record.response,
+            lockedUntil: null,
+          }
+        : { lockedUntil: null },
+    )
+    .where(
+      and(
+        eq(partnerIdempotencyKeys.key, key),
+        eq(partnerIdempotencyKeys.requestHash, requestHash),
+        eq(partnerIdempotencyKeys.statusCode, IDEMPOTENCY_PENDING),
+      ),
+    );
 }
 
 export async function reservePartnerNonceWithDb(
@@ -135,9 +235,10 @@ export function defaultDeps(): PartnerApiDeps {
     now: () => new Date(),
     claim: (request) => claimRouterWithDb(db, request),
     unbind: (input) => unbindRouterClaimWithDb(db, input),
-    findIdempotent: (key) => findIdempotencyRecordWithDb(db, key),
-    storeIdempotent: (key, record) =>
-      storeIdempotencyRecordWithDb(db, key, record),
+    reserveIdempotent: (key, hashes) =>
+      reserveIdempotencyKeyWithDb(db, key, hashes),
+    finishIdempotent: (key, requestHash, record) =>
+      finishIdempotencyKeyWithDb(db, key, requestHash, record),
   };
 }
 
@@ -156,16 +257,23 @@ function invalid(detail: string) {
   return partnerJson({ error: "invalid", detail }, 400);
 }
 
-/** The request identity an Idempotency-Key is bound to. */
+/** The request identity an Idempotency-Key is bound to (see PartnerRequestHashes). */
 export function hashPartnerRequest(
   method: string,
   path: string,
   rawBody: Uint8Array,
-) {
-  return createHash("sha256")
-    .update(`${method} ${path}\n`)
-    .update(rawBody)
-    .digest("hex");
+): PartnerRequestHashes {
+  return {
+    requestHash: keyedDigest(
+      "partner-idempotency-v1",
+      `${method} ${path}\n`,
+      rawBody,
+    ),
+    legacyHash: createHash("sha256")
+      .update(`${method} ${path}\n`)
+      .update(rawBody)
+      .digest("hex"),
+  };
 }
 
 /** null = no key sent; false = a malformed key. */
@@ -275,10 +383,12 @@ type PartnerExecution = {
   >;
 };
 
-// Signature first, then the Idempotency-Key replay, then the operation. Only
-// successful answers are stored: a 404/410 is re-evaluated on retry, so a
-// backend that retries while the router has not yet checked in with its new
-// code can still succeed with the same key.
+// Signature first, then the body, then the Idempotency-Key reservation, then
+// the operation. The key is bound to the body before anything runs: the same
+// key with another body is refused even while the first attempt is still
+// running or ended in a failure. Only a 2xx is stored as the final answer: a
+// 404/410 releases the key, so a backend that retries while the router has not
+// yet checked in with its new code can still succeed with the same key.
 export async function executePartnerRequest(args: PartnerExecution) {
   const rawBody = await readRawBody(args.request);
   if (!rawBody) {
@@ -303,41 +413,72 @@ export async function executePartnerRequest(args: PartnerExecution) {
     );
   }
 
-  const requestHash = hashPartnerRequest(args.method, args.path, rawBody);
-  if (key) {
-    const stored = await args.deps.findIdempotent(key);
-    if (stored) {
-      return stored.requestHash === requestHash
-        ? partnerJson(stored.response, stored.statusCode, {
-            [IDEMPOTENT_REPLAY_HEADER]: "true",
-          })
-        : partnerJson({ error: "idempotency_key_mismatch" }, 422);
-    }
-  }
-
   const body = parseJsonBody(rawBody);
   if (body === undefined) {
     return invalid("body must be JSON");
   }
 
-  const outcome = await args.run(body);
-  if (outcome instanceof Response) {
-    return outcome;
-  }
-
-  if (outcome.ok && key) {
-    const stored = await args.deps.storeIdempotent(key, {
-      requestHash,
-      statusCode: outcome.status,
-      response: outcome.body,
-    });
-    if (stored.requestHash !== requestHash) {
+  const hashes = hashPartnerRequest(args.method, args.path, rawBody);
+  if (key) {
+    let reservation: IdempotencyReservation;
+    try {
+      reservation = await args.deps.reserveIdempotent(key, hashes);
+    } catch {
+      return partnerJson({ error: "partner_idempotency_unavailable" }, 503);
+    }
+    if (reservation.kind === "mismatch") {
       return partnerJson({ error: "idempotency_key_mismatch" }, 422);
     }
-    return partnerJson(stored.response, stored.statusCode);
+    if (reservation.kind === "busy") {
+      return partnerJson({ error: "idempotency_in_progress" }, 503, {
+        "retry-after": "2",
+      });
+    }
+    if (reservation.kind === "replay") {
+      return partnerJson(
+        reservation.record.response,
+        reservation.record.statusCode,
+        { [IDEMPOTENT_REPLAY_HEADER]: "true" },
+      );
+    }
   }
 
-  return partnerJson(outcome.body, outcome.status);
+  let outcome: Awaited<ReturnType<PartnerExecution["run"]>>;
+  try {
+    outcome = await args.run(body);
+  } catch (error) {
+    if (key) {
+      await args.deps
+        .finishIdempotent(key, hashes.requestHash, null)
+        .catch(() => undefined);
+    }
+    throw error;
+  }
+
+  if (key) {
+    // The operation already ran: a failed bookkeeping write must not turn its
+    // answer into a 500. The key's lease then expires and a retry re-runs,
+    // which every partner operation absorbs (claims and actions dedupe).
+    await args.deps
+      .finishIdempotent(
+        key,
+        hashes.requestHash,
+        !(outcome instanceof Response) && outcome.ok
+          ? {
+              requestHash: hashes.requestHash,
+              statusCode: outcome.status,
+              response: outcome.body,
+            }
+          : null,
+      )
+      .catch((error: unknown) =>
+        console.error("[partner-api] idempotency key not finished", error),
+      );
+  }
+
+  return outcome instanceof Response
+    ? outcome
+    : partnerJson(outcome.body, outcome.status);
 }
 
 /** POST /api/partner/router-claims */

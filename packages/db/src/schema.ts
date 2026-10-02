@@ -812,6 +812,9 @@ export const partnerIdempotencyKeys = createTable(
     requestHash: text("request_hash").notNull(),
     statusCode: integer("status_code").notNull(),
     response: jsonb("response").$type<Record<string, unknown>>().notNull(),
+    // status_code 0 = reserved, no final answer yet; the attempt holding it
+    // owns it until locked_until (NULL = released for a retry of the same body).
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

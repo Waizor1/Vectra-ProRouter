@@ -5,8 +5,8 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import * as schema from "@vectra/db";
 import {
   reservePartnerNonceWithDb,
-  findIdempotencyRecordWithDb,
-  storeIdempotencyRecordWithDb,
+  reserveIdempotencyKeyWithDb,
+  finishIdempotencyKeyWithDb,
 } from "./partner-api";
 import {
   queuePartnerActionWithDb,
@@ -83,9 +83,10 @@ describe.skipIf(!socket)("real isolated PostgreSQL partner concurrency", () => {
           unbind: vi.fn(),
           reserveNonce: (id, hash, expiry) =>
             reservePartnerNonceWithDb(db, id, hash, expiry),
-          findIdempotent: (key) => findIdempotencyRecordWithDb(db, key),
-          storeIdempotent: (key, record) =>
-            storeIdempotencyRecordWithDb(db, key, record),
+          reserveIdempotent: (key, hashes) =>
+            reserveIdempotencyKeyWithDb(db, key, hashes),
+          finishIdempotent: (key, hash, record) =>
+            finishIdempotencyKeyWithDb(db, key, hash, record),
         },
         read: vi.fn(),
         action: (body, key) => queuePartnerActionWithDb(db, body, key),
@@ -104,9 +105,17 @@ describe.skipIf(!socket)("real isolated PostgreSQL partner concurrency", () => {
           handlePartnerRouterAction(request(), routerId, deps),
         ),
       );
-      expect(outcomes.every((result) => result.status === 202)).toBe(true);
+      // One attempt runs; a twin that raced it is told to retry (503) or,
+      // once the first finished, replays its answer.
+      expect(
+        outcomes.every(
+          (result) => result.status === 202 || result.status === 503,
+        ),
+      ).toBe(true);
+      const accepted202 = outcomes.filter((result) => result.status === 202);
+      expect(accepted202.length).toBeGreaterThan(0);
       const bodies = await Promise.all(
-        outcomes.map(
+        accepted202.map(
           (result) => result.json() as Promise<{ actionId: string }>,
         ),
       );
