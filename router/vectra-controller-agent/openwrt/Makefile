@@ -54,6 +54,9 @@ define Package/$(PKG_NAME)/postinst
 	if [ "$${VECTRA_SKIP_POSTINST_RESTART}" = "1" ] || [ -f /tmp/vectra-skip-postinst-restart ]; then \
 		exit 0; \
 	fi; \
+	if [ -f /etc/vectra-controller-pro/.legacy-agent-disabled-by-vctl ]; then \
+		exit 0; \
+	fi; \
 	/etc/init.d/vectra-controller enable >/dev/null 2>&1 || true; \
 	if /etc/init.d/vectra-controller running >/dev/null 2>&1; then \
 		/etc/init.d/vectra-controller restart >/dev/null 2>&1 || true; \

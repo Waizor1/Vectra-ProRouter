@@ -456,6 +456,9 @@ fi
 
 [ "${VECTRA_SKIP_POSTINST_RESTART:-}" = "1" ] && exit 0
 [ -f /tmp/vectra-skip-postinst-restart ] && exit 0
+# vectra-controller-pro (vctl) runs this router and disabled this agent: an
+# upgrade must not enable and start a second controller beside it.
+[ -f /etc/vectra-controller-pro/.legacy-agent-disabled-by-vctl ] && exit 0
 
 /etc/init.d/vectra-controller enable >/dev/null 2>&1 || true
 if /etc/init.d/vectra-controller running >/dev/null 2>&1; then
