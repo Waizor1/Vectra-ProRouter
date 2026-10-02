@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -94,5 +95,28 @@ func TestLoadFallsBackPastASealedFileWithoutItsKey(t *testing.T) {
 	_ = os.WriteFile(moved, raw, 0o600)
 	if _, err := readStateFile(moved); err == nil {
 		t.Fatal("opened ciphertext moved from another path")
+	}
+}
+
+// Every copy sealed and the key gone: the agent refuses rather than register
+// a second identity for a router the panel already knows.
+func TestLoadRefusesToMintOverSealedCredentialsItCannotOpen(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "vectra-controller")
+	_ = os.MkdirAll(dir, 0o755)
+	path := filepath.Join(dir, "state.json")
+	creds := []byte(`{"router_id":"r-1","agent_token":"synthetic-token"}`)
+	for _, p := range []string{path, lastGoodPath(path), identityMirrorPath(path)} {
+		seal(t, p, creds)
+	}
+	if err := os.RemoveAll(dir + ".vault-keys"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); !errors.Is(err, ErrSealedIdentity) {
+		t.Fatalf("Load = %v, want ErrSealedIdentity", err)
+	}
+	// A router that never had credentials still enrolls.
+	fresh := filepath.Join(t.TempDir(), "vectra-controller", "state.json")
+	if _, err := Load(fresh); err != nil {
+		t.Fatalf("fresh enrollment: %v", err)
 	}
 }

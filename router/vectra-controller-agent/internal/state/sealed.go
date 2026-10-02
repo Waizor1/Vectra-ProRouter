@@ -21,6 +21,20 @@ const sealedMagic = "VCTLVAULT1\n"
 
 var errSealed = errors.New("state: sealed file cannot be opened")
 
+// ErrSealedIdentity: the router's credentials are sealed by vctl and cannot
+// be opened; the agent must not register a new identity over them.
+var ErrSealedIdentity = errors.New("state: the router's credentials are sealed and cannot be opened; not registering a new identity")
+
+// sealedUnreadable: one of the state's files is sealed and cannot be opened.
+func sealedUnreadable(path string) bool {
+	for _, p := range []string{path, identityMirrorPath(path), lastGoodPath(path)} {
+		if _, err := readStateFile(p); errors.Is(err, errSealed) {
+			return true
+		}
+	}
+	return false
+}
+
 // readStateFile reads path, opening it when vctl sealed it.
 func readStateFile(path string) ([]byte, error) {
 	raw, err := os.ReadFile(path)

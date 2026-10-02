@@ -91,6 +91,12 @@ func Load(path string) (PersistedState, error) {
 			fillMissingCredentials(&persisted, stored)
 		}
 	}
+	if !hasCredentials(persisted) && sealedUnreadable(path) {
+		// The router's credentials are there, sealed by vctl, and cannot be
+		// opened (their key is gone). Registering now would mint a second
+		// identity for a router the panel already knows.
+		return PersistedState{}, ErrSealedIdentity
+	}
 	return persisted, nil
 }
 
