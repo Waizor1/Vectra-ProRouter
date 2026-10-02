@@ -148,6 +148,31 @@ func reportSecretStorage(code, severity, title string, err error) {
 }
 
 func init() {
+	register(command{name: "legacy-handback-prepare", summary: "Before a hand-back: give an old agent that reads only plaintext its identity mirror back", run: cmdLegacyHandbackPrepare})
+}
+
+// cmdLegacyHandbackPrepare runs from the init script just before the old
+// agent is started again. An old agent that reads sealed files needs
+// nothing; one that does not (downgraded below the vault-read release while
+// vctl ran) gets its identity mirror unsealed, or it would mint a new
+// identity.
+func cmdLegacyHandbackPrepare(args []string) error {
+	fs := newFlagSet("legacy-handback-prepare")
+	path := fs.String("state", "/etc/vectra-controller/state.json", "the old agent's state file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return legacyHandbackPrepare(*path)
+}
+
+func legacyHandbackPrepare(path string) error {
+	if legacyReadsSealed() {
+		return nil
+	}
+	return vault.Unseal(path + ".identity")
+}
+
+func init() {
 	register(command{name: "teardown-mark", summary: "Print the public TPROXY teardown mark only", run: cmdTeardownMark})
 }
 func cmdTeardownMark(args []string) error {

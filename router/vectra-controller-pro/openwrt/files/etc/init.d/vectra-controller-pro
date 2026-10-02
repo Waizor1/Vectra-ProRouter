@@ -353,6 +353,10 @@ restore_legacy_controller() {
 	[ -f "$LEGACY_MARKER" ] || [ -f "$TRIAL_MARKER_DIR/${LEGACY_MARKER##*/}" ] || return 0
 	[ -x "$LEGACY_INIT" ] || return 0
 	logger -t vectra-controller-pro "restoring legacy vectra-controller (vctl no longer owns this router)"
+	# An agent that reads only plaintext (one older than the vault-read
+	# release) gets its identity mirror back before it starts; best effort —
+	# without vctl the hand-back still goes on.
+	[ -x "$VCTL_BIN" ] && "$VCTL_BIN" legacy-handback-prepare >/dev/null 2>&1
 	"$LEGACY_INIT" enable >/dev/null 2>&1 || true
 	"$LEGACY_INIT" start >/dev/null 2>&1 || true
 	# Consumed once it is back enabled, not before — PassWall's rule: an

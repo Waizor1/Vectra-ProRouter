@@ -104,3 +104,33 @@ func TestVaultRestoreWritesANewPlaintextFileOnly(t *testing.T) {
 		t.Fatal("overwrote an existing file")
 	}
 }
+
+// At a hand-back an old agent that reads only plaintext gets its mirror back;
+// one that reads sealed files leaves it sealed.
+func TestHandbackGivesAPlaintextOnlyAgentItsMirror(t *testing.T) {
+	dir := t.TempDir()
+	oldMarker, oldControl := legacyAgentVaultMarker, legacyAgentControl
+	t.Cleanup(func() { legacyAgentVaultMarker, legacyAgentControl = oldMarker, oldControl })
+	legacyAgentVaultMarker = filepath.Join(dir, "vault-read-v1")
+	legacyAgentControl = filepath.Join(dir, "agent.control")
+	p := filepath.Join(dir, "legacy", "state.json")
+	_ = os.MkdirAll(filepath.Dir(p), 0o700)
+	if err := vault.WriteFile(p+".identity", []byte(`{"router_id":"r","agent_token":"synthetic-handback"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(legacyAgentControl, []byte("Version: x\n"), 0o644)
+	_ = os.WriteFile(legacyAgentVaultMarker, []byte("v1\n"), 0o644)
+	if err := legacyHandbackPrepare(p); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(p + ".identity"); strings.Contains(string(raw), "synthetic-handback") {
+		t.Fatal("unsealed for an agent that reads sealed files")
+	}
+	_ = os.Remove(legacyAgentVaultMarker) // downgraded below the vault-read release
+	if err := legacyHandbackPrepare(p); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(p + ".identity"); !strings.Contains(string(raw), "synthetic-handback") {
+		t.Fatal("the plaintext-only agent cannot read its mirror")
+	}
+}
