@@ -291,7 +291,16 @@ func addConnectServices(p *servicePlan, base []byte, entries map[string]json.Raw
 				}
 			}
 			if len(selectors) == 0 {
-				return errors.New("unsupported_entry_graph")
+				// A balancer of nodes the location does not have (the
+				// provider's whitelist levels) passes through to its
+				// fallback, here as in the provider's document: its own
+				// selectors, namespaced, still match nothing.
+				for _, sel := range jsonStrings(b["selector"]) {
+					selectors = append(selectors, prefix+sel)
+				}
+				if len(selectors) == 0 {
+					return errors.New("unsupported_entry_graph")
+				}
 			}
 			b["selector"] = marshalNoEscape(selectors)
 			if jsonString(b["fallbackTag"]) == "" {
@@ -301,10 +310,10 @@ func addConnectServices(p *servicePlan, base []byte, entries map[string]json.Raw
 				b["fallbackTag"] = marshalNoEscape(v.Default.Tag)
 			}
 			if t := jsonString(b["fallbackTag"]); t != "" {
-				if tags[t] == "" {
-					return errors.New("unsupported_entry_graph")
-				}
-				b["fallbackTag"] = marshalNoEscape(tags[t])
+				// A fallback to a tag the location lacks (the end of the
+				// provider's whitelist chain) leads nowhere, as in the
+				// provider's document: namespaced, it still names nothing.
+				b["fallbackTag"] = marshalNoEscape(prefix + t)
 			}
 			if !baseView.HasObservatory {
 				var strategy map[string]json.RawMessage
@@ -330,10 +339,9 @@ func addConnectServices(p *servicePlan, base []byte, entries map[string]json.Raw
 			rule["inboundTag"] = marshalNoEscape(inbounds)
 			for _, field := range []string{"outboundTag", "balancerTag"} {
 				if tag := jsonString(rule[field]); tag != "" {
-					if tags[tag] == "" {
-						return errors.New("unsupported_entry_graph")
-					}
-					rule[field] = marshalNoEscape(tags[tag])
+					// Namespaced like every tag; one the location lacks still
+					// names nothing, as in the provider's document.
+					rule[field] = marshalNoEscape(prefix + tag)
 				}
 			}
 			p.backRules = append(p.backRules, marshalNoEscape(rule))

@@ -56,10 +56,9 @@ func TestConnectExactServiceGraph(t *testing.T) {
 }
 func TestConnectEntryGraphRefusesUnsafeReferences(t *testing.T) {
 	for name, doc := range map[string]string{
-		"unknown_service":   svcDoc,
-		"missing_reference": strings.Replace(svcDoc, `"fallbackTag":"DIRECT"`, `"fallbackTag":"MISSING"`, 1),
-		"proxy_reference":   strings.Replace(svcDoc, `"tag":"sticky-de5","protocol"`, `"tag":"sticky-de5","proxySettings":{"tag":"MISSING"},"protocol"`, 1),
-		"no_observatory":    strings.Replace(svcDoc, `"burstObservatory"`, `"unusedObservatory"`, 1),
+		"unknown_service": svcDoc,
+		"proxy_reference": strings.Replace(svcDoc, `"tag":"sticky-de5","protocol"`, `"tag":"sticky-de5","proxySettings":{"tag":"MISSING"},"protocol"`, 1),
+		"no_observatory":  strings.Replace(svcDoc, `"burstObservatory"`, `"unusedObservatory"`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			id := "tiktok"
@@ -86,7 +85,7 @@ func TestConnectServiceGraphDuplicateCollisionAndBounds(t *testing.T) {
 	cases := map[string]string{
 		"duplicate_outbound":        strings.Replace(svcDoc, `"tag":"bridge-de5"`, `"tag":"sticky-de5"`, 1),
 		"duplicate_balancer":        strings.Replace(svcDoc, `"tag":"BL-TK"`, `"tag":"BL-MAIN"`, 1),
-		"balancer_outbound_overlap": strings.Replace(svcDoc, `"tag":"BL-MAIN"`, `"tag":"sticky-de5"`, 1),
+		"balancer_outbound_overlap": strings.ReplaceAll(svcDoc, `"BL-MAIN"`, `"sticky-de5"`),
 		"oversized":                 svcDoc + strings.Repeat(" ", 1<<20),
 		"negated_inbound":           strings.Replace(svcDoc, `"inboundTag":["STAGE_TK"]`, `"inboundTag":["!STAGE_TK"]`, 1),
 		"unknown_dialer":            strings.Replace(svcDoc, `"tag":"sticky-de5","protocol"`, `"tag":"sticky-de5","streamSettings":{"sockopt":{"dialerProxy":"MISSING"}},"protocol"`, 1),
@@ -283,5 +282,61 @@ func TestConnectServiceImportsOnlyWhatItsPathReaches(t *testing.T) {
 	broken := strings.Replace(entry, `{"tag":"BL-MAIN","selector":["de-"],"fallbackTag":"de-1"}`, `{"tag":"BL-MAIN","selector":["de-"],"fallbackTag":"missing"}`, 1)
 	if _, _, err := xray.Splice([]byte(svcDoc), testTproxy(), xray.SpliceOptions{ServiceEntries: map[string]json.RawMessage{"youtube": json.RawMessage(broken)}}); err == nil {
 		t.Fatal("a reached balancer with an unknown fallback was accepted")
+	}
+}
+
+// The provider's real locations (1111, 2026-10-02): YouTube's own rule goes to
+// the Russian bridge, whose fallback stages through the main balancer and the
+// whitelist levels — balancers of nodes the location does not have, ending in
+// a fallback to a tag it lacks. xray takes that document; the import takes the
+// same chain, namespaced, leading nowhere at its end as the provider's does.
+func TestConnectServiceTakesTheProvidersWhitelistChain(t *testing.T) {
+	entry := `{
+ "outbounds":[
+  {"tag":"sticky-de5","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u"}]}]}},
+  {"tag":"bridge-ru-tcp","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.10","port":443,"users":[{"id":"u"}]}]}},
+  {"tag":"stage-main","protocol":"loopback","settings":{"inboundTag":"STAGE_MAIN"}},
+  {"tag":"stage-wl","protocol":"loopback","settings":{"inboundTag":"STAGE_WL"}},
+  {"tag":"DIRECT","protocol":"freedom"},
+  {"tag":"BLOCK","protocol":"blackhole"}
+ ],
+ "routing":{
+  "balancers":[
+   {"tag":"BL-RU","selector":["bridge-ru-tcp"],"fallbackTag":"stage-main","strategy":{"type":"leastLoad"}},
+   {"tag":"BL-MAIN","selector":["sticky-de5"],"fallbackTag":"stage-wl","strategy":{"type":"leastLoad"}},
+   {"tag":"BL-WL-LV1","selector":["whitelist-lv1"],"fallbackTag":"whitelist-lv3","strategy":{"type":"leastLoad"}}
+  ],
+  "rules":[
+   {"inboundTag":["STAGE_MAIN"],"balancerTag":"BL-MAIN"},
+   {"inboundTag":["STAGE_WL"],"balancerTag":"BL-WL-LV1"},
+   {"domain":["geosite:youtube"],"balancerTag":"BL-RU"},
+   {"network":"tcp,udp","balancerTag":"BL-MAIN"}
+  ]
+ }
+}`
+	_, r, res := spliceServices(t, xray.SpliceOptions{ServiceEntries: map[string]json.RawMessage{"youtube": json.RawMessage(entry)}})
+	if len(res.Services.Applied) != 1 {
+		t.Fatalf("applied %v", res.Services.Applied)
+	}
+	got := map[string]string{}
+	for _, b := range r.Routing.Balancers {
+		if strings.HasPrefix(b.Tag, "vctl-connect-youtube-") {
+			got[b.Tag] = strings.Join(b.Selector, ",") + "|" + b.FallbackTag
+		}
+	}
+	want := map[string]string{
+		"vctl-connect-youtube-BL-RU":     "vctl-connect-youtube-bridge-ru-tcp|vctl-connect-youtube-stage-main",
+		"vctl-connect-youtube-BL-MAIN":   "vctl-connect-youtube-sticky-de5|vctl-connect-youtube-stage-wl",
+		"vctl-connect-youtube-BL-WL-LV1": "vctl-connect-youtube-whitelist-lv1|vctl-connect-youtube-whitelist-lv3",
+	}
+	for tag, w := range want {
+		if got[tag] != w {
+			t.Fatalf("%s: got %q want %q (all %v)", tag, got[tag], w, got)
+		}
+	}
+	for _, o := range r.Outbounds {
+		if o.Tag == "vctl-connect-youtube-whitelist-lv3" || o.Tag == "vctl-connect-youtube-whitelist-lv1" {
+			t.Fatalf("invented an outbound %s", o.Tag)
+		}
 	}
 }
