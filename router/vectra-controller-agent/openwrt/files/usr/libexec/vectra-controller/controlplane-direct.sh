@@ -20,32 +20,39 @@
 # The Go agent stamps SO_MARK = VECTRA_CONTROL_PLANE_FWMARK on its own sockets
 # (it reads the value from config.json `control_plane_fwmark`, rendered by
 # render-config.sh). This script installs a dedicated nftables table whose ONLY
-# job is: at the `output` hook, BEFORE PassWall2's chain, `accept` any packet
-# carrying that mark.
+# job is: at the `output` hook, BEFORE PassWall2's chain, re-stamp any packet
+# carrying that mark with PassWall2's own local-output bypass mark (0xff).
 #
 #   table inet vectra_controlplane {
 #     chain output_direct {
 #       type route hook output priority -160; policy accept;
-#       meta mark 0x564354 counter accept
+#       meta mark 0x564354 counter meta mark set 0xff accept
 #     }
 #   }
 #
-# ORDERING / WHY IT BEATS PASSWALL2 (verified against nftables.sh):
-#   * PassWall2 creates `chain mangle_output { type route hook output
-#     priority mangle - 1; ... }` i.e. priority -151
-#     (passwall2/.../root/usr/share/passwall2/nftables.sh:139-141).
-#   * nftables evaluates all base chains registered on the SAME hook in
-#     ASCENDING priority order. Our chain at priority -160 runs strictly
-#     BEFORE PassWall2's -151 chain.
-#   * An `accept` verdict issued from a base chain TERMINATES evaluation of the
-#     remaining base chains on that hook for this packet. So once we accept a
-#     marked packet, PassWall2's `mangle_output` (which would `meta mark set
-#     0x50535732` and divert it via `ip rule ... table 999`) never runs.
-#   * The packet therefore keeps a clean mark, misses the tproxy `ip rule`, and
-#     is routed by the MAIN table out the WAN = DIRECT egress. This is exactly
-#     the same effect PassWall2 grants its own internal bypass sentinel
-#     (`meta mark 255 counter return`, nftables.sh:781), but in our own table
-#     and with our own mark so we never depend on a PassWall2 magic constant.
+# WHY A HAND-OFF AND NOT A PLAIN `accept`:
+#   * An `accept` verdict is NOT final across base chains. nftables keeps
+#     evaluating every later-priority base chain registered on the same hook
+#     ("If a packet is accepted and there is another chain, bearing the same
+#     hook type and with a later priority, then the packet will subsequently
+#     traverse this other chain" - wiki.nftables.org, Configuring chains). Only
+#     `drop` is final. So accepting at -160 never kept PassWall2's
+#     `mangle_output` (priority mangle - 1 = -151) from stamping its tproxy mark.
+#   * PassWall2 itself exempts locally-generated packets carrying mark 0xff (the
+#     mark xray stamps on its own outbound sockets) as the first non-address
+#     rule of EVERY output chain, before any jump to PSW2_RULE or REDIRECT:
+#       26.4.10 .. 26.8.10  `meta mark 255 counter return`
+#       26.9.x              `meta mark and 0xff == 0xff counter return`
+#     in PSW2_OUTPUT_MANGLE, PSW2_OUTPUT_MANGLE_V6 and (redirect mode)
+#     PSW2_OUTPUT_NAT. Exactly 0xff satisfies both forms.
+#   * Our chain runs first (-160 < -151), and because it is a `type route`
+#     chain the kernel re-routes the packet after the mark changes. The packet
+#     reaches PassWall2 already carrying 0xff, PassWall2 returns it unmarked by
+#     its tproxy mark, no `ip rule fwmark` matches, and the MAIN table sends it
+#     out the WAN = DIRECT egress - the same path xray's own traffic takes.
+#   * We keep our own distinctive mark on the socket (and the counter on it) so
+#     the agent never depends on the PassWall2 constant directly; the coupling
+#     lives in this one rule (VECTRA_PASSWALL_BYPASS_MARK).
 #
 # DELIBERATELY a SEPARATE table (`inet vectra_controlplane`), NOT a rule grafted
 # into `inet passwall2`:
@@ -78,6 +85,12 @@ set -u
 # an otherwise unused range.
 VECTRA_CONTROL_PLANE_FWMARK="${VECTRA_CONTROL_PLANE_FWMARK:-0x564354}"
 
+# PassWall2's local-output bypass mark (see "WHY A HAND-OFF" above). Must stay
+# exactly 0xff: 26.4-26.8 compare `meta mark 255`, 26.9 compares the low byte.
+VECTRA_PASSWALL_BYPASS_MARK="${VECTRA_PASSWALL_BYPASS_MARK:-0xff}"
+
+DISABLED_PATH="${DISABLED_PATH:-/etc/vectra-controller/controlplane-direct.disabled}"
+
 NFT_TABLE="inet vectra_controlplane"
 NFT_BIN="${NFT_BIN:-nft}"
 LOG_TAG="vectra-controlplane-direct"
@@ -108,7 +121,7 @@ render_ruleset() {
 	table $NFT_TABLE {
 		chain output_direct {
 			type route hook output priority -160; policy accept;
-			meta mark $VECTRA_CONTROL_PLANE_FWMARK counter accept
+			meta mark $VECTRA_CONTROL_PLANE_FWMARK counter meta mark set $VECTRA_PASSWALL_BYPASS_MARK accept
 		}
 	}
 	EOF
@@ -120,7 +133,7 @@ apply() {
 		return 0
 	fi
 	if render_ruleset | "$NFT_BIN" -f - 2>/dev/null; then
-		log "applied control-plane direct carve-out (mark $VECTRA_CONTROL_PLANE_FWMARK)"
+		log "applied control-plane direct carve-out (mark $VECTRA_CONTROL_PLANE_FWMARK -> $VECTRA_PASSWALL_BYPASS_MARK)"
 		return 0
 	fi
 	log "failed to apply control-plane direct carve-out"
@@ -132,6 +145,35 @@ remove() {
 	"$NFT_BIN" delete table $NFT_TABLE 2>/dev/null || true
 	log "removed control-plane direct carve-out"
 	return 0
+}
+
+# `remove` is temporary: boot/reload hooks intentionally rebuild the table.
+# `disable` is the persistent rollback. Keep package-owned hooks in place;
+# automatic apply becomes a no-op until uci-defaults/reinstall calls enable.
+disable() {
+	mkdir -p "$(dirname "$DISABLED_PATH")" || return 1
+	(umask 077; : > "$DISABLED_PATH") || return 1
+	if have_nft && "$NFT_BIN" list table $NFT_TABLE >/dev/null 2>&1; then
+		"$NFT_BIN" delete table $NFT_TABLE || return 1
+	fi
+	if command -v uci >/dev/null 2>&1 &&
+		[ "$(uci -q get firewall.vectra_controlplane.type)" = "script" ] &&
+		[ "$(uci -q get firewall.vectra_controlplane.path)" = "$FW_INCLUDE_PATH" ]; then
+		uci -q delete firewall.vectra_controlplane || return 1
+		uci -q commit firewall || return 1
+	fi
+	# Never remove a file the owner replaced with their own include.
+	if [ -f "$FW_INCLUDE_PATH" ] &&
+		grep -qF "# Auto-generated by $LOG_TAG." "$FW_INCLUDE_PATH"; then
+		rm -f "$FW_INCLUDE_PATH" || return 1
+	fi
+	log "disabled control-plane direct carve-out persistently"
+}
+
+enable() {
+	rm -f "$DISABLED_PATH" || return 1
+	write_fw_include
+	apply
 }
 
 status() {
@@ -162,8 +204,15 @@ write_fw_include() {
 arg="${1:-apply}"
 case "$arg" in
 	apply)
+		[ ! -f "$DISABLED_PATH" ] || exit 0
 		write_fw_include
 		apply
+		;;
+	disable)
+		disable
+		;;
+	enable)
+		enable
 		;;
 	remove)
 		remove
@@ -175,7 +224,7 @@ case "$arg" in
 		write_fw_include
 		;;
 	*)
-		echo "usage: $0 {apply|remove|status|write_include}" >&2
+		echo "usage: $0 {apply|remove|disable|enable|status|write_include}" >&2
 		exit 2
 		;;
 esac
