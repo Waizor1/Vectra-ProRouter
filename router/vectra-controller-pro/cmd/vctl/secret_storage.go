@@ -66,6 +66,13 @@ func migrateSecrets(c agentcfg.Config) error {
 	if err := localctl.MigrateEntries(c.EntriesPath); err != nil {
 		return err
 	}
+	// PassWall2's nodes and subscriptions in plaintext backups an older vctl
+	// or a person left: sealed, still recoverable; a failure is reported,
+	// never a reason not to start.
+	if err := retireEnv().SealPlaintextBackups(); err != nil {
+		logging.L().Warn("a plaintext PassWall2 backup was left unsealed", "err", err.Error())
+		reportSecretStorage("passwall_backup_unsealed", "warning", "a PassWall2 backup was left in plaintext", err)
+	}
 	// Crash-left atomic temp files can contain incomplete secret input. Seal
 	// rather than deleting them: recovery custody remains explicit.
 	for _, base := range []string{c.XrayConfigPath, c.ProviderConfigPath, passwallDocumentPath(c.ProviderConfigPath), c.XrayRenderPath} {

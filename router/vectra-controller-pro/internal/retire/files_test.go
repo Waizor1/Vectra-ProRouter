@@ -330,3 +330,39 @@ func TestEncryptedBackupsPreserveLegacyAndRejectOversized(t *testing.T) {
 		t.Fatal("oversized configuration accepted")
 	}
 }
+
+// Plaintext PassWall2 backups an older vctl or a person left are sealed: an
+// old archive becomes the encrypted form restore-passwall restores, a
+// hand-made UCI copy is sealed in place, and nothing readable is lost.
+func TestPlaintextBackupsAreSealedAndStayRecoverable(t *testing.T) {
+	dir := t.TempDir()
+	e := Env{BackupDir: filepath.Join(dir, "backup")}
+	_ = os.MkdirAll(e.BackupDir, 0o700)
+	archive := filepath.Join(e.BackupDir, "passwall2-1111-2026-09-29.tar.gz")
+	body := []byte("\x1f\x8bsynthetic-archive-with-node-uuid")
+	uci := filepath.Join(e.BackupDir, "passwall2.before-native")
+	text := []byte("config nodes 'n'\n\toption password 'synthetic-node-pass'\n")
+	_ = os.WriteFile(archive, body, 0o600)
+	_ = os.WriteFile(uci, text, 0o600)
+	if err := e.SealPlaintextBackups(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(archive); !os.IsNotExist(err) {
+		t.Fatal("the plaintext archive is still there")
+	}
+	got, err := vault.ReadFile(archive + ".vault")
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("the sealed archive does not restore: %v", err)
+	}
+	raw, _ := os.ReadFile(uci)
+	if bytes.Contains(raw, []byte("synthetic-node-pass")) {
+		t.Fatal("the hand-made copy stayed plaintext")
+	}
+	if got, err := vault.ReadFile(uci); err != nil || !bytes.Equal(got, text) {
+		t.Fatalf("the hand-made copy is lost: %v", err)
+	}
+	// Run again: nothing changes, nothing fails.
+	if err := e.SealPlaintextBackups(); err != nil {
+		t.Fatal(err)
+	}
+}

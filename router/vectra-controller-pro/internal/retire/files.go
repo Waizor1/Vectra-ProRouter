@@ -237,7 +237,8 @@ func (e Env) owes() bool {
 const MaxArchiveBytes int64 = 32 << 20
 
 // Backup preserves recovery in an authenticated encrypted archive. Older
-// plaintext backups are left intact; only encrypted generations are rotated.
+// plaintext backups are sealed at vctl's start (SealPlaintextBackups); only
+// encrypted generations are rotated.
 func (e Env) Backup(now time.Time) (string, error) {
 	var files []string
 	var total int64
@@ -291,6 +292,62 @@ func (e Env) Backup(now time.Time) (string, error) {
 	}
 	e.rotate()
 	return path, nil
+}
+
+// SealPlaintextBackups seals what an older vctl or a person left in the
+// backup directory as plaintext: PassWall2's nodes and subscriptions. An old
+// archive passwall2-*.tar.gz becomes passwall2-*.tar.gz.vault — the form
+// `vctl restore-passwall` restores — once the sealed copy reads back byte for
+// byte; any other file (a hand-made copy of a UCI file) is sealed in place.
+// Nothing is lost: what was readable stays recoverable, with the key outside
+// this directory.
+func (e Env) SealPlaintextBackups() error {
+	ents, err := os.ReadDir(e.BackupDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, d := range ents {
+		name := d.Name()
+		path := filepath.Join(e.BackupDir, name)
+		if !d.Type().IsRegular() || strings.HasSuffix(name, ".vault") || !vault.Unsealed(path) {
+			continue
+		}
+		if !strings.HasPrefix(name, "passwall2-") || !strings.HasSuffix(name, ".tar.gz") {
+			errs = append(errs, vault.MigrateFile(path, func([]byte) error { return nil }))
+			continue
+		}
+		errs = append(errs, sealArchive(path))
+	}
+	return errors.Join(errs...)
+}
+
+func sealArchive(path string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	defer clear(raw)
+	if int64(len(raw)) > MaxArchiveBytes+(1<<20) {
+		return fmt.Errorf("configuration archive exceeds size limit")
+	}
+	sealed := path + ".vault"
+	if err := vault.WriteFile(sealed, raw); err != nil {
+		return err
+	}
+	back, err := vault.ReadFile(sealed)
+	if err != nil {
+		return err
+	}
+	same := bytes.Equal(back, raw)
+	clear(back)
+	if !same {
+		return fmt.Errorf("sealed archive does not read back")
+	}
+	return os.Remove(path)
 }
 
 func addFile(tw *tar.Writer, path string) error {
