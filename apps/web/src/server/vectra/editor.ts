@@ -3,6 +3,7 @@ import {
   summarizePasswallRevisionDiff,
   type PasswallDesiredConfig,
   type SupportState,
+  type XrayDesiredConfig,
 } from "@vectra/contracts";
 
 import type { ConfigSourceMode } from "./config-trust";
@@ -1017,4 +1018,189 @@ function isEqual(left: unknown, right: unknown) {
 
 function unique(values: string[]) {
   return [...new Set(values)];
+}
+
+// ---------------------------------------------------------------------------
+// xray-direct (Vectra Controller Pro) minimal editor surface.
+//
+// This is intentionally minimal: enough scalar fields to REPRESENT an
+// XrayDesiredConfig in the operator surface and diff a draft against the
+// authoritative revision. Full visual parity with the passwall V2 editor is a
+// post-canary follow-up. The passwall buildEditorSurface above is untouched;
+// the surface builder branches on engineMode to call this for xray routers.
+// ---------------------------------------------------------------------------
+
+const XRAY_SCALAR_FIELDS: EditorFieldMeta[] = [
+  {
+    path: "instance.name",
+    section: "Экземпляр",
+    label: "Имя инстанса",
+    kind: "string",
+  },
+  {
+    path: "instance.logLevel",
+    section: "Экземпляр",
+    label: "Уровень логирования",
+    kind: "string",
+  },
+  {
+    path: "process.xrayBinary",
+    section: "Процесс",
+    label: "Путь к Xray",
+    kind: "string",
+  },
+  {
+    path: "process.workDir",
+    section: "Процесс",
+    label: "Рабочий каталог",
+    kind: "string",
+  },
+  {
+    path: "process.memorySoftMiB",
+    section: "Процесс",
+    label: "Мягкий лимит памяти (MiB)",
+    kind: "number",
+  },
+  {
+    path: "process.memoryHardMiB",
+    section: "Процесс",
+    label: "Жёсткий лимит памяти (MiB)",
+    kind: "number",
+  },
+  {
+    path: "process.oomScoreAdj",
+    section: "Процесс",
+    label: "OOM score adj",
+    kind: "number",
+  },
+  {
+    path: "inbounds.tproxy.port",
+    section: "Входящие",
+    label: "Порт TPROXY",
+    kind: "number",
+  },
+  {
+    path: "inbounds.tproxy.killSwitch",
+    section: "Входящие",
+    label: "Kill switch",
+    kind: "boolean",
+  },
+  {
+    path: "geo.assetDir",
+    section: "Гео",
+    label: "Каталог ассетов",
+    kind: "string",
+  },
+  {
+    path: "geo.geoipUrl",
+    section: "Гео",
+    label: "URL GeoIP",
+    kind: "string",
+  },
+  {
+    path: "geo.geositeUrl",
+    section: "Гео",
+    label: "URL GeoSite",
+    kind: "string",
+  },
+  // Which provider profile the router runs, by its "remarks" string. The
+  // subscription URL itself is deliberately NOT surfaced here — it is a
+  // credential and is masked at rest.
+  {
+    path: "subscriptions.0.entryRemark",
+    section: "Подписка",
+    label: "Профиль провайдера",
+    kind: "string",
+  },
+];
+
+export type XrayEditorSurfaceData = {
+  engineMode: "xray-direct";
+  currentConfig: XrayDesiredConfig;
+  authoritativeConfig: XrayDesiredConfig | null;
+  draftConfig: XrayDesiredConfig;
+  fieldMeta: EditorFieldMeta[];
+  fieldDiffs: EditorFieldDiff[];
+};
+
+// registerXrayFields walks the minimal xray scalar definitions and emits a
+// field registration for each, parallel to the passwall registerScalarFields.
+export function registerXrayFields(
+  currentConfig: XrayDesiredConfig,
+  authoritativeConfig: XrayDesiredConfig | null,
+  draftConfig: XrayDesiredConfig,
+  registerField: (
+    meta: EditorFieldMeta,
+    currentValue: unknown,
+    authoritativeValue: unknown,
+    draftValue: unknown,
+  ) => void,
+) {
+  for (const def of XRAY_SCALAR_FIELDS) {
+    registerField(
+      def,
+      getNestedValue(currentConfig, def.path),
+      getNestedValue(authoritativeConfig, def.path),
+      getNestedValue(draftConfig, def.path),
+    );
+  }
+}
+
+export function buildXrayEditorSurface(args: {
+  currentConfig: XrayDesiredConfig;
+  authoritativeConfig: XrayDesiredConfig | null;
+  draftConfig: XrayDesiredConfig;
+}): XrayEditorSurfaceData {
+  const fields: FieldRegistration[] = [];
+
+  const registerField = (
+    meta: EditorFieldMeta,
+    currentValue: unknown,
+    authoritativeValue: unknown,
+    draftValue: unknown,
+  ) => {
+    if (
+      currentValue === undefined &&
+      authoritativeValue === undefined &&
+      draftValue === undefined
+    ) {
+      return;
+    }
+    fields.push({ meta, currentValue, authoritativeValue, draftValue });
+  };
+
+  registerXrayFields(
+    args.currentConfig,
+    args.authoritativeConfig,
+    args.draftConfig,
+    registerField,
+  );
+
+  const fieldMeta = fields.map((field) => field.meta);
+  const fieldDiffs = fields
+    .map((field) => ({
+      path: field.meta.path,
+      section: field.meta.section,
+      label: field.meta.label,
+      kind: field.meta.kind,
+      currentValue: field.currentValue,
+      authoritativeValue: field.authoritativeValue,
+      draftValue: field.draftValue,
+      source: "authoritative" as const,
+      currentMatchesAuthoritative: isEqual(
+        field.currentValue,
+        field.authoritativeValue,
+      ),
+      draftChanged: !isEqual(field.draftValue, field.authoritativeValue),
+    }))
+    .filter((field) => field.currentValue !== undefined || field.draftChanged);
+
+  return {
+    engineMode: "xray-direct",
+    currentConfig: args.currentConfig,
+    authoritativeConfig: args.authoritativeConfig,
+    draftConfig: args.draftConfig,
+    fieldMeta,
+    fieldDiffs,
+  };
 }

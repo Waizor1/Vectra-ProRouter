@@ -96,6 +96,9 @@ function certifiedRouter(overrides: Record<string, unknown> = {}) {
     openwrtRelease: "24.10.6",
     routePolicyExempt: null,
     routePolicyExemptReason: null,
+    // ADR-0006 ownership columns: a fleet router is neither owned nor released.
+    ownerRef: null,
+    releasedAt: null,
     lastSeenAt: NOW,
     ...overrides,
   };
@@ -238,6 +241,22 @@ describe("clearStaleControlPlaneRecoveryParks", () => {
     // path.
     const { db, inserted } = createMockDb(
       healthyPark({ router: { hostname: "hh", displayName: "hh" } }),
+    );
+
+    await expect(clearStaleControlPlaneRecoveryParks(db, NOW)).resolves.toBe(0);
+    expect(inserted).toEqual([]);
+  });
+
+  it("leaves a released Connect router alone", async () => {
+    // A released router dropped its owner's config on purpose; an unattended
+    // reconnect would bring the old proxy back before anyone claims it.
+    const { db, inserted } = createMockDb(
+      healthyPark({
+        router: {
+          ownerRef: null,
+          releasedAt: new Date("2026-10-01T10:00:00.000Z"),
+        },
+      }),
     );
 
     await expect(clearStaleControlPlaneRecoveryParks(db, NOW)).resolves.toBe(0);

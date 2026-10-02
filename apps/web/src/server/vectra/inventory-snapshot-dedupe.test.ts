@@ -255,6 +255,34 @@ describe("materialInventoryFingerprint", () => {
       materialInventoryFingerprint(baseInventory),
     );
   });
+
+  // Partner webhooks diff the Connect verdict against the newest stored row;
+  // a verdict change that wrote no row would re-fire the same event on every
+  // later check-in until the heartbeat.
+  it("reacts to a Connect verdict change but not to its gauges", () => {
+    const connected = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 100, lanClients: 2 },
+    });
+    const gaugesMoved = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 145, lanClients: 3 },
+    });
+    const down = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "down", uptimeSec: 145, lanClients: 3 },
+    });
+
+    expect(materialInventoryFingerprint(gaugesMoved)).toBe(
+      materialInventoryFingerprint(connected),
+    );
+    expect(materialInventoryFingerprint(down)).not.toBe(
+      materialInventoryFingerprint(connected),
+    );
+    expect(materialInventoryFingerprint(connected)).not.toBe(
+      materialInventoryFingerprint(baseInventory),
+    );
+  });
 });
 
 describe("shouldWriteInventorySnapshot", () => {

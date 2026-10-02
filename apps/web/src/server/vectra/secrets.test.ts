@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   MASKED_SECRET_PLACEHOLDER,
   passwallDesiredConfigSchema,
+  xrayDesiredConfigSchema,
 } from "@vectra/contracts";
 import { z } from "zod";
 
@@ -15,10 +16,13 @@ import {
   createSecretPayload,
   encryptJson,
   hydratePasswallConfig,
+  hydrateXrayConfig,
   restoreMaskedPasswallConfig,
+  restoreMaskedXrayConfig,
   sanitizePasswallConfig,
   sanitizePasswallRawSnapshot,
   stableStringify,
+  sanitizeXrayConfig,
 } from "./secrets";
 
 const baseConfig = passwallDesiredConfigSchema.parse({
@@ -283,5 +287,150 @@ describe("sanitizePasswallRawSnapshot", () => {
         MASKED_SECRET_PLACEHOLDER,
       ),
     ).toBe(true);
+  });
+});
+
+// The xray-direct OPERATOR config. Since the "consume provider JSON" pivot it
+// carries no outbounds/nodes/routing at all — the router fetches the provider's
+// Xray document itself. The only credential left in it is the subscription URL
+// (which embeds the per-router token) plus any auth headers sent with it.
+const baseXrayConfig = xrayDesiredConfigSchema.parse({
+  schema: 1,
+  instance: { name: "test-router", logLevel: "info" },
+  process: {
+    xrayBinary: "/usr/bin/xray",
+    workDir: "/var/run/vectra-controller-pro",
+    oomScoreAdj: -500,
+    memorySoftMiB: 80,
+    restartBackoff: { initialMs: 500, factor: 2, maxMs: 60_000, reset: "60s" },
+  },
+  inbounds: {
+    tproxy: {
+      listenIP: "0.0.0.0",
+      port: 12345,
+      fwmark: 1,
+      udpEnabled: true,
+      tag: "tproxy-in",
+      sniffing: {
+        enabled: true,
+        destOverride: ["http", "tls", "quic"],
+        routeOnly: true,
+      },
+    },
+  },
+  subscriptions: [
+    {
+      id: "primary",
+      remark: "BloopCat",
+      url: "https://sub.example.com/api/sub/REAL_TOKEN",
+      enabled: true,
+      userAgent: "Happ/1.0",
+      mode: "json",
+      entryRemark: "⚡Extreme Польша 🇵🇱",
+      headers: { Authorization: "Bearer real-bearer-token" },
+    },
+  ],
+  geo: {
+    assetDir: "/usr/share/v2ray",
+    geoipUrl: "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat",
+    geositeUrl:
+      "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
+    updateOnStart: false,
+  },
+});
+
+describe("sanitizeXrayConfig", () => {
+  it("masks the subscription url and auth headers but keeps public geo URLs", () => {
+    const sanitized = sanitizeXrayConfig(baseXrayConfig);
+
+    const subscription = sanitized.subscriptions?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(subscription.url).toBe(MASKED_SECRET_PLACEHOLDER);
+    expect(
+      (subscription.headers as Record<string, unknown>).Authorization,
+    ).toBe(MASKED_SECRET_PLACEHOLDER);
+
+    // Non-secret subscription fields survive so the operator surface can still
+    // show which feed and which provider profile the router is on.
+    expect(subscription.remark).toBe("BloopCat");
+    expect(subscription.entryRemark).toBe("⚡Extreme Польша 🇵🇱");
+    expect(subscription.userAgent).toBe("Happ/1.0");
+    expect(subscription.mode).toBe("json");
+
+    // Public asset URLs under geo are never masked.
+    expect(sanitized.geo.geoipUrl).toBe(
+      "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat",
+    );
+    expect(sanitized.geo.geositeUrl).toBe(
+      "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
+    );
+    expect(sanitized.geo.assetDir).toBe("/usr/share/v2ray");
+  });
+
+  it("leaves no real credential material anywhere in the masked config", () => {
+    const maskedJson = JSON.stringify(sanitizeXrayConfig(baseXrayConfig));
+    expect(maskedJson).not.toContain("REAL_TOKEN");
+    expect(maskedJson).not.toContain("real-bearer-token");
+  });
+
+  it("produces a config that still parses through the xray schema", () => {
+    expect(() =>
+      xrayDesiredConfigSchema.parse(sanitizeXrayConfig(baseXrayConfig)),
+    ).not.toThrow();
+  });
+
+  it("does not disturb the tproxy inbound, which carries no credential", () => {
+    const sanitized = sanitizeXrayConfig(baseXrayConfig);
+    expect(sanitized.inbounds.tproxy).toEqual(baseXrayConfig.inbounds.tproxy);
+  });
+});
+
+describe("hydrateXrayConfig", () => {
+  it("returns the stored (masked) config unchanged when no ciphertext is present", () => {
+    const masked = sanitizeXrayConfig(baseXrayConfig);
+    expect(hydrateXrayConfig(masked, null)).toEqual(masked);
+  });
+
+  // The full encrypt -> hydrate round-trip (which depends on VECTRA_SECRETS_KEY)
+  // lives in secrets.xray-roundtrip.test.ts, where ~/env is mocked so it does
+  // not depend on the shared, intentionally-unset secrets key.
+});
+
+describe("restoreMaskedXrayConfig", () => {
+  it("re-injects real secrets when an operator re-submits a previously-masked config", () => {
+    // Simulate the latent save-path trap: an edit UI loads the MASKED config
+    // and re-submits it (placeholders in place of every secret) with one
+    // cosmetic edit. Without restore, placeholders would be persisted as real
+    // secrets and the controller would fetch the subscription from the literal
+    // string "__VECTRA_MASKED__".
+    const masked = sanitizeXrayConfig(baseXrayConfig);
+    const maskedSubscriptions = masked.subscriptions!;
+    const resubmitted = xrayDesiredConfigSchema.parse({
+      ...masked,
+      subscriptions: [
+        { ...maskedSubscriptions[0]!, entryRemark: "🇷🇺🇪🇺 Авто Самый стабильный" },
+      ],
+    });
+
+    const restored = restoreMaskedXrayConfig(resubmitted, baseXrayConfig);
+    const subscription = restored.subscriptions![0]!;
+
+    // The cosmetic edit — here, switching provider profile — is preserved.
+    expect(subscription.entryRemark).toBe("🇷🇺🇪🇺 Авто Самый стабильный");
+
+    // Every masked secret is restored to its real prior value, matched by
+    // subscription `id` through the shared restore walker.
+    expect(subscription.url).toBe("https://sub.example.com/api/sub/REAL_TOKEN");
+    expect(subscription.headers?.Authorization).toBe("Bearer real-bearer-token");
+
+    // No placeholder survives once restored from the prior revision.
+    expect(JSON.stringify(restored)).not.toContain(MASKED_SECRET_PLACEHOLDER);
+  });
+
+  it("returns the masked config unchanged when there is no source revision", () => {
+    const masked = sanitizeXrayConfig(baseXrayConfig);
+    expect(restoreMaskedXrayConfig(masked, null)).toEqual(masked);
   });
 });

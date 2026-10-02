@@ -9,9 +9,17 @@
 {$OPERATOR_DOMAIN} {
 	encode zstd gzip
 
+	# Access logs without the routers' credentials: a router token or an
+	# install session in a header must not end up in `docker logs`.
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Vectra-Router-Token delete
+				request>headers>X-Vectra-Install-Session delete
+			}
+		}
 	}
 
 	handle /artifacts {
@@ -39,8 +47,16 @@
 		respond "ok" 200
 	}
 
+	# The partner API's bodies are small (the route caps them too).
+	request_body /api/partner/* {
+		max_size 16KB
+	}
+
 	handle {
 		reverse_proxy web:3000 {
+			# The rate limiters trust this header: it must be ours, never the client's.
+			header_up X-Vectra-Client-IP {remote_host}
+			header_up X-Real-IP {remote_host}
 			health_uri /api/health
 			health_interval 30s
 			health_timeout 5s
@@ -51,9 +67,17 @@
 {$ROUTER_API_DOMAIN} {
 	encode zstd gzip
 
+	# Access logs without the routers' credentials: a router token or an
+	# install session in a header must not end up in `docker logs`.
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Vectra-Router-Token delete
+				request>headers>X-Vectra-Install-Session delete
+			}
+		}
 	}
 
 	handle /artifacts {
@@ -93,6 +117,22 @@
 	}
 
 	handle /api/router/* {
+		reverse_proxy web:3000 {
+			header_up X-Vectra-Client-IP {remote_host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			health_uri /api/health
+			health_interval 30s
+			health_timeout 5s
+		}
+	}
+
+	# Server-to-server API for the Vectra app's backend (router claims,
+	# ADR-0006). Every request is HMAC-signed; the route checks it itself.
+	handle /api/partner/* {
+		request_body {
+			max_size 16KB
+		}
 		reverse_proxy web:3000 {
 			header_up X-Vectra-Client-IP {remote_host}
 			header_up X-Real-IP {remote_host}

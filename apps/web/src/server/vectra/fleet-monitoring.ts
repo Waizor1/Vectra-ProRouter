@@ -112,6 +112,8 @@ export type FleetMonitoringRouterInput = {
     reason: string;
     openedAt: Date | null;
   } | null;
+  // Unlinked by its Vectra account and waiting for a new owner (ADR-0006).
+  released?: boolean;
 };
 
 type FleetMonitoringChartFilter = {
@@ -196,6 +198,7 @@ type FleetMonitoringRouter = {
   freshnessState: MonitoringFreshnessState;
   supportState: SupportState;
   alertKinds: MonitoringAlertKind[];
+  released: boolean;
 };
 
 export type FleetMonitoringSnapshot = {
@@ -438,7 +441,15 @@ function buildAlerts(
     policy: router.fleetPolicyCompliance.status,
   } as const;
 
-  if (router.offline) {
+  // A router that has never checked in did not lose contact: registration
+  // always stamps lastSeenAt, so this is a record a Vectra account claim
+  // created ahead of the router's first contact (ADR-0006), waiting for the
+  // customer to plug it in. This alert feeds browser push and auto-rescue
+  // (a stale_check_in case escalates straight to Telegram); an operator can do
+  // nothing for such a router, so it must not page anyone.
+  // A released router is out of service until someone claims it again: it
+  // may be unplugged, sold or wiped, and none of that is an operator's page.
+  if (router.offline && router.lastSeenAt !== null && !router.released) {
     alerts.push({
       id: `offline:${router.id}`,
       kind: "offline",
@@ -447,16 +458,14 @@ function buildAlerts(
       routerName: router.name,
       href,
       title: "Нет свежей связи",
-      description:
-        router.lastSeenAt === null
-          ? "Контроллер ещё не сделал первый check-in."
-          : `Последний известный check-in: ${router.lastSeen}.`,
+      description: `Последний известный check-in: ${router.lastSeen}.`,
       openedAt: router.lastSeenAt,
       filters: routerFilters,
     });
   }
 
-  if (router.directMode) {
+  // Nor a direct-mode or incident alert for a released router.
+  if (router.directMode && !router.released) {
     alerts.push({
       id: `direct:${router.id}`,
       kind: "direct_mode",
@@ -479,7 +488,8 @@ function buildAlerts(
   } else if (
     incident &&
     incident.type !== "recovered" &&
-    router.operationalState === "recovery"
+    router.operationalState === "recovery" &&
+    !router.released
   ) {
     alerts.push({
       id: `incident:${router.id}:${incident.type}`,
@@ -923,6 +933,7 @@ export function buildFleetMonitoringSnapshot(args: {
       freshnessState,
       supportState: input.supportState,
       alertKinds: [],
+      released: input.released ?? false,
     };
 
     operationalCounts[operationalState] += 1;

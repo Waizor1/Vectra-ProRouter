@@ -1,8 +1,10 @@
+import { routerInventorySnapshots, routers } from "@vectra/db";
 import { describe, expect, it } from "vitest";
 
 import {
   planAutoRepairRetry,
   autoRepairActionsForTrigger,
+  detectBlockedReachabilityTriggers,
   hasDistinctBlockedReachabilityEvidence,
   isStaleControlPlaneRecoveryPark,
   noAutoRepairEscalationReason,
@@ -10,6 +12,7 @@ import {
   repairActionsForTrigger,
   resourceGuardReasonsForLogCollection,
 } from "./auto-rescue";
+import { createFakeDb } from "./testing/fake-db";
 
 describe("repairActionsForTrigger", () => {
   it("maps critical proxy/direct triggers to safe repair only", () => {
@@ -430,5 +433,53 @@ describe("planAutoRepairRetry", () => {
         now: NOW,
       }),
     ).toEqual({ attempt: false, exhausted: true });
+  });
+});
+
+describe("detectBlockedReachabilityTriggers and released routers (ADR-0006)", () => {
+  const NOW = new Date("2026-09-28T10:00:00.000Z");
+  // Three snapshots with distinct probe times, all blocked: real evidence.
+  const blockedSnapshots = [0, 1, 2].map((index) => ({
+    id: `snapshot-${index}`,
+    createdAt: new Date(NOW.getTime() - index * 60_000),
+    payload: {
+      telegramReachability: {
+        reachable: false,
+        status: "blocked",
+        checkedAt: new Date(NOW.getTime() - index * 60_000).toISOString(),
+      },
+    },
+  }));
+
+  it("opens no case for a released router, only for an ordinary one", async () => {
+    const fake = createFakeDb({
+      selects: [
+        [
+          routers,
+          [
+            [
+              {
+                id: "released",
+                releasedAt: new Date("2026-09-28T09:00:00.000Z"),
+                ownerRef: null,
+              },
+              { id: "in-service", releasedAt: null, ownerRef: "acct-42" },
+            ],
+          ],
+        ],
+        // Only one router's snapshots are ever read: the released one is
+        // skipped before its evidence is loaded.
+        [routerInventorySnapshots, [blockedSnapshots]],
+      ],
+    });
+
+    const triggers = await detectBlockedReachabilityTriggers(
+      fake.db as never,
+      NOW,
+    );
+
+    expect(
+      triggers.map((trigger) => `${trigger.trigger}:${trigger.routerId}`),
+    ).toEqual(["telegram_blocked:in-service"]);
   });
 });

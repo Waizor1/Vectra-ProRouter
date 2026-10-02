@@ -114,6 +114,32 @@ export function materialInventoryFingerprint(inventory: RouterInventory) {
       memoryTotalMb: inventory.resources?.memoryTotalMb ?? null,
       swapTotalMb: inventory.resources?.swapTotalMb ?? null,
     },
+
+    // Connect telemetry (ADR-0006). Partner webhooks diff the verdict and the
+    // owner's snapshot reads these from the newest row, so a change must write
+    // one. uptimeSec and lanClients are gauges and stay out, for the reason
+    // above; Wi-Fi passwords never reach the stored payload (the caller always
+    // writes when one is present). Routers without Connect report null here on
+    // both sides, so their fingerprint comparison is unchanged.
+    connect: inventory.connect
+      ? {
+          ownerRef: inventory.connect.ownerRef ?? null,
+          capabilities: inventory.connect.capabilities ?? null,
+          availableVersion: inventory.connect.availableVersion ?? null,
+          verdict: inventory.connect.verdict ?? null,
+          exitCountry: inventory.connect.exitCountry ?? null,
+          location: inventory.connect.location ?? null,
+          entries: inventory.connect.entries ?? null,
+          sites: inventory.connect.sites ?? null,
+          services: inventory.connect.services ?? null,
+          wifi:
+            inventory.connect.wifi?.map(({ band, ssid }) => ({ band, ssid })) ??
+            null,
+          routerPasswordSet: inventory.connect.routerPasswordSet ?? null,
+          supportAccess: inventory.connect.supportAccess ?? null,
+          autoUpdate: inventory.connect.autoUpdate ?? null,
+        }
+      : null,
   };
 
   return createHash("sha256").update(stableStringify(material)).digest("hex");

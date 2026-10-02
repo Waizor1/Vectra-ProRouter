@@ -85,6 +85,15 @@ services:
       VECTRA_TELEGRAM_WEBHOOK_SECRET: ${VECTRA_TELEGRAM_WEBHOOK_SECRET:-}
       VECTRA_TELEGRAM_CALLBACK_SECRET: ${VECTRA_TELEGRAM_CALLBACK_SECRET:-}
       VECTRA_TELEGRAM_DRY_RUN: ${VECTRA_TELEGRAM_DRY_RUN:-true}
+      # Router onboarding from the Vectra app (ADR-0006). Unset = the partner
+      # API answers 503 and routers get no claim key, bot or webhooks — they
+      # must be listed here, or the values in .env never reach the container.
+      VECTRA_PARTNER_SECRET: ${VECTRA_PARTNER_SECRET:-}
+      VECTRA_ROUTER_CLAIM_PUBKEY: ${VECTRA_ROUTER_CLAIM_PUBKEY:-}
+      VECTRA_ROUTER_CLAIM_KID: ${VECTRA_ROUTER_CLAIM_KID:-}
+      VECTRA_CONNECT_BOT_USERNAME: ${VECTRA_CONNECT_BOT_USERNAME:-}
+      VECTRA_CONNECT_WEBHOOK_URL: ${VECTRA_CONNECT_WEBHOOK_URL:-}
+      VECTRA_CONNECT_WEBHOOK_SECRET: ${VECTRA_CONNECT_WEBHOOK_SECRET:-}
     command:
       - /bin/sh
       - -lc

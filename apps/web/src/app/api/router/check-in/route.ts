@@ -14,7 +14,7 @@ export async function POST(request: Request) {
       );
     }
     const payload: unknown = await parseJsonBody(request);
-    const response = await checkInRouter(auth.router.id, payload);
+    const response = await checkInRouter(auth.router.id, payload, {devicePublicKey: auth.credential.devicePublicKey});
     await safelyMaybeAdvanceRouterOnboarding(auth.router.id);
     return Response.json(response);
   } catch (error) {

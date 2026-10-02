@@ -1,5 +1,6 @@
 import { draftRouter } from "~/server/api/routers/draft";
 import { fleetRouter } from "~/server/api/routers/fleet";
+import { happCryptRouter } from "~/server/api/routers/happ-crypt";
 import { logsRouter } from "~/server/api/routers/logs";
 import { notificationsRouter } from "~/server/api/routers/notifications";
 import { onboardingRouter } from "~/server/api/routers/onboarding";
@@ -17,6 +18,7 @@ import { createCallerFactory, createTRPCRouter } from "~/server/api/trpc";
 export const appRouter = createTRPCRouter({
   draft: draftRouter,
   fleet: fleetRouter,
+  happCrypt: happCryptRouter,
   logs: logsRouter,
   notifications: notificationsRouter,
   onboarding: onboardingRouter,

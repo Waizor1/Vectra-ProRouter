@@ -567,6 +567,137 @@ describe("pickFreshAlertsForBrowser", () => {
   });
 });
 
+describe("routers that have never checked in (ADR-0006 pre-claimed)", () => {
+  function routerInput(id: string, lastSeenAt: Date | null) {
+    return {
+      id,
+      name: id,
+      status: "pending" as const,
+      importState: "approved",
+      supportState: "certified" as const,
+      lastSeenAt,
+      selectedNode: null,
+      passwallEnabled: false,
+      nodeCount: 0,
+      subscriptionCount: 0,
+      controllerVersion: null,
+      passwallVersion: null,
+      components: {},
+      queuedJobCount: 1,
+      lastRescueReason: null,
+      configTrust: {
+        liveConfigAvailable: false,
+        requiresReimport: false,
+        digestMismatch: false,
+        configSourceMode: "missing",
+        lastLiveImportAt: null,
+        lastCheckInAt: lastSeenAt?.toISOString() ?? null,
+      },
+      openIncident: null,
+    };
+  }
+
+  it("raises no offline alert (so no push, no auto-rescue) until first contact", () => {
+    const snapshot = buildFleetMonitoringSnapshot({
+      now: new Date("2026-09-28T10:00:00.000Z"),
+      offlineThresholdMs: 3 * 60 * 1000,
+      openIncidentCount: 0,
+      queuedJobs: 1,
+      routers: [
+        routerInput("preclaimed", null),
+        routerInput("went-quiet", new Date("2026-09-28T09:00:00.000Z")),
+      ] as never,
+    });
+
+    // Still visible to the operator as not reachable...
+    expect(snapshot.routers.find((r) => r.id === "preclaimed")).toMatchObject({
+      offline: true,
+      freshnessState: "never",
+    });
+    // ...but only a router that lost contact pages anyone.
+    const offlineAlerts = snapshot.alerts.filter((a) => a.kind === "offline");
+    expect(offlineAlerts.map((a) => a.routerId)).toEqual(["went-quiet"]);
+  });
+});
+
+describe("released routers (ADR-0006: unlinked, waiting for a new owner)", () => {
+  const NOW = new Date("2026-09-28T10:00:00.000Z");
+  const ONLINE = new Date("2026-09-28T09:59:30.000Z");
+  const QUIET = new Date("2026-09-28T09:00:00.000Z");
+
+  function routerInput(
+    id: string,
+    overrides: Record<string, unknown> = {},
+  ) {
+    return {
+      id,
+      name: id,
+      status: "active" as const,
+      importState: "approved",
+      supportState: "certified" as const,
+      lastSeenAt: ONLINE,
+      selectedNode: "Default",
+      passwallEnabled: false,
+      nodeCount: 0,
+      subscriptionCount: 0,
+      controllerVersion: "0.4.0-r1",
+      passwallVersion: "неизвестно",
+      components: {},
+      queuedJobCount: 0,
+      lastRescueReason: null,
+      configTrust: null,
+      openIncident: null,
+      ...overrides,
+    };
+  }
+
+  const proxyOutage = {
+    type: "proxy_outage" as const,
+    reason: "Proxy-path recovery did not converge.",
+    openedAt: new Date("2026-09-28T09:58:00.000Z"),
+  };
+
+  function pagingAlerts(routers: unknown[]) {
+    const snapshot = buildFleetMonitoringSnapshot({
+      now: NOW,
+      offlineThresholdMs: 3 * 60 * 1000,
+      openIncidentCount: 0,
+      queuedJobs: 0,
+      routers: routers as never,
+    });
+    // The three kinds browser push and auto-rescue are built from.
+    return snapshot.alerts
+      .filter((alert) =>
+        ["offline", "direct_mode", "incident"].includes(alert.kind),
+      )
+      .map((alert) => `${alert.kind}:${alert.routerId}`)
+      .sort();
+  }
+
+  it("raises no offline, direct-mode or incident alert for a released router", () => {
+    expect(
+      pagingAlerts([
+        routerInput("released-quiet", { released: true, lastSeenAt: QUIET }),
+        routerInput("released-direct", { released: true, status: "direct" }),
+        routerInput("released-incident", {
+          released: true,
+          openIncident: proxyOutage,
+        }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("still pages for the same states when the router is not released", () => {
+    expect(
+      pagingAlerts([
+        routerInput("quiet", { lastSeenAt: QUIET }),
+        routerInput("direct", { status: "direct" }),
+        routerInput("incident", { openIncident: proxyOutage }),
+      ]),
+    ).toEqual(["direct_mode:direct", "incident:incident", "offline:quiet"]);
+  });
+});
+
 describe("computeConnectivityVerdict", () => {
   it("returns 'unknown' when router is offline", () => {
     expect(

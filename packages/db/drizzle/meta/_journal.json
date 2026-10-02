@@ -113,6 +113,48 @@
       "when": 1779581000000,
       "tag": "0015_router_route_policy_exempt",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1780272000000,
+      "tag": "0016_xray_direct_engine_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790553600000,
+      "tag": "0017_router_claims",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790596800000,
+      "tag": "0018_router_released",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790640000000,
+      "tag": "0019_router_claim_previous_code",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1790866800000,
+      "tag": "0020_connect_router_actions",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1790877600000,
+      "tag": "0021_partner_request_nonces",
+      "breakpoints": true
     }
   ]
 }

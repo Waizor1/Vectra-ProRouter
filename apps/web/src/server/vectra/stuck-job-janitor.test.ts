@@ -56,10 +56,12 @@ function createJanitorMockDb(candidates: Array<Record<string, unknown>>) {
         abortNextUpdate = true;
       },
     },
-    failOnNextTransaction() {
+    // Arrow properties, not shorthand methods: both are destructured by the
+    // tests below, and a destructured method loses its `this` binding.
+    failOnNextTransaction: () => {
       throwOnNextTx = true;
     },
-    failOnNextEventInsert() {
+    failOnNextEventInsert: () => {
       throwOnNextEventInsert = true;
     },
   };

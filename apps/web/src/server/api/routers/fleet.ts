@@ -8,6 +8,7 @@ import {
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
+import { engineModeSchema, type XrayDesiredConfig } from "@vectra/contracts";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
@@ -48,6 +49,7 @@ import {
   sanitizeRevisionForClient,
 } from "~/server/vectra/router-control";
 import { canRunDestructiveAction, describeRouterSupport } from "~/server/vectra/support";
+import { isUiLocked } from "~/server/vectra/xray-operator-config";
 
 const activeJobStates: Array<"queued" | "delivered" | "running"> = [
   "queued",
@@ -568,9 +570,17 @@ export const fleetRouter = createTRPCRouter({
           snapshotHostname: snapshots[0]?.payload.hostname,
         }),
       );
+      // The operator's UI lock as the latest xray revision states it (set with
+      // draft.setXrayUiLock); null when the router has no xray config.
+      const latestXrayRevision =
+        revisions.find((revision) => revision.engineMode === "xray-direct") ??
+        null;
 
       return {
         router,
+        xrayUiLock: latestXrayRevision
+          ? isUiLocked(latestXrayRevision.config as unknown as XrayDesiredConfig)
+          : null,
         latestSnapshot: snapshots[0] ?? null,
         snapshots,
         revisions: revisions.map((revision) =>
@@ -711,6 +721,123 @@ export const fleetRouter = createTRPCRouter({
         severity: "info",
         message: "Operator requested a fresh live import from the router.",
         metadata: {},
+      });
+
+      return updatedRouter ?? router;
+    }),
+
+  // The only writer of `routers.engineMode`. Until this existed the column sat
+  // at its 'passwall' default forever, so `resolveDesiredRevisionWithDb`'s
+  // engine guard could never be satisfied for an xray revision and a router
+  // could only be moved onto the pro controller by hand-written SQL.
+  //
+  // Note on ordering: this deliberately does NOT require an xray revision to
+  // already exist. `draft.saveXray` and `draft.configureXray` both refuse to
+  // run until the router is already on `xray-direct`, so requiring a revision
+  // here would deadlock the feature. The switch comes first, the config second.
+  setEngineMode: protectedProcedure
+    .input(
+      z.object({
+        routerId: z.string().uuid(),
+        engineMode: engineModeSchema,
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [router] = await ctx.db
+        .select()
+        .from(routers)
+        .where(eq(routers.id, input.routerId))
+        .limit(1);
+
+      if (!router) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `Router ${input.routerId} was not found.`,
+        });
+      }
+
+      const [snapshot] = await ctx.db
+        .select()
+        .from(routerInventorySnapshots)
+        .where(eq(routerInventorySnapshots.routerId, input.routerId))
+        .orderBy(desc(routerInventorySnapshots.createdAt))
+        .limit(1);
+      const support = describeRouterSupport({
+        boardName: snapshot?.payload.boardName ?? router.boardName,
+        layoutFamily:
+          typeof snapshot?.payload.layoutFamily === "string"
+            ? snapshot.payload.layoutFamily
+            : null,
+        target: snapshot?.payload.target ?? router.target,
+        architecture: snapshot?.payload.architecture ?? router.architecture,
+        openwrtRelease:
+          snapshot?.payload.openwrtRelease ?? router.openwrtRelease,
+      });
+
+      if (!canRunDestructiveAction(support.state)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "Смена движка доступна только для поддерживаемых pilot/certified board/layout пар.",
+        });
+      }
+
+      if (router.engineMode === input.engineMode) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Роутер уже работает на движке "${input.engineMode}".`,
+        });
+      }
+
+      // In-flight jobs are engine-scoped: selectDeliverableJobsForCheckIn drops
+      // apply_passwall_config for an xray router and apply_xray_config for a
+      // passwall one. Flipping with work already queued would strand those jobs
+      // in `queued` forever instead of failing them — a silent no-op. Make the
+      // operator drain the queue first, in both directions.
+      const inFlightJobs = await ctx.db
+        .select()
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.routerId, router.id),
+            inArray(jobs.state, activeJobStates),
+          ),
+        )
+        .orderBy(desc(jobs.createdAt))
+        .limit(1);
+
+      if (inFlightJobs.length > 0) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "Нельзя менять движок, пока у роутера есть незавершённые задачи: дождитесь их завершения или отмените их.",
+        });
+      }
+
+      const [updatedRouter] = await ctx.db
+        .update(routers)
+        .set({
+          engineMode: input.engineMode,
+        })
+        .where(eq(routers.id, router.id))
+        .returning();
+
+      await ctx.db.insert(eventLog).values({
+        routerId: router.id,
+        type: "router.engine_mode.changed",
+        severity: "warning",
+        message: `Operator switched router engine from "${router.engineMode}" to "${input.engineMode}".`,
+        metadata: {
+          routerId: router.id,
+          deviceIdentifier: router.deviceIdentifier,
+          previousEngineMode: router.engineMode,
+          engineMode: input.engineMode,
+          // The router keeps serving its last applied config until a revision
+          // for the NEW engine is authored and applied; record what it was
+          // pointing at so an operator can trace a stalled device back here.
+          activeRevisionId: router.activeRevisionId,
+          lastAppliedRevisionId: router.lastAppliedRevisionId,
+        },
       });
 
       return updatedRouter ?? router;

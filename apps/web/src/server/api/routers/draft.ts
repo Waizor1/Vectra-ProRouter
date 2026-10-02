@@ -1,4 +1,5 @@
 import {
+  eventLog,
   jobs,
   passwallDesiredRevisions,
   routerInventorySnapshots,
@@ -7,6 +8,7 @@ import {
 import {
   passwallDesiredConfigSchema,
   summarizePasswallRevisionDiff,
+  xrayDesiredConfigSchema,
 } from "@vectra/contracts";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -26,7 +28,9 @@ import {
   pickWorkspaceRevision,
 } from "~/server/vectra/draft-selection";
 import {
+  configureXrayRevisionWithDb,
   createOperatorDraftRevision,
+  queueXrayApplyJobWithDb,
   sanitizeRevisionForClient,
 } from "~/server/vectra/router-control";
 import {
@@ -211,6 +215,168 @@ export const draftRouter = createTRPCRouter({
       return sanitizeRevisionForClient(revision);
     }),
 
+  // Additive xray-direct counterpart of `save`. Stores an XrayDesiredConfig
+  // revision tagged engineMode "xray-direct". The passwall `save` above is left
+  // untouched. The router must already be on the xray-direct engine.
+  saveXray: protectedProcedure
+    .input(
+      z.object({
+        routerId: z.string().uuid(),
+        note: z.string().trim().max(500).optional(),
+        config: xrayDesiredConfigSchema,
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [router] = await ctx.db
+        .select()
+        .from(routers)
+        .where(eq(routers.id, input.routerId))
+        .limit(1);
+
+      if (!router) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `Router ${input.routerId} was not found.`,
+        });
+      }
+
+      if (router.engineMode !== "xray-direct") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Router is not on the xray-direct engine. Switch engineMode before saving an xray config.",
+        });
+      }
+
+      const revision = await createOperatorDraftRevision({
+        routerId: input.routerId,
+        note: input.note,
+        engineMode: "xray-direct",
+        xrayConfig: input.config,
+        // The passwall `config` carrier is unused on the xray path; the helper
+        // ignores it once engineMode is "xray-direct".
+        config: undefined as never,
+      });
+      return sanitizeRevisionForClient(revision);
+    }),
+
+  // Operator entry point for the xray-direct engine that does NOT require
+  // hand-authoring the whole operator config: set the subscription URL and/or
+  // pick which provider profile (by its "remarks" string) the router runs.
+  //
+  // Persistence is the revision itself — the same pipeline that already masks
+  // at rest, encrypts the cleartext into the secret blob, computes the digest
+  // and gates delivery on engineMode. No parallel source of truth.
+  configureXray: protectedProcedure
+    .input(
+      z.object({
+        routerId: z.string().uuid(),
+        note: z.string().trim().max(500).optional(),
+        // Omit to keep the stored URL. Required the first time.
+        subscriptionUrl: z.string().trim().min(1).optional(),
+        // Omit to keep the current profile; pass null or "" to fall back to
+        // the first profile in the provider feed.
+        entryRemark: z.string().trim().max(200).nullish(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [router] = await ctx.db
+        .select()
+        .from(routers)
+        .where(eq(routers.id, input.routerId))
+        .limit(1);
+
+      if (!router) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `Router ${input.routerId} was not found.`,
+        });
+      }
+
+      if (router.engineMode !== "xray-direct") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Router is not on the xray-direct engine. Switch engineMode before configuring xray.",
+        });
+      }
+
+      let revision: Awaited<ReturnType<typeof configureXrayRevisionWithDb>>;
+      try {
+        revision = await configureXrayRevisionWithDb(ctx.db, {
+          router,
+          note: input.note,
+          subscriptionUrl: input.subscriptionUrl,
+          entryRemark: input.entryRemark,
+        });
+      } catch (error) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not build the xray operator config.",
+        });
+      }
+      return sanitizeRevisionForClient(revision);
+    }),
+
+  // The operator's UI lock (ADR-0006 customer routers): pins the router's own
+  // web UI to the owner's simple view. Authored like configureXray — a new
+  // xray revision from the latest one — and applied with queueApplyXray.
+  setXrayUiLock: protectedProcedure
+    .input(
+      z.object({
+        routerId: z.string().uuid(),
+        lock: z.boolean(),
+        note: z.string().trim().max(500).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [router] = await ctx.db
+        .select()
+        .from(routers)
+        .where(eq(routers.id, input.routerId))
+        .limit(1);
+
+      if (!router) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `Router ${input.routerId} was not found.`,
+        });
+      }
+
+      if (router.engineMode !== "xray-direct") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Router is not on the xray-direct engine. The UI lock is part of the xray operator config.",
+        });
+      }
+
+      let revision: Awaited<ReturnType<typeof configureXrayRevisionWithDb>>;
+      try {
+        revision = await configureXrayRevisionWithDb(ctx.db, {
+          router,
+          note:
+            input.note ??
+            (input.lock
+              ? "Lock the router UI to the simple view."
+              : "Unlock the router UI."),
+          uiLock: input.lock,
+        });
+      } catch (error) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not build the xray operator config.",
+        });
+      }
+      return sanitizeRevisionForClient(revision);
+    }),
+
   queueApply: protectedProcedure
     .input(
       z.object({
@@ -365,6 +531,136 @@ export const draftRouter = createTRPCRouter({
       }
 
       return job;
+    }),
+
+  // Additive xray-direct counterpart of `queueApply`. Queues an
+  // `apply_xray_config` job for an xray revision. `queueApply` above is left
+  // untouched so the passwall path carries zero risk.
+  queueApplyXray: protectedProcedure
+    .input(
+      z.object({
+        routerId: z.string().uuid(),
+        desiredRevisionId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [router] = await ctx.db
+        .select()
+        .from(routers)
+        .where(eq(routers.id, input.routerId))
+        .limit(1);
+
+      const [snapshot] = await ctx.db
+        .select()
+        .from(routerInventorySnapshots)
+        .where(eq(routerInventorySnapshots.routerId, input.routerId))
+        .orderBy(desc(routerInventorySnapshots.createdAt))
+        .limit(1);
+
+      if (!router) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `Router ${input.routerId} was not found.`,
+        });
+      }
+
+      if (router.engineMode !== "xray-direct") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Router is not on the xray-direct engine. Use queueApply for passwall routers.",
+        });
+      }
+
+      const support = describeEffectiveRouterSupport({
+        router: {
+          boardName: router.boardName,
+          target: router.target,
+          architecture: router.architecture,
+          openwrtRelease: router.openwrtRelease,
+        },
+        inventory: snapshot?.payload ?? null,
+      });
+
+      if (!canRunDestructiveAction(support.state)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "Конфигурация может применяться только на поддерживаемых pilot/certified роутерах.",
+        });
+      }
+
+      if (router.importState !== "approved") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Сначала нужно завершить import review или re-import, затем сервер снова станет authoritative.",
+        });
+      }
+
+      const [desiredRevision] = await ctx.db
+        .select()
+        .from(passwallDesiredRevisions)
+        .where(
+          and(
+            eq(passwallDesiredRevisions.routerId, input.routerId),
+            eq(passwallDesiredRevisions.id, input.desiredRevisionId),
+          ),
+        )
+        .limit(1);
+
+      if (!desiredRevision) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message:
+            "Выбранная ревизия не найдена у этого роутера. Обновите рабочую поверхность перед apply.",
+        });
+      }
+
+      if (desiredRevision.engineMode !== "xray-direct") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Выбранная ревизия не относится к движку xray-direct.",
+        });
+      }
+
+      // A router its Vectra account released (ADR-0006) is taken over by the
+      // operator HERE: queueing its apply is the commitment to run it again
+      // (authoring a draft is not). From now on it must not be told
+      // `released: true`, or it would keep dropping the config this job
+      // installs. One transaction, so the router never receives the job while
+      // it is still marked released.
+      const releasedAt = router.releasedAt;
+      if (releasedAt) {
+        return ctx.db.transaction(async (tx) => {
+          await tx
+            .update(routers)
+            .set({ releasedAt: null })
+            .where(eq(routers.id, router.id));
+          await tx.insert(eventLog).values({
+            routerId: router.id,
+            type: "router.release.ended",
+            severity: "info",
+            message:
+              "Operator took over a released router: it is no longer told to drop its config.",
+            metadata: {
+              releasedAt: releasedAt.toISOString(),
+              desiredRevisionId: desiredRevision.id,
+              operatorUser: ctx.operatorSession.user,
+            },
+          });
+          return queueXrayApplyJobWithDb(tx, {
+            routerId: input.routerId,
+            desiredRevision,
+          });
+        });
+      }
+
+      return queueXrayApplyJobWithDb(ctx.db, {
+        routerId: input.routerId,
+        desiredRevision,
+      });
     }),
 
   discard: protectedProcedure
