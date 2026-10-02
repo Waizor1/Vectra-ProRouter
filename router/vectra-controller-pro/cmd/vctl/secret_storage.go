@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/config"
@@ -20,9 +21,11 @@ func migrateSecrets(c agentcfg.Config) error {
 	if err := state.Migrate(c.StatePath); err != nil {
 		return err
 	}
+	// The old agent's state is its own: a failure to seal it is not a reason
+	// to refuse vctl's start (the dead-man would hand the router back to it).
 	if c.LegacyStatePath != "" {
-		if err := state.Migrate(c.LegacyStatePath); err != nil {
-			return err
+		if err := state.MigrateLegacy(c.LegacyStatePath); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: legacy state left as it is: %v\n", err)
 		}
 	}
 	validateJSON := func(b []byte) error {

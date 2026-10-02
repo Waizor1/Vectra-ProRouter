@@ -360,3 +360,43 @@ func TestMigrateArtifactRemovesASealedCopyUnderAnotherName(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A wrong or replaced key makes every artifact fail to open; that is no proof
+// it is a copy. Only an artifact that opens under the name it was copied from
+// (its own name minus .corrupt-<time> or .tmp) is a proven copy and may go;
+// anything else stays where it is, and does not refuse the start.
+func TestMigrateArtifactDeletesOnlyProvenCopies(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "state.json")
+	if err := WriteFile(p, []byte(`{"a":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	// A sealed artifact of its own (a .tmp sealed under its own name).
+	own := p + ".tmp"
+	if err := WriteFile(own, []byte("own sealed artifact")); err != nil {
+		t.Fatal(err)
+	}
+	// Another sealed file, copied under an artifact name it was not derived from.
+	other := filepath.Join(dir, "other.json")
+	if err := WriteFile(other, []byte(`{"b":2}`)); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(other)
+	stray := p + ".corrupt-20261002T021300Z"
+	if err := os.WriteFile(stray, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Replace the key: nothing opens any more.
+	kp := testKeyPath(t, p)
+	if err := os.WriteFile(kp, bytes.Repeat([]byte{7}, 32), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []string{own, stray} {
+		if err := MigrateArtifact(a); err != nil {
+			t.Fatalf("%s: %v", filepath.Base(a), err)
+		}
+		if _, err := os.Stat(a); err != nil {
+			t.Fatalf("%s deleted without proof it is a copy: %v", filepath.Base(a), err)
+		}
+	}
+}

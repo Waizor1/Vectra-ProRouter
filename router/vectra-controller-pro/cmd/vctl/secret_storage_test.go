@@ -280,3 +280,30 @@ func TestTheNextStartSurvivesAnOldReadersCopiesOfSealedFiles(t *testing.T) {
 		t.Fatalf("identity lost: %v", e)
 	}
 }
+
+// A hand-back (dead-man) runs the old agent, which saves its own state as
+// plaintext over the sealed copy, and may leave garbage there. Neither may
+// refuse vctl's next start.
+func TestTheNextStartSurvivesAHandBackToTheOldAgent(t *testing.T) {
+	dir := t.TempDir()
+	c := agentcfg.Config{StatePath: filepath.Join(dir, "state.json"), XrayConfigPath: filepath.Join(dir, "operator.json"), ProviderConfigPath: filepath.Join(dir, "provider.json"), XrayRenderPath: filepath.Join(dir, "run", "xray.json"), LegacyStatePath: filepath.Join(dir, "legacy", "state.json"), EntriesPath: filepath.Join(dir, "entries.gz")}
+	c.Defaults()
+	st, _ := json.Marshal(state.PersistedState{RouterID: "test-router", AgentToken: "SYNTHETIC_ROUTER_TOKEN_0123456789abcdef"})
+	for _, p := range []string{c.StatePath, c.LegacyStatePath} {
+		os.MkdirAll(filepath.Dir(p), 0700)
+		if e := os.WriteFile(p, st, 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if e := migrateSecrets(c); e != nil {
+		t.Fatal(e)
+	}
+	for _, rewrite := range [][]byte{st, []byte("not json at all")} {
+		if e := os.WriteFile(c.LegacyStatePath, rewrite, 0600); e != nil {
+			t.Fatal(e)
+		}
+		if e := migrateSecrets(c); e != nil {
+			t.Fatalf("start after the old agent wrote %q: %v", rewrite[:8], e)
+		}
+	}
+}

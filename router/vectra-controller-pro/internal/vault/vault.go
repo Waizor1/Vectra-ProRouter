@@ -495,19 +495,30 @@ func RefusePlaintextWrite(path string) error {
 
 // MigrateArtifact seals a crash artifact — a temp file, an old reader's backup
 // — as MigrateFile seals legacy plaintext, without validating it, with one
-// difference: a ciphertext copy that cannot be opened under its own name is
-// removed. An old reader that cannot parse a sealed file (vectra-reporter
-// 1.0.0-r2, the legacy agent) keeps a byte copy of it as <name>.corrupt-<time>:
-// authenticated to the original path, it can never be opened and reveals
-// nothing; left in place it refused every start of the daemon (1111,
-// 2026-10-02). Never call it on a primary secret.
+// difference: a byte copy of a sealed file is removed. An old reader that
+// cannot parse a sealed file (vectra-reporter 1.0.0-r2, the legacy agent)
+// keeps one as <name>.corrupt-<time>: authenticated to the original path, it
+// never opens under its own name and reveals nothing; left in place it
+// refused every start of the daemon (1111, 2026-10-02). Only a proven copy —
+// one that opens under the name it was copied from — goes; an artifact that
+// opens under neither name (a replaced key, a stray) stays where it is and
+// does not refuse the start. Never call it on a primary secret.
 func MigrateArtifact(path string) error {
 	err := MigrateFile(path, func([]byte) error { return nil })
 	if !errors.Is(err, ErrInvalid) {
 		return err
 	}
+	origin := artifactOrigin(path)
+	if origin == "" {
+		return nil
+	}
 	mu.Lock()
 	defer mu.Unlock()
+	unlock, e := fileLock(path, true)
+	if e != nil {
+		return e
+	}
+	defer unlock()
 	raw, e := os.ReadFile(path)
 	if os.IsNotExist(e) {
 		return nil
@@ -515,11 +526,17 @@ func MigrateArtifact(path string) error {
 	if e != nil {
 		return e
 	}
-	sealed := bytes.HasPrefix(raw, []byte(magic))
-	clear(raw)
-	if !sealed {
-		return err
+	from, fromDir, _, _, e := paths(origin)
+	if e != nil {
+		clear(raw)
+		return e
 	}
+	plain, e := open(from, fromDir, raw)
+	clear(raw)
+	if e != nil {
+		return nil
+	}
+	clear(plain)
 	target, dir, marker, stage, e := paths(path)
 	if e != nil {
 		return e
@@ -532,10 +549,67 @@ func MigrateArtifact(path string) error {
 	if e = syncDir(filepath.Dir(target)); e != nil {
 		return e
 	}
-	if _, e = os.Stat(dir); e == nil {
-		return syncDir(dir)
+	return syncDir(dir)
+}
+
+// artifactOrigin names the file an artifact was copied from: <name> for
+// <name>.corrupt-<time> and <name>.tmp, nothing for any other artifact.
+func artifactOrigin(path string) string {
+	base := filepath.Base(path)
+	if i := strings.LastIndex(base, ".corrupt-"); i > 0 {
+		return filepath.Join(filepath.Dir(path), base[:i])
 	}
-	return nil
+	if o := strings.TrimSuffix(base, ".tmp"); o != base && o != "" && !strings.HasPrefix(o, ".") {
+		return filepath.Join(filepath.Dir(path), o)
+	}
+	return ""
+}
+
+// ResealRewritten seals again a file its legacy owner legitimately rewrote as
+// plaintext over the sealed copy: the old Vectra agent after a hand-back
+// cannot read its sealed state and saves it as plaintext, which every later
+// read refused as a downgrade (ErrDowngrade). The plaintext must validate.
+// Use it only for a file another program owns; a missing, unmarked or still
+// sealed file is left to MigrateFile.
+func ResealRewritten(path string, validate func([]byte) error) error {
+	mu.Lock()
+	defer mu.Unlock()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	unlock, err := fileLock(path, true)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	target, _, marker, _, err := paths(path)
+	if err != nil {
+		return err
+	}
+	if status, e := os.ReadFile(marker); os.IsNotExist(e) {
+		return nil
+	} else if e != nil {
+		return e
+	} else if string(status) != "sealed-v1\n" {
+		return nil
+	}
+	raw, err := os.ReadFile(target)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer clear(raw)
+	if bytes.HasPrefix(raw, []byte("VCTLVAULT")) {
+		return nil
+	}
+	if validate == nil || validate(raw) != nil {
+		return errors.New("vault: rewritten legacy file failed validation")
+	}
+	return write(path, raw)
 }
 
 // Unsealed reports a file that was never sealed: present, without the vault's
@@ -556,5 +630,5 @@ func Unsealed(path string) bool {
 	defer f.Close()
 	head := make([]byte, len(magic))
 	n, _ := f.Read(head)
-	return !bytes.HasPrefix(head[:n], []byte(magic))
+	return !bytes.HasPrefix(head[:n], []byte("VCTLVAULT"))
 }

@@ -262,3 +262,39 @@ func TestLoadReadOnlyReadsSealedAndPlaintextAndNeverWrites(t *testing.T) {
 		t.Fatal("an unopenable copy loaded")
 	}
 }
+
+// A hand-back starts the old Vectra agent, which cannot read the sealed legacy
+// state: it keeps a copy and writes its state back as plaintext over the
+// sealed path. vctl's next start must not refuse that (it is the old agent's
+// own file, legitimately rewritten): it seals it again.
+func TestMigrateLegacyResealsWhatTheOldAgentWroteBack(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "legacy", "state.json")
+	_ = os.MkdirAll(filepath.Dir(p), 0o700)
+	if err := os.WriteFile(p, []byte(`{"router_id":"r-legacy","agent_token":"t"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateLegacy(p); err != nil {
+		t.Fatal(err)
+	}
+	// The old agent, after a hand-back: a copy, then plaintext over both paths.
+	raw, _ := os.ReadFile(p)
+	_ = os.WriteFile(p+".corrupt-20261002T022100Z", raw, 0o600)
+	for _, f := range []string{p, p + ".last-good"} {
+		if err := os.WriteFile(f, []byte(`{"router_id":"r-legacy","agent_token":"t2"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := MigrateLegacy(p); err != nil {
+		t.Fatalf("MigrateLegacy after the old agent wrote back: %v", err)
+	}
+	if b, _ := os.ReadFile(p); !bytes.HasPrefix(b, []byte("VCTLVAULT")) {
+		t.Fatal("the legacy state was not sealed again")
+	}
+	if got, err := LoadReadOnly(p); err != nil || got.AgentToken != "t2" {
+		t.Fatalf("LoadReadOnly: token %q, %v", got.AgentToken, err)
+	}
+	if left, _ := filepath.Glob(p + ".corrupt-*"); len(left) != 0 {
+		t.Fatalf("the old agent's copy of the sealed state is still there: %v", left)
+	}
+}

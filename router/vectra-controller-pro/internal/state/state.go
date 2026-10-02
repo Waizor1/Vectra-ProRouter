@@ -156,6 +156,21 @@ func Migrate(path string) error {
 	return nil
 }
 
+// MigrateLegacy seals the old Vectra agent's state as Migrate seals vctl's,
+// except that a plaintext rewrite over the sealed copy is accepted: after a
+// hand-back the old agent cannot read its sealed state, recovers its
+// credentials from its own identity mirror and saves the state as plaintext.
+// That is the owner's legitimate write, not a downgrade: it is sealed again.
+func MigrateLegacy(path string) error {
+	validate := func(raw []byte) error { _, err := decode(raw); return err }
+	for _, p := range []string{lastGoodPath(path), path} {
+		if err := vault.ResealRewritten(p, validate); err != nil {
+			return err
+		}
+	}
+	return Migrate(path)
+}
+
 func decode(raw []byte) (PersistedState, error) {
 	if strings.TrimSpace(string(raw)) == "" {
 		return PersistedState{}, fmt.Errorf("empty state file")
@@ -268,8 +283,9 @@ func ImportLegacyIdentity(persisted *PersistedState, legacyStatePath string) (bo
 	return true, nil
 }
 
-// LoadReadOnly is a reader's load (vectra-reporter): it never writes — Load
-// restores a primary from last-good and saves it, a race with the daemon. A
+// LoadReadOnly is a reader's load (vectra-reporter): it never saves state —
+// Load restores a primary from last-good and saves it, a race with the daemon
+// (the vault may still finish an interrupted seal of the same bytes). A
 // sealed state is opened; one that was never sealed (a router on 0.6.0-r36, or
 // rolled back to it) is read as it is.
 func LoadReadOnly(path string) (PersistedState, error) {
