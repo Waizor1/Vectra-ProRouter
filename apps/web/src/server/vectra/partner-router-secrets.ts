@@ -3,6 +3,7 @@ import type { jobs, routerInventorySnapshots, routers } from "@vectra/db";
 import {
   decryptJson,
   encryptJson,
+  isAadBoundEnvelope,
   sanitizePasswallRawSnapshot,
 } from "./secrets";
 import {
@@ -11,10 +12,16 @@ import {
 } from "./partner-action-params";
 
 type WifiSecretEnvelope = {
+  purpose?: string;
   routerId: string;
   ownerRef: string;
   wifi: Array<{ band: string; ssid: string; password: string }>;
 };
+export const CONNECT_INVENTORY_WIFI_PURPOSE = "connect-inventory-wifi-v1";
+/** GCM associated data: the envelope only opens for this purpose and router. */
+export function connectInventoryWifiAad(routerId: string) {
+  return `${CONNECT_INVENTORY_WIFI_PURPOSE}\n${routerId}`;
+}
 /** Wire-only credentials never enter ordinary inventory. Metadata and owner
  * binding are authenticated by the same AES-GCM envelope as the password. */
 export function protectConnectInventory(
@@ -42,11 +49,15 @@ export function protectConnectInventory(
   return {
     inventory: sanitized,
     ciphertext: secrets.length
-      ? encryptJson({
-          routerId,
-          ownerRef: ownerRef!,
-          wifi: secrets,
-        } satisfies WifiSecretEnvelope)
+      ? encryptJson(
+          {
+            purpose: CONNECT_INVENTORY_WIFI_PURPOSE,
+            routerId,
+            ownerRef: ownerRef!,
+            wifi: secrets,
+          } satisfies WifiSecretEnvelope,
+          { aad: connectInventoryWifiAad(routerId) },
+        )
       : null,
   };
 }
@@ -69,10 +80,18 @@ export function hydrateConnectWifi(
   )
     return wifi;
   try {
+    // New envelopes are bound to purpose + router by the GCM tag; envelopes
+    // written before that (no `ad`, no purpose) still open during the
+    // transition, but only on the same router/owner checks as before.
+    const bound = isAadBoundEnvelope(inventory.connectSecretCiphertext);
     const envelope = decryptJson<WifiSecretEnvelope>(
       inventory.connectSecretCiphertext,
+      bound ? { aad: connectInventoryWifiAad(router.id) } : {},
     );
     if (
+      (bound
+        ? envelope.purpose !== CONNECT_INVENTORY_WIFI_PURPOSE
+        : envelope.purpose !== undefined) ||
       envelope.routerId !== router.id ||
       envelope.ownerRef !== router.ownerRef
     )

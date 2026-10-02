@@ -1,4 +1,10 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createHmac,
+  randomBytes,
+} from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
 
 import {
@@ -81,6 +87,25 @@ export function computeConfigDigest(value: unknown) {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
 }
 
+export const KEYED_DIGEST_PREFIX = "hmac1:";
+
+/**
+ * A digest of request material that may carry a secret (a Wi-Fi password),
+ * keyed by a subkey of VECTRA_SECRETS_KEY: unlike a bare sha256, a database
+ * dump alone cannot be brute-forced back to the password. `purpose` separates
+ * the uses of the subkey.
+ */
+export function keyedDigest(purpose: string, ...parts: Array<string | Uint8Array>) {
+  const subkey = createHmac("sha256", env.VECTRA_SECRETS_KEY)
+    .update(`vectra-keyed-digest-v1\n${purpose}`)
+    .digest();
+  const mac = createHmac("sha256", subkey);
+  for (const part of parts) {
+    mac.update(part);
+  }
+  return `${KEYED_DIGEST_PREFIX}${mac.digest("hex")}`;
+}
+
 // Envelope versions:
 //   v1 — plaintext JSON, then AES-256-GCM.
 //   v2 — plaintext JSON, then gzip, then AES-256-GCM.
@@ -96,24 +121,45 @@ export function computeConfigDigest(value: unknown) {
 // ages them out anyway.
 const SECRET_ENVELOPE_VERSION = 2;
 
-export function encryptJson(payload: unknown) {
+// `aad` binds an envelope to its context (purpose, row id) through the GCM
+// tag: a ciphertext copied onto another row fails to decrypt instead of
+// decrypting into the wrong context. Such an envelope carries `ad: 1` and can
+// only be opened with the same `aad`.
+export function encryptJson(payload: unknown, options: { aad?: string } = {}) {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", deriveKey(), iv);
+  if (options.aad !== undefined) {
+    cipher.setAAD(Buffer.from(options.aad, "utf8"));
+  }
   const plaintext = gzipSync(Buffer.from(stableStringify(payload), "utf8"));
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const tag = cipher.getAuthTag();
 
   return JSON.stringify({
     v: SECRET_ENVELOPE_VERSION,
+    ...(options.aad !== undefined ? { ad: 1 } : {}),
     iv: iv.toString("base64url"),
     tag: tag.toString("base64url"),
     data: ciphertext.toString("base64url"),
   });
 }
 
-export function decryptJson<T>(ciphertext: string): T {
+/** Whether an envelope was sealed with associated data (see encryptJson). */
+export function isAadBoundEnvelope(ciphertext: string) {
+  try {
+    return (JSON.parse(ciphertext) as { ad?: unknown }).ad === 1;
+  } catch {
+    return false;
+  }
+}
+
+export function decryptJson<T>(
+  ciphertext: string,
+  options: { aad?: string } = {},
+): T {
   const parsed = JSON.parse(ciphertext) as {
     v: number;
+    ad?: number;
     iv: string;
     tag: string;
     data: string;
@@ -123,6 +169,12 @@ export function decryptJson<T>(ciphertext: string): T {
     deriveKey(),
     Buffer.from(parsed.iv, "base64url")
   );
+  if (parsed.ad === 1) {
+    if (options.aad === undefined) {
+      throw new Error("Envelope requires associated data.");
+    }
+    decipher.setAAD(Buffer.from(options.aad, "utf8"));
+  }
   decipher.setAuthTag(Buffer.from(parsed.tag, "base64url"));
   const plaintext = Buffer.concat([
     decipher.update(Buffer.from(parsed.data, "base64url")),

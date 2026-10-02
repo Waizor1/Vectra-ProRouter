@@ -176,3 +176,73 @@ describe("owner-bound confidential Connect persistence", () => {
     });
   });
 });
+
+describe("inventory Wi-Fi envelope purpose and associated data", () => {
+  it("seals new envelopes with the purpose and binds them to the router through the GCM tag", async () => {
+    const { decryptJson, isAadBoundEnvelope } = await import("./secrets");
+    const { connectInventoryWifiAad, CONNECT_INVENTORY_WIFI_PURPOSE } =
+      await import("./partner-router-secrets");
+    const ciphertext = snapshot().connectSecretCiphertext!;
+    expect(isAadBoundEnvelope(ciphertext)).toBe(true);
+    expect(() => decryptJson(ciphertext)).toThrow();
+    expect(() =>
+      decryptJson(ciphertext, { aad: connectInventoryWifiAad("other-router") }),
+    ).toThrow();
+    expect(
+      decryptJson<{ purpose: string }>(ciphertext, {
+        aad: connectInventoryWifiAad(ID),
+      }).purpose,
+    ).toBe(CONNECT_INVENTORY_WIFI_PURPOSE);
+  });
+  it("refuses a new envelope stripped of its associated-data marker (downgrade)", () => {
+    const row = snapshot();
+    const stripped = JSON.parse(row.connectSecretCiphertext!) as Record<string, unknown>;
+    delete stripped.ad;
+    expect(
+      JSON.stringify(
+        hydrateConnectWifi(router, {
+          ...row,
+          connectSecretCiphertext: JSON.stringify(stripped),
+        }),
+      ),
+    ).not.toContain(PASSWORD);
+  });
+  it("still opens a legacy envelope (no purpose, no associated data) for the same router and owner only", async () => {
+    const { encryptJson } = await import("./secrets");
+    const row = snapshot();
+    const legacy = encryptJson({
+      routerId: ID,
+      ownerRef: "acct-42",
+      wifi: [{ band: "5G", ssid: "Fake guest", password: PASSWORD }],
+    });
+    expect(
+      hydrateConnectWifi(router, { ...row, connectSecretCiphertext: legacy })?.[0],
+    ).toMatchObject({ password: PASSWORD });
+    expect(
+      JSON.stringify(
+        hydrateConnectWifi(router, {
+          ...row,
+          connectSecretCiphertext: encryptJson({
+            routerId: ID,
+            ownerRef: "other",
+            wifi: [{ band: "5G", ssid: "Fake guest", password: PASSWORD }],
+          }),
+        }),
+      ),
+    ).not.toContain(PASSWORD);
+    // An unbound envelope that names another purpose is not a Wi-Fi envelope.
+    expect(
+      JSON.stringify(
+        hydrateConnectWifi(router, {
+          ...row,
+          connectSecretCiphertext: encryptJson({
+            purpose: "connect-partner-job-v1",
+            routerId: ID,
+            ownerRef: "acct-42",
+            wifi: [{ band: "5G", ssid: "Fake guest", password: PASSWORD }],
+          }),
+        }),
+      ),
+    ).not.toContain(PASSWORD);
+  });
+});
