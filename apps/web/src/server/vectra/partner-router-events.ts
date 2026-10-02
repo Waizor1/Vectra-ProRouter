@@ -137,9 +137,15 @@ export async function notifyPartnerActionResultWithDb(
     job: typeof jobs.$inferSelect;
     ownerRef: string | null;
     status: string;
+    // The router's reason for a failure; only a plain code is passed on.
+    code?: string | null;
   },
 ) {
   const payload = args.job.payload;
+  const code =
+    args.status !== "success" && typeof args.code === "string" && /^[a-z][a-z_]{0,47}$/.test(args.code)
+      ? args.code
+      : undefined;
   if (
     args.status === "accepted" ||
     payload.origin !== "partner_action" ||
@@ -168,6 +174,7 @@ export async function notifyPartnerActionResultWithDb(
       detail: {
         actionId: payload.actionId,
         state: args.status === "success" ? "applied" : "failed",
+        ...(code ? { detail: code } : {}),
       },
     });
   });

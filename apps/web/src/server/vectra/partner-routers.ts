@@ -76,7 +76,13 @@ export function projectPartnerRouter(
       !!router.lastSeenAt &&
       now.getTime() - router.lastSeenAt.getTime() <= 180_000,
     lastSeenAt: router.lastSeenAt?.toISOString() ?? null,
-    uptimeSec: measured?.uptimeSec ?? null,
+    // The row is rewritten on a material change, a reboot (uptime going down)
+    // or the heartbeat, not on every check-in: uptime runs on from its time.
+    uptimeSec:
+      typeof measured?.uptimeSec === "number" && inventory
+        ? measured.uptimeSec +
+          Math.max(0, Math.floor((now.getTime() - inventory.createdAt.getTime()) / 1000))
+        : null,
     verdict: measured?.verdict ?? null,
     exitCountry: measured?.exitCountry ?? null,
     lanClients: measured?.lanClients ?? null,

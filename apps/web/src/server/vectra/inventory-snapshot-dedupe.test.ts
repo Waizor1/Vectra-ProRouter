@@ -297,6 +297,27 @@ describe("shouldWriteInventorySnapshot", () => {
     ).toBe(true);
   });
 
+  // Uptime is a gauge and stays out of the fingerprint, so a reboot changed
+  // nothing material and the owner's card kept the old boot's uptime for up
+  // to an hour (1111, 2026-10-02). Uptime going down is the reboot itself.
+  it("writes when the Connect uptime went down: the router rebooted", () => {
+    const before = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 11873 },
+    });
+    const rebooted = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 64 },
+    });
+    const later = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 11918 },
+    });
+    const args = { latest: latest(before, 5), now, heartbeatMinutes: 60 };
+    expect(shouldWriteInventorySnapshot({ ...args, inventory: rebooted })).toBe(true);
+    expect(shouldWriteInventorySnapshot({ ...args, inventory: later })).toBe(false);
+  });
+
   it("skips a check-in that carries no material change", () => {
     expect(
       shouldWriteInventorySnapshot({

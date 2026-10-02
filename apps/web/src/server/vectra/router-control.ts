@@ -1697,10 +1697,16 @@ export async function recordJobResult(routerId: string, input: unknown) {
 
   // Partner action results carry no arbitrary echoed params/output: a router
   // must never persist or log a WiFi credential through its result channel.
+  // The router's failure code (vctl connectFinish: {"code": …}) is a plain
+  // word, never echoed input; keep it for the owner's journal.
+  const partnerResultCode =
+    typeof parsed.result?.code === "string" && /^[a-z][a-z_]{0,47}$/.test(parsed.result.code)
+      ? parsed.result.code
+      : null;
   if (job.payload.origin === "partner_action") {
     parsed.stdout = undefined;
     parsed.stderr = undefined;
-    parsed.result = {actionId: job.id};
+    parsed.result = partnerResultCode ? {actionId: job.id, code: partnerResultCode} : {actionId: job.id};
     parsed.incidentTransitions = [];
     if (job.type === "connect_router_action") {
       parsed.appliedRevisionId = undefined;
@@ -1902,7 +1908,7 @@ export async function recordJobResult(routerId: string, input: unknown) {
 
   try {
     await notifyPartnerActionResultWithDb(db, {
-      job, ownerRef: currentRouter.ownerRef, status: parsed.status,
+      job, ownerRef: currentRouter.ownerRef, status: parsed.status, code: partnerResultCode,
     });
     schedulePartnerWebhookDelivery();
   } catch (error) {

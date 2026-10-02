@@ -170,5 +170,17 @@ export function shouldWriteInventorySnapshot(args: {
     return true;
   }
 
+  // Uptime is a gauge, out of the fingerprint; uptime going DOWN is a reboot,
+  // and the owner's card must not keep the previous boot's figure.
+  const previousUptime = (latest.payload as RouterInventory | null)?.connect?.uptimeSec;
+  const currentUptime = inventory.connect?.uptimeSec;
+  if (
+    typeof previousUptime === "number" &&
+    typeof currentUptime === "number" &&
+    currentUptime < previousUptime
+  ) {
+    return true;
+  }
+
   return previous !== materialInventoryFingerprint(inventory);
 }

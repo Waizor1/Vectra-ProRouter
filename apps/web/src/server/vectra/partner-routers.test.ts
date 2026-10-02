@@ -174,6 +174,20 @@ describe("partner snapshot ownership and measured truth", () => {
       /should-be-stripped|do-not-expose|not-public-here/,
     );
   });
+  // The row is rewritten only on a material change or the heartbeat: the
+  // card's uptime runs on from the row's time instead of standing still.
+  it("advances uptime from the time of the stored row", () => {
+    const row = {
+      ...inventory({ connect: routerConnectTelemetrySchema.parse({ uptimeSec: 50 }) }),
+      createdAt: new Date(NOW.getTime() - 120_000),
+    };
+    const snapshot = projectPartnerRouter(
+      router({ claimedAt: new Date(NOW.getTime() - 3_600_000) }),
+      row,
+      NOW,
+    );
+    expect(snapshot.uptimeSec).toBe(170);
+  });
   it("does not expose a previous owner's telemetry", () => {
     expect(
       projectPartnerRouter(
@@ -454,6 +468,38 @@ describe("reported events", () => {
     });
     await sweepPartnerOfflineWithDb(fake.db as never, NOW);
     expect(fake.inserts(partnerWebhooks)).toEqual([]);
+  });
+});
+
+describe("partner action failure reason", () => {
+  // The router says why an action failed (service_path_unavailable, …); the
+  // owner's journal got only "failed" (1111, 2026-10-02). Only a plain code
+  // passes: nothing the router echoes, never a credential.
+  it("carries a plain failure code into the webhook detail, nothing else", async () => {
+    const job = {
+      id: "00000000-0000-4000-8000-000000000099",
+      routerId: ID,
+      payload: { origin: "partner_action", ownerRef: "acct-42", actionId: "00000000-0000-4000-8000-000000000099" },
+    } as unknown as typeof jobs.$inferSelect;
+    for (const [code, want] of [
+      ["service_path_unavailable", "service_path_unavailable"],
+      ["wifi password hunter2", undefined],
+      [undefined, undefined],
+    ] as const) {
+      const outbox = createFakeDb({ updateReturns: [[routers, [[router()]]]] });
+      await notifyPartnerActionResultWithDb(outbox.db as never, {
+        job,
+        ownerRef: "acct-42",
+        status: "failure",
+        code,
+      });
+      const row = outbox.inserts(partnerWebhooks)[0] as
+        | { payload?: { detail?: Record<string, unknown> } }
+        | undefined;
+      const detail = row?.payload?.detail;
+      expect(detail?.state).toBe("failed");
+      expect(detail?.detail).toBe(want);
+    }
   });
 });
 
