@@ -399,17 +399,37 @@ export async function runRouteHealthVerifierTick(
     return { queued: 0, routerIds: [] as string[] };
   }
 
-  for (const routerId of picked) {
-    await database.insert(jobs).values({
-      routerId,
-      type: ROUTE_HEALTH_JOB_TYPE,
-      state: "queued",
-      payload: { reason: "route-health-telemetry" },
-      dedupeKey: routeHealthDedupeKey(routerId),
-    });
-  }
+  const queued = await queueRouteHealthJobs(database, picked);
+  return { queued: queued.length, routerIds: queued };
+}
 
-  return { queued: picked.length, routerIds: picked };
+/**
+ * Queues a route verification per router, skipping a router whose previous
+ * one still holds the key: selection only sees `queued` jobs, and one that is
+ * running (or handed out and not finished) keeps its dedupe key until its
+ * result. A unique-key error there used to abort the whole tick — the routers
+ * after it and the subscription rescue with it.
+ */
+export async function queueRouteHealthJobs(
+  database: Pick<DatabaseClient, "insert">,
+  routerIds: string[],
+) {
+  const queued: string[] = [];
+  for (const routerId of routerIds) {
+    const inserted = await database
+      .insert(jobs)
+      .values({
+        routerId,
+        type: ROUTE_HEALTH_JOB_TYPE,
+        state: "queued",
+        payload: { reason: "route-health-telemetry" },
+        dedupeKey: routeHealthDedupeKey(routerId),
+      })
+      .onConflictDoNothing({ target: jobs.dedupeKey })
+      .returning({ id: jobs.id });
+    if (inserted.length > 0) queued.push(routerId);
+  }
+  return queued;
 }
 
 const globalForVerifier = globalThis as unknown as {
@@ -429,12 +449,17 @@ export function startRouteHealthVerifier() {
     globalForVerifier.__vectraRouteHealthVerifierRunning = true;
     try {
       const { db } = await import("~/server/db");
-      const result = await runRouteHealthVerifierTick(db);
-      if (result.queued > 0) {
-        console.info(
-          "[route-health] queued route verification for %d router(s)",
-          result.queued,
-        );
+      // Its own failure must not cost the subscription rescue below its tick.
+      try {
+        const result = await runRouteHealthVerifierTick(db);
+        if (result.queued > 0) {
+          console.info(
+            "[route-health] queued route verification for %d router(s)",
+            result.queued,
+          );
+        }
+      } catch (error) {
+        console.error("[route-health] verification", error);
       }
       // The refresh now runs unattended, because the condition this lane was
       // held back for is finally met.

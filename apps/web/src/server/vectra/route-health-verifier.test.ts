@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 
+import { jobs } from "@vectra/db";
+
 import {
+  queueRouteHealthJobs,
   routeVerificationToHealthSample,
   selectRoutersForRouteHealthCheck,
   selectRoutersForSubscriptionRescue,
   subscriptionHasHardwareId,
   type RouteHealthCandidate,
 } from "./route-health-verifier";
+import { createFakeDb } from "./testing/fake-db";
 
 const NOW = new Date("2026-08-24T18:00:00.000Z");
 
@@ -352,5 +356,25 @@ describe("subscriptionHasHardwareId", () => {
       false,
     );
     expect(subscriptionHasHardwareId(null)).toBe(false);
+  });
+});
+
+// Prod 2026-10-02: a verification still running kept its dedupe key, the
+// insert hit vectra_job_dedupe_idx, and the error aborted the tick — the
+// routers after it and the subscription rescue with it.
+describe("queueRouteHealthJobs", () => {
+  it("skips a router whose previous verification still holds the key", async () => {
+    const fake = createFakeDb({ insertConflicts: [jobs] });
+    expect(await queueRouteHealthJobs(fake.db as never, ["r1", "r2"])).toEqual([]);
+    expect(fake.inserts(jobs)).toHaveLength(2);
+  });
+
+  it("queues one keyed verification per router", async () => {
+    const fake = createFakeDb();
+    expect(await queueRouteHealthJobs(fake.db as never, ["r1", "r2"])).toEqual(["r1", "r2"]);
+    expect(fake.inserts(jobs).map((row) => row.dedupeKey)).toEqual([
+      "route-health:r1",
+      "route-health:r2",
+    ]);
   });
 });
