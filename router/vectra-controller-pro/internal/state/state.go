@@ -126,7 +126,9 @@ func Migrate(path string) error {
 	artifacts = append(artifacts, oldTemps...)
 	artifacts = append(artifacts, path+".tmp")
 	for _, artifact := range artifacts {
-		if err := vault.MigrateFile(artifact, func([]byte) error { return nil }); err != nil {
+		// An old reader's ciphertext copy (state.json.corrupt-*) cannot be
+		// opened under its own name: MigrateArtifact takes it away.
+		if err := vault.MigrateArtifact(artifact); err != nil {
 			return err
 		}
 	}
@@ -264,4 +266,22 @@ func ImportLegacyIdentity(persisted *PersistedState, legacyStatePath string) (bo
 		persisted.DevicePrivateKey = legacy.DevicePrivateKey
 	}
 	return true, nil
+}
+
+// LoadReadOnly is a reader's load (vectra-reporter): it never writes — Load
+// restores a primary from last-good and saves it, a race with the daemon. A
+// sealed state is opened; one that was never sealed (a router on 0.6.0-r36, or
+// rolled back to it) is read as it is.
+func LoadReadOnly(path string) (PersistedState, error) {
+	raw, err := vault.ReadFile(path)
+	if err != nil {
+		if !vault.Unsealed(path) {
+			return PersistedState{}, err
+		}
+		if raw, err = os.ReadFile(path); err != nil {
+			return PersistedState{}, err
+		}
+	}
+	defer clear(raw)
+	return decode(raw)
 }

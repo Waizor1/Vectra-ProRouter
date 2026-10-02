@@ -198,3 +198,67 @@ func TestCorruptBackupRepairsFromAuthenticatedPrimary(t *testing.T) {
 		t.Fatalf("primary recovery: %v", err)
 	}
 }
+
+// 1111, 2026-10-02: after a planned restart vctl 0.7.0-r1 never started again
+// — "secret storage migration: vault: invalid or unauthenticated envelope".
+// The old vectra-reporter read the sealed state.json every minute, could not
+// parse it and kept a byte copy as state.json.corrupt-<time>; Migrate then
+// treated that ciphertext copy as a crash artifact it could not open.
+func TestMigrateSurvivesAnOldReadersCorruptCopy(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "state.json")
+	want := PersistedState{RouterID: "router-synthetic", AgentToken: "token-synthetic"}
+	if err := Save(p, want); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(p)
+	if err := os.WriteFile(p+".corrupt-20261002T021300Z", raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(p); err != nil {
+		t.Fatalf("Migrate = %v", err)
+	}
+	got, err := Load(p)
+	if err != nil || got.RouterID != want.RouterID || got.AgentToken != want.AgentToken {
+		t.Fatalf("Load = %+v %v", got, err)
+	}
+}
+
+// The reporter only reads the router's state: it must never write it (Load
+// restores from last-good and saves), and it reads both a sealed state (vctl
+// 0.7) and a plaintext one (a router rolled back to 0.6.0-r36).
+func TestLoadReadOnlyReadsSealedAndPlaintextAndNeverWrites(t *testing.T) {
+	dir := t.TempDir()
+	sealed := filepath.Join(dir, "sealed", "state.json")
+	want := PersistedState{RouterID: "router-synthetic", AgentToken: "token-synthetic"}
+	if err := Save(sealed, want); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := LoadReadOnly(sealed); err != nil || got.RouterID != want.RouterID {
+		t.Fatalf("sealed: %+v %v", got, err)
+	}
+	plain := filepath.Join(dir, "plain", "state.json")
+	_ = os.MkdirAll(filepath.Dir(plain), 0o700)
+	if err := os.WriteFile(plain, []byte(`{"router_id":"router-plain","agent_token":"t"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadDir(filepath.Dir(plain))
+	got, err := LoadReadOnly(plain)
+	if err != nil || got.RouterID != "router-plain" {
+		t.Fatalf("plaintext: %+v %v", got, err)
+	}
+	after, _ := os.ReadDir(filepath.Dir(plain))
+	if len(after) != len(before) {
+		t.Fatalf("a read wrote files: %d -> %d", len(before), len(after))
+	}
+	if b, _ := os.ReadFile(plain); !bytes.HasPrefix(b, []byte(`{"router_id"`)) {
+		t.Fatal("a read changed the plaintext state")
+	}
+	// A sealed file under a marker that is not there to open: an error, never a write.
+	broken := filepath.Join(dir, "sealed", "copy.json")
+	raw, _ := os.ReadFile(sealed)
+	_ = os.WriteFile(broken, raw, 0o600)
+	if _, err := LoadReadOnly(broken); err == nil {
+		t.Fatal("an unopenable copy loaded")
+	}
+}

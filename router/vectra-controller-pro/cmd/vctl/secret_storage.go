@@ -46,7 +46,7 @@ func migrateSecrets(c agentcfg.Config) error {
 	// Crash-left atomic temp files can contain incomplete secret input. Seal
 	// rather than deleting them: recovery custody remains explicit.
 	for _, base := range []string{c.XrayConfigPath, c.ProviderConfigPath, passwallDocumentPath(c.ProviderConfigPath), c.XrayRenderPath} {
-		if err := vault.MigrateFile(base+".tmp", func([]byte) error { return nil }); err != nil {
+		if err := vault.MigrateArtifact(base + ".tmp"); err != nil {
 			return err
 		}
 	}

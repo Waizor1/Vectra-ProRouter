@@ -45,7 +45,7 @@ GEOSITE_SHA256="73898f78635258cf8fa75b8fdde376afc202a47e0806ce773e04140b56b9675e
 GEODATA_VERSION="2026.9.28-r2"
 # vectra-reporter: the bug reporter (ADR-0007), a package of its own so a bad
 # vctl release never replaces it.
-REPORTER_VERSION="1.0.0-r2"
+REPORTER_VERSION="1.0.0-r3"
 # The categories the provider's xray config routes by, read from the scrubbed
 # provider entry the Go tests use — so the check follows the fixture.
 PROVIDER_FIXTURE="$PKG_MODULE/internal/coreengine/xray/testdata/provider/entry-00.json"
@@ -266,7 +266,7 @@ n="$(pkg_stage_payload "$payload")"
 echo "  payload: $n files from openwrt/Makefile"
 pkg_maintainer_scripts "$vctl_ctrl"
 echo "/etc/config/vectra-controller-pro" > "$vctl_ctrl/conffiles"
-deps="$(pkg_depends | awk -v min="$XRAY_MIN" 'BEGIN { FS = OFS = ", " } { for (i = 1; i <= NF; i++) if ($i == "xray-core") $i = "xray-core (>= " min ")"; print }'), vectra-geodata, vectra-reporter"
+deps="$(pkg_depends | awk -v min="$XRAY_MIN" 'BEGIN { FS = OFS = ", " } { for (i = 1; i <= NF; i++) if ($i == "xray-core") $i = "xray-core (>= " min ")"; print }'), vectra-geodata, vectra-reporter (>= 1.0.0-r3)"
 [[ "$deps" == *"xray-core (>= $XRAY_MIN)"* ]] || die "the Makefile's DEPENDS no longer names xray-core: $deps"
 
 go_build_once() { # <go-target> -> the cached binary

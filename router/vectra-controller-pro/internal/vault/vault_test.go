@@ -310,3 +310,53 @@ func TestWholeConfigurationDirectoryCopyContainsNoDecryptionKey(t *testing.T) {
 		t.Fatal("config-only clone decrypted")
 	}
 }
+
+// An old reader (vectra-reporter 1.0.0-r2, the legacy agent) that cannot parse
+// a sealed file keeps a byte copy of it under another name (state.json.corrupt-
+// <time>). That copy is ciphertext authenticated to the original path: it can
+// never be opened, and it reveals nothing. Migrating crash artifacts must take
+// it away, not fail the daemon's start on it (1111, 2026-10-02).
+func TestMigrateArtifactRemovesASealedCopyUnderAnotherName(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "state.json")
+	if err := WriteFile(p, []byte(`{"synthetic":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(p)
+	copyPath := p + ".corrupt-20261002T021300Z"
+	if err := os.WriteFile(copyPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateFile(copyPath, func([]byte) error { return nil }); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("precondition: MigrateFile on the copy = %v, want ErrInvalid", err)
+	}
+	if err := MigrateArtifact(copyPath); err != nil {
+		t.Fatalf("MigrateArtifact = %v", err)
+	}
+	if _, err := os.Stat(copyPath); !os.IsNotExist(err) {
+		t.Fatalf("the unopenable copy is still there: %v", err)
+	}
+	if got, err := ReadFile(p); err != nil || string(got) != `{"synthetic":true}` {
+		t.Fatalf("the original suffered: %q %v", got, err)
+	}
+	// A plaintext artifact is still sealed, an openable sealed one kept.
+	plain := p + ".tmp"
+	if err := os.WriteFile(plain, []byte("partial synthetic secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateArtifact(plain); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(plain); bytes.Contains(b, []byte("synthetic secret")) {
+		t.Fatal("plaintext artifact not sealed")
+	}
+	if err := MigrateArtifact(plain); err != nil {
+		t.Fatalf("second pass over a sealed artifact: %v", err)
+	}
+	if _, err := ReadFile(plain); err != nil {
+		t.Fatalf("sealed artifact lost: %v", err)
+	}
+	if err := MigrateArtifact(filepath.Join(dir, "absent")); err != nil {
+		t.Fatal(err)
+	}
+}

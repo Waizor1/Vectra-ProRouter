@@ -492,3 +492,69 @@ func RefusePlaintextWrite(path string) error {
 	}
 	return nil
 }
+
+// MigrateArtifact seals a crash artifact — a temp file, an old reader's backup
+// — as MigrateFile seals legacy plaintext, without validating it, with one
+// difference: a ciphertext copy that cannot be opened under its own name is
+// removed. An old reader that cannot parse a sealed file (vectra-reporter
+// 1.0.0-r2, the legacy agent) keeps a byte copy of it as <name>.corrupt-<time>:
+// authenticated to the original path, it can never be opened and reveals
+// nothing; left in place it refused every start of the daemon (1111,
+// 2026-10-02). Never call it on a primary secret.
+func MigrateArtifact(path string) error {
+	err := MigrateFile(path, func([]byte) error { return nil })
+	if !errors.Is(err, ErrInvalid) {
+		return err
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	raw, e := os.ReadFile(path)
+	if os.IsNotExist(e) {
+		return nil
+	}
+	if e != nil {
+		return e
+	}
+	sealed := bytes.HasPrefix(raw, []byte(magic))
+	clear(raw)
+	if !sealed {
+		return err
+	}
+	target, dir, marker, stage, e := paths(path)
+	if e != nil {
+		return e
+	}
+	for _, p := range []string{target, marker, stage} {
+		if e = os.Remove(p); e != nil && !os.IsNotExist(e) {
+			return e
+		}
+	}
+	if e = syncDir(filepath.Dir(target)); e != nil {
+		return e
+	}
+	if _, e = os.Stat(dir); e == nil {
+		return syncDir(dir)
+	}
+	return nil
+}
+
+// Unsealed reports a file that was never sealed: present, without the vault's
+// header, and with no seal marker. A reader of a router still on plaintext
+// (0.6.0-r36, or rolled back to it) may read such a file as it is.
+func Unsealed(path string) bool {
+	_, _, marker, _, err := paths(path)
+	if err != nil {
+		return false
+	}
+	if _, err = os.Stat(marker); !os.IsNotExist(err) {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, len(magic))
+	n, _ := f.Read(head)
+	return !bytes.HasPrefix(head[:n], []byte(magic))
+}

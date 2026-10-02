@@ -234,3 +234,49 @@ func TestLegacyVaultUpgradeRecoveryAndKeyFreeExport(t *testing.T) {
 		t.Fatalf("legacy recovery: %v", err)
 	}
 }
+
+// 1111, 2026-10-02: vctl 0.7.0-r1 migrated and ran; after a planned restart it
+// never started again. The old vectra-reporter (1.0.0-r2) read the sealed
+// state every minute, failed to parse it and kept byte copies of it as
+// state.json.corrupt-<time>; the next start refused them as crash artifacts
+// it could not open. Copies of every sealed secret under foreign names — the
+// legacy agent does the same with its state — must never refuse a start.
+func TestTheNextStartSurvivesAnOldReadersCopiesOfSealedFiles(t *testing.T) {
+	dir := t.TempDir()
+	c := agentcfg.Config{StatePath: filepath.Join(dir, "state.json"), XrayConfigPath: filepath.Join(dir, "operator.json"), ProviderConfigPath: filepath.Join(dir, "provider.json"), XrayRenderPath: filepath.Join(dir, "run", "xray.json"), LegacyStatePath: filepath.Join(dir, "legacy", "state.json"), EntriesPath: filepath.Join(dir, "entries.gz")}
+	c.Defaults()
+	token := "SYNTHETIC_ROUTER_TOKEN_0123456789abcdef"
+	st, _ := json.Marshal(state.PersistedState{RouterID: "test-router", AgentToken: token, DeviceIdentifier: "synthetic-device"})
+	operator := []byte(`{"schema":1,"inbounds":{"tproxy":{"listenIP":"0.0.0.0","port":12345}},"subscriptions":[{"id":"test","enabled":true,"url":"https://node.invalid/SYNTHETIC_SUB_TOKEN"}]}`)
+	provider := []byte(`{"outbounds":[]}`)
+	for p, b := range map[string][]byte{c.StatePath: st, c.StatePath + ".last-good": st, c.LegacyStatePath: st, c.XrayConfigPath: operator, c.ProviderConfigPath: provider, c.XrayRenderPath: provider} {
+		os.MkdirAll(filepath.Dir(p), 0700)
+		if e := os.WriteFile(p, b, 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if e := migrateSecrets(c); e != nil {
+		t.Fatal(e)
+	}
+	// What the old readers leave between two starts.
+	for _, p := range []string{c.StatePath, c.LegacyStatePath} {
+		raw, _ := os.ReadFile(p)
+		if e := os.WriteFile(p+".corrupt-20261002T021300Z", raw, 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	raw, _ := os.ReadFile(c.ProviderConfigPath)
+	_ = os.WriteFile(c.ProviderConfigPath+".tmp", raw, 0600)
+	if e := migrateSecrets(c); e != nil {
+		t.Fatalf("the next start: %v", e)
+	}
+	for _, p := range []string{c.StatePath + ".corrupt-20261002T021300Z", c.LegacyStatePath + ".corrupt-20261002T021300Z", c.ProviderConfigPath + ".tmp"} {
+		if _, e := os.Stat(p); !os.IsNotExist(e) {
+			t.Fatalf("%s left: %v", filepath.Base(p), e)
+		}
+	}
+	got, e := state.Load(c.StatePath)
+	if e != nil || got.AgentToken != token {
+		t.Fatalf("identity lost: %v", e)
+	}
+}
