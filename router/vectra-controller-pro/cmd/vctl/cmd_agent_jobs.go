@@ -1166,7 +1166,7 @@ func requireHTTPS(rawURL string) error {
 // is held back; the job restarts vctl itself once opkg is done.
 func controllerInstallCommand(ctx context.Context, dest string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "sh", "-c",
-		fmt.Sprintf(`{ echo %d > /proc/self/oom_score_adj; } 2>/dev/null; exec opkg install --force-reinstall "$0"`, memguard.JobAdj), dest)
+		fmt.Sprintf(`{ echo %d > /proc/self/oom_score_adj; } 2>/dev/null; exec opkg install "$0"`, memguard.JobAdj), dest)
 	cmd.Env = append(os.Environ(), "VECTRA_SKIP_POSTINST_RESTART=1")
 	return cmd
 }

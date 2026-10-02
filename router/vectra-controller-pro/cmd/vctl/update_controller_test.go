@@ -215,3 +215,16 @@ func TestTheGeoUpdateWritesOnlyIntoVctlsOwnDirectory(t *testing.T) {
 		t.Fatalf("the refused directory was made: %v", err)
 	}
 }
+
+// The self-update is an upgrade, never a re-install: opkg's --force-reinstall
+// removes the installed package first, its prerm sees a removal (not
+// "upgrade"), stops vctl, disables it and hands the router back to the old
+// agent — killing the opkg, so the new version never lands (1111, Connect
+// update_now, 2026-10-02 09:13). Both update lanes only ever install a newer
+// version (the signed feed's floor), so a plain install is an upgrade.
+func TestTheSelfUpdateIsAnUpgradeNotAReinstall(t *testing.T) {
+	cmd := controllerInstallCommand(context.Background(), "/tmp/vectra-controller-pro-update.ipk")
+	if strings.Contains(strings.Join(cmd.Args, " "), "--force-reinstall") {
+		t.Fatalf("a re-install runs the old package's removal: %v", cmd.Args)
+	}
+}
