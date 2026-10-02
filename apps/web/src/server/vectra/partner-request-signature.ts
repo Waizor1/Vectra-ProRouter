@@ -63,7 +63,7 @@ export function buildPartnerRequestHeaders(
   rawBody: Uint8Array | string,
   key = "",
   nowMs = Date.now(),
-  requestId = randomUUID(),
+  requestId: string = randomUUID(),
 ) {
   const target = new URL(url);
   const timestamp = Math.floor(nowMs / 1000);

@@ -8,7 +8,7 @@ import { and, asc, eq, isNull, lte } from "drizzle-orm";
 
 import { env } from "~/env";
 import { db } from "~/server/db";
-import { buildPartnerSignatureHeaders } from "~/server/vectra/partner-signature";
+import { buildPartnerRequestHeaders } from "~/server/vectra/partner-request-signature";
 
 /**
  * Webhooks to the Vectra backend (ADR-0006): router.claimed, router.ready (the
@@ -19,6 +19,13 @@ import { buildPartnerSignatureHeaders } from "~/server/vectra/partner-signature"
  * zero-delay timer) and then from a periodic sweep, with backoff, so a backend
  * outage or a panel restart delays a webhook instead of losing it. Delivery is
  * at-least-once; X-Vectra-Webhook-Id is stable across retries for dedupe.
+ *
+ * Signed with partner signature v2 (partner-request-signature.ts), the scheme
+ * the backend→panel direction uses: version, timestamp, request id, method,
+ * path, sorted query, sha256(body) and the idempotency key. The webhook row id
+ * is BOTH the request id and the Idempotency-Key, so the backend's durable
+ * nonce on the request id is also its dedupe: a retry of a webhook it already
+ * processed is answered 409, which means "delivered".
  */
 
 // A transaction handle works too: a webhook is queued in the same transaction
@@ -124,7 +131,15 @@ export async function deliverPartnerWebhook(
         "content-type": "application/json",
         "user-agent": "VectraProRouterPanel/1",
         [PARTNER_WEBHOOK_ID_HEADER]: row.id,
-        ...buildPartnerSignatureHeaders(target.secret, rawBody, options.nowMs),
+        ...buildPartnerRequestHeaders(
+          target.secret,
+          "POST",
+          target.url,
+          rawBody,
+          row.id,
+          options.nowMs ?? Date.now(),
+          row.id,
+        ),
       },
       body: rawBody,
       // A signed webhook goes to the configured URL or nowhere.
@@ -133,7 +148,9 @@ export async function deliverPartnerWebhook(
     });
     void response.body?.cancel().catch(() => undefined);
 
-    return response.ok
+    // 409 = the backend already processed this request id (its nonce is
+    // spent): an earlier attempt was delivered and only its answer got lost.
+    return response.ok || response.status === 409
       ? { ok: true as const, status: response.status }
       : {
           ok: false as const,

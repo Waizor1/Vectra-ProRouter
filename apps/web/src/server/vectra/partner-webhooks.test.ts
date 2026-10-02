@@ -2,6 +2,11 @@ import { eventLog, partnerWebhooks } from "@vectra/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  PARTNER_REQUEST_ID_HEADER,
+  PARTNER_VERSION_HEADER,
+  verifyPartnerRequest,
+} from "./partner-request-signature";
+import {
   PARTNER_SIGNATURE_HEADER,
   PARTNER_TIMESTAMP_HEADER,
   verifyPartnerSignature,
@@ -103,7 +108,7 @@ describe("enqueuePartnerWebhookWithDb", () => {
 });
 
 describe("deliverPartnerWebhook", () => {
-  it("signs the body the same way the partner API is signed", async () => {
+  it("signs with partner signature v2, the webhook id as request id and idempotency key", async () => {
     const fetchImpl = vi.fn(async () => ({ ok: true, status: 204, body: null }));
     const row = dueRow();
 
@@ -126,6 +131,23 @@ describe("deliverPartnerWebhook", () => {
     expect(init.redirect).toBe("manual");
     expect(init.headers[PARTNER_WEBHOOK_ID_HEADER]).toBe(row.id);
     expect(JSON.parse(init.body as string)).toEqual(row.payload);
+    expect(init.headers[PARTNER_VERSION_HEADER]).toBe("2");
+    expect(init.headers[PARTNER_REQUEST_ID_HEADER]).toBe(row.id);
+    expect(init.headers["Idempotency-Key"]).toBe(row.id);
+    const verified = verifyPartnerRequest({
+      request: new Request(url, {
+        method: "POST",
+        headers: init.headers,
+        body: init.body as string,
+      }),
+      secret: WEBHOOK_SECRET,
+      rawBody: new TextEncoder().encode(init.body as string),
+      nowMs: NOW.getTime(),
+      method: "POST",
+      path: "/hooks/prorouter",
+    });
+    expect(verified).toMatchObject({ ok: true, requestId: row.id });
+    // The bare v1 body signature (no id, method or path) is gone.
     expect(
       verifyPartnerSignature({
         secret: WEBHOOK_SECRET,
@@ -134,7 +156,46 @@ describe("deliverPartnerWebhook", () => {
         rawBody: init.body as string,
         nowMs: NOW.getTime(),
       }),
-    ).toEqual({ ok: true });
+    ).toMatchObject({ ok: false, error: "bad_signature" });
+  });
+
+  it("binds the signature to the webhook id: a captured body under another id does not verify", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, body: null }));
+    const row = dueRow();
+    await deliverPartnerWebhook(
+      row,
+      { url: "https://backend.example.test/hooks/prorouter", secret: WEBHOOK_SECRET },
+      { fetchImpl, nowMs: NOW.getTime() },
+    );
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [
+      string,
+      RequestInit & { headers: Record<string, string> },
+    ];
+    const swapped = {
+      ...init.headers,
+      [PARTNER_REQUEST_ID_HEADER]: "4c0e7d2f-3a5b-4f9c-8d8e-2b3c4d5e6f70",
+      [PARTNER_WEBHOOK_ID_HEADER]: "4c0e7d2f-3a5b-4f9c-8d8e-2b3c4d5e6f70",
+    };
+    expect(
+      verifyPartnerRequest({
+        request: new Request(url, { method: "POST", headers: swapped, body: init.body as string }),
+        secret: WEBHOOK_SECRET,
+        rawBody: new TextEncoder().encode(init.body as string),
+        nowMs: NOW.getTime(),
+        method: "POST",
+        path: "/hooks/prorouter",
+      }),
+    ).toMatchObject({ ok: false, error: "bad_signature" });
+  });
+
+  it("counts a 409 (request id already processed by the backend) as delivered", async () => {
+    expect(
+      await deliverPartnerWebhook(
+        dueRow(),
+        { url: "https://backend.example.test/hooks/prorouter", secret: WEBHOOK_SECRET },
+        { fetchImpl: async () => ({ ok: false, status: 409, body: null }) },
+      ),
+    ).toEqual({ ok: true, status: 409 });
   });
 
   it("reports a refusal or a network error instead of throwing", async () => {

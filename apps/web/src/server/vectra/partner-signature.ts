@@ -7,8 +7,10 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  *   X-Vectra-Partner-Timestamp: <unix seconds>
  *   X-Vectra-Partner-Signature: hex(HMAC-SHA256(secret, `${timestamp}\n${rawBody}`))
  *
- * The panel signs outbound webhooks with VECTRA_CONNECT_WEBHOOK_SECRET.
- * This verifier is not used by any inbound partner endpoint.
+ * Nothing signs with this any more: outbound webhooks use partner signature
+ * v2 too (partner-webhooks.ts), which binds the request id, method and path
+ * that this scheme leaves unsigned. The module stays for its header names and
+ * this verifier is not used by any inbound partner endpoint.
  * A timestamp outside +-300 s is refused, which bounds how long a captured
  * request stays replayable.
  */
@@ -80,7 +82,7 @@ export function verifyPartnerSignature(args: {
   return { ok: true };
 }
 
-/** Headers for a signed request the panel sends (webhooks). */
+/** Legacy v1 headers. Not used for webhooks (they are signed with v2). */
 export function buildPartnerSignatureHeaders(
   secret: string,
   rawBody: string,
