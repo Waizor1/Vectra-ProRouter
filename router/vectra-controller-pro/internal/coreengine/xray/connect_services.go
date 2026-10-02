@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"vectra-controller-pro/internal/xrayview"
@@ -53,6 +54,11 @@ func connectServicePath(raw []byte, v *xrayview.View, s Service) (servicePathOf,
 	if p, ok := servicePath(rules, v, s); ok {
 		return p, true
 	}
+	// An own rule that is no path (to a blackhole, to a missing tag) still
+	// decides: the location says "not through me".
+	if namesService(rules, s) {
+		return servicePathOf{}, false
+	}
 	p := servicePathOf{domains: s.Domains, ips: s.IPs}
 	if target, balancer, found := catchAllRule(rules); found {
 		p.target, p.isBalancer = target, balancer
@@ -62,10 +68,54 @@ func connectServicePath(raw []byte, v *xrayview.View, s Service) (servicePathOf,
 		return servicePathOf{}, false
 	}
 	if p.isBalancer {
-		return p, v.Balancer(p.target) != nil
+		return p, balancerTunnels(v, p.target)
 	}
 	o := v.Outbound(p.target)
 	return p, o != nil && o.Dials
+}
+
+// namesService: some rule names the service by its own matcher, with no
+// other condition — the location's own rule, whatever it says.
+func namesService(rules []map[string]json.RawMessage, s Service) bool {
+	for _, r := range rules {
+		for field, markers := range map[string][]string{"domain": s.Domains, "ip": s.IPs} {
+			if len(markers) > 0 && slices.Contains(jsonStrings(ruleField(r, field)), markers[0]) && onlyMatcher(r, field) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// balancerTunnels: every way out of the balancer is a tunnel — some member
+// dials, and its fallback (or, without one, xray's default handler, where a
+// balancer with no live member sends traffic) dials too.
+func balancerTunnels(v *xrayview.View, tag string) bool { return balancerTunnelsDepth(v, tag, 8) }
+
+func balancerTunnelsDepth(v *xrayview.View, tag string, depth int) bool {
+	b := v.Balancer(tag)
+	if b == nil || depth == 0 {
+		return false
+	}
+	member := false
+	for _, m := range b.Members {
+		if o := v.Outbound(m); o != nil && o.Dials {
+			member = true
+			break
+		}
+	}
+	if !member {
+		return false
+	}
+	switch {
+	case b.FallbackBalancer != "":
+		return balancerTunnelsDepth(v, b.FallbackBalancer, depth-1)
+	case b.FallbackTag != "":
+		o := v.Outbound(b.FallbackTag)
+		return o != nil && o.Dials
+	default:
+		return v.Default != nil && v.Default.Dials
+	}
 }
 
 // catchAllRule is the first rule that matches all traffic: no condition but
@@ -78,7 +128,8 @@ func catchAllRule(rules []map[string]json.RawMessage) (target string, balancer b
 			switch foldKey(k) {
 			case foldKey("type"), foldKey("outboundTag"), foldKey("balancerTag"), foldKey("ruleTag"):
 			case foldKey("network"):
-				network = strings.ToLower(jsonString(val))
+				// "tcp,udp" or ["tcp","udp"]: xray takes both.
+				network = strings.ToLower(jsonString(val) + "," + strings.Join(jsonStrings(val), ","))
 			default:
 				if !emptyJSON(val) {
 					other = true

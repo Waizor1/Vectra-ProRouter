@@ -203,11 +203,28 @@ func TestConnectServiceTakesTheMainPathOfALocationWithoutItsOwnRule(t *testing.T
 	}
 }
 
+func TestConnectServiceTakesABalancedMainPathAndAnArrayNetwork(t *testing.T) {
+	for name, entry := range map[string]string{
+		"balancer with a tunnel fallback": strings.Replace(strings.Replace(oneCountryEntry, `{"network":"tcp,udp","outboundTag":"de-1"}`, `{"network":"tcp,udp","balancerTag":"BL"}`, 1), `"routing":{`, `"routing":{"balancers":[{"tag":"BL","selector":["de-"],"fallbackTag":"de-1"}],`, 1),
+		"network as an array":             strings.Replace(strings.Replace(oneCountryEntry, `"tcp,udp"`, `["tcp","udp"]`, 1), `{"tag":"de-1","protocol":"vless"`, `{"tag":"DIRECT0","protocol":"freedom"},{"tag":"de-1","protocol":"vless"`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := xray.ValidateConnectServiceEntry([]byte(entry), "youtube"); err != nil {
+				t.Fatalf("refused: %v", err)
+			}
+		})
+	}
+}
+
 func TestConnectServiceRefusesALocationWhoseMainPathIsNotATunnel(t *testing.T) {
 	for name, entry := range map[string]string{
-		"direct catch-all":              strings.Replace(oneCountryEntry, `{"network":"tcp,udp","outboundTag":"de-1"}`, `{"network":"tcp,udp","outboundTag":"DIRECT"}`, 1),
-		"blocked catch-all":             strings.Replace(oneCountryEntry, `{"network":"tcp,udp","outboundTag":"de-1"}`, `{"network":"tcp,udp","outboundTag":"BLOCK"}`, 1),
-		"freedom default":               `{"outbounds":[{"tag":"DIRECT","protocol":"freedom"},{"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u"}]}]}}],"routing":{"rules":[{"domain":["geosite:google"],"outboundTag":"de-1"}]}}`,
+		"direct catch-all":  strings.Replace(oneCountryEntry, `{"network":"tcp,udp","outboundTag":"de-1"}`, `{"network":"tcp,udp","outboundTag":"DIRECT"}`, 1),
+		"blocked catch-all": strings.Replace(oneCountryEntry, `{"network":"tcp,udp","outboundTag":"de-1"}`, `{"network":"tcp,udp","outboundTag":"BLOCK"}`, 1),
+		"freedom default":   `{"outbounds":[{"tag":"DIRECT","protocol":"freedom"},{"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u"}]}]}}],"routing":{"rules":[{"domain":["geosite:google"],"outboundTag":"de-1"}]}}`,
+		// The location's own rule decides even when it says "not through me".
+		"own rule blocks it":            strings.Replace(oneCountryEntry, `{"domain":["geosite:category-ru"],"outboundTag":"DIRECT"},`, `{"domain":["geosite:category-ru"],"outboundTag":"DIRECT"},{"domain":["geosite:youtube"],"outboundTag":"BLOCK"},`, 1),
+		"balancer of direct members":    strings.Replace(strings.Replace(oneCountryEntry, `{"network":"tcp,udp","outboundTag":"de-1"}`, `{"network":"tcp,udp","balancerTag":"BL"}`, 1), `"routing":{`, `"routing":{"balancers":[{"tag":"BL","selector":["DIRECT"],"fallbackTag":"DIRECT"}],`, 1),
+		"balancer falling back direct":  `{"outbounds":[{"tag":"DIRECT","protocol":"freedom"},{"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u"}]}]}}],"routing":{"balancers":[{"tag":"BL","selector":["de-"]}],"rules":[{"network":"tcp,udp","balancerTag":"BL"}]}}`,
 		"tcp-only rule, direct default": `{"outbounds":[{"tag":"DIRECT","protocol":"freedom"},{"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u"}]}]}}],"routing":{"rules":[{"network":"tcp","outboundTag":"de-1"}]}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
