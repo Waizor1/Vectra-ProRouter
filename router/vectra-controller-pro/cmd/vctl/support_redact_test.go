@@ -8,6 +8,7 @@ import (
 
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/state"
+	"vectra-controller-pro/internal/vault"
 )
 
 // What support access (run_terminal_command) and log collection return goes
@@ -76,5 +77,30 @@ func TestTheOldAgentIsSeenRunning(t *testing.T) {
 	_ = os.Symlink(legacyAgentBinary, filepath.Join(dir, "34", "exe"))
 	if !legacyAgentRunning() {
 		t.Fatal("the old agent's process was not seen")
+	}
+}
+
+// vault-restore is the explicit full-recovery mode: any sealed file back as a
+// NEW plaintext file, 0600, never over an existing one.
+func TestVaultRestoreWritesANewPlaintextFileOnly(t *testing.T) {
+	dir := t.TempDir()
+	sealed := filepath.Join(dir, "backup", "passwall2.before-native")
+	_ = os.MkdirAll(filepath.Dir(sealed), 0o700)
+	text := []byte("config nodes 'n'\n\toption password 'synthetic'\n")
+	if err := vault.WriteFile(sealed, text); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "restored.uci")
+	if err := vaultRestore(sealed, out); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(out); string(b) != string(text) {
+		t.Fatal("restored content differs")
+	}
+	if st, _ := os.Stat(out); st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v", st.Mode().Perm())
+	}
+	if err := vaultRestore(sealed, out); err == nil {
+		t.Fatal("overwrote an existing file")
 	}
 }

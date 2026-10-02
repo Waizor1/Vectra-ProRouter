@@ -366,3 +366,38 @@ func TestPlaintextBackupsAreSealedAndStayRecoverable(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A sealed archive of the same name that differs is never replaced; plaintext
+// copied back over a sealed name is sealed again.
+func TestBackupSealingNeverReplacesAndResealsACopyBack(t *testing.T) {
+	dir := t.TempDir()
+	e := Env{BackupDir: filepath.Join(dir, "backup")}
+	_ = os.MkdirAll(e.BackupDir, 0o700)
+	archive := filepath.Join(e.BackupDir, "passwall2-manual.tar.gz")
+	if err := vault.WriteFile(archive+".vault", []byte("another archive")); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(archive, []byte("this archive"), 0o600)
+	if err := e.SealPlaintextBackups(); err == nil {
+		t.Fatal("a differing sealed archive was not reported")
+	}
+	if got, _ := vault.ReadFile(archive + ".vault"); string(got) != "another archive" {
+		t.Fatal("a sealed archive was replaced")
+	}
+	if b, _ := os.ReadFile(archive); string(b) != "this archive" {
+		t.Fatal("the plaintext was dropped without a sealed copy of it")
+	}
+	uci := filepath.Join(e.BackupDir, "copy.uci")
+	_ = os.WriteFile(uci, []byte("option password 'a'"), 0o600)
+	_ = os.Remove(archive)
+	if err := e.SealPlaintextBackups(); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(uci, []byte("option password 'synthetic-copied-back'"), 0o600)
+	if err := e.SealPlaintextBackups(); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(uci); bytes.Contains(raw, []byte("synthetic-copied-back")) {
+		t.Fatal("plaintext copied back over a sealed name stayed")
+	}
+}

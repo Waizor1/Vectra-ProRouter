@@ -313,7 +313,17 @@ func (e Env) SealPlaintextBackups() error {
 	for _, d := range ents {
 		name := d.Name()
 		path := filepath.Join(e.BackupDir, name)
-		if !d.Type().IsRegular() || strings.HasSuffix(name, ".vault") || !vault.Unsealed(path) {
+		if !d.Type().IsRegular() || strings.HasSuffix(name, ".vault") {
+			continue
+		}
+		if st, err := os.Lstat(path); err != nil || st.Size() > MaxArchiveBytes+(1<<20) {
+			errs = append(errs, fmt.Errorf("%s: missing or over the size limit", name))
+			continue
+		}
+		if !vault.Unsealed(path) {
+			// Sealed already — or plaintext copied back over a sealed name,
+			// which the owner's own write does: sealed again.
+			errs = append(errs, vault.ResealRewritten(path, func([]byte) error { return nil }))
 			continue
 		}
 		if !strings.HasPrefix(name, "passwall2-") || !strings.HasSuffix(name, ".tar.gz") {
@@ -335,6 +345,18 @@ func sealArchive(path string) error {
 		return fmt.Errorf("configuration archive exceeds size limit")
 	}
 	sealed := path + ".vault"
+	if prior, err := vault.ReadFile(sealed); err == nil {
+		// A sealed archive of this name already: the same one (a conversion
+		// cut short) or another, which is never replaced.
+		same := bytes.Equal(prior, raw)
+		clear(prior)
+		if !same {
+			return fmt.Errorf("%s exists and differs; both kept", filepath.Base(sealed))
+		}
+		return os.Remove(path)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	if err := vault.WriteFile(sealed, raw); err != nil {
 		return err
 	}
