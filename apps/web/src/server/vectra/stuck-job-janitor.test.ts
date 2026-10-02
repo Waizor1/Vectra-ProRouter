@@ -306,6 +306,31 @@ describe("runStuckJobJanitorTick", () => {
     });
   });
 
+  it("keeps a partner action's key so the partner's cancel finds it", async () => {
+    const { db, metrics } = createJanitorMockDb([
+      {
+        id: "job-stuck-partner",
+        routerId: "router-a",
+        type: "set_service",
+        createdAt: TWO_HOURS_AGO,
+        deliveredAt: TWO_HOURS_AGO,
+        dedupeKey: "partner-action:key-1",
+        payload: { origin: "partner" },
+      },
+    ]);
+
+    await runStuckJobJanitorTick(
+      NOW,
+      db as unknown as Parameters<typeof runStuckJobJanitorTick>[1],
+      { enabled: true, staleSeconds: 3600 },
+    );
+
+    expect(metrics.updateSetValues()[0]).toMatchObject({
+      state: "cancelled",
+      dedupeKey: "partner-action:key-1",
+    });
+  });
+
   // Regression: code-reviewer probe B (2026-06-05). When the eventLog
   // INSERT throws inside the per-row transaction, drizzle rolls back the
   // UPDATE. The result.cancelledJobIds must NOT include the rolled-back

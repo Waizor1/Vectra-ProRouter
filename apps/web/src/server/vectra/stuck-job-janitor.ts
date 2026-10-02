@@ -38,6 +38,10 @@ import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
 import { eventLog, jobs } from "@vectra/db";
 
 import { env } from "~/env";
+
+// Mirrors partner-routers.ts; kept literal so the janitor does not load the
+// partner API module.
+const PARTNER_ACTION_DEDUPE_PREFIX = "partner-action:";
 import { db } from "~/server/db";
 
 type DatabaseClient = typeof db;
@@ -133,6 +137,7 @@ export async function runStuckJobJanitorTick(
       type: jobs.type,
       createdAt: jobs.createdAt,
       deliveredAt: jobs.deliveredAt,
+      dedupeKey: jobs.dedupeKey,
       payload: jobs.payload,
     })
     .from(jobs)
@@ -183,8 +188,15 @@ export async function runStuckJobJanitorTick(
             // operator-cancel path (draft.ts:442) and the normal
             // job-completion path (router-control.ts:212-225) already
             // null dedupeKey for the same reason; we mirror that
-            // contract.
-            dedupeKey: null,
+            // contract. A partner action keeps its key, as on a result
+            // (resolveJobDedupeKeyAfterResult): the partner cancels and
+            // retries by that key, and must learn this job was cancelled
+            // by someone else instead of being told it never existed.
+            dedupeKey: candidate.dedupeKey?.startsWith(
+              PARTNER_ACTION_DEDUPE_PREFIX,
+            )
+              ? candidate.dedupeKey
+              : null,
           })
           .where(
             and(
