@@ -18,6 +18,7 @@
 			fields {
 				request>headers>X-Vectra-Router-Token delete
 				request>headers>X-Vectra-Install-Session delete
+				request>uri regexp "^/router-sub/[^/?]+" "/router-sub/REDACTED"
 			}
 		}
 	}
@@ -76,6 +77,7 @@
 			fields {
 				request>headers>X-Vectra-Router-Token delete
 				request>headers>X-Vectra-Install-Session delete
+				request>uri regexp "^/router-sub/[^/?]+" "/router-sub/REDACTED"
 			}
 		}
 	}
@@ -113,6 +115,19 @@
 			health_uri /api/health
 			health_interval 30s
 			health_timeout 5s
+		}
+	}
+
+	# Vectra Connect router subscriptions (ADR-0006). A router fetches its
+	# first config before it has a tunnel, and Russian ISPs stall TLS to the
+	# app backend host after ~16 KB; this host is not stalled. The backend
+	# verifies the router-signed path and query, not the host.
+	handle /router-sub/* {
+		request_body {
+			max_size 1KB
+		}
+		reverse_proxy https://api-app.vectra-pro.net {
+			header_up Host api-app.vectra-pro.net
 		}
 	}
 
