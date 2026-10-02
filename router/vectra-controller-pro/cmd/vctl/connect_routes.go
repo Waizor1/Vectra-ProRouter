@@ -7,8 +7,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"sort"
 	"strings"
+	"sync"
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
@@ -252,6 +255,38 @@ func remarkFlags(remark string) []string {
 // render carries it (or the router runs that location itself). The Connect
 // inventory and the router UI report this, never a default a render refused.
 func aiDefaultApplied(cfg agentcfg.Config, ov localctl.Overrides) (string, bool) {
+	// The check-in asks every minute; the answer only changes with these files
+	// and the owner's choice, so it is kept until one of them does.
+	key := aiAppliedKey(cfg, ov)
+	aiApplied.Lock()
+	defer aiApplied.Unlock()
+	if key != "" && key == aiApplied.key {
+		return aiApplied.id, aiApplied.ok
+	}
+	id, ok := aiDefaultAppliedNow(cfg, ov)
+	aiApplied.key, aiApplied.id, aiApplied.ok = key, id, ok
+	return id, ok
+}
+
+var aiApplied struct {
+	sync.Mutex
+	key, id string
+	ok      bool
+}
+
+func aiAppliedKey(cfg agentcfg.Config, ov localctl.Overrides) string {
+	k := fmt.Sprintf("%s|%q|%q|", cfg.RouteSource, ov.ServiceEntries["ai"], ov.Services["ai"])
+	for _, p := range []string{cfg.EntriesPath, cfg.ProviderConfigPath, cfg.XrayRenderPath} {
+		st, err := os.Stat(p)
+		if err != nil {
+			return ""
+		}
+		k += fmt.Sprintf("%s:%d:%d|", p, st.Size(), st.ModTime().UnixNano())
+	}
+	return k
+}
+
+func aiDefaultAppliedNow(cfg agentcfg.Config, ov localctl.Overrides) (string, bool) {
 	cache, err := localctl.LoadEntries(cfg.EntriesPath)
 	if err != nil {
 		return "", false
