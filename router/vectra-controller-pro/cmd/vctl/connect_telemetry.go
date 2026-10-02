@@ -106,9 +106,17 @@ func connectSettings(in uiapi.Inputs, f setup.Facts) controlplane.RouterConnectT
 		ordered = append(ordered, id)
 	}
 	sort.Strings(ordered)
+	aiDefault := ""
+	if in.Index != nil {
+		aiDefault, _ = pickAIEntry(in.Index.Entries)
+	}
 	for _, id := range ordered {
 		s := controlplane.ConnectService{ID: id}
-		if entry := in.Overrides.ServiceEntries[id]; valid[entry] {
+		entry, chosen := in.Overrides.ServiceEntries[id]
+		if !chosen && id == "ai" && in.Overrides.Services["ai"] == "" {
+			entry = aiDefault // «Нейросети» run through their default location
+		}
+		if valid[entry] {
 			e := entry
 			s.EntryID = &e
 		}

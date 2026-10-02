@@ -61,6 +61,10 @@ type ServiceChoice struct {
 	ID      string `json:"id"`
 	Country string `json:"country"`
 	EntryID string `json:"entryId,omitempty"`
+	// MainPath is the Vectra app's «as the main VPN» (entryId null): for a
+	// service with a default location (ServicesWithDefault) it is kept as a
+	// choice; a choice merely cleared (the router UI's «default») is not.
+	MainPath bool `json:"mainPath,omitempty"`
 }
 
 // Rules are the owner's own sites ("My sites"): Direct always without the
@@ -104,6 +108,14 @@ func (c Change) ApplyTo(o *Overrides) {
 	}
 	if s := c.SetService; s != nil {
 		delete(o.ServiceEntries, s.ID)
+		if s.MainPath && s.EntryID == "" && s.Country == "" && ServicesWithDefault[s.ID] {
+			// «As the main VPN» for a service with a default location is a
+			// choice: kept, so the default does not come back.
+			if o.ServiceEntries == nil {
+				o.ServiceEntries = map[string]string{}
+			}
+			o.ServiceEntries[s.ID] = ServiceMainPath
+		}
 		if s.EntryID != "" {
 			if o.ServiceEntries == nil {
 				o.ServiceEntries = map[string]string{}
@@ -158,6 +170,14 @@ type Runtime struct {
 	// failover watchdog last saw it; nil before its first look.
 	Route *Route `json:"route,omitempty"`
 }
+
+// ServiceMainPath in Overrides.ServiceEntries is the owner's «as the main
+// VPN» for a service that has a default location of its own.
+const ServiceMainPath = "main"
+
+// ServicesWithDefault are the services routed through a location of their
+// own unless the owner chose otherwise («Нейросети»: Kazakhstan).
+var ServicesWithDefault = map[string]bool{"ai": true}
 
 // Claim is the code the router shows now, ready for the UI.
 type Claim struct {

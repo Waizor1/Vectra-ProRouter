@@ -340,3 +340,38 @@ func TestConnectServiceTakesTheProvidersWhitelistChain(t *testing.T) {
 		}
 	}
 }
+
+// «Нейросети»: the provider's locations name ChatGPT in an AI rule of their
+// own; the service takes that path, with every AI domain we know besides the
+// provider's (2026-10-02). A location without such a rule takes its main
+// path for the same domains.
+func TestConnectAIServiceCoversEveryKnownAIDomain(t *testing.T) {
+	withRule := strings.Replace(oneCountryEntry, `{"domain":["geosite:category-ru"],"outboundTag":"DIRECT"},`, `{"domain":["geosite:category-ru"],"outboundTag":"DIRECT"},{"domain":["domain:chatgpt.com","domain:provider-only-ai.example"],"outboundTag":"de-1"},`, 1)
+	for name, entry := range map[string]string{"own AI rule": withRule, "main path": oneCountryEntry} {
+		t.Run(name, func(t *testing.T) {
+			_, r, res := spliceServices(t, xray.SpliceOptions{ServiceEntries: map[string]json.RawMessage{"ai": json.RawMessage(entry)}})
+			if len(res.Services.Applied) != 1 {
+				t.Fatalf("applied %v", res.Services.Applied)
+			}
+			got := map[string]bool{}
+			for _, rule := range r.Routing.Rules {
+				if rule.OutboundTag == "vctl-connect-ai-de-1" {
+					for _, d := range rule.Domain {
+						got[d] = true
+					}
+				}
+			}
+			for _, d := range []string{"domain:chatgpt.com", "domain:openai.com", "domain:claude.ai", "domain:anthropic.com", "full:gemini.google.com", "domain:perplexity.ai", "domain:grok.com"} {
+				if !got[d] {
+					t.Fatalf("%s missing from %v", d, got)
+				}
+			}
+			if name == "own AI rule" && !got["domain:provider-only-ai.example"] {
+				t.Fatal("dropped the provider's own AI domains")
+			}
+			if got["domain:google.com"] {
+				t.Fatal("sent all of Google through the AI exit")
+			}
+		})
+	}
+}

@@ -12,7 +12,7 @@ import type { Key } from '../i18n';
 import { flagged } from '../lib/names';
 
 /** The services this UI has words for; a newer router's other ones wait for a newer UI. */
-const KNOWN = ['youtube', 'tiktok', 'telegram'];
+const KNOWN = ['youtube', 'tiktok', 'telegram', 'ai'];
 
 export function Services() {
   const { t, run, pending, store } = useApp();
@@ -26,7 +26,7 @@ export function Services() {
   // A service the entry has no path for has no country to offer: shown only
   // while it holds a choice, to be cleared.
   const rows =
-    data && data.available !== false ? data.services.filter((s) => KNOWN.indexOf(s.id) >= 0 && (s.countries.length > 0 || !!s.choice)) : [];
+    data && data.available !== false ? data.services.filter((s) => KNOWN.indexOf(s.id) >= 0 && (s.countries.length > 0 || !!s.choice || (s.id === 'ai' && !!s.defaultCountry))) : [];
   if (!rows.length) return null;
 
   const place = (cc: string) => flagged(t.lang, cc);

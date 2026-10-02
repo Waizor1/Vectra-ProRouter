@@ -1281,6 +1281,7 @@ export const S = {
   'sv.name.youtube': ['YouTube', 'YouTube', 'YouTube'],
   'sv.name.tiktok': ['TikTok', 'TikTok', 'TikTok'],
   'sv.name.telegram': ['Telegram', 'Telegram', 'Telegram'],
+  'sv.name.ai': ['Нейросети', 'AI services', 'AI 服务'],
   'sv.default': ['По умолчанию', 'Default', '默认'],
   'sv.defaultIn': ['По умолчанию · {country}', 'Default · {country}', '默认 · {country}'],
   'sv.country': ['Страна для {service}', 'Country for {service}', '{service} 的国家'],

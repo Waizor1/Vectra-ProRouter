@@ -70,7 +70,15 @@ func TestConnectSettingsUseCanonicalDigestsAndNoPasswords(t *testing.T) {
 	if out.Wifi == nil || (*out.Wifi)[0].Password != "" {
 		t.Fatal("password telemetry")
 	}
-	if out.Services == nil || len(*out.Services) != 3 || (*out.Services)[0].EntryID != nil || (*out.Services)[2].EntryID == nil {
+	byID := map[string]*string{}
+	if out.Services != nil {
+		for _, s := range *out.Services {
+			byID[s.ID] = s.EntryID
+		}
+	}
+	// «Нейросети» are a fourth service; with no Kazakh location in the index
+	// they run on the main path (null), like any service without a choice.
+	if len(byID) != 4 || byID["telegram"] != nil || byID["youtube"] == nil || byID["ai"] != nil {
 		t.Fatal("service country converted into entry identity")
 	}
 }

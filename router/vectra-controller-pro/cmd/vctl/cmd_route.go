@@ -421,7 +421,7 @@ func routeInside(in []netip.Prefix, p netip.Prefix) bool {
 // missing cache entries refuse the preview before any persistent change.
 func routePreviewOptions(d *daemon, raw []byte, ov localctl.Overrides) (xray.SpliceOptions, error) {
 	opts, _ := spliceOptionsFor(raw, ov, !d.cfg.NoRussiaDirect)
-	entries, err := d.connectServiceOptions(ov)
+	entries, err := d.connectServiceOptionsFor(ov, raw)
 	if err != nil {
 		return opts, err
 	}

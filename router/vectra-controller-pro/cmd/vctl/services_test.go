@@ -120,7 +120,9 @@ func TestTheServicesAnswerIsWhatTheRouterRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := rpcdCall(context.Background(), s.cfg, "services", nil).(uiapi.Services)
-	if !got.Available || len(got.Services) != 3 {
+	// youtube, tiktok, telegram and «Нейросети» (ai), whose AI rule this
+	// fixture's provider does not have: offered no country.
+	if !got.Available || len(got.Services) != 4 || got.Services[3].ID != "ai" || len(got.Services[3].Countries) != 0 {
 		t.Fatalf("services = %+v", got)
 	}
 	str := func(p *string) string {
@@ -139,6 +141,7 @@ func TestTheServicesAnswerIsWhatTheRouterRuns(t *testing.T) {
 		"youtube ∅ RU BY/DE/RU - -",
 		"tiktok DE BY BY/DE/RU active -",
 		"telegram NL BY BY/DE/RU - stale",
+		"ai ∅ ∅  - -",
 	}
 	if !reflect.DeepEqual(rows, want) {
 		t.Fatalf("rows:\n%s\nwant:\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))

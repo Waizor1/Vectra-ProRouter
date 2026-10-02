@@ -61,7 +61,7 @@ func (d *daemon) spliceOptions(providerRaw []byte) (xray.SpliceOptions, localctl
 		logging.L().Warn("local overrides unreadable; rendering with defaults", "err", err.Error())
 	}
 	opts, probe := spliceOptionsFor(providerRaw, ov, !d.cfg.NoRussiaDirect)
-	opts.ServiceEntries, err = d.connectServiceOptions(ov)
+	opts.ServiceEntries, err = d.connectServiceOptionsFor(ov, providerRaw)
 	if err != nil {
 		opts.ServiceEntries = map[string]json.RawMessage{"stale": json.RawMessage(`{}`)}
 	}
@@ -268,7 +268,7 @@ func (d *daemon) localReapplyOnce(ctx context.Context, change *localctl.Change) 
 	}
 
 	opts, probe := spliceOptionsFor(providerRaw, ov, !d.cfg.NoRussiaDirect)
-	serviceEntries, serviceErr := d.connectServiceOptions(ov)
+	serviceEntries, serviceErr := d.connectServiceOptionsFor(ov, providerRaw)
 	if serviceErr != nil {
 		return localctl.SocketResponse{Code: "unknown_entry"}
 	}

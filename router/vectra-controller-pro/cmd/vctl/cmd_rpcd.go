@@ -1,7 +1,6 @@
 package main
 
 import (
- "vectra-controller-pro/internal/vault"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/api"
@@ -245,7 +245,11 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 		if in := rpcdGather(ctx, env, uiapi.Need{Runtime: true}); in.Runtime != nil {
 			egress = in.Runtime.Egress
 		}
-		return uiapi.BuildServices(cfg.RouteSource == "", raw, ov, egress)
+		res := uiapi.BuildServices(cfg.RouteSource == "", raw, ov, egress)
+		if idx, err := localctl.LoadEntriesIndex(cfg.EntriesIndexPath); err == nil {
+			markAIDefault(&res, ov, idx.Entries)
+		}
+		return res
 	case "select_entry", "reset_entry", "pin_balancer", "unpin_balancer", "set_probe_interval", "set_rules", "set_service", "restart_xray":
 		return rpcdMutate(ctx, cfg, method, params)
 	case "set_power":
