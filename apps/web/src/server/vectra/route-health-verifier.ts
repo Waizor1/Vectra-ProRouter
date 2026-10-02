@@ -36,6 +36,8 @@ export type RouteHealthCandidate = {
   lastVerifiedAt: Date | null;
   queuedJobCount: number;
   routePolicyExempt?: boolean | null;
+  /** The router's engine; verify_passwall_routes is a PassWall-only job. */
+  engineMode?: string | null;
   /**
    * When this router last had its proxy stack disturbed — a subscription
    * refresh or a config apply. See `settleMs`.
@@ -135,6 +137,11 @@ export function selectRoutersForRouteHealthCheck(
       return false;
     }
     if (candidate.routePolicyExempt) {
+      return false;
+    }
+    // A router on the xray engine never receives a PassWall job: it would sit
+    // queued forever and block an engine switch.
+    if (candidate.engineMode && candidate.engineMode !== "passwall") {
       return false;
     }
     // Terminal-style jobs collapse per router: queuing on top of pending work
@@ -373,6 +380,7 @@ export async function loadRouteHealthCandidates(
     lastVerifiedAt: verifications.get(router.id)?.verifiedAt ?? null,
     queuedJobCount: queuedByRouter.get(router.id) ?? 0,
     routePolicyExempt: router.routePolicyExempt,
+    engineMode: router.engineMode,
     lastDisruptionAt: lastDisruptionByRouter.get(router.id) ?? null,
   }));
 }

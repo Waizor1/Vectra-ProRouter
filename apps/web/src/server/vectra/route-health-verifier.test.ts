@@ -25,6 +25,23 @@ function candidate(
 }
 
 describe("selectRoutersForRouteHealthCheck", () => {
+  // verify_passwall_routes is a PassWall job: a router on the xray engine (a
+  // Vectra Connect router on vctl) never receives it, and the queued job sat
+  // there forever, blocking an engine switch (1111, 2026-10-02).
+  it("never picks a router that is not on the PassWall engine", () => {
+    const picked = selectRoutersForRouteHealthCheck(
+      [
+        candidate({ routerId: "xray", engineMode: "xray-direct" }),
+        candidate({ routerId: "passwall", engineMode: "passwall" }),
+        candidate({ routerId: "legacy" }),
+      ],
+      NOW,
+      { limit: 5, staleAfterMs: 0 },
+    );
+    expect(picked).not.toContain("xray");
+    expect(picked).toEqual(expect.arrayContaining(["passwall", "legacy"]));
+  });
+
   it("prefers the router that has gone longest without a check", () => {
     const picked = selectRoutersForRouteHealthCheck(
       [
