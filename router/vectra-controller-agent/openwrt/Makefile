@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vectra-controller-agent
 VECTRA_VERSION?=0.1.13
-VECTRA_RELEASE?=43
+VECTRA_RELEASE?=44
 PKG_VERSION:=$(VECTRA_VERSION)
 PKG_RELEASE:=$(VECTRA_RELEASE)
 
@@ -107,6 +107,10 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_BIN) ./files/usr/sbin/vectra-oom-guard $(1)/usr/sbin/vectra-oom-guard
 	$(INSTALL_BIN) ./files/usr/sbin/vectra-xray-wrapper $(1)/usr/sbin/vectra-xray-wrapper
 	$(INSTALL_BIN) ./files/usr/sbin/vectra-controller-watchdog $(1)/usr/sbin/vectra-controller-watchdog
+	# Tells vectra-controller-pro this agent reads the state it sealed, so its
+	# plaintext identity mirror may be sealed too.
+	$(INSTALL_DIR) $(1)/usr/share/vectra-controller
+	$(INSTALL_DATA) ./files/usr/share/vectra-controller/vault-read-v1 $(1)/usr/share/vectra-controller/vault-read-v1
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))

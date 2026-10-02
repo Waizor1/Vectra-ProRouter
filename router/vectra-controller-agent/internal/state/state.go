@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,11 +52,11 @@ type PersistedState struct {
 	// must keep honouring the last instruction it was given (in particular an
 	// exemption) rather than reverting to the controller's built-in defaults.
 	// Nil means the panel has never sent one, and the built-in scorer applies.
-	LastRoutePolicy *passwall.FleetRoutePolicyDirective `json:"last_route_policy,omitempty"`
-	Rescue                   RescueSnapshot                       `json:"rescue,omitempty"`
-	ControlPlaneRecovery     recovery.State                       `json:"control_plane_recovery,omitempty"`
-	CurrentJob               CurrentJob                           `json:"current_job,omitempty"`
-	PendingJobResult         *controlplane.JobResultRequest       `json:"pending_job_result,omitempty"`
+	LastRoutePolicy      *passwall.FleetRoutePolicyDirective `json:"last_route_policy,omitempty"`
+	Rescue               RescueSnapshot                      `json:"rescue,omitempty"`
+	ControlPlaneRecovery recovery.State                      `json:"control_plane_recovery,omitempty"`
+	CurrentJob           CurrentJob                          `json:"current_job,omitempty"`
+	PendingJobResult     *controlplane.JobResultRequest      `json:"pending_job_result,omitempty"`
 	// PendingJobResultRetryCount tracks how many consecutive run_once cycles
 	// have failed to flush PendingJobResult. The controller uses this to bail
 	// out of an unrecoverable version-mismatch loop (the totchto-filiciy
@@ -90,11 +91,26 @@ func Load(path string) (PersistedState, error) {
 			fillMissingCredentials(&persisted, stored)
 		}
 	}
+	if !hasCredentials(persisted) && sealedUnreadable(path) {
+		// The router's credentials are there, sealed by vctl, and cannot be
+		// opened (their key is gone). Registering now would mint a second
+		// identity for a router the panel already knows.
+		return PersistedState{}, ErrSealedIdentity
+	}
 	return persisted, nil
 }
 
 func loadBase(path string) (PersistedState, error) {
-	bytes, err := os.ReadFile(path)
+	bytes, err := readStateFile(path)
+	if errors.Is(err, errSealed) {
+		// Sealed by vctl and its key gone: not corrupt, and no copy of the
+		// ciphertext. The last-good copy, then the identity mirror (Load)
+		// still hold the credentials.
+		if recovered, ok := loadLastGood(path); ok {
+			return recovered, nil
+		}
+		return PersistedState{}, nil
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			if recovered, ok := loadLastGood(path); ok {
@@ -150,7 +166,7 @@ func corruptPath(path string) string {
 }
 
 func loadLastGood(path string) (PersistedState, bool) {
-	bytes, err := os.ReadFile(lastGoodPath(path))
+	bytes, err := readStateFile(lastGoodPath(path))
 	if err != nil {
 		return PersistedState{}, false
 	}
@@ -246,7 +262,7 @@ func fillMissingCredentials(dst *PersistedState, src PersistedState) {
 // calls Save, so it is safe to use from inside Save and Load.
 func loadStoredCredentials(path string) PersistedState {
 	for _, candidate := range []string{identityMirrorPath(path), path, lastGoodPath(path)} {
-		bytes, err := os.ReadFile(candidate)
+		bytes, err := readStateFile(candidate)
 		if err != nil {
 			continue
 		}
