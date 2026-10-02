@@ -11,6 +11,7 @@ import {
 import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { buildTerminalRouterHostnameUpdatePayload } from "~/lib/router-hostname-jobs";
 import * as dbModule from "~/server/db";
@@ -18,6 +19,7 @@ import * as dbModule from "~/server/db";
 import {
   buildRouterReauthMessage,
   checkInRouter,
+  describeUndeliverableError,
   recordJobResult,
   registerRouter,
   resolveRegisteredEngineMode,
@@ -494,17 +496,56 @@ describe("checkInRouter claim", () => {
     const good = {id: JOB_ID, routerId: ROUTER_ID, type: "connect_router_action", state: "queued", desiredRevisionId: null, createdAt: new Date(), payload: {origin: "partner_action", ownerRef: "acct-42", actionId: JOB_ID, action: "set_wifi", ...protectPartnerParams("set_wifi", {ssid: "Fake guest", password: "fake-guest-pass-123"}, {routerId: ROUTER_ID, ownerRef: "acct-42", actionId: JOB_ID})}};
     // A ciphertext that no longer opens (key rotated, row corrupted).
     const broken = {id: BROKEN_ID, routerId: ROUTER_ID, type: "connect_router_action", state: "queued", desiredRevisionId: null, createdAt: new Date(), payload: {origin: "partner_action", ownerRef: "acct-42", actionId: BROKEN_ID, action: "set_wifi", paramsCiphertext: "{\"v\":2,\"iv\":\"AAAA\",\"tag\":\"AAAA\",\"data\":\"AAAA\"}"}};
-    fake.reset({selects: [[routers, [[owner]]], [healthIncidents, [[]]], [jobs, [[broken, good]]]], updateReturns: [[routers, [[owner], [owner], [owner], [owner]]], [jobs, [[{...broken, state: "failed"}]]]]});
+    // The failure is recorded through the router's own result path, which
+    // reads the job and the router again.
+    fake.reset({selects: [[routers, [[owner], [owner]]], [healthIncidents, [[]]], [jobs, [[broken, good], [{...broken, state: "running"}]]]], updateReturns: [[routers, [[owner], [owner], [owner], [owner]]], [jobs, [[{...broken, state: "running"}]]]]});
 
     const response = await checkInRouter(ROUTER_ID, checkInPayload());
 
     expect(response.jobs.map(job => job.id)).toEqual([JOB_ID]);
-    expect(fake.updates(jobs)).toHaveLength(1);
-    expect(fake.updates(jobs)[0]).toMatchObject({state: "failed"});
-    expect(fake.updates(jobs)[0]?.completedAt).toBeInstanceOf(Date);
+    expect(fake.updates(jobs)).toHaveLength(2);
+    expect(fake.updates(jobs)[0]).toEqual({state: "running"});
+    expect(fake.updates(jobs)[1]).toMatchObject({state: "failed"});
+    expect(fake.updates(jobs)[1]?.completedAt).toBeInstanceOf(Date);
     expect(fake.inserts(eventLog)).toEqual(expect.arrayContaining([expect.objectContaining({type: "job.undeliverable", metadata: {jobId: BROKEN_ID, jobType: "connect_router_action", code: "payload_unavailable"}})]));
     expect(fake.inserts(partnerWebhooks).map(row => row.payload)).toEqual(expect.arrayContaining([expect.objectContaining({event: "router.action", ownerRef: "acct-42", detail: {actionId: BROKEN_ID, state: "failed", detail: "payload_unavailable"}})]));
     expect(JSON.stringify(fake.calls.map(({table: _table, ...call}) => call))).not.toContain("fake-guest-pass-123");
+  });
+
+  // Review 2026-10-02: a non-partner job that failed at check-in skipped the
+  // result path, so a claim's first apply never told the backend it failed.
+  it("fails an undeliverable claim apply through the result path: router.failed reaches the backend", async () => {
+    const owner = routerRow({ownerRef: "acct-42", approvedAt: new Date(), importState: "approved", status: "active"});
+    const apply = {id: JOB_ID, routerId: ROUTER_ID, type: "apply_xray_config", state: "queued", desiredRevisionId: REVISION_ID, dedupeKey: `apply:${ROUTER_ID}:${REVISION_ID}`, deliveredAt: null, payload: {desiredRevisionId: REVISION_ID, origin: "partner_claim"}, createdAt: new Date(Number.NaN)};
+    fake.reset({
+      selects: [
+        [routers, [[owner], [owner]]],
+        [healthIncidents, [[]]],
+        [jobs, [[apply], [{...apply, state: "running"}]]],
+        // The check-in's revision summary finds none; the result path finds the revision.
+        [passwallDesiredRevisions, [[], [{id: REVISION_ID, engineMode: "xray-direct", configDigest: "d", config: {}}]]],
+      ],
+      updateReturns: [[routers, [[owner], [owner], [owner]]], [jobs, [[{...apply, state: "running"}]]]],
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await checkInRouter(ROUTER_ID, checkInPayload());
+
+    expect(response.jobs).toEqual([]);
+    expect(fake.updates(jobs).map(update => update.state)).toEqual(["running", "failed"]);
+    expect(fake.inserts(partnerWebhooks).map(row => row.payload)).toEqual(expect.arrayContaining([expect.objectContaining({event: "router.failed", ownerRef: "acct-42", detail: "payload_unavailable"})]));
+    // Logged: which job, and the error's class — nothing from the payload.
+    expect(errors).toHaveBeenCalledWith("[router-control] job could not be prepared for delivery", {jobId: JOB_ID, jobType: "apply_xray_config", error: "RangeError"});
+    errors.mockRestore();
+  });
+
+  it("logs only the class and the issue paths of a schema failure, never its message or data", () => {
+    const parsed = z.object({password: z.number(), nested: z.object({ssid: z.number()})}).safeParse({password: "fake-guest-pass-123", nested: {ssid: "Fake guest"}});
+    expect(parsed.success).toBe(false);
+    const described = describeUndeliverableError(parsed.error);
+    expect(described).toEqual({error: "ZodError", issuePaths: ["password", "nested.ssid"]});
+    expect(JSON.stringify(described)).not.toMatch(/fake-guest-pass-123|Fake guest|Expected/);
+    expect(describeUndeliverableError(new TypeError("fake-guest-pass-123"))).toEqual({error: "TypeError"});
   });
 
   it("stores the latest claim the router reports", async () => {

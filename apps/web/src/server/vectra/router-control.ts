@@ -21,6 +21,7 @@ import {
   routerRegisterRequestSchema,
   routerRegisterResponseSchema,
   summarizePasswallRevisionDiff,
+  VECTRA_PROTOCOL_VERSION,
   type XrayDesiredConfig,
   xrayDesiredConfigSchema,
 } from "@vectra/contracts";
@@ -40,6 +41,7 @@ import {
 } from "@vectra/db";
 import { and, asc, desc, eq, inArray, isNull, lt, lte, or } from "drizzle-orm";
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
+import { ZodError } from "zod";
 
 import { env } from "~/env";
 
@@ -1704,7 +1706,14 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     for (const job of candidates) {
       try {
         delivered.push(serializeJob(job, ownerRef));
-      } catch {
+      } catch (error) {
+        // Only the error's class and the paths of a schema failure: the
+        // message or data may come from a payload with a Wi-Fi password.
+        console.error("[router-control] job could not be prepared for delivery", {
+          jobId: job.id,
+          jobType: job.type,
+          ...describeUndeliverableError(error),
+        });
         undeliverable.push(job);
       }
     }
@@ -1718,7 +1727,7 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     })
     : serializeEach(deliverableJobs, null);
   if (serialization.undeliverable.length > 0) {
-    await failUndeliverableJobs(router.id, serialization.undeliverable, serialization.ownerRef, now);
+    await failUndeliverableJobs(router.id, serialization.undeliverable, now);
   }
   const serializedJobs = serialization.delivered;
 
@@ -1757,25 +1766,38 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
 
 const UNDELIVERABLE_JOB_CODE = "payload_unavailable";
 
+/** What may be logged about a job that cannot be serialized: never a message. */
+export function describeUndeliverableError(error: unknown) {
+  return {
+    error: error instanceof Error ? error.name : typeof error,
+    ...(error instanceof ZodError
+      ? { issuePaths: error.issues.map((issue) => issue.path.join(".") || "(root)") }
+      : {}),
+  };
+}
+
 /**
  * Fail jobs a check-in could not serialize. The reason is a fixed code: the
  * underlying error may come from decrypting a payload that carries a Wi-Fi
- * password and is never echoed anywhere. An owner's action ends as a failed
- * router.action, so the Connect app shows a final result instead of waiting.
+ * password and is never echoed anywhere. The failure goes through the same
+ * result path as a router's own failure (recordJobResult): an owner's action
+ * ends as a failed router.action, a claim's first apply as router.failed, a
+ * revision as failed — not as a job that silently stops.
  */
 async function failUndeliverableJobs(
   routerId: string,
   undeliverable: JobRow[],
-  ownerRef: string | null,
   now: Date,
 ) {
   for (const job of undeliverable) {
-    const [failed] = await db
+    // Taken out of the queue first, so no other check-in (or a partner's
+    // cancel) acts on it while its failure is recorded.
+    const [taken] = await db
       .update(jobs)
-      .set({ state: "failed", completedAt: now })
+      .set({ state: "running" })
       .where(and(eq(jobs.id, job.id), eq(jobs.state, "queued")))
       .returning();
-    if (!failed) {
+    if (!taken) {
       continue;
     }
     await db.insert(eventLog).values({
@@ -1786,15 +1808,22 @@ async function failUndeliverableJobs(
       metadata: { jobId: job.id, jobType: job.type, code: UNDELIVERABLE_JOB_CODE },
     });
     try {
-      await notifyPartnerActionResultWithDb(db, {
-        job,
-        ownerRef,
+      await recordJobResult(routerId, {
+        protocolVersion: VECTRA_PROTOCOL_VERSION,
+        routerId,
+        jobId: job.id,
         status: "failure",
-        code: UNDELIVERABLE_JOB_CODE,
+        result: { code: UNDELIVERABLE_JOB_CODE, error: UNDELIVERABLE_JOB_CODE },
       });
-      schedulePartnerWebhookDelivery();
     } catch (error) {
-      console.error("[partner-webhooks] undeliverable job event failed", error);
+      console.error("[router-control] undeliverable job result not recorded", {
+        jobId: job.id,
+        ...describeUndeliverableError(error),
+      });
+      await db
+        .update(jobs)
+        .set({ state: "failed", completedAt: now })
+        .where(and(eq(jobs.id, job.id), eq(jobs.state, "running")));
     }
   }
 }
