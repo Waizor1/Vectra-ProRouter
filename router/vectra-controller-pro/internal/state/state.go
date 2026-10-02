@@ -182,10 +182,13 @@ func MigrateLegacy(path string, sealIdentity bool) error {
 	if err := Migrate(path); err != nil {
 		return err
 	}
-	if !sealIdentity {
-		return nil
-	}
 	identity := path + ".identity"
+	if !sealIdentity {
+		// An old agent that reads only plaintext (one downgraded below the
+		// vault-read release) recovers from this mirror after a hand-back:
+		// a mirror sealed while a newer agent was installed is unsealed.
+		return vault.Unseal(identity)
+	}
 	credentials := func(raw []byte) error {
 		var legacy legacyAgentState
 		if err := json.Unmarshal(raw, &legacy); err != nil {

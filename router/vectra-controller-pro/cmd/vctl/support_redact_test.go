@@ -59,3 +59,21 @@ func TestTheLegacyMirrorIsSealedOnlyForAnAgentThatCanReadIt(t *testing.T) {
 		t.Fatal("kept the mirror plaintext for an old agent that reads sealed files")
 	}
 }
+
+// The old agent's files are never migrated under its running process.
+func TestTheOldAgentIsSeenRunning(t *testing.T) {
+	dir := t.TempDir()
+	old := legacyAgentProc
+	t.Cleanup(func() { legacyAgentProc = old })
+	legacyAgentProc = dir
+	_ = os.MkdirAll(filepath.Join(dir, "12", ""), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "12", "comm"), []byte("vctl\n"), 0o644)
+	if legacyAgentRunning() {
+		t.Fatal("vctl taken for the old agent")
+	}
+	_ = os.MkdirAll(filepath.Join(dir, "34"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "34", "comm"), []byte("vectra-controll\n"), 0o644)
+	if !legacyAgentRunning() {
+		t.Fatal("the old agent's process was not seen")
+	}
+}

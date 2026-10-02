@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"vectra-controller-pro/internal/agentcfg"
@@ -28,7 +30,9 @@ func migrateSecrets(c agentcfg.Config) error {
 	// to refuse vctl's start (the dead-man would hand the router back to it),
 	// but it is never silent: the log and the reporter's inbox say that the
 	// old agent's credentials are still in plaintext.
-	if c.LegacyStatePath != "" {
+	if c.LegacyStatePath != "" && !legacyAgentRunning() {
+		// Never under a running old agent: it writes these files without
+		// vctl's lock, and a temp file sealed under it opens under no name.
 		if err := state.MigrateLegacy(c.LegacyStatePath, legacyReadsSealed()); err != nil {
 			reportLegacyUnsealed(err)
 		}
@@ -88,6 +92,28 @@ func legacyReadsSealed() bool {
 	}
 	_, err := os.Stat(legacyAgentControl)
 	return os.IsNotExist(err)
+}
+
+// legacyAgentProc is /proc, where the old agent is looked for.
+var legacyAgentProc = "/proc"
+
+// legacyAgentRunning: the old agent's process is alive (its comm is its
+// name cut to 15 bytes).
+func legacyAgentRunning() bool {
+	dirs, _ := filepath.Glob(filepath.Join(legacyAgentProc, "[0-9]*", "comm"))
+	for _, comm := range dirs {
+		if b, err := os.ReadFile(comm); err == nil && strings.TrimSpace(string(b)) == "vectra-controll" {
+			return true
+		}
+	}
+	return false
+}
+
+// legacyAgentInstalled: the old agent's package is there to hand the router
+// back to.
+func legacyAgentInstalled() bool {
+	_, err := os.Stat(legacyAgentControl)
+	return err == nil
 }
 
 // reportLegacyUnsealed says, without secrets, that the old agent's state was

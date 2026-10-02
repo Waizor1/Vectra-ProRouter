@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"vectra-controller-pro/internal/vault"
 )
 
 func TestSaveLoadRoundTrip(t *testing.T) {
@@ -403,5 +405,35 @@ func TestMigrateSealsAValidPrimaryPastADamagedLastGood(t *testing.T) {
 	}
 	if got, err := Load(p); err != nil || got.RouterID != "r-1" {
 		t.Fatalf("load: %v %v", got.RouterID, err)
+	}
+}
+
+// The old agent downgraded below the vault-read release reads only plaintext:
+// a mirror sealed while the newer agent was installed is unsealed for it.
+func TestAMirrorSealedForANewAgentIsUnsealedForAnOldOne(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "legacy", "state.json")
+	_ = os.MkdirAll(filepath.Dir(p), 0o700)
+	creds := []byte(`{"router_id":"r-legacy","agent_token":"synthetic-downgrade-token"}`)
+	_ = os.WriteFile(p, creds, 0o600)
+	_ = os.WriteFile(p+".identity", creds, 0o600)
+	if err := MigrateLegacy(p, true); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(p + ".identity"); bytes.Contains(raw, []byte("synthetic-downgrade-token")) {
+		t.Fatal("not sealed for the new agent")
+	}
+	if err := MigrateLegacy(p, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(p + ".identity")
+	if !bytes.Contains(raw, []byte("synthetic-downgrade-token")) || !vault.Unsealed(p+".identity") {
+		t.Fatal("the old agent cannot read its mirror")
+	}
+	// Upgraded again: sealed again.
+	if err := MigrateLegacy(p, true); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(p + ".identity"); bytes.Contains(raw, []byte("synthetic-downgrade-token")) {
+		t.Fatal("not sealed again")
 	}
 }

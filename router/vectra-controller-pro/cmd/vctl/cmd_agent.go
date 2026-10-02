@@ -299,9 +299,16 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 	// unconditionally) but reported a freshly minted deviceIdentifier.
 	if imported, err := state.ImportLegacyIdentity(&st, cfg.LegacyStatePath); err != nil {
 		// The panel already knows this router by the old agent's identity;
-		// minting another would split it in two records. Not starting hands
-		// the router back to the old agent, which still has it.
-		return nil, fmt.Errorf("legacy identity unreadable; not minting a new one: %w", err)
+		// minting another would split it in two records. With the old agent
+		// installed, not starting hands the router back to it. Without it
+		// there is nothing to hand back to: a new identity the operator
+		// adopts beats a router that never checks in again.
+		if legacyAgentInstalled() {
+			reportSecretStorage("legacy_identity_unreadable", "error", "vctl did not start: the router's identity cannot be read", err)
+			return nil, fmt.Errorf("legacy identity unreadable; not minting a new one: %w", err)
+		}
+		reportSecretStorage("legacy_identity_unreadable", "error", "the router's old identity cannot be read; vctl enrols anew", err)
+		logging.L().Error("the old agent's identity cannot be read and no old agent is installed; enrolling anew", "err", err.Error())
 	} else if imported {
 		logging.L().Info("adopted legacy router identity for xray-direct canary", "routerId", st.RouterID)
 	}

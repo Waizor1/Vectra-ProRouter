@@ -612,6 +612,46 @@ func ResealRewritten(path string, validate func([]byte) error) error {
 	return write(path, raw)
 }
 
+// Unseal writes a sealed file back as plaintext and drops its seal, for a
+// reader that cannot open sealed files: the old Vectra agent downgraded to a
+// release without the vault read, which would otherwise lose the router's
+// identity after a hand-back. A file that is not sealed is left alone.
+func Unseal(path string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	unlock, err := fileLock(path, true)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	target, _, marker, stage, err := paths(path)
+	if err != nil {
+		return err
+	}
+	if _, err = os.Stat(marker); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	plain, err := read(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer clear(plain)
+	if err = atomic(target, plain); err != nil {
+		return err
+	}
+	for _, p := range []string{marker, stage} {
+		if err = os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return syncDir(filepath.Dir(marker))
+}
+
 // Unsealed reports a file that was never sealed: present, without the vault's
 // header, and with no seal marker. A reader of a router still on plaintext
 // (0.6.0-r36, or rolled back to it) may read such a file as it is.
