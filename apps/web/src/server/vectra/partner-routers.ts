@@ -292,6 +292,10 @@ export async function queuePartnerActionWithDb(
           actionId,
           action: input.action,
           ownerRef: input.ownerRef,
+          // The partner's own key for this action: the router.action result
+          // carries it back, so the partner matches the result even when the
+          // 202 with this actionId never reached it. Never sent to the router.
+          idempotencyKey: key,
           requestHash,
           ...protectPartnerParams(input.action, params, {
             routerId: router.id,
@@ -324,6 +328,89 @@ export async function queuePartnerActionWithDb(
   });
 }
 
+export const partnerActionCancelRequestSchema = z
+  .object({
+    // The signature covers the body: bind both path ids into it.
+    routerId: z.string().uuid(),
+    ownerRef: ownerSchema,
+    actionId: z.string().uuid(),
+  })
+  .strict();
+
+/**
+ * Cancel an owner's action ONLY while it still waits for the router: a
+ * queued job never reached the router, so cancelling it means it will never
+ * run and the partner may honestly say "did not run, try again". Once
+ * delivered (or running, or finished) it is not cancelled: the answer is a
+ * 409 with the job's state, and the partner keeps waiting for its result.
+ */
+export async function cancelPartnerActionWithDb(
+  client: Client,
+  input: z.infer<typeof partnerActionCancelRequestSchema>,
+  now = new Date(),
+) {
+  return client.transaction(async (tx) => {
+    // Same ownership lock as queueing: a release cannot race the cancel.
+    const [router] = await tx
+      .update(routers)
+      .set({ updatedAt: now })
+      .where(
+        and(
+          eq(routers.id, input.routerId),
+          eq(routers.ownerRef, input.ownerRef),
+          isNull(routers.releasedAt),
+        ),
+      )
+      .returning();
+    if (router?.ownerRef !== input.ownerRef || router.releasedAt)
+      return { ok: false, status: 404, body: { error: "not_found" } };
+    const [job] = await tx
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.id, input.actionId), eq(jobs.routerId, router.id)))
+      .limit(1);
+    // Only this owner's own partner action: an operator job, or another
+    // owner's, is not the partner's to cancel and is not even confirmed.
+    if (
+      !job ||
+      job.routerId !== router.id ||
+      job.payload.origin !== PARTNER_ACTION_ORIGIN ||
+      job.payload.ownerRef !== input.ownerRef
+    )
+      return { ok: false, status: 404, body: { error: "action_not_found" } };
+    const cancelled = {
+      ok: true,
+      status: 200,
+      body: { actionId: job.id, state: "cancelled" },
+    };
+    if (job.state === "cancelled") return cancelled;
+    if (job.state === "queued") {
+      const [updated] = await tx
+        .update(jobs)
+        .set({ state: "cancelled", completedAt: now })
+        .where(and(eq(jobs.id, job.id), eq(jobs.state, "queued")))
+        .returning();
+      if (updated) return cancelled;
+      // A check-in delivered it in between: report what it is now.
+      const [current] = await tx
+        .select()
+        .from(jobs)
+        .where(eq(jobs.id, job.id))
+        .limit(1);
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "not_cancellable", state: current?.state ?? "delivered" },
+      };
+    }
+    return {
+      ok: false,
+      status: 409,
+      body: { error: "not_cancellable", state: job.state },
+    };
+  });
+}
+
 export type PartnerRoutersDeps = {
   api: PartnerApiDeps;
   read: (
@@ -334,12 +421,16 @@ export type PartnerRoutersDeps = {
     input: z.infer<typeof partnerActionRequestSchema>,
     key: string,
   ) => ReturnType<typeof queuePartnerActionWithDb>;
+  cancel: (
+    input: z.infer<typeof partnerActionCancelRequestSchema>,
+  ) => ReturnType<typeof cancelPartnerActionWithDb>;
 };
 function defaults(): PartnerRoutersDeps {
   return {
     api: defaultDeps(),
     read: (owner, id) => readPartnerRoutersWithDb(db, owner, id),
     action: (input, key) => queuePartnerActionWithDb(db, input, key),
+    cancel: (input) => cancelPartnerActionWithDb(db, input),
   };
 }
 
@@ -395,6 +486,43 @@ export async function handlePartnerRouterAction(
       if (!parsed.success || parsed.data.routerId !== routerId)
         return partnerJson({ error: "invalid" }, 400);
       return deps.action(parsed.data, key);
+    },
+  });
+}
+
+/**
+ * POST /api/partner/routers/:routerId/actions/:actionId/cancel
+ *
+ * 200 {actionId, state: "cancelled"} — it will never run (also on a repeat);
+ * 409 {error: "not_cancellable", state} — already delivered/running/finished;
+ * 404 {error: "action_not_found"} — no such action of this owner on the router.
+ */
+export async function handlePartnerRouterActionCancel(
+  request: Request,
+  routerId: string,
+  actionId: string,
+  deps = defaults(),
+) {
+  const key = parseIdempotencyKey(request.headers.get("Idempotency-Key"));
+  if (!key)
+    return partnerJson(
+      { error: "invalid", detail: "Idempotency-Key required" },
+      400,
+    );
+  return executePartnerRequest({
+    request,
+    deps: deps.api,
+    method: "POST",
+    path: `/api/partner/routers/${routerId}/actions/${actionId}/cancel`,
+    run: async (body) => {
+      const parsed = partnerActionCancelRequestSchema.safeParse(body);
+      if (
+        !parsed.success ||
+        parsed.data.routerId !== routerId ||
+        parsed.data.actionId !== actionId
+      )
+        return partnerJson({ error: "invalid" }, 400);
+      return deps.cancel(parsed.data);
     },
   });
 }

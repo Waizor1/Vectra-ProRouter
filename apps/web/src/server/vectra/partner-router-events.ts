@@ -5,6 +5,7 @@ import type { db } from "~/server/db";
 import { enqueuePartnerWebhookWithDb } from "./partner-webhooks";
 
 type Client = Pick<typeof db, "select" | "insert" | "update" | "transaction">;
+const PARTNER_ACTION_DEDUPE_PREFIX = "partner-action:";
 type Router = typeof routers.$inferSelect;
 export function reportedPartnerTransitions(
   previous: RouterInventory | null,
@@ -156,6 +157,15 @@ export async function notifyPartnerActionResultWithDb(
     typeof payload.actionId !== "string"
   )
     return;
+  // The partner's Idempotency-Key of the action (stored on the job; an older
+  // job only has it in its dedupe key): it matches the result to its own
+  // action even when the 202 carrying actionId never reached it.
+  const idempotencyKey =
+    typeof payload.idempotencyKey === "string"
+      ? payload.idempotencyKey
+      : args.job.dedupeKey?.startsWith(PARTNER_ACTION_DEDUPE_PREFIX)
+        ? args.job.dedupeKey.slice(PARTNER_ACTION_DEDUPE_PREFIX.length)
+        : undefined;
   await client.transaction(async (tx) => {
     const [current] = await tx
       .update(routers)
@@ -175,6 +185,7 @@ export async function notifyPartnerActionResultWithDb(
       ownerRef: args.ownerRef!,
       detail: {
         actionId: payload.actionId,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
         state: args.status === "success" ? "applied" : "failed",
         ...(code ? { detail: code } : {}),
       },

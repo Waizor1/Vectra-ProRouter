@@ -90,6 +90,7 @@ describe.skipIf(!socket)("real isolated PostgreSQL partner concurrency", () => {
         },
         read: vi.fn(),
         action: (body, key) => queuePartnerActionWithDb(db, body, key),
+        cancel: vi.fn(),
       };
       const url = `https://fake.example/api/partner/routers/${routerId}/actions`,
         raw = JSON.stringify(input);
