@@ -145,6 +145,10 @@ export function materialInventoryFingerprint(inventory: RouterInventory) {
   return createHash("sha256").update(stableStringify(material)).digest("hex");
 }
 
+// Clock skew and check-in latency move the implied boot time by seconds; a
+// reboot moves it by at least the time the router was down and booting.
+const BOOT_TIME_TOLERANCE_MS = 120_000;
+
 export function shouldWriteInventorySnapshot(args: {
   inventory: RouterInventory;
   latest: { payload: unknown; createdAt: Date } | null;
@@ -170,16 +174,18 @@ export function shouldWriteInventorySnapshot(args: {
     return true;
   }
 
-  // Uptime is a gauge, out of the fingerprint; uptime going DOWN is a reboot,
-  // and the owner's card must not keep the previous boot's figure.
+  // Uptime is a gauge, out of the fingerprint. A reboot moves the boot time
+  // the uptime implies (row time − uptime); then the owner's card must not
+  // keep the previous boot's figure. Uptime alone misses a second reboot that
+  // reports more uptime than a row written just after the first one.
   const previousUptime = (latest.payload as RouterInventory | null)?.connect?.uptimeSec;
   const currentUptime = inventory.connect?.uptimeSec;
-  if (
-    typeof previousUptime === "number" &&
-    typeof currentUptime === "number" &&
-    currentUptime < previousUptime
-  ) {
-    return true;
+  if (typeof previousUptime === "number" && typeof currentUptime === "number") {
+    const previousBoot = latest.createdAt.getTime() - previousUptime * 1000;
+    const currentBoot = now.getTime() - currentUptime * 1000;
+    if (Math.abs(currentBoot - previousBoot) > BOOT_TIME_TOLERANCE_MS) {
+      return true;
+    }
   }
 
   return previous !== materialInventoryFingerprint(inventory);

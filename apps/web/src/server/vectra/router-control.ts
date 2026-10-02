@@ -1704,7 +1704,7 @@ export async function recordJobResult(routerId: string, input: unknown) {
   // The router's failure code (vctl connectFinish: {"code": …}) is a plain
   // word, never echoed input; keep it for the owner's journal.
   const partnerResultCode =
-    typeof parsed.result?.code === "string" && /^[a-z][a-z_]{0,47}$/.test(parsed.result.code)
+    typeof parsed.result?.code === "string" && /^[a-z][a-z0-9_]{0,47}$/.test(parsed.result.code)
       ? parsed.result.code
       : null;
   if (job.payload.origin === "partner_action") {

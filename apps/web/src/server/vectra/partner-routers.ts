@@ -78,10 +78,19 @@ export function projectPartnerRouter(
     lastSeenAt: router.lastSeenAt?.toISOString() ?? null,
     // The row is rewritten on a material change, a reboot (uptime going down)
     // or the heartbeat, not on every check-in: uptime runs on from its time.
+    // Counted on only while the router was seen: an offline router's uptime
+    // stops at its last check-in.
     uptimeSec:
       typeof measured?.uptimeSec === "number" && inventory
         ? measured.uptimeSec +
-          Math.max(0, Math.floor((now.getTime() - inventory.createdAt.getTime()) / 1000))
+          Math.max(
+            0,
+            Math.floor(
+              (Math.min(now.getTime(), router.lastSeenAt?.getTime() ?? inventory.createdAt.getTime()) -
+                inventory.createdAt.getTime()) /
+                1000,
+            ),
+          )
         : null,
     verdict: measured?.verdict ?? null,
     exitCountry: measured?.exitCountry ?? null,

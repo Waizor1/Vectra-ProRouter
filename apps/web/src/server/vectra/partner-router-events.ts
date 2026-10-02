@@ -145,7 +145,7 @@ export async function notifyPartnerActionResultWithDb(
 ) {
   const payload = args.job.payload;
   const code =
-    args.status !== "success" && typeof args.code === "string" && /^[a-z][a-z_]{0,47}$/.test(args.code)
+    args.status !== "success" && typeof args.code === "string" && /^[a-z][a-z0-9_]{0,47}$/.test(args.code)
       ? args.code
       : undefined;
   if (

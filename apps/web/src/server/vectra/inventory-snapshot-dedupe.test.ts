@@ -311,11 +311,30 @@ describe("shouldWriteInventorySnapshot", () => {
     });
     const later = routerInventorySchema.parse({
       ...baseInventory,
-      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 11918 },
+      // The same boot, five minutes on (the row is 5 minutes old).
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 11873 + 300 },
     });
     const args = { latest: latest(before, 5), now, heartbeatMinutes: 60 };
     expect(shouldWriteInventorySnapshot({ ...args, inventory: rebooted })).toBe(true);
     expect(shouldWriteInventorySnapshot({ ...args, inventory: later })).toBe(false);
+  });
+
+  // A row written soon after a boot (uptime 120) and a second reboot before
+  // the heartbeat: the next check-in can report MORE uptime than the row, yet
+  // the boot moved. Compare implied boot times, not uptimes.
+  it("writes when the implied boot time moved, whatever the uptime says", () => {
+    const early = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 120 },
+    });
+    const rebootedAgain = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 150 },
+    });
+    // The row is 30 minutes old: a continuous boot would now report ~1920 s.
+    expect(
+      shouldWriteInventorySnapshot({ inventory: rebootedAgain, latest: latest(early, 30), now, heartbeatMinutes: 60 }),
+    ).toBe(true);
   });
 
   it("skips a check-in that carries no material change", () => {

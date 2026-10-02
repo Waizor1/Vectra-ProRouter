@@ -188,6 +188,23 @@ describe("partner snapshot ownership and measured truth", () => {
     );
     expect(snapshot.uptimeSec).toBe(170);
   });
+  // An offline router's uptime stops at its last check-in: aging it to now
+  // showed days of uptime for a router switched off (review, 2026-10-02).
+  it("stops the uptime at the router's last check-in", () => {
+    const row = {
+      ...inventory({ connect: routerConnectTelemetrySchema.parse({ uptimeSec: 50 }) }),
+      createdAt: new Date(NOW.getTime() - 3_600_000),
+    };
+    const snapshot = projectPartnerRouter(
+      router({
+        claimedAt: new Date(NOW.getTime() - 7_200_000),
+        lastSeenAt: new Date(NOW.getTime() - 3_000_000),
+      }),
+      row,
+      NOW,
+    );
+    expect(snapshot.uptimeSec).toBe(650);
+  });
   it("does not expose a previous owner's telemetry", () => {
     expect(
       projectPartnerRouter(
@@ -483,6 +500,7 @@ describe("partner action failure reason", () => {
     } as unknown as typeof jobs.$inferSelect;
     for (const [code, want] of [
       ["service_path_unavailable", "service_path_unavailable"],
+      ["dns_v6_unavailable", "dns_v6_unavailable"],
       ["wifi password hunter2", undefined],
       [undefined, undefined],
     ] as const) {
