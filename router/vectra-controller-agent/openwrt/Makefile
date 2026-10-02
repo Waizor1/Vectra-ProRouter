@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vectra-controller-agent
 VECTRA_VERSION?=0.1.13
-VECTRA_RELEASE?=44
+VECTRA_RELEASE?=45
 PKG_VERSION:=$(VECTRA_VERSION)
 PKG_RELEASE:=$(VECTRA_RELEASE)
 
@@ -52,6 +52,12 @@ define Package/$(PKG_NAME)/postinst
 		/etc/uci-defaults/93_vectra_controlplane_direct >/dev/null 2>&1 || true; \
 	fi; \
 	if [ "$${VECTRA_SKIP_POSTINST_RESTART}" = "1" ] || [ -f /tmp/vectra-skip-postinst-restart ]; then \
+		exit 0; \
+	fi; \
+	if [ -f /etc/vectra-controller-pro/.legacy-agent-disabled-by-vctl ] || [ -f /tmp/vectra-trial.d/.legacy-agent-disabled-by-vctl ]; then \
+		exit 0; \
+	fi; \
+	if [ -x /etc/init.d/vectra-controller-pro ] && /etc/init.d/vectra-controller-pro running >/dev/null 2>&1; then \
 		exit 0; \
 	fi; \
 	/etc/init.d/vectra-controller enable >/dev/null 2>&1 || true; \
