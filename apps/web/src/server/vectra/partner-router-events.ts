@@ -2,10 +2,10 @@ import type { PartnerWebhookEvent, RouterInventory } from "@vectra/contracts";
 import { type jobs, routers, routerInventorySnapshots } from "@vectra/db";
 import { and, desc, eq, isNotNull, isNull, lt, ne } from "drizzle-orm";
 import type { db } from "~/server/db";
+import { PARTNER_ACTION_DEDUPE_PREFIX } from "./partner-action-key";
 import { enqueuePartnerWebhookWithDb } from "./partner-webhooks";
 
 type Client = Pick<typeof db, "select" | "insert" | "update" | "transaction">;
-const PARTNER_ACTION_DEDUPE_PREFIX = "partner-action:";
 type Router = typeof routers.$inferSelect;
 export function reportedPartnerTransitions(
   previous: RouterInventory | null,

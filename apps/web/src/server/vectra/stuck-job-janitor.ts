@@ -38,11 +38,9 @@ import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
 import { eventLog, jobs } from "@vectra/db";
 
 import { env } from "~/env";
-
-// Mirrors partner-routers.ts; kept literal so the janitor does not load the
-// partner API module.
-const PARTNER_ACTION_DEDUPE_PREFIX = "partner-action:";
 import { db } from "~/server/db";
+
+import { PARTNER_ACTION_DEDUPE_PREFIX } from "./partner-action-key";
 
 type DatabaseClient = typeof db;
 

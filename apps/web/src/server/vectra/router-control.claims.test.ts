@@ -782,8 +782,28 @@ describe("recordJobResult reports a claim's first apply to the backend", () => {
     expect(answer.acknowledged).toBe(true);
     expect(warn).toHaveBeenCalledWith("[router-control] cancelled job ran", expect.objectContaining({jobId: JOB_ID}));
     expect(fake.inserts(partnerWebhooks).map(row => row.payload)).toEqual([expect.objectContaining({event: "router.action", detail: {actionId: JOB_ID, idempotencyKey: "rb7-key", state: "failed", detail: "no_route"}})]);
-    // The job itself stays cancelled.
-    expect(fake.updates(jobs)).toEqual([]);
+    // The job itself stays cancelled; it only records that its run was reported.
+    expect(fake.updates(jobs)).toEqual([{payload: expect.objectContaining({cancelledBy: "partner", cancelledRunReported: true})}]);
+    warn.mockRestore();
+  });
+
+  // Review 2026-10-03: every retried finish of a cancelled job sent another webhook.
+  it("reports a cancelled owner action's run only once", async () => {
+    const router = routerRow({ownerRef: "acct-42", approvedAt: new Date(), importState: "approved", status: "active"});
+    fake.reset({
+      selects: [
+        [jobs, [[{id: JOB_ID, routerId: ROUTER_ID, type: "connect_router_action", state: "cancelled", desiredRevisionId: null, dedupeKey: "partner-action:rb7-key", payload: {origin: "partner_action", actionId: JOB_ID, ownerRef: "acct-42", action: "reboot", idempotencyKey: "rb7-key", cancelledBy: "partner", cancelledRunReported: true}, createdAt: new Date()}]]],
+        [routers, [[router]]],
+      ],
+      // The claim finds the run already reported.
+      updateReturns: [[jobs, [[]]], [routers, [[router]]]],
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const answer = await recordJobResult(ROUTER_ID, result("success"));
+
+    expect(answer.acknowledged).toBe(true);
+    expect(fake.inserts(partnerWebhooks)).toEqual([]);
     warn.mockRestore();
   });
 

@@ -796,7 +796,7 @@ describe("negotiated full typed management", () => {
     const fake = createFakeDb({
       selects: [
         [routerInventorySnapshots, [[negotiated()]]],
-        [jobs, [[{ id: OTHER, payload: { requestHash: legacy } }]]],
+        [jobs, [[{ id: OTHER, state: "queued", payload: { requestHash: legacy } }]]],
       ],
       updateReturns: [[routers, [[router()]]]],
     });
@@ -970,7 +970,7 @@ describe("cancelling an owner's action by the partner's key", () => {
 // not_ready / not_supported / invalid_params on its retry.
 describe("a same-key retry is answered from its job before any validation", () => {
   it("replays the queued action even when the router is no longer ready or capable", async () => {
-    const queued = { id: JOB, payload: { requestHash: keyedDigestOf(action()) } };
+    const queued = { id: JOB, state: "queued", payload: { requestHash: keyedDigestOf(action()) } };
     for (const row of [
       router({ lastAppliedRevisionId: null }),
       router({ engineMode: "passwall" }),
@@ -986,6 +986,22 @@ describe("a same-key retry is answered from its job before any validation", () =
         ok: true,
         status: 202,
         body: { actionId: JOB, state: "queued" },
+      });
+      expect(fake.inserts(jobs)).toEqual([]);
+    }
+  });
+
+  // Review 2026-10-03: the reply was hard-coded `queued`.
+  it("answers a same-key retry with the job's real state", async () => {
+    for (const state of ["running", "succeeded", "failed", "cancelled"]) {
+      const fake = createFakeDb({
+        selects: [[jobs, [[{ id: JOB, state, payload: { requestHash: keyedDigestOf(action()) } }]]]],
+        updateReturns: [[routers, [[router()]]]],
+      });
+      expect(await queuePartnerActionWithDb(fake.db as never, action(), "key", NOW)).toEqual({
+        ok: true,
+        status: 202,
+        body: { actionId: JOB, state },
       });
       expect(fake.inserts(jobs)).toEqual([]);
     }

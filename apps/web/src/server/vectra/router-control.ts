@@ -39,7 +39,7 @@ import {
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
-import { and, asc, desc, eq, inArray, isNull, lt, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 import { ZodError } from "zod";
 
@@ -1914,7 +1914,22 @@ export async function recordJobResult(routerId: string, input: unknown) {
       jobType: job.type,
       status: parsed.status,
     });
-    if (parsed.status !== "accepted") {
+    // Once per job: a router retrying its finish must not announce it again.
+    const [claimed] =
+      parsed.status === "accepted"
+        ? []
+        : await db
+            .update(jobs)
+            .set({ payload: { ...job.payload, cancelledRunReported: true } })
+            .where(
+              and(
+                eq(jobs.id, job.id),
+                eq(jobs.state, "cancelled"),
+                sql`${jobs.payload} ->> 'cancelledRunReported' is null`,
+              ),
+            )
+            .returning({ id: jobs.id });
+    if (claimed) {
       const code =
         typeof parsed.result?.code === "string" && /^[a-z][a-z0-9_]{0,47}$/.test(parsed.result.code)
           ? parsed.result.code
