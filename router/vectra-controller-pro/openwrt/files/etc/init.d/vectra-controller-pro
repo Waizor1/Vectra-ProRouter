@@ -356,7 +356,7 @@ restore_legacy_controller() {
 	# An agent that reads only plaintext (one older than the vault-read
 	# release) gets its identity mirror back before it starts; best effort —
 	# without vctl the hand-back still goes on.
-	[ -x "$VCTL_BIN" ] && "$VCTL_BIN" legacy-handback-prepare >/dev/null 2>&1
+	[ -x "$VCTL_BIN" ] && timeout 10 "$VCTL_BIN" legacy-handback-prepare >/dev/null 2>&1
 	"$LEGACY_INIT" enable >/dev/null 2>&1 || true
 	"$LEGACY_INIT" start >/dev/null 2>&1 || true
 	# Consumed once it is back enabled, not before — PassWall's rule: an

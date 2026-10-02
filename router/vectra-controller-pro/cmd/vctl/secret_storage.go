@@ -158,9 +158,18 @@ func init() {
 // identity.
 func cmdLegacyHandbackPrepare(args []string) error {
 	fs := newFlagSet("legacy-handback-prepare")
-	path := fs.String("state", "/etc/vectra-controller/state.json", "the old agent's state file")
+	cfgPath := fs.String("config", "/var/run/vectra-controller-pro/agent.json", "the daemon's agent config")
+	path := fs.String("state", "", "the old agent's state file (default: the configured one)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *path == "" {
+		cfg, err := agentcfg.Load(*cfgPath)
+		if err != nil {
+			cfg = agentcfg.Config{}
+			cfg.Defaults()
+		}
+		*path = cfg.LegacyStatePath
 	}
 	return legacyHandbackPrepare(*path)
 }
