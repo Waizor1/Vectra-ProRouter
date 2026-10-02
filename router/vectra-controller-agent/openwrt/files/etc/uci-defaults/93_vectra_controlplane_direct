@@ -62,8 +62,8 @@ else
 fi
 
 # --- 2. Write the include file + apply the carve-out now -------------------
-# `apply` writes the include file (write_fw_include) and installs the nftables
+# `enable` clears a persistent rollback marker; then apply writes the include file (write_fw_include) and installs the nftables
 # table immediately, so the carve-out is live without waiting for a reload.
-"$SELF_SCRIPT" apply >/dev/null 2>&1 || log "initial apply returned non-zero"
+"$SELF_SCRIPT" enable >/dev/null 2>&1 || log "initial apply returned non-zero"
 
 exit 0

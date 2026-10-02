@@ -196,13 +196,65 @@ EOF
 	chmod 0755 "$path"
 }
 
-mark_executable_if_present() {
-	local path
-	for path in "$@"; do
-		if [[ -f "$path" ]]; then
-			chmod 0755 "$path"
+# Directories whose every regular file is a script OpenWrt executes (directly,
+# or via `[ -x ... ] && ...` guards in other scripts). Shared by the chmod pass
+# and the post-package assertion so the two can never drift apart.
+SHIPPED_SCRIPT_DIRS=(
+	etc/init.d
+	etc/uci-defaults
+	etc/hotplug.d
+	usr/libexec
+	usr/sbin
+	usr/bin
+)
+
+# chmod 0755 every regular file under SHIPPED_SCRIPT_DIRS of a package data
+# root. Directory-based on purpose: a hand-maintained file list silently missed
+# every helper added after it was written (r28 watchdog; r34-r42 control-plane
+# carve-out shipped 0644 and never ran on a single router).
+mark_shipped_scripts_executable() {
+	local data_dir="$1"
+	local dir
+	for dir in "${SHIPPED_SCRIPT_DIRS[@]}"; do
+		if [[ -d "$data_dir/$dir" ]]; then
+			find "$data_dir/$dir" -type f -exec chmod 0755 {} +
 		fi
 	done
+}
+
+# Fail the build if any regular file under SHIPPED_SCRIPT_DIRS inside the IPK's
+# data.tar.gz lacks the owner-execute bit. Reads modes from the archive itself,
+# so it checks exactly what opkg will install.
+assert_ipk_scripts_executable() {
+	local ipk="$1"
+	local temp_dir
+	local dir
+	local offenders=""
+	local listing
+
+	temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/vectra-ipk-modes.XXXXXX")"
+	if ! tar -xzf "$ipk" -C "$temp_dir" ||
+		! listing="$(tar -tvzf "$temp_dir/data.tar.gz")"; then
+		rm -rf "$temp_dir"
+		echo "assert_ipk_scripts_executable: cannot inspect $(basename "$ipk")" >&2
+		return 1
+	fi
+	while read -r mode path; do
+		[[ "$mode" == -* ]] || continue
+		path="${path#./}"
+		for dir in "${SHIPPED_SCRIPT_DIRS[@]}"; do
+			if [[ "$path" == "$dir/"* && "${mode:3:1}" != "x" ]]; then
+				offenders+="    $mode $path"$'\n'
+			fi
+		done
+	done < <(printf '%s\n' "$listing" | awk '{print $1, $NF}')
+	rm -rf "$temp_dir"
+
+	if [[ -n "$offenders" ]]; then
+		echo "assert_ipk_scripts_executable: $(basename "$ipk") ships non-executable scripts:" >&2
+		printf '%s' "$offenders" >&2
+		exit 1
+	fi
 }
 
 remove_macos_metadata() {
@@ -280,6 +332,7 @@ package_ipk() {
 	rm -f "$output_file"
 	tar --numeric-owner --owner=0 --group=0 -czf "$output_file" -C "$temp_dir" ./debian-binary ./control.tar.gz ./data.tar.gz
 	assert_ipk_has_no_macos_metadata "$output_file"
+	assert_ipk_scripts_executable "$output_file"
 	rm -rf "$temp_dir"
 }
 
@@ -355,21 +408,15 @@ build_agent_package_manually() {
 	fi
 
 	# Mark every shipped helper executable. The Go binary is chmod'd
-	# directly by the pre-build assertion (line 320); these scripts are
+	# directly by the pre-build assertion above; these scripts are
 	# copied as-is from openwrt/files/. Without explicit chmod the
 	# OpenWrt tar preserves the source mode, which for files committed
-	# to git can drift to 0644. Past incident: r28 first build shipped
-	# vectra-controller-watchdog without +x → cron silently no-op'd.
-	mark_executable_if_present \
-		"$data_dir/etc/init.d/vectra-controller" \
-		"$data_dir/etc/init.d/vectra-oom-guard" \
-		"$data_dir/etc/uci-defaults/90_vectra_controller_defaults" \
-		"$data_dir/etc/uci-defaults/91_vectra_low_mem_profile" \
-		"$data_dir/etc/uci-defaults/92_vectra_controller_watchdog" \
-		"$data_dir/usr/libexec/vectra-controller/render-config.sh" \
-		"$data_dir/usr/sbin/vectra-oom-guard" \
-		"$data_dir/usr/sbin/vectra-xray-wrapper" \
-		"$data_dir/usr/sbin/vectra-controller-watchdog"
+	# to git can drift to 0644. Past incidents: r28 first build shipped
+	# vectra-controller-watchdog without +x → cron silently no-op'd;
+	# r34-r42 shipped the control-plane carve-out (93 uci-default,
+	# firewall hotplug hook, controlplane-direct.sh) without +x, so it
+	# never applied. package_ipk() re-checks the modes in the archive.
+	mark_shipped_scripts_executable "$data_dir"
 
 	installed_size="$(du -sk "$data_dir" | awk '{print $1}')"
 
@@ -398,6 +445,13 @@ fi
 
 if [ -x /etc/uci-defaults/90_vectra_controller_defaults ]; then
 	/etc/uci-defaults/90_vectra_controller_defaults || true
+fi
+
+# uci-defaults only run at boot; without this an upgrade would leave the
+# control-plane carve-out (fw4 include + nft table) off until the next reboot.
+# Idempotent, so the boot-time run is harmless.
+if [ -x /etc/uci-defaults/93_vectra_controlplane_direct ]; then
+	/etc/uci-defaults/93_vectra_controlplane_direct >/dev/null 2>&1 || true
 fi
 
 [ "${VECTRA_SKIP_POSTINST_RESTART:-}" = "1" ] && exit 0
@@ -470,8 +524,7 @@ build_luci_package_manually() {
 		cp -R "$package_root/htdocs/." "$data_dir/www/"
 	fi
 
-	mark_executable_if_present \
-		"$data_dir/usr/libexec/vectra-controller/luci-bridge.sh"
+	mark_shipped_scripts_executable "$data_dir"
 
 	installed_size="$(du -sk "$data_dir" | awk '{print $1}')"
 

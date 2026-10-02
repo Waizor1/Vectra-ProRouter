@@ -12,7 +12,9 @@
 #   1. `sh -n` (syntax) on every shell script this change touches.
 #   2. controlplane-direct.sh `apply` feeds nft an atomic ruleset that creates
 #      `table inet vectra_controlplane`, an output-hook chain at priority -160,
-#      and a rule matching the chosen fwmark with `accept`.
+#      and a rule that re-stamps the chosen fwmark with PassWall2's own
+#      local-output bypass mark 0xff (an `accept` alone is not final across
+#      base chains, so it never kept PassWall2's -151 chain off the packet).
 #   3. The chosen mark does NOT equal either PassWall2 mark (0x50535732, 0xff).
 #   4. controlplane-direct.sh `apply` writes a fw4 include that re-invokes the
 #      carve-out (persistence across `fw4 reload`).
@@ -186,8 +188,20 @@ assert_contains "$RULESET" "flush table inet vectra_controlplane" \
 	"apply: flushes table first (idempotent re-apply)"
 assert_contains "$RULESET" "type route hook output priority -160" \
 	"apply: output-hook chain at priority -160 (beats PassWall2's -151)"
-assert_contains "$RULESET" "meta mark $EXPECTED_MARK counter accept" \
-	"apply: rule matches the control-plane mark and accepts (terminates hook)"
+assert_contains "$RULESET" "meta mark $EXPECTED_MARK counter meta mark set $PSW2_BYPASS_MARK accept" \
+	"apply: rule hands the control-plane mark off to PassWall2's bypass mark $PSW2_BYPASS_MARK"
+assert_not_contains "$RULESET" "meta mark $EXPECTED_MARK counter accept" \
+	"apply: no bare accept (accept is not final across base chains; PassWall2 would still tproxy)"
+
+# The hand-off mark must satisfy BOTH PassWall2 exemption forms:
+#   26.4.10..26.8.10  `meta mark 255 counter return`
+#   26.9.x            `meta mark and 0xff == 0xff counter return`
+HANDOFF_MARK="$(sed -n 's/^VECTRA_PASSWALL_BYPASS_MARK="\${VECTRA_PASSWALL_BYPASS_MARK:-\([^}]*\)}".*/\1/p' "$CARVE_SCRIPT" | head -n1)"
+if [ -n "$HANDOFF_MARK" ] && [ $((HANDOFF_MARK)) -eq 255 ] && [ $((HANDOFF_MARK & 0xff)) -eq 255 ]; then
+	pass "hand-off: default bypass mark ($HANDOFF_MARK) == 255 and low byte == 0xff (PassWall2 26.4..26.9)"
+else
+	fail "hand-off: default bypass mark == 255 and low byte == 0xff" "got '$HANDOFF_MARK'"
+fi
 
 # =========================================================================
 # 3. Chosen mark must not collide with PassWall2's marks.
@@ -249,7 +263,7 @@ NFT_BIN="$SANDBOX/bin/nft" \
 	VECTRA_CONTROL_PLANE_FWMARK="$OVERRIDE_MARK" \
 	sh "$CARVE_SCRIPT" apply >/dev/null 2>&1
 OVERRIDE_RULESET="$(cat "$NFT_STDIN_LOG" 2>/dev/null)"
-assert_contains "$OVERRIDE_RULESET" "meta mark $OVERRIDE_MARK counter accept" \
+assert_contains "$OVERRIDE_RULESET" "meta mark $OVERRIDE_MARK counter meta mark set $PSW2_BYPASS_MARK accept" \
 	"override: honors VECTRA_CONTROL_PLANE_FWMARK env override"
 
 # =========================================================================
@@ -291,10 +305,10 @@ assert_contains "$UCI_CMDS" "firewall.vectra_controlplane.type=script" \
 assert_contains "$UCI_CMDS" "commit firewall" \
 	"uci-default: commits firewall config"
 
-if [ -f "$APPLY_MARKER" ] && grep -q "carve apply" "$APPLY_MARKER"; then
-	pass "uci-default: invokes carve-out apply"
+if [ -f "$APPLY_MARKER" ] && grep -q "carve enable" "$APPLY_MARKER"; then
+	pass "uci-default: enables carve-out after install/rollback"
 else
-	fail "uci-default: invokes carve-out apply" "apply marker not recorded"
+	fail "uci-default: enables carve-out after install/rollback" "apply marker not recorded"
 fi
 
 # =========================================================================
@@ -441,8 +455,8 @@ assert_contains "$RB_RULESET" "table inet vectra_controlplane" \
 	"reboot/9c: rebuilt ruleset recreates table inet vectra_controlplane"
 assert_contains "$RB_RULESET" "type route hook output priority -160" \
 	"reboot/9c: rebuilt chain keeps output-hook priority -160"
-assert_contains "$RB_RULESET" "meta mark $EXPECTED_MARK counter accept" \
-	"reboot/9c: rebuilt rule re-stamps mark $EXPECTED_MARK with accept"
+assert_contains "$RB_RULESET" "meta mark $EXPECTED_MARK counter meta mark set $PSW2_BYPASS_MARK accept" \
+	"reboot/9c: rebuilt rule hands mark $EXPECTED_MARK off to $PSW2_BYPASS_MARK"
 assert_file_contains "$RB_INCLUDE" "$RB_HELPER" \
 	"reboot/9c: hotplug rebuild also rewrites the fw4 include (not include-dependent)"
 
