@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"vectra-controller-pro/internal/agentcfg"
@@ -30,10 +29,12 @@ func migrateSecrets(c agentcfg.Config) error {
 	// to refuse vctl's start (the dead-man would hand the router back to it),
 	// but it is never silent: the log and the reporter's inbox say that the
 	// old agent's credentials are still in plaintext.
-	if c.LegacyStatePath != "" && !legacyAgentRunning() {
+	if c.LegacyStatePath != "" {
 		// Never under a running old agent: it writes these files without
 		// vctl's lock, and a temp file sealed under it opens under no name.
-		if err := state.MigrateLegacy(c.LegacyStatePath, legacyReadsSealed()); err != nil {
+		if legacyAgentRunning() {
+			logging.L().Info("the old agent is running: its files are sealed at the next start")
+		} else if err := state.MigrateLegacy(c.LegacyStatePath, legacyReadsSealed()); err != nil {
 			reportLegacyUnsealed(err)
 		}
 	}
@@ -97,12 +98,15 @@ func legacyReadsSealed() bool {
 // legacyAgentProc is /proc, where the old agent is looked for.
 var legacyAgentProc = "/proc"
 
-// legacyAgentRunning: the old agent's process is alive (its comm is its
-// name cut to 15 bytes).
+// legacyAgentBinary is the old agent's executable.
+var legacyAgentBinary = "/usr/sbin/vectra-controller-agent"
+
+// legacyAgentRunning: the old agent's process is alive — by its executable,
+// not its 15-byte name, which the init scripts and the watchdog share.
 func legacyAgentRunning() bool {
-	dirs, _ := filepath.Glob(filepath.Join(legacyAgentProc, "[0-9]*", "comm"))
-	for _, comm := range dirs {
-		if b, err := os.ReadFile(comm); err == nil && strings.TrimSpace(string(b)) == "vectra-controll" {
+	exes, _ := filepath.Glob(filepath.Join(legacyAgentProc, "[0-9]*", "exe"))
+	for _, exe := range exes {
+		if target, err := os.Readlink(exe); err == nil && target == legacyAgentBinary {
 			return true
 		}
 	}

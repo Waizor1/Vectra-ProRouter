@@ -637,12 +637,16 @@ func Unseal(path string) error {
 	if os.IsNotExist(err) {
 		return nil
 	}
-	if err != nil {
+	if errors.Is(err, ErrDowngrade) {
+		// Interrupted after the plaintext was written: only the seal is left.
+		plain, err = nil, nil
+	} else if err != nil {
 		return err
-	}
-	defer clear(plain)
-	if err = atomic(target, plain); err != nil {
-		return err
+	} else {
+		defer clear(plain)
+		if err = atomic(target, plain); err != nil {
+			return err
+		}
 	}
 	for _, p := range []string{marker, stage} {
 		if err = os.Remove(p); err != nil && !os.IsNotExist(err) {

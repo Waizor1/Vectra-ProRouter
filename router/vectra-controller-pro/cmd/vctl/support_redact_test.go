@@ -60,19 +60,20 @@ func TestTheLegacyMirrorIsSealedOnlyForAnAgentThatCanReadIt(t *testing.T) {
 	}
 }
 
-// The old agent's files are never migrated under its running process.
+// The old agent's files are never migrated under its running process, told
+// by its executable: the init scripts and the watchdog share its name.
 func TestTheOldAgentIsSeenRunning(t *testing.T) {
 	dir := t.TempDir()
 	old := legacyAgentProc
 	t.Cleanup(func() { legacyAgentProc = old })
 	legacyAgentProc = dir
-	_ = os.MkdirAll(filepath.Join(dir, "12", ""), 0o755)
-	_ = os.WriteFile(filepath.Join(dir, "12", "comm"), []byte("vctl\n"), 0o644)
+	_ = os.MkdirAll(filepath.Join(dir, "12"), 0o755)
+	_ = os.Symlink("/bin/busybox", filepath.Join(dir, "12", "exe")) // an init script named vectra-controll…
 	if legacyAgentRunning() {
-		t.Fatal("vctl taken for the old agent")
+		t.Fatal("a script taken for the old agent")
 	}
 	_ = os.MkdirAll(filepath.Join(dir, "34"), 0o755)
-	_ = os.WriteFile(filepath.Join(dir, "34", "comm"), []byte("vectra-controll\n"), 0o644)
+	_ = os.Symlink(legacyAgentBinary, filepath.Join(dir, "34", "exe"))
 	if !legacyAgentRunning() {
 		t.Fatal("the old agent's process was not seen")
 	}

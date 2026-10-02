@@ -429,3 +429,31 @@ func TestSealedFilesOpenWithTheStandardLibraryAsTheOldAgentDoes(t *testing.T) {
 		t.Fatalf("format drifted from what the old agent reads: %v", err)
 	}
 }
+
+// Unseal writes the plaintext first and drops the seal last: interrupted in
+// between, the next Unseal finishes it instead of failing on the plaintext.
+func TestUnsealFinishesAnInterruptedUnseal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy", "state.json.identity")
+	_ = os.MkdirAll(filepath.Dir(path), 0o700)
+	plain := []byte(`{"router_id":"r","agent_token":"synthetic"}`)
+	if err := WriteFile(path, plain); err != nil {
+		t.Fatal(err)
+	}
+	if err := Unseal(path); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); !bytes.Equal(b, plain) || !Unsealed(path) {
+		t.Fatal("not unsealed")
+	}
+	// Sealed again, then interrupted after the plaintext was written.
+	if err := MigrateFile(path, func([]byte) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(path, plain, 0o600)
+	if err := Unseal(path); err != nil {
+		t.Fatalf("interrupted unseal: %v", err)
+	}
+	if b, _ := os.ReadFile(path); !bytes.Equal(b, plain) || !Unsealed(path) {
+		t.Fatal("the interrupted unseal was not finished")
+	}
+}
