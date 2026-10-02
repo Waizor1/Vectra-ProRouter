@@ -234,3 +234,54 @@ func TestConnectServiceRefusesALocationWhoseMainPathIsNotATunnel(t *testing.T) {
 		})
 	}
 }
+
+// The provider's real locations carry balancers the location itself never
+// uses: a selector naming no node it has, a fallback to a tag it lacks. xray
+// ignores them; importing the whole graph refused every location on 1111
+// with unsupported_entry_graph (2026-10-02). Only what the service's path
+// reaches is imported — and what it reaches must still be whole.
+func TestConnectServiceImportsOnlyWhatItsPathReaches(t *testing.T) {
+	entry := `{
+ "outbounds":[
+  {"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u"}]}]}},
+  {"tag":"DIRECT","protocol":"freedom"},
+  {"tag":"BLOCK","protocol":"blackhole"}
+ ],
+ "routing":{
+  "balancers":[
+   {"tag":"BL-MAIN","selector":["de-"],"fallbackTag":"de-1"},
+   {"tag":"BL-TK","selector":["tk-"],"fallbackTag":"de-1"},
+   {"tag":"BL-RU","selector":["ru-"],"fallbackTag":"stage-ru"}
+  ],
+  "rules":[
+   {"domain":["geosite:category-ru"],"outboundTag":"DIRECT"},
+   {"inboundTag":["STAGE_RU"],"balancerTag":"BL-RU"},
+   {"network":"tcp,udp","balancerTag":"BL-MAIN"}
+  ]
+ }
+}`
+	if err := xray.ValidateConnectServiceEntry([]byte(entry), "youtube"); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	_, r, res := spliceServices(t, xray.SpliceOptions{ServiceEntries: map[string]json.RawMessage{"youtube": json.RawMessage(entry)}})
+	if len(res.Services.Applied) != 1 {
+		t.Fatalf("applied %v", res.Services.Applied)
+	}
+	for _, b := range r.Routing.Balancers {
+		if b.Tag == "vctl-connect-youtube-BL-TK" || b.Tag == "vctl-connect-youtube-BL-RU" {
+			t.Fatalf("imported an unreached balancer %s", b.Tag)
+		}
+	}
+	found := false
+	for _, b := range r.Routing.Balancers {
+		found = found || b.Tag == "vctl-connect-youtube-BL-MAIN"
+	}
+	if !found {
+		t.Fatal("the service's own balancer is missing")
+	}
+	// What the path reaches must still be whole.
+	broken := strings.Replace(entry, `{"tag":"BL-MAIN","selector":["de-"],"fallbackTag":"de-1"}`, `{"tag":"BL-MAIN","selector":["de-"],"fallbackTag":"missing"}`, 1)
+	if _, _, err := xray.Splice([]byte(svcDoc), testTproxy(), xray.SpliceOptions{ServiceEntries: map[string]json.RawMessage{"youtube": json.RawMessage(broken)}}); err == nil {
+		t.Fatal("a reached balancer with an unknown fallback was accepted")
+	}
+}

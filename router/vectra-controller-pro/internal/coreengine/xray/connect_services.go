@@ -181,6 +181,7 @@ func addConnectServices(p *servicePlan, base []byte, entries map[string]json.Raw
 		if len(doc.Outbounds) > 256 || len(doc.Routing.Balancers) > 128 || len(doc.Routing.Rules) > 512 {
 			return errors.New("entry_graph_too_large")
 		}
+		doc.Outbounds, doc.Routing.Balancers, doc.Routing.Rules = reachedGraph(doc.Outbounds, doc.Routing.Balancers, doc.Routing.Rules, path.target, v)
 		prefix := "vctl-connect-" + id + "-"
 		tags := map[string]string{}
 		for _, o := range doc.Outbounds {
@@ -357,4 +358,111 @@ func addConnectServices(p *servicePlan, base []byte, entries map[string]json.Raw
 		p.res.Applied = append(p.res.Applied, id+"=entry")
 	}
 	return nil
+}
+
+// reachedGraph keeps the part of a location's graph that the service's path
+// reaches: from the target, a balancer's members and fallback (or xray's
+// default handler), an outbound's proxy and dialer, and a loopback's stage —
+// the rules on its inbound and their targets. A provider's location also
+// carries balancers it never uses (a selector naming no node it has, a
+// fallback to a tag it lacks); xray ignores them, and so does the import.
+// Whatever is reached keeps every reference it makes, so a broken reached
+// graph is still refused further on.
+func reachedGraph(outbounds, balancers, rules []map[string]json.RawMessage, target string, v *xrayview.View) ([]map[string]json.RawMessage, []map[string]json.RawMessage, []map[string]json.RawMessage) {
+	outByTag := map[string]map[string]json.RawMessage{}
+	for _, o := range outbounds {
+		if t := jsonString(o["tag"]); t != "" {
+			outByTag[t] = o
+		}
+	}
+	balByTag := map[string]map[string]json.RawMessage{}
+	for _, b := range balancers {
+		if t := jsonString(b["tag"]); t != "" {
+			balByTag[t] = b
+		}
+	}
+	keep := map[string]bool{}
+	keepRule := map[int]bool{}
+	queue := []string{target}
+	for len(queue) > 0 {
+		tag := queue[0]
+		queue = queue[1:]
+		if tag == "" || keep[tag] {
+			continue
+		}
+		keep[tag] = true
+		if b, ok := balByTag[tag]; ok {
+			for _, sel := range jsonStrings(b["selector"]) {
+				for t := range outByTag {
+					if strings.HasPrefix(t, sel) {
+						queue = append(queue, t)
+					}
+				}
+			}
+			if fb := jsonString(b["fallbackTag"]); fb != "" {
+				queue = append(queue, fb)
+			} else if v.Default != nil {
+				queue = append(queue, v.Default.Tag)
+			}
+			continue
+		}
+		o, ok := outByTag[tag]
+		if !ok {
+			continue
+		}
+		var ps map[string]json.RawMessage
+		if json.Unmarshal(o["proxySettings"], &ps) == nil {
+			queue = append(queue, jsonString(ps["tag"]))
+		}
+		var ss struct {
+			Sockopt map[string]json.RawMessage `json:"sockopt"`
+		}
+		if json.Unmarshal(o["streamSettings"], &ss) == nil && ss.Sockopt != nil {
+			queue = append(queue, jsonString(ss.Sockopt["dialerProxy"]))
+		}
+		if jsonString(o["protocol"]) == "loopback" {
+			var st map[string]json.RawMessage
+			_ = json.Unmarshal(o["settings"], &st)
+			stage := jsonString(st["inboundTag"])
+			for i, r := range rules {
+				if ruleOnStage(jsonStrings(r["inboundTag"]), stage) {
+					keepRule[i] = true
+					queue = append(queue, jsonString(r["outboundTag"]), jsonString(r["balancerTag"]))
+				}
+			}
+		}
+	}
+	var outs, bals, rs []map[string]json.RawMessage
+	for _, o := range outbounds {
+		// An untagged outbound is no reference target; keep it so the import
+		// still refuses it (unsupported_entry_graph) rather than hide it.
+		if t := jsonString(o["tag"]); t == "" || keep[t] {
+			outs = append(outs, o)
+		}
+	}
+	for _, b := range balancers {
+		if t := jsonString(b["tag"]); t == "" || keep[t] {
+			bals = append(bals, b)
+		}
+	}
+	for i, r := range rules {
+		// Rules on an inbound are stages: only those of a reached loopback.
+		// Rules without one are never imported (see addConnectServices).
+		if keepRule[i] {
+			rs = append(rs, r)
+		}
+	}
+	return outs, bals, rs
+}
+
+// ruleOnStage: a rule's inbound list names the stage. A negated inbound is
+// refused by the import outright (its reach over the stages is not checked),
+// so a rule carrying one is kept to be refused, never silently dropped.
+func ruleOnStage(inbounds []string, stage string) bool {
+	for _, t := range inbounds {
+		if t == stage || strings.HasPrefix(t, "!") {
+			return true
+		}
+	}
+	return false
 }
