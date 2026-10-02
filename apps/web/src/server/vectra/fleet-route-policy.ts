@@ -156,7 +156,8 @@ export const canonicalFleetRoutePolicy = {
     {
       id: "WorldProxy",
       label: "WorldProxy",
-      expected: "Poland direct :443 (RU-entry Poland fallback)",
+      expected:
+        "RU-entry Germany :50052 (then Poland direct :443, RU-entry EU auto :40051, RU-entry Poland)",
       strictPreferred: true,
     },
     {
@@ -330,6 +331,35 @@ function isCanonicalPolandExit(host: string) {
   return normalizeHost(host) === canonicalPolandExitHost;
 }
 
+// The provider's RU-entry EU auto exit — shipped as "🇷🇺🇪🇺 Авто Самый
+// стабильный" — is the declared WorldProxy target for every router whose
+// subscription carries no canonical Poland exit.
+//
+// Matched by PORT, not by label, for the same reason as every other host match
+// in this file: the label is ad copy the provider re-maps per subscription.
+// 40051 is the discriminator — across all 15 live configs read on 2026-09-21 it
+// carried that one label and nothing else, and every affected router had such a
+// node. The RU-entry check keeps a future foreign :40051 out of this tier.
+const ruEntryAutoExitPort = 40051;
+
+function isRuEntryAutoExit(host: string, port: number | null | undefined) {
+  return port === ruEntryAutoExitPort && hostLooksLikeRuEntry(host);
+}
+
+// The provider's Germany exit reached through its RU bridge — "🇷🇺🇩🇪⚡Германия
+// YouTube 🚫Ad🚫" — and the operator's declared WorldProxy canon as of
+// 2026-09-27.
+//
+// Matched by PORT, like every other host match here. 50052 carried that one
+// label and nothing else across all 25 live configs read that day, and it
+// spans eleven distinct RU entries (ru3, ru4, ru5, ru7, ru14-ru20), so the
+// bridge is not a single shared hop.
+const ruEntryGermanyExitPort = 50052;
+
+function isRuEntryGermanyExit(host: string, port: number | null | undefined) {
+  return port === ruEntryGermanyExitPort && hostLooksLikeRuEntry(host);
+}
+
 function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
   if (!node.enabled || node.protocol === "shunt") {
     return 0;
@@ -371,6 +401,66 @@ function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
       // routers to the RU-entry fallback tier; measured 2026-08-08 on 2 of the
       // 26 routers that carry a pl2 host. The host is the routing fact, the
       // label is provider ad copy.
+      // Operator decision 2026-09-21: a router with no canonical Poland exit
+      // goes to the provider's RU-entry EU auto exit, not to another Poland
+      // host and not to the RU-entry Poland fallback.
+      //
+      // What forced it: pl1.nfnpx.online:443 died outright. Measured on
+      // AlexanderBabkin that day, url_test_node returned 000 through pl1 —
+      // not a selective blackhole, no traffic at all — while its own
+      // ru3:40051 answered 204 in 0.19s, ru17:50053 in 0.22s and the direct
+      // NL exits in ~1.3s. Sixteen routers were sitting on pl1 with Telegram
+      // and Instagram down, and NONE of their subscriptions carried pl2, so
+      // the declared canon was unreachable for every one of them.
+      //
+      // Scored 142: above any non-canonical Poland :443 (140), below the
+      // canonical pl2 (145). That is deliberate and is the whole point of the
+      // number — the fifteen routers that do carry pl2, including the
+      // operator's own 1111111111, keep it and do not move. The tier only
+      // claims routers the canon cannot reach.
+      //
+      // Note this outranks a live Poland exit rather than waiting for the
+      // liveness ledger to condemn a dead one. The ledger could not do this
+      // job here: it spares a host the moment ANY router reports reaching it,
+      // and an 18-day-old snapshot from an offline router (aleksandr-
+      // kutuzovgrad, last seen 2026-09-03) still said pl1 was fine, which
+      // vetoed condemnation for the whole fleet. Keep aligned with the
+      // controller scorer in
+      // router/vectra-controller-agent/internal/passwall/fleet_policy.go.
+      // Operator decision 2026-09-27: the whole fleet goes to Germany through
+      // the RU bridge. Top tier, so it wins over every Poland shape and over
+      // the auto exit below.
+      //
+      // What forced it: the auto tier added on 2026-09-21 became the fleet's
+      // home once the provider stopped serving pl2, and it does not carry
+      // Instagram reliably — measured that morning, 24 of 27 routers sat on
+      // ru*:40051 and Instagram was reachable on 12, blocked on 11, partial on
+      // one. Telegram was fine throughout, which is exactly why nothing
+      // condemned those nodes: the ledger asks whether a node is reachable,
+      // not whether it carries the services the slot owes.
+      //
+      // Measured before switching, url_test_node with url_test_url swapped to
+      // the real destination, eleven routers: Telegram 200 on 11 of 11,
+      // Instagram 200 on 10 of 11 — and the one 000 (dmitry-filicity through
+      // ru7:50052) returned 200 on retest twenty minutes later, so it was
+      // transient rather than a property of the host. Every one of the 25
+      // non-exempt routers carries such a node.
+      //
+      // This exit was the canon once before and was abandoned on 2026-07-02
+      // because the shared German egress was overloaded — 22 of 24 routers
+      // behind one address, and Instagram died for all of them on 07-31. The
+      // risk is real and was put to the operator before this shipped. What is
+      // different now: the bridge spans eleven RU entries rather than one. The
+      // egress itself still needs watching, which is what the fleet's
+      // Instagram probes are for.
+      if (isRuEntryGermanyExit(address, node.port)) {
+        return 160;
+      }
+
+      if (isRuEntryAutoExit(address, node.port)) {
+        return 142;
+      }
+
       const poland =
         includesAny(label, ["польш", "poland", "🇵🇱"]) ||
         (!ruEntry && hostLooksLikePolandExit(address));
@@ -793,18 +883,86 @@ function summarizeCompliance(
  * WorldProxy carries geosite:TELEGRAM and geosite:META, YouTube carries
  * geosite:YOUTUBE.
  */
+/** See the `now` parameter of collectFleetNodeHealthSample. */
+const STALE_PROBE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
 export function collectFleetNodeHealthSample(
   routerId: string,
   config: PasswallDesiredConfig | null | undefined,
   probes: {
-    telegram?: { status?: string | null } | null;
-    youtube?: { status?: string | null } | null;
-    instagram?: { status?: string | null } | null;
+    telegram?: { status?: string | null; checkedAt?: string | null } | null;
+    youtube?: { status?: string | null; checkedAt?: string | null } | null;
+    instagram?: { status?: string | null; checkedAt?: string | null } | null;
   },
+  /**
+   * When the bindings in `config` took effect — the creation time of the
+   * imported revision these observations are attributed against.
+   *
+   * A destination probe says nothing about the node a slot is bound to NOW if
+   * it ran before that binding existed. Measured on 2026-09-21, when the
+   * WorldProxy canon moved the stranded routers onto the provider's auto exit:
+   * within minutes the ledger had condemned ru5:40051, ru13:40051 and
+   * ru16:40051 — every host routers had just arrived on — on the strength of
+   * probes taken 3 to 29 minutes BEFORE the move, while those routers were
+   * still on the dead pl1. The policy then sent them back to pl1, whereupon
+   * the accusation evaporated and the cycle restarted. A self-sustaining
+   * oscillation, and every accusation in it was false.
+   *
+   * Age alone cannot separate these: a live router's probes are a median 28
+   * minutes old (p95 44, max 50 on the day this was measured), so any window
+   * wide enough to keep normal evidence keeps the pre-move probes too. The
+   * binding time is the honest discriminator.
+   *
+   * Absent, nothing is filtered, which is the behaviour every caller had
+   * before this parameter existed.
+   */
+  bindingSince?: Date | null,
+  /**
+   * Now, for ageing out evidence from routers that stopped reporting.
+   *
+   * The binding cutoff above cannot catch a ghost: an offline router's last
+   * snapshot is usually NEWER than the revision it was importing from, so its
+   * probes pass that test forever. aleksandr-kutuzovgrad went offline on
+   * 2026-09-03 holding a green Telegram and Instagram reading through
+   * pl1.nfnpx.online:443. Eighteen days later that host was returning 000 to
+   * every router in the fleet, and those two dead readings were still the
+   * reason it counted as reached — sparing it fleet-wide while fifteen live
+   * routers reported it blocked. That is the outage of 2026-09-21.
+   *
+   * The window is wide because it only has to separate the living from the
+   * long gone, and the measured gap is enormous: online routers' probes that
+   * day ran a median 28 minutes old, p95 44, maximum 50, while every offline
+   * router's were 18 to 99 days. Six hours sits two orders of magnitude from
+   * either edge, so no live evidence is lost to it.
+   */
+  now?: Date | null,
 ): FleetNodeHealthSample | null {
   if (!config) {
     return null;
   }
+
+  const observedAfterBinding = (checkedAt?: string | null) => {
+    if (now && checkedAt) {
+      const at = new Date(checkedAt).getTime();
+      if (
+        Number.isFinite(at) &&
+        now.getTime() - at > STALE_PROBE_MAX_AGE_MS
+      ) {
+        return false;
+      }
+    }
+    if (!bindingSince) {
+      return true;
+    }
+    if (!checkedAt) {
+      // Cannot place the probe in time, so it cannot be shown to postdate the
+      // binding. Dropping it costs an opinion; keeping it risks another false
+      // condemnation, and the ledger is only ever consulted to reject.
+      return false;
+    }
+    const at = new Date(checkedAt);
+    return Number.isFinite(at.getTime()) && at.getTime() >= bindingSince.getTime();
+  };
 
   const hostForSlot = (slotId: FleetRoutePolicySlotId) => {
     const slot = canonicalFleetRoutePolicy.slots.find(
@@ -842,20 +1000,21 @@ export function collectFleetNodeHealthSample(
   const add = (
     slotId: FleetRoutePolicySlotId,
     status: string | null | undefined,
+    checkedAt?: string | null,
   ) => {
+    if (!observedAfterBinding(checkedAt)) {
+      return;
+    }
     const outcome = outcomeOf(status);
     const host = outcome ? hostForSlot(slotId) : null;
     if (outcome && host) {
-      // Inferred: the probe reached a destination, and this is merely the node
-      // the carrying slot was bound to. A route verification of the same
-      // endpoint outranks it — see FleetNodeHealthObservation.source.
-      observations.push({ host, outcome, source: "inferred" });
+      observations.push({ host, outcome });
     }
   };
 
-  add("WorldProxy", probes.telegram?.status);
-  add("WorldProxy", probes.instagram?.status);
-  add("YouTube", probes.youtube?.status);
+  add("WorldProxy", probes.telegram?.status, probes.telegram?.checkedAt);
+  add("WorldProxy", probes.instagram?.status, probes.instagram?.checkedAt);
+  add("YouTube", probes.youtube?.status, probes.youtube?.checkedAt);
 
   return observations.length > 0 ? { routerId, observations } : null;
 }

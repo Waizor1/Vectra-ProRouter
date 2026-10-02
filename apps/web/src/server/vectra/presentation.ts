@@ -150,8 +150,6 @@ export function buildRouterSummary(router: FleetRouter): RouterSummary {
           : "PassWall2 сейчас выключен",
     nodeCount: router.latestSnapshot?.nodeCount ?? 0,
     subscriptionCount: router.latestSnapshot?.subscriptionCount ?? 0,
-    subscriptionHealth:
-      router.latestSnapshot?.payload?.subscriptionHealth ?? null,
     controllerVersion: formatControllerVersion(
       router.latestSnapshot?.controllerVersion,
     ),

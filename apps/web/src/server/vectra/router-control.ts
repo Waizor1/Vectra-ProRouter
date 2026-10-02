@@ -51,6 +51,10 @@ import {
 import { buildFleetRoutePolicyDirective } from "~/server/vectra/fleet-route-policy";
 import { getFleetPolicyContext } from "~/server/vectra/fleet-node-health-cache";
 import {
+  handleSubscriptionRefreshResult,
+  SUBSCRIPTION_REFRESH_JOB_TYPE,
+} from "~/server/vectra/subscription-refresh-guard";
+import {
   resolveImportedConfigDigest,
   resolvePersistedConfigDigest,
   shouldRequestImportOnCheckIn,
@@ -1495,6 +1499,38 @@ export async function recordJobResult(routerId: string, input: unknown) {
       }),
     })
     .where(eq(jobs.id, job.id));
+
+  // A refresh that destroyed the node list is undone here, before anything
+  // else reacts to it. Without this the rescue lane cannot run unattended:
+  // see subscription-refresh-guard for the failure it exists to reverse.
+  if (
+    job.type === SUBSCRIPTION_REFRESH_JOB_TYPE &&
+    parsed.status !== "accepted"
+  ) {
+    try {
+      const guard = await handleSubscriptionRefreshResult(
+        db,
+        {
+          routerId,
+          jobPayload: job.payload,
+          resultPayload: payload,
+        },
+        (args) => queueDesiredRevisionApplyJobWithDb(db, args),
+      );
+      if (guard.restored) {
+        console.warn(
+          "[subscription-guard] restored node list on %s from revision %s: %s",
+          routerId,
+          guard.revisionId,
+          guard.reason,
+        );
+      }
+    } catch (error) {
+      // Never let the guard fail the result recording itself: a job result
+      // that cannot be written is a worse outage than a missed restore.
+      console.error("[subscription-guard]", error);
+    }
+  }
 
   if (job.type === "run_rescue_repair" && parsed.status !== "accepted") {
     const rescueRepairPayload = payload as Record<string, unknown>;

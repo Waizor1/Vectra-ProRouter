@@ -32,19 +32,6 @@ export type FleetNodeHealthObservation = {
    */
   host: string;
   outcome: "ok" | "fail";
-  /**
-   * How the verdict was obtained.
-   *
-   * `direct` is a per-node test of the endpoint itself (a route
-   * verification's smoke test). `inferred` is a destination probe — it
-   * reached, or failed to reach, some site, and the endpoint is whichever
-   * node the carrying slot happens to bind; that the traffic truly crossed
-   * that node is an assumption, not an observation.
-   *
-   * Absent means `inferred`, which is what every caller produced before the
-   * distinction existed.
-   */
-  source?: "direct" | "inferred";
 };
 
 export type FleetNodeHealthSample = {
@@ -110,38 +97,9 @@ export function buildFleetNodeHealth(
 
   for (const sample of samples) {
     const hostsSeen = new Map<string, "ok" | "fail">();
-
-    // Where this router carries both kinds of evidence about one endpoint,
-    // only the direct verdict is heard. A destination probe assumes its
-    // traffic crossed the slot's node; a node test watched it. galeevy-dom on
-    // 2026-09-06 is the shape: youtube.com came back "reachable" while its
-    // own verification failed against the ru7:50051 that slot was bound to,
-    // and that one inferred success was enough to spare a dead host for the
-    // whole fleet — six routers pinned to it, all reported "compliant".
-    //
-    // Scoped to the router and the endpoint on purpose. Another router
-    // genuinely reaching the host still spares it, so this narrows which
-    // evidence counts, never which direction the ledger leans.
-    const directlyJudged = new Set<string>();
     for (const observation of sample.observations) {
-      if ((observation.source ?? "inferred") !== "direct") {
-        continue;
-      }
-      const host = normalizeNodeHost(observation.host);
-      if (host.length > 0) {
-        directlyJudged.add(host);
-      }
-    }
-
-    for (const observation of sample.observations) {
-      const host = normalizeNodeHost(observation.host);
+      const host = observation.host.trim().toLowerCase();
       if (host.length === 0) {
-        continue;
-      }
-      if (
-        (observation.source ?? "inferred") !== "direct" &&
-        directlyJudged.has(host)
-      ) {
         continue;
       }
       // A host this router reached even once counts as reached, whatever else

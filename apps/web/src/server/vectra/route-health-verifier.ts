@@ -235,13 +235,7 @@ export function routeVerificationToHealthSample(
       // about a binding that no longer exists and says nothing about today.
       continue;
     }
-    // The smoke test runs against this node, so the verdict is about the node
-    // — unlike a destination probe, which only assumes it went this way.
-    observations.push({
-      host,
-      outcome: slot.smokeOk ? "ok" : "fail",
-      source: "direct",
-    });
+    observations.push({ host, outcome: slot.smokeOk ? "ok" : "fail" });
   }
 
   return observations.length > 0 ? { routerId, observations } : null;
@@ -434,27 +428,39 @@ export function startRouteHealthVerifier() {
           result.queued,
         );
       }
-      // Detection only — the refresh itself stays an operator decision.
+      // The refresh now runs unattended, because the condition this lane was
+      // held back for is finally met.
       //
-      // 2026-08-24: refreshing yuranrod-msk WITH hwid=1 set returned a payload
-      // that left him with zero proxy nodes (≈20 hosts before, none after) and
-      // all five slots pointing at an id that no longer existed. The hardware
-      // id gate is necessary but NOT sufficient, so an unattended refresh can
-      // take a customer's node list away. Reporting the state is safe;
-      // automatically acting on it is not, until the wipe can be detected and
-      // undone.
-      const { collectSubscriptionRescueCandidates } =
+      // It was detection-only since 2026-08-24, when refreshing yuranrod-msk
+      // WITH hwid=1 set returned a payload that left him with zero proxy nodes
+      // (≈20 hosts before, none after) and all five slots pointing at an id
+      // that no longer existed. The hardware id gate is necessary but NOT
+      // sufficient, so an unattended refresh can take a customer's node list
+      // away — and the rule was that reporting is safe while acting is not,
+      // "until the wipe can be detected and undone".
+      //
+      // Detected: the controller judges a refresh by what it left behind
+      // (VerifySubscriptionRefresh) and reports placeholder_nodes / no_nodes
+      // to the panel. Undone: subscription-refresh-guard turns that verdict
+      // into a restore of the node list the rescue recorded before queueing
+      // the refresh, and raises an incident either way. The worst case is no
+      // longer "a customer loses every node" but "a refresh achieved nothing
+      // and the operator is told".
+      //
+      // One more thing had to change for the refresh to be worth running at
+      // all: it now clears the md5 lock first. Measured 2026-09-22 on
+      // ar-filicity — a plain refresh returned the identical dead node list,
+      // and the same refresh after clearing md5 returned live hosts and
+      // brought the stranded slot back to 204. Without that this lane would
+      // have fired on schedule and changed nothing.
+      const { runSubscriptionRescueTick } =
         await import("./subscription-rescue");
-      const stranded = await collectSubscriptionRescueCandidates(db);
-      if (stranded.length > 0) {
+      const rescue = await runSubscriptionRescueTick(db);
+      if (rescue.queued > 0) {
         console.warn(
-          "[route-health] node list exhausted for %d router(s), subscription refresh needed: %o",
-          stranded.length,
-          stranded.map((entry) => ({
-            routerId: entry.routerId,
-            slots: entry.strandedSlots,
-            canRefresh: entry.hwidPresent,
-          })),
+          "[route-health] node list exhausted, queued subscription re-roll for %d router(s): %o",
+          rescue.queued,
+          rescue.routerIds,
         );
       }
     } catch (error) {

@@ -71,7 +71,10 @@ export function resetFleetNodeHealthCache() {
   inFlight = null;
 }
 
-async function rebuild(database: DatabaseClient): Promise<FleetPolicyContext> {
+async function rebuild(
+  database: DatabaseClient,
+  now: number,
+): Promise<FleetPolicyContext> {
   const routerRows = await database
     .select()
     .from(routers)
@@ -106,14 +109,21 @@ async function rebuild(database: DatabaseClient): Promise<FleetPolicyContext> {
     if (!payload) {
       return [];
     }
+    const policyRow = policyConfigRows.get(routerId);
     const sample = collectFleetNodeHealthSample(
       routerId,
-      policyConfigRows.get(routerId)?.config ?? null,
+      policyRow?.config ?? null,
       {
         telegram: payload.telegramReachability ?? null,
         youtube: payload.youtubeReachability ?? null,
         instagram: payload.instagramReachability ?? null,
       },
+      // The bindings come from this revision, so a probe older than it was
+      // measured through some other node — see collectFleetNodeHealthSample.
+      policyRow?.createdAt ?? null,
+      // Ages out ghosts: an offline router's last green reading must not keep
+      // sparing a host the live fleet has since measured dead.
+      new Date(now),
     );
     return sample ? [sample] : [];
   });
@@ -157,7 +167,7 @@ export async function getFleetPolicyContext(
     return inFlight;
   }
 
-  inFlight = rebuild(database)
+  inFlight = rebuild(database, now)
     .then((value) => {
       cached = { value, expiresAt: Date.now() + TTL_MS };
       return value;

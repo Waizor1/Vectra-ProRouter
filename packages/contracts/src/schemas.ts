@@ -480,16 +480,6 @@ export const routerInventorySchema = z.object({
   selectedNodeLabel: z.string().nullable().optional(),
   nodeCount: z.number().int().nonnegative(),
   subscriptionCount: z.number().int().nonnegative(),
-  // Optional because controllers older than this field simply do not send it,
-  // and their silence must not be read as "the gate is open" — see
-  // hasSubscriptionGateRisk, which treats an absent report as unknown.
-  subscriptionHealth: z
-    .object({
-      hwidEnabled: z.boolean(),
-      scheduleEnabled: z.boolean(),
-      placeholderNodes: z.number().int().nonnegative(),
-    })
-    .optional(),
   configDigest: z.string().min(1).nullable().optional(),
   appliedRevisionId: z.string().uuid().nullable().optional(),
   packageVersions: z.record(z.string(), z.string().nullable()).default({}),

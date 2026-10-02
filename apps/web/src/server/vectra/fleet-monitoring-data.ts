@@ -465,14 +465,19 @@ export async function loadFleetMonitoringSnapshot(
       }).concat(
       routerIds.flatMap((routerId) => {
         const payload = snapshots.get(routerId)?.payload;
+        const policyRow = policyConfigRows.get(routerId);
         const sample = collectFleetNodeHealthSample(
           routerId,
-          policyConfigRows.get(routerId)?.config ?? null,
+          policyRow?.config ?? null,
           {
             telegram: payload?.telegramReachability ?? null,
             youtube: payload?.youtubeReachability ?? null,
             instagram: payload?.instagramReachability ?? null,
           },
+          // Same cutoff as the check-in path, or this page would judge
+          // compliance against evidence the directive has already discarded.
+          policyRow?.createdAt ?? null,
+          new Date(now),
         );
         return sample ? [sample] : [];
       })),
