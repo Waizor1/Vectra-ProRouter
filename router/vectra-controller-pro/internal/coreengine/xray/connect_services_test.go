@@ -399,3 +399,46 @@ func TestConnectServiceRefusesAStageToAMissingBalancer(t *testing.T) {
 		t.Fatal("trial accepted a stage that names a missing balancer")
 	}
 }
+
+// The provider's 🇷🇺🇰🇿 cascade as 1111 has it (2026-10-02, tags only): its AI
+// rule's balancer falls back through the Kazakh bridge and three whitelist
+// levels, ten steps, to a tag it lacks — closed, never direct. The default
+// takes it; the same chain ending in DIRECT is refused.
+func TestTheKazakhCascadeIsATunnelAllTheWayDown(t *testing.T) {
+	cascade := `{
+ "outbounds":[
+  {"tag":"sticky-kz5","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u"}]}]}},
+  {"tag":"bridge-kz5","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.10","port":443,"users":[{"id":"u"}]}]}},
+  {"tag":"stage-bridge","protocol":"loopback","settings":{"inboundTag":"STAGE_BRIDGE"}},
+  {"tag":"stage-wl","protocol":"loopback","settings":{"inboundTag":"STAGE_WL"}},
+  {"tag":"stage-wl-lv2","protocol":"loopback","settings":{"inboundTag":"STAGE_WL_LV2"}},
+  {"tag":"stage-wl-lv3","protocol":"loopback","settings":{"inboundTag":"STAGE_WL_LV3"}},
+  {"tag":"DIRECT","protocol":"freedom"},
+  {"tag":"BLOCK","protocol":"blackhole"}
+ ],
+ "routing":{
+  "balancers":[
+   {"tag":"BL-MAIN","selector":["sticky-kz5"],"fallbackTag":"stage-bridge","strategy":{"type":"leastPing"}},
+   {"tag":"BL-BRIDGE","selector":["bridge-kz5"],"fallbackTag":"stage-wl","strategy":{"type":"leastPing"}},
+   {"tag":"BL-WL-LV1","selector":["whitelist-lv1"],"fallbackTag":"stage-wl-lv2","strategy":{"type":"leastPing"}},
+   {"tag":"BL-WL-LV2","selector":["whitelist-lv2"],"fallbackTag":"stage-wl-lv3","strategy":{"type":"leastPing"}},
+   {"tag":"BL-WL-LV3","selector":["whitelist-lv3"],"fallbackTag":"END","strategy":{"type":"leastPing"}}
+  ],
+  "rules":[
+   {"inboundTag":["STAGE_WL"],"balancerTag":"BL-WL-LV1"},
+   {"inboundTag":["STAGE_WL_LV2"],"balancerTag":"BL-WL-LV2"},
+   {"inboundTag":["STAGE_WL_LV3"],"balancerTag":"BL-WL-LV3"},
+   {"type":"field","inboundTag":["STAGE_BRIDGE"],"balancerTag":"BL-BRIDGE"},
+   {"domain":["domain:chatgpt.com","domain:claude.ai"],"balancerTag":"BL-MAIN"},
+   {"network":"tcp,udp","balancerTag":"BL-MAIN"}
+  ]
+ }
+}`
+	base := []byte(`{"outbounds":[{"tag":"main","protocol":"vless"}],"burstObservatory":{"subjectSelector":["main"]}}`)
+	if err := xray.TrialConnectService(base, []byte(strings.Replace(cascade, `"END"`, `"whitelist-lv3"`, 1)), "ai"); err != nil {
+		t.Fatalf("the cascade: %v", err)
+	}
+	if err := xray.TrialConnectService(base, []byte(strings.Replace(cascade, `"END"`, `"DIRECT"`, 1)), "ai"); err == nil {
+		t.Fatal("took a cascade whose last way out is direct")
+	}
+}

@@ -53,12 +53,17 @@ func TrialConnectService(base, raw []byte, id string) error {
 	s, _ := ServiceByID(id)
 	v, _ := xrayview.Parse(raw)
 	p, _ := connectServicePath(raw, v, s)
-	if !neverDirect(v, providerRules(raw), p.target, p.isBalancer, 8) {
+	if !neverDirect(v, providerRules(raw), p.target, p.isBalancer, neverDirectDepth) {
 		return errors.New("service_path_not_tunnel")
 	}
 	var trial servicePlan
 	return addConnectServices(&trial, base, map[string]json.RawMessage{id: raw}, "vctl-trial")
 }
+
+// neverDirectDepth bounds the walk (and so a cycle). A balancer and a loopback
+// stage each take a step: the provider's 🇷🇺🇰🇿 cascade runs ten deep — its
+// AI balancer, the bridge, three whitelist levels, each behind a stage.
+const neverDirectDepth = 32
 
 // neverDirect: no way out of target leaves the tunnel. A balancer's members
 // and its fallback (without one, xray's default handler) are followed, and a
