@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isConnectOwnedXrayRouter,
   resolveImportedConfigDigest,
   resolvePersistedConfigDigest,
   shouldRequestImportOnCheckIn,
@@ -113,5 +114,40 @@ describe("resolveImportedConfigDigest", () => {
         fallbackDigest: "digest-from-server",
       })
     ).toBe("digest-from-server");
+  });
+});
+
+// A Vectra Connect owner's router runs vctl on the xray engine. A legacy agent
+// that wakes up on it (a dead-man hand-back) reports a PassWall baseline; the
+// panel neither asks for one nor lets one turn the router out_of_sync, which
+// would hold every partner action (1111, 2026-10-02).
+describe("Connect-owned xray routers", () => {
+  const owned = { ownerRef: "owner-1", releasedAt: null, engineMode: "xray-direct" };
+
+  it("recognises only an owned, unreleased router on the xray engine", () => {
+    expect(isConnectOwnedXrayRouter(owned)).toBe(true);
+    expect(isConnectOwnedXrayRouter({ ...owned, ownerRef: null })).toBe(false);
+    expect(isConnectOwnedXrayRouter({ ...owned, releasedAt: new Date() })).toBe(false);
+    expect(isConnectOwnedXrayRouter({ ...owned, engineMode: "passwall" })).toBe(false);
+  });
+
+  it("never asks such a router for a PassWall import", () => {
+    expect(
+      shouldRequestImportOnCheckIn({
+        importState: "approved",
+        connectOwned: true,
+        hasPasswallImport: false,
+        reportedDigest: "digest-live",
+        authoritativeDigest: "digest-authoritative",
+      })
+    ).toBe(false);
+    expect(
+      shouldRequestImportOnCheckIn({
+        importState: "approved",
+        hasPasswallImport: false,
+        reportedDigest: "digest-live",
+        authoritativeDigest: "digest-authoritative",
+      })
+    ).toBe(true);
   });
 });

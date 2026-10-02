@@ -67,6 +67,7 @@ import {
 } from "~/server/vectra/subscription-refresh-guard";
 import {
   resolveImportedConfigDigest,
+  isConnectOwnedXrayRouter,
   resolvePersistedConfigDigest,
   shouldRequestImportOnCheckIn,
 } from "~/server/vectra/config-sync";
@@ -672,6 +673,9 @@ async function createImportedBaselineRevision(
     reportedAppliedRevisionId?: string | null;
   } = {},
 ) {
+  if (isConnectOwnedXrayRouter(router)) {
+    return router;
+  }
   const configDigest = resolveImportedConfigDigest({
     importedDigest: importedState.configDigest,
     fallbackDigest: computeConfigDigest(importedState.config),
@@ -1489,6 +1493,7 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
   );
   const requestImport = shouldRequestImportOnCheckIn({
     importState: existingRouter.importState,
+    connectOwned: isConnectOwnedXrayRouter(existingRouter),
     hasPasswallImport: Boolean(parsed.passwallImport),
     reportedDigest: parsed.inventory.configDigest,
     authoritativeDigest: existingRouter.lastConfigDigest,
