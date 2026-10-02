@@ -182,7 +182,7 @@ func connectEntryRaw(cache *localctl.EntriesCache, id string) json.RawMessage {
 // render would and never goes direct. One that does not is skipped — an
 // unchosen default never refuses a render, never unproxies a service. A
 // router that runs the location itself takes its own rule.
-func aiDefault(ov localctl.Overrides, routeSource string, cache *localctl.EntriesCache, running []byte, refused string) (string, json.RawMessage, bool) {
+func aiDefault(ov localctl.Overrides, routeSource string, cache *localctl.EntriesCache, running []byte, refused map[string]bool) (string, json.RawMessage, bool) {
 	if routeSource != "" || cache == nil || running == nil {
 		return "", nil, false
 	}
@@ -197,7 +197,7 @@ func aiDefault(ov localctl.Overrides, routeSource string, cache *localctl.Entrie
 		if bytes.Equal(raw, running) {
 			return id, raw, true
 		}
-		if refused != "" && aiRefusedKey(raw, running) == refused {
+		if refused[aiRefusedKey(raw, running)] {
 			continue // xray refused it on this document
 		}
 		if xray.TrialConnectService(running, raw, "ai") == nil {
@@ -327,7 +327,7 @@ func aiRunsDefault(cfg agentcfg.Config, ov localctl.Overrides) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	id, raw, ok := aiDefault(ov, cfg.RouteSource, cache, running, "")
+	id, raw, ok := aiDefault(ov, cfg.RouteSource, cache, running, nil)
 	return id, ok && bytes.Equal(raw, running)
 }
 

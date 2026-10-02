@@ -59,7 +59,7 @@ func TestTheAIServiceDefaultsToTheKazakhCascade(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			d, c := aiTestCache(t, tc.remarks...)
-			id, _, ok := aiDefault(localctl.Overrides{}, d.cfg.RouteSource, c, []byte(`{"outbounds":[{"tag":"main","protocol":"vless"}]}`), "")
+			id, _, ok := aiDefault(localctl.Overrides{}, d.cfg.RouteSource, c, []byte(`{"outbounds":[{"tag":"main","protocol":"vless"}]}`), nil)
 			if tc.want < 0 {
 				if ok {
 					t.Fatalf("picked %s with no Kazakh location", id)
@@ -235,7 +235,7 @@ func TestARefusedRenderDropsOnlyTheUnchosenAIDefault(t *testing.T) {
 func TestARefusedAIDefaultIsSkippedOnThatDocument(t *testing.T) {
 	d, c := aiTestCache(t, "🇷🇺🇪🇺 Авто", "🇷🇺🇰🇿 Казахстан", "🇰🇿 Казахстан")
 	running := c.Entries[0]
-	d.aiRefused = aiRefusedKey(c.Entries[1], running)
+	d.aiRefused = map[string]bool{aiRefusedKey(c.Entries[1], running): true}
 	got, err := d.connectServiceOptionsFor(localctl.Overrides{}, running)
 	if err != nil || string(got["ai"]) != string(c.Entries[2]) {
 		t.Fatalf("took %s (%v), want the next Kazakh location", got["ai"], err)

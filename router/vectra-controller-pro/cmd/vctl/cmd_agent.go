@@ -121,9 +121,9 @@ func runAgent(ctx context.Context, d *daemon, once bool) error {
 
 // daemon is the long-running autonomous controller.
 type daemon struct {
-	// aiRefused is the «Нейросети» default xray refused, on the document it
-	// joined (aiRefusedKey): not tried again until either changes.
-	aiRefused string
+	// aiRefused are the «Нейросети» defaults xray refused, each on the
+	// document it joined (aiRefusedKey): not tried again until either changes.
+	aiRefused map[string]bool
 	cfg       agentcfg.Config
 	client    *controlplane.Client
 	sup       *supervisor.Process

@@ -155,9 +155,16 @@ func (d *daemon) applyRendering(ctx context.Context, providerRaw []byte, force b
 	if !ok {
 		return res, err
 	}
-	d.aiRefused = aiRefusedKey(opts.ServiceEntries["ai"], providerRaw)
 	logging.L().Warn("xray refused the render with the «Нейросети» default; rendering without it", "err", err.Error())
-	return d.applyProviderWith(ctx, providerRaw, force, without, probe)
+	res, err = d.applyProviderWith(ctx, providerRaw, force, without, probe)
+	if err == nil {
+		// Only now is the default the reason: without it xray took the render.
+		if d.aiRefused == nil {
+			d.aiRefused = map[string]bool{}
+		}
+		d.aiRefused[aiRefusedKey(opts.ServiceEntries["ai"], providerRaw)] = true
+	}
+	return res, err
 }
 
 // withoutAIDefault is opts without «Нейросети», when they carry them only as
