@@ -7,11 +7,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
+	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/sites"
 	"vectra-controller-pro/internal/uiapi"
+	"vectra-controller-pro/internal/vault"
 )
 
 func connectRouteChange(action string, params json.RawMessage, cache *localctl.EntriesCache) (*localctl.Change, string) {
@@ -129,38 +132,23 @@ func (d *daemon) connectServiceOptions(ov localctl.Overrides) (map[string]json.R
 // the owner's choices, and «Нейросети» through Kazakhstan unless they chose
 // otherwise (a location, «as the main VPN», a country).
 func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte) (map[string]json.RawMessage, error) {
-	ids := map[string]string{}
+	chosen := map[string]string{}
 	for svc, id := range ov.ServiceEntries {
-		ids[svc] = id
+		if id != localctl.ServiceMainPath { // «as the main VPN» needs no location
+			chosen[svc] = id
+		}
 	}
 	cache, err := localctl.LoadEntries(d.cfg.EntriesPath)
 	if err != nil {
-		if len(ov.ServiceEntries) == 0 {
-			return nil, nil // no cache, no choice: nothing to overlay
+		if len(chosen) == 0 {
+			return nil, nil // no cache, no location chosen: nothing to overlay
 		}
 		return nil, err
 	}
-	if _, chosen := ids["ai"]; !chosen && ov.Services["ai"] == "" {
-		if id, ok := defaultAIEntry(cache); ok {
-			ids["ai"] = id
-		}
-	}
 	out := map[string]json.RawMessage{}
-	for svc, id := range ids {
-		if id == localctl.ServiceMainPath {
-			continue
-		}
-		var raw json.RawMessage
-		for _, entry := range localctl.Summarize(cache) {
-			if entry.Digest == id {
-				raw = cache.Entries[entry.Index]
-				break
-			}
-		}
+	for svc, id := range chosen {
+		raw := connectEntryRaw(cache, id)
 		if raw == nil {
-			if _, chosen := ov.ServiceEntries[svc]; !chosen {
-				continue // a default that is not there any more is no choice to keep
-			}
 			return nil, errConnectStaleEntry
 		}
 		if running != nil && bytes.Equal(raw, running) {
@@ -168,41 +156,119 @@ func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte)
 		}
 		out[svc] = raw
 	}
+	if _, raw, ok := aiDefault(ov, d.cfg.RouteSource, cache, running); ok && !bytes.Equal(raw, running) {
+		out["ai"] = raw
+	}
 	if len(out) == 0 {
 		return nil, nil
 	}
 	return out, nil
 }
 
-// defaultAIEntry is where «Нейросети» go by default: the provider's cascade
-// through Russia to Kazakhstan (a remark with both flags), else its Kazakh
-// location — a plain one before one named for a single service.
-func defaultAIEntry(cache *localctl.EntriesCache) (string, bool) {
-	return pickAIEntry(localctl.Summarize(cache))
-}
-
-// pickAIEntry is defaultAIEntry over the entries' summaries (the index the
-// UI and the Connect telemetry read).
-func pickAIEntry(entries []localctl.EntrySummary) (string, bool) {
-	const ru, kz = "\U0001F1F7\U0001F1FA", "\U0001F1F0\U0001F1FF"
-	best, rank := "", 0
-	for _, e := range entries {
-		remark := e.Remark
-		if !strings.Contains(remark, kz) {
-			continue
-		}
-		r := 1
-		switch {
-		case strings.Contains(remark, ru):
-			r = 3
-		case !strings.Contains(remark, "·"):
-			r = 2
-		}
-		if r > rank {
-			best, rank = e.Digest, r
+func connectEntryRaw(cache *localctl.EntriesCache, id string) json.RawMessage {
+	for _, entry := range localctl.Summarize(cache) {
+		if entry.Digest == id {
+			return cache.Entries[entry.Index]
 		}
 	}
-	return best, rank > 0
+	return nil
+}
+
+// aiDefault is where «Нейросети» go while the owner has made no choice: the
+// best Kazakh location (aiCandidates) that imports into running exactly as a
+// render would and never goes direct. One that does not is skipped — an
+// unchosen default never refuses a render, never unproxies a service. A
+// router that runs the location itself takes its own rule.
+func aiDefault(ov localctl.Overrides, routeSource string, cache *localctl.EntriesCache, running []byte) (string, json.RawMessage, bool) {
+	if routeSource != "" || cache == nil || running == nil {
+		return "", nil, false
+	}
+	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" {
+		return "", nil, false
+	}
+	for _, id := range aiCandidates(localctl.Summarize(cache)) {
+		raw := connectEntryRaw(cache, id)
+		if raw == nil {
+			continue
+		}
+		if bytes.Equal(raw, running) || xray.TrialConnectService(running, raw, "ai") == nil {
+			return id, raw, true
+		}
+	}
+	return "", nil, false
+}
+
+// aiCandidates are the Kazakh locations, best first: the provider's cascade
+// entering in Russia and leaving in Kazakhstan (🇷🇺🇰🇿), then a Kazakh one;
+// within each, a plain one before one named for a single service
+// («🇰🇿 Gemini · Google»). The flags are read in order — the last is the
+// exit — so «🇰🇿🇷🇺», leaving in Russia, is none.
+func aiCandidates(entries []localctl.EntrySummary) []string {
+	type candidate struct {
+		id    string
+		score int
+	}
+	var cs []candidate
+	for _, e := range entries {
+		flags := remarkFlags(e.Remark)
+		score := 0
+		switch {
+		case len(flags) == 2 && flags[0] == "RU" && flags[1] == "KZ":
+			score = 4
+		case len(flags) == 1 && flags[0] == "KZ":
+			score = 2
+		default:
+			continue
+		}
+		if !strings.Contains(e.Remark, "·") {
+			score++
+		}
+		cs = append(cs, candidate{e.Digest, score})
+	}
+	sort.SliceStable(cs, func(i, j int) bool { return cs[i].score > cs[j].score })
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		out[i] = c.id
+	}
+	return out
+}
+
+// remarkFlags are the country flags in a remark, in order, as ISO codes.
+func remarkFlags(remark string) []string {
+	const a, z = 0x1F1E6, 0x1F1FF
+	rs := []rune(remark)
+	var out []string
+	for i := 0; i+1 < len(rs); i++ {
+		if rs[i] >= a && rs[i] <= z && rs[i+1] >= a && rs[i+1] <= z {
+			out = append(out, string([]rune{'A' + rs[i] - a, 'A' + rs[i+1] - a}))
+			i++
+		}
+	}
+	return out
+}
+
+// aiDefaultApplied is the location «Нейросети» run through while the owner
+// has made no choice, as the router runs it: the default, when the installed
+// render carries it (or the router runs that location itself). The Connect
+// inventory and the router UI report this, never a default a render refused.
+func aiDefaultApplied(cfg agentcfg.Config, ov localctl.Overrides) (string, bool) {
+	cache, err := localctl.LoadEntries(cfg.EntriesPath)
+	if err != nil {
+		return "", false
+	}
+	running, err := vault.ReadFile(cfg.ProviderConfigPath)
+	if err != nil {
+		return "", false
+	}
+	id, raw, ok := aiDefault(ov, cfg.RouteSource, cache, running)
+	if !ok {
+		return "", false
+	}
+	if bytes.Equal(raw, running) {
+		return id, true
+	}
+	render, err := vault.ReadFile(cfg.XrayRenderPath)
+	return id, err == nil && bytes.Contains(render, []byte(`"vctl-connect-ai-`))
 }
 
 func connectDigestIndex(entries []json.RawMessage, id string) (int, error) {
@@ -216,12 +282,9 @@ func connectDigestIndex(entries []json.RawMessage, id string) (int, error) {
 }
 
 // markAIDefault tells the router UI where «Нейросети» go while the owner has
-// made no choice: Kazakhstan, when the subscription has a Kazakh location.
-func markAIDefault(res *uiapi.Services, ov localctl.Overrides, entries []localctl.EntrySummary) {
-	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" {
-		return
-	}
-	if _, ok := pickAIEntry(entries); !ok {
+// made no choice: Kazakhstan, when the router runs them there (aiDefaultApplied).
+func markAIDefault(res *uiapi.Services, applied bool) {
+	if !applied {
 		return
 	}
 	for i := range res.Services {

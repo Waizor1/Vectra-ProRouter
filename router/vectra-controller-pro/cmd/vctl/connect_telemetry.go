@@ -50,6 +50,9 @@ func (d *daemon) publishConnectTelemetry(ctx context.Context, features map[strin
 		in.Overrides = overrides
 	}
 	t := connectSettings(in, connectSetup(ctx))
+	if id, ok := aiDefaultApplied(d.cfg, overrides); ok && settingsErr == nil && t.Services != nil {
+		setConnectServiceEntry(*t.Services, "ai", id, t.Entries) // «Нейросети» through their default
+	}
 	if settingsErr != nil {
 		t.Sites = nil
 		t.Services = nil
@@ -106,16 +109,9 @@ func connectSettings(in uiapi.Inputs, f setup.Facts) controlplane.RouterConnectT
 		ordered = append(ordered, id)
 	}
 	sort.Strings(ordered)
-	aiDefault := ""
-	if in.Index != nil {
-		aiDefault, _ = pickAIEntry(in.Index.Entries)
-	}
 	for _, id := range ordered {
 		s := controlplane.ConnectService{ID: id}
-		entry, chosen := in.Overrides.ServiceEntries[id]
-		if !chosen && id == "ai" && in.Overrides.Services["ai"] == "" {
-			entry = aiDefault // «Нейросети» run through their default location
-		}
+		entry := in.Overrides.ServiceEntries[id]
 		if valid[entry] {
 			e := entry
 			s.EntryID = &e
@@ -136,6 +132,27 @@ func connectSettings(in uiapi.Inputs, f setup.Facts) controlplane.RouterConnectT
 	}
 	return t
 }
+
+// setConnectServiceEntry reports service as running through entry, when the
+// inventory lists that entry.
+func setConnectServiceEntry(services []controlplane.ConnectService, service, entry string, entries *[]controlplane.ConnectEntry) {
+	if entries == nil {
+		return
+	}
+	for _, e := range *entries {
+		if e.ID != entry {
+			continue
+		}
+		for i := range services {
+			if services[i].ID == service && services[i].EntryID == nil {
+				id := entry
+				services[i].EntryID = &id
+			}
+		}
+		return
+	}
+}
+
 func validConnectEntryID(id string) bool {
 	if len(id) != 64 {
 		return false

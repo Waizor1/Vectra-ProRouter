@@ -375,3 +375,27 @@ func TestConnectAIServiceCoversEveryKnownAIDomain(t *testing.T) {
 		})
 	}
 }
+
+// A missing outbound is a dead end xray closes; a missing balancer is a config
+// xray refuses to start — the import refuses it rather than the render.
+func TestConnectServiceRefusesAStageToAMissingBalancer(t *testing.T) {
+	entry := `{
+ "outbounds":[
+  {"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u"}]}]}},
+  {"tag":"stage-wl","protocol":"loopback","settings":{"inboundTag":"STAGE_WL"}}
+ ],
+ "routing":{
+  "balancers":[{"tag":"BL-MAIN","selector":["de-"],"fallbackTag":"stage-wl"}],
+  "rules":[
+   {"inboundTag":["STAGE_WL"],"balancerTag":"BL-NOPE"},
+   {"network":"tcp,udp","balancerTag":"BL-MAIN"}
+  ]
+ }
+}`
+	if _, _, err := xray.Splice([]byte(svcDoc), testTproxy(), xray.SpliceOptions{ServiceEntries: map[string]json.RawMessage{"youtube": json.RawMessage(entry)}}); err == nil {
+		t.Fatal("imported a stage that names a missing balancer")
+	}
+	if err := xray.TrialConnectService([]byte(`{"outbounds":[{"tag":"main","protocol":"vless"}]}`), []byte(entry), "ai"); err == nil {
+		t.Fatal("trial accepted a stage that names a missing balancer")
+	}
+}

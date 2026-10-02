@@ -2,15 +2,26 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/uiapi"
+	"vectra-controller-pro/internal/vault"
 )
 
 func aiTestCache(t *testing.T, remarks ...string) (*daemon, *localctl.EntriesCache) {
+	t.Helper()
+	docs := make([]string, len(remarks))
+	for i := range remarks {
+		docs[i] = `{"outbounds":[{"tag":"n` + string(rune('a'+i)) + `","protocol":"vless"}]}`
+	}
+	return aiTestCacheOf(t, remarks, docs)
+}
+
+func aiTestCacheOf(t *testing.T, remarks, docs []string) (*daemon, *localctl.EntriesCache) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := agentcfg.Config{StatePath: filepath.Join(dir, "state.json")}
@@ -19,7 +30,7 @@ func aiTestCache(t *testing.T, remarks ...string) (*daemon, *localctl.EntriesCac
 	c := &localctl.EntriesCache{}
 	for i, r := range remarks {
 		c.Remarks = append(c.Remarks, r)
-		c.Entries = append(c.Entries, json.RawMessage(`{"outbounds":[{"tag":"n`+string(rune('a'+i))+`","protocol":"vless"}]}`))
+		c.Entries = append(c.Entries, json.RawMessage(docs[i]))
 	}
 	if _, err := localctl.SaveEntries(cfg.EntriesPath, cfg.EntriesIndexPath, c); err != nil {
 		t.Fatal(err)
@@ -29,18 +40,21 @@ func aiTestCache(t *testing.T, remarks ...string) (*daemon, *localctl.EntriesCac
 
 // «Нейросети» go through Kazakhstan unless the owner chose otherwise: the
 // provider's RU→KZ cascade first, its KZ location else, nothing without one.
+// The last flag is the exit: «🇰🇿🇷🇺» leaves in Russia.
 func TestTheAIServiceDefaultsToTheKazakhCascade(t *testing.T) {
 	for name, tc := range map[string]struct {
 		remarks []string
 		want    int
 	}{
-		"cascade first":  {[]string{"🇷🇺🇪🇺 Авто", "🇰🇿 Казахстан", "🇷🇺🇰🇿 Казахстан", "🇰🇿 Gemini · Google"}, 2},
-		"KZ without one": {[]string{"🇷🇺🇪🇺 Авто", "🇰🇿 Gemini · Google", "🇰🇿 Казахстан"}, 2},
-		"no KZ, nothing": {[]string{"🇷🇺🇪🇺 Авто", "🇩🇪 Германия"}, -1},
+		"cascade first":       {[]string{"🇷🇺🇪🇺 Авто", "🇰🇿 Казахстан", "🇷🇺🇰🇿 Казахстан", "🇰🇿 Gemini · Google"}, 2},
+		"plain cascade first": {[]string{"🇷🇺🇰🇿 Gemini · Google", "🇷🇺🇰🇿 Казахстан"}, 1},
+		"KZ without one":      {[]string{"🇷🇺🇪🇺 Авто", "🇰🇿 Gemini · Google", "🇰🇿 Казахстан"}, 2},
+		"exit in Russia":      {[]string{"🇰🇿🇷🇺 Обратный", "🇩🇪 Германия"}, -1},
+		"no KZ, nothing":      {[]string{"🇷🇺🇪🇺 Авто", "🇩🇪 Германия"}, -1},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, c := aiTestCache(t, tc.remarks...)
-			id, ok := defaultAIEntry(c)
+			d, c := aiTestCache(t, tc.remarks...)
+			id, _, ok := aiDefault(localctl.Overrides{}, d.cfg.RouteSource, c, []byte(`{"outbounds":[{"tag":"main","protocol":"vless"}]}`))
 			if tc.want < 0 {
 				if ok {
 					t.Fatalf("picked %s with no Kazakh location", id)
@@ -83,6 +97,16 @@ func TestTheAIDefaultYieldsToTheOwner(t *testing.T) {
 			}
 		}
 	}
+	// «As the main VPN» needs no location, so no cache either.
+	if err := os.Remove(d.cfg.EntriesPath); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := d.connectServiceOptionsFor(localctl.Overrides{ServiceEntries: map[string]string{"ai": localctl.ServiceMainPath}}, running); err != nil || got != nil {
+		t.Fatalf("main VPN without a cache: %v %v", got, err)
+	}
+	if _, err := localctl.SaveEntries(d.cfg.EntriesPath, d.cfg.EntriesIndexPath, c); err != nil {
+		t.Fatal(err)
+	}
 	// A router that runs the cascade itself needs no second copy of it.
 	if got, _ := d.connectServiceOptionsFor(localctl.Overrides{}, c.Entries[1]); got["ai"] != nil {
 		t.Fatal("overlaid the running location on itself")
@@ -113,16 +137,68 @@ func TestChoosingTheMainVPNForTheAIServiceIsKept(t *testing.T) {
 	}
 }
 
-func TestTheRouterUIShowsKazakhstanAsTheAIDefault(t *testing.T) {
-	_, c := aiTestCache(t, "🇷🇺🇪🇺 Авто", "🇷🇺🇰🇿 Казахстан")
-	res := uiapi.Services{Services: []uiapi.ServiceInfo{{ID: "youtube"}, {ID: "ai"}}}
-	markAIDefault(&res, localctl.Overrides{}, localctl.Summarize(c))
-	if res.Services[1].DefaultCountry == nil || *res.Services[1].DefaultCountry != "KZ" || res.Services[0].DefaultCountry != nil {
-		t.Fatalf("%+v", res.Services)
+// An unchosen default never refuses a render and never unproxies the AI
+// sites: a location whose AI path ends DIRECT, or that would not import (no
+// path that tunnels — the provider's whitelist chain without the cascade's
+// own AI rule), is skipped for the next, and with none there is no default.
+func TestAnAIDefaultThatWouldGoDirectOrNotImportIsSkipped(t *testing.T) {
+	const direct = `{"outbounds":[{"tag":"kz-1","protocol":"vless"},{"tag":"DIRECT","protocol":"freedom"}],
+ "routing":{"balancers":[{"tag":"BL-MAIN","selector":["kz-"],"fallbackTag":"DIRECT"}],
+  "rules":[{"domain":["domain:chatgpt.com"],"balancerTag":"BL-MAIN"}]}}`
+	const unimportable = `{"outbounds":[{"tag":"kz-2","protocol":"vless"},{"tag":"stage-wl","protocol":"loopback","settings":{"inboundTag":"STAGE_WL"}},{"tag":"DIRECT","protocol":"freedom"}],
+ "routing":{"balancers":[{"tag":"BL-MAIN","selector":["kz-"],"fallbackTag":"stage-wl"},{"tag":"BL-WL","selector":["whitelist-"],"fallbackTag":"whitelist-lv3"}],
+  "rules":[{"inboundTag":["STAGE_WL"],"balancerTag":"BL-WL"},{"network":"tcp,udp","balancerTag":"BL-MAIN"}]}}`
+	const chain = `{"outbounds":[{"tag":"kz-3","protocol":"vless"},{"tag":"stage-wl","protocol":"loopback","settings":{"inboundTag":"STAGE_WL"}},{"tag":"DIRECT","protocol":"freedom"}],
+ "routing":{"balancers":[{"tag":"BL-MAIN","selector":["kz-"],"fallbackTag":"stage-wl"},{"tag":"BL-WL","selector":["whitelist-"],"fallbackTag":"whitelist-lv3"}],
+  "rules":[{"inboundTag":["STAGE_WL"],"balancerTag":"BL-WL"},{"domain":["domain:chatgpt.com"],"balancerTag":"BL-MAIN"},{"network":"tcp,udp","balancerTag":"BL-MAIN"}]}}`
+	const main = `{"outbounds":[{"tag":"main","protocol":"vless"}]}`
+	d, c := aiTestCacheOf(t,
+		[]string{"🇷🇺🇪🇺 Авто", "🇷🇺🇰🇿 Казахстан", "🇷🇺🇰🇿 Казахстан 2", "🇰🇿 Казахстан"},
+		[]string{main, direct, unimportable, chain})
+	got, err := d.connectServiceOptionsFor(localctl.Overrides{}, c.Entries[0])
+	if err != nil || string(got["ai"]) != chain {
+		t.Fatalf("took %s (%v), want the whitelist chain that ends closed", got["ai"], err)
 	}
-	res = uiapi.Services{Services: []uiapi.ServiceInfo{{ID: "ai"}}}
-	markAIDefault(&res, localctl.Overrides{ServiceEntries: map[string]string{"ai": localctl.ServiceMainPath}}, localctl.Summarize(c))
-	if res.Services[0].DefaultCountry != nil {
-		t.Fatal("Kazakhstan shown for an owner who chose the main VPN")
+	d, c = aiTestCacheOf(t, []string{"🇷🇺🇪🇺 Авто", "🇷🇺🇰🇿 Казахстан", "🇰🇿 Казахстан"}, []string{main, direct, unimportable})
+	if got, err := d.connectServiceOptionsFor(localctl.Overrides{}, c.Entries[0]); err != nil || got != nil {
+		t.Fatalf("a default that goes direct or does not import: %v %v", got, err)
+	}
+}
+
+// The router UI and the Connect inventory say «Kazakhstan» only for a default
+// the installed render carries.
+func TestTheAIDefaultIsReportedOnlyWhenTheRenderCarriesIt(t *testing.T) {
+	d, c := aiTestCache(t, "🇷🇺🇪🇺 Авто", "🇷🇺🇰🇿 Казахстан")
+	dir := t.TempDir()
+	d.cfg.ProviderConfigPath = filepath.Join(dir, "provider.json")
+	d.cfg.XrayRenderPath = filepath.Join(dir, "xray.json")
+	if err := vault.WriteFile(d.cfg.ProviderConfigPath, c.Entries[0]); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		render string
+		ov     localctl.Overrides
+		want   bool
+	}{
+		{`{"routing":{"balancers":[{"tag":"vctl-connect-ai-x"}]}}`, localctl.Overrides{}, true},
+		{`{"routing":{"balancers":[]}}`, localctl.Overrides{}, false}, // the render refused it
+		{`{"routing":{"balancers":[{"tag":"vctl-connect-ai-x"}]}}`, localctl.Overrides{ServiceEntries: map[string]string{"ai": localctl.ServiceMainPath}}, false},
+	} {
+		if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(tc.render)); err != nil {
+			t.Fatal(err)
+		}
+		id, ok := aiDefaultApplied(d.cfg, tc.ov)
+		if ok != tc.want || (ok && id != localctl.Summarize(c)[1].Digest) {
+			t.Fatalf("render %s, %+v: %q %v", tc.render, tc.ov, id, ok)
+		}
+		res := uiapi.Services{Services: []uiapi.ServiceInfo{{ID: "youtube"}, {ID: "ai"}}}
+		markAIDefault(&res, ok)
+		if (res.Services[1].DefaultCountry != nil) != tc.want || res.Services[0].DefaultCountry != nil {
+			t.Fatalf("UI: %+v", res.Services)
+		}
+	}
+	d.cfg.RouteSource = "passwall" // a router on another engine renders no services
+	if _, ok := aiDefaultApplied(d.cfg, localctl.Overrides{}); ok {
+		t.Fatal("reported a default on a router that renders no services")
 	}
 }

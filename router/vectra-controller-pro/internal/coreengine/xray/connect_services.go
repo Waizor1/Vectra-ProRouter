@@ -41,6 +41,75 @@ func ValidateConnectServiceEntry(raw []byte, id string) error {
 	return nil
 }
 
+// TrialConnectService is ValidateConnectServiceEntry for a location the
+// router picks by itself («Нейросети» through Kazakhstan): no owner chose it,
+// so it must import into base exactly as a render would, and no way out of
+// its path may go direct. A default that fails is no default — it never
+// refuses the render it would join, and never unproxies a service.
+func TrialConnectService(base, raw []byte, id string) error {
+	if err := ValidateConnectServiceEntry(raw, id); err != nil {
+		return err
+	}
+	s, _ := ServiceByID(id)
+	v, _ := xrayview.Parse(raw)
+	p, _ := connectServicePath(raw, v, s)
+	if !neverDirect(v, providerRules(raw), p.target, p.isBalancer, 8) {
+		return errors.New("service_path_not_tunnel")
+	}
+	var trial servicePlan
+	return addConnectServices(&trial, base, map[string]json.RawMessage{id: raw}, "vctl-trial")
+}
+
+// neverDirect: no way out of target leaves the tunnel. A balancer's members
+// and its fallback (without one, xray's default handler) are followed, and a
+// loopback's stage when one plain rule takes it. A proxy, a blackhole and a
+// tag the document lacks (xray closes the connection) end a way well;
+// freedom, a stage decided by conditions, or a graph too deep to follow
+// does not.
+func neverDirect(v *xrayview.View, rules []map[string]json.RawMessage, target string, isBalancer bool, depth int) bool {
+	if depth == 0 {
+		return false
+	}
+	if isBalancer {
+		b := v.Balancer(target)
+		if b == nil {
+			return false
+		}
+		for _, m := range b.Members {
+			if !neverDirect(v, rules, m, false, depth-1) {
+				return false
+			}
+		}
+		if b.FallbackTag != "" {
+			return neverDirect(v, rules, b.FallbackTag, false, depth-1)
+		}
+		return v.Default != nil && (v.Default.Dials || strings.EqualFold(v.Default.Protocol, "blackhole"))
+	}
+	o := v.Outbound(target)
+	switch {
+	case o == nil:
+		return true
+	case o.Dials, strings.EqualFold(o.Protocol, "blackhole"):
+		return true
+	case strings.EqualFold(o.Protocol, "loopback") && o.LoopbackInbound != "":
+		for _, r := range rules {
+			if !slices.Contains(jsonStrings(ruleField(r, "inboundTag")), o.LoopbackInbound) {
+				continue
+			}
+			if !onlyMatcher(r, "inboundTag") {
+				return false
+			}
+			if t := jsonString(ruleField(r, "balancerTag")); t != "" {
+				return neverDirect(v, rules, t, true, depth-1)
+			}
+			return neverDirect(v, rules, jsonString(ruleField(r, "outboundTag")), false, depth-1)
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 // connectServicePath is where a location chosen in the Vectra app sends a
 // service. The location's own rule for it decides, as in the router's own
 // service choice. A one-country location has none — everything that is not
@@ -337,10 +406,13 @@ func addConnectServices(p *servicePlan, base []byte, entries map[string]json.Raw
 				inbounds[i] = prefix + tag
 			}
 			rule["inboundTag"] = marshalNoEscape(inbounds)
+			if tag := jsonString(rule["balancerTag"]); tag != "" && tags[tag] == "" {
+				return errors.New("unsupported_entry_graph") // xray refuses a missing balancer
+			}
 			for _, field := range []string{"outboundTag", "balancerTag"} {
 				if tag := jsonString(rule[field]); tag != "" {
-					// Namespaced like every tag; one the location lacks still
-					// names nothing, as in the provider's document.
+					// Namespaced like every tag; an outbound the location
+					// lacks still names nothing, as in the provider's document.
 					rule[field] = marshalNoEscape(prefix + tag)
 				}
 			}
@@ -374,8 +446,9 @@ func addConnectServices(p *servicePlan, base []byte, entries map[string]json.Raw
 // the rules on its inbound and their targets. A provider's location also
 // carries balancers it never uses (a selector naming no node it has, a
 // fallback to a tag it lacks); xray ignores them, and so does the import.
-// Whatever is reached keeps every reference it makes, so a broken reached
-// graph is still refused further on.
+// Whatever is reached keeps every reference it makes: an outbound it lacks
+// stays a dead end (xray closes such a connection), a balancer it lacks is
+// refused further on.
 func reachedGraph(outbounds, balancers, rules []map[string]json.RawMessage, target string, v *xrayview.View) ([]map[string]json.RawMessage, []map[string]json.RawMessage, []map[string]json.RawMessage) {
 	outByTag := map[string]map[string]json.RawMessage{}
 	for _, o := range outbounds {
