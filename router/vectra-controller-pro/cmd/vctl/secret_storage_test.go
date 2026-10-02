@@ -307,3 +307,42 @@ func TestTheNextStartSurvivesAHandBackToTheOldAgent(t *testing.T) {
 		}
 	}
 }
+
+// The render is derived: one that cannot be opened (damaged, plaintext put
+// over the sealed copy) is retired and never read; vctl still starts. A
+// sealed document that cannot be opened still refuses the start.
+func TestADamagedRenderIsRetiredButADamagedSecretRefusesTheStart(t *testing.T) {
+	dir := t.TempDir()
+	c := agentcfg.Config{StatePath: filepath.Join(dir, "state.json"), XrayConfigPath: filepath.Join(dir, "operator.json"), ProviderConfigPath: filepath.Join(dir, "provider.json"), XrayRenderPath: filepath.Join(dir, "run", "xray.json"), EntriesPath: filepath.Join(dir, "entries.gz")}
+	c.Defaults()
+	provider := []byte(`{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"node.invalid","port":443,"users":[{"id":"11111111-2222-4333-8444-555555555555"}]}]}}]}`)
+	for _, p := range []string{c.ProviderConfigPath, c.XrayRenderPath} {
+		_ = os.MkdirAll(filepath.Dir(p), 0o700)
+		if err := os.WriteFile(p, provider, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateSecrets(c); err != nil {
+		t.Fatal(err)
+	}
+	// Plaintext over the sealed render: retired, not read, start goes on.
+	if err := os.WriteFile(c.XrayRenderPath, []byte(`{"outbounds":[{"protocol":"freedom","tag":"SYNTHETIC_INJECTED"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSecrets(c); err != nil {
+		t.Fatalf("a damaged render refused the start: %v", err)
+	}
+	if b, err := os.ReadFile(c.XrayRenderPath); err == nil && bytes.Contains(b, []byte("SYNTHETIC_INJECTED")) {
+		t.Fatal("the injected render is still there")
+	}
+	if err := vault.WriteFile(c.XrayRenderPath, provider); err != nil {
+		t.Fatalf("the next apply cannot write the render again: %v", err)
+	}
+	// Plaintext over the sealed provider document: refused, never read.
+	if err := os.WriteFile(c.ProviderConfigPath, provider, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSecrets(c); err == nil {
+		t.Fatal("plaintext over a sealed secret was accepted")
+	}
+}

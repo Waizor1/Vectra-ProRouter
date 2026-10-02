@@ -279,6 +279,10 @@ const xrayGOGC = 30
 
 func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 	if err := migrateSecrets(cfg); err != nil {
+		// Not started: no secret is read and none is written in plaintext.
+		// The dead-man hands the router back if it owes it, and the reporter
+		// tells the operator either way.
+		reportSecretStorage("secret_storage_migration_failed", "error", "vctl did not start: its secrets could not be sealed", err)
 		return nil, fmt.Errorf("secret storage migration: %w", err)
 	}
 	st, err := state.Load(cfg.StatePath)

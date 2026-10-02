@@ -43,10 +43,20 @@ func migrateSecrets(c agentcfg.Config) error {
 	if err := vault.MigrateFile(c.XrayConfigPath, operator); err != nil {
 		return err
 	}
-	for _, p := range []string{c.ProviderConfigPath, passwallDocumentPath(c.ProviderConfigPath), c.XrayRenderPath} {
+	for _, p := range []string{c.ProviderConfigPath, passwallDocumentPath(c.ProviderConfigPath)} {
 		if err := vault.MigrateFile(p, validateJSON); err != nil {
 			return err
 		}
+	}
+	// The render is derived — the next apply writes it again from the sealed
+	// documents. One that cannot be sealed or opened (damaged, its tmpfs key
+	// gone, plaintext put over it) is retired, never read, and never a reason
+	// for the router to lose its controller.
+	if err := vault.MigrateFile(c.XrayRenderPath, validateJSON); err != nil {
+		if e := vault.RemoveFile(c.XrayRenderPath); e != nil {
+			return err
+		}
+		logging.L().Warn("the installed render could not be sealed; retired, the next apply writes it again", "err", err.Error())
 	}
 	if err := localctl.MigrateEntries(c.EntriesPath); err != nil {
 		return err
@@ -85,10 +95,17 @@ func legacyReadsSealed() bool {
 // reporter's inbox.
 func reportLegacyUnsealed(err error) {
 	logging.L().Warn("the old agent's state was left unsealed", "err", err.Error())
+	reportSecretStorage("legacy_state_unsealed", "warning", "the old agent's credentials were left in plaintext", err)
+}
+
+// reportSecretStorage puts a secret-storage failure in the reporter's inbox:
+// the reporter is a process of its own, so the operator hears of it even when
+// vctl does not start. The vault's errors name paths and causes, never
+// contents.
+func reportSecretStorage(code, severity, title string, err error) {
 	incident.NewRecorder(incident.Dir, time.Hour).Record(incident.Incident{
-		Code: "legacy_state_unsealed", Severity: "warning", Key: "legacy-state",
-		Title: "the old agent's credentials were left in plaintext",
-		At:    time.Now(), Source: "vctl",
+		Code: code, Severity: severity, Key: code, Title: title,
+		At: time.Now(), Source: "vctl",
 		Details: map[string]any{"error": err.Error()},
 	})
 }
