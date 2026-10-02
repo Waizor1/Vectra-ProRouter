@@ -25,6 +25,7 @@ import {
   readRawBody,
   type PartnerApiDeps,
 } from "./partner-api";
+import { PARTNER_ACTION_DEDUPE_PREFIX } from "./partner-action-key";
 import { keyedDigest } from "./secrets";
 import {
   canRunDestructiveAction,
@@ -35,7 +36,6 @@ type Client = Pick<typeof db, "select" | "insert" | "update" | "transaction">;
 type Router = typeof routers.$inferSelect;
 type Inventory = typeof routerInventorySnapshots.$inferSelect;
 export const PARTNER_ACTION_ORIGIN = "partner_action";
-import { PARTNER_ACTION_DEDUPE_PREFIX } from "./partner-action-key";
 export { PARTNER_ACTION_DEDUPE_PREFIX };
 /** payload.cancelledBy of a job the partner itself cancelled. */
 export const PARTNER_CANCELLED_BY = "partner";
@@ -391,8 +391,7 @@ export async function cancelPartnerActionWithDb(
     // Only this owner's own action on this router counts; anything else under
     // the key is not something that will run for this owner here.
     if (
-      !job ||
-      job.routerId !== router.id ||
+      job?.routerId !== router.id ||
       job.payload.origin !== PARTNER_ACTION_ORIGIN ||
       job.payload.ownerRef !== input.ownerRef
     )
