@@ -2125,11 +2125,15 @@ export async function recordJobResult(routerId: string, input: unknown) {
     parsed.appliedRevisionId ?? job.desiredRevisionId ?? null;
 
   if (appliedRevisionId && parsed.status !== "accepted") {
-    const [revision] = await db
+    const [candidate] = await db
       .select()
       .from(passwallDesiredRevisions)
       .where(eq(passwallDesiredRevisions.id, appliedRevisionId))
       .limit(1);
+    // The id may come from the router. Another router's revision is treated
+    // as unknown: recording it here would make that router's config (and its
+    // secrets) this router's active revision.
+    const revision = candidate?.routerId === routerId ? candidate : undefined;
 
     if (revision) {
       const resultState = parsed.status === "success" ? "applied" : "failed";

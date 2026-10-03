@@ -3,6 +3,7 @@ import {
   healthIncidents,
   jobs,
   partnerWebhooks,
+  passwallAppliedRevisions,
   passwallDesiredRevisions,
   routerCredentials,
   routerInventorySnapshots,
@@ -755,7 +756,7 @@ describe("recordJobResult reports a claim's first apply to the backend", () => {
         [routers, [[router]]],
         [
           passwallDesiredRevisions,
-          [[{ id: REVISION_ID, engineMode: "xray-direct", configDigest: "d", config: {} }]],
+          [[{ id: REVISION_ID, routerId: ROUTER_ID, engineMode: "xray-direct", configDigest: "d", config: {} }]],
         ],
       ],
       updateReturns: [[routers, [[router]]]],
@@ -913,5 +914,100 @@ describe("selectDeliverableJobsForCheckIn — rename on xray-direct", () => {
         "passwall",
       ).map((job) => job.id),
     ).toEqual(["rename", "shell"]);
+  });
+});
+
+// appliedRevisionId in a job result comes from the router. Another router's
+// revision must be ignored: recording it would make that router's config (and
+// its secrets) this router's active revision.
+describe("recordJobResult and revision ownership", () => {
+  const OTHER_ROUTER_ID = "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d";
+  const FOREIGN_REVISION_ID = "3e4f5a6b-7c8d-4e9f-8a0b-1c2d3e4f5a6b";
+
+  function scriptApply(revisionOwner: string, revisionId: string) {
+    const router = routerRow({
+      approvedAt: new Date(),
+      importState: "approved",
+      status: "active",
+    });
+    fake.reset({
+      selects: [
+        [
+          jobs,
+          [
+            [
+              {
+                id: JOB_ID,
+                routerId: ROUTER_ID,
+                type: "apply_passwall_config",
+                state: "running",
+                payload: {},
+                desiredRevisionId: null,
+                dedupeKey: null,
+                deliveredAt: new Date(),
+                createdAt: new Date(),
+              },
+            ],
+          ],
+        ],
+        [routers, [[router]]],
+        [
+          passwallDesiredRevisions,
+          [
+            [
+              {
+                id: revisionId,
+                routerId: revisionOwner,
+                engineMode: "passwall",
+                configDigest: "digest",
+                config: {},
+              },
+            ],
+          ],
+        ],
+      ],
+      updateReturns: [[routers, [[router]]]],
+    });
+  }
+
+  const success = (appliedRevisionId: string) => ({
+    protocolVersion: "2026-04-v1",
+    routerId: ROUTER_ID,
+    jobId: JOB_ID,
+    status: "success",
+    appliedRevisionId,
+  });
+
+  it("ignores a revision that belongs to another router", async () => {
+    scriptApply(OTHER_ROUTER_ID, FOREIGN_REVISION_ID);
+
+    const answer = await recordJobResult(
+      ROUTER_ID,
+      success(FOREIGN_REVISION_ID),
+    );
+
+    expect(answer.acknowledged).toBe(true);
+    expect(fake.inserts(passwallAppliedRevisions)).toEqual([]);
+    expect(fake.updates(passwallDesiredRevisions)).toEqual([]);
+    expect(
+      fake.updates(routers).filter((set) => "activeRevisionId" in set),
+    ).toEqual([]);
+  });
+
+  it("records the router's own revision as applied", async () => {
+    scriptApply(ROUTER_ID, REVISION_ID);
+
+    await recordJobResult(ROUTER_ID, success(REVISION_ID));
+
+    expect(fake.inserts(passwallAppliedRevisions)).toEqual([
+      expect.objectContaining({
+        routerId: ROUTER_ID,
+        desiredRevisionId: REVISION_ID,
+        result: "applied",
+      }),
+    ]);
+    expect(
+      fake.updates(routers).filter((set) => "activeRevisionId" in set),
+    ).toEqual([expect.objectContaining({ activeRevisionId: REVISION_ID })]);
   });
 });

@@ -339,13 +339,21 @@ async function getHydratedRouterConfig(
   routerId: string,
   preferredRevisionId: string | null | undefined,
 ) {
+  // Scoped to the router: lastAppliedRevisionId is whatever the router last
+  // reported, and another router's revision must never be hydrated (secrets
+  // included) into this router's rollout.
   const revision =
     preferredRevisionId
       ? (
           await client
             .select()
             .from(passwallDesiredRevisions)
-            .where(eq(passwallDesiredRevisions.id, preferredRevisionId))
+            .where(
+              and(
+                eq(passwallDesiredRevisions.id, preferredRevisionId),
+                eq(passwallDesiredRevisions.routerId, routerId),
+              ),
+            )
             .limit(1)
         )[0] ?? null
       : null;
