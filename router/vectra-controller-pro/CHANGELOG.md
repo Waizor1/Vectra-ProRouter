@@ -9,41 +9,52 @@
   the level until the log filled RAM, switch on the DNS log, open a reverse
   tunnel into the LAN, move where xray reads its files from (`env`), or
   write a line of its choosing into the router's log with a newline in a
-  tag. Now `log` is the router's whole; the top level is an allowlist
-  (`dns`, `routing`, `outbounds`, `policy`, `stats`, `observatory`,
-  `burstObservatory`, `remarks`, `version`, `fakedns` inside xray's own
-  ranges; `log` and `inbounds` replaced) matched as xray matches keys, in
-  any spelling; `api`, `metrics`, `reverse`, `env`, `transport` and any
-  other key refuse the document. So do, anywhere in it, `reverse`, a
-  freedom outbound's `redirect`, a field naming a file (`certificateFile`,
-  `keyFile`, …), `masterKeyLog`, a geo list read from outside xray's asset
-  directory, and a tag, selector or key with a control character or longer
-  than 256 bytes. With DNS through the tunnel, `dns.hosts` may not answer
-  for the panel or NTP. A refused document is not applied: the router keeps
-  the config it runs. The installed render is redone once at the start.
+  tag. Now `log` is the router's whole, and the rest is sorted in two:
+  - **refused** — `reverse` anywhere, a freedom outbound's `redirect`, a TLS
+    certificate or key *file* and `masterKeyLog`, a geo list read from
+    outside xray's asset directory, a tag, selector or key with a control
+    character or longer than 256 bytes, a FakeDNS pool outside xray's own
+    ranges. The router keeps the render it runs;
+  - **dropped, the rest applied** (one warning line) — every top-level key
+    outside `dns`, `routing`, `outbounds`, `policy`, `stats`,
+    `observatory`, `burstObservatory`, `remarks`, `version`, `fakedns` (and
+    `log`, `inbounds`, replaced): `api`, `metrics`, `env`, `transport`,
+    `$schema`, `assets` (one real entry carries it), any key xray learns
+    later — in any spelling; and, with DNS through the tunnel, `dns.hosts`
+    entries over the panel or NTP.
   What is allowed and why: `internal/coreengine/xray/provider_guard.go`,
   docs/SECURITY.md.
+- **A refusal never costs the data plane.** Every render xray took is kept
+  sealed on flash (`xray-last-good.json`, written only when it changes);
+  after a reboot that cannot make the render again from the provider's
+  document — refused since, or gone — that render runs. Incidents say
+  which (`PROVIDER_REFUSED`, `PROVIDER_PARTS_DROPPED`,
+  `RENDER_RESUME_FALLBACK`, `RENDER_RESUME_FAILED`). The installed render is
+  redone once at the start, under the guard.
 - **Nothing speaks to xray's TPROXY port directly.** One connection to the
   router's own address on that port made xray proxy into itself until it
   ran out of descriptors. Such packets are dropped ahead of fw4
-  (`vctl_inbound_guard`); what TPROXY delivers is untouched.
+  (`vctl_inbound_guard`), in a connection's original direction only; what
+  TPROXY delivers, and answers to the router's own sockets, are untouched.
 - **xray never dials into the LAN.** A sniffed `Host: 192.168.1.1` or a
   provider's connection sent there is dropped on its way out to br-lan or a
   guest bridge (`vctl_lan_dial`); xray's answers to the LAN's own
-  connections pass.
+  connections pass. Its limits are in docs/SECURITY.md.
 
 ### Fixed
 - **No zombie per firewall programming.** The commit-confirm dead-man was
   released, never waited for: the test router had two zombies after 20 h.
 - **A check-in that changed nothing writes nothing to flash.** state.json
   and its last-good copy were sealed and written twice a minute (~5.7k
-  writes a day), nearly always the same bytes.
+  writes a day), nearly always the same bytes. A missing copy of either is
+  written again.
 - **Maps of the provider's names forget the names it dropped:** the exits'
   countries (kept in state.json for good), the watchdog's last answer per
   node and last resolution per name, and «Нейросети» refusals per document.
 - **Connect action receipts fit the router's flash:** their budget was 64 MB
-  against ~18 MB of free overlay; it is 2 MB, and a receipt older than 90
-  days goes when the archive is next written.
+  against ~18 MB of free overlay; it is 2 MB, a receipt older than 90 days
+  goes when the archive is next written, and a full budget makes room by
+  the oldest receipts — it never refuses the owner's next action.
 - **An update's package does not stay in RAM.** It is removed however the
   update ends; at the daemon's start vctl removes its own leftovers in RAM
   (update packages, the vault's temp files — by exact names, older than ten
