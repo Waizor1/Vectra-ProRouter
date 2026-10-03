@@ -828,8 +828,9 @@ func TestATakeoverFromPassWallThatCarriesNothingGivesTheRouterBack(t *testing.T)
 }
 
 // PassWall2 switched off by the takeover is still PassWall2 that carried the
-// traffic: its breadcrumbs say so — the switch's or the rc.d link's, on /etc
-// or a trial's tmpfs. Switched off by its owner, there are none: no route.
+// traffic: the switch's breadcrumb says so, on /etc or a trial's tmpfs.
+// Switched off by its owner there is none — and the rc.d link's breadcrumb,
+// written for an enabled link whatever the switch, proves nothing: no route.
 func TestAutoPassWallOnlyWherePassWallCarried(t *testing.T) {
 	r := fleet(t)
 	r.unconfigure(true)
@@ -842,8 +843,9 @@ func TestAutoPassWallOnlyWherePassWallCarried(t *testing.T) {
 	}
 	for _, crumb := range []string{r.marker(switchMarker), r.marker(passwallMarker), r.trialMarker(switchMarker), r.trialMarker(passwallMarker)} {
 		r.write(crumb)
-		if !AutoPassWall("", r.env.OperatorConfig, r.env.PassWallRoutes()) {
-			t.Errorf("taken over (%s), not routed by", crumb)
+		want := filepath.Base(crumb) == switchMarker
+		if got := AutoPassWall("", r.env.OperatorConfig, r.env.PassWallRoutes()); got != want {
+			t.Errorf("breadcrumb %s: routed by %v, want %v", crumb, got, want)
 		}
 		if err := os.Remove(crumb); err != nil {
 			t.Fatal(err)

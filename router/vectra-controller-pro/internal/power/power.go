@@ -386,9 +386,10 @@ type PassWallRoutes struct {
 //     "": the provider's, the default);
 //   - PassWall2's generator installed;
 //   - PassWall2 on: its own switch on now (before the takeover), or the
-//     takeover's breadcrumb saying it was — its switch or its rc.d link,
-//     which the takeover turns off and notes. A PassWall2 an owner had
-//     switched off routes nothing here either;
+//     takeover's breadcrumb saying it was (PASSWALL_SWITCH_MARKER, written
+//     only for a switch that was on). Its rc.d link's breadcrumb proves
+//     nothing: the link can be enabled with the switch off. A PassWall2 an
+//     owner had switched off routes nothing here either;
 //   - its global node naming a node its configuration has.
 //
 // Otherwise vctl does as before 0.7.0-r14: it waits for its setup.
@@ -411,8 +412,11 @@ func AutoPassWall(routeSource, operatorConfig string, pw PassWallRoutes) bool {
 	if g[0].Get("enabled") == "1" {
 		return true
 	}
+	// The switch's breadcrumb only: the takeover writes it only for a switch
+	// that was on. Not the rc.d link's — written for an enabled link whatever
+	// the switch, and a PassWall2 started with its switch off runs nothing.
 	for _, d := range pw.MarkerDirs {
-		if d != "" && (exists(filepath.Join(d, passwallMarker)) || exists(filepath.Join(d, switchMarker))) {
+		if d != "" && exists(filepath.Join(d, switchMarker)) {
 			return true
 		}
 	}

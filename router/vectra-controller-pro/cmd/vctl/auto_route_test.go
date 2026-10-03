@@ -235,6 +235,25 @@ func TestAPassWallItsOwnerSwitchedOffIsNotRoutedBy(t *testing.T) {
 	}
 }
 
+// The rc.d link's breadcrumb alone — an enabled link, PassWall2's own switch
+// off (LuCI's main switch): the takeover notes the link, and that PassWall2
+// carried nothing. No auto route.
+func TestTheRcdBreadcrumbAloneIsNoProof(t *testing.T) {
+	markers := passwallRouter(t)
+	if err := os.Remove(filepath.Join(markers, ".passwall-switch-off-by-vctl")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(markers, ".passwall-disabled-by-vctl"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	provider := newProviderStub(t, providerEntry(t))
+	d := newTestDaemon(t, dir, newPanelStub(t, operatorConfigPointingAt(t, provider.URL)), provider)
+	if d.autoRoute || d.desired != nil || d.cfg.RouteSource != "" {
+		t.Fatalf("auto %v, operator config %v, route source %q", d.autoRoute, d.desired != nil, d.cfg.RouteSource)
+	}
+}
+
 // startAuto starts a daemon that routes by PassWall2 of itself (one loop:
 // its render, xray on it) against a panel whose operator config points at
 // subscription.
