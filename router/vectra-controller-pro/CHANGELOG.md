@@ -1,5 +1,65 @@
 # Changelog
 
+## vctl 0.7.0-r12 — before the public launch: the provider decides nothing on the router, nothing leaks, the tune goes deeper
+
+### Security
+- **The provider's document no longer decides files, ports or log lines on
+  the router.** Only `log.access` of the subscription's document was
+  rewritten: the provider could point xray's error log at a file, raise
+  the level until the log filled RAM, switch on the DNS log, open a reverse
+  tunnel into the LAN, move where xray reads its files from (`env`), or
+  write a line of its choosing into the router's log with a newline in a
+  tag. Now `log` is the router's whole; the top level is an allowlist
+  (`dns`, `routing`, `outbounds`, `policy`, `stats`, `observatory`,
+  `burstObservatory`, `remarks`, `version`, `fakedns` inside xray's own
+  ranges; `log` and `inbounds` replaced) matched as xray matches keys, in
+  any spelling; `api`, `metrics`, `reverse`, `env`, `transport` and any
+  other key refuse the document. So do, anywhere in it, `reverse`, a
+  freedom outbound's `redirect`, a field naming a file (`certificateFile`,
+  `keyFile`, …), `masterKeyLog`, a geo list read from outside xray's asset
+  directory, and a tag, selector or key with a control character or longer
+  than 256 bytes. With DNS through the tunnel, `dns.hosts` may not answer
+  for the panel or NTP. A refused document is not applied: the router keeps
+  the config it runs. The installed render is redone once at the start.
+  What is allowed and why: `internal/coreengine/xray/provider_guard.go`,
+  docs/SECURITY.md.
+- **Nothing speaks to xray's TPROXY port directly.** One connection to the
+  router's own address on that port made xray proxy into itself until it
+  ran out of descriptors. Such packets are dropped ahead of fw4
+  (`vctl_inbound_guard`); what TPROXY delivers is untouched.
+- **xray never dials into the LAN.** A sniffed `Host: 192.168.1.1` or a
+  provider's connection sent there is dropped on its way out to br-lan or a
+  guest bridge (`vctl_lan_dial`); xray's answers to the LAN's own
+  connections pass.
+
+### Fixed
+- **No zombie per firewall programming.** The commit-confirm dead-man was
+  released, never waited for: the test router had two zombies after 20 h.
+- **A check-in that changed nothing writes nothing to flash.** state.json
+  and its last-good copy were sealed and written twice a minute (~5.7k
+  writes a day), nearly always the same bytes.
+- **Maps of the provider's names forget the names it dropped:** the exits'
+  countries (kept in state.json for good), the watchdog's last answer per
+  node and last resolution per name, and «Нейросети» refusals per document.
+- **Connect action receipts fit the router's flash:** their budget was 64 MB
+  against ~18 MB of free overlay; it is 2 MB, and a receipt older than 90
+  days goes when the archive is next written.
+- **An update's package does not stay in RAM.** It is removed however the
+  update ends; at the daemon's start vctl removes its own leftovers in RAM
+  (update packages, the vault's temp files — by exact names, older than ten
+  minutes, open in no process).
+
+### Improved
+- **The tune goes deeper, with the same safeguards** (only what nobody set
+  otherwise, a backup first, `vctl tune undo`, `tune '0'`, one log line per
+  change): busybox crond's log level 9 (`cron_loglevel`: every job it ran
+  pushed the log out of logread's 64 KB), vctl's leftovers in RAM removed
+  (`tmp_leftovers`), and zram-swap whose module is for another kernel said
+  as `no_kernel_module` instead of a start failing at every run. `vctl tune
+  plan` adds where memory and flash go: free memory and swap, the largest
+  processes, free overlay, and packages and staging directories under /root
+  the operator may remove — never vctl's.
+
 ## vctl 0.6.0-r37 — the router’s password, PassWall2 retirement, signed updates and automatic tuning
 
 ### Added
