@@ -603,6 +603,8 @@ describe("checkInRouter claim", () => {
 
     expect(fake.updates(jobs).map(update => update.state)).toEqual(["running", "failed"]);
     expect(fake.inserts(partnerWebhooks).map(row => row.payload)).toEqual(expect.arrayContaining([expect.objectContaining({event: "router.action", detail: expect.objectContaining({actionId: BROKEN_ID, state: "failed", detail: "payload_unavailable"})})]));
+    // The fallback frees the key like any result would.
+    expect(fake.updates(jobs)[1]).toMatchObject({state: "failed", dedupeKey: null});
     errors.mockRestore();
   });
 

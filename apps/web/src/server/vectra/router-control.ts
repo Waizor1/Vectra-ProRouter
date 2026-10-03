@@ -1843,7 +1843,16 @@ async function failUndeliverableJobs(
       });
       const [failed] = await db
         .update(jobs)
-        .set({ state: "failed", completedAt: now })
+        .set({
+          state: "failed",
+          completedAt: now,
+          // As on any result: free the key (onboarding/partner keys stay),
+          // or a keyed lane (route-health) could never queue for it again.
+          dedupeKey: resolveJobDedupeKeyAfterResult({
+            currentDedupeKey: job.dedupeKey ?? null,
+            resultStatus: "failure",
+          }),
+        })
         .where(and(eq(jobs.id, job.id), eq(jobs.state, "running")))
         .returning();
       // The result path did not run: the backend still hears the failure.

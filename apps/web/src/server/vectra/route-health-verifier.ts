@@ -400,6 +400,13 @@ export async function runRouteHealthVerifierTick(
   }
 
   const queued = await queueRouteHealthJobs(database, picked);
+  if (queued.length < picked.length) {
+    // A key held for good would otherwise leave a router silently unverified.
+    console.info(
+      "[route-health] previous verification still holds the key: %o",
+      picked.filter((routerId) => !queued.includes(routerId)),
+    );
+  }
   return { queued: queued.length, routerIds: queued };
 }
 
