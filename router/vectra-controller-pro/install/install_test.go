@@ -146,6 +146,11 @@ func (r *router) run(script string) (string, int) {
 	if err != nil {
 		r.t.Fatal(err)
 	}
+	// Opened here, not only by the shell: go test's cache then knows the
+	// result depends on it, and an edit runs the tests again.
+	if _, err := os.ReadFile(src); err != nil {
+		r.t.Fatal(err)
+	}
 	prelude := ". '" + src + "'\nLOG='" + filepath.Join(r.dir, "install.log") + "'\nWORK='" + filepath.Join(r.dir, "work") +
 		"'\nARCH=aarch64_cortex-a53\nSTORE=/overlay\n"
 	cmd := exec.Command(shell, "-c", prelude+script)
