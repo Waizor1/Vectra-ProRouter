@@ -92,6 +92,25 @@ func (d *Detector) Observe(now time.Time, entries []conntrack.Entry, endpoints E
 	d.seenAnswered = answered
 }
 
+// Keep forgets the last answer of every node but tags — the render's: it
+// grew with every node the provider ever named. A node whose name does not
+// resolve for now stays in the render, and keeps its answer. An empty list
+// (no render read) forgets nothing.
+func (d *Detector) Keep(tags []string) {
+	if len(tags) == 0 {
+		return
+	}
+	keep := make(map[string]bool, len(tags))
+	for _, t := range tags {
+		keep[t] = true
+	}
+	for t := range d.lastAnswered {
+		if !keep[t] {
+			delete(d.lastAnswered, t)
+		}
+	}
+}
+
 // Failing reports whether the node has stopped answering.
 func (d *Detector) Failing(tag string, now time.Time) bool {
 	last, answered := d.lastAnswered[tag]

@@ -230,3 +230,52 @@ func TestTheDaemonsRunTunesTheRouter(t *testing.T) {
 		t.Fatal("the daemon's start did not tune the router")
 	}
 }
+
+// The daemon's start removes an update's package an earlier vctl left in
+// RAM — whatever the tune's switch says — and nothing that is not vctl's.
+func TestTheDaemonsStartRemovesAnUpdatesLeftoverPackage(t *testing.T) {
+	s := newTuneStand(t)
+	withTune(t, s, noTrial)
+	dir := t.TempDir()
+	s.env.TmpDir = dir
+	old := time.Now().Add(-time.Hour)
+	for _, name := range []string{controllerUpdateFile, "someone-elses.ipk"} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("pkg"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removeLeftoversAtStart()
+	if _, err := os.Stat(filepath.Join(dir, controllerUpdateFile)); !os.IsNotExist(err) {
+		t.Fatalf("the update's package stayed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "someone-elses.ipk")); err != nil {
+		t.Fatal("removed a file that is not vctl's")
+	}
+}
+
+// `vctl tune plan` prints where the router's memory and flash go after the
+// items, and carries it in its JSON.
+func TestTunePlanCarriesTheAnalysis(t *testing.T) {
+	s := newTuneStand(t)
+	out := withTune(t, s, noTrial)
+	if err := cmdTune([]string{"plan"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "memory: 87 MiB available") || !strings.Contains(out.String(), "cron_loglevel") {
+		t.Fatalf("plan:\n%s", out.String())
+	}
+	out.Reset()
+	if err := cmdTune([]string{"plan", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"analysis": {`) || !strings.Contains(out.String(), `"memAvailableMiB": 87`) {
+		t.Fatalf("plan --json:\n%s", out.String())
+	}
+	if calls := s.called(); len(calls) != 0 {
+		t.Fatalf("the plan ran %v", calls)
+	}
+}

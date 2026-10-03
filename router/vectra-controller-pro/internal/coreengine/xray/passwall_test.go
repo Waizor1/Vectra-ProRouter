@@ -158,7 +158,7 @@ func TestAdaptPassWallRefusesWhatIsNotAGlobalConfig(t *testing.T) {
 // PassWall's generator names its geo directory in the config's env, and a recent
 // xray (26.7.28) applies that over the env it was started with: vctl's pinned
 // directory (the supervisor's, the xray -test gate's) would be ignored. The
-// adapter takes XRAY_LOCATION_ASSET out and leaves the rest of env.
+// adapter takes env out whole (r12): the splice refuses any document with one.
 func TestAdaptPassWallLeavesTheGeoDirectoryToVctl(t *testing.T) {
 	var doc map[string]any
 	if err := json.Unmarshal(passwallFixture(t), &doc); err != nil {
@@ -181,12 +181,12 @@ func TestAdaptPassWallLeavesTheGeoDirectoryToVctl(t *testing.T) {
 		if !res.DroppedAssetDir || strings.Contains(string(out), "XRAY_LOCATION_ASSET") {
 			t.Fatalf("%s: the config still names the geo directory: %v", name, got["env"])
 		}
-		e, has := got["env"].(map[string]any)
-		if name == "asset only" && has {
-			t.Fatalf("an env left empty stays: %v", e)
+		if e, has := got["env"]; has {
+			t.Fatalf("%s: env stays: %v", name, e)
 		}
-		if name == "and more" && (!has || e["XRAY_BUF_SPLICE"] != "enable") {
-			t.Fatalf("the rest of env was lost: %v", got["env"])
+		// And the adapted document passes the splice's guard.
+		if _, _, err := xray.Splice(out, testTproxy(), xray.SpliceOptions{}); err != nil {
+			t.Fatalf("%s: the adapted document was refused: %v", name, err)
 		}
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestJournalDurableReplayAndNoSecretPersistence(t *testing.T) {
@@ -400,5 +401,114 @@ func TestJournalArchiveRejectsSymlinkAndCorruption(t *testing.T) {
 	}
 	if _, started, err := j.Begin(b, e); err != ErrJournal || started {
 		t.Fatal("corrupt receipt allowed replay")
+	}
+}
+
+// The receipts fit the router's flash: the budget is 2 MB, not more than the
+// free overlay, and a receipt older than ReceiptMaxAge is removed when the
+// archive is next written — a newer one, and anything that is no receipt,
+// stays.
+func TestJournalReceiptsAgeOutAndFitTheOverlay(t *testing.T) {
+	if ArchiveBudgetBytes > 2*1024*1024 {
+		t.Fatalf("archive budget %d bytes is more than the router's free flash takes", ArchiveBudgetBytes)
+	}
+	j, err := OpenJournal(filepath.Join(t.TempDir(), "actions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := Binding{RouterID: "r1", OwnerRef: "owner-1"}
+	sum := sha256.Sum256([]byte(`{}`))
+	fill := func(prefix string) {
+		t.Helper()
+		if err := j.withData(func(data *journalData) (bool, error) {
+			for i := 0; i < 3; i++ {
+				id := fmt.Sprintf("%s-%d", prefix, i)
+				data.Records[scopeKey(b, id)] = Record{ActionID: id, Action: "reboot", Status: Succeeded, ParamDigest: hex.EncodeToString(sum[:])}
+			}
+			return true, j.archiveTerminal(data)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fill("old")
+	old := scopeKey(b, "old-0")
+	if _, ok, err := j.readReceipt(old); err != nil || !ok {
+		t.Fatalf("receipt not archived: %v", err)
+	}
+	stray := filepath.Join(filepath.Dir(j.receiptPath(old)), ".connect-actions-1.tmp")
+	if err := os.WriteFile(stray, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	long := time.Now().Add(-ReceiptMaxAge - time.Hour)
+	for i := 0; i < 3; i++ {
+		if err := os.Chtimes(j.receiptPath(scopeKey(b, fmt.Sprintf("old-%d", i))), long, long); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chtimes(stray, long, long); err != nil {
+		t.Fatal(err)
+	}
+	fill("new")
+	for i := 0; i < 3; i++ {
+		if _, ok, err := j.readReceipt(scopeKey(b, fmt.Sprintf("old-%d", i))); err != nil || ok {
+			t.Fatalf("a receipt older than %s stayed (%v)", ReceiptMaxAge, err)
+		}
+		if _, ok, err := j.readReceipt(scopeKey(b, fmt.Sprintf("new-%d", i))); err != nil || !ok {
+			t.Fatalf("a new receipt went (%v)", err)
+		}
+	}
+	if _, err := os.Stat(stray); err != nil {
+		t.Fatal("a file that is no receipt was removed")
+	}
+}
+
+// A full receipt budget makes room by the oldest receipts: the owner's next
+// action is never refused for it, and the newest receipts stay.
+func TestJournalFullBudgetEvictsTheOldestReceipts(t *testing.T) {
+	j, err := OpenJournal(filepath.Join(t.TempDir(), "actions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := Binding{RouterID: "r1", OwnerRef: "owner-1"}
+	sum := sha256.Sum256([]byte(`{}`))
+	archive := func(ids ...string) error {
+		return j.withData(func(data *journalData) (bool, error) {
+			for _, id := range ids {
+				data.Records[scopeKey(b, id)] = Record{ActionID: id, Action: "reboot", Status: Succeeded, ParamDigest: hex.EncodeToString(sum[:])}
+			}
+			return true, j.archiveTerminal(data)
+		})
+	}
+	var old []string
+	for i := 0; i < 6; i++ {
+		old = append(old, fmt.Sprintf("old-%d", i))
+	}
+	if err := archive(old...); err != nil {
+		t.Fatal(err)
+	}
+	// Oldest first: old-0 a week ago, old-5 a day ago.
+	for i, id := range old {
+		at := time.Now().Add(-time.Duration(7-i) * 24 * time.Hour)
+		if err := os.Chtimes(j.receiptPath(scopeKey(b, id)), at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	used, err := archiveUsage(j.path + ".receipts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.archiveBudget = used + 2*receiptMaxBytes // room for one more receipt
+	if err := archive("new-0", "new-1"); err != nil {
+		t.Fatalf("a full budget refused: %v", err)
+	}
+	for _, id := range []string{"new-0", "new-1", "old-2", "old-3", "old-4", "old-5"} {
+		if _, ok, err := j.readReceipt(scopeKey(b, id)); err != nil || !ok {
+			t.Fatalf("receipt %s went (%v)", id, err)
+		}
+	}
+	for _, id := range []string{"old-0", "old-1"} {
+		if _, ok, _ := j.readReceipt(scopeKey(b, id)); ok {
+			t.Fatalf("the oldest receipt %s stayed", id)
+		}
 	}
 }

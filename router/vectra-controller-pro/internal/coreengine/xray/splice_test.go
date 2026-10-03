@@ -137,12 +137,12 @@ func TestSplicePreservesEveryByteExceptInboundsAndOutbounds(t *testing.T) {
 // TestSplicePreservesNonAlphabeticalKeyOrder proves order preservation is real
 // and not an artifact of the fixture's (alphabetical) provider ordering.
 func TestSplicePreservesNonAlphabeticalKeyOrder(t *testing.T) {
-	in := []byte(`{"zulu":1,"log":{"loglevel":"warning"},"inbounds":[],"alpha":{"nested":{}},"outbounds":[{"tag":"DIRECT","protocol":"freedom"}]}`)
+	in := []byte(`{"stats":{},"log":{"loglevel":"warning"},"inbounds":[],"policy":{"levels":{}},"outbounds":[{"tag":"DIRECT","protocol":"freedom"}]}`)
 	out, _, err := xray.SpliceInbounds(in, testTproxy())
 	if err != nil {
 		t.Fatalf("SpliceInbounds: %v", err)
 	}
-	want := []string{"zulu", "log", "inbounds", "alpha", "outbounds"}
+	want := []string{"stats", "log", "inbounds", "policy", "outbounds"}
 	got := orderedKeys(t, out)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("key order = %v, want %v", got, want)

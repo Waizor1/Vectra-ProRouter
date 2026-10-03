@@ -1,6 +1,7 @@
 package firewall
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -216,5 +217,78 @@ func TestOutputChainCarriesTheRoutersOwnFlowsWhole(t *testing.T) {
 			t.Fatalf("want reply return < ct-mark follow < established return < marking rule that tags the connection:\n  %s",
 				strings.Join(rules, "\n  "))
 		}
+	}
+}
+
+// A connection to the router's own address on xray's TPROXY port is xray's
+// listener spoken to directly: dokodemo-door takes the router itself for the
+// destination and proxies into itself until it runs out of descriptors. The
+// guard drops what TPROXY did not deliver — and only that.
+func TestRender_InboundGuardDropsDirectConnectionsToTheTproxyPort(t *testing.T) {
+	out, err := Render(DefaultSpec(12345, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain := chainBody(t, out, "inbound_guard")
+	for _, must := range []string{
+		"type filter hook input priority filter - 10; policy accept;",
+		`ct direction original meta l4proto { tcp, udp } th dport 12345 fib daddr type local meta mark != 0x1 counter name "` + CounterInboundGuard + `" drop`,
+	} {
+		if !strings.Contains(chain, must) {
+			t.Errorf("inbound_guard lacks %q:\n%s", must, chain)
+		}
+	}
+	if !strings.Contains(out, "counter "+CounterInboundGuard+" { }") {
+		t.Errorf("counter %s not declared", CounterInboundGuard)
+	}
+	// What TPROXY delivers is untouched: the capture rule still marks and
+	// accepts, and the guard is the only rule naming the port as a dport.
+	if !strings.Contains(out, "tproxy to :12345 meta mark set 0x1 accept") {
+		t.Error("the TPROXY capture changed")
+	}
+	if n := strings.Count(out, "th dport 12345"); n != 1 {
+		t.Errorf("th dport 12345 appears %d times, want the guard's once", n)
+	}
+	// Only a connection's original direction: an answer to the router's own
+	// socket on that port (dnsmasq's random source ports) is not dropped.
+	if !strings.HasPrefix(strings.TrimSpace(strings.SplitN(chain, "\n", 3)[2]), "ct direction original ") {
+		t.Errorf("inbound_guard judges replies too:\n%s", chain)
+	}
+	// Another port and mark are followed.
+	out, _ = Render(DefaultSpec(7000, 0x2))
+	if !strings.Contains(chainBody(t, out, "inbound_guard"), "th dport 7000 fib daddr type local meta mark != 0x2 ") {
+		t.Errorf("inbound_guard does not follow the spec:\n%s", out)
+	}
+}
+
+// xray dialling into the LAN — a sniffed "Host: 192.168.1.1", a provider's
+// connection sent there — is dropped; its answers to the LAN's own
+// connections leave from the address the client asked for and pass.
+func TestRender_LANEgressGuardDropsXrayDialsIntoTheLAN(t *testing.T) {
+	s := DefaultSpec(12345, 1)
+	out, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mark := fmt.Sprintf("0x%x", s.SockMark)
+	want := `meta mark ` + mark + ` oifname { "br-lan" } fib saddr type local counter name "` + CounterLANDial + `" drop`
+	if chain := chainBody(t, out, "lan_egress_guard"); !strings.Contains(chain, want) || !strings.Contains(chain, "type filter hook output priority filter; policy accept;") {
+		t.Errorf("lan_egress_guard without devices:\n%s", chain)
+	}
+	if !strings.Contains(out, "counter "+CounterLANDial+" { }") {
+		t.Errorf("counter %s not declared", CounterLANDial)
+	}
+	// The LAN's devices as netifd reports them, a guest bridge among them;
+	// a name no interface can have is left out.
+	s.LANDevices = []string{"br-lan", "br-guest", `x"; drop`}
+	out, _ = Render(s)
+	if chain := chainBody(t, out, "lan_egress_guard"); !strings.Contains(chain, `oifname { "br-lan", "br-guest" } fib saddr type local`) {
+		t.Errorf("lan_egress_guard with devices:\n%s", chain)
+	}
+	// No SockMark, no way to tell xray's sockets: no guard.
+	s.SockMark = 0
+	out, _ = Render(s)
+	if strings.Contains(out, "lan_egress_guard") {
+		t.Error("lan_egress_guard rendered without a SockMark")
 	}
 }

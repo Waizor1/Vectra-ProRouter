@@ -140,6 +140,20 @@
         "value": "1",
         "target": "1",
         "reason": null
+      },
+      {
+        "id": "cron_loglevel",
+        "state": "applied",
+        "value": "9",
+        "target": "9",
+        "reason": null
+      },
+      {
+        "id": "tmp_leftovers",
+        "state": "already",
+        "value": null,
+        "target": "0",
+        "reason": null
       }
     ]
   }

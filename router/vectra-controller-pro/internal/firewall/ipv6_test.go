@@ -61,11 +61,11 @@ func TestIPv6IntoTheLANsOwnDevicesIsLeftToTheFirewall(t *testing.T) {
 		t.Fatalf("forward: LAN return %d, tcp reset %d:\n%s", lan, tcp, strings.Join(fwd, "\n"))
 	}
 	s.LANDevices = nil
-	if out := mustRender(t, s); strings.Contains(out, "oifname {") {
+	if out := chainNamed(t, mustRender(t, s), "forward"); strings.Contains(out, "oifname {") {
 		t.Fatalf("a LAN return with no LAN device known:\n%s", out)
 	}
 	s.RefuseIPv6, s.LANDevices = false, []string{"br-lan"}
-	if out := mustRender(t, s); strings.Contains(out, "oifname {") {
+	if out := chainNamed(t, mustRender(t, s), "forward"); strings.Contains(out, "oifname {") {
 		t.Fatalf("a LAN return while IPv6 is carried:\n%s", out)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"vectra-controller-pro/internal/incident"
 	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
@@ -272,14 +273,14 @@ func TestNothingIsResumedWithoutAnEarlierApply(t *testing.T) {
 	}
 }
 
-// Without the stored document nothing is rebuilt, and nothing is fetched to
-// make up for it at start.
+// Without the stored document and without a last good render nothing is
+// rebuilt, nothing is fetched to make up for it at start — and it is said.
 func TestNothingIsResumedWithoutTheStoredProviderDocument(t *testing.T) {
 	dir, agentPath := localRouter(t, true, true)
 	if err := cmdApplyLocal([]string{"-config", agentPath}); err != nil {
 		t.Fatalf("apply-local: %v", err)
 	}
-	for _, f := range []string{"xray.json", "provider-config.json"} {
+	for _, f := range []string{"xray.json", "provider-config.json", "xray-last-good.json"} {
 		if err := os.Remove(filepath.Join(dir, f)); err != nil {
 			t.Fatal(err)
 		}
@@ -288,6 +289,77 @@ func TestNothingIsResumedWithoutTheStoredProviderDocument(t *testing.T) {
 	if fileExists(filepath.Join(dir, "xray.json")) {
 		t.Error("a render was made without the stored provider document")
 	}
+	if !hasIncident("RENDER_RESUME_FAILED") {
+		t.Error("no incident said the data plane waits")
+	}
+}
+
+// A document that cannot be rendered again after a reboot — refused since by
+// r12's guard, or gone — never leaves the router without a data plane: the
+// last render xray took, kept sealed on flash, runs, and an incident says so.
+func TestTheLastGoodRenderRunsWhenTheDocumentCannotBeRenderedAgain(t *testing.T) {
+	for name, damage := range map[string]func(t *testing.T, dir string){
+		"refused since": func(t *testing.T, dir string) {
+			doc := `{"reverse":{"bridges":[{"tag":"b","domain":"r.test"}]},"outbounds":[{"tag":"d","protocol":"freedom"}]}`
+			if err := vault.WriteFile(filepath.Join(dir, "provider-config.json"), []byte(doc)); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"gone": func(t *testing.T, dir string) {
+			if err := os.Remove(filepath.Join(dir, "provider-config.json")); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, agentPath := localRouter(t, true, true)
+			if err := cmdApplyLocal([]string{"-config", agentPath}); err != nil {
+				t.Fatalf("apply-local: %v", err)
+			}
+			render := filepath.Join(dir, "xray.json")
+			before, err := readEncryptedTestFile(t, render)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kept, err := readEncryptedTestFile(t, filepath.Join(dir, "xray-last-good.json"))
+			if err != nil || !bytes.Equal(kept, before) {
+				t.Fatalf("the render was not kept on flash: %v", err)
+			}
+			if raw, _ := os.ReadFile(filepath.Join(dir, "xray-last-good.json")); bytes.Contains(raw, []byte(`"outbounds"`)) {
+				t.Fatal("the last good render is kept in the clear")
+			}
+			if err := os.Remove(render); err != nil { // the reboot
+				t.Fatal(err)
+			}
+			damage(t, dir)
+
+			restartedDaemon(t, agentPath).resumeRender(context.Background())
+
+			after, err := readEncryptedTestFile(t, render)
+			if err != nil {
+				t.Fatalf("no data plane after the restart: %v", err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Error("the render run is not the last good one")
+			}
+			if !hasIncident("RENDER_RESUME_FALLBACK") {
+				t.Error("no incident said the last good render runs")
+			}
+			if name == "refused since" && !hasIncident("PROVIDER_REFUSED") {
+				t.Error("no incident said the provider's document was refused")
+			}
+		})
+	}
+}
+
+// hasIncident: the reporter's inbox holds one of code.
+func hasIncident(code string) bool {
+	for _, p := range incident.Read(incident.Dir) {
+		if p.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 // A render that is there is the one to run: resuming never overwrites it.

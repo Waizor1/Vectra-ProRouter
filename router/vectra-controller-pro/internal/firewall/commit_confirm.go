@@ -153,17 +153,25 @@ func runCommand(name string, args ...string) error {
 // spawnDetached runs the deadman in its own session so it survives the
 // controller exiting/crashing — the whole point of the safety net.
 func spawnDetached(script string) error {
-	cmd := exec.Command("setsid", "sh", "-c", script)
-	if err := cmd.Start(); err == nil {
-		_ = cmd.Process.Release()
+	if err := startReaped(exec.Command("setsid", "sh", "-c", script)); err == nil {
 		return nil
 	}
 	// Fallback where setsid is unavailable: detached sh.
-	cmd = exec.Command("sh", "-c", script)
+	return startReaped(exec.Command("sh", "-c", script))
+}
+
+// startReaped starts cmd and waits for it in the background. The deadman is
+// still vctl's child — busybox setsid execs in place rather than forking —
+// and a child nobody waits for stays a zombie: one per firewall programming
+// (the test router: two after 20 h). Released instead of waited for, it was
+// never reaped. Waiting does not tie it to vctl: if vctl exits first, init
+// reaps it.
+func startReaped(cmd *exec.Cmd) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	return cmd.Process.Release()
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 func touchFile(path string) error {

@@ -312,6 +312,7 @@ export const S = {
   'tune.memory': ['память настроена под сжатую подкачку', 'memory tuned for the compressed swap', '内存已针对压缩交换优化'],
   'tune.packet_steering': ['все ядра обрабатывают сеть', 'every CPU core handles the network', '所有 CPU 核心共同处理网络'],
   'tune.flow_offloading': ['ускоренная пересылка трафика', 'faster traffic forwarding', '更快的流量转发'],
+  'tune.cron_loglevel': ['журнал без лишних записей планировщика', 'the log kept free of scheduler noise', '日志不再被计划任务刷屏'],
 
   // ── routes (Pro; the tab was "Balancing") ──────────────────────────────
   // A route is a balancer and its fallback chain, named by what it carries

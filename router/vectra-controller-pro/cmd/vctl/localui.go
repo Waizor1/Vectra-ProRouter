@@ -129,9 +129,22 @@ func (d *daemon) applyProviderWith(ctx context.Context, providerRaw []byte, forc
 	if err != nil {
 		d.lastApplyErr = err.Error()
 		d.noteApplyErr(err)
+		if errors.Is(err, xray.ErrProviderRefused) {
+			d.incident("PROVIDER_REFUSED", reKeyNumber.ReplaceAllString(clipText(err.Error(), 200), "N"),
+				"the router refused the provider's document; the running render stays", map[string]any{"error": clipText(err.Error(), 300)})
+		}
 		return res, err
 	}
+	if len(res.DroppedKeys) > 0 || len(res.DroppedHosts) > 0 {
+		// One line for all of it; the rest of the document is applied.
+		logging.L().Warn("left out of the provider's document what the router does not take",
+			"keys", strings.Join(res.DroppedKeys, ","), "dnsHosts", strings.Join(res.DroppedHosts, ","))
+		d.incident("PROVIDER_PARTS_DROPPED", strings.Join(res.DroppedKeys, ",")+"|"+strings.Join(res.DroppedHosts, ","),
+			"the router left out parts of the provider's document it does not take",
+			map[string]any{"keys": res.DroppedKeys, "dnsHosts": res.DroppedHosts})
+	}
 	d.lastApplyErr = ""
+	d.keepAIRefusedFor(providerRaw)
 	d.st.ConfigDigest = res.AppliedDigest
 	d.st.SpliceKey = d.renderKey(opts)
 	// Every unfit exit, not only those the render moved: after a restart the
@@ -159,12 +172,25 @@ func (d *daemon) applyRendering(ctx context.Context, providerRaw []byte, force b
 	res, err = d.applyProviderWith(ctx, providerRaw, force, without, probe)
 	if err == nil {
 		// Only now is the default the reason: without it xray took the render.
+		d.keepAIRefusedFor(providerRaw)
 		if d.aiRefused == nil {
 			d.aiRefused = map[string]bool{}
 		}
 		d.aiRefused[aiRefusedKey(opts.ServiceEntries["ai"], providerRaw)] = true
 	}
 	return res, err
+}
+
+// keepAIRefusedFor forgets the «Нейросети» defaults refused on any document
+// but this one: a refusal holds only on the document it joined
+// (aiRefusedKey), and every document the provider ever sent stayed a key.
+func (d *daemon) keepAIRefusedFor(document []byte) {
+	_, doc, _ := strings.Cut(aiRefusedKey(nil, document), ":")
+	for k := range d.aiRefused {
+		if _, kd, _ := strings.Cut(k, ":"); kd != doc {
+			delete(d.aiRefused, k)
+		}
+	}
 }
 
 // withoutAIDefault is opts without «Нейросети», when they carry them only as
@@ -716,7 +742,10 @@ func (d *daemon) renderKey(opts xray.SpliceOptions) string {
 	// And the geo directory it is checked against: a render checked against
 	// another is checked again (a new operator config's directory, vctl's
 	// own once vectra-geodata is there).
-	return k + ";geo=" + d.geoAssetDir()
+	// And the provider guard the render passed (xray/provider_guard.go): a
+	// render made before r12 kept the provider's own log block and api, so
+	// it is redone once, at start, before xray comes up.
+	return k + ";geo=" + d.geoAssetDir() + ";guard=1"
 }
 
 // resumeRender puts back, after a reboot, the render the router ran before it.
@@ -739,13 +768,18 @@ func (d *daemon) resumeRender(ctx context.Context) {
 	}
 	raw, err := vault.ReadFile(d.documentPath())
 	if err != nil || len(raw) == 0 {
-		logging.L().Warn("no render to run and no last-good provider document to rebuild it from; the data plane waits for an apply",
+		logging.L().Warn("no render to run and no last-good provider document to rebuild it from",
 			"provider", d.documentPath())
+		d.resumeLastGoodRender(ctx, "no last-good provider document")
 		return
 	}
 	res, err := d.applyProvider(ctx, raw, false)
 	if err != nil {
-		logging.L().Error("could not rebuild the render from the last-good provider document; the data plane waits for an apply", "err", err.Error())
+		// A document refused since (r12's guard) or a render that cannot be
+		// made again: never left without a data plane — the last render
+		// xray took runs (last_good_render.go).
+		logging.L().Error("could not rebuild the render from the last-good provider document", "err", err.Error())
+		d.resumeLastGoodRender(ctx, err.Error())
 		return
 	}
 	d.nodeCount = countProviderOutbounds(raw)

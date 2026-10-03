@@ -493,6 +493,7 @@ describe('the setup wizard', () => {
       'память настроена под сжатую подкачку',
       'все ядра обрабатывают сеть',
       'ускоренная пересылка трафика',
+      'журнал без лишних записей планировщика',
     ]);
   });
 
@@ -531,7 +532,11 @@ describe('the setup wizard', () => {
     await tick(300);
     expect(read(app.$('.wz-tune h3'))).toBe('Разгон роутера');
     // The memory settings are there for the swap: without it they are not worth a word.
-    expect(app.all('.wz-tune li').map(read)).toEqual(['все ядра обрабатывают сеть', 'ускоренная пересылка трафика']);
+    expect(app.all('.wz-tune li').map(read)).toEqual([
+      'все ядра обрабатывают сеть',
+      'ускоренная пересылка трафика',
+      'журнал без лишних записей планировщика',
+    ]);
   });
 
   // The verdicts as the mock router judges them (dev: `&wifi=`), from what is on the air.

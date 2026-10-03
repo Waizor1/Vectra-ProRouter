@@ -63,7 +63,10 @@ func cmdTune(args []string) error {
 	var err error
 	switch verb {
 	case "plan":
-		return printTunePlan(tuneOut, tune.Inspect(env), *asJSON)
+		// The plan, and where the router's memory and flash go: read only.
+		p, a := tune.Inspect(env), tune.Analyze(env)
+		p.Analysis = &a
+		return printTunePlan(tuneOut, p, *asJSON)
 	case "apply":
 		if tuneTrial() {
 			fmt.Fprintln(tuneOut, "a trial runs (vectra on --trial): the router is tuned once it is kept (vectra keep)")
@@ -111,7 +114,35 @@ func printTunePlan(w io.Writer, p tune.Plan, asJSON bool) error {
 	for _, it := range p.Items {
 		fmt.Fprintf(tw, "%s\t%s\t%s\n", it.ID, it.State, tuneDetail(it))
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if a := p.Analysis; a != nil {
+		printTuneAnalysis(w, a)
+	}
+	return nil
+}
+
+// printTuneAnalysis is the plan's analysis in a few lines: nothing in it is
+// the tune's to change.
+func printTuneAnalysis(w io.Writer, a *tune.Analysis) {
+	fmt.Fprintf(w, "memory: %d MiB available; swap %d of %d MiB used\n", a.MemAvailableMiB, a.SwapUsedMiB, a.SwapTotalMiB)
+	if len(a.TopRSS) > 0 {
+		top := make([]string, 0, len(a.TopRSS))
+		for _, p := range a.TopRSS {
+			top = append(top, fmt.Sprintf("%s %.1f MiB", p.Name, p.RSSMiB))
+		}
+		fmt.Fprintln(w, "  most RAM: "+strings.Join(top, ", "))
+	}
+	if a.OverlayFreeMiB != nil {
+		fmt.Fprintf(w, "flash (overlay): %d MiB free\n", *a.OverlayFreeMiB)
+	}
+	if len(a.Reclaimable) > 0 {
+		fmt.Fprintln(w, "  may be freed by the operator (not vctl's to delete):")
+		for _, r := range a.Reclaimable {
+			fmt.Fprintf(w, "    %s  %.1f MiB (%s)\n", r.Path, r.MiB, r.Kind)
+		}
+	}
 }
 
 // tuneDetail is an item's values in a few words.
@@ -122,8 +153,11 @@ func tuneDetail(it tune.Item) string {
 		if it.ID == tune.ItemZram {
 			now += " MiB"
 		}
-	} else if it.ID == tune.ItemZram {
+	} else if it.ID == tune.ItemZram || it.ID == tune.ItemTmpLeftovers {
 		now = "none"
+	}
+	if it.ID == tune.ItemTmpLeftovers && it.Value != nil {
+		now += " MiB"
 	}
 	switch it.State {
 	case tune.Pending:
@@ -141,6 +175,22 @@ func tuneDetail(it tune.Item) string {
 		return now + " (the owner's)"
 	}
 	return now
+}
+
+// removeLeftoversAtStart removes vctl's own leftovers in RAM (internal/tune,
+// leftovers.go), one log line for them all.
+func removeLeftoversAtStart() {
+	removed, err := tune.RemoveLeftovers(tuneEnv(), time.Now())
+	if len(removed) > 0 {
+		var n int64
+		for _, l := range removed {
+			n += l.Bytes
+		}
+		logging.L().Info(fmt.Sprintf("removed vctl's leftovers in RAM: %d file(s), %.1f MiB", len(removed), float64(n)/(1<<20)))
+	}
+	if err != nil {
+		logging.L().Warn("could not remove vctl's leftovers in RAM", "err", err.Error())
+	}
 }
 
 // tuneAtStart runs the router's tune once the daemon is up, in the

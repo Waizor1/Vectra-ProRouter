@@ -8,6 +8,7 @@ package state
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/vault"
@@ -242,19 +244,63 @@ func loadLastGood(path string) (PersistedState, bool) {
 
 // Save writes state atomically and updates the last-good backup.
 func Save(path string, persisted PersistedState) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create state dir: %w", err)
-	}
 	raw, err := json.MarshalIndent(persisted, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode state: %w", err)
 	}
 	defer clear(raw)
+	return saveRaw(path, raw)
+}
+
+func saveRaw(path string, raw []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create state dir: %w", err)
+	}
 	if err := vault.WriteFile(path, raw); err != nil {
 		return err
 	}
 	if err := vault.WriteFile(lastGoodPath(path), raw); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to update last-good state backup %s: %v\n", lastGoodPath(path), err)
+	}
+	return nil
+}
+
+// Saver is Save for the daemon, which saves after every check-in: twice a
+// minute, state.json and its last-good copy each sealed through the vault —
+// ~5.7k writes a day to flash, nearly all of them the same bytes. A Saver
+// writes only when the state encodes differently from what it last wrote,
+// or the file is no longer what it wrote (another vctl process saved, or it
+// is gone), or its last-good copy is gone. It keeps a digest of what it wrote, never the bytes: they hold
+// the router's keys. The zero value is ready; safe for concurrent use.
+type Saver struct {
+	mu   sync.Mutex
+	sum  [sha256.Size]byte
+	file os.FileInfo
+}
+
+// Save writes persisted to path unless nothing changed (see Saver).
+func (s *Saver) Save(path string, persisted PersistedState) error {
+	raw, err := json.MarshalIndent(persisted, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode state: %w", err)
+	}
+	defer clear(raw)
+	sum := sha256.Sum256(raw)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.file != nil && sum == s.sum {
+		fi, err := os.Stat(path)
+		_, lgErr := os.Stat(lastGoodPath(path))
+		if err == nil && lgErr == nil && fi.Size() == s.file.Size() && fi.ModTime().Equal(s.file.ModTime()) {
+			return nil
+		}
+	}
+	s.file = nil
+	if err := saveRaw(path, raw); err != nil {
+		return err
+	}
+	if fi, err := os.Stat(path); err == nil {
+		s.sum, s.file = sum, fi
 	}
 	return nil
 }

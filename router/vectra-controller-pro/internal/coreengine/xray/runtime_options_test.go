@@ -100,7 +100,7 @@ func TestSpliceOptionsTouchOnlyTheirOwnKeys(t *testing.T) {
 	if res.ProviderProbeInterval != 12*time.Hour || res.ProbeInterval != 10*time.Minute {
 		t.Errorf("result intervals = %s -> %s, want 12h0m0s -> 10m0s", res.ProviderProbeInterval, res.ProbeInterval)
 	}
-	if res.APIListen != "127.0.0.1:10085" || res.MetricsListen != "127.0.0.1:10086" || len(res.ProviderReplaced) != 0 {
+	if res.APIListen != "127.0.0.1:10085" || res.MetricsListen != "127.0.0.1:10086" {
 		t.Errorf("result = %+v", res)
 	}
 }
@@ -145,22 +145,27 @@ func TestSpliceBoundsTheProbeInterval(t *testing.T) {
 	}
 }
 
-// A provider that ships its own api/metrics has them REPLACED: its listen
-// (possibly 0.0.0.0, possibly a service set we do not want) is not ours to keep.
-func TestSpliceReplacesAProviderAPIBlock(t *testing.T) {
-	doc := []byte(`{"api":{"tag":"x","listen":"0.0.0.0:8080","services":["HandlerService"]},"metrics":{"tag":"m"},"outbounds":[{"tag":"d","protocol":"freedom"}]}`)
-	out, res, err := xray.Splice(doc, testTproxy(), routerOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(out), "0.0.0.0:8080") {
-		t.Fatal("the provider's api listen survived")
-	}
-	if strings.Join(res.ProviderReplaced, ",") != "api,metrics" {
-		t.Errorf("ProviderReplaced = %v", res.ProviderReplaced)
-	}
-	if got := strings.Join(orderedKeys(t, out), ","); got != "api,metrics,outbounds,inbounds" {
-		t.Errorf("keys = %s: a replaced key keeps its position, a missing inbounds is appended", got)
+// A provider that ships its own api or metrics has them dropped: its listen
+// (possibly 0.0.0.0, possibly a service set we do not want) is not the
+// provider's to decide, in any spelling (provider_guard.go). The router's
+// own, on loopback, are appended when it installs them.
+func TestSpliceDropsAProviderAPIBlock(t *testing.T) {
+	doc := []byte(`{"Api":{"tag":"x","listen":"0.0.0.0:8080","services":["HandlerService"]},"metrics":{"tag":"m","listen":"0.0.0.0:9090"},"outbounds":[{"tag":"d","protocol":"freedom"}]}`)
+	for _, opts := range []xray.SpliceOptions{routerOptions(), {}} {
+		out, res, err := xray.Splice(doc, testTproxy(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(out), "0.0.0.0:") || strings.Contains(string(out), "HandlerService") || strings.Join(res.DroppedKeys, ",") != "Api,metrics" {
+			t.Fatalf("dropped %v: %s", res.DroppedKeys, out)
+		}
+		want := "outbounds,inbounds"
+		if opts.APIListen != "" {
+			want += ",api,metrics"
+		}
+		if got := strings.Join(orderedKeys(t, out), ","); got != want {
+			t.Errorf("keys = %s, want %s", got, want)
+		}
 	}
 }
 
@@ -226,9 +231,9 @@ func contains(xs []string, x string) bool {
 }
 
 // The provider leaves log.access unset, which makes xray print a line per
-// connection to stdout. The router option turns it off and touches nothing
-// else in the log block.
-func TestNoAccessLogSetsAccessNoneAndKeepsTheRest(t *testing.T) {
+// connection to stdout. The router option turns it off; the rest of the log
+// block is the router's own (TestSpliceReplacesTheProvidersWholeLog).
+func TestNoAccessLogSetsAccessNone(t *testing.T) {
 	raw := providerFixture(t)
 	out, _, err := xray.Splice(raw, testTproxy(), xray.SpliceOptions{NoAccessLog: true})
 	if err != nil {
@@ -246,7 +251,7 @@ func TestNoAccessLogSetsAccessNoneAndKeepsTheRest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(topLevel(t, out)["log"]); got != `{"access":"none"}` {
+	if got := string(topLevel(t, out)["log"]); got != `{"access":"none","loglevel":"warning"}` {
 		t.Fatalf("appended log = %s", got)
 	}
 	if (xray.SpliceOptions{NoAccessLog: true}).Key() == (xray.SpliceOptions{}).Key() {
@@ -291,7 +296,7 @@ func TestSpliceTreatsANullLogBlockAsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Splice: %v", err)
 	}
-	if got := string(topLevel(t, out)["log"]); got != `{"access":"none"}` {
+	if got := string(topLevel(t, out)["log"]); got != `{"access":"none","loglevel":"warning"}` {
 		t.Fatalf("log = %s", got)
 	}
 }

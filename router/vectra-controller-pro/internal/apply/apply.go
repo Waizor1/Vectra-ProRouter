@@ -46,6 +46,12 @@ type ApplyResult struct {
 	XrayBytes     int         `json:"xrayBytes"`
 	// DroppedInbounds records the provider inbounds the splice removed.
 	DroppedInbounds []string `json:"droppedInbounds,omitempty"`
+	// DroppedKeys and DroppedHosts are what of the provider's document the
+	// router does not take, and left out (xray provider_guard.go): its
+	// top-level keys, and dns.hosts entries over names the router resolves
+	// directly.
+	DroppedKeys  []string `json:"droppedKeys,omitempty"`
+	DroppedHosts []string `json:"droppedHosts,omitempty"`
 	// ProbeInterval is the observatory interval the render runs with when the
 	// splice overrode it (0 = the provider's own), ProviderProbeInterval what
 	// the provider asked for.
@@ -131,6 +137,14 @@ func (a *Applier) Apply(ctx context.Context, providerRaw []byte, currentDigest s
 	res.ProbeInterval = spliceRes.ProbeInterval
 	res.ProviderProbeInterval = spliceRes.ProviderProbeInterval
 	res.DroppedInbounds = spliceRes.DroppedInbounds
+	res.DroppedKeys, res.DroppedHosts = spliceRes.DroppedKeys, spliceRes.DNS.DroppedHosts
+	if len(res.DroppedKeys) > 0 || len(res.DroppedHosts) > 0 {
+		res.Operations = append(res.Operations, Operation{
+			Kind: "drop_provider_parts",
+			Description: fmt.Sprintf("left out what the router does not take: top-level keys %v, dns.hosts entries %v",
+				res.DroppedKeys, res.DroppedHosts),
+		})
+	}
 	res.Operations = append(res.Operations, Operation{
 		Kind:        "splice_inbounds",
 		Description: fmt.Sprintf("replaced %d provider inbound(s) with the tproxy inbound; %d other top-level keys kept verbatim", len(spliceRes.DroppedInbounds), len(spliceRes.TopLevelKeys)-1),

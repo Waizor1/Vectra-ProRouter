@@ -42,14 +42,15 @@ type SpliceResult struct {
 	// API and metrics ("" = not installed).
 	APIListen     string
 	MetricsListen string
-	// ProviderReplaced lists provider top-level keys the options replaced
-	// outright ("api", "metrics") — the provider ships neither today.
-	ProviderReplaced []string
 	// ProviderProbeInterval is the observatory interval the provider asked for
 	// (0 = it had no observatory, or the option was not used), and
 	// ProbeInterval the one the spliced document runs with.
 	ProviderProbeInterval time.Duration
 	ProbeInterval         time.Duration
+	// DroppedKeys lists the provider's top-level keys the router does not
+	// take, left out of the render (provider_guard.go): "api", "metrics",
+	// "env", "transport", "$schema", any key xray learns later.
+	DroppedKeys []string
 	// UserRules is what the owner's sites became (zero without any).
 	UserRules UserRulesResult
 	// DNS is what DNS through the tunnel became (zero when not asked for).
@@ -92,9 +93,14 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 	if err := checkKeyFolding(providerRaw); err != nil {
 		return nil, res, err
 	}
+	// What the provider may not decide on the router: files, open ports,
+	// identifiers the log would take as lines (provider_guard.go).
+	if err := checkProviderDocument(providerRaw); err != nil {
+		return nil, res, err
+	}
 	res.APIListen = opts.APIListen
 	res.MetricsListen = opts.MetricsListen
-	seenAPI, seenMetrics, seenLog, seenRouting := false, false, false, false
+	seenLog, seenRouting := false, false
 
 	var plan rulesPlan
 	if !opts.Rules.empty() {
@@ -212,6 +218,15 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 			return nil, res, fmt.Errorf("xray splice: read value for %q: %w", key, err)
 		}
 		res.TopLevelKeys = append(res.TopLevelKeys, key)
+		// Matched as xray matches keys, like everything below: a key in
+		// another spelling is still the one xray runs.
+		fk := foldKey(key)
+		if providerKeyDropped(key) {
+			// Not the router's to run (provider_guard.go): left out, the
+			// rest applied.
+			res.DroppedKeys = append(res.DroppedKeys, key)
+			continue
+		}
 
 		if !first {
 			out.WriteByte(',')
@@ -220,7 +235,7 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 		writeJSONString(&out, key)
 		out.WriteByte(':')
 
-		if key == InboundsKey {
+		if fk == foldKey(InboundsKey) {
 			dropped, err := describeInbounds(raw)
 			if err != nil {
 				return nil, res, err
@@ -240,7 +255,7 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 			out.WriteByte(']')
 			continue
 		}
-		if key == OutboundsKey {
+		if fk == foldKey(OutboundsKey) {
 			if plan.addDirect {
 				// Appended BEFORE the marking below, so it is stamped like every
 				// other dialling outbound; and last, so the first outbound —
@@ -272,7 +287,7 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 			out.Write(marked)
 			continue
 		}
-		if (len(rules) > 0 || ruTag != "" || !sp.empty() || len(opts.LeaveOut) > 0) && foldKey(key) == foldKey(RoutingKey) {
+		if (len(rules) > 0 || ruTag != "" || !sp.empty() || len(opts.LeaveOut) > 0) && fk == foldKey(RoutingKey) {
 			// Matched as xray matches it: the provider's rules must not end up
 			// under a second, differently spelled "routing" that wins.
 			seenRouting = true
@@ -309,14 +324,14 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 			out.Write(routing)
 			continue
 		}
-		if len(sp.observe) > 0 && (key == BurstObservatoryKey || key == ObservatoryKey) {
+		if len(sp.observe) > 0 && (fk == foldKey(BurstObservatoryKey) || fk == foldKey(ObservatoryKey)) {
 			rewritten, err := observeTags(nullAsObject(raw), sp.observe)
 			if err != nil {
 				return nil, res, err
 			}
 			raw = rewritten
 		}
-		if dp.on && foldKey(key) == foldKey(PolicyKey) {
+		if dp.on && fk == foldKey(PolicyKey) {
 			seenPolicy = true
 			rewritten, err := withDNSLevel(nullAsObject(raw), dp.level)
 			if err != nil {
@@ -325,11 +340,16 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 			out.Write(rewritten)
 			continue
 		}
-		if dp.on && foldKey(key) == foldKey(DNSKey) {
+		if dp.on && fk == foldKey(DNSKey) {
 			seenDNS = true
 			rewritten, err := prependDNSServers(nullAsObject(raw), dp.servers)
 			if err != nil {
 				return nil, res, err
+			}
+			if len(dp.res.DroppedHosts) > 0 {
+				if rewritten, err = dropHostsEntries(rewritten, dp.res.DroppedHosts); err != nil {
+					return nil, res, err
+				}
 			}
 			if opts.DNS.IPv4Only {
 				// The field found as xray finds it.
@@ -350,17 +370,7 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 			continue
 		}
 		switch {
-		case key == APIKey && opts.APIListen != "":
-			seenAPI = true
-			res.ProviderReplaced = append(res.ProviderReplaced, key)
-			out.Write(apiObject(opts.APIListen))
-			continue
-		case key == MetricsKey && opts.MetricsListen != "":
-			seenMetrics = true
-			res.ProviderReplaced = append(res.ProviderReplaced, key)
-			out.Write(metricsObject(opts.MetricsListen))
-			continue
-		case key == BurstObservatoryKey && opts.ProbeInterval > 0:
+		case fk == foldKey(BurstObservatoryKey) && opts.ProbeInterval > 0:
 			rewritten, was, err := rewriteBurstInterval(nullAsObject(raw), opts.ProbeInterval)
 			if err != nil {
 				return nil, res, err
@@ -371,15 +381,13 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 			res.ProviderProbeInterval, res.ProbeInterval = was, opts.ProbeInterval
 			out.Write(rewritten)
 			continue
-		case key == LogKey && opts.NoAccessLog:
+		case fk == foldKey(LogKey):
+			// Replaced whole: where xray writes its logs, and how much, is
+			// the router's (provider_guard.go).
 			seenLog = true
-			rewritten, _, err := rewriteObjectField(nullAsObject(raw), "access", json.RawMessage(`"none"`))
-			if err != nil {
-				return nil, res, fmt.Errorf("xray splice: log: %w", err)
-			}
-			out.Write(rewritten)
+			out.Write(routerLogObject(opts.NoAccessLog))
 			continue
-		case key == ObservatoryKey && opts.ProbeInterval > 0:
+		case fk == foldKey(ObservatoryKey) && opts.ProbeInterval > 0:
 			rewritten, was, err := rewriteClassicInterval(nullAsObject(raw), opts.ProbeInterval)
 			if err != nil {
 				return nil, res, err
@@ -424,15 +432,15 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 		}
 		out.WriteByte(']')
 	}
-	// Absent from the provider (today: always) — appended, so the provider's
+	// Never the provider's (provider_guard.go) — appended, so the provider's
 	// own keys keep their positions.
-	if opts.APIListen != "" && !seenAPI {
+	if opts.APIListen != "" {
 		out.WriteByte(',')
 		writeJSONString(&out, APIKey)
 		out.WriteByte(':')
 		out.Write(apiObject(opts.APIListen))
 	}
-	if opts.MetricsListen != "" && !seenMetrics {
+	if opts.MetricsListen != "" {
 		out.WriteByte(',')
 		writeJSONString(&out, MetricsKey)
 		out.WriteByte(':')
@@ -441,7 +449,8 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 	if opts.NoAccessLog && !seenLog {
 		out.WriteByte(',')
 		writeJSONString(&out, LogKey)
-		out.WriteString(`:{"access":"none"}`)
+		out.WriteByte(':')
+		out.Write(routerLogObject(true))
 	}
 	if dp.on && !seenDNS {
 		out.WriteByte(',')

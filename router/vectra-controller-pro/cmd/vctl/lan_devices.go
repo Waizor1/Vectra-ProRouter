@@ -8,18 +8,16 @@ import (
 	"vectra-controller-pro/internal/firewall"
 )
 
-// withLANDevices gives a ruleset that refuses IPv6 the LAN's devices to leave
-// out of the refusal. Asked of netifd when a ruleset is loaded, not every
-// loop.
+// withLANDevices gives a ruleset the LAN's devices: the IPv6 refusal leaves
+// them out, and xray may not dial into them (firewall.CounterLANDial).
+// Asked of netifd when a ruleset is loaded, not every loop.
 func withLANDevices(spec firewall.Spec) firewall.Spec {
-	if spec.RefuseIPv6 {
-		spec.LANDevices = lanDevices()
-	}
+	spec.LANDevices = lanDevices()
 	return spec
 }
 
 // lanDevices is the router's LAN-side devices, for the IPv6 refusal's
-// exemption (firewall.Spec.LANDevices): what netifd set up statically — the
+// exemption and the LAN egress guard (firewall.Spec.LANDevices): what netifd set up statically — the
 // LAN, a guest network — that is up and carries no default route, and no
 // device a default route leaves by. nil on any doubt; the refusal then stays
 // whole.

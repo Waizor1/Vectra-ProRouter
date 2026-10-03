@@ -156,7 +156,7 @@ func TestNoDNSOptionsNoDNSInbound(t *testing.T) {
 	if _, ok := xray.RenderDNSListen(spliced); ok {
 		t.Fatal("a DNS inbound without DNS options")
 	}
-	if res.DNS != (xray.DNSResult{}) {
+	if !reflect.DeepEqual(res.DNS, xray.DNSResult{}) {
 		t.Fatalf("result = %+v", res.DNS)
 	}
 	base := xray.SpliceOptions{APIListen: xray.DefaultAPIListen}
@@ -271,7 +271,7 @@ func TestNodeHostsFromEveryShape(t *testing.T) {
 		{"tag":"b","protocol":"trojan","settings":{"servers":[{"address":"b.example.net"}]}},
 		{"tag":"c","protocol":"hysteria","settings":{"address":"c.example.net"}},
 		{"tag":"d","protocol":"wireguard","settings":{"peers":[{"endpoint":"d.example.net:51820"},{"endpoint":"[2001:db8::1]:51820"}]}},
-		{"tag":"e","protocol":"freedom","settings":{"redirect":"e.example.net:1"}},
+		{"tag":"e","protocol":"freedom","settings":{"domainStrategy":"UseIPv4"}},
 		{"tag":"f","protocol":"vless","settings":{"address":"a.example.net"}}
 	]}`
 	spliced, res, err := xray.Splice([]byte(doc), testTproxy(), xray.SpliceOptions{DNS: dnsOptions()})

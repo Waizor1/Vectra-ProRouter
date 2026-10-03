@@ -228,6 +228,7 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 		cancel()
 		w.eps, w.epsAt = eps, now
 		w.namesResolved(namedTags(w.view.Outbounds), unresolved, now, true)
+		w.det.Keep(viewOutboundTags(w.view.Outbounds))
 		if said := fmt.Sprintf("%d/%d", len(eps), len(unresolved)); said != w.epsSaid {
 			w.epsSaid = said
 			if len(unresolved) > 0 {
@@ -365,6 +366,16 @@ func namedTags(outs []xrayview.Outbound) []string {
 	return tags
 }
 
+// viewOutboundTags are every outbound tag of the render: what the watchdog
+// may still have to judge (failover.Detector.Keep).
+func viewOutboundTags(outs []xrayview.Outbound) []string {
+	tags := make([]string, 0, len(outs))
+	for _, o := range outs {
+		tags = append(tags, o.Tag)
+	}
+	return tags
+}
+
 // fastBatch is the next few names that did not resolve, in turn.
 func (w *failoverWatch) fastBatch() []string {
 	tags := make([]string, 0, len(w.unresolved))
@@ -409,6 +420,11 @@ func (w *failoverWatch) namesResolved(asked, unresolved []string, now time.Time,
 				delete(w.unresolved, t)
 				delete(w.aliveLost, t)
 				delete(w.lostInOutage, t)
+			}
+		}
+		for t := range w.seenResolved {
+			if !contains(asked, t) {
+				delete(w.seenResolved, t)
 			}
 		}
 	}

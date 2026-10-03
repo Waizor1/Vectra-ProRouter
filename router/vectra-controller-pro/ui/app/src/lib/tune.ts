@@ -8,10 +8,11 @@ import type { Fmt } from './format';
 
 /**
  * One phrase per thing in place, in the router's order: the zram swap with its
- * size, the two memory settings as one, packet steering, flow offloading. An
- * id the UI does not know yet is shown raw. The memory settings are there for
- * the swap: they are named only beside it, and not at all when `brief` (one
- * line, the Pro diagnostics), where they go without saying.
+ * size, the two memory settings as one, packet steering, flow offloading, the
+ * quiet cron log. An id the UI does not know yet is shown raw. The memory
+ * settings are there for the swap: they are named only beside it, and not at
+ * all when `brief` (one line, the Pro diagnostics), where they go without
+ * saying. vctl's leftovers in RAM are housekeeping, never named.
  */
 export function tuneWords(t: T, f: Fmt, ids: readonly string[], zramMiB: number | null, brief = false): string[] {
   const out: string[] = [];
@@ -30,6 +31,11 @@ export function tuneWords(t: T, f: Fmt, ids: readonly string[], zramMiB: number 
         break;
       case 'flow_offloading':
         add(t('tune.flow_offloading'));
+        break;
+      case 'cron_loglevel':
+        add(t('tune.cron_loglevel'));
+        break;
+      case 'tmp_leftovers':
         break;
       default:
         add(id);
