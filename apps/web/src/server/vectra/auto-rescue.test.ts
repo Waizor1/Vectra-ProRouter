@@ -1,4 +1,9 @@
-import { routerInventorySnapshots, routers } from "@vectra/db";
+import {
+  jobs,
+  rescueCases,
+  routerInventorySnapshots,
+  routers,
+} from "@vectra/db";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -9,6 +14,7 @@ import {
   isStaleControlPlaneRecoveryPark,
   noAutoRepairEscalationReason,
   planRepairActionsForRouterSafety,
+  queueRescueCaseLogCollection,
   repairActionsForTrigger,
   resourceGuardReasonsForLogCollection,
 } from "./auto-rescue";
@@ -539,5 +545,50 @@ describe("detectBlockedReachabilityTriggers and unapproved routers", () => {
           call.kind === "select" && call.table === routerInventorySnapshots,
       ),
     ).toHaveLength(1);
+  });
+});
+
+// collect_router_logs is a PassWall agent job; vctl never runs it, so one
+// queued for an xray-direct router only waits to be failed at check-in.
+describe("queueRescueCaseLogCollection on a vctl router", () => {
+  const CASE_ID = "5b4a3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d";
+
+  function scripted(engineMode: string) {
+    return createFakeDb({
+      selects: [
+        [rescueCases, [[{ id: CASE_ID, routerId: "router-1" }]]],
+        [jobs, [[]]],
+        [routers, [[{ engineMode }]]],
+      ],
+    });
+  }
+
+  it("tells an operator why it refuses", async () => {
+    const fake = scripted("xray-direct");
+
+    await expect(
+      queueRescueCaseLogCollection(CASE_ID, fake.db as never),
+    ).rejects.toThrow("vctl routers: logs come from vctl");
+    expect(fake.inserts(jobs)).toEqual([]);
+  });
+
+  it("skips quietly when unattended", async () => {
+    const fake = scripted("xray-direct");
+
+    await expect(
+      queueRescueCaseLogCollection(CASE_ID, fake.db as never, {
+        unattended: true,
+      }),
+    ).resolves.toBeNull();
+    expect(fake.inserts(jobs)).toEqual([]);
+  });
+
+  it("still goes on for a PassWall router", async () => {
+    const fake = scripted("passwall");
+
+    // Past the engine gate it meets the resource guard (no snapshot here).
+    await expect(
+      queueRescueCaseLogCollection(CASE_ID, fake.db as never),
+    ).rejects.toThrow(/resource guard/);
   });
 });

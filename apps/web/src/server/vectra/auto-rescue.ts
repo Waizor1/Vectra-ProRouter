@@ -1065,17 +1065,19 @@ export async function queueRescueCaseLogCollection(
     return existingJob;
   }
 
-  // collect_router_logs is a PassWall agent job: vctl never runs it, and an
-  // unattended one on a vctl router only waited to be failed at check-in.
-  if (options.unattended) {
-    const [router] = await database
-      .select({ engineMode: routers.engineMode })
-      .from(routers)
-      .where(eq(routers.id, rescueCase.routerId))
-      .limit(1);
-    if (router?.engineMode === "xray-direct") {
+  // collect_router_logs is a PassWall agent job: vctl never runs it, and one
+  // queued for a vctl router only waits to be failed at check-in. Unattended
+  // collection skips such a router quietly; an operator is told why.
+  const [router] = await database
+    .select({ engineMode: routers.engineMode })
+    .from(routers)
+    .where(eq(routers.id, rescueCase.routerId))
+    .limit(1);
+  if (router?.engineMode === "xray-direct") {
+    if (options.unattended) {
       return null;
     }
+    throw new Error("vctl routers: logs come from vctl");
   }
 
   // Diagnostics are evidence gathering, not remediation: a few log dumps
