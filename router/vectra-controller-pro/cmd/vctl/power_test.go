@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/power"
 	"vectra-controller-pro/internal/uiapi"
 )
@@ -31,6 +32,8 @@ type powerRouter struct {
 	spawned  []*exec.Cmd
 	spawnErr error
 	out      bytes.Buffer
+	// runtime is what the daemon answers on its socket (nil: nothing).
+	runtime *localctl.Runtime
 }
 
 func newPowerRouter(t *testing.T) *powerRouter {
@@ -86,7 +89,9 @@ func newPowerRouter(t *testing.T) *powerRouter {
 	r.passwall = true
 	r.sync(t)
 
-	prevEnv, prevStart, prevOut, prevHanded := powerEnv, powerStart, powerOut, powerHanded
+	prevEnv, prevStart, prevOut, prevHanded, prevRuntime, prevBot := powerEnv, powerStart, powerOut, powerHanded, powerRuntime, powerBot
+	powerRuntime = func(context.Context) *localctl.Runtime { return r.runtime }
+	powerBot = func() string { return "" }
 	powerEnv = func() power.Env { return r.env }
 	// The test binary's own fd 3 is not a lock, and is not this test's to close.
 	powerHanded = func() *os.File { return nil }
@@ -98,7 +103,9 @@ func newPowerRouter(t *testing.T) *powerRouter {
 		return 4242, nil
 	}
 	powerOut = &r.out
-	t.Cleanup(func() { powerEnv, powerStart, powerOut, powerHanded = prevEnv, prevStart, prevOut, prevHanded })
+	t.Cleanup(func() {
+		powerEnv, powerStart, powerOut, powerHanded, powerRuntime, powerBot = prevEnv, prevStart, prevOut, prevHanded, prevRuntime, prevBot
+	})
 	return r
 }
 
@@ -284,7 +291,7 @@ func TestPowerStatus(t *testing.T) {
 		t.Fatal(err, r.out.String())
 	}
 	want := map[string]interface{}{"enabled": false, "running": false, "carrying": false, "holder": "passwall2", "handBack": nil,
-		"uci": false, "boot": false, "trial": nil, "busy": false}
+		"uci": false, "boot": false, "trial": nil, "busy": false, "claim": nil, "autoRouteSource": nil}
 	if !reflect.DeepEqual(st, want) {
 		t.Fatalf("status --json = %v\nwant %v", st, want)
 	}
@@ -347,6 +354,106 @@ func TestPowerStatus(t *testing.T) {
 	}
 }
 
+// While the router is not linked, status says its claim code, until when it
+// is taken, and the link that opens it in Vectra's app — what an operator
+// passes on, without `ubus call vectra setup` — and that vctl routes by
+// PassWall2's configuration until then.
+func TestPowerStatusShowsTheClaimCode(t *testing.T) {
+	r := newPowerRouter(t)
+	r.uci(t, "1")
+	r.boot(t)
+	r.vctl, r.passwall = true, false
+	r.sync(t)
+	exp := time.Date(2026, 10, 3, 14, 29, 19, 0, time.UTC)
+	r.runtime = &localctl.Runtime{Claim: &localctl.Claim{State: "unclaimed", Code: "V8RX3WKG", ExpiresAt: exp}, AutoRouteSource: "passwall"}
+	if err := cmdPower([]string{"status"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Claim code: V8RX3WKG (valid until 14:29 UTC)",
+		"Link: https://t.me/VectraConnect_bot/start?startapp=rt_V8RX3WKG",
+		"It routes by PassWall2's configuration until the router is linked",
+	} {
+		if !strings.Contains(r.out.String(), want) {
+			t.Errorf("status lacks %q:\n%s", want, r.out.String())
+		}
+	}
+	r.out.Reset()
+	powerBot = func() string { return "VectraBot" }
+	if err := cmdPower([]string{"status", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	var st struct {
+		Claim           *powerClaimState `json:"claim"`
+		AutoRouteSource *string          `json:"autoRouteSource"`
+	}
+	if err := json.Unmarshal(r.out.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Claim == nil || *st.Claim != (powerClaimState{Code: "V8RX3WKG", ExpiresAt: "2026-10-03T14:29:19Z", Link: "https://t.me/VectraBot?start=rt_V8RX3WKG"}) ||
+		st.AutoRouteSource == nil || *st.AutoRouteSource != "passwall" {
+		t.Fatalf("status --json: %s", r.out.String())
+	}
+	// Claimed (an owner picked it, the panel has not linked it yet), or
+	// linked: no code to pass on.
+	r.runtime.Claim.State = "claimed"
+	r.out.Reset()
+	if err := cmdPower([]string{"status"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(r.out.String(), "Claim code") {
+		t.Fatalf("a claimed router's code is shown:\n%s", r.out.String())
+	}
+}
+
+// `vectra on` that would leave the LAN without its VPN — no operator config,
+// no PassWall2 to route by — says so and changes nothing, unless --force;
+// --force goes through to the change it detaches.
+func TestPowerOnRefusesToCarryNothingWithoutForce(t *testing.T) {
+	r := newPowerRouter(t)
+	r.uci(t, "0")
+	dir := t.TempDir()
+	r.env.OperatorConfig = filepath.Join(dir, "xray-desired.json")
+	r.env.PassWallUCI = filepath.Join(dir, "passwall2")
+	r.env.PassWallGenerator = filepath.Join(dir, "util_xray.lua")
+	for _, args := range [][]string{{"on"}, {"on", "--trial"}, {"on", "--foreground"}} {
+		err := cmdPower(args)
+		if !errors.Is(err, errWouldIdle) {
+			t.Fatalf("%v: err = %v", args, err)
+		}
+		if !strings.Contains(err.Error(), "without a VPN") || !strings.Contains(err.Error(), "--force") {
+			t.Fatalf("not said plainly: %v", err)
+		}
+	}
+	if len(r.spawned) != 0 || len(r.cmds) != 0 {
+		t.Fatalf("a refusal changed the router: spawned %d, ran %v", len(r.spawned), r.cmds)
+	}
+	if err := cmdPower([]string{"on", "--force"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.spawned) != 1 || !reflect.DeepEqual(r.spawned[0].Args[1:], []string{"power", "on", "--foreground", "--force"}) {
+		t.Fatalf("spawned %d: %v", len(r.spawned), r.spawned)
+	}
+	// PassWall2's configuration to route by: it carries, nothing to say.
+	if err := os.WriteFile(r.env.PassWallUCI, []byte("config global\n\toption node 'myshunt'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(r.env.PassWallGenerator, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdPower([]string{"on"}); err != nil {
+		t.Fatal(err)
+	}
+	// An operator config: configured.
+	_ = os.Remove(r.env.PassWallUCI)
+	if err := os.WriteFile(r.env.OperatorConfig, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdPower([]string{"on"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // ---- set_power ----------------------------------------------------------
 
 // powerCfg is a daemon config whose files are all this test's: no operator
@@ -393,7 +500,7 @@ func TestSetPowerHandsTheChangeToADetachedProcess(t *testing.T) {
 		t.Fatalf("spawned %d, ran %v in the rpcd call itself", len(r.spawned), r.cmds)
 	}
 	c := r.spawned[0]
-	if !reflect.DeepEqual(c.Args[1:], []string{"power", "on", "--foreground"}) || !c.SysProcAttr.Setsid || len(c.ExtraFiles) != 1 {
+	if !reflect.DeepEqual(c.Args[1:], []string{"power", "on", "--foreground", "--force"}) || !c.SysProcAttr.Setsid || len(c.ExtraFiles) != 1 {
 		t.Fatalf("spawned %v setsid=%v files=%d", c.Args, c.SysProcAttr.Setsid, len(c.ExtraFiles))
 	}
 	if f, ok := c.Stdout.(*os.File); !ok || f.Name() != r.env.Log {

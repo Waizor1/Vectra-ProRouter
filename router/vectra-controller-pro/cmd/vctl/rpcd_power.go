@@ -62,11 +62,14 @@ func rpcdSetPower(ctx context.Context, params []byte) uiapi.Action {
 	case !*p.On && !f.On() && !f.Running && f.Owed == "":
 		return action(true, "power_off", "")
 	}
-	verb := "off"
+	args := []string{"power", "off", "--foreground"}
 	if *p.On {
-		verb = "on"
+		// --force: the page shows what the router carries, an idle vctl
+		// included — the console's warning (errWouldIdle) is for a person
+		// who sees nothing.
+		args = []string{"power", "on", "--foreground", "--force"}
 	}
-	if _, err := powerSpawn(env, lock, "power", verb, "--foreground"); err != nil {
+	if _, err := powerSpawn(env, lock, args...); err != nil {
 		return action(false, "apply_failed", "the switch did not start, so nothing changed: "+err.Error())
 	}
 	return action(true, "pending", "")
