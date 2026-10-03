@@ -39,9 +39,21 @@ import (
 
 // Rotation of the nonce: a new one every Period; each stays valid for Grace
 // after the next replaced it, so a scan of the code just replaced still works.
+// A code is shown for Period and taken for Period+Grace: 30 minutes, the
+// expiry the router reports (Nonces.Current) and the panel keeps as it is.
+//
+// Ten minutes was too short for a code passed on by people: on a router
+// migrated from PassWall (2026-10-03) the code went from the router to the
+// operator, to the owner, to the person with the app, and expired 50 s
+// before it was typed. Half an hour is still safe: a code is 8 characters
+// of Crockford base32, 40 bits, and the backend lets about 5 guesses a
+// minute through — 150 over a code's life against 2^40 codes, about one
+// chance in 7 billion, twice that with the code just replaced still valid.
+// A router shows a code only while it is unclaimed, and a claimed one has
+// none at all.
 const (
-	Period = 10 * time.Minute
-	Grace  = 2 * time.Minute
+	Period = 20 * time.Minute
+	Grace  = 10 * time.Minute
 )
 
 // NonceSize is n's length in bytes.

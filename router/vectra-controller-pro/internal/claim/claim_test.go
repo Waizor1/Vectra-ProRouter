@@ -243,15 +243,15 @@ func TestNoncesRotateAndStayValidForTheGrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !expA.Equal(t0.Add(12 * time.Minute)) {
-		t.Errorf("expiresAt = %s, want the 10 minutes plus the 2-minute grace", expA)
+	if !expA.Equal(t0.Add(10*time.Minute + Grace)) {
+		t.Errorf("expiresAt = %s, want the 10 minutes plus the grace", expA)
 	}
 	b, expB, _ := n.Current(t0.Add(10*time.Minute - time.Second))
 	if !bytes.Equal(a, b) || !expB.Equal(expA) {
 		t.Fatal("the nonce changed before its period")
 	}
 	c, expC, _ := n.Current(t0.Add(10 * time.Minute))
-	if bytes.Equal(a, c) || !expC.Equal(t0.Add(22*time.Minute)) {
+	if bytes.Equal(a, c) || !expC.Equal(t0.Add(20*time.Minute+Grace)) {
 		t.Fatalf("no rotation at the period: expiresAt %s", expC)
 	}
 	c[0] ^= 0xff // the caller's copy is its own
@@ -260,6 +260,26 @@ func TestNoncesRotateAndStayValidForTheGrace(t *testing.T) {
 	}
 	if _, _, err := NewNonces(0, bytes.NewReader(nil)).Current(t0); err == nil {
 		t.Fatal("minted a nonce from an empty source")
+	}
+}
+
+// A code is shown for 20 minutes and taken for 30: long enough to be passed
+// from the router through two people to the app (claim.go, Period).
+func TestACodeIsTakenForHalfAnHourByDefault(t *testing.T) {
+	n := NewNonces(0, bytes.NewReader(bytes.Repeat(fixed("rand"), 4)))
+	t0 := time.Date(2026, 10, 3, 13, 47, 0, 0, time.UTC)
+	a, exp, err := n.Current(t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exp.Equal(t0.Add(30 * time.Minute)) {
+		t.Fatalf("expiresAt %s, want half an hour after the code was minted", exp)
+	}
+	if b, _, _ := n.Current(t0.Add(20*time.Minute - time.Second)); !bytes.Equal(a, b) {
+		t.Fatal("the code changed before 20 minutes")
+	}
+	if b, _, _ := n.Current(t0.Add(20 * time.Minute)); bytes.Equal(a, b) {
+		t.Fatal("the code was not replaced after 20 minutes")
 	}
 }
 
@@ -307,7 +327,7 @@ func TestResetMintsAFreshNonceAtOnce(t *testing.T) {
 	}
 	n.Reset()
 	b, exp, err := n.Current(t0.Add(time.Minute))
-	if err != nil || bytes.Equal(a, b) || !exp.Equal(t0.Add(13*time.Minute)) {
+	if err != nil || bytes.Equal(a, b) || !exp.Equal(t0.Add(11*time.Minute+Grace)) {
 		t.Fatalf("after Reset: the same nonce=%v, expiresAt %s, err %v", bytes.Equal(a, b), exp, err)
 	}
 }

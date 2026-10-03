@@ -340,8 +340,8 @@ func TestSetupAnswersWhatTheRouterHas(t *testing.T) {
 }
 
 // Support: the bot the panel named, else the one the box was prepared with
-// (UCI support_bot), else none. The claim's link goes only to the panel's
-// bot: a code means something only there.
+// (UCI support_bot), else none. The claim's link goes only to Vectra's: the
+// panel's bot, else Vectra Connect's mini app — never the support bot.
 func TestSupportGoesToThePanelsBotElseTheBoxs(t *testing.T) {
 	w := newWizardRouter(t)
 	exp := time.Date(2026, 9, 28, 7, 12, 0, 0, time.UTC)
@@ -356,14 +356,17 @@ func TestSupportGoesToThePanelsBotElseTheBoxs(t *testing.T) {
 		}
 		return *p
 	}
+	// Before its first check-in the router knows no bot of the panel's: the
+	// code still opens Vectra Connect's mini app, filled in.
+	const connect = "https://t.me/VectraConnect_bot/start?startapp=rt_7ZKNPGS6"
 	for _, tc := range []struct {
 		name, panel, uci, bot, url string
 	}{
-		{"a box never online, prepared with a bot", "", "VectraHelpBot", "VectraHelpBot", "<null>"},
+		{"a box never online, prepared with a bot", "", "VectraHelpBot", "VectraHelpBot", connect},
 		{"the panel's bot wins", "VectraBot", "VectraHelpBot", "VectraBot", "https://t.me/VectraBot?start=rt_7ZKNPGS6"},
 		{"the panel's bot alone", "VectraBot", "", "VectraBot", "https://t.me/VectraBot?start=rt_7ZKNPGS6"},
-		{"neither", "", "", "<null>", "<null>"},
-		{"an invalid support bot is ignored", "", "@Vectra-Help", "<null>", "<null>"},
+		{"neither", "", "", "<null>", connect},
+		{"an invalid support bot is ignored", "", "@Vectra-Help", "<null>", connect},
 	} {
 		state := `{"device_identifier":"vectra-1"}`
 		if tc.panel != "" {

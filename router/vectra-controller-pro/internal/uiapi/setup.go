@@ -179,11 +179,27 @@ func BuildWanCheck(w setup.Wan, r setup.Result, now time.Time) WanCheck {
 		CheckedAt: now.UTC().Format(time.RFC3339)}
 }
 
+// ClaimBot is the Vectra Connect bot and its mini app ("start"), where a
+// claim code means something: the link a router that never reached the
+// panel gives — before its first check-in it knows no bot of the panel's.
+const ClaimBot = "VectraConnect_bot"
+
+// ClaimLink opens the claim with the code filled in: the bot the panel named,
+// else Vectra Connect's own mini app. Never the box's support bot (UCI
+// support_bot): a code means something only to Vectra's.
+func ClaimLink(bot, code string) string {
+	if bot != "" {
+		return "https://t.me/" + bot + "?start=rt_" + code
+	}
+	return "https://t.me/" + ClaimBot + "/start?startapp=rt_" + code
+}
+
 // BuildSetup answers `setup` from the router's facts, the daemon's claim (rt
 // nil: the daemon is down), whether the router is linked, and what the daemon
 // kept of the panel's word: the bot username and the owner (nil: none).
 // Support goes to the panel's bot, else to the box's own (f.SupportBot); the
-// claim's link only ever to the panel's — a code means something only there.
+// claim's link only ever to Vectra's (ClaimLink) — a code means something
+// only there.
 func BuildSetup(f setup.Facts, rt *localctl.Runtime, linked bool, bot string, owner *ClaimOwner) Setup {
 	s := Setup{Done: f.Done, PasswordSet: f.Password, Lan: SetupLan{IPv4: strPtr(f.Lan.IPv4)}}
 	w := f.Wan
@@ -196,10 +212,8 @@ func BuildSetup(f setup.Facts, rt *localctl.Runtime, linked bool, bot string, ow
 	s.Vectra = SetupVectra{Linked: linked, BotUsername: strPtr(support), Owner: owner}
 	if !linked && rt != nil && rt.Claim != nil {
 		c := rt.Claim
-		sc := &SetupClaim{State: c.State, Code: c.Code, QR: strPtr(c.QR), ExpiresAt: c.ExpiresAt.UTC().Format(time.RFC3339)}
-		if bot != "" {
-			sc.BotURL = strPtr("https://t.me/" + bot + "?start=rt_" + c.Code)
-		}
+		sc := &SetupClaim{State: c.State, Code: c.Code, QR: strPtr(c.QR), ExpiresAt: c.ExpiresAt.UTC().Format(time.RFC3339),
+			BotURL: strPtr(ClaimLink(bot, c.Code))}
 		if c.Owner != nil {
 			sc.Owner = &ClaimOwner{Label: c.Owner.Label}
 		}

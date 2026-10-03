@@ -593,10 +593,12 @@ the simple view: the operator's lock never refuses it.
   configuration follows); `code`, 8 characters of Crockford base32 — show it
   as 4-4; `qr`, the text to put in a QR code (`VECTRA:R1:…`), `null` until the
   panel has sent Vectra's key (the code works regardless); `expiresAt`, when
-  the code stops being valid — a new one replaces it 2 minutes before, so a
-  code just replaced still works for 2 minutes; `botUrl`,
-  `https://t.me/<bot>?start=rt_<code>` or `null`; `owner`, `{"label"}` or
-  `null`.
+  the code stops being valid, 30 minutes after it was made — a new one
+  replaces it 10 minutes before, so a code just replaced still works for 10
+  minutes; `botUrl`, `https://t.me/<bot>?start=rt_<code>` for the bot the
+  panel named, else Vectra Connect's mini app,
+  `https://t.me/VectraConnect_bot/start?startapp=rt_<code>` (never `null`
+  while there is a code); `owner`, `{"label"}` or `null`.
 
 `wan_check`: `{link, ipv4, dns, internet, panel, checkedAt}` — active checks,
 within 8 s, that hold with xray down and with the kill switch armed (every
