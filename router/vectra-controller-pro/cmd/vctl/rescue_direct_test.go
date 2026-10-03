@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/controlplane"
+	"vectra-controller-pro/internal/failover"
 	"vectra-controller-pro/internal/rescue"
 )
 
@@ -106,5 +108,66 @@ func TestAStartInDirectModeLoadsNothing(t *testing.T) {
 	d.restoreDataPlane(context.Background())
 	if _, err := os.Stat(confirm); err == nil {
 		t.Fatal("proxy mode, and the firewall was not programmed")
+	}
+}
+
+// Between the polls the rescue looks again only while it is unsure: after a
+// failed probe through the tunnel, or in direct mode once the cooldown allows
+// the way back and a node lives — never under the kill switch.
+func TestTheRescueRechecksBetweenPollsOnlyWhenUnsure(t *testing.T) {
+	d := &daemon{rescuePolicy: rescue.DefaultPolicy()}
+	now := time.Now()
+	if d.rescueRecheckDue(now) {
+		t.Fatal("rechecked a healthy proxy between the polls")
+	}
+	d.storeRescueState(rescue.State{Mode: rescue.ModeProxy, ProxyFailureCount: 1}, "")
+	if !d.rescueRecheckDue(now) {
+		t.Fatal("a probe through the tunnel failed and nothing looks again before the next poll")
+	}
+	d.rescueCheckedAt = now
+	if d.rescueRecheckDue(now.Add(rescueRecheckEvery / 2)) {
+		t.Fatal("looked again sooner than rescueRecheckEvery")
+	}
+
+	d.rescueCheckedAt = time.Time{}
+	d.storeRescueState(rescue.State{Mode: rescue.ModeDirect, LastTransitionAt: now}, "")
+	if d.rescueRecheckDue(now) {
+		t.Fatal("direct mode looks for the way back within the cooldown")
+	}
+	later := now.Add(d.rescuePolicy.Cooldown + time.Second)
+	if !d.rescueRecheckDue(later) {
+		t.Fatal("the cooldown is over and nothing says the tunnel is dead, yet no recheck")
+	}
+	d.tunnel.Store(&tunnelLook{Dead: true, At: later})
+	if d.rescueRecheckDue(later) {
+		t.Fatal("every node is dead and the rescue still looks for the way back")
+	}
+	if !d.rescueRecheckDue(later.Add(2 * time.Minute)) {
+		t.Fatal("an old word of the observatory still holds the way back")
+	}
+
+	d.desired = &config.Config{Inbounds: config.Inbounds{Tproxy: &config.TproxyInbound{Port: 12345, FwMark: 1, KillSwitch: true}}}
+	d.storeRescueState(rescue.State{Mode: rescue.ModeProxy, ProxyFailureCount: 2}, "")
+	if d.rescueRecheckDue(later) {
+		t.Fatal("rechecked under the kill switch")
+	}
+}
+
+// The observatory's word: dead only when no node of the main balancer, its
+// reserve or the borrow pool is alive.
+func TestTheTunnelIsDeadOnlyWithEveryNodeDead(t *testing.T) {
+	d := &daemon{}
+	now := time.Now()
+	if d.tunnelDead(now) {
+		t.Fatal("dead with no word at all")
+	}
+	health := map[string]failover.Health{"a": {}, "b": {}, "c": {Alive: true}}
+	d.publishTunnel(health, now, []string{"a"}, []string{"b"}, []string{"c"})
+	if d.tunnelDead(now) {
+		t.Fatal("a borrowable node lives, and yet dead")
+	}
+	d.publishTunnel(health, now, []string{"a"}, []string{"b"})
+	if !d.tunnelDead(now) {
+		t.Fatal("every node the main traffic can take is dead, and yet alive")
 	}
 }

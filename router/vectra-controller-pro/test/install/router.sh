@@ -285,8 +285,8 @@ lifecycle)
 	check fresh_sized "sizes the install from the feed's own list (xray alone is ~34 MB)" \
 		sh -c "grep -q 'нужно около [1-9][0-9] МБ' /tmp/installer.out"
 	assert_installed_and_on fresh
-	check fresh_no_shell "a new router: the support shell is off (remote_shell '$(uci -q get $PKG.main.remote_shell)')" \
-		test "$(uci -q get $PKG.main.remote_shell)" = 0
+	check fresh_shell_on "a new router: the support shell is on, the owner can switch it off (remote_shell '$(uci -q get $PKG.main.remote_shell)')" \
+		test "$(uci -q get $PKG.main.remote_shell)" = 1
 	check fresh_geodata "vectra-geodata $(version_of vectra-geodata) keeps its data in Vectra's own directory, nothing of it in /usr/share/v2ray" \
 		sh -c '[ -s /usr/share/vectra-controller-pro/geo/geoip.dat ] && [ -s /usr/share/vectra-controller-pro/geo/geosite.dat ] && [ ! -L /usr/share/v2ray/geoip.dat ] && [ ! -L /usr/share/v2ray/geosite.dat ]'
 	check fresh_reporter "vectra-reporter $(version_of vectra-reporter): cron runs it every minute, and it answers" \
@@ -443,8 +443,8 @@ passwall-upgrade)
 	installer --yes
 	check pwup_taken "taken over first: exit $INSTALL_RC, vctl runs, PassWall2 stopped" \
 		sh -c "[ '$INSTALL_RC' = 0 ] && /etc/init.d/$PKG running && ! /etc/init.d/passwall2 running"
-	check pwup_shell_new "a new router, PassWall2 or not: the support shell is off (remote_shell '$(uci -q get $PKG.main.remote_shell)')" \
-		test "$(uci -q get $PKG.main.remote_shell)" = 0
+	check pwup_shell_new "a new router, PassWall2 or not: the support shell is on (remote_shell '$(uci -q get $PKG.main.remote_shell)')" \
+		test "$(uci -q get $PKG.main.remote_shell)" = 1
 	# The vctl this upgrade replaces is one from before the support shell's
 	# switch (r36 and earlier): no remote_shell. It has run here, so its state
 	# is there.

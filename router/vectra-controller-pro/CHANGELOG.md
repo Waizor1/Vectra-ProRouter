@@ -1,5 +1,36 @@
 # Changelog
 
+## vctl 0.7.0-r15 — a failed VPN never takes the internet with it
+
+Fault drills on a live router (1111, 2026-10-04), a LAN client measured every
+two seconds: xray killed once, xray killed in a loop, every node blocked, the
+panel cut off. The owner's rule: when the VPN fails the internet stays, the
+VPN comes back by itself.
+
+### Fixed
+- **xray down: the router's DNS left the dead inbound only at the polls.**
+  TPROXY already fell through to the open path within a second, but dnsmasq
+  kept asking xray's DNS inbound until dnsDeadAfter polls (two minutes): the
+  LAN resolved nothing for 90 s in the crash-loop drill. Between the polls
+  the loop now asks the inbound every 3 s (dnsWatchDue); three misses in a
+  row take the redirect out at once, without waiting for an answer, and the
+  first answer puts it back.
+- **Every node dead: 147 s without internet before the rescue went direct.**
+  After a failed probe through the tunnel the rescue looks again every 10 s
+  (rescueRecheckDue), not once a poll; three failures take about half a
+  minute.
+- **Direct mode went back to a dead tunnel, and could not leave it again.**
+  After its cooldown the rescue retried the proxy with every node still
+  blocked (116 s without internet), and the same cooldown held the way back
+  out. Now the way back waits for xray's observatory to hold a node of the
+  main balancer, its reserve or the borrow pool alive (publishTunnel), and
+  the way out never waits for the cooldown.
+
+### Changed
+- **The support shell is on by default** (UCI `remote_shell` '1' on a new
+  router too); the owner switches it off in the router UI, and an upgrade
+  keeps that.
+
 ## vctl 0.7.0-r14 — a router taken from PassWall2 keeps its VPN, and its owner gets its code in time
 
 What the migration of a live router (netis NX31, 2026-10-03) from PassWall2

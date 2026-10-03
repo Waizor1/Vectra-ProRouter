@@ -445,3 +445,59 @@ func TestFakeDNSWhereTheKernelTakesTheRussianNetworks(t *testing.T) {
 		t.Fatal("FakeDNS with the Russian networks left to the provider")
 	}
 }
+
+// Between the polls the DNS watch takes a dead inbound's redirect out after
+// dnsFastDeadAfter checks — seconds, not the polls' minutes — and puts it
+// back at the first answer; a healthy redirect costs one query and nothing
+// else.
+func TestTheDNSWatchFailsOpenWithinSeconds(t *testing.T) {
+	d := dnsDaemon(t, renderWithDNS, dnsmasqAs453)
+	d.desired = &config.Config{}
+	d.supStarted = true
+	ctx := context.Background()
+	answering := true
+	d.dnsAnswers = func(context.Context, int) bool { return answering }
+	if d.dnsWatchDue(ctx) {
+		t.Fatal("due before anything was programmed by this process")
+	}
+	cur := "10053/[453]/v6reject=false/hijack=false"
+	d.fwProgrammed = &cur
+	if d.dnsWatchDue(ctx) {
+		t.Fatal("due while xray answers")
+	}
+	answering = false
+	for i := 1; i < dnsFastDeadAfter; i++ {
+		if d.dnsWatchDue(ctx) {
+			t.Fatalf("the redirect went after %d misses", i)
+		}
+	}
+	if !d.dnsWatchDue(ctx) {
+		t.Fatalf("%d misses in a row and the redirect stays", dnsFastDeadAfter)
+	}
+	none := "fakedns=198.18.0.0/16"
+	d.fwProgrammed = &none
+	if d.dnsWatchDue(ctx) {
+		t.Fatal("still dead, and yet due without the redirect")
+	}
+	answering = true
+	if !d.dnsWatchDue(ctx) {
+		t.Fatal("xray answers again and the redirect is not put back")
+	}
+	if d.dnsWatchDue(ctx) {
+		t.Fatal("put back twice")
+	}
+	// A redirect this watch did not take out (dns_tunnel '0', say) is not its
+	// to put back.
+	answering = true
+	if d.dnsWatchDue(ctx) {
+		t.Fatal("due with nothing taken out")
+	}
+}
+
+func TestRedirectPort(t *testing.T) {
+	for key, want := range map[string]int{"10053/[453]/v6reject=false/hijack=false": 10053, "": 0, "fakedns=198.18.0.0/16": 0, "10053/[453]/v6reject=true/hijack=truefakedns=198.18.0.0/16": 10053} {
+		if got, _ := redirectPort(key); got != want {
+			t.Errorf("redirectPort(%q) = %d, want %d", key, got, want)
+		}
+	}
+}

@@ -72,22 +72,42 @@ func TestTransientFailureNotCounted(t *testing.T) {
 	}
 }
 
-func TestCooldownBlocksTransition(t *testing.T) {
+// The cooldown holds the way back to the proxy, never the way out: a tunnel
+// that died minutes after the last switch must not keep the LAN offline.
+func TestCooldownHoldsOnlyTheWayBack(t *testing.T) {
 	p := DefaultPolicy()
-	st := State{
-		Mode:              ModeProxy,
-		ProxyFailureCount: p.TriggerFailureCount - 1,
-		LastTransitionAt:  time.Now(), // just transitioned
-	}
+	now := time.Now()
 	d := Evaluate(Input{
-		CurrentState:    st,
+		CurrentState:    State{Mode: ModeProxy, ProxyFailureCount: p.TriggerFailureCount - 1, LastTransitionAt: now},
 		PublicReachable: false,
 		ProxyConclusive: true,
 		DirectReachable: true,
-		Now:             time.Now(),
+		Now:             now,
+	}, p)
+	if !d.ShouldTransition || d.NextMode != ModeDirect {
+		t.Fatalf("the cooldown kept a dead tunnel: %+v", d)
+	}
+	d = Evaluate(Input{
+		CurrentState:    State{Mode: ModeDirect, DirectSuccessCount: p.RecoverySuccessCount, LastTransitionAt: now},
+		PublicReachable: true,
+		Now:             now,
 	}, p)
 	if d.ShouldTransition {
-		t.Fatalf("cooldown should block transition: %+v", d)
+		t.Fatalf("back to the proxy within the cooldown: %+v", d)
+	}
+}
+
+// With the observatory holding every node dead, direct mode stays: the proxy
+// retried then carries nothing.
+func TestNoRetryWhileTheTunnelIsDead(t *testing.T) {
+	p := DefaultPolicy()
+	now := time.Now()
+	st := State{Mode: ModeDirect, DirectSuccessCount: p.RecoverySuccessCount, LastTransitionAt: now.Add(-p.Cooldown - time.Second)}
+	if d := Evaluate(Input{CurrentState: st, PublicReachable: true, TunnelDead: true, Now: now}, p); d.ShouldTransition {
+		t.Fatalf("retried the proxy with every node dead: %+v", d)
+	}
+	if d := Evaluate(Input{CurrentState: st, PublicReachable: true, Now: now}, p); !d.ShouldTransition || d.NextMode != ModeProxy {
+		t.Fatalf("a node lives and the proxy is not retried: %+v", d)
 	}
 }
 

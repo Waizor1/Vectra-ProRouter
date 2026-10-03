@@ -913,12 +913,20 @@ func fileExists(path string) bool {
 // successful check-in confirms and the detached deadman auto-reverts if
 // connectivity never returns.
 func (d *daemon) programFirewall(ctx context.Context, cfg *config.Config) {
+	d.programFirewallWithin(ctx, cfg, dnsRedirectWait)
+}
+
+// programFirewallWithin is programFirewall waiting at most dnsWait for xray
+// to answer on its DNS inbound: none at all when the DNS watch takes a dead
+// inbound's redirect out — every second of waiting is a second the LAN
+// resolves nothing.
+func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, dnsWait time.Duration) {
 	spec, ok := firewallSpecFromConfig(cfg)
 	spec = withLANDevices(withLoadGuards(spec, d.cfg))
 	if !ok {
 		return // no tproxy inbound — nothing kernel-side to program
 	}
-	d.addDNSRedirect(ctx, &spec, dnsRedirectWait)
+	d.addDNSRedirect(ctx, &spec, dnsWait)
 	d.carryFakeDNS(&spec)
 	script, err := firewall.Render(spec)
 	if err != nil {

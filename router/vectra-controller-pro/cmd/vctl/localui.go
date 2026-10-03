@@ -799,12 +799,29 @@ func (d *daemon) waitForTick(ctx context.Context, tick <-chan time.Time) bool {
 	if d.claim != nil {
 		rotated = d.claim.rotated
 	}
+	watch := time.NewTicker(dnsWatchEvery)
+	defer watch.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return false
 		case <-tick:
 			return true
+		case <-watch.C:
+			// xray down: the router's lookups leave the dead inbound within
+			// seconds, not at the next poll (dnsWatchDue).
+			if d.dnsWatchDue(ctx) {
+				d.programFirewallWithin(ctx, d.desired, 0)
+				d.publishRuntime()
+			}
+			// A probe through the tunnel just failed, or direct mode may go
+			// back: the rescue looks again now, not at the next poll.
+			if d.rescueRecheckDue(time.Now()) {
+				if dec := d.rescueStep(ctx); dec.ShouldTransition {
+					d.applyRescueTransition(ctx, dec)
+					d.publishRuntime()
+				}
+			}
 		case <-rotated:
 			// The UI shows a new claim code: check in now, so the panel knows it.
 			return true

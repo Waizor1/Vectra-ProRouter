@@ -326,6 +326,9 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 		}
 		bals = append(bals, failover.Balancer{Tag: b.Tag, Members: b.Members, Principle: info.Principle,
 			Override: info.Override, OwnerPin: ov.Pins[b.Tag], Fallback: nodeFallback(w.view, b), Chain: chain, Borrow: borrow})
+		if b.Role == "main" && len(health) > 0 {
+			d.publishTunnel(health, now, b.Members, chain, borrow)
+		}
 	}
 	for _, a := range w.pol.Decide(now, bals, health, w.det) {
 		d.applyFailover(ctx, w, a, now, main)
@@ -344,6 +347,35 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 	} else {
 		delete(w.downReported, main)
 	}
+}
+
+// tunnelLook is the observatory's word on the main traffic's way out, as the
+// watchdog last read it: Dead when no node of the main balancer, its reserve
+// or the entry's other countries is alive.
+type tunnelLook struct {
+	Dead bool
+	At   time.Time
+}
+
+// publishTunnel records whether any node the main traffic can take is alive.
+func (d *daemon) publishTunnel(health map[string]failover.Health, now time.Time, groups ...[]string) {
+	for _, g := range groups {
+		for _, t := range g {
+			if health[t].Alive {
+				d.tunnel.Store(&tunnelLook{At: now})
+				return
+			}
+		}
+	}
+	d.tunnel.Store(&tunnelLook{Dead: true, At: now})
+}
+
+// tunnelDead: the observatory, read within the last minute, holds every node
+// the main traffic can take dead. Not known (no watchdog, no metrics, an old
+// look) is not dead.
+func (d *daemon) tunnelDead(now time.Time) bool {
+	l := d.tunnel.Load()
+	return l != nil && l.Dead && now.Sub(l.At) < time.Minute
 }
 
 // lookupEach looks a node's name up within its own budget.

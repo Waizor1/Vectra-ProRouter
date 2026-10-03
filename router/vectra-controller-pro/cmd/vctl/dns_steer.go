@@ -279,6 +279,69 @@ func dnsRedirectKey(spec firewall.Spec) string {
 	return fmt.Sprintf("%d/%v/v6reject=%t/hijack=%t", spec.DNSRedirectPort, spec.DNSResolverUIDs, spec.DNSRejectV6, spec.HijackDNS)
 }
 
+// dnsWatchEvery is how often, between the polls, the loop asks xray's DNS
+// inbound whether it still answers while the data plane sends the router's
+// lookups to it (dnsWatchDue). At the polls' pace alone a crashed xray cost the
+// LAN every name for dnsDeadAfter minutes, while TPROXY itself falls through to
+// the open path within a second: measured on 1111 on 2026-10-04, xray killed
+// in a loop, 90 s without a single lookup before the redirect went.
+const dnsWatchEvery = 3 * time.Second
+
+// dnsFastDeadAfter is how many of those checks in a row xray may not answer
+// before the redirect goes: about ten seconds, longer than a reload or a
+// supervised restart takes.
+const dnsFastDeadAfter = 3
+
+// dnsWatchDue: the loaded data plane is to be programmed again now, between
+// the polls — the redirect it holds leads to an inbound that has not answered
+// dnsFastDeadAfter checks in a row, or this watch took it out and xray answers
+// again. Cheap while nothing changes: one query to the inbound it redirects
+// to, or nothing at all.
+func (d *daemon) dnsWatchDue(ctx context.Context) bool {
+	if d.desired == nil || !d.supStarted || d.fwProgrammed == nil {
+		return false
+	}
+	if port, ok := redirectPort(*d.fwProgrammed); ok {
+		if d.answers(ctx, port) {
+			d.dnsFastMisses = 0
+			return false
+		}
+		d.dnsFastMisses++
+		if d.dnsFastMisses < dnsFastDeadAfter {
+			return false
+		}
+		d.dnsFastMisses = 0
+		d.dnsFailedOpen = true
+		logging.L().Warn("xray stopped answering on its DNS inbound; the router's resolver asks over the open path until it answers again", "port", port)
+		return true
+	}
+	if !d.dnsFailedOpen {
+		return false
+	}
+	port, _, ok := d.dnsCandidate()
+	if !ok {
+		d.dnsFailedOpen = false
+		return false
+	}
+	if !d.answers(ctx, port) {
+		return false
+	}
+	d.dnsFailedOpen = false
+	logging.L().Info("xray answers on its DNS inbound again; the router's resolver asks through the tunnel", "port", port)
+	return true
+}
+
+// redirectPort is the port a dnsRedirectKey redirects to; ok is false when it
+// redirects nothing.
+func redirectPort(key string) (int, bool) {
+	head, _, found := strings.Cut(key, "/")
+	if !found {
+		return 0, false
+	}
+	port, err := strconv.Atoi(head)
+	return port, err == nil && port > 0
+}
+
 // dnsDeadAfter is how many loops in a row xray may not answer on its DNS
 // inbound before the redirect is taken out: one miss can be a restart.
 const dnsDeadAfter = 2

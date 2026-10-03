@@ -56,7 +56,11 @@ type Input struct {
 	PublicReachable bool // could we reach the public health URLs this loop?
 	ProxyConclusive bool // in proxy mode, was the failure conclusive (not a transient probe error)?
 	DirectReachable bool // is a direct path available (gate before switching to direct)?
-	Now             time.Time
+	// TunnelDead: xray's observatory holds every node the main traffic can
+	// take dead. In direct mode the proxy is not retried then: retried, it
+	// carried nothing and the LAN sat offline until the rescue left it again.
+	TunnelDead bool
+	Now        time.Time
 }
 
 // Decision is the evaluator's recommendation.
@@ -94,7 +98,10 @@ func Evaluate(in Input, p Policy) Decision {
 			return d // transient probe failure — don't count it
 		}
 		d.NextState.ProxyFailureCount = st.ProxyFailureCount + 1
-		if d.NextState.ProxyFailureCount >= p.TriggerFailureCount && cooldownOK && in.DirectReachable {
+		// No cooldown on the way out: the internet must not wait for it. The
+		// way back keeps it, so a flapping tunnel still swings at most once
+		// a cooldown.
+		if d.NextState.ProxyFailureCount >= p.TriggerFailureCount && in.DirectReachable {
 			d.ShouldTransition = true
 			d.NextMode = ModeDirect
 			d.NextState.Mode = ModeDirect
@@ -107,7 +114,7 @@ func Evaluate(in Input, p Policy) Decision {
 	case ModeDirect:
 		if in.PublicReachable {
 			d.NextState.DirectSuccessCount = st.DirectSuccessCount + 1
-			if d.NextState.DirectSuccessCount >= p.RecoverySuccessCount && cooldownOK {
+			if d.NextState.DirectSuccessCount >= p.RecoverySuccessCount && cooldownOK && !in.TunnelDead {
 				d.ShouldTransition = true
 				d.NextMode = ModeProxy
 				d.NextState.Mode = ModeProxy
