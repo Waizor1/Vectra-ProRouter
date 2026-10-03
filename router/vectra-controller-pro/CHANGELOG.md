@@ -1,5 +1,17 @@
 # Changelog
 
+## vctl 0.7.0-r13 — crond quiet on the routers that need it
+
+### Fixed
+- **The tune's `cron_loglevel` takes the stock levels too.** r12 set level 9
+  only where nothing was set, and took any level found for the owner's: on
+  1111 it found 7, set by nobody, and left crond logging every job into
+  logread's 64 KB ring. Busybox crond logs every job below 9, and 5, 7 and
+  8 (LuCI's presets, crond's default) are no one's choice to keep: they are
+  now set to 9 like an unset level, the old level backed up, and `vctl tune
+  undo` puts it back. 9 and above, anything unusual, and a level changed
+  after the tune set 9 stay the owner's.
+
 ## vctl 0.7.0-r12 — before the public launch: the provider decides nothing on the router, nothing leaks, the tune goes deeper
 
 ### Security

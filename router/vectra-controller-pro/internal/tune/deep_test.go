@@ -36,25 +36,83 @@ func TestCronLogLevelIsQuietedAndPutBack(t *testing.T) {
 	}
 }
 
-// A level the owner chose — before the tune or since — is theirs: never set,
+// The stock levels — unset (crond's 8), LuCI's 5 and 8, the 7 found on the
+// test router — all log every job crond starts: the tune sets 9 over them,
+// backs the old level up, and undo puts it back.
+func TestCronStockLevelsAreQuietedAndPutBack(t *testing.T) {
+	for _, was := range []string{"5", "7", "8"} {
+		r := newRouter(t)
+		r.write("etc/config/system", "config system\n\toption cronloglevel '"+was+"'\n")
+		if got := states(Inspect(r.env))[ItemCronLogLevel]; got != Pending {
+			t.Fatalf("level %s: %s", was, got)
+		}
+		res := r.apply()
+		if v, _ := r.option("system", "system", "cronloglevel"); v != "9" || states(res.Plan)[ItemCronLogLevel] != Applied {
+			t.Fatalf("level %s: now %q, %v", was, v, states(res.Plan))
+		}
+		var line string
+		for _, c := range res.Changes {
+			if c.ID == ItemCronLogLevel {
+				line = c.String()
+			}
+		}
+		if line != "system.@system[0].cronloglevel: "+was+" -> 9" {
+			t.Fatalf("level %s: change %q", was, line)
+		}
+		if b := r.backup().Items[ItemCronLogLevel]; b.Was == nil || *b.Was != was {
+			t.Fatalf("level %s: backup %+v", was, b)
+		}
+		r.calls = nil
+		r.undo()
+		if v, _ := r.option("system", "system", "cronloglevel"); v != was || !containsCall(r.calls, "uci -q set system.@system[0].cronloglevel="+was) {
+			t.Fatalf("level %s: undo left %q, %v", was, v, r.calls)
+		}
+	}
+}
+
+// A level of 9 or above, or anything unusual, is the owner's: never set,
 // never put back.
 func TestCronLogLevelTheOwnerChoseStays(t *testing.T) {
-	r := newRouter(t)
-	r.write("etc/config/system", "config system\n\toption cronloglevel '5'\n")
-	r.apply()
-	if v, _ := r.option("system", "system", "cronloglevel"); v != "5" || containsCall(r.calls, "uci -q commit system") {
-		t.Fatalf("the owner's level %q, calls %v", v, r.calls)
+	for _, mine := range []string{"10", "0", "6", "debug"} {
+		r := newRouter(t)
+		r.write("etc/config/system", "config system\n\toption cronloglevel '"+mine+"'\n")
+		res := r.apply()
+		if got := states(res.Plan)[ItemCronLogLevel]; got != UserSet {
+			t.Fatalf("level %s: %s", mine, got)
+		}
+		if v, _ := r.option("system", "system", "cronloglevel"); v != mine || containsCall(r.calls, "uci -q commit system") {
+			t.Fatalf("the owner's level %q became %q, calls %v", mine, v, r.calls)
+		}
 	}
+	// 9 set by someone before the tune: already so, not backed up.
+	r := newRouter(t)
+	r.write("etc/config/system", "config system\n\toption cronloglevel '9'\n")
+	if got := states(r.apply().Plan)[ItemCronLogLevel]; got != Already {
+		t.Fatalf("9 before the tune: %s", got)
+	}
+	if _, noted := r.backup().Items[ItemCronLogLevel]; noted {
+		t.Fatal("9 before the tune was backed up as the tune's")
+	}
+}
 
-	r = newRouter(t)
+// A level the owner set after the tune set 9 — a stock one included — is
+// theirs from then on: not set again at the next run, and not put back.
+func TestCronLogLevelTheOwnerSetSinceStays(t *testing.T) {
+	r := newRouter(t)
 	r.apply()
 	r.write("etc/config/system", "config system\n\toption cronloglevel '8'\n")
 	res := r.apply()
 	if got := states(res.Plan)[ItemCronLogLevel]; got != UserSet {
 		t.Fatalf("set since by the owner: %s", got)
 	}
-	if _, noted := r.backup().Items[ItemCronLogLevel]; noted {
-		t.Fatal("the tune still claims the owner's level")
+	b := r.backup()
+	if _, noted := b.Items[ItemCronLogLevel]; noted || !b.owner(ItemCronLogLevel) {
+		t.Fatalf("backup %+v", b)
+	}
+	r.calls = nil
+	res = r.apply()
+	if got := states(res.Plan)[ItemCronLogLevel]; got != UserSet || containsCall(r.calls, "uci -q commit system") {
+		t.Fatalf("the next run: %s, %v", got, r.calls)
 	}
 	r.calls = nil
 	r.undo()

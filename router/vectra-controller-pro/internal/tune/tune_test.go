@@ -462,8 +462,8 @@ func TestTheOwnersExplicitChoicesStay(t *testing.T) {
 	r.write("etc/sysctl.conf", "# mine\nvm.swappiness = 10\n")
 	r.write("proc/sys/vm/swappiness", "10\n")
 	r.write("etc/sysctl.d/50-mine.conf", "vm/vfs_cache_pressure=50\n")
-	// LuCI's «Cron Log Level» left at «Normal» is a level set, too.
-	r.write("etc/config/system", "config system\n\toption cronloglevel '8'\n")
+	// A cron level quieter than the tune's is a choice, too.
+	r.write("etc/config/system", "config system\n\toption cronloglevel '10'\n")
 	p := Inspect(r.env)
 	want := map[string]string{ItemZram: Pending, ItemSwappiness: UserSet, ItemVFSCachePressure: UserSet, ItemPacketSteering: UserSet, ItemFlowOffloading: UserSet,
 		ItemCronLogLevel: UserSet, ItemTmpLeftovers: Already}

@@ -29,7 +29,10 @@
 //   - cron_loglevel: busybox crond logs every job it runs, at err level, into
 //     logread's 64 KB ring — vctl's dead-man and watchdog every minute push
 //     out what the log is kept for. system.@system[0].cronloglevel '9' keeps
-//     only its warnings, applied with cron's own reload.
+//     only its warnings, applied with cron's own reload. Unset (crond's 8)
+//     and the stock levels 5, 7 and 8 all log every job and are the tune's
+//     to change, the old value backed up; 9 and above, or anything unusual,
+//     is the owner's.
 //   - tmp_leftovers: vctl's own leftovers in RAM (/tmp): a downloaded update
 //     package, a crash-left temp file of the vault (leftovers.go) — by their
 //     exact names, older than ten minutes and open in no process. Nothing
@@ -115,6 +118,12 @@ const (
 // CronLogLevel is busybox crond's level the tune sets: 9 logs its warnings
 // and errors, not every job it starts (8, its default, does).
 const CronLogLevel = "9"
+
+// cronStockLevels are the levels nobody chose to keep: LuCI's presets (5
+// «Debug», 8 «Normal», crond's own default when unset) and 7, found on the
+// test router with no owner's hand in it (1111, r12). Every one logs every
+// job crond starts; the tune sets 9 over them and backs the old one up.
+var cronStockLevels = map[string]bool{"5": true, "7": true, "8": true}
 
 // Profiles.
 const (
@@ -548,9 +557,11 @@ func cronItem(f Facts) Item {
 		it.State, it.Reason = Skipped, ReasonNoSystem
 	case f.System.Value != nil && strings.TrimSpace(*f.System.Value) == CronLogLevel:
 		it.State = appliedOr(f.ours(ItemCronLogLevel))
-	case f.System.Value != nil:
-		// Any level set is someone's choice — LuCI's «Cron Log Level» among
-		// them.
+	case f.ours(ItemCronLogLevel) || f.Backup.owner(ItemCronLogLevel):
+		// Changed since the tune set 9: the owner's, whatever the level.
+		it.State = UserSet
+	case f.System.Value != nil && !cronStockLevels[strings.TrimSpace(*f.System.Value)]:
+		// Above 9 (quieter still), or anything unusual: someone's choice.
 		it.State = UserSet
 	case f.Pending["system"]:
 		it.State, it.Reason = Skipped, ReasonUCIPending
@@ -598,8 +609,10 @@ func Apply(ctx context.Context, env Env) (Result, error) {
 	// router would say so at the next run.
 	for _, it := range p.Items {
 		if it.State == UserSet && f.ours(it.ID) {
-			if it.ID == ItemZram && !a.backup.owner(ItemZram) {
-				a.backup.Owner = append(a.backup.Owner, ItemZram)
+			// cron_loglevel too: a stock level put back by the owner would
+			// read as the tune's to change again.
+			if (it.ID == ItemZram || it.ID == ItemCronLogLevel) && !a.backup.owner(it.ID) {
+				a.backup.Owner = append(a.backup.Owner, it.ID)
 			}
 			a.forget(it.ID)
 		}
@@ -873,7 +886,12 @@ func (a *applier) cron(p Plan) {
 		return
 	}
 	opt := "system." + a.f.System.Section + ".cronloglevel"
-	if !a.note(ItemCronLogLevel, Saved{Key: opt, Set: CronLogLevel}) {
+	from := "unset"
+	if a.f.System.Value != nil {
+		from = *a.f.System.Value
+	}
+	// The old level is backed up: undo puts back 5, 7 or 8, or unsets it.
+	if !a.note(ItemCronLogLevel, Saved{Key: opt, Was: a.f.System.Value, Set: CronLogLevel}) {
 		return
 	}
 	for _, c := range [][]string{{"-q", "set", opt + "=" + CronLogLevel}, {"-q", "commit", "system"}} {
@@ -887,7 +905,7 @@ func (a *applier) cron(p Plan) {
 			return
 		}
 	}
-	a.change(ItemCronLogLevel, opt, "unset", CronLogLevel)
+	a.change(ItemCronLogLevel, opt, from, CronLogLevel)
 	if err := a.run(filepath.Join(a.env.InitDir, "cron"), "reload"); err != nil {
 		a.failed = append(a.failed, Failure{ID: ItemCronLogLevel, Err: "set; not applied until the next boot: " + err.Error()})
 	}

@@ -274,7 +274,7 @@ not. UCI `vectra-controller-pro.main.tune` '0': the tune changes nothing.
 | `vfs_cache_pressure` | `vm.vfs_cache_pressure` 200 — `lowmem` only | the kernel's value |
 | `packet_steering` | `network.@globals[0].packet_steering` '1': every core takes the network's receive work — 2 cores or more | the option, `null` unset |
 | `flow_offloading` | `firewall.@defaults[0].flow_offloading` '1': software flow offloading, never hardware | the option, `null` unset |
-| `cron_loglevel` | `system.@system[0].cronloglevel` '9': busybox crond logs its warnings, not every job it starts into logread's 64 KB ring; applied with cron's reload | the option, `null` unset |
+| `cron_loglevel` | `system.@system[0].cronloglevel` '9': busybox crond logs its warnings, not every job it starts into logread's 64 KB ring; applied with cron's reload. Unset and the stock levels 5, 7 and 8 (all log every job) are set to 9, the old level backed up for undo; 9 and above, anything unusual, or a level changed after the tune set 9 are `user_set` | the option, `null` unset |
 | `tmp_leftovers` | vctl's own leftovers in RAM removed: an update's package (`/tmp/vectra-controller-pro-update.ipk`, `/tmp/vectra-controller-pro-auto-*.ipk`) and the vault's temp files in `/var/run/vectra-controller-pro` — by these exact names only, older than 10 minutes and open in no process. Never backed up (nothing to put back), never `user_set` | the MiB of such leftovers found, `null` when none |
 
 `target`: what the tune sets (`on` for `zram`). `state`: `applied` (the tune
