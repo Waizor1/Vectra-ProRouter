@@ -14,7 +14,10 @@ first start.
   the LAN went out directly until the panel's apply came (17 min on the
   router, most of it a claim code passed on by people). Now it routes by
   PassWall2's own configuration — route_source 'passwall', chosen by vctl
-  itself, automatic — on a built-in operator config: the panel's
+  itself, automatic — where PassWall2 carried the traffic (its switch on, or
+  the takeover's breadcrumbs saying its switch or rc.d link was) and its
+  global node is one of its nodes; one its owner had switched off routes
+  nothing — on a built-in operator config: the panel's
   `buildXrayOperatorConfig` without the subscription (`config.Base`, proven
   against the panel's golden file). Nothing is written for it, no UCI and no
   operator config: the choice is made again at each start, the router still
@@ -24,7 +27,9 @@ first start.
   is never touched; a router without PassWall2 (a fresh install) waits for
   its setup as before. `vectra on` waits for that data plane like a
   configured vctl's, and without it gives the router back to PassWall2.
-  `vectra status` says while it lasts (`autoRouteSource`).
+  `vectra status` says while it lasts (`autoRouteSource`). `vctl
+  apply-local` refuses it (it installs the provider's document from the
+  operator's config, which there is none of).
 - **A claim code is taken for 30 minutes**, shown for 20 (it was 10 and
   2): the router's code went through two people and expired 50 s before it
   was typed. The check-in's expiry carries the grace, as the panel keeps it.
@@ -44,25 +49,33 @@ first start.
 - **`vectra on` says when it would carry nothing** — no operator config and
   no PassWall2 to route by: the LAN would go out directly, without a VPN,
   until the router is linked — before anything is switched, and asks for
-  `--force`. The router UI's set_power passes `--force`: its page shows what
-  the router carries.
+  `--force`. The router UI asks the same: `status.power.wouldIdle` says it,
+  set_power refuses `{"on": true}` with `would_idle` unless `"force": true`,
+  and the page sends that only after its dialog has said the internet goes
+  without a VPN until the router is linked.
 
 ### Installer
 - **An xray put on the router by hand is kept**: with no xray-core package
-  (PassWall2's binary, swapped in), the xray-core of the binary's own
-  version, from whichever feed has it, goes in first, checked against its
-  feed's SHA256 — opkg would have put the pro feed's older one over it. No
-  such package, a binary below the minimum, or one that does not run:
-  refused, the binary untouched.
+  (PassWall2's binary, swapped in), or over one older than the minimum, the
+  xray-core of the binary's own version, from whichever feed has it, goes in
+  first, checked against its feed's SHA256 — opkg would have put the pro
+  feed's older one over it. No such package, no SHA256 in its feed's list, a
+  binary below the minimum, or one that does not run: refused, the binary
+  untouched. Over a package at the minimum or newer, opkg leaves both alone,
+  and so does the installer.
 - **vectra-geodata and vectra-reporter on a first install too**, by name:
   the Depends that pulls them is the pro feed's alone, and a feed without
   it left the router without its geo data — xray then refused every route
   by country and service.
 - **The version check reads the feed's own list**, not the version the
   installer was signed with («установлена 0.7.0-r13, в фиде 0.6.0-r36»).
-- **Exit codes say warnings from errors**: 0 done, 2 done with warnings
-  (named by code in the summary), 1 refused or failed — refusals were 2 —
-  and 3 an unknown option.
+- **Exit codes say warnings from errors — and a refusal is now 1, not 2**:
+  0 done; 2 done with warnings (named by code in the summary); 1 refused
+  (was 2), failed, or installed to carry the traffic and not running — the
+  service down or its ubus object silent after a takeover; 3 an unknown
+  option. `--check` exits 0 with advice (a DPI tool, little storage left),
+  naming it. Whatever reads the installer's exit code: a refusal moved from
+  2 to 1, and 2 now means installed with warnings.
 - **Free storage against the update's floor** (16 MB on /overlay), from
   the estimate in the checks and from what is left at the end: below it, a
   warning — Connect's «Обновить» would be refused until room is made. An
@@ -74,6 +87,12 @@ first start.
   first.
 - **`--json`**: JSON lines, ASCII codes only, each short — through the
   panel's ASCII-only output filter (docs/INSTALL.md).
+- **The installer's container stand** checks first that the docker host's
+  kernel has nftables' `fib` (vctl's ruleset needs it; Docker Desktop's
+  linuxkit kernel has none — passwall-retire could never carry the traffic
+  there) and says to run it on Colima; its retirement check reads the
+  sealed backup (`.tar.gz.vault`, since 0.7.0-r4) through `vctl
+  vault-restore`.
 
 ## vctl 0.7.0-r13 — crond quiet on the routers that need it
 

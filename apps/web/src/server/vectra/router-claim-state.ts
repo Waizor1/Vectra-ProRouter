@@ -123,8 +123,10 @@ function isLive(expiresAt: Date | null, now: Date) {
 /**
  * The router columns a check-in `claim` maps to.
  *
- * The router replaces its code every 10 minutes and promises the replaced one
- * stays valid until its own expiry (2 minutes past the replacement). So when a
+ * The router replaces its code every 20 minutes (vctl 0.7.0-r14; 10 before)
+ * and promises the replaced one stays valid until its own expiry (10 minutes
+ * past the replacement; 2 before). The expiry it reports already includes that
+ * grace, and is kept as reported — nothing here assumes a period. So when a
  * check-in brings a NEW code, the current one moves to the previous slot with
  * its expiry instead of being dropped. An absent/null claim clears both: the
  * router stops reporting a code once it is linked, and no code may stay
