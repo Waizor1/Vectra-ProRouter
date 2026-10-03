@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 )
 
 const receiptMaxBytes = 4096
@@ -100,6 +101,9 @@ func (j *Journal) archiveTerminal(data *journalData) error {
 	if err := syncDirectory(filepath.Dir(root)); err != nil {
 		return err
 	}
+	if err := ageOutReceipts(root, time.Now().Add(-ReceiptMaxAge)); err != nil {
+		return err
+	}
 	used, err := archiveUsage(root)
 	if err != nil {
 		return err
@@ -115,7 +119,8 @@ func (j *Journal) archiveTerminal(data *journalData) error {
 		}
 	}
 	sort.Strings(keys)
-	// Each batch frees substantial active capacity; all receipts survive forever.
+	// Each batch frees substantial active capacity; receipts survive
+	// ReceiptMaxAge (ageOutReceipts).
 	if len(keys) > 128 {
 		keys = keys[:128]
 	}
@@ -163,6 +168,55 @@ func (j *Journal) archiveTerminal(data *journalData) error {
 	}
 	return nil
 }
+
+// ageOutReceipts removes receipts last written before cutoff: files named
+// <sha256 hex>.json in a shard directory named by their first two letters,
+// and nothing else — a crash-left temp file or anything unknown stays
+// (archiveUsage charges it).
+func ageOutReceipts(root string, cutoff time.Time) error {
+	shards, err := os.ReadDir(root)
+	if err != nil {
+		return ErrJournal
+	}
+	for _, sh := range shards {
+		if !sh.IsDir() || len(sh.Name()) != 2 {
+			continue
+		}
+		dir := filepath.Join(root, sh.Name())
+		if privateDir(dir, false) != nil {
+			return ErrJournal
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return ErrJournal
+		}
+		removed := false
+		for _, e := range entries {
+			key, ok := strings.CutSuffix(e.Name(), ".json")
+			if !ok || len(key) != 64 || !strings.HasPrefix(key, sh.Name()) || !e.Type().IsRegular() {
+				continue
+			}
+			if _, err := hex.DecodeString(key); err != nil {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil || !info.ModTime().Before(cutoff) {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return ErrJournal
+			}
+			removed = true
+		}
+		if removed {
+			if err := syncDirectory(dir); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func archiveUsage(root string) (int64, error) {
 	var used int64
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {

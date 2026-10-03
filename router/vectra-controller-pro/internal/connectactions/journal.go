@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"syscall"
+	"time"
 )
 
 var ErrJournal = errors.New("connect action journal unavailable")
@@ -23,7 +24,17 @@ const MaxRecords = 1024
 const maxJournalBytes = 1024 * 1024
 
 // ArchiveBudgetBytes limits replay receipt storage, not lifetime action count.
-const ArchiveBudgetBytes int64 = 64 * 1024 * 1024
+// It was 64 MB — more than the whole free overlay of an AX3000T (~18 MB):
+// receipts could have filled the router's flash. 2 MB is ~250 receipts at
+// their charged size, past what an owner sends in ReceiptMaxAge.
+const ArchiveBudgetBytes int64 = 2 * 1024 * 1024
+
+// ReceiptMaxAge: a receipt older than this is removed when the archive is
+// written. A receipt stops Connect's retry of an action from running it
+// twice; Connect retries for minutes, not months, and an action ID it sent
+// 90 days ago is not sent again. Kept for good, receipts would fill the
+// budget and stop every new action (ErrJournalFull).
+const ReceiptMaxAge = 90 * 24 * time.Hour
 
 type Status string
 
