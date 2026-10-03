@@ -647,7 +647,24 @@ describe("DELETE /api/partner/router-claims/:routerId", () => {
     const response = await handleRouterUnbindRequest(
       signedRequest("DELETE", path, {
         routerId: "11111111-1111-4111-8111-111111111111",
+        ownerRef: "acct-42",
       }),
+      ROUTER_ID,
+      deps,
+    );
+
+    expect(response.status).toBe(400);
+    expect(deps.unbind).not.toHaveBeenCalled();
+  });
+
+  // Every unbind names its owner: the Connect backend always sends ownerRef
+  // (RouterBinding.owner_ref is NOT NULL), and without it a signed request
+  // could unbind whoever owns the router now.
+  it("requires ownerRef", async () => {
+    const { deps } = createDeps();
+
+    const response = await handleRouterUnbindRequest(
+      signedRequest("DELETE", path, { routerId: ROUTER_ID }),
       ROUTER_ID,
       deps,
     );
@@ -679,7 +696,10 @@ describe("DELETE /api/partner/router-claims/:routerId", () => {
     });
 
     const response = await handleRouterUnbindRequest(
-      signedRequest("DELETE", path, { routerId: ROUTER_ID }),
+      signedRequest("DELETE", path, {
+        routerId: ROUTER_ID,
+        ownerRef: "acct-42",
+      }),
       ROUTER_ID,
       deps,
     );
@@ -695,7 +715,7 @@ describe("DELETE /api/partner/router-claims/:routerId", () => {
       signedRequest(
         "DELETE",
         path,
-        { routerId: ROUTER_ID },
+        { routerId: ROUTER_ID, ownerRef: "acct-42" },
         { secret: "x".repeat(40) },
       ),
       ROUTER_ID,

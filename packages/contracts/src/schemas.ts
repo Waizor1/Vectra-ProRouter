@@ -578,9 +578,49 @@ export const xrayDesiredConfigSchema = z
   })
   .strict();
 
+// Size caps on what a router sends. Register answers anonymous callers, so no
+// free-form field a router reports may be unbounded. Each cap is measured on
+// the serialized JSON and sits well above the largest the live fleet has sent
+// (2026-10-03: an imported PassWall config 280 KB and its raw UCI snapshot
+// 318 KB; a job result 336 KB; version maps under 1 KB; the inventory
+// rawSnapshot and more than one incident transition never seen at all).
+export const ROUTER_PASSWALL_IMPORT_PART_MAX_CHARS = 1024 * 1024;
+export const ROUTER_RAW_SNAPSHOT_MAX_CHARS = 64 * 1024;
+export const ROUTER_VERSION_MAP_MAX_CHARS = 16 * 1024;
+export const ROUTER_JOB_RESULT_MAX_CHARS = 1024 * 1024;
+export const ROUTER_INCIDENT_TRANSITIONS_MAX = 20;
+
+// Measured on the RAW input, before the inner schema applies its defaults:
+// the panel's own bounding of an authenticated router's payload measures the
+// raw JSON too, and the two must agree on what is over the cap.
+function serializedWithin<T extends z.ZodTypeAny>(maxChars: number, schema: T) {
+  return z
+    .unknown()
+    .refine(
+      (value) => {
+        try {
+          return (
+            ((JSON.stringify(value) as string | undefined)?.length ?? 0) <=
+            maxChars
+          );
+        } catch {
+          return false;
+        }
+      },
+      { message: `must serialize to at most ${maxChars} characters` },
+    )
+    .pipe(schema);
+}
+
 export const passwallImportedStateSchema = z.object({
-  config: passwallDesiredConfigSchema,
-  rawSnapshot: z.record(z.string(), z.unknown()).default({}),
+  config: serializedWithin(
+    ROUTER_PASSWALL_IMPORT_PART_MAX_CHARS,
+    passwallDesiredConfigSchema,
+  ),
+  rawSnapshot: serializedWithin(
+    ROUTER_PASSWALL_IMPORT_PART_MAX_CHARS,
+    z.record(z.string(), z.unknown()),
+  ).default({}),
   configDigest: z.string().min(1),
   importedAt: z.string().datetime().optional(),
   source: z
@@ -773,12 +813,20 @@ export const routerInventorySchema = z.object({
   xrayVersion: z.string().optional(),
   selectedNodeId: z.string().nullable().optional(),
   selectedNodeLabel: z.string().nullable().optional(),
+  // vctl: whether the router's owner allows the panel's support shell.
+  remoteShell: z.boolean().optional(),
   nodeCount: z.number().int().nonnegative(),
   subscriptionCount: z.number().int().nonnegative(),
   configDigest: z.string().min(1).nullable().optional(),
   appliedRevisionId: z.string().uuid().nullable().optional(),
-  packageVersions: z.record(z.string(), z.string().nullable()).default({}),
-  binaryVersions: z.record(z.string(), z.string().nullable()).default({}),
+  packageVersions: serializedWithin(
+    ROUTER_VERSION_MAP_MAX_CHARS,
+    z.record(z.string(), z.string().nullable()),
+  ).default({}),
+  binaryVersions: serializedWithin(
+    ROUTER_VERSION_MAP_MAX_CHARS,
+    z.record(z.string(), z.string().nullable()),
+  ).default({}),
   rulesAssets: z
     .object({
       assetDirectory: z.string().optional(),
@@ -798,7 +846,10 @@ export const routerInventorySchema = z.object({
   youtubeReachability: routerYoutubeReachabilitySchema.optional(),
   instagramReachability: routerInstagramReachabilitySchema.optional(),
   safetyEvents: z.array(routerSafetyEventSchema).optional(),
-  rawSnapshot: z.record(z.string(), z.unknown()).optional(),
+  rawSnapshot: serializedWithin(
+    ROUTER_RAW_SNAPSHOT_MAX_CHARS,
+    z.record(z.string(), z.unknown()),
+  ).optional(),
   connect: routerConnectTelemetrySchema.optional(),
 });
 
@@ -1632,12 +1683,13 @@ export const partnerRouterClaimResponseSchema = z.object({
 // The body a DELETE must carry. The signature covers the body only, so the
 // router id is repeated here to bind the signature to the router it unbinds —
 // otherwise a signed DELETE could be replayed against any other router path
-// inside the timestamp window. `ownerRef`, when sent, must still own the
-// router: a late retry from an old owner's flow cannot unbind the next owner.
+// inside the timestamp window. `ownerRef` is required and must still own the
+// router: a late retry from an old owner's flow cannot unbind the next owner,
+// and no unbind goes through without naming whose router it is.
 export const partnerRouterUnbindRequestSchema = z
   .object({
     routerId: z.string().uuid(),
-    ownerRef: partnerOwnerRefSchema.nullable().optional(),
+    ownerRef: partnerOwnerRefSchema,
   })
   .strict();
 
@@ -1678,8 +1730,14 @@ export const jobResultRequestSchema = z.object({
   configDigest: z.string().min(1).nullable().optional(),
   stdout: z.string().max(16000).optional(),
   stderr: z.string().max(16000).optional(),
-  incidentTransitions: z.array(incidentTransitionSchema).default([]),
-  result: z.record(z.string(), z.unknown()).default({}),
+  incidentTransitions: z
+    .array(incidentTransitionSchema)
+    .max(ROUTER_INCIDENT_TRANSITIONS_MAX)
+    .default([]),
+  result: serializedWithin(
+    ROUTER_JOB_RESULT_MAX_CHARS,
+    z.record(z.string(), z.unknown()),
+  ).default({}),
 });
 
 export const jobResultResponseSchema = z.object({

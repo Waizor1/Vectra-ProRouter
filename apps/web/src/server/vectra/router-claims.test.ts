@@ -1000,8 +1000,25 @@ describe("unbindRouterClaimWithDb", () => {
     const fake = createFakeDb({ selects: [[routers, [[routerRow()]]]] });
 
     expect(
-      await unbindRouterClaimWithDb(fake.db as never, { routerId: ROUTER_ID }),
+      await unbindRouterClaimWithDb(fake.db as never, {
+        routerId: ROUTER_ID,
+        ownerRef: "acct-42",
+      }),
     ).toEqual({ ok: false, status: 404, body: { error: "not_claimed" } });
+  });
+
+  it("refuses an unbind that names no owner", async () => {
+    const fake = createFakeDb({
+      selects: [[routers, [[routerRow({ ownerRef: "acct-42" })]]]],
+    });
+
+    expect(
+      await unbindRouterClaimWithDb(fake.db as never, {
+        routerId: ROUTER_ID,
+        ownerRef: "",
+      }),
+    ).toMatchObject({ status: 400, body: { error: "invalid" } });
+    expect(fake.updates(routers)).toEqual([]);
   });
 
   it("refuses to unbind for an account that no longer owns the router", async () => {

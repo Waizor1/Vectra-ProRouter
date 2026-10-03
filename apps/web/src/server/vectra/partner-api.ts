@@ -87,7 +87,7 @@ export type PartnerApiDeps = {
   claim: (request: PartnerRouterClaimRequest) => Promise<RouterClaimOutcome>;
   unbind: (input: {
     routerId: string;
-    ownerRef?: string | null;
+    ownerRef: string;
   }) => Promise<RouterUnbindOutcome>;
   /**
    * Bind the key to this request BEFORE running it: the first attempt runs,
@@ -531,7 +531,7 @@ export async function handleRouterUnbindRequest(
       }
       return deps.unbind({
         routerId: parsed.data.routerId,
-        ownerRef: parsed.data.ownerRef ?? null,
+        ownerRef: parsed.data.ownerRef,
       });
     },
   });

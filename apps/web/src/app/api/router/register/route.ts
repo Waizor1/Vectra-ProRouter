@@ -6,6 +6,7 @@ import { authenticateRouter } from "~/server/vectra/auth";
 import { safelyMaybeAdvanceRouterOnboarding } from "~/server/vectra/router-auto-onboarding";
 import {
   publicInstallRegisterRateLimiter,
+  rateLimitKeyForIp,
   readRequestIp,
 } from "~/server/vectra/public-install-rate-limit";
 
@@ -16,7 +17,9 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const clientIp = readRequestIp(request);
-    const rateLimit = publicInstallRegisterRateLimiter.consume(clientIp);
+    const rateLimit = publicInstallRegisterRateLimiter.consume(
+      rateLimitKeyForIp(clientIp),
+    );
 
     if (!rateLimit.allowed) {
       await db.insert(eventLog).values({

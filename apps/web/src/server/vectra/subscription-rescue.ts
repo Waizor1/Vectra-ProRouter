@@ -92,6 +92,7 @@ export async function collectSubscriptionRescueCandidates(
         hwidPresent: subscriptionHasHardwareId(config),
         lastRefreshAt: lastRefreshByRouter.get(router.id) ?? null,
         queuedJobCount: queuedByRouter.get(router.id) ?? 0,
+        engineMode: router.engineMode,
       } satisfies SubscriptionRescueCandidate,
     ];
   });
