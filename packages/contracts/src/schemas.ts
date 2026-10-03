@@ -1671,12 +1671,13 @@ export const partnerRouterClaimResponseSchema = z.object({
 // The body a DELETE must carry. The signature covers the body only, so the
 // router id is repeated here to bind the signature to the router it unbinds —
 // otherwise a signed DELETE could be replayed against any other router path
-// inside the timestamp window. `ownerRef`, when sent, must still own the
-// router: a late retry from an old owner's flow cannot unbind the next owner.
+// inside the timestamp window. `ownerRef` is required and must still own the
+// router: a late retry from an old owner's flow cannot unbind the next owner,
+// and no unbind goes through without naming whose router it is.
 export const partnerRouterUnbindRequestSchema = z
   .object({
     routerId: z.string().uuid(),
-    ownerRef: partnerOwnerRefSchema.nullable().optional(),
+    ownerRef: partnerOwnerRefSchema,
   })
   .strict();
 

@@ -267,7 +267,7 @@ describe("partner claim request", () => {
     expect(partnerRouterClaimRequestSchema.safeParse(body).success).toBe(false);
   });
 
-  it("binds an unbind to its router and optionally its owner", () => {
+  it("binds an unbind to its router and its owner", () => {
     expect(
       partnerRouterUnbindRequestSchema.safeParse({
         routerId: "6f0c2d8e-4b1a-4c3e-9d57-2a8b1c0e9f31",
@@ -275,6 +275,17 @@ describe("partner claim request", () => {
       }).success,
     ).toBe(true);
     expect(partnerRouterUnbindRequestSchema.safeParse({}).success).toBe(false);
+    expect(
+      partnerRouterUnbindRequestSchema.safeParse({
+        routerId: "6f0c2d8e-4b1a-4c3e-9d57-2a8b1c0e9f31",
+      }).success,
+    ).toBe(false);
+    expect(
+      partnerRouterUnbindRequestSchema.safeParse({
+        routerId: "6f0c2d8e-4b1a-4c3e-9d57-2a8b1c0e9f31",
+        ownerRef: null,
+      }).success,
+    ).toBe(false);
   });
 
   it("shapes webhooks as {event, routerId, ownerRef, at, detail?}", () => {
