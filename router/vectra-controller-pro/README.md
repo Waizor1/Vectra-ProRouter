@@ -206,10 +206,19 @@ customer in the router UI:
 vectra on                   # take the traffic, for good (also after a reboot)
 vectra off                  # give the router back as it was: PassWall2, the
                             # previous agent, or the internet without a VPN
-vectra status [--json]      # what is on, and who carries the traffic
+vectra status [--json]      # what is on, who carries the traffic, and the
+                            # claim code while the router is not linked
 vectra on --trial --minutes 10   # take it for 10 minutes, then give it back by itself
 vectra keep                 # keep a trial: on for good
 ```
+
+Before the panel's operator config arrives, a vctl that takes the router
+from PassWall2 carries the traffic on PassWall2's own routes (route_source
+'passwall', chosen automatically, on the panel's base operator config); the
+claim's apply then moves it to the provider's, with no gap
+(`cmd/vctl/auto_route.go`). With nothing to route by — no operator config,
+no PassWall2 — `vectra on` says the LAN would go out without a VPN and asks
+for `--force`.
 
 `vectra` is `vctl power` (`internal/power`). On is the init script's takeover
 (the legacy agent and PassWall stopped, disabled, and remembered — PassWall2's

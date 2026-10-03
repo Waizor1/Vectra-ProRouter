@@ -1,5 +1,80 @@
 # Changelog
 
+## vctl 0.7.0-r14 — a router taken from PassWall2 keeps its VPN, and its owner gets its code in time
+
+What the migration of a live router (netis NX31, 2026-10-03) from PassWall2
+and the old agent to vctl ran into: 17 minutes of LAN without a VPN, a claim
+code that expired before it reached the app, an installer that would have
+put an older xray over PassWall's, and tools that did not work before vctl's
+first start.
+
+### Fixed
+- **No VPN gap when vctl takes a router from PassWall2 before it is
+  linked.** A vctl with no operator config turned on without a data plane:
+  the LAN went out directly until the panel's apply came (17 min on the
+  router, most of it a claim code passed on by people). Now it routes by
+  PassWall2's own configuration — route_source 'passwall', chosen by vctl
+  itself, automatic — on a built-in operator config: the panel's
+  `buildXrayOperatorConfig` without the subscription (`config.Base`, proven
+  against the panel's golden file). Nothing is written for it, no UCI and no
+  operator config: the choice is made again at each start, the router still
+  shows its claim code, and when the panel's operator config arrives (the
+  claim's apply) vctl runs it and routes by the provider again, the PassWall
+  render running until the provider's replaces it. An owner's route_source
+  is never touched; a router without PassWall2 (a fresh install) waits for
+  its setup as before. `vectra on` waits for that data plane like a
+  configured vctl's, and without it gives the router back to PassWall2.
+  `vectra status` says while it lasts (`autoRouteSource`).
+- **A claim code is taken for 30 minutes**, shown for 20 (it was 10 and
+  2): the router's code went through two people and expired 50 s before it
+  was typed. The check-in's expiry carries the grace, as the panel keeps it.
+  8 characters of base32 against the backend's ~5 guesses a minute stay
+  safe (`internal/claim`).
+- **`vctl passwall-render [-compare]` works before vctl's first start**: it
+  renders agent.json from UCI as the init script does, and uses the base
+  operator config when there is no panel's yet.
+
+### Improved
+- **`vectra status` shows the claim code** while the router is not linked —
+  until when it is taken and the link that opens it in the app (`--json`:
+  `claim {code, expiresAt, link}`); operators dug it out of `ubus call
+  vectra setup`. The setup's `botUrl` is no longer null before the first
+  check-in: Vectra Connect's mini app,
+  `https://t.me/VectraConnect_bot/start?startapp=rt_<code>`.
+- **`vectra on` says when it would carry nothing** — no operator config and
+  no PassWall2 to route by: the LAN would go out directly, without a VPN,
+  until the router is linked — before anything is switched, and asks for
+  `--force`. The router UI's set_power passes `--force`: its page shows what
+  the router carries.
+
+### Installer
+- **An xray put on the router by hand is kept**: with no xray-core package
+  (PassWall2's binary, swapped in), the xray-core of the binary's own
+  version, from whichever feed has it, goes in first, checked against its
+  feed's SHA256 — opkg would have put the pro feed's older one over it. No
+  such package, a binary below the minimum, or one that does not run:
+  refused, the binary untouched.
+- **vectra-geodata and vectra-reporter on a first install too**, by name:
+  the Depends that pulls them is the pro feed's alone, and a feed without
+  it left the router without its geo data — xray then refused every route
+  by country and service.
+- **The version check reads the feed's own list**, not the version the
+  installer was signed with («установлена 0.7.0-r13, в фиде 0.6.0-r36»).
+- **Exit codes say warnings from errors**: 0 done, 2 done with warnings
+  (named by code in the summary), 1 refused or failed — refusals were 2 —
+  and 3 an unknown option.
+- **Free storage against the update's floor** (16 MB on /overlay), from
+  the estimate in the checks and from what is left at the end: below it, a
+  warning — Connect's «Обновить» would be refused until room is made. An
+  xray binary its package replaces counts as freed.
+- **The old agent**: `--check` without `--standby` says why it is needed
+  (two controllers would check in as one router and take the same
+  traffic), checks the rest as with it, and exits 1; Vectra goes next only
+  to 0.1.13-r45 or later (`vault-read-v1`), an older one to be updated
+  first.
+- **`--json`**: JSON lines, ASCII codes only, each short — through the
+  panel's ASCII-only output filter (docs/INSTALL.md).
+
 ## vctl 0.7.0-r13 — crond quiet on the routers that need it
 
 ### Fixed
