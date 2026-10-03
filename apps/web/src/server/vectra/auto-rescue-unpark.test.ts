@@ -99,6 +99,7 @@ function certifiedRouter(overrides: Record<string, unknown> = {}) {
     // ADR-0006 ownership columns: a fleet router is neither owned nor released.
     ownerRef: null,
     releasedAt: null,
+    approvedAt: new Date("2026-08-01T00:00:00.000Z"),
     lastSeenAt: NOW,
     ...overrides,
   };
@@ -257,6 +258,17 @@ describe("clearStaleControlPlaneRecoveryParks", () => {
           releasedAt: new Date("2026-10-01T10:00:00.000Z"),
         },
       }),
+    );
+
+    await expect(clearStaleControlPlaneRecoveryParks(db, NOW)).resolves.toBe(0);
+    expect(inserted).toEqual([]);
+  });
+
+  it("leaves alone a router nobody approved", async () => {
+    // Register answers anonymous callers; an unattended job for a record
+    // nobody approved would be the panel acting on an attacker's behalf.
+    const { db, inserted } = createMockDb(
+      healthyPark({ router: { approvedAt: null } }),
     );
 
     await expect(clearStaleControlPlaneRecoveryParks(db, NOW)).resolves.toBe(0);

@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
+  ROUTER_INCIDENT_TRANSITIONS_MAX,
+  ROUTER_JOB_RESULT_MAX_CHARS,
   jobResultRequestSchema,
   passwallDesiredConfigSchema,
   routerJobSchema,
@@ -477,5 +479,58 @@ describe("shared job contract fixtures", () => {
         fixture.name,
       ).toThrow();
     }
+  });
+
+  // The largest real result (an apply_passwall_config, 2026-10-03) is ~336 KB;
+  // the caps sit well above it and only refuse a flood.
+  // Measured on the raw input, as the panel's own bounding of an
+  // authenticated payload measures it: the two must agree.
+  it("measures a size cap on the raw input, before the inner schema", () => {
+    const accepted = jobFixtures.jobResults.accepted[0]!.value as Record<
+      string,
+      unknown
+    >;
+    const result = jobResultRequestSchema.safeParse({
+      ...accepted,
+      result: { blob: "z".repeat(ROUTER_JOB_RESULT_MAX_CHARS) },
+    });
+
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain(
+      "must serialize to at most",
+    );
+  });
+
+  it("caps the size of a job result and its incident transitions", () => {
+    const accepted = jobFixtures.jobResults.accepted[0]!.value as Record<
+      string,
+      unknown
+    >;
+    expect(
+      jobResultRequestSchema.safeParse({
+        ...accepted,
+        result: { stdout: "z".repeat(400 * 1024) },
+      }).success,
+    ).toBe(true);
+    expect(
+      jobResultRequestSchema.safeParse({
+        ...accepted,
+        result: { stdout: "z".repeat(ROUTER_JOB_RESULT_MAX_CHARS) },
+      }).success,
+    ).toBe(false);
+    const transition = {
+      type: "proxy_outage",
+      state: "open",
+      reason: "probe failed",
+    };
+    expect(
+      jobResultRequestSchema.safeParse({
+        ...accepted,
+        incidentTransitions: Array.from(
+          { length: ROUTER_INCIDENT_TRANSITIONS_MAX + 1 },
+          () => transition,
+        ),
+      }).success,
+    ).toBe(false);
   });
 });

@@ -546,6 +546,7 @@ export type SubscriptionRescueCandidate = {
   hwidPresent: boolean;
   lastRefreshAt: Date | null;
   queuedJobCount: number;
+  engineMode?: string | null;
 };
 
 export type SubscriptionRescueOptions = {
@@ -568,6 +569,11 @@ export function selectRoutersForSubscriptionRescue(
   return candidates
     .filter((candidate) => {
       if (candidate.strandedSlots.length === 0) {
+        return false;
+      }
+      // refresh_subscriptions is a PassWall job: a vctl router never runs it,
+      // and it would sit queued until failed at check-in.
+      if (candidate.engineMode && candidate.engineMode !== "passwall") {
         return false;
       }
       if (!candidate.hwidPresent) {

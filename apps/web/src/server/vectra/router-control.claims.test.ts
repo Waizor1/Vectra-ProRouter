@@ -1,8 +1,10 @@
 import {
   eventLog,
   healthIncidents,
+  jobResults,
   jobs,
   partnerWebhooks,
+  passwallAppliedRevisions,
   passwallDesiredRevisions,
   routerCredentials,
   routerInventorySnapshots,
@@ -464,6 +466,74 @@ describe("checkInRouter claim", () => {
     expect(fake.inserts(partnerWebhooks).map(row => row.payload)).toEqual(expect.arrayContaining([expect.objectContaining({event: "router.vpn_down", ownerRef: "acct-42", detail: {verdict: "down"}})]));
   });
 
+  // The agent re-sends its check-in (and import) until a 2xx: an oversized
+  // field must be cut down, never refused.
+  it("accepts a check-in with an oversized raw snapshot and logs the truncation", async () => {
+    scriptCheckIn();
+
+    await checkInRouter(
+      ROUTER_ID,
+      checkInPayload({
+        inventory: inventory({ rawSnapshot: { blob: "x".repeat(70_000) } }),
+      }),
+    );
+
+    expect(fake.inserts(routerInventorySnapshots)[0]).toMatchObject({
+      payload: { rawSnapshot: { truncated: true } },
+    });
+    expect(fake.inserts(eventLog)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "router.payload_truncated",
+          metadata: { endpoint: "check_in", fields: ["inventory.rawSnapshot"] },
+        }),
+      ]),
+    );
+  });
+
+  // A dropped import still counts as sent: asking for it again would have
+  // the agent re-send >1 MB on every check-in and skip its self-heals.
+  it("does not ask again for an import it dropped as oversized", async () => {
+    scriptCheckIn(
+      routerRow({ importState: "awaiting_import", engineMode: "passwall" }),
+    );
+
+    const response = await checkInRouter(
+      ROUTER_ID,
+      checkInPayload({
+        inventory: inventory({ engineMode: "passwall" }),
+        passwallImport: {
+          config: { blob: "x".repeat(1024 * 1024 + 1) },
+          configDigest: "big-digest",
+        },
+      }),
+    );
+
+    expect(response.configSyncState.requestImport).toBe(false);
+  });
+
+  it("logs the same truncation at most once an hour", async () => {
+    const oversized = checkInPayload({
+      inventory: inventory({
+        configDigest: "digest-throttle",
+        rawSnapshot: { blob: "x".repeat(70_000) },
+      }),
+    });
+    scriptCheckIn();
+    await checkInRouter(ROUTER_ID, oversized);
+    const first = fake
+      .inserts(eventLog)
+      .filter((row) => row.type === "router.payload_truncated");
+    scriptCheckIn();
+    await checkInRouter(ROUTER_ID, oversized);
+    const second = fake
+      .inserts(eventLog)
+      .filter((row) => row.type === "router.payload_truncated");
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(0);
+  });
+
   it("binds confidential telemetry to the authenticated device key", async () => {
     scriptCheckIn(routerRow({ownerRef: "acct-42"}));
     await expect(checkInRouter(ROUTER_ID, checkInPayload({inventory: inventory({connect: {ownerRef: "acct-42", wifi: [{band: "5G", ssid: "Fake guest", password: "fake-guest-pass-123"}]}})}), {devicePublicKey: Buffer.alloc(32, 8).toString("base64")})).rejects.toThrow("device identity mismatch");
@@ -489,6 +559,24 @@ describe("checkInRouter claim", () => {
     const response = await checkInRouter(ROUTER_ID, checkInPayload());
     expect(response.jobs[0]?.payload).toEqual({origin: "partner_action", ownerRef: "acct-42", actionId: JOB_ID, action: "set_wifi", params: {ssid: "Fake guest", password: "fake-guest-pass-123"}});
     expect(JSON.stringify(fake.calls.map(({table: _table, ...call}) => call))).not.toContain("fake-guest-pass-123");
+  });
+
+  // Live 2026-10-03: auto-rescue queued collect_router_logs (a PassWall agent
+  // job) for 1111 on vctl; it sat in `queued` forever, filled the delivery
+  // candidates and blocked the engine switch. vctl reports xray-direct, so it
+  // is failed at check-in with engine_mismatch and owner actions still go out.
+  it("fails a job vctl can never run and still delivers the owner's action", async () => {
+    const owner = routerRow({ownerRef: "acct-42", approvedAt: new Date(), importState: "approved", status: "active", engineMode: "xray-direct"});
+    const STUCK_ID = "3f4e5d6c-7b8a-4f9e-8d0c-2b1a0f3e4d5c";
+    const stuck = {id: STUCK_ID, routerId: ROUTER_ID, type: "collect_router_logs", state: "queued", desiredRevisionId: null, dedupeKey: "auto_rescue_logs:case-1", createdAt: new Date(Date.now() - 60_000), payload: {source: "all", lines: 200}};
+    const action = {id: JOB_ID, routerId: ROUTER_ID, type: "reload_xray_outbound", state: "queued", desiredRevisionId: null, createdAt: new Date(), payload: {origin: "partner_action", ownerRef: "acct-42", actionId: JOB_ID, action: "restart_vpn"}};
+    fake.reset({selects: [[routers, [[owner], [owner]]], [healthIncidents, [[]]], [jobs, [[stuck, action], [action], [{...stuck, state: "running"}]]]], updateReturns: [[routers, [[owner], [owner], [owner], [owner]]], [jobs, [[{...action}], [{...stuck, state: "running"}]]]]});
+
+    const response = await checkInRouter(ROUTER_ID, checkInPayload());
+
+    expect(response.jobs.map(job => job.id)).toEqual([JOB_ID]);
+    expect(fake.inserts(eventLog)).toEqual(expect.arrayContaining([expect.objectContaining({type: "job.undeliverable", metadata: {jobId: STUCK_ID, jobType: "collect_router_logs", code: "engine_mismatch"}})]));
+    expect(fake.updates(jobs).map(update => update.state).filter(Boolean)).toEqual(["running", "failed"]);
   });
 
   it("fails one undecryptable owner job and still delivers the rest of the check-in", async () => {
@@ -737,7 +825,7 @@ describe("recordJobResult reports a claim's first apply to the backend", () => {
         [routers, [[router]]],
         [
           passwallDesiredRevisions,
-          [[{ id: REVISION_ID, engineMode: "xray-direct", configDigest: "d", config: {} }]],
+          [[{ id: REVISION_ID, routerId: ROUTER_ID, engineMode: "xray-direct", configDigest: "d", config: {} }]],
         ],
       ],
       updateReturns: [[routers, [[router]]]],
@@ -895,5 +983,133 @@ describe("selectDeliverableJobsForCheckIn — rename on xray-direct", () => {
         "passwall",
       ).map((job) => job.id),
     ).toEqual(["rename", "shell"]);
+  });
+});
+
+// appliedRevisionId in a job result comes from the router. Another router's
+// revision must be ignored: recording it would make that router's config (and
+// its secrets) this router's active revision.
+describe("recordJobResult and revision ownership", () => {
+  const OTHER_ROUTER_ID = "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d";
+  const FOREIGN_REVISION_ID = "3e4f5a6b-7c8d-4e9f-8a0b-1c2d3e4f5a6b";
+
+  function scriptApply(revisionOwner: string, revisionId: string) {
+    const router = routerRow({
+      approvedAt: new Date(),
+      importState: "approved",
+      status: "active",
+    });
+    fake.reset({
+      selects: [
+        [
+          jobs,
+          [
+            [
+              {
+                id: JOB_ID,
+                routerId: ROUTER_ID,
+                type: "apply_passwall_config",
+                state: "running",
+                payload: {},
+                desiredRevisionId: null,
+                dedupeKey: null,
+                deliveredAt: new Date(),
+                createdAt: new Date(),
+              },
+            ],
+          ],
+        ],
+        [routers, [[router]]],
+        [
+          passwallDesiredRevisions,
+          [
+            [
+              {
+                id: revisionId,
+                routerId: revisionOwner,
+                engineMode: "passwall",
+                configDigest: "digest",
+                config: {},
+              },
+            ],
+          ],
+        ],
+      ],
+      updateReturns: [[routers, [[router]]]],
+    });
+  }
+
+  const success = (appliedRevisionId: string) => ({
+    protocolVersion: "2026-04-v1",
+    routerId: ROUTER_ID,
+    jobId: JOB_ID,
+    status: "success",
+    appliedRevisionId,
+  });
+
+  it("ignores a revision that belongs to another router", async () => {
+    scriptApply(OTHER_ROUTER_ID, FOREIGN_REVISION_ID);
+
+    const answer = await recordJobResult(
+      ROUTER_ID,
+      success(FOREIGN_REVISION_ID),
+    );
+
+    expect(answer.acknowledged).toBe(true);
+    expect(fake.inserts(passwallAppliedRevisions)).toEqual([]);
+    expect(fake.updates(passwallDesiredRevisions)).toEqual([]);
+    expect(
+      fake.updates(routers).filter((set) => "activeRevisionId" in set),
+    ).toEqual([]);
+  });
+
+  it("records the router's own revision as applied", async () => {
+    scriptApply(ROUTER_ID, REVISION_ID);
+
+    await recordJobResult(ROUTER_ID, success(REVISION_ID));
+
+    expect(fake.inserts(passwallAppliedRevisions)).toEqual([
+      expect.objectContaining({
+        routerId: ROUTER_ID,
+        desiredRevisionId: REVISION_ID,
+        result: "applied",
+      }),
+    ]);
+    expect(
+      fake.updates(routers).filter((set) => "activeRevisionId" in set),
+    ).toEqual([expect.objectContaining({ activeRevisionId: REVISION_ID })]);
+  });
+
+  // The PassWall agent re-sends an unacknowledged result before every
+  // check-in; refusing an oversized one would wedge the router for good.
+  it("accepts an oversized result, storing a size marker in its place", async () => {
+    scriptApply(ROUTER_ID, REVISION_ID);
+
+    const answer = await recordJobResult(ROUTER_ID, {
+      protocolVersion: "2026-04-v1",
+      routerId: ROUTER_ID,
+      jobId: JOB_ID,
+      status: "failure",
+      result: { stdout: "z".repeat(1024 * 1024 + 1) },
+      stderr: "e".repeat(20_000),
+    });
+
+    expect(answer.acknowledged).toBe(true);
+    expect(fake.inserts(jobResults)).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          truncated: true,
+          bytes: expect.any(Number) as number,
+        }) as object,
+      }),
+    ]);
+    expect(fake.inserts(eventLog)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "router.payload_truncated",
+          metadata: { endpoint: "job_result", fields: ["result", "stderr"] },
+        }),
+      ]),
+    );
   });
 });

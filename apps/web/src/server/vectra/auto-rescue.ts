@@ -738,6 +738,10 @@ export async function detectBlockedReachabilityTriggers(
     if (isReleasedAwaitingOwner(router)) {
       continue;
     }
+    // Nor is an unapproved one scanned: anyone can register a router.
+    if (!router.approvedAt) {
+      continue;
+    }
     const recentSnapshots = await loadRecentSnapshots(database, router.id);
     if (recentSnapshots.length < blockedSnapshotWindow) {
       continue;
@@ -1038,6 +1042,11 @@ async function ensureRescueCase(
   );
 }
 
+/** A rescue action refused for a reason the operator is meant to read (400). */
+export class RescueActionRefusedError extends Error {
+  readonly status = 400;
+}
+
 export async function queueRescueCaseLogCollection(
   caseId: string,
   database: DatabaseClient = db,
@@ -1059,6 +1068,21 @@ export async function queueRescueCaseLogCollection(
 
   if (existingJob) {
     return existingJob;
+  }
+
+  // collect_router_logs is a PassWall agent job: vctl never runs it, and one
+  // queued for a vctl router only waits to be failed at check-in. Unattended
+  // collection skips such a router quietly; an operator is told why.
+  const [router] = await database
+    .select({ engineMode: routers.engineMode })
+    .from(routers)
+    .where(eq(routers.id, rescueCase.routerId))
+    .limit(1);
+  if (router?.engineMode === "xray-direct") {
+    if (options.unattended) {
+      return null;
+    }
+    throw new RescueActionRefusedError("vctl routers: logs come from vctl");
   }
 
   // Diagnostics are evidence gathering, not remediation: a few log dumps
@@ -1403,10 +1427,17 @@ async function escalateRescueCase(
     return rescueCase;
   }
 
+  // vctl never runs collect_router_logs: no button for it.
+  const [router] = await database
+    .select({ engineMode: routers.engineMode })
+    .from(routers)
+    .where(eq(routers.id, rescueCase.routerId))
+    .limit(1);
   const sendResult = await sendTelegramRescueMessage({
     caseId: rescueCase.id,
     text: caseEscalationText(rescueCase),
     includeButtons: true,
+    collectLogs: router?.engineMode !== "xray-direct",
   }).catch((error: unknown) => ({
     attempted: false,
     delivered: 0,
@@ -1549,6 +1580,12 @@ async function escalateExpiredCases(database: DatabaseClient, now: Date) {
 // Telegram-initiated repairs are unaffected because they start from an explicit
 // rescue case id rather than this monitor sweep.
 function isAutoRescueExemptRouter(router: RouterRow) {
+  // An unapproved router is nobody's responsibility yet: register answers
+  // anonymous callers, so a record nobody approved must not open cases, queue
+  // jobs or page Telegram.
+  if (!router.approvedAt) {
+    return true;
+  }
   // A released router (ADR-0006) dropped its owner's proxy config on purpose
   // and waits for a new owner; an unattended reconnect or repair would undo
   // the release. Routers that never used Connect have releasedAt null.

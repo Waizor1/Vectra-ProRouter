@@ -526,6 +526,7 @@ export async function loadFleetMonitoringSnapshot(
         importState: router.importState,
         supportState: support.state,
         released: isReleasedAwaitingOwner(router),
+        unapproved: !router.approvedAt,
         lastSeenAt: router.lastSeenAt,
         selectedNode:
           payload?.selectedNodeLabel ??

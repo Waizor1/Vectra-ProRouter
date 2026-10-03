@@ -16,6 +16,7 @@ import {
   getActiveRescueCaseForRouter,
   listRescueCases,
   loadRescueCaseDetails,
+  RescueActionRefusedError,
   queueRescueCaseLogCollection,
   queueRescueCaseReconnectProxy,
   queueRescueCaseSafeRepair,
@@ -140,6 +141,9 @@ export const rescueRouter = createTRPCRouter({
       try {
         return await queueRescueCaseLogCollection(input.caseId, ctx.db);
       } catch (error) {
+        if (error instanceof RescueActionRefusedError) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+        }
         throw new TRPCError({
           code: "BAD_REQUEST",
           message:

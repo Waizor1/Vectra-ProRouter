@@ -21,5 +21,10 @@ export default async function LoginPage({
     redirect("/fleet");
   }
 
-  return <LoginV2 hasError={params.error === "1"} />;
+  return (
+    <LoginV2
+      hasError={params.error === "1"}
+      rateLimited={params.error === "rate"}
+    />
+  );
 }

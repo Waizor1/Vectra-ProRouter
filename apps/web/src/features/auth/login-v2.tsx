@@ -17,9 +17,10 @@ import { Separator } from "~/components/ui/separator";
 
 export interface LoginV2Props {
   hasError: boolean;
+  rateLimited?: boolean;
 }
 
-export function LoginV2({ hasError }: LoginV2Props) {
+export function LoginV2({ hasError, rateLimited = false }: LoginV2Props) {
   return (
     <section className="mx-auto flex min-h-[70vh] w-full max-w-md items-center px-4">
       <Card className="w-full bg-card/95 backdrop-blur-sm">
@@ -67,6 +68,14 @@ export function LoginV2({ hasError }: LoginV2Props) {
               <Alert variant="destructive">
                 <AlertTitle>Не удалось войти</AlertTitle>
                 <AlertDescription>Неверный логин или пароль.</AlertDescription>
+              </Alert>
+            ) : null}
+            {rateLimited ? (
+              <Alert variant="destructive">
+                <AlertTitle>Слишком много попыток</AlertTitle>
+                <AlertDescription>
+                  Подождите минуту и попробуйте снова.
+                </AlertDescription>
               </Alert>
             ) : null}
           </CardContent>
