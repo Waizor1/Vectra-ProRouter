@@ -716,7 +716,10 @@ func (d *daemon) renderKey(opts xray.SpliceOptions) string {
 	// And the geo directory it is checked against: a render checked against
 	// another is checked again (a new operator config's directory, vctl's
 	// own once vectra-geodata is there).
-	return k + ";geo=" + d.geoAssetDir()
+	// And the provider guard the render passed (xray/provider_guard.go): a
+	// render made before r12 kept the provider's own log block and api, so
+	// it is redone once, at start, before xray comes up.
+	return k + ";geo=" + d.geoAssetDir() + ";guard=1"
 }
 
 // resumeRender puts back, after a reboot, the render the router ran before it.

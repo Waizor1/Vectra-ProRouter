@@ -76,10 +76,12 @@ type SpliceOptions struct {
 	// provider's documents target phone apps that restart constantly; a router
 	// runs for a day between its nightly reboots.
 	ProbeInterval time.Duration
-	// NoAccessLog sets log.access to "none". The provider leaves it unset,
-	// and xray then prints one line PER CONNECTION to stdout — on a router,
-	// every destination every LAN client opens, churned through a pipe into
-	// RAM, burying the warnings the log is kept for.
+	// NoAccessLog sets log.access to "none" (and adds a log block when the
+	// provider has none). The provider leaves it unset, and xray then prints
+	// one line PER CONNECTION to stdout — on a router, every destination
+	// every LAN client opens, churned through a pipe into RAM, burying the
+	// warnings the log is kept for. The provider's own log block is replaced
+	// whole either way (provider_guard.go).
 	NoAccessLog bool
 	// Rules are the router owner's own sites, rendered at the top of the
 	// routing (user_rules.go). Empty = nothing added, the inbound's sniffing

@@ -22,5 +22,7 @@
 // Splice layers the router's own additions on the inbound swap, each touching
 // only what it names: the egress mark (outbound_mark.go); xray's API, metrics
 // and the probe interval (runtime_options.go); the owner's own sites, as the
-// first routing rules (user_rules.go).
+// first routing rules (user_rules.go). What the provider may not decide on the
+// router — log files, open ports, reverse tunnels, identifiers the log would
+// take as lines — is replaced, dropped or refused (provider_guard.go).
 package xray

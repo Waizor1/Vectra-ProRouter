@@ -274,6 +274,11 @@ func planDNS(providerRaw []byte, o *DNSOptions) (dnsPlan, error) {
 		plan.res.Skipped = why
 		return plan, nil
 	}
+	// The names the router resolves directly are its own: through the tunnel
+	// the router's lookups are xray's, and hosts answer before any server.
+	if h := dnsHostsConflict(doc.DNS, o.DirectDomains); h != "" {
+		return plan, fmt.Errorf("xray splice: the provider's dns.hosts entry %s would answer a name the router resolves directly — refusing the document", strconv.Quote(clip(h)))
+	}
 
 	hosts := nodeHosts(doc.Outbounds)
 	// The DNS servers' own names too: a DoH server named by its host is

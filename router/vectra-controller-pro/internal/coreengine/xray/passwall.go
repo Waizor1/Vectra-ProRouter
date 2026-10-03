@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 
 	"vectra-controller-pro/internal/config"
 )
@@ -60,7 +61,8 @@ type PassWallResult struct {
 //   - socket marks go from its outbounds: the splice stamps vctl's own, which
 //     vctl's output chain returns on (PassWall's 255 would loop back into
 //     TPROXY);
-//   - its env's XRAY_LOCATION_ASSET goes: vctl says where the geo files are;
+//   - its env goes, XRAY_LOCATION_ASSET with it: vctl says where the geo
+//     files are, and what else xray's environment holds;
 //   - "localhost" DNS servers go: PassWall resolves its nodes' names with the
 //     system resolver, which is dnsmasq, which vctl redirects into this very
 //     DNS — a loop. The splice answers those names directly instead
@@ -123,20 +125,22 @@ func AdaptPassWall(raw []byte, tproxyTag string) ([]byte, PassWallResult, error)
 	// pin the route policy's own). On the test router that directory went with
 	// PassWall's v2ray-geoip/geosite packages, and xray stopped starting
 	// (2026-09-29; the stand's xray 26.3.27 ignores a config's env and did not
-	// show it). The rest of env stays.
-	if raw, ok := doc["env"]; ok {
+	// show it). The rest of env goes with it (r12): xray's environment is
+	// vctl's to set, and the splice refuses any document that carries one
+	// (provider_guard.go).
+	for k, raw := range doc {
+		if foldKey(k) != foldKey("env") {
+			continue
+		}
 		env := map[string]json.RawMessage{}
-		if err := json.Unmarshal(raw, &env); err == nil {
-			if _, has := env["XRAY_LOCATION_ASSET"]; has {
-				delete(env, "XRAY_LOCATION_ASSET")
-				res.DroppedAssetDir = true
-			}
-			if len(env) == 0 {
-				delete(doc, "env")
-			} else {
-				doc["env"] = mustMarshal(env)
+		if json.Unmarshal(raw, &env) == nil {
+			for name := range env {
+				if strings.EqualFold(name, "XRAY_LOCATION_ASSET") {
+					res.DroppedAssetDir = true
+				}
 			}
 		}
+		delete(doc, k)
 	}
 
 	// Outbounds: no socket marks of PassWall's.

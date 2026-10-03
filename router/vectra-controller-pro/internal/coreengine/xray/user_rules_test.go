@@ -306,8 +306,9 @@ func TestADirectOutboundIsAddedMarkedAndLast(t *testing.T) {
 }
 
 // Only a freedom that goes straight where it was asked carries a direct
-// site: one that redirects, chains through another outbound, or prefixes a
-// PROXY protocol header does not.
+// site: one that chains through another outbound or prefixes a PROXY
+// protocol header does not. (One that redirects refuses the whole document:
+// TestSpliceRefusesReverseAndRedirectInOutbounds.)
 func TestDirectTakesOnlyAPlainFreedom(t *testing.T) {
 	node := fmt.Sprintf(nodeOutbound, "node")
 	for name, tc := range map[string]struct {
@@ -316,8 +317,7 @@ func TestDirectTakesOnlyAPlainFreedom(t *testing.T) {
 	}{
 		"plain":                {`{"tag":"direct","protocol":"freedom","settings":{"domainStrategy":"ForceIPv4"}}`, "direct"},
 		"capitalized protocol": {`{"tag":"direct","protocol":"Freedom"}`, "direct"},
-		"the first plain one":  {`{"tag":"fwd","protocol":"freedom","settings":{"redirect":"127.0.0.1:53"}},{"tag":"direct","protocol":"freedom"}`, "direct"},
-		"redirect":             {`{"tag":"fwd","protocol":"freedom","settings":{"redirect":"127.0.0.1:53"}}`, xray.DirectTag},
+		"the first plain one":  {`{"tag":"pp1","protocol":"freedom","settings":{"proxyProtocol":1}},{"tag":"direct","protocol":"freedom"}`, "direct"},
 		"proxy protocol":       {`{"tag":"pp","protocol":"freedom","settings":{"proxyProtocol":2}}`, xray.DirectTag},
 		"proxy protocol 0":     {`{"tag":"pp","protocol":"freedom","settings":{"proxyProtocol":0}}`, "pp"},
 		"chained":              {`{"tag":"ch","protocol":"freedom","proxySettings":{"tag":"node"}}`, xray.DirectTag},
