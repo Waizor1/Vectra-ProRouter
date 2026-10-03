@@ -205,7 +205,7 @@ assert_unchanged() { # <name> <what>
 }
 
 refused() { # <name> <expected text> -> the installer refused, said why, changed nothing
-	check "$1_refused" "exit 2 (refused before any change), got $INSTALL_RC" test "$INSTALL_RC" = 2
+	check "$1_refused" "exit 1 (refused before any change), got $INSTALL_RC" test "$INSTALL_RC" = 1
 	check "$1_says_why" "says: $2" said "$2"
 	assert_unchanged "$1_unchanged" "$1"
 }
@@ -231,12 +231,17 @@ none_installed() { for p in "$@"; do ! installed "$p" || return 1; done; }
 # directory only root enters, with /etc/config/passwall2 in it. (ls for the
 # modes: OpenWrt's busybox has no stat.)
 # shellcheck disable=SC2010
+# Sealed in vctl's vault since 0.7.0-r4 (passwall2-*.tar.gz.vault): opened
+# here only by the explicit recovery, into a new file.
 backup_kept() {
-	set -- "$VCTL_ETC"/backup/passwall2-*.tar.gz
+	set -- "$VCTL_ETC"/backup/passwall2-*.tar.gz.vault
 	[ $# = 1 ] && [ -f "$1" ] || return 1
 	ls -l "$1" | grep -q '^-rw-------' || return 1
 	ls -ld "$VCTL_ETC/backup" | grep -q '^drwx------' || return 1
-	tar -tzf "$1" | grep -qx 'etc/config/passwall2'
+	head -c 10 "$1" | grep -q '^VCTLVAULT1' || return 1
+	rm -f /tmp/passwall2-backup.tar.gz
+	/usr/sbin/vctl vault-restore -in "$1" -out /tmp/passwall2-backup.tar.gz > /dev/null 2>&1 || return 1
+	tar -tzf /tmp/passwall2-backup.tar.gz | grep -qx 'etc/config/passwall2'
 }
 # Nothing on the router says PassWall2 is owed back, and the record says why.
 nothing_owed() {
@@ -628,7 +633,7 @@ refuse-apk)
 	printf '#!/bin/sh\nexit 1\n' > /usr/bin/apk
 	chmod +x /usr/bin/apk
 	installer
-	check apk_refused "exit 2, got $INSTALL_RC" test "$INSTALL_RC" = 2
+	check apk_refused "exit 1, got $INSTALL_RC" test "$INSTALL_RC" = 1
 	check apk_says_why "names apk" said "apk"
 	rm -f /usr/bin/apk
 	mv /bin/opkg.hidden /bin/opkg
@@ -666,6 +671,27 @@ refuse-fleet)
 	snapshot /tmp/before
 	installer
 	refused fleet "--standby"
+	;;
+refuse-agent-old)
+	# An old agent that does not know Vectra (before 0.1.13-r45): not even
+	# next to it, off — update the agent first.
+	install_fixture vectra-controller-agent-r43
+	snapshot /tmp/before
+	installer --standby
+	refused agent_old "0.1.13-r45"
+	;;
+check-json)
+	# --check --json next to the old agent, without --standby: why it is
+	# needed, the rest checked as with it — JSON lines, ASCII only, exit 1.
+	install_fixture vectra-controller-agent
+	snapshot /tmp/before
+	installer --check --json
+	check json_exit "exit 1, got $INSTALL_RC" test "$INSTALL_RC" = 1
+	check json_ascii "every line a JSON object, ASCII only" sh -c '! LC_ALL=C grep -q "[^ -~]" /tmp/installer.out && ! grep -qv "^{.*}$" /tmp/installer.out'
+	check json_code "names LEGACY_AGENT_NEEDS_STANDBY, and ends refused" sh -c 'grep -q "\"check\":\"LEGACY_AGENT_NEEDS_STANDBY\"" /tmp/installer.out && tail -n 1 /tmp/installer.out | grep -q "\"result\":\"refused\""'
+	check json_rest "the rest checked as with --standby: the storage too" sh -c 'grep -q "\"check\":\"STORAGE\"" /tmp/installer.out'
+	check json_log "the words are in the log" grep -q -- "--standby" /tmp/vectra-install.log
+	assert_unchanged json_unchanged "--check --json"
 	;;
 refuse-signature)
 	snapshot /tmp/before

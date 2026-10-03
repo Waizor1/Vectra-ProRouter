@@ -66,11 +66,13 @@ func TestTheClaimerFollowsTheRules(t *testing.T) {
 	t0 := time.Date(2026, 9, 28, 7, 0, 0, 0, time.UTC)
 
 	v := c.view(t0)
-	if v == nil || v.State != "unclaimed" || len(v.Code) != 8 || v.QR != "" || !v.ExpiresAt.Equal(t0.Add(3*time.Minute)) || v.Owner != nil {
+	if v == nil || v.State != "unclaimed" || len(v.Code) != 8 || v.QR != "" || !v.ExpiresAt.Equal(t0.Add(time.Minute+claim.Grace)) || v.Owner != nil {
 		t.Fatalf("view = %+v", v)
 	}
 	a := c.announcement(t0.Add(30 * time.Second))
-	if a == nil || a.CodeHash != claim.CodeHash(v.Code) || a.ExpiresAt != "2026-09-28T07:03:00Z" {
+	// The panel is told the expiry the code is taken until, the grace in it
+	// (router-claim-state.ts keeps it as it is): the same the UI shows.
+	if a == nil || a.CodeHash != claim.CodeHash(v.Code) || a.ExpiresAt != v.ExpiresAt.Format(time.RFC3339) || a.ExpiresAt != "2026-09-28T07:11:00Z" {
 		t.Fatalf("announcement = %+v for code %s", a, v.Code)
 	}
 	if v2 := c.view(t0.Add(time.Minute)); v2.Code == v.Code {

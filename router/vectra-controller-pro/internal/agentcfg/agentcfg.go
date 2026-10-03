@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"vectra-controller-pro/internal/claim"
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/jobsafety"
 	"vectra-controller-pro/internal/localctl"
@@ -59,7 +60,7 @@ type Config struct {
 	JobSafety jobsafety.Config `json:"jobSafety"`
 
 	// ClaimRotateSeconds is how often the claim code changes (ADR-0006);
-	// 0 = every 10 minutes. Shorter only for tests.
+	// 0 = claim.Period, every 20 minutes. Shorter only for tests.
 	ClaimRotateSeconds int `json:"claimRotateSeconds,omitempty"`
 
 	// NoDNSTunnel keeps the router's resolver on the open path (UCI
@@ -143,7 +144,7 @@ func (c Config) PassWallRetireAfter() time.Duration {
 // ClaimRotate is the claim code's period.
 func (c Config) ClaimRotate() time.Duration {
 	if c.ClaimRotateSeconds <= 0 {
-		return 10 * time.Minute
+		return claim.Period
 	}
 	return time.Duration(c.ClaimRotateSeconds) * time.Second
 }

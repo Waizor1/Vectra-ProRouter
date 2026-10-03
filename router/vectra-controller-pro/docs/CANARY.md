@@ -75,8 +75,14 @@ still owns the router at this point; apply-local only writes files.
 
 ```sh
 vectra on --trial --minutes 15
-vectra status                   # who carries the traffic, and the minutes left
+vectra status                   # who carries the traffic, the minutes left,
+                                # and the claim code (and its link) to pass on
 ```
+
+A router not yet linked (no operator config) carries its traffic on
+PassWall2's routes until the claim's apply moves it to the provider's: no
+gap without a VPN. Check the render first, even before vctl ever ran:
+`vctl passwall-render -compare`.
 
 The hand-over stops the old agent and PassWall (and remembers that it did),
 turns PassWall2's own switch off (`uci get passwall2.@global[0].enabled` → 0:

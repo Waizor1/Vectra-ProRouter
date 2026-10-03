@@ -249,9 +249,24 @@ func (d *daemon) jobApplyXrayConfig(ctx context.Context, job controlplane.Job, r
 		return d.submitFailure(ctx, job, "refusing operator config: "+err.Error())
 	}
 	operatorChanged := d.desired == nil || !sameOperatorConfig(d.desired, cfg)
-	d.desired = cfg
 	if err := config.SaveSecret(d.cfg.XrayConfigPath, cfg); err != nil {
+		// Routing by PassWall2's configuration of its own accord, the router
+		// keeps doing so on the base config it runs: an operator config
+		// not on /etc is not the router's (a restart would not know it), and
+		// d.desired is what autoRoute runs on.
+		if !d.autoRoute {
+			d.desired = cfg
+		}
 		return d.submitFailure(ctx, job, "persist operator config: "+err.Error())
+	}
+	d.desired = cfg
+	// Routed by PassWall2's configuration until now, of vctl's own accord
+	// (auto_route.go): the provider's from here on. Its render is made anew
+	// below, and the one that runs keeps the LAN on the VPN until then; if the
+	// provider's cannot be made, it keeps running, and the daemon's own
+	// refresh tries the provider's again.
+	if d.leaveAutoRoute() {
+		operatorChanged = true
 	}
 	d.rebuildApplier()
 

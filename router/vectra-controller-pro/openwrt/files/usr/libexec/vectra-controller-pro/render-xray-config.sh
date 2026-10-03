@@ -82,7 +82,8 @@ job_safety_heavy_tmp_floor_mb="$(int_or_default "$(uci_get_or_default job_safety
 job_safety_storage_tmp_floor_mb="$(int_or_default "$(uci_get_or_default job_safety_storage_tmp_floor_mb 0)" 0)"
 job_safety_diagnostic_tmp_floor_mb="$(int_or_default "$(uci_get_or_default job_safety_diagnostic_tmp_floor_mb 0)" 0)"
 job_safety_pre_drop_caches="$(uci_get_or_default job_safety_pre_drop_caches 0)"
-# How often the claim code changes (ADR-0006); 0/empty = the default, 10 min.
+# How often the claim code changes (ADR-0006); 0/empty = the default, 20 min
+# (each code is taken for 10 min more).
 # Shorter only for tests.
 claim_rotate_sec="$(int_or_default "$(uci_get_or_default claim_rotate_sec 0)" 0)"
 # The router's resolver asks through the tunnel unless dns_tunnel is '0' (the

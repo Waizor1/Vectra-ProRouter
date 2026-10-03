@@ -64,10 +64,12 @@ export interface Status {
   /**
    * Vectra's own switch: `enabled` switched on (a trial counts), `running`
    * procd runs it, `holder` who carries the traffic now, `handBack` who takes
-   * it when Vectra is turned off (null while it is off). All null on a vctl
+   * it when Vectra is turned off (null while it is off), `wouldIdle` that
+   * switched on now it would carry nothing — the LAN without a VPN until the
+   * router is linked (set_power then wants `force`). All null on a vctl
    * older than the switch.
    */
-  power: { enabled: boolean | null; running: boolean | null; holder: Holder | null; handBack: Holder | null };
+  power: { enabled: boolean | null; running: boolean | null; holder: Holder | null; handBack: Holder | null; wouldIdle?: boolean | null };
   controller: { running: boolean | null; pid: number | null; uptimeSec: number | null };
   engine: {
     state: EngineState | null;

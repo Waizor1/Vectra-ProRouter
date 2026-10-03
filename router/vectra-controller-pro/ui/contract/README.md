@@ -37,7 +37,7 @@ Change a shape here first, then both sides.
 | `restart_xray` | — | `action.json` |
 | `services` | — | `services.json` |
 | `set_service` | `{"id": "tiktok", "country": "DE"}` (`""` = the entry's own path) | `action.json` |
-| `set_power` | `{"on": true}` (`false` turns Vectra off — see Power) | `action.json` |
+| `set_power` | `{"on": true}` (`false` turns Vectra off; `"force": true` also where it would carry nothing — see Power) | `action.json` |
 | `set_remote_shell` | `{"on": false}` (`true` lets support in — see Support shell) | `action.json` |
 
 `select_entry`, `reset_entry`, `set_probe_interval`, `set_rules` and
@@ -120,8 +120,16 @@ Once it is `retired`,
 `handBack` is `direct`: turning Vectra off leaves the router on plain
 internet.
 
+- `wouldIdle`: Vectra does not run, and switched on now it would carry
+  nothing — no operator config yet, and no PassWall2 configuration to route
+  by (a router taken from a PassWall2 that carried its traffic is routed by
+  that configuration until it is linked). The LAN would go out without a
+  VPN until the router is linked: the page says so, and asks, before it
+  turns Vectra on. `false` while vctl runs.
+
 `set_power`: `{"on": true}` turns Vectra on for good (after a reboot too),
-`{"on": false}` turns it off. Answers:
+`{"on": false}` turns it off; `"force": true` turns it on also where it would
+carry nothing yet (`power.wouldIdle`). Answers:
 
 - `power_on`, `power_off`: it was so already; nothing changed.
 - `pending`: the change runs in a process of its own and outlives the call.
@@ -132,8 +140,12 @@ internet.
   `holder` saying who got the router back.
 - `busy`: a change is still in flight (from this page, another, or the
   console); nothing changed.
-- `invalid_params` for anything but `{"on": true|false}`; `apply_failed`
-  when the change could not be started — nothing changed; `internal`.
+- `would_idle`: `{"on": true}` without `force` where Vectra would carry
+  nothing (`power.wouldIdle`); nothing changed — ask the person, then send
+  `{"on": true, "force": true}`.
+- `invalid_params` for anything but `{"on": true|false}` (and `force`);
+  `apply_failed` when the change could not be started — nothing changed;
+  `internal`.
 
 ## Router password
 
@@ -364,7 +376,8 @@ The router answers in CODES, never in prose, so the UI can speak ru, en and zh.
   On failure (`ok: false`): `invalid_params`, `unknown_entry`, `unknown_service`,
   `unknown_country`, `unavailable`,
   `unknown_balancer`, `unknown_node`, `no_entries_cache`, `controller_down`,
-  `xray_api_unavailable`, `apply_failed`, `busy`, `internal`, `locked` (the
+  `xray_api_unavailable`, `apply_failed`, `busy`, `internal`, `would_idle`
+  (set_power: see Power), `locked` (the
   operator's lock refuses this method on this router — see Operator lock),
   `unsupported` (the router has a radio the Wi-Fi tuning has no rules for —
   see Setup wizard).
@@ -593,10 +606,12 @@ the simple view: the operator's lock never refuses it.
   configuration follows); `code`, 8 characters of Crockford base32 — show it
   as 4-4; `qr`, the text to put in a QR code (`VECTRA:R1:…`), `null` until the
   panel has sent Vectra's key (the code works regardless); `expiresAt`, when
-  the code stops being valid — a new one replaces it 2 minutes before, so a
-  code just replaced still works for 2 minutes; `botUrl`,
-  `https://t.me/<bot>?start=rt_<code>` or `null`; `owner`, `{"label"}` or
-  `null`.
+  the code stops being valid, 30 minutes after it was made — a new one
+  replaces it 10 minutes before, so a code just replaced still works for 10
+  minutes; `botUrl`, `https://t.me/<bot>?start=rt_<code>` for the bot the
+  panel named, else Vectra Connect's mini app,
+  `https://t.me/VectraConnect_bot/start?startapp=rt_<code>` (never `null`
+  while there is a code); `owner`, `{"label"}` or `null`.
 
 `wan_check`: `{link, ipv4, dns, internet, panel, checkedAt}` — active checks,
 within 8 s, that hold with xray down and with the kill switch armed (every

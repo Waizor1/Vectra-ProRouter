@@ -749,7 +749,10 @@ func TestUpIsThreeLooksWithoutTheSocket(t *testing.T) {
 
 // An unconfigured vctl — before its first setup through the router UI's
 // wizard — runs without a data plane by design: on is on, and the traffic
-// goes out directly until it is set up. Said so, not called Vectra's.
+// goes out directly until it is set up. Said so, not called Vectra's. Only
+// with no PassWall2 configuration to route by (Env.PassWallUCI unset here):
+// with one, it carries (TestATakeoverFromPassWallCarriesBeforeAnyOperatorConfig);
+// and `vectra on` asks for --force first (cmd/vctl, WouldIdle).
 func TestAnUnconfiguredVctlIsOnWithoutADataPlane(t *testing.T) {
 	r := fleet(t)
 	r.uci("0")
@@ -765,6 +768,146 @@ func TestAnUnconfiguredVctlIsOnWithoutADataPlane(t *testing.T) {
 	}
 	if f := r.facts(); !f.On() || !f.Running || f.Carrying || f.Holder() != Direct {
 		t.Fatalf("%+v holder %s", f, f.Holder())
+	}
+}
+
+// passwallRoutable is PassWall2's configuration on a router it routes: its
+// switch on, its global node one of its nodes.
+const passwallRoutable = "config global\n\toption enabled '1'\n\toption node 'myshunt'\n\nconfig nodes 'myshunt'\n\toption protocol '_shunt'\n"
+
+// unconfigure takes the panel's files away and, with passwall, gives the
+// router PassWall2's configuration and generator: vctl then routes by it
+// until the panel's operator config arrives (AutoPassWall).
+func (r *router) unconfigure(passwall bool) {
+	for _, p := range []string{r.env.OperatorConfig, r.env.ProviderDoc} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			r.t.Fatal(err)
+		}
+	}
+	r.env.PassWallUCI = filepath.Join(r.dir, "config", "passwall2")
+	r.env.PassWallGenerator = filepath.Join(r.dir, "util_xray.lua")
+	if passwall {
+		if err := os.WriteFile(r.env.PassWallUCI, []byte(passwallRoutable), 0o644); err != nil {
+			r.t.Fatal(err)
+		}
+		r.write(r.env.PassWallGenerator)
+	}
+}
+
+// No VPN gap when vctl takes a router from PassWall2 before it is linked: it
+// routes by PassWall2's configuration, so `on` waits for its data plane like
+// a configured vctl's — and the traffic goes through Vectra, not directly.
+func TestATakeoverFromPassWallCarriesBeforeAnyOperatorConfig(t *testing.T) {
+	r := fleet(t)
+	r.uci("0")
+	r.unconfigure(true)
+	say, _ := r.said()
+	if err := On(context.Background(), r.env, say); err != nil {
+		t.Fatal(err)
+	}
+	if f := r.facts(); !f.On() || !f.Carrying || f.Holder() != Vectra {
+		t.Fatalf("%+v holder %s", f, f.Holder())
+	}
+}
+
+// ...and one that does not load it is no takeover: like a configured vctl's,
+// the router goes back to PassWall2 rather than out directly.
+func TestATakeoverFromPassWallThatCarriesNothingGivesTheRouterBack(t *testing.T) {
+	r := fleet(t)
+	r.uci("0")
+	r.unconfigure(true)
+	r.idle = true
+	say, _ := r.said()
+	err := On(context.Background(), r.env, say)
+	if !errors.Is(err, errIdle) {
+		t.Fatalf("err = %v, want the data plane's absence", err)
+	}
+	if f := r.facts(); f.On() || f.Running || f.Holder() != PassWall {
+		t.Fatalf("%+v holder %s", f, f.Holder())
+	}
+}
+
+// PassWall2 switched off by the takeover is still PassWall2 that carried the
+// traffic: the switch's breadcrumb says so, on /etc or a trial's tmpfs.
+// Switched off by its owner there is none — and the rc.d link's breadcrumb,
+// written for an enabled link whatever the switch, proves nothing: no route.
+func TestAutoPassWallOnlyWherePassWallCarried(t *testing.T) {
+	r := fleet(t)
+	r.unconfigure(true)
+	off := strings.Replace(passwallRoutable, "enabled '1'", "enabled '0'", 1)
+	if err := os.WriteFile(r.env.PassWallUCI, []byte(off), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if AutoPassWall("", r.env.OperatorConfig, r.env.PassWallRoutes()) {
+		t.Fatal("an owner's PassWall2, switched off, routes")
+	}
+	for _, crumb := range []string{r.marker(switchMarker), r.marker(passwallMarker), r.trialMarker(switchMarker), r.trialMarker(passwallMarker)} {
+		r.write(crumb)
+		want := filepath.Base(crumb) == switchMarker
+		if got := AutoPassWall("", r.env.OperatorConfig, r.env.PassWallRoutes()); got != want {
+			t.Errorf("breadcrumb %s: routed by %v, want %v", crumb, got, want)
+		}
+		if err := os.Remove(crumb); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// WouldIdle is what `vectra on` warns of: no operator config and nothing to
+// route by. PassWall2's configuration is something; the owner's own route
+// source, a configuration without a node, a missing generator are not.
+func TestWouldIdle(t *testing.T) {
+	r := fleet(t)
+	if r.env.WouldIdle() {
+		t.Fatal("configured: idle")
+	}
+	r.unconfigure(true)
+	if r.env.WouldIdle() {
+		t.Fatal("PassWall2 to route by: idle")
+	}
+	if !AutoPassWall("", r.env.OperatorConfig, r.env.PassWallRoutes()) {
+		t.Fatal("not routing by PassWall2")
+	}
+	// The owner's route source is theirs: vctl does not choose another.
+	if err := os.WriteFile(r.env.Config, []byte("config controller 'main'\n\toption route_source 'native'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !r.env.WouldIdle() {
+		t.Fatal("route_source 'native' without an operator config: not idle")
+	}
+	// 'provider' is the default, spelled out.
+	if err := os.WriteFile(r.env.Config, []byte("config controller 'main'\n\toption route_source 'provider'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r.env.WouldIdle() {
+		t.Fatal("route_source 'provider': idle")
+	}
+	if err := os.WriteFile(r.env.Config, []byte("config controller 'main'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, uci string }{
+		{"no node", "config global\n\toption enabled '1'\n"},
+		{"a node it does not have", "config global\n\toption enabled '1'\n\toption node 'gone'\n\nconfig nodes 'myshunt'\n"},
+		{"switched off by its owner", "config global\n\toption enabled '0'\n\toption node 'myshunt'\n\nconfig nodes 'myshunt'\n"},
+	} {
+		if err := os.WriteFile(r.env.PassWallUCI, []byte(tc.uci), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if !r.env.WouldIdle() {
+			t.Errorf("PassWall2 with %s: routed by", tc.name)
+		}
+	}
+	r.unconfigure(false)
+	_ = os.Remove(r.env.PassWallUCI)
+	if !r.env.WouldIdle() {
+		t.Fatal("no PassWall2 at all: not idle")
+	}
+	r.write(r.env.OperatorConfig)
+	if r.env.WouldIdle() {
+		t.Fatal("an operator config: idle")
+	}
+	if (Env{}).WouldIdle() {
+		t.Fatal("an Env that names no operator config cannot tell, and says nothing")
 	}
 }
 

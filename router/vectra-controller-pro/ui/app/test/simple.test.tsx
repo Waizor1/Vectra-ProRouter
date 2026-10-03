@@ -547,6 +547,69 @@ describe('Vectra on and off', () => {
     expect(app.$('[role="alertdialog"]')?.textContent).toContain('Интернет пойдёт напрямую, без VPN: заблокированные сайты перестанут открываться.');
   });
 
+  // power.wouldIdle: switched on now, Vectra would carry nothing (no operator
+  // config, no PassWall2 to route by). The dialog says the internet goes
+  // without a VPN until the router is linked, and only its confirmation sends
+  // force — never a click that did not see it.
+  it('asks before turning on a Vectra that would carry nothing, and only then sends force', async () => {
+    const calls: string[] = [];
+    const w = world((x) => {
+      x.status.power = { enabled: false, running: false, holder: 'direct', handBack: null, wouldIdle: true };
+    });
+    const app = start({ call: (m, p) => (m === 'set_power' && calls.push(JSON.stringify(p)), w(m, p)) });
+    await settle();
+    app.button('Включить Vectra')!.click();
+    await settle();
+    expect(app.$('[role="alertdialog"]')?.textContent).toContain('до привязки интернет пойдёт напрямую, без VPN');
+    expect(calls).toEqual([]);
+    app.confirm();
+    await settle();
+    expect(calls).toEqual(['{"on":true,"force":true}']);
+  });
+
+  // The page read wouldIdle false, the router answers would_idle (its status
+  // changed since): the router's word is taken at once — the dialog that
+  // says the internet goes without a VPN, then force, no status poll between.
+  it('asks again at once when the router answers would_idle, then sends force', async () => {
+    const calls: string[] = [];
+    const w = world((x) => {
+      x.status.power = { enabled: false, running: false, holder: 'passwall2', handBack: null, wouldIdle: false };
+    });
+    const call: CallFn = (m, p) => {
+      if (m !== 'set_power') return w(m, p);
+      calls.push(JSON.stringify(p));
+      return Promise.resolve(p?.force === true ? { ok: true, code: 'pending', detail: null } : { ok: false, code: 'would_idle', detail: 'Vectra would carry no traffic yet' });
+    };
+    const app = start({ call });
+    await settle();
+    app.button('Включить Vectra')!.click();
+    await settle();
+    expect(app.$('[role="alertdialog"]')?.textContent).not.toContain('без VPN');
+    app.confirm();
+    await settle();
+    expect(calls).toEqual(['{"on":true}']);
+    expect(app.$('[role="alertdialog"]')?.textContent).toContain('до привязки интернет пойдёт напрямую, без VPN');
+    expect(app.$('.toast.t-fail')).toBeNull();
+    app.confirm();
+    await settle();
+    expect(calls).toEqual(['{"on":true}', '{"on":true,"force":true}']);
+  });
+
+  it('turns on without force where Vectra carries the traffic', async () => {
+    const calls: string[] = [];
+    const w = world((x) => {
+      x.status.power = { enabled: false, running: false, holder: 'passwall2', handBack: null, wouldIdle: false };
+    });
+    const app = start({ call: (m, p) => (m === 'set_power' && calls.push(JSON.stringify(p)), w(m, p)) });
+    await settle();
+    app.button('Включить Vectra')!.click();
+    await settle();
+    expect(app.$('[role="alertdialog"]')?.textContent).not.toContain('без VPN');
+    app.confirm();
+    await settle();
+    expect(calls).toEqual(['{"on":true}']);
+  });
+
   it('says so when a change is already on its way, in its own words', async () => {
     const mock = createMock({ latencyMs: 0, live: false });
     const calls: string[] = [];
@@ -608,7 +671,7 @@ describe('Vectra on and off', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(await mock.call('set_power', { on: false })).toMatchObject({ ok: true, code: 'power_off' });
     const st = (await mock.call('status')) as ReadData['status'];
-    expect(st.power).toEqual({ enabled: false, running: false, holder: 'passwall2', handBack: null });
+    expect(st.power).toEqual({ enabled: false, running: false, holder: 'passwall2', handBack: null, wouldIdle: false });
     expect(st.controller.running).toBe(false);
   });
 });

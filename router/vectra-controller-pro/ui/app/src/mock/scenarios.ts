@@ -105,7 +105,7 @@ function empty(w: ReadData): void {
   s.router.uptimeSec = 1260;
   // A router Vectra holds from the start: nothing to give back but the plain
   // internet. With no data plane yet vctl carries nothing: the holder is direct.
-  s.power = { enabled: true, running: true, holder: 'direct', handBack: 'direct' };
+  s.power = { enabled: true, running: true, holder: 'direct', handBack: 'direct', wouldIdle: false };
   // A fleet router the operator has not given a subscription yet: no owner.
   w.setup.vectra.owner = null;
   w.balancers = { ...w.balancers, apiReachable: false, balancers: [] };
@@ -223,7 +223,7 @@ export function wifiAs(w: ReadData, as: WifiAs): void {
  */
 export function off(w: ReadData, holder: Holder): void {
   const s = w.status;
-  s.power = { enabled: false, running: false, holder, handBack: null };
+  s.power = { enabled: false, running: false, holder, handBack: null, wouldIdle: false };
   s.controller = { running: false, pid: null, uptimeSec: null };
   s.engine = { state: 'unknown', xrayVersion: null, pid: null, uptimeSec: null, rssMiB: null, memoryLimitMiB: null, restarts: 0, lastExit: null };
   s.api.reachable = false;

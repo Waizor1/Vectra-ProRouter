@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ErrInfo } from '../api/errors';
 import type { Entry, Status } from '../api/types';
 import { useApp, useRes } from '../app/ctx';
-import { powerOpts } from '../app/power';
+import { powerOpts, powerParams } from '../app/power';
 import type { Key } from '../i18n';
 import { parseRemark } from '../lib/flags';
 import { flagged } from '../lib/names';
@@ -535,7 +535,7 @@ export function Simple() {
       }
     },
     link: () => setWizard('vectra'),
-    power: (on) => void run('set_power', { on }, powerOpts(t, s, on)),
+    power: (on) => void run('set_power', powerParams(s, on), powerOpts(t, s, on)),
     report: async () => {
       const text = buildReport(t, f, s, dg.data, t(v.title));
       const ok = await copyText(text, root);

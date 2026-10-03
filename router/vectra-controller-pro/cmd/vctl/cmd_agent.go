@@ -181,6 +181,9 @@ type daemon struct {
 	// PassWall-compatible routing (passwall_source.go): the sniffing of
 	// PassWall's tproxy inbound, and what the last sync was made from.
 	passwallSniffing *config.Sniffing
+	// autoRoute: vctl routes by PassWall2's configuration of itself, on the
+	// base operator config, until the panel's arrives (auto_route.go).
+	autoRoute        bool
 	passwallCfgStamp string
 	passwallGeoStamp string
 	// passwallRetryAt: a sync refused for want of memory is not tried
@@ -341,6 +344,12 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 		SocketMark: firewall.DefaultControlMark,
 	})
 
+	// No operator config yet on a router PassWall2 routes: vctl routes by its
+	// configuration until the panel's arrives (auto_route.go).
+	auto := autoRouteSource(cfg)
+	if auto {
+		cfg.RouteSource = routeSourcePassWall
+	}
 	assetDir := config.ResolveGeoAssetDir(cfg.GeoAssetDir)
 	switch cfg.RouteSource {
 	case routeSourcePassWall:
@@ -407,9 +416,11 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 	// inbound (and therefore the applier) is usable before the first check-in.
 	if c, err := config.LoadSecret(cfg.XrayConfigPath); err == nil {
 		d.desired = c
+	} else if auto {
+		d.enterAutoRoute()
 	}
 	d.claim = newClaimer(st, d.device.Model, cfg.ClaimRotate())
-	d.claim.setLinked(d.desired != nil)
+	d.claim.setLinked(d.linked())
 	d.rebuildApplier()
 	// The render on disk runs with the directory it passed `xray -test` with
 	// (state.json keeps which): a config the gate refused since — saved all
@@ -677,7 +688,7 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	}
 
 	d.enrichConnectCheckin(&inv)
-	d.claim.setLinked(d.desired != nil)
+	d.claim.setLinked(d.linked())
 	resp, err := d.client.CheckIn(ctx, controlplane.CheckInRequest{
 		ProtocolVersion: controlplane.ProtocolVersion,
 		RouterID:        d.st.RouterID,

@@ -439,9 +439,11 @@ export function createMock(opts: MockOptions = {}): Mock {
       // after it — and one runs at a time.
       case 'set_power': {
         const on = p.on;
-        if (typeof on !== 'boolean' || Object.keys(p).some((k) => k !== 'on')) return fail('invalid_params', 'params must be {"on": true} or {"on": false}');
+        if (typeof on !== 'boolean' || Object.keys(p).some((k) => k !== 'on' && k !== 'force') || (p.force !== undefined && typeof p.force !== 'boolean'))
+          return fail('invalid_params', 'params must be {"on": true} or {"on": false}');
         if (powerBusy) return fail('busy', 'another power change is still in flight');
         const pw = s.power;
+        if (on && pw.wouldIdle === true && p.force !== true) return fail('would_idle', 'Vectra would carry no traffic yet');
         if (on && pw.enabled === true && pw.running === true) return ok('power_on');
         if (!on && pw.enabled === false && pw.running === false) return ok('power_off');
         powerBusy = true;
@@ -454,7 +456,7 @@ export function createMock(opts: MockOptions = {}): Mock {
             beforeOff = null;
             Object.assign(w, { balancers: was.balancers, nodes: was.nodes, entries: was.entries, diagnostics: was.diagnostics });
             w.status = { ...was.status, ui: s.ui, legacy: { ...was.status.legacy, agentEnabled: false, passwallRunning: false } };
-            w.status.power = { enabled: true, running: true, holder: 'vectra', handBack: back === 'passwall2' || back === 'agent' ? back : 'direct' };
+            w.status.power = { enabled: true, running: true, holder: 'vectra', handBack: back === 'passwall2' || back === 'agent' ? back : 'direct', wouldIdle: false };
             // xray has just started.
             engineBase = 0;
             engineSince = now();

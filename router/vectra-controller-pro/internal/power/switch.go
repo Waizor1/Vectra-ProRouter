@@ -364,10 +364,12 @@ func (env Env) up(ctx context.Context) error {
 }
 
 // carries waits, within DataplaneWait, for a configured vctl's data plane to
-// load; an unconfigured one — before its first setup — carries nothing yet,
-// by design, and passes. vctl stopping meanwhile fails at once.
+// load — or one that routes by PassWall2's configuration until it is
+// (AutoPassWall); an unconfigured one with nothing to route by — before its
+// first setup on a router without PassWall2 — carries nothing yet, by design,
+// and passes. vctl stopping meanwhile fails at once.
 func (env Env) carries(ctx context.Context) error {
-	if !env.configured() {
+	if !env.routes() {
 		return nil
 	}
 	start := env.Now()

@@ -12,24 +12,30 @@ import (
 	"syscall"
 	"time"
 
+	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/power"
+	"vectra-controller-pro/internal/uiapi"
 )
 
 // `vctl power` is Vectra's own switch. /usr/sbin/vectra is `vctl power "$@"`,
 // so a person types `vectra on`, `vectra off`, `vectra status`; the router
 // UI's set_power runs the same change (rpcd_power.go).
 func init() {
-	register(command{name: "power", summary: "Vectra on or off (the `vectra` command): on [--trial [--minutes N]] | off | keep | status [--json]", run: cmdPower})
+	register(command{name: "power", summary: "Vectra on or off (the `vectra` command): on [--trial [--minutes N]] [--force] | off | keep | status [--json]", run: cmdPower})
 }
 
-const powerUsage = `usage: vectra on [--trial [--minutes N]] | off | keep | status [--json]
+const powerUsage = `usage: vectra on [--trial [--minutes N]] [--force] | off | keep | status [--json]
   on            Vectra takes the traffic, for good: also after a reboot
   on --trial    takes it for N minutes (10), then gives it back by itself;
                 a reboot gives it back too
+  on --force    also when Vectra would carry nothing yet: no operator
+                config, and no PassWall2 to route by until there is one
   keep          keeps a trial: Vectra stays on, as after "vectra on"
   off           gives the router back as it was: PassWall2, the previous
                 Vectra agent, or the internet without a VPN
-  status        whether Vectra is on and who carries the traffic
+  status        whether Vectra is on, who carries the traffic, and the
+                claim code while the router is not linked
 on, off and keep run in the background (--foreground: here); what they do
 goes to the log they name.`
 
@@ -48,7 +54,39 @@ var (
 	powerOut io.Writer = os.Stdout
 	// powerHanded is the lock a detached change was handed, as its fd 3.
 	powerHanded = func() *os.File { return handedFile(3, "vectra-power.lock") }
+	// powerRuntime is the daemon's live state (nil: it does not answer), and
+	// powerBot the Vectra bot the panel named (""), for status.
+	powerRuntime = func(ctx context.Context) *localctl.Runtime {
+		cfg := powerAgentCfg()
+		c, cancel := context.WithTimeout(ctx, power.CallTime)
+		defer cancel()
+		resp, err := localctl.Call(c, cfg.UISocketPath, localctl.SocketRequest{Op: localctl.OpRuntime})
+		if err != nil || !resp.OK {
+			return nil
+		}
+		return resp.Runtime
+	}
+	powerBot = func() string {
+		bot, _ := persistedClaim(powerAgentCfg())
+		return bot
+	}
 )
+
+// powerAgentCfg is the daemon's config where status reads it: the rendered
+// agent.json, else its defaults — the same files.
+func powerAgentCfg() agentcfg.Config {
+	if cfg, err := agentcfg.Load("/var/run/vectra-controller-pro/agent.json"); err == nil {
+		return cfg
+	}
+	var cfg agentcfg.Config
+	cfg.Defaults()
+	return cfg
+}
+
+// errWouldIdle: `vectra on` would leave the LAN without its VPN.
+var errWouldIdle = errors.New("Vectra would carry no traffic yet: it has no operator config, and no PassWall2 configuration to route by. " +
+	"Switched on now, it would leave the LAN's internet going out directly, without a VPN, until the router is linked to a Vectra account " +
+	"(its claim code: vectra status, once Vectra runs). `vectra on --force` switches it on all the same")
 
 // powerLogMax is where the power log starts afresh: it lives on /tmp, in RAM.
 const powerLogMax = 64 << 10
@@ -72,6 +110,7 @@ func cmdPower(args []string) error {
 	var (
 		fg      *bool
 		trial   *bool
+		force   *bool
 		minutes *int
 		asJSON  *bool
 		id      *string
@@ -82,6 +121,7 @@ func cmdPower(args []string) error {
 		if verb == "on" {
 			trial = fs.Bool("trial", false, "take the traffic for --minutes, then give it back by itself")
 			minutes = fs.Int("minutes", 10, "how long a trial lasts (1-1440)")
+			force = fs.Bool("force", false, "switch on also when Vectra would carry no traffic yet")
 		}
 	case "status":
 		asJSON = fs.Bool("json", false, "answer in JSON")
@@ -112,10 +152,17 @@ func cmdPower(args []string) error {
 	if minutes != nil && !isTrial && minutesSet(fs) {
 		return errors.New("--minutes is for a trial: vectra on --trial --minutes N")
 	}
+	// Said BEFORE anything is switched: an `on` that takes the router from
+	// whatever carries its traffic now to a vctl that carries nothing. One
+	// that runs already took it; the router UI asks with --force — its page
+	// says what the router carries.
+	if force != nil && !*force && env.WouldIdle() && !power.Read(context.Background(), env, false).Running {
+		return errWouldIdle
+	}
 	if *fg {
 		return powerChange(env, verb, isTrial, minutesOr(minutes), powerHanded(), powerOut)
 	}
-	return powerDetach(env, verb, isTrial, minutesOr(minutes), powerOut)
+	return powerDetach(env, verb, isTrial, minutesOr(minutes), force != nil && *force, powerOut)
 }
 
 func minutesSet(fs *flag.FlagSet) bool {
@@ -178,7 +225,7 @@ func powerLock(env power.Env, handed *os.File) (*os.File, error) {
 
 // powerDetach takes the lock and hands the change, with it, to a process of
 // its own: see powerSpawn. It returns once that process has started.
-func powerDetach(env power.Env, verb string, trial bool, minutes int, out io.Writer) error {
+func powerDetach(env power.Env, verb string, trial bool, minutes int, force bool, out io.Writer) error {
 	lock, err := power.Lock(env)
 	if errors.Is(err, power.ErrBusy) {
 		return fmt.Errorf("%w: tail %s", err, env.Log)
@@ -192,6 +239,9 @@ func powerDetach(env power.Env, verb string, trial bool, minutes int, out io.Wri
 	if trial {
 		args = append(args, "--trial", fmt.Sprintf("--minutes=%d", minutes))
 		what = fmt.Sprintf("taking the traffic for a trial of %d min", minutes)
+	}
+	if force {
+		args = append(args, "--force")
 	}
 	if _, err := powerSpawn(env, lock, args...); err != nil {
 		return fmt.Errorf("the change did not start, so nothing changed: %w", err)
@@ -260,6 +310,19 @@ type powerStatusJSON struct {
 	Boot     bool             `json:"boot"`
 	Trial    *powerTrialState `json:"trial"`
 	Busy     bool             `json:"busy"`
+	// Claim: the code that links the router to a Vectra account, while vctl
+	// runs and the router is not linked — what an operator passes on.
+	Claim *powerClaimState `json:"claim"`
+	// AutoRouteSource: "passwall" while vctl routes by PassWall2's
+	// configuration of itself, until it is linked; null otherwise.
+	AutoRouteSource *string `json:"autoRouteSource"`
+}
+
+type powerClaimState struct {
+	Code      string `json:"code"`
+	ExpiresAt string `json:"expiresAt"`
+	// Link opens the claim in Vectra's app with the code filled in.
+	Link string `json:"link"`
 }
 
 type powerTrialState struct {
@@ -281,6 +344,17 @@ func powerStatus(env power.Env, asJSON bool, out io.Writer) error {
 			st.Trial.Until = &u
 			if left := t.Until.Sub(env.Now()); left > 0 {
 				st.Trial.MinutesLeft = int((left + time.Minute - 1) / time.Minute)
+			}
+		}
+	}
+	if f.Running {
+		if rt := powerRuntime(context.Background()); rt != nil {
+			if c := rt.Claim; c != nil && c.State == "unclaimed" {
+				st.Claim = &powerClaimState{Code: c.Code, ExpiresAt: c.ExpiresAt.UTC().Format(time.RFC3339), Link: uiapi.ClaimLink(powerBot(), c.Code)}
+			}
+			if rt.AutoRouteSource != "" {
+				a := rt.AutoRouteSource
+				st.AutoRouteSource = &a
 			}
 		}
 	}
@@ -330,6 +404,17 @@ func powerLines(st powerStatusJSON, log string) []string {
 	}
 	if idle != "" {
 		out = append(out, "  Its data plane is not loaded: before its first setup, or its render failed (logread -e vctl).")
+	}
+	if st.AutoRouteSource != nil {
+		out = append(out, "  It routes by PassWall2's configuration until the router is linked: the operator's config then replaces it, with no gap.")
+	}
+	if c := st.Claim; c != nil {
+		until := c.ExpiresAt
+		if t, err := time.Parse(time.RFC3339, c.ExpiresAt); err == nil {
+			until = t.UTC().Format("15:04 UTC")
+		}
+		out = append(out, fmt.Sprintf("  Not linked to a Vectra account yet. Claim code: %s (valid until %s)", c.Code, until),
+			"  Link: "+c.Link)
 	}
 	out = append(out, fmt.Sprintf("  switch (uci enabled): %s · starts at boot: %s · running: %s", onOff(st.UCI), yes[st.Boot], yes[st.Running]))
 	if st.Busy {

@@ -34,7 +34,10 @@
 #   dnsmasq-rollback  a dnsmasq-full that never runs: the old dnsmasq comes back
 #   mirror            downloads.openwrt.org unreachable: through a mirror
 #   refuse-*          arch, apk, release, memory, storage, conflict, fleet,
-#                     signature, feed-down: refused, the router unchanged
+#                     agent-old, signature, feed-down: refused (exit 1), the
+#                     router unchanged
+#   check-json        --check --json next to the old agent: why --standby,
+#                     JSON lines in ASCII, exit 1, the router unchanged
 set -euo pipefail
 export COPYFILE_DISABLE=1
 
@@ -54,13 +57,26 @@ OPENWRT_MIRROR="${OPENWRT_MIRROR:-https://mirror-03.infra.openwrt.org}"
 PARALLEL="${INSTALL_PARALLEL:-4}"
 ALL=(lifecycle geodata-links check standby standby-upgrade passwall passwall-upgrade passwall-retire dnsmasq-rollback mirror
 	refuse-arch refuse-apk refuse-release refuse-memory refuse-storage
-	refuse-conflict refuse-fleet refuse-signature refuse-feed-down)
+	refuse-conflict refuse-fleet refuse-agent-old refuse-signature refuse-feed-down check-json)
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 fail() { printf '\n\033[1mFATAL: %s\033[0m\n' "$*" >&2; exit 2; }
 
 command -v docker > /dev/null || fail "docker not found"
 command -v go > /dev/null || fail "go not found"
+
+# The routers share the docker host's kernel, and vctl's ruleset needs the
+# nftables `fib` expression (nft_fib_inet: its LAN, TPROXY and DNS guards).
+# Docker Desktop's linuxkit kernel has none: every scenario installs, and
+# passwall-retire, which needs vctl to carry the traffic, can never load its
+# data plane (seen 2026-10-03: 158 checks passed, then STAND-FATAL). Said
+# here, before twenty minutes of building, not after.
+step "the docker host's kernel"
+if ! docker run --rm --privileged --network none --platform linux/aarch64_generic "openwrt/rootfs:aarch64_generic-$OPENWRT_VERSION" \
+	sh -c 'nft add table inet probe && nft add chain inet probe c "{ type filter hook prerouting priority 0; }" && nft add rule inet probe c fib daddr type local return' > /dev/null 2>&1; then
+	fail "this docker host's kernel ($(docker info --format '{{.KernelVersion}}' 2>/dev/null)) has no nftables fib expression (nft_fib_inet), which vctl's ruleset needs: run it on Colima — DOCKER_CONTEXT=colima ./test/install/run.sh"
+fi
+echo "  nft fib: yes ($(docker info --format '{{.KernelVersion}}' 2>/dev/null))"
 if [[ $# -gt 0 ]]; then SELECTED=("$@"); else SELECTED=("${ALL[@]}"); fi
 
 cleanup() {
@@ -96,7 +112,11 @@ fake() { # <package> <version> [depends]: a package that only has to exist
 	rm -rf "$d"
 }
 fake podkop 0.2.5-r1
-fake vectra-controller-agent 0.1.13-r40
+# The old agent, as old as Vectra goes next to (it knows Vectra), and one
+# older (refuse-agent-old).
+fake vectra-controller-agent 0.1.13-r43
+mv "$BUILD/fixtures/vectra-controller-agent.ipk" "$BUILD/fixtures/vectra-controller-agent-r43.ipk"
+fake vectra-controller-agent 0.1.13-r45
 fake luci-app-passwall2 26.8.10-r1
 # PassWall2 as opkg has it on a fleet router, for passwall-retire: its package
 # owns its init script (the stand's stub) and its configuration (a conffile),

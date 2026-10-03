@@ -356,41 +356,47 @@ export function App({ call, setPassword = null, lang: hostLang, root }: { call: 
     L.pending = o.key;
     setPending(o.key);
     let done = false;
+    let again: RunOpts['retry'] = undefined;
     try {
       const before = store.get('status').data;
       const res = normAction(await call(method, params));
       if (!L.alive) return false;
-      // The simple view speaks to the router's owner: its own words, no raw detail.
-      const simple = L.mode === 'simple';
-      const first =
-        res.ok && o.quiet && res.code !== 'pending'
-          ? 0
-          : toast(
-              res.ok ? (res.code === 'pending' ? 'info' : 'ok') : 'fail',
-              !res.ok && o.fail?.[res.code] ? L.t(o.fail[res.code]!) : actionText(L.t, res.code, simple, res.ok),
-              simple ? null : res.detail,
-            );
-      done = res.ok && res.code !== 'pending';
-      if (res.ok && res.code === 'pending' && (o.landed || o.settled)) {
-        // Accepted but still applying: keep asking until the router shows it.
-        let landed = false;
-        for (const deadline = Date.now() + (o.waitMs ?? PENDING_MAX_MS); !landed && L.alive && Date.now() < deadline; ) {
-          await new Promise<void>((r) => later(PENDING_STEP_MS, r));
-          if (o.settled) {
-            await store.fetch(o.settled.read);
-            const d = store.get(o.settled.read).data;
-            landed = d != null && o.settled.ok(d);
-          } else {
-            await store.fetch('status');
-            const s = store.get('status').data;
-            landed = !!s && o.landed!(s, before);
+      if (!res.ok && o.retry && res.code === o.retry.code) {
+        // Asked again below, once this one has let go of the controls.
+        again = o.retry;
+      } else {
+        // The simple view speaks to the router's owner: its own words, no raw detail.
+        const simple = L.mode === 'simple';
+        const first =
+          res.ok && o.quiet && res.code !== 'pending'
+            ? 0
+            : toast(
+                res.ok ? (res.code === 'pending' ? 'info' : 'ok') : 'fail',
+                !res.ok && o.fail?.[res.code] ? L.t(o.fail[res.code]!) : actionText(L.t, res.code, simple, res.ok),
+                simple ? null : res.detail,
+              );
+        done = res.ok && res.code !== 'pending';
+        if (res.ok && res.code === 'pending' && (o.landed || o.settled)) {
+          // Accepted but still applying: keep asking until the router shows it.
+          let landed = false;
+          for (const deadline = Date.now() + (o.waitMs ?? PENDING_MAX_MS); !landed && L.alive && Date.now() < deadline; ) {
+            await new Promise<void>((r) => later(PENDING_STEP_MS, r));
+            if (o.settled) {
+              await store.fetch(o.settled.read);
+              const d = store.get(o.settled.read).data;
+              landed = d != null && o.settled.ok(d);
+            } else {
+              await store.fetch('status');
+              const s = store.get('status').data;
+              landed = !!s && o.landed!(s, before);
+            }
           }
+          if (!L.alive) return false;
+          dismiss(first);
+          // A `pending` change is kept only if it succeeds: not seen in 30 s means not applied.
+          toast(landed ? 'ok' : 'info', landed ? actionText(L.t, o.done ?? DONE_CODE[method], simple) : L.t('a.late'));
+          done = landed;
         }
-        if (!L.alive) return false;
-        dismiss(first);
-        // A `pending` change is kept only if it succeeds: not seen in 30 s means not applied.
-        toast(landed ? 'ok' : 'info', landed ? actionText(L.t, o.done ?? DONE_CODE[method], simple) : L.t('a.late'));
-        done = landed;
       }
     } catch (e) {
       if (L.alive) L.mode === 'simple' ? toast('fail', L.t('s.a.fail')) : toast('fail', L.t('err.other'), describeError(e).raw);
@@ -402,6 +408,7 @@ export function App({ call, setPassword = null, lang: hostLang, root }: { call: 
         Promise.resolve(tick.current(true)).then(() => L.alive && hadFocus && later(50, keepFocus));
       }
     }
+    if (again && L.alive) return run(method, again.params, again.opts);
     return done;
   };
 

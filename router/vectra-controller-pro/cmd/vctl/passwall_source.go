@@ -27,11 +27,13 @@ import (
 
 const routeSourcePassWall = "passwall"
 
-// passwallGenerator is PassWall2's xray config generator; passwallAssetDir
-// where PassWall2 keeps the geo files its rules name.
+// passwallGenerator is PassWall2's xray config generator, run by
+// passwallLua; passwallAssetDir where PassWall2 keeps the geo files its rules
+// name. internal/power names the same two files (power.RouterEnv).
 var (
 	passwallGenerator = "/usr/lib/lua/luci/passwall2/util_xray.lua"
 	passwallUCIFile   = "/etc/config/passwall2"
+	passwallLua       = "lua"
 )
 
 const passwallDefaultAssetDir = "/usr/share/v2ray/"
@@ -202,7 +204,7 @@ func (d *daemon) generatePassWall(ctx context.Context) ([]byte, error) {
 	j, _ := json.Marshal(args)
 	c, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(c, "lua", passwallGenerator, "gen_config", string(j))
+	cmd := exec.CommandContext(c, passwallLua, passwallGenerator, "gen_config", string(j))
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	err = cmd.Start()

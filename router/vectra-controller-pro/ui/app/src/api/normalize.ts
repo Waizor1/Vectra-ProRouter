@@ -81,7 +81,7 @@ function norm(spec: Spec, v: unknown): unknown {
 const SPECS: Record<ReadMethod, Spec> = {
   status: {
     version: 's',
-    power: { enabled: 'b', running: 'b', holder: 's', handBack: 's' },
+    power: { enabled: 'b', running: 'b', holder: 's', handBack: 's', wouldIdle: 'b' },
     controller: { running: 'b', pid: 'n', uptimeSec: 'n' },
     engine: {
       state: 's',

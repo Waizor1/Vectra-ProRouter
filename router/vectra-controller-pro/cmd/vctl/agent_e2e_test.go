@@ -177,6 +177,13 @@ func (p *panelStub) resultsFor(id string) []controlplane.JobResultRequest {
 
 func newTestDaemon(t *testing.T, dir string, panel *panelStub, provider *providerStub) *daemon {
 	t.Helper()
+	return newTestDaemonWith(t, dir, panel, provider, nil)
+}
+
+// newTestDaemonWith is newTestDaemon with more of agent.json (UCI rendered by
+// render-xray-config.sh), such as the owner's routeSource.
+func newTestDaemonWith(t *testing.T, dir string, panel *panelStub, provider *providerStub, extra map[string]any) *daemon {
+	t.Helper()
 	agentJSON := map[string]any{
 		"controlUrl":         panel.URL,
 		"statePath":          filepath.Join(dir, "state.json"),
@@ -187,6 +194,9 @@ func newTestDaemon(t *testing.T, dir string, panel *panelStub, provider *provide
 		"xrayBinary":         writeFakeXray(t, dir),
 		"geoAssetDir":        filepath.Join(dir, "assets"),
 		"legacyStatePath":    filepath.Join(dir, "no-legacy.json"),
+	}
+	for k, v := range extra {
+		agentJSON[k] = v
 	}
 	agentPath := filepath.Join(dir, "agent.json")
 	raw, _ := json.Marshal(agentJSON)
