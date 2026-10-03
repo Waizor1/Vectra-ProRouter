@@ -171,6 +171,9 @@ const wanUp = `{"up":true,"device":"wan","l3_device":"pppoe-wan","ipv4-address":
 "route":[{"target":"10.0.0.0","mask":8,"nexthop":"100.64.12.9"},{"target":"0.0.0.0","mask":0,"nexthop":"100.64.12.1"}],
 "dns-server":["100.64.12.1","100.64.12.2"]}`
 
+// What `ubus call network.interface.lan status` prints on a stock router.
+const lanUp = `{"up":true,"device":"br-lan","l3_device":"br-lan","ipv4-address":[{"address":"192.168.1.1","mask":24}],"dns-server":[]}`
+
 func TestReadGathersWhatTheWizardShows(t *testing.T) {
 	r := newRouter(t)
 	r.write(t, r.env.NetworkConfig, network)
@@ -181,10 +184,14 @@ func TestReadGathersWhatTheWizardShows(t *testing.T) {
 	r.write(t, filepath.Join(r.env.SysClassNet, "wan", "address"), "a4:39:b3:12:ab:cd\n")
 	r.write(t, filepath.Join(r.env.SysClassNet, "br-lan", "address"), "a4:39:b3:12:ab:cc\n")
 	r.ubus = wanUp
+	r.answers = map[string]string{"call network.interface.lan status": lanUp}
 
 	f := Read(context.Background(), r.env)
 	if f.Done {
 		t.Errorf("done=%v", f.Done)
+	}
+	if f.Password == nil || *f.Password || f.Lan.IPv4 != "192.168.1.1" {
+		t.Errorf("password %v, lan %+v: want no password, 192.168.1.1", f.Password, f.Lan)
 	}
 	w := f.Wan
 	if w.Proto != "pppoe" || w.IPv4 != "100.64.12.7" || w.Gateway != "100.64.12.1" ||
@@ -204,9 +211,13 @@ func TestReadGathersWhatTheWizardShows(t *testing.T) {
 	r.write(t, r.env.NetworkConfig, "config interface 'wan'\n\toption device 'eth1'\n\toption proto 'dhcp'\n")
 	r.write(t, filepath.Join(r.env.SysClassNet, "eth1", "carrier"), "0\n")
 	r.ubus = ""
+	r.answers = nil
 	f = Read(context.Background(), r.env)
 	if !f.Done || !f.Wifi.Radios[0].Secured || !f.Wifi.Radios[0].Enabled {
 		t.Errorf("facts = %+v", f)
+	}
+	if f.Password == nil || !*f.Password || f.Lan.IPv4 != "" {
+		t.Errorf("password %v, lan %+v: want a password, and no address without netifd", f.Password, f.Lan)
 	}
 	if w := f.Wan; w.Proto != "dhcp" || w.IPv4 != "" || w.DNS != nil || w.Link == nil || *w.Link {
 		t.Errorf("wan without ubus = %+v", w)
@@ -276,12 +287,72 @@ func TestTheSupportBotIsATelegramUsernameOrNothing(t *testing.T) {
 func TestReadSaysLittleAboutARouterItCannotRead(t *testing.T) {
 	r := newRouter(t)
 	f := Read(context.Background(), r.env)
-	if f.Done || f.Wan.Proto != "other" || f.Wan.Link != nil || f.Wifi.Suggested != "" || len(f.Wifi.Radios) != 0 || !f.Wifi.Tunable() || f.Wifi.Tuned() == nil || !*f.Wifi.Tuned() || f.Wifi.Apply != nil {
+	if f.Done || f.Wan.Proto != "other" || f.Wan.Link != nil || f.Wifi.Suggested != "" || len(f.Wifi.Radios) != 0 || !f.Wifi.Tunable() || f.Wifi.Tuned() == nil || !*f.Wifi.Tuned() || f.Wifi.Apply != nil ||
+		f.Password != nil || f.Lan.IPv4 != "" {
 		t.Fatalf("facts = %+v", f)
 	}
 	r.write(t, r.env.NetworkConfig, "config interface 'wan'\n\toption proto 'dhcpv6'\n\toption device '../../etc'\n")
 	if w := ReadWan(context.Background(), r.env); w.Proto != "other" || w.Link != nil {
 		t.Fatalf("wan = %+v", w)
+	}
+}
+
+// Whether LuCI's login asks for a password: rpcd lets anyone in when root's
+// field in /etc/shadow is empty (session.c, rpc_login_test_password), and
+// nobody without the password otherwise — a locked "!" included. Unknown — no
+// shadow file, no root in it — is nil, never a guess; the install-time guess
+// reads it as no password.
+func TestThePasswordIsSetEmptyOrUnknown(t *testing.T) {
+	r := newRouter(t)
+	say := func(p *bool) string {
+		switch {
+		case p == nil:
+			return "unknown"
+		case *p:
+			return "set"
+		}
+		return "empty"
+	}
+	if got := say(Password(r.env)); got != "unknown" || PasswordSet(r.env) {
+		t.Fatalf("no shadow file: %s", got)
+	}
+	for body, want := range map[string]string{
+		"root::0:0:99999:7:::\n":                              "empty",
+		"root:$1$abc$def:0:0:99999:7:::\n":                    "set",
+		"daemon:*:0:0:99999:7:::\nroot:$6$salt$hash:1:::::\n": "set",
+		"root:!:0:0:99999:7:::\n":                             "set",
+		"rootless::0:0:::::\ndaemon:*:0:0:::::\n":             "unknown",
+		"": "unknown",
+	} {
+		r.write(t, r.env.Shadow, body)
+		if got := say(Password(r.env)); got != want {
+			t.Errorf("%q: %s, want %s", body, got, want)
+		}
+		if PasswordSet(r.env) != (want == "set") {
+			t.Errorf("%q: PasswordSet = %v", body, PasswordSet(r.env))
+		}
+	}
+}
+
+// Where this page always opens: the LAN's IPv4 address as netifd has it up —
+// the first one, and only an IPv4 address; nothing when netifd cannot say.
+func TestTheLANAddressIsWhatNetifdHasUp(t *testing.T) {
+	r := newRouter(t)
+	if got := ReadLan(context.Background(), r.env); got.IPv4 != "" {
+		t.Fatalf("netifd silent: %+v", got)
+	}
+	for answer, want := range map[string]string{
+		lanUp: "192.168.1.1",
+		`{"up":true,"ipv4-address":[{"address":"10.9.8.1","mask":8},{"address":"192.168.1.1","mask":24}]}`: "10.9.8.1",
+		`{"up":false,"ipv4-address":[]}`:                               "",
+		`{"up":true,"ipv4-address":[{"address":"<b>","mask":24}]}`:     "",
+		`{"up":true,"ipv4-address":[{"address":"fd00::1","mask":64}]}`: "",
+		`not json`: "",
+	} {
+		r.answers = map[string]string{"call network.interface.lan status": answer}
+		if got := ReadLan(context.Background(), r.env); got.IPv4 != want {
+			t.Errorf("%s: %q, want %q", answer, got.IPv4, want)
+		}
 	}
 }
 
@@ -358,6 +429,47 @@ func TestFinishAndMarkDoneIfWorking(t *testing.T) {
 		if err != nil || marked != tc.marked || (strings.Join(r.commands(), "\n") == finish) != tc.marked {
 			t.Errorf("%s: marked=%v err=%v commands %q", tc.name, marked, err, r.commands())
 		}
+	}
+}
+
+// The support shell (the panel's run_terminal_command: any command, as root)
+// runs only where the owner allows it: vectra-controller-pro.main.remote_shell
+// '1'. Anything else — the option absent, a file that cannot be read — is no.
+func TestRemoteShellIsOnOnlyWhereTheOwnerSaysSo(t *testing.T) {
+	r := newRouter(t)
+	if RemoteShell(r.env) {
+		t.Fatal("no config file, and the shell is on")
+	}
+	for body, want := range map[string]bool{
+		"config controller 'main'\n\toption remote_shell '1'\n":   true,
+		"config controller 'main'\n\toption remote_shell 'on'\n":  true,
+		"config controller 'main'\n\toption remote_shell '0'\n":   false,
+		"config controller 'main'\n\toption enabled '1'\n":        false,
+		"config controller 'main'\n\toption remote_shell 'yes":    false, // uci cannot read it
+		"config controller 'other'\n\toption remote_shell '1'\n":  false,
+		"config controller 'main'\n\toption remote_shell ' 1 '\n": true,
+	} {
+		r.write(t, r.env.VectraConfig, body)
+		if got := RemoteShell(r.env); got != want {
+			t.Errorf("%q: %v, want %v", body, got, want)
+		}
+	}
+
+	// Switched through uci, one argv per value, and committed: the next job
+	// reads it, nothing restarts.
+	for on, want := range map[bool]string{
+		true:  "uci set vectra-controller-pro.main=controller\nuci set vectra-controller-pro.main.remote_shell=1\nuci commit vectra-controller-pro",
+		false: "uci set vectra-controller-pro.main=controller\nuci set vectra-controller-pro.main.remote_shell=0\nuci commit vectra-controller-pro",
+	} {
+		r := newRouter(t)
+		if err := SetRemoteShell(context.Background(), r.env, on); err != nil || strings.Join(r.commands(), "\n") != want {
+			t.Errorf("on=%v: %v\n%s", on, err, strings.Join(r.commands(), "\n"))
+		}
+	}
+	r = newRouter(t)
+	r.fail = func(args []string) bool { return len(args) > 1 && args[1] == "commit" }
+	if err := SetRemoteShell(context.Background(), r.env, true); err == nil {
+		t.Error("a commit that failed was a success")
 	}
 }
 

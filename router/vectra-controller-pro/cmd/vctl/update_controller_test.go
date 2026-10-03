@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/controlplane"
 )
 
@@ -146,5 +148,83 @@ func TestTheSelfUpdateRestartOutlivesVctl(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(cmd.Args, " "), "/etc/init.d/vectra-controller-pro restart") {
 		t.Fatalf("args %v", cmd.Args)
+	}
+}
+
+// The artifact is fetched over https only, redirects included: a redirect to
+// plain http is refused before anything is asked of it.
+func TestTheArtifactDownloadRefusesARedirectToPlainHTTP(t *testing.T) {
+	var plainHits atomic.Int32
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plainHits.Add(1)
+		_, _ = w.Write([]byte("not an ipk"))
+	}))
+	defer plain.Close()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+r.URL.Path, http.StatusFound)
+	}))
+	defer srv.Close()
+	prev := updateHTTPClient
+	updateHTTPClient = func() *http.Client { return srv.Client() }
+	t.Cleanup(func() { updateHTTPClient = prev })
+
+	_, err := downloadFile(context.Background(), srv.URL+"/vectra-controller-pro_0.6.0-r37_aarch64_cortex-a53.ipk", filepath.Join(t.TempDir(), "u.ipk"))
+	if err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("a redirect to plain http = %v, want a refusal", err)
+	}
+	if n := plainHits.Load(); n > 0 {
+		t.Fatalf("the redirect was followed %d time(s)", n)
+	}
+}
+
+// The panel's geo update writes into vctl's own geo directory only. The
+// directory is the operator config's to name, and the files are written as
+// root: an operator config naming /etc/crontabs, with an asset called
+// "root", would be a shell on the router for whoever sent it.
+func TestTheGeoUpdateWritesOnlyIntoVctlsOwnDirectory(t *testing.T) {
+	results := map[string][]controlplane.JobResultRequest{}
+	mu := &sync.Mutex{}
+	d := buildGuardTestDaemon(t, results, mu)
+	crontabs := filepath.Join(t.TempDir(), "crontabs")
+	raw, err := os.ReadFile(filepath.Join("..", "..", "internal", "config", "testdata", "panel", "operator-config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Unmarshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Geo.AssetDir = crontabs
+	cfg.Geo.ExtraAssets = []config.GeoFile{{Filename: "root", URL: "https://evil.invalid/cron"}}
+	if err := config.Save(d.cfg.XrayConfigPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	d.desired = cfg
+	// ...and xray runs a render that passed its -test there.
+	d.sup.SetAssetDir(crontabs)
+
+	_ = d.executeJob(context.Background(), controlplane.Job{ID: "g1", Type: "update_xray_assets"}, controlplane.CheckInResponse{})
+	fail, ok := lastResult(results, mu, "g1")
+	if !ok {
+		t.Fatalf("the geo update into another directory was not refused: %+v", results["g1"])
+	}
+	if msg, _ := fail.Result["error"].(string); !strings.Contains(msg, crontabs) || !strings.Contains(msg, config.DefaultGeoAssetDir) {
+		t.Errorf("the refusal does not say where and why: %v", fail.Result)
+	}
+	if _, err := os.Stat(crontabs); !os.IsNotExist(err) {
+		t.Fatalf("the refused directory was made: %v", err)
+	}
+}
+
+// The self-update is an upgrade, never a re-install: opkg's --force-reinstall
+// removes the installed package first, its prerm sees a removal (not
+// "upgrade"), stops vctl, disables it and hands the router back to the old
+// agent — killing the opkg, so the new version never lands (1111, Connect
+// update_now, 2026-10-02 09:13). Both update lanes only ever install a newer
+// version (the signed feed's floor), so a plain install is an upgrade.
+func TestTheSelfUpdateIsAnUpgradeNotAReinstall(t *testing.T) {
+	cmd := controllerInstallCommand(context.Background(), "/tmp/vectra-controller-pro-update.ipk")
+	if strings.Contains(strings.Join(cmd.Args, " "), "--force-reinstall") {
+		t.Fatalf("a re-install runs the old package's removal: %v", cmd.Args)
 	}
 }

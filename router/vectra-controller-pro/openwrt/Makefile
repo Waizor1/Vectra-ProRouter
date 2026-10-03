@@ -3,8 +3,8 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=vectra-controller-pro
 # Versioned independently from vectra-controller-agent: this is a separate,
 # additive controller package (xray-direct engine), not a replacement.
-VECTRA_VERSION?=0.6.0
-VECTRA_RELEASE?=36
+VECTRA_VERSION?=0.7.0
+VECTRA_RELEASE?=11
 PKG_VERSION:=$(VECTRA_VERSION)
 PKG_RELEASE:=$(VECTRA_RELEASE)
 
@@ -33,7 +33,7 @@ define Package/$(PKG_NAME)
   SUBMENU:=Routing and Redirection
   TITLE:=Vectra Controller Pro (xray-direct)
   URL:=https://router.vectra-pro.net
-  DEPENDS:=+ca-bundle +jsonfilter +jshn +procd +procd-ujail +uci +xray-core +kmod-nft-tproxy +kmod-nft-socket +kmod-nft-nat +dnsmasq-full +rpcd-mod-iwinfo
+  DEPENDS:=+ca-bundle +jsonfilter +jshn +procd +procd-ujail +uci +xray-core +kmod-nft-tproxy +kmod-nft-socket +kmod-nft-nat +dnsmasq-full +rpcd-mod-iwinfo +zram-swap
 endef
 
 define Package/$(PKG_NAME)/description
@@ -70,8 +70,16 @@ define Package/$(PKG_NAME)/prerm
 # the legacy agent up next to the outgoing xray), and killed the opkg of a
 # vctl updating itself (update_controller runs it as vctl's own child). The
 # new postinst restarts the running vctl instead: a restart is no hand-back.
+#
+# The router's tune (`vctl tune`) is put back here, on a removal only: what
+# it changed and is still as it left it (its backup, /etc/vectra-controller-
+# pro/tune-backup.json). Here, because the postrm runs once the package's
+# files are gone, vctl with them; before the hand-back, which starts the
+# stack that takes the router back.
 [ -n "$${IPKG_INSTROOT}" ] || { \
 	if [ "$${PKG_UPGRADE:-0}" = "1" ] || [ "$${1:-}" = "upgrade" ]; then exit 0; fi; \
+	vctl="$${VCTL:-/usr/sbin/vctl}"; \
+	if [ -x "$$vctl" ]; then "$$vctl" tune undo 2>&1 | logger -t vectra-controller-pro; fi; \
 	/etc/init.d/vectra-controller-pro stop >/dev/null 2>&1 || true; \
 	/etc/init.d/vectra-controller-pro disable >/dev/null 2>&1 || true; \
 	exit 0; \
@@ -84,6 +92,11 @@ define Package/$(PKG_NAME)/postinst
 # During a trial (`vectra on --trial`: /tmp/vectra-trial.json, the init
 # script's TRIAL_FILE) vctl has no boot links on purpose — a reboot must give
 # the router back — and an upgrade in the middle of one gives it none either.
+#
+# Once vctl runs, the router is tuned (`vctl tune apply`, internal/tune):
+# zram, the kernel's memory settings, packet steering, flow offloading —
+# what nobody set otherwise. One line per change goes to the log. A standby
+# install, a start that gave the router back and a trial tune nothing.
 [ -n "$${IPKG_INSTROOT}" ] || { \
 	if [ -x /etc/uci-defaults/90_vectra_controller_pro_defaults ]; then \
 		/etc/uci-defaults/90_vectra_controller_pro_defaults >/dev/null 2>&1 || true; \
@@ -101,6 +114,10 @@ define Package/$(PKG_NAME)/postinst
 	else \
 		/etc/init.d/vectra-controller-pro start >/dev/null 2>&1 || true; \
 	fi; \
+	vctl="$${VCTL:-/usr/sbin/vctl}"; \
+	if [ -x "$$vctl" ] && /etc/init.d/vectra-controller-pro running >/dev/null 2>&1; then \
+		"$$vctl" tune apply 2>&1 | logger -t vectra-controller-pro; \
+	fi; \
 	exit 0; \
 }
 endef
@@ -112,10 +129,13 @@ define Package/$(PKG_NAME)/postrm
 # LuCI forget the menu entry. SIGHUP makes rpcd re-exec itself with its
 # sessions kept, so nobody is logged out of LuCI.
 #
-# vectra.lan goes with the package (the uci-defaults script added it) — on a
-# removal only. opkg runs the OLD package's postrm on every upgrade too, as
-# `postrm upgrade <version>` with PKG_UPGRADE=1 (libopkg/opkg_install.c), and
-# an upgrade keeps the name. So does the dead-man's block in root's crontab.
+# vectra.lan and my.vectra-pro.net go with the package (the uci-defaults
+# script added them) — on a removal only. opkg runs the OLD package's postrm
+# on every upgrade too, as `postrm upgrade <version>` with PKG_UPGRADE=1
+# (libopkg/opkg_install.c), and an upgrade keeps the names. So does the
+# dead-man's block in root's crontab.
+# And the tune's own sysctl file and backup: the prerm's `vctl tune undo`
+# took them already; whatever it could not goes here.
 [ -n "$${IPKG_INSTROOT}" ] || { \
 	rm -f /tmp/luci-indexcache* 2>/dev/null; \
 	rm -rf /tmp/luci-modulecache/ 2>/dev/null; \
@@ -129,13 +149,18 @@ define Package/$(PKG_NAME)/postrm
 			[ -x "$$cron" ] && "$$cron" running >/dev/null 2>&1 && "$$cron" restart >/dev/null 2>&1; \
 		fi; \
 		named=""; \
-		for s in $$(uci -q -X show dhcp 2>/dev/null | sed -n "s/^dhcp\.\([^.=]*\)\.interface_name=.*'vectra\.lan'.*/\1/p"); do \
-			uci -q del_list "dhcp.$$s.interface_name=vectra.lan" && named=1; \
+		for s in $$(uci -q -X show dhcp 2>/dev/null | sed -n "s/^dhcp\.\([^.=]*\)\.interface_name=.*/\1/p"); do \
+			for n in vectra.lan my.vectra-pro.net; do \
+				case " $$(uci -q get "dhcp.$$s.interface_name") " in \
+				*" $$n "*) uci -q del_list "dhcp.$$s.interface_name=$$n" && named=1 ;; \
+				esac; \
+			done; \
 		done; \
 		if [ -n "$$named" ] && uci -q commit dhcp; then \
 			dnsmasq="$${DNSMASQ_INIT:-/etc/init.d/dnsmasq}"; \
 			[ -x "$$dnsmasq" ] && "$$dnsmasq" running >/dev/null 2>&1 && "$$dnsmasq" reload >/dev/null 2>&1; \
 		fi; \
+		rm -f "$${TUNECONF:-/etc/sysctl.d/95-vectra-tune.conf}" "$${TUNEBACKUP:-/etc/vectra-controller-pro/tune-backup.json}"; \
 		memconf="$${MEMCONF:-/etc/sysctl.d/99-vectra-pro-memory.conf}"; \
 		if grep -q '^# vectra-controller-pro:' "$$memconf" 2>/dev/null; then \
 			rm -f "$$memconf"; \

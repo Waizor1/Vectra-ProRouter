@@ -4,17 +4,16 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/memguard"
 )
 
-// Validator runs `xray run -test -c <file>` against a candidate config.
+// Validator runs `xray run -test -c stdin:` against a candidate config.
 // It is the write gate: a document that Xray refuses is never installed, so
 // the previously-good config stays live.
 type Validator struct {
@@ -40,7 +39,8 @@ type Validator struct {
 // ErrLowMemory is wrapped by Test when there was too little memory to check.
 var ErrLowMemory = fmt.Errorf("too little free memory to check a configuration now")
 
-// Test writes candidate to a temp file and asks Xray to parse it.
+// Test sends candidate through a private stdin pipe and asks Xray to parse it.
+// Child output is discarded because parse errors may contain credentials.
 // Returns nil only when Xray reports the config is usable.
 func (v Validator) Test(ctx context.Context, candidate []byte) error {
 	if v.Binary == "" {
@@ -56,15 +56,6 @@ func (v Validator) Test(ctx context.Context, candidate []byte) error {
 				ErrLowMemory, memguard.MiB(in.AvailableKB), memguard.MiB(v.MemFloorKB))
 		}
 	}
-	dir, err := os.MkdirTemp("", "vctl-xray-test-")
-	if err != nil {
-		return fmt.Errorf("xray validate: tempdir: %w", err)
-	}
-	defer os.RemoveAll(dir)
-	path := filepath.Join(dir, "candidate.json")
-	if err := os.WriteFile(path, candidate, 0o600); err != nil {
-		return fmt.Errorf("xray validate: write candidate: %w", err)
-	}
 
 	timeout := v.Timeout
 	if timeout <= 0 {
@@ -73,27 +64,25 @@ func (v Validator) Test(ctx context.Context, candidate []byte) error {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, v.Binary, "run", "-test", "-c", path)
+	cmd := exec.CommandContext(runCtx, v.Binary, "run", "-test", "-c", "stdin:")
 	cmd.Env = config.XrayAssetEnv(os.Environ(), v.AssetDir)
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
+	cmd.Stdin = bytes.NewReader(candidate)
+	// Bound exec's stdin copier when a descendant retains the read end.
+	cmd.WaitDelay = 100 * time.Millisecond
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("xray validate: start %s: %w", v.Binary, err)
 	}
 	if v.OOMScoreAdj != 0 {
 		_ = memguard.SetOOMScoreAdj(cmd.Process.Pid, v.OOMScoreAdj)
 	}
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("xray validate: %s run -test rejected the config: %w: %s",
-			v.Binary, err, lastLines(out.String(), 800))
+	err := cmd.Wait()
+	// Even a successful child exit must not turn expired validation into success.
+	if runCtx.Err() != nil {
+		return fmt.Errorf("xray validate: check canceled or timed out: %w", runCtx.Err())
+	}
+	if err != nil {
+		return fmt.Errorf("xray validate: configuration rejected: %w", err)
 	}
 	return nil
-}
-
-func lastLines(s string, max int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= max {
-		return s
-	}
-	return "..." + s[len(s)-max:]
 }

@@ -66,6 +66,8 @@ type Applier struct {
 	// ProviderPath is where the last-good provider document is stored VERBATIM.
 	// Empty disables persistence (tests).
 	ProviderPath string
+	// SecretStorage selects authenticated at-rest storage for daemon-owned documents.
+	SecretStorage bool
 	// WriteXray atomically installs the spliced document (typically
 	// supervisor.Process.WriteXrayConfig).
 	WriteXray func(data []byte) error
@@ -151,7 +153,11 @@ func (a *Applier) Apply(ctx context.Context, providerRaw []byte, currentDigest s
 	res.Operations = append(res.Operations, Operation{Kind: "xray_test", Description: "xray accepted the spliced config"})
 
 	if a.ProviderPath != "" {
-		if err := config.SaveRaw(a.ProviderPath, providerRaw); err != nil {
+		save := config.SaveRaw
+		if a.SecretStorage {
+			save = config.SaveSecretRaw
+		}
+		if err := save(a.ProviderPath, providerRaw); err != nil {
 			return res, fmt.Errorf("apply: persist provider config: %w", err)
 		}
 		res.Operations = append(res.Operations, Operation{Kind: "persist_provider", Description: "persisted provider document verbatim"})

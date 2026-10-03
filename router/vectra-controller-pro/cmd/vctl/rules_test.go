@@ -126,7 +126,7 @@ func TestTheOwnersSitesAreKeptOnlyOnceTheyRun(t *testing.T) {
 	noRulesKey := d.st.SpliceKey
 	render := func() string {
 		t.Helper()
-		b, err := os.ReadFile(d.cfg.XrayRenderPath)
+		b, err := readEncryptedTestFile(t, d.cfg.XrayRenderPath)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -204,7 +204,7 @@ func TestTheOwnersSitesAreKeptOnlyOnceTheyRun(t *testing.T) {
 		t.Error("the location switch dropped the sites")
 	}
 	// And an unchanged document under unchanged options is still a no-op.
-	onDisk, _ := os.ReadFile(d.cfg.ProviderConfigPath)
+	onDisk, _ := readEncryptedTestFile(t, d.cfg.ProviderConfigPath)
 	if res, err := d.applyProvider(ctx, onDisk, false); err != nil || !res.Noop {
 		t.Errorf("an unchanged render was redone: %+v %v", res, err)
 	}

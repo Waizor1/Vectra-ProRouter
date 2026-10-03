@@ -26,7 +26,7 @@ type FactsEnv struct {
 func Facts(e FactsEnv) (Router, []string) {
 	p := func(rel string) string { return filepath.Join(e.Root, rel) }
 	var r Router
-	if st, err := state.Load(p("etc/vectra-controller-pro/state.json")); err == nil {
+	if st, err := state.LoadReadOnly(p("etc/vectra-controller-pro/state.json")); err == nil {
 		r.DeviceID = st.DeviceIdentifier
 	}
 	r.Vctl = field(p("usr/lib/opkg/info/vectra-controller-pro.control"), "Version:")
@@ -54,7 +54,7 @@ func Facts(e FactsEnv) (Router, []string) {
 			}
 		}
 	}
-	if c, err := config.Load(p("etc/vectra-controller-pro/xray-desired.json")); err == nil && c.Inbounds.Tproxy != nil {
+	if c, err := config.LoadSecret(p("etc/vectra-controller-pro/xray-desired.json")); err == nil && c.Inbounds.Tproxy != nil {
 		ks := c.Inbounds.Tproxy.KillSwitch
 		r.KillSwitch = &ks
 	}

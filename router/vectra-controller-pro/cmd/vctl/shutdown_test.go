@@ -50,7 +50,7 @@ func shutdownDaemon(t *testing.T) (*daemon, *recordedCmds, firewall.Spec) {
 		t.Fatal(err)
 	}
 	config.ApplyDefaults(cfg)
-	if err := config.Save(filepath.Join(dir, "operator.json"), cfg); err != nil {
+	if err := config.SaveSecret(filepath.Join(dir, "operator.json"), cfg); err != nil {
 		t.Fatal(err)
 	}
 	d.desired = cfg

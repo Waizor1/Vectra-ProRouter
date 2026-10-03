@@ -12,6 +12,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"vectra-controller-pro/internal/vault"
 )
 
 // EntriesCache is the provider's whole array from the last fetch. The entries
@@ -103,7 +105,8 @@ func SaveEntries(cachePath, indexPath string, c *EntriesCache) (bool, error) {
 	}
 	d := c.digest()
 	if idx, err := LoadEntriesIndex(indexPath); err == nil && idx.Digest == d && idx.SubscriptionID == c.SubscriptionID {
-		if _, err := os.Stat(cachePath); err == nil {
+		if raw, err := vault.ReadFile(cachePath); err == nil {
+			clear(raw)
 			// Same array: the half-megabyte cache is not rewritten, but the
 			// small index learns when it was last confirmed, which is what the
 			// UI shows as "updated".
@@ -118,6 +121,7 @@ func SaveEntries(cachePath, indexPath string, c *EntriesCache) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	defer clear(raw)
 	var gz bytes.Buffer
 	zw, _ := gzip.NewWriterLevel(&gz, gzip.BestCompression)
 	if _, err := zw.Write(raw); err != nil {
@@ -126,9 +130,10 @@ func SaveEntries(cachePath, indexPath string, c *EntriesCache) (bool, error) {
 	if err := zw.Close(); err != nil {
 		return false, err
 	}
+	defer func() { clear(gz.Bytes()) }()
 	// The cache first, the index second: an index never describes a cache
 	// that is not on disk yet.
-	if err := WriteFileAtomic(cachePath, gz.Bytes(), 0o600); err != nil {
+	if err := vault.WriteFile(cachePath, gz.Bytes()); err != nil {
 		return false, err
 	}
 	idx := EntriesIndex{SubscriptionID: c.SubscriptionID, FetchedAt: c.FetchedAt, Digest: d, Entries: Summarize(c)}
@@ -144,15 +149,16 @@ func SaveEntries(cachePath, indexPath string, c *EntriesCache) (bool, error) {
 
 // LoadEntries reads the full cache.
 func LoadEntries(cachePath string) (*EntriesCache, error) {
-	f, err := os.Open(cachePath)
+	data, err := vault.ReadFile(cachePath)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	zr, err := gzip.NewReader(f)
+	defer clear(data)
+	zr, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("localctl: %s: %w", cachePath, err)
 	}
+	defer zr.Close()
 	raw, err := io.ReadAll(io.LimitReader(zr, maxEntriesBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("localctl: %s: %w", cachePath, err)
@@ -168,6 +174,33 @@ func LoadEntries(cachePath string) (*EntriesCache, error) {
 		return nil, fmt.Errorf("localctl: %s holds %d entries and %d remarks", cachePath, len(c.Entries), len(c.Remarks))
 	}
 	return c, nil
+}
+
+// MigrateEntries validates the legacy gzip container before sealing it.
+func MigrateEntries(path string) error {
+	return vault.MigrateFile(path, func(data []byte) error {
+		zr, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		defer zr.Close()
+		raw, err := io.ReadAll(io.LimitReader(zr, maxEntriesBytes+1))
+		if err != nil {
+			return err
+		}
+		defer clear(raw)
+		if len(raw) > maxEntriesBytes {
+			return errors.New("entries cache too large")
+		}
+		c, err := decodeEntries(raw)
+		if err != nil {
+			return err
+		}
+		if len(c.Entries) == 0 || len(c.Entries) != len(c.Remarks) {
+			return errors.New("invalid entries cache")
+		}
+		return nil
+	})
 }
 
 // The cache container keeps every entry's bytes EXACTLY as the provider sent

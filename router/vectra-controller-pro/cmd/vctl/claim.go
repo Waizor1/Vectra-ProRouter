@@ -172,13 +172,30 @@ func (d *daemon) adoptClaimInfo(ctx context.Context, info controlplane.ClaimInfo
 			logging.L().Warn("the panel sent an owner the router cannot read", "err", err.Error())
 			return false
 		}
+		if owner != nil && owner.OwnerRef != "" && !connectOwnerPattern.MatchString(owner.OwnerRef) {
+			owner.OwnerRef = ""
+		}
 		if owner != nil && utf8.RuneCountInString(owner.Label) > 64 {
 			owner.Label = string([]rune(owner.Label)[:64])
+		}
+		previous := d.connectBinding().OwnerRef
+		next := ""
+		if owner != nil {
+			next = owner.OwnerRef
+		}
+		if previous != next {
+			if previous != "" {
+				d.release(ctx)
+				released = true
+			}
+			if err := connectForgetWifiOwner(d.cfg); err != nil {
+				logging.L().Warn("connect Wi-Fi eligibility unavailable")
+			}
 		}
 		d.st.ClaimOwner = owner
 		d.claim.setOwner(owner)
 	}
-	return false
+	return released
 }
 
 // botUsername: what Telegram allows in a username, so it can go into a link

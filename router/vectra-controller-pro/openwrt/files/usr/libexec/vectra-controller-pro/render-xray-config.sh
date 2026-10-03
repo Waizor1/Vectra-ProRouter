@@ -127,6 +127,11 @@ exit_check_every="$(uci_get_or_default exit_check_every "")"
 # (/etc/config/vectra_route, imported from PassWall2's once), generated and
 # kept current by vctl, with no PassWall2 on the router.
 route_source="$(uci_get_or_default route_source provider)"
+# PassWall2 goes from the router once vctl has carried its traffic, switched
+# on for good, for passwall_retire_after seconds (a day by default), unless
+# retire_passwall is '0' (internal/retire).
+retire_passwall="$(uci_get_or_default retire_passwall 1)"
+passwall_retire_after="$(uci_get_or_default passwall_retire_after "")"
 
 mkdir -p "$(dirname "$OUTPUT_PATH")"
 
@@ -187,6 +192,10 @@ case "$exit_check_every" in '' | *[!0-9]*) ;; *) json_add_int exitCheckEverySec 
 case "$route_source" in
 passwall|native) json_add_string routeSource "$route_source" ;;
 esac
+if [ "$retire_passwall" = "0" ] || [ "$retire_passwall" = "false" ]; then
+	json_add_boolean noRetirePassWall 1
+fi
+case "$passwall_retire_after" in '' | *[!0-9]*) ;; *) json_add_int passWallRetireAfterSec "$passwall_retire_after" ;; esac
 
 json_add_object jobSafety
 json_add_int heavyMemoryFloorMb "$job_safety_heavy_memory_floor_mb"

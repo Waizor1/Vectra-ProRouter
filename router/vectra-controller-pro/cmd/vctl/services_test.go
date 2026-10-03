@@ -9,6 +9,7 @@ import (
 
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/uiapi"
+	"vectra-controller-pro/internal/vault"
 )
 
 // A server per service: `vctl rpcd` answers what the running entry offers
@@ -44,7 +45,7 @@ func svcStand(t *testing.T) *lockStand {
 	s := newLockStand(t)
 	fakeGather(t)
 	fakeUILock(t, "0", nil)
-	if err := os.WriteFile(s.cfg.XrayRenderPath, []byte(svcRunning), 0o600); err != nil {
+	if err := vault.WriteFile(s.cfg.XrayRenderPath, []byte(svcRunning)); err != nil {
 		t.Fatal(err)
 	}
 	return s
@@ -119,7 +120,9 @@ func TestTheServicesAnswerIsWhatTheRouterRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := rpcdCall(context.Background(), s.cfg, "services", nil).(uiapi.Services)
-	if !got.Available || len(got.Services) != 3 {
+	// youtube, tiktok, telegram and «Нейросети» (ai), whose AI rule this
+	// fixture's provider does not have: offered no country.
+	if !got.Available || len(got.Services) != 4 || got.Services[3].ID != "ai" || len(got.Services[3].Countries) != 0 {
 		t.Fatalf("services = %+v", got)
 	}
 	str := func(p *string) string {
@@ -138,6 +141,7 @@ func TestTheServicesAnswerIsWhatTheRouterRuns(t *testing.T) {
 		"youtube ∅ RU BY/DE/RU - -",
 		"tiktok DE BY BY/DE/RU active -",
 		"telegram NL BY BY/DE/RU - stale",
+		"ai ∅ ∅  - -",
 	}
 	if !reflect.DeepEqual(rows, want) {
 		t.Fatalf("rows:\n%s\nwant:\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
@@ -164,7 +168,7 @@ const svcNoTikTok = `{"outbounds":[
 // that is not running.
 func TestAChoiceTheRouterDoesNotRunIsStale(t *testing.T) {
 	s := svcStand(t)
-	if err := os.WriteFile(s.cfg.XrayRenderPath, []byte(svcNoTikTok), 0o600); err != nil {
+	if err := vault.WriteFile(s.cfg.XrayRenderPath, []byte(svcNoTikTok)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := localctl.UpdateOverrides(s.cfg.OverridesPath, func(o *localctl.Overrides) error {

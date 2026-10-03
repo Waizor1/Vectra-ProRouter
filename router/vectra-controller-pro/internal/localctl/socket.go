@@ -23,6 +23,9 @@ const (
 	OpRuntime     = "runtime"      // read the daemon's live state
 	OpReapply     = "reapply"      // re-render from the cache under the current overrides
 	OpRestartXray = "restart_xray" // restart xray on the installed config
+	// OpRetirePassWall takes PassWall2 off the router now, when every
+	// condition holds (`vctl retire-passwall`, internal/retire).
+	OpRetirePassWall = "retire_passwall"
 )
 
 // SocketRequest is one call.
@@ -33,6 +36,9 @@ type SocketRequest struct {
 	// queued when the caller gives up waiting, never sits on disk as a choice
 	// the router is not running.
 	Change *Change `json:"change,omitempty"`
+	// Now is OpRetirePassWall's --now: the stability window is not waited
+	// out; every other condition still holds.
+	Now bool `json:"now,omitempty"`
 }
 
 // Change is one edit to the router's local choices.
@@ -54,18 +60,25 @@ type Change struct {
 type ServiceChoice struct {
 	ID      string `json:"id"`
 	Country string `json:"country"`
+	EntryID string `json:"entryId,omitempty"`
+	// MainPath is the Vectra app's «as the main VPN» (entryId null): for a
+	// service with a default location (ServicesWithDefault) it is kept as a
+	// choice; a choice merely cleared (the router UI's «default») is not.
+	MainPath bool `json:"mainPath,omitempty"`
 }
 
 // Rules are the owner's own sites ("My sites"): Direct always without the
 // VPN, Proxy always through it.
 type Rules struct {
-	Direct []string `json:"direct"`
-	Proxy  []string `json:"proxy"`
+	Connect bool     `json:"connect,omitempty"`
+	Direct  []string `json:"direct"`
+	Proxy   []string `json:"proxy"`
 }
 
 // EntryChoice names a location by remark, and by index to tell apart two
 // locations the provider gave the same remark.
 type EntryChoice struct {
+	Digest string `json:"digest,omitempty"`
 	Remark string `json:"remark"`
 	Index  int    `json:"index"`
 }
@@ -77,20 +90,38 @@ func (c Change) TouchesEntry() bool { return c.SetEntry != nil || c.ResetEntry }
 func (c Change) ApplyTo(o *Overrides) {
 	switch {
 	case c.SetEntry != nil:
+		o.EntryDigest = c.SetEntry.Digest
 		o.EntryRemark = c.SetEntry.Remark
 		i := c.SetEntry.Index
 		o.EntryIndex = &i
 	case c.ResetEntry:
+		o.EntryDigest = ""
 		o.EntryRemark, o.EntryIndex = "", nil
 	}
 	if c.ProbeIntervalSec != nil {
 		o.ProbeIntervalSec = *c.ProbeIntervalSec
 	}
 	if c.SetRules != nil {
+		o.ConnectRules = c.SetRules.Connect
 		o.Direct = append([]string(nil), c.SetRules.Direct...)
 		o.Proxy = append([]string(nil), c.SetRules.Proxy...)
 	}
 	if s := c.SetService; s != nil {
+		delete(o.ServiceEntries, s.ID)
+		if s.MainPath && s.EntryID == "" && s.Country == "" && ServicesWithDefault[s.ID] {
+			// «As the main VPN» for a service with a default location is a
+			// choice: kept, so the default does not come back.
+			if o.ServiceEntries == nil {
+				o.ServiceEntries = map[string]string{}
+			}
+			o.ServiceEntries[s.ID] = ServiceMainPath
+		}
+		if s.EntryID != "" {
+			if o.ServiceEntries == nil {
+				o.ServiceEntries = map[string]string{}
+			}
+			o.ServiceEntries[s.ID] = s.EntryID
+		}
 		if s.Country == "" {
 			delete(o.Services, s.ID)
 		} else {
@@ -139,6 +170,14 @@ type Runtime struct {
 	// failover watchdog last saw it; nil before its first look.
 	Route *Route `json:"route,omitempty"`
 }
+
+// ServiceMainPath in Overrides.ServiceEntries is the owner's «as the main
+// VPN» for a service that has a default location of its own.
+const ServiceMainPath = "main"
+
+// ServicesWithDefault are the services routed through a location of their
+// own unless the owner chose otherwise («Нейросети»: Kazakhstan).
+var ServicesWithDefault = map[string]bool{"ai": true}
 
 // Claim is the code the router shows now, ready for the UI.
 type Claim struct {

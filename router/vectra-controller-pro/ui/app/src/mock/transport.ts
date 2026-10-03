@@ -2,10 +2,10 @@
 // tests. It answers with the contract fixtures, waits like a small router, and
 // applies mutations so every flow can be exercised without hardware.
 
-import type { Action, CallFn, Holder, ReadData, ReadMethod, WifiRadio, WifiScanRadio } from '../api/types';
+import type { Action, CallFn, Holder, ReadData, ReadMethod, SetPasswordFn, Setup, WifiRadio, WifiScanRadio, WifiVerdict } from '../api/types';
 import { FIXTURE_NOW, FIXTURES } from './fixtures';
 import { normalizeSite } from '../lib/sites';
-import { buildWorld, clone, off, type Scenario } from './scenarios';
+import { buildWorld, clone, off, wifiAs, type Scenario, type WifiAs } from './scenarios';
 
 export interface MockOptions {
   scenario?: Scenario;
@@ -25,10 +25,16 @@ export interface MockOptions {
   wifiEnd?: 'unverified' | 'failed';
   /** Who carries the traffic in the `off` scenario (PassWall2 unless said). */
   holder?: Holder;
+  /** LuCI's password change does not take it (`refused`), refuses the session (`denied`), or the connection drops (`offline`). */
+  passwordFails?: 'refused' | 'denied' | 'offline';
+  /** The Wi-Fi as an owner may have it (scenarios.ts, `wifiAs`): the wizard's verdicts. */
+  wifi?: WifiAs;
 }
 
 export interface Mock {
   call: CallFn;
+  /** LuCI's own password change (the LuCI view hands the app `luci.setPassword`): the router then has one. */
+  setPassword: SetPasswordFn;
   dispose(): void;
 }
 
@@ -45,6 +51,26 @@ function allowed(r: WifiRadio): number[] {
   const low = [36, 40, 44, 48];
   const width = r.width ?? 20;
   return width >= 160 ? low : width >= 40 ? [...low, 149, 153, 157, 161] : [...low, 149, 153, 157, 161, 165];
+}
+
+/**
+ * The wizard's verdict as the router gives it (contract: setup, `wifi.verdict`),
+ * judged at every read: of the radios that are on, one not up or 2.4 GHz off
+ * 1/6/11 is `boost`; 5 GHz on a channel the rules refuse is `manual`; else
+ * `fine`. A mesh radio's channel is never judged. The mock knows no driver
+ * power list: the power counts as fine.
+ */
+export function wifiVerdict(w: Setup['wifi']): WifiVerdict | null {
+  if (w.tunable === false) return null;
+  let v: WifiVerdict = 'fine';
+  for (const r of w.radios) {
+    if (r.enabled !== true) continue;
+    if (r.up === false) return 'boost';
+    if (r.mesh === true || r.auto === true || r.channel === null) continue;
+    if (r.band === '2g' && [1, 6, 11].indexOf(r.channel) < 0) return 'boost';
+    if (r.band === '5g' && allowed(r).indexOf(r.channel) < 0) v = 'manual';
+  }
+  return v;
 }
 
 /** The channel the router picks from what it heard: the least shared; a near tie keeps the current block. */
@@ -117,6 +143,7 @@ export function createMock(opts: MockOptions = {}): Mock {
   const born = Date.now();
   const built = buildWorld(scenario, opts.holder);
   if (built) built.status.ui = { locked: !!opts.locked };
+  if (built && opts.wifi) wifiAs(built, opts.wifi);
   // Live mode moves the fixture router's clock to the moment the page opened;
   // from then on its data ages naturally.
   const world = built && live ? shiftTimes(built, born - FIXTURE_NOW) : built;
@@ -228,6 +255,10 @@ export function createMock(opts: MockOptions = {}): Mock {
       if (m === 'diagnostics') w.diagnostics.checkedAt = iso(t);
     }
     const data = clone(w[m]);
+    if (m === 'setup') {
+      const wifi = (data as ReadData['setup']).wifi;
+      wifi.verdict = wifiVerdict(wifi);
+    }
     if (m === 'status' && live) {
       const s = data as ReadData['status'];
       const up = (Date.now() - born) / 1000;
@@ -422,7 +453,7 @@ export function createMock(opts: MockOptions = {}): Mock {
             const was = beforeOff ?? clone(live ? shiftTimes(FIXTURES, born - FIXTURE_NOW) : FIXTURES);
             beforeOff = null;
             Object.assign(w, { balancers: was.balancers, nodes: was.nodes, entries: was.entries, diagnostics: was.diagnostics });
-            w.status = { ...was.status, ui: s.ui, legacy: { agentEnabled: false, passwallRunning: false } };
+            w.status = { ...was.status, ui: s.ui, legacy: { ...was.status.legacy, agentEnabled: false, passwallRunning: false } };
             w.status.power = { enabled: true, running: true, holder: 'vectra', handBack: back === 'passwall2' || back === 'agent' ? back : 'direct' };
             // xray has just started.
             engineBase = 0;
@@ -435,6 +466,14 @@ export function createMock(opts: MockOptions = {}): Mock {
           }
         });
         return ok('pending');
+      }
+      // Like `vctl rpcd`: uci set + commit, nothing restarts; the next job reads it.
+      case 'set_remote_shell': {
+        const on = p.on;
+        if (typeof on !== 'boolean' || Object.keys(p).some((k) => k !== 'on')) return fail('invalid_params', 'params must be {"on": true} or {"on": false}');
+        s.remoteShell = on;
+        log(on ? 'support shell on' : 'support shell off');
+        return ok('remote_shell_set');
       }
       case 'set_service': {
         if (typeof p.id !== 'string' || typeof p.country !== 'string') return fail('invalid_params', 'id and country are both required; "" is the entry\'s own path');
@@ -499,8 +538,23 @@ export function createMock(opts: MockOptions = {}): Mock {
     return mutate(method, params || {});
   };
 
+  // LuCI's, not vctl's: it works on a router whose Vectra plugin is missing too.
+  const setPassword: SetPasswordFn = async (password) => {
+    await wait();
+    if (opts.passwordFails === 'denied') {
+      const e = new Error('RPC call to luci/setPassword failed with ubus code 6: Permission denied');
+      e.name = 'RPCError';
+      throw e;
+    }
+    if (opts.passwordFails === 'offline') throw new Error('XHR request aborted by browser');
+    if (opts.passwordFails === 'refused' || !password) return false;
+    if (world) world.setup.passwordSet = true;
+    return true;
+  };
+
   return {
     call,
+    setPassword,
     dispose() {
       timers.forEach((id) => clearTimeout(id));
       timers.clear();

@@ -4,25 +4,34 @@
 // here asks for what the router does by itself (the internet connection is
 // its own), nothing says "done" before the router shows it, and nothing leaves
 // a person without a way forward: every step can be skipped, and the wizard
-// closes even when the router could not note that it was finished.
+// closes even when the router could not note that it was finished. One
+// exception: a router without a password — anyone on the LAN can open its
+// settings — gets that step first, and no way past it until it has one.
 
 import { createContext, type ComponentChildren } from 'preact';
 import { useContext, useEffect, useRef, useState } from 'preact/hooks';
-import type { Entry, Setup as SetupData, Status, WanCheck, WifiRadio, WifiScanRadio } from '../api/types';
+import type { Entry, Setup as SetupData, Status, Tune, WanCheck, WifiRadio, WifiScanRadio } from '../api/types';
 import { useApp, useRes } from '../app/ctx';
 import type { Key } from '../i18n';
 import { parseTime } from '../lib/format';
 import { hasSubscription } from '../lib/health';
 import { face, groupServers } from '../lib/servers';
 import { copyText } from '../lib/storage';
+import { tuneInPlace, tuneWords } from '../lib/tune';
 import { Icon, type IconName } from '../ui/icons';
-import { Button, Note, Skeleton, Spinner } from '../ui/kit';
+import { Button, Field, Note, Skeleton, Spinner } from '../ui/kit';
 import { Qr } from '../ui/Qr';
 import { around, SLOT } from './Nodes';
+import { PasswordFields, usePasswordForm } from './Password';
 
-export type StepId = 'internet' | 'wifi' | 'vectra' | 'server';
+export type StepId = 'password' | 'internet' | 'wifi' | 'vectra' | 'server';
+/** The steps every router goes through; one without a password starts with that (WITH_PW). */
 export const STEPS: readonly StepId[] = ['internet', 'wifi', 'vectra', 'server'];
+const WITH_PW: readonly StepId[] = ['password', ...STEPS];
 export type Screen = 'welcome' | StepId | 'done';
+
+/** The wizard asks for a password: the router has none, and the page can set one (LuCI's change). */
+const asksPassword = (s: SetupData, canSet: boolean) => canSet && s.passwordSet === false;
 
 /** The router reaches the outside world: the internet probe answered, or at least the panel did. */
 export const online = (w: WanCheck | null | undefined) => !!w && (w.internet === true || w.panel === true);
@@ -40,6 +49,8 @@ const configured = (s: SetupData, st: Status | null | undefined) => s.vectra.lin
 /** Is this step fine as it is? The internet is confirmed live by wan_check; the link by a subscription in `status`. */
 export function stepOk(s: SetupData, id: StepId, wan?: WanCheck | null, st?: Status | null): boolean {
   switch (id) {
+    case 'password':
+      return s.passwordSet !== false;
     case 'internet':
       return wan ? online(wan) : !!s.wan.ipv4;
     case 'wifi':
@@ -52,19 +63,26 @@ export function stepOk(s: SetupData, id: StepId, wan?: WanCheck | null, st?: Sta
   }
 }
 
-/** The wizard opens by itself only on a router that was never set up and still misses something. */
-export const needsSetup = (s: SetupData | null) => !!s && s.done === false && STEPS.some((id) => !stepOk(s, id));
+/**
+ * The wizard opens by itself only on a router that was never set up and still
+ * misses something — a password among it, where the page can set one.
+ */
+export const needsSetup = (s: SetupData | null, canSetPassword = false) =>
+  !!s && s.done === false && (asksPassword(s, canSetPassword) || STEPS.some((id) => !stepOk(s, id)));
 
-const ICON: Record<StepId, IconName> = { internet: 'globe', wifi: 'wifi', vectra: 'shield', server: 'server' };
+const ICON: Record<StepId, IconName> = { password: 'lock', internet: 'globe', wifi: 'wifi', vectra: 'shield', server: 'server' };
 
 /**
  * A step's badge: what the router shows, in so many words — the internet
- * works, the Wi-Fi runs at full power, the subscription is on the router.
+ * works, the Wi-Fi runs at full power (or works, with more to get), the
+ * subscription is on the router.
  */
 function badge(s: SetupData, id: StepId, ok: boolean, wan: WanCheck | null, st: Status | null): Key {
+  if (id === 'password') return ok ? 'w.ok.pw' : 'w.pw.todo';
   if (id === 'internet') return ok ? 'w.works' : !wan ? 'w.checking' : wan.link === false ? 'w.nocable' : 'w.noinet';
-  if (!ok) return 'w.todo';
-  if (id === 'wifi') return !s.wifi.radios.some(hasAp) ? 'w.ok.noWifi' : s.wifi.tunable === false ? 'w.ok.wifiSet' : 'w.ok.wifi';
+  if (!ok) return id === 'wifi' && wifiMore(s.wifi) ? 'w.more' : 'w.todo';
+  // "At full power" only where the tuning is in place; a working Wi-Fi of the owner's own is "set up".
+  if (id === 'wifi') return !s.wifi.radios.some(hasAp) ? 'w.ok.noWifi' : s.wifi.tunable !== false && s.wifi.tuned === true ? 'w.ok.wifi' : 'w.ok.wifiSet';
   if (id === 'vectra') return st && hasSubscription(st) ? 'w.ok.sub' : 'w.ok.linked';
   return 'w.ok.server';
 }
@@ -86,16 +104,20 @@ export function useLate(on: boolean, ms: number, key?: unknown): boolean {
   return late;
 }
 
-function Stepper({ s, st, at, wan, go }: { s: SetupData; st: Status | null; at: Screen; wan: WanCheck | null; go: (to: StepId) => void }) {
+function Stepper(p: { s: SetupData; st: Status | null; at: Screen; wan: WanCheck | null; steps: readonly StepId[]; go: (to: StepId) => void }) {
+  const { s, st, at, wan, go } = p;
   const { t, pending } = useApp();
+  // No step past the password until there is one.
+  const shut = p.steps[0] === 'password' && !stepOk(s, 'password');
   return (
     <ol class="wz-steps" aria-label={t('w.steps')}>
-      {STEPS.map((id, i) => {
+      {p.steps.map((id, i) => {
         const ok = stepOk(s, id, wan, st);
         const on = at === id;
+        const locked = shut && id !== 'password';
         return (
-          <li key={id} class={(on ? 'on ' : '') + (ok ? 'ok' : '')}>
-            <button type="button" aria-current={on ? 'step' : undefined} disabled={!!pending} onClick={() => go(id)}>
+          <li key={id} class={(on ? 'on ' : '') + (ok ? 'ok' : '') + (locked ? ' shut' : '')}>
+            <button type="button" aria-current={on ? 'step' : undefined} disabled={!!pending || locked} onClick={() => go(id)}>
               <i aria-hidden="true">{ok ? <Icon name="ok" size={14} /> : i + 1}</i>
               <span>{t(('w.step.' + id) as Key)}</span>
               <span class="sr">: {t(badge(s, id, ok, wan, st))}</span>
@@ -115,7 +137,8 @@ const WzNav = createContext<{ back?: () => void; skip?: () => void }>({});
  * saves, as the button does. Its foot holds every way on — "Back" on the left,
  * "Skip this step" and the step's own buttons on the right — and stays in
  * reach while a long step scrolls. A card with its own "Next" (`onward`)
- * needs no "Skip" beside it: both would lead to the same place.
+ * needs no "Skip" beside it: both would lead to the same place. `busy`: the
+ * step's own work is under way, and the way off waits for it.
  */
 function Frame(p: {
   icon: IconName;
@@ -125,6 +148,7 @@ function Frame(p: {
   foot: ComponentChildren;
   onSubmit?: () => void;
   onward?: boolean;
+  busy?: boolean;
 }) {
   const { t, pending } = useApp();
   const nav = useContext(WzNav);
@@ -136,12 +160,12 @@ function Frame(p: {
       {main || nav.back || skip ? (
         <div class="wz-foot wz-bar">
           {nav.back ? (
-            <Button kind="g" small class="wz-back" disabled={!!pending} onClick={nav.back}>
+            <Button kind="g" small class="wz-back" disabled={!!pending || p.busy} onClick={nav.back}>
               {t('w.back')}
             </Button>
           ) : null}
           {skip ? (
-            <Button kind="g" small class="wz-skip" disabled={!!pending} onClick={skip}>
+            <Button kind="g" small class="wz-skip" disabled={!!pending || p.busy} onClick={skip}>
               {t('w.skipStep')}
             </Button>
           ) : null}
@@ -179,33 +203,30 @@ function Frame(p: {
   );
 }
 
-function Field(p: { id: string; label: string; value: string; onInput: (v: string) => void; type?: string; error?: string | null; hint?: string; auto?: string }) {
-  return (
-    <div class="fld">
-      <label for={p.id}>{p.label}</label>
-      <input
-        id={p.id}
-        class="in"
-        type={p.type || 'text'}
-        value={p.value}
-        autoComplete={p.auto || 'off'}
-        autoCapitalize="none"
-        spellcheck={false}
-        aria-invalid={p.error ? true : undefined}
-        aria-describedby={p.error || p.hint ? p.id + '-h' : undefined}
-        onInput={(e) => p.onInput((e.currentTarget as HTMLInputElement).value)}
-      />
-      {p.error ? (
-        <span id={p.id + '-h'} class="fld-err" role="alert">
-          {p.error}
-        </span>
-      ) : p.hint ? (
-        <span id={p.id + '-h'} class="hint">
-          {p.hint}
-        </span>
-      ) : null}
-    </div>
-  );
+/** An IPv4 address, dotted: the only thing put in a link to the router's own address. */
+const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+
+/**
+ * Where this page opens. dnsmasq answers the router's names on the LAN, Vectra
+ * on or off: my.vectra-pro.net first — a browser opens a real top-level
+ * domain as an address — then vectra.lan as it must be typed (a bare
+ * `vectra.lan` is a search to a browser). A device with a VPN app or a
+ * private DNS asks neither of the router: the router's own address, which
+ * always works, when the router says it. `links`: each is a link.
+ */
+export function WayIn({ ip, links }: { ip: string | null | undefined; links?: boolean }) {
+  const { t } = useApp();
+  const addr = ip && IPV4.test(ip) ? ip : null;
+  const at = (text: string, host: string) =>
+    links ? (
+      <a class="lnk" href={'http://' + host + '/'}>
+        {text}
+      </a>
+    ) : (
+      <b class="nw">{text}</b>
+    );
+  const names = [at('my.vectra-pro.net', 'my.vectra-pro.net'), at('http://vectra.lan', 'vectra.lan')];
+  return addr ? around(t('s.lanIp', { a: SLOT, b: SLOT, ip: SLOT }), ...names, at(addr, addr)) : around(t('s.lan', { a: SLOT, b: SLOT }), ...names);
 }
 
 /** The way to Vectra's support: the bot the router knows (from the panel, or set when the box was prepared). */
@@ -223,6 +244,39 @@ function Support({ bot }: { bot: string | null }) {
 }
 
 // ── the steps ───────────────────────────────────────────────────────────────
+
+const PW_IDS = ['vx-pw-1', 'vx-pw-2'] as const;
+
+// The router's password, on a router that has none: out of the box anyone on
+// the LAN can open its settings. The one step that cannot be skipped; once
+// LuCI has the password it says plainly what changes from now on.
+function Password({ s, saved, onSaved, next }: { s: SetupData; saved: boolean; onSaved: () => void; next: () => void }) {
+  const { t, pending } = useApp();
+  const f = usePasswordForm(PW_IDS, onSaved);
+  if (saved || s.passwordSet !== false) {
+    return (
+      <Frame icon="ok" tone="ok" title={t(saved ? 'pw.saved.t' : 'pw.set.t')} foot={<Button kind="p" icon="arrow" onClick={next}>{t('w.next')}</Button>} onward>
+        <p>{t(saved ? 'pw.saved.d' : 'pw.set.d')}</p>
+      </Frame>
+    );
+  }
+  return (
+    <Frame
+      icon="lock"
+      title={t('pw.t')}
+      onSubmit={f.save}
+      busy={f.busy}
+      foot={
+        <Button kind="p" icon="lock" type="submit" busy={f.busy} disabled={!!pending}>
+          {t('pw.save')}
+        </Button>
+      }
+    >
+      <p class="lede">{t('pw.d')}</p>
+      <PasswordFields f={f} ids={PW_IDS} />
+    </Frame>
+  );
+}
 
 // The internet is the router's own business: it connects to the provider by
 // itself, so this step has nothing to fill in. It watches, says when the cable
@@ -301,18 +355,36 @@ const hasAp = (r: WifiRadio) => r.ap === true;
 const UNSETTLED = ['applying', 'partial', 'failed'];
 
 /**
+ * The router suggests the boost: its verdict says there is more to get (a band
+ * down, 2.4 GHz on a channel that overlaps). A router older than the verdict
+ * says only whether its own tuning is in place (`tuned`).
+ */
+export const moreToGet = (w: SetupData['wifi']) => (w.verdict != null ? w.verdict === 'boost' : w.tuned !== true);
+
+/**
+ * The Wi-Fi works — a network is on, and every one that is on has a password —
+ * and the router sees more to get (its verdict `boost`): a suggestion, not a
+ * step left undone.
+ */
+export function wifiMore(w: SetupData['wifi']): boolean {
+  const on = w.radios.filter((r) => hasAp(r) && r.enabled === true);
+  return w.tunable !== false && w.verdict === 'boost' && on.length > 0 && on.every((r) => r.secured === true);
+}
+
+/**
  * The Wi-Fi is set up: at least one network is on, every network that is on
- * has a password, where the router can tune it it says every band runs at full
- * power on a fixed channel (`tuned`), and the last change came back whole — no
- * restart still under way, no band left down. A router without an access point
- * has nothing to set up here.
+ * has a password, where the router can tune it its verdict suggests no boost —
+ * a working setup of the owner's own is set up, whatever its country, channel
+ * or power — and the last change came back whole — no restart still under way,
+ * no band left down. A router without an access point has nothing to set up
+ * here.
  */
 export function wifiOk(w: SetupData['wifi']): boolean {
   const aps = w.radios.filter(hasAp);
   if (!aps.length) return true;
   const on = aps.filter((r) => r.enabled === true);
   if (!on.length || !on.every((r) => r.secured === true)) return false;
-  if (w.tunable !== false && w.tuned !== true) return false;
+  if (w.tunable !== false && moreToGet(w)) return false;
   if (w.apply && UNSETTLED.indexOf(w.apply.state ?? '') >= 0) return false;
   return !on.some((r) => r.up === false);
 }
@@ -358,11 +430,15 @@ function Heard({ scan, r }: { scan: WifiScanRadio; r: WifiRadio }) {
   );
 }
 
-/** One band as it is now, before the boost. */
-function BandCard({ r, tunable, heard, ago }: { r: WifiRadio; tunable: boolean; heard: WifiScanRadio | undefined; ago: string | null }) {
+/**
+ * One band as it is now, before the boost. `ok`: the Wi-Fi works as it is —
+ * its power is said as it is, not as the boost would set it.
+ */
+function BandCard({ r, tunable, ok, heard, ago }: { r: WifiRadio; tunable: boolean; ok: boolean; heard: WifiScanRadio | undefined; ago: string | null }) {
   const { t } = useApp();
   const channel = r.auto === true || r.channel === null ? t('w.wifi.chAuto') : String(r.channel);
   const full = r.maxPower === true && r.country === 'PA';
+  const power: Key = full ? 'w.wifi.powerMax' : !ok ? 'w.wifi.powerUp' : r.maxPower === false ? 'w.wifi.powerOwn' : 'w.wifi.powerOk';
   const state =
     r.enabled !== true ? t(r.secured !== true ? 'w.wifi.offOpen' : 'w.wifi.off') : r.up === false ? t('w.wifi.down') : r.mesh === true ? t('w.wifi.mesh') : null;
   return (
@@ -391,7 +467,7 @@ function BandCard({ r, tunable, heard, ago }: { r: WifiRadio; tunable: boolean; 
         {tunable ? (
           <div>
             <dt>{t('w.wifi.power')}</dt>
-            <dd>{t(full ? 'w.wifi.powerMax' : 'w.wifi.powerUp')}</dd>
+            <dd>{t(power)}</dd>
           </div>
         ) : null}
       </dl>
@@ -672,12 +748,31 @@ function Wifi({ s, next, result, onResult }: { s: SetupData; next: () => void; r
   const set = (id: string, k: keyof Net) => (v: string) =>
     id === 'all' ? setShared((p) => ({ ...p, [k]: v })) : setPer((p) => ({ ...p, [id]: { ...p[id], [k]: v } }));
   const last = s.wifi.apply?.state;
+  // How the Wi-Fi is, in the router's words: its own tuning in place, a working
+  // setup of the owner's (fine, or theirs by hand), or more to get — a band down,
+  // 2.4 GHz on a channel that overlaps, or on 12-13 that some devices do not
+  // see. The boost is in reach whatever it says.
+  const tuned = s.wifi.tuned === true;
+  const manual = s.wifi.verdict === 'manual';
+  const more = wifiMore(s.wifi);
+  const down = radios.find((r) => r.enabled === true && r.up === false);
+  const odd = radios.find((r) => r.enabled === true && r.band === '2g' && r.mesh !== true && r.auto !== true && r.channel !== null && [1, 6, 11].indexOf(r.channel) < 0);
+  const title: Key = !tunable ? 'w.wifi.t' : ok ? (tuned ? 'w.wifi.tuned' : manual ? 'w.wifi.manual' : 'w.wifi.fine') : more ? 'w.wifi.more' : 'w.wifi.boost.t';
+  const lede = !tunable
+    ? t('w.wifi.untunable')
+    : ok
+      ? t(tuned ? 'w.wifi.tuned.d' : manual ? 'w.wifi.manual.d' : 'w.wifi.fine.d')
+      : more && down
+        ? t('w.wifi.more.down', { band: bandName(t, down.band) })
+        : more && odd
+          ? t(odd.channel! > 11 ? 'w.wifi.more.edge' : 'w.wifi.more.ch', { ch: odd.channel! })
+          : t('w.wifi.boost.d');
 
   return (
     <Frame
       icon={ok ? 'ok' : 'wifi'}
       tone={ok ? 'ok' : 'info'}
-      title={t(!tunable ? 'w.wifi.t' : ok ? 'w.wifi.tuned' : 'w.wifi.boost.t')}
+      title={t(title)}
       onSubmit={() => void save(!ok)}
       onward={ok && !edit}
       foot={
@@ -685,7 +780,7 @@ function Wifi({ s, next, result, onResult }: { s: SetupData; next: () => void; r
           <>
             {tunable ? (
               <Button icon="wifi" onClick={() => void save(true)} busy={pending === 'wifi'} disabled={!!pending}>
-                {t('w.wifi.again')}
+                {t(tuned ? 'w.wifi.again' : 'w.wifi.boost')}
               </Button>
             ) : null}
             <Button kind="p" icon="arrow" onClick={next}>
@@ -712,11 +807,11 @@ function Wifi({ s, next, result, onResult }: { s: SetupData; next: () => void; r
         )
       }
     >
-      <p class="lede">{t(!tunable ? 'w.wifi.untunable' : ok ? 'w.wifi.tuned.d' : 'w.wifi.boost.d')}</p>
+      <p class="lede">{lede}</p>
       {last === 'rolled_back' ? <Note tone="warn">{t('w.wifi.lastBack')}</Note> : last === 'partial' || last === 'failed' ? <Note tone="warn">{t(APPLY_NOTE[last])}</Note> : null}
       <div class="bands">
         {radios.map((r) => (
-          <BandCard key={r.device} r={r} tunable={tunable} heard={byDev.get(r.device)} ago={ago} />
+          <BandCard key={r.device} r={r} tunable={tunable} ok={ok} heard={byDev.get(r.device)} ago={ago} />
         ))}
       </div>
       {edit ? (
@@ -984,18 +1079,57 @@ function Vectra({ s, st, wan, next }: { s: SetupData; st: Status | null; wan: Wa
   );
 }
 
+/**
+ * What the router's tune set up (contract: Tune), in plain words, at the end
+ * of the wizard. "At the maximum" once the tune has nothing left to do; until
+ * then (switched off, or a change still to come) it only names what is set.
+ */
+function TuneDone({ tune }: { tune: Tune }) {
+  const { t, f } = useApp();
+  const { ids, zramMiB } = tuneInPlace(tune);
+  const words = tuneWords(t, f, ids, zramMiB);
+  if (!words.length) return null;
+  const max = tune.enabled !== false && !tune.items.some((it) => it.state === 'pending');
+  return (
+    <div class="wz-tune">
+      <div class="wz-tune-h">
+        <span class="sicon" aria-hidden="true">
+          <Icon name="gauge" size={18} />
+        </span>
+        <h3 id="vx-wz-tune">{t(max ? 'w.tune.t' : 'd.tune.t')}</h3>
+      </div>
+      <ul aria-labelledby="vx-wz-tune">
+        {words.map((w) => (
+          <li key={w}>
+            <Icon name="ok" size={16} />
+            <span>{w}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ── the wizard ──────────────────────────────────────────────────────────────
 
 /** `onClose(tour)`: tour — the person went through to the end, show them around the main screen. */
 export function Setup({ onClose, start = 'welcome' }: { onClose: (tour: boolean) => void; start?: Screen }) {
-  const { t, store, run, pending } = useApp();
+  const { t, store, run, pending, setPassword } = useApp();
   const res = useRes('setup');
   const wanRes = useRes('wan_check');
   const stRes = useRes('status');
-  const s = res.data;
   const wan = wanRes.data;
   const st = stRes.data;
-  const [screen, setScreen] = useState<Screen>(start);
+  // The password step, once the router was seen without a password, stays for
+  // the wizard's life — ticked once it has one. It cannot be walked past: a
+  // person who came for a later step starts there.
+  const askPw = useRef(false);
+  if (res.data && asksPassword(res.data, !!setPassword)) askPw.current = true;
+  const steps = askPw.current ? WITH_PW : STEPS;
+  const [screen, setScreen] = useState<Screen>(() => (askPw.current && start !== 'welcome' && start !== 'done' ? 'password' : start));
+  // LuCI took the password: it counts as set until `setup` says so too.
+  const [pwSaved, setPwSaved] = useState(false);
+  const s = res.data && pwSaved && res.data.passwordSet === false ? { ...res.data, passwordSet: true } : res.data;
   // The last Wi-Fi change and its new password: shown again if the person comes back to the step.
   const [wifiResult, setWifiResult] = useState<WifiResult | null>(null);
   const top = useRef<HTMLDivElement>(null);
@@ -1015,6 +1149,8 @@ export function Setup({ onClose, start = 'welcome' }: { onClose: (tour: boolean)
       if (screen !== 'wifi' && screen !== 'server') void store.fetch('wan_check', online(store.get('wan_check').data) ? 30_000 : 3500);
       // Linked, the subscription on its way: `status` says when it has arrived.
       if ((screen === 'vectra' || screen === 'server') && store.get('setup').data?.vectra.linked) void store.fetch('status', 2500);
+      // At the end, what the router's tune set up: `status` says, once.
+      if (screen === 'done') void store.fetch('status', 60_000);
     };
     poll();
     const id = setInterval(poll, 1000);
@@ -1034,11 +1170,11 @@ export function Setup({ onClose, start = 'welcome' }: { onClose: (tour: boolean)
   };
   if (!s) return <Skeleton rows={3} />;
 
-  const firstTodo = STEPS.find((id) => !stepOk(s, id, wan, st)) ?? 'server';
-  const allOk = STEPS.every((id) => stepOk(s, id, wan, st));
+  const firstTodo = steps.find((id) => !stepOk(s, id, wan, st)) ?? 'server';
+  const allOk = steps.every((id) => stepOk(s, id, wan, st));
   const after = (id: StepId) => () => {
-    const i = STEPS.indexOf(id);
-    go(i + 1 < STEPS.length ? STEPS[i + 1] : 'done');
+    const i = steps.indexOf(id);
+    go(i + 1 < steps.length ? steps[i + 1] : 'done');
   };
   // "Set up later", "Close" and "Go to the main screen" close the wizard.
   // Success is no news worth a toast; a router that could not note it still
@@ -1051,7 +1187,7 @@ export function Setup({ onClose, start = 'welcome' }: { onClose: (tour: boolean)
 
   const list = (tone: 'mute' | 'warn') => (
     <ul class="wz-list">
-      {STEPS.map((id) => {
+      {steps.map((id) => {
         const ok = stepOk(s, id, wan, st);
         return (
           <li key={id} class={ok ? 'ok' : undefined}>
@@ -1069,13 +1205,13 @@ export function Setup({ onClose, start = 'welcome' }: { onClose: (tour: boolean)
 
   return (
     <div class="wz" ref={top}>
-      {screen !== 'welcome' && screen !== 'done' ? <Stepper s={s} st={st} at={screen} wan={wan} go={go} /> : null}
+      {screen !== 'welcome' && screen !== 'done' ? <Stepper s={s} st={st} at={screen} wan={wan} steps={steps} go={go} /> : null}
       {screen === 'welcome' ? (
         <section class="wz-card card wz-hello" aria-labelledby="vx-wz-t">
           <h2 id="vx-wz-t" class="verdict" tabIndex={-1}>
             {t('w.welcome.t')}
           </h2>
-          <p class="lede">{t('w.welcome.d')}</p>
+          <p class="lede">{t(steps[0] === 'password' ? 'w.welcome.dPw' : 'w.welcome.d')}</p>
           {list('mute')}
           <div class="row wz-foot">
             <Button kind="p" icon="arrow" onClick={() => go(firstTodo)}>
@@ -1088,14 +1224,16 @@ export function Setup({ onClose, start = 'welcome' }: { onClose: (tour: boolean)
         </section>
       ) : screen !== 'done' ? (
         // A step that is done has its own "Next"; skipping is for the ones that are not
-        // (some people keep their Wi-Fi exactly as it is).
+        // (some people keep their Wi-Fi exactly as it is) — never the password.
         <WzNav.Provider
           value={{
-            back: () => go(screen === 'internet' ? 'welcome' : STEPS[STEPS.indexOf(screen) - 1]),
-            skip: stepOk(s, screen, wan, st) ? undefined : after(screen),
+            back: () => go(screen === steps[0] ? 'welcome' : steps[steps.indexOf(screen) - 1]),
+            skip: screen === 'password' || stepOk(s, screen, wan, st) ? undefined : after(screen),
           }}
         >
-          {screen === 'internet' ? (
+          {screen === 'password' ? (
+            <Password s={s} saved={pwSaved} onSaved={() => setPwSaved(true)} next={after('password')} />
+          ) : screen === 'internet' ? (
             <Internet s={s} wan={wan} failed={!!wanRes.error} next={after('internet')} />
           ) : screen === 'wifi' ? (
             <Wifi s={s} next={after('wifi')} result={wifiResult} onResult={setWifiResult} />
@@ -1116,9 +1254,16 @@ export function Setup({ onClose, start = 'welcome' }: { onClose: (tour: boolean)
             </h2>
           </div>
           <p>{t(allOk ? 'w.done.d' : 'w.done.part.d')}</p>
-          {/* Where to find this page again: the router answers vectra.lan since the version with Vectra's switch. */}
-          {st && st.power.enabled !== null ? <p class="hint">{around(t('s.lan', { addr: SLOT }), <b>vectra.lan</b>)}</p> : null}
+          {/* Where to find this page again — named, not linked: a click would leave the
+              wizard before it has noted it is done. The router answers its names since
+              the version with Vectra's switch. */}
+          {st && st.power.enabled !== null ? (
+            <p class="hint">
+              <WayIn ip={s.lan.ipv4} />
+            </p>
+          ) : null}
           {list('warn')}
+          {st?.tune ? <TuneDone tune={st.tune} /> : null}
           <div class="row wz-foot">
             <Button kind="p" icon="arrow" busy={pending === 'finish'} disabled={!!pending} onClick={() => finish(true)}>
               {t('w.done.go')}

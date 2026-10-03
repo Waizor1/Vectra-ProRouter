@@ -2,6 +2,7 @@ package uiapi
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"vectra-controller-pro/internal/memguard"
@@ -11,6 +12,7 @@ import (
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/power"
 	"vectra-controller-pro/internal/sites"
+	"vectra-controller-pro/internal/tune"
 	"vectra-controller-pro/internal/xrayview"
 )
 
@@ -53,6 +55,10 @@ type Inputs struct {
 
 	AgentEnabled    bool
 	PasswallRunning bool
+	// PassWall is PassWall2 on the router — installed, retired or absent,
+	// "" when not looked at — and PassWallRetiredAt when it was retired.
+	PassWall          string
+	PassWallRetiredAt time.Time
 
 	Router         RouterFacts
 	XrayRSSMiB     *float64
@@ -61,10 +67,16 @@ type Inputs struct {
 	// UILocked is the operator's lock on the router UI (UCI ui_lock); rpcd
 	// reads it at every call.
 	UILocked bool
+	// RemoteShell is the owner's switch for the panel's support shell (UCI
+	// remote_shell); rpcd reads it at every status call.
+	RemoteShell bool
 
 	// Power is whether Vectra is switched on and who carries the traffic;
 	// rpcd reads it at every status call, the daemon up or not.
 	Power power.Facts
+
+	// Tune is the router's tune as it is now (tune.Inspect); nil when not read.
+	Tune *tune.Plan
 }
 
 // RouterFacts are /proc and friends.
@@ -148,7 +160,8 @@ func BuildStatus(in Inputs) Status {
 		Version: in.Version,
 		Engine:  Engine{State: "unknown"},
 		Pins:    map[string]string{},
-		Legacy:  Legacy{AgentEnabled: in.AgentEnabled, PasswallRunning: in.PasswallRunning},
+		Legacy: Legacy{AgentEnabled: in.AgentEnabled, PasswallRunning: in.PasswallRunning,
+			Passwall: strPtr(in.PassWall), PasswallRetiredAt: timePtr(in.PassWallRetiredAt)},
 		Router: Router{
 			Hostname:        in.Router.Hostname,
 			Model:           strPtr(in.Router.Model),
@@ -163,6 +176,7 @@ func BuildStatus(in Inputs) Status {
 		Subscription: SubscriptionState{Source: "panel"},
 		Probe:        ProbeState{Source: "provider"},
 		UI:           UIPolicy{Locked: in.UILocked},
+		RemoteShell:  in.RemoteShell,
 		Power: Power{Enabled: in.Power.On(), Running: in.Power.Running, Holder: in.Power.Holder(),
 			HandBack: strPtr(in.Power.HandBack())},
 	}
@@ -225,6 +239,13 @@ func BuildStatus(in Inputs) Status {
 		st.Dataplane.Counters = map[string]int64{}
 		for k, v := range in.Counters {
 			st.Dataplane.Counters[k] = v
+		}
+	}
+	if p := in.Tune; p != nil {
+		st.Tune = &Tune{Enabled: p.On, Profile: p.Profile, Items: make([]TuneItem, 0, len(p.Items))}
+		for _, it := range p.Items {
+			st.Tune.Items = append(st.Tune.Items, TuneItem{ID: it.ID, State: it.State, Value: it.Value, Target: it.Target,
+				Reason: strPtr(it.Reason)})
 		}
 	}
 	return st
@@ -523,6 +544,11 @@ func BuildDiagnostics(in Inputs) Diagnostics {
 		}
 	}
 
+	if p := in.Tune; p != nil {
+		status, params := tuneCheck(p)
+		add("tune", status, params)
+	}
+
 	if in.Metrics != nil && in.View != nil {
 		var dead []string
 		for _, o := range in.View.Outbounds {
@@ -577,6 +603,34 @@ func BuildDiagnostics(in Inputs) Diagnostics {
 	rank := map[string]int{"fail": 0, "warn": 1, "unknown": 2, "ok": 3}
 	sort.SliceStable(d.Checks, func(i, j int) bool { return rank[d.Checks[i].Status] < rank[d.Checks[j].Status] })
 	return d
+}
+
+// tuneCheck is the tune's line: the items in place (set by the tune, or so
+// before it), the zram swap's size, and a warning where a small router runs
+// without its compressed swap — the memory guard and every measurement of it
+// on the fleet assume one.
+func tuneCheck(p *tune.Plan) (string, map[string]interface{}) {
+	items := []string{}
+	var zram interface{}
+	status := "ok"
+	for _, it := range p.Items {
+		in := it.State == tune.Applied || it.State == tune.Already
+		if in {
+			items = append(items, it.ID)
+		}
+		if it.ID != tune.ItemZram {
+			continue
+		}
+		if in && it.Value != nil {
+			if mib, err := strconv.Atoi(*it.Value); err == nil {
+				zram = mib
+			}
+		}
+		if !in && p.Profile == tune.Lowmem {
+			status = "warn"
+		}
+	}
+	return status, map[string]interface{}{"enabled": p.On, "profile": p.Profile, "items": items, "zramMiB": zram}
 }
 
 // leakFailPackets is where packets past a running xray stop being a trickle:

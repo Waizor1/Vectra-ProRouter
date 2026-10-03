@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/apply"
 	"vectra-controller-pro/internal/config"
@@ -25,8 +26,10 @@ import (
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/geo"
 	"vectra-controller-pro/internal/jobsafety"
+	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/memguard"
+	"vectra-controller-pro/internal/redact"
 	"vectra-controller-pro/internal/rescue"
 	"vectra-controller-pro/internal/state"
 	"vectra-controller-pro/internal/subscription"
@@ -36,6 +39,9 @@ func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // executeJob acknowledges, resource-gates, and dispatches a single job.
 func (d *daemon) executeJob(ctx context.Context, job controlplane.Job, resp controlplane.CheckInResponse) error {
+	if job.Type == "connect_router_action" {
+		return d.jobConnectAction(ctx, job, resp.RouterID)
+	}
 	d.ackJob(ctx, job)
 	d.st.CurrentJob = state.CurrentJob{JobID: job.ID, JobType: job.Type, AcceptedAt: nowRFC3339()}
 	_ = d.persist()
@@ -100,7 +106,9 @@ func (d *daemon) finishJob(ctx context.Context, job controlplane.Job, status, ap
 	// Journal the result before sending so a crash/blip is recoverable.
 	d.st.PendingJobResult = &req
 	d.st.CurrentJob = state.CurrentJob{}
-	_ = d.persist()
+	if err := d.persist(); err != nil {
+		return errors.New("job result journal unavailable")
+	}
 
 	if _, err := d.client.SubmitJobResult(ctx, req); err != nil {
 		logging.L().Warn("job result submit failed; will retry next loop", "jobId", job.ID, "err", err.Error())
@@ -138,7 +146,7 @@ func (d *daemon) subscriptionURLs() []string {
 		// The operator config is normally loaded at startup; fall back to disk
 		// so a result produced before the first check-in is scrubbed too.
 		var err error
-		if cfg, err = config.Load(d.cfg.XrayConfigPath); err != nil {
+		if cfg, err = config.LoadSecret(d.cfg.XrayConfigPath); err != nil {
 			return nil
 		}
 	}
@@ -242,7 +250,7 @@ func (d *daemon) jobApplyXrayConfig(ctx context.Context, job controlplane.Job, r
 	}
 	operatorChanged := d.desired == nil || !sameOperatorConfig(d.desired, cfg)
 	d.desired = cfg
-	if err := config.Save(d.cfg.XrayConfigPath, cfg); err != nil {
+	if err := config.SaveSecret(d.cfg.XrayConfigPath, cfg); err != nil {
 		return d.submitFailure(ctx, job, "persist operator config: "+err.Error())
 	}
 	d.rebuildApplier()
@@ -393,8 +401,10 @@ func (d *daemon) maybeRefreshSubscription(ctx context.Context, now time.Time) {
 // providerDocument returns the last-good provider document from disk, or
 // fetches a fresh one when there is none yet.
 func (d *daemon) providerDocument(ctx context.Context, cfg *config.Config) ([]byte, string, error) {
-	if raw, err := os.ReadFile(d.cfg.ProviderConfigPath); err == nil && len(raw) > 0 {
+	if raw, err := vault.ReadFile(d.cfg.ProviderConfigPath); err == nil && len(raw) > 0 {
 		return raw, "cache", nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, "", errors.New("provider vault unavailable")
 	}
 	raw, _, err := d.fetchProviderDocument(ctx, cfg)
 	if err != nil {
@@ -472,6 +482,13 @@ func (d *daemon) fetchProviderDocument(ctx context.Context, cfg *config.Config) 
 	// The router's own choice (by remark) wins while the provider still
 	// offers it; otherwise the panel's.
 	idx, local, stale, err := d.resolveEntry(fr.Remarks, sub)
+	if ov, oerr := localctl.LoadOverrides(d.cfg.OverridesPath); oerr == nil && ov.EntryDigest != "" {
+		idx, err = connectDigestIndex(fr.Entries, ov.EntryDigest)
+		if err != nil {
+			return nil, meta, errConnectStaleEntry
+		}
+		local, stale = true, false
+	}
 	if err != nil {
 		return nil, meta, fmt.Errorf("subscription %s: select entry: %w", sub.ID, err)
 	}
@@ -524,8 +541,15 @@ func (d *daemon) jobUpdateAssets(ctx context.Context, job controlplane.Job) erro
 		return d.submitFailure(ctx, job, "update_assets: with route_source 'passwall' xray reads PassWall2's geo files; vctl does not replace them")
 	}
 	dir := d.runningAssetDir()
-	if dir == config.LegacyGeoAssetDir {
+	switch {
+	case dir == config.LegacyGeoAssetDir:
 		return d.submitFailure(ctx, job, "update_assets: xray reads PassWall2's geo files in "+dir+" (vectra-geodata is not installed); vctl does not replace them — install vectra-geodata")
+	case dir != config.DefaultGeoAssetDir:
+		// The directory is the operator config's to name, and the files are
+		// written as root: anywhere else — /etc/crontabs, with an asset
+		// called "root" — the panel's geo update would be a shell on the
+		// router.
+		return d.submitFailure(ctx, job, "update_assets: vctl writes geo data only into its own directory "+config.DefaultGeoAssetDir+"; the config names "+dir)
 	}
 	cfg, err := d.loadDesiredConfig()
 	if err != nil {
@@ -603,7 +627,11 @@ func (d *daemon) jobReconnect(ctx context.Context, job controlplane.Job) error {
 func (d *daemon) jobRunTerminal(ctx context.Context, job controlplane.Job) error {
 	// The command is operator-authored shell delivered by the authenticated
 	// panel over HTTPS (token-gated) — the same trust model as the legacy
-	// agent's run_terminal_command. It is not untrusted external input.
+	// agent's run_terminal_command. It is root on the router, so it runs only
+	// where the router's owner allows the support shell (remote_shell.go).
+	if !remoteShellAllowed() {
+		return d.submitFailure(ctx, job, remoteShellOff)
+	}
 	cmdStr, _ := job.Payload["command"].(string)
 	if strings.TrimSpace(cmdStr) == "" {
 		return d.submitFailure(ctx, job, "run_terminal_command: empty command")
@@ -647,8 +675,8 @@ func (d *daemon) jobRunTerminal(ctx context.Context, job controlplane.Job) error
 		"completedAt":     completed.Format(terminalTimeLayout),
 		"durationMs":      completed.Sub(started).Milliseconds(),
 		"timedOut":        errors.Is(runCtx.Err(), context.DeadlineExceeded),
-		"stdout":          stdout.String(),
-		"stderr":          stderr.String(),
+		"stdout":          d.redactSupport(stdout.String()),
+		"stderr":          d.redactSupport(stderr.String()),
 		"stdoutTruncated": stdout.truncated,
 		"stderrTruncated": stderr.truncated,
 	}
@@ -663,6 +691,24 @@ func (d *daemon) jobRunTerminal(ctx context.Context, job controlplane.Job) error
 		return d.finishJob(ctx, job, "failure", "", "", result)
 	}
 	return d.finishJob(ctx, job, "success", "", "", result)
+}
+
+// redactSupport takes the router's credentials out of support output before
+// it goes to the panel's database: the values vctl knows (its panel token,
+// its device key, the subscriptions' addresses) wherever they appear, and
+// whatever is a credential by its shape (share links, UUIDs, a URL's path
+// and query, a secret's value in JSON, key=value or a UCI option — PassWall2's
+// nodes, Wi-Fi's key). Hashes and digests stay: support compares them.
+func (d *daemon) redactSupport(s string) string {
+	for _, known := range []string{d.st.AgentToken, d.st.DevicePrivateKey, d.cfg.AgentToken} {
+		if len(known) >= 8 {
+			s = strings.ReplaceAll(s, known, "<redacted>")
+		}
+	}
+	for _, u := range d.subscriptionURLs() {
+		s = subscription.Scrub(s, u)
+	}
+	return redact.Credentials(s)
 }
 
 // terminalOutputMax caps each stream of a terminal command's answer.
@@ -702,16 +748,28 @@ func (d *daemon) jobCollectLogs(ctx context.Context, job controlplane.Job) error
 		runCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		out, _ := exec.CommandContext(runCtx, args[0], args[1:]...).CombinedOutput()
 		cancel()
-		sections[name] = tail(string(out), 8000)
+		sections[name] = d.redactSupport(tail(string(out), 8000))
 	}
 	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"logSections": sections})
 }
 
-// jobUpdateController self-updates the controller package and schedules a
-// restart so the init system brings up the new binary.
+// jobUpdateController self-updates the controller package — only one the
+// signed Vectra feed publishes (signed_feed.go) — and schedules a restart so
+// the init system brings up the new binary.
 const proPackageName = "vectra-controller-pro"
 
 func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) error {
+	err := d.updateController(ctx, job)
+	if errors.Is(err, errControllerUpToDate) {
+		return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"controllerUpdated": false, "upToDate": true})
+	}
+	return err
+}
+
+// updateController installs the job's signed package. A package already
+// installed is errControllerUpToDate, before anything is downloaded; every
+// other outcome is reported here.
+func (d *daemon) updateController(ctx context.Context, job controlplane.Job) error {
 	artifactURL, _ := job.Payload["artifactUrl"].(string)
 	if artifactURL == "" {
 		return d.submitFailure(ctx, job, "update_controller: missing artifactUrl")
@@ -722,7 +780,12 @@ func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) 
 	if sha == "" {
 		sha, _ = job.Payload["checksumSha256"].(string)
 	}
+	// The panel's contract names the version artifactVersion
+	// (updateControllerJobPayloadSchema); vctl read `version` first.
 	version, _ := job.Payload["version"].(string)
+	if version == "" {
+		version, _ = job.Payload["artifactVersion"].(string)
+	}
 	pkgName, _ := job.Payload["name"].(string)
 
 	// Identity guard: the controller-update lane is engine-agnostic and could
@@ -735,6 +798,19 @@ func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) 
 	if sha == "" {
 		return d.submitFailure(ctx, job, "update_controller: missing sha256 (refusing unverified install)")
 	}
+	// Only a package the signed Vectra feed publishes (signed_feed.go), and
+	// that before anything is downloaded. The feed's entry has the job's
+	// sha256, and the download must have it too: what opkg installs is the
+	// package the feed's key vouched for.
+	verifiedPackage, err := signedFeedPackage(ctx, sha, version)
+	if err != nil {
+		return d.submitFailure(ctx, job, notInSignedFeed+": "+err.Error())
+	}
+	if err := signedControllerVersionFloor(ctx, verifiedPackage.Version); errors.Is(err, errControllerUpToDate) {
+		return err
+	} else if err != nil {
+		return d.submitFailure(ctx, job, "update_controller: "+err.Error()+" (nothing installed)")
+	}
 
 	dest := filepath.Join(os.TempDir(), "vectra-controller-pro-update.ipk")
 	gotSha, err := downloadFile(ctx, artifactURL, dest)
@@ -746,7 +822,7 @@ func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) 
 	}
 
 	installCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
-	out, err := controllerInstallCommand(installCtx, dest).CombinedOutput()
+	out, err := runControllerInstall(installCtx, dest)
 	cancel()
 	if err != nil {
 		return d.submitFailure(ctx, job, "opkg install: "+err.Error()+": "+tail(string(out), 1000))
@@ -766,7 +842,9 @@ func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) 
 			"sha256":            gotSha,
 		},
 	}
-	_ = d.persist()
+	if err := d.persist(); err != nil {
+		return errors.New("update journal unavailable")
+	}
 
 	scheduleControllerRestart()
 	return errControllerRestartRequested
@@ -775,7 +853,7 @@ func (d *daemon) jobUpdateController(ctx context.Context, job controlplane.Job) 
 // ---- helpers --------------------------------------------------------------
 
 func (d *daemon) loadDesiredConfig() (*config.Config, error) {
-	raw, err := os.ReadFile(d.cfg.XrayConfigPath)
+	raw, err := vault.ReadFile(d.cfg.XrayConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("read desired config: %w", err)
 	}
@@ -1033,23 +1111,56 @@ func tail(s string, max int) string {
 // response cannot fill /tmp.
 const maxArtifactBytes = 64 << 20
 
-func downloadFile(ctx context.Context, rawURL, dest string) (string, error) {
+// updateHTTPClient is the self-update's HTTP client; tests trust their own
+// server with it.
+var updateHTTPClient = func() *http.Client { return &http.Client{Timeout: 120 * time.Second} }
+
+// getHTTPS is the self-update's GET: an https URL only, https all the way (a
+// redirect to plain http is refused, not followed), and anything but a 200
+// refused.
+func getHTTPS(ctx context.Context, rawURL string) (*http.Response, error) {
 	if err := requireHTTPS(rawURL); err != nil {
-		return "", err
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	hc := &http.Client{Timeout: 120 * time.Second}
-	resp, err := hc.Do(req)
+	resp, err := subscription.HTTPSOnlyRedirects(updateHTTPClient()).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != 200 {
+		resp.Body.Close()
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	return resp, nil
+}
+
+// fetchHTTPS reads an https URL whole with getHTTPS; an answer longer than max
+// is refused, not cut.
+func fetchHTTPS(ctx context.Context, rawURL string, max int64) ([]byte, error) {
+	resp, err := getHTTPS(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > max {
+		return nil, fmt.Errorf("longer than %d bytes", max)
+	}
+	return b, nil
+}
+
+func downloadFile(ctx context.Context, rawURL, dest string) (string, error) {
+	resp, err := getHTTPS(ctx, rawURL)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("http %d", resp.StatusCode)
-	}
 	f, err := os.Create(dest)
 	if err != nil {
 		return "", err
@@ -1087,14 +1198,21 @@ func requireHTTPS(rawURL string) error {
 // is held back; the job restarts vctl itself once opkg is done.
 func controllerInstallCommand(ctx context.Context, dest string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "sh", "-c",
-		fmt.Sprintf(`{ echo %d > /proc/self/oom_score_adj; } 2>/dev/null; exec opkg install --force-reinstall "$0"`, memguard.JobAdj), dest)
+		fmt.Sprintf(`{ echo %d > /proc/self/oom_score_adj; } 2>/dev/null; exec opkg install "$0"`, memguard.JobAdj), dest)
 	cmd.Env = append(os.Environ(), "VECTRA_SKIP_POSTINST_RESTART=1")
 	return cmd
 }
 
+// runControllerInstall runs the self-update's opkg (controllerInstallCommand)
+// and returns what it said; tests stand it in.
+var runControllerInstall = func(ctx context.Context, dest string) ([]byte, error) {
+	return controllerInstallCommand(ctx, dest).CombinedOutput()
+}
+
 // scheduleControllerRestart restarts the controller service shortly after we
-// exit, detached so the dying process does not take it down.
-func scheduleControllerRestart() {
+// exit, detached so the dying process does not take it down. Tests stand it
+// in.
+var scheduleControllerRestart = func() {
 	if err := controllerRestartCommand().Start(); err != nil {
 		// procd's respawn (5 s) still brings the new binary up.
 		logging.L().Error("could not schedule the restart after the self-update", "err", err.Error())

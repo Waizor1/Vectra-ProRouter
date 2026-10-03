@@ -67,3 +67,15 @@ func TestWithDefaultsFillsZeros(t *testing.T) {
 		t.Errorf("default not filled: %d", c.StorageMemoryFloorMB)
 	}
 }
+
+// PassWall2's retirement runs opkg beside xray: the heavy class's floors
+// (the operator's UCI job_safety_heavy_* included).
+func TestRetiringPassWallIsHeavy(t *testing.T) {
+	if got := Classify("retire_passwall"); got != ClassHeavy {
+		t.Fatalf("retire_passwall = %q", got)
+	}
+	res := controlplane.RouterResources{MemoryAvailableMB: 30, OverlayFreeMB: 50, TMPFreeMB: 50}
+	if d := Evaluate("retire_passwall", res, DefaultConfig()); !d.Blocked {
+		t.Fatalf("30 MB free did not stop it: %+v", d)
+	}
+}

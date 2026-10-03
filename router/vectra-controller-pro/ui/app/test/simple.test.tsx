@@ -15,6 +15,11 @@ import { mount } from '../src/mount';
 // The Pro view's words, in every language, and anything shaped like an address.
 const TECH = /xray|vctl|balanc|балансир|负载均衡|\bnodes?\b|узел|узла|узлов|节点|\bPID\b|TPROXY|\bAPI\b|rpcd|LuCI|ubus|\b\d{1,3}(\.\d{1,3}){3}\b|:\d{4,5}\b/i;
 const BAD_TEXT = /undefined|NaN|\bnull\b|\[object Object\]/;
+/** The router's LAN address in the fixtures: the one address the simple view names. */
+const LAN_IP = FIXTURES.setup.lan.ipv4!;
+/** Where the page opens, as the footer says it (ru). */
+const WAY_IN = 'Этот экран открывается по адресу my.vectra-pro.net или http://vectra.lan, а если не выходит — по адресу 192.168.1.1.';
+const WAY_IN_HREFS = ['http://my.vectra-pro.net/', 'http://vectra.lan/', 'http://192.168.1.1/'];
 
 let cleanup: (() => void)[] = [];
 let consoleErrors: unknown[] = [];
@@ -44,7 +49,8 @@ function start(opts: { scenario?: Scenario; lang?: Lang; call?: CallFn; locked?:
   const base = opts.call ?? mock.call;
   const host = document.createElement('div');
   document.body.appendChild(host);
-  const unmount = mount(host, { call: (m, p) => (calls.push(m), base(m, p)), lang: 'ru' });
+  // As the LuCI view mounts it: with LuCI's own password change.
+  const unmount = mount(host, { call: (m, p) => (calls.push(m), base(m, p)), setPassword: mock.setPassword, lang: 'ru' });
   cleanup.push(() => {
     unmount();
     mock.dispose();
@@ -80,8 +86,10 @@ describe('opens as the simple view', () => {
       expect(app.$('.sv'), `${scenario}/${lang}`).not.toBeNull();
       expect(app.$('.tabs'), `${scenario}/${lang}`).toBeNull();
       expect(app.text(), `${scenario}/${lang}`).not.toMatch(BAD_TEXT);
-      // The footer names the product and its version; everything else is plain words.
-      expect(app.text().replace(/Vectra \S+/g, ''), `${scenario}/${lang}`).not.toMatch(TECH);
+      // The footer names the product and its version, and the router's own address —
+      // where this page opens, as on the box's card; everything else is plain words.
+      const plain = app.text().replace(/Vectra \S+/g, '').split(LAN_IP).join('');
+      expect(plain, `${scenario}/${lang}`).not.toMatch(TECH);
       cleanup.forEach((fn) => fn());
       cleanup = [];
       localStorage.clear();
@@ -157,6 +165,47 @@ describe('opens as the simple view', () => {
     expect(app.text()).toContain('Автоматический выбор серверов включён');
     expect(app.$('.verdict')?.textContent).toBe('Всё работает');
     expect(app.$('.sv-pins')).toBeNull();
+  });
+});
+
+// A browser takes a typed `vectra.lan` for a search, and a device with a VPN
+// app or a private DNS asks neither name of the router: a name under a real
+// top-level domain first, the .lan one as it must be typed, and the router's
+// own address, which always works.
+describe('where this page opens', () => {
+  it('names my.vectra-pro.net first, then http://vectra.lan, then the router’s own address', async () => {
+    const app = start();
+    await settle();
+    expect(app.$('.sv-lan')?.textContent).toBe(WAY_IN);
+    expect(app.all('.sv-lan a').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['my.vectra-pro.net', 'http://my.vectra-pro.net/'],
+      ['http://vectra.lan', 'http://vectra.lan/'],
+      ['192.168.1.1', 'http://192.168.1.1/'],
+    ]);
+  });
+
+  it('names no address the router cannot say, nor one that is not an address', async () => {
+    for (const ipv4 of [null, '<b>x</b>', '192.168.1.1/24', 'fd00::1']) {
+      const app = start({
+        call: world((w) => {
+          w.setup.lan = { ipv4 };
+        }),
+      });
+      await settle();
+      expect(app.$('.sv-lan')?.textContent, String(ipv4)).toBe('Этот экран открывается по адресу my.vectra-pro.net или http://vectra.lan.');
+      expect(app.all('.sv-lan a').map((a) => a.getAttribute('href')), String(ipv4)).toEqual(WAY_IN_HREFS.slice(0, 2));
+      cleanup.forEach((fn) => fn());
+      cleanup = [];
+    }
+  });
+
+  it.each([
+    ['en', 'This page opens at my.vectra-pro.net or http://vectra.lan; if neither works, at 192.168.1.1.'],
+    ['zh', '本页面可通过 my.vectra-pro.net 或 http://vectra.lan 打开；如都打不开，请访问 192.168.1.1。'],
+  ] as const)('says it in %s', async (lang, said) => {
+    const app = start({ lang });
+    await settle();
+    expect(app.$('.sv-lan')?.textContent).toBe(said);
   });
 });
 
@@ -417,8 +466,9 @@ describe('Vectra on and off', () => {
     expect(app.button('Перезапустить')).toBeUndefined();
     expect(app.button('Выключить Vectra')).toBeUndefined();
     expect(app.button('Открыть мастер настройки')).toBeUndefined();
-    expect(app.$('.sv-lan')?.textContent).toBe('Этот экран всегда открывается по адресу vectra.lan');
-    expect(app.$<HTMLAnchorElement>('.sv-lan a')?.getAttribute('href')).toBe('http://vectra.lan/');
+    // dnsmasq answers the names with Vectra off too.
+    expect(app.$('.sv-lan')?.textContent).toBe(WAY_IN);
+    expect(app.all('.sv-lan a').map((a) => a.getAttribute('href'))).toEqual(WAY_IN_HREFS);
   });
 
   // status.power's holder is vectra only with the data plane loaded: a vctl

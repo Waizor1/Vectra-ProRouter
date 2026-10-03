@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/config"
@@ -72,7 +73,7 @@ func directDaemon(t *testing.T) (*daemon, *[]string) {
 	}
 	// IPv6 carried (UCI ipv6 '1'): both families; the refusal's own test sets it off.
 	d := &daemon{cfg: agentcfg.Config{XrayRenderPath: filepath.Join(dir, "xray.json"), GeoAssetDir: assets, IPv6: true}}
-	if err := os.WriteFile(d.cfg.XrayRenderPath, []byte(directRender), 0o600); err != nil {
+	if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(directRender)); err != nil {
 		t.Fatal(err)
 	}
 	d.desired = &config.Config{}
@@ -292,7 +293,7 @@ func TestDirectSetsFollowExtGeoFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	render := strings.Replace(directRender, `"ip":["geoip:DIRECT","1.2.3.0/24"]`, `"ip":["ext:vectra.dat:direct"]`, 1)
-	if err := os.WriteFile(d.cfg.XrayRenderPath, []byte(render), 0o600); err != nil {
+	if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(render)); err != nil {
 		t.Fatal(err)
 	}
 	d.maybeLoadDirect(context.Background())
@@ -329,7 +330,7 @@ const directRenderFake = `{
 
 func TestDirectSetsReachPastProxiedNamesLessProxiedAddresses(t *testing.T) {
 	d, loads := directDaemon(t)
-	if err := os.WriteFile(d.cfg.XrayRenderPath, []byte(directRenderFake), 0o600); err != nil {
+	if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(directRenderFake)); err != nil {
 		t.Fatal(err)
 	}
 	d.maybeLoadDirect(context.Background())

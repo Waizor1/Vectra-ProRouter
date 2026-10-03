@@ -635,3 +635,54 @@ describe('Vectra on and off, in Pro', () => {
     expect(app.$('.pill')?.textContent).toBe('Off');
   });
 });
+
+describe('the router\'s tune in Pro', () => {
+  it('says in the diagnostics what the tune set, in plain words', async () => {
+    const app = start({ lang: 'ru' });
+    await settle();
+    const line = app.all('.chk').find((c) => c.textContent?.includes('Разгон роутера'));
+    // One line: the memory settings, there for the swap, go without saying beside it.
+    expect(line?.textContent).toContain('Разгон роутера: сжатая подкачка 117 МБ, все ядра обрабатывают сеть, ускоренная пересылка трафика');
+    expect(line?.textContent).not.toContain('память');
+  });
+
+  it('lists what the tune set with the enumeration comma in Chinese', async () => {
+    const app = start({ lang: 'zh' });
+    await settle();
+    const line = app.all('.chk').find((c) => c.textContent?.includes('路由器优化'));
+    expect(line?.textContent).toContain('路由器优化：压缩交换空间 117 MB、所有 CPU 核心共同处理网络、更快的流量转发');
+  });
+
+  it('warns where a small router runs without its compressed swap', async () => {
+    const mock = createMock({ scenario: 'healthy', latencyMs: 0, live: false, applyMs: 10 });
+    cleanup.push(() => mock.dispose());
+    const call: CallFn = async (m, p) => {
+      const r = (await mock.call(m, p)) as { checks?: { id: string; status: string; params: Record<string, unknown> }[] };
+      const c = r.checks?.find((x) => x.id === 'tune');
+      if (c) Object.assign(c, { status: 'warn', params: { enabled: true, profile: 'lowmem', items: ['packet_steering'], zramMiB: null } });
+      return r;
+    };
+    const app = start({ lang: 'en', call });
+    await settle();
+    const line = app.all('.chk').find((c) => c.textContent?.includes('Compressed swap'));
+    expect(line?.textContent).toContain('Compressed swap is not running: under load the memory runs out sooner');
+    expect(line?.className).toContain('warn');
+  });
+
+  it('says plainly when none of the tune is in place, never that there is nothing to change', async () => {
+    // A router over 384 MiB right after the install: its two items wait for the tune's first run.
+    const mock = createMock({ scenario: 'healthy', latencyMs: 0, live: false, applyMs: 10 });
+    cleanup.push(() => mock.dispose());
+    const call: CallFn = async (m, p) => {
+      const r = (await mock.call(m, p)) as { checks?: { id: string; status: string; params: Record<string, unknown> }[] };
+      const c = r.checks?.find((x) => x.id === 'tune');
+      if (c) Object.assign(c, { status: 'ok', params: { enabled: true, profile: 'standard', items: [], zramMiB: null } });
+      return r;
+    };
+    const app = start({ lang: 'en', call });
+    await settle();
+    const line = app.all('.chk').find((c) => c.textContent?.includes('Router tuning'));
+    expect(line?.textContent).toContain('Router tuning: nothing switched on');
+    expect(line?.textContent).not.toContain('nothing to change');
+  });
+});

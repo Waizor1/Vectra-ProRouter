@@ -65,7 +65,9 @@
   },
   "legacy": {
     "agentEnabled": false,
-    "passwallRunning": false
+    "passwallRunning": false,
+    "passwall": "installed",
+    "passwallRetiredAt": null
   },
   "router": {
     "hostname": "vectra-ax3000t",
@@ -85,6 +87,7 @@
   "ui": {
     "locked": false
   },
+  "remoteShell": false,
   "route": {
     "nodes": [
       {
@@ -98,5 +101,46 @@
     "reason": null,
     "unfit": [],
     "unfitKept": []
+  },
+  "tune": {
+    "enabled": true,
+    "profile": "lowmem",
+    "items": [
+      {
+        "id": "zram",
+        "state": "applied",
+        "value": "117",
+        "target": "on",
+        "reason": null
+      },
+      {
+        "id": "swappiness",
+        "state": "applied",
+        "value": "80",
+        "target": "80",
+        "reason": null
+      },
+      {
+        "id": "vfs_cache_pressure",
+        "state": "applied",
+        "value": "200",
+        "target": "200",
+        "reason": null
+      },
+      {
+        "id": "packet_steering",
+        "state": "already",
+        "value": "1",
+        "target": "1",
+        "reason": null
+      },
+      {
+        "id": "flow_offloading",
+        "state": "applied",
+        "value": "1",
+        "target": "1",
+        "reason": null
+      }
+    ]
   }
 }

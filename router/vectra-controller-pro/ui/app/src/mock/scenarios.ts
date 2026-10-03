@@ -47,6 +47,10 @@ function degraded(w: ReadData): void {
   setCheck(w, 'panel_link', 'warn', { lastCheckInAgoSec: 1116 });
   setCheck(w, 'subscription_ua', 'fail', { reason: 'malformed_happ' });
   setCheck(w, 'memory', 'fail', { availableMiB: 41, totalMiB: 234, xrayMiB: null });
+  // The zram swap did not come up at the tune's last run: a small router without it.
+  const zram = s.tune?.items.find((x) => x.id === 'zram');
+  if (zram) Object.assign(zram, { state: 'pending', value: null, reason: 'failed' });
+  setCheck(w, 'tune', 'warn', { enabled: true, profile: 'lowmem', items: ['swappiness', 'vfs_cache_pressure', 'packet_steering', 'flow_offloading'], zramMiB: null });
   setCheck(w, 'dead_nodes', 'unknown', {});
   setCheck(w, 'pinned_node_dead', 'unknown', {});
   // A real router omits checks whose inputs it cannot read.
@@ -135,9 +139,12 @@ function unboxed(w: ReadData): void {
   empty(w);
   w.setup = {
     done: false,
+    // OpenWrt ships without a root password: anyone on the LAN can sign in.
+    passwordSet: false,
     // The cable is in and the router is still getting its address: the mock
     // brings the internet up by itself a few seconds later, as a router does.
     wan: { proto: 'dhcp', link: true, ipv4: null, gateway: null, dns: [] },
+    lan: { ipv4: '192.168.1.1' },
     // OpenWrt's defaults: both radios off, open, channel picked by the radio, the regulatory default.
     wifi: {
       radios: [
@@ -146,6 +153,8 @@ function unboxed(w: ReadData): void {
       ],
       tuned: false,
       tunable: true,
+      // Nothing on the air judges as fine: the open networks are what the wizard asks about.
+      verdict: 'fine',
       suggested: 'Vectra-4E2A',
       apply: null,
     },
@@ -166,16 +175,44 @@ function unboxed(w: ReadData): void {
 }
 
 /**
- * A box as it ships (docs/LAUNCH.md): the Wi-Fi from the card on the air and
- * secured, each radio picking its own channel, the regulatory default — the
- * person joins it and opens the wizard over Wi-Fi.
+ * A box as it ships (docs/LAUNCH.md): the Wi-Fi and the router's password
+ * from the card, the Wi-Fi on the air and secured, each radio picking its own
+ * channel, the regulatory default — the person joins it and opens the wizard
+ * over Wi-Fi.
  */
 function boxed(w: ReadData): void {
   unboxed(w);
+  w.setup.passwordSet = true;
   w.setup.wifi.radios = [
     radio('2g', { channel: null, auto: true, country: null }),
     radio('5g', { channel: null, auto: true, country: null }),
   ];
+}
+
+/** The Wi-Fi as an owner may have it (`wifiAs`). */
+export type WifiAs = 'manual' | 'overlap' | 'down';
+
+/**
+ * The Wi-Fi as an owner may have it, on any scenario (dev: `&wifi=`), for the
+ * wizard's verdicts (contract: setup, `wifi.verdict`; the mock judges them at
+ * every read): `manual` — a country of their own, 5 GHz on a radar channel at
+ * a power they set, left alone; `overlap` — 2.4 GHz on channel 3, between the
+ * channels that do not overlap; `down` — 5 GHz on, and not up. The last two
+ * get the boost suggested.
+ */
+export function wifiAs(w: ReadData, as: WifiAs): void {
+  const wifi = w.setup.wifi;
+  const r2 = wifi.radios.find((r) => r.band === '2g');
+  const r5 = wifi.radios.find((r) => r.band === '5g');
+  if (as === 'manual') {
+    if (r2) Object.assign(r2, { channel: 6, auto: false, country: 'RU', txpower: null, maxPower: true });
+    if (r5) Object.assign(r5, { channel: 100, auto: false, country: 'RU', txpower: 14, maxPower: false });
+  }
+  if (as === 'overlap' && r2) Object.assign(r2, { channel: 3, auto: false });
+  if (as === 'down' && r5) r5.up = false;
+  // The tuning's recipe, as the router counts it: every 2.4/5 GHz radio that is on.
+  const on = wifi.radios.filter((r) => r.enabled === true && (r.band === '2g' || r.band === '5g'));
+  wifi.tuned = on.every((r) => r.country === 'PA' && r.maxPower === true && r.auto === false && r.channel !== null);
 }
 
 /**
@@ -195,7 +232,7 @@ export function off(w: ReadData, holder: Holder): void {
   s.controlPlane = { reachable: null, lastCheckIn: null, routerId: null };
   s.subscription = { ...s.subscription, entryIndex: null, entryRemark: null, source: 'panel', overrideStale: false };
   s.probe = { intervalSec: s.probe.intervalSec, source: 'provider' };
-  s.legacy = { agentEnabled: holder !== 'direct', passwallRunning: holder === 'passwall2' };
+  s.legacy = { ...s.legacy, agentEnabled: holder !== 'direct', passwallRunning: holder === 'passwall2' };
   s.router.memAvailableMiB = 102;
   w.balancers = { ...w.balancers, apiReachable: false, balancers: w.balancers.balancers.map((b) => ({ ...b, selected: null })) };
   for (const n of w.nodes.nodes) Object.assign(n, { alive: null, delayMs: null, lastSeen: null, lastTry: null, traffic: null });

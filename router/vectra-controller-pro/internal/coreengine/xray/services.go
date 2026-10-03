@@ -30,6 +30,25 @@ type Service struct {
 	// ANDed, so a service reached by name or by address has a rule for each.
 	Domains []string
 	IPs     []string
+	// Extra are domains the service always covers besides the entry's own
+	// list for it (the AI services the provider may not name).
+	Extra []string
+}
+
+// withExtra is matchers plus s.Extra, without repeats, in that order.
+func (s Service) withExtra(matchers []string) []string {
+	if len(s.Extra) == 0 {
+		return matchers
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range append(append([]string(nil), matchers...), s.Extra...) {
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // Services are the services with a choice.
@@ -37,6 +56,8 @@ var Services = []Service{
 	{ID: "youtube", Domains: []string{"geosite:youtube"}},
 	{ID: "tiktok", Domains: []string{"geosite:tiktok"}},
 	{ID: "telegram", Domains: []string{"geosite:telegram"}, IPs: []string{"geoip:telegram"}},
+	// «Нейросети»: the provider's AI rule names ChatGPT; AIDomains go with it.
+	{ID: "ai", Domains: []string{"domain:chatgpt.com"}, Extra: AIDomains},
 }
 
 // ServiceByID finds a service.
@@ -198,7 +219,7 @@ func servicePath(rules []map[string]json.RawMessage, v *xrayview.View, s Service
 	}
 	switch {
 	case hasDom:
-		p = servicePathOf{target: dom.target, isBalancer: dom.isBalancer, domains: dom.matchers}
+		p = servicePathOf{target: dom.target, isBalancer: dom.isBalancer, domains: s.withExtra(dom.matchers)}
 		if hasIP && ip.target == dom.target && ip.isBalancer == dom.isBalancer {
 			p.ips = ip.matchers
 		}
@@ -219,7 +240,7 @@ type servicePlan struct {
 	res       ServicesResult
 }
 
-func (p servicePlan) empty() bool { return len(p.balancers) == 0 }
+func (p servicePlan) empty() bool { return len(p.balancers) == 0 && len(p.rules) == 0 }
 
 // planServices resolves the owner's choices against the document.
 func planServices(providerRaw []byte, choices map[string]string, inboundTag string) (servicePlan, error) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/logging"
@@ -36,6 +37,9 @@ import (
 // ui_lock. The subscription URL is never logged: the one line says what was
 // removed, by name.
 func (d *daemon) release(ctx context.Context) {
+	if err := connectForgetWifiOwner(d.cfg); err != nil {
+		logging.L().Warn("connect Wi-Fi eligibility unavailable")
+	}
 	var removed []string
 	if d.desired != nil && d.unloadDataPlane(ctx, d.desired) {
 		removed = append(removed, "the data plane")
@@ -52,7 +56,11 @@ func (d *daemon) release(ctx context.Context) {
 		{"the locations cache", d.cfg.EntriesPath},
 		{"the locations index", d.cfg.EntriesIndexPath},
 	} {
-		switch err := os.Remove(f.path); {
+		remove := vault.RemoveFile
+		if f.path == d.cfg.EntriesIndexPath {
+			remove = os.Remove
+		}
+		switch err := remove(f.path); {
 		case err == nil:
 			removed = append(removed, f.what)
 		case !errors.Is(err, os.ErrNotExist):
@@ -71,6 +79,8 @@ func (d *daemon) release(ctx context.Context) {
 	d.st.AppliedRevisionID, d.st.ConfigDigest, d.st.SpliceKey = "", "", ""
 	d.st.LastDesiredRevision = nil
 	d.st.Rescue = state.RescueSnapshot{}
+	d.st.CurrentJob = state.CurrentJob{}
+	d.st.PendingJobResult = nil
 	d.st.ClaimOwner = nil
 
 	d.desired = nil

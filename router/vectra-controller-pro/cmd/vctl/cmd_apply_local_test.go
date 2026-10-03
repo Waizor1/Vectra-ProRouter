@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 )
@@ -69,7 +70,7 @@ func TestApplyLocalInstallsFromTheCachedProviderDocument(t *testing.T) {
 		t.Fatalf("apply-local: %v", err)
 	}
 
-	rendered, err := os.ReadFile(filepath.Join(dir, "xray.json"))
+	rendered, err := readEncryptedTestFile(t, filepath.Join(dir, "xray.json"))
 	if err != nil {
 		t.Fatalf("no rendered xray config was installed: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestApplyLocalInstallsFromTheCachedProviderDocument(t *testing.T) {
 	// The cached provider document must be untouched. It is the byte-exact
 	// last-good document, and rewriting it through a decode/encode round trip is
 	// the corruption the verbatim rule exists to prevent.
-	after, err := os.ReadFile(filepath.Join(dir, "provider-config.json"))
+	after, err := readEncryptedTestFile(t, filepath.Join(dir, "provider-config.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestApplyLocalInstallsFromTheCachedProviderDocument(t *testing.T) {
 
 	// And the digest is persisted, so the daemon's next apply is a no-op rather
 	// than a redundant reinstall.
-	stateRaw, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	stateRaw, err := readEncryptedTestFile(t, filepath.Join(dir, "state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +169,7 @@ func TestApplyLocalPreservesTheDaemonsState(t *testing.T) {
 		t.Fatalf("apply-local: %v", err)
 	}
 
-	raw, err := os.ReadFile(statePath)
+	raw, err := readEncryptedTestFile(t, statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +243,7 @@ func TestTheDaemonResumesItsRenderAfterAReboot(t *testing.T) {
 		t.Fatalf("apply-local: %v", err)
 	}
 	render := filepath.Join(dir, "xray.json")
-	before, err := os.ReadFile(render)
+	before, err := readEncryptedTestFile(t, render)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +253,7 @@ func TestTheDaemonResumesItsRenderAfterAReboot(t *testing.T) {
 
 	restartedDaemon(t, agentPath).resumeRender(context.Background())
 
-	after, err := os.ReadFile(render)
+	after, err := readEncryptedTestFile(t, render)
 	if err != nil {
 		t.Fatalf("no render after the restart: %v", err)
 	}
@@ -296,11 +297,11 @@ func TestAnExistingRenderIsNotRebuilt(t *testing.T) {
 		t.Fatalf("apply-local: %v", err)
 	}
 	render := filepath.Join(dir, "xray.json")
-	if err := os.WriteFile(render, []byte(`{"marker":true}`), 0o600); err != nil {
+	if err := vault.WriteFile(render, []byte(`{"marker":true}`)); err != nil {
 		t.Fatal(err)
 	}
 	restartedDaemon(t, agentPath).resumeRender(context.Background())
-	if got, _ := os.ReadFile(render); string(got) != `{"marker":true}` {
+	if got, _ := readEncryptedTestFile(t, render); string(got) != `{"marker":true}` {
 		t.Error("an existing render was rebuilt")
 	}
 }
@@ -315,12 +316,12 @@ func TestAChangedInboundIsRenderedAgain(t *testing.T) {
 		t.Fatalf("apply-local: %v", err)
 	}
 	render := filepath.Join(dir, "xray.json")
-	before, err := os.ReadFile(render)
+	before, err := readEncryptedTestFile(t, render)
 	if err != nil {
 		t.Fatal(err)
 	}
 	op := filepath.Join(dir, "operator.json")
-	raw, err := os.ReadFile(op)
+	raw, err := readEncryptedTestFile(t, op)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,13 +332,13 @@ func TestAChangedInboundIsRenderedAgain(t *testing.T) {
 	tp := cfg["inbounds"].(map[string]any)["tproxy"].(map[string]any)
 	tp["port"] = float64(12399)
 	out, _ := json.Marshal(cfg)
-	if err := os.WriteFile(op, out, 0o600); err != nil {
+	if err := vault.WriteFile(op, out); err != nil {
 		t.Fatal(err)
 	}
 	if err := cmdApplyLocal([]string{"-config", agentPath}); err != nil {
 		t.Fatalf("apply-local again: %v", err)
 	}
-	after, err := os.ReadFile(render)
+	after, err := readEncryptedTestFile(t, render)
 	if err != nil {
 		t.Fatal(err)
 	}

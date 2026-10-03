@@ -23,6 +23,7 @@ import (
 	"sort"
 	"syscall"
 	"time"
+	"vectra-controller-pro/internal/vault"
 )
 
 // Default locations. /etc survives reboots and sysupgrade (the package's
@@ -40,6 +41,7 @@ type Overrides struct {
 	// against the provider's "remarks". The remark, not the index, is what is
 	// honoured: the provider reorders its array, and an index would silently
 	// land on a different country. EntryIndex is kept for display only.
+	EntryDigest string `json:"entryDigest,omitempty"`
 	EntryRemark string `json:"entryRemark,omitempty"`
 	EntryIndex  *int   `json:"entryIndex,omitempty"`
 	// Pins maps a balancer tag to the outbound tag it is pinned to.
@@ -50,12 +52,14 @@ type Overrides struct {
 	// Direct and Proxy are the owner's own sites ("My sites"), in the
 	// canonical form of internal/sites: always without the VPN, always
 	// through it. Part of every render (xray.SpliceOptions.Rules).
-	Direct []string `json:"direct,omitempty"`
-	Proxy  []string `json:"proxy,omitempty"`
+	ConnectRules bool     `json:"connectRules,omitempty"`
+	Direct       []string `json:"direct,omitempty"`
+	Proxy        []string `json:"proxy,omitempty"`
 	// Services are the owner's country per service ("tiktok": "DE"); a
 	// service not named runs on the entry's own path.
-	Services  map[string]string `json:"services,omitempty"`
-	UpdatedAt time.Time         `json:"updatedAt,omitempty"`
+	ServiceEntries map[string]string `json:"serviceEntries,omitempty"`
+	Services       map[string]string `json:"services,omitempty"`
+	UpdatedAt      time.Time         `json:"updatedAt,omitempty"`
 }
 
 // HasEntry reports whether a location was chosen on the router.
@@ -160,6 +164,9 @@ func withLock(path string, fn func() error) error {
 // WriteFileAtomic writes data via tmp + fsync + rename, then fsyncs the
 // directory, so a power cut leaves either the old file or the new one.
 func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if err := vault.RefusePlaintextWrite(path); err != nil {
+		return err
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err

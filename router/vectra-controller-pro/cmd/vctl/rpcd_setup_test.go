@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,9 +18,11 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/power"
 	"vectra-controller-pro/internal/setup"
 	"vectra-controller-pro/internal/uiapi"
 )
@@ -153,7 +156,7 @@ func newWizardRouter(t *testing.T) *wizardRouter {
 			return nil, errors.New("Command failed: Not found")
 		},
 	}
-	cfg, err := agentcfg.Parse([]byte(`{"controlUrl":"unused"}`))
+	cfg, err := agentcfg.Parse([]byte(`{"controlUrl":"https://api.vectra-pro.net"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +242,13 @@ func (w *wizardRouter) write(t *testing.T, path, body string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	var err error
+	if path == w.cfg.StatePath || path == w.cfg.XrayConfigPath {
+		err = vault.WriteFile(path, []byte(body))
+	} else {
+		err = os.WriteFile(path, []byte(body), 0o600)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -265,6 +274,9 @@ func TestSetupAnswersWhatTheRouterHas(t *testing.T) {
 	w.write(t, filepath.Join(w.env.SysClassNet, "wan", "carrier"), "1\n")
 	w.write(t, filepath.Join(w.env.SysClassNet, "wan", "address"), "a4:39:b3:12:3f:2a\n")
 	w.write(t, w.cfg.StatePath, `{"device_identifier":"vectra-1","bot_username":"VectraBot","agent_token":"tok-secret"}`)
+	// Out of the box: no root password, the LAN at OpenWrt's address.
+	w.write(t, w.env.Shadow, "root::0:0:99999:7:::\n")
+	w.ubus = map[string]string{"call network.interface.lan status": `{"up":true,"device":"br-lan","ipv4-address":[{"address":"192.168.1.1","mask":24}]}`}
 	exp := time.Date(2026, 9, 28, 7, 12, 0, 0, time.UTC)
 	withRuntime(t, &localctl.Runtime{Claim: &localctl.Claim{State: "unclaimed", Code: "7ZKNPGS6", QR: "VECTRA:R1:AAAA", ExpiresAt: exp}})
 
@@ -278,11 +290,15 @@ func TestSetupAnswersWhatTheRouterHas(t *testing.T) {
 			t.Fatalf("%s reached the answer: %s", secret, b)
 		}
 	}
+	if st.PasswordSet == nil || *st.PasswordSet || st.Lan.IPv4 == nil || *st.Lan.IPv4 != "192.168.1.1" {
+		t.Fatalf("password and LAN = %s", b)
+	}
 	if st.Done || st.Wan.Proto != "pppoe" || *st.Wan.IPv4 != "100.64.12.7" || !*st.Wan.Link || len(st.Wifi.Radios) != 1 ||
 		*st.Wifi.Radios[0].SSID != "OpenWrt" || st.Wifi.Radios[0].Secured || st.Wifi.Radios[0].Enabled || !st.Wifi.Radios[0].Auto ||
 		st.Wifi.Radios[0].Channel != nil || !st.Wifi.Radios[0].MaxPower || st.Wifi.Radios[0].Width != nil || !st.Wifi.Radios[0].AP ||
 		st.Wifi.Radios[0].Mesh || st.Wifi.Radios[0].Up != nil || !st.Wifi.Tunable || st.Wifi.Tuned == nil || !*st.Wifi.Tuned || st.Wifi.Apply != nil ||
-		*st.Wifi.Suggested != "Vectra-3F2A" || st.Vectra.Linked || *st.Vectra.BotUsername != "VectraBot" || st.Vectra.Owner != nil {
+		*st.Wifi.Suggested != "Vectra-3F2A" || st.Vectra.Linked || *st.Vectra.BotUsername != "VectraBot" || st.Vectra.Owner != nil ||
+		st.Wifi.Verdict == nil || *st.Wifi.Verdict != "fine" {
 		t.Fatalf("setup = %s", b)
 	}
 	c := st.Vectra.Claim
@@ -297,13 +313,23 @@ func TestSetupAnswersWhatTheRouterHas(t *testing.T) {
 	}
 
 	// Linked: no claim, the bot still named (support), and whose it is — the
-	// owner the daemon kept.
+	// owner the daemon kept. The password set: only that it is, never its hash.
 	w.write(t, w.cfg.StatePath, `{"device_identifier":"vectra-1","bot_username":"VectraBot","agent_token":"tok-secret","claim_owner":{"label":"Иван П."}}`)
 	w.write(t, w.cfg.XrayConfigPath, string(mustOperatorConfig(t, false)))
+	w.write(t, w.env.Shadow, "root:$6$salt$shadow-hash-never-shown:0:0:99999:7:::\n")
 	st = w.call("setup", "").(uiapi.Setup)
 	if b, _ := json.Marshal(st.Vectra); !st.Vectra.Linked || st.Vectra.Claim != nil || *st.Vectra.BotUsername != "VectraBot" ||
 		st.Vectra.Owner == nil || st.Vectra.Owner.Label != "Иван П." || strings.Contains(string(b), "tok-secret") {
 		t.Fatalf("linked setup = %s", b)
+	}
+	if b, _ := json.Marshal(st); st.PasswordSet == nil || !*st.PasswordSet || strings.Contains(string(b), "shadow-hash") || strings.Contains(string(b), "$6$") {
+		t.Fatalf("a password set = %s", b)
+	}
+	// Neither known: null, never a guess.
+	os.Remove(w.env.Shadow)
+	w.ubus = nil
+	if st := w.call("setup", "").(uiapi.Setup); st.PasswordSet != nil || st.Lan.IPv4 != nil {
+		t.Fatalf("unknown password and LAN = %+v, %+v", st.PasswordSet, st.Lan)
 	}
 	// The daemon down: no claim to show, and no guess; the owner is still known.
 	os.Remove(w.cfg.XrayConfigPath)
@@ -682,7 +708,7 @@ func TestOptimizeWifiRefusesARouterItCannotTune(t *testing.T) {
 		t.Fatalf("wifi_scan after a refusal = %+v", sc)
 	}
 	st := w.call("setup", "").(uiapi.Setup)
-	if b, _ := json.Marshal(st.Wifi); st.Wifi.Tunable || st.Wifi.Tuned != nil || !strings.Contains(string(b), `"tuned":null,"tunable":false`) {
+	if b, _ := json.Marshal(st.Wifi); st.Wifi.Tunable || st.Wifi.Tuned != nil || !strings.Contains(string(b), `"tuned":null,"tunable":false,"verdict":null`) {
 		t.Fatalf("setup.wifi = %s", b)
 	}
 	if a := w.call("set_wifi", `{"radios":{"radio2":{"ssid":"Дом-6"}}}`).(uiapi.Action); !a.OK || a.Code != "wifi_set" ||
@@ -872,7 +898,7 @@ func TestThePanelCanLockTheRouterToo(t *testing.T) {
 	} {
 		os.Remove(s.cfg.XrayConfigPath)
 		if tc.config != nil {
-			if err := os.WriteFile(s.cfg.XrayConfigPath, tc.config, 0o600); err != nil {
+			if err := vault.WriteFile(s.cfg.XrayConfigPath, tc.config); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -881,5 +907,52 @@ func TestThePanelCanLockTheRouterToo(t *testing.T) {
 		if st.UI.Locked != tc.locked || (string(out) == lockedAnswer) != tc.locked {
 			t.Errorf("%s: ui.locked=%v nodes=%s, want locked=%v", tc.name, st.UI.Locked, out, tc.locked)
 		}
+	}
+}
+
+// The owner's switch for the support shell (remote_shell.go): status says
+// what the router does, set_remote_shell {"on": bool} changes it through uci
+// — the simple view's, so the operator's lock never refuses it.
+func TestTheOwnerSwitchesTheSupportShell(t *testing.T) {
+	w := newWizardRouter(t)
+	withRuntime(t, nil)
+	prevPower := rpcdPower
+	rpcdPower = func(context.Context, bool, bool) power.Facts { return power.Facts{UCI: true, Boot: true} }
+	t.Cleanup(func() { rpcdPower = prevPower })
+	shell := func() bool {
+		t.Helper()
+		st, ok := w.call("status", "").(uiapi.Status)
+		if !ok {
+			t.Fatal("status did not answer a status")
+		}
+		return st.RemoteShell
+	}
+	if shell() {
+		t.Fatal("no remote_shell option, and status says the shell is on")
+	}
+	w.write(t, w.env.VectraConfig, "config controller 'main'\n\toption remote_shell '1'\n")
+	if !shell() {
+		t.Fatal("remote_shell '1', and status says the shell is off")
+	}
+
+	fakeUILock(t, "1", nil)
+	for on, v := range map[bool]string{false: "0", true: "1"} {
+		w.forget()
+		a, ok := w.call("set_remote_shell", fmt.Sprintf(`{"on":%v}`, on)).(uiapi.Action)
+		want := "uci set vectra-controller-pro.main=controller\nuci set vectra-controller-pro.main.remote_shell=" + v + "\nuci commit vectra-controller-pro"
+		if !ok || !a.OK || a.Code != "remote_shell_set" || w.commands() != want {
+			t.Errorf("set_remote_shell on=%v under the lock = %+v\n%s", on, a, w.commands())
+		}
+	}
+	for _, p := range []string{``, `{}`, `{"on":1}`, `{"on":"yes"}`, `{"on":true,"for":"ever"}`, `[true]`} {
+		w.forget()
+		if a, _ := w.call("set_remote_shell", p).(uiapi.Action); a.OK || a.Code != "invalid_params" || w.commands() != "" {
+			t.Errorf("%q = %+v, ran %q", p, a, w.commands())
+		}
+	}
+	w.forget()
+	w.fail = func(cmd string) bool { return strings.HasPrefix(cmd, "uci commit") }
+	if a, _ := w.call("set_remote_shell", `{"on":true}`).(uiapi.Action); a.OK || a.Code != "internal" {
+		t.Errorf("a commit that failed = %+v", a)
 	}
 }

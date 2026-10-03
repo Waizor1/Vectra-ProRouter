@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"vectra-controller-pro/internal/logging"
+	"vectra-controller-pro/internal/redact"
 )
 
 // Version is overridden at build time via -ldflags "-X main.Version=...".
@@ -58,13 +59,17 @@ func main() {
 				if errors.Is(err, flag.ErrHelp) {
 					return
 				}
-				fmt.Fprintf(os.Stderr, "vctl %s: %v\n", c.name, err)
+				if c.name == "agent" {
+					logging.L().Error("agent stopped", "error", err)
+				} else {
+					fmt.Fprintf(os.Stderr, "vctl %s: %s\n", c.name, redact.Text(err.Error()))
+				}
 				os.Exit(1)
 			}
 			return
 		}
 	}
-	fmt.Fprintf(os.Stderr, "vctl: unknown command %q\n\n", name)
+	fmt.Fprintf(os.Stderr, "vctl: unknown command %q\n\n", redact.Text(name))
 	usage()
 	os.Exit(2)
 }

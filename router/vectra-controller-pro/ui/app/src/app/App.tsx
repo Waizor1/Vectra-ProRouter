@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { describeError, type ErrInfo } from '../api/errors';
 import { normAction } from '../api/normalize';
 import { createStore } from '../api/store';
-import type { ActionMethod, CallFn, ReadMethod } from '../api/types';
+import type { ActionMethod, CallFn, ReadMethod, SetPasswordFn } from '../api/types';
 import { LANG_LABEL, LANGS, makeT, pickLang, type Key, type Lang } from '../i18n';
 import { makeFmt } from '../lib/format';
 import { hasSubscription, health, type Level } from '../lib/health';
@@ -53,6 +53,7 @@ const DONE_CODE: Record<ActionMethod, string> = {
   set_rules: 'rules_set',
   set_service: 'service_set',
   set_power: 'power_on',
+  set_remote_shell: 'remote_shell_set',
 };
 const LEVEL_TONE: Record<Level, string> = { ok: 'ok', warn: 'warn', fail: 'fail', setup: 'info', unknown: 'mute', off: 'mute' };
 
@@ -212,7 +213,7 @@ function Main({ tab, logsAuto, setLogsAuto }: { tab: TabId; logsAuto: boolean; s
   );
 }
 
-export function App({ call, lang: hostLang, root }: { call: CallFn; lang?: string; root: ShadowRoot | HTMLElement }) {
+export function App({ call, setPassword = null, lang: hostLang, root }: { call: CallFn; setPassword?: SetPasswordFn | null; lang?: string; root: ShadowRoot | HTMLElement }) {
   // mount() renders once: the transport, and so the store, never change.
   const [store] = useState(() => createStore(call));
   const [lang, setLangState] = useState<Lang>(() => pickLang(load('lang'), hostLang, navigator.language));
@@ -412,8 +413,8 @@ export function App({ call, lang: hostLang, root }: { call: CallFn; lang?: strin
   // Stable identities for the context: the functions above only read `L` and refs.
   const fns = useRef({ run, confirm, toast, refresh }).current;
   const ctx = useMemo<AppCtx>(
-    () => ({ t, f, lang, mode, locked, store, pending, root, goTab, run: fns.run, confirm: fns.confirm, refresh: fns.refresh, toast: (a, b, c) => void fns.toast(a, b, c) }),
-    [t, f, lang, mode, locked, store, pending, root, goTab, fns],
+    () => ({ t, f, lang, mode, locked, store, setPassword, pending, root, goTab, run: fns.run, confirm: fns.confirm, refresh: fns.refresh, toast: (a, b, c) => void fns.toast(a, b, c) }),
+    [t, f, lang, mode, locked, store, setPassword, pending, root, goTab, fns],
   );
 
   const setLang = (l: Lang) => {

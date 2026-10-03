@@ -1,6 +1,7 @@
 package main
 
 import (
+ "vectra-controller-pro/internal/vault"
 	"bufio"
 	"context"
 	"encoding/binary"
@@ -113,7 +114,7 @@ func controlPlaneDomains(urls ...string) []string {
 // inbound port and dnsmasq's uids. ok is false when either is missing — then
 // nothing is redirected and dnsmasq asks its own servers, as without vctl.
 func (d *daemon) dnsCandidate() (port int, uids []int, ok bool) {
-	raw, err := os.ReadFile(d.cfg.XrayRenderPath)
+	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
 	if err != nil {
 		return 0, nil, false
 	}
@@ -160,7 +161,7 @@ func (d *daemon) addDNSRedirect(ctx context.Context, spec *firewall.Spec, wait t
 		if d.cfg.NoDNSTunnel {
 			return
 		}
-		raw, err := os.ReadFile(d.cfg.XrayRenderPath)
+		raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
 		if _, has := xray.RenderDNSListen(raw); err == nil && has {
 			logging.L().Warn("DNS through the tunnel is off: no dnsmasq runs as its own user; the router's resolver keeps asking over the open path")
 		}
@@ -324,7 +325,7 @@ func (d *daemon) dnsRedirectStale(ctx context.Context) bool {
 // each stands for. Bypassed (198.18.0.0/15 is in the default set), a client
 // handed one would connect nowhere.
 func (d *daemon) carryFakeDNS(spec *firewall.Spec) {
-	raw, err := os.ReadFile(d.cfg.XrayRenderPath)
+	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
 	if err != nil {
 		return
 	}

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/localctl"
@@ -78,7 +79,7 @@ func newLockStand(t *testing.T) *lockStand {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	cfg, err := agentcfg.Parse([]byte(`{"controlUrl":"unused"}`))
+	cfg, err := agentcfg.Parse([]byte(`{"controlUrl":"https://api.vectra-pro.net"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +112,7 @@ func newLockStand(t *testing.T) *lockStand {
 		`{"tag":"node-b","protocol":"vless","settings":{"vnext":[{"address":"10.44.0.2","port":2002}]}}],`+
 		`"routing":{"rules":[{"balancerTag":"BL-MAIN","network":"tcp,udp"}],"balancers":[{"tag":"BL-MAIN","selector":["node-"]}]}}`,
 		ln.Addr().String())
-	if err := os.WriteFile(cfg.XrayRenderPath, []byte(render), 0o600); err != nil {
+	if err := vault.WriteFile(cfg.XrayRenderPath, []byte(render)); err != nil {
 		t.Fatal(err)
 	}
 	idx, _ := json.Marshal(localctl.EntriesIndex{FetchedAt: time.Now().UTC(), Entries: []localctl.EntrySummary{
@@ -372,7 +373,7 @@ func TestUCIsAnswerIsReadForWhatItIs(t *testing.T) {
 func TestEveryMethodIsPlacedUnderTheLock(t *testing.T) {
 	simple := map[string]bool{"status": true, "entries": true, "diagnostics": true, "select_entry": true,
 		"reset_entry": true, "restart_xray": true, "unpin_balancer": true, "rules": true, "set_rules": true,
-		"set_power": true, "services": true, "set_service": true}
+		"set_power": true, "services": true, "set_service": true, "set_remote_shell": true}
 	for m := range rpcdSetupSignatures { // the setup wizard is the simple view
 		simple[m] = true
 	}
@@ -392,5 +393,18 @@ func TestEveryMethodIsPlacedUnderTheLock(t *testing.T) {
 		if !strings.Contains(section, "`"+m+"`") {
 			t.Errorf("the contract's Operator lock section does not place %s", m)
 		}
+	}
+}
+
+// Before the daemon ever rendered its config, rpcd reads the router's
+// defaults — its files, and the panel's address wan_check asks — never an
+// empty config.
+func TestRPCDConfigBeforeTheDaemonStarted(t *testing.T) {
+	if _, err := os.Stat(rpcdAgentConfig); err == nil {
+		t.Skip("this machine has a daemon config")
+	}
+	c := rpcdConfig()
+	if c.ControlURL != "https://api.vectra-pro.net" || c.UISocketPath != localctl.DefaultSocketPath || c.StatePath == "" {
+		t.Fatalf("rpcd config = %+v", c)
 	}
 }

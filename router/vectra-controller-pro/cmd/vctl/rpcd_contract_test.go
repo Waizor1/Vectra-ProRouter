@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/power"
 	"vectra-controller-pro/internal/sites"
+	"vectra-controller-pro/internal/tune"
 	"vectra-controller-pro/internal/uiapi"
 	"vectra-controller-pro/internal/xrayview"
 )
@@ -135,12 +137,24 @@ func contractInputs(t *testing.T) uiapi.Inputs {
 		HasOperatorConfig: true,
 		// A fleet router Vectra took from PassWall2: on, running, PassWall owed.
 		Power:       power.Facts{UCI: true, Boot: true, Running: true, Carrying: true, Owed: power.PassWall},
+		PassWall:    "installed",
 		TableLoaded: true, Counters: map[string]int64{"vctl_tproxy_hits": 5, "vctl_would_leak": 0, "vctl_tproxy_escaped": 0, "vctl_unproxied_other": 12},
 		Router: uiapi.RouterFacts{Hostname: "r", Model: "Xiaomi Mi Router AX3000T", Release: "OpenWrt 24.10.6",
 			MemTotalMiB: &total, MemAvailableMiB: &avail, Load: []float64{0.3, 0.2, 0.1}},
 		XrayRSSMiB: &mem, MemoryLimitMiB: &limit,
+		// A 234 MB router the tune has been through; packet steering was on
+		// before it.
+		Tune: &tune.Plan{On: true, Profile: tune.Lowmem, MemTotalMiB: 234, Cores: 2, Items: []tune.Item{
+			{ID: tune.ItemZram, State: tune.Applied, Value: strp("117"), Target: "on"},
+			{ID: tune.ItemSwappiness, State: tune.Applied, Value: strp("80"), Target: "80"},
+			{ID: tune.ItemVFSCachePressure, State: tune.Applied, Value: strp("200"), Target: "200"},
+			{ID: tune.ItemPacketSteering, State: tune.Already, Value: strp("1"), Target: "1"},
+			{ID: tune.ItemFlowOffloading, State: tune.Applied, Value: strp("1"), Target: "1"},
+		}},
 	}
 }
+
+func strp(s string) *string { return &s }
 
 // The answers built from real inputs have the fixtures' shape: the same keys
 // at every level. Values may be null where the contract allows it.
@@ -394,7 +408,7 @@ func TestDiagnosticParamsTheUIReadsAreTheFixtures(t *testing.T) {
 	}
 	seen := 0
 	for _, c := range uiapi.BuildDiagnostics(contractInputs(t)).Checks {
-		if c.ID != "no_leak" && c.ID != "balancer_fallback" {
+		if c.ID != "no_leak" && c.ID != "balancer_fallback" && c.ID != "tune" {
 			continue
 		}
 		seen++
@@ -403,8 +417,8 @@ func TestDiagnosticParamsTheUIReadsAreTheFixtures(t *testing.T) {
 			t.Errorf("%s:\n  router  %s\n  fixture %s", c.ID, got, want[c.ID])
 		}
 	}
-	if seen != 2 {
-		t.Fatalf("built %d of the 2 checks", seen)
+	if seen != 3 {
+		t.Fatalf("built %d of the 3 checks", seen)
 	}
 }
 
@@ -474,6 +488,22 @@ func TestRPCDACLMatchesTheMethods(t *testing.T) {
 	}
 	if len(granted) != len(rpcdSignatures) {
 		t.Errorf("ACL lists %d methods, rpcd offers %d", len(granted), len(rpcdSignatures))
+	}
+	// Beyond vectra, exactly LuCI's own password change: the UI sets the
+	// router's password with it (contract README, "Router password") — vctl
+	// never handles a password. Nothing else of LuCI's, and nothing to read.
+	for obj, methods := range g.Read.Ubus {
+		if obj != "vectra" {
+			t.Errorf("the ACL lets the UI read %s %v", obj, methods)
+		}
+	}
+	for obj, methods := range g.Write.Ubus {
+		if obj != "vectra" && (obj != "luci" || !slices.Equal(methods, []string{"setPassword"})) {
+			t.Errorf("the ACL lets the UI change %s %v", obj, methods)
+		}
+	}
+	if !slices.Equal(g.Write.Ubus["luci"], []string{"setPassword"}) {
+		t.Errorf("the ACL does not grant luci.setPassword: %v", g.Write.Ubus["luci"])
 	}
 	// And the contract README documents the same set.
 	readme := string(readContract(t, "README.md"))

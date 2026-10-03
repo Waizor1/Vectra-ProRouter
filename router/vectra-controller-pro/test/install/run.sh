@@ -22,9 +22,15 @@
 #                     an old vctl left off — upgraded, still off, PassWall2's
 #                     process never interrupted
 #   passwall          PassWall2 + official xray-core: refused without --yes,
-#                     taken over with it (xray upgraded), given back on stop
+#                     taken over with it (xray upgraded), given back on
+#                     `vectra off`
 #   passwall-upgrade  taken over from PassWall2, then upgraded: vctl
 #                     restarted in place, PassWall2 never ran meanwhile
+#   passwall-retire   taken over from PassWall2 as opkg has it, then retired
+#                     (`vctl retire-passwall --now`, once vctl carries the
+#                     traffic): its packages gone, xray-core and dnsmasq-full
+#                     kept, its configuration backed up; refused before that;
+#                     `vectra off` leaves plain internet, the dead-man too
 #   dnsmasq-rollback  a dnsmasq-full that never runs: the old dnsmasq comes back
 #   mirror            downloads.openwrt.org unreachable: through a mirror
 #   refuse-*          arch, apk, release, memory, storage, conflict, fleet,
@@ -46,7 +52,7 @@ FEED_BASE="http://$FEED_NAME:8080"
 # host that runs openwrt-cache is the control plane every router checks in with).
 OPENWRT_MIRROR="${OPENWRT_MIRROR:-https://mirror-03.infra.openwrt.org}"
 PARALLEL="${INSTALL_PARALLEL:-4}"
-ALL=(lifecycle geodata-links check standby standby-upgrade passwall passwall-upgrade dnsmasq-rollback mirror
+ALL=(lifecycle geodata-links check standby standby-upgrade passwall passwall-upgrade passwall-retire dnsmasq-rollback mirror
 	refuse-arch refuse-apk refuse-release refuse-memory refuse-storage
 	refuse-conflict refuse-fleet refuse-signature refuse-feed-down)
 
@@ -76,18 +82,46 @@ FEEDTOOL="$MODULE/dist/cache/feedtool"
 cp "$BUILD/feed/install.sh" "$BUILD/fixtures/install.sh"
 
 step "fixtures"
-fake() { # <package> <version>: a package that only has to exist
+fake() { # <package> <version> [depends]: a package that only has to exist
 	local d
 	d="$(mktemp -d)"
 	mkdir -p "$d/data/usr/share/doc/$1" "$d/ctrl"
 	echo "stands in for $1 in test/install" > "$d/data/usr/share/doc/$1/README"
-	printf 'Package: %s\nVersion: %s\nArchitecture: all\nMaintainer: test\nDescription: test/install fixture\n' "$1" "$2" > "$d/ctrl/control"
+	{
+		printf 'Package: %s\nVersion: %s\n' "$1" "$2"
+		[[ -z "${3:-}" ]] || printf 'Depends: %s\n' "$3"
+		printf 'Architecture: all\nMaintainer: test\nDescription: test/install fixture\n'
+	} > "$d/ctrl/control"
 	"$FEEDTOOL" ipk -data "$d/data" -control "$d/ctrl" -out "$BUILD/fixtures/$1.ipk"
 	rm -rf "$d"
 }
 fake podkop 0.2.5-r1
 fake vectra-controller-agent 0.1.13-r40
 fake luci-app-passwall2 26.8.10-r1
+# PassWall2 as opkg has it on a fleet router, for passwall-retire: its package
+# owns its init script (the stand's stub) and its configuration (a conffile),
+# with a translation that needs it and helpers it needs — so the retirement's
+# `opkg remove` really takes the service off the router, and keeps the
+# configuration the takeover changed, as opkg does with a modified conffile.
+pw2="$(mktemp -d)"
+mkdir -p "$pw2/data/etc/init.d" "$pw2/data/etc/config" "$pw2/ctrl"
+cp "$MODULE/test/dataplane/stand/legacy-stub/passwall2" "$pw2/data/etc/init.d/passwall2"
+chmod 0755 "$pw2/data/etc/init.d/passwall2"
+cp "$MODULE/test/dataplane/stand/legacy-stub/passwall2.config" "$pw2/data/etc/config/passwall2"
+chmod 0644 "$pw2/data/etc/config/passwall2"
+printf 'Package: luci-app-passwall2\nVersion: 26.8.10-r1\nDepends: xray-core, geoview, tcping, chinadns-ng\nArchitecture: all\nMaintainer: test\nDescription: test/install fixture\n' > "$pw2/ctrl/control"
+echo /etc/config/passwall2 > "$pw2/ctrl/conffiles"
+"$FEEDTOOL" ipk -data "$pw2/data" -control "$pw2/ctrl" -out "$BUILD/fixtures/luci-app-passwall2-full.ipk"
+rm -rf "$pw2"
+fake luci-i18n-passwall2-ru 26.8.10-r1 luci-app-passwall2
+fake geoview 0.2.6-r1
+fake tcping 0.3-r1
+fake chinadns-ng 2025.08.09-r1
+# What a router bound to an account has on /etc for passwall-retire: the
+# data-plane stand's operator config and provider document (a freedom
+# outbound: traffic through xray, straight out).
+cp "$MODULE/test/dataplane/stand/operator-config.json" "$BUILD/fixtures/operator-config.json"
+cp "$MODULE/test/dataplane/stand/provider-marked.json" "$BUILD/fixtures/provider-config.json"
 # A key the feed is not signed with.
 "$FEEDTOOL" keygen -pub "$BUILD/fixtures/rogue.pub" -sec "$BUILD/fixtures/rogue.sec" -comment rogue > "$BUILD/fixtures/rogue.id"
 # The same feed, plus a dnsmasq-full newer than OpenWrt's that installs a README

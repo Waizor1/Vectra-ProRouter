@@ -23,6 +23,7 @@ type Process struct {
 	cfg           config.Process
 	binary        string
 	configFile    string
+	configSource  func() ([]byte, error)
 	logDir        string
 	assetDir      string
 	memorySoftMiB int
@@ -39,13 +40,15 @@ type Process struct {
 	// childEnv is added to every xray's environment (SetChildEnv).
 	childEnv []string
 
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	cancel    context.CancelFunc
-	done      chan struct{} // closed exactly once after the active cmd's Wait returns
-	status    atomic.Pointer[Status]
-	backoff   *BackoffState
-	startedAt time.Time
+	mu          sync.Mutex
+	cmd         *exec.Cmd
+	configWrite *os.File
+	configDone  chan struct{}
+	cancel      context.CancelFunc
+	done        chan struct{} // closed exactly once after the active cmd's Wait returns
+	status      atomic.Pointer[Status]
+	backoff     *BackoffState
+	startedAt   time.Time
 
 	stopping     atomic.Bool // true after Stop has been called
 	expectedExit atomic.Bool // true when a controlled restart (Reload/Stop) signalled
@@ -79,6 +82,16 @@ func (p *Process) SetOnStart(fn func(pid int)) {
 		return
 	}
 	p.onStart.Store(&fn)
+}
+
+// SetConfigSource supplies a fresh configuration for each start, including crash
+// restarts. The source must return an independent snapshot. Config bytes travel
+// only through the child stdin pipe; child output is discarded in this mode.
+// This reduces disk artifacts, not root access to process memory.
+func (p *Process) SetConfigSource(source func() ([]byte, error)) {
+	p.mu.Lock()
+	p.configSource = source
+	p.mu.Unlock()
 }
 
 // SetOOMScoreAdj pins the OOM score adjustment of the controller itself
@@ -159,6 +172,12 @@ func (p *Process) Status() Status {
 // WriteXrayConfig atomically writes the given config bytes to ConfigFile,
 // fsyncing the file and parent dir so a power-cut cannot truncate it.
 func (p *Process) WriteXrayConfig(data []byte) error {
+	p.mu.Lock()
+	hardened := p.configSource != nil
+	p.mu.Unlock()
+	if hardened {
+		return errors.New("supervisor: file config disabled with private config source")
+	}
 	return atomicWriteFile(p.configFile, data, 0o600)
 }
 
@@ -268,7 +287,43 @@ func (p *Process) Reload(ctx context.Context) error {
 
 func (p *Process) startOnce(ctx context.Context) error {
 	subCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(subCtx, p.binary, "run", "-c", p.configFile)
+	p.mu.Lock()
+	source := p.configSource
+	p.mu.Unlock()
+	configArg := p.configFile
+	var candidate []byte
+	if source != nil {
+		var err error
+		candidate, err = source()
+		if err != nil {
+			cancel()
+			return errors.New("supervisor: private configuration unavailable")
+		}
+		if len(candidate) == 0 {
+			cancel()
+			return errors.New("supervisor: private configuration empty")
+		}
+		configArg = "stdin:"
+	}
+	cmd := exec.CommandContext(subCtx, p.binary, "run", "-c", configArg)
+	cmd.WaitDelay = 100 * time.Millisecond
+	var configRead, configWrite *os.File
+	if source != nil {
+		var err error
+		configRead, configWrite, err = os.Pipe()
+		if err != nil {
+			cancel()
+			return errors.New("supervisor: private configuration pipe unavailable")
+		}
+		cmd.Stdin = configRead
+		originalCancel := cmd.Cancel
+		cmd.Cancel = func() error { _ = configWrite.Close(); return originalCancel() }
+		// Public ownership marker for init orphan cleanup. The production shell
+		// wrapper retains its own argv so its scoped cleanup pattern still works.
+		if filepath.Base(p.binary) != "vctl-xray-wrapper" {
+			cmd.Args[0] = "vctl-xray-private"
+		}
+	}
 	// Pin the geo asset dir regardless of how xray was launched. The
 	// vctl-xray-wrapper exports it too, but the supervisor may exec
 	// /usr/bin/xray directly (dev, doctor, a config that bypasses the wrapper)
@@ -281,7 +336,7 @@ func (p *Process) startOnce(ctx context.Context) error {
 	cmd.SysProcAttr = newSysProcAttr()
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
-	if p.logDir != "" {
+	if source == nil && p.logDir != "" {
 		if err := os.MkdirAll(p.logDir, 0o755); err == nil {
 			// Size-capped, NOT an O_APPEND file handed to xray. The log dir is
 			// tmpfs — RAM — and xray logs a warning per failed probe and per
@@ -295,12 +350,31 @@ func (p *Process) startOnce(ctx context.Context) error {
 		}
 	}
 	if err := cmd.Start(); err != nil {
+		if configRead != nil {
+			_ = configRead.Close()
+			_ = configWrite.Close()
+		}
 		cancel()
 		return err
+	}
+	var configDone chan struct{}
+	if configRead != nil {
+		configDone = make(chan struct{})
+		_ = configRead.Close()
+		// A real OS pipe avoids exec retaining a Reader and the plaintext snapshot
+		// throughout the child's lifetime. EOF terminates Xray's config read.
+		go func(data []byte) {
+			defer close(configDone)
+			defer clear(data)
+			_, _ = configWrite.Write(data)
+			_ = configWrite.Close()
+		}(candidate)
 	}
 	doneCh := make(chan struct{})
 	p.mu.Lock()
 	p.cmd = cmd
+	p.configWrite = configWrite
+	p.configDone = configDone
 	p.cancel = cancel
 	p.done = doneCh
 	p.startedAt = time.Now()
@@ -328,16 +402,22 @@ func (p *Process) waitOnce() (error, time.Duration) {
 	cmd := p.cmd
 	startedAt := p.startedAt
 	doneCh := p.done
+	configWrite, configDone := p.configWrite, p.configDone
 	p.mu.Unlock()
 	if cmd == nil {
 		return errors.New("supervisor: nil cmd in waitOnce"), 0
 	}
 	err := cmd.Wait()
+	if configWrite != nil {
+		_ = configWrite.Close()
+		<-configDone
+	}
 	p.mu.Lock()
 	if p.cancel != nil {
 		p.cancel()
 	}
 	p.cmd = nil
+	p.configWrite, p.configDone = nil, nil
 	p.done = nil
 	p.mu.Unlock()
 	close(doneCh)

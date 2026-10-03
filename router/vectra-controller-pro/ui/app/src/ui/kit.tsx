@@ -164,6 +164,36 @@ export const ErrorBox = ({ t, err, onRetry, big, note }: { t: T; err: ErrInfo; o
 
 // ── inputs ──────────────────────────────────────────────────────────────────
 
+/** A labelled text field; its error (or else its hint) under it, tied to the input. */
+export function Field(p: { id: string; label: string; value: string; onInput: (v: string) => void; type?: string; error?: string | null; hint?: string; auto?: string }) {
+  return (
+    <div class="fld">
+      <label for={p.id}>{p.label}</label>
+      <input
+        id={p.id}
+        class="in"
+        type={p.type || 'text'}
+        value={p.value}
+        autoComplete={p.auto || 'off'}
+        autoCapitalize="none"
+        spellcheck={false}
+        aria-invalid={p.error ? true : undefined}
+        aria-describedby={p.error || p.hint ? p.id + '-h' : undefined}
+        onInput={(e) => p.onInput((e.currentTarget as HTMLInputElement).value)}
+      />
+      {p.error ? (
+        <span id={p.id + '-h'} class="fld-err" role="alert">
+          {p.error}
+        </span>
+      ) : p.hint ? (
+        <span id={p.id + '-h'} class="hint">
+          {p.hint}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export interface Opt<V> {
   value: V;
   label: ComponentChildren;
@@ -203,8 +233,21 @@ export function Seg<V extends string | number>(p: { label: string; value: V | nu
   );
 }
 
-export const Switch = ({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) => (
-  <button type="button" role="switch" class="sw" aria-checked={checked} onClick={() => onChange(!checked)}>
+export const Switch = ({
+  label,
+  checked,
+  onChange,
+  disabled,
+  describedBy,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+  /** The id of the sentence that says what the switch does. */
+  describedBy?: string;
+}) => (
+  <button type="button" role="switch" class="sw" aria-checked={checked} aria-describedby={describedBy} disabled={disabled} onClick={() => onChange(!checked)}>
     <i aria-hidden="true" />
     {label}
   </button>

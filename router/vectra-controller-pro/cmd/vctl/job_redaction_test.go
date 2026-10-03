@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"vectra-controller-pro/internal/controlplane"
+	"vectra-controller-pro/internal/vault"
 )
 
 // subToken is the bearer material providers put in the subscription URL.
@@ -31,7 +31,7 @@ func deadProviderDaemon(t *testing.T, dir string, panel *panelStub) (*daemon, st
 	d := newTestDaemon(t, dir, panel, provider)
 
 	secret := provider.URL + "/sub/" + subToken + "?token=" + subToken
-	if err := os.WriteFile(filepath.Join(dir, "operator.json"), operatorConfigPointingAt(t, secret), 0o600); err != nil {
+	if err := vault.WriteFile(filepath.Join(dir, "operator.json"), operatorConfigPointingAt(t, secret)); err != nil {
 		t.Fatal(err)
 	}
 	provider.Close() // connection refused on the next fetch
@@ -96,7 +96,7 @@ func TestJournalledJobResultDoesNotLeakSubscriptionURL(t *testing.T) {
 	if d.st.PendingJobResult == nil {
 		t.Fatal("expected the failed submission to leave a journalled result")
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	raw, err := readEncryptedTestFile(t, filepath.Join(dir, "state.json"))
 	if err != nil {
 		t.Fatalf("read state.json: %v", err)
 	}
@@ -177,6 +177,7 @@ func renderValue(v interface{}) string {
 // (routerTerminalResultPayloadSchema): without its required fields the panel
 // dropped the whole payload and showed every answer from vctl as empty.
 func TestTerminalAnswerHasThePanelsShape(t *testing.T) {
+	fakeRemoteShell(t, true) // a router whose owner allows the support shell
 	dir := t.TempDir()
 	panel := newPanelStub(t, nil)
 	d, _ := deadProviderDaemon(t, dir, panel)

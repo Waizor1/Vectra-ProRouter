@@ -81,21 +81,22 @@ type RouterReachabilityProbe struct {
 // preserved, and engineMode + xray-native fields are added (the panel accepts
 // these as optional after the Phase 2 contract change).
 type RouterInventory struct {
-	ProtocolVersion          string `json:"protocolVersion"`
-	EngineMode               string `json:"engineMode"`
-	DeviceIdentifier         string `json:"deviceIdentifier"`
-	DevicePublicKey          string `json:"devicePublicKey"`
-	ControllerVersion        string `json:"controllerVersion"`
-	ControllerRuntimeVersion string `json:"controllerRuntimeVersion,omitempty"`
-	Hostname                 string `json:"hostname,omitempty"`
-	PanelDomain              string `json:"panelDomain,omitempty"`
-	Model                    string `json:"model"`
-	BoardName                string `json:"boardName"`
-	LayoutFamily             string `json:"layoutFamily,omitempty"`
-	Target                   string `json:"target"`
-	Architecture             string `json:"architecture"`
-	OpenWrtRelease           string `json:"openwrtRelease"`
-	OpenWrtDescription       string `json:"openwrtDescription,omitempty"`
+	Connect                  *RouterConnectTelemetry `json:"connect,omitempty"`
+	ProtocolVersion          string                  `json:"protocolVersion"`
+	EngineMode               string                  `json:"engineMode"`
+	DeviceIdentifier         string                  `json:"deviceIdentifier"`
+	DevicePublicKey          string                  `json:"devicePublicKey"`
+	ControllerVersion        string                  `json:"controllerVersion"`
+	ControllerRuntimeVersion string                  `json:"controllerRuntimeVersion,omitempty"`
+	Hostname                 string                  `json:"hostname,omitempty"`
+	PanelDomain              string                  `json:"panelDomain,omitempty"`
+	Model                    string                  `json:"model"`
+	BoardName                string                  `json:"boardName"`
+	LayoutFamily             string                  `json:"layoutFamily,omitempty"`
+	Target                   string                  `json:"target"`
+	Architecture             string                  `json:"architecture"`
+	OpenWrtRelease           string                  `json:"openwrtRelease"`
+	OpenWrtDescription       string                  `json:"openwrtDescription,omitempty"`
 	// PasswallEnabled is required by the panel's inventory schema; on an
 	// xray-direct router it is always false (PassWall2 is not the data plane).
 	PasswallEnabled     bool                     `json:"passwallEnabled"`
@@ -115,6 +116,10 @@ type RouterInventory struct {
 	ForeignReachability *RouterReachabilityProbe `json:"foreignReachability,omitempty"`
 	ConfigDigest        string                   `json:"configDigest,omitempty"`
 	AppliedRevisionID   string                   `json:"appliedRevisionId,omitempty"`
+	// RemoteShell: the router's owner allows the panel's support shell here
+	// (run_terminal_command; UCI vectra-controller-pro.main.remote_shell). Off,
+	// the router refuses it.
+	RemoteShell bool `json:"remoteShell"`
 }
 
 // MissingRequiredFields returns the JSON names of the inventory fields the
@@ -229,7 +234,8 @@ type ClaimKey struct {
 
 // ClaimOwner is who claimed the router, as the panel may show them.
 type ClaimOwner struct {
-	Label string `json:"label"`
+	OwnerRef string `json:"ownerRef,omitempty"`
+	Label    string `json:"label"`
 }
 
 type CheckInResponse struct {
@@ -302,4 +308,46 @@ type JobResultRequest struct {
 type JobResultResponse struct {
 	ProtocolVersion string `json:"protocolVersion"`
 	Acknowledged    bool   `json:"acknowledged"`
+}
+
+// RouterConnectTelemetry contains measured state or applied owner settings.
+// Pointers distinguish unavailable observations from measured zero/false.
+type RouterConnectTelemetry struct {
+	OwnerRef          string            `json:"ownerRef,omitempty"`
+	AvailableVersion  string            `json:"availableVersion,omitempty"`
+	Capabilities      *[]string         `json:"capabilities,omitempty"`
+	UptimeSec         *int64            `json:"uptimeSec,omitempty"`
+	Verdict           string            `json:"verdict,omitempty"`
+	ExitCountry       *string           `json:"exitCountry,omitempty"`
+	LanClients        *int              `json:"lanClients,omitempty"`
+	Location          *ConnectLocation  `json:"location,omitempty"`
+	Entries           *[]ConnectEntry   `json:"entries,omitempty"`
+	Sites             *ConnectSites     `json:"sites,omitempty"`
+	Services          *[]ConnectService `json:"services,omitempty"`
+	Wifi              *[]ConnectWifi    `json:"wifi,omitempty"`
+	RouterPasswordSet *bool             `json:"routerPasswordSet,omitempty"`
+	SupportAccess     *bool             `json:"supportAccess,omitempty"`
+	AutoUpdate        *bool             `json:"autoUpdate,omitempty"`
+}
+type ConnectLocation struct {
+	Mode    string  `json:"mode"`
+	EntryID *string `json:"entryId"`
+}
+type ConnectEntry struct {
+	ID      string  `json:"id"`
+	Name    string  `json:"name"`
+	Country *string `json:"country"`
+}
+type ConnectSites struct {
+	Direct []string `json:"direct"`
+	VPN    []string `json:"vpn"`
+}
+type ConnectService struct {
+	ID      string  `json:"id"`
+	EntryID *string `json:"entryId"`
+}
+type ConnectWifi struct {
+	Password string `json:"password,omitempty"`
+	Band     string `json:"band"`
+	SSID     string `json:"ssid"`
 }

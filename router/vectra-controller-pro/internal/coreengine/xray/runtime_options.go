@@ -90,7 +90,8 @@ type SpliceOptions struct {
 	DNS *DNSOptions
 	// Services are the owner's country per service ("tiktok": "DE"; ""
 	// = the entry's own path), rendered as overlays (services.go).
-	Services map[string]string
+	Services       map[string]string
+	ServiceEntries map[string]json.RawMessage
 	// RussiaDirect sends the provider's Russian BL-RU rules to its plain
 	// freedom outbound (russia_direct.go). YouTube's BL-RU rule stays.
 	RussiaDirect bool
@@ -125,6 +126,9 @@ func (o SpliceOptions) Key() string {
 	}
 	if sk := servicesKey(o.Services); sk != "" {
 		k += ";svc=" + sk
+	}
+	if len(o.ServiceEntries) > 0 {
+		k += ";svcEntries=" + connectServicesKey(o.ServiceEntries)
 	}
 	if o.ExitProbeListen != "" {
 		k += ";exitprobe=" + o.ExitProbeListen

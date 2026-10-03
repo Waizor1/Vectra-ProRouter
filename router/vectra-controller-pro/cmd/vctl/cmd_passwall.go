@@ -102,7 +102,7 @@ func cmdPassWallRender(args []string) error {
 	if err := v.Test(ctx, spliced); err != nil {
 		return fmt.Errorf("xray -test refused the render (geo files: %s): %w", assetDir, err)
 	}
-	if err := os.WriteFile(*out, spliced, 0o600); err != nil {
+	if err := writePrivate(*out, spliced); err != nil {
 		return err
 	}
 	who := "PassWall2's generator"

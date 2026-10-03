@@ -98,6 +98,22 @@
       "id": "pinned_node_dead",
       "status": "ok",
       "params": {}
+    },
+    {
+      "id": "tune",
+      "status": "ok",
+      "params": {
+        "enabled": true,
+        "items": [
+          "zram",
+          "swappiness",
+          "vfs_cache_pressure",
+          "packet_steering",
+          "flow_offloading"
+        ],
+        "profile": "lowmem",
+        "zramMiB": 117
+      }
     }
   ]
 }

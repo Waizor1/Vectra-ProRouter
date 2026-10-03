@@ -100,8 +100,9 @@ const SPECS: Record<ReadMethod, Spec> = {
     subscription: { entryIndex: 'n', entryRemark: 's', entryCount: 'n', fetchedAt: 's', source: 's', overrideStale: 'b' },
     probe: { intervalSec: 'n', source: 's' },
     pins: 'M',
-    legacy: { agentEnabled: 'b', passwallRunning: 'b' },
+    legacy: { agentEnabled: 'b', passwallRunning: 'b', passwall: 's', passwallRetiredAt: 's' },
     ui: { locked: 'b' },
+    remoteShell: 'b',
     router: {
       hostname: 's',
       model: 's',
@@ -124,6 +125,7 @@ const SPECS: Record<ReadMethod, Spec> = {
         unfitKept: [{ tag: 'T', country: 's', egress: 's' }],
       },
     ],
+    tune: ['?', { enabled: 'b', profile: 's', items: [{ id: 'T', state: 's', value: 's', target: 's', reason: 's' }] }],
   },
   balancers: {
     apiReachable: 'b',
@@ -177,7 +179,9 @@ const SPECS: Record<ReadMethod, Spec> = {
   logs: { lines: [{ time: 's', level: 's:unknown', source: 's', message: 's:' }] },
   setup: {
     done: 'b',
+    passwordSet: 'b',
     wan: { proto: 's', link: 'b', ipv4: 's', gateway: 's', dns: 'S' },
+    lan: { ipv4: 's' },
     wifi: {
       radios: [
         {
@@ -200,6 +204,7 @@ const SPECS: Record<ReadMethod, Spec> = {
       ],
       tuned: 'b',
       tunable: 'b',
+      verdict: 's',
       suggested: 's',
       apply: ['?', { state: 's', at: 's', detail: 's', radios: 'B' }],
     },

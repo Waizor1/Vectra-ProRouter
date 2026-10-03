@@ -2,6 +2,7 @@ package localctl
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -113,5 +114,20 @@ func TestCallHonoursTheDeadlineOfASlowHandler(t *testing.T) {
 	}
 	if time.Since(start) > 2*time.Second {
 		t.Fatal("deadline not applied")
+	}
+}
+
+// `vctl retire-passwall --now` reaches the daemon as a request of its own.
+func TestTheRetireRequestCarriesNow(t *testing.T) {
+	b, err := json.Marshal(SocketRequest{Op: OpRetirePassWall, Now: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"op":"retire_passwall","now":true}` {
+		t.Fatalf("request %s", b)
+	}
+	b, _ = json.Marshal(SocketRequest{Op: OpRuntime})
+	if string(b) != `{"op":"runtime"}` {
+		t.Fatalf("a request without it changed: %s", b)
 	}
 }

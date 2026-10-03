@@ -38,11 +38,14 @@ export const radio = (band: '2g' | '5g', over: Partial<WifiRadio> = {}): WifiRad
 
 const setup: Setup = {
   done: true,
+  passwordSet: true,
   wan: { proto: 'dhcp', link: true, ipv4: '100.64.12.7', gateway: '100.64.12.1', dns: ['100.64.12.1'] },
+  lan: { ipv4: '192.168.1.1' },
   wifi: {
     radios: [radio('2g'), radio('5g')],
     tuned: true,
     tunable: true,
+    verdict: 'fine',
     suggested: 'Vectra-4E2A',
     apply: { state: 'ok', at: diagnostics.checkedAt, detail: null, radios: { radio0: true, radio1: true } },
   },

@@ -20,23 +20,25 @@ import (
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/power"
+	"vectra-controller-pro/internal/tune"
 	"vectra-controller-pro/internal/uaguard"
+	"vectra-controller-pro/internal/vault"
 	"vectra-controller-pro/internal/xrayview"
 )
 
 // Need says which inputs a method reads: each rpcd call is its own process
 // on a 234 MB router, so nothing is gathered that the answer does not use.
 type Need struct {
-	Runtime, View, Reach, Metrics, Balancers, Local, Operator, Counters, Legacy, Router bool
+	Runtime, View, Reach, Metrics, Balancers, Local, Operator, Counters, Legacy, Router, Tune bool
 }
 
 var (
-	NeedStatus      = Need{Runtime: true, View: true, Reach: true, Local: true, Counters: true, Legacy: true, Router: true}
+	NeedStatus      = Need{Runtime: true, View: true, Reach: true, Local: true, Counters: true, Legacy: true, Router: true, Tune: true}
 	NeedBalancers   = Need{Runtime: true, View: true, Balancers: true, Local: true}
 	NeedNodes       = Need{View: true, Metrics: true}
 	NeedEntries     = Need{Runtime: true, Local: true, Operator: true}
 	NeedDiagnostics = Need{Runtime: true, View: true, Reach: true, Metrics: true, Balancers: true, Local: true,
-		Operator: true, Counters: true, Legacy: true, Router: true}
+		Operator: true, Counters: true, Legacy: true, Router: true, Tune: true}
 )
 
 // Env is where a router keeps things; tests point it elsewhere.
@@ -51,12 +53,16 @@ type Env struct {
 	Release  string // "/etc/openwrt_release"
 	Version  string
 	CallTime time.Duration // per external call
+	// Tune is where the router's tune reads the router; it only reads here.
+	Tune tune.Env
 }
 
 // RouterEnv is the production Env for cfg.
 func RouterEnv(cfg agentcfg.Config, version string) Env {
+	t := tune.RouterEnv()
+	t.Run = nil // read, never run: the answers only look
 	return Env{Cfg: cfg, ProcDir: "/proc", RCDir: "/etc/rc.d", Nft: "nft", Overlay: "/overlay", Tmp: "/tmp",
-		ModelF: "/tmp/sysinfo/model", Release: "/etc/openwrt_release", Version: version, CallTime: 3 * time.Second}
+		ModelF: "/tmp/sysinfo/model", Release: "/etc/openwrt_release", Version: version, CallTime: 3 * time.Second, Tune: t}
 }
 
 // Gather collects what need asks for. It never fails: what cannot be read is
@@ -73,22 +79,26 @@ func Gather(ctx context.Context, env Env, need Need) Inputs {
 		cancel()
 	}
 	if need.View || need.Reach || need.Metrics || need.Balancers {
-		if raw, err := os.ReadFile(env.Cfg.XrayRenderPath); err == nil {
+		if raw, err := vault.ReadFile(env.Cfg.XrayRenderPath); err == nil {
 			in.View, _ = xrayview.Parse(raw)
+			clear(raw)
 		}
 	}
 	if need.Local {
 		in.Overrides, _ = localctl.LoadOverrides(env.Cfg.OverridesPath)
 		in.Index, _ = localctl.LoadEntriesIndex(env.Cfg.EntriesIndexPath)
 		if in.Runtime == nil || in.Runtime.Probe == nil {
-			if raw, err := os.ReadFile(env.Cfg.ProviderConfigPath); err == nil {
+			if raw, err := vault.ReadFile(env.Cfg.ProviderConfigPath); err == nil {
 				in.ProviderProbeInterval, _, _ = xray.ProviderProbeInterval(raw)
+				clear(raw)
 			}
 		}
 	}
 	if need.Operator {
-		if raw, err := os.ReadFile(env.Cfg.XrayConfigPath); err == nil {
-			if c, err := config.Unmarshal(raw); err == nil {
+		if raw, err := vault.ReadFile(env.Cfg.XrayConfigPath); err == nil {
+			c, parseErr := config.Unmarshal(raw)
+			clear(raw)
+			if parseErr == nil {
 				for _, s := range c.Subscriptions {
 					if !s.Enabled {
 						continue
@@ -144,6 +154,10 @@ func Gather(ctx context.Context, env Env, need Need) Inputs {
 	if need.Legacy {
 		in.AgentEnabled = legacyAgentEnabled(env.RCDir)
 		in.PasswallRunning = power.PassWallRunning(env.ProcDir)
+	}
+	if need.Tune && env.Tune.ProcDir != "" {
+		p := tune.Inspect(env.Tune)
+		in.Tune = &p
 	}
 	if need.Router {
 		in.Router = routerFacts(env)

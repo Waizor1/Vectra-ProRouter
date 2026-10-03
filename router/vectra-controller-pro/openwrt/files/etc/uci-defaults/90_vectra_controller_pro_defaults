@@ -42,9 +42,32 @@ set_if_empty job_safety_heavy_tmp_floor_mb "0"
 set_if_empty job_safety_storage_tmp_floor_mb "0"
 set_if_empty job_safety_diagnostic_tmp_floor_mb "0"
 set_if_empty job_safety_pre_drop_caches "0"
+set_if_empty tune "1"
 # support_bot is deliberately not seeded: it is empty until boxes are prepared
 # (uci set vectra-controller-pro.main.support_bot=<bot>; uci commit), and an
 # absent option reads the same as an empty one.
+
+# The support shell: the panel's run_terminal_command runs any command as
+# root, so vctl runs it only where the router's owner allows it
+# (remote_shell '1', switched in the router UI: «Доступ поддержки к
+# роутеру»). Decided once, here, and never again: a router an older vctl
+# already ran on — its state is there — keeps the shell it had, and so does
+# one the old Vectra agent (vectra-controller-agent) ran on, which had the
+# shell through it — its state is legacy_state_path; a router that had
+# neither starts without it. The package's config file does not name the
+# option, so that an upgrade's copy of it cannot decide first.
+if [ -z "$(uci -q get vectra-controller-pro.main.remote_shell || true)" ]; then
+	state="$(uci -q get vectra-controller-pro.main.state_path || true)"
+	[ -n "$state" ] || state=/etc/vectra-controller-pro/state.json
+	legacy="$(uci -q get vectra-controller-pro.main.legacy_state_path || true)"
+	[ -n "$legacy" ] || legacy=/etc/vectra-controller/state.json
+	if [ -s "$state" ] || [ -s "$legacy" ]; then
+		uci -q set vectra-controller-pro.main.remote_shell=1
+	else
+		uci -q set vectra-controller-pro.main.remote_shell=0
+	fi
+	changed=1
+fi
 
 if [ "$changed" -eq 1 ]; then
 	uci commit vectra-controller-pro
@@ -77,14 +100,20 @@ if [ -x /usr/sbin/vctl ]; then
 	/usr/sbin/vctl setup mark-done-if-working >/dev/null 2>&1 || true
 fi
 
-# vectra.lan: the router's own name on the LAN, so this page is always at
-# http://vectra.lan — with Vectra on or off, since dnsmasq answers it, not
-# vctl. dnsmasq's init turns the `interface_name` list of the LAN's `config
-# dhcp` section into --interface-name=vectra.lan,<the LAN's device>, so the
-# name follows the LAN's address wherever it is moved. The section is the one
-# serving the LAN (option interface 'lan'), whatever it is called. Removing
-# the package takes the name away again (postrm). DNSMASQ_INIT is a variable
-# only so the packaging tests can stand dnsmasq in.
+# The router's own names on the LAN, so this page is always at
+# http://my.vectra-pro.net and http://vectra.lan — with Vectra on or off,
+# since dnsmasq answers them, not vctl. my.vectra-pro.net is under a real
+# top-level domain: a browser opens it as an address, where it takes a typed
+# `vectra.lan` (a .lan it does not know) for a search. dnsmasq answers both
+# only to the devices that ask it: one with a VPN app or a private DNS gets
+# neither, and has the LAN's address instead (the UI shows it). dnsmasq's
+# init turns the `interface_name` list of the LAN's `config dhcp` section
+# into --interface-name=<name>,<the LAN's device>, so the names follow the
+# LAN's address wherever it is moved. The section is the one serving the LAN
+# (option interface 'lan'), whatever it is called. A name already there is
+# not added again (an upgraded router has vectra.lan); removing the package
+# takes both away again (postrm). DNSMASQ_INIT is a variable only so the
+# packaging tests can stand dnsmasq in.
 DNSMASQ_INIT="${DNSMASQ_INIT:-/etc/init.d/dnsmasq}"
 lan_dhcp=""
 for s in $(uci -q -X show dhcp 2>/dev/null | sed -n "s/^dhcp\.\([^.=]*\)\.interface='lan'\$/\1/p"); do
@@ -94,16 +123,19 @@ for s in $(uci -q -X show dhcp 2>/dev/null | sed -n "s/^dhcp\.\([^.=]*\)\.interf
 	fi
 done
 if [ -n "$lan_dhcp" ]; then
-	case " $(uci -q get "dhcp.$lan_dhcp.interface_name" || true) " in
-	*" vectra.lan "*) ;;
-	*)
-		if uci -q add_list "dhcp.$lan_dhcp.interface_name=vectra.lan" && uci -q commit dhcp; then
-			if [ -x "$DNSMASQ_INIT" ] && "$DNSMASQ_INIT" running >/dev/null 2>&1; then
-				"$DNSMASQ_INIT" reload >/dev/null 2>&1 || true
-			fi
+	names=" $(uci -q get "dhcp.$lan_dhcp.interface_name" || true) "
+	added=""
+	for name in vectra.lan my.vectra-pro.net; do
+		case "$names" in
+		*" $name "*) ;;
+		*) uci -q add_list "dhcp.$lan_dhcp.interface_name=$name" && added=1 ;;
+		esac
+	done
+	if [ -n "$added" ] && uci -q commit dhcp; then
+		if [ -x "$DNSMASQ_INIT" ] && "$DNSMASQ_INIT" running >/dev/null 2>&1; then
+			"$DNSMASQ_INIT" reload >/dev/null 2>&1 || true
 		fi
-		;;
-	esac
+	fi
 fi
 
 # The dead-man (/usr/libexec/vectra-controller-pro/deadman.sh), every minute

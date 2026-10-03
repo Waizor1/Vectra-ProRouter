@@ -99,8 +99,13 @@ vectra keep
 *Way back (at any moment, trial or not):*
 
 ```sh
-vectra off      # unloads vctl, gives PassWall + agent back
+vectra off      # unloads vctl, gives PassWall2 + the agent back
 ```
+
+Not `/etc/init.d/vectra-controller-pro stop`: with Vectra on, the dead-man
+starts a bare stop again within a minute. Once Vectra has removed PassWall2
+— a day after it carries the traffic, §7 — `vectra off` leaves the router
+on plain internet instead.
 
 ## 5. Check (5–10 minutes)
 
@@ -146,10 +151,35 @@ restarts PassWall at 00:00 too; with its switch off that starts nothing:
 `pgrep -f /tmp/etc/passwall2/bin` finds nothing the next morning. To end the
 test: step 4's way back, then `opkg remove vectra-controller-pro`.
 
-## 7. A router without PassWall2 (route_source 'native', 0.6.0-r17)
+## 7. A router without PassWall2
+
+Since r37 vctl takes PassWall2 off the router by itself, and the router ends
+without it: once Vectra has carried the traffic, switched on for good, for a
+day (UCI `passwall_retire_after`, seconds; `retire_passwall '0'` keeps
+PassWall2), it removes `luci-app-passwall2`, its translations and the
+helpers nothing else needs — never xray-core or dnsmasq-full — and keeps
+PassWall2's configuration in `/etc/vectra-controller-pro/backup` (0600,
+kept across a sysupgrade). `docs/INSTALL.md`, "PassWall2 after the install",
+has the whole of it, and how to put PassWall2 back by hand.
+
+```sh
+vctl retire-passwall           # removes it if the day is over; otherwise says when, or why not
+vctl retire-passwall --now     # at once: only the day is skipped
+ubus call vectra status | jsonfilter -e '@.legacy.passwall' -e '@.legacy.passwallRetiredAt'
+```
+
+Afterwards `vectra off` leaves the router on plain internet, and the
+dead-man never gives anything back. Do not remove PassWall2's packages by
+hand any more. A router where that was done, as this section once said
+(the test router), is tidied the same way: after the same day, counted
+while PassWall2 is gone, its configuration is backed up and taken and the
+takeover's breadcrumbs go; the record says `by=hand`.
+
+### Native routing (route_source 'native', 0.6.0-r17)
 
 A router that routes by the operator's policy (`route_source 'passwall'`)
-can drop PassWall2 altogether: vctl then keeps the policy itself
+keeps PassWall2 — its generator renders that routing — until it moves to
+native routing: vctl then keeps the policy itself
 (`/etc/config/vectra_route`, imported once from `/etc/config/passwall2` as it
 is), generates xray's configuration from it, refreshes its subscription and
 its geo files on the policy's own schedule.
@@ -179,26 +209,20 @@ uci set vectra-controller-pro.main.route_source=native && uci commit vectra-cont
 Check: `logread | grep 'route policy'` says `generator="vctl's generator"`;
 `ls -l /etc/config/vectra_route` is `-rw-------`;
 `/usr/share/vectra-controller-pro/route-geo/` has geoip.dat and geosite.dat;
-the LAN's sites open as before. The subscription refreshes at its own time
+the LAN's sites open as before; `grep -c XRAY_LOCATION_ASSET
+/var/run/vectra-controller-pro/xray.json` says 0 (PassWall's generator
+writes its own geo directory into the config, and a recent xray applies it
+over vctl's: the test router's xray stopped starting when PassWall2's
+packages took that directory). The subscription refreshes at its own time
 (`uci show vectra_route | grep update_`), or at once with the panel's
 refresh-subscriptions job; each slot's move is logged ("a slot moved to the
 refreshed node", with what matched).
 
-Only then PassWall2's packages go — not xray-core, not dnsmasq-full — and
-only with vctl 0.6.0-r18 or later: r17 kept the geo directory PassWall's
-generator writes into the config (`"env": {"XRAY_LOCATION_ASSET":
-"/usr/share/v2ray/"}`), which a recent xray applies over vctl's, and the
-test router's xray stopped starting when the packages took that directory
-(`grep -c XRAY_LOCATION_ASSET /var/run/vectra-controller-pro/xray.json`
-must say 0):
+PassWall2 then goes as above, once vctl's own store and geo files are in
+place (`vctl retire-passwall` names what is missing until then).
 
-```sh
-opkg remove luci-app-passwall2
-opkg remove chinadns-ng geoview tcping v2ray-geoip v2ray-geosite
-```
-
-Way back: reinstall luci-app-passwall2 (its configuration: the backup, or
-`/etc/config/vectra_route`, which is PassWall's format), then
+Way back: PassWall2 back by hand (`docs/INSTALL.md`; its configuration:
+the backup, or `/etc/config/vectra_route`, which is PassWall's format), then
 `route_source 'passwall'`.
 
 ## 8. Bug reports (vectra-reporter)
@@ -263,6 +287,14 @@ sites stay there, harmless.
   IPv4 LAN sources and IPv6 ULA ones: a client using a global IPv6 source
   address keeps asking its own resolver. `option dns_hijack '0'` turns it off.
 
+- **PassWall2 is the way back for a day only.** Once Vectra has carried the
+  traffic, switched on for good, for a day, vctl removes it (§7), and
+  `vectra off` leaves the router on plain internet from then on; going back
+  to PassWall2 is a person's job (`docs/INSTALL.md`). `retire_passwall '0'`
+  keeps it; every `vectra off` before the day is over starts the day anew.
+- **`--uninstall --purge` deletes the backup of PassWall2's configuration**
+  with the rest of `/etc/vectra-controller-pro`: copy `backup/` off the
+  router first if it may be wanted.
 - **A PassWall that ran with its boot link off** — an operator's, started by
   hand — gets only its own switch back from the hand-back: the takeover
   stopped it, but its link was not Vectra's to give back, so it is not

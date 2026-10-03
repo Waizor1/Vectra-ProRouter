@@ -135,10 +135,18 @@ Ratified, intentional decisions for the canary stage:
 - **Self-update is fail-closed and engine-scoped.** `update_controller` refuses any
   artifact whose name/URL isn't `vectra-controller-pro`, requires a `sha256`
   (no checksum → refuse), caps the download, and only fetches over HTTPS.
+  It installs only a package the **signed Vectra feed** publishes: before
+  anything is downloaded, the feed's index (the `vectra_pro` line the installer
+  wrote to `/etc/opkg/customfeeds.conf`) must carry a usign signature by a key
+  in `/etc/opkg/keys` and list `vectra-controller-pro` with the job's `sha256`,
+  built for the router's `DISTRIB_ARCH`, of the version the job names
+  (`cmd/vctl/signed_feed.go`, `internal/feedverify`). The panel cannot sign.
 - **All external fetches are HTTPS-pinned** (controller artifact, geo assets,
   subscriptions) — a downgraded link can't deliver cleartext config/binaries.
 - **`run_terminal_command` runs operator-authored shell** from the authenticated
-  panel (HTTPS + per-router token) — same trust model as the legacy agent.
+  panel (HTTPS + per-router token), and only where the router's owner allows it
+  (UCI `remote_shell`: off on a new router, kept on where vctl or the old agent
+  ran before). What the router protects and what it cannot: `docs/SECURITY.md`.
 - **nftables is fail-open-to-direct** (`policy accept`): a broken ruleset or a dead
   Xray lets traffic egress *direct* rather than black-holing the router. This
   matches PassWall2 and is acceptable for canary because PassWall2 remains the
@@ -158,3 +166,11 @@ Tracked fast-follows (not canary blockers):
   delivery to creation order (asc) so queued applies run in order.
 - **Native gRPC** Observatory/Handler hot-reload (today: shell-out `xray api` +
   active-probe health).
+
+## Connect owner actions (r37)
+
+Authenticated native `connect_router_action` jobs carry origin, actionId, ownerRef, action and strict params. The adopted claim ownerRef and router ID bound the job before a durable secret-free receipt is started. Native restart/refresh jobs retain their existing paths. Entry selection and per-service routing use exact provider entry digests and imported namespaced outbound graphs; no country approximation is used. The catalogue includes all supported service IDs even without an override.
+
+A root-only journal keeps 1024 active receipts and durable hash-sharded archives with a 64 MiB fail-closed budget. Recovery preserves durable terminal truth, including a crash before pending-result persistence. Wi-Fi uses existing synchronous setup verification; its owner/AP marker contains no password. Confidential readback enriches a clone of check-in only after verified owner-bound Wi-Fi apply. Normal inventory, journal, action result and logs omit the secret.
+
+Reboot remains accepted until a changed boot ID proves it. Updates verify the installed trusted signed feed, package and runtime versions. Auto-update state is scoped to the adopted owner, uses durable bounded retries and signed feed observations. All local validation uses fake OS/providers or synthetic isolated stands. See docs/R37-CONNECT-VERIFICATION.md for evidence and limits.

@@ -1,6 +1,7 @@
 package main
 
 import (
+ "vectra-controller-pro/internal/vault"
 	"context"
 	"encoding/json"
 	"errors"
@@ -55,19 +56,29 @@ const uiReplyWait = 12 * time.Second
 // spliceOptions are the router-side options for rendering providerRaw, and
 // the probe state they imply.
 func (d *daemon) spliceOptions(providerRaw []byte) (xray.SpliceOptions, localctl.Probe) {
+	opts, probe, _ := d.spliceOptionsOv(providerRaw)
+	return opts, probe
+}
+
+// spliceOptionsOv is spliceOptions and the overrides they were made from.
+func (d *daemon) spliceOptionsOv(providerRaw []byte) (xray.SpliceOptions, localctl.Probe, localctl.Overrides) {
 	ov, err := localctl.LoadOverrides(d.cfg.OverridesPath)
 	if err != nil {
 		logging.L().Warn("local overrides unreadable; rendering with defaults", "err", err.Error())
 	}
 	opts, probe := spliceOptionsFor(providerRaw, ov, !d.cfg.NoRussiaDirect)
+	opts.ServiceEntries, err = d.connectServiceOptionsFor(ov, providerRaw)
+	if err != nil {
+		opts.ServiceEntries = map[string]json.RawMessage{"stale": json.RawMessage(`{}`)}
+	}
 	opts = d.withRuntime(opts, providerRaw)
-	return opts, probe
+	return opts, probe, ov
 }
 
 // spliceOptionsFor is spliceOptions under the given overrides.
 func spliceOptionsFor(providerRaw []byte, ov localctl.Overrides, russiaDirect bool) (xray.SpliceOptions, localctl.Probe) {
 	opts := xray.SpliceOptions{APIListen: xray.DefaultAPIListen, MetricsListen: xray.DefaultMetricsListen, NoAccessLog: true,
-		Rules: xray.UserRules{Direct: ov.Direct, Proxy: ov.Proxy}, Services: ov.Services,
+		Rules: xray.UserRules{Direct: ov.Direct, Proxy: ov.Proxy, Connect: ov.ConnectRules}, Services: ov.Services,
 		// Only a document that has the provider's Russian bridge: the others
 		// keep their splice key, so an upgrade re-renders nothing there.
 		RussiaDirect: russiaDirect && xray.HasRussianBalancer(providerRaw)}
@@ -107,8 +118,8 @@ func clampProbe(d time.Duration) time.Duration {
 // render is redone when the provider bytes changed, when the options it was
 // made with changed (SpliceKey), when force is set, or when there is none.
 func (d *daemon) applyProvider(ctx context.Context, providerRaw []byte, force bool) (apply.ApplyResult, error) {
-	opts, probe := d.spliceOptions(providerRaw)
-	return d.applyProviderWith(ctx, providerRaw, force, opts, probe)
+	opts, probe, ov := d.spliceOptionsOv(providerRaw)
+	return d.applyRendering(ctx, providerRaw, force, opts, probe, ov)
 }
 
 func (d *daemon) applyProviderWith(ctx context.Context, providerRaw []byte, force bool, opts xray.SpliceOptions, probe localctl.Probe) (apply.ApplyResult, error) {
@@ -128,6 +139,55 @@ func (d *daemon) applyProviderWith(ctx context.Context, providerRaw []byte, forc
 	d.st.UnfitExits = unfitStamps(d.exits.Snapshot(d.exits.Unfit()))
 	d.probe = &probe
 	return res, nil
+}
+
+// applyRendering is applyProviderWith under ov, the overrides opts were made
+// from. TrialConnectService cannot run xray -test: a render xray refuses
+// while it carries «Нейросети» only as the router's own default (ov names no
+// choice for them) is made again without them, and that default is not tried
+// again on this document (aiRefused). An owner's choice is never dropped.
+func (d *daemon) applyRendering(ctx context.Context, providerRaw []byte, force bool, opts xray.SpliceOptions, probe localctl.Probe, ov localctl.Overrides) (apply.ApplyResult, error) {
+	res, err := d.applyProviderWith(ctx, providerRaw, force, opts, probe)
+	if err == nil || !errors.Is(err, apply.ErrRefused) {
+		return res, err
+	}
+	without, ok := withoutAIDefault(opts, ov)
+	if !ok {
+		return res, err
+	}
+	logging.L().Warn("xray refused the render with the «Нейросети» default; rendering without it", "err", err.Error())
+	res, err = d.applyProviderWith(ctx, providerRaw, force, without, probe)
+	if err == nil {
+		// Only now is the default the reason: without it xray took the render.
+		if d.aiRefused == nil {
+			d.aiRefused = map[string]bool{}
+		}
+		d.aiRefused[aiRefusedKey(opts.ServiceEntries["ai"], providerRaw)] = true
+	}
+	return res, err
+}
+
+// withoutAIDefault is opts without «Нейросети», when they carry them only as
+// the router's own default: ov, the overrides opts were made from, names no
+// choice for them.
+func withoutAIDefault(opts xray.SpliceOptions, ov localctl.Overrides) (xray.SpliceOptions, bool) {
+	if opts.ServiceEntries["ai"] == nil {
+		return opts, false
+	}
+	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" {
+		return opts, false
+	}
+	entries := map[string]json.RawMessage{}
+	for id, raw := range opts.ServiceEntries {
+		if id != "ai" {
+			entries[id] = raw
+		}
+	}
+	if len(entries) == 0 {
+		entries = nil
+	}
+	opts.ServiceEntries = entries
+	return opts, true
 }
 
 // reloadAfterApply brings xray onto a freshly written render.
@@ -234,6 +294,19 @@ func (d *daemon) localReapplyOnce(ctx context.Context, change *localctl.Change) 
 			// than install the panel's and report success.
 			return localctl.SocketResponse{Code: "unknown_entry", Detail: "the chosen location is not in the cached subscription"}
 		}
+		if ov.EntryDigest != "" {
+			found := false
+			for _, e := range localctl.Summarize(cache) {
+				if e.Digest == ov.EntryDigest {
+					idx = e.Index
+					found = true
+					break
+				}
+			}
+			if !found {
+				return localctl.SocketResponse{Code: "unknown_entry"}
+			}
+		}
 		providerRaw = cache.Entries[idx]
 	case (change != nil && change.TouchesEntry()) || ov.HasEntry():
 		// Without the array neither a location nor "back to the panel's" can
@@ -242,7 +315,7 @@ func (d *daemon) localReapplyOnce(ctx context.Context, change *localctl.Change) 
 	default:
 		// No cache and no location involved (a probe interval): the document
 		// on disk is the one running.
-		raw, rerr := os.ReadFile(d.cfg.ProviderConfigPath)
+		raw, rerr := vault.ReadFile(d.cfg.ProviderConfigPath)
 		if rerr != nil {
 			return localctl.SocketResponse{Code: "no_entries_cache", Detail: rerr.Error()}
 		}
@@ -250,8 +323,13 @@ func (d *daemon) localReapplyOnce(ctx context.Context, change *localctl.Change) 
 	}
 
 	opts, probe := spliceOptionsFor(providerRaw, ov, !d.cfg.NoRussiaDirect)
+	serviceEntries, serviceErr := d.connectServiceOptionsFor(ov, providerRaw)
+	if serviceErr != nil {
+		return localctl.SocketResponse{Code: "unknown_entry"}
+	}
+	opts.ServiceEntries = serviceEntries
 	opts = d.withRuntime(opts, providerRaw)
-	res, err := d.applyProviderWith(ctx, providerRaw, false, opts, probe)
+	res, err := d.applyRendering(ctx, providerRaw, false, opts, probe, ov)
 	if err != nil {
 		return localctl.SocketResponse{Code: "apply_failed", Detail: err.Error()}
 	}
@@ -291,6 +369,8 @@ func (d *daemon) handleUIRequest(ctx context.Context, op string, change *localct
 		return d.restartXray(ctx)
 	case opRerender:
 		return d.rerenderRunning(ctx)
+	case localctl.OpRetirePassWall, opRetirePassWallNow:
+		return d.retirePassWall(ctx, retireEnv(), time.Now(), op == opRetirePassWallNow)
 	}
 	return localctl.SocketResponse{Code: "invalid_params", Detail: "unknown operation " + op}
 }
@@ -302,17 +382,26 @@ func (d *daemon) serveUI(ctx context.Context) {
 		switch req.Op {
 		case localctl.OpRuntime:
 			return localctl.SocketResponse{OK: true, Runtime: d.liveRuntime()}
-		case localctl.OpReapply, localctl.OpRestartXray:
+		case localctl.OpReapply, localctl.OpRestartXray, localctl.OpRetirePassWall:
+			op, wait := req.Op, uiReplyWait
+			if req.Op == localctl.OpRetirePassWall {
+				// A person at the console waits for opkg and PassWall2's own
+				// stop, not a UI poll.
+				wait = retireReplyWait
+				if req.Now {
+					op = opRetirePassWallNow
+				}
+			}
 			reply := make(chan localctl.SocketResponse, 1)
 			select {
-			case d.uiReqs <- uiRequest{op: req.Op, change: req.Change, reply: reply}:
+			case d.uiReqs <- uiRequest{op: op, change: req.Change, reply: reply}:
 			default:
 				return localctl.SocketResponse{Code: "busy", Detail: "another change made on the router is still being applied"}
 			}
 			select {
 			case r := <-reply:
 				return r
-			case <-time.After(uiReplyWait):
+			case <-time.After(wait):
 				return localctl.SocketResponse{OK: true, Code: "pending"}
 			case <-hctx.Done():
 				return localctl.SocketResponse{Code: "internal", Detail: "the controller is shutting down"}
@@ -432,7 +521,7 @@ func (d *daemon) startBudget() time.Duration {
 // the budget runs out. No API to ask, or an xray replaced first: no baseline,
 // and no_leak says it cannot tell rather than guess.
 func (d *daemon) takeLeakBaseline(pid int) {
-	raw, err := os.ReadFile(d.cfg.XrayRenderPath)
+	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
 	if err != nil {
 		return
 	}
@@ -520,7 +609,7 @@ func (d *daemon) reapplyPins(pid int) {
 	if err != nil || len(ov.Pins) == 0 {
 		return
 	}
-	raw, err := os.ReadFile(d.cfg.XrayRenderPath)
+	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
 	if err != nil {
 		return
 	}
@@ -590,7 +679,7 @@ func (d *daemon) reconcileRender(ctx context.Context) {
 	if d.desired == nil || d.applier == nil || d.applier.Tproxy == nil {
 		return
 	}
-	raw, err := os.ReadFile(d.documentPath())
+	raw, err := vault.ReadFile(d.documentPath())
 	if err != nil || len(raw) == 0 {
 		return
 	}
@@ -648,7 +737,7 @@ func (d *daemon) resumeRender(ctx context.Context) {
 	if fileExists(d.cfg.XrayRenderPath) || d.desired == nil || d.applier == nil || d.applier.Tproxy == nil || d.st.ConfigDigest == "" {
 		return
 	}
-	raw, err := os.ReadFile(d.documentPath())
+	raw, err := vault.ReadFile(d.documentPath())
 	if err != nil || len(raw) == 0 {
 		logging.L().Warn("no render to run and no last-good provider document to rebuild it from; the data plane waits for an apply",
 			"provider", d.documentPath())
@@ -730,7 +819,7 @@ func (d *daemon) localReapplyPassWall(ctx context.Context, change *localctl.Chan
 	if change != nil {
 		change.ApplyTo(&ov)
 	}
-	raw, err := os.ReadFile(d.documentPath())
+	raw, err := vault.ReadFile(d.documentPath())
 	if err != nil {
 		return localctl.SocketResponse{Code: "apply_failed", Detail: err.Error()}
 	}

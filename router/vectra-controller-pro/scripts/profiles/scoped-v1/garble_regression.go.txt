@@ -1,0 +1,60 @@
+package main
+
+import (
+	"errors"
+	"testing"
+)
+
+func TestTrialUnobfuscatedTestImportPath(t *testing.T) {
+	for _, in := range []string{"example/config [example/config.test]", "example/config_test [example/config.test]"} {
+		p := listedPackage{ImportPath: in, ForTest: "example/config", Name: "config"}
+		want := "example/config"
+		if in[14:19] == "_test" {
+			want = "example/config_test"
+		}
+		if got := p.obfuscatedImportPath(); got != want {
+			t.Fatalf("got %q want %q", got, want)
+		}
+	}
+	p := listedPackage{ImportPath: "example/config", Name: "config"}
+	if p.obfuscatedImportPath() != p.ImportPath {
+		t.Fatal("ordinary path changed")
+	}
+}
+
+func TestTrialRaceImplicitMainDependency(t *testing.T) {
+	previous := sharedCache
+	defer func() { sharedCache = previous }()
+	for _, tc := range []struct {
+		name                 string
+		main, standard, race bool
+		want                 bool
+	}{
+		{"instrumented-main", true, true, true, true},
+		{"plain-main", true, true, false, false},
+		{"non-main", false, true, true, false},
+		{"non-standard", true, false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sharedCache = &sharedCacheType{ListedPackages: newListedPackages()}
+			if tc.race {
+				sharedCache.ForwardBuildFlags = []string{"-race"}
+			}
+			sharedCache.ListedPackages.set("runtime", &listedPackage{Name: "runtime", ImportPath: "runtime", Standard: true})
+			race := &listedPackage{Name: "race", ImportPath: "runtime/race", Standard: tc.standard}
+			sharedCache.ListedPackages.set("runtime/race", race)
+			from := &listedPackage{Name: "pkg", ImportPath: "example"}
+			if tc.main {
+				from.Name = "main"
+			}
+			got, err := listPackage(from, "runtime/race")
+			if tc.want {
+				if err != nil || got != race {
+					t.Fatalf("instrumentation dependency lost: %v", err)
+				}
+			} else if !errors.Is(err, ErrNotDependency) {
+				t.Fatalf("unexpected acceptance/error: %v", err)
+			}
+		})
+	}
+}

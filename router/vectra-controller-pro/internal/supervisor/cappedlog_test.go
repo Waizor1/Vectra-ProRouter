@@ -44,7 +44,7 @@ func TestCappedLogResumesFromTheExistingSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := newCappedLog(path, 1000)
-	_, _ = c.Write([]byte(strings.Repeat("z", 200)))
+	_, _ = c.Write([]byte(strings.Repeat("z", 199) + "\n"))
 	if st, _ := os.Stat(path); st.Size() != 200 {
 		t.Fatalf("size = %d; the pre-existing 900 bytes were not counted", st.Size())
 	}
@@ -64,5 +64,80 @@ func TestChildEnvDropsTheControllersGoTuning(t *testing.T) {
 	want := "PATH=/usr/bin,GOGCX=1,HOME=/root"
 	if strings.Join(got, ",") != want {
 		t.Fatalf("childEnv = %v, want %s", got, want)
+	}
+}
+
+// xray's log is root's alone: its errors quote the config they choke on — a
+// user id, a password — and a log a previous version left readable to all
+// (0644) is made root's too.
+func TestCappedLogIsReadableOnlyByRoot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "xray.log")
+	for _, p := range []string{path, path + ".1"} {
+		if err := os.WriteFile(p, []byte("old\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := newCappedLog(path, 1000)
+	_, _ = c.Write([]byte("new\n"))
+	for _, p := range []string{path, path + ".1"} {
+		if st, err := os.Stat(p); err != nil || st.Mode().Perm() != 0o600 {
+			t.Errorf("%s: mode %v, %v; want 0600", filepath.Base(p), st.Mode().Perm(), err)
+		}
+	}
+	// A fresh log, and each generation rotation makes, is root's alone too.
+	fresh := filepath.Join(t.TempDir(), "xray.log")
+	c = newCappedLog(fresh, 100)
+	for i := 0; i < 30; i++ {
+		_, _ = c.Write([]byte(strings.Repeat("x", 9) + "\n"))
+	}
+	for _, p := range []string{fresh, fresh + ".1"} {
+		if st, err := os.Stat(p); err != nil || st.Mode().Perm() != 0o600 {
+			t.Errorf("%s: mode %v, %v; want 0600", filepath.Base(p), st.Mode().Perm(), err)
+		}
+	}
+}
+
+func TestCappedLogRedactsAcrossWriteBoundaries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "xray.log")
+	c := newCappedLog(path, 1000)
+	for _, p := range []string{`config: {"password":"short-`, `pass"} user 11111111-2222-`, "3333-4444-555555555555\n"} {
+		_, _ = c.Write([]byte(p))
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "short-pass") || strings.Contains(string(b), "11111111") {
+		t.Fatalf("secret persisted: %s", b)
+	}
+	if !strings.Contains(string(b), "config") {
+		t.Fatal("lost error context")
+	}
+}
+func TestCappedLogOversizedLineIsBoundedAndOmitted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "xray.log")
+	c := newCappedLog(path, 1000)
+	_, _ = c.Write([]byte(strings.Repeat("s", 20000)))
+	if len(c.pending) != 0 {
+		t.Fatal("oversized pending retained")
+	}
+	_, _ = c.Write([]byte("\nnext line\n"))
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "ssss") || !strings.Contains(string(b), "next line") {
+		t.Fatalf("unsafe output %s", b)
+	}
+}
+
+func TestCappedLogOmitsMultilinePrivateKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "xray.log")
+	c := newCappedLog(path, 1000)
+	_, _ = c.Write([]byte("-----BEGIN PRIVATE KEY-----\nALLLETTERSECRETBASEMATERIAL\n-----END PRIVATE KEY-----\nstartup refused\n"))
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "ALLLETTER") || !strings.Contains(string(b), "startup refused") {
+		t.Fatalf("unsafe output %s", b)
 	}
 }

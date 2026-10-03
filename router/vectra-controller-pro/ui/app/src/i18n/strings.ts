@@ -296,6 +296,22 @@ export const S = {
     'Pinned node {node} in {balancer} is down: that traffic does not get through',
     '{balancer} 中固定的节点 {node} 无响应，这部分流量无法通过',
   ],
+  'd.tune.t': ['Разгон роутера', 'Router tuning', '路由器优化'],
+  'd.tune.ok': ['Разгон роутера: {list}', 'Router tuning: {list}', '路由器优化：{list}'],
+  'd.tune.none': ['Разгон роутера: ничего не включено', 'Router tuning: nothing switched on', '路由器优化：未启用任何项'],
+  'd.tune.off': ['Разгон роутера выключен', 'Router tuning is off', '路由器优化已关闭'],
+  'd.tune.bad': [
+    'Сжатая подкачка не работает — под нагрузкой памяти хватит меньше',
+    'Compressed swap is not running: under load the memory runs out sooner',
+    '压缩交换未运行：高负载时内存会更快耗尽',
+  ],
+
+  // ── the router's tune: what it set, in plain words ─────────────────────
+  'tune.zram': ['сжатая подкачка {size}', 'compressed swap, {size}', '压缩交换空间 {size}'],
+  'tune.zram0': ['сжатая подкачка', 'compressed swap', '压缩交换空间'],
+  'tune.memory': ['память настроена под сжатую подкачку', 'memory tuned for the compressed swap', '内存已针对压缩交换优化'],
+  'tune.packet_steering': ['все ядра обрабатывают сеть', 'every CPU core handles the network', '所有 CPU 核心共同处理网络'],
+  'tune.flow_offloading': ['ускоренная пересылка трафика', 'faster traffic forwarding', '更快的流量转发'],
 
   // ── routes (Pro; the tab was "Balancing") ──────────────────────────────
   // A route is a balancer and its fallback chain, named by what it carries
@@ -495,6 +511,7 @@ export const S = {
   ],
   'a.power_on': ['Vectra включена', 'Vectra turned on', 'Vectra 已开启'],
   'a.power_off': ['Vectra выключена', 'Vectra turned off', 'Vectra 已关闭'],
+  'a.remote_shell_set': ['Доступ поддержки изменён', 'Support access changed', '支持人员访问已更改'],
 
   // ── simple view: the verdict ───────────────────────────────────────────
   's.ok.t': ['Всё работает', 'Everything works', '一切正常'],
@@ -715,7 +732,13 @@ export const S = {
   ],
   's.restartQ': ['Перезапустить VPN?', 'Restart the VPN?', '重启 VPN？'],
   's.lockedNote': ['Режим Pro отключён оператором.', 'Pro mode is turned off by the operator.', '运营方已关闭专业模式。'],
-  's.lan': ['Этот экран всегда открывается по адресу {addr}', 'This page always opens at {addr}', '本页面始终可通过 {addr} 打开'],
+  // Where this page opens ({a}, {b}: the router's names; {ip}: its own address), in this order in every language.
+  's.lan': ['Этот экран открывается по адресу {a} или {b}.', 'This page opens at {a} or {b}.', '本页面可通过 {a} 或 {b} 打开。'],
+  's.lanIp': [
+    'Этот экран открывается по адресу {a} или {b}, а если не выходит — по адресу {ip}.',
+    'This page opens at {a} or {b}; if neither works, at {ip}.',
+    '本页面可通过 {a} 或 {b} 打开；如都打不开，请访问 {ip}。',
+  ],
 
   // ── simple view: action results ────────────────────────────────────────
   's.a.xray_restarted': ['VPN перезапущен', 'VPN restarted', 'VPN 已重启'],
@@ -738,12 +761,18 @@ export const S = {
     'We check the internet, boost the Wi-Fi, connect Vectra and pick a server: it takes a couple of minutes.',
     '检查网络、优化 Wi-Fi、连接 Vectra 并选择服务器，只需几分钟。',
   ],
+  'w.welcome.dPw': [
+    'Зададим пароль роутера, проверим интернет, прокачаем Wi-Fi, подключим Vectra и выберем сервер — займёт пару минут.',
+    'We set a router password, check the internet, boost the Wi-Fi, connect Vectra and pick a server: it takes a couple of minutes.',
+    '设置路由器密码、检查网络、优化 Wi-Fi、连接 Vectra 并选择服务器，只需几分钟。',
+  ],
   'w.start': ['Начать', 'Start', '开始'],
   'w.next': ['Далее', 'Next', '下一步'],
   'w.back': ['Назад', 'Back', '上一步'],
   'w.skip': ['Настроить позже', 'Set up later', '稍后设置'],
   'w.skipStep': ['Пропустить шаг', 'Skip this step', '跳过此步'],
   'w.steps': ['Шаги настройки', 'Setup steps', '设置步骤'],
+  'w.step.password': ['Пароль', 'Password', '密码'],
   'w.step.internet': ['Интернет', 'Internet', '网络'],
   'w.step.wifi': ['Wi-Fi', 'Wi-Fi', 'Wi-Fi'],
   'w.step.vectra': ['Vectra', 'Vectra', 'Vectra'],
@@ -754,7 +783,10 @@ export const S = {
   'w.ok.sub': ['подписка есть', 'subscribed', '已订阅'],
   'w.ok.linked': ['подключено', 'connected', '已连接'],
   'w.ok.server': ['выбран', 'chosen', '已选择'],
+  'w.ok.pw': ['задан', 'set', '已设置'],
   'w.todo': ['не настроено', 'not set up', '未设置'],
+  'w.pw.todo': ['не задан', 'not set', '未设置'],
+  'w.more': ['можно лучше', 'can do more', '可优化'],
   'w.works': ['работает', 'working', '正常'],
   'w.req': ['Заполните это поле.', 'Fill in this field.', '请填写此项。'],
   'w.checking': ['проверяем', 'checking', '检查中'],
@@ -809,6 +841,34 @@ export const S = {
     '路由器会侦听周围信号，为 2.4 GHz 和 5 GHz 选择最空闲的信道，并开到最大功率。',
   ],
   'w.wifi.tuned': ['Wi-Fi работает на полную мощность', 'Wi-Fi runs at full power', 'Wi-Fi 已全功率运行'],
+  'w.wifi.fine': ['Wi-Fi в порядке', 'The Wi-Fi is fine', 'Wi-Fi 状态良好'],
+  'w.wifi.fine.d': [
+    'Каналы и мощность в норме — прокачивать не обязательно. Прокачка послушает эфир, выберет самые свободные каналы и включит полную мощность.',
+    'The channels and the power are fine: a boost is optional. It listens to the air, picks the least busy channels and turns the power up to full.',
+    '信道和功率均正常，可不优化。优化会侦听周围信号，选择最空闲的信道并开到最大功率。',
+  ],
+  'w.wifi.manual': ['Wi-Fi настроен вручную', 'The Wi-Fi is set by hand', 'Wi-Fi 为手动设置'],
+  'w.wifi.manual.d': [
+    'Роутер оставляет ваши настройки как есть. Прокачка поставила бы свободный канал без радаров и полную мощность.',
+    'The router leaves your settings as they are. A boost would take a free channel without radar detection, at full power.',
+    '路由器保留您的设置。优化会选择无需雷达检测的空闲信道，并开到最大功率。',
+  ],
+  'w.wifi.more': ['Из Wi-Fi можно выжать больше', 'The Wi-Fi can do more', 'Wi-Fi 还能更好'],
+  'w.wifi.more.ch': [
+    '2,4 ГГц на канале {ch} — он мешает соседним. Прокачка поставит самый свободный из 1, 6 и 11 и включит полную мощность.',
+    '2.4 GHz is on channel {ch}, which overlaps its neighbours. A boost takes the least busy of 1, 6 and 11, at full power.',
+    '2.4 GHz 位于信道 {ch}，会与相邻信道重叠。优化会在 1、6、11 中选择最空闲的信道，并开到最大功率。',
+  ],
+  'w.wifi.more.edge': [
+    '2,4 ГГц на канале {ch} — его видят не все устройства. Прокачка поставит самый свободный из 1, 6 и 11 и включит полную мощность.',
+    '2.4 GHz is on channel {ch}, which some devices cannot see. A boost takes the least busy of 1, 6 and 11, at full power.',
+    '2.4 GHz 位于信道 {ch}，部分设备无法识别。优化会在 1、6、11 中选择最空闲的信道，并开到最大功率。',
+  ],
+  'w.wifi.more.down': [
+    '{band} сейчас не работает. Прокачка перезапустит Wi-Fi на свободных каналах с полной мощностью.',
+    '{band} is not working right now. A boost restarts the Wi-Fi on free channels at full power.',
+    '{band} 当前未运行。优化会以最大功率在空闲信道上重启 Wi-Fi。',
+  ],
   'w.wifi.tuned.d': [
     'Каналы выбраны по загрузке эфира, мощность максимальная. Можно прокачать ещё раз или сменить имя и пароль сети.',
     'The channels were picked by how busy the air is, at maximum power. You can boost it again or change the network name and password.',
@@ -853,6 +913,8 @@ export const S = {
   'w.wifi.power': ['Мощность', 'Power', '功率'],
   'w.wifi.powerMax': ['максимальная', 'maximum', '最大'],
   'w.wifi.powerUp': ['станет максимальной', 'goes to maximum', '将调至最大'],
+  'w.wifi.powerOk': ['в норме', 'normal', '正常'],
+  'w.wifi.powerOwn': ['задана вручную', 'set by hand', '手动设置'],
   'w.wifi.boost': ['Прокачать Wi-Fi', 'Boost Wi-Fi', '优化 Wi-Fi'],
   'w.wifi.boostQ': ['Прокачать Wi-Fi?', 'Boost the Wi-Fi?', '优化 Wi-Fi？'],
   'w.wifi.boostD': [
@@ -1031,6 +1093,7 @@ export const S = {
     '连接代码尚未就绪：路由器仍在启动 Vectra。请稍候一分钟；如果仍未出现代码，请联系客服。',
   ],
   'w.done.t': ['Всё готово', 'All set', '设置完成'],
+  'w.tune.t': ['Роутер настроен на максимум', 'The router is tuned for the most it can do', '路由器已调至最佳性能'],
   'w.done.d': ['Роутер настроен. Дальше он работает сам.', 'The router is set up and runs on its own from here.', '路由器已设置完成，之后会自动运行。'],
   'w.done.part.t': ['Почти готово', 'Almost done', '即将完成'],
   'w.done.part.d': [
@@ -1040,6 +1103,74 @@ export const S = {
   ],
   'w.done.go': ['На главный экран', 'Go to the main screen', '前往主界面'],
   'w.reopen': ['Открыть мастер настройки', 'Open the setup wizard', '打开设置向导'],
+
+  // ── the router's password (LuCI's own change; vctl never sees it) ──────
+  'pw.t': ['Задайте пароль роутера', 'Set a router password', '设置路由器密码'],
+  'pw.d': [
+    'Сейчас настройки роутера может открыть любой, кто подключён к вашей сети, — например, дети. С паролем роутер будет спрашивать его при входе.',
+    'Right now anyone on your network, children included, can open the router’s settings. With a password, the router asks for it at sign-in.',
+    '目前，连接到您网络的任何人（包括孩子）都能打开路由器设置。设置密码后，登录时路由器会要求输入密码。',
+  ],
+  'pw.new': ['Новый пароль', 'New password', '新密码'],
+  'pw.again': ['Повторите пароль', 'Repeat the password', '再次输入密码'],
+  'pw.hint': ['Не короче 8 символов.', 'At least 8 characters.', '至少 8 个字符。'],
+  'pw.show': ['Показать пароль', 'Show the password', '显示密码'],
+  'pw.save': ['Сохранить пароль', 'Save the password', '保存密码'],
+  'pw.e.empty': ['Введите пароль.', 'Enter a password.', '请输入密码。'],
+  'pw.e.short': ['Пароль короче 8 символов.', 'The password is shorter than 8 characters.', '密码少于 8 个字符。'],
+  'pw.e.again': ['Повторите пароль.', 'Repeat the password.', '请再次输入密码。'],
+  'pw.e.mismatch': ['Пароли не совпадают.', 'The passwords do not match.', '两次输入的密码不一致。'],
+  'pw.e.refused': ['Роутер не принял пароль. Попробуйте ещё раз.', 'The router did not take the password. Try again.', '路由器未接受该密码。请重试。'],
+  'pw.e.access': [
+    'Сессия истекла. Обновите страницу, войдите заново и повторите.',
+    'Your session has expired. Reload the page, sign in again and retry.',
+    '会话已过期。请刷新页面，重新登录后再试。',
+  ],
+  'pw.e.network': [
+    'Нет связи с роутером. Проверьте подключение и сохраните пароль ещё раз.',
+    'The router is unreachable. Check the connection and save the password again.',
+    '无法连接路由器。请检查连接后再次保存密码。',
+  ],
+  'pw.e.other': ['Не получилось сохранить пароль. Попробуйте ещё раз.', 'Could not save the password. Try again.', '未能保存密码。请重试。'],
+  'pw.saved.t': ['Пароль сохранён', 'Password saved', '密码已保存'],
+  'pw.saved.d': [
+    'Теперь роутер будет спрашивать этот пароль при входе в настройки.',
+    'From now on the router asks for this password when you sign in to its settings.',
+    '从现在起，登录路由器设置时需要输入此密码。',
+  ],
+  'pw.set.t': ['Пароль задан', 'A password is set', '已设置密码'],
+  'pw.set.d': ['Роутер спрашивает его при входе в настройки.', 'The router asks for it when you sign in to its settings.', '登录路由器设置时需要输入该密码。'],
+  'pw.none.t': ['Пароль роутера не задан.', 'The router has no password.', '路由器未设置密码。'],
+  // {b}: 'pw.none.t', in bold.
+  'pw.none.d': [
+    '{b} Его настройки может открыть любой в вашей сети — например, дети.',
+    '{b} Anyone on your network, children included, can open its settings.',
+    '{b}您网络中的任何人（包括孩子）都能打开它的设置。',
+  ],
+  'pw.set': ['Задать пароль', 'Set a password', '设置密码'],
+  'pw.change': ['Сменить пароль', 'Change the password', '更改密码'],
+  'pw.change.t': ['Новый пароль роутера', 'A new router password', '新的路由器密码'],
+  'pw.change.d': [
+    'Роутер будет спрашивать новый пароль при входе в настройки.',
+    'The router will ask for the new password when you sign in to its settings.',
+    '登录路由器设置时将需要输入新密码。',
+  ],
+  // Support access: the panel's support may run commands on the router (contract: "Support shell").
+  'sa.t': ['Доступ поддержки к роутеру', 'Support access to the router', '支持人员访问路由器'],
+  'sa.d': [
+    'Поддержка Vectra сможет выполнять команды на роутере, чтобы разобраться с неполадкой. Включайте, когда об этом попросит поддержка.',
+    'Vectra support can run commands on the router to sort out a problem. Turn it on when support asks you to.',
+    'Vectra 支持人员可以在路由器上执行命令来排查故障。请在支持人员要求时开启。',
+  ],
+  'sa.onQ': ['Открыть доступ поддержке?', 'Give support access?', '向支持人员开放访问？'],
+  'sa.onQ.d': [
+    'Поддержка Vectra сможет выполнять на роутере любые команды. Закрыть доступ можно здесь же в любой момент.',
+    'Vectra support will be able to run any command on the router. You can close the access here at any time.',
+    'Vectra 支持人员将能在路由器上执行任何命令。您可以随时在这里关闭访问。',
+  ],
+  'sa.onBtn': ['Открыть доступ', 'Give access', '开放访问'],
+  'sa.on.done': ['Доступ поддержки открыт', 'Support access is on', '已向支持人员开放访问'],
+  'sa.off.done': ['Доступ поддержки закрыт', 'Support access is off', '已关闭支持人员访问'],
   'tour.1.t': ['Здесь видно, работает ли VPN', 'This tells you whether the VPN works', '这里显示 VPN 是否正常'],
   'tour.1.d': [
     'Зелёный — всё хорошо. Если что-то не так, здесь же будет написано, что сделать.',
@@ -1150,6 +1281,7 @@ export const S = {
   'sv.name.youtube': ['YouTube', 'YouTube', 'YouTube'],
   'sv.name.tiktok': ['TikTok', 'TikTok', 'TikTok'],
   'sv.name.telegram': ['Telegram', 'Telegram', 'Telegram'],
+  'sv.name.ai': ['Нейросети', 'AI services', 'AI 服务'],
   'sv.default': ['По умолчанию', 'Default', '默认'],
   'sv.defaultIn': ['По умолчанию · {country}', 'Default · {country}', '默认 · {country}'],
   'sv.country': ['Страна для {service}', 'Country for {service}', '{service} 的国家'],

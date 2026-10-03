@@ -3,6 +3,8 @@
 //   ?locked=1 (the operator's lock: simple view only)
 //   ?wifiDown=radio1 (a radio that does not come back after a Wi-Fi change)   ?wifiEnd=unverified|failed
 //   ?scenario=off&holder=passwall2|agent|direct (Vectra switched off: who carries the traffic)
+//   ?pwfail=refused|denied|offline (LuCI's password change fails so)
+//   ?wifi=manual|overlap|down (the Wi-Fi as an owner may have it: the wizard's verdicts)
 import { createMock } from './mock/transport';
 import { SCENARIOS, type Scenario } from './mock/scenarios';
 import { mount } from './mount';
@@ -28,6 +30,8 @@ if (bar) {
 
 const wifiEnd = q.get('wifiEnd');
 const holder = q.get('holder');
+const pw = q.get('pwfail');
+const wifi = q.get('wifi');
 const mock = createMock({
   scenario,
   latencyMs: Number(q.get('latency') ?? 300),
@@ -35,9 +39,11 @@ const mock = createMock({
   wifiDown: q.get('wifiDown')?.split(',').filter(Boolean),
   wifiEnd: wifiEnd === 'unverified' || wifiEnd === 'failed' ? wifiEnd : undefined,
   holder: holder === 'agent' || holder === 'direct' ? holder : undefined,
+  passwordFails: pw === 'refused' || pw === 'denied' || pw === 'offline' ? pw : undefined,
+  wifi: wifi === 'manual' || wifi === 'overlap' || wifi === 'down' ? wifi : undefined,
 });
 const host = document.getElementById('vectra-host') as HTMLElement;
-const unmount = mount(host, { call: mock.call, lang: document.documentElement.lang });
+const unmount = mount(host, { call: mock.call, setPassword: mock.setPassword, lang: document.documentElement.lang });
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/config"
@@ -69,7 +70,7 @@ func dnsDaemon(t *testing.T, render string, procs map[string][2]string) *daemon 
 		XrayRenderPath: filepath.Join(dir, "xray.json"),
 	}}
 	if render != "" {
-		if err := os.WriteFile(d.cfg.XrayRenderPath, []byte(render), 0o600); err != nil {
+		if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(render)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -165,7 +166,7 @@ func TestAStaleRedirectIsProgrammedAgain(t *testing.T) {
 	if !d.dnsRedirectStale(ctx) {
 		t.Fatal("an IPv4 upstream appeared and IPv6 is still not refused: not stale?")
 	}
-	if err := os.WriteFile(d.cfg.XrayRenderPath, []byte(renderWithoutDNS), 0o600); err != nil {
+	if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(renderWithoutDNS)); err != nil {
 		t.Fatal(err)
 	}
 	if !d.dnsRedirectStale(ctx) {

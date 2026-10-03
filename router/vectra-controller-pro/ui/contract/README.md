@@ -4,6 +4,8 @@ The router UI never talks to xray, nftables or the filesystem. It calls ONE ubus
 object, `vectra`, through LuCI's authenticated `rpc` layer. `vectra` is an rpcd
 exec plugin (`/usr/libexec/rpcd/vectra`) that execs `vctl rpcd`, so every answer
 is produced by Go code that is unit-tested against the fixtures in this folder.
+The one call beyond it is LuCI's own: the router's password (see Router
+password) — vctl never handles a password.
 
 Both sides test against the SAME files:
 
@@ -36,6 +38,7 @@ Change a shape here first, then both sides.
 | `services` | — | `services.json` |
 | `set_service` | `{"id": "tiktok", "country": "DE"}` (`""` = the entry's own path) | `action.json` |
 | `set_power` | `{"on": true}` (`false` turns Vectra off — see Power) | `action.json` |
+| `set_remote_shell` | `{"on": false}` (`true` lets support in — see Support shell) | `action.json` |
 
 `select_entry`, `reset_entry`, `set_probe_interval`, `set_rules` and
 `restart_xray` restart xray: client connections drop for a few seconds. The UI
@@ -63,7 +66,8 @@ call — nothing restarts.
 - Still served: `status`, `entries`, `diagnostics`, `select_entry`,
   `reset_entry`, `restart_xray`, `rules` and `set_rules` (My sites is the
   simple view's), `services` and `set_service` (a service's country is the
-  owner's choice too), `set_power` (turning Vectra on and off is the owner's), and
+  owner's choice too), `set_power` (turning Vectra on and off is the owner's),
+  `set_remote_shell` (whether support may run commands here is the owner's), and
   `unpin_balancer` (it only hands a balancer back to the provider's own
   choice; the simple view needs it to undo a pin made earlier in Pro).
 - It is a product policy, not a security boundary: root on the router can
@@ -105,6 +109,17 @@ internet goes out directly, without a VPN.
   `agent` or `direct` — from what the takeover noted it took; `null` while
   Vectra is off.
 
+`status.legacy.passwall` — what became of PassWall2 on this router:
+`installed` (the takeover keeps it as the way back), `retired` (vctl removed
+it once Vectra had carried the traffic, switched on for good, for a day —
+UCI `passwall_retire_after`; its configuration is kept in
+`/etc/vectra-controller-pro/backup`; `passwallRetiredAt` says when — also
+where a person had removed its packages and vctl, after the same day,
+tidied what they left) or `absent`; `null` when the router did not look.
+Once it is `retired`,
+`handBack` is `direct`: turning Vectra off leaves the router on plain
+internet.
+
 `set_power`: `{"on": true}` turns Vectra on for good (after a reboot too),
 `{"on": false}` turns it off. Answers:
 
@@ -119,6 +134,51 @@ internet goes out directly, without a VPN.
   console); nothing changed.
 - `invalid_params` for anything but `{"on": true|false}`; `apply_failed`
   when the change could not be started — nothing changed; `internal`.
+
+## Router password
+
+Everything on this page is behind LuCI's login, and LuCI's login is root's
+password. OpenWrt ships without one: rpcd then lets anyone on the LAN in.
+`setup.passwordSet` says whether there is one (see Setup wizard); the UI sets
+and changes it with LuCI's own call, the one System → Administration makes:
+
+    luci.setPassword {"username": "root", "password": "…"}  →  {"result": true|false}
+
+- It is luci-base's rpcd plugin (`/usr/share/rpcd/ucode/luci`): it pipes the
+  password, shell-quoted, twice to busybox `passwd root`; `result` is
+  whether `passwd` took it. The rpcd session stays valid: nobody is logged
+  out, and the next login asks for the new password.
+- This package's ACL grants exactly `luci.setPassword` beside `vectra`
+  (`write`), so the page works without luci-mod-system too
+  (`TestRPCDACLMatchesTheMethods` pins it).
+- The LuCI view hands it to the app as `mount(host, {call, setPassword,
+  lang})`: `setPassword(password)` resolves `true` only when LuCI answers
+  `result: true`, `false` otherwise; a ubus or network failure rejects (the
+  same `reject`/`nobatch` as `vectra`). A host that hands none gets no
+  password step and no password actions.
+- The UI asks for at least 8 characters, twice; it shows what went wrong
+  next to the fields, keeps nothing and logs nothing.
+
+## Support shell
+
+The panel can run a command on the router as root (its job
+`run_terminal_command`): support's console, and — were the panel or an
+operator's login ever stolen — root on every router at once. So the router
+runs it only where its owner allows it: UCI
+`vectra-controller-pro.main.remote_shell` `1`. Refused, the panel is told
+`support shell access is off on this router`, and nothing runs. A new router
+starts with it off; one upgraded from a vctl that had no such switch keeps the
+shell it had (`1`, written once by the package). Every check-in reports it
+(`inventory.remoteShell`).
+
+- `status.remoteShell`: `true` while the router runs the panel's commands.
+  Anything but a yes in UCI — the option absent, a config the router cannot
+  read — is `false`: what the router does.
+- `set_remote_shell`: `{"on": true}` or `{"on": false}`, through uci and
+  committed: the next job sees it, nothing restarts. Answers
+  `remote_shell_set` (read `status` for the state), `invalid_params` for
+  anything but `{"on": true|false}`, `internal` when uci failed (nothing
+  changed). The simple view's: the operator's lock never refuses it.
 
 ## My sites
 
@@ -194,6 +254,46 @@ country the running entry has. Everything else goes where the entry sends it.
   rules follow the owner's own sites (which win) and precede the provider's,
   for the LAN's traffic only.
 
+## Tune
+
+The router's tune («Разгон роутера», `vctl tune`, internal/tune): at the
+package's install (its postinst, once vctl runs) and at every start of the
+daemon, vctl sets what gets the most out of the router — only what nobody
+set otherwise, every value it changes backed up first. A trial (`vectra on
+--trial`) waits until it is kept. The package's removal puts back what the
+tune changed and is still as it left it (`vctl tune undo`); an upgrade does
+not. UCI `vectra-controller-pro.main.tune` '0': the tune changes nothing.
+
+`status.tune` (`null`: not read) — `enabled`: that switch; `profile`:
+`lowmem` (less than 384 MiB of RAM) or `standard`; `items`, in this order:
+
+| id | what the tune sets | `value` (now) |
+|---|---|---|
+| `zram` | compressed swap (zram-swap, a dependency of the package): its service enabled and started — `lowmem` only | the zram swap's size in MiB, `null` when none is up |
+| `swappiness` | `vm.swappiness` 80 — `lowmem` only | the kernel's value |
+| `vfs_cache_pressure` | `vm.vfs_cache_pressure` 200 — `lowmem` only | the kernel's value |
+| `packet_steering` | `network.@globals[0].packet_steering` '1': every core takes the network's receive work — 2 cores or more | the option, `null` unset |
+| `flow_offloading` | `firewall.@defaults[0].flow_offloading` '1': software flow offloading, never hardware | the option, `null` unset |
+
+`target`: what the tune sets (`on` for `zram`). `state`: `applied` (the tune
+set it, and it is so), `already` (so before the tune), `pending` (not so yet:
+the next run sets it), `user_set` (set otherwise on purpose — an option set
+to anything else, a sysctl in a file of the owner's own, zram switched off
+after the tune switched it on: left alone), `skipped` (`reason` says why).
+`reason` (`null` when none): `off` (the switch), `enough_ram`, `one_core`,
+`not_installed` (no zram-swap), `no_swap`, `not_supported` (no
+/etc/init.d/packet_steering), `no_fw4`, `no_defaults`, `hw_offload` (the
+owner's `flow_offloading_hw` waits for software offloading: the tune would
+switch hardware offloading on with it), `no_kernel_support` (no
+`nft_flow_offload`: fw4 would fail to load its ruleset), `uci_pending`
+(uncommitted changes wait in uci for that config), `check_failed` (fw4
+refused its ruleset with it: taken back), `unreadable`, `failed` (with
+`pending`: the last run's change failed; tried again at the next).
+
+vm.min_free_kbytes is never the tune's. The firewall is reloaded live (fw4
+replaces its own `inet fw4` table in one transaction; vctl's `inet vctl` and
+its policy route are untouched), and netifd never is.
+
 ## Language
 
 The router answers in CODES, never in prose, so the UI can speak ru, en and zh.
@@ -234,6 +334,8 @@ The router answers in CODES, never in prose, so the UI can speak ru, en and zh.
 - `status.power.holder`: `vectra`, `passwall2`, `agent`, `direct`;
   `status.power.handBack`: `passwall2`, `agent`, `direct` or `null` (see
   Power).
+- `status.legacy.passwall`: `installed`, `retired`, `absent` or `null`;
+  `status.legacy.passwallRetiredAt`: RFC 3339 or `null` (see Power).
 - `balancers.defaultOutbound`: the tag of xray's default outbound — the
   config's FIRST outbound. xray sends it a connection no rule routes, and the
   traffic of a balancer that has neither a target nor a fallback. `null` when
@@ -241,6 +343,7 @@ The router answers in CODES, never in prose, so the UI can speak ru, en and zh.
 - `action.code` on success: `entry_selected`, `entry_reset`, `balancer_pinned`,
   `balancer_unpinned`, `probe_interval_set`, `rules_set`, `service_set`, `xray_restarted`,
   `wifi_set`, `wifi_optimized`, `setup_finished`, `power_on`, `power_off`,
+  `remote_shell_set`,
   `pending` (the controller accepted the request and is still applying it; it
   is remembered only if it succeeds — poll `status`, or `rules`, to see it
   land).
@@ -268,6 +371,7 @@ The router answers in CODES, never in prose, so the UI can speak ru, en and zh.
 | `dead_nodes` | `count`, `tags` |
 | `balancer_fallback` | `balancers` (the balancers whose traffic is being passed on because they have no working member), `main`, `mainBlocked`, `mainDirect`, `blocked`, `blockedBalancers`, `warming` |
 | `pinned_node_dead` | `balancer`, `node`, `main` when not ok |
+| `tune` | `enabled`, `profile`, `items` (the ids in place: `applied` or `already`), `zramMiB` (`null` when no zram swap is up) |
 
 - `no_leak` reads the vctl nft table's counters:
   - `vctl_would_leak` (kill switch off) / `vctl_killswitch_drops` (on) count
@@ -313,6 +417,8 @@ The router answers in CODES, never in prose, so the UI can speak ru, en and zh.
   `main: true` when it is the main balancer (everything else), `warn` with
   `main: false` otherwise.
 - `memory`: `warn` below 64 MiB available, `fail` below 48.
+- `tune` (see Tune): `warn` when a `lowmem` router runs without its zram swap
+  (the memory guard assumes one); `ok` otherwise.
 
 An id the UI does not know is shown with its raw `id` and `params` — the router
 may grow checks before the UI learns their sentences.
@@ -334,17 +440,29 @@ may grow checks before the UI learns their sentences.
   is `null` whenever the tag does not name a country unambiguously
   (`whitelist-lv3` is whitelist LEVEL 3, not Latvia).
 - Node addresses and ports are shown; credentials (UUIDs, keys, passwords,
-  short IDs, subscription URLs) are NEVER in any response.
+  short IDs, subscription URLs) are NEVER in any response. Every answer goes
+  through the router's scrub on its way out (`cmd/vctl/rpcd_scrub.go`), so
+  what the router quotes — a log line, `lastExit.error`, an action's `detail`
+  — has them replaced: `<redacted>` (the router's own secrets, a value under a
+  secret's name), `<uuid>`, `<link>` (a share link), `<secret>` (a long bare
+  token, in quoted text only). A web address keeps its host:
+  `https://sub.example.com/<redacted>`. Kept exactly, and not credentials:
+  `status.controlPlane.routerId` (the router's id in the panel — support asks
+  for it; the panel takes nothing from a router without its token beside it),
+  `setup`'s claim `code`, `qr` and `botUrl` (shown to link the router), the
+  owner's own sites (`rules`) and Wi-Fi names.
 
 ## Setup wizard
 
-What a customer runs after unboxing, on the Vectra page in LuCI: a look at the
-internet connection → the Wi-Fi, tuned and each band's network optionally
-renamed → linking the router to their Vectra account (ADR-0006) → done. The
+What a customer runs after unboxing, on the Vectra page in LuCI: the router's
+password, when it has none (`passwordSet: false`) → a look at the internet
+connection → the Wi-Fi, tuned and each band's network optionally renamed →
+linking the router to their Vectra account (ADR-0006) → a server → done. The
 router sets its internet connection up itself: the wizard shows it and checks
-it, and never changes it. The router's password is not the wizard's: LuCI's
-own banner asks for one. It is the simple view: the operator's lock never
-refuses it.
+it, and never changes it. The password goes to LuCI's own change, never to
+vctl (see Router password); it is the one step that cannot be skipped, and the
+wizard opens by itself on a router that was never set up and has none. It is
+the simple view: the operator's lock never refuses it.
 
 | method | params | answer |
 |---|---|---|
@@ -362,10 +480,20 @@ refuses it.
   config, or a WAN address, Wi-Fi on and secured on every radio that is on,
   and a root password — is marked done when the package is installed: the
   fleet never sees the wizard.
+- `passwordSet`: root has a password, so LuCI's login asks for one — the
+  second field of root's line in `/etc/shadow` is not empty (rpcd lets anyone
+  in on an empty one; a locked `!` lets nobody in). `false` out of the box;
+  `null` when the router cannot tell (no shadow file, no root in it). Never
+  the password or its hash.
 - `wan` (read-only): `proto` `dhcp`, `pppoe`, `static` or `other`; `link` a
   cable in the WAN port (`null`: the router cannot tell); `ipv4`, `gateway`,
   `dns` what the router has now (`null` / `[]` when none). No credential of the
   connection is ever in it.
+- `lan.ipv4`: the LAN's IPv4 address as netifd has it up (`ubus call
+  network.interface.lan status`, the first one), `null` when netifd cannot
+  say: where this page opens on a device that does not ask the router's DNS
+  (a VPN app, private DNS), which the names (`my.vectra-pro.net`,
+  `vectra.lan`) need.
 - `wifi.radios`: one entry per radio (UCI `wifi-device`), in file order:
   `device` (its UCI name, the key `set_wifi` and `optimize_wifi` take);
   `band` `2g`, `5g`, `6g`, `60g` or `null`; `channel` a number, or `null`
@@ -392,6 +520,25 @@ refuses it.
 - `wifi.tuned`: every enabled radio has `country` `PA`, `maxPower` and a
   fixed channel — the tuning below is in place. No radio enabled (or none at
   all): `true`. `null` when `tunable` is `false`.
+- `wifi.verdict`: how the wizard judges the Wi-Fi as it is — not whether it
+  is the tuning's recipe (`tuned` says that). Of the radios that are on:
+  - `boost`: there is more to get, and the boost gets it — a radio that is
+    not `up`, or 2.4 GHz on a fixed channel other than 1, 6 or 11 (2-5 and
+    7-10 overlap two of them; 12 and 13 some clients do not see). The wizard
+    suggests the boost («можно выжать больше»).
+  - `manual`: none of that, but a choice of the owner's the tuning would
+    undo — 5 GHz on a channel that needs radar detection or that its width
+    cannot carry (the rules below), or the power more than 6 dB below the
+    driver's most (`txpower`, or an access point's lower `vif_txpower`,
+    against `iwinfo`'s list less the offset). Left alone, not suggested.
+  - `fine`: otherwise — any country, 2.4 GHz on 1, 6, 11 or auto, 5 GHz on
+    auto or a channel the rules allow, the power at most 6 dB down, and
+    what the router cannot tell (`up` `null`, no `iwinfo`) counted as fine.
+    No radio on: `fine`.
+
+  A mesh radio's channel is its peers' and never judged. `null` when
+  `tunable` is `false`. The boost itself (`optimize_wifi`) is the same
+  whatever the verdict, and the wizard keeps it in reach either way.
 - `wifi.apply`: the last Wi-Fi change's restart since the router booted
   (`null`: none): `{state, at, detail, radios}`. `state`:
   - `applying`: the change is committed; the Wi-Fi is being restarted and

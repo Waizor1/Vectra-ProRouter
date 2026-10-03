@@ -1,7 +1,7 @@
 import { createContext } from 'preact';
 import { useContext, useEffect, useReducer, useRef } from 'preact/hooks';
 import type { Res, Store } from '../api/store';
-import type { ActionMethod, ReadData, ReadMethod, Status } from '../api/types';
+import type { ActionMethod, ReadData, ReadMethod, SetPasswordFn, Status } from '../api/types';
 import type { Key, Lang, T } from '../i18n';
 import type { Fmt } from '../lib/format';
 
@@ -48,6 +48,8 @@ export interface AppCtx {
   /** The operator allows only the simple view on this router (status.ui.locked). */
   locked: boolean;
   store: Store;
+  /** LuCI's own change of the router's password, from the host page; null: none to offer. */
+  setPassword: SetPasswordFn | null;
   /** Key of the action in flight, or null. Every mutating control is disabled while set. */
   pending: string | null;
   /** Resolves true once the change is in effect; false when cancelled, refused or not seen landing. */

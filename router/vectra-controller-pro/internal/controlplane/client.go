@@ -42,7 +42,7 @@ func NewClient(opts Options) *Client {
 	}
 	client := opts.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: timeout, Transport: markedTransport(opts.SocketMark)}
+		client = &http.Client{Timeout: timeout, Transport: markedTransport(opts.SocketMark), CheckRedirect: noRedirect}
 	}
 	return &Client{
 		baseURL:    strings.TrimRight(opts.BaseURL, "/"),
@@ -152,6 +152,9 @@ func (c *Client) doJSON(ctx context.Context, method string, path string, payload
 	defer response.Body.Close()
 
 	if response.StatusCode < 200 || response.StatusCode > 299 {
+		if path == "/api/router/check-in" {
+			return fmt.Errorf("unexpected status %d for check-in", response.StatusCode)
+		}
 		bodyPreview, readErr := io.ReadAll(io.LimitReader(response.Body, 2048))
 		if readErr != nil {
 			return fmt.Errorf("unexpected status %d for %s (failed to read response body: %w)",
@@ -167,16 +170,25 @@ func (c *Client) doJSON(ctx context.Context, method string, path string, payload
 		return nil
 	}
 	if err := json.NewDecoder(response.Body).Decode(out); err != nil {
+		if path == "/api/router/check-in" {
+			return fmt.Errorf("invalid check-in response")
+		}
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
 }
 
+// noRedirect answers a redirect with the redirect itself: an answer from
+// anywhere but the endpoint is no answer, and following one would carry the
+// router's token (x-vectra-router-token) to wherever it points — another
+// host, or plain http.
+func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
 // MarkedHTTPClient is an HTTP client on the control plane's path: SO_MARK =
 // mark on every socket, names resolved on the same path, and no redirect
-// followed — an answer from anywhere but the endpoint is no answer.
+// followed (noRedirect).
 func MarkedHTTPClient(mark int, timeout time.Duration) *http.Client {
-	c := &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	c := &http.Client{Timeout: timeout, CheckRedirect: noRedirect}
 	if t := markedTransport(mark); t != nil {
 		c.Transport = t
 	}

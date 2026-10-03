@@ -100,7 +100,7 @@ func out(name string, args ...string) string {
 }
 
 func env(c cfg) bugreport.Env {
-	st, _ := state.Load("/etc/vectra-controller-pro/state.json")
+	st, _ := state.LoadReadOnly("/etc/vectra-controller-pro/state.json")
 	dev := subscription.ReadDeviceFacts()
 	vctl := strings.TrimSpace(strings.TrimPrefix(firstLine("/usr/lib/opkg/info/vectra-controller-pro.control", "Version:"), "Version:"))
 	return bugreport.Env{

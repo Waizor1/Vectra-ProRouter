@@ -28,9 +28,38 @@ type Status struct {
 	Legacy       Legacy            `json:"legacy"`
 	Router       Router            `json:"router"`
 	UI           UIPolicy          `json:"ui"`
+	// RemoteShell: the router's owner lets the panel's support shell run here
+	// (UCI remote_shell; ui/contract/README.md, "Support shell").
+	RemoteShell bool `json:"remoteShell"`
 	// Route is where the main traffic goes now and what the failover
 	// watchdog moved it off (spec decision 6); null before its first look.
 	Route *RouteView `json:"route"`
+	// Tune is the router's tune (internal/tune): what it set, found set or
+	// left alone; null when it could not be read.
+	Tune *Tune `json:"tune"`
+}
+
+// Tune is the router's tune as the status carries it.
+type Tune struct {
+	// Enabled: vectra-controller-pro.main.tune is not '0'.
+	Enabled bool `json:"enabled"`
+	// Profile: lowmem (under 384 MiB of RAM) or standard.
+	Profile string     `json:"profile"`
+	Items   []TuneItem `json:"items"`
+}
+
+// TuneItem is one thing the tune sets: zram, swappiness,
+// vfs_cache_pressure, packet_steering, flow_offloading.
+type TuneItem struct {
+	ID string `json:"id"`
+	// State: applied, already, pending, user_set, skipped.
+	State string `json:"state"`
+	// Value is what the router has now: the zram swap's MiB, a sysctl's
+	// value, a UCI option's; null when none or unset.
+	Value  *string `json:"value"`
+	Target string  `json:"target"`
+	// Reason is why it is skipped (or not set yet); null when there is none.
+	Reason *string `json:"reason"`
 }
 
 // RouteView is the server card's line: the nodes the main traffic goes
@@ -137,6 +166,12 @@ type ProbeState struct {
 type Legacy struct {
 	AgentEnabled    bool `json:"agentEnabled"`
 	PasswallRunning bool `json:"passwallRunning"`
+	// Passwall is PassWall2 on the router (internal/retire): installed (the
+	// takeover's way back), retired (vctl removed it after a day of carrying
+	// the traffic: PasswallRetiredAt says when) or absent; nil when not
+	// looked at.
+	Passwall          *string `json:"passwall"`
+	PasswallRetiredAt *string `json:"passwallRetiredAt"`
 }
 
 type Router struct {

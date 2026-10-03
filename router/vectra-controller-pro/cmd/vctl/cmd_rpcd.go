@@ -13,12 +13,15 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/api"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/setup"
 	"vectra-controller-pro/internal/sites"
+	"vectra-controller-pro/internal/state"
 	"vectra-controller-pro/internal/uci"
 	"vectra-controller-pro/internal/uiapi"
 	"vectra-controller-pro/internal/xrayview"
@@ -61,7 +64,7 @@ func cmdRPCD(args []string) error {
 			return fmt.Errorf("rpcd: call needs a method")
 		}
 		params, _ := io.ReadAll(io.LimitReader(os.Stdin, 64<<10))
-		out := rpcdCall(context.Background(), rpcdConfig(), args[1], params)
+		out := rpcdAnswer(context.Background(), rpcdConfig(), args[1], params)
 		return writeJSON(os.Stdout, out)
 	}
 	return fmt.Errorf("rpcd: unknown verb %q", args[0])
@@ -97,7 +100,7 @@ func rpcdConfig() agentcfg.Config {
 	if c, err := agentcfg.Load(rpcdAgentConfig); err == nil {
 		return c
 	}
-	c, _ := agentcfg.Parse([]byte(`{"controlUrl":"unused"}`))
+	c, _ := agentcfg.Parse([]byte(`{"controlUrl":"https://api.vectra-pro.net"}`))
 	return c
 }
 
@@ -210,7 +213,9 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 	case "status":
 		in := rpcdGather(ctx, env, uiapi.NeedStatus)
 		in.UILocked = locked
+		in.RemoteShell = setup.RemoteShell(rpcdSetupEnv())
 		in.Power = rpcdPower(ctx, in.Runtime != nil, in.TableLoaded)
+		in.PassWall, in.PassWallRetiredAt = retireEnv().State()
 		return uiapi.BuildStatus(in)
 	case "balancers":
 		return uiapi.BuildBalancers(rpcdGather(ctx, env, uiapi.NeedBalancers))
@@ -235,17 +240,23 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 	case "services":
 		// The running render: what the countries are is what runs, choice
 		// included.
-		raw, _ := os.ReadFile(cfg.XrayRenderPath)
+		raw, _ := vault.ReadFile(cfg.XrayRenderPath)
 		ov, _ := localctl.LoadOverrides(cfg.OverridesPath)
 		var egress map[string]string
 		if in := rpcdGather(ctx, env, uiapi.Need{Runtime: true}); in.Runtime != nil {
 			egress = in.Runtime.Egress
 		}
-		return uiapi.BuildServices(cfg.RouteSource == "", raw, ov, egress)
+		res := uiapi.BuildServices(cfg.RouteSource == "", raw, ov, egress)
+		st, _ := state.LoadReadOnly(cfg.StatePath)
+		_, applied := aiDefaultApplied(cfg, ov, st.SpliceKey)
+		markAIDefault(&res, applied)
+		return res
 	case "select_entry", "reset_entry", "pin_balancer", "unpin_balancer", "set_probe_interval", "set_rules", "set_service", "restart_xray":
 		return rpcdMutate(ctx, cfg, method, params)
 	case "set_power":
 		return rpcdSetPower(ctx, params)
+	case "set_remote_shell":
+		return rpcdSetRemoteShell(ctx, params)
 	}
 	return action(false, "invalid_params", "unknown method "+method)
 }
@@ -369,7 +380,7 @@ func rpcdMutate(ctx context.Context, cfg agentcfg.Config, method string, params 
 		}
 		cc := strings.ToUpper(strings.TrimSpace(*sp.Country))
 		if cc != "" {
-			raw, err := os.ReadFile(cfg.XrayRenderPath)
+			raw, err := vault.ReadFile(cfg.XrayRenderPath)
 			if err != nil {
 				return action(false, "apply_failed", "no running config yet")
 			}
@@ -417,7 +428,7 @@ func rpcdPin(ctx context.Context, cfg agentcfg.Config, pin bool, balancer, node 
 	if balancer == "" || (pin && node == "") {
 		return action(false, "invalid_params", "balancer (and node, to pin) are required")
 	}
-	raw, err := os.ReadFile(cfg.XrayRenderPath)
+	raw, err := vault.ReadFile(cfg.XrayRenderPath)
 	if err != nil {
 		return action(false, "xray_api_unavailable", "no installed xray config")
 	}

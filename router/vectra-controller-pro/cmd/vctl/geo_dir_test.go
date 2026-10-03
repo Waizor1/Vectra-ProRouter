@@ -23,6 +23,7 @@ func TestTheGeoDirectoryMovesOnlyWithAWrittenRender(t *testing.T) {
 		"case \"$1\" in\n" +
 		"  version) echo 'Xray 26.7.28 (fake)'; exit 0;;\n" +
 		"  run)\n" +
+		"    case \" $* \" in *\" stdin: \"*) cat >/dev/null;; *) exit 43;; esac\n" +
 		"    for a in \"$@\"; do [ \"$a\" = '-test' ] && { [ -s \"$XRAY_LOCATION_ASSET/geoip.dat\" ] || exit 1; exit 0; }; done\n" +
 		"    exec sleep 300;;\n" +
 		"  *) exec sleep 300;;\n" +
@@ -56,7 +57,7 @@ func TestTheGeoDirectoryMovesOnlyWithAWrittenRender(t *testing.T) {
 		c := *cfg
 		c.Geo.AssetDir = assetDir
 		d.desired = &c
-		if err := config.Save(d.cfg.XrayConfigPath, &c); err != nil {
+		if err := config.SaveSecret(d.cfg.XrayConfigPath, &c); err != nil {
 			t.Fatal(err)
 		}
 		d.rebuildApplier()

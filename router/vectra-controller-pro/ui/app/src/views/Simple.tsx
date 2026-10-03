@@ -17,10 +17,11 @@ import { copyText } from '../lib/storage';
 import { Icon, type IconName } from '../ui/icons';
 import { Badge, Button, Note, Skeleton, Spinner } from '../ui/kit';
 import { MySites } from './MySites';
+import { PasswordDialog, PasswordNote } from './Password';
 import { Services } from './Services';
-import { around, SLOT } from './Nodes';
+import { SupportAccess } from './SupportAccess';
 import { face, groupServers } from '../lib/servers';
-import { CONFIG_SLOW_MS, needsSetup, owned, Setup, useLate, type Screen } from './Setup';
+import { CONFIG_SLOW_MS, needsSetup, owned, Setup, useLate, WayIn, type Screen } from './Setup';
 import { Tour, tourSeen } from './Tour';
 
 const ICON: Record<SimpleVerdict['tone'], IconName> = { ok: 'ok', info: 'info', warn: 'warn', fail: 'fail', mute: 'power' };
@@ -433,7 +434,7 @@ function ManualCopy({ text }: { text: string }) {
 }
 
 export function Simple() {
-  const { t, f, run, toast, store, root, locked, pending } = useApp();
+  const { t, f, run, toast, store, root, locked, pending, setPassword } = useApp();
   const st = useRes('status');
   const dg = useRes('diagnostics');
   const setup = useRes('setup');
@@ -447,7 +448,7 @@ export function Simple() {
   // router could not note that the setup was finished.
   const [dismissed, setDismissed] = useState(false);
   // Switched off on purpose: the wizard sets Vectra up, and would not open by itself on that.
-  const need = needsSetup(setup.data) && !dismissed && st.data?.power.enabled !== false;
+  const need = needsSetup(setup.data, !!setPassword) && !dismissed && st.data?.power.enabled !== false;
   useEffect(() => {
     if (need) setWizard('welcome');
   }, [need]);
@@ -466,6 +467,8 @@ export function Simple() {
   // 0 closed · 1 opened by its toggle · 2 opened from elsewhere (focus moves to the list)
   const [open, setOpen] = useState<0 | 1 | 2>(0);
   const [manual, setManual] = useState<string | null>(null);
+  // The router's password dialog: to set the first one, or to change it.
+  const [pwDialog, setPwDialog] = useState<'set' | 'change' | null>(null);
   const locRef = useRef<HTMLElement>(null);
 
   // Fresh locations every time the list opens: the subscription may have changed.
@@ -551,6 +554,8 @@ export function Simple() {
         <Note tone="warn">{t('s.dgStale')}</Note>
       ) : null}
       <StatusCard v={v} checkedAt={checkedAt} acts={acts} />
+      {/* No password: anyone on the LAN can open the settings. LuCI's change sets one. */}
+      {setPassword && setup.data?.passwordSet === false ? <PasswordNote onSet={() => setPwDialog('set')} /> : null}
       {/* A router without settings has no location to show and nothing to try:
           the status card already says so and offers the report. */}
       {!off && (hasSubscription(s) || up) ? (
@@ -599,6 +604,12 @@ export function Simple() {
             {t('tour.replay')}
           </Button>
         ) : null}
+        {/* The note above sets a first password; this changes one. */}
+        {setPassword && setup.data?.passwordSet !== false ? (
+          <Button kind="g" small icon="lock" onClick={() => setPwDialog('change')}>
+            {t('pw.change')}
+          </Button>
+        ) : null}
         {/* Quiet on purpose: the way back to PassWall, or to no VPN at all — also
             while Vectra still runs switched off: a change in flight answers busy,
             one that stopped half way is tried again. */}
@@ -607,19 +618,17 @@ export function Simple() {
             {t('s.pw.offBtn')}
           </Button>
         ) : null}
-        {/* The router answers vectra.lan since the version that has the switch. */}
+        {/* The router answers its names since the version that has the switch. */}
         {s.power.enabled !== null ? (
           <span class="sv-lan">
-            {around(
-              t('s.lan', { addr: SLOT }),
-              <a class="lnk" href="http://vectra.lan/">
-                vectra.lan
-              </a>,
-            )}
+            <WayIn ip={setup.data?.lan.ipv4} links />
           </span>
         ) : null}
+        {/* Whether support may run commands here is the owner's (a router older than the switch says nothing). */}
+        {typeof s.remoteShell === 'boolean' ? <SupportAccess on={s.remoteShell} /> : null}
       </footer>
       {tour ? <Tour onDone={() => setTour(false)} /> : null}
+      {pwDialog ? <PasswordDialog first={pwDialog === 'set'} onClose={() => setPwDialog(null)} /> : null}
     </div>
   );
 }

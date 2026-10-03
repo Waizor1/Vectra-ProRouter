@@ -84,7 +84,10 @@ func (c Config) WithDefaults() Config {
 // Classify maps a job type to its resource class.
 func Classify(jobType string) Class {
 	switch jobType {
-	case "apply_xray_config", "refresh_xray_subscriptions", "update_xray_assets":
+	case "apply_xray_config", "refresh_xray_subscriptions", "update_xray_assets",
+		// PassWall2's retirement (internal/retire): opkg and PassWall2's
+		// own stop beside a running xray. Not a panel job: the daemon's own.
+		"retire_passwall":
 		return ClassHeavy
 	case "update_controller", "validate_firmware", "update_xray_binary":
 		return ClassStorage

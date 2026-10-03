@@ -42,3 +42,16 @@ config controller 'main'
 	# when boxes are prepared. The panel's bot wins once it names one; an
 	# invalid value is ignored.
 	option support_bot ''
+	# Support shell (remote_shell): '1' lets the panel run commands on this
+	# router as root (its run_terminal_command, support's console); anything
+	# else refuses them. Not set here on purpose: the package decides it once
+	# (uci-defaults) — kept on a router upgraded from a vctl without it, off on
+	# a new one — and the router's owner switches it in the router UI. Read at
+	# every panel job: `uci commit` is enough, nothing restarts.
+	# The router's tune («Разгон роутера», `vctl tune`): at install and at every
+	# start vctl sets what gets the most out of this router — compressed swap
+	# and the kernel's memory settings on a router under 384 MB, packet
+	# steering on two cores or more, software flow offloading — only what
+	# nobody set otherwise. 0 = change nothing (what it changed stays;
+	# `vctl tune undo` puts it back). `vctl tune` shows what it would do.
+	option tune '1'

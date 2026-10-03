@@ -30,6 +30,7 @@ type Radio struct {
 	Country  string // "" when unset
 	TxPower  *int   // dBm; nil when unset: the driver's maximum
 	MaxPower bool   // at full power: no txpower (or the driver's most), and no vif_txpower on its access points
+	PowerCut *int   // dB below the driver's most (its txpower, or an access point's lower vif_txpower); nil: cannot tell
 	SSID     string // the first access point's; "" with none
 	Secured  bool   // the first access point has encryption (not none/open)
 	Enabled  bool   // the radio and its first access point are both on
@@ -50,6 +51,7 @@ type ifaceConf struct {
 	secure   bool
 	on       bool // its own disabled option is not set
 	vifPower bool // it sets vif_txpower
+	vifDBm   *int // that vif_txpower, when it is a number
 }
 
 // firstAP is the radio's first access point: the network the wizard shows,
@@ -98,6 +100,58 @@ func (w Wifi) Tuned() *bool {
 	return &tuned
 }
 
+// The wizard's verdict on the Wi-Fi (setup.wifi.verdict).
+const (
+	// VerdictFine: it works as it is — the tuning's own, or a setup of the
+	// owner's that does as well.
+	VerdictFine = "fine"
+	// VerdictBoost: there is more to get, and the boost gets it.
+	VerdictBoost = "boost"
+	// VerdictManual: the owner's own choice the tuning would undo (a radar
+	// channel, the power cut hard): left alone, not suggested.
+	VerdictManual = "manual"
+)
+
+// MaxPowerCutDB is how far below the driver's most a radio may run and still
+// count as fine: 6 dB is a quarter of the power, and some reach.
+const MaxPowerCutDB = 6
+
+// Verdict judges the Wi-Fi a person has, not the tuning's recipe (Tuned is
+// that). Of the radios that are on: one not up, or 2.4 GHz on a channel
+// other than 1, 6 or 11 (2-5 and 7-10 overlap two of those, 12 and 13 some
+// clients do not see) is VerdictBoost. Else 5 GHz on a channel that needs
+// radar detection or that its width cannot carry, or the power more than
+// MaxPowerCutDB below the driver's most, is VerdictManual. Else — any
+// country, a channel on auto, the power a little down, what the router
+// cannot tell — VerdictFine. A mesh radio's channel is its peers' and never
+// judged. "" when the router cannot be tuned (Tunable).
+func (w Wifi) Verdict() string {
+	if !w.Tunable() {
+		return ""
+	}
+	verdict := VerdictFine
+	for _, r := range w.Radios {
+		if !r.Enabled {
+			continue
+		}
+		if r.Up != nil && !*r.Up {
+			return VerdictBoost
+		}
+		if !r.Mesh && r.Channel != 0 {
+			switch {
+			case r.Band == "2g" && r.Channel != 1 && r.Channel != 6 && r.Channel != 11:
+				return VerdictBoost
+			case r.Band == "5g" && ValidChannel("5g", r.HTMode, r.Channel) != nil:
+				verdict = VerdictManual
+			}
+		}
+		if r.PowerCut != nil && *r.PowerCut > MaxPowerCutDB {
+			verdict = VerdictManual
+		}
+	}
+	return verdict
+}
+
 // secured: some access point is on and secured, and none is on and open.
 func (w Wifi) secured() bool {
 	on := false
@@ -135,12 +189,22 @@ func ReadWifi(ctx context.Context, env Env) Wifi {
 			up := s.Up
 			r.Up = &up
 		}
-		if r.TxPower == nil || r.vifPower() {
+		set, ok := r.setPower()
+		if !ok {
 			continue
 		}
-		if max, ok := maxTxPower(ctx, env, status[r.Device].APIfname); ok {
+		max, known := maxTxPower(ctx, env, status[r.Device].APIfname)
+		if !known {
+			continue
+		}
+		if r.TxPower != nil && !r.vifPower() {
 			r.MaxPower = *r.TxPower >= max
 		}
+		cut := max - set
+		if cut < 0 {
+			cut = 0
+		}
+		r.PowerCut = &cut
 	}
 	w.Apply = LoadApply(env)
 	return w
@@ -153,6 +217,21 @@ func (r Radio) vifPower() bool {
 		}
 	}
 	return false
+}
+
+// setPower is the lowest power set on the radio (txpower) or its access
+// points (vif_txpower), in dBm; false when nothing is set there.
+func (r Radio) setPower() (int, bool) {
+	v, ok := 0, false
+	if r.TxPower != nil {
+		v, ok = *r.TxPower, true
+	}
+	for _, i := range r.ifaces {
+		if i.mode == "ap" && i.vifDBm != nil && (!ok || *i.vifDBm < v) {
+			v, ok = *i.vifDBm, true
+		}
+	}
+	return v, ok
 }
 
 // readRadios reads the radios from UCI alone.
@@ -172,6 +251,9 @@ func readRadios(env Env) Wifi {
 			c := ifaceConf{ref: i.Ref(), mode: i.Get("mode"), ssid: i.Get("ssid"), enc: i.Get("encryption"),
 				secure: encrypted(i.Get("encryption")), on: !disabledOpt(i.Get("disabled")),
 				vifPower: strings.TrimSpace(i.Get("vif_txpower")) != ""}
+			if p, err := strconv.Atoi(strings.TrimSpace(i.Get("vif_txpower"))); err == nil {
+				c.vifDBm = &p
+			}
 			switch c.mode {
 			case "ap":
 				r.AP = true
@@ -184,6 +266,10 @@ func readRadios(env Env) Wifi {
 			r.SSID, r.Secured, r.Enabled = ap.ssid, ap.secure, r.radioOn && ap.on
 		}
 		r.MaxPower = r.TxPower == nil && !r.vifPower()
+		if r.MaxPower {
+			zero := 0
+			r.PowerCut = &zero
+		}
 		w.Radios = append(w.Radios, r)
 	}
 	return w

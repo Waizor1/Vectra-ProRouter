@@ -896,6 +896,8 @@ func (s *stack) prologue(enabled string) string {
 		"PASSWALL_MARKER=" + q(".passwall-disabled-by-vctl") + "\n" +
 		"PASSWALL_SWITCH_MARKER=" + q(".passwall-switch-off-by-vctl") + "\n" +
 		"PASSWALL_SWITCH_SNIPPET=" + q("uci-defaults/99-vectra-trial-passwall-switch") + "\n" +
+		"PASSWALL_RETIRED=" + q(".passwall-retired-by-vctl") + "\n" +
+		"PASSWALL_RETIRE_CLOCK=" + q(".passwall-retire-clock") + "\n" +
 		"PASSWALL_INIT_CANDIDATES=" + q("passwall2") + "\n" +
 		"PASSWALL_LOCK_DIR=" + q("lock") + "\n" +
 		"TRIAL_FILE=" + q("vectra-trial.json") + "\n" +
@@ -1053,7 +1055,7 @@ func TestTheTakeoverTakesARouterWithLuciAppPasswall2(t *testing.T) {
 	}
 	// Down three times in a row before vctl runs.
 	want := []string{
-		"pgrep -P 1 -f run -c " + s.path("run") + "/",
+		"pgrep -P 1 -f run -c " + s.path("run") + "/|(^|/)(vctl-xray-wrapper|vctl-xray-private) run -c stdin:($| )",
 		"agent enabled", "agent disable", "agent stop",
 		"uci -q set passwall2.@global[0].enabled=0", "uci -q commit passwall2",
 		"passwall enabled", "passwall disable", "passwall stop",
@@ -1143,7 +1145,7 @@ func TestATrialTakesTheRouterWithoutDisablingAnything(t *testing.T) {
 		t.Fatalf("a trial with the switch off did not start:\n%s\n%s", strings.Join(events, "\n"), out)
 	}
 	want := []string{
-		"pgrep -P 1 -f run -c " + s.path("run") + "/",
+		"pgrep -P 1 -f run -c " + s.path("run") + "/|(^|/)(vctl-xray-wrapper|vctl-xray-private) run -c stdin:($| )",
 		"agent enabled", "agent stop",
 		"uci -q set passwall2.@global[0].enabled=0", "uci -q commit passwall2",
 		"passwall enabled", "passwall stop",
@@ -1742,6 +1744,44 @@ func (r *lanRouter) run(script string, args ...string) []string {
 	return strings.Split(strings.TrimSpace(string(raw)), "\n")
 }
 
+// seed puts a section of config pkg in the uci stand-in's store.
+func (r *lanRouter) seed(pkg string, sec uciSection) {
+	r.t.Helper()
+	st := r.store()
+	st[pkg] = append(st[pkg], sec)
+	raw, err := json.Marshal(st)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	if err := os.WriteFile(r.state, raw, 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// option is an option's value in the uci stand-in's store ("" when unset).
+func (r *lanRouter) option(pkg, section, opt string) string {
+	r.t.Helper()
+	for _, s := range r.store()[pkg] {
+		if s.Name == section {
+			return s.Opts[opt]
+		}
+	}
+	return ""
+}
+
+func (r *lanRouter) store() map[string][]uciSection {
+	r.t.Helper()
+	raw, err := os.ReadFile(r.state)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	var st map[string][]uciSection
+	if err := json.Unmarshal(raw, &st); err != nil {
+		r.t.Fatal(err)
+	}
+	return st
+}
+
 func (r *lanRouter) names(section string) []string {
 	r.t.Helper()
 	raw, err := os.ReadFile(r.state)
@@ -1772,38 +1812,62 @@ func stockDHCP() []uciSection {
 
 const defaultsScript = "files/etc/uci-defaults/90_vectra_controller_pro_defaults"
 
-// The uci-defaults script names the router vectra.lan on the LAN's dhcp
-// section — once, however often it runs — and has dnsmasq take it up.
-func TestUCIDefaultsNameTheRouterVectraLan(t *testing.T) {
+// The router's own names on the LAN, as the uci-defaults script adds them.
+var routerNames = []string{"vectra.lan", "my.vectra-pro.net"}
+
+// The uci-defaults script names the router vectra.lan and my.vectra-pro.net
+// on the LAN's dhcp section — once, however often it runs — and has dnsmasq
+// take them up with one commit and one reload.
+func TestUCIDefaultsNameTheRouter(t *testing.T) {
 	t.Parallel()
 	r := newLanRouter(t, stockDHCP(), true)
 	calls := strings.Join(r.run(defaultsScript), "\n")
-	if got := r.names("home"); !reflect.DeepEqual(got, []string{"vectra.lan"}) {
+	if got := r.names("home"); !reflect.DeepEqual(got, routerNames) {
 		t.Fatalf("home.interface_name = %v\n%s", got, calls)
 	}
-	for _, want := range []string{"uci -q add_list dhcp.home.interface_name=vectra.lan", "uci -q commit dhcp", "dnsmasq reload"} {
+	for _, want := range []string{"uci -q add_list dhcp.home.interface_name=vectra.lan", "uci -q add_list dhcp.home.interface_name=my.vectra-pro.net",
+		"uci -q commit dhcp", "dnsmasq reload"} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("did not run %q:\n%s", want, calls)
 		}
+	}
+	if n := strings.Count(calls, "commit dhcp"); n != 1 || strings.Count(calls, "dnsmasq reload") != 1 {
+		t.Errorf("%d commits for the two names, and reloads:\n%s", n, calls)
 	}
 	if strings.Contains(calls, "dhcp.wan.interface_name") {
 		t.Errorf("named the WAN:\n%s", calls)
 	}
 	// Again (every upgrade's postinst, the first boot): nothing more.
 	calls = strings.Join(r.run(defaultsScript), "\n")
-	if got := r.names("home"); !reflect.DeepEqual(got, []string{"vectra.lan"}) || strings.Contains(calls, "add_list") ||
+	if got := r.names("home"); !reflect.DeepEqual(got, routerNames) || strings.Contains(calls, "add_list") ||
 		strings.Contains(calls, "commit dhcp") || strings.Contains(calls, "dnsmasq") {
 		t.Fatalf("a second run added or reloaded: %v\n%s", got, calls)
 	}
 }
 
+// A router upgraded from a version that named it vectra.lan only gets
+// my.vectra-pro.net beside it — and vectra.lan is not added twice.
+func TestUCIDefaultsAddTheNewNameOnAnUpgrade(t *testing.T) {
+	t.Parallel()
+	dhcp := stockDHCP()
+	dhcp[1].Lists = map[string][]string{"interface_name": {"vectra.lan"}}
+	r := newLanRouter(t, dhcp, true)
+	calls := strings.Join(r.run(defaultsScript), "\n")
+	if got := r.names("home"); !reflect.DeepEqual(got, routerNames) {
+		t.Fatalf("home.interface_name = %v\n%s", got, calls)
+	}
+	if strings.Contains(calls, "interface_name=vectra.lan") || !strings.Contains(calls, "dnsmasq reload") {
+		t.Fatalf("calls:\n%s", calls)
+	}
+}
+
 // With dnsmasq not running yet (the first boot runs uci-defaults before it
-// starts) nothing is reloaded; dnsmasq reads the name when it starts.
+// starts) nothing is reloaded; dnsmasq reads the names when it starts.
 func TestUCIDefaultsDoNotStartDnsmasq(t *testing.T) {
 	t.Parallel()
 	r := newLanRouter(t, stockDHCP(), false)
 	calls := strings.Join(r.run(defaultsScript), "\n")
-	if !reflect.DeepEqual(r.names("home"), []string{"vectra.lan"}) || strings.Contains(calls, "dnsmasq reload") {
+	if !reflect.DeepEqual(r.names("home"), routerNames) || strings.Contains(calls, "dnsmasq reload") {
 		t.Fatalf("calls:\n%s", calls)
 	}
 }
@@ -1816,7 +1880,7 @@ func TestUCIDefaultsKeepWhatIsThere(t *testing.T) {
 	dhcp[1].Lists = map[string][]string{"interface_name": {"nas.lan"}}
 	r := newLanRouter(t, dhcp, true)
 	r.run(defaultsScript)
-	if got := r.names("home"); !reflect.DeepEqual(got, []string{"nas.lan", "vectra.lan"}) {
+	if got := r.names("home"); !reflect.DeepEqual(got, append([]string{"nas.lan"}, routerNames...)) {
 		t.Fatalf("interface_name = %v", got)
 	}
 	none := newLanRouter(t, []uciSection{{Name: "wan", Type: "dhcp", Opts: map[string]string{"interface": "wan"}}}, true)
@@ -1848,19 +1912,20 @@ func makefileScript(t *testing.T, name string) string {
 	return p
 }
 
-// Removing the package takes vectra.lan away; an upgrade — whose old postrm
-// opkg runs as `postrm upgrade <version>` with PKG_UPGRADE=1 — keeps it.
-func TestPostrmTakesVectraLanAwayOnRemovalOnly(t *testing.T) {
+// Removing the package takes vectra.lan and my.vectra-pro.net away; an
+// upgrade — whose old postrm opkg runs as `postrm upgrade <version>` with
+// PKG_UPGRADE=1 — keeps them.
+func TestPostrmTakesTheNamesAwayOnRemovalOnly(t *testing.T) {
 	t.Parallel()
 	postrm := makefileScript(t, "postrm")
 	named := stockDHCP()
-	named[1].Lists = map[string][]string{"interface_name": {"nas.lan", "vectra.lan"}}
+	named[1].Lists = map[string][]string{"interface_name": {"nas.lan", "vectra.lan", "my.vectra-pro.net"}}
 
 	up := newLanRouter(t, named, true)
 	up.env = append(up.env, "PKG_UPGRADE=1")
 	calls := strings.Join(up.run(postrm, "upgrade", "0.6.0-r1"), "\n")
-	if got := up.names("home"); !reflect.DeepEqual(got, []string{"nas.lan", "vectra.lan"}) || strings.Contains(calls, "del_list") {
-		t.Fatalf("an upgrade took vectra.lan away: %v\n%s", got, calls)
+	if got := up.names("home"); !reflect.DeepEqual(got, []string{"nas.lan", "vectra.lan", "my.vectra-pro.net"}) || strings.Contains(calls, "del_list") {
+		t.Fatalf("an upgrade took a name away: %v\n%s", got, calls)
 	}
 	if !strings.Contains(calls, "killall -HUP rpcd") {
 		t.Errorf("the upgrade's postrm no longer tells rpcd:\n%s", calls)
@@ -1876,6 +1941,9 @@ func TestPostrmTakesVectraLanAwayOnRemovalOnly(t *testing.T) {
 		if !strings.Contains(calls, want) {
 			t.Errorf("removal did not run %q:\n%s", want, calls)
 		}
+	}
+	if strings.Count(calls, "commit dhcp") != 1 || strings.Count(calls, "dnsmasq reload") != 1 {
+		t.Errorf("one commit and one reload for both names:\n%s", calls)
 	}
 	// Nothing named: nothing committed, nothing reloaded.
 	calls = strings.Join(gone.run(postrm, "remove"), "\n")
@@ -2051,5 +2119,307 @@ func TestTheMemoryReserveFollowsTheRouter(t *testing.T) {
 	r.env = append(r.env, "MEMINFO="+s.path("meminfo"))
 	if calls := strings.Join(r.run(defaultsScript), "\n"); strings.Contains(calls, "sysctl") || mine() != "" {
 		t.Fatalf("the package's defaults set the reserve:\n%s", calls)
+	}
+}
+
+// The support shell (vectra-controller-pro.main.remote_shell) is decided once,
+// by the uci-defaults script: a router an older vctl already ran on — its
+// state is there — keeps the shell it had ('1'); a new one starts without it
+// ('0'). What is set — by this script or the owner — is never changed again.
+func TestUCIDefaultsDecideTheSupportShellOnce(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name  string
+		state bool
+		set   string
+		want  string
+	}{
+		{"a new router", false, "", "0"},
+		{"a router upgraded from a vctl without the switch", true, "", "1"},
+		{"the owner turned it off", true, "0", "0"},
+		{"the owner turned it on", false, "1", "1"},
+	} {
+		r := newLanRouter(t, stockDHCP(), true)
+		statePath := filepath.Join(r.dir, "etc", "state.json")
+		if c.state {
+			if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(statePath, []byte(`{"router_id":"r-1","agent_token":"x"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// No old agent's state: this machine's own is none of the test's.
+		opts := map[string]string{"state_path": statePath, "legacy_state_path": filepath.Join(r.dir, "no-legacy.json"), "enabled": "1"}
+		if c.set != "" {
+			opts["remote_shell"] = c.set
+		}
+		r.seed("vectra-controller-pro", uciSection{Name: "main", Type: "controller", Opts: opts})
+		r.run(defaultsScript)
+		if got := r.option("vectra-controller-pro", "main", "remote_shell"); got != c.want {
+			t.Errorf("%s: remote_shell = %q, want %q", c.name, got, c.want)
+		}
+		// Again (every upgrade's postinst): nothing changes, whatever the
+		// state says by then.
+		if !c.state {
+			if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(statePath, []byte(`{"router_id":"r-1"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r.run(defaultsScript)
+		if got := r.option("vectra-controller-pro", "main", "remote_shell"); got != c.want {
+			t.Errorf("%s, run again: remote_shell = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// A router that ran the old Vectra agent (vectra-controller-agent, whose state
+// is legacy_state_path, /etc/vectra-controller/state.json) had the support
+// shell through it: moving it to vctl is an upgrade, not a new router, and it
+// keeps the shell. Only a router that had neither vctl nor the old agent
+// starts without it; an empty state file is no state.
+func TestUCIDefaultsKeepTheSupportShellOfARouterTheOldAgentRan(t *testing.T) {
+	t.Parallel()
+	const none = "-"
+	for _, c := range []struct {
+		name          string
+		state, legacy string // the files' contents, or none
+		want          string
+	}{
+		{"the old agent's state", none, `{"router_id":"r-1","agent_token":"x"}`, "1"},
+		{"both states", `{"router_id":"r-1"}`, `{"router_id":"r-1","agent_token":"x"}`, "1"},
+		{"an empty old agent's state", none, "", "0"},
+		{"both states empty", "", "", "0"},
+		{"neither", none, none, "0"},
+	} {
+		r := newLanRouter(t, stockDHCP(), true)
+		statePath := filepath.Join(r.dir, "etc", "vectra-controller-pro", "state.json")
+		legacyPath := filepath.Join(r.dir, "etc", "vectra-controller", "state.json")
+		for p, body := range map[string]string{statePath: c.state, legacyPath: c.legacy} {
+			if body == none {
+				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r.seed("vectra-controller-pro", uciSection{Name: "main", Type: "controller",
+			Opts: map[string]string{"state_path": statePath, "legacy_state_path": legacyPath, "enabled": "1"}})
+		r.run(defaultsScript)
+		if got := r.option("vectra-controller-pro", "main", "remote_shell"); got != c.want {
+			t.Errorf("%s: remote_shell = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// The package's config file does not name remote_shell: a conffile opkg puts
+// in place of an untouched one on an upgrade would decide for the router,
+// before the uci-defaults script could tell a new router from an old one.
+func TestTheConffileLeavesTheSupportShellToTheUCIDefaults(t *testing.T) {
+	raw, err := os.ReadFile("files/etc/config/vectra-controller-pro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := uci.Parse(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if main := f.Named("main"); main == nil {
+		t.Fatal("no main section")
+	} else if v, ok := main.Options["remote_shell"]; ok {
+		t.Fatalf("the conffile sets remote_shell %q", v)
+	}
+}
+
+// A small router's swap comes with the package: zram-swap (and with it
+// kmod-zram) is a dependency, so a clean install has what the tune switches
+// on (internal/tune) and the memory guard assumes.
+func TestTheSwapComesWithThePackage(t *testing.T) {
+	t.Parallel()
+	mk, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := regexp.MustCompile(`(?m)^\s*DEPENDS:=(.*)$`).FindSubmatch(mk)
+	if deps == nil {
+		t.Fatal("no DEPENDS in the Makefile")
+	}
+	if !strings.Contains(" "+string(deps[1])+" ", " +zram-swap ") {
+		t.Fatalf("DEPENDS lacks +zram-swap: %s", deps[1])
+	}
+}
+
+// postinstStand runs the package's postinst with its init script, vctl and
+// the tools it calls stood in: `running` answers runningAfter once the
+// postinst has started or restarted vctl, and every call is noted.
+func postinstStand(t *testing.T, runningAfter bool, env ...string) []string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(dir, "calls.log")
+	rec := func(who string) string { return "#!/bin/sh\necho \"" + who + " $*\" >>\"$STUB_LOG\"\n" }
+	for _, tool := range []string{"killall", "rm", "sysctl"} {
+		writeExec(t, filepath.Join(bin, tool), rec(tool))
+	}
+	// logger takes its lines on stdin.
+	writeExec(t, filepath.Join(bin, "logger"), "#!/bin/sh\nwhile IFS= read -r l; do echo \"logger $* $l\" >>\"$STUB_LOG\"; done\n")
+	up := "1"
+	if runningAfter {
+		up = "0"
+	}
+	started := filepath.Join(dir, "started")
+	init := filepath.Join(dir, "init")
+	writeExec(t, init, rec("init")+"case \"$1\" in\n"+
+		"  running) [ -f '"+started+"' ] && exit "+up+"; exit 1;;\n"+
+		"  start|restart) true >'"+started+"';;\n"+
+		"esac\nexit 0\n")
+	vctl := filepath.Join(dir, "vctl")
+	writeExec(t, vctl, rec("vctl")+"echo 'changed: vm.swappiness: 60 -> 80'\n")
+	raw, err := os.ReadFile(makefileScript(t, "postinst"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "postinst")
+	writeExec(t, script, strings.ReplaceAll(string(raw), "/etc/init.d/vectra-controller-pro", init))
+	cmd := exec.Command("sh", script, "configure")
+	cmd.Env = append(append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "STUB_LOG="+log, "VCTL="+vctl), env...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("postinst: %v\n%s", err, out)
+	}
+	calls, _ := os.ReadFile(log)
+	return strings.Split(strings.TrimSpace(string(calls)), "\n")
+}
+
+// The install tunes the router once vctl is up — its changes go to the log —
+// and a standby install, or a start that gave the router back, tunes nothing.
+func TestThePostinstTunesTheRouterOnceVctlRuns(t *testing.T) {
+	t.Parallel()
+	calls := postinstStand(t, true)
+	tuned := -1
+	for i, c := range calls {
+		if c == "vctl tune apply" {
+			tuned = i
+		}
+	}
+	if tuned < 0 {
+		t.Fatalf("no tune:\n%s", strings.Join(calls, "\n"))
+	}
+	for _, c := range calls[:tuned] {
+		if c == "init start" || c == "init restart" {
+			goto started
+		}
+	}
+	t.Fatalf("tuned before vctl was started:\n%s", strings.Join(calls, "\n"))
+started:
+	if !containsLine(calls, "logger -t vectra-controller-pro changed: vm.swappiness: 60 -> 80") {
+		t.Fatalf("the tune's changes are not in the log:\n%s", strings.Join(calls, "\n"))
+	}
+
+	for name, calls := range map[string][]string{
+		"a standby install":         postinstStand(t, true, "VECTRA_SKIP_POSTINST_RESTART=1"),
+		"a start that gave it back": postinstStand(t, false),
+	} {
+		for _, c := range calls {
+			if strings.HasPrefix(c, "vctl ") {
+				t.Fatalf("%s tuned the router:\n%s", name, strings.Join(calls, "\n"))
+			}
+		}
+	}
+}
+
+// A removal puts back what the tune changed — before the hand-back, while
+// vctl's binary is still on disk — and an upgrade does not.
+func TestThePrermUndoesTheTuneOnRemovalOnly(t *testing.T) {
+	t.Parallel()
+	s := newStack(t)
+	s.write("vctl.enabled", "")
+	if _, out := s.run("1", "start_service; echo \"rc=$?\"\n"); !strings.Contains(out, "rc=0") {
+		t.Fatalf("not taken:\n%s", out)
+	}
+	vctl := s.path("bin/vctl-tune")
+	writeExec(t, vctl, "#!/bin/sh\necho \"vctl $*\" >>\"$STUB_LOG\"\n")
+	writeExec(t, s.path("bin/logger"), "#!/bin/sh\n")
+	events, out := s.prerm([]string{"upgrade", "0.6.0-r36"}, "PKG_UPGRADE=1", "VCTL="+vctl)
+	if len(events) != 0 {
+		t.Fatalf("an upgrade undid the tune:\n%s\n%s", strings.Join(events, "\n"), out)
+	}
+	events, out = s.prerm([]string{"remove"}, "VCTL="+vctl)
+	events = withoutLogs(events)
+	if len(events) == 0 || events[0] != "vctl tune undo" {
+		t.Fatalf("the removal did not undo the tune first:\n%s\n%s", strings.Join(events, "\n"), out)
+	}
+	if countLine(events, "vctl tune undo") != 1 {
+		t.Fatalf("undone more than once:\n%s", strings.Join(events, "\n"))
+	}
+}
+
+// The postrm takes the tune's own files on a removal (whatever the prerm's
+// undo could not), and an upgrade keeps them.
+func TestThePostrmTakesTheTunesFilesOnRemovalOnly(t *testing.T) {
+	t.Parallel()
+	r := newLanRouter(t, stockDHCP(), true)
+	conf, backup := filepath.Join(r.dir, "95-vectra-tune.conf"), filepath.Join(r.dir, "tune-backup.json")
+	r.env = append(r.env, "TUNECONF="+conf, "TUNEBACKUP="+backup)
+	postrm := makefileScript(t, "postrm")
+	if calls := strings.Join(r.run(postrm, "upgrade", "0.6.0-r36"), "\n"); strings.Contains(calls, conf) || strings.Contains(calls, backup) {
+		t.Fatalf("an upgrade took the tune's files:\n%s", calls)
+	}
+	if calls := r.run(postrm, "remove"); !containsLine(calls, "rm -f "+conf+" "+backup) {
+		t.Fatalf("the removal kept the tune's files:\n%s", strings.Join(calls, "\n"))
+	}
+}
+
+// tune '1' is seeded where it is not set; an operator's '0' stays.
+func TestUCIDefaultsSeedTheTuneSwitch(t *testing.T) {
+	t.Parallel()
+	r := newLanRouter(t, stockDHCP(), true)
+	if calls := r.run(defaultsScript); !containsLine(calls, "uci -q set vectra-controller-pro.main.tune=1") {
+		t.Fatalf("tune not seeded:\n%s", strings.Join(calls, "\n"))
+	}
+	off := newLanRouter(t, stockDHCP(), true)
+	raw, err := json.Marshal(map[string][]uciSection{"dhcp": stockDHCP(),
+		"vectra-controller-pro": {{Name: "main", Type: "controller", Opts: map[string]string{"tune": "0"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(off.state, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range off.run(defaultsScript) {
+		if strings.Contains(c, "main.tune") && strings.Contains(c, " set ") {
+			t.Fatalf("an operator's tune '0' was overwritten: %s", c)
+		}
+	}
+}
+
+func TestPrivateStdinXrayOwnershipPatternIsScoped(t *testing.T) {
+	s := newStack(t)
+	_, out := s.run("1", "vctl_xray_pattern\n")
+	pattern, err := regexp.Compile(strings.TrimSpace(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"/usr/sbin/vctl-xray-wrapper run -c stdin:", "vctl-xray-private run -c stdin:", "/usr/bin/xray run -c " + s.path("run") + "/old.json"} {
+		if !pattern.MatchString(cmd) {
+			t.Errorf("owned child not recognized: %s", cmd)
+		}
+	}
+	for _, cmd := range []string{"/usr/bin/xray run -c stdin:", "/tmp/fake-vctl-xray-wrapper run -c stdin:", "vctl-xray-private run -c stdin:other", "sleep 90; test -f " + s.path("run") + "/fw-confirm"} {
+		if pattern.MatchString(cmd) {
+			t.Errorf("unowned process recognized: %s", cmd)
+		}
+	}
+	events, _ := s.run("1", "kill_orphan_xray\n")
+	if len(events) != 1 || !strings.Contains(events[0], "pgrep -P 1 -f ") {
+		t.Fatalf("orphan query lacks parent scope: %v", events)
 	}
 }

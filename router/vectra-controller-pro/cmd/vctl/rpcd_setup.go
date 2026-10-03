@@ -1,6 +1,7 @@
 package main
 
 import (
+ "vectra-controller-pro/internal/vault"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -36,6 +37,30 @@ func init() {
 	for m, sig := range rpcdSetupSignatures {
 		rpcdSignatures[m] = sig
 	}
+}
+
+// set_remote_shell is the owner's switch for the panel's support shell
+// (remote_shell.go; ui/contract/README.md, "Support shell"): the simple
+// view's, so the operator's lock never refuses it.
+func init() {
+	rpcdSignatures["set_remote_shell"] = map[string]interface{}{"on": true}
+}
+
+// rpcdSetRemoteShell answers set_remote_shell {"on": bool}: the switch
+// through uci, committed — the next job reads it, nothing restarts.
+func rpcdSetRemoteShell(ctx context.Context, params []byte) uiapi.Action {
+	var p struct {
+		On *bool `json:"on"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	if len(params) == 0 || dec.Decode(&p) != nil || p.On == nil {
+		return action(false, "invalid_params", `params must be {"on": true} or {"on": false}`)
+	}
+	if err := setup.SetRemoteShell(ctx, rpcdSetupEnv(), *p.On); err != nil {
+		return action(false, "internal", err.Error())
+	}
+	return action(true, "remote_shell_set", "")
 }
 
 // Seams: tests point the wizard at a fake router and never spawn anything.
@@ -190,7 +215,7 @@ func operatorConfig(cfg agentcfg.Config) (c *config.Config, present bool, err er
 	if _, serr := os.Stat(cfg.XrayConfigPath); errors.Is(serr, os.ErrNotExist) {
 		return nil, false, nil
 	}
-	c, err = config.Load(cfg.XrayConfigPath)
+	c, err = config.LoadSecret(cfg.XrayConfigPath)
 	return c, true, err
 }
 
@@ -208,7 +233,7 @@ func panelLocked(cfg agentcfg.Config) bool {
 // the Vectra bot it named and the router's owner — linked or not. Only these
 // two fields are read from the state file.
 func persistedClaim(cfg agentcfg.Config) (bot string, owner *uiapi.ClaimOwner) {
-	raw, err := os.ReadFile(cfg.StatePath)
+	raw, err := vault.ReadFile(cfg.StatePath)
 	if err != nil {
 		return "", nil
 	}

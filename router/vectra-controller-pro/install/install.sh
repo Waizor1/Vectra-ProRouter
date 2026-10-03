@@ -11,7 +11,8 @@
 #   sh vectra.sh --uninstall  remove Vectra (add --purge to forget the router's
 #                             Vectra identity and settings too)
 #   --yes                     do not ask (a router with PassWall2: Vectra takes
-#                             over the traffic; stopping Vectra gives it back)
+#                             over the traffic, `vectra off` gives it back; after
+#                             a day of Vectra's VPN, Vectra removes PassWall2)
 #   --force                   go on below the memory floor (tests only: the
 #                             router may run out of memory)
 #
@@ -282,7 +283,10 @@ check_conflicts() {
 	elif installed luci-app-passwall2 || [ -x /etc/init.d/passwall2 ]; then
 		TAKEOVER=passwall2
 		say "    PassWall2: Vectra заберёт у него трафик (PassWall2 остановится)."
-		say "    Вернуть как было: /etc/init.d/$PKG stop — PassWall2 запустится снова."
+		say "    Вернуть ему трафик: vectra off."
+		say "    Через сутки работы VPN Vectra удалит PassWall2 сама"
+		say "    (настройки сохранятся в /etc/vectra-controller-pro/backup);"
+		say "    после этого vectra off оставит интернет без VPN."
 		say "    До привязки к аккаунту Vectra интернет пойдёт напрямую, без VPN."
 		if [ "$YES" != 1 ]; then
 			[ -t 0 ] || refuse "на роутере PassWall2. Запустите с --yes, если Vectra должна забрать у него трафик."
@@ -571,7 +575,12 @@ finish() {
 		i=$((i + 1))
 	done
 	[ -n "$code" ] && say "  Код привязки: $code (в приложении Vectra: Роутер -> Привязать)"
-	[ "$TAKEOVER" = passwall2 ] && say "  PassWall2 остановлен. Вернуть: /etc/init.d/$PKG stop"
+	if [ "$TAKEOVER" = passwall2 ]; then
+		say "  PassWall2 остановлен. Вернуть ему трафик: vectra off."
+		say "  Через сутки работы VPN Vectra удалит PassWall2 сама"
+		say "  (настройки сохранятся в /etc/vectra-controller-pro/backup);"
+		say "  после этого vectra off оставит интернет без VPN."
+	fi
 	if [ -f "$0" ] && mkdir -p /etc/vectra-controller-pro && cp "$0" "$SELF_COPY" 2>/dev/null; then
 		say "  Удалить: sh $SELF_COPY --uninstall"
 	fi
@@ -585,7 +594,7 @@ uninstall() {
 	installed "$PKG" || note "$PKG не установлен"
 	if installed "$PKG"; then
 		# prerm stops the service: the data plane is unloaded and PassWall2, if
-		# Vectra took it over, is given back.
+		# Vectra took it over and has not removed it since, is given back.
 		run opkg remove --autoremove "$PKG" || fail "opkg remove $PKG не прошёл."
 		ok "$PKG удалён; служба остановлена"
 	fi
@@ -619,7 +628,7 @@ main() {
 		--yes | -y) YES=1 ;;
 		--force) FORCE=1 ;;
 		-h | --help)
-			sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+			sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
 			exit 0
 			;;
 		*)

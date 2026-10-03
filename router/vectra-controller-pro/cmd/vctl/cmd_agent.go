@@ -14,11 +14,13 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/apply"
 	"vectra-controller-pro/internal/claim"
 	"vectra-controller-pro/internal/config"
+	"vectra-controller-pro/internal/connectactions"
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/exitcheck"
@@ -55,7 +57,7 @@ func cmdAgent(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	setupLogging(*logLevel)
+	logging.SetDefault(logging.New(*logLevel, os.Stdout, "text"))
 	// A crash of the daemon goes to the reporter too (ADR-0007).
 	captureCrashes()
 
@@ -119,6 +121,9 @@ func runAgent(ctx context.Context, d *daemon, once bool) error {
 
 // daemon is the long-running autonomous controller.
 type daemon struct {
+	// aiRefused are the «Нейросети» defaults xray refused, each on the
+	// document it joined (aiRefusedKey): not tried again until either changes.
+	aiRefused map[string]bool
 	cfg       agentcfg.Config
 	client    *controlplane.Client
 	sup       *supervisor.Process
@@ -255,6 +260,17 @@ type daemon struct {
 	// claim is the router's side of being claimed by a Vectra account
 	// (ADR-0006) until it is linked.
 	claim *claimer
+
+	// PassWall2's retirement (retire_passwall.go): the loop's next look, the
+	// next try after a removal that failed, and the last refusal said. Seams
+	// for tests: xray running, `ip` show, the router's resources (nil: the
+	// supervisor, the ip command, the collector).
+	retireNextAt      time.Time
+	retireFailedUntil time.Time
+	retireSaid        string
+	xrayRunning       func() bool
+	ipOutput          func(ctx context.Context, args ...string) ([]byte, error)
+	retireResources   func() controlplane.RouterResources
 }
 
 // xrayGOGC is xray's GC target: collect when the heap has grown 30% since
@@ -262,6 +278,13 @@ type daemon struct {
 const xrayGOGC = 30
 
 func newDaemon(cfg agentcfg.Config) (*daemon, error) {
+	if err := migrateSecrets(cfg); err != nil {
+		// Not started: no secret is read and none is written in plaintext.
+		// The dead-man hands the router back if it owes it, and the reporter
+		// tells the operator either way.
+		reportSecretStorage("secret_storage_migration_failed", "error", "vctl did not start: its secrets could not be sealed", err)
+		return nil, fmt.Errorf("secret storage migration: %w", err)
+	}
 	st, err := state.Load(cfg.StatePath)
 	if err != nil {
 		return nil, fmt.Errorf("load state: %w", err)
@@ -275,7 +298,17 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 	// fresh install — the router kept the legacy routerId/token (adopted
 	// unconditionally) but reported a freshly minted deviceIdentifier.
 	if imported, err := state.ImportLegacyIdentity(&st, cfg.LegacyStatePath); err != nil {
-		logging.L().Warn("legacy identity import", "err", err.Error())
+		// The panel already knows this router by the old agent's identity;
+		// minting another would split it in two records. With the old agent
+		// installed, not starting hands the router back to it. Without it
+		// there is nothing to hand back to: a new identity the operator
+		// adopts beats a router that never checks in again.
+		if legacyAgentInstalled() {
+			reportSecretStorage("legacy_identity_unreadable", "error", "vctl did not start: the router's identity cannot be read", err)
+			return nil, fmt.Errorf("legacy identity unreadable; not minting a new one: %w", err)
+		}
+		reportSecretStorage("legacy_identity_unreadable", "error", "the router's old identity cannot be read; vctl enrols anew", err)
+		logging.L().Error("the old agent's identity cannot be read and no old agent is installed; enrolling anew", "err", err.Error())
 	} else if imported {
 		logging.L().Info("adopted legacy router identity for xray-direct canary", "routerId", st.RouterID)
 	}
@@ -356,6 +389,7 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 	// Every start — the first, a reload, a crash restart — must get the
 	// router's pins back (xray keeps balancer overrides in memory only) and a
 	// fresh leak baseline (see takeLeakBaseline).
+	sup.SetConfigSource(func() ([]byte, error) { return vault.ReadFile(cfg.XrayRenderPath) })
 	sup.SetOnStart(d.onXrayStart)
 	d.incidents = incident.NewRecorder(incident.Dir, 10*time.Minute)
 	sup.SetOnExit(func(code int, err error, ran time.Duration) { d.noteXrayExit(code, err, ran, time.Now()) })
@@ -366,7 +400,7 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 	}
 	// Best-effort: adopt any previously-applied operator config so the tproxy
 	// inbound (and therefore the applier) is usable before the first check-in.
-	if c, err := config.Load(cfg.XrayConfigPath); err == nil {
+	if c, err := config.LoadSecret(cfg.XrayConfigPath); err == nil {
 		d.desired = c
 	}
 	d.claim = newClaimer(st, d.device.Model, cfg.ClaimRotate())
@@ -420,15 +454,17 @@ func (d *daemon) rebuildApplier() {
 			tproxy = &t
 		}
 	}
+	d.sup.SetConfigSource(func() ([]byte, error) { return vault.ReadFile(d.cfg.XrayRenderPath) })
 	d.applier = &apply.Applier{
-		Tproxy:       tproxy,
-		ProviderPath: d.documentPath(),
+		Tproxy:        tproxy,
+		ProviderPath:  d.documentPath(),
+		SecretStorage: true,
 		// xray reads its geo files where the xray -test gate checked the
 		// render it runs: the directory moves with a render written, never
 		// before — a config the gate refused leaves the running render its
 		// own directory for every restart after.
 		WriteXray: func(b []byte) error {
-			if err := d.sup.WriteXrayConfig(b); err != nil {
+			if err := vault.WriteFile(d.cfg.XrayRenderPath, b); err != nil {
 				return err
 			}
 			d.sup.SetAssetDir(assetDir)
@@ -471,7 +507,7 @@ func (d *daemon) geoAssetDir() string {
 
 // refreshNodeCount recounts the provider document's outbounds from disk.
 func (d *daemon) refreshNodeCount() {
-	raw, err := os.ReadFile(d.documentPath())
+	raw, err := vault.ReadFile(d.documentPath())
 	if err != nil {
 		return
 	}
@@ -494,6 +530,8 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 		go d.watchMemory(ctx)
 		go d.watchFailover(ctx)
 		go d.watchExits(ctx)
+		// The router's tune (cmd_tune.go): in the background, never in the way.
+		go d.tuneAtStart(ctx)
 	}
 	// PassWall-compatible routing renders from PassWall2's configuration, as
 	// it is now; the document on /etc (resumeRender) only when that fails.
@@ -545,6 +583,7 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 		d.maybeSyncPassWall(ctx)
 		d.maybeLoadDirect(ctx)
 		d.maybeRefreshSubscription(ctx, time.Now())
+		d.maybeRetirePassWall(ctx, time.Now())
 		d.publishRuntime()
 		// Between polls the loop serves the router UI's changes, so they run
 		// here, serialized with the jobs, never beside them.
@@ -597,10 +636,12 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	// Journal recovery first: flush any result a crash left pending.
 	d.recoverJournal(ctx)
 
+	d.publishConnectTelemetry(ctx, d.connectCapabilities())
 	nodeCount, subCount := d.currentCounts()
 	inv := d.collector.Collect(ctx, d.sup.Status(), nodeCount, subCount)
 	inv.AppliedRevisionID = d.st.AppliedRevisionID
 	inv.ConfigDigest = d.st.ConfigDigest
+	inv.RemoteShell = remoteShellAllowed()
 	// The panel erases field names from its 400, so name them here. Still send:
 	// the panel is authoritative and a rejected report is no worse than a
 	// skipped one, but now the router log says exactly which field is empty.
@@ -621,6 +662,7 @@ func (d *daemon) runOnce(ctx context.Context) error {
 		return d.register(ctx, inv)
 	}
 
+	d.enrichConnectCheckin(&inv)
 	d.claim.setLinked(d.desired != nil)
 	resp, err := d.client.CheckIn(ctx, controlplane.CheckInRequest{
 		ProtocolVersion: controlplane.ProtocolVersion,
@@ -633,12 +675,24 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("check-in: %w", err)
 	}
+	if resp.RouterID != "" && resp.RouterID != d.st.RouterID {
+		return fmt.Errorf("check-in target mismatch")
+	}
 	d.lastCheckIn = time.Now().UTC()
 	if d.adoptClaimInfo(ctx, resp.ClaimInfo) {
 		// The rest of the answer that released the router was meant for the
 		// owner who just left: its desired revision is not kept and its jobs
 		// are not run (they stay the panel's to cancel or send again).
 		return d.persist()
+	}
+	if err := d.persist(); err != nil {
+		return fmt.Errorf("persist adopted claim: %w", err)
+	}
+	if err := d.connectMaintenanceAfterCheckin(ctx, d.connectBinding().OwnerRef); err != nil {
+		if errors.Is(err, errControllerRestartRequested) {
+			return err
+		}
+		logging.L().Warn("connect maintenance unavailable")
 	}
 
 	// A successful check-in proves the panel link is healthy, so (re)write the
@@ -858,7 +912,26 @@ func (d *daemon) storeRescueState(s rescue.State, reason string) {
 // mid-flight as failed, so the panel is never left waiting.
 func (d *daemon) recoverJournal(ctx context.Context) {
 	if d.st.PendingJobResult != nil {
+		if expected := d.st.CurrentJob.ExpectedControllerVersion; expected != "" && d.st.PendingJobResult.Status == "success" {
+			ok, err := maintenanceConfirmVersion(ctx, expected)
+			if err != nil {
+				return
+			}
+			if !ok {
+				d.st.PendingJobResult.Status = "failure"
+				d.st.PendingJobResult.Result = map[string]interface{}{"code": "update_version_unverified"}
+				if d.persist() != nil {
+					return
+				}
+			}
+		}
+		if d.persist() != nil {
+			return
+		}
 		if _, err := d.client.SubmitJobResult(ctx, *d.st.PendingJobResult); err == nil {
+			if d.connectRecoverDelivered(d.st.PendingJobResult.JobID, d.st.PendingJobResult.Status) != nil {
+				return
+			}
 			d.st.PendingJobResult = nil
 			d.st.CurrentJob = state.CurrentJob{}
 			_ = d.persist()
@@ -866,15 +939,36 @@ func (d *daemon) recoverJournal(ctx context.Context) {
 		return
 	}
 	if d.st.CurrentJob.JobID != "" {
-		_, _ = d.client.SubmitJobResult(ctx, controlplane.JobResultRequest{
-			ProtocolVersion: controlplane.ProtocolVersion,
-			RouterID:        d.st.RouterID,
-			JobID:           d.st.CurrentJob.JobID,
-			Status:          "failure",
-			Result:          map[string]interface{}{"error": "controller restarted before job completed"},
-		})
-		d.st.CurrentJob = state.CurrentJob{}
-		_ = d.persist()
+		job := controlplane.Job{ID: d.st.CurrentJob.JobID, Type: d.st.CurrentJob.JobType}
+		status, code := "failure", "controller_restarted"
+		if job.Type == "connect_router_action" {
+			binding := d.connectBinding()
+			journal, err := connectactions.OpenJournal(d.cfg.StatePath + ".connect-actions.json")
+			if err != nil {
+				return
+			}
+			record, found, err := journal.Lookup(binding, job.ID)
+			if err != nil {
+				return
+			}
+			if found {
+				switch record.Status {
+				case connectactions.Succeeded:
+					status, code = "success", "recovered_terminal"
+				case connectactions.Failed:
+					code = "recovered_terminal"
+				}
+				if record.Action == "reboot" && d.maintenancePendingReboot(binding.OwnerRef, job.ID) {
+					status, code = "accepted", "reboot_pending"
+				}
+			}
+		}
+		if d.finishJob(ctx, job, status, "", "", map[string]interface{}{"code": code}) == nil && job.Type == "connect_router_action" {
+			if d.connectRecoverDelivered(job.ID, status) != nil {
+				d.st.PendingJobResult = &controlplane.JobResultRequest{ProtocolVersion: controlplane.ProtocolVersion, RouterID: d.st.RouterID, JobID: job.ID, Status: status, Result: map[string]interface{}{"code": code}}
+				_ = d.persist()
+			}
+		}
 	}
 }
 

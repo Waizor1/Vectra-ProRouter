@@ -8,12 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/api"
@@ -84,7 +84,7 @@ func failoverDaemon(t *testing.T) *daemon {
 	t.Helper()
 	dir := t.TempDir()
 	render := filepath.Join(dir, "xray.json")
-	if err := os.WriteFile(render, []byte(failoverRender), 0o644); err != nil {
+	if err := vault.WriteFile(render, []byte(failoverRender)); err != nil {
 		t.Fatal(err)
 	}
 	return &daemon{cfg: agentcfg.Config{XrayRenderPath: render, OverridesPath: filepath.Join(dir, "overrides.json")},
@@ -147,7 +147,7 @@ func TestTheWatchdogForgetsWhatANewRenderLeftBehind(t *testing.T) {
 	d.failoverTick(context.Background(), w, t0.Add(2*time.Second))
 	next := strings.ReplaceAll(strings.ReplaceAll(failoverRender, "bridge-nl5", "bridge-de5"), "203.0.113.5", "203.0.113.9")
 	next = strings.Replace(next, `"routing":{`, `"routing":{"domainStrategy":"AsIs",`, 1)
-	if err := os.WriteFile(d.cfg.XrayRenderPath, []byte(next), 0o644); err != nil {
+	if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(next)); err != nil {
 		t.Fatal(err)
 	}
 	f.entries = nil
@@ -303,7 +303,7 @@ func TestTheWatchdogPutsAOneNodeBalancerOnItsFallbackStage(t *testing.T) {
 	}
 	f.install(t)
 	d := failoverDaemon(t)
-	if err := os.WriteFile(d.cfg.XrayRenderPath, []byte(failoverRenderOneNode), 0o644); err != nil {
+	if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(failoverRenderOneNode)); err != nil {
 		t.Fatal(err)
 	}
 	w := newFailoverWatch()
@@ -329,7 +329,7 @@ func TestTheWatchdogNeverParksABalancerOnDirect(t *testing.T) {
 	}
 	f.install(t)
 	d := failoverDaemon(t)
-	if err := os.WriteFile(d.cfg.XrayRenderPath, []byte(failoverRenderOneNode), 0o644); err != nil {
+	if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(failoverRenderOneNode)); err != nil {
 		t.Fatal(err)
 	}
 	w := newFailoverWatch()
@@ -375,7 +375,7 @@ func TestTheWatchdogLendsTheMainBalancerAnotherCountryWhenItsWholePathIsDead(t *
 	}
 	f.install(t)
 	d := failoverDaemon(t)
-	if err := os.WriteFile(d.cfg.XrayRenderPath, []byte(failoverRenderBorrow), 0o644); err != nil {
+	if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(failoverRenderBorrow)); err != nil {
 		t.Fatal(err)
 	}
 	w := newFailoverWatch()
@@ -420,7 +420,7 @@ func TestTheWatchdogNeverLendsAnExitTheCheckFoundUnfit(t *testing.T) {
 	}
 	f.install(t)
 	d := failoverDaemon(t)
-	if err := os.WriteFile(d.cfg.XrayRenderPath, []byte(failoverRenderBorrowUnfit), 0o644); err != nil {
+	if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(failoverRenderBorrowUnfit)); err != nil {
 		t.Fatal(err)
 	}
 	d.exits.Restore(map[string]time.Time{"sticky-us5": time.Now()})
@@ -486,7 +486,7 @@ func namedRender(t *testing.T, d *daemon) *namedDNS {
 	t.Helper()
 	named := strings.NewReplacer(`"address":"203.0.113.5"`, `"address":"nl5.provider.invalid"`,
 		`"address":"203.0.113.7"`, `"address":"pl5.provider.invalid"`).Replace(failoverRender)
-	if err := os.WriteFile(d.cfg.XrayRenderPath, []byte(named), 0o644); err != nil {
+	if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(named)); err != nil {
 		t.Fatal(err)
 	}
 	dns := &namedDNS{gone: map[string]bool{}, lookups: map[string]int{}}

@@ -9,10 +9,20 @@ import (
 
 // Setup answers `setup`: what the setup wizard shows (ui/contract/setup.json).
 type Setup struct {
-	Done   bool        `json:"done"`
-	Wan    SetupWan    `json:"wan"`
-	Wifi   SetupWifi   `json:"wifi"`
-	Vectra SetupVectra `json:"vectra"`
+	Done bool `json:"done"`
+	// PasswordSet: root has a password, so LuCI's login asks for one; nil =
+	// the router cannot tell. Never the password or its hash.
+	PasswordSet *bool       `json:"passwordSet"`
+	Wan         SetupWan    `json:"wan"`
+	Lan         SetupLan    `json:"lan"`
+	Wifi        SetupWifi   `json:"wifi"`
+	Vectra      SetupVectra `json:"vectra"`
+}
+
+// SetupLan is how the home network reaches the router: IPv4, where this page
+// always opens (nil: netifd cannot say).
+type SetupLan struct {
+	IPv4 *string `json:"ipv4"`
 }
 
 // SetupWan is the internet connection as the router has it: read-only (the
@@ -26,13 +36,17 @@ type SetupWan struct {
 }
 
 // SetupWifi is every radio, whether the tuning can apply and is in place,
-// the router's own network name, and the last change's restart.
+// the wizard's verdict on the Wi-Fi as it is, the router's own network name,
+// and the last change's restart.
 type SetupWifi struct {
-	Radios    []SetupRadio `json:"radios"`
-	Tuned     *bool        `json:"tuned"`
-	Tunable   bool         `json:"tunable"`
-	Suggested *string      `json:"suggested"`
-	Apply     *SetupApply  `json:"apply"`
+	Radios  []SetupRadio `json:"radios"`
+	Tuned   *bool        `json:"tuned"`
+	Tunable bool         `json:"tunable"`
+	// Verdict: fine, boost or manual (setup.Wifi.Verdict); nil when the
+	// router cannot be tuned.
+	Verdict   *string     `json:"verdict"`
+	Suggested *string     `json:"suggested"`
+	Apply     *SetupApply `json:"apply"`
 }
 
 // SetupRadio is one radio and its first access point — never a key.
@@ -104,7 +118,8 @@ func BuildWifiScan(scan *setup.ScanResult) WifiScan {
 }
 
 func buildWifi(w setup.Wifi) SetupWifi {
-	out := SetupWifi{Radios: make([]SetupRadio, 0, len(w.Radios)), Tuned: w.Tuned(), Tunable: w.Tunable(), Suggested: strPtr(w.Suggested)}
+	out := SetupWifi{Radios: make([]SetupRadio, 0, len(w.Radios)), Tuned: w.Tuned(), Tunable: w.Tunable(), Verdict: strPtr(w.Verdict()),
+		Suggested: strPtr(w.Suggested)}
 	for _, r := range w.Radios {
 		out.Radios = append(out.Radios, SetupRadio{Device: r.Device, Band: strPtr(r.Band), Channel: intPtr(r.Channel),
 			Auto: r.Channel == 0, HTMode: strPtr(r.HTMode), Width: intPtr(r.Width), Country: strPtr(r.Country), TxPower: r.TxPower,
@@ -170,7 +185,7 @@ func BuildWanCheck(w setup.Wan, r setup.Result, now time.Time) WanCheck {
 // Support goes to the panel's bot, else to the box's own (f.SupportBot); the
 // claim's link only ever to the panel's — a code means something only there.
 func BuildSetup(f setup.Facts, rt *localctl.Runtime, linked bool, bot string, owner *ClaimOwner) Setup {
-	s := Setup{Done: f.Done}
+	s := Setup{Done: f.Done, PasswordSet: f.Password, Lan: SetupLan{IPv4: strPtr(f.Lan.IPv4)}}
 	w := f.Wan
 	s.Wan = SetupWan{Proto: w.Proto, Link: w.Link, IPv4: strPtr(w.IPv4), Gateway: strPtr(w.Gateway), DNS: nonNil(w.DNS)}
 	s.Wifi = buildWifi(f.Wifi)

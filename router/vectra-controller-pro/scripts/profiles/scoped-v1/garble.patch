@@ -1,0 +1,27 @@
+--- official-v0.17.0/cache_shared.go
++++ trial/cache_shared.go
+@@ -365,6 +365,11 @@
+ 		return "main"
+ 	}
+ 	if !p.ToObfuscate {
++		// go list test variants carry a display suffix, not a legal import path.
++		if p.ForTest != "" {
++			path, _, _ := strings.Cut(p.ImportPath, " [")
++			return path
++		}
+ 		return p.ImportPath
+ 	}
+ 	// We can't obfuscate these standard library import paths,
+@@ -649,6 +654,12 @@
+ 	// since those are always an implicit dependency.
+ 	// We need to handle this ourselves as runtime does not appear in Deps.
+ 	// TODO: it might be faster to bring back a "runtimeAndDeps" map or func.
++	// Go adds runtime/race as an implicit dependency of instrumented mains.
++	// It is present in the package graph but absent from explicit Imports.
++	if from.Name == "main" && pkg.Standard && pkg.ImportPath == "runtime/race" &&
++		(slices.Contains(sharedCache.ForwardBuildFlags, "-race") || slices.Contains(sharedCache.ForwardBuildFlags, "-race=true")) {
++		return pkg, nil
++	}
+ 	if pkg.ImportPath == "runtime" {
+ 		return pkg, nil
+ 	}

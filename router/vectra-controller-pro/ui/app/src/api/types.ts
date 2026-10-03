@@ -28,13 +28,21 @@ export type Method =
   | 'set_rules'
   | 'services'
   | 'set_service'
-  | 'set_power';
+  | 'set_power'
+  | 'set_remote_shell';
 
 export type ReadMethod = 'status' | 'balancers' | 'nodes' | 'entries' | 'diagnostics' | 'logs' | 'setup' | 'wan_check' | 'rules' | 'wifi_scan' | 'services';
 export type ActionMethod = Exclude<Method, ReadMethod>;
 
 /** The transport the host page hands to mount(): LuCI rpc in production, fixtures in dev. */
 export type CallFn = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+
+/**
+ * LuCI's own change of root's password (`luci.setPassword`), as the host page
+ * hands it to mount(): true when LuCI took the password, false when it did
+ * not; a transport failure rejects. vctl never sees a password.
+ */
+export type SetPasswordFn = (password: string) => Promise<boolean>;
 
 export type EngineState = Open<
   'running' | 'starting' | 'reloading' | 'backoff' | 'exited' | 'stopped' | 'failed' | 'idle' | 'unknown'
@@ -48,6 +56,8 @@ export type CheckStatus = Open<'ok' | 'warn' | 'fail' | 'unknown'>;
 export type LogLevel = Open<'debug' | 'info' | 'warn' | 'error' | 'unknown'>;
 /** Who carries the LAN's traffic (contract: Power). */
 export type Holder = Open<'vectra' | 'passwall2' | 'agent' | 'direct'>;
+/** What became of PassWall2 on the router (contract: Power, `legacy.passwall`). */
+export type PassWallState = Open<'installed' | 'retired' | 'absent'>;
 
 export interface Status {
   version: string | null;
@@ -83,9 +93,17 @@ export interface Status {
   };
   probe: { intervalSec: number | null; source: ProbeSource | null };
   pins: Record<string, string> | null;
-  legacy: { agentEnabled: boolean | null; passwallRunning: boolean | null };
+  legacy: {
+    agentEnabled: boolean | null;
+    passwallRunning: boolean | null;
+    /** installed (the takeover's way back), retired (vctl removed it after a day: `passwallRetiredAt`), absent. */
+    passwall: PassWallState | null;
+    passwallRetiredAt: string | null;
+  };
   /** `locked`: the operator allows only the simple view here; the router refuses the Pro methods itself. */
   ui: { locked: boolean | null };
+  /** The panel's support may run commands on the router (the owner's switch); null: a router without the switch. */
+  remoteShell: boolean | null;
   router: {
     hostname: string | null;
     model: string | null;
@@ -99,6 +117,31 @@ export interface Status {
   };
   /** Where the main traffic goes now and what the router's watchdog moved it off; null before its first look. */
   route: RouteView | null;
+  /** The router's tune («Разгон роутера»): what it set on this router; null on a vctl without it. */
+  tune: Tune | null;
+}
+
+export type TuneState = Open<'applied' | 'already' | 'pending' | 'user_set' | 'skipped'>;
+
+/**
+ * One thing the tune sets: `zram` (compressed swap; `value` its size in MiB),
+ * `swappiness`, `vfs_cache_pressure`, `packet_steering`, `flow_offloading`.
+ * `applied`: the tune set it; `already`: it was so; `user_set`: the owner's
+ * own choice, left alone; `skipped`: not for this router (`reason`).
+ */
+export interface TuneItem {
+  id: string;
+  state: TuneState | null;
+  value: string | null;
+  target: string | null;
+  reason: string | null;
+}
+
+export interface Tune {
+  enabled: boolean | null;
+  /** `lowmem` (under 384 MiB of RAM) or `standard`. */
+  profile: Open<'lowmem' | 'standard'> | null;
+  items: TuneItem[];
 }
 
 /** A node and the country its tag names (null when none). */
@@ -250,6 +293,8 @@ export interface Owner {
 
 export interface Setup {
   done: boolean | null;
+  /** Root has a password, so LuCI's login asks for one; null: the router cannot tell. */
+  passwordSet: boolean | null;
   /** Read-only: the router sets its internet connection up itself. */
   wan: {
     proto: WanProto | null;
@@ -258,20 +303,37 @@ export interface Setup {
     gateway: string | null;
     dns: string[];
   };
+  /** How the home network reaches the router: `ipv4` is where this page always opens. */
+  lan: { ipv4: string | null };
   /**
    * One radio per band. `tuned`: every enabled 2.4/5 GHz radio runs at full
-   * power on a fixed channel (null when the router cannot be tuned).
+   * power on a fixed channel (null when the router cannot be tuned) — the
+   * tuning's recipe, not the verdict (`verdict`).
    * `tunable`: false on a router with a band Panama's rules do not cover
    * (6 GHz): the wizard only names its networks there. `suggested`: a unique
    * default name (Vectra-XXXX from the MAC), offered instead of OpenWrt's.
    * `apply`: how the last Wi-Fi change went once the Wi-Fi restarted.
    */
-  wifi: { radios: WifiRadio[]; tuned: boolean | null; tunable: boolean | null; suggested: string | null; apply: WifiApply | null };
+  wifi: {
+    radios: WifiRadio[];
+    tuned: boolean | null;
+    tunable: boolean | null;
+    /**
+     * How the Wi-Fi is as it is: `fine` (it works — the tuning's own or the
+     * owner's), `boost` (more to get: a band down, or 2.4 GHz on a channel
+     * that overlaps), `manual` (the owner's own choice the tuning would undo:
+     * left alone). null when the router cannot be tuned, or on an older vctl.
+     */
+    verdict: WifiVerdict | null;
+    suggested: string | null;
+    apply: WifiApply | null;
+  };
   /** `linked`: the router has an operator config. `owner`: the account it belongs to, when the panel named one. */
   vectra: { linked: boolean | null; botUsername: string | null; owner: Owner | null; claim: Claim | null };
 }
 
 export type Band = Open<'2g' | '5g' | '6g' | '60g'>;
+export type WifiVerdict = Open<'fine' | 'boost' | 'manual'>;
 
 /** A Wi-Fi radio and the network on it (its first access point). Never the key. */
 export interface WifiRadio {

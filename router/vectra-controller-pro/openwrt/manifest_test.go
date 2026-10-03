@@ -68,6 +68,19 @@ func TestRouterUIRegistrationFilesAreValid(t *testing.T) {
 	if !ok || len(g.Read.Ubus["vectra"]) == 0 || len(g.Write.Ubus["vectra"]) == 0 {
 		t.Fatalf("acl = %+v", acl)
 	}
+	// The switch that lets the panel's support shell in is a change: only a
+	// session with write access to the router UI may throw it.
+	in := func(list []string, m string) bool {
+		for _, x := range list {
+			if x == m {
+				return true
+			}
+		}
+		return false
+	}
+	if !in(g.Write.Ubus["vectra"], "set_remote_shell") || in(g.Read.Ubus["vectra"], "set_remote_shell") {
+		t.Errorf("set_remote_shell: write %v, read %v; want it granted as a write only", g.Write.Ubus["vectra"], g.Read.Ubus["vectra"])
+	}
 
 	var menu map[string]struct {
 		Order  int `json:"order"`

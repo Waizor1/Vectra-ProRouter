@@ -55,7 +55,10 @@ desired_config_path() {
 tproxy_fwmark() {
 	local config mark=""
 	config="$(desired_config_path)"
-	if [ -r "$config" ] && command -v jsonfilter >/dev/null 2>&1; then
+	if [ -r "$config" ] && command -v vctl >/dev/null 2>&1; then
+		mark="$(vctl teardown-mark -config "$config" 2>/dev/null)" || mark=""
+	fi
+	if [ -z "$mark" ] && [ -r "$config" ] && command -v jsonfilter >/dev/null 2>&1; then
 		mark="$(jsonfilter -i "$config" -e '@.inbounds.tproxy.fwmark' 2>/dev/null)" || mark=""
 	fi
 	case "$mark" in

@@ -22,6 +22,7 @@ PKG_MODULE="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=lib/pkg.sh
 . "$PKG_MODULE/scripts/lib/pkg.sh"
 OUT="${1:-$PKG_MODULE/dist}"
+if [ "${VECTRA_BUILD_PROFILE:-plain}" = scoped-v1 ] && [ $# = 0 ]; then OUT="$PKG_MODULE/dist/scoped-v1"; fi
 ARCH="${IPK_ARCH:-aarch64_cortex-a53}"
 full="$(pkg_version)"
 
@@ -52,6 +53,7 @@ Architecture: $ARCH
 Maintainer: Vectra
 Description: Vectra Controller Pro (xray-direct) with the router UI — canary build $(git -C "$PKG_MODULE" rev-parse --short HEAD 2>/dev/null || echo dev)
 CTL
+if [ "${VECTRA_BUILD_PROFILE:-plain}" = scoped-v1 ]; then printf 'X-Vectra-Build-Profile: scoped-v1\n' >> "$ctrl/control"; fi
 echo "/etc/config/vectra-controller-pro" > "$ctrl/conffiles"
 
 ipk="$OUT/vectra-controller-pro_${full}_${ARCH}.ipk"
