@@ -270,7 +270,7 @@ func saveRaw(path string, raw []byte) error {
 // ~5.7k writes a day to flash, nearly all of them the same bytes. A Saver
 // writes only when the state encodes differently from what it last wrote,
 // or the file is no longer what it wrote (another vctl process saved, or it
-// is gone). It keeps a digest of what it wrote, never the bytes: they hold
+// is gone), or its last-good copy is gone. It keeps a digest of what it wrote, never the bytes: they hold
 // the router's keys. The zero value is ready; safe for concurrent use.
 type Saver struct {
 	mu   sync.Mutex
@@ -289,7 +289,9 @@ func (s *Saver) Save(path string, persisted PersistedState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.file != nil && sum == s.sum {
-		if fi, err := os.Stat(path); err == nil && fi.Size() == s.file.Size() && fi.ModTime().Equal(s.file.ModTime()) {
+		fi, err := os.Stat(path)
+		_, lgErr := os.Stat(lastGoodPath(path))
+		if err == nil && lgErr == nil && fi.Size() == s.file.Size() && fi.ModTime().Equal(s.file.ModTime()) {
 			return nil
 		}
 	}
