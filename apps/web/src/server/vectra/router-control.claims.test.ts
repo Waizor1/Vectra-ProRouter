@@ -491,6 +491,24 @@ describe("checkInRouter claim", () => {
     expect(JSON.stringify(fake.calls.map(({table: _table, ...call}) => call))).not.toContain("fake-guest-pass-123");
   });
 
+  // Live 2026-10-03: auto-rescue queued collect_router_logs (a PassWall agent
+  // job) for 1111 on vctl; it sat in `queued` forever, filled the delivery
+  // candidates and blocked the engine switch. vctl reports xray-direct, so it
+  // is failed at check-in with engine_mismatch and owner actions still go out.
+  it("fails a job vctl can never run and still delivers the owner's action", async () => {
+    const owner = routerRow({ownerRef: "acct-42", approvedAt: new Date(), importState: "approved", status: "active", engineMode: "xray-direct"});
+    const STUCK_ID = "3f4e5d6c-7b8a-4f9e-8d0c-2b1a0f3e4d5c";
+    const stuck = {id: STUCK_ID, routerId: ROUTER_ID, type: "collect_router_logs", state: "queued", desiredRevisionId: null, dedupeKey: "auto_rescue_logs:case-1", createdAt: new Date(Date.now() - 60_000), payload: {source: "all", lines: 200}};
+    const action = {id: JOB_ID, routerId: ROUTER_ID, type: "reload_xray_outbound", state: "queued", desiredRevisionId: null, createdAt: new Date(), payload: {origin: "partner_action", ownerRef: "acct-42", actionId: JOB_ID, action: "restart_vpn"}};
+    fake.reset({selects: [[routers, [[owner], [owner]]], [healthIncidents, [[]]], [jobs, [[stuck, action], [action], [{...stuck, state: "running"}]]]], updateReturns: [[routers, [[owner], [owner], [owner], [owner]]], [jobs, [[{...action}], [{...stuck, state: "running"}]]]]});
+
+    const response = await checkInRouter(ROUTER_ID, checkInPayload());
+
+    expect(response.jobs.map(job => job.id)).toEqual([JOB_ID]);
+    expect(fake.inserts(eventLog)).toEqual(expect.arrayContaining([expect.objectContaining({type: "job.undeliverable", metadata: {jobId: STUCK_ID, jobType: "collect_router_logs", code: "engine_mismatch"}})]));
+    expect(fake.updates(jobs).map(update => update.state).filter(Boolean)).toEqual(["running", "failed"]);
+  });
+
   it("fails one undecryptable owner job and still delivers the rest of the check-in", async () => {
     const {protectPartnerParams} = await import("./partner-router-secrets");
     const owner = routerRow({ownerRef: "acct-42", approvedAt: new Date(), importState: "approved", status: "active"});

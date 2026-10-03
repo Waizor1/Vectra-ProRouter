@@ -1061,6 +1061,19 @@ export async function queueRescueCaseLogCollection(
     return existingJob;
   }
 
+  // collect_router_logs is a PassWall agent job: vctl never runs it, and an
+  // unattended one on a vctl router only waited to be failed at check-in.
+  if (options.unattended) {
+    const [router] = await database
+      .select({ engineMode: routers.engineMode })
+      .from(routers)
+      .where(eq(routers.id, rescueCase.routerId))
+      .limit(1);
+    if (router?.engineMode === "xray-direct") {
+      return null;
+    }
+  }
+
   // Diagnostics are evidence gathering, not remediation: a few log dumps
   // answer the question and repeating forever does not. The in-flight check
   // above cannot bound this on its own, because resolveJobDedupeKeyAfterResult
