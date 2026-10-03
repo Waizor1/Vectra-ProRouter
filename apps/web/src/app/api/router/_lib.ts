@@ -23,10 +23,24 @@ function routeError(status: number, message: string) {
 }
 
 // A Drizzle query error ends its message with "params: <bound values>" —
-// router tokens, keys and configs. Everything from there to the stack frames
-// is cut before the error is logged.
+// router tokens, keys and configs. Everything from there on is cut before the
+// message is logged.
 export function redactQueryParams(text: string) {
-  return text.replace(/params:[\s\S]*?(?=\n\s+at |$)/g, "params: [redacted]");
+  return text.replace(/params:[\s\S]*$/, "params: [redacted]");
+}
+
+// Only the frames of the stack: its head repeats the message, and a bound
+// value could itself contain lines that look like frames, so everything up to
+// the end of the message is skipped before frames are picked out.
+export function stackFrames(error: Error) {
+  const stack = error.stack ?? "";
+  const messageAt = error.message ? stack.indexOf(error.message) : -1;
+  const trace =
+    messageAt >= 0 ? stack.slice(messageAt + error.message.length) : stack;
+  return trace
+    .split("\n")
+    .filter((line) => /^\s+at /.test(line))
+    .join("\n");
 }
 
 export async function parseJsonBody(
@@ -89,7 +103,7 @@ export function toRouteErrorResponse(error: unknown) {
       "[router-api] unhandled error:",
       error.constructor.name,
       redactQueryParams(error.message),
-      redactQueryParams(error.stack ?? ""),
+      stackFrames(error),
     );
   } else {
     console.error("[router-api] unhandled non-error throw:", typeof error);

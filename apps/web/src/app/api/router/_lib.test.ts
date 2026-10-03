@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { parseJsonBody, redactQueryParams, toRouteErrorResponse } from "./_lib";
+import {
+  parseJsonBody,
+  redactQueryParams,
+  stackFrames,
+  toRouteErrorResponse,
+} from "./_lib";
 
 describe("toRouteErrorResponse", () => {
   it("preserves explicit route HTTP status codes", async () => {
@@ -47,18 +52,23 @@ describe("toRouteErrorResponse", () => {
   });
 });
 
-describe("redactQueryParams", () => {
-  it("cuts the bound parameters and keeps the stack frames", () => {
+describe("redactQueryParams / stackFrames", () => {
+  it("cuts everything from the bound parameters on", () => {
     expect(
-      redactQueryParams(
-        "Error: Failed query: insert into x values ($1)\nparams: a,b\nc\n    at run (db.ts:1:1)\n    at main (app.ts:2:2)",
-      ),
-    ).toBe(
-      "Error: Failed query: insert into x values ($1)\nparams: [redacted]\n    at run (db.ts:1:1)\n    at main (app.ts:2:2)",
+      redactQueryParams("Failed query: select 1\nparams: a,b\n    at x"),
+    ).toBe("Failed query: select 1\nparams: [redacted]");
+  });
+
+  // A bound value that looks like a stack frame must not end up logged.
+  it("logs only the real frames, never a frame-like parameter", () => {
+    const error = new Error(
+      "Failed query: insert into x values ($1)\nparams: \n    at s3cret-token (fake.ts:1:1)",
     );
-    expect(redactQueryParams("Failed query: select 1\nparams: secret")).toBe(
-      "Failed query: select 1\nparams: [redacted]",
-    );
+    const frames = stackFrames(error);
+
+    expect(frames).not.toContain("s3cret-token");
+    expect(frames.split("\n").every((line) => /^\s+at /.test(line))).toBe(true);
+    expect(frames.length).toBeGreaterThan(0);
   });
 });
 
