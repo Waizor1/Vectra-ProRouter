@@ -48,6 +48,19 @@ async function assertTerminalCapableRouter(
     .orderBy(desc(routerInventorySnapshots.createdAt))
     .limit(1);
 
+  // vctl (xray-direct) runs an operator's command only while its owner allows
+  // the support shell, which it reports as remoteShell on every check-in. A
+  // command queued without it would only be failed at the next check-in.
+  if (router.engineMode === "xray-direct" && snapshot?.payload?.remoteShell !== true) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        snapshot?.payload?.remoteShell === false
+          ? "Владелец роутера выключил доступ поддержки к терминалу (vctl remote_shell=0): команда не будет доставлена."
+          : "Роутер ещё не сообщил, разрешён ли доступ поддержки (ждём следующей связи vctl, ~1 мин): команда не будет доставлена.",
+    });
+  }
+
   const support = describeEffectiveRouterSupport({
     router: {
       boardName: router.boardName,
