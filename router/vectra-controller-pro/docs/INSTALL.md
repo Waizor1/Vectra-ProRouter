@@ -18,10 +18,14 @@ wget -qO /tmp/vectra.sh https://api.vectra-pro.net/artifacts/openwrt/<channel>/i
 | `--force` | go on below the memory floor (tests only) |
 | `--json` | the same run said as JSON lines, ASCII codes only, each line short (the words go to the log): with `--check`, what an operator reads through the panel's ASCII-only output filter |
 
-**Exit code**: `0` done, nothing to warn of; `2` done, with warnings — named
-by code in the summary (`Итог: …`) and in `--json`'s last line; `1` not done:
-refused before any change, or failed (the summary says which, and in what
-state the router is); `3` an option it does not know.
+**Exit code**: `0` done, nothing to warn of (`--check`: also with advice —
+a DPI tool, little storage left — named in the summary and in `--json`);
+`2` done, with warnings — named by code in the summary (`Итог: …`) and in
+`--json`'s last line; `1` not done: refused before any change, failed (the
+summary says which, and in what state the router is), or installed to
+carry the traffic and not running — the service down or its ubus object
+silent; `3` an option it does not know. **Changed in 0.7.0-r14**: a refusal
+exited 2 before; 2 now means installed with warnings.
 
 `--json` prints one object a line: `{"installer":…,"mode":…}` first, then
 `{"check":CODE,"level":"ok|warn|refuse|fail"[,"value":…]}` for what it found,
@@ -65,8 +69,11 @@ Nothing changes until every check has passed:
    written over it — an older one on the router migrated on 2026-10-03. The
    `xray-core` of the binary's own version, from whichever feed has it, is
    planned instead (installed first, checked against its feed's SHA256);
-   with none — or a binary older than the minimum, or one that does not run —
-   the install is refused and the binary left as it is.
+   with none — or no SHA256 in its feed's list, a binary older than the
+   minimum, or one that does not run — the install is refused and the binary
+   left as it is. The same over an xray-core package older than the minimum
+   (opkg would upgrade it over the binary); over one at the minimum or newer,
+   opkg leaves package and binary alone, and so does the installer.
 8. **Storage**: Vectra's packages by the `Installed-Size` of the feed's own
    index, OpenWrt's by download size × 3 (their index has none), plus 4 MB;
    an xray binary its package replaces counts as freed. What would be left is
@@ -215,6 +222,10 @@ nothing about uncommitted work.
 
 ```sh
 DOCKER_CONTEXT=colima ./test/install/run.sh                 # 21 scenarios on aarch64_generic
+
+The routers share the docker host's kernel, which needs nftables' `fib`
+(vctl's ruleset): the run checks that first and stops on a kernel without it
+(Docker Desktop's linuxkit) — Colima's has it.
 INSTALL_ARCHS="x86_64 arm_cortex-a15_neon-vfpv4 mips_24kc" ./test/install/run.sh lifecycle
 ```
 

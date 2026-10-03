@@ -84,6 +84,7 @@ func newRouter(t *testing.T) *router {
 		// zcat, which the router has.
 		"zcat": "#!/bin/sh\nexit 1\n",
 		"ubus": "#!/bin/sh\nexit 0\n",
+		"uci":  "#!/bin/sh\nexit 1\n",
 	}
 	if _, err := exec.LookPath("sha256sum"); err != nil {
 		fakes["sha256sum"] = "#!/bin/sh\nexec shasum -a 256 \"$@\"\n"
@@ -257,9 +258,53 @@ func TestAnXrayWithoutAPackageOfItsVersionIsLeftAlone(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	// A package already owns xray: opkg's business, as before.
+	r.write("xray-version", "26.7.28")
 	r.write("installed", "xray-core - 26.7.28-r1\n")
 	if out, code := r.run("plan_xray; echo \"PIN=[$XRAY_PIN]\""); code != 0 || !strings.Contains(out, "PIN=[]") {
 		t.Fatalf("exit %d:\n%s", code, out)
+	}
+}
+
+// A binary swapped in by hand over an xray-core package. A package at the
+// minimum or newer satisfies Vectra's dependency: opkg leaves it, and the
+// binary over it — nothing to do. One older than the minimum is what opkg
+// would upgrade, over the binary: as with no package at all, the package of
+// the binary's version goes in first, or nothing does.
+func TestAnXraySwappedOverItsPackage(t *testing.T) {
+	r := newRouter(t)
+	r.write("xray-version", "26.7.28")
+	ipk := "an xray-core package"
+	sum := sha256.Sum256([]byte(ipk))
+	r.write("download", ipk)
+	r.write("installed", "xray-core - 26.4.25-r1\n")
+	if out, code := r.run("plan_xray; echo \"PIN=[$XRAY_PIN]\""); code != 0 || !strings.Contains(out, "PIN=[]") || !strings.Contains(out, "opkg его не тронет") {
+		t.Fatalf("a package at the minimum: exit %d:\n%s", code, out)
+	}
+	r.write("installed", "xray-core - 25.10.15-r1\n")
+	out, code := r.run("plan_xray")
+	if code != 1 || !strings.Contains(out, "поверх пакета xray-core 25.10.15-r1") || !strings.Contains(out, "xray не тронут") {
+		t.Fatalf("a package below the minimum, no package of the binary's version: exit %d:\n%s", code, out)
+	}
+	r.feed("passwall_packages", "https://example.invalid/passwall",
+		pkg("xray-core", "26.7.28-r1", "xray-core_26.7.28-r1_aarch64_cortex-a53.ipk", hex.EncodeToString(sum[:])))
+	out, code = r.run("plan_xray; echo \"PIN=$XRAY_PIN FREED=$XRAY_FREED_KB\"; install_xray_pin")
+	if code != 0 || !strings.Contains(out, "PIN=passwall_packages 26.7.28-r1") || !strings.Contains(out, "FREED=0") ||
+		!strings.Contains(r.read("log"), "opkg install "+filepath.Join(r.dir, "work", "pkgs", "xray-core_26.7.28-r1_aarch64_cortex-a53.ipk")) {
+		t.Fatalf("the package of the binary's version: exit %d, log %q:\n%s", code, r.read("log"), out)
+	}
+}
+
+// A feed list that names no SHA256 for the package leaves nothing to check
+// the download against: refused at the plan, before anything is fetched.
+func TestAPinWithoutAChecksumIsRefused(t *testing.T) {
+	r := newRouter(t)
+	r.write("xray-version", "26.7.28")
+	r.write("download", "anything")
+	r.feed("passwall_packages", "https://example.invalid/passwall",
+		"Package: xray-core\nVersion: 26.7.28-r1\nFilename: xray-core_26.7.28-r1_aarch64_cortex-a53.ipk")
+	out, code := r.run("plan_xray; install_xray_pin")
+	if code != 1 || !strings.Contains(out, "нет SHA256") || strings.Contains(r.read("log"), "wget") {
+		t.Fatalf("exit %d, log %q:\n%s", code, r.read("log"), out)
 	}
 }
 
@@ -324,6 +369,31 @@ func TestOverlayBelowTheUpdateFloorIsAWarning(t *testing.T) {
 	}
 }
 
+// After a takeover vctl that does not run, or a ubus object that does not
+// answer, is not an install that worked: the run exits 1. Next to what
+// carries the traffic (--standby), a silent ubus is a warning.
+func TestAVctlThatDoesNotRunAfterATakeoverIsAFailure(t *testing.T) {
+	r := newRouter(t)
+	r.write("xray-version", "26.7.28")
+	// wait_for's seconds pass at once here.
+	r.write(filepath.Join("bin", "sleep"), "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(filepath.Join(r.dir, "bin", "sleep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.write(filepath.Join("bin", "ubus"), "#!/bin/sh\nexit 1\n")
+	if err := os.Chmod(filepath.Join(r.dir, "bin", "ubus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := r.run(`verify; conclude "Vectra установлена"`)
+	if code != 1 || !strings.Contains(out, "SERVICE_NOT_RUNNING") || !strings.Contains(out, "UBUS_NOT_ANSWERING") || !strings.Contains(out, "(код 1)") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	out, code = r.run(`STANDBY=1; verify; echo "FAILURES=[$FAILURES]"`)
+	if !strings.Contains(out, "FAILURES=[]") || !strings.Contains(out, "ubus-объект vectra не отвечает") {
+		t.Fatalf("--standby: exit %d: %s", code, out)
+	}
+}
+
 // Exit codes: 0 done with nothing to warn of, 2 done with warnings — named
 // in the summary — and 1 not done.
 func TestTheExitCodeSaysWarningsFromErrors(t *testing.T) {
@@ -336,13 +406,21 @@ func TestTheExitCodeSaysWarningsFromErrors(t *testing.T) {
 		{`warn GEO_DATA_REJECTED "гео"; warn XRAY_TOO_OLD "xray"; conclude "Vectra установлена"`, "с предупреждениями: GEO_DATA_REJECTED XRAY_TOO_OLD (код 2)", 2},
 		{`refuse FEED_UNREACHABLE "фид недоступен"`, "Итог: не установлено, FEED_UNREACHABLE (код 1).", 1},
 		{`fail PKG_INSTALL "не прошёл"`, "Итог: не установлено, PKG_INSTALL (код 1).", 1},
+		// Installed to carry the traffic, and not running: not done.
+		{`warn GEO_DATA_REJECTED "гео"; broken SERVICE_NOT_RUNNING "служба"; conclude "Vectra установлена"`, "но не работает: SERVICE_NOT_RUNNING; предупреждения: GEO_DATA_REJECTED (код 1)", 1},
+		// --check's warnings are advice.
+		{`MODE=check; warn DPI_TOOL "zapret"; warn OVERLAY_AFTER_BELOW_UPDATE_FLOOR "место"; conclude "проверки пройдены"`, "с замечаниями: DPI_TOOL OVERLAY_AFTER_BELOW_UPDATE_FLOOR (код 0)", 0},
 	} {
 		out, code := r.run(tc.script)
 		if code != tc.code || !strings.Contains(out, tc.says) {
 			t.Errorf("%s: exit %d, want %d saying %q:\n%s", tc.script, code, tc.code, tc.says, out)
 		}
 	}
-	out, code := r.run(`JSON=1; warn GEO_DATA_REJECTED "гео-данные не те"; conclude "Vectra установлена"`)
+	out, code := r.run(`JSON=1; MODE=check; warn DPI_TOOL "zapret"; conclude "проверки пройдены"`)
+	if lines := jsonLines(t, out); code != 0 || lines[len(lines)-1]["result"] != "ok" || lines[len(lines)-1]["warnings"].([]any)[0] != "DPI_TOOL" {
+		t.Fatalf("--check with advice: exit %d: %v", code, lines)
+	}
+	out, code = r.run(`JSON=1; warn GEO_DATA_REJECTED "гео-данные не те"; conclude "Vectra установлена"`)
 	lines := jsonLines(t, out)
 	if code != 2 || len(lines) != 2 || lines[0]["check"] != "GEO_DATA_REJECTED" || lines[0]["level"] != "warn" ||
 		lines[1]["result"] != "warnings" || lines[1]["exit"] != float64(2) {

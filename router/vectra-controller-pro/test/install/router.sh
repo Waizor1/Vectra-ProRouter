@@ -231,12 +231,17 @@ none_installed() { for p in "$@"; do ! installed "$p" || return 1; done; }
 # directory only root enters, with /etc/config/passwall2 in it. (ls for the
 # modes: OpenWrt's busybox has no stat.)
 # shellcheck disable=SC2010
+# Sealed in vctl's vault since 0.7.0-r4 (passwall2-*.tar.gz.vault): opened
+# here only by the explicit recovery, into a new file.
 backup_kept() {
-	set -- "$VCTL_ETC"/backup/passwall2-*.tar.gz
+	set -- "$VCTL_ETC"/backup/passwall2-*.tar.gz.vault
 	[ $# = 1 ] && [ -f "$1" ] || return 1
 	ls -l "$1" | grep -q '^-rw-------' || return 1
 	ls -ld "$VCTL_ETC/backup" | grep -q '^drwx------' || return 1
-	tar -tzf "$1" | grep -qx 'etc/config/passwall2'
+	head -c 10 "$1" | grep -q '^VCTLVAULT1' || return 1
+	rm -f /tmp/passwall2-backup.tar.gz
+	/usr/sbin/vctl vault-restore -in "$1" -out /tmp/passwall2-backup.tar.gz > /dev/null 2>&1 || return 1
+	tar -tzf /tmp/passwall2-backup.tar.gz | grep -qx 'etc/config/passwall2'
 }
 # Nothing on the router says PassWall2 is owed back, and the record says why.
 nothing_owed() {

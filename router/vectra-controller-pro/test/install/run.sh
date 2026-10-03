@@ -64,6 +64,19 @@ fail() { printf '\n\033[1mFATAL: %s\033[0m\n' "$*" >&2; exit 2; }
 
 command -v docker > /dev/null || fail "docker not found"
 command -v go > /dev/null || fail "go not found"
+
+# The routers share the docker host's kernel, and vctl's ruleset needs the
+# nftables `fib` expression (nft_fib_inet: its LAN, TPROXY and DNS guards).
+# Docker Desktop's linuxkit kernel has none: every scenario installs, and
+# passwall-retire, which needs vctl to carry the traffic, can never load its
+# data plane (seen 2026-10-03: 158 checks passed, then STAND-FATAL). Said
+# here, before twenty minutes of building, not after.
+step "the docker host's kernel"
+if ! docker run --rm --privileged --network none --platform linux/aarch64_generic "openwrt/rootfs:aarch64_generic-$OPENWRT_VERSION" \
+	sh -c 'nft add table inet probe && nft add chain inet probe c "{ type filter hook prerouting priority 0; }" && nft add rule inet probe c fib daddr type local return' > /dev/null 2>&1; then
+	fail "this docker host's kernel ($(docker info --format '{{.KernelVersion}}' 2>/dev/null)) has no nftables fib expression (nft_fib_inet), which vctl's ruleset needs: run it on Colima — DOCKER_CONTEXT=colima ./test/install/run.sh"
+fi
+echo "  nft fib: yes ($(docker info --format '{{.KernelVersion}}' 2>/dev/null))"
 if [[ $# -gt 0 ]]; then SELECTED=("$@"); else SELECTED=("${ALL[@]}"); fi
 
 cleanup() {

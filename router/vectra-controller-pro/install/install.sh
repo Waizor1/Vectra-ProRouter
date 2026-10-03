@@ -18,9 +18,10 @@
 #   --json                    say it as JSON lines, ASCII codes only (with
 #                             --check: what an operator reads through the panel)
 #
-# Exit code: 0 done, nothing to warn of; 2 done, with warnings (said in the
-# summary, by code); 1 not done — refused before any change, or failed; 3 an
-# option it does not know.
+# Exit code: 0 done, nothing to warn of (--check: also with advice, named);
+# 2 done, with warnings (said in the summary, by code); 1 not done — refused
+# before any change, failed, or Vectra installed to carry the traffic and not
+# running; 3 an option it does not know. (Before 0.7.0-r14 a refusal was 2.)
 #
 # OpenWrt 23.05 or 24.10 with opkg. OpenWrt 25 (apk) is not supported yet.
 #
@@ -107,8 +108,11 @@ YES=0
 FORCE=0
 PURGE=0
 JSON=0
-# The warnings of this run, by code: a run that ends with any exits 2.
+# The warnings of this run, by code: an install that ends with any exits 2
+# (--check: 0, they are advice). FAILURES: what the end's checks found
+# broken where Vectra was to carry the traffic — the install exits 1.
 WARNINGS=""
+FAILURES=""
 # In --check, the refusal --standby lifts (the old agent): said, and the rest
 # checked as with --standby — one run says everything.
 BLOCKER=""
@@ -148,12 +152,29 @@ fail() { # <CODE> <message>: something was changed; say what state the router is
 	cleanup
 	exit 1
 }
-# conclude <what was done>: the summary, and the exit code it means — 0
-# nothing to warn of, 2 with warnings (named by code).
+broken() { # <CODE> <message>: the end's check failed — the run exits 1
+	FAILURES="$FAILURES $1"
+	say "    ! $2"
+	jcheck fail "$1"
+}
+# conclude <what was done>: the summary, and the exit code it means — 1
+# something the end's checks found broken; 2 with warnings (named by code);
+# 0 nothing to warn of. --check's warnings are advice: it exits 0, naming
+# them.
 conclude() {
 	say ""
+	if [ -n "$FAILURES" ]; then
+		say "Итог: $1, но не работает:$FAILURES${WARNINGS:+; предупреждения:$WARNINGS} (код 1). Что это значит — выше; подробности: $LOG"
+		result failed 1 "${FAILURES# }"
+		exit 1
+	fi
 	if [ -z "$WARNINGS" ]; then
 		say "Итог: $1, без предупреждений (код 0)."
+		result ok 0
+		exit 0
+	fi
+	if [ "$MODE" = check ]; then
+		say "Итог: $1, с замечаниями:$WARNINGS (код 0). Что они значат — выше."
 		result ok 0
 		exit 0
 	fi
@@ -469,31 +490,51 @@ use_openwrt_mirror() {
 
 # ------------------------------------------------------------------ plan ----
 
-# xray on the router without its package: PassWall2's, swapped in by hand
-# (the fleet's onboarding puts a newer xray there than any feed of its time).
-# Vectra's package depends on xray-core, and opkg would satisfy that with an
-# xray-core of any feed written over the binary PassWall2 runs — an older one
-# on the router of 2026-10-03 (26.3.27 over 26.7.28). So the xray-core of the
-# binary's own version, from whichever feed has it, goes in first
-# (install_xray_pin): the same xray, now a package. With none, nothing is
-# installed, and the binary is left as it is.
+# xray on the router that is not its package's — PassWall2's, swapped in by
+# hand (the fleet's onboarding puts a newer xray there than any feed of its
+# time): no xray-core package at all, or one whose version is not the
+# binary's. Vectra's package depends on xray-core (>= minimum), and opkg
+# satisfies that with an xray-core of any feed written over the binary
+# PassWall2 runs — an older one on the router of 2026-10-03 (26.3.27 over
+# 26.7.28). So, where opkg would write one — no package, or one older than
+# the minimum — the xray-core of the binary's own version, from whichever feed
+# has it, goes in first (install_xray_pin): the same xray, now its package.
+# With none, nothing is installed, and the binary is left as it is. A package
+# at the minimum or newer satisfies the dependency: opkg leaves it, and the
+# binary over it, alone.
 XRAY_PIN=""
 XRAY_FREED_KB=0
 plan_xray() {
-	installed xray-core && return 0
 	xb="$(command -v xray 2> /dev/null)"
 	[ -n "$xb" ] || return 0
-	step "xray без пакета"
+	pv="$(installed_version xray-core)"
 	xv="$(xray_version)"
+	if [ -n "$pv" ]; then
+		# The package's own binary (or one that does not answer: verify says
+		# so): opkg's business, as before.
+		[ -z "$xv" ] || [ "$(echo "$pv" | sed 's/-r\{0,1\}[0-9]*$//')" = "$xv" ] && return 0
+		step "xray $xv поверх пакета xray-core $pv"
+		if version_ge "$pv" "$XRAY_MIN"; then
+			note "xray заменён вручную; пакет xray-core $pv не старше нужного Vectra $XRAY_MIN, и opkg его не тронет: xray остаётся как есть"
+			jcheck ok XRAY_HAND_SWAPPED_KEPT "$xv"
+			return 0
+		fi
+	else
+		step "xray без пакета"
+	fi
 	[ -n "$xv" ] || refuse XRAY_BINARY_BROKEN "на роутере есть $xb без пакета xray-core, и он не запускается (xray version). Установщик не заменяет xray, поставленный вручную: почините или удалите его и запустите установщик снова."
-	version_ge "$xv" "$XRAY_MIN" || refuse XRAY_BINARY_TOO_OLD "на роутере $xb $xv без пакета xray-core, а Vectra нужен xray $XRAY_MIN или новее. Установщик не заменяет xray, поставленный вручную: обновите его пакетом xray-core и запустите установщик снова."
+	version_ge "$xv" "$XRAY_MIN" || refuse XRAY_BINARY_TOO_OLD "на роутере $xb $xv${pv:+ (поверх пакета xray-core $pv)}, а Vectra нужен xray $XRAY_MIN или новее. Установщик не заменяет xray, поставленный вручную: обновите его пакетом xray-core и запустите установщик снова."
 	XRAY_PIN="$(pkg_candidates xray-core | awk -v v="$xv" '{ u = $2; sub(/-r?[0-9]+$/, "", u); if (u == v) { print; exit } }')"
-	[ -n "$XRAY_PIN" ] || refuse XRAY_NO_SAME_VERSION "на роутере $xb $xv без пакета xray-core (поставлен вручную, обычно для PassWall2), а ни в одном фиде нет пакета xray-core $xv. Пакет Vectra зависит от xray-core, и opkg поставил бы поверх другую версию — установщик этого не делает, xray не тронут. Поставьте пакет xray-core $xv (opkg install ./xray-core_$xv-r1_$ARCH.ipk) и запустите установщик снова."
-	# The package's binary takes the place of this one.
-	XRAY_FREED_KB="$(du -k "$xb" 2> /dev/null | awk '{ print $1; exit }')"
+	[ -n "$XRAY_PIN" ] || refuse XRAY_NO_SAME_VERSION "на роутере $xb $xv, поставленный вручную (обычно для PassWall2)${pv:+ поверх пакета xray-core $pv, который старше нужного Vectra $XRAY_MIN}, а ни в одном фиде нет пакета xray-core $xv. Пакет Vectra зависит от xray-core, и opkg поставил бы поверх другую версию — установщик этого не делает, xray не тронут. Поставьте пакет xray-core $xv (opkg install ./xray-core_$xv-r1_$ARCH.ipk) и запустите установщик снова."
+	# The package's binary takes the place of this one (with no package:
+	# its space is the binary's).
+	[ -n "$pv" ] || XRAY_FREED_KB="$(du -k "$xb" 2> /dev/null | awk '{ print $1; exit }')"
 	# shellcheck disable=SC2086 # the plan's fields
 	set -- $XRAY_PIN
-	ok "xray $xv без пакета: сначала встанет xray-core $2 из фида $1 — та же версия"
+	# Only what its feed's signed list vouches for: a list with no SHA256sum
+	# for it leaves nothing to check the download against.
+	[ -n "${4:-}" ] || refuse XRAY_PIN_CHECKSUM "в списке фида $1 нет SHA256 для xray-core $2: установщик не ставит то, что нечем проверить; xray не тронут."
+	ok "xray $xv: сначала встанет xray-core $2 из фида $1 — та же версия"
 	jcheck ok XRAY_PIN "$2"
 }
 
@@ -544,7 +585,7 @@ install_xray_pin() {
 	mkdir -p "$WORK/pkgs"
 	f="$WORK/pkgs/${3##*/}"
 	fetch "$base/$3" "$f" || refuse XRAY_PIN_DOWNLOAD "не удалось скачать xray-core $2 ($base/$3)."
-	if [ -n "${4:-}" ] && [ "$(sha256sum "$f" 2> /dev/null | awk '{ print $1 }')" != "$4" ]; then
+	if [ "$(sha256sum "$f" 2> /dev/null | awk '{ print $1 }')" != "$4" ]; then
 		refuse XRAY_PIN_CHECKSUM "xray-core $2 скачался не тот: sha256 не совпадает со списком фида $1."
 	fi
 	INSTALLED_SOMETHING=1
@@ -725,12 +766,16 @@ verify() {
 	elif wait_for 30 "/etc/init.d/$PKG" running; then
 		ok "служба $PKG запущена"
 	else
-		warn SERVICE_NOT_RUNNING "служба $PKG не запустилась: logread -e vctl"
+		# Vectra was to carry the traffic (a takeover: what carried it is
+		# stopped): not running is not done.
+		broken SERVICE_NOT_RUNNING "служба $PKG не запустилась: logread -e vctl"
 	fi
 	if wait_for 20 ubus call vectra status; then
 		ok "ubus: vectra отвечает"
-	else
+	elif [ "$STANDBY" = 1 ]; then
 		warn UBUS_NOT_ANSWERING "ubus-объект vectra не отвечает (rpcd): /etc/init.d/rpcd restart"
+	else
+		broken UBUS_NOT_ANSWERING "ubus-объект vectra не отвечает (rpcd): /etc/init.d/rpcd restart — ни vectra status, ни страница роутера не работают"
 	fi
 	if [ -f /www/luci-static/resources/view/vectra/app.js ] && wait_for 10 fetch http://127.0.0.1/luci-static/vectra/vectra-app.js "$WORK/app.js"; then
 		ok "LuCI отдаёт страницу Vectra"
@@ -836,7 +881,7 @@ main() {
 		--force) FORCE=1 ;;
 		--json) JSON=1 ;;
 		-h | --help)
-			sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+			sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
 			exit 0
 			;;
 		*)
