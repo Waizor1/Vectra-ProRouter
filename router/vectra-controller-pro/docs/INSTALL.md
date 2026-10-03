@@ -16,6 +16,16 @@ wget -qO /tmp/vectra.sh https://api.vectra-pro.net/artifacts/openwrt/<channel>/i
 | `--yes` | on a router with PassWall2: Vectra takes the traffic (PassWall2 stops; `vectra off` gives it back — until Vectra removes PassWall2, a day after it carries the traffic: see [PassWall2 after the install](#passwall2-after-the-install)) |
 | `--uninstall [--purge]` | remove Vectra (dnsmasq-full stays); `--purge` also forgets the router's Vectra identity |
 | `--force` | go on below the memory floor (tests only) |
+| `--json` | the same run said as JSON lines, ASCII codes only, each line short (the words go to the log): with `--check`, what an operator reads through the panel's ASCII-only output filter |
+
+**Exit code**: `0` done, nothing to warn of; `2` done, with warnings — named
+by code in the summary (`Итог: …`) and in `--json`'s last line; `1` not done:
+refused before any change, or failed (the summary says which, and in what
+state the router is); `3` an option it does not know.
+
+`--json` prints one object a line: `{"installer":…,"mode":…}` first, then
+`{"check":CODE,"level":"ok|warn|refuse|fail"[,"value":…]}` for what it found,
+and last `{"result":"ok|warnings|refused|failed","exit":N,"mode":…,"code":CODE,"warnings":[…]}`.
 
 The installer keeps a copy of itself in `/etc/vectra-controller-pro/vectra-install.sh`
 for `--uninstall` after a reboot, and logs everything opkg says to
@@ -37,38 +47,60 @@ Nothing changes until every check has passed:
    transparent proxies fight). OpenWrt's xray-core and sing-box packages alone
    are fine: their init script starts nothing until configured. PassWall2 is
    taken over only with `--yes` (reversibly for a day, then Vectra removes it:
-   below); the old Vectra agent only next to `--standby`.
+   below); until the router is linked, Vectra carries its traffic on
+   PassWall2's own routes. The old Vectra agent only next to `--standby` —
+   two controllers would check in as one router and take the same traffic —
+   and only 0.1.13-r45 or later (`/usr/share/vectra-controller/vault-read-v1`:
+   it reads the identity Vectra seals and never starts beside it); an older
+   one is to be updated first. `--check` without `--standby` next to the
+   agent says why, checks the rest as with it, and exits 1.
 6. **The feeds**: the Vectra feed's key goes to `/etc/opkg/keys/<id>` (baked
    into the installer at signing), the feed to `customfeeds.conf`, then
    `opkg update` — a list that fails its signature is dropped by opkg and the
    install stops. If OpenWrt's own feeds do not answer (a broken ISP IPv6 is the
    usual cause), `distfeeds.conf` is pointed at a mirror for this run
    (`<feed host>/openwrt-cache` by default) and put back at the end.
-7. **Storage**: Vectra's packages by the `Installed-Size` of the feed's own
-   index, OpenWrt's by download size × 3 (their index has none), plus 4 MB.
+7. **xray without its package** (PassWall2's, swapped in by hand): opkg
+   would satisfy Vectra's `xray-core` dependency with another feed's version
+   written over it — an older one on the router migrated on 2026-10-03. The
+   `xray-core` of the binary's own version, from whichever feed has it, is
+   planned instead (installed first, checked against its feed's SHA256);
+   with none — or a binary older than the minimum, or one that does not run —
+   the install is refused and the binary left as it is.
+8. **Storage**: Vectra's packages by the `Installed-Size` of the feed's own
+   index, OpenWrt's by download size × 3 (their index has none), plus 4 MB;
+   an xray binary its package replaces counts as freed. What would be left is
+   held against what Vectra's own update needs free (16 MB): less is a
+   warning — Connect's «Обновить» would be refused until room is made.
 
 Then:
 
-8. **dnsmasq → dnsmasq-full** without a moment without DHCP/DNS: its libraries
+9. **dnsmasq → dnsmasq-full** without a moment without DHCP/DNS: its libraries
    first, both packages downloaded, the swap, `/etc/config/dhcp` restored, and
    dnsmasq must do again what it did before (answer from `/etc/hosts`, or at
    least run when another DNS server owns port 53). Otherwise the old dnsmasq
    is put back from the download and the install stops.
-9. **The packages**: `vectra-controller-pro` pulls `xray-core (>= minimum)`,
-   `vectra-geodata`, the kmods and the rest. An update upgrades Vectra's own
-   packages only: xray-core may be PassWall's (often with a binary swapped in by
-   hand), and its version is the Depends' business.
-10. **Geo data**: Vectra reads its own set, vectra-geodata's, in
+10. **The packages**: the planned xray-core first, then
+   `vectra-controller-pro`, which pulls `xray-core (>= minimum)`, the kmods
+   and the rest; `vectra-geodata` and `vectra-reporter` are named too on a
+   first install, not left to the package's Depends (that Depends is the pro
+   feed's, and a feed or package without it left a router without its geo
+   data). An update upgrades Vectra's own packages only: xray-core may be
+   PassWall's, and its version is the Depends' business.
+11. **Geo data**: Vectra reads its own set, vectra-geodata's, in
     `/usr/share/vectra-controller-pro/geo`, and never replaces a file in
     `/usr/share/v2ray` (PassWall2's packages'; only links to its own set for
     a vctl older than 0.6.0-r18, which read them there). `uci geo_asset_dir`
     naming the fleet's old `/usr/share/v2ray` reads as Vectra's own. Another
     directory named there that lacks a category the provider routes by gets
     Vectra's own instead; its files stay untouched.
-11. **The end is checked**: the installed version, `xray version` ≥ minimum,
-    xray accepting every geo category, the service running (off in
-    `--standby`), `ubus call vectra status`, and LuCI serving the page. The
-    claim code is printed when the router already reached Vectra.
+12. **The end is checked**: the installed version against the feed's own
+    list (not the version the installer was signed with), `xray version` ≥
+    minimum, xray accepting every geo category, the service running (off in
+    `--standby`), `ubus call vectra status`, LuCI serving the page, and free
+    storage against the update's 16 MB. What fails is a warning: the run
+    exits 2. The claim code and its link are printed when the router already
+    reached Vectra (and stay in `vectra status` while it is not linked).
 
 ## PassWall2 after the install
 
@@ -182,7 +214,7 @@ nothing about uncommitted work.
 ## The stand
 
 ```sh
-DOCKER_CONTEXT=colima ./test/install/run.sh                 # 19 scenarios on aarch64_generic
+DOCKER_CONTEXT=colima ./test/install/run.sh                 # 21 scenarios on aarch64_generic
 INSTALL_ARCHS="x86_64 arm_cortex-a15_neon-vfpv4 mips_24kc" ./test/install/run.sh lifecycle
 ```
 
@@ -205,7 +237,14 @@ leave the router byte for byte as it was (packages, feeds, keys, `/etc/config`,
 | `passwall-retire` | taken over from PassWall2 as opkg has it; refused while vctl carries nothing and with `retire_passwall '0'`; then carrying (the data-plane stand's operator config, a freedom outbound) and `vctl retire-passwall --now`: PassWall2's packages gone, xray-core and dnsmasq-full kept, its configuration in a 0600 backup, nothing owed, status `retired`; a bare stop restarted by the dead-man; `vectra off` leaves plain internet, a minute later too |
 | `dnsmasq-rollback` | a dnsmasq-full that never runs: the old dnsmasq back and answering |
 | `mirror` | downloads.openwrt.org unreachable: through a mirror, `distfeeds.conf` restored |
-| `refuse-*` | arch, apk, release, memory, storage, conflict, fleet, signature, feed-down |
+| `refuse-*` | arch, apk, release, memory, storage, conflict, fleet, agent-old, signature, feed-down: exit 1, the router byte for byte as it was |
+| `check-json` | `--check --json` next to the old agent without `--standby`: JSON lines in ASCII, why `--standby`, the rest checked, exit 1 |
+
+The installer's decisions are also proven without Docker, on a fake opkg,
+xray and wget (`go test ./install`): the xray-core of a hand-swapped binary's
+version, refusing another; geo data and reporter on a first install; the
+version read from the feed; the update's storage floor; the exit codes; the
+old agent; `--json`.
 
 Foreign architectures run under qemu-user, which does not emulate everything a
 router has: procd's jail is off there, dnsmasq's replies do not come back under

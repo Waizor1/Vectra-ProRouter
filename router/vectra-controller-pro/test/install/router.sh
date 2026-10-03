@@ -205,7 +205,7 @@ assert_unchanged() { # <name> <what>
 }
 
 refused() { # <name> <expected text> -> the installer refused, said why, changed nothing
-	check "$1_refused" "exit 2 (refused before any change), got $INSTALL_RC" test "$INSTALL_RC" = 2
+	check "$1_refused" "exit 1 (refused before any change), got $INSTALL_RC" test "$INSTALL_RC" = 1
 	check "$1_says_why" "says: $2" said "$2"
 	assert_unchanged "$1_unchanged" "$1"
 }
@@ -628,7 +628,7 @@ refuse-apk)
 	printf '#!/bin/sh\nexit 1\n' > /usr/bin/apk
 	chmod +x /usr/bin/apk
 	installer
-	check apk_refused "exit 2, got $INSTALL_RC" test "$INSTALL_RC" = 2
+	check apk_refused "exit 1, got $INSTALL_RC" test "$INSTALL_RC" = 1
 	check apk_says_why "names apk" said "apk"
 	rm -f /usr/bin/apk
 	mv /bin/opkg.hidden /bin/opkg
@@ -666,6 +666,27 @@ refuse-fleet)
 	snapshot /tmp/before
 	installer
 	refused fleet "--standby"
+	;;
+refuse-agent-old)
+	# An old agent that does not know Vectra (before 0.1.13-r45): not even
+	# next to it, off — update the agent first.
+	install_fixture vectra-controller-agent-r43
+	snapshot /tmp/before
+	installer --standby
+	refused agent_old "0.1.13-r45"
+	;;
+check-json)
+	# --check --json next to the old agent, without --standby: why it is
+	# needed, the rest checked as with it — JSON lines, ASCII only, exit 1.
+	install_fixture vectra-controller-agent
+	snapshot /tmp/before
+	installer --check --json
+	check json_exit "exit 1, got $INSTALL_RC" test "$INSTALL_RC" = 1
+	check json_ascii "every line a JSON object, ASCII only" sh -c '! LC_ALL=C grep -q "[^ -~]" /tmp/installer.out && ! grep -qv "^{.*}$" /tmp/installer.out'
+	check json_code "names LEGACY_AGENT_NEEDS_STANDBY, and ends refused" sh -c 'grep -q "\"check\":\"LEGACY_AGENT_NEEDS_STANDBY\"" /tmp/installer.out && tail -n 1 /tmp/installer.out | grep -q "\"result\":\"refused\""'
+	check json_rest "the rest checked as with --standby: the storage too" sh -c 'grep -q "\"check\":\"STORAGE\"" /tmp/installer.out'
+	check json_log "the words are in the log" grep -q -- "--standby" /tmp/vectra-install.log
+	assert_unchanged json_unchanged "--check --json"
 	;;
 refuse-signature)
 	snapshot /tmp/before

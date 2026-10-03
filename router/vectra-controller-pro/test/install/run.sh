@@ -34,7 +34,10 @@
 #   dnsmasq-rollback  a dnsmasq-full that never runs: the old dnsmasq comes back
 #   mirror            downloads.openwrt.org unreachable: through a mirror
 #   refuse-*          arch, apk, release, memory, storage, conflict, fleet,
-#                     signature, feed-down: refused, the router unchanged
+#                     agent-old, signature, feed-down: refused (exit 1), the
+#                     router unchanged
+#   check-json        --check --json next to the old agent: why --standby,
+#                     JSON lines in ASCII, exit 1, the router unchanged
 set -euo pipefail
 export COPYFILE_DISABLE=1
 
@@ -54,7 +57,7 @@ OPENWRT_MIRROR="${OPENWRT_MIRROR:-https://mirror-03.infra.openwrt.org}"
 PARALLEL="${INSTALL_PARALLEL:-4}"
 ALL=(lifecycle geodata-links check standby standby-upgrade passwall passwall-upgrade passwall-retire dnsmasq-rollback mirror
 	refuse-arch refuse-apk refuse-release refuse-memory refuse-storage
-	refuse-conflict refuse-fleet refuse-signature refuse-feed-down)
+	refuse-conflict refuse-fleet refuse-agent-old refuse-signature refuse-feed-down check-json)
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 fail() { printf '\n\033[1mFATAL: %s\033[0m\n' "$*" >&2; exit 2; }
@@ -96,7 +99,11 @@ fake() { # <package> <version> [depends]: a package that only has to exist
 	rm -rf "$d"
 }
 fake podkop 0.2.5-r1
-fake vectra-controller-agent 0.1.13-r40
+# The old agent, as old as Vectra goes next to (it knows Vectra), and one
+# older (refuse-agent-old).
+fake vectra-controller-agent 0.1.13-r43
+mv "$BUILD/fixtures/vectra-controller-agent.ipk" "$BUILD/fixtures/vectra-controller-agent-r43.ipk"
+fake vectra-controller-agent 0.1.13-r45
 fake luci-app-passwall2 26.8.10-r1
 # PassWall2 as opkg has it on a fleet router, for passwall-retire: its package
 # owns its init script (the stand's stub) and its configuration (a conffile),
