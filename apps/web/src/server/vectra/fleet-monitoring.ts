@@ -114,6 +114,9 @@ export type FleetMonitoringRouterInput = {
   } | null;
   // Unlinked by its Vectra account and waiting for a new owner (ADR-0006).
   released?: boolean;
+  // Registered but never approved. Register answers anonymous callers, so
+  // such a record raises no alert: alerts feed browser push and auto-rescue.
+  unapproved?: boolean;
 };
 
 type FleetMonitoringChartFilter = {
@@ -972,12 +975,13 @@ export function buildFleetMonitoringSnapshot(args: {
     return {
       router,
       incident: input.openIncident,
+      unapproved: input.unapproved ?? false,
     };
   });
 
   const alerts = routers
-    .flatMap(({ router, incident }) => {
-      const nextAlerts = buildAlerts(router, incident);
+    .flatMap(({ router, incident, unapproved }) => {
+      const nextAlerts = unapproved ? [] : buildAlerts(router, incident);
       router.alertKinds = nextAlerts.map((alert) => alert.kind);
       return nextAlerts;
     })

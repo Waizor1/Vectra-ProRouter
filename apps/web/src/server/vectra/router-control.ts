@@ -103,6 +103,11 @@ import {
   withSubscriptionUserAgent,
   withUiLock,
 } from "~/server/vectra/xray-operator-config";
+import {
+  boundJobResultPayload,
+  boundRouterCheckInPayload,
+} from "~/server/vectra/router-payload-bounds";
+import { MemoryWindowRateLimiter } from "~/server/vectra/public-install-rate-limit";
 
 type RouterRow = typeof routers.$inferSelect;
 type RevisionRow = typeof passwallDesiredRevisions.$inferSelect;
@@ -227,12 +232,7 @@ export function selectDeliverableJobsForCheckIn(
   // run_terminal_command runner executes as well.
   const engineScopedJobs =
     engineMode === "xray-direct"
-      ? queuedCandidates.filter(
-          (job) =>
-            isXrayEngineJob(job) ||
-            isEngineAgnosticExclusiveJob(job) ||
-            isRouterHostnameUpdateJob(job),
-        )
+      ? queuedCandidates.filter(runsOnXrayEngine)
       : queuedCandidates.filter((job) => !isXrayEngineJob(job));
 
   const applyGateJobType =
@@ -256,6 +256,15 @@ export function selectDeliverableJobsForCheckIn(
   }
 
   return allowedJobs;
+}
+
+/** A job vctl (the xray-direct engine) can run at all. */
+function runsOnXrayEngine(job: JobRow) {
+  return (
+    isXrayEngineJob(job) ||
+    isEngineAgnosticExclusiveJob(job) ||
+    isRouterHostnameUpdateJob(job)
+  );
 }
 
 function isEngineAgnosticExclusiveJob(job: JobRow) {
@@ -1529,11 +1538,52 @@ export function resolveRegisteredEngineMode(
   return reported === "xray-direct" ? "xray-direct" : "passwall";
 }
 
-export async function checkInRouter(routerId: string, input: unknown, auth?: {devicePublicKey: string}) {
-  const parsed = routerCheckInRequestSchema.parse(input);
-  if (parsed.routerId !== routerId) {
-    throw new Error("Router identity mismatch.");
+// An authenticated router's oversized field is cut down, never refused (see
+// router-payload-bounds): the operator sees that it happened here. A router
+// keeps sending the same oversized payload, so the same truncation (router,
+// endpoint, fields, config digest) is logged at most once an hour.
+const truncationLogThrottle = new MemoryWindowRateLimiter(1, 60 * 60 * 1000);
+
+async function logTruncatedRouterPayload(
+  routerId: string,
+  endpoint: "check_in" | "job_result",
+  fields: string[],
+  options: { passwallImportDropped?: boolean; configDigest?: string | null } = {},
+) {
+  if (fields.length === 0) {
+    return;
   }
+  const throttleKey = [
+    routerId,
+    endpoint,
+    fields.join(","),
+    options.configDigest ?? "",
+  ].join("|");
+  if (!truncationLogThrottle.consume(throttleKey).allowed) {
+    return;
+  }
+  const passwallImportDropped = options.passwallImportDropped ?? false;
+  await db.insert(eventLog).values({
+    routerId,
+    type: "router.payload_truncated",
+    severity: "warning",
+    message: passwallImportDropped
+      ? "Router sent a PassWall import over the size cap; it was ignored."
+      : "Router sent fields over the size cap; they were truncated.",
+    metadata: { endpoint, fields },
+  });
+}
+
+export async function checkInRouter(routerId: string, input: unknown, auth?: {devicePublicKey: string}) {
+  const bounded = boundRouterCheckInPayload(input);
+  const parsed = routerCheckInRequestSchema.parse(bounded.payload);
+  if (parsed.routerId !== routerId) {
+    throw Object.assign(new Error("Router identity mismatch."), { status: 403 });
+  }
+  await logTruncatedRouterPayload(routerId, "check_in", bounded.truncated, {
+    passwallImportDropped: bounded.passwallImportDropped,
+    configDigest: parsed.inventory.configDigest,
+  });
 
   const [existingRouter] = await db
     .select()
@@ -1542,13 +1592,16 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     .limit(1);
 
   if (!existingRouter) {
-    throw new Error("Router not found.");
+    throw Object.assign(new Error("Router not found."), { status: 404 });
   }
 
   if (parsed.inventory.connect && auth &&
     (parsed.inventory.deviceIdentifier !== existingRouter.deviceIdentifier ||
      !devicePublicKeysMatch(parsed.inventory.devicePublicKey, auth.devicePublicKey))) {
-    throw new Error("Connect telemetry device identity mismatch.");
+    throw Object.assign(
+      new Error("Connect telemetry device identity mismatch."),
+      { status: 403 },
+    );
   }
   const now = new Date();
   const nextStatus = deriveRouterStatus(
@@ -1559,7 +1612,10 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
   const requestImport = shouldRequestImportOnCheckIn({
     importState: existingRouter.importState,
     connectOwned: isConnectOwnedXrayRouter(existingRouter),
-    hasPasswallImport: Boolean(parsed.passwallImport),
+    // A dropped oversized import still counts as sent: asking for it again
+    // would have the agent re-send it every check-in.
+    hasPasswallImport:
+      Boolean(parsed.passwallImport) || bounded.passwallImportDropped,
     reportedDigest: parsed.inventory.configDigest,
     authoritativeDigest: existingRouter.lastConfigDigest,
   });
@@ -1680,6 +1736,16 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     )
     .limit(10);
 
+  // A job vctl can never run (a PassWall job queued for a vctl router, e.g.
+  // by auto-rescue) used to sit in `queued` forever: it filled the ten
+  // candidates read above — owner actions behind it were never delivered —,
+  // counted toward the partner's pending limit, and blocked an engine switch.
+  // It is failed instead, through the result path like any other failure.
+  const engineMismatched =
+    router.engineMode === "xray-direct" &&
+    parsed.inventory.engineMode === "xray-direct"
+      ? queuedCandidates.filter((job) => !runsOnXrayEngine(job))
+      : [];
   const deliverableJobs = selectDeliverableJobsForCheckIn(
     router.importState,
     queuedCandidates,
@@ -1749,6 +1815,9 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
   if (serialization.undeliverable.length > 0) {
     await failUndeliverableJobs(router.id, serialization.undeliverable, serialization.ownerRef, now);
   }
+  if (engineMismatched.length > 0) {
+    await failUndeliverableJobs(router.id, engineMismatched, router.ownerRef, now, ENGINE_MISMATCH_JOB_CODE);
+  }
   const serializedJobs = serialization.delivered;
 
   return routerCheckInResponseSchema.parse({
@@ -1785,6 +1854,8 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
 }
 
 const UNDELIVERABLE_JOB_CODE = "payload_unavailable";
+/** A job for another engine than the one the router runs. */
+const ENGINE_MISMATCH_JOB_CODE = "engine_mismatch";
 
 /** What may be logged about a job that cannot be serialized: never a message. */
 export function describeUndeliverableError(error: unknown) {
@@ -1809,6 +1880,7 @@ async function failUndeliverableJobs(
   undeliverable: JobRow[],
   ownerRef: string | null,
   now: Date,
+  code: string = UNDELIVERABLE_JOB_CODE,
 ) {
   for (const job of undeliverable) {
     // Taken out of the queue first, so no other check-in (or a partner's
@@ -1825,8 +1897,11 @@ async function failUndeliverableJobs(
       routerId,
       type: "job.undeliverable",
       severity: "warning",
-      message: `Job ${job.id} (${job.type}) could not be prepared for delivery and was failed.`,
-      metadata: { jobId: job.id, jobType: job.type, code: UNDELIVERABLE_JOB_CODE },
+      message:
+        code === ENGINE_MISMATCH_JOB_CODE
+          ? `Job ${job.id} (${job.type}) cannot run on this router's engine and was failed.`
+          : `Job ${job.id} (${job.type}) could not be prepared for delivery and was failed.`,
+      metadata: { jobId: job.id, jobType: job.type, code },
     });
     try {
       await recordJobResult(routerId, {
@@ -1834,7 +1909,7 @@ async function failUndeliverableJobs(
         routerId,
         jobId: job.id,
         status: "failure",
-        result: { code: UNDELIVERABLE_JOB_CODE, error: UNDELIVERABLE_JOB_CODE },
+        result: { code, error: code },
       });
     } catch (error) {
       console.error("[router-control] undeliverable job result not recorded", {
@@ -1857,13 +1932,17 @@ async function failUndeliverableJobs(
         .returning();
       // The result path did not run: the backend still hears the failure.
       if (failed) {
-        await notifyUndeliverableFailure(job, ownerRef);
+        await notifyUndeliverableFailure(job, ownerRef, code);
       }
     }
   }
 }
 
-async function notifyUndeliverableFailure(job: JobRow, ownerRef: string | null) {
+async function notifyUndeliverableFailure(
+  job: JobRow,
+  ownerRef: string | null,
+  code: string = UNDELIVERABLE_JOB_CODE,
+) {
   try {
     const owner =
       ownerRef ??
@@ -1875,14 +1954,14 @@ async function notifyUndeliverableFailure(job: JobRow, ownerRef: string | null) 
         event: "router.failed",
         routerId: job.routerId,
         ownerRef: owner,
-        detail: UNDELIVERABLE_JOB_CODE,
+        detail: code,
       });
     } else {
       await notifyPartnerActionResultWithDb(db, {
         job,
         ownerRef: owner,
         status: "failure",
-        code: UNDELIVERABLE_JOB_CODE,
+        code,
       });
     }
     schedulePartnerWebhookDelivery();
@@ -1892,10 +1971,12 @@ async function notifyUndeliverableFailure(job: JobRow, ownerRef: string | null) 
 }
 
 export async function recordJobResult(routerId: string, input: unknown) {
-  const parsed = jobResultRequestSchema.parse(input);
+  const bounded = boundJobResultPayload(input);
+  const parsed = jobResultRequestSchema.parse(bounded.payload);
   if (parsed.routerId !== routerId) {
-    throw new Error("Router identity mismatch.");
+    throw Object.assign(new Error("Router identity mismatch."), { status: 403 });
   }
+  await logTruncatedRouterPayload(routerId, "job_result", bounded.truncated);
 
   const [[job], [router]] = await Promise.all([
     db
@@ -1907,11 +1988,11 @@ export async function recordJobResult(routerId: string, input: unknown) {
   ]);
 
   if (!job) {
-    throw new Error("Job not found.");
+    throw Object.assign(new Error("Job not found."), { status: 404 });
   }
 
   if (!router) {
-    throw new Error("Router not found.");
+    throw Object.assign(new Error("Router not found."), { status: 404 });
   }
 
   const terminalJobStates = new Set(["succeeded", "failed", "cancelled"]);
@@ -2095,11 +2176,15 @@ export async function recordJobResult(routerId: string, input: unknown) {
     parsed.appliedRevisionId ?? job.desiredRevisionId ?? null;
 
   if (appliedRevisionId && parsed.status !== "accepted") {
-    const [revision] = await db
+    const [candidate] = await db
       .select()
       .from(passwallDesiredRevisions)
       .where(eq(passwallDesiredRevisions.id, appliedRevisionId))
       .limit(1);
+    // The id may come from the router. Another router's revision is treated
+    // as unknown: recording it here would make that router's config (and its
+    // secrets) this router's active revision.
+    const revision = candidate?.routerId === routerId ? candidate : undefined;
 
     if (revision) {
       const resultState = parsed.status === "success" ? "applied" : "failed";
@@ -2327,8 +2412,11 @@ export async function getFirmwareManifest(
   const channel = query.get("channel") === "beta" ? "beta" : "stable";
 
   if (!target || !architecture || !layoutFamily) {
-    throw new Error(
-      "Missing target, architecture or layoutFamily query parameters.",
+    throw Object.assign(
+      new Error(
+        "Missing target, architecture or layoutFamily query parameters.",
+      ),
+      { status: 400 },
     );
   }
 

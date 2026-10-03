@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-import { routerCheckInRequestSchema } from "@vectra/contracts";
+import {
+  ROUTER_RAW_SNAPSHOT_MAX_CHARS,
+  ROUTER_VERSION_MAP_MAX_CHARS,
+  routerCheckInRequestSchema,
+} from "@vectra/contracts";
 
 /**
  * The panel half of the vctl check-in contract guard.
@@ -81,5 +85,51 @@ describe("vctl check-in payload against the panel contract", () => {
     payload.inventory[field] = "";
     const result = routerCheckInRequestSchema.safeParse(payload);
     expect(result.success).toBe(false);
+  });
+});
+
+// Register is reachable anonymously, so every free-form field a router sends
+// is size-capped. The caps must reject a flood without touching a real router.
+describe("router check-in size caps", () => {
+  function withInventory(patch: Record<string, unknown>) {
+    const payload = structuredClone(checkInFixture) as {
+      inventory: Record<string, unknown>;
+    };
+    Object.assign(payload.inventory, patch);
+    return payload;
+  }
+
+  it("rejects an inventory rawSnapshot over the cap", () => {
+    const result = routerCheckInRequestSchema.safeParse(
+      withInventory({
+        rawSnapshot: { blob: "x".repeat(ROUTER_RAW_SNAPSHOT_MAX_CHARS) },
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a package version map over the cap", () => {
+    const packageVersions = Object.fromEntries(
+      Array.from({ length: 2000 }, (_, i) => [`pkg-${i}`, "1.0.0-r1"]),
+    );
+    expect(JSON.stringify(packageVersions).length).toBeGreaterThan(
+      ROUTER_VERSION_MAP_MAX_CHARS,
+    );
+    const result = routerCheckInRequestSchema.safeParse(
+      withInventory({ packageVersions }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it("still accepts a realistic version map and raw snapshot", () => {
+    const result = routerCheckInRequestSchema.safeParse(
+      withInventory({
+        packageVersions: Object.fromEntries(
+          Array.from({ length: 40 }, (_, i) => [`pkg-${i}`, "26.8.10-r1"]),
+        ),
+        rawSnapshot: { note: "y".repeat(8 * 1024) },
+      }),
+    );
+    expect(result.success).toBe(true);
   });
 });

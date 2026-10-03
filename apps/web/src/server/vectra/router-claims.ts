@@ -585,9 +585,14 @@ const CLAIM_JOB_TYPES: Array<(typeof jobs.$inferSelect)["type"]> = [
  */
 export async function unbindRouterClaimWithDb(
   client: ClaimsDatabase,
-  input: { routerId: string; ownerRef?: string | null },
+  input: { routerId: string; ownerRef: string },
   options: { now?: Date } = {},
 ): Promise<RouterUnbindOutcome> {
+  // The schema requires it; refused here too, so no caller can unbind a
+  // router without naming its owner.
+  if (!input.ownerRef) {
+    return fail(400, "invalid", "ownerRef is required");
+  }
   const now = options.now ?? new Date();
   const [router] = await client
     .select()
@@ -598,7 +603,7 @@ export async function unbindRouterClaimWithDb(
   if (!router?.ownerRef) {
     return fail(404, "not_claimed");
   }
-  if (input.ownerRef && input.ownerRef !== router.ownerRef) {
+  if (input.ownerRef !== router.ownerRef) {
     return fail(409, "claimed_by_other");
   }
   const previousOwnerRef = router.ownerRef;
