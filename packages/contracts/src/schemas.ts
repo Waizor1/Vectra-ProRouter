@@ -590,27 +590,37 @@ export const ROUTER_VERSION_MAP_MAX_CHARS = 16 * 1024;
 export const ROUTER_JOB_RESULT_MAX_CHARS = 1024 * 1024;
 export const ROUTER_INCIDENT_TRANSITIONS_MAX = 20;
 
-function serializedWithin(maxChars: number) {
-  return [
-    (value: unknown) => {
-      try {
-        return JSON.stringify(value).length <= maxChars;
-      } catch {
-        return false;
-      }
-    },
-    { message: `must serialize to at most ${maxChars} characters` },
-  ] as const;
+// Measured on the RAW input, before the inner schema applies its defaults:
+// the panel's own bounding of an authenticated router's payload measures the
+// raw JSON too, and the two must agree on what is over the cap.
+function serializedWithin<T extends z.ZodTypeAny>(maxChars: number, schema: T) {
+  return z
+    .unknown()
+    .refine(
+      (value) => {
+        try {
+          return (
+            ((JSON.stringify(value) as string | undefined)?.length ?? 0) <=
+            maxChars
+          );
+        } catch {
+          return false;
+        }
+      },
+      { message: `must serialize to at most ${maxChars} characters` },
+    )
+    .pipe(schema);
 }
 
 export const passwallImportedStateSchema = z.object({
-  config: passwallDesiredConfigSchema.refine(
-    ...serializedWithin(ROUTER_PASSWALL_IMPORT_PART_MAX_CHARS),
+  config: serializedWithin(
+    ROUTER_PASSWALL_IMPORT_PART_MAX_CHARS,
+    passwallDesiredConfigSchema,
   ),
-  rawSnapshot: z
-    .record(z.string(), z.unknown())
-    .refine(...serializedWithin(ROUTER_PASSWALL_IMPORT_PART_MAX_CHARS))
-    .default({}),
+  rawSnapshot: serializedWithin(
+    ROUTER_PASSWALL_IMPORT_PART_MAX_CHARS,
+    z.record(z.string(), z.unknown()),
+  ).default({}),
   configDigest: z.string().min(1),
   importedAt: z.string().datetime().optional(),
   source: z
@@ -807,14 +817,14 @@ export const routerInventorySchema = z.object({
   subscriptionCount: z.number().int().nonnegative(),
   configDigest: z.string().min(1).nullable().optional(),
   appliedRevisionId: z.string().uuid().nullable().optional(),
-  packageVersions: z
-    .record(z.string(), z.string().nullable())
-    .refine(...serializedWithin(ROUTER_VERSION_MAP_MAX_CHARS))
-    .default({}),
-  binaryVersions: z
-    .record(z.string(), z.string().nullable())
-    .refine(...serializedWithin(ROUTER_VERSION_MAP_MAX_CHARS))
-    .default({}),
+  packageVersions: serializedWithin(
+    ROUTER_VERSION_MAP_MAX_CHARS,
+    z.record(z.string(), z.string().nullable()),
+  ).default({}),
+  binaryVersions: serializedWithin(
+    ROUTER_VERSION_MAP_MAX_CHARS,
+    z.record(z.string(), z.string().nullable()),
+  ).default({}),
   rulesAssets: z
     .object({
       assetDirectory: z.string().optional(),
@@ -834,10 +844,10 @@ export const routerInventorySchema = z.object({
   youtubeReachability: routerYoutubeReachabilitySchema.optional(),
   instagramReachability: routerInstagramReachabilitySchema.optional(),
   safetyEvents: z.array(routerSafetyEventSchema).optional(),
-  rawSnapshot: z
-    .record(z.string(), z.unknown())
-    .refine(...serializedWithin(ROUTER_RAW_SNAPSHOT_MAX_CHARS))
-    .optional(),
+  rawSnapshot: serializedWithin(
+    ROUTER_RAW_SNAPSHOT_MAX_CHARS,
+    z.record(z.string(), z.unknown()),
+  ).optional(),
   connect: routerConnectTelemetrySchema.optional(),
 });
 
@@ -1722,10 +1732,10 @@ export const jobResultRequestSchema = z.object({
     .array(incidentTransitionSchema)
     .max(ROUTER_INCIDENT_TRANSITIONS_MAX)
     .default([]),
-  result: z
-    .record(z.string(), z.unknown())
-    .refine(...serializedWithin(ROUTER_JOB_RESULT_MAX_CHARS))
-    .default({}),
+  result: serializedWithin(
+    ROUTER_JOB_RESULT_MAX_CHARS,
+    z.record(z.string(), z.unknown()),
+  ).default({}),
 });
 
 export const jobResultResponseSchema = z.object({

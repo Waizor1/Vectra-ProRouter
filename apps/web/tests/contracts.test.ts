@@ -483,6 +483,24 @@ describe("shared job contract fixtures", () => {
 
   // The largest real result (an apply_passwall_config, 2026-10-03) is ~336 KB;
   // the caps sit well above it and only refuse a flood.
+  // Measured on the raw input, as the panel's own bounding of an
+  // authenticated payload measures it: the two must agree.
+  it("measures a size cap on the raw input, before the inner schema", () => {
+    const accepted = jobFixtures.jobResults.accepted[0]!.value as Record<
+      string,
+      unknown
+    >;
+    const result = jobResultRequestSchema.safeParse({
+      ...accepted,
+      result: { blob: "z".repeat(ROUTER_JOB_RESULT_MAX_CHARS) },
+    });
+
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain(
+      "must serialize to at most",
+    );
+  });
+
   it("caps the size of a job result and its incident transitions", () => {
     const accepted = jobFixtures.jobResults.accepted[0]!.value as Record<
       string,
