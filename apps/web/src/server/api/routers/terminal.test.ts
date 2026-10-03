@@ -86,15 +86,15 @@ describe("terminal.queueCommand on xray-direct (vctl)", () => {
   });
 
   it.each([
-    ["false", { engineMode: "xray-direct", remoteShell: false }],
-    ["absent", { engineMode: "xray-direct" }],
-  ])("refuses up front when remoteShell is %s", async (_label, extra) => {
+    ["false", { engineMode: "xray-direct", remoteShell: false }, "выключил доступ поддержки"],
+    ["absent", { engineMode: "xray-direct" }, "ещё не сообщил"],
+  ])("refuses up front when remoteShell is %s", async (_label, extra, reason) => {
     const mock = createMockDb([[routerRow("xray-direct")], [snapshotRow(extra)]]);
     const error: unknown = await caller(mock.db)
       .queueCommand({ routerId: ROUTER_ID, command: "uptime" })
       .catch((caught: unknown) => caught);
     expect(error).toMatchObject({ code: "PRECONDITION_FAILED" });
-    expect(String((error as Error).message)).toContain("выключил доступ поддержки");
+    expect(String((error as Error).message)).toContain(reason);
     expect(mock.inserted).toHaveLength(0);
   });
 

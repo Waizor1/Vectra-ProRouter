@@ -55,7 +55,9 @@ async function assertTerminalCapableRouter(
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message:
-        "Владелец роутера выключил доступ поддержки к терминалу (vctl remote_shell=0): команда не будет доставлена.",
+        snapshot?.payload?.remoteShell === false
+          ? "Владелец роутера выключил доступ поддержки к терминалу (vctl remote_shell=0): команда не будет доставлена."
+          : "Роутер ещё не сообщил, разрешён ли доступ поддержки (ждём следующей связи vctl, ~1 мин): команда не будет доставлена.",
     });
   }
 
