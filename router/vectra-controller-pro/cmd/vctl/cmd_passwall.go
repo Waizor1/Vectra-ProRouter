@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/routepolicy"
@@ -34,6 +37,13 @@ func init() {
 // -compare makes it with both generators from PassWall2's configuration and
 // says where they differ, by JSON path only: the documents carry the
 // subscription's keys, and no value of theirs is printed.
+//
+// It works on a router where vctl never ran — the check before the first
+// `vectra on`: without the daemon's agent.json (the init script renders it at
+// a start) it renders one itself, as the init script does, and without an
+// operator config (the panel's arrives only once vctl runs) it uses the base
+// one vctl itself routes by PassWall2's configuration on until then
+// (auto_route.go).
 func cmdPassWallRender(args []string) error {
 	fs := newFlagSet("passwall-render")
 	agentPath := fs.String("config", "/var/run/vectra-controller-pro/agent.json", "the daemon's agent config")
@@ -43,7 +53,7 @@ func cmdPassWallRender(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := agentcfg.Load(*agentPath)
+	cfg, err := loadOrRenderAgentConfig(*agentPath)
 	if err != nil {
 		return err
 	}
@@ -53,7 +63,11 @@ func cmdPassWallRender(args []string) error {
 	}
 	d := &daemon{cfg: cfg}
 	desired, err := d.loadDesiredConfig()
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
+		name, _ := os.Hostname()
+		desired = config.Base(name)
+		fmt.Printf("no operator config at %s: the base one vctl routes by PassWall2's configuration on until the panel's arrives\n", cfg.XrayConfigPath)
+	} else if err != nil {
 		return err
 	}
 	d.desired = desired
@@ -114,6 +128,32 @@ func cmdPassWallRender(args []string) error {
 	fmt.Printf("  DNS through the tunnel: %s (node names answered directly: %d)%s\n", orNone(res.DNS.Listen), res.DNS.NodeHosts, skipped(res.DNS.Skipped))
 	fmt.Printf("  outbounds marked: %d; owner's sites: %s\n", res.OutboundsMarked, res.UserRules.Describe())
 	return nil
+}
+
+// agentRenderer renders the daemon's agent.json from UCI: the init script's
+// RENDERER.
+var agentRenderer = "/usr/libexec/vectra-controller-pro/render-xray-config.sh"
+
+// loadOrRenderAgentConfig is the daemon's agent.json at path — or, on a
+// router where vctl has not run since its boot (the init script renders it
+// at a start, on tmpfs), one rendered now from UCI the same way, into a temp
+// file that goes again.
+func loadOrRenderAgentConfig(path string) (agentcfg.Config, error) {
+	cfg, err := agentcfg.Load(path)
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		return cfg, err
+	}
+	tmp, terr := os.CreateTemp("", "vctl-agent-*.json")
+	if terr != nil {
+		return cfg, terr
+	}
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+	if out, rerr := exec.Command(agentRenderer, tmp.Name()).CombinedOutput(); rerr != nil {
+		return cfg, fmt.Errorf("%s is not there, and rendering it from UCI failed (%s): %w: %s", path, agentRenderer, rerr, strings.TrimSpace(string(out)))
+	}
+	fmt.Printf("no %s (vctl has not run since the boot): rendered from UCI as the init script does\n", path)
+	return agentcfg.Load(tmp.Name())
 }
 
 // nativePolicyReadOnly is the store, or PassWall2's configuration where
