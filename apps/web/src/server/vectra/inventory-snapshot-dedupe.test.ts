@@ -259,6 +259,14 @@ describe("materialInventoryFingerprint", () => {
   // Partner webhooks diff the Connect verdict against the newest stored row;
   // a verdict change that wrote no row would re-fire the same event on every
   // later check-in until the heartbeat.
+  // terminal.queueCommand reads the owner's support-shell switch from the
+  // newest snapshot: a flip must not wait for the heartbeat.
+  it("reacts when vctl's owner flips the support shell", () => {
+    const off = materialInventoryFingerprint({ ...baseInventory, remoteShell: false });
+    expect(materialInventoryFingerprint({ ...baseInventory, remoteShell: true })).not.toBe(off);
+    expect(materialInventoryFingerprint(baseInventory)).not.toBe(off);
+  });
+
   it("reacts to a Connect verdict change but not to its gauges", () => {
     const connected = routerInventorySchema.parse({
       ...baseInventory,

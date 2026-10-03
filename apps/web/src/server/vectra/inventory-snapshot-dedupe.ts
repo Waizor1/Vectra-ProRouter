@@ -98,6 +98,9 @@ export function materialInventoryFingerprint(inventory: RouterInventory) {
     subscriptionCount: inventory.subscriptionCount,
     configDigest: inventory.configDigest ?? null,
     appliedRevisionId: inventory.appliedRevisionId ?? null,
+    // vctl: the owner's support-shell switch; terminal.queueCommand reads it
+    // from the newest row, so a flip must write one. Absent → null both sides.
+    remoteShell: inventory.remoteShell ?? null,
 
     // Health.
     serviceHealth: inventory.serviceHealth,
