@@ -26,6 +26,7 @@ import {
   registerRouter,
   resolveRegisteredEngineMode,
   selectDeliverableJobsForCheckIn,
+  SUPPORT_SHELL_OFF_MESSAGE,
 } from "./router-control";
 import {
   hashClaimCode,
@@ -579,6 +580,64 @@ describe("checkInRouter claim", () => {
     expect(fake.updates(jobs).map(update => update.state).filter(Boolean)).toEqual(["running", "failed"]);
   });
 
+  // Live 2026-10-03 (artem-lutfulin): an operator's support command never
+  // reached vctl; it runs it when the owner allows the support shell, which
+  // vctl reports as inventory remoteShell on every check-in.
+  describe("operator support shell on vctl", () => {
+    const SHELL_ID = "4a5b6c7d-8e9f-4a0b-9c1d-2e3f4a5b6c7d";
+    const LOGS_ID = "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e";
+    const owner = () => routerRow({ownerRef: "acct-42", approvedAt: new Date(), importState: "approved", status: "active", engineMode: "xray-direct"});
+    const shell = {id: SHELL_ID, routerId: ROUTER_ID, type: "run_terminal_command", state: "queued", desiredRevisionId: null, dedupeKey: `run_terminal_command:${ROUTER_ID}`, createdAt: new Date(Date.now() - 30_000), payload: {command: "uptime", timeoutSeconds: 30}};
+    const logs = {id: LOGS_ID, routerId: ROUTER_ID, type: "collect_router_logs", state: "queued", desiredRevisionId: null, dedupeKey: "auto_rescue_logs:case-2", createdAt: new Date(Date.now() - 60_000), payload: {source: "all", lines: 200}};
+    const undeliverable = () => fake.inserts(eventLog).filter(event => event.type === "job.undeliverable");
+
+    it("delivers it when remoteShell is true; a PassWall job still fails as before", async () => {
+      const router = owner();
+      fake.reset({selects: [[routers, [[router], [router]]], [healthIncidents, [[]]], [jobs, [[logs, shell], [{...logs, state: "running"}]]]], updateReturns: [[routers, [[router], [router], [router]]], [jobs, [[{...logs, state: "running"}]]]]});
+
+      const response = await checkInRouter(ROUTER_ID, checkInPayload({inventory: inventory({remoteShell: true})}));
+
+      expect(response.jobs.map(job => job.id)).toEqual([SHELL_ID]);
+      expect(undeliverable()).toEqual([expect.objectContaining({
+        message: `Job ${LOGS_ID} (collect_router_logs) cannot run on this router's engine and was failed.`,
+        metadata: {jobId: LOGS_ID, jobType: "collect_router_logs", code: "engine_mismatch"},
+      })]);
+    });
+
+    it.each([
+      ["false", {remoteShell: false}],
+      ["absent", {}],
+    ])("fails it with engine_mismatch and a shell-off message when remoteShell is %s", async (_label, extra) => {
+      const router = owner();
+      fake.reset({selects: [[routers, [[router], [router]]], [healthIncidents, [[]]], [jobs, [[shell], [{...shell, state: "running"}]]]], updateReturns: [[routers, [[router], [router], [router]]], [jobs, [[{...shell, state: "running"}]]]]});
+
+      const response = await checkInRouter(ROUTER_ID, checkInPayload({inventory: inventory(extra)}));
+
+      expect(response.jobs).toEqual([]);
+      const events = undeliverable();
+      expect(events).toHaveLength(1);
+      expect(events[0]?.metadata).toEqual({jobId: SHELL_ID, jobType: "run_terminal_command", code: "engine_mismatch"});
+      expect(String(events[0]?.message)).toContain("owner has the support shell switched off");
+      // The result reads as a terminal result, so the operator's history shows why.
+      const results = fake.inserts(jobResults);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({jobId: SHELL_ID, status: "failure"});
+      expect(results[0]?.payload).toMatchObject({code: "engine_mismatch", error: SUPPORT_SHELL_OFF_MESSAGE, command: "uptime", timeoutSeconds: 30});
+      expect(fake.updates(jobs).map(update => update.state).filter(Boolean)).toEqual(["running", "failed"]);
+    });
+
+    it("leaves it queued for vctl when a legacy agent (hand-back) checks in", async () => {
+      const router = owner();
+      fake.reset({selects: [[routers, [[router], [router]]], [healthIncidents, [[]]], [jobs, [[shell]]]], updateReturns: [[routers, [[router], [router], [router]]]]});
+
+      const response = await checkInRouter(ROUTER_ID, checkInPayload({inventory: inventory({engineMode: undefined, remoteShell: true})}));
+
+      expect(response.jobs).toEqual([]);
+      expect(undeliverable()).toEqual([]);
+      expect(fake.updates(jobs)).toEqual([]);
+    });
+  });
+
   it("fails one undecryptable owner job and still delivers the rest of the check-in", async () => {
     const {protectPartnerParams} = await import("./partner-router-secrets");
     const owner = routerRow({ownerRef: "acct-42", approvedAt: new Date(), importState: "approved", status: "active"});
@@ -973,6 +1032,29 @@ describe("selectDeliverableJobsForCheckIn — rename on xray-direct", () => {
         "xray-direct",
       ).map((job) => job.id),
     ).toEqual(["rename"]);
+  });
+
+  it("delivers an operator's command too when vctl reports remoteShell", () => {
+    expect(
+      selectDeliverableJobsForCheckIn(
+        "approved",
+        [hostnameJob, operatorShell] as never,
+        "xray-direct",
+        "xray-direct",
+        true,
+      ).map((job) => job.id),
+    ).toEqual(["rename", "shell"]);
+  });
+
+  it("keeps an operator's command from a legacy agent (hand-back)", () => {
+    expect(
+      selectDeliverableJobsForCheckIn(
+        "approved",
+        [operatorShell] as never,
+        "xray-direct",
+        "other",
+      ),
+    ).toEqual([]);
   });
 
   it("leaves PassWall delivery as it was", () => {

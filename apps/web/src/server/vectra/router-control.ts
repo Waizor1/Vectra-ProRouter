@@ -223,16 +223,20 @@ export function selectDeliverableJobsForCheckIn(
   // does not, and cannot run the xray engine's jobs or an owner's actions —
   // they wait for vctl instead of failing on the wrong controller.
   reportingController: "xray-direct" | "other" = "xray-direct",
+  // vctl's inventory remoteShell: its owner allows the panel's support shell
+  // (UCI remote_shell=1), so vctl runs an operator's run_terminal_command.
+  remoteShell = false,
 ) {
   // Engine isolation: a router only ever receives jobs for its own engine.
   // passwall routers (the default, all 18 live devices) never see xray jobs
   // and vice versa. Engine-agnostic exclusive jobs (controller self-update,
   // reboot, clear-ipsets, rescue, firmware) are handled below for both, and
   // the OpenWrt hostname update (fleet.renameRouter) is plain uci that vctl's
-  // run_terminal_command runner executes as well.
+  // run_terminal_command runner executes as well — as it does an operator's
+  // support command when the owner has the support shell switched on.
   const engineScopedJobs =
     engineMode === "xray-direct"
-      ? queuedCandidates.filter(runsOnXrayEngine)
+      ? queuedCandidates.filter((job) => runsOnXrayEngine(job, remoteShell))
       : queuedCandidates.filter((job) => !isXrayEngineJob(job));
 
   const applyGateJobType =
@@ -259,11 +263,12 @@ export function selectDeliverableJobsForCheckIn(
 }
 
 /** A job vctl (the xray-direct engine) can run at all. */
-function runsOnXrayEngine(job: JobRow) {
+function runsOnXrayEngine(job: JobRow, remoteShell: boolean) {
   return (
     isXrayEngineJob(job) ||
     isEngineAgnosticExclusiveJob(job) ||
-    isRouterHostnameUpdateJob(job)
+    isRouterHostnameUpdateJob(job) ||
+    (remoteShell && job.type === "run_terminal_command")
   );
 }
 
@@ -1741,16 +1746,22 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
   // candidates read above — owner actions behind it were never delivered —,
   // counted toward the partner's pending limit, and blocked an engine switch.
   // It is failed instead, through the result path like any other failure.
+  // An operator's support command runs on vctl only while its owner allows
+  // the support shell; vctl reports that on every check-in.
+  const vctlRemoteShell =
+    parsed.inventory.engineMode === "xray-direct" &&
+    parsed.inventory.remoteShell === true;
   const engineMismatched =
     router.engineMode === "xray-direct" &&
     parsed.inventory.engineMode === "xray-direct"
-      ? queuedCandidates.filter((job) => !runsOnXrayEngine(job))
+      ? queuedCandidates.filter((job) => !runsOnXrayEngine(job, vctlRemoteShell))
       : [];
   const deliverableJobs = selectDeliverableJobsForCheckIn(
     router.importState,
     queuedCandidates,
     router.engineMode,
     parsed.inventory.engineMode === "xray-direct" ? "xray-direct" : "other",
+    vctlRemoteShell,
   );
 
   const [desiredRevision, policyContext] = await Promise.all([
@@ -1856,6 +1867,18 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
 const UNDELIVERABLE_JOB_CODE = "payload_unavailable";
 /** A job for another engine than the one the router runs. */
 const ENGINE_MISMATCH_JOB_CODE = "engine_mismatch";
+/** Shown in the terminal history when vctl's owner keeps the support shell off. */
+export const SUPPORT_SHELL_OFF_MESSAGE =
+  "Владелец роутера выключил доступ поддержки к терминалу (vctl remote_shell=0): команда не доставлена.";
+
+/** An operator's support command failed only because the owner has the shell off. */
+function isSupportShellOffMismatch(job: JobRow, code: string) {
+  return (
+    code === ENGINE_MISMATCH_JOB_CODE &&
+    job.type === "run_terminal_command" &&
+    !isRouterHostnameUpdateJob(job)
+  );
+}
 
 /** What may be logged about a job that cannot be serialized: never a message. */
 export function describeUndeliverableError(error: unknown) {
@@ -1893,12 +1916,14 @@ async function failUndeliverableJobs(
     if (!taken) {
       continue;
     }
+    const shellOff = isSupportShellOffMismatch(job, code);
     await db.insert(eventLog).values({
       routerId,
       type: "job.undeliverable",
       severity: "warning",
-      message:
-        code === ENGINE_MISMATCH_JOB_CODE
+      message: shellOff
+        ? `Job ${job.id} (${job.type}) was failed: the router's owner has the support shell switched off (remote_shell).`
+        : code === ENGINE_MISMATCH_JOB_CODE
           ? `Job ${job.id} (${job.type}) cannot run on this router's engine and was failed.`
           : `Job ${job.id} (${job.type}) could not be prepared for delivery and was failed.`,
       metadata: { jobId: job.id, jobType: job.type, code },
@@ -1909,7 +1934,18 @@ async function failUndeliverableJobs(
         routerId,
         jobId: job.id,
         status: "failure",
-        result: { code, error: code },
+        // A terminal result shape, so the operator's terminal history shows why.
+        result: shellOff
+          ? {
+              code,
+              error: SUPPORT_SHELL_OFF_MESSAGE,
+              command: typeof job.payload.command === "string" ? job.payload.command : "",
+              timeoutSeconds: typeof job.payload.timeoutSeconds === "number" ? job.payload.timeoutSeconds : 30,
+              startedAt: now.toISOString(),
+              completedAt: now.toISOString(),
+              exitCode: null,
+            }
+          : { code, error: code },
       });
     } catch (error) {
       console.error("[router-control] undeliverable job result not recorded", {
