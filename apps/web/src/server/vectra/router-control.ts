@@ -1536,7 +1536,7 @@ export function resolveRegisteredEngineMode(
 export async function checkInRouter(routerId: string, input: unknown, auth?: {devicePublicKey: string}) {
   const parsed = routerCheckInRequestSchema.parse(input);
   if (parsed.routerId !== routerId) {
-    throw new Error("Router identity mismatch.");
+    throw Object.assign(new Error("Router identity mismatch."), { status: 403 });
   }
 
   const [existingRouter] = await db
@@ -1546,13 +1546,16 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     .limit(1);
 
   if (!existingRouter) {
-    throw new Error("Router not found.");
+    throw Object.assign(new Error("Router not found."), { status: 404 });
   }
 
   if (parsed.inventory.connect && auth &&
     (parsed.inventory.deviceIdentifier !== existingRouter.deviceIdentifier ||
      !devicePublicKeysMatch(parsed.inventory.devicePublicKey, auth.devicePublicKey))) {
-    throw new Error("Connect telemetry device identity mismatch.");
+    throw Object.assign(
+      new Error("Connect telemetry device identity mismatch."),
+      { status: 403 },
+    );
   }
   const now = new Date();
   const nextStatus = deriveRouterStatus(
@@ -1921,7 +1924,7 @@ async function notifyUndeliverableFailure(
 export async function recordJobResult(routerId: string, input: unknown) {
   const parsed = jobResultRequestSchema.parse(input);
   if (parsed.routerId !== routerId) {
-    throw new Error("Router identity mismatch.");
+    throw Object.assign(new Error("Router identity mismatch."), { status: 403 });
   }
 
   const [[job], [router]] = await Promise.all([
@@ -1934,11 +1937,11 @@ export async function recordJobResult(routerId: string, input: unknown) {
   ]);
 
   if (!job) {
-    throw new Error("Job not found.");
+    throw Object.assign(new Error("Job not found."), { status: 404 });
   }
 
   if (!router) {
-    throw new Error("Router not found.");
+    throw Object.assign(new Error("Router not found."), { status: 404 });
   }
 
   const terminalJobStates = new Set(["succeeded", "failed", "cancelled"]);
@@ -2354,8 +2357,11 @@ export async function getFirmwareManifest(
   const channel = query.get("channel") === "beta" ? "beta" : "stable";
 
   if (!target || !architecture || !layoutFamily) {
-    throw new Error(
-      "Missing target, architecture or layoutFamily query parameters.",
+    throw Object.assign(
+      new Error(
+        "Missing target, architecture or layoutFamily query parameters.",
+      ),
+      { status: 400 },
     );
   }
 

@@ -578,9 +578,39 @@ export const xrayDesiredConfigSchema = z
   })
   .strict();
 
+// Size caps on what a router sends. Register answers anonymous callers, so no
+// free-form field a router reports may be unbounded. Each cap is measured on
+// the serialized JSON and sits well above the largest the live fleet has sent
+// (2026-10-03: an imported PassWall config 280 KB and its raw UCI snapshot
+// 318 KB; a job result 336 KB; version maps under 1 KB; the inventory
+// rawSnapshot and more than one incident transition never seen at all).
+export const ROUTER_PASSWALL_IMPORT_PART_MAX_CHARS = 1024 * 1024;
+export const ROUTER_RAW_SNAPSHOT_MAX_CHARS = 64 * 1024;
+export const ROUTER_VERSION_MAP_MAX_CHARS = 16 * 1024;
+export const ROUTER_JOB_RESULT_MAX_CHARS = 1024 * 1024;
+export const ROUTER_INCIDENT_TRANSITIONS_MAX = 20;
+
+function serializedWithin(maxChars: number) {
+  return [
+    (value: unknown) => {
+      try {
+        return JSON.stringify(value).length <= maxChars;
+      } catch {
+        return false;
+      }
+    },
+    { message: `must serialize to at most ${maxChars} characters` },
+  ] as const;
+}
+
 export const passwallImportedStateSchema = z.object({
-  config: passwallDesiredConfigSchema,
-  rawSnapshot: z.record(z.string(), z.unknown()).default({}),
+  config: passwallDesiredConfigSchema.refine(
+    ...serializedWithin(ROUTER_PASSWALL_IMPORT_PART_MAX_CHARS),
+  ),
+  rawSnapshot: z
+    .record(z.string(), z.unknown())
+    .refine(...serializedWithin(ROUTER_PASSWALL_IMPORT_PART_MAX_CHARS))
+    .default({}),
   configDigest: z.string().min(1),
   importedAt: z.string().datetime().optional(),
   source: z
@@ -777,8 +807,14 @@ export const routerInventorySchema = z.object({
   subscriptionCount: z.number().int().nonnegative(),
   configDigest: z.string().min(1).nullable().optional(),
   appliedRevisionId: z.string().uuid().nullable().optional(),
-  packageVersions: z.record(z.string(), z.string().nullable()).default({}),
-  binaryVersions: z.record(z.string(), z.string().nullable()).default({}),
+  packageVersions: z
+    .record(z.string(), z.string().nullable())
+    .refine(...serializedWithin(ROUTER_VERSION_MAP_MAX_CHARS))
+    .default({}),
+  binaryVersions: z
+    .record(z.string(), z.string().nullable())
+    .refine(...serializedWithin(ROUTER_VERSION_MAP_MAX_CHARS))
+    .default({}),
   rulesAssets: z
     .object({
       assetDirectory: z.string().optional(),
@@ -798,7 +834,10 @@ export const routerInventorySchema = z.object({
   youtubeReachability: routerYoutubeReachabilitySchema.optional(),
   instagramReachability: routerInstagramReachabilitySchema.optional(),
   safetyEvents: z.array(routerSafetyEventSchema).optional(),
-  rawSnapshot: z.record(z.string(), z.unknown()).optional(),
+  rawSnapshot: z
+    .record(z.string(), z.unknown())
+    .refine(...serializedWithin(ROUTER_RAW_SNAPSHOT_MAX_CHARS))
+    .optional(),
   connect: routerConnectTelemetrySchema.optional(),
 });
 
@@ -1678,8 +1717,14 @@ export const jobResultRequestSchema = z.object({
   configDigest: z.string().min(1).nullable().optional(),
   stdout: z.string().max(16000).optional(),
   stderr: z.string().max(16000).optional(),
-  incidentTransitions: z.array(incidentTransitionSchema).default([]),
-  result: z.record(z.string(), z.unknown()).default({}),
+  incidentTransitions: z
+    .array(incidentTransitionSchema)
+    .max(ROUTER_INCIDENT_TRANSITIONS_MAX)
+    .default([]),
+  result: z
+    .record(z.string(), z.unknown())
+    .refine(...serializedWithin(ROUTER_JOB_RESULT_MAX_CHARS))
+    .default({}),
 });
 
 export const jobResultResponseSchema = z.object({
