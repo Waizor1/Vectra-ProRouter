@@ -156,7 +156,7 @@ func TestNoDNSOptionsNoDNSInbound(t *testing.T) {
 	if _, ok := xray.RenderDNSListen(spliced); ok {
 		t.Fatal("a DNS inbound without DNS options")
 	}
-	if res.DNS != (xray.DNSResult{}) {
+	if !reflect.DeepEqual(res.DNS, xray.DNSResult{}) {
 		t.Fatalf("result = %+v", res.DNS)
 	}
 	base := xray.SpliceOptions{APIListen: xray.DefaultAPIListen}

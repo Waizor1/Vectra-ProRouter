@@ -129,7 +129,19 @@ func (d *daemon) applyProviderWith(ctx context.Context, providerRaw []byte, forc
 	if err != nil {
 		d.lastApplyErr = err.Error()
 		d.noteApplyErr(err)
+		if errors.Is(err, xray.ErrProviderRefused) {
+			d.incident("PROVIDER_REFUSED", reKeyNumber.ReplaceAllString(clipText(err.Error(), 200), "N"),
+				"the router refused the provider's document; the running render stays", map[string]any{"error": clipText(err.Error(), 300)})
+		}
 		return res, err
+	}
+	if len(res.DroppedKeys) > 0 || len(res.DroppedHosts) > 0 {
+		// One line for all of it; the rest of the document is applied.
+		logging.L().Warn("left out of the provider's document what the router does not take",
+			"keys", strings.Join(res.DroppedKeys, ","), "dnsHosts", strings.Join(res.DroppedHosts, ","))
+		d.incident("PROVIDER_PARTS_DROPPED", strings.Join(res.DroppedKeys, ",")+"|"+strings.Join(res.DroppedHosts, ","),
+			"the router left out parts of the provider's document it does not take",
+			map[string]any{"keys": res.DroppedKeys, "dnsHosts": res.DroppedHosts})
 	}
 	d.lastApplyErr = ""
 	d.keepAIRefusedFor(providerRaw)
@@ -756,13 +768,18 @@ func (d *daemon) resumeRender(ctx context.Context) {
 	}
 	raw, err := vault.ReadFile(d.documentPath())
 	if err != nil || len(raw) == 0 {
-		logging.L().Warn("no render to run and no last-good provider document to rebuild it from; the data plane waits for an apply",
+		logging.L().Warn("no render to run and no last-good provider document to rebuild it from",
 			"provider", d.documentPath())
+		d.resumeLastGoodRender(ctx, "no last-good provider document")
 		return
 	}
 	res, err := d.applyProvider(ctx, raw, false)
 	if err != nil {
-		logging.L().Error("could not rebuild the render from the last-good provider document; the data plane waits for an apply", "err", err.Error())
+		// A document refused since (r12's guard) or a render that cannot be
+		// made again: never left without a data plane — the last render
+		// xray took runs (last_good_render.go).
+		logging.L().Error("could not rebuild the render from the last-good provider document", "err", err.Error())
+		d.resumeLastGoodRender(ctx, err.Error())
 		return
 	}
 	d.nodeCount = countProviderOutbounds(raw)

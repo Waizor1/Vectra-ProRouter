@@ -145,19 +145,26 @@ func TestSpliceBoundsTheProbeInterval(t *testing.T) {
 	}
 }
 
-// A provider that ships its own api or metrics is refused: its listen
+// A provider that ships its own api or metrics has them dropped: its listen
 // (possibly 0.0.0.0, possibly a service set we do not want) is not the
-// provider's to decide, in any spelling (provider_guard.go).
-func TestSpliceRefusesAProviderAPIBlock(t *testing.T) {
-	for _, doc := range []string{
-		`{"api":{"tag":"x","listen":"0.0.0.0:8080","services":["HandlerService"]},"outbounds":[{"tag":"d","protocol":"freedom"}]}`,
-		`{"Api":{"listen":"0.0.0.0:8080"},"outbounds":[{"tag":"d","protocol":"freedom"}]}`,
-		`{"metrics":{"tag":"m","listen":"0.0.0.0:9090"},"outbounds":[{"tag":"d","protocol":"freedom"}]}`,
-	} {
-		for _, opts := range []xray.SpliceOptions{routerOptions(), {}} {
-			if out, _, err := xray.Splice([]byte(doc), testTproxy(), opts); err == nil {
-				t.Fatalf("spliced %s into %s", doc, out)
-			}
+// provider's to decide, in any spelling (provider_guard.go). The router's
+// own, on loopback, are appended when it installs them.
+func TestSpliceDropsAProviderAPIBlock(t *testing.T) {
+	doc := []byte(`{"Api":{"tag":"x","listen":"0.0.0.0:8080","services":["HandlerService"]},"metrics":{"tag":"m","listen":"0.0.0.0:9090"},"outbounds":[{"tag":"d","protocol":"freedom"}]}`)
+	for _, opts := range []xray.SpliceOptions{routerOptions(), {}} {
+		out, res, err := xray.Splice(doc, testTproxy(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(out), "0.0.0.0:") || strings.Contains(string(out), "HandlerService") || strings.Join(res.DroppedKeys, ",") != "Api,metrics" {
+			t.Fatalf("dropped %v: %s", res.DroppedKeys, out)
+		}
+		want := "outbounds,inbounds"
+		if opts.APIListen != "" {
+			want += ",api,metrics"
+		}
+		if got := strings.Join(orderedKeys(t, out), ","); got != want {
+			t.Errorf("keys = %s, want %s", got, want)
 		}
 	}
 }

@@ -1,6 +1,10 @@
 package xray_test
 
 import (
+	"bytes"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -87,7 +91,7 @@ func TestSpliceRefusesFilesNamedByTheProvider(t *testing.T) {
 		"ext absolute":     `{"outbounds":[{"tag":"a","protocol":"freedom"}],"routing":{"rules":[{"ip":["EXT:/tmp/x.dat:y"],"outboundTag":"a"}]}}`,
 		"ext in dns":       `{"outbounds":[{"tag":"a","protocol":"freedom"}],"dns":{"servers":[{"address":"1.1.1.1","domains":["ext:/root/x.dat:z"]}]}}`,
 		"fakedns over lan": `{"outbounds":[{"tag":"a","protocol":"freedom"}],"fakedns":[{"ipPool":"192.168.1.0/24","poolSize":200}]}`,
-		"fakedns too big":  `{"outbounds":[{"tag":"a","protocol":"freedom"}],"fakedns":{"ipPool":"198.18.0.0/15","poolSize":10000000}}`,
+		"fakedns wider":    `{"outbounds":[{"tag":"a","protocol":"freedom"}],"fakedns":{"ipPool":"198.16.0.0/13"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, _, err := xray.Splice([]byte(doc), testTproxy(), routerOptions()); err == nil {
@@ -96,8 +100,12 @@ func TestSpliceRefusesFilesNamedByTheProvider(t *testing.T) {
 		})
 	}
 	// Anti-vacuity: inline certificates, an empty masterKeyLog, a geo list in
-	// the asset directory and xray's own FakeDNS ranges all pass.
+	// the asset directory, xray's own FakeDNS ranges whatever their poolSize,
+	// and names merely ending in "file" — a header, a host — all pass.
 	for _, doc := range []string{
+		`{"outbounds":[{"tag":"a","protocol":"freedom"}],"fakedns":{"ipPool":"198.18.0.0/15","poolSize":10000000}}`,
+		`{"outbounds":[{"tag":"a","protocol":"vless","settings":{"vnext":[{"address":"cdn.profile","port":443}]},"streamSettings":{"xhttpSettings":{"headers":{"X-Profile":"1","Profile":"x"},"host":"my.profile"}}}]}`,
+		`{"outbounds":[{"tag":"a","protocol":"vless","streamSettings":{"realitySettings":{"keyFile":"not a tls block"}}}]}`,
 		`{"outbounds":[{"tag":"a","protocol":"vless","streamSettings":{"tlsSettings":{"masterKeyLog":"","certificates":[{"usage":"verify","certificate":["-----BEGIN CERTIFICATE-----"]}]}}}]}`,
 		`{"outbounds":[{"tag":"a","protocol":"freedom"}],"routing":{"rules":[{"domain":["ext:custom.dat:ads","geosite:ru"],"outboundTag":"a"}]}}`,
 		`{"outbounds":[{"tag":"a","protocol":"freedom"}],"fakedns":[{"ipPool":"198.18.0.0/16","poolSize":65535},{"ipPool":"fc00::/18","poolSize":65535}]}`,
@@ -108,17 +116,30 @@ func TestSpliceRefusesFilesNamedByTheProvider(t *testing.T) {
 	}
 }
 
-// The top level is an allowlist: reverse (bridges and portals into the
-// router's network), env (where xray reads its files from), api, metrics,
-// transport and anything unknown refuse the document, in any spelling.
+// The top level is an allowlist. reverse (bridges and portals into the
+// router's network) refuses the document, in any spelling; every other key
+// the router does not take — env (where xray reads its files from), api,
+// metrics, transport, $schema, assets, anything unknown — is dropped and the
+// rest applied.
 func TestSpliceTakesOnlyTheAllowedTopLevelKeys(t *testing.T) {
-	for _, key := range []string{"reverse", "Reverse", "env", "ENV", "api", "metrics", "transport", "zulu"} {
+	for _, key := range []string{"reverse", "Reverse"} {
 		doc := `{"` + key + `":{},"outbounds":[{"tag":"d","protocol":"freedom"}]}`
-		if _, _, err := xray.Splice([]byte(doc), testTproxy(), routerOptions()); err == nil {
-			t.Fatalf("spliced a document with %q", key)
+		_, _, err := xray.Splice([]byte(doc), testTproxy(), routerOptions())
+		if !errors.Is(err, xray.ErrProviderRefused) {
+			t.Fatalf("a document with %q: %v", key, err)
 		}
 	}
-	// Anti-vacuity: every allowed key, in other spellings too, passes.
+	for _, key := range []string{"env", "ENV", "api", "Api", "metrics", "transport", "$schema", "assets", "zulu"} {
+		doc := `{"` + key + `":{"listen":"0.0.0.0:1","XRAY_LOCATION_ASSET":"/"},"outbounds":[{"tag":"d","protocol":"freedom"}]}`
+		out, res, err := xray.Splice([]byte(doc), testTproxy(), routerOptions())
+		if err != nil {
+			t.Fatalf("a document with %q was refused: %v", key, err)
+		}
+		if strings.Join(res.DroppedKeys, ",") != key || strings.Contains(string(out), "0.0.0.0:1") || strings.Contains(string(out), "XRAY_LOCATION_ASSET") {
+			t.Fatalf("%q: dropped %v, out %s", key, res.DroppedKeys, out)
+		}
+	}
+	// Anti-vacuity: every allowed key, in other spellings too, passes and stays.
 	doc := `{"remarks":"🇵🇱","Log":{},"DNS":{"servers":["1.1.1.1"]},"stats":{},"Policy":{},"version":{"min":"26.3.27"},` +
 		`"fakedns":[{"ipPool":"198.18.0.0/16","poolSize":65535}],"observatory":{"subjectSelector":["d"]},` +
 		`"burstObservatory":{"subjectSelector":["d"]},"Routing":{"rules":[]},"Inbounds":[],"Outbounds":[{"tag":"d","protocol":"freedom"}]}`
@@ -126,8 +147,31 @@ func TestSpliceTakesOnlyTheAllowedTopLevelKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a document of allowed keys was refused: %v", err)
 	}
-	if !res.InboundsReplaced || res.OutboundsMarked != 1 {
+	if !res.InboundsReplaced || res.OutboundsMarked != 1 || len(res.DroppedKeys) != 0 {
 		t.Fatalf("a key in another spelling was not handled as xray reads it: %+v\n%s", res, out)
+	}
+}
+
+// A real entry carries a top-level "assets" (1111's #28): dropped, the rest
+// of the document as it is (testdata/provider/README.md).
+func TestARealEntryWithAssetsIsAppliedWithoutThem(t *testing.T) {
+	raw, err := os.ReadFile(filepath.FromSlash("testdata/provider/entry-28-assets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, res, err := xray.Splice(raw, testTproxy(), routerOptions())
+	if err != nil {
+		t.Fatalf("the entry was refused: %v", err)
+	}
+	if strings.Join(res.DroppedKeys, ",") != "assets" || strings.Contains(string(out), "assets.provider.invalid") {
+		t.Fatalf("dropped %v", res.DroppedKeys)
+	}
+	plain, _, err := xray.Splice(providerFixture(t), testTproxy(), routerOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out, plain) {
+		t.Fatal("dropping assets changed the rest of the render")
 	}
 }
 
@@ -152,11 +196,12 @@ func TestSpliceRefusesReverseAndRedirectInOutbounds(t *testing.T) {
 }
 
 // With DNS through the tunnel the router's own lookups are xray's, and hosts
-// answer before any server: the provider may not pin the panel or NTP.
-func TestSpliceRefusesHostsOverTheRoutersDirectNames(t *testing.T) {
+// answer before any server: an entry over the panel or NTP is dropped, the
+// rest of hosts and of the document applied.
+func TestSpliceDropsHostsOverTheRoutersDirectNames(t *testing.T) {
 	opts := xray.SpliceOptions{DNS: &xray.DNSOptions{Listen: "127.0.0.1:10053", DirectResolvers: []string{"8.8.8.8"},
 		DirectDomains: []string{"full:router.vectra-pro.net", "domain:pool.ntp.org"}}}
-	base := `{"outbounds":[{"tag":"n","protocol":"vless","settings":{"vnext":[{"address":"n.example","port":443}]}}],"dns":{"servers":["1.1.1.1"],"hosts":{%s}}}`
+	base := `{"outbounds":[{"tag":"n","protocol":"vless","settings":{"vnext":[{"address":"n.example","port":443}]}}],"dns":{"servers":["1.1.1.1"],"hosts":{"n.example":"203.0.113.1",%s}}}`
 	for _, hosts := range []string{
 		`"router.vectra-pro.net":"203.0.113.9"`,
 		`"full:ROUTER.vectra-pro.net":"203.0.113.9"`,
@@ -165,23 +210,28 @@ func TestSpliceRefusesHostsOverTheRoutersDirectNames(t *testing.T) {
 		`"0.ru.pool.ntp.org":"203.0.113.9"`,
 		`"domain:ntp.org":"203.0.113.9"`,
 		`"keyword:ntp":"203.0.113.9"`,
-		`"regexp:^router\.":"203.0.113.9"`,
+		`"regexp:^router\\.":"203.0.113.9"`,
 	} {
 		doc := strings.Replace(base, "%s", hosts, 1)
-		if _, _, err := xray.Splice([]byte(doc), testTproxy(), opts); err == nil {
-			t.Fatalf("spliced hosts {%s}", hosts)
+		out, res, err := xray.Splice([]byte(doc), testTproxy(), opts)
+		if err != nil {
+			t.Fatalf("hosts {%s} refused the document: %v", hosts, err)
+		}
+		if len(res.DNS.DroppedHosts) != 1 || strings.Contains(string(out), "203.0.113.9") || !strings.Contains(string(out), `"n.example":"203.0.113.1"`) {
+			t.Fatalf("hosts {%s}: dropped %v\n%s", hosts, res.DNS.DroppedHosts, out)
 		}
 	}
 	// Anti-vacuity: the provider's own names, a category and other names
-	// pass; without DNS through the tunnel hosts are not the router's.
-	for _, hosts := range []string{`"n.example":"203.0.113.1"`, `"geosite:category-ads-all":"127.0.0.1"`, `"domain:example.org":"203.0.113.2"`} {
+	// stay; without DNS through the tunnel hosts are not the router's.
+	for _, hosts := range []string{`"geosite:category-ads-all":"127.0.0.1"`, `"domain:example.org":"203.0.113.2"`} {
 		doc := strings.Replace(base, "%s", hosts, 1)
-		if _, _, err := xray.Splice([]byte(doc), testTproxy(), opts); err != nil {
-			t.Fatalf("hosts {%s} refused: %v", hosts, err)
+		_, res, err := xray.Splice([]byte(doc), testTproxy(), opts)
+		if err != nil || len(res.DNS.DroppedHosts) != 0 {
+			t.Fatalf("hosts {%s}: dropped %v, %v", hosts, res.DNS.DroppedHosts, err)
 		}
 	}
 	doc := strings.Replace(base, "%s", `"pool.ntp.org":"203.0.113.9"`, 1)
-	if _, _, err := xray.Splice([]byte(doc), testTproxy(), xray.SpliceOptions{}); err != nil {
-		t.Fatalf("hosts refused without DNS through the tunnel: %v", err)
+	if out, _, err := xray.Splice([]byte(doc), testTproxy(), xray.SpliceOptions{}); err != nil || !strings.Contains(string(out), "203.0.113.9") {
+		t.Fatalf("hosts touched without DNS through the tunnel: %v", err)
 	}
 }

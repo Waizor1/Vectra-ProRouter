@@ -123,6 +123,9 @@ func runAgent(ctx context.Context, d *daemon, once bool) error {
 type daemon struct {
 	// saver writes state.json only when it changed (persist).
 	saver state.Saver
+	// lastGoodRenderSum is the sha256 of the render kept on flash
+	// (last_good_render.go).
+	lastGoodRenderSum [32]byte
 	// aiRefused are the «Нейросети» defaults xray refused, each on the
 	// document it joined (aiRefusedKey): not tried again until either changes.
 	aiRefused map[string]bool
@@ -469,6 +472,9 @@ func (d *daemon) rebuildApplier() {
 			if err := vault.WriteFile(d.cfg.XrayRenderPath, b); err != nil {
 				return err
 			}
+			// Kept on flash too: a reboot that cannot make it again runs
+			// it (resumeLastGoodRender).
+			d.keepLastGoodRender(b)
 			d.sup.SetAssetDir(assetDir)
 			d.st.RenderAssetDir = assetDir
 			if d.collector != nil {

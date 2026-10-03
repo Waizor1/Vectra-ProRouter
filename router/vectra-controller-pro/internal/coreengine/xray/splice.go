@@ -47,6 +47,10 @@ type SpliceResult struct {
 	// ProbeInterval the one the spliced document runs with.
 	ProviderProbeInterval time.Duration
 	ProbeInterval         time.Duration
+	// DroppedKeys lists the provider's top-level keys the router does not
+	// take, left out of the render (provider_guard.go): "api", "metrics",
+	// "env", "transport", "$schema", any key xray learns later.
+	DroppedKeys []string
 	// UserRules is what the owner's sites became (zero without any).
 	UserRules UserRulesResult
 	// DNS is what DNS through the tunnel became (zero when not asked for).
@@ -217,6 +221,12 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 		// Matched as xray matches keys, like everything below: a key in
 		// another spelling is still the one xray runs.
 		fk := foldKey(key)
+		if providerKeyDropped(key) {
+			// Not the router's to run (provider_guard.go): left out, the
+			// rest applied.
+			res.DroppedKeys = append(res.DroppedKeys, key)
+			continue
+		}
 
 		if !first {
 			out.WriteByte(',')
@@ -335,6 +345,11 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 			rewritten, err := prependDNSServers(nullAsObject(raw), dp.servers)
 			if err != nil {
 				return nil, res, err
+			}
+			if len(dp.res.DroppedHosts) > 0 {
+				if rewritten, err = dropHostsEntries(rewritten, dp.res.DroppedHosts); err != nil {
+					return nil, res, err
+				}
 			}
 			if opts.DNS.IPv4Only {
 				// The field found as xray finds it.

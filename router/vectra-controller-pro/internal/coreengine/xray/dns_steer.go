@@ -163,6 +163,9 @@ type DNSResult struct {
 	// Level is the policy level the DNS sessions run on (dnsLevelPolicy).
 	Level   uint32
 	Skipped string
+	// DroppedHosts are the provider's dns.hosts entries dropped: they would
+	// have answered a name the router resolves directly (provider_guard.go).
+	DroppedHosts []string
 }
 
 // dnsPlan is what DNS through the tunnel becomes in one provider document.
@@ -276,9 +279,8 @@ func planDNS(providerRaw []byte, o *DNSOptions) (dnsPlan, error) {
 	}
 	// The names the router resolves directly are its own: through the tunnel
 	// the router's lookups are xray's, and hosts answer before any server.
-	if h := dnsHostsConflict(doc.DNS, o.DirectDomains); h != "" {
-		return plan, fmt.Errorf("xray splice: the provider's dns.hosts entry %s would answer a name the router resolves directly — refusing the document", strconv.Quote(clip(h)))
-	}
+	// Such entries are dropped (Splice), the rest of hosts kept.
+	plan.res.DroppedHosts = dnsHostsConflicts(doc.DNS, o.DirectDomains)
 
 	hosts := nodeHosts(doc.Outbounds)
 	// The DNS servers' own names too: a DoH server named by its host is

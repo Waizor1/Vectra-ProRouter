@@ -55,3 +55,12 @@ code defect but is only a bad fixture. Generate one with `xray x25519`.
 
 Spliced through `vctl render` and accepted by Xray 26.3.27 with
 `XRAY_LOCATION_ASSET` pointing at the merged geo set: `Configuration OK.`
+
+## `entry-28-assets.json`
+
+`entry-00.json` with one top-level key added at its end, `assets`, shaped
+like the one real entry that carries it (1111's cached entry #28,
+2026-10-03; its value here is synthetic, under `provider.invalid`). vctl
+does not read it and xray does not need it: the splice drops it with a
+warning and applies the rest (`provider_guard.go`); r12's first guard
+refused the whole document for it.
