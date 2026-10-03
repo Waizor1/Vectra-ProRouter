@@ -133,7 +133,7 @@ export const routerCheckInRateLimiter = new MemoryWindowRateLimiter(
   60 * 1000,
 );
 export const routerJobResultRateLimiter = new MemoryWindowRateLimiter(
-  60,
+  120,
   60 * 1000,
 );
 
