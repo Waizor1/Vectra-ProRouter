@@ -76,8 +76,13 @@ type Env struct {
 	// OperatorConfig and ProviderDoc are what vctl renders its xray from, on
 	// /etc: with both there vctl is configured, and runs to carry traffic —
 	// switched on, it must load its data plane. Without them it waits for its
-	// first setup, and runs without one.
+	// first setup, and runs without one — unless it routes by PassWall2's
+	// configuration until then (AutoPassWall).
 	OperatorConfig, ProviderDoc string
+	// PassWallUCI and PassWallGenerator are PassWall2's configuration and
+	// its xray config generator: what vctl routes by, with no operator
+	// config yet, on a router it takes over from PassWall2 (AutoPassWall).
+	PassWallUCI, PassWallGenerator string
 
 	// Run runs a command (uci, an init script, nft); Output runs one and
 	// returns its stdout (ubus).
@@ -113,8 +118,11 @@ func RouterEnv() Env {
 		// The daemon's own defaults: the files it resumes its render from.
 		OperatorConfig: cfg.XrayConfigPath,
 		ProviderDoc:    cfg.ProviderConfigPath,
-		Run:            runCommand,
-		Output:         outputCommand,
+		// cmd/vctl's passwallUCIFile and passwallGenerator.
+		PassWallUCI:       "/etc/config/passwall2",
+		PassWallGenerator: "/usr/lib/lua/luci/passwall2/util_xray.lua",
+		Run:               runCommand,
+		Output:            outputCommand,
 		Daemon: func(ctx context.Context) bool {
 			c, cancel := context.WithTimeout(ctx, CallTime)
 			defer cancel()
@@ -334,6 +342,58 @@ func (env Env) loaded(ctx context.Context) bool {
 // Env.ProviderDoc).
 func (env Env) configured() bool {
 	return env.OperatorConfig != "" && env.ProviderDoc != "" && exists(env.OperatorConfig) && exists(env.ProviderDoc)
+}
+
+// routes: vctl, once up, is to carry the traffic — it is configured, or it
+// routes by PassWall2's configuration until it is (AutoPassWall) — so a
+// switch-on waits for its data plane, and gives the router back without it.
+func (env Env) routes() bool {
+	return env.configured() || AutoPassWall(routeSource(env.Config), env.OperatorConfig, env.PassWallUCI, env.PassWallGenerator)
+}
+
+// WouldIdle says that vctl, switched on now, would run without a data plane:
+// no operator config yet, and no PassWall2 configuration to route by — the
+// LAN's internet would go out directly, without a VPN, until the router is
+// linked. False when it cannot tell (no OperatorConfig named).
+func (env Env) WouldIdle() bool {
+	return env.OperatorConfig != "" && !exists(env.OperatorConfig) && !env.routes()
+}
+
+// AutoPassWall says whether vctl, started now, routes by PassWall2's own
+// configuration of itself — route_source 'passwall', chosen by vctl and not
+// by the owner (cmd/vctl/auto_route.go): it has no operator config yet
+// (operatorConfig, which the panel's apply writes, is not there), the owner
+// chose no route source (routeSource "": the provider's, the default), and
+// PassWall2's generator is installed, with a configuration that names the
+// global node to route by. PassWall2's own switch is not asked: the
+// takeover turns it off, and what counts is its configuration.
+func AutoPassWall(routeSource, operatorConfig, passwallUCI, generator string) bool {
+	if routeSource != "" || operatorConfig == "" || exists(operatorConfig) || passwallUCI == "" || generator == "" || !exists(generator) {
+		return false
+	}
+	f, err := uci.Load(passwallUCI)
+	if err != nil {
+		return false
+	}
+	g := f.OfType("global")
+	return len(g) > 0 && g[0].Get("node") != ""
+}
+
+// routeSource reads route_source of section main as render-xray-config.sh
+// passes it to vctl: 'passwall' or 'native', and anything else — 'provider',
+// nothing at all — the provider's, "".
+func routeSource(path string) string {
+	f, err := uci.Load(path)
+	if err != nil {
+		return ""
+	}
+	if main := f.Named("main"); main != nil {
+		switch v := main.Get("route_source"); v {
+		case "passwall", "native":
+			return v
+		}
+	}
+	return ""
 }
 
 // owed is what the init script's stop gives back: the PassWall stack — its

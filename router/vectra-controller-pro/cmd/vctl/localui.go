@@ -464,7 +464,10 @@ func (d *daemon) publishRuntime() {
 		rt.KillSwitch = d.desired.Inbounds.Tproxy.KillSwitch
 	}
 	rt.Entry = d.runningEntry()
-	d.claim.setLinked(d.desired != nil)
+	if d.autoRoute {
+		rt.AutoRouteSource = d.cfg.RouteSource
+	}
+	d.claim.setLinked(d.linked())
 	d.runtime.Store(rt)
 }
 

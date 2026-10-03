@@ -163,6 +163,11 @@ type Runtime struct {
 	// Claim is how this router can be linked to a Vectra account (ADR-0006);
 	// nil once it is linked (it has an operator config).
 	Claim *Claim `json:"claim,omitempty"`
+	// AutoRouteSource is the route source vctl chose itself until it is
+	// linked — "passwall": it routes by PassWall2's configuration, having
+	// taken the router over from it before any operator config came
+	// (cmd/vctl/auto_route.go); "" otherwise.
+	AutoRouteSource string `json:"autoRouteSource,omitempty"`
 	// Egress is where the router saw each exit really leave (tag → ISO
 	// country), from its exit check: «Турция» may leave in Poland.
 	Egress map[string]string `json:"egress,omitempty"`
