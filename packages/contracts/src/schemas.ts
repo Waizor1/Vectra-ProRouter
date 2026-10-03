@@ -813,6 +813,8 @@ export const routerInventorySchema = z.object({
   xrayVersion: z.string().optional(),
   selectedNodeId: z.string().nullable().optional(),
   selectedNodeLabel: z.string().nullable().optional(),
+  // vctl: whether the router's owner allows the panel's support shell.
+  remoteShell: z.boolean().optional(),
   nodeCount: z.number().int().nonnegative(),
   subscriptionCount: z.number().int().nonnegative(),
   configDigest: z.string().min(1).nullable().optional(),
