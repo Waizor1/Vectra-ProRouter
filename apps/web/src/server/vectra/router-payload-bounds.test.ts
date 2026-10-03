@@ -100,7 +100,17 @@ describe("boundJobResultPayload", () => {
     });
   });
 
-  it("keeps the first incident transitions and cuts long output", () => {
+  it("never cuts output inside a surrogate pair", () => {
+    // 15999 ASCII characters then an emoji: the cap falls between its halves.
+    const output = `${"a".repeat(15_999)}\u{1F600}tail`;
+    const { payload } = boundJobResultPayload({ stdout: output });
+    const kept = (payload as { stdout: string }).stdout;
+
+    expect(kept).toHaveLength(15_999);
+    expect(kept.endsWith("a")).toBe(true);
+  });
+
+  it("keeps the newest incident transitions and cuts long output", () => {
     const { payload, truncated } = boundJobResultPayload({
       incidentTransitions: Array.from(
         { length: ROUTER_INCIDENT_TRANSITIONS_MAX + 5 },
@@ -110,9 +120,11 @@ describe("boundJobResultPayload", () => {
     });
 
     expect(truncated).toEqual(["incidentTransitions", "stdout"]);
-    expect(
-      (payload as { incidentTransitions: unknown[] }).incidentTransitions,
-    ).toHaveLength(ROUTER_INCIDENT_TRANSITIONS_MAX);
+    const kept = (payload as { incidentTransitions: { i: number }[] })
+      .incidentTransitions;
+    expect(kept).toHaveLength(ROUTER_INCIDENT_TRANSITIONS_MAX);
+    expect(kept[0]).toEqual({ i: 5 });
+    expect(kept.at(-1)).toEqual({ i: ROUTER_INCIDENT_TRANSITIONS_MAX + 4 });
     expect((payload as { stdout: string }).stdout).toHaveLength(16_000);
   });
 });

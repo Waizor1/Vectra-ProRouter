@@ -491,6 +491,49 @@ describe("checkInRouter claim", () => {
     );
   });
 
+  // A dropped import still counts as sent: asking for it again would have
+  // the agent re-send >1 MB on every check-in and skip its self-heals.
+  it("does not ask again for an import it dropped as oversized", async () => {
+    scriptCheckIn(
+      routerRow({ importState: "awaiting_import", engineMode: "passwall" }),
+    );
+
+    const response = await checkInRouter(
+      ROUTER_ID,
+      checkInPayload({
+        inventory: inventory({ engineMode: "passwall" }),
+        passwallImport: {
+          config: { blob: "x".repeat(1024 * 1024 + 1) },
+          configDigest: "big-digest",
+        },
+      }),
+    );
+
+    expect(response.configSyncState.requestImport).toBe(false);
+  });
+
+  it("logs the same truncation at most once an hour", async () => {
+    const oversized = checkInPayload({
+      inventory: inventory({
+        configDigest: "digest-throttle",
+        rawSnapshot: { blob: "x".repeat(70_000) },
+      }),
+    });
+    scriptCheckIn();
+    await checkInRouter(ROUTER_ID, oversized);
+    const first = fake
+      .inserts(eventLog)
+      .filter((row) => row.type === "router.payload_truncated");
+    scriptCheckIn();
+    await checkInRouter(ROUTER_ID, oversized);
+    const second = fake
+      .inserts(eventLog)
+      .filter((row) => row.type === "router.payload_truncated");
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(0);
+  });
+
   it("binds confidential telemetry to the authenticated device key", async () => {
     scriptCheckIn(routerRow({ownerRef: "acct-42"}));
     await expect(checkInRouter(ROUTER_ID, checkInPayload({inventory: inventory({connect: {ownerRef: "acct-42", wifi: [{band: "5G", ssid: "Fake guest", password: "fake-guest-pass-123"}]}})}), {devicePublicKey: Buffer.alloc(32, 8).toString("base64")})).rejects.toThrow("device identity mismatch");

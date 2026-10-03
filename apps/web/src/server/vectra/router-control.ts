@@ -107,6 +107,7 @@ import {
   boundJobResultPayload,
   boundRouterCheckInPayload,
 } from "~/server/vectra/router-payload-bounds";
+import { MemoryWindowRateLimiter } from "~/server/vectra/public-install-rate-limit";
 
 type RouterRow = typeof routers.$inferSelect;
 type RevisionRow = typeof passwallDesiredRevisions.$inferSelect;
@@ -1538,16 +1539,30 @@ export function resolveRegisteredEngineMode(
 }
 
 // An authenticated router's oversized field is cut down, never refused (see
-// router-payload-bounds): the operator sees that it happened here.
+// router-payload-bounds): the operator sees that it happened here. A router
+// keeps sending the same oversized payload, so the same truncation (router,
+// endpoint, fields, config digest) is logged at most once an hour.
+const truncationLogThrottle = new MemoryWindowRateLimiter(1, 60 * 60 * 1000);
+
 async function logTruncatedRouterPayload(
   routerId: string,
   endpoint: "check_in" | "job_result",
   fields: string[],
-  passwallImportDropped = false,
+  options: { passwallImportDropped?: boolean; configDigest?: string | null } = {},
 ) {
   if (fields.length === 0) {
     return;
   }
+  const throttleKey = [
+    routerId,
+    endpoint,
+    fields.join(","),
+    options.configDigest ?? "",
+  ].join("|");
+  if (!truncationLogThrottle.consume(throttleKey).allowed) {
+    return;
+  }
+  const passwallImportDropped = options.passwallImportDropped ?? false;
   await db.insert(eventLog).values({
     routerId,
     type: "router.payload_truncated",
@@ -1565,12 +1580,10 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
   if (parsed.routerId !== routerId) {
     throw Object.assign(new Error("Router identity mismatch."), { status: 403 });
   }
-  await logTruncatedRouterPayload(
-    routerId,
-    "check_in",
-    bounded.truncated,
-    bounded.passwallImportDropped,
-  );
+  await logTruncatedRouterPayload(routerId, "check_in", bounded.truncated, {
+    passwallImportDropped: bounded.passwallImportDropped,
+    configDigest: parsed.inventory.configDigest,
+  });
 
   const [existingRouter] = await db
     .select()
@@ -1599,7 +1612,10 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
   const requestImport = shouldRequestImportOnCheckIn({
     importState: existingRouter.importState,
     connectOwned: isConnectOwnedXrayRouter(existingRouter),
-    hasPasswallImport: Boolean(parsed.passwallImport),
+    // A dropped oversized import still counts as sent: asking for it again
+    // would have the agent re-send it every check-in.
+    hasPasswallImport:
+      Boolean(parsed.passwallImport) || bounded.passwallImportDropped,
     reportedDigest: parsed.inventory.configDigest,
     authoritativeDigest: existingRouter.lastConfigDigest,
   });

@@ -49,6 +49,13 @@ function placeholder(value: unknown) {
   return { truncated: true, bytes: serializedBytes(value) };
 }
 
+/** The first `max` UTF-16 code units, never ending inside a surrogate pair. */
+function sliceCodeUnits(text: string, max: number) {
+  const last = text.charCodeAt(max - 1);
+  const end = last >= 0xd800 && last <= 0xdbff ? max - 1 : max;
+  return text.slice(0, end);
+}
+
 /** Keeps entries, in order, while the map still fits. */
 function truncateVersionMap(map: JsonObject) {
   const kept: JsonObject = {};
@@ -139,16 +146,16 @@ export function boundJobResultPayload(input: unknown) {
     Array.isArray(payload.incidentTransitions) &&
     payload.incidentTransitions.length > ROUTER_INCIDENT_TRANSITIONS_MAX
   ) {
+    // The newest are last, and they are the ones that describe now.
     payload.incidentTransitions = payload.incidentTransitions.slice(
-      0,
-      ROUTER_INCIDENT_TRANSITIONS_MAX,
+      -ROUTER_INCIDENT_TRANSITIONS_MAX,
     );
     truncated.push("incidentTransitions");
   }
   for (const field of ["stdout", "stderr"] as const) {
     const output = payload[field];
     if (typeof output === "string" && output.length > JOB_OUTPUT_MAX_CHARS) {
-      payload[field] = output.slice(0, JOB_OUTPUT_MAX_CHARS);
+      payload[field] = sliceCodeUnits(output, JOB_OUTPUT_MAX_CHARS);
       truncated.push(field);
     }
   }
