@@ -230,3 +230,29 @@ func TestTheDaemonsRunTunesTheRouter(t *testing.T) {
 		t.Fatal("the daemon's start did not tune the router")
 	}
 }
+
+// The daemon's start removes an update's package an earlier vctl left in
+// RAM — whatever the tune's switch says — and nothing that is not vctl's.
+func TestTheDaemonsStartRemovesAnUpdatesLeftoverPackage(t *testing.T) {
+	s := newTuneStand(t)
+	withTune(t, s, noTrial)
+	dir := t.TempDir()
+	s.env.TmpDir = dir
+	old := time.Now().Add(-time.Hour)
+	for _, name := range []string{controllerUpdateFile, "someone-elses.ipk"} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("pkg"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removeLeftoversAtStart()
+	if _, err := os.Stat(filepath.Join(dir, controllerUpdateFile)); !os.IsNotExist(err) {
+		t.Fatalf("the update's package stayed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "someone-elses.ipk")); err != nil {
+		t.Fatal("removed a file that is not vctl's")
+	}
+}

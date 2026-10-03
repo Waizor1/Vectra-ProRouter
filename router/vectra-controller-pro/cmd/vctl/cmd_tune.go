@@ -143,6 +143,22 @@ func tuneDetail(it tune.Item) string {
 	return now
 }
 
+// removeLeftoversAtStart removes vctl's own leftovers in RAM (internal/tune,
+// leftovers.go), one log line for them all.
+func removeLeftoversAtStart() {
+	removed, err := tune.RemoveLeftovers(tuneEnv(), time.Now())
+	if len(removed) > 0 {
+		var n int64
+		for _, l := range removed {
+			n += l.Bytes
+		}
+		logging.L().Info(fmt.Sprintf("removed vctl's leftovers in RAM: %d file(s), %.1f MiB", len(removed), float64(n)/(1<<20)))
+	}
+	if err != nil {
+		logging.L().Warn("could not remove vctl's leftovers in RAM", "err", err.Error())
+	}
+}
+
 // tuneAtStart runs the router's tune once the daemon is up, in the
 // background: it never holds the daemon up. It reads first and changes only
 // what differs, so after the first run it runs nothing. A trial waits for

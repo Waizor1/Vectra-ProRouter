@@ -812,7 +812,11 @@ func (d *daemon) updateController(ctx context.Context, job controlplane.Job) err
 		return d.submitFailure(ctx, job, "update_controller: "+err.Error()+" (nothing installed)")
 	}
 
-	dest := filepath.Join(os.TempDir(), "vectra-controller-pro-update.ipk")
+	dest := filepath.Join(os.TempDir(), controllerUpdateFile)
+	// Gone however the update ends: the package is 4.4 MB of a 234 MB
+	// router's RAM (/tmp), and it stayed there after every update. opkg is
+	// done with it once runControllerInstall returns.
+	defer os.Remove(dest)
 	gotSha, err := downloadFile(ctx, artifactURL, dest)
 	if err != nil {
 		return d.submitFailure(ctx, job, "download: "+err.Error())
@@ -849,6 +853,11 @@ func (d *daemon) updateController(ctx context.Context, job controlplane.Job) err
 	scheduleControllerRestart()
 	return errControllerRestartRequested
 }
+
+// controllerUpdateFile is where update_controller downloads the package, in
+// /tmp. internal/tune knows the name (its leftovers): a package an update
+// left behind is removed at the daemon's next start.
+const controllerUpdateFile = "vectra-controller-pro-update.ipk"
 
 // ---- helpers --------------------------------------------------------------
 

@@ -138,6 +138,10 @@ type Env struct {
 	SysModule  string // /sys/module
 	ModulesDir string // /lib/modules
 	Lock       string // one run at a time
+	// TmpDir and RunDir are where vctl's own leftovers are looked for
+	// (leftovers.go); "" looks nowhere.
+	TmpDir string // /tmp
+	RunDir string // /var/run/vectra-controller-pro
 
 	// Run runs a command; nil in an Env that only reads (Inspect).
 	Run func(ctx context.Context, name string, args ...string) error
@@ -159,6 +163,8 @@ func RouterEnv() Env {
 		SysModule:  "/sys/module",
 		ModulesDir: "/lib/modules",
 		Lock:       "/var/lock/vectra-tune.lock",
+		TmpDir:     "/tmp",
+		RunDir:     "/var/run/vectra-controller-pro",
 		Run:        runCommand,
 	}
 }

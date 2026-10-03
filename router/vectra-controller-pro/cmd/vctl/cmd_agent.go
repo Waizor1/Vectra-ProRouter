@@ -528,6 +528,12 @@ func (d *daemon) shutdownDataPlane() {
 
 func (d *daemon) run(ctx context.Context, once bool) error {
 	if !once {
+		// An update's package left in RAM by an earlier vctl (one that died
+		// mid-update, or a version that never removed it): vctl's own, so
+		// removed whatever the tune's switch says (tune.RemoveLeftovers:
+		// older than ten minutes and open in no process — no update runs
+		// before this daemon starts one).
+		removeLeftoversAtStart()
 		go d.serveUI(ctx)
 		go d.watchMemory(ctx)
 		go d.watchFailover(ctx)

@@ -254,7 +254,29 @@ func TestUpdateControllerInstallsWhatTheSignedFeedPublishes(t *testing.T) {
 			if s.hit(feedPath+"/Packages.gz") != 1 || s.hit(feedPath+"/Packages.sig") != 1 || s.hit(feedPath+"/Packages") != 0 {
 				t.Fatalf("not read as opkg reads a src/gz feed: %v", s.hits)
 			}
+			// The package does not stay in RAM once installed.
+			if _, err := os.Stat(filepath.Join(os.TempDir(), controllerUpdateFile)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the downloaded package stayed in /tmp: %v", err)
+			}
 		})
+	}
+}
+
+// A failed install leaves no package behind either.
+func TestUpdateControllerRemovesThePackageWhenTheInstallFails(t *testing.T) {
+	results := map[string][]controlplane.JobResultRequest{}
+	mu := &sync.Mutex{}
+	d := buildGuardTestDaemon(t, results, mu)
+	s := newSignedFeedStand(t)
+	runControllerInstall = func(context.Context, string) ([]byte, error) {
+		return []byte("Collected errors"), errors.New("exit status 255")
+	}
+	_ = d.executeJob(context.Background(), s.job("u2", nil), controlplane.CheckInResponse{})
+	if r, _ := lastResult(results, mu, "u2"); r.Status != "failure" {
+		t.Fatalf("result = %+v", r)
+	}
+	if _, err := os.Stat(filepath.Join(os.TempDir(), controllerUpdateFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the downloaded package stayed in /tmp after a failed install: %v", err)
 	}
 }
 
