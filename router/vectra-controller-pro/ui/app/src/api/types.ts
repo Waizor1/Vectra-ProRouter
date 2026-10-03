@@ -125,7 +125,9 @@ export type TuneState = Open<'applied' | 'already' | 'pending' | 'user_set' | 's
 
 /**
  * One thing the tune sets: `zram` (compressed swap; `value` its size in MiB),
- * `swappiness`, `vfs_cache_pressure`, `packet_steering`, `flow_offloading`.
+ * `swappiness`, `vfs_cache_pressure`, `packet_steering`, `flow_offloading`,
+ * `cron_loglevel`, `tmp_leftovers` (vctl's own leftovers in RAM removed;
+ * `value` the MiB found, null when none).
  * `applied`: the tune set it; `already`: it was so; `user_set`: the owner's
  * own choice, left alone; `skipped`: not for this router (`reason`).
  */

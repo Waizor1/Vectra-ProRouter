@@ -274,6 +274,8 @@ not. UCI `vectra-controller-pro.main.tune` '0': the tune changes nothing.
 | `vfs_cache_pressure` | `vm.vfs_cache_pressure` 200 — `lowmem` only | the kernel's value |
 | `packet_steering` | `network.@globals[0].packet_steering` '1': every core takes the network's receive work — 2 cores or more | the option, `null` unset |
 | `flow_offloading` | `firewall.@defaults[0].flow_offloading` '1': software flow offloading, never hardware | the option, `null` unset |
+| `cron_loglevel` | `system.@system[0].cronloglevel` '9': busybox crond logs its warnings, not every job it starts into logread's 64 KB ring; applied with cron's reload | the option, `null` unset |
+| `tmp_leftovers` | vctl's own leftovers in RAM removed: an update's package (`/tmp/vectra-controller-pro-update.ipk`, `/tmp/vectra-controller-pro-auto-*.ipk`) and the vault's temp files in `/var/run/vectra-controller-pro` — by these exact names only, older than 10 minutes and open in no process. Never backed up (nothing to put back), never `user_set` | the MiB of such leftovers found, `null` when none |
 
 `target`: what the tune sets (`on` for `zram`). `state`: `applied` (the tune
 set it, and it is so), `already` (so before the tune), `pending` (not so yet:
@@ -281,7 +283,10 @@ the next run sets it), `user_set` (set otherwise on purpose — an option set
 to anything else, a sysctl in a file of the owner's own, zram switched off
 after the tune switched it on: left alone), `skipped` (`reason` says why).
 `reason` (`null` when none): `off` (the switch), `enough_ram`, `one_core`,
-`not_installed` (no zram-swap), `no_swap`, `not_supported` (no
+`not_installed` (no zram-swap), `no_kernel_module` (zram-swap, but no zram
+module for the running kernel — kmod-zram is for another one: the swap
+cannot start), `no_cron` (no /etc/init.d/cron), `no_system` (no system
+section in /etc/config/system), `no_swap`, `not_supported` (no
 /etc/init.d/packet_steering), `no_fw4`, `no_defaults`, `hw_offload` (the
 owner's `flow_offloading_hw` waits for software offloading: the tune would
 switch hardware offloading on with it), `no_kernel_support` (no
@@ -293,6 +298,15 @@ refused its ruleset with it: taken back), `unreadable`, `failed` (with
 vm.min_free_kbytes is never the tune's. The firewall is reloaded live (fw4
 replaces its own `inet fw4` table in one transaction; vctl's `inet vctl` and
 its policy route are untouched), and netifd never is.
+
+`vctl tune plan` (and `--json`, its `analysis` object) adds where the
+router's memory and flash go, read only and never in `status.tune` (it walks
+every process and /root): `memAvailableMiB`, `swapTotalMiB`, `swapUsedMiB`,
+`topRss` (the five processes holding the most RAM: `name`, `pid`,
+`rssMiB`), `overlayFreeMiB` (`null`: unread) and `reclaimable` — `.ipk`
+files in /root and one level down, and directories there named `*staging*`
+(`path`, `mib`, `kind`: `package` or `staging`): the operator's to remove,
+never vctl's.
 
 ## Language
 

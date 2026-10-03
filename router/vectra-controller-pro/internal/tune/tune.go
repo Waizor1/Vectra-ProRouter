@@ -2,7 +2,7 @@
 // every start of the daemon vctl looks at what the router is — its RAM, its
 // cores, its swap, what the kernel and UCI hold now, what someone set on
 // purpose — and sets what gets the most out of this hardware while it stays
-// a working router. Five items:
+// a working router. Seven items:
 //
 //   - zram: a router with less than 384 MiB of RAM (the previous agent's
 //     line, 91_vectra_low_mem_profile) runs compressed swap — zram-swap, a
@@ -26,6 +26,15 @@
 //     offloading (flow_offloading_hw): unprovable without a wired rig.
 //     Applied with fw4's reload, which is safe under vctl's traffic (see
 //     applyOffloading).
+//   - cron_loglevel: busybox crond logs every job it runs, at err level, into
+//     logread's 64 KB ring — vctl's dead-man and watchdog every minute push
+//     out what the log is kept for. system.@system[0].cronloglevel '9' keeps
+//     only its warnings, applied with cron's own reload.
+//   - tmp_leftovers: vctl's own leftovers in RAM (/tmp): a downloaded update
+//     package, a crash-left temp file of the vault (leftovers.go) — by their
+//     exact names, older than ten minutes and open in no process. Nothing
+//     else is ever removed, and nothing is backed up: they are vctl's, and
+//     there is nothing to put back.
 //
 // What someone set explicitly stays theirs (user_set): an option set to
 // anything else, a sysctl set in a file of their own, zram switched off
@@ -34,7 +43,8 @@
 // left it. vctl-controller-pro.main.tune '0' makes Apply change nothing.
 //
 // Inspect only reads files: it is what `vctl tune plan` prints and what the
-// router UI's status carries, at every call.
+// router UI's status carries, at every call. `vctl tune plan` adds Analyze
+// (analysis.go): where the router's memory and flash go, read only.
 package tune
 
 import (
@@ -63,6 +73,8 @@ const (
 	ItemVFSCachePressure = "vfs_cache_pressure"
 	ItemPacketSteering   = "packet_steering"
 	ItemFlowOffloading   = "flow_offloading"
+	ItemCronLogLevel     = "cron_loglevel"
+	ItemTmpLeftovers     = "tmp_leftovers"
 )
 
 // An item's state.
@@ -95,7 +107,14 @@ const (
 	ReasonCheckFailed     = "check_failed"      // fw4 refused the ruleset with it
 	ReasonUnreadable      = "unreadable"        // what it is set in could not be read
 	ReasonFailed          = "failed"            // the last run's change failed
+	ReasonNoKernelModule  = "no_kernel_module"  // zram-swap, but no zram module for the running kernel
+	ReasonNoCron          = "no_cron"           // no /etc/init.d/cron
+	ReasonNoSystem        = "no_system"         // no system section in /etc/config/system
 )
+
+// CronLogLevel is busybox crond's level the tune sets: 9 logs its warnings
+// and errors, not every job it starts (8, its default, does).
+const CronLogLevel = "9"
 
 // Profiles.
 const (
@@ -142,6 +161,9 @@ type Env struct {
 	// (leftovers.go); "" looks nowhere.
 	TmpDir string // /tmp
 	RunDir string // /var/run/vectra-controller-pro
+	// Overlay and RootDir are only read, by Analyze.
+	Overlay string // /overlay
+	RootDir string // /root
 
 	// Run runs a command; nil in an Env that only reads (Inspect).
 	Run func(ctx context.Context, name string, args ...string) error
@@ -165,6 +187,8 @@ func RouterEnv() Env {
 		Lock:       "/var/lock/vectra-tune.lock",
 		TmpDir:     "/tmp",
 		RunDir:     "/var/run/vectra-controller-pro",
+		Overlay:    "/overlay",
+		RootDir:    "/root",
 		Run:        runCommand,
 	}
 }
@@ -204,6 +228,9 @@ type Plan struct {
 	MemTotalMiB int    `json:"memTotalMiB"`
 	Cores       int    `json:"cores"`
 	Items       []Item `json:"items"`
+	// Analysis is where the router's memory and flash go (Analyze); only
+	// `vctl tune plan` reads it, never the router UI's status.
+	Analysis *Analysis `json:"analysis,omitempty"`
 }
 
 // Item is the plan's item id.
@@ -300,14 +327,23 @@ type Facts struct {
 	ZramInstalled bool   // /etc/init.d/zram
 	ZramEnabled   bool   // its boot link
 	ZramKB        uint64 // the zram swap up now; 0: none
+	// ZramModule: the running kernel has zram (loaded, built in, or a module
+	// of its own release); true when that cannot be told.
+	ZramModule bool
 	// Sysctl is the kernel's values of the tune's keys (absent: unreadable).
 	Sysctl map[string]string
 	// UserSysctl is what files other than vctl's set, by key: the one the
 	// boot applies last.
-	UserSysctl         map[string]setting
-	Network            uciOption // network.@globals[0].packet_steering
-	Firewall           uciOption // firewall.@defaults[0].flow_offloading
-	OffloadHW          string    // firewall.@defaults[0].flow_offloading_hw
+	UserSysctl map[string]setting
+	Network    uciOption // network.@globals[0].packet_steering
+	Firewall   uciOption // firewall.@defaults[0].flow_offloading
+	OffloadHW  string    // firewall.@defaults[0].flow_offloading_hw
+	System     uciOption // system.@system[0].cronloglevel
+	CronInit   bool      // /etc/init.d/cron
+	// Leftovers are vctl's own leftovers found (leftovers.go); LeftoversRead
+	// is false when the Env names nowhere to look.
+	Leftovers          []Leftover
+	LeftoversRead      bool
 	PacketSteeringInit bool
 	Fw4                bool
 	OffloadModule      bool
@@ -330,6 +366,7 @@ func Detect(env Env) Facts {
 	}
 	f.ZramInstalled = executable(filepath.Join(env.InitDir, "zram"))
 	f.ZramEnabled = bootLink(env.RCDir, "zram")
+	f.ZramModule = zramModule(env)
 	f.Sysctl = liveSysctl(env)
 	f.UserSysctl = userSysctl(env)
 
@@ -339,6 +376,11 @@ func Detect(env Env) Facts {
 	if fw != nil {
 		f.OffloadHW = fw.Options["flow_offloading_hw"]
 	}
+	f.System, _ = firstOption(filepath.Join(env.ConfigDir, "system"), "system", "cronloglevel")
+	f.CronInit = executable(filepath.Join(env.InitDir, "cron"))
+	if env.TmpDir != "" || env.RunDir != "" {
+		f.Leftovers, f.LeftoversRead = Leftovers(env, time.Now()), true
+	}
 	f.PacketSteeringInit = executable(filepath.Join(env.InitDir, "packet_steering"))
 	f.Fw4 = executable(env.Fw4)
 	f.OffloadModule = exists(filepath.Join(env.SysModule, "nft_flow_offload"))
@@ -346,7 +388,7 @@ func Detect(env Env) Facts {
 		ko, _ := filepath.Glob(filepath.Join(env.ModulesDir, "*", "nft_flow_offload.ko"))
 		f.OffloadModule = len(ko) > 0
 	}
-	for _, cfg := range []string{"network", "firewall"} {
+	for _, cfg := range []string{"network", "firewall", "system"} {
 		if st, err := os.Stat(filepath.Join(env.UCISaveDir, cfg)); err == nil && st.Size() > 0 {
 			f.Pending[cfg] = true
 		}
@@ -368,7 +410,7 @@ func plan(f Facts) Plan {
 	for _, s := range sysctlSpecs {
 		p.Items = append(p.Items, sysctlItem(f, low, s))
 	}
-	p.Items = append(p.Items, steeringItem(f), offloadingItem(f))
+	p.Items = append(p.Items, steeringItem(f), offloadingItem(f), cronItem(f), leftoversItem(f))
 	if !f.On {
 		for i := range p.Items {
 			if p.Items[i].State == Pending {
@@ -404,6 +446,11 @@ func zramItem(f Facts, low bool) Item {
 		it.State, it.Reason = Skipped, ReasonNoSwap
 	case !f.ZramInstalled:
 		it.State, it.Reason = Skipped, ReasonNotInstalled
+	case f.ZramKB == 0 && !f.ZramModule:
+		// zram-swap is there, and kmod-zram is not for the running kernel
+		// (a kernel upgraded past its package): a start would fail at every
+		// run. Said as it is, for the operator.
+		it.State, it.Reason = Skipped, ReasonNoKernelModule
 	case f.Backup.owner(ItemZram) && f.ZramEnabled && f.ZramKB > 0:
 		it.State = Already
 	case f.Backup.owner(ItemZram) || (f.ours(ItemZram) && !f.ZramEnabled):
@@ -490,6 +537,47 @@ func offloadingItem(f Facts) Item {
 	return it
 }
 
+func cronItem(f Facts) Item {
+	it := Item{ID: ItemCronLogLevel, Target: CronLogLevel, Value: f.System.Value}
+	switch {
+	case !f.CronInit:
+		it.State, it.Reason = Skipped, ReasonNoCron
+	case !f.System.Readable:
+		it.State, it.Reason = Skipped, ReasonUnreadable
+	case f.System.Section == "":
+		it.State, it.Reason = Skipped, ReasonNoSystem
+	case f.System.Value != nil && strings.TrimSpace(*f.System.Value) == CronLogLevel:
+		it.State = appliedOr(f.ours(ItemCronLogLevel))
+	case f.System.Value != nil:
+		// Any level set is someone's choice — LuCI's «Cron Log Level» among
+		// them.
+		it.State = UserSet
+	case f.Pending["system"]:
+		it.State, it.Reason = Skipped, ReasonUCIPending
+	default:
+		it.State = Pending
+	}
+	return it
+}
+
+// leftoversItem: Value is the MiB of vctl's own leftovers found, nil when
+// none. It is never the owner's — they are vctl's files — and never backed
+// up: a removed leftover has nothing to put back.
+func leftoversItem(f Facts) Item {
+	it := Item{ID: ItemTmpLeftovers, Target: "0"}
+	if !f.LeftoversRead {
+		it.State, it.Reason = Skipped, ReasonUnreadable
+		return it
+	}
+	if len(f.Leftovers) == 0 {
+		it.State = Already
+		return it
+	}
+	v := mib(leftoverBytes(f.Leftovers))
+	it.Value, it.State = &v, Pending
+	return it
+}
+
 // Apply sets what the plan finds pending, and backs every change up first.
 // One run at a time: it waits for another until ctx ends (ErrBusy).
 func Apply(ctx context.Context, env Env) (Result, error) {
@@ -520,6 +608,8 @@ func Apply(ctx context.Context, env Env) (Result, error) {
 	a.sysctl(p)
 	a.steering(p)
 	a.offloading(p)
+	a.cron(p)
+	a.leftovers(p)
 
 	res := Result{Plan: plan(Detect(env)), Changes: a.changes, Failed: a.failed}
 	for id, reason := range a.outcome {
@@ -775,6 +865,49 @@ func (a *applier) offloading(p Plan) {
 	}
 }
 
+// cron sets busybox crond's log level, and has cron reload: procd starts
+// crond again with the new -l (its command line changed); nothing else on
+// the router restarts.
+func (a *applier) cron(p Plan) {
+	if it, _ := p.Item(ItemCronLogLevel); it.State != Pending {
+		return
+	}
+	opt := "system." + a.f.System.Section + ".cronloglevel"
+	if !a.note(ItemCronLogLevel, Saved{Key: opt, Set: CronLogLevel}) {
+		return
+	}
+	for _, c := range [][]string{{"-q", "set", opt + "=" + CronLogLevel}, {"-q", "commit", "system"}} {
+		if err := a.run("uci", c...); err != nil {
+			if revertErr := a.run("uci", "-q", "revert", "system"); revertErr != nil {
+				a.fail(ItemCronLogLevel, ReasonFailed, fmt.Errorf("%v; revert failed (backup kept): %w", err, revertErr))
+				return
+			}
+			a.forget(ItemCronLogLevel)
+			a.fail(ItemCronLogLevel, ReasonFailed, err)
+			return
+		}
+	}
+	a.change(ItemCronLogLevel, opt, "unset", CronLogLevel)
+	if err := a.run(filepath.Join(a.env.InitDir, "cron"), "reload"); err != nil {
+		a.failed = append(a.failed, Failure{ID: ItemCronLogLevel, Err: "set; not applied until the next boot: " + err.Error()})
+	}
+}
+
+// leftovers removes vctl's own leftovers found (leftovers.go): one change
+// for all of them, with the MiB freed.
+func (a *applier) leftovers(p Plan) {
+	if it, _ := p.Item(ItemTmpLeftovers); it.State != Pending {
+		return
+	}
+	removed, err := RemoveLeftovers(a.env, time.Now())
+	if len(removed) > 0 {
+		a.change(ItemTmpLeftovers, "vctl's leftovers in RAM", fmt.Sprintf("%d file(s), %s MiB", len(removed), mib(leftoverBytes(removed))), "removed")
+	}
+	if err != nil {
+		a.fail(ItemTmpLeftovers, ReasonFailed, err)
+	}
+}
+
 // Undo puts back what the tune changed and is still as it left it — what
 // was changed since is left alone — and takes its own sysctl file and the
 // backup away. The zram swap is not switched off under a running router
@@ -826,6 +959,7 @@ func Undo(ctx context.Context, env Env) (Result, error) {
 	}{
 		{ItemPacketSteering, "network", "packet_steering", f.Network},
 		{ItemFlowOffloading, "firewall", "firewall", f.Firewall},
+		{ItemCronLogLevel, "system", "cron", f.System},
 	} {
 		s, ok := a.backup.Items[u.id]
 		if !ok {
@@ -1128,3 +1262,32 @@ func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
+
+// zramModule: the running kernel has zram — loaded (/sys/module/zram), built
+// in, or a module of its own release under /lib/modules. When the running
+// release cannot be read it says true: nothing is concluded from nothing.
+func zramModule(env Env) bool {
+	if exists(filepath.Join(env.SysModule, "zram")) {
+		return true
+	}
+	raw, err := os.ReadFile(filepath.Join(env.ProcDir, "sys", "kernel", "osrelease"))
+	release := strings.TrimSpace(string(raw))
+	if err != nil || release == "" || strings.ContainsAny(release, `/\`) {
+		return true
+	}
+	dir := filepath.Join(env.ModulesDir, release)
+	if exists(filepath.Join(dir, "zram.ko")) {
+		return true
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "modules.builtin")); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if filepath.Base(strings.TrimSpace(line)) == "zram.ko" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// mib is bytes in MiB, one decimal.
+func mib(b int64) string { return strconv.FormatFloat(float64(b)/(1<<20), 'f', 1, 64) }

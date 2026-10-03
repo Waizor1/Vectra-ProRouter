@@ -36,7 +36,8 @@ type router struct {
 
 // newRouter is an AX3000T as a clean vctl install finds it: 234 MiB, two
 // cores, zram-swap installed and off, the kernel's defaults, packet steering
-// and flow offloading never set, fw4 with the offload module.
+// and flow offloading never set, fw4 with the offload module, crond at its
+// default level, nothing of vctl's left in /tmp.
 func newRouter(t *testing.T) *router {
 	t.Helper()
 	dir := t.TempDir()
@@ -55,6 +56,10 @@ func newRouter(t *testing.T) *router {
 		SysModule:  filepath.Join(dir, "sys/module"),
 		ModulesDir: filepath.Join(dir, "lib/modules"),
 		Lock:       filepath.Join(dir, "var/lock/vectra-tune.lock"),
+		TmpDir:     filepath.Join(dir, "tmp"),
+		RunDir:     filepath.Join(dir, "var/run/vectra-controller-pro"),
+		Overlay:    filepath.Join(dir, "overlay"),
+		RootDir:    filepath.Join(dir, "root"),
 	}
 	r.env.Run = r.run
 	r.write("proc/meminfo", "MemTotal:         239792 kB\nMemFree:           60000 kB\nMemAvailable:      90000 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n")
@@ -72,6 +77,13 @@ func newRouter(t *testing.T) *router {
 	r.write("etc/config/network", "config interface 'loopback'\n\toption device 'lo'\n\nconfig globals 'globals'\n\toption ula_prefix 'auto'\n")
 	r.write("etc/config/firewall", "config defaults\n\toption syn_flood '1'\n\toption input 'REJECT'\n\toption forward 'REJECT'\n\nconfig zone\n\toption name 'lan'\n")
 	r.write("etc/config/vectra-controller-pro", "config controller 'main'\n\toption enabled '1'\n")
+	r.write("etc/config/system", "config system\n\toption hostname 'OpenWrt'\n\toption log_size '64'\n")
+	r.exec("etc/init.d/cron")
+	for _, d := range []string{"tmp", "var/run/vectra-controller-pro", "overlay", "root"} {
+		if err := os.MkdirAll(r.path(d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return r
 }
 
@@ -325,7 +337,8 @@ func TestALowmemRouterGetsTheWholeTune(t *testing.T) {
 	if p.Profile != Lowmem || !p.On || p.MemTotalMiB != 234 || p.Cores != 2 {
 		t.Fatalf("plan: %+v", p)
 	}
-	want := map[string]string{ItemZram: Pending, ItemSwappiness: Pending, ItemVFSCachePressure: Pending, ItemPacketSteering: Pending, ItemFlowOffloading: Pending}
+	want := map[string]string{ItemZram: Pending, ItemSwappiness: Pending, ItemVFSCachePressure: Pending, ItemPacketSteering: Pending, ItemFlowOffloading: Pending,
+		ItemCronLogLevel: Pending, ItemTmpLeftovers: Already}
 	if got := states(p); !reflect.DeepEqual(got, want) {
 		t.Fatalf("before: %v", got)
 	}
@@ -345,11 +358,15 @@ func TestALowmemRouterGetsTheWholeTune(t *testing.T) {
 		"uci -q commit firewall",
 		"/sbin/fw4 -q check",
 		"/etc/init.d/firewall reload",
+		"uci -q set system.@system[0].cronloglevel=9",
+		"uci -q commit system",
+		"/etc/init.d/cron reload",
 	}
 	if !reflect.DeepEqual(r.calls, wantCalls) {
 		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(r.calls, "\n"), strings.Join(wantCalls, "\n"))
 	}
-	all := map[string]string{ItemZram: Applied, ItemSwappiness: Applied, ItemVFSCachePressure: Applied, ItemPacketSteering: Applied, ItemFlowOffloading: Applied}
+	all := map[string]string{ItemZram: Applied, ItemSwappiness: Applied, ItemVFSCachePressure: Applied, ItemPacketSteering: Applied, ItemFlowOffloading: Applied,
+		ItemCronLogLevel: Applied, ItemTmpLeftovers: Already}
 	if got := states(res.Plan); !reflect.DeepEqual(got, all) {
 		t.Fatalf("after: %v", got)
 	}
@@ -366,6 +383,7 @@ func TestALowmemRouterGetsTheWholeTune(t *testing.T) {
 		"vm.vfs_cache_pressure: 100 -> 200",
 		"network.globals.packet_steering: unset -> 1",
 		"firewall.@defaults[0].flow_offloading: unset -> 1",
+		"system.@system[0].cronloglevel: unset -> 9",
 	}
 	if !reflect.DeepEqual(lines, wantLines) || len(res.Failed) != 0 {
 		t.Fatalf("changes:\n%s\nfailed: %v", strings.Join(lines, "\n"), res.Failed)
@@ -383,6 +401,7 @@ func TestALowmemRouterGetsTheWholeTune(t *testing.T) {
 		ItemVFSCachePressure: {Key: "vm.vfs_cache_pressure", Was: str("100"), Set: "200"},
 		ItemPacketSteering:   {Key: "network.globals.packet_steering", Set: "1"},
 		ItemFlowOffloading:   {Key: "firewall.@defaults[0].flow_offloading", Set: "1"},
+		ItemCronLogLevel:     {Key: "system.@system[0].cronloglevel", Set: "9"},
 	}
 	if !reflect.DeepEqual(b.Items, wantBackup) {
 		t.Fatalf("backup: %+v", b.Items)
@@ -422,8 +441,10 @@ func TestWhatWasAlreadySoIsLeftAndNotBackedUp(t *testing.T) {
 	r.write("proc/sys/vm/vfs_cache_pressure", "200\n")
 	r.write("etc/config/network", "config globals 'globals'\n\toption packet_steering '2'\n")
 	r.write("etc/config/firewall", "config defaults\n\toption flow_offloading 'yes'\n")
+	r.write("etc/config/system", "config system\n\toption cronloglevel '9'\n")
 	res := r.apply()
-	want := map[string]string{ItemZram: Already, ItemSwappiness: Already, ItemVFSCachePressure: Already, ItemPacketSteering: Already, ItemFlowOffloading: Already}
+	want := map[string]string{ItemZram: Already, ItemSwappiness: Already, ItemVFSCachePressure: Already, ItemPacketSteering: Already, ItemFlowOffloading: Already,
+		ItemCronLogLevel: Already, ItemTmpLeftovers: Already}
 	if got := states(res.Plan); !reflect.DeepEqual(got, want) {
 		t.Fatalf("states: %v", got)
 	}
@@ -441,8 +462,11 @@ func TestTheOwnersExplicitChoicesStay(t *testing.T) {
 	r.write("etc/sysctl.conf", "# mine\nvm.swappiness = 10\n")
 	r.write("proc/sys/vm/swappiness", "10\n")
 	r.write("etc/sysctl.d/50-mine.conf", "vm/vfs_cache_pressure=50\n")
+	// LuCI's «Cron Log Level» left at «Normal» is a level set, too.
+	r.write("etc/config/system", "config system\n\toption cronloglevel '8'\n")
 	p := Inspect(r.env)
-	want := map[string]string{ItemZram: Pending, ItemSwappiness: UserSet, ItemVFSCachePressure: UserSet, ItemPacketSteering: UserSet, ItemFlowOffloading: UserSet}
+	want := map[string]string{ItemZram: Pending, ItemSwappiness: UserSet, ItemVFSCachePressure: UserSet, ItemPacketSteering: UserSet, ItemFlowOffloading: UserSet,
+		ItemCronLogLevel: UserSet, ItemTmpLeftovers: Already}
 	if got := states(p); !reflect.DeepEqual(got, want) {
 		t.Fatalf("states: %v", got)
 	}
@@ -453,7 +477,7 @@ func TestTheOwnersExplicitChoicesStay(t *testing.T) {
 	}
 	r.apply()
 	for _, c := range r.calls {
-		if strings.Contains(c, "uci") || strings.Contains(c, "sysctl") || strings.Contains(c, "firewall") || strings.Contains(c, "packet_steering") {
+		if strings.Contains(c, "uci") || strings.Contains(c, "sysctl") || strings.Contains(c, "firewall") || strings.Contains(c, "packet_steering") || strings.Contains(c, "cron") {
 			t.Fatalf("touched an owner's choice: %v", r.calls)
 		}
 	}
@@ -511,7 +535,8 @@ func TestARouterWithRAMToSpareKeepsItsMemorySettings(t *testing.T) {
 	r.write("proc/meminfo", "MemTotal:         497000 kB\nMemAvailable:     300000 kB\n")
 	res := r.apply()
 	want := map[string]string{ItemZram: Skipped + "/" + ReasonEnoughRAM, ItemSwappiness: Skipped + "/" + ReasonEnoughRAM,
-		ItemVFSCachePressure: Skipped + "/" + ReasonEnoughRAM, ItemPacketSteering: Applied, ItemFlowOffloading: Applied}
+		ItemVFSCachePressure: Skipped + "/" + ReasonEnoughRAM, ItemPacketSteering: Applied, ItemFlowOffloading: Applied,
+		ItemCronLogLevel: Applied, ItemTmpLeftovers: Already}
 	if got := states(res.Plan); !reflect.DeepEqual(got, want) || res.Plan.Profile != Standard {
 		t.Fatalf("%s: %v", res.Plan.Profile, got)
 	}
@@ -553,7 +578,8 @@ func TestTheSwitchOffChangesNothing(t *testing.T) {
 		t.Fatalf("calls: %v, on %v", r.calls, res.Plan.On)
 	}
 	want := map[string]string{ItemZram: Skipped + "/" + ReasonOff, ItemSwappiness: Skipped + "/" + ReasonOff,
-		ItemVFSCachePressure: Skipped + "/" + ReasonOff, ItemPacketSteering: Already, ItemFlowOffloading: Skipped + "/" + ReasonOff}
+		ItemVFSCachePressure: Skipped + "/" + ReasonOff, ItemPacketSteering: Already, ItemFlowOffloading: Skipped + "/" + ReasonOff,
+		ItemCronLogLevel: Skipped + "/" + ReasonOff, ItemTmpLeftovers: Already}
 	if got := states(res.Plan); !reflect.DeepEqual(got, want) {
 		t.Fatalf("states: %v", got)
 	}
@@ -577,6 +603,9 @@ func TestUndoPutsBackWhatTheTuneChanged(t *testing.T) {
 		"uci -q delete firewall.@defaults[0].flow_offloading",
 		"uci -q commit firewall",
 		"/etc/init.d/firewall reload",
+		"uci -q delete system.@system[0].cronloglevel",
+		"uci -q commit system",
+		"/etc/init.d/cron reload",
 	}
 	if !reflect.DeepEqual(r.calls, want) {
 		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(r.calls, "\n"), strings.Join(want, "\n"))

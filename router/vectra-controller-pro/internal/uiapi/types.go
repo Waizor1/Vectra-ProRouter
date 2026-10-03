@@ -49,13 +49,15 @@ type Tune struct {
 }
 
 // TuneItem is one thing the tune sets: zram, swappiness,
-// vfs_cache_pressure, packet_steering, flow_offloading.
+// vfs_cache_pressure, packet_steering, flow_offloading, cron_loglevel,
+// tmp_leftovers.
 type TuneItem struct {
 	ID string `json:"id"`
 	// State: applied, already, pending, user_set, skipped.
 	State string `json:"state"`
 	// Value is what the router has now: the zram swap's MiB, a sysctl's
-	// value, a UCI option's; null when none or unset.
+	// value, a UCI option's, the MiB of vctl's leftovers; null when none or
+	// unset.
 	Value  *string `json:"value"`
 	Target string  `json:"target"`
 	// Reason is why it is skipped (or not set yet); null when there is none.
