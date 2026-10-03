@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import { env } from "~/env";
 import {
+  RescueActionRefusedError,
   queueRescueCaseLogCollection,
   queueRescueCaseReconnectProxy,
   queueRescueCaseSafeRepair,
@@ -137,6 +138,9 @@ export async function POST(request: Request) {
       text: error instanceof Error ? error.message : "Action failed.",
       alert: true,
     }).catch(() => null);
+    if (error instanceof RescueActionRefusedError) {
+      return reject(error.status, error.message);
+    }
     return reject(400, "action failed");
   }
 

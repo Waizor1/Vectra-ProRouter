@@ -208,7 +208,11 @@ function rescueCaseUrl(caseId: string) {
   ).toString();
 }
 
-export function buildTelegramRescueButtons(caseId: string, now = new Date()) {
+export function buildTelegramRescueButtons(
+  caseId: string,
+  now = new Date(),
+  options: { collectLogs?: boolean } = {},
+) {
   const expiresAt = new Date(now.getTime() + 60 * 60 * 1000);
   const rowOne: TelegramButton[] = [
     {
@@ -231,12 +235,14 @@ export function buildTelegramRescueButtons(caseId: string, now = new Date()) {
     }),
   ].filter((button): button is TelegramButton => button !== null);
   const rowThree = [
-    buildCallbackButton({
-      text: "Collect logs",
-      caseId,
-      action: "collect_logs",
-      expiresAt,
-    }),
+    options.collectLogs === false
+      ? null
+      : buildCallbackButton({
+          text: "Collect logs",
+          caseId,
+          action: "collect_logs",
+          expiresAt,
+        }),
     buildCallbackButton({
       text: "Silence 1h",
       caseId,
@@ -283,6 +289,8 @@ export async function sendTelegramRescueMessage(args: {
   caseId: string;
   text: string;
   includeButtons?: boolean;
+  /** False hides "Collect logs" (a vctl router never runs it). */
+  collectLogs?: boolean;
 }): Promise<TelegramSendResult> {
   if (env.VECTRA_TELEGRAM_DRY_RUN) {
     return {
@@ -303,7 +311,11 @@ export async function sendTelegramRescueMessage(args: {
   }
 
   const replyMarkup = args.includeButtons
-    ? { inline_keyboard: buildTelegramRescueButtons(args.caseId) }
+    ? {
+        inline_keyboard: buildTelegramRescueButtons(args.caseId, new Date(), {
+          collectLogs: args.collectLogs,
+        }),
+      }
     : undefined;
   let delivered = 0;
   for (const chatId of parseTelegramAllowedChatIds()) {

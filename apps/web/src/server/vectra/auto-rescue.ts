@@ -1042,6 +1042,11 @@ async function ensureRescueCase(
   );
 }
 
+/** A rescue action refused for a reason the operator is meant to read (400). */
+export class RescueActionRefusedError extends Error {
+  readonly status = 400;
+}
+
 export async function queueRescueCaseLogCollection(
   caseId: string,
   database: DatabaseClient = db,
@@ -1077,7 +1082,7 @@ export async function queueRescueCaseLogCollection(
     if (options.unattended) {
       return null;
     }
-    throw new Error("vctl routers: logs come from vctl");
+    throw new RescueActionRefusedError("vctl routers: logs come from vctl");
   }
 
   // Diagnostics are evidence gathering, not remediation: a few log dumps
@@ -1422,10 +1427,17 @@ async function escalateRescueCase(
     return rescueCase;
   }
 
+  // vctl never runs collect_router_logs: no button for it.
+  const [router] = await database
+    .select({ engineMode: routers.engineMode })
+    .from(routers)
+    .where(eq(routers.id, rescueCase.routerId))
+    .limit(1);
   const sendResult = await sendTelegramRescueMessage({
     caseId: rescueCase.id,
     text: caseEscalationText(rescueCase),
     includeButtons: true,
+    collectLogs: router?.engineMode !== "xray-direct",
   }).catch((error: unknown) => ({
     attempted: false,
     delivered: 0,

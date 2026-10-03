@@ -15,6 +15,7 @@ import {
   noAutoRepairEscalationReason,
   planRepairActionsForRouterSafety,
   queueRescueCaseLogCollection,
+  RescueActionRefusedError,
   repairActionsForTrigger,
   resourceGuardReasonsForLogCollection,
 } from "./auto-rescue";
@@ -566,9 +567,12 @@ describe("queueRescueCaseLogCollection on a vctl router", () => {
   it("tells an operator why it refuses", async () => {
     const fake = scripted("xray-direct");
 
-    await expect(
-      queueRescueCaseLogCollection(CASE_ID, fake.db as never),
-    ).rejects.toThrow("vctl routers: logs come from vctl");
+    const refusal = queueRescueCaseLogCollection(CASE_ID, fake.db as never);
+    await expect(refusal).rejects.toBeInstanceOf(RescueActionRefusedError);
+    await expect(refusal).rejects.toMatchObject({
+      status: 400,
+      message: "vctl routers: logs come from vctl",
+    });
     expect(fake.inserts(jobs)).toEqual([]);
   });
 

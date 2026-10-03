@@ -10,17 +10,29 @@ const envMock = vi.hoisted(() => ({
 }));
 
 vi.mock("~/env", () => envMock);
-vi.mock("~/server/vectra/auto-rescue", () => ({
-  queueRescueCaseLogCollection: vi.fn(),
-  queueRescueCaseReconnectProxy: vi.fn(),
-  queueRescueCaseSafeRepair: vi.fn(),
-  silenceRescueCase: vi.fn(),
-}));
-vi.mock("~/server/vectra/telegram-rescue", () => ({
+const autoRescue = vi.hoisted(() => {
+  class RescueActionRefusedError extends Error {
+    readonly status = 400;
+  }
+  return {
+    RescueActionRefusedError,
+    queueRescueCaseLogCollection: vi.fn(),
+  };
+});
+const telegram = vi.hoisted(() => ({
   answerTelegramCallback: vi.fn(async () => undefined),
   isTelegramChatAllowed: vi.fn(() => true),
   verifyTelegramRescueActionToken: vi.fn(),
 }));
+
+vi.mock("~/server/vectra/auto-rescue", () => ({
+  RescueActionRefusedError: autoRescue.RescueActionRefusedError,
+  queueRescueCaseLogCollection: autoRescue.queueRescueCaseLogCollection,
+  queueRescueCaseReconnectProxy: vi.fn(),
+  queueRescueCaseSafeRepair: vi.fn(),
+  silenceRescueCase: vi.fn(),
+}));
+vi.mock("~/server/vectra/telegram-rescue", () => telegram);
 
 const { POST } = await import("./route");
 
@@ -53,5 +65,44 @@ describe("POST /api/telegram/rescue", () => {
 
     envMock.env.VECTRA_TELEGRAM_WEBHOOK_SECRET = "webhook-secret-0123456789";
     warn.mockRestore();
+  });
+
+  // vctl never runs collect_router_logs: the button answers with why, as a
+  // typed 400, not the generic "action failed".
+  it("answers a refused log collection with its reason", async () => {
+    telegram.verifyTelegramRescueActionToken.mockReturnValueOnce({
+      caseId: "case-1",
+      action: "collect_logs",
+    });
+    autoRescue.queueRescueCaseLogCollection.mockRejectedValueOnce(
+      new autoRescue.RescueActionRefusedError(
+        "vctl routers: logs come from vctl",
+      ),
+    );
+
+    const response = await POST(
+      new Request("https://example.test/api/telegram/rescue", {
+        method: "POST",
+        headers: {
+          "x-telegram-bot-api-secret-token": "webhook-secret-0123456789",
+        },
+        body: JSON.stringify({
+          callback_query: {
+            id: "cb-1",
+            data: "rescue:token",
+            message: { chat: { id: 1 } },
+          },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      ok: false,
+      error: "vctl routers: logs come from vctl",
+    });
+    expect(telegram.answerTelegramCallback).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "vctl routers: logs come from vctl" }),
+    );
   });
 });
