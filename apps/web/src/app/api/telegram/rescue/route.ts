@@ -1,3 +1,5 @@
+import { createHash, timingSafeEqual } from "node:crypto";
+
 import { env } from "~/env";
 import {
   queueRescueCaseLogCollection,
@@ -34,14 +36,29 @@ function reject(status: number, message: string) {
   return Response.json({ ok: false, error: message }, { status });
 }
 
+function sha256(value: string) {
+  return createHash("sha256").update(value).digest();
+}
+
+let missingSecretWarned = false;
+
 function validateWebhookSecret(request: Request) {
   if (!env.VECTRA_TELEGRAM_WEBHOOK_SECRET) {
+    // Left open so a deployment without the secret keeps working; the action
+    // tokens and the chat allowlist still gate every action.
+    if (env.NODE_ENV === "production" && !missingSecretWarned) {
+      missingSecretWarned = true;
+      console.warn(
+        "[telegram-rescue] VECTRA_TELEGRAM_WEBHOOK_SECRET is not set: the webhook accepts unsigned updates.",
+      );
+    }
     return true;
   }
 
-  return (
-    request.headers.get("x-telegram-bot-api-secret-token") ===
-    env.VECTRA_TELEGRAM_WEBHOOK_SECRET
+  // Digests, so the comparison is constant-time and length-independent.
+  return timingSafeEqual(
+    sha256(request.headers.get("x-telegram-bot-api-secret-token") ?? ""),
+    sha256(env.VECTRA_TELEGRAM_WEBHOOK_SECRET),
   );
 }
 
