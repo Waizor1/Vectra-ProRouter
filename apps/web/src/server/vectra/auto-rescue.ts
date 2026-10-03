@@ -738,6 +738,10 @@ export async function detectBlockedReachabilityTriggers(
     if (isReleasedAwaitingOwner(router)) {
       continue;
     }
+    // Nor is an unapproved one scanned: anyone can register a router.
+    if (!router.approvedAt) {
+      continue;
+    }
     const recentSnapshots = await loadRecentSnapshots(database, router.id);
     if (recentSnapshots.length < blockedSnapshotWindow) {
       continue;
@@ -1562,6 +1566,12 @@ async function escalateExpiredCases(database: DatabaseClient, now: Date) {
 // Telegram-initiated repairs are unaffected because they start from an explicit
 // rescue case id rather than this monitor sweep.
 function isAutoRescueExemptRouter(router: RouterRow) {
+  // An unapproved router is nobody's responsibility yet: register answers
+  // anonymous callers, so a record nobody approved must not open cases, queue
+  // jobs or page Telegram.
+  if (!router.approvedAt) {
+    return true;
+  }
   // A released router (ADR-0006) dropped its owner's proxy config on purpose
   // and waits for a new owner; an unattended reconnect or repair would undo
   // the release. Routers that never used Connect have releasedAt null.

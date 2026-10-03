@@ -463,7 +463,12 @@ describe("detectBlockedReachabilityTriggers and released routers (ADR-0006)", ()
                 releasedAt: new Date("2026-09-28T09:00:00.000Z"),
                 ownerRef: null,
               },
-              { id: "in-service", releasedAt: null, ownerRef: "acct-42" },
+              {
+                id: "in-service",
+                releasedAt: null,
+                ownerRef: "acct-42",
+                approvedAt: new Date("2026-09-01T00:00:00.000Z"),
+              },
             ],
           ],
         ],
@@ -481,5 +486,58 @@ describe("detectBlockedReachabilityTriggers and released routers (ADR-0006)", ()
     expect(
       triggers.map((trigger) => `${trigger.trigger}:${trigger.routerId}`),
     ).toEqual(["telegram_blocked:in-service"]);
+  });
+});
+
+describe("detectBlockedReachabilityTriggers and unapproved routers", () => {
+  const NOW = new Date("2026-09-28T10:00:00.000Z");
+  const blockedSnapshots = [0, 1, 2].map((index) => ({
+    id: `snapshot-${index}`,
+    createdAt: new Date(NOW.getTime() - index * 60_000),
+    payload: {
+      foreignReachability: {
+        reachable: false,
+        status: "blocked",
+        checkedAt: new Date(NOW.getTime() - index * 60_000).toISOString(),
+      },
+    },
+  }));
+
+  // Anyone can register a router; nobody approved this one, so its probes
+  // are not read and it can open no case.
+  it("never scans a router nobody approved", async () => {
+    const fake = createFakeDb({
+      selects: [
+        [
+          routers,
+          [
+            [
+              { id: "anonymous", releasedAt: null, approvedAt: null },
+              {
+                id: "approved",
+                releasedAt: null,
+                approvedAt: new Date("2026-09-01T00:00:00.000Z"),
+              },
+            ],
+          ],
+        ],
+        [routerInventorySnapshots, [blockedSnapshots]],
+      ],
+    });
+
+    const triggers = await detectBlockedReachabilityTriggers(
+      fake.db as never,
+      NOW,
+    );
+
+    expect(
+      triggers.map((trigger) => `${trigger.trigger}:${trigger.routerId}`),
+    ).toEqual(["foreign_reachability_blocked:approved"]);
+    expect(
+      fake.calls.filter(
+        (call) =>
+          call.kind === "select" && call.table === routerInventorySnapshots,
+      ),
+    ).toHaveLength(1);
   });
 });

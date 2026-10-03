@@ -696,6 +696,33 @@ describe("released routers (ADR-0006: unlinked, waiting for a new owner)", () =>
       ]),
     ).toEqual(["direct_mode:direct", "incident:incident", "offline:quiet"]);
   });
+
+  // Register answers anonymous callers: a record nobody approved must not
+  // page anyone, whatever state it reports.
+  it("raises no alert at all for a router nobody approved", () => {
+    const snapshot = buildFleetMonitoringSnapshot({
+      now: NOW,
+      offlineThresholdMs: 3 * 60 * 1000,
+      openIncidentCount: 0,
+      queuedJobs: 0,
+      routers: [
+        routerInput("pending-quiet", { unapproved: true, lastSeenAt: QUIET }),
+        routerInput("pending-direct", { unapproved: true, status: "direct" }),
+        routerInput("pending-incident", {
+          unapproved: true,
+          openIncident: proxyOutage,
+        }),
+      ] as never,
+    });
+
+    expect(snapshot.alerts).toEqual([]);
+    // Still listed, so an operator can find and approve it.
+    expect(snapshot.routers.map((router) => router.id).sort()).toEqual([
+      "pending-direct",
+      "pending-incident",
+      "pending-quiet",
+    ]);
+  });
 });
 
 describe("computeConnectivityVerdict", () => {
