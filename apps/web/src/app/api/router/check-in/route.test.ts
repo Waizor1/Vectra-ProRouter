@@ -17,12 +17,12 @@ vi.mock("~/server/vectra/auth", () => ({
 
 const { POST } = await import("./route");
 
-function checkIn(routerId: string) {
+function checkIn(routerId: string, body = "{}") {
   return POST(
     new Request("https://example.test/api/router/check-in", {
       method: "POST",
       headers: { "x-vectra-router-id": routerId },
-      body: "{}",
+      body,
     }),
   );
 }
@@ -44,5 +44,14 @@ describe("POST /api/router/check-in", () => {
     expect(statuses[30]).toBe(429);
     expect(checkInRouter).toHaveBeenCalledTimes(30);
     expect((await checkIn("router-b")).status).toBe(200);
+  });
+
+  // Register keeps a 2 MB cap; an authenticated router's check-in is let
+  // through up to 8 MB, since the agent retries a refused one forever.
+  it("reads a check-in body well past the register cap", async () => {
+    const body = JSON.stringify({ pad: "x".repeat(3 * 1024 * 1024) });
+
+    expect((await checkIn("router-big", body)).status).toBe(200);
+    expect(checkInRouter).toHaveBeenCalledTimes(1);
   });
 });

@@ -103,6 +103,10 @@ import {
   withSubscriptionUserAgent,
   withUiLock,
 } from "~/server/vectra/xray-operator-config";
+import {
+  boundJobResultPayload,
+  boundRouterCheckInPayload,
+} from "~/server/vectra/router-payload-bounds";
 
 type RouterRow = typeof routers.$inferSelect;
 type RevisionRow = typeof passwallDesiredRevisions.$inferSelect;
@@ -1533,11 +1537,40 @@ export function resolveRegisteredEngineMode(
   return reported === "xray-direct" ? "xray-direct" : "passwall";
 }
 
+// An authenticated router's oversized field is cut down, never refused (see
+// router-payload-bounds): the operator sees that it happened here.
+async function logTruncatedRouterPayload(
+  routerId: string,
+  endpoint: "check_in" | "job_result",
+  fields: string[],
+  passwallImportDropped = false,
+) {
+  if (fields.length === 0) {
+    return;
+  }
+  await db.insert(eventLog).values({
+    routerId,
+    type: "router.payload_truncated",
+    severity: "warning",
+    message: passwallImportDropped
+      ? "Router sent a PassWall import over the size cap; it was ignored."
+      : "Router sent fields over the size cap; they were truncated.",
+    metadata: { endpoint, fields },
+  });
+}
+
 export async function checkInRouter(routerId: string, input: unknown, auth?: {devicePublicKey: string}) {
-  const parsed = routerCheckInRequestSchema.parse(input);
+  const bounded = boundRouterCheckInPayload(input);
+  const parsed = routerCheckInRequestSchema.parse(bounded.payload);
   if (parsed.routerId !== routerId) {
     throw Object.assign(new Error("Router identity mismatch."), { status: 403 });
   }
+  await logTruncatedRouterPayload(
+    routerId,
+    "check_in",
+    bounded.truncated,
+    bounded.passwallImportDropped,
+  );
 
   const [existingRouter] = await db
     .select()
@@ -1922,10 +1955,12 @@ async function notifyUndeliverableFailure(
 }
 
 export async function recordJobResult(routerId: string, input: unknown) {
-  const parsed = jobResultRequestSchema.parse(input);
+  const bounded = boundJobResultPayload(input);
+  const parsed = jobResultRequestSchema.parse(bounded.payload);
   if (parsed.routerId !== routerId) {
     throw Object.assign(new Error("Router identity mismatch."), { status: 403 });
   }
+  await logTruncatedRouterPayload(routerId, "job_result", bounded.truncated);
 
   const [[job], [router]] = await Promise.all([
     db

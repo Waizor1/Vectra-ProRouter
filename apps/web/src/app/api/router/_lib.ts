@@ -4,6 +4,10 @@ import { ZodError } from "zod";
 // whole PassWall import, 2026-10-03). Reading stops at this cap instead of
 // buffering whatever an anonymous caller streams at register.
 export const ROUTER_REQUEST_BODY_MAX_BYTES = 2 * 1024 * 1024;
+// Check-in and job-result come from an authenticated router, which retries a
+// refused request forever: their cap is far looser, and an oversized field
+// inside is cut down rather than refused (router-payload-bounds).
+export const AUTHENTICATED_ROUTER_BODY_MAX_BYTES = 8 * 1024 * 1024;
 
 function readErrorStatus(error: Error) {
   const value =

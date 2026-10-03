@@ -1,6 +1,7 @@
 import {
   eventLog,
   healthIncidents,
+  jobResults,
   jobs,
   partnerWebhooks,
   passwallAppliedRevisions,
@@ -463,6 +464,31 @@ describe("checkInRouter claim", () => {
     await checkInRouter(ROUTER_ID, checkInPayload({inventory: inventory({connect: {verdict: "down", exitCountry: null, lanClients: 2}})}));
     expect(fake.inserts(routerInventorySnapshots)[0]).toMatchObject({payload: {connect: {verdict: "down", lanClients: 2}}});
     expect(fake.inserts(partnerWebhooks).map(row => row.payload)).toEqual(expect.arrayContaining([expect.objectContaining({event: "router.vpn_down", ownerRef: "acct-42", detail: {verdict: "down"}})]));
+  });
+
+  // The agent re-sends its check-in (and import) until a 2xx: an oversized
+  // field must be cut down, never refused.
+  it("accepts a check-in with an oversized raw snapshot and logs the truncation", async () => {
+    scriptCheckIn();
+
+    await checkInRouter(
+      ROUTER_ID,
+      checkInPayload({
+        inventory: inventory({ rawSnapshot: { blob: "x".repeat(70_000) } }),
+      }),
+    );
+
+    expect(fake.inserts(routerInventorySnapshots)[0]).toMatchObject({
+      payload: { rawSnapshot: { truncated: true } },
+    });
+    expect(fake.inserts(eventLog)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "router.payload_truncated",
+          metadata: { endpoint: "check_in", fields: ["inventory.rawSnapshot"] },
+        }),
+      ]),
+    );
   });
 
   it("binds confidential telemetry to the authenticated device key", async () => {
@@ -1009,5 +1035,38 @@ describe("recordJobResult and revision ownership", () => {
     expect(
       fake.updates(routers).filter((set) => "activeRevisionId" in set),
     ).toEqual([expect.objectContaining({ activeRevisionId: REVISION_ID })]);
+  });
+
+  // The PassWall agent re-sends an unacknowledged result before every
+  // check-in; refusing an oversized one would wedge the router for good.
+  it("accepts an oversized result, storing a size marker in its place", async () => {
+    scriptApply(ROUTER_ID, REVISION_ID);
+
+    const answer = await recordJobResult(ROUTER_ID, {
+      protocolVersion: "2026-04-v1",
+      routerId: ROUTER_ID,
+      jobId: JOB_ID,
+      status: "failure",
+      result: { stdout: "z".repeat(1024 * 1024 + 1) },
+      stderr: "e".repeat(20_000),
+    });
+
+    expect(answer.acknowledged).toBe(true);
+    expect(fake.inserts(jobResults)).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          truncated: true,
+          bytes: expect.any(Number) as number,
+        }) as object,
+      }),
+    ]);
+    expect(fake.inserts(eventLog)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "router.payload_truncated",
+          metadata: { endpoint: "job_result", fields: ["result", "stderr"] },
+        }),
+      ]),
+    );
   });
 });
