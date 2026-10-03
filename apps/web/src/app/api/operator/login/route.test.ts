@@ -111,4 +111,40 @@ describe("POST /api/operator/login", () => {
     ).toBe("/login?error=rate");
     expect(setCookie).not.toHaveBeenCalled();
   });
+
+  // The decision is made after the body is read, with no await before the
+  // failure is counted: a burst from one address gets at most 5 compares.
+  it("gives a burst of concurrent attempts from one address at most 5 compares", async () => {
+    const { POST } = await loadRoute();
+
+    const responses = await Promise.all(
+      Array.from({ length: 20 }, (_, i) => login(POST, `guess-${i}`)),
+    );
+    const compared = responses.filter(
+      (response) => response.headers.get("location") === "/login?error=1",
+    );
+
+    expect(compared).toHaveLength(5);
+    expect(
+      responses.filter(
+        (response) => response.headers.get("location") === "/login?error=rate",
+      ),
+    ).toHaveLength(15);
+  });
+
+  it("refuses even a clean address once 300 failures a minute are reached", async () => {
+    const { POST } = await loadRoute();
+
+    for (let i = 0; i < 299; i += 1) {
+      await login(POST, "wrong", `10.0.${Math.floor(i / 250)}.${i % 250}`);
+    }
+    expect(
+      (await login(POST, RIGHT, "203.0.113.50")).headers.get("location"),
+    ).toBe("/fleet");
+
+    await login(POST, "wrong", "10.9.9.9");
+    expect(
+      (await login(POST, RIGHT, "203.0.113.51")).headers.get("location"),
+    ).toBe("/login?error=rate");
+  });
 });

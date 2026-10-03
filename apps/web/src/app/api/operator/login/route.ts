@@ -18,25 +18,29 @@ import {
 // Brute-force brake, in process (one web container). Only FAILED attempts
 // are counted, never successes. An address with 5 failures in a minute is
 // refused before its password is checked. Across all addresses, 30 failures a
-// minute closes the door too — but only to addresses that have failed
-// recently, so a flood from elsewhere never locks out an operator signing in
-// from a clean address. The address is the Caddy-set client-ip header.
+// minute refuses addresses that have failed recently; a clean address is
+// still checked, so a flood from elsewhere does not lock out an operator —
+// until 300 failures a minute, a ceiling that also brakes guessing spread
+// over ever-fresh addresses. The address is the Caddy-set client-ip header.
 const LOGIN_FAILURES_PER_ADDRESS = 5;
 const LOGIN_FAILURES_OVERALL = 30;
+const LOGIN_FAILURES_CEILING = 300;
 const loginFailuresPerAddress = new MemoryWindowRateLimiter(
   LOGIN_FAILURES_PER_ADDRESS,
   60 * 1000,
 );
 const loginFailuresOverall = new MemoryWindowRateLimiter(
-  LOGIN_FAILURES_OVERALL,
+  LOGIN_FAILURES_CEILING,
   60 * 1000,
 );
 
 function loginRefusedForAddress(clientKey: string) {
   const failures = loginFailuresPerAddress.peek(clientKey);
+  const overall = loginFailuresOverall.peek("all");
   return (
     failures >= LOGIN_FAILURES_PER_ADDRESS ||
-    (failures > 0 && loginFailuresOverall.peek("all") >= LOGIN_FAILURES_OVERALL)
+    (failures > 0 && overall >= LOGIN_FAILURES_OVERALL) ||
+    overall >= LOGIN_FAILURES_CEILING
   );
 }
 
@@ -69,10 +73,6 @@ function constantTimeStringEquals(actual: string, expected: string) {
 export async function POST(request: Request) {
   warnIfPasswordShort();
   const clientKey = rateLimitKeyForIp(readRequestIp(request));
-  if (loginRefusedForAddress(clientKey)) {
-    return relativeRedirect("/login?error=rate");
-  }
-
   const formData = await request.formData();
   const usernameEntry = formData.get("username");
   const passwordEntry = formData.get("password");
@@ -80,6 +80,12 @@ export async function POST(request: Request) {
     typeof usernameEntry === "string" ? usernameEntry.trim() : "";
   const password = typeof passwordEntry === "string" ? passwordEntry : "";
 
+  // From the check to the counting of a failure there is no await, so
+  // concurrent attempts from one address cannot all pass the check before
+  // any of their failures is counted.
+  if (loginRefusedForAddress(clientKey)) {
+    return relativeRedirect("/login?error=rate");
+  }
   const usernameMatches = constantTimeStringEquals(
     username,
     env.VECTRA_OPERATOR_USER,
