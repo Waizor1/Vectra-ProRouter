@@ -771,6 +771,10 @@ func TestAnUnconfiguredVctlIsOnWithoutADataPlane(t *testing.T) {
 	}
 }
 
+// passwallRoutable is PassWall2's configuration on a router it routes: its
+// switch on, its global node one of its nodes.
+const passwallRoutable = "config global\n\toption enabled '1'\n\toption node 'myshunt'\n\nconfig nodes 'myshunt'\n\toption protocol '_shunt'\n"
+
 // unconfigure takes the panel's files away and, with passwall, gives the
 // router PassWall2's configuration and generator: vctl then routes by it
 // until the panel's operator config arrives (AutoPassWall).
@@ -783,7 +787,7 @@ func (r *router) unconfigure(passwall bool) {
 	r.env.PassWallUCI = filepath.Join(r.dir, "config", "passwall2")
 	r.env.PassWallGenerator = filepath.Join(r.dir, "util_xray.lua")
 	if passwall {
-		if err := os.WriteFile(r.env.PassWallUCI, []byte("config global\n\toption enabled '1'\n\toption node 'myshunt'\n"), 0o644); err != nil {
+		if err := os.WriteFile(r.env.PassWallUCI, []byte(passwallRoutable), 0o644); err != nil {
 			r.t.Fatal(err)
 		}
 		r.write(r.env.PassWallGenerator)
@@ -823,6 +827,30 @@ func TestATakeoverFromPassWallThatCarriesNothingGivesTheRouterBack(t *testing.T)
 	}
 }
 
+// PassWall2 switched off by the takeover is still PassWall2 that carried the
+// traffic: its breadcrumbs say so — the switch's or the rc.d link's, on /etc
+// or a trial's tmpfs. Switched off by its owner, there are none: no route.
+func TestAutoPassWallOnlyWherePassWallCarried(t *testing.T) {
+	r := fleet(t)
+	r.unconfigure(true)
+	off := strings.Replace(passwallRoutable, "enabled '1'", "enabled '0'", 1)
+	if err := os.WriteFile(r.env.PassWallUCI, []byte(off), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if AutoPassWall("", r.env.OperatorConfig, r.env.PassWallRoutes()) {
+		t.Fatal("an owner's PassWall2, switched off, routes")
+	}
+	for _, crumb := range []string{r.marker(switchMarker), r.marker(passwallMarker), r.trialMarker(switchMarker), r.trialMarker(passwallMarker)} {
+		r.write(crumb)
+		if !AutoPassWall("", r.env.OperatorConfig, r.env.PassWallRoutes()) {
+			t.Errorf("taken over (%s), not routed by", crumb)
+		}
+		if err := os.Remove(crumb); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // WouldIdle is what `vectra on` warns of: no operator config and nothing to
 // route by. PassWall2's configuration is something; the owner's own route
 // source, a configuration without a node, a missing generator are not.
@@ -835,7 +863,7 @@ func TestWouldIdle(t *testing.T) {
 	if r.env.WouldIdle() {
 		t.Fatal("PassWall2 to route by: idle")
 	}
-	if !AutoPassWall("", r.env.OperatorConfig, r.env.PassWallUCI, r.env.PassWallGenerator) {
+	if !AutoPassWall("", r.env.OperatorConfig, r.env.PassWallRoutes()) {
 		t.Fatal("not routing by PassWall2")
 	}
 	// The owner's route source is theirs: vctl does not choose another.
@@ -852,11 +880,20 @@ func TestWouldIdle(t *testing.T) {
 	if r.env.WouldIdle() {
 		t.Fatal("route_source 'provider': idle")
 	}
-	if err := os.WriteFile(r.env.PassWallUCI, []byte("config global\n\toption enabled '0'\n"), 0o644); err != nil {
+	if err := os.WriteFile(r.env.Config, []byte("config controller 'main'\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !r.env.WouldIdle() {
-		t.Fatal("PassWall2 with no node: not idle")
+	for _, tc := range []struct{ name, uci string }{
+		{"no node", "config global\n\toption enabled '1'\n"},
+		{"a node it does not have", "config global\n\toption enabled '1'\n\toption node 'gone'\n\nconfig nodes 'myshunt'\n"},
+		{"switched off by its owner", "config global\n\toption enabled '0'\n\toption node 'myshunt'\n\nconfig nodes 'myshunt'\n"},
+	} {
+		if err := os.WriteFile(r.env.PassWallUCI, []byte(tc.uci), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if !r.env.WouldIdle() {
+			t.Errorf("PassWall2 with %s: routed by", tc.name)
+		}
 	}
 	r.unconfigure(false)
 	_ = os.Remove(r.env.PassWallUCI)

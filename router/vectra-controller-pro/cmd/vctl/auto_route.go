@@ -31,9 +31,14 @@ import (
 // by, and waits for its setup as before.
 
 // autoRouteSource: a vctl started with cfg routes by PassWall2's
-// configuration of itself.
+// configuration of itself — only where PassWall2 carried the traffic before
+// the takeover (power.AutoPassWall: its switch on, or the takeover's
+// breadcrumbs, and a global node it has).
 func autoRouteSource(cfg agentcfg.Config) bool {
-	return power.AutoPassWall(cfg.RouteSource, cfg.XrayConfigPath, passwallUCIFile, passwallGenerator)
+	env := powerEnv()
+	return power.AutoPassWall(cfg.RouteSource, cfg.XrayConfigPath, power.PassWallRoutes{
+		UCI: passwallUCIFile, Generator: passwallGenerator, MarkerDirs: []string{env.MarkerDir, env.TrialMarkers},
+	})
 }
 
 // enterAutoRoute makes d route by PassWall2's configuration on the base

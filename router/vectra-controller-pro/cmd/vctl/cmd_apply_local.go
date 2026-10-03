@@ -85,7 +85,13 @@ func cmdApplyLocal(args []string) error {
 	if err != nil {
 		return err
 	}
-	if d.desired == nil {
+	// d.autoRoute: no operator config either — the daemon would route by
+	// PassWall2's configuration on its base one until the panel's arrives
+	// (auto_route.go). apply-local installs the PROVIDER's document from the
+	// operator's: on that base config there is no subscription to fetch, and
+	// in PassWall mode the applier writes PassWall's document, not the
+	// provider's. Refused as if there were nothing, which is the case.
+	if d.desired == nil || d.autoRoute {
 		return fmt.Errorf(
 			"no operator config at %s.\n"+
 				"That file is what defines the tproxy inbound, the geo assets and the subscription, and it is\n"+

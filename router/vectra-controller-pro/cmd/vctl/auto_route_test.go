@@ -3,24 +3,45 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"vectra-controller-pro/internal/power"
 )
 
-// passwallRouter gives the test a PassWall2 to route by: its configuration
-// naming a global node, its generator, and a `lua` that runs it — answering
-// what PassWall2's generator made on a real router (the xray package's
-// fixture).
-func passwallRouter(t *testing.T) {
+// passwallRouter gives the test a PassWall2 to route by, as the takeover
+// leaves it: its configuration naming a global node it has, its own switch
+// turned off by the takeover and noted in its breadcrumb, its generator,
+// and a `lua` that runs it — answering what PassWall2's generator made on a
+// real router (the xray package's fixture). It returns where the takeover's
+// breadcrumbs are.
+func passwallRouter(t *testing.T) (markers string) {
 	t.Helper()
 	dir := t.TempDir()
-	oldUCI, oldGen, oldLua, oldGet := passwallUCIFile, passwallGenerator, passwallLua, uciGet
-	t.Cleanup(func() { passwallUCIFile, passwallGenerator, passwallLua, uciGet = oldUCI, oldGen, oldLua, oldGet })
+	oldUCI, oldGen, oldLua, oldGet, oldEnv := passwallUCIFile, passwallGenerator, passwallLua, uciGet, powerEnv
+	t.Cleanup(func() {
+		passwallUCIFile, passwallGenerator, passwallLua, uciGet, powerEnv = oldUCI, oldGen, oldLua, oldGet, oldEnv
+	})
 	passwallUCIFile = filepath.Join(dir, "passwall2")
-	if err := os.WriteFile(passwallUCIFile, []byte("config global\n\toption enabled '0'\n\toption node 'myshunt'\n"), 0o644); err != nil {
+	if err := os.WriteFile(passwallUCIFile, []byte("config global\n\toption enabled '0'\n\toption node 'myshunt'\n\nconfig nodes 'myshunt'\n\toption protocol '_shunt'\n"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	markers = filepath.Join(dir, "etc-vectra")
+	if err := os.MkdirAll(markers, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(markers, ".passwall-switch-off-by-vctl"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	powerEnv = func() power.Env {
+		env := power.RouterEnv()
+		env.MarkerDir, env.TrialMarkers = markers, filepath.Join(dir, "trial.d")
+		return env
 	}
 	passwallGenerator = filepath.Join(dir, "util_xray.lua")
 	if err := os.WriteFile(passwallGenerator, []byte("-- PassWall2's generator\n"), 0o644); err != nil {
@@ -40,6 +61,16 @@ func passwallRouter(t *testing.T) {
 			return "myshunt"
 		}
 		return ""
+	}
+	return markers
+}
+
+// passwallFails makes PassWall2's generator fail, as a broken configuration
+// or a router out of memory would.
+func passwallFails(t *testing.T) {
+	t.Helper()
+	if err := os.WriteFile(passwallLua, []byte("#!/bin/sh\necho 'lua: util_xray.lua:1: attempt to index a nil value' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -184,5 +215,145 @@ func TestWithoutPassWallVctlWaitsForItsSetup(t *testing.T) {
 	d := newTestDaemon(t, dir, panel, provider)
 	if d.autoRoute || d.desired != nil || d.cfg.RouteSource != "" || d.linked() {
 		t.Fatalf("auto %v, operator config %v, route source %q", d.autoRoute, d.desired != nil, d.cfg.RouteSource)
+	}
+}
+
+// An owner's PassWall2, switched off before vctl came (no breadcrumb of the
+// takeover, its switch off): it carried nothing, so vctl routes by nothing
+// of it — as r13, waiting for its setup.
+func TestAPassWallItsOwnerSwitchedOffIsNotRoutedBy(t *testing.T) {
+	markers := passwallRouter(t)
+	if err := os.Remove(filepath.Join(markers, ".passwall-switch-off-by-vctl")); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	provider := newProviderStub(t, providerEntry(t))
+	panel := newPanelStub(t, operatorConfigPointingAt(t, provider.URL))
+	d := newTestDaemon(t, dir, panel, provider)
+	if d.autoRoute || d.desired != nil || d.cfg.RouteSource != "" {
+		t.Fatalf("auto %v, operator config %v, route source %q", d.autoRoute, d.desired != nil, d.cfg.RouteSource)
+	}
+}
+
+// startAuto starts a daemon that routes by PassWall2 of itself (one loop:
+// its render, xray on it) against a panel whose operator config points at
+// subscription.
+func startAuto(t *testing.T, dir, subscription string) (*daemon, *panelStub) {
+	t.Helper()
+	provider := newProviderStub(t, providerEntry(t))
+	if subscription == "" {
+		subscription = provider.URL
+	}
+	panel := newPanelStub(t, operatorConfigPointingAt(t, subscription))
+	d := newTestDaemon(t, dir, panel, provider)
+	t.Cleanup(func() { d.stopXray(context.Background()) })
+	if !d.autoRoute {
+		t.Fatal("not routing by PassWall2 of itself")
+	}
+	if err := d.run(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, out := renderedTags(t, dir); !hasTag(out, "WorldProxy:NL") || !d.supStarted {
+		t.Fatalf("not running PassWall2's render: %v, xray %v", out, d.supStarted)
+	}
+	return d, panel
+}
+
+// The claim's apply comes, and the provider cannot be fetched: the job
+// fails, and the PassWall render keeps running — the LAN keeps its VPN; the
+// daemon's own refresh tries the provider again.
+func TestAnApplyWhoseProviderFailsKeepsThePassWallRender(t *testing.T) {
+	passwallRouter(t)
+	dead := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusBadGateway)
+	}))
+	t.Cleanup(dead.Close)
+	dir := t.TempDir()
+	d, panel := startAuto(t, dir, dead.URL)
+	if err := d.runOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := panel.resultsFor("j1"); len(got) == 0 || got[len(got)-1].Status != "failure" {
+		t.Fatalf("apply_xray_config: %+v", got)
+	}
+	if _, out := renderedTags(t, dir); !hasTag(out, "WorldProxy:NL") || !d.supStarted {
+		t.Fatalf("the render that ran is gone: %v, xray %v", out, d.supStarted)
+	}
+	if d.autoRoute || d.cfg.RouteSource != "" || !d.linked() {
+		t.Fatalf("auto %v, route source %q, linked %v: the panel's config is the router's now", d.autoRoute, d.cfg.RouteSource, d.linked())
+	}
+}
+
+// A reboot while vctl routes by PassWall2 of itself: no render on tmpfs, and
+// PassWall2's generator failing at the start — the render is rebuilt from
+// PassWall's document on /etc (resumeRender), and runs.
+func TestARebootInAutoModeResumesThePassWallRender(t *testing.T) {
+	passwallRouter(t)
+	dir := t.TempDir()
+	d, _ := startAuto(t, dir, "")
+	d.stopXray(context.Background())
+	if err := os.Remove(filepath.Join(dir, "xray.json")); err != nil {
+		t.Fatal(err)
+	}
+	passwallFails(t)
+	// The panel out of reach after the reboot: what runs is the router's own.
+	provider := newProviderStub(t, providerEntry(t))
+	panel := newPanelStub(t, operatorConfigPointingAt(t, provider.URL))
+	panel.Close()
+	again := newTestDaemon(t, dir, panel, provider)
+	defer again.stopXray(context.Background())
+	if !again.autoRoute {
+		t.Fatal("after the reboot, not routing by PassWall2")
+	}
+	_ = again.run(context.Background(), true) // its check-in fails: the panel is down
+	if _, out := renderedTags(t, dir); !hasTag(out, "WorldProxy:NL") || !again.supStarted {
+		t.Fatalf("not resumed: %v, xray %v", out, again.supStarted)
+	}
+}
+
+// PassWall2's generator failing on the first start: no render, no xray — no
+// data plane, which `vectra on` sees and answers by giving the router back
+// to PassWall2 (internal/power). The daemon stays up and tries again.
+func TestAGeneratorFailureInAutoModeLoadsNothing(t *testing.T) {
+	passwallRouter(t)
+	passwallFails(t)
+	dir := t.TempDir()
+	provider := newProviderStub(t, providerEntry(t))
+	d := newTestDaemon(t, dir, newPanelStub(t, operatorConfigPointingAt(t, provider.URL)), provider)
+	defer d.stopXray(context.Background())
+	if err := d.run(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "xray.json")); !os.IsNotExist(err) || d.supStarted {
+		t.Fatalf("a render or xray without PassWall2's generator: %v, xray %v", err, d.supStarted)
+	}
+	if !d.autoRoute || d.passwallCfgStamp != "" {
+		t.Fatalf("auto %v, stamp %q: the next loop would not try again", d.autoRoute, d.passwallCfgStamp)
+	}
+}
+
+// apply-local installs the provider's document from the operator's config;
+// routing by PassWall2 of itself there is neither: refused, and nothing is
+// written — PassWall's document least of all.
+func TestApplyLocalRefusesTheAutoRoute(t *testing.T) {
+	passwallRouter(t)
+	dir := t.TempDir()
+	provider := newProviderStub(t, providerEntry(t))
+	d := newTestDaemon(t, dir, newPanelStub(t, operatorConfigPointingAt(t, provider.URL)), provider)
+	if !d.autoRoute {
+		t.Fatal("not routing by PassWall2")
+	}
+	doc := filepath.Join(dir, "doc.json")
+	if err := os.WriteFile(doc, providerEntry(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := cmdApplyLocal([]string{"-config", filepath.Join(dir, "agent.json"), "-provider", doc, "-ignore-legacy-agent"})
+	if err == nil || !strings.Contains(err.Error(), "no operator config") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, f := range []string{"passwall-config.json", "provider-config.json", "xray.json"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); !os.IsNotExist(err) {
+			t.Errorf("%s written", f)
+		}
 	}
 }

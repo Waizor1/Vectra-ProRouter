@@ -194,6 +194,9 @@ type Facts struct {
 	// PassWall, Agent or "".
 	Owed  string
 	Trial *Trial // nil when no trial runs
+	// WouldIdle: vctl does not run, and switched on now it would carry
+	// nothing (Env.WouldIdle) — what a switch-on is to be confirmed for.
+	WouldIdle bool
 }
 
 // On is Vectra switched on: both switches on, or a trial running (which
@@ -242,6 +245,8 @@ func Read(ctx context.Context, env Env, up bool) Facts {
 	}
 	if f.Running {
 		f.Carrying = env.loaded(ctx)
+	} else {
+		f.WouldIdle = env.WouldIdle()
 	}
 	if !f.Running || !f.Carrying {
 		f.PassWall = PassWallRunning(env.ProcDir)
@@ -348,7 +353,12 @@ func (env Env) configured() bool {
 // routes by PassWall2's configuration until it is (AutoPassWall) — so a
 // switch-on waits for its data plane, and gives the router back without it.
 func (env Env) routes() bool {
-	return env.configured() || AutoPassWall(routeSource(env.Config), env.OperatorConfig, env.PassWallUCI, env.PassWallGenerator)
+	return env.configured() || AutoPassWall(routeSource(env.Config), env.OperatorConfig, env.PassWallRoutes())
+}
+
+// PassWallRoutes is where AutoPassWall looks on this Env's router.
+func (env Env) PassWallRoutes() PassWallRoutes {
+	return PassWallRoutes{UCI: env.PassWallUCI, Generator: env.PassWallGenerator, MarkerDirs: []string{env.MarkerDir, env.TrialMarkers}}
 }
 
 // WouldIdle says that vctl, switched on now, would run without a data plane:
@@ -359,24 +369,54 @@ func (env Env) WouldIdle() bool {
 	return env.OperatorConfig != "" && !exists(env.OperatorConfig) && !env.routes()
 }
 
+// PassWallRoutes are PassWall2's configuration and generator, and where the
+// init script's takeover leaves its breadcrumbs (on /etc, and on tmpfs for a
+// trial).
+type PassWallRoutes struct {
+	UCI, Generator string
+	MarkerDirs     []string
+}
+
 // AutoPassWall says whether vctl, started now, routes by PassWall2's own
 // configuration of itself — route_source 'passwall', chosen by vctl and not
-// by the owner (cmd/vctl/auto_route.go): it has no operator config yet
-// (operatorConfig, which the panel's apply writes, is not there), the owner
-// chose no route source (routeSource "": the provider's, the default), and
-// PassWall2's generator is installed, with a configuration that names the
-// global node to route by. PassWall2's own switch is not asked: the
-// takeover turns it off, and what counts is its configuration.
-func AutoPassWall(routeSource, operatorConfig, passwallUCI, generator string) bool {
-	if routeSource != "" || operatorConfig == "" || exists(operatorConfig) || passwallUCI == "" || generator == "" || !exists(generator) {
+// by the owner (cmd/vctl/auto_route.go). Only on proof that PassWall2
+// carried the router's traffic, and would again:
+//   - no operator config yet (operatorConfig, which the panel's apply
+//     writes, is not there), and the owner chose no route source (routeSource
+//     "": the provider's, the default);
+//   - PassWall2's generator installed;
+//   - PassWall2 on: its own switch on now (before the takeover), or the
+//     takeover's breadcrumb saying it was — its switch or its rc.d link,
+//     which the takeover turns off and notes. A PassWall2 an owner had
+//     switched off routes nothing here either;
+//   - its global node naming a node its configuration has.
+//
+// Otherwise vctl does as before 0.7.0-r14: it waits for its setup.
+func AutoPassWall(routeSource, operatorConfig string, pw PassWallRoutes) bool {
+	if routeSource != "" || operatorConfig == "" || exists(operatorConfig) || pw.UCI == "" || pw.Generator == "" || !exists(pw.Generator) {
 		return false
 	}
-	f, err := uci.Load(passwallUCI)
+	f, err := uci.Load(pw.UCI)
 	if err != nil {
 		return false
 	}
 	g := f.OfType("global")
-	return len(g) > 0 && g[0].Get("node") != ""
+	if len(g) == 0 {
+		return false
+	}
+	node := g[0].Get("node")
+	if node == "" || f.Named(node) == nil {
+		return false
+	}
+	if g[0].Get("enabled") == "1" {
+		return true
+	}
+	for _, d := range pw.MarkerDirs {
+		if d != "" && (exists(filepath.Join(d, passwallMarker)) || exists(filepath.Join(d, switchMarker))) {
+			return true
+		}
+	}
+	return false
 }
 
 // routeSource reads route_source of section main as render-xray-config.sh
