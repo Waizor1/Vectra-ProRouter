@@ -512,6 +512,11 @@ export const S = {
   ],
   'a.power_on': ['Vectra включена', 'Vectra turned on', 'Vectra 已开启'],
   'a.power_off': ['Vectra выключена', 'Vectra turned off', 'Vectra 已关闭'],
+  'a.would_idle': [
+    'Vectra пока не повезёт трафик: роутер ещё не привязан. Подтвердите включение ещё раз.',
+    'Vectra would carry no traffic yet: the router is not linked. Confirm turning it on again.',
+    'Vectra 暂时不会承载流量：路由器尚未绑定。请再次确认开启。',
+  ],
   'a.remote_shell_set': ['Доступ поддержки изменён', 'Support access changed', '支持人员访问已更改'],
 
   // ── simple view: the verdict ───────────────────────────────────────────
@@ -652,6 +657,16 @@ export const S = {
   's.pw.on': ['Включить Vectra', 'Turn on Vectra', '开启 Vectra'],
   's.pw.onQ': ['Включить Vectra?', 'Turn on Vectra?', '开启 Vectra？'],
   's.pw.onBody': ['Интернет пойдёт через VPN Vectra. На несколько секунд он пропадёт.', 'The internet will go through the Vectra VPN. It drops for a few seconds.', '网络将经由 Vectra VPN，会中断几秒钟。'],
+  's.pw.onBody.idle': [
+    'Роутер ещё не привязан к аккаунту Vectra: до привязки интернет пойдёт напрямую, без VPN, — заблокированные сайты не откроются.',
+    'The router is not linked to a Vectra account yet: until it is, the internet goes out directly, without a VPN — blocked sites will not open.',
+    '路由器尚未绑定 Vectra 账户：绑定之前，网络将直连、不经 VPN，被封锁的网站无法打开。',
+  ],
+  's.pw.idle': [
+    'Vectra пока не повезёт трафик: роутер ещё не привязан. Нажмите «Включить» ещё раз, чтобы включить всё равно.',
+    'Vectra would carry no traffic yet: the router is not linked. Press Turn on again to turn it on anyway.',
+    'Vectra 暂时不会承载流量：路由器尚未绑定。再次点击“开启”以仍然开启。',
+  ],
   's.pw.onBody.passwall2': [
     'PassWall2 остановится, и интернет пойдёт через Vectra. На несколько секунд он пропадёт.',
     'PassWall2 stops and the internet goes through Vectra. It drops for a few seconds.',

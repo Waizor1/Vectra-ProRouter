@@ -435,7 +435,7 @@ func TestPowerOnRefusesToCarryNothingWithoutForce(t *testing.T) {
 		t.Fatalf("spawned %d: %v", len(r.spawned), r.spawned)
 	}
 	// PassWall2's configuration to route by: it carries, nothing to say.
-	if err := os.WriteFile(r.env.PassWallUCI, []byte("config global\n\toption node 'myshunt'\n"), 0o644); err != nil {
+	if err := os.WriteFile(r.env.PassWallUCI, []byte("config global\n\toption enabled '1'\n\toption node 'myshunt'\n\nconfig nodes 'myshunt'\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(r.env.PassWallGenerator, nil, 0o644); err != nil {
@@ -500,7 +500,7 @@ func TestSetPowerHandsTheChangeToADetachedProcess(t *testing.T) {
 		t.Fatalf("spawned %d, ran %v in the rpcd call itself", len(r.spawned), r.cmds)
 	}
 	c := r.spawned[0]
-	if !reflect.DeepEqual(c.Args[1:], []string{"power", "on", "--foreground", "--force"}) || !c.SysProcAttr.Setsid || len(c.ExtraFiles) != 1 {
+	if !reflect.DeepEqual(c.Args[1:], []string{"power", "on", "--foreground"}) || !c.SysProcAttr.Setsid || len(c.ExtraFiles) != 1 {
 		t.Fatalf("spawned %v setsid=%v files=%d", c.Args, c.SysProcAttr.Setsid, len(c.ExtraFiles))
 	}
 	if f, ok := c.Stdout.(*os.File); !ok || f.Name() != r.env.Log {
@@ -520,6 +520,30 @@ func TestSetPowerHandsTheChangeToADetachedProcess(t *testing.T) {
 	}
 	if len(r.spawned) != 2 {
 		t.Fatalf("spawned %d, want 2", len(r.spawned))
+	}
+}
+
+// A Vectra that would carry nothing: status says so (power.wouldIdle), and
+// set_power turns it on only when asked again with force — the UI's
+// confirmation; then the change runs with --force.
+func TestSetPowerAsksForForceWhenVectraWouldCarryNothing(t *testing.T) {
+	r := newPowerRouter(t)
+	fakePowerEnv(t, r)
+	r.uci(t, "0")
+	r.env.OperatorConfig = filepath.Join(t.TempDir(), "xray-desired.json")
+	if f := power.Read(context.Background(), r.env, false); !f.WouldIdle {
+		t.Fatal("facts do not say it would carry nothing")
+	}
+	if a := setPower(t, `{"on":true}`); a.OK || a.Code != "would_idle" || len(r.spawned) != 0 {
+		t.Fatalf("on without force = %+v, spawned %d", a, len(r.spawned))
+	}
+	if a := setPower(t, `{"on":true,"force":true}`); !a.OK || a.Code != "pending" || len(r.spawned) != 1 ||
+		!reflect.DeepEqual(r.spawned[0].Args[1:], []string{"power", "on", "--foreground", "--force"}) {
+		t.Fatalf("on with force = %+v, spawned %v", a, r.spawned)
+	}
+	// Off needs no force.
+	if a := setPower(t, `{"on":false}`); !a.OK {
+		t.Fatalf("off = %+v", a)
 	}
 }
 
@@ -592,7 +616,7 @@ func TestStatusAnswersWithTheDaemonDown(t *testing.T) {
 		t.Fatal("status did not answer")
 	}
 	raw, _ := json.Marshal(st.Power)
-	if string(raw) != `{"enabled":false,"running":false,"holder":"passwall2","handBack":null}` || st.Controller.Running {
+	if string(raw) != `{"enabled":false,"running":false,"holder":"passwall2","handBack":null,"wouldIdle":false}` || st.Controller.Running {
 		t.Fatalf("power = %s, controller = %+v", raw, st.Controller)
 	}
 	if !reflect.DeepEqual(up, []bool{false}) {

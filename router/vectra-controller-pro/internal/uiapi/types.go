@@ -102,6 +102,11 @@ type Power struct {
 	// HandBack: who takes the traffic when Vectra is turned off — passwall2,
 	// agent or direct; nil while it is off.
 	HandBack *string `json:"handBack"`
+	// WouldIdle: Vectra does not run, and switched on now it would carry
+	// nothing — no operator config, and no PassWall2 to route by: the LAN
+	// would go out without a VPN until the router is linked. set_power
+	// refuses to turn it on then unless asked with force (the UI confirms).
+	WouldIdle bool `json:"wouldIdle"`
 }
 
 // UIPolicy is how the operator set up this router's UI.

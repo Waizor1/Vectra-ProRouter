@@ -178,7 +178,7 @@ func BuildStatus(in Inputs) Status {
 		UI:           UIPolicy{Locked: in.UILocked},
 		RemoteShell:  in.RemoteShell,
 		Power: Power{Enabled: in.Power.On(), Running: in.Power.Running, Holder: in.Power.Holder(),
-			HandBack: strPtr(in.Power.HandBack())},
+			HandBack: strPtr(in.Power.HandBack()), WouldIdle: in.Power.WouldIdle},
 	}
 	for b, n := range in.Overrides.Pins {
 		st.Pins[b] = n

@@ -1,7 +1,7 @@
 import type { ComponentChildren } from 'preact';
 import type { Check, Diagnostics, Status } from '../api/types';
 import { useApp, useRes } from '../app/ctx';
-import { powerOpts } from '../app/power';
+import { powerOpts, powerParams } from '../app/power';
 import type { Key } from '../i18n';
 import { parseRemark } from '../lib/flags';
 import { hasSubscription, health, memTone, powerSwitching, simpleVerdict, viaKey, type Health, type SimpleKind } from '../lib/health';
@@ -73,7 +73,7 @@ function Hero({ s, hl }: { s: Status; hl: Health }) {
                   ? t('b.apiDown')
                   : 'Xray: ' + stateLabel(t, s.engine.state)
               : '';
-  const power = (on: boolean) => run('set_power', { on }, powerOpts(t, s, on));
+  const power = (on: boolean) => run('set_power', powerParams(s, on), powerOpts(t, s, on));
   return (
     <section class={'hero t-' + LEVEL[lv][0]} aria-labelledby="vx-verdict">
       <div class="hero-m">

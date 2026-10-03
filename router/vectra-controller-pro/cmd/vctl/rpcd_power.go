@@ -15,7 +15,7 @@ import (
 // trial, which is for a person at the console. The simple view's: the
 // operator's lock never refuses it.
 func init() {
-	rpcdSignatures["set_power"] = map[string]interface{}{"on": true}
+	rpcdSignatures["set_power"] = map[string]interface{}{"on": true, "force": false}
 }
 
 // Seams: tests read a fake router and never spawn anything.
@@ -40,11 +40,14 @@ var (
 func rpcdSetPower(ctx context.Context, params []byte) uiapi.Action {
 	var p struct {
 		On *bool `json:"on"`
+		// Force: on also when Vectra would carry nothing (status.power
+		// .wouldIdle) — the UI asks the person first.
+		Force bool `json:"force"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(params))
 	dec.DisallowUnknownFields()
 	if len(params) == 0 || dec.Decode(&p) != nil || p.On == nil {
-		return action(false, "invalid_params", `params must be {"on": true} or {"on": false}`)
+		return action(false, "invalid_params", `params must be {"on": true} or {"on": false}, with "force": true to switch on a Vectra that would carry nothing yet`)
 	}
 	env := rpcdPowerEnv()
 	lock, err := power.Lock(env)
@@ -62,12 +65,17 @@ func rpcdSetPower(ctx context.Context, params []byte) uiapi.Action {
 	case !*p.On && !f.On() && !f.Running && f.Owed == "":
 		return action(true, "power_off", "")
 	}
+	// What `vectra on` refuses without --force (errWouldIdle): the page says
+	// so first (status.power.wouldIdle), and asks again with force.
+	if *p.On && f.WouldIdle && !p.Force {
+		return action(false, "would_idle", "Vectra would carry no traffic yet: no operator config, and no PassWall2 to route by — the LAN would go out without a VPN until the router is linked")
+	}
 	args := []string{"power", "off", "--foreground"}
 	if *p.On {
-		// --force: the page shows what the router carries, an idle vctl
-		// included — the console's warning (errWouldIdle) is for a person
-		// who sees nothing.
-		args = []string{"power", "on", "--foreground", "--force"}
+		args = []string{"power", "on", "--foreground"}
+		if p.Force {
+			args = append(args, "--force")
+		}
 	}
 	if _, err := powerSpawn(env, lock, args...); err != nil {
 		return action(false, "apply_failed", "the switch did not start, so nothing changed: "+err.Error())

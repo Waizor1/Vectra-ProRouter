@@ -4,7 +4,8 @@
     "enabled": true,
     "running": true,
     "holder": "vectra",
-    "handBack": "passwall2"
+    "handBack": "passwall2",
+    "wouldIdle": false
   },
   "controller": {
     "running": true,
