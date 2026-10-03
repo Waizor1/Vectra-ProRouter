@@ -26,7 +26,8 @@ const maxJournalBytes = 1024 * 1024
 // ArchiveBudgetBytes limits replay receipt storage, not lifetime action count.
 // It was 64 MB — more than the whole free overlay of an AX3000T (~18 MB):
 // receipts could have filled the router's flash. 2 MB is ~250 receipts at
-// their charged size, past what an owner sends in ReceiptMaxAge.
+// their charged size. Reached, it makes room by the oldest receipts
+// (archiveTerminal): a full budget never blocks a Connect action.
 const ArchiveBudgetBytes int64 = 2 * 1024 * 1024
 
 // ReceiptMaxAge: a receipt older than this is removed when the archive is

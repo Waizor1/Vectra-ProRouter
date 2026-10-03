@@ -108,6 +108,12 @@ func (j *Journal) archiveTerminal(data *journalData) error {
 	if err != nil {
 		return err
 	}
+	// Oldest first, for when the budget is reached: a full budget makes room
+	// by the oldest receipts, never by refusing the owner's next action.
+	evictable, err := listReceipts(root)
+	if err != nil {
+		return err
+	}
 	budget := j.archiveBudget
 	if budget <= 0 {
 		budget = ArchiveBudgetBytes
@@ -120,7 +126,7 @@ func (j *Journal) archiveTerminal(data *journalData) error {
 	}
 	sort.Strings(keys)
 	// Each batch frees substantial active capacity; receipts survive
-	// ReceiptMaxAge (ageOutReceipts).
+	// ReceiptMaxAge (ageOutReceipts), or until the budget needs their room.
 	if len(keys) > 128 {
 		keys = keys[:128]
 	}
@@ -147,8 +153,16 @@ func (j *Journal) archiveTerminal(data *journalData) error {
 		// Reserve the receipt block plus a directory block (new shard or
 		// growth of an existing shard). This is intentionally conservative.
 		reserve := int64(2 * receiptMaxBytes)
-		if used > budget-reserve {
-			return ErrJournalFull
+		for used > budget-reserve {
+			if len(evictable) == 0 {
+				// Nothing of the receipts' own left to make room with.
+				return ErrJournalFull
+			}
+			if err := removeReceipt(evictable[0]); err != nil {
+				return err
+			}
+			used -= evictable[0].charge
+			evictable = evictable[1:]
 		}
 		if newShard {
 			if err := privateDir(shard, true); err != nil {
@@ -169,28 +183,35 @@ func (j *Journal) archiveTerminal(data *journalData) error {
 	return nil
 }
 
-// ageOutReceipts removes receipts last written before cutoff: files named
+// receiptFile is one receipt on flash, as the budget charges it.
+type receiptFile struct {
+	path   string
+	mod    time.Time
+	charge int64
+}
+
+// listReceipts are the receipts under root, oldest first: files named
 // <sha256 hex>.json in a shard directory named by their first two letters,
-// and nothing else — a crash-left temp file or anything unknown stays
-// (archiveUsage charges it).
-func ageOutReceipts(root string, cutoff time.Time) error {
+// and nothing else — a crash-left temp file or anything unknown is never
+// listed, so never removed (archiveUsage charges it).
+func listReceipts(root string) ([]receiptFile, error) {
 	shards, err := os.ReadDir(root)
 	if err != nil {
-		return ErrJournal
+		return nil, ErrJournal
 	}
+	var out []receiptFile
 	for _, sh := range shards {
 		if !sh.IsDir() || len(sh.Name()) != 2 {
 			continue
 		}
 		dir := filepath.Join(root, sh.Name())
 		if privateDir(dir, false) != nil {
-			return ErrJournal
+			return nil, ErrJournal
 		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			return ErrJournal
+			return nil, ErrJournal
 		}
-		removed := false
 		for _, e := range entries {
 			key, ok := strings.CutSuffix(e.Name(), ".json")
 			if !ok || len(key) != 64 || !strings.HasPrefix(key, sh.Name()) || !e.Type().IsRegular() {
@@ -200,21 +221,57 @@ func ageOutReceipts(root string, cutoff time.Time) error {
 				continue
 			}
 			info, err := e.Info()
-			if err != nil || !info.ModTime().Before(cutoff) {
+			if err != nil {
 				continue
 			}
-			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return ErrJournal
-			}
-			removed = true
+			out = append(out, receiptFile{path: filepath.Join(dir, e.Name()), mod: info.ModTime(), charge: fileCharge(info)})
 		}
-		if removed {
-			if err := syncDirectory(dir); err != nil {
-				return err
-			}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].mod.Equal(out[j].mod) {
+			return out[i].mod.Before(out[j].mod)
+		}
+		return out[i].path < out[j].path
+	})
+	return out, nil
+}
+
+// removeReceipt removes one listed receipt and syncs its shard.
+func removeReceipt(r receiptFile) error {
+	if err := os.Remove(r.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return ErrJournal
+	}
+	return syncDirectory(filepath.Dir(r.path))
+}
+
+// ageOutReceipts removes receipts last written before cutoff.
+func ageOutReceipts(root string, cutoff time.Time) error {
+	receipts, err := listReceipts(root)
+	if err != nil {
+		return err
+	}
+	for _, r := range receipts {
+		if !r.mod.Before(cutoff) {
+			break
+		}
+		if err := removeReceipt(r); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// fileCharge is what a file costs the budget: its blocks, at least a
+// receipt's maximum, rounded up to whole receipts by size.
+func fileCharge(st fs.FileInfo) int64 {
+	charge := int64(receiptMaxBytes)
+	if stat, ok := st.Sys().(*syscall.Stat_t); ok && stat.Blocks*512 > charge {
+		charge = stat.Blocks * 512
+	}
+	if st.Size() > charge {
+		charge = ((st.Size() + receiptMaxBytes - 1) / receiptMaxBytes) * receiptMaxBytes
+	}
+	return charge
 }
 
 func archiveUsage(root string) (int64, error) {
@@ -252,14 +309,7 @@ func archiveUsage(root string) (int64, error) {
 			return ErrJournal
 		}
 		// Include crash-left temp files in the budget. Never remove unrelated files.
-		charge := int64(receiptMaxBytes)
-		if stat, ok := st.Sys().(*syscall.Stat_t); ok && stat.Blocks*512 > charge {
-			charge = stat.Blocks * 512
-		}
-		if st.Size() > charge {
-			charge = ((st.Size() + receiptMaxBytes - 1) / receiptMaxBytes) * receiptMaxBytes
-		}
-		used += charge
+		used += fileCharge(st)
 		return nil
 	})
 	if err != nil {

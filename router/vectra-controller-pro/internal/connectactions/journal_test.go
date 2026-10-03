@@ -461,3 +461,54 @@ func TestJournalReceiptsAgeOutAndFitTheOverlay(t *testing.T) {
 		t.Fatal("a file that is no receipt was removed")
 	}
 }
+
+// A full receipt budget makes room by the oldest receipts: the owner's next
+// action is never refused for it, and the newest receipts stay.
+func TestJournalFullBudgetEvictsTheOldestReceipts(t *testing.T) {
+	j, err := OpenJournal(filepath.Join(t.TempDir(), "actions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := Binding{RouterID: "r1", OwnerRef: "owner-1"}
+	sum := sha256.Sum256([]byte(`{}`))
+	archive := func(ids ...string) error {
+		return j.withData(func(data *journalData) (bool, error) {
+			for _, id := range ids {
+				data.Records[scopeKey(b, id)] = Record{ActionID: id, Action: "reboot", Status: Succeeded, ParamDigest: hex.EncodeToString(sum[:])}
+			}
+			return true, j.archiveTerminal(data)
+		})
+	}
+	var old []string
+	for i := 0; i < 6; i++ {
+		old = append(old, fmt.Sprintf("old-%d", i))
+	}
+	if err := archive(old...); err != nil {
+		t.Fatal(err)
+	}
+	// Oldest first: old-0 a week ago, old-5 a day ago.
+	for i, id := range old {
+		at := time.Now().Add(-time.Duration(7-i) * 24 * time.Hour)
+		if err := os.Chtimes(j.receiptPath(scopeKey(b, id)), at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	used, err := archiveUsage(j.path + ".receipts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.archiveBudget = used + 2*receiptMaxBytes // room for one more receipt
+	if err := archive("new-0", "new-1"); err != nil {
+		t.Fatalf("a full budget refused: %v", err)
+	}
+	for _, id := range []string{"new-0", "new-1", "old-2", "old-3", "old-4", "old-5"} {
+		if _, ok, err := j.readReceipt(scopeKey(b, id)); err != nil || !ok {
+			t.Fatalf("receipt %s went (%v)", id, err)
+		}
+	}
+	for _, id := range []string{"old-0", "old-1"} {
+		if _, ok, _ := j.readReceipt(scopeKey(b, id)); ok {
+			t.Fatalf("the oldest receipt %s stayed", id)
+		}
+	}
+}
