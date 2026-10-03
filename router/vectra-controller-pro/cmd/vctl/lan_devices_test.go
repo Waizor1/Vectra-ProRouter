@@ -40,8 +40,9 @@ func TestTheLANsDevicesAreTheStaticOnesNoDefaultRouteLeavesBy(t *testing.T) {
 	}
 }
 
-// The daemon's loaded ruleset carries them only while IPv6 is refused — and
-// netifd is not asked on the every-loop checks (dataPlaneMissing).
+// The daemon's loaded ruleset carries them whether IPv6 is refused or not —
+// the LAN egress guard needs them too — and netifd is not asked on the
+// every-loop checks (dataPlaneMissing).
 func TestTheRefusalKnowsTheLANsDevices(t *testing.T) {
 	prev := lanDevices
 	t.Cleanup(func() { lanDevices = prev })
@@ -51,7 +52,7 @@ func TestTheRefusalKnowsTheLANsDevices(t *testing.T) {
 	if s := withLANDevices(withLoadGuards(base, agentcfg.Config{})); !reflect.DeepEqual(s.LANDevices, []string{"br-lan"}) {
 		t.Fatalf("refused, LAN devices %v", s.LANDevices)
 	}
-	if s := withLANDevices(withLoadGuards(base, agentcfg.Config{IPv6: true})); s.LANDevices != nil {
+	if s := withLANDevices(withLoadGuards(base, agentcfg.Config{IPv6: true})); !reflect.DeepEqual(s.LANDevices, []string{"br-lan"}) {
 		t.Fatalf("carried, LAN devices %v", s.LANDevices)
 	}
 	asked = 0

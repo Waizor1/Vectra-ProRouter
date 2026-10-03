@@ -141,7 +141,8 @@ type Spec struct {
 	// Under RefuseIPv6, IPv6 forwarded INTO them — from the internet to a
 	// LAN device, between the LAN's own networks — is left to fw4 as without
 	// vctl; IPv6 to anywhere else is refused. With none known the refusal
-	// stays whole: a device misread as the LAN's would let IPv6 out.
+	// stays whole: a device misread as the LAN's would let IPv6 out. xray
+	// may not dial into them either (CounterLANDial; "br-lan" when none).
 	LANDevices []string
 
 	// KillSwitch makes forwarded LAN-client traffic fail CLOSED, so a client
@@ -354,6 +355,25 @@ func (s Spec) steersDNS() bool {
 // CounterLocalGuard counts connections the loopback guard refused.
 const CounterLocalGuard = "vctl_local_guard"
 
+// CounterInboundGuard counts packets dropped on their way into xray's TPROXY
+// port that TPROXY did not put there: sent to the router's own address on
+// that port (from the LAN, from the router itself, or from the WAN past
+// fw4). xray's tproxy inbound listens on 0.0.0.0 — a TPROXY socket must, to
+// take traffic for every address — and dokodemo-door with followRedirect
+// takes such a connection's destination, the router itself, for the one to
+// dial: xray proxies into itself, over and over, until it runs out of file
+// descriptors. One connection was enough.
+const CounterInboundGuard = "vctl_inbound_guard"
+
+// CounterLANDial counts xray's own dials into the router's LAN that were
+// dropped. xray never has a reason to: the LAN is bypassed before TPROXY, so
+// nothing the router carries is for it. A dial there is a LAN client's
+// "Host: 192.168.1.1" sniffed into a destination, or a provider document
+// sending a connection there — xray as a door into the LAN. xray's answers
+// to the LAN's own connections leave from the address the client asked for
+// (TPROXY keeps it), never from the router's, so they are not this.
+const CounterLANDial = "vctl_lan_dial"
+
 // DefaultDirectCtMark is the conntrack bit of connections the kernel routes
 // straight out (Spec.DirectCtMark): high, clear of the fwmark vctl stamps as
 // a whole ct mark on the router's own flows, of mwan3's 0x3f00 and of the low
@@ -469,6 +489,12 @@ table inet {{ .TableName }} {
 {{- end }}
 {{- if .GuardPorts }}
   counter {{ .CounterLocalGuard }} { }
+{{- end }}
+{{- if .TproxyPort }}
+  counter {{ .CounterInboundGuard }} { }
+{{- end }}
+{{- if .SockMark }}
+  counter {{ .CounterLANDial }} { }
 {{- end }}
 {{- if .SteersDNS }}
   counter {{ .CounterDNSRedirected }} { }
@@ -814,6 +840,30 @@ table inet {{ .TableName }} {
     oifname "lo" tcp dport { {{ joinInts .GuardPorts ", " }} } meta skuid != 0 counter name "{{ .CounterLocalGuard }}" reject with tcp reset
   }
 {{- end }}
+{{- if .TproxyPort }}
+
+  # The inbound guard (see CounterInboundGuard). What TPROXY delivers keeps
+  # the address it was sent to — never the router's own — and carries the
+  # tproxy mark; a connection to the router's own address on the TPROXY port
+  # is someone speaking to xray's listener directly, and is dropped. Ahead of
+  # fw4's input chain, so the LAN's accept there never reaches it.
+  chain inbound_guard {
+    type filter hook input priority filter - 10; policy accept;
+    meta l4proto { tcp, udp } th dport {{ .TproxyPort }} fib daddr type local meta mark != 0x{{ printf "%x" .FwMark }} counter name "{{ .CounterInboundGuard }}" drop
+  }
+{{- end }}
+{{- if .SockMark }}
+
+  # The LAN egress guard (see CounterLANDial): xray's own sockets carry
+  # SockMark; one that leaves from the router's own address into a LAN-side
+  # device is xray dialling into the LAN, and is dropped. Its answers to the
+  # LAN's connections leave from the address the client asked for, which is
+  # not the router's, and pass.
+  chain lan_egress_guard {
+    type filter hook output priority filter; policy accept;
+    meta mark 0x{{ printf "%x" .SockMark }} oifname { {{ .EgressLANDevs }} } fib saddr type local counter name "{{ .CounterLANDial }}" drop
+  }
+{{- end }}
 {{- if .DNSRate }}
 
   # A device's DNS storm waits at the router's door (see Spec.DNSRate): its
@@ -897,6 +947,11 @@ type tmplData struct {
 	CounterPaced          string
 	CounterDNSHeld        string
 	CounterIPv6Refused    string
+	CounterInboundGuard   string
+	CounterLANDial        string
+	// EgressLANDevs: the LAN-side devices xray may not dial into, quoted for
+	// an nft set — Spec.LANDevices, or "br-lan" when none is known.
+	EgressLANDevs string
 	// P2P: Spec.P2PBypass is in force — it rides DirectCtMark.
 	P2P bool
 	// RefuseV6: Spec.RefuseIPv6 is in force (it needs IPv6Enabled).
@@ -954,6 +1009,9 @@ func Render(s Spec) (string, error) {
 		CounterPaced:          CounterPaced,
 		CounterDNSHeld:        CounterDNSHeld,
 		CounterIPv6Refused:    CounterIPv6Refused,
+		CounterInboundGuard:   CounterInboundGuard,
+		CounterLANDial:        CounterLANDial,
+		EgressLANDevs:         egressLANDevices(s.LANDevices),
 		P2P:                   s.P2PBypass && s.DirectCtMark != 0 && !s.KillSwitch,
 		RefuseV6:              s.RefuseIPv6 && s.IPv6Enabled,
 		LANDevs:               quotedDevices(s.LANDevices),
@@ -1010,6 +1068,16 @@ func quotedDevices(devs []string) string {
 		q = append(q, `"`+d+`"`)
 	}
 	return strings.Join(q, ", ")
+}
+
+// egressLANDevices is the LAN egress guard's devices: the LAN's as netifd
+// reports them, or the LAN bridge every OpenWrt router has. Never a guess
+// wider than that — a WAN in the set would cut xray off from everything.
+func egressLANDevices(devs []string) string {
+	if q := quotedDevices(devs); q != "" {
+		return q
+	}
+	return `"br-lan"`
 }
 
 var ifaceName = regexp.MustCompile(`^[A-Za-z0-9._@:+-]{1,15}$`)
