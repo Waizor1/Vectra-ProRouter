@@ -846,10 +846,13 @@ table inet {{ .TableName }} {
   # the address it was sent to — never the router's own — and carries the
   # tproxy mark; a connection to the router's own address on the TPROXY port
   # is someone speaking to xray's listener directly, and is dropped. Ahead of
-  # fw4's input chain, so the LAN's accept there never reaches it.
+  # fw4's input chain, so the LAN's accept there never reaches it. Only a
+  # connection's original direction: an answer to one of the router's own
+  # sockets whose local port happens to be the TPROXY port (dnsmasq asks
+  # from random ports) is not one.
   chain inbound_guard {
     type filter hook input priority filter - 10; policy accept;
-    meta l4proto { tcp, udp } th dport {{ .TproxyPort }} fib daddr type local meta mark != 0x{{ printf "%x" .FwMark }} counter name "{{ .CounterInboundGuard }}" drop
+    ct direction original meta l4proto { tcp, udp } th dport {{ .TproxyPort }} fib daddr type local meta mark != 0x{{ printf "%x" .FwMark }} counter name "{{ .CounterInboundGuard }}" drop
   }
 {{- end }}
 {{- if .SockMark }}

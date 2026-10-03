@@ -232,7 +232,7 @@ func TestRender_InboundGuardDropsDirectConnectionsToTheTproxyPort(t *testing.T) 
 	chain := chainBody(t, out, "inbound_guard")
 	for _, must := range []string{
 		"type filter hook input priority filter - 10; policy accept;",
-		`meta l4proto { tcp, udp } th dport 12345 fib daddr type local meta mark != 0x1 counter name "` + CounterInboundGuard + `" drop`,
+		`ct direction original meta l4proto { tcp, udp } th dport 12345 fib daddr type local meta mark != 0x1 counter name "` + CounterInboundGuard + `" drop`,
 	} {
 		if !strings.Contains(chain, must) {
 			t.Errorf("inbound_guard lacks %q:\n%s", must, chain)
@@ -248,6 +248,11 @@ func TestRender_InboundGuardDropsDirectConnectionsToTheTproxyPort(t *testing.T) 
 	}
 	if n := strings.Count(out, "th dport 12345"); n != 1 {
 		t.Errorf("th dport 12345 appears %d times, want the guard's once", n)
+	}
+	// Only a connection's original direction: an answer to the router's own
+	// socket on that port (dnsmasq's random source ports) is not dropped.
+	if !strings.HasPrefix(strings.TrimSpace(strings.SplitN(chain, "\n", 3)[2]), "ct direction original ") {
+		t.Errorf("inbound_guard judges replies too:\n%s", chain)
 	}
 	// Another port and mark are followed.
 	out, _ = Render(DefaultSpec(7000, 0x2))
