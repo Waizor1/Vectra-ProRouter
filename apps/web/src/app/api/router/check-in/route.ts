@@ -1,6 +1,10 @@
 import { checkInRouter } from "~/server/vectra/router-control";
 import { authenticateRouter } from "~/server/vectra/auth";
 import { safelyMaybeAdvanceRouterOnboarding } from "~/server/vectra/router-auto-onboarding";
+import {
+  routerCheckInRateLimiter,
+  routerRateLimitedResponse,
+} from "~/server/vectra/public-install-rate-limit";
 
 import { parseJsonBody, toRouteErrorResponse } from "../_lib";
 
@@ -12,6 +16,10 @@ export async function POST(request: Request) {
         { error: "Unauthorized router request." },
         { status: 401 },
       );
+    }
+    const rateLimit = routerCheckInRateLimiter.consume(auth.router.id);
+    if (!rateLimit.allowed) {
+      return routerRateLimitedResponse(rateLimit.resetAt);
     }
     const payload: unknown = await parseJsonBody(request);
     const response = await checkInRouter(auth.router.id, payload, {devicePublicKey: auth.credential.devicePublicKey});
