@@ -230,3 +230,24 @@ func TestAPageLoadOfDialsIsNotAStorm(t *testing.T) {
 		t.Fatal("30 dials outstanding to a dead node waited like a storm")
 	}
 }
+
+// A node the view no longer has is forgotten: its last answer grew the map
+// with every node the provider ever named. No view at all forgets nothing.
+func TestANodeGoneFromTheViewIsForgotten(t *testing.T) {
+	d := NewDetector()
+	t0 := time.Unix(1790000000, 0)
+	ok := syn(3)
+	ok.Replied, ok.State = true, "ESTABLISHED"
+	d.Observe(t0, []conntrack.Entry{ok}, eps)
+	if !d.AnsweredSince("bridge-nl5", t0) {
+		t.Fatal("answer not recorded")
+	}
+	d.Observe(t0.Add(time.Second), nil, Endpoints{})
+	if !d.AnsweredSince("bridge-nl5", t0) {
+		t.Fatal("an empty view forgot the answer")
+	}
+	d.Observe(t0.Add(2*time.Second), nil, Endpoints{{Proto: "tcp", Addr: netip.MustParseAddrPort("203.0.113.9:443")}: {"direct-de5"}})
+	if d.AnsweredSince("bridge-nl5", t0) || len(d.lastAnswered) != 0 {
+		t.Fatalf("a node gone from the view is remembered: %v", d.lastAnswered)
+	}
+}

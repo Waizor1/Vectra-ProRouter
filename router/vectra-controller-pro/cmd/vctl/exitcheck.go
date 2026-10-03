@@ -180,6 +180,8 @@ func (d *daemon) exitRound(ctx context.Context, w *exitWatch, now time.Time) {
 		// No probe in the running render yet, or nothing to compare against.
 		return
 	}
+	// Countries of exits the render no longer has are nobody's to show.
+	d.exits.KeepEgress(append(append([]string(nil), exits...), leftOut...))
 	control := d.cfg.ExitCheckControl
 	if control == "" {
 		control = exitCheckControl

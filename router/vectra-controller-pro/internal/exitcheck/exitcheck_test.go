@@ -460,3 +460,19 @@ func TestAnExitsCountryOutlivesARestart(t *testing.T) {
 		t.Fatalf("due after its day %v", due)
 	}
 }
+
+// An exit the render no longer has leaves the countries — and so state.json —
+// instead of staying for good; an empty render list forgets nothing.
+func TestAnExitGoneFromTheRenderLeavesTheCountries(t *testing.T) {
+	var s State
+	t0 := time.Unix(1790000000, 0)
+	s.SetEgress([]string{"bridge-tr5", "bridge-de5", "ru9"}, map[string]string{"bridge-tr5": "PL", "bridge-de5": "DE", "ru9": "RU"}, t0)
+	s.KeepEgress(nil)
+	if len(s.EgressSnapshot()) != 3 {
+		t.Fatal("an empty list forgot countries")
+	}
+	s.KeepEgress([]string{"bridge-tr5", "bridge-de5"})
+	if got := s.Egress(); !reflect.DeepEqual(got, map[string]string{"bridge-tr5": "PL", "bridge-de5": "DE"}) {
+		t.Fatalf("egress = %v", got)
+	}
+}

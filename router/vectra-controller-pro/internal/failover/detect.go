@@ -90,6 +90,22 @@ func (d *Detector) Observe(now time.Time, entries []conntrack.Entry, endpoints E
 		}
 	}
 	d.seenAnswered = answered
+	// Nodes the view no longer has: their last answer is nobody's to keep
+	// (it grew with every node the provider ever named). No view at all
+	// forgets nothing.
+	if len(endpoints) > 0 {
+		inView := map[string]bool{}
+		for _, tags := range endpoints {
+			for _, t := range tags {
+				inView[t] = true
+			}
+		}
+		for t := range d.lastAnswered {
+			if !inView[t] {
+				delete(d.lastAnswered, t)
+			}
+		}
+	}
 }
 
 // Failing reports whether the node has stopped answering.

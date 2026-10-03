@@ -132,6 +132,7 @@ func (d *daemon) applyProviderWith(ctx context.Context, providerRaw []byte, forc
 		return res, err
 	}
 	d.lastApplyErr = ""
+	d.keepAIRefusedFor(providerRaw)
 	d.st.ConfigDigest = res.AppliedDigest
 	d.st.SpliceKey = d.renderKey(opts)
 	// Every unfit exit, not only those the render moved: after a restart the
@@ -159,12 +160,25 @@ func (d *daemon) applyRendering(ctx context.Context, providerRaw []byte, force b
 	res, err = d.applyProviderWith(ctx, providerRaw, force, without, probe)
 	if err == nil {
 		// Only now is the default the reason: without it xray took the render.
+		d.keepAIRefusedFor(providerRaw)
 		if d.aiRefused == nil {
 			d.aiRefused = map[string]bool{}
 		}
 		d.aiRefused[aiRefusedKey(opts.ServiceEntries["ai"], providerRaw)] = true
 	}
 	return res, err
+}
+
+// keepAIRefusedFor forgets the «Нейросети» defaults refused on any document
+// but this one: a refusal holds only on the document it joined
+// (aiRefusedKey), and every document the provider ever sent stayed a key.
+func (d *daemon) keepAIRefusedFor(document []byte) {
+	_, doc, _ := strings.Cut(aiRefusedKey(nil, document), ":")
+	for k := range d.aiRefused {
+		if _, kd, _ := strings.Cut(k, ":"); kd != doc {
+			delete(d.aiRefused, k)
+		}
+	}
 }
 
 // withoutAIDefault is opts without «Нейросети», when they carry them only as

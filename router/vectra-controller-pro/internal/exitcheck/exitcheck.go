@@ -101,6 +101,26 @@ func (s *State) SetEgress(asked []string, located map[string]string, now time.Ti
 	}
 }
 
+// KeepEgress forgets where exits no longer in the render were seen leaving.
+// Without it every exit the provider ever named stayed in memory and in
+// state.json for good. An empty list (no render to read) forgets nothing.
+func (s *State) KeepEgress(tags []string) {
+	if len(tags) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keep := make(map[string]bool, len(tags))
+	for _, t := range tags {
+		keep[t] = true
+	}
+	for t := range s.egress {
+		if !keep[t] {
+			delete(s.egress, t)
+		}
+	}
+}
+
 // Located is where an exit was seen leaving, and when (the state file's).
 type Located struct {
 	CC string

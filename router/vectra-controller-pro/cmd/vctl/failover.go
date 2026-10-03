@@ -411,6 +411,11 @@ func (w *failoverWatch) namesResolved(asked, unresolved []string, now time.Time,
 				delete(w.lostInOutage, t)
 			}
 		}
+		for t := range w.seenResolved {
+			if !contains(asked, t) {
+				delete(w.seenResolved, t)
+			}
+		}
 	}
 	back := 0
 	for _, t := range asked {
