@@ -782,6 +782,7 @@ finish() {
 	fi
 	if [ "$TAKEOVER" = passwall2 ]; then
 		say "  PassWall2 остановлен. Вернуть ему трафик: vectra off."
+		say "  До привязки Vectra ведёт трафик по маршрутам PassWall2, через VPN."
 		say "  Через сутки работы VPN Vectra удалит PassWall2 сама"
 		say "  (настройки сохранятся в /etc/vectra-controller-pro/backup);"
 		say "  после этого vectra off оставит интернет без VPN."
