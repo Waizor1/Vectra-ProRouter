@@ -37,6 +37,12 @@ export interface RunOpts {
   waitMs?: number;
   /** The code a landed `pending` change is told with, when it is not the method's own. */
   done?: string;
+  /**
+   * A refusal that is a question: when the router answers `code`, no failure
+   * is told — the action is asked again at once with these params and opts
+   * (their own dialog first). set_power's `would_idle`.
+   */
+  retry?: { code: string; params: Record<string, unknown>; opts: RunOpts };
 }
 
 export interface AppCtx {

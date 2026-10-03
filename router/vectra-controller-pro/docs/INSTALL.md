@@ -74,6 +74,12 @@ Nothing changes until every check has passed:
    left as it is. The same over an xray-core package older than the minimum
    (opkg would upgrade it over the binary); over one at the minimum or newer,
    opkg leaves package and binary alone, and so does the installer.
+   **Caveat**: that holds for the minimum of the feed the router installs
+   from now. A later pro feed that raises the minimum above the installed
+   xray-core package lets opkg upgrade xray-core on Vectra's next update —
+   over a binary swapped in by hand. Before raising the minimum in the feed,
+   put an xray-core package of the fleet's binaries' version in it (the
+   installer then pins it), or swap those binaries back to their package.
 8. **Storage**: Vectra's packages by the `Installed-Size` of the feed's own
    index, OpenWrt's by download size × 3 (their index has none), plus 4 MB;
    an xray binary its package replaces counts as freed. What would be left is

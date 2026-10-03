@@ -567,6 +567,34 @@ describe('Vectra on and off', () => {
     expect(calls).toEqual(['{"on":true,"force":true}']);
   });
 
+  // The page read wouldIdle false, the router answers would_idle (its status
+  // changed since): the router's word is taken at once — the dialog that
+  // says the internet goes without a VPN, then force, no status poll between.
+  it('asks again at once when the router answers would_idle, then sends force', async () => {
+    const calls: string[] = [];
+    const w = world((x) => {
+      x.status.power = { enabled: false, running: false, holder: 'passwall2', handBack: null, wouldIdle: false };
+    });
+    const call: CallFn = (m, p) => {
+      if (m !== 'set_power') return w(m, p);
+      calls.push(JSON.stringify(p));
+      return Promise.resolve(p?.force === true ? { ok: true, code: 'pending', detail: null } : { ok: false, code: 'would_idle', detail: 'Vectra would carry no traffic yet' });
+    };
+    const app = start({ call });
+    await settle();
+    app.button('Включить Vectra')!.click();
+    await settle();
+    expect(app.$('[role="alertdialog"]')?.textContent).not.toContain('без VPN');
+    app.confirm();
+    await settle();
+    expect(calls).toEqual(['{"on":true}']);
+    expect(app.$('[role="alertdialog"]')?.textContent).toContain('до привязки интернет пойдёт напрямую, без VPN');
+    expect(app.$('.toast.t-fail')).toBeNull();
+    app.confirm();
+    await settle();
+    expect(calls).toEqual(['{"on":true}', '{"on":true,"force":true}']);
+  });
+
   it('turns on without force where Vectra carries the traffic', async () => {
     const calls: string[] = [];
     const w = world((x) => {

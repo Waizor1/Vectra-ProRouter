@@ -35,8 +35,10 @@ export function powerOpts(t: T, s: Status, on: boolean): RunOpts {
     landed: (n) => n.power.enabled === on && n.power.running === on,
     done: on ? 'power_on' : 'power_off',
     waitMs: POWER_WAIT_MS,
-    // would_idle: the status this page read was older than the router's
-    // answer — it asks again, with the dialog that says so.
     fail: { busy: 's.pw.busy', would_idle: 's.pw.idle' },
+    // would_idle where this page read wouldIdle false (its status older than
+    // the router's answer): the router's word is taken at once — the dialog
+    // that says so, and on its confirmation `force`, no status poll between.
+    retry: on && !idle ? { code: 'would_idle', params: { on, force: true }, opts: powerOpts(t, { ...s, power: { ...p, wouldIdle: true } }, on) } : undefined,
   };
 }
