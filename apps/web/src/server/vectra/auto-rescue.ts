@@ -20,6 +20,7 @@ import { isControlPlaneRecoveryIncident } from "~/server/vectra/control-plane-re
 import { buildRouterManagementTaskLog } from "~/server/vectra/editor-surface";
 import { loadFleetMonitoringSnapshot } from "~/server/vectra/fleet-monitoring-data";
 import { getFleetRoutePolicyExceptionReason } from "~/server/vectra/fleet-route-policy";
+import { isReleasedAwaitingOwner } from "~/server/vectra/router-claim-state";
 import { isRouterReachable } from "~/server/vectra/router-presence";
 import { loadLatestRouteVerifications } from "~/server/vectra/route-health-verifier";
 import {
@@ -722,7 +723,7 @@ async function loadActiveCaseForRouter(
   return activeCase;
 }
 
-async function detectBlockedReachabilityTriggers(
+export async function detectBlockedReachabilityTriggers(
   database: DatabaseClient,
   now: Date,
 ): Promise<CriticalTrigger[]> {
@@ -730,6 +731,13 @@ async function detectBlockedReachabilityTriggers(
   const triggers: CriticalTrigger[] = [];
 
   for (const router of routerRows) {
+    // A released router (ADR-0006) has dropped its owner's proxy config on
+    // purpose; blocked probes are expected and nobody is to be paged. Its
+    // offline/direct/incident alerts are suppressed in fleet monitoring,
+    // which is where the other auto-rescue triggers come from.
+    if (isReleasedAwaitingOwner(router)) {
+      continue;
+    }
     const recentSnapshots = await loadRecentSnapshots(database, router.id);
     if (recentSnapshots.length < blockedSnapshotWindow) {
       continue;
@@ -1541,6 +1549,12 @@ async function escalateExpiredCases(database: DatabaseClient, now: Date) {
 // Telegram-initiated repairs are unaffected because they start from an explicit
 // rescue case id rather than this monitor sweep.
 function isAutoRescueExemptRouter(router: RouterRow) {
+  // A released router (ADR-0006) dropped its owner's proxy config on purpose
+  // and waits for a new owner; an unattended reconnect or repair would undo
+  // the release. Routers that never used Connect have releasedAt null.
+  if (isReleasedAwaitingOwner(router)) {
+    return true;
+  }
   return (
     getFleetRoutePolicyExceptionReason({
       id: router.id,

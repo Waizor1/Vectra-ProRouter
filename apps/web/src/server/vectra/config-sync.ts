@@ -12,6 +12,8 @@ type ResolvePersistedConfigDigestArgs = {
 
 type ShouldRequestImportOnCheckInArgs = {
   importState: RouterImportState;
+  /** A Vectra Connect owner's router on the xray engine (isConnectOwnedXrayRouter). */
+  connectOwned?: boolean;
   hasPasswallImport: boolean;
   reportedDigest: string | null | undefined;
   authoritativeDigest: string | null | undefined;
@@ -35,6 +37,11 @@ export function resolvePersistedConfigDigest(
 export function shouldRequestImportOnCheckIn(
   args: ShouldRequestImportOnCheckInArgs
 ) {
+  // Its config is the owner's, run by vctl: there is no PassWall baseline to
+  // ask for, and a digest that moves is the owner's own change.
+  if (args.connectOwned) {
+    return false;
+  }
   if (args.importState === "awaiting_import") {
     return !args.hasPasswallImport;
   }
@@ -54,4 +61,19 @@ export function resolveImportedConfigDigest(
   return importedDigest && importedDigest.length > 0
     ? importedDigest
     : args.fallbackDigest;
+}
+
+/**
+ * A router a Vectra Connect owner holds and the panel runs on the xray engine.
+ * A PassWall baseline from it can only come from a legacy agent that woke up
+ * on it (a dead-man hand-back): it is not the router's config, and must never
+ * stop the owner's actions — partner jobs are delivered only while the router
+ * is "approved".
+ */
+export function isConnectOwnedXrayRouter(router: {
+  ownerRef: string | null;
+  releasedAt: Date | null;
+  engineMode: string;
+}) {
+  return Boolean(router.ownerRef) && !router.releasedAt && router.engineMode === "xray-direct";
 }

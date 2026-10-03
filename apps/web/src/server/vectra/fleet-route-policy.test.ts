@@ -14,7 +14,7 @@ import {
   FLEET_ROUTE_POLICY_VERSION,
   normalizeFleetRoutePolicy,
 } from "./fleet-route-policy";
-import { buildFleetNodeHealth, isUnhealthyNodeHost } from "./fleet-node-health";
+import { buildFleetNodeHealth } from "./fleet-node-health";
 
 function buildConfig(
   overrides: {
@@ -29,6 +29,15 @@ function buildConfig(
     nodeIds?: Partial<
       Record<"world" | "youtube" | "special" | "tiktok" | "discord", string>
     >;
+    /**
+     * Drops the RU-entry Germany node from the fixture.
+     *
+     * That node is the WorldProxy canon since 2026-09-27 and outranks every
+     * tier below it, so a test about the Poland or auto ordering has to build a
+     * subscription that does not carry it — exactly the routers those tiers
+     * exist for.
+     */
+    omitGermanyBridge?: boolean;
   } = {},
 ): PasswallDesiredConfig {
   const nodeIds = {
@@ -38,16 +47,18 @@ function buildConfig(
     tiktok: overrides.nodeIds?.tiktok ?? "node-tiktok-1",
     discord: overrides.nodeIds?.discord ?? "node-discord-1",
   };
+  const germanyBridge = overrides.omitGermanyBridge !== true;
+  // WorldProxy and DiscordVoiceUdp share the RU-entry Germany node (ru*:50052),
+  // the canon since 2026-09-27, so the default config is policy-compliant. When
+  // that node is omitted the pair falls to the RU-entry Poland node, which is
+  // what the tiers below this one are about.
+  const canonNode = germanyBridge ? nodeIds.world : nodeIds.discord;
   const bindings = {
-    // WorldProxy now canonically shares the RU-entry Poland node with
-    // DiscordVoiceUdp (DE→PL move, 2026-07-02). The node-world fixture below
-    // stays a now-inert Germany node; WorldProxy defaults onto the discord
-    // (RU-Poland) node so the default config is policy-compliant.
-    WorldProxy: nodeIds.discord,
+    WorldProxy: canonNode,
     YouTube: nodeIds.youtube,
     Special: nodeIds.special,
     Tiktok: nodeIds.tiktok,
-    DiscordVoiceUdp: nodeIds.discord,
+    DiscordVoiceUdp: canonNode,
     ...overrides.bindings,
   };
 
@@ -124,17 +135,29 @@ function buildConfig(
         group: "default",
         extras: bindings,
       },
-      {
-        id: nodeIds.world,
-        label: "🇷🇺🇩🇪⚡Германия YouTube 🚫Ad🚫",
-        protocol: "vless",
-        enabled: true,
-        group: "default",
-        address: "ru4.nfnpx.online",
-        port: 50052,
-        transport: "grpc",
-        extras: {},
-      },
+      // The RU-entry Germany exit: the WorldProxy/DiscordVoiceUdp canon since
+      // 2026-09-27. Carries the Discord tuning because the slot requires it on
+      // whichever node it resolves to.
+      ...(germanyBridge
+        ? [
+            {
+              id: nodeIds.world,
+              label: "🇷🇺🇩🇪⚡Германия YouTube 🚫Ad🚫",
+              protocol: "vless",
+              enabled: true,
+              group: "default",
+              address: "ru4.nfnpx.online",
+              port: 50052,
+              transport: "grpc",
+              extras: {
+                mux: "1",
+                mux_concurrency: "-1",
+                xudp_concurrency: "16",
+                ...overrides.discordNodeExtras,
+              },
+            },
+          ]
+        : []),
       {
         id: nodeIds.youtube,
         label: "🇷🇺⚡Россия YouTube 🚫Ad🚫",
@@ -355,17 +378,19 @@ describe("fleet route policy", () => {
       result.config.basicSettings.shuntRules.find(
         (rule) => rule.id === "WorldProxy",
       )?.outboundNodeId,
-    ).toBe("node-discord-1");
+    ).toBe("node-world-1");
     const discordRule = result.config.basicSettings.shuntRules.find(
       (rule) => rule.id === "DiscordVoiceUdp",
     );
-    expect(discordRule?.outboundNodeId).toBe("node-discord-1");
+    expect(discordRule?.outboundNodeId).toBe("node-world-1");
     expect(discordRule?.extras).toMatchObject({
       network: "udp",
       port: "19294-19344,50000-50100",
     });
+    // The tuning is repaired on whichever node the slot resolves to, which is
+    // the RU-entry Germany canon — not on the node it used to sit on.
     const discordNode = result.config.nodes.find(
-      (node) => node.id === "node-discord-1",
+      (node) => node.id === "node-world-1",
     );
     expect(discordNode?.extras).toMatchObject({
       mux: "1",
@@ -375,8 +400,8 @@ describe("fleet route policy", () => {
     expect(
       result.config.nodes.find((node) => node.id === "myshunt")?.extras,
     ).toMatchObject({
-      WorldProxy: "node-discord-1",
-      DiscordVoiceUdp: "node-discord-1",
+      WorldProxy: "node-world-1",
+      DiscordVoiceUdp: "node-world-1",
     });
   });
 
@@ -550,7 +575,7 @@ describe("WorldProxy canon (2026-08-02: direct Poland :443)", () => {
   // router/vectra-controller-agent/internal/passwall/fleet_policy_test.go — the
   // two scorers must agree or they undo each other every check-in.
   function withPolandNodes(extra: Array<Record<string, unknown>>) {
-    const base = buildConfig({});
+    const base = buildConfig({ omitGermanyBridge: true });
     return passwallDesiredConfigSchema.parse({
       ...base,
       nodes: [...base.nodes, ...extra],
@@ -621,7 +646,7 @@ describe("WorldProxy canon (2026-08-02: direct Poland :443)", () => {
   });
 
   it("keeps DiscordVoiceUdp with WorldProxy on the RU-entry fallback too", () => {
-    const result = normalizeFleetRoutePolicy(buildConfig({}), {
+    const result = normalizeFleetRoutePolicy(buildConfig({ omitGermanyBridge: true }), {
       hostname: "kirill-msk",
     });
 
@@ -636,7 +661,7 @@ describe("WorldProxy canon (2026-08-02: direct Poland :443)", () => {
   });
 
   it("falls back to RU-entry Poland when the subscription has no direct node", () => {
-    const result = normalizeFleetRoutePolicy(buildConfig({}), {
+    const result = normalizeFleetRoutePolicy(buildConfig({ omitGermanyBridge: true }), {
       hostname: "kirill-msk",
     });
 
@@ -653,7 +678,7 @@ describe("WorldProxy strictPreferred", () => {
   // its own scorer. If a slot parked on the RU-entry fallback counted as
   // compliant, the panel would pin every router back onto the broken exit.
   function withDirectPoland() {
-    const base = buildConfig({});
+    const base = buildConfig({ omitGermanyBridge: true });
     return passwallDesiredConfigSchema.parse({
       ...base,
       nodes: [
@@ -719,6 +744,99 @@ describe("WorldProxy strictPreferred", () => {
   });
 });
 
+describe("RU-entry EU auto exit (2026-09-21: pl1 died, no pl2 in those subscriptions)", () => {
+  function node(
+    id: string,
+    address: string,
+    port: number,
+    label: string,
+    transport = "tcp",
+  ) {
+    return {
+      id,
+      label,
+      protocol: "vless",
+      enabled: true,
+      group: "default",
+      address,
+      port,
+      transport,
+      extras: {},
+    };
+  }
+
+  const autoExit = node(
+    "node-auto",
+    "ru3.nfnpx.online",
+    40051,
+    "🇷🇺🇪🇺 Авто Самый стабильный",
+    "grpc",
+  );
+  const pl1 = node(
+    "node-pl1",
+    "pl1.nfnpx.online",
+    443,
+    "🇵🇱 ⚡️Польша YouTube 🚫Ad🚫",
+  );
+  const pl2 = node("node-pl2", "pl2.nfnpx.online", 443, "⚡Extreme Польша 🇵🇱");
+
+  function withNodes(extra: ReturnType<typeof node>[]) {
+    const base = buildConfig({ omitGermanyBridge: true });
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [...base.nodes, ...extra],
+    });
+  }
+
+  function worldTarget(extra: ReturnType<typeof node>[]) {
+    return normalizeFleetRoutePolicy(withNodes(extra), {
+      deviceIdentifier: "vectra-51704493c3e5",
+    }).after.matchedSlots.find((slot) => slot.slot === "WorldProxy")
+      ?.targetNodeId;
+  }
+
+  it("takes the auto exit over a Poland exit the canon cannot reach", () => {
+    // The sixteen routers stranded on pl1 carried no pl2 node at all, so the
+    // canon was unreachable for them and pl1 was returning 000 — no traffic at
+    // all, measured by url_test_node on AlexanderBabkin.
+    expect(worldTarget([pl1, autoExit])).toBe("node-auto");
+  });
+
+  it("leaves a router that does carry the canonical exit alone", () => {
+    // Operator instruction was explicit: every router except 1111111111, which
+    // is on pl2 and healthy. The score ordering is what enforces that, so it
+    // gets a test rather than a comment.
+    expect(worldTarget([pl2, autoExit])).toBe("node-pl2");
+  });
+
+  it("keeps DiscordVoiceUdp on the same node as WorldProxy", () => {
+    // Splitting the two killed Discord voice fleet-wide on 2026-08-03; the new
+    // tier must not reopen that.
+    const slots = normalizeFleetRoutePolicy(withNodes([pl1, autoExit]), {
+      deviceIdentifier: "vectra-51704493c3e5",
+    }).after.matchedSlots;
+    const world = slots.find((slot) => slot.slot === "WorldProxy");
+    const discord = slots.find((slot) => slot.slot === "DiscordVoiceUdp");
+
+    expect(discord?.targetNodeId).toBe(world?.targetNodeId);
+    expect(discord?.targetNodeId).toBe("node-auto");
+  });
+
+  it("matches the auto exit by port, never by its label", () => {
+    // "Авто" is provider ad copy: the same word ships on nl*:443 exits that are
+    // a different product entirely, and the provider re-maps labels per
+    // subscription. Only the RU-entry :40051 service is this tier.
+    const labelLookalike = node(
+      "node-auto-lookalike",
+      "nl3.nfnpx.online",
+      443,
+      "🇪🇺 Авто Самый быстрый",
+    );
+
+    expect(worldTarget([pl1, labelLookalike])).toBe("node-pl1");
+  });
+});
+
 describe("exit spreading across equally good Poland nodes", () => {
   function polandNode(id: string, address: string, label: string) {
     return {
@@ -738,7 +856,9 @@ describe("exit spreading across equally good Poland nodes", () => {
     nodes: ReturnType<typeof polandNode>[],
     bindings?: Record<string, string>,
   ) {
-    const base = buildConfig(bindings ? { bindings } : {});
+    const base = buildConfig(
+      bindings ? { bindings, omitGermanyBridge: true } : { omitGermanyBridge: true },
+    );
     return passwallDesiredConfigSchema.parse({
       ...base,
       nodes: [...base.nodes, ...nodes],
@@ -1014,7 +1134,10 @@ describe("no churn when already on the right exit", () => {
 
   // One host, two labels — the shape every real subscription hands out.
   function twinLabelConfig(boundNodeId: string) {
-    const base = buildConfig({ bindings: { WorldProxy: boundNodeId } });
+    const base = buildConfig({
+      bindings: { WorldProxy: boundNodeId },
+      omitGermanyBridge: true,
+    });
     return passwallDesiredConfigSchema.parse({
       ...base,
       nodes: [
@@ -1067,7 +1190,10 @@ describe("no churn when already on the right exit", () => {
     // operator's exit is available in its subscription has to be relocated —
     // that is exactly the case that left kirill-msk rotting on an emergency
     // node for five days on 2026-08-07.
-    const base = buildConfig({ bindings: { WorldProxy: "node-pl1" } });
+    const base = buildConfig({
+      bindings: { WorldProxy: "node-pl1" },
+      omitGermanyBridge: true,
+    });
     const config = passwallDesiredConfigSchema.parse({
       ...base,
       nodes: [
@@ -1100,7 +1226,7 @@ describe("directive covers slots that have drifted", () => {
   // needed it. The drift then survives forever. The directive must therefore
   // name the node a slot should be on, never just the ones already correct.
   function driftedWorldProxy() {
-    const base = buildConfig({});
+    const base = buildConfig({ omitGermanyBridge: true });
     return passwallDesiredConfigSchema.parse({
       ...base,
       nodes: [
@@ -1263,52 +1389,172 @@ describe("dead provider hosts lose their slot", () => {
   });
 });
 
-describe("collectFleetNodeHealthSample", () => {
-  // A destination probe never observed the node it gets attributed to — it
-  // observed a website. Tagging it says so, and is what lets a route
-  // verification of the same endpoint outrank it in the ledger.
-  it("tags destination probes as inferred evidence", () => {
-    const sample = collectFleetNodeHealthSample("r1", buildConfig(), {
-      youtube: { status: "blocked" },
-      telegram: { status: "reachable" },
-    });
+describe("a probe cannot testify about a binding it predates", () => {
+  // 2026-09-21: moving the pl1-stranded routers onto the provider's auto exit
+  // made the ledger condemn ru5/ru13/ru16:40051 within minutes — every host
+  // they had just arrived on — using probes taken 3 to 29 minutes BEFORE the
+  // move, while those routers were still on dead pl1. The policy sent them
+  // back to pl1, the accusation evaporated, and the cycle restarted.
+  const binding = new Date("2026-09-21T22:23:45Z");
+  const config = buildConfig({});
 
-    expect(sample?.observations).toContainEqual({
-      host: "ru5.nfnpx.online:50051",
-      outcome: "fail",
-      source: "inferred",
-    });
-    expect(
-      sample?.observations.every((entry) => entry.source === "inferred"),
-    ).toBe(true);
+  function sample(checkedAt: string | null, since: Date | null) {
+    return collectFleetNodeHealthSample(
+      "router-1",
+      config,
+      { telegram: { status: "blocked", checkedAt } },
+      since,
+    );
+  }
+
+  it("ignores a failure measured before the binding took effect", () => {
+    expect(sample("2026-09-21T22:21:02Z", binding)).toBeNull();
   });
 
-  // The 2026-09-06 outage end to end. galeevy-dom's YouTube slot was bound to
-  // a host its own url_test_node could not reach, yet youtube.com still came
-  // back "reachable" — the probe never crossed the slot. Ranked equally, that
-  // lone success spared the dead host for the entire fleet and six routers
-  // stayed pinned to it. The direct verdict has to win.
-  it("does not let a green destination probe shield a host the router's own node test condemns", () => {
-    const config = buildConfig();
-    const probeSaysFine = collectFleetNodeHealthSample("galeevy", config, {
-      youtube: { status: "reachable" },
-      telegram: { status: "reachable" },
-    })!;
+  it("still hears a failure measured after the binding took effect", () => {
+    const result = sample("2026-09-21T22:25:10Z", binding);
 
-    const health = buildFleetNodeHealth([
-      {
-        routerId: "galeevy",
-        observations: [
-          ...probeSaysFine.observations,
-          {
-            host: "ru5.nfnpx.online:50051",
-            outcome: "fail",
-            source: "direct",
-          },
-        ],
-      },
+    expect(result?.observations).toEqual([
+      { host: "ru4.nfnpx.online:50052", outcome: "fail" },
     ]);
+  });
 
-    expect(isUnhealthyNodeHost(health, "ru5.nfnpx.online", 50051)).toBe(true);
+  it("drops a probe it cannot place in time", () => {
+    // No timestamp means the probe cannot be shown to postdate the binding.
+    // Losing an opinion is cheap; the ledger is only consulted to reject.
+    expect(sample(null, binding)).toBeNull();
+  });
+
+  it("filters nothing when the binding time is unknown", () => {
+    // Every caller behaved this way before the cutoff existed.
+    expect(sample("2026-09-21T22:21:02Z", null)?.observations).toHaveLength(1);
+  });
+});
+
+describe("a ghost cannot vouch for a host the living call dead", () => {
+  // The outage of 2026-09-21 in one test. aleksandr-kutuzovgrad went offline on
+  // 09-03 holding a green reading through pl1; eighteen days later that single
+  // stale "ok" was still why pl1 counted as reached, sparing it fleet-wide
+  // while fifteen live routers reported it blocked.
+  const now = new Date("2026-09-21T22:00:00Z");
+  const config = buildConfig({});
+
+  function sample(checkedAt: string) {
+    return collectFleetNodeHealthSample(
+      "ghost",
+      config,
+      { telegram: { status: "reachable", checkedAt } },
+      null,
+      now,
+    );
+  }
+
+  it("ignores a reading from a router that stopped reporting weeks ago", () => {
+    expect(sample("2026-09-03T04:34:45Z")).toBeNull();
+  });
+
+  it("still hears a live router", () => {
+    // Median probe age that day was 28 minutes; p95 44; maximum 50.
+    expect(sample("2026-09-21T21:16:00Z")?.observations).toHaveLength(1);
+  });
+
+  it("filters nothing when no clock is supplied", () => {
+    expect(
+      collectFleetNodeHealthSample(
+        "ghost",
+        config,
+        { telegram: { status: "reachable", checkedAt: "2026-09-03T04:34:45Z" } },
+      )?.observations,
+    ).toHaveLength(1);
+  });
+});
+
+describe("RU-entry Germany canon (2026-09-27: the auto tier did not carry Instagram)", () => {
+  function node(
+    id: string,
+    address: string,
+    port: number,
+    label: string,
+    transport = "grpc",
+  ) {
+    return {
+      id,
+      label,
+      protocol: "vless",
+      enabled: true,
+      group: "default",
+      address,
+      port,
+      transport,
+      extras: {},
+    };
+  }
+
+  const germany = node(
+    "node-de-bridge",
+    "ru7.nfnpx.online",
+    50052,
+    "🇷🇺🇩🇪⚡Германия YouTube 🚫Ad🚫",
+  );
+  const auto = node(
+    "node-auto",
+    "ru3.nfnpx.online",
+    40051,
+    "🇷🇺🇪🇺 Авто Самый стабильный",
+  );
+  const pl2 = node("node-pl2", "pl2.nfnpx.online", 443, "⚡Extreme Польша 🇵🇱", "tcp");
+  const directGermany = node(
+    "node-de-direct",
+    "ger6.nfnpx.online",
+    443,
+    "🇩🇪⚡Германия YouTube 🚫Ad🚫",
+    "tcp",
+  );
+
+  function withNodes(extra: ReturnType<typeof node>[]) {
+    const base = buildConfig({ omitGermanyBridge: true });
+    return passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: [...base.nodes, ...extra],
+    });
+  }
+
+  function worldTarget(extra: ReturnType<typeof node>[]) {
+    return normalizeFleetRoutePolicy(withNodes(extra), {
+      deviceIdentifier: "vectra-de-canon",
+    }).after.matchedSlots.find((slot) => slot.slot === "WorldProxy")
+      ?.targetNodeId;
+  }
+
+  it("wins over the auto exit that was leaving Instagram broken", () => {
+    expect(worldTarget([auto, germany])).toBe("node-de-bridge");
+  });
+
+  it("wins over the canonical Poland exit too", () => {
+    // "всех на германию" — the whole fleet, including routers that still carry
+    // pl2.
+    expect(worldTarget([pl2, germany])).toBe("node-de-bridge");
+  });
+
+  it("keeps DiscordVoiceUdp on the same node", () => {
+    const slots = normalizeFleetRoutePolicy(withNodes([auto, germany]), {
+      deviceIdentifier: "vectra-de-canon",
+    }).after.matchedSlots;
+    const world = slots.find((slot) => slot.slot === "WorldProxy");
+    const discord = slots.find((slot) => slot.slot === "DiscordVoiceUdp");
+
+    expect(discord?.targetNodeId).toBe(world?.targetNodeId);
+    expect(discord?.targetNodeId).toBe("node-de-bridge");
+  });
+
+  it("is the bridged exit, not the direct German one", () => {
+    // The operator asked for "германию которая через мост". Both shapes ship in
+    // every subscription and only the bridged one is the canon.
+    expect(worldTarget([directGermany, germany])).toBe("node-de-bridge");
+  });
+
+  it("falls back to the auto exit when no bridged Germany node exists", () => {
+    // Nothing may strand the slot: every tier below stays reachable.
+    expect(worldTarget([auto])).toBe("node-auto");
   });
 });

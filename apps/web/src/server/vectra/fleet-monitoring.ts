@@ -21,14 +21,8 @@ import {
   getTelegramReachabilityStatus,
 } from "~/lib/telegram-reachability";
 import {
-  describeSubscriptionRisk,
-  hasSubscriptionGateRisk,
-  hasWipedNodeList,
-} from "~/lib/subscription-health";
-import {
   formatYoutubeReachabilityLabel,
   getYoutubeReachabilityStatus,
-  isYoutubeVideoPathDown,
 } from "~/lib/youtube-reachability";
 
 import type { ConfigSourceMode } from "./config-trust";
@@ -64,8 +58,6 @@ type MonitoringAlertKind =
   | "awaiting_import"
   | "low_memory"
   | "router_safety"
-  | "subscription_wiped"
-  | "subscription_gate_risk"
   | "blocked_support";
 
 type FleetMonitoringConfigTrust = {
@@ -82,8 +74,6 @@ type MonitoringServiceFilterValue =
   | "telegram_degraded"
   | "youtube_degraded"
   | "instagram_degraded"
-  | "subscription_wiped"
-  | "subscription_gate_risk"
   | "service_unknown";
 
 export type FleetMonitoringRouterInput = {
@@ -97,11 +87,6 @@ export type FleetMonitoringRouterInput = {
   passwallEnabled: boolean;
   nodeCount: number;
   subscriptionCount: number;
-  subscriptionHealth?: {
-    hwidEnabled: boolean;
-    scheduleEnabled: boolean;
-    placeholderNodes: number;
-  } | null;
   controllerVersion: string;
   passwallVersion: string;
   components: Record<string, string>;
@@ -127,6 +112,8 @@ export type FleetMonitoringRouterInput = {
     reason: string;
     openedAt: Date | null;
   } | null;
+  // Unlinked by its Vectra account and waiting for a new owner (ADR-0006).
+  released?: boolean;
 };
 
 type FleetMonitoringChartFilter = {
@@ -190,11 +177,6 @@ type FleetMonitoringRouter = {
   statusLabel: string;
   nodeCount: number;
   subscriptionCount: number;
-  subscriptionHealth?: {
-    hwidEnabled: boolean;
-    scheduleEnabled: boolean;
-    placeholderNodes: number;
-  } | null;
   controllerVersion: string;
   passwallVersion: string;
   components: Record<string, string>;
@@ -216,6 +198,7 @@ type FleetMonitoringRouter = {
   freshnessState: MonitoringFreshnessState;
   supportState: SupportState;
   alertKinds: MonitoringAlertKind[];
+  released: boolean;
 };
 
 export type FleetMonitoringSnapshot = {
@@ -458,7 +441,15 @@ function buildAlerts(
     policy: router.fleetPolicyCompliance.status,
   } as const;
 
-  if (router.offline) {
+  // A router that has never checked in did not lose contact: registration
+  // always stamps lastSeenAt, so this is a record a Vectra account claim
+  // created ahead of the router's first contact (ADR-0006), waiting for the
+  // customer to plug it in. This alert feeds browser push and auto-rescue
+  // (a stale_check_in case escalates straight to Telegram); an operator can do
+  // nothing for such a router, so it must not page anyone.
+  // A released router is out of service until someone claims it again: it
+  // may be unplugged, sold or wiped, and none of that is an operator's page.
+  if (router.offline && router.lastSeenAt !== null && !router.released) {
     alerts.push({
       id: `offline:${router.id}`,
       kind: "offline",
@@ -467,16 +458,14 @@ function buildAlerts(
       routerName: router.name,
       href,
       title: "Нет свежей связи",
-      description:
-        router.lastSeenAt === null
-          ? "Контроллер ещё не сделал первый check-in."
-          : `Последний известный check-in: ${router.lastSeen}.`,
+      description: `Последний известный check-in: ${router.lastSeen}.`,
       openedAt: router.lastSeenAt,
       filters: routerFilters,
     });
   }
 
-  if (router.directMode) {
+  // Nor a direct-mode or incident alert for a released router.
+  if (router.directMode && !router.released) {
     alerts.push({
       id: `direct:${router.id}`,
       kind: "direct_mode",
@@ -499,7 +488,8 @@ function buildAlerts(
   } else if (
     incident &&
     incident.type !== "recovered" &&
-    router.operationalState === "recovery"
+    router.operationalState === "recovery" &&
+    !router.released
   ) {
     alerts.push({
       id: `incident:${router.id}:${incident.type}`,
@@ -540,60 +530,21 @@ function buildAlerts(
       });
     }
 
-    // The subscription can destroy a router overnight without anything else
-    // going red first, so it is judged before the service probes: a wiped node
-    // list is already an outage, and an open HWID gate is one midnight away.
-    const subscriptionHealth = router.subscriptionHealth;
-    if (hasWipedNodeList(subscriptionHealth)) {
-      alerts.push({
-        id: `subscription-wiped:${router.id}`,
-        kind: "subscription_wiped",
-        severity: "critical",
-        routerId: router.id,
-        routerName: router.name,
-        href,
-        title: "Узлы подписки подменены заглушкой",
-        description: describeSubscriptionRisk(subscriptionHealth),
-        openedAt: router.lastSeenAt,
-        filters: { ...routerFilters, service: "subscription_wiped" },
-      });
-    } else if (hasSubscriptionGateRisk(subscriptionHealth)) {
-      alerts.push({
-        id: `subscription-gate:${router.id}`,
-        kind: "subscription_gate_risk",
-        severity: "warning",
-        routerId: router.id,
-        routerName: router.name,
-        href,
-        title: "Подписка сотрёт узлы в ближайшую ночь",
-        description: describeSubscriptionRisk(subscriptionHealth),
-        openedAt: router.lastSeenAt,
-        filters: { ...routerFilters, service: "subscription_gate_risk" },
-      });
-    }
-
     const youtubeStatus = getYoutubeReachabilityStatus(
       router.youtubeReachability,
     );
     if (youtubeStatus === "partial" || youtubeStatus === "blocked") {
-      // A failed googlevideo check means playback is dead even when the page
-      // still answers, so it is a critical outage for that user rather than the
-      // soft "partial" it would otherwise be filed as.
-      const videoPathDown = isYoutubeVideoPathDown(router.youtubeReachability);
       alerts.push({
         id: `youtube:${router.id}:${youtubeStatus}`,
         kind: "youtube_degraded",
-        severity:
-          youtubeStatus === "blocked" || videoPathDown ? "critical" : "warning",
+        severity: youtubeStatus === "blocked" ? "critical" : "warning",
         routerId: router.id,
         routerName: router.name,
         href,
         title:
           youtubeStatus === "blocked"
             ? "YouTube не отвечает"
-            : videoPathDown
-              ? "YouTube: видео не грузится"
-              : "YouTube частично деградировал",
+            : "YouTube частично деградировал",
         description: `YouTube ${formatYoutubeReachabilityLabel(router.youtubeReachability)}: сервисные probes уже не полностью зелёные.`,
         openedAt: router.youtubeReachability?.checkedAt ?? router.lastSeenAt,
         filters: {
@@ -907,8 +858,6 @@ export function buildFleetMonitoringSnapshot(args: {
     telegram_degraded: 0,
     youtube_degraded: 0,
     instagram_degraded: 0,
-    subscription_wiped: 0,
-    subscription_gate_risk: 0,
     service_unknown: 0,
   };
   const policyCounts: Record<FleetRoutePolicyStatus, number> = {
@@ -984,6 +933,7 @@ export function buildFleetMonitoringSnapshot(args: {
       freshnessState,
       supportState: input.supportState,
       alertKinds: [],
+      released: input.released ?? false,
     };
 
     operationalCounts[operationalState] += 1;

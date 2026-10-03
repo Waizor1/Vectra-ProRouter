@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 
+import { jobs } from "@vectra/db";
+
 import {
+  queueRouteHealthJobs,
   routeVerificationToHealthSample,
   selectRoutersForRouteHealthCheck,
   selectRoutersForSubscriptionRescue,
   subscriptionHasHardwareId,
   type RouteHealthCandidate,
 } from "./route-health-verifier";
+import { createFakeDb } from "./testing/fake-db";
 
 const NOW = new Date("2026-08-24T18:00:00.000Z");
 
@@ -25,6 +29,23 @@ function candidate(
 }
 
 describe("selectRoutersForRouteHealthCheck", () => {
+  // verify_passwall_routes is a PassWall job: a router on the xray engine (a
+  // Vectra Connect router on vctl) never receives it, and the queued job sat
+  // there forever, blocking an engine switch (1111, 2026-10-02).
+  it("never picks a router that is not on the PassWall engine", () => {
+    const picked = selectRoutersForRouteHealthCheck(
+      [
+        candidate({ routerId: "xray", engineMode: "xray-direct" }),
+        candidate({ routerId: "passwall", engineMode: "passwall" }),
+        candidate({ routerId: "legacy" }),
+      ],
+      NOW,
+      { limit: 5, staleAfterMs: 0 },
+    );
+    expect(picked).not.toContain("xray");
+    expect(picked).toEqual(expect.arrayContaining(["passwall", "legacy"]));
+  });
+
   it("prefers the router that has gone longest without a check", () => {
     const picked = selectRoutersForRouteHealthCheck(
       [
@@ -214,8 +235,8 @@ describe("routeVerificationToHealthSample", () => {
     expect(sample).toEqual({
       routerId: "r1",
       observations: [
-        { host: "nl3.nfnpx.online:443", outcome: "fail", source: "direct" },
-        { host: "pl2.nfnpx.online:443", outcome: "ok", source: "direct" },
+        { host: "nl3.nfnpx.online:443", outcome: "fail" },
+        { host: "pl2.nfnpx.online:443", outcome: "ok" },
       ],
     });
   });
@@ -335,5 +356,25 @@ describe("subscriptionHasHardwareId", () => {
       false,
     );
     expect(subscriptionHasHardwareId(null)).toBe(false);
+  });
+});
+
+// Prod 2026-10-02: a verification still running kept its dedupe key, the
+// insert hit vectra_job_dedupe_idx, and the error aborted the tick — the
+// routers after it and the subscription rescue with it.
+describe("queueRouteHealthJobs", () => {
+  it("skips a router whose previous verification still holds the key", async () => {
+    const fake = createFakeDb({ insertConflicts: [jobs] });
+    expect(await queueRouteHealthJobs(fake.db as never, ["r1", "r2"])).toEqual([]);
+    expect(fake.inserts(jobs)).toHaveLength(2);
+  });
+
+  it("queues one keyed verification per router", async () => {
+    const fake = createFakeDb();
+    expect(await queueRouteHealthJobs(fake.db as never, ["r1", "r2"])).toEqual(["r1", "r2"]);
+    expect(fake.inserts(jobs).map((row) => row.dedupeKey)).toEqual([
+      "route-health:r1",
+      "route-health:r2",
+    ]);
   });
 });

@@ -7,6 +7,7 @@ import {
   artifactTypeSchema,
   controllerChannelSchema,
   credentialTypeSchema,
+  engineModeSchema,
   incidentStateSchema,
   incidentTypeSchema,
   jobResultStatusSchema,
@@ -48,6 +49,7 @@ const artifactTypeEnum = pgEnum(
   "vectra_artifact_type",
   artifactTypeSchema.options,
 );
+const engineModeEnum = pgEnum("vectra_engine_mode", engineModeSchema.options);
 const channelEnum = pgEnum(
   "vectra_controller_channel",
   controllerChannelSchema.options,
@@ -109,6 +111,7 @@ export const routers = createTable(
     controllerChannel: channelEnum("controller_channel")
       .notNull()
       .default("stable"),
+    engineMode: engineModeEnum("engine_mode").notNull().default("passwall"),
     rolloutGroupId: text("rollout_group_id"),
     pendingImportRevisionId: text("pending_import_revision_id"),
     activeRevisionId: text("active_revision_id"),
@@ -126,6 +129,30 @@ export const routers = createTable(
     // without a code change or a controller rollout.
     routePolicyExempt: boolean("route_policy_exempt"),
     routePolicyExemptReason: text("route_policy_exempt_reason"),
+    // ADR-0006 ownership. owner_ref is the Vectra account id (opaque, no
+    // personal data); owner_label is the masked label the backend chose to
+    // show on the router's own page.
+    ownerRef: text("owner_ref"),
+    ownerLabel: text("owner_label"),
+    // The router's latest reported one-time claim code, stored as a keyed
+    // digest of the sha256 the router sends (see router-claim-codes.ts): an
+    // 8-character code is only 40 bits, so the plain sha256 would be reversible
+    // offline by anyone who can read this column.
+    claimCodeHash: text("claim_code_hash"),
+    claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
+    // The code the router showed before its current one, kept (sealed the same
+    // way) until its own expiry: a code the router just replaced stays valid
+    // for the grace period the router promises (2 minutes past replacement).
+    previousClaimCodeHash: text("previous_claim_code_hash"),
+    previousClaimExpiresAt: timestamp("previous_claim_expires_at", {
+      withTimezone: true,
+    }),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    // Set when the Vectra account unlinked the router (partner unbind) and
+    // cleared by the next claim. While set with no owner, the router is told
+    // `released: true` — an explicit "drop the previous owner's config" that
+    // `owner: null` (which every fleet router receives) cannot carry.
+    releasedAt: timestamp("released_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [
@@ -135,6 +162,10 @@ export const routers = createTable(
     index("vectra_router_status_idx").on(table.status),
     index("vectra_router_last_seen_idx").on(table.lastSeenAt),
     index("vectra_router_rollout_group_idx").on(table.rolloutGroupId),
+    index("vectra_router_claim_code_hash_idx").on(table.claimCodeHash),
+    index("vectra_router_previous_claim_code_hash_idx").on(
+      table.previousClaimCodeHash,
+    ),
   ],
 );
 
@@ -174,6 +205,8 @@ export const routerInventorySnapshots = createTable(
       .references(() => routers.id, { onDelete: "cascade" }),
     source: text("source").notNull().default("check_in"),
     payload: jsonb("payload").$type<RouterInventory>().notNull(),
+    // Owner-bound confidential Connect telemetry, never plaintext inventory.
+    connectSecretCiphertext: text("connect_secret_ciphertext"),
     passwallEnabled: boolean("passwall_enabled").notNull().default(false),
     selectedNodeId: text("selected_node_id"),
     nodeCount: integer("node_count").notNull().default(0),
@@ -206,7 +239,12 @@ export const passwallDesiredRevisions = createTable(
     revisionNumber: integer("revision_number").notNull(),
     status: text("status").notNull().default("draft"),
     origin: text("origin").notNull().default("operator_draft"),
+    engineMode: engineModeEnum("engine_mode").notNull().default("passwall"),
     configDigest: text("config_digest"),
+    // Typed as the passwall config so the (many) existing passwall consumers
+    // keep their inferred type unchanged. xray-direct revisions store an
+    // XrayDesiredConfig in the same jsonb column and narrow/cast at their own
+    // read/write boundary (see router-control xray draft path).
     config: jsonb("config").$type<PasswallDesiredConfig>().notNull(),
     rawImportedSnapshot: jsonb("raw_imported_snapshot")
       .$type<Record<string, unknown> | null>()
@@ -242,6 +280,7 @@ export const passwallAppliedRevisions = createTable(
     ),
     jobId: text("job_id"),
     result: text("result").notNull().default("applied"),
+    engineMode: engineModeEnum("engine_mode").notNull().default("passwall"),
     uciDigest: text("uci_digest"),
     stdout: text("stdout"),
     stderr: text("stderr"),
@@ -754,6 +793,72 @@ export const operatorPushAlerts = createTable(
     uniqueIndex("vectra_operator_push_alert_dedupe_idx").on(table.dedupeKey),
     index("vectra_operator_push_alert_router_idx").on(table.routerId),
     index("vectra_operator_push_alert_resolved_idx").on(table.resolvedAt),
+  ],
+);
+
+// Stored answers of the partner API (ADR-0006), keyed by the caller's
+// Idempotency-Key. A retry with the same key and the same request replays the
+// stored answer; the same key with a different request is refused.
+export const partnerRequestNonces = createTable("partner_request_nonce", {
+  requestId: text("request_id").primaryKey(),
+  fingerprint: text("fingerprint").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, table => [index("vectra_partner_request_nonce_expiry_idx").on(table.expiresAt)]);
+
+export const partnerIdempotencyKeys = createTable(
+  "partner_idempotency_key",
+  {
+    key: text("key").primaryKey(),
+    requestHash: text("request_hash").notNull(),
+    statusCode: integer("status_code").notNull(),
+    response: jsonb("response").$type<Record<string, unknown>>().notNull(),
+    // status_code 0 = reserved, no final answer yet; the attempt holding it
+    // owns it until locked_until (NULL = released for a retry of the same body).
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("vectra_partner_idempotency_key_created_idx").on(table.createdAt),
+  ],
+);
+
+export type PartnerWebhookEventName =
+  | "router.claimed"
+  | "router.ready"
+  | "router.failed"
+  | "router.online" | "router.offline" | "router.vpn_down" | "router.vpn_up" | "router.updated" | "router.action";
+
+// Outbox of webhooks to the Vectra backend. A row is written in the request
+// path (one insert) and delivered out of it, with backoff, by
+// partner-webhooks.ts. `next_attempt_at` null with `delivered_at` null means
+// delivery was given up.
+export const partnerWebhooks = createTable(
+  "partner_webhook",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    event: text("event").$type<PartnerWebhookEventName>().notNull(),
+    routerId: text("router_id").references(() => routers.id, {
+      onDelete: "set null",
+    }),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    lastStatus: integer("last_status"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("vectra_partner_webhook_due_idx")
+      .on(table.nextAttemptAt)
+      .where(sql`${table.deliveredAt} is null`),
+    index("vectra_partner_webhook_router_idx").on(table.routerId),
   ],
 );
 

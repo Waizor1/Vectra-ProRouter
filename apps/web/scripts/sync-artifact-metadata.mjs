@@ -12,11 +12,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const workspaceRoot = path.resolve(__dirname, "..", "..", "..");
 
+// Keep in lockstep with artifactTypeSchema in packages/contracts/src/schemas.ts.
 const artifactTypeSchema = z.enum([
   "controller",
   "passwall_package",
   "passwall_bundle",
   "firmware",
+  // Standalone Xray binary shipped alongside the Vectra Controller Pro feed.
+  "xray_binary",
 ]);
 const channelSchema = z.enum(["stable", "beta"]);
 const passwallRecoveryDependencySchema = z.enum([
@@ -323,6 +326,10 @@ async function buildFeedArtifacts(options) {
     );
     const filePath = path.join(feedDir, packageFile);
 
+    // Every package in the OpenWrt feed index is a controller artifact. This
+    // is name-agnostic, so the additive vectra-controller-pro package (vctl,
+    // the xray-direct controller) is ingested as a controller artifact exactly
+    // like vectra-controller-agent and luci-app-vectra-controller.
     artifacts.push(
       artifactSeedSchema.parse({
         type: "controller",

@@ -1,0 +1,41 @@
+[
+  {
+    "name": "get-owner",
+    "secret": "synthetic-partner-v2-test-key",
+    "timestamp": 1790856000,
+    "requestId": "12345678-1234-4123-8123-123456789abc",
+    "method": "GET",
+    "pathname": "/api/partner/routers",
+    "canonicalQuery": "ownerRef=acct-a",
+    "rawBody": "",
+    "idempotencyKey": "",
+    "canonicalMessage": "[\"vectra-partner-v2\",1790856000,\"12345678-1234-4123-8123-123456789abc\",\"GET\",\"/api/partner/routers\",\"ownerRef=acct-a\",\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"\"]",
+    "signature": "5f2cf1d0eb0a76a06a9d105250acdc4c2db30f55881370904c549e885a5786d1"
+  },
+  {
+    "name": "post-wifi",
+    "secret": "synthetic-partner-v2-test-key",
+    "timestamp": 1790856000,
+    "requestId": "12345678-1234-4123-8123-123456789abc",
+    "method": "POST",
+    "pathname": "/api/partner/routers/router-7/actions",
+    "canonicalQuery": "",
+    "rawBody": "{\"routerId\":\"router-7\",\"ownerRef\":\"acct-a\",\"action\":\"set_wifi\",\"params\":{\"ssid\":\"Тест 网络\",\"password\":\"synthetic-pass\"}}",
+    "idempotencyKey": "router-action-7",
+    "canonicalMessage": "[\"vectra-partner-v2\",1790856000,\"12345678-1234-4123-8123-123456789abc\",\"POST\",\"/api/partner/routers/router-7/actions\",\"\",\"4fb2708242f738cb4408b9ef16cf571fdba9f70276278d66c4529870639859c1\",\"router-action-7\"]",
+    "signature": "535bee59746fe1a8cc5f1b26372510df2ef9551337542381ba9998649fcbd2ca"
+  },
+  {
+    "name": "query-encoding",
+    "secret": "synthetic-partner-v2-test-key",
+    "timestamp": 1790856000,
+    "requestId": "12345678-1234-4123-8123-123456789abc",
+    "method": "GET",
+    "pathname": "/api/partner/routers/router-7",
+    "canonicalQuery": "ownerRef=acct%3Aa%20%2B%2F~",
+    "rawBody": "",
+    "idempotencyKey": "",
+    "canonicalMessage": "[\"vectra-partner-v2\",1790856000,\"12345678-1234-4123-8123-123456789abc\",\"GET\",\"/api/partner/routers/router-7\",\"ownerRef=acct%3Aa%20%2B%2F~\",\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"\"]",
+    "signature": "c9891e1b25a6852661448c10691a448dbf0c20ea9e82da847eef4a6d482ab0bf"
+  }
+]

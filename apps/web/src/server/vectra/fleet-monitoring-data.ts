@@ -27,6 +27,7 @@ import {
 } from "./route-health-verifier";
 import { buildFleetMonitoringSnapshot } from "./fleet-monitoring";
 import { loadRevisionMetadata } from "./revision-metadata";
+import { isReleasedAwaitingOwner } from "./router-claim-state";
 import { isRouterReachable } from "./router-presence";
 import { describeRouterSupport } from "./support";
 
@@ -161,6 +162,8 @@ function normalizeSnapshotRow(row: unknown): RouterInventorySnapshotRow | null {
     routerId,
     source: readStringField(record, "source") ?? "check_in",
     payload: normalizeSnapshotPayload(record.payload),
+    // Confidential ciphertext is not part of the ordinary fleet read model.
+    connectSecretCiphertext: null,
     passwallEnabled: readBooleanField(
       record,
       "passwallEnabled",
@@ -465,14 +468,19 @@ export async function loadFleetMonitoringSnapshot(
       }).concat(
       routerIds.flatMap((routerId) => {
         const payload = snapshots.get(routerId)?.payload;
+        const policyRow = policyConfigRows.get(routerId);
         const sample = collectFleetNodeHealthSample(
           routerId,
-          policyConfigRows.get(routerId)?.config ?? null,
+          policyRow?.config ?? null,
           {
             telegram: payload?.telegramReachability ?? null,
             youtube: payload?.youtubeReachability ?? null,
             instagram: payload?.instagramReachability ?? null,
           },
+          // Same cutoff as the check-in path, or this page would judge
+          // compliance against evidence the directive has already discarded.
+          policyRow?.createdAt ?? null,
+          new Date(now),
         );
         return sample ? [sample] : [];
       })),
@@ -517,6 +525,7 @@ export async function loadFleetMonitoringSnapshot(
         status: router.status,
         importState: router.importState,
         supportState: support.state,
+        released: isReleasedAwaitingOwner(router),
         lastSeenAt: router.lastSeenAt,
         selectedNode:
           payload?.selectedNodeLabel ??

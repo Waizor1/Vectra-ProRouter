@@ -56,10 +56,12 @@ function createJanitorMockDb(candidates: Array<Record<string, unknown>>) {
         abortNextUpdate = true;
       },
     },
-    failOnNextTransaction() {
+    // Arrow properties, not shorthand methods: both are destructured by the
+    // tests below, and a destructured method loses its `this` binding.
+    failOnNextTransaction: () => {
       throwOnNextTx = true;
     },
-    failOnNextEventInsert() {
+    failOnNextEventInsert: () => {
       throwOnNextEventInsert = true;
     },
   };
@@ -301,6 +303,31 @@ describe("runStuckJobJanitorTick", () => {
     expect(setVals[0]).toMatchObject({
       state: "cancelled",
       dedupeKey: null,
+    });
+  });
+
+  it("keeps a partner action's key so the partner's cancel finds it", async () => {
+    const { db, metrics } = createJanitorMockDb([
+      {
+        id: "job-stuck-partner",
+        routerId: "router-a",
+        type: "set_service",
+        createdAt: TWO_HOURS_AGO,
+        deliveredAt: TWO_HOURS_AGO,
+        dedupeKey: "partner-action:key-1",
+        payload: { origin: "partner" },
+      },
+    ]);
+
+    await runStuckJobJanitorTick(
+      NOW,
+      db as unknown as Parameters<typeof runStuckJobJanitorTick>[1],
+      { enabled: true, staleSeconds: 3600 },
+    );
+
+    expect(metrics.updateSetValues()[0]).toMatchObject({
+      state: "cancelled",
+      dedupeKey: "partner-action:key-1",
     });
   });
 

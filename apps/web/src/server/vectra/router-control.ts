@@ -1,11 +1,17 @@
+import { devicePublicKeysMatch } from "./router-claim-state";
+import { protectConnectInventory, hydratePartnerJobPayload } from "./partner-router-secrets";
+import { notifyPartnerCheckInWithDb, notifyPartnerActionResultWithDb } from "~/server/vectra/partner-router-events";
 import {
   artifactMetadataSchema,
+  MASKED_SECRET_PLACEHOLDER,
   createDefaultRescuePolicy,
   createDefaultUpdatePolicy,
   desiredRevisionSummarySchema,
+  type EngineMode,
   firmwareManifestSchema,
   jobResultRequestSchema,
   jobResultResponseSchema,
+  type PasswallDesiredConfig,
   type PasswallImportedState,
   type RouterConfigSyncState,
   type RouterInventory,
@@ -15,6 +21,9 @@ import {
   routerRegisterRequestSchema,
   routerRegisterResponseSchema,
   summarizePasswallRevisionDiff,
+  VECTRA_PROTOCOL_VERSION,
+  type XrayDesiredConfig,
+  xrayDesiredConfigSchema,
 } from "@vectra/contracts";
 import {
   artifacts,
@@ -30,15 +39,19 @@ import {
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
-import { and, desc, eq, inArray, isNull, lt, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
+import { ZodError } from "zod";
 
 import { env } from "~/env";
 
 import { shouldWriteInventorySnapshot } from "./inventory-snapshot-dedupe";
 import { isControllerUpdateJob } from "~/lib/controller-update-jobs";
 import { isPasswallClearIpsetsJob } from "~/lib/passwall-clear-ipsets-jobs";
-import { isRouterHostnameUpdateTerminalPayload } from "~/lib/router-hostname-jobs";
+import {
+  isRouterHostnameUpdateJob,
+  isRouterHostnameUpdateTerminalPayload,
+} from "~/lib/router-hostname-jobs";
 import { isRouterRebootJob } from "~/lib/router-reboot-jobs";
 import { db } from "~/server/db";
 import { issueRouterCredential } from "~/server/vectra/auth";
@@ -51,23 +64,67 @@ import {
 import { buildFleetRoutePolicyDirective } from "~/server/vectra/fleet-route-policy";
 import { getFleetPolicyContext } from "~/server/vectra/fleet-node-health-cache";
 import {
+  handleSubscriptionRefreshResult,
+  SUBSCRIPTION_REFRESH_JOB_TYPE,
+} from "~/server/vectra/subscription-refresh-guard";
+import {
   resolveImportedConfigDigest,
+  isConnectOwnedXrayRouter,
   resolvePersistedConfigDigest,
   shouldRequestImportOnCheckIn,
 } from "~/server/vectra/config-sync";
+import { isEditableDraftRevision } from "~/server/vectra/draft-selection";
+import {
+  enqueuePartnerWebhookWithDb,
+  schedulePartnerWebhookDelivery,
+} from "~/server/vectra/partner-webhooks";
+import {
+  buildRouterClaimResponseFields,
+  evaluatePreclaimAdoptionWithDb,
+  resolveCheckInClaimColumns,
+} from "~/server/vectra/router-claim-state";
 import {
   computeConfigDigest,
   createSecretPayload,
+  createXraySecretPayload,
   hydratePasswallConfig,
+  hydrateXrayConfig,
   restoreMaskedPasswallConfig,
+  restoreMaskedXrayConfig,
   sanitizePasswallConfig,
   sanitizePasswallRawSnapshot,
+  sanitizeXrayConfig,
 } from "~/server/vectra/secrets";
+import {
+  buildXrayOperatorConfig,
+  withFreshPrimarySubscription,
+  withSelectedProfile,
+  withSubscriptionUrl,
+  withSubscriptionUserAgent,
+  withUiLock,
+} from "~/server/vectra/xray-operator-config";
 
 type RouterRow = typeof routers.$inferSelect;
 type RevisionRow = typeof passwallDesiredRevisions.$inferSelect;
 type JobRow = typeof jobs.$inferSelect;
-type DatabaseClient = typeof db;
+// The query surface the *WithDb helpers use. Narrower than `typeof db` so a
+// transaction handle is accepted too (the partner claim composes several of
+// these helpers inside one transaction).
+type DatabaseClient = Pick<typeof db, "select" | "insert" | "update" | "delete">;
+
+// Job types owned by the xray-direct engine. Only delivered to routers whose
+// engineMode is "xray-direct"; passwall routers never receive these.
+const XRAY_JOB_TYPES = new Set<JobRow["type"]>([
+  "apply_xray_config",
+  "reload_xray_outbound",
+  "refresh_xray_subscriptions",
+  "update_xray_assets",
+  "connect_router_action",
+]);
+
+function isXrayEngineJob(job: JobRow) {
+  return XRAY_JOB_TYPES.has(job.type);
+}
 
 export type ClientRevisionRow = Omit<RevisionRow, "rawImportedSnapshot"> & {
   hasRawImportedSnapshot: boolean;
@@ -141,33 +198,57 @@ function buildConfigSyncState(
   };
 }
 
-function serializeJob(job: JobRow) {
+function serializeJob(job: JobRow, ownerRef: string | null = null) {
   return routerJobSchema.parse({
     id: job.id,
     type: job.type,
     state: job.state,
     createdAt: job.createdAt.toISOString(),
     desiredRevisionId: job.desiredRevisionId,
-    payload: job.payload,
+    payload: hydratePartnerJobPayload(job, ownerRef),
   });
 }
 
 export function selectDeliverableJobsForCheckIn(
   importState: RouterRow["importState"],
   queuedCandidates: JobRow[],
+  engineMode: RouterRow["engineMode"] = "passwall",
+  // Which controller is checking in: vctl reports engineMode "xray-direct";
+  // a legacy agent that woke up on an xray router (a dead-man hand-back)
+  // does not, and cannot run the xray engine's jobs or an owner's actions —
+  // they wait for vctl instead of failing on the wrong controller.
+  reportingController: "xray-direct" | "other" = "xray-direct",
 ) {
+  // Engine isolation: a router only ever receives jobs for its own engine.
+  // passwall routers (the default, all 18 live devices) never see xray jobs
+  // and vice versa. Engine-agnostic exclusive jobs (controller self-update,
+  // reboot, clear-ipsets, rescue, firmware) are handled below for both, and
+  // the OpenWrt hostname update (fleet.renameRouter) is plain uci that vctl's
+  // run_terminal_command runner executes as well.
+  const engineScopedJobs =
+    engineMode === "xray-direct"
+      ? queuedCandidates.filter(
+          (job) =>
+            isXrayEngineJob(job) ||
+            isEngineAgnosticExclusiveJob(job) ||
+            isRouterHostnameUpdateJob(job),
+        )
+      : queuedCandidates.filter((job) => !isXrayEngineJob(job));
+
+  const applyGateJobType =
+    engineMode === "xray-direct" ? "apply_xray_config" : "apply_passwall_config";
+
+  const controllerJobs =
+    engineMode === "xray-direct" && reportingController !== "xray-direct"
+      ? engineScopedJobs.filter((job) => !isXrayEngineJob(job))
+      : engineScopedJobs;
   const allowedJobs =
     importState === "approved"
-      ? queuedCandidates
-      : queuedCandidates.filter((job) => job.type !== "apply_passwall_config");
+      ? controllerJobs
+      : controllerJobs.filter((job) => job.type !== applyGateJobType && job.type !== "connect_router_action");
 
-  const exclusiveJob = allowedJobs.find(
-    (job) =>
-      isControllerUpdateJob(job) ||
-      isPasswallClearIpsetsJob(job) ||
-      isRouterRebootJob(job) ||
-      job.type === "run_rescue_repair" ||
-      job.type === "validate_firmware",
+  const exclusiveJob = allowedJobs.find((job) =>
+    isEngineAgnosticExclusiveJob(job),
   );
 
   if (exclusiveJob) {
@@ -175,6 +256,17 @@ export function selectDeliverableJobsForCheckIn(
   }
 
   return allowedJobs;
+}
+
+function isEngineAgnosticExclusiveJob(job: JobRow) {
+  return (
+    isControllerUpdateJob(job) ||
+    isPasswallClearIpsetsJob(job) ||
+    isRouterRebootJob(job) ||
+    job.type === "run_rescue_repair" ||
+    job.type === "validate_firmware" ||
+    (job.type === "connect_router_action" && (job.payload.action === "reboot" || job.payload.action === "update_now"))
+  );
 }
 
 export function sanitizeRevisionForClient(
@@ -187,8 +279,21 @@ export function sanitizeRevisionForClient(
   const safeRevision = Object.fromEntries(
     Object.entries(revision).filter(([key]) => key !== "rawImportedSnapshot"),
   ) as Omit<RevisionRow, "rawImportedSnapshot">;
+
+  // xray-direct revisions store an XrayDesiredConfig in the jsonb column.
+  // Writes mask it at rest, but re-mask defensively at the client boundary so
+  // operator surfaces never receive raw node/subscription/inbound secrets even
+  // for revisions persisted before at-rest masking landed.
+  const safeConfig =
+    revision.engineMode === "xray-direct"
+      ? (sanitizeXrayConfig(
+          revision.config as unknown as XrayDesiredConfig,
+        ) as unknown as RevisionRow["config"])
+      : safeRevision.config;
+
   return {
     ...safeRevision,
+    config: safeConfig,
     hasRawImportedSnapshot: Boolean(revision.rawImportedSnapshot),
   };
 }
@@ -228,7 +333,10 @@ export function resolveJobDedupeKeyAfterResult(args: {
     return args.currentDedupeKey;
   }
 
-  if (args.currentDedupeKey?.startsWith("onboarding:")) {
+  if (
+    args.currentDedupeKey?.startsWith("onboarding:") ||
+    args.currentDedupeKey?.startsWith("partner-action:")
+  ) {
     return args.currentDedupeKey;
   }
 
@@ -348,10 +456,17 @@ async function insertInventorySnapshot(
   inventory: RouterInventory,
   source: string,
 ) {
+  const carriesWifiSecret =
+    inventory.connect?.wifi?.some((item) => item.password) ?? false;
   // Check-ins arrive roughly every 45 seconds per router and used to write a
   // row every time — ~50k rows/day fleet-wide, 459 MB standing. Registration
   // is rare and marks a real lifecycle event, so it always writes.
-  if (source === "check_in") {
+  //
+  // A Connect check-in that carries a Wi-Fi password always writes too: the
+  // password is stripped from the payload (so the fingerprint cannot see it
+  // change) and only lands in connectSecretCiphertext, which the owner's
+  // snapshot reads from the newest row.
+  if (source === "check_in" && !carriesWifiSecret) {
     const [latest] = await db
       .select({
         payload: routerInventorySnapshots.payload,
@@ -376,16 +491,24 @@ async function insertInventorySnapshot(
     }
   }
 
-  return db.insert(routerInventorySnapshots).values({
-    routerId,
-    source,
-    payload: inventory,
-    passwallEnabled: inventory.passwallEnabled,
-    selectedNodeId: inventory.selectedNodeId ?? null,
-    nodeCount: inventory.nodeCount,
-    subscriptionCount: inventory.subscriptionCount,
-    controllerVersion: inventory.controllerVersion,
-    passwallAppVersion: inventory.packageVersions["luci-app-passwall2"] ?? null,
+  const save = async (client: Pick<typeof db, "insert">, ownerRef: string | null) => {
+    const protectedInventory = protectConnectInventory(routerId, ownerRef, inventory);
+    return client.insert(routerInventorySnapshots).values({
+      routerId, source, payload: protectedInventory.inventory,
+      connectSecretCiphertext: protectedInventory.ciphertext,
+      passwallEnabled: inventory.passwallEnabled,
+      selectedNodeId: inventory.selectedNodeId ?? null,
+      nodeCount: inventory.nodeCount, subscriptionCount: inventory.subscriptionCount,
+      controllerVersion: inventory.controllerVersion,
+      passwallAppVersion: inventory.packageVersions["luci-app-passwall2"] ?? null,
+    });
+  };
+  if (!carriesWifiSecret) return save(db, null);
+  // The ownership lock also orders release's purge after this secret insert.
+  // A concurrent unbind cannot leave a late encrypted old-owner snapshot.
+  return db.transaction(async tx => {
+    const [router] = await tx.select().from(routers).where(eq(routers.id, routerId)).for("share").limit(1);
+    return save(tx, router && !router.releasedAt ? router.ownerRef : null);
   });
 }
 
@@ -451,6 +574,15 @@ async function hydrateRevisionConfigWithDb(
     client,
     revision.id,
   );
+  if (revision.engineMode === "xray-direct") {
+    // The jsonb column is typed as the passwall config for the (many) existing
+    // consumers; an xray revision stores an XrayDesiredConfig there, so narrow
+    // at this boundary before hydrating through the xray schema.
+    return hydrateXrayConfig(
+      revision.config as unknown as XrayDesiredConfig,
+      ciphertext,
+    );
+  }
   return hydratePasswallConfig(revision.config, ciphertext);
 }
 
@@ -485,8 +617,32 @@ async function getRevisionSummaryWithDb(
     return null;
   }
 
-  // "Previous" is the next lower revision number, which is what indexing one
-  // past the current row in a revisionNumber-descending list resolved to.
+  if (current.engineMode === "xray-direct") {
+    // xray-direct revisions are not diffed by the passwall differ. The pro
+    // controller computes its own apply impact from the desired config; the
+    // panel just delivers the config with a neutral, restart-safe summary.
+    const currentConfig = await hydrateRevisionConfigWithDb(client, current);
+    return desiredRevisionSummarySchema.parse({
+      id: current.id,
+      revisionNumber: current.revisionNumber,
+      status: current.status,
+      origin: current.origin,
+      engineMode: current.engineMode,
+      configDigest: current.configDigest,
+      config: currentConfig,
+      impact: {
+        changedSections: [],
+        requiresRestart: true,
+        refreshSubscriptions: false,
+        refreshRules: false,
+        packageInstall: false,
+        firmwareValidation: false,
+      },
+    });
+  }
+
+  // passwall path: diff against the previous passwall revision — the next
+  // lower revision number, skipping any xray-direct revision in between.
   const [previous = null] = await client
     .select()
     .from(passwallDesiredRevisions)
@@ -494,6 +650,7 @@ async function getRevisionSummaryWithDb(
       and(
         eq(passwallDesiredRevisions.routerId, routerId),
         lt(passwallDesiredRevisions.revisionNumber, current.revisionNumber),
+        eq(passwallDesiredRevisions.engineMode, "passwall"),
       ),
     )
     .orderBy(desc(passwallDesiredRevisions.revisionNumber))
@@ -510,17 +667,14 @@ async function getRevisionSummaryWithDb(
     revisionNumber: current.revisionNumber,
     status: current.status,
     origin: current.origin,
+    engineMode: current.engineMode,
     configDigest: current.configDigest,
     config: currentConfig,
-    impact: summarizePasswallRevisionDiff(previousConfig, currentConfig),
+    impact: summarizePasswallRevisionDiff(
+      previousConfig as PasswallDesiredConfig | null,
+      currentConfig as PasswallDesiredConfig,
+    ),
   });
-}
-
-async function getRevisionSummary(
-  routerId: string,
-  revisionId: string | null | undefined,
-) {
-  return getRevisionSummaryWithDb(db, routerId, revisionId);
 }
 
 async function createImportedBaselineRevision(
@@ -530,6 +684,9 @@ async function createImportedBaselineRevision(
     reportedAppliedRevisionId?: string | null;
   } = {},
 ) {
+  if (isConnectOwnedXrayRouter(router)) {
+    return router;
+  }
   const configDigest = resolveImportedConfigDigest({
     importedDigest: importedState.configDigest,
     fallbackDigest: computeConfigDigest(importedState.config),
@@ -687,7 +844,11 @@ async function createImportedBaselineRevision(
   return updatedRouter ?? router;
 }
 
-async function resolveDesiredRevision(router: RouterRow, queuedJobs: JobRow[]) {
+export async function resolveDesiredRevisionWithDb(
+  client: DatabaseClient,
+  router: RouterRow,
+  queuedJobs: JobRow[],
+) {
   if (router.importState !== "approved") {
     return null;
   }
@@ -701,7 +862,24 @@ async function resolveDesiredRevision(router: RouterRow, queuedJobs: JobRow[]) {
     router.lastAppliedRevisionId ??
     null;
 
-  return getRevisionSummary(router.id, preferredRevisionId);
+  const summary = await getRevisionSummaryWithDb(
+    client,
+    router.id,
+    preferredRevisionId,
+  );
+
+  // Engine guard: never hand a router a desired config for a different engine.
+  // Old routers (engineMode "passwall") only ever see passwall revisions, and
+  // an xray-direct router only sees xray revisions.
+  if (summary && summary.engineMode !== router.engineMode) {
+    return null;
+  }
+
+  return summary;
+}
+
+async function resolveDesiredRevision(router: RouterRow, queuedJobs: JobRow[]) {
+  return resolveDesiredRevisionWithDb(db, router, queuedJobs);
 }
 
 function buildRegisterMessage(router: RouterRow) {
@@ -1092,13 +1270,29 @@ export async function registerRouter(
     .where(eq(routers.deviceIdentifier, parsed.inventory.deviceIdentifier))
     .limit(1);
 
-  if (
-    existingRouter &&
+  // ADR-0006: a record the partner API created before this router ever called
+  // in (claim by device) is this router's — the one existing record a router
+  // may register into without a token — but only if it PROVES it holds the
+  // device key the Vectra backend verified (a signed register proof). The key
+  // alone is public; the record comes with the owner's config.
+  const tokenRequired =
+    Boolean(existingRouter) &&
     !canIssueRegistrationToken({
-      existingRouterId: existingRouter.id,
+      existingRouterId: existingRouter?.id,
       authenticatedRouterId: options.authenticatedRouterId ?? null,
-    })
-  ) {
+    });
+  const adoption =
+    tokenRequired && existingRouter
+      ? await evaluatePreclaimAdoptionWithDb(db, existingRouter, {
+          devicePublicKey: parsed.inventory.devicePublicKey,
+          proof: parsed.proof,
+        })
+      : null;
+  const adoptingPreclaimedRouter = adoption?.adopt === true;
+  // Set once a recovery proof verified against the STORED device key.
+  let provenByStoredKey = false;
+
+  if (existingRouter && tokenRequired && !adoptingPreclaimedRouter) {
     // Recovery path: a router that lost its bearer token but kept its ed25519
     // device keypair can re-register by proving possession of the private key.
     const recoveryVerification = parsed.recoveryProof
@@ -1122,6 +1316,10 @@ export async function registerRouter(
           authenticatedRouterId: options.authenticatedRouterId ?? null,
           recoveryProofPresented: Boolean(parsed.recoveryProof),
           recoveryProofRejectReason: recoveryVerification.reason,
+          // Why a pre-claimed record was not adopted (proof_missing,
+          // proof_stale — a router clock not synced yet — proof_invalid,
+          // key_mismatch), or not_preclaimed for an ordinary record.
+          preclaimAdoption: adoption && !adoption.adopt ? adoption.reason : null,
         },
       });
 
@@ -1133,6 +1331,7 @@ export async function registerRouter(
       );
     }
 
+    provenByStoredKey = true;
     await db.insert(eventLog).values({
       routerId: existingRouter.id,
       type: "router.reregister_via_signature",
@@ -1144,6 +1343,54 @@ export async function registerRouter(
         signedAt: parsed.recoveryProof?.signedAt ?? null,
       },
     });
+  }
+
+  // A router a Connect account owns keeps its device key: the bearer token
+  // alone (which a re-registration also accepts) must not be able to swap in
+  // another key and so take the owner's confidential telemetry and Wi-Fi jobs
+  // to a different device. A key change needs a recovery proof signed by the
+  // key on record. A pre-claimed adoption already proved the partner-verified
+  // key and is not a change.
+  if (
+    existingRouter?.ownerRef &&
+    !existingRouter.releasedAt &&
+    !adoptingPreclaimedRouter &&
+    !provenByStoredKey
+  ) {
+    const storedKey = await getLatestDevicePublicKey(existingRouter.id);
+    if (
+      storedKey &&
+      !devicePublicKeysMatch(storedKey, parsed.inventory.devicePublicKey)
+    ) {
+      const keyChangeProof = parsed.recoveryProof
+        ? verifyRouterReauthProof({
+            recoveryProof: parsed.recoveryProof,
+            deviceIdentifier: parsed.inventory.deviceIdentifier,
+            devicePublicKey: storedKey,
+            now,
+          })
+        : ({ ok: false, reason: "missing_proof" } as const);
+      if (!keyChangeProof.ok) {
+        await db.insert(eventLog).values({
+          routerId: existingRouter.id,
+          type: "router.device_key_change_blocked",
+          severity: "warning",
+          message:
+            "Re-registration of an owned router with a different device key was rejected: no proof signed by the key on record.",
+          metadata: {
+            deviceIdentifier: parsed.inventory.deviceIdentifier,
+            recoveryProofPresented: Boolean(parsed.recoveryProof),
+            recoveryProofRejectReason: keyChangeProof.reason,
+          },
+        });
+        throw Object.assign(
+          new Error(
+            "An owned router's device key can only change with a proof signed by its current key.",
+          ),
+          { status: 403 },
+        );
+      }
+    }
   }
 
   const nextStatus = deriveRouterStatus(
@@ -1182,7 +1429,8 @@ export async function registerRouter(
           lastConfigDigest: resolvePersistedConfigDigest({
             previousDigest: existingRouter.lastConfigDigest,
             reportedDigest: parsed.inventory.configDigest,
-            hasPasswallImport: Boolean(parsed.passwallImport),
+            hasPasswallImport:
+              Boolean(parsed.passwallImport) && !isConnectOwnedXrayRouter(existingRouter),
           }),
         })
         .where(eq(routers.id, existingRouter.id))
@@ -1199,6 +1447,9 @@ export async function registerRouter(
           target: parsed.inventory.target,
           architecture: parsed.inventory.architecture,
           openwrtRelease: parsed.inventory.openwrtRelease,
+          // Only a NEW record takes the engine the router reports; an existing
+          // PassWall router is never flipped by a re-registration.
+          engineMode: resolveRegisteredEngineMode(parsed.inventory.engineMode),
           status: nextStatus,
           lastSeenAt: now,
           lastCheckInAt: now,
@@ -1230,21 +1481,25 @@ export async function registerRouter(
       )
     : persistedRouter;
 
+  const firstRegistration = !existingRouter || adoptingPreclaimedRouter;
   await db.insert(eventLog).values({
     routerId: router.id,
-    type: existingRouter ? "router.reregistered" : "router.registered",
+    type: firstRegistration ? "router.registered" : "router.reregistered",
     severity: "info",
-    message: existingRouter
-      ? `Router ${router.deviceIdentifier} re-registered with ${parsed.inventory.controllerVersion}.`
-      : `Router ${router.deviceIdentifier} registered with ${parsed.inventory.controllerVersion}.`,
+    message: firstRegistration
+      ? `Router ${router.deviceIdentifier} registered with ${parsed.inventory.controllerVersion}.`
+      : `Router ${router.deviceIdentifier} re-registered with ${parsed.inventory.controllerVersion}.`,
     metadata: {
       architecture: parsed.inventory.architecture,
       boardName: parsed.inventory.boardName,
-      enrollmentMode: "open_global_install",
+      enrollmentMode: adoptingPreclaimedRouter
+        ? "partner_preclaimed"
+        : "open_global_install",
       pendingReview: !router.approvedAt || router.importState !== "approved",
     },
   });
 
+  // Also revokes the reserved "bootstrap" credential of a pre-claimed record.
   const issued = await issueRouterCredential(
     router.id,
     parsed.inventory.devicePublicKey,
@@ -1257,14 +1512,24 @@ export async function registerRouter(
     issuedToken: issued.token,
     pollingIntervalSeconds: Number(env.VECTRA_POLLING_INTERVAL_SECONDS),
     pendingApproval: !router.approvedAt || router.importState !== "approved",
-    configSyncState: buildConfigSyncState(router),
+    configSyncState: buildConfigSyncState(router, {
+      requestImport: !isConnectOwnedXrayRouter(router) && router.importState === "awaiting_import",
+    }),
     rescuePolicy: createDefaultRescuePolicy(),
     updatePolicy: createDefaultUpdatePolicy(),
     operatorMessage: buildRegisterMessage(router),
+    ...buildRouterClaimResponseFields(router),
   });
 }
 
-export async function checkInRouter(routerId: string, input: unknown) {
+/** engine_mode for a router registering for the first time. */
+export function resolveRegisteredEngineMode(
+  reported: EngineMode | null | undefined,
+): EngineMode {
+  return reported === "xray-direct" ? "xray-direct" : "passwall";
+}
+
+export async function checkInRouter(routerId: string, input: unknown, auth?: {devicePublicKey: string}) {
   const parsed = routerCheckInRequestSchema.parse(input);
   if (parsed.routerId !== routerId) {
     throw new Error("Router identity mismatch.");
@@ -1280,6 +1545,11 @@ export async function checkInRouter(routerId: string, input: unknown) {
     throw new Error("Router not found.");
   }
 
+  if (parsed.inventory.connect && auth &&
+    (parsed.inventory.deviceIdentifier !== existingRouter.deviceIdentifier ||
+     !devicePublicKeysMatch(parsed.inventory.devicePublicKey, auth.devicePublicKey))) {
+    throw new Error("Connect telemetry device identity mismatch.");
+  }
   const now = new Date();
   const nextStatus = deriveRouterStatus(
     existingRouter.status,
@@ -1288,6 +1558,7 @@ export async function checkInRouter(routerId: string, input: unknown) {
   );
   const requestImport = shouldRequestImportOnCheckIn({
     importState: existingRouter.importState,
+    connectOwned: isConnectOwnedXrayRouter(existingRouter),
     hasPasswallImport: Boolean(parsed.passwallImport),
     reportedDigest: parsed.inventory.configDigest,
     authoritativeDigest: existingRouter.lastConfigDigest,
@@ -1321,8 +1592,15 @@ export async function checkInRouter(routerId: string, input: unknown) {
       lastConfigDigest: resolvePersistedConfigDigest({
         previousDigest: existingRouter.lastConfigDigest,
         reportedDigest: parsed.inventory.configDigest,
-        hasPasswallImport: Boolean(parsed.passwallImport),
+        // An ignored PassWall baseline (createImportedBaselineRevision) is
+        // not the digest of an owner's router.
+        hasPasswallImport:
+          Boolean(parsed.passwallImport) && !isConnectOwnedXrayRouter(existingRouter),
       }),
+      // ADR-0006: the one-time claim code the router shows (keyed hash +
+      // expiry), and the one it just replaced until that one's own expiry;
+      // both cleared once it stops reporting a code.
+      ...resolveCheckInClaimColumns(existingRouter, parsed.claim, now),
     })
     .where(eq(routers.id, existingRouter.id))
     .returning();
@@ -1331,6 +1609,16 @@ export async function checkInRouter(routerId: string, input: unknown) {
     throw new Error("Router check-in update failed.");
   }
 
+  try {
+    // Only a router a Vectra account owns has partner events; waking the
+    // dispatcher on every check-in of the whole fleet cost a query each.
+    if (existingRouter.ownerRef && !existingRouter.releasedAt) {
+      await notifyPartnerCheckInWithDb(db, existingRouter, parsed.inventory, now);
+      schedulePartnerWebhookDelivery();
+    }
+  } catch (error) {
+    console.error("[partner-webhooks] check-in event failed", error);
+  }
   await insertInventorySnapshot(
     persistedRouter.id,
     parsed.inventory,
@@ -1380,12 +1668,23 @@ export async function checkInRouter(routerId: string, input: unknown) {
         or(isNull(jobs.deliverAfter), lte(jobs.deliverAfter, now)),
       ),
     )
-    .orderBy(desc(jobs.createdAt))
+    // xray-direct (vctl/Connect) routers get creation order (oldest first) so
+    // an older queued apply/reboot is never skipped by a newer one and owner
+    // actions run in the order they were asked; selectDeliverableJobsForCheckIn
+    // then picks the OLDEST pending exclusive job. PassWall routers — the
+    // existing fleet — keep the newest-first delivery they have always had.
+    .orderBy(
+      router.engineMode === "xray-direct"
+        ? asc(jobs.createdAt)
+        : desc(jobs.createdAt),
+    )
     .limit(10);
 
   const deliverableJobs = selectDeliverableJobsForCheckIn(
     router.importState,
     queuedCandidates,
+    router.engineMode,
+    parsed.inventory.engineMode === "xray-direct" ? "xray-direct" : "other",
   );
 
   const [desiredRevision, policyContext] = await Promise.all([
@@ -1398,6 +1697,59 @@ export async function checkInRouter(routerId: string, input: unknown) {
   // the panel stored for it.
   const routePolicyConfig =
     parsed.passwallImport?.config ?? policyContext.configByRouter.get(router.id) ?? null;
+  // Serialized one by one: a job that cannot be hydrated (a stored ciphertext
+  // that no longer decrypts or binds) is failed on its own instead of throwing
+  // the whole check-in away — and with it every other job for this router.
+  const serializeEach = (candidates: JobRow[], ownerRef: string | null) => {
+    const delivered: ReturnType<typeof serializeJob>[] = [];
+    const undeliverable: JobRow[] = [];
+    for (const job of candidates) {
+      try {
+        delivered.push(serializeJob(job, ownerRef));
+      } catch (error) {
+        // Only the error's class and the paths of a schema failure: the
+        // message or data may come from a payload with a Wi-Fi password.
+        console.error("[router-control] job could not be prepared for delivery", {
+          jobId: job.id,
+          jobType: job.type,
+          ...describeUndeliverableError(error),
+        });
+        undeliverable.push(job);
+      }
+    }
+    return { delivered, undeliverable, ownerRef };
+  };
+  const isPartnerJob = (job: JobRow) => job.payload.origin === "partner_action";
+  const serialization = deliverableJobs.some(isPartnerJob)
+    ? await db.transaction(async tx => {
+      // The router row lock a partner's cancel takes as well: a delivery and
+      // a cancel of the same job are serialized, never interleaved.
+      const [current] = await tx.update(routers).set({updatedAt: now}).where(eq(routers.id, router.id)).returning();
+      if (!current || current.releasedAt || !current.ownerRef || current.status === "disabled" || current.importState !== "approved" || current.engineMode !== "xray-direct") return serializeEach([], null);
+      const owned = deliverableJobs.filter(job => !isPartnerJob(job) || job.payload.ownerRef === current.ownerRef);
+      // Re-read under the lock: a partner job cancelled after the candidates
+      // were read must not be handed out.
+      const partnerIds = owned.filter(isPartnerJob).map(job => job.id);
+      const stillQueued = new Set(
+        partnerIds.length > 0
+          ? (await tx.select().from(jobs).where(and(inArray(jobs.id, partnerIds), eq(jobs.state, "queued")))).map(row => row.id)
+          : [],
+      );
+      const serialized = serializeEach(owned.filter(job => !isPartnerJob(job) || stillQueued.has(job.id)), current.ownerRef);
+      // Delivery is recorded (deliveredAt) without leaving `queued`: a lost
+      // check-in answer still redelivers the job, but from now on a cancel
+      // knows the router may already have it.
+      const handedOut = serialized.delivered.map(job => job.id).filter(id => stillQueued.has(id));
+      if (handedOut.length > 0) {
+        await tx.update(jobs).set({deliveredAt: now}).where(and(inArray(jobs.id, handedOut), isNull(jobs.deliveredAt)));
+      }
+      return serialized;
+    })
+    : serializeEach(deliverableJobs, null);
+  if (serialization.undeliverable.length > 0) {
+    await failUndeliverableJobs(router.id, serialization.undeliverable, serialization.ownerRef, now);
+  }
+  const serializedJobs = serialization.delivered;
 
   return routerCheckInResponseSchema.parse({
     protocolVersion: parsed.protocolVersion,
@@ -1408,7 +1760,7 @@ export async function checkInRouter(routerId: string, input: unknown) {
     rescuePolicy: createDefaultRescuePolicy(),
     updatePolicy: createDefaultUpdatePolicy(),
     desiredRevision,
-    jobs: deliverableJobs.map(serializeJob),
+    jobs: serializedJobs,
     operatorMessage: buildCheckInMessage(router, parsed.health.currentMode),
     // Tell the controller which nodes to bind rather than letting it re-derive
     // them from its own compiled-in scorer. Computed from the config the router
@@ -1428,7 +1780,115 @@ export async function checkInRouter(routerId: string, input: unknown) {
       // has lost, and pins routers to dead hosts — see fleet-node-health.ts.
       { nodeHealth: policyContext.nodeHealth },
     ),
+    ...buildRouterClaimResponseFields(router),
   });
+}
+
+const UNDELIVERABLE_JOB_CODE = "payload_unavailable";
+
+/** What may be logged about a job that cannot be serialized: never a message. */
+export function describeUndeliverableError(error: unknown) {
+  return {
+    error: error instanceof Error ? error.name : typeof error,
+    ...(error instanceof ZodError
+      ? { issuePaths: error.issues.map((issue) => issue.path.join(".") || "(root)") }
+      : {}),
+  };
+}
+
+/**
+ * Fail jobs a check-in could not serialize. The reason is a fixed code: the
+ * underlying error may come from decrypting a payload that carries a Wi-Fi
+ * password and is never echoed anywhere. The failure goes through the same
+ * result path as a router's own failure (recordJobResult): an owner's action
+ * ends as a failed router.action, a claim's first apply as router.failed, a
+ * revision as failed — not as a job that silently stops.
+ */
+async function failUndeliverableJobs(
+  routerId: string,
+  undeliverable: JobRow[],
+  ownerRef: string | null,
+  now: Date,
+) {
+  for (const job of undeliverable) {
+    // Taken out of the queue first, so no other check-in (or a partner's
+    // cancel) acts on it while its failure is recorded.
+    const [taken] = await db
+      .update(jobs)
+      .set({ state: "running" })
+      .where(and(eq(jobs.id, job.id), eq(jobs.state, "queued")))
+      .returning();
+    if (!taken) {
+      continue;
+    }
+    await db.insert(eventLog).values({
+      routerId,
+      type: "job.undeliverable",
+      severity: "warning",
+      message: `Job ${job.id} (${job.type}) could not be prepared for delivery and was failed.`,
+      metadata: { jobId: job.id, jobType: job.type, code: UNDELIVERABLE_JOB_CODE },
+    });
+    try {
+      await recordJobResult(routerId, {
+        protocolVersion: VECTRA_PROTOCOL_VERSION,
+        routerId,
+        jobId: job.id,
+        status: "failure",
+        result: { code: UNDELIVERABLE_JOB_CODE, error: UNDELIVERABLE_JOB_CODE },
+      });
+    } catch (error) {
+      console.error("[router-control] undeliverable job result not recorded", {
+        jobId: job.id,
+        ...describeUndeliverableError(error),
+      });
+      const [failed] = await db
+        .update(jobs)
+        .set({
+          state: "failed",
+          completedAt: now,
+          // As on any result: free the key (onboarding/partner keys stay),
+          // or a keyed lane (route-health) could never queue for it again.
+          dedupeKey: resolveJobDedupeKeyAfterResult({
+            currentDedupeKey: job.dedupeKey ?? null,
+            resultStatus: "failure",
+          }),
+        })
+        .where(and(eq(jobs.id, job.id), eq(jobs.state, "running")))
+        .returning();
+      // The result path did not run: the backend still hears the failure.
+      if (failed) {
+        await notifyUndeliverableFailure(job, ownerRef);
+      }
+    }
+  }
+}
+
+async function notifyUndeliverableFailure(job: JobRow, ownerRef: string | null) {
+  try {
+    const owner =
+      ownerRef ??
+      (await db.select().from(routers).where(eq(routers.id, job.routerId)).limit(1))[0]?.ownerRef ??
+      null;
+    if (!owner) return;
+    if (isPartnerClaimApplyJob(job)) {
+      await enqueuePartnerWebhookWithDb(db, {
+        event: "router.failed",
+        routerId: job.routerId,
+        ownerRef: owner,
+        detail: UNDELIVERABLE_JOB_CODE,
+      });
+    } else {
+      await notifyPartnerActionResultWithDb(db, {
+        job,
+        ownerRef: owner,
+        status: "failure",
+        code: UNDELIVERABLE_JOB_CODE,
+      });
+    }
+    schedulePartnerWebhookDelivery();
+  } catch (error) {
+    console.error("[partner-webhooks] undeliverable job event failed", describeUndeliverableError(error));
+  }
 }
 
 export async function recordJobResult(routerId: string, input: unknown) {
@@ -1455,6 +1915,47 @@ export async function recordJobResult(routerId: string, input: unknown) {
   }
 
   const terminalJobStates = new Set(["succeeded", "failed", "cancelled"]);
+  if (job.state === "cancelled" && job.payload.origin === "partner_action") {
+    // A cancelled owner action must never run; if the router ran it anyway,
+    // its owner hears the real result instead of it being dropped.
+    console.warn("[router-control] cancelled job ran", {
+      jobId: job.id,
+      jobType: job.type,
+      status: parsed.status,
+    });
+    if (parsed.status !== "accepted") {
+      const code =
+        typeof parsed.result?.code === "string" && /^[a-z][a-z0-9_]{0,47}$/.test(parsed.result.code)
+          ? parsed.result.code
+          : null;
+      try {
+        // Once per job, and in one transaction with the event: a router
+        // retrying its finish must not announce it again, and a failed
+        // enqueue leaves it unclaimed for the next retry.
+        const reported = await db.transaction(async (tx) => {
+          const [claimed] = await tx
+            .update(jobs)
+            .set({ payload: { ...job.payload, cancelledRunReported: true } })
+            .where(
+              and(
+                eq(jobs.id, job.id),
+                eq(jobs.state, "cancelled"),
+                sql`${jobs.payload} ->> 'cancelledRunReported' is null`,
+              ),
+            )
+            .returning({ id: jobs.id });
+          if (!claimed) return false;
+          await notifyPartnerActionResultWithDb(tx, {
+            job, ownerRef: router.ownerRef, status: parsed.status, code,
+          });
+          return true;
+        });
+        if (reported) schedulePartnerWebhookDelivery();
+      } catch (error) {
+        console.error("[partner-webhooks] cancelled job result event failed", describeUndeliverableError(error));
+      }
+    }
+  }
   if (
     (parsed.status === "accepted" &&
       (job.state === "running" || terminalJobStates.has(job.state))) ||
@@ -1466,6 +1967,24 @@ export async function recordJobResult(routerId: string, input: unknown) {
     });
   }
 
+  // Partner action results carry no arbitrary echoed params/output: a router
+  // must never persist or log a WiFi credential through its result channel.
+  // The router's failure code (vctl connectFinish: {"code": …}) is a plain
+  // word, never echoed input; keep it for the owner's journal.
+  const partnerResultCode =
+    typeof parsed.result?.code === "string" && /^[a-z][a-z0-9_]{0,47}$/.test(parsed.result.code)
+      ? parsed.result.code
+      : null;
+  if (job.payload.origin === "partner_action") {
+    parsed.stdout = undefined;
+    parsed.stderr = undefined;
+    parsed.result = partnerResultCode ? {actionId: job.id, code: partnerResultCode} : {actionId: job.id};
+    parsed.incidentTransitions = [];
+    if (job.type === "connect_router_action") {
+      parsed.appliedRevisionId = undefined;
+      parsed.configDigest = undefined;
+    }
+  }
   const payload = normalizeJobResultPayload(parsed);
 
   await db.insert(jobResults).values({
@@ -1495,6 +2014,38 @@ export async function recordJobResult(routerId: string, input: unknown) {
       }),
     })
     .where(eq(jobs.id, job.id));
+
+  // A refresh that destroyed the node list is undone here, before anything
+  // else reacts to it. Without this the rescue lane cannot run unattended:
+  // see subscription-refresh-guard for the failure it exists to reverse.
+  if (
+    job.type === SUBSCRIPTION_REFRESH_JOB_TYPE &&
+    parsed.status !== "accepted"
+  ) {
+    try {
+      const guard = await handleSubscriptionRefreshResult(
+        db,
+        {
+          routerId,
+          jobPayload: job.payload,
+          resultPayload: payload,
+        },
+        (args) => queueDesiredRevisionApplyJobWithDb(db, args),
+      );
+      if (guard.restored) {
+        console.warn(
+          "[subscription-guard] restored node list on %s from revision %s: %s",
+          routerId,
+          guard.revisionId,
+          guard.reason,
+        );
+      }
+    } catch (error) {
+      // Never let the guard fail the result recording itself: a job result
+      // that cannot be written is a worse outage than a missed restore.
+      console.error("[subscription-guard]", error);
+    }
+  }
 
   if (job.type === "run_rescue_repair" && parsed.status !== "accepted") {
     const rescueRepairPayload = payload as Record<string, unknown>;
@@ -1557,6 +2108,7 @@ export async function recordJobResult(routerId: string, input: unknown) {
         routerId,
         desiredRevisionId: revision.id,
         jobId: job.id,
+        engineMode: revision.engineMode,
         result: resultState,
         uciDigest: parsed.configDigest ?? revision.configDigest ?? null,
         stdout: parsed.stdout ?? null,
@@ -1626,6 +2178,21 @@ export async function recordJobResult(routerId: string, input: unknown) {
     currentRouter = updatedRouter ?? currentRouter;
   }
 
+  try {
+    await notifyPartnerActionResultWithDb(db, {
+      job, ownerRef: currentRouter.ownerRef, status: parsed.status, code: partnerResultCode,
+    });
+    schedulePartnerWebhookDelivery();
+  } catch (error) {
+    console.error("[partner-webhooks] action result event failed", error);
+  }
+
+  await notifyPartnerOfClaimApplyResult({
+    job,
+    ownerRef: currentRouter.ownerRef,
+    parsed,
+  });
+
   await db.insert(eventLog).values({
     routerId,
     type: `job.${parsed.status}`,
@@ -1641,6 +2208,64 @@ export async function recordJobResult(routerId: string, input: unknown) {
     protocolVersion: parsed.protocolVersion,
     acknowledged: true,
   });
+}
+
+// Marks the apply job a partner claim queues (ADR-0006). Its first terminal
+// result is what the Vectra backend waits for: router.ready or router.failed.
+export const PARTNER_CLAIM_APPLY_ORIGIN = "partner_claim";
+
+export function isPartnerClaimApplyJob(
+  job: Pick<JobRow, "type" | "payload">,
+) {
+  return (
+    job.type === "apply_xray_config" &&
+    job.payload?.origin === PARTNER_CLAIM_APPLY_ORIGIN
+  );
+}
+
+export function describeFailedJobResult(
+  parsed: ReturnType<typeof jobResultRequestSchema.parse>,
+) {
+  if (typeof parsed.result.error === "string" && parsed.result.error.trim()) {
+    return parsed.result.error.trim();
+  }
+  if (parsed.stderr?.trim()) {
+    return parsed.stderr.trim();
+  }
+  return "The router could not apply its configuration.";
+}
+
+// Never fails the router's job-result request: the webhook is one outbox
+// insert, and its delivery happens later, off this request.
+async function notifyPartnerOfClaimApplyResult(args: {
+  job: JobRow;
+  ownerRef: string | null;
+  parsed: ReturnType<typeof jobResultRequestSchema.parse>;
+}) {
+  if (
+    args.parsed.status === "accepted" ||
+    !args.ownerRef ||
+    !isPartnerClaimApplyJob(args.job)
+  ) {
+    return;
+  }
+
+  try {
+    const webhookId = await enqueuePartnerWebhookWithDb(db, {
+      event: args.parsed.status === "success" ? "router.ready" : "router.failed",
+      routerId: args.job.routerId,
+      ownerRef: args.ownerRef,
+      detail:
+        args.parsed.status === "success"
+          ? null
+          : describeFailedJobResult(args.parsed),
+    });
+    if (webhookId) {
+      schedulePartnerWebhookDelivery();
+    }
+  } catch (error) {
+    console.error("[partner-webhooks] could not queue a claim result", error);
+  }
 }
 
 export async function getArtifactMetadata(
@@ -1759,6 +2384,16 @@ export async function getFullConfigForRevisionWithDb(
     return null;
   }
 
+  // Defensive: this helper feeds passwall-only restore logic. If ever asked for
+  // an xray revision, hand back the stored xray config rather than parsing it
+  // through the passwall schema (which would throw).
+  if (revision.engineMode === "xray-direct") {
+    return hydrateXrayConfig(
+      revision.config as unknown as XrayDesiredConfig,
+      await getSecretCiphertextForRevisionWithDb(client, revision.id),
+    ) as unknown as PasswallDesiredConfig;
+  }
+
   return hydratePasswallConfig(
     revision.config,
     await getSecretCiphertextForRevisionWithDb(client, revision.id),
@@ -1769,6 +2404,8 @@ export async function createOperatorDraftRevision(input: {
   routerId: string;
   note?: string;
   config: RevisionRow["config"];
+  engineMode?: EngineMode;
+  xrayConfig?: XrayDesiredConfig;
 }) {
   return createOperatorDraftRevisionWithDb(db, input);
 }
@@ -1778,7 +2415,12 @@ export async function createOperatorDraftRevisionWithDb(
   input: {
     routerId: string;
     note?: string;
+    // passwall config carrier; required for the passwall path (the default).
     config: RevisionRow["config"];
+    // engineMode defaults to "passwall"; when "xray-direct" the xray path runs
+    // and `xrayConfig` is stored instead of `config`.
+    engineMode?: EngineMode;
+    xrayConfig?: XrayDesiredConfig;
   },
 ) {
   const [router] = await client
@@ -1797,6 +2439,82 @@ export async function createOperatorDraftRevisionWithDb(
     .where(eq(passwallDesiredRevisions.routerId, input.routerId))
     .orderBy(desc(passwallDesiredRevisions.revisionNumber))
     .limit(1);
+
+  if (input.engineMode === "xray-direct") {
+    if (!input.xrayConfig) {
+      throw new Error("xray-direct draft requires an xray config.");
+    }
+
+    const submittedXrayConfig = xrayDesiredConfigSchema.parse(input.xrayConfig);
+
+    // Re-inject real secrets if the operator re-submitted a previously-MASKED
+    // config (placeholders must never be persisted as real secrets, or the
+    // controller would hydrate placeholders into a broken router). Mirrors the
+    // passwall path below: source the prior revision's hydrated cleartext.
+    // Guard the source to an xray-direct revision so a passwall baseline left
+    // over from an engine switch is never fed into the xray restore walker.
+    const xraySourceRevisionId =
+      router.pendingImportRevisionId ??
+      router.activeRevisionId ??
+      latestRevision?.id ??
+      null;
+    const [xraySourceRevision] = xraySourceRevisionId
+      ? await client
+          .select()
+          .from(passwallDesiredRevisions)
+          .where(eq(passwallDesiredRevisions.id, xraySourceRevisionId))
+          .limit(1)
+      : [];
+    const xraySourceConfig =
+      xraySourceRevision?.engineMode === "xray-direct"
+        ? ((await getFullConfigForRevisionWithDb(
+            client,
+            xraySourceRevision.id,
+          )) as unknown as XrayDesiredConfig)
+        : null;
+    const xrayConfig = restoreMaskedXrayConfig(
+      submittedXrayConfig,
+      xraySourceConfig,
+    );
+
+    // Digest covers the real (cleartext) config so it matches what the
+    // controller ultimately renders, mirroring the passwall path.
+    const configDigest = computeConfigDigest(xrayConfig);
+    // Mask node/subscription/inbound secrets before persisting in the jsonb
+    // column; cleartext lives only in the encrypted secret blob below.
+    const maskedXrayConfig = sanitizeXrayConfig(xrayConfig);
+
+    const [revision] = await client
+      .insert(passwallDesiredRevisions)
+      .values({
+        routerId: input.routerId,
+        revisionNumber: (latestRevision?.revisionNumber ?? 0) + 1,
+        status: "draft",
+        origin: "operator_draft",
+        engineMode: "xray-direct",
+        configDigest,
+        // The column is typed as the passwall config for existing consumers;
+        // narrow at this write boundary (mirrored by hydrateRevisionConfigWithDb).
+        config: maskedXrayConfig as unknown as RevisionRow["config"],
+        createdBy: "operator",
+        note: input.note,
+      })
+      .returning();
+
+    if (!revision) {
+      throw new Error("Failed to create xray draft revision.");
+    }
+
+    await upsertRevisionSecretBlobWithDb(
+      client,
+      input.routerId,
+      revision.id,
+      "desired_revision",
+      createXraySecretPayload(xrayConfig),
+    );
+
+    return revision;
+  }
 
   const sourceRevisionId =
     router.pendingImportRevisionId ??
@@ -1895,4 +2613,196 @@ export async function queueDesiredRevisionApplyJobWithDb(
     .where(eq(passwallDesiredRevisions.id, input.desiredRevisionId));
 
   return job ?? null;
+}
+
+/**
+ * Queue `apply_xray_config` for an xray revision — the write half of
+ * `draft.queueApplyXray`, shared with the partner claim (ADR-0006). The caller
+ * owns the preconditions (engine, support, approval); this only dedupes on the
+ * revision and queues. `origin` marks a claim's apply, whose first result is
+ * reported to the Vectra backend as router.ready / router.failed.
+ */
+export async function queueXrayApplyJobWithDb(
+  client: DatabaseClient,
+  input: {
+    routerId: string;
+    desiredRevision: Pick<RevisionRow, "id" | "origin" | "status" | "configDigest">;
+    origin?: typeof PARTNER_CLAIM_APPLY_ORIGIN;
+  },
+) {
+  const dedupeKey = `apply:${input.routerId}:${input.desiredRevision.id}`;
+
+  const [existingJob] = await client
+    .select()
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.routerId, input.routerId),
+        eq(jobs.dedupeKey, dedupeKey),
+        inArray(jobs.state, ["queued", "delivered", "running"]),
+      ),
+    )
+    .limit(1);
+
+  if (existingJob) {
+    return existingJob;
+  }
+
+  const [job] = await client
+    .insert(jobs)
+    .values({
+      routerId: input.routerId,
+      type: "apply_xray_config",
+      state: "queued",
+      dedupeKey,
+      desiredRevisionId: input.desiredRevision.id,
+      payload: {
+        desiredRevisionId: input.desiredRevision.id,
+        ...(input.origin ? { origin: input.origin } : {}),
+      },
+    })
+    .returning();
+
+  if (isEditableDraftRevision(input.desiredRevision)) {
+    await client
+      .update(passwallDesiredRevisions)
+      .set({ status: "queued" })
+      .where(eq(passwallDesiredRevisions.id, input.desiredRevision.id));
+  }
+
+  return job;
+}
+
+export type ConfigureXrayRevisionInput = {
+  router: Pick<RouterRow, "id" | "displayName" | "hostname" | "deviceIdentifier">;
+  note?: string;
+  /** Omit to keep the stored URL. Required when there is no xray config yet. */
+  subscriptionUrl?: string;
+  /** Omit to keep the current profile; null or "" selects the first profile. */
+  entryRemark?: string | null;
+  /**
+   * Omit to keep the stored User-Agent (the fleet default for a new config on
+   * the operator's path). With `replaceSubscription`, omit or pass `null` for
+   * the router's own signed agent — a customer's subscription never gets the
+   * fleet default in its place.
+   */
+  userAgent?: string | null;
+  /**
+   * Rebuild the subscription from scratch instead of editing it: the partner
+   * claim hands the router to a new owner, and nothing of the previous
+   * subscription may carry over. Requires `subscriptionUrl`; `userAgent` may
+   * be omitted/null for the router's own signed agent — a customer's
+   * subscription is never given an invented client agent.
+   */
+  replaceSubscription?: boolean;
+  /** Omit to keep the operator's UI lock as it is. */
+  uiLock?: boolean;
+};
+
+/**
+ * Author the next xray-direct revision from the latest one (or from fleet
+ * defaults when there is none) — the core of `draft.configureXray`, shared with
+ * `draft.setXrayUiLock` and the partner claim so every path goes through the
+ * same builders (https-only URL, User-Agent guard, strict schema) and the same
+ * revision pipeline (masking at rest, encrypted secret blob, digest).
+ *
+ * Throws a plain Error with an operator-readable message on bad input.
+ */
+export async function configureXrayRevisionWithDb(
+  client: DatabaseClient,
+  input: ConfigureXrayRevisionInput,
+) {
+  const [latestXrayRevision] = await client
+    .select()
+    .from(passwallDesiredRevisions)
+    .where(
+      and(
+        eq(passwallDesiredRevisions.routerId, input.router.id),
+        eq(passwallDesiredRevisions.engineMode, "xray-direct"),
+      ),
+    )
+    .orderBy(desc(passwallDesiredRevisions.revisionNumber))
+    .limit(1);
+
+  // Hydrated => real subscription URL, not the at-rest placeholder.
+  const existingConfig = latestXrayRevision
+    ? ((await getFullConfigForRevisionWithDb(
+        client,
+        latestXrayRevision.id,
+      )) as unknown as XrayDesiredConfig)
+    : null;
+
+  // A replaced subscription is a customer's (partner claim): its URL must be
+  // stated. Its agent is either stated too, or null for the router's own
+  // signed one — never the fleet default.
+  const replacement = input.replaceSubscription
+    ? {
+        subscriptionUrl: input.subscriptionUrl ?? "",
+        userAgent: input.userAgent ?? null,
+      }
+    : null;
+  if (replacement && !replacement.subscriptionUrl) {
+    throw new Error("A subscription URL is required to replace it.");
+  }
+
+  let nextConfig: XrayDesiredConfig;
+  if (!existingConfig) {
+    if (!input.subscriptionUrl) {
+      throw new Error(
+        "This router has no xray config yet. Provide the subscription URL to create one.",
+      );
+    }
+    const fleetDefaults = buildXrayOperatorConfig({
+      instanceName:
+        input.router.displayName ??
+        input.router.hostname ??
+        input.router.deviceIdentifier,
+      subscriptionUrl: input.subscriptionUrl,
+      entryRemark: input.entryRemark,
+      userAgent: input.userAgent,
+    });
+    nextConfig = replacement
+      ? withFreshPrimarySubscription(fleetDefaults, replacement)
+      : fleetDefaults;
+  } else if (replacement) {
+    nextConfig = withFreshPrimarySubscription(existingConfig, replacement);
+  } else {
+    const withUrl = input.subscriptionUrl
+      ? withSubscriptionUrl(existingConfig, input.subscriptionUrl)
+      : existingConfig;
+    const withAgent = input.userAgent
+      ? withSubscriptionUserAgent(withUrl, input.userAgent)
+      : withUrl;
+    // `undefined` means "leave the profile alone"; null/"" resets to the
+    // first profile, so it must not collapse into "unchanged".
+    nextConfig =
+      input.entryRemark === undefined
+        ? withAgent
+        : withSelectedProfile(withAgent, input.entryRemark);
+  }
+
+  if (input.uiLock !== undefined) {
+    nextConfig = withUiLock(nextConfig, input.uiLock);
+  }
+
+  // A revision whose secret blob was purged (the claim was unbound) hydrates
+  // to the at-rest placeholder; it must never be re-persisted as a real URL.
+  if (
+    nextConfig.subscriptions?.some(
+      (subscription) => subscription.url === MASKED_SECRET_PLACEHOLDER,
+    )
+  ) {
+    throw new Error(
+      "The stored subscription URL is no longer available. Provide the subscription URL.",
+    );
+  }
+
+  return createOperatorDraftRevisionWithDb(client, {
+    routerId: input.router.id,
+    note: input.note,
+    engineMode: "xray-direct",
+    xrayConfig: nextConfig,
+    // The passwall `config` carrier is unused on the xray path.
+    config: undefined as never,
+  });
 }

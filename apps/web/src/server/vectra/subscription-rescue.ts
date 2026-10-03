@@ -14,6 +14,8 @@ import {
   subscriptionHasHardwareId,
   type SubscriptionRescueCandidate,
 } from "./route-health-verifier";
+import { loadLatestFleetPolicyConfigRows } from "./fleet-monitoring-data";
+import { queueSubscriptionMd5Reset } from "./subscription-refresh-guard";
 
 type DatabaseClient = typeof appDb;
 
@@ -117,12 +119,33 @@ export async function runSubscriptionRescueTick(
     return { queued: 0, routerIds: [] as string[] };
   }
 
+  // The revision each picked router is currently importing FROM. This is the
+  // node list a destructive refresh would take away, so it is what the guard
+  // restores to. Read before the refresh is queued, never after.
+  const restoreRevisions = await loadLatestFleetPolicyConfigRows(
+    database,
+    picked,
+  );
+
   for (const routerId of picked) {
+    // Clearing the md5 lock first is what makes the refresh a re-roll instead
+    // of a no-op: PassWall skips the import when the payload hash is
+    // unchanged, and the provider serves the same dead assignment until asked
+    // again. Queued as its own job so it runs before the refresh on the same
+    // router — and guarded on the device, so a router without the hardware-id
+    // gate is left alone rather than handed a placeholder list.
+    await queueSubscriptionMd5Reset(database, routerId);
+
+    const restoreRevisionId = restoreRevisions.get(routerId)?.id ?? null;
+
     await database.insert(jobs).values({
       routerId,
       type: SUBSCRIPTION_REFRESH_JOB_TYPE,
       state: "queued",
-      payload: { reason: "node-list-exhausted" },
+      payload: {
+        reason: "node-list-exhausted",
+        ...(restoreRevisionId ? { restoreRevisionId } : {}),
+      },
     });
   }
 

@@ -255,6 +255,34 @@ describe("materialInventoryFingerprint", () => {
       materialInventoryFingerprint(baseInventory),
     );
   });
+
+  // Partner webhooks diff the Connect verdict against the newest stored row;
+  // a verdict change that wrote no row would re-fire the same event on every
+  // later check-in until the heartbeat.
+  it("reacts to a Connect verdict change but not to its gauges", () => {
+    const connected = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 100, lanClients: 2 },
+    });
+    const gaugesMoved = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 145, lanClients: 3 },
+    });
+    const down = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "down", uptimeSec: 145, lanClients: 3 },
+    });
+
+    expect(materialInventoryFingerprint(gaugesMoved)).toBe(
+      materialInventoryFingerprint(connected),
+    );
+    expect(materialInventoryFingerprint(down)).not.toBe(
+      materialInventoryFingerprint(connected),
+    );
+    expect(materialInventoryFingerprint(connected)).not.toBe(
+      materialInventoryFingerprint(baseInventory),
+    );
+  });
 });
 
 describe("shouldWriteInventorySnapshot", () => {
@@ -266,6 +294,46 @@ describe("shouldWriteInventorySnapshot", () => {
         now,
         heartbeatMinutes: 60,
       }),
+    ).toBe(true);
+  });
+
+  // Uptime is a gauge and stays out of the fingerprint, so a reboot changed
+  // nothing material and the owner's card kept the old boot's uptime for up
+  // to an hour (1111, 2026-10-02). Uptime going down is the reboot itself.
+  it("writes when the Connect uptime went down: the router rebooted", () => {
+    const before = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 11873 },
+    });
+    const rebooted = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 64 },
+    });
+    const later = routerInventorySchema.parse({
+      ...baseInventory,
+      // The same boot, five minutes on (the row is 5 minutes old).
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 11873 + 300 },
+    });
+    const args = { latest: latest(before, 5), now, heartbeatMinutes: 60 };
+    expect(shouldWriteInventorySnapshot({ ...args, inventory: rebooted })).toBe(true);
+    expect(shouldWriteInventorySnapshot({ ...args, inventory: later })).toBe(false);
+  });
+
+  // A row written soon after a boot (uptime 120) and a second reboot before
+  // the heartbeat: the next check-in can report MORE uptime than the row, yet
+  // the boot moved. Compare implied boot times, not uptimes.
+  it("writes when the implied boot time moved, whatever the uptime says", () => {
+    const early = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 120 },
+    });
+    const rebootedAgain = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", uptimeSec: 150 },
+    });
+    // The row is 30 minutes old: a continuous boot would now report ~1920 s.
+    expect(
+      shouldWriteInventorySnapshot({ inventory: rebootedAgain, latest: latest(early, 30), now, heartbeatMinutes: 60 }),
     ).toBe(true);
   });
 

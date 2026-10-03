@@ -84,7 +84,6 @@ const operatorTrpcCatalog = {
       "queueControllerUpdate",
       "queueSubscriptionsRefresh",
       "queueRulesRefresh",
-      "queueXrayRuntimeRepair",
       "queuePasswallPackageUpdate",
       "queueFirmwareValidation",
     ],
@@ -423,7 +422,6 @@ class VectraPanelClient {
       "  update controller <selector> [--channel stable|beta]",
       "  update passwall <selector> [--channel stable|beta] [--package xray-core ...]",
       "  update rules <selector>",
-      "  update xray-runtime <selector> [--replace-in-place]",
       "  update subscriptions <selector>",
       "  rescue direct <selector> [--reason TEXT]",
       "  rescue reconnect <selector> [--keep-rescue]",
@@ -1205,7 +1203,7 @@ async function runUpdate(client, args) {
 
   if (!subcommand || !selector) {
     throw new CliError(
-      "Usage: update controller <selector> | update passwall <selector> [--package ...] | update rules <selector> | update subscriptions <selector> | update xray-runtime <selector> [--replace-in-place]",
+      "Usage: update controller <selector> | update passwall <selector> [--package ...] | update rules <selector> | update subscriptions <selector>",
     );
   }
 
@@ -1241,19 +1239,6 @@ async function runUpdate(client, args) {
         routerId: router.id,
         artifactChannel: channel,
         packages,
-      });
-      return {
-        router: summarizeFleetRouter(router.summary),
-        job,
-      };
-    }
-    case "xray-runtime": {
-      const parsed = parseSubcommandArgs(args.slice(2), {
-        "replace-in-place": { type: "boolean" },
-      });
-      const job = await client.mutate("update.queueXrayRuntimeRepair", {
-        routerId: router.id,
-        replaceInPlace: Boolean(parsed.values["replace-in-place"]),
       });
       return {
         router: summarizeFleetRouter(router.summary),

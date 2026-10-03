@@ -191,24 +191,3 @@ export function hasYoutubeReachabilityProblem(probe: YoutubeReachabilityLike) {
   const status = getYoutubeReachabilityStatus(probe);
   return status === "partial" || status === "blocked";
 }
-
-/**
- * True when the probe shows the video CDN specifically failing.
- *
- * googlevideo carries the video bytes, so losing it means playback is dead even
- * while youtube.com still answers — which is exactly what users report as
- * "YouTube does not work". Counting that as a plain `partial` would file it
- * next to a slow thumbnail host and bury it under a warning.
- *
- * Controllers older than the googlevideo probe target ship no such check. Their
- * silence is not evidence of a healthy video path, but it is not evidence of a
- * broken one either, so they return false and keep their existing severity.
- */
-export function isYoutubeVideoPathDown(probe: YoutubeReachabilityLike) {
-  return getChecks(probe).some(
-    (entry) =>
-      entry.reachable !== true &&
-      (entry.targetUrl?.includes("googlevideo.com") === true ||
-        entry.label?.includes("googlevideo.com") === true),
-  );
-}

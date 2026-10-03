@@ -114,10 +114,40 @@ export function materialInventoryFingerprint(inventory: RouterInventory) {
       memoryTotalMb: inventory.resources?.memoryTotalMb ?? null,
       swapTotalMb: inventory.resources?.swapTotalMb ?? null,
     },
+
+    // Connect telemetry (ADR-0006). Partner webhooks diff the verdict and the
+    // owner's snapshot reads these from the newest row, so a change must write
+    // one. uptimeSec and lanClients are gauges and stay out, for the reason
+    // above; Wi-Fi passwords never reach the stored payload (the caller always
+    // writes when one is present). Routers without Connect report null here on
+    // both sides, so their fingerprint comparison is unchanged.
+    connect: inventory.connect
+      ? {
+          ownerRef: inventory.connect.ownerRef ?? null,
+          capabilities: inventory.connect.capabilities ?? null,
+          availableVersion: inventory.connect.availableVersion ?? null,
+          verdict: inventory.connect.verdict ?? null,
+          exitCountry: inventory.connect.exitCountry ?? null,
+          location: inventory.connect.location ?? null,
+          entries: inventory.connect.entries ?? null,
+          sites: inventory.connect.sites ?? null,
+          services: inventory.connect.services ?? null,
+          wifi:
+            inventory.connect.wifi?.map(({ band, ssid }) => ({ band, ssid })) ??
+            null,
+          routerPasswordSet: inventory.connect.routerPasswordSet ?? null,
+          supportAccess: inventory.connect.supportAccess ?? null,
+          autoUpdate: inventory.connect.autoUpdate ?? null,
+        }
+      : null,
   };
 
   return createHash("sha256").update(stableStringify(material)).digest("hex");
 }
+
+// Clock skew and check-in latency move the implied boot time by seconds; a
+// reboot moves it by at least the time the router was down and booting.
+const BOOT_TIME_TOLERANCE_MS = 120_000;
 
 export function shouldWriteInventorySnapshot(args: {
   inventory: RouterInventory;
@@ -142,6 +172,20 @@ export function shouldWriteInventorySnapshot(args: {
   } catch {
     // An unreadable stored payload is not evidence that nothing changed.
     return true;
+  }
+
+  // Uptime is a gauge, out of the fingerprint. A reboot moves the boot time
+  // the uptime implies (row time − uptime); then the owner's card must not
+  // keep the previous boot's figure. Uptime alone misses a second reboot that
+  // reports more uptime than a row written just after the first one.
+  const previousUptime = (latest.payload as RouterInventory | null)?.connect?.uptimeSec;
+  const currentUptime = inventory.connect?.uptimeSec;
+  if (typeof previousUptime === "number" && typeof currentUptime === "number") {
+    const previousBoot = latest.createdAt.getTime() - previousUptime * 1000;
+    const currentBoot = now.getTime() - currentUptime * 1000;
+    if (Math.abs(currentBoot - previousBoot) > BOOT_TIME_TOLERANCE_MS) {
+      return true;
+    }
   }
 
   return previous !== materialInventoryFingerprint(inventory);

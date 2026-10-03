@@ -27,6 +27,35 @@ export const productionSafeStringSchema = (schema, unsafeValues, label) =>
     }
   });
 
+// The deliberately PUBLIC test key of router/vectra-controller-pro/ui/contract/
+// claim-vector.json. Anyone can open a router QR sealed to it, so production
+// refuses it. (Kept in sync with the vector by src/env.test.ts; the panel also
+// declines to hand it to routers at runtime, router-claim-state.ts.)
+const ROUTER_CLAIM_PUBLIC_TEST_KEY =
+  "dsTt0kkqBdr7emCqoixBS+iz/r9Y86jyAxEzzKARNBs=";
+
+// Standard, padded base64 of 32 bytes: exactly what vctl decodes
+// (base64.StdEncoding) — a url-safe or unpadded key would be refused by every
+// router and no QR would ever be shown.
+export const routerClaimPubkeySchema = z
+  .string()
+  .regex(
+    /^[A-Za-z0-9+/]{43}=$/,
+    "VECTRA_ROUTER_CLAIM_PUBKEY must be a standard base64 raw 32-byte X25519 key.",
+  )
+  .superRefine((value, ctx) => {
+    if (
+      process.env.NODE_ENV === "production" &&
+      value === ROUTER_CLAIM_PUBLIC_TEST_KEY
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "VECTRA_ROUTER_CLAIM_PUBKEY is the public test key from claim-vector.json: anyone could open router QRs. Set Vectra's real claim key.",
+      });
+    }
+  });
+
 export const env = createEnv({
   /**
    * Specify your server-side environment variables schema here. This way you can ensure the app
@@ -179,6 +208,32 @@ export const env = createEnv({
     VECTRA_TELEGRAM_WEBHOOK_SECRET: z.string().min(16).optional(),
     VECTRA_TELEGRAM_CALLBACK_SECRET: z.string().min(32).optional(),
     VECTRA_TELEGRAM_DRY_RUN: booleanFlagSchema(true),
+    // ADR-0006 — router onboarding by QR from the Vectra app.
+    // Shared secret of the partner API (POST/DELETE /api/partner/router-claims).
+    // Unset = the partner API answers 503 and accepts nothing.
+    VECTRA_PARTNER_SECRET: z.string().min(32).optional(),
+    // The Vectra backend's X25519 key the router seals its QR to (raw 32 bytes,
+    // base64) and its key id. Both unset = no claimKey in router responses.
+    VECTRA_ROUTER_CLAIM_PUBKEY: routerClaimPubkeySchema.optional(),
+    VECTRA_ROUTER_CLAIM_KID: z.coerce.number().int().min(0).max(255).optional(),
+    // Telegram bot username for the router's "open in Telegram" deep link.
+    VECTRA_CONNECT_BOT_USERNAME: z
+      .string()
+      .transform((value) => value.replace(/^@/, ""))
+      .pipe(z.string().regex(/^[A-Za-z0-9_]{5,32}$/))
+      .optional(),
+    // Where router.claimed / router.ready / router.failed are sent, and the
+    // secret they are signed with. Either unset = no webhooks.
+    VECTRA_CONNECT_WEBHOOK_URL: z
+      .string()
+      .url()
+      .refine(
+        (value) =>
+          process.env.NODE_ENV !== "production" || value.startsWith("https://"),
+        "VECTRA_CONNECT_WEBHOOK_URL must be https:// in production.",
+      )
+      .optional(),
+    VECTRA_CONNECT_WEBHOOK_SECRET: z.string().min(32).optional(),
     NODE_ENV: z
       .enum(["development", "test", "production"])
       .default("development"),
@@ -251,6 +306,12 @@ export const env = createEnv({
     VECTRA_TELEGRAM_CALLBACK_SECRET:
       process.env.VECTRA_TELEGRAM_CALLBACK_SECRET,
     VECTRA_TELEGRAM_DRY_RUN: process.env.VECTRA_TELEGRAM_DRY_RUN,
+    VECTRA_PARTNER_SECRET: process.env.VECTRA_PARTNER_SECRET,
+    VECTRA_ROUTER_CLAIM_PUBKEY: process.env.VECTRA_ROUTER_CLAIM_PUBKEY,
+    VECTRA_ROUTER_CLAIM_KID: process.env.VECTRA_ROUTER_CLAIM_KID,
+    VECTRA_CONNECT_BOT_USERNAME: process.env.VECTRA_CONNECT_BOT_USERNAME,
+    VECTRA_CONNECT_WEBHOOK_URL: process.env.VECTRA_CONNECT_WEBHOOK_URL,
+    VECTRA_CONNECT_WEBHOOK_SECRET: process.env.VECTRA_CONNECT_WEBHOOK_SECRET,
     NODE_ENV: process.env.NODE_ENV,
     // NEXT_PUBLIC_CLIENTVAR: process.env.NEXT_PUBLIC_CLIENTVAR,
   },

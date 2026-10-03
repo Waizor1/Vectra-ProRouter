@@ -155,7 +155,7 @@ export function UpdatesV2({
     });
 
   const handleSaveProfile = async () => {
-    if (!editing || !editing.name.trim()) {
+    if (!editing?.name.trim()) {
       toast.error("Укажите название профиля");
       return;
     }

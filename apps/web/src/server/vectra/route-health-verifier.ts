@@ -36,6 +36,8 @@ export type RouteHealthCandidate = {
   lastVerifiedAt: Date | null;
   queuedJobCount: number;
   routePolicyExempt?: boolean | null;
+  /** The router's engine; verify_passwall_routes is a PassWall-only job. */
+  engineMode?: string | null;
   /**
    * When this router last had its proxy stack disturbed — a subscription
    * refresh or a config apply. See `settleMs`.
@@ -137,6 +139,11 @@ export function selectRoutersForRouteHealthCheck(
     if (candidate.routePolicyExempt) {
       return false;
     }
+    // A router on the xray engine never receives a PassWall job: it would sit
+    // queued forever and block an engine switch.
+    if (candidate.engineMode && candidate.engineMode !== "passwall") {
+      return false;
+    }
     // Terminal-style jobs collapse per router: queuing on top of pending work
     // overwrites that row's payload, so an operator command can silently never
     // run. Health telemetry is never worth stepping on operator intent.
@@ -235,13 +242,7 @@ export function routeVerificationToHealthSample(
       // about a binding that no longer exists and says nothing about today.
       continue;
     }
-    // The smoke test runs against this node, so the verdict is about the node
-    // — unlike a destination probe, which only assumes it went this way.
-    observations.push({
-      host,
-      outcome: slot.smokeOk ? "ok" : "fail",
-      source: "direct",
-    });
+    observations.push({ host, outcome: slot.smokeOk ? "ok" : "fail" });
   }
 
   return observations.length > 0 ? { routerId, observations } : null;
@@ -379,6 +380,7 @@ export async function loadRouteHealthCandidates(
     lastVerifiedAt: verifications.get(router.id)?.verifiedAt ?? null,
     queuedJobCount: queuedByRouter.get(router.id) ?? 0,
     routePolicyExempt: router.routePolicyExempt,
+    engineMode: router.engineMode,
     lastDisruptionAt: lastDisruptionByRouter.get(router.id) ?? null,
   }));
 }
@@ -397,17 +399,44 @@ export async function runRouteHealthVerifierTick(
     return { queued: 0, routerIds: [] as string[] };
   }
 
-  for (const routerId of picked) {
-    await database.insert(jobs).values({
-      routerId,
-      type: ROUTE_HEALTH_JOB_TYPE,
-      state: "queued",
-      payload: { reason: "route-health-telemetry" },
-      dedupeKey: routeHealthDedupeKey(routerId),
-    });
+  const queued = await queueRouteHealthJobs(database, picked);
+  if (queued.length < picked.length) {
+    // A key held for good would otherwise leave a router silently unverified.
+    console.info(
+      "[route-health] previous verification still holds the key: %o",
+      picked.filter((routerId) => !queued.includes(routerId)),
+    );
   }
+  return { queued: queued.length, routerIds: queued };
+}
 
-  return { queued: picked.length, routerIds: picked };
+/**
+ * Queues a route verification per router, skipping a router whose previous
+ * one still holds the key: selection only sees `queued` jobs, and one that is
+ * running (or handed out and not finished) keeps its dedupe key until its
+ * result. A unique-key error there used to abort the whole tick — the routers
+ * after it and the subscription rescue with it.
+ */
+export async function queueRouteHealthJobs(
+  database: Pick<DatabaseClient, "insert">,
+  routerIds: string[],
+) {
+  const queued: string[] = [];
+  for (const routerId of routerIds) {
+    const inserted = await database
+      .insert(jobs)
+      .values({
+        routerId,
+        type: ROUTE_HEALTH_JOB_TYPE,
+        state: "queued",
+        payload: { reason: "route-health-telemetry" },
+        dedupeKey: routeHealthDedupeKey(routerId),
+      })
+      .onConflictDoNothing({ target: jobs.dedupeKey })
+      .returning({ id: jobs.id });
+    if (inserted.length > 0) queued.push(routerId);
+  }
+  return queued;
 }
 
 const globalForVerifier = globalThis as unknown as {
@@ -427,34 +456,51 @@ export function startRouteHealthVerifier() {
     globalForVerifier.__vectraRouteHealthVerifierRunning = true;
     try {
       const { db } = await import("~/server/db");
-      const result = await runRouteHealthVerifierTick(db);
-      if (result.queued > 0) {
-        console.info(
-          "[route-health] queued route verification for %d router(s)",
-          result.queued,
-        );
+      // Its own failure must not cost the subscription rescue below its tick.
+      try {
+        const result = await runRouteHealthVerifierTick(db);
+        if (result.queued > 0) {
+          console.info(
+            "[route-health] queued route verification for %d router(s)",
+            result.queued,
+          );
+        }
+      } catch (error) {
+        console.error("[route-health] verification", error);
       }
-      // Detection only — the refresh itself stays an operator decision.
+      // The refresh now runs unattended, because the condition this lane was
+      // held back for is finally met.
       //
-      // 2026-08-24: refreshing yuranrod-msk WITH hwid=1 set returned a payload
-      // that left him with zero proxy nodes (≈20 hosts before, none after) and
-      // all five slots pointing at an id that no longer existed. The hardware
-      // id gate is necessary but NOT sufficient, so an unattended refresh can
-      // take a customer's node list away. Reporting the state is safe;
-      // automatically acting on it is not, until the wipe can be detected and
-      // undone.
-      const { collectSubscriptionRescueCandidates } =
+      // It was detection-only since 2026-08-24, when refreshing yuranrod-msk
+      // WITH hwid=1 set returned a payload that left him with zero proxy nodes
+      // (≈20 hosts before, none after) and all five slots pointing at an id
+      // that no longer existed. The hardware id gate is necessary but NOT
+      // sufficient, so an unattended refresh can take a customer's node list
+      // away — and the rule was that reporting is safe while acting is not,
+      // "until the wipe can be detected and undone".
+      //
+      // Detected: the controller judges a refresh by what it left behind
+      // (VerifySubscriptionRefresh) and reports placeholder_nodes / no_nodes
+      // to the panel. Undone: subscription-refresh-guard turns that verdict
+      // into a restore of the node list the rescue recorded before queueing
+      // the refresh, and raises an incident either way. The worst case is no
+      // longer "a customer loses every node" but "a refresh achieved nothing
+      // and the operator is told".
+      //
+      // One more thing had to change for the refresh to be worth running at
+      // all: it now clears the md5 lock first. Measured 2026-09-22 on
+      // ar-filicity — a plain refresh returned the identical dead node list,
+      // and the same refresh after clearing md5 returned live hosts and
+      // brought the stranded slot back to 204. Without that this lane would
+      // have fired on schedule and changed nothing.
+      const { runSubscriptionRescueTick } =
         await import("./subscription-rescue");
-      const stranded = await collectSubscriptionRescueCandidates(db);
-      if (stranded.length > 0) {
+      const rescue = await runSubscriptionRescueTick(db);
+      if (rescue.queued > 0) {
         console.warn(
-          "[route-health] node list exhausted for %d router(s), subscription refresh needed: %o",
-          stranded.length,
-          stranded.map((entry) => ({
-            routerId: entry.routerId,
-            slots: entry.strandedSlots,
-            canRefresh: entry.hwidPresent,
-          })),
+          "[route-health] node list exhausted, queued subscription re-roll for %d router(s): %o",
+          rescue.queued,
+          rescue.routerIds,
         );
       }
     } catch (error) {

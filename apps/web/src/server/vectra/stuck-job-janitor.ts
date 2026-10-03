@@ -40,6 +40,8 @@ import { eventLog, jobs } from "@vectra/db";
 import { env } from "~/env";
 import { db } from "~/server/db";
 
+import { PARTNER_ACTION_DEDUPE_PREFIX } from "./partner-action-key";
+
 type DatabaseClient = typeof db;
 
 export type StuckJobJanitorResult = {
@@ -133,6 +135,7 @@ export async function runStuckJobJanitorTick(
       type: jobs.type,
       createdAt: jobs.createdAt,
       deliveredAt: jobs.deliveredAt,
+      dedupeKey: jobs.dedupeKey,
       payload: jobs.payload,
     })
     .from(jobs)
@@ -183,8 +186,15 @@ export async function runStuckJobJanitorTick(
             // operator-cancel path (draft.ts:442) and the normal
             // job-completion path (router-control.ts:212-225) already
             // null dedupeKey for the same reason; we mirror that
-            // contract.
-            dedupeKey: null,
+            // contract. A partner action keeps its key, as on a result
+            // (resolveJobDedupeKeyAfterResult): the partner cancels and
+            // retries by that key, and must learn this job was cancelled
+            // by someone else instead of being told it never existed.
+            dedupeKey: candidate.dedupeKey?.startsWith(
+              PARTNER_ACTION_DEDUPE_PREFIX,
+            )
+              ? candidate.dedupeKey
+              : null,
           })
           .where(
             and(

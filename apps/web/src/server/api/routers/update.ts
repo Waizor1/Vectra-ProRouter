@@ -6,7 +6,6 @@ import {
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
-import { checkPasswallUpgradePreflight } from "~/lib/passwall-upgrade-preflight";
 import {
   ensurePasswallRuntimeJobPayloadSchema,
   passwallDesiredConfigSchema,
@@ -290,22 +289,6 @@ async function enqueuePasswallPackageUpdate(args: {
     scopedPackages: args.packages ? [...args.packages] : undefined,
     passwallArtifacts,
   });
-
-  // Refuse the upgrade when the router itself reports a state that this upgrade
-  // is known to turn into an outage. Both conditions have already taken routers
-  // down, hours after a job that reported success, so this is a hard stop rather
-  // than a warning — the operator fixes the precondition and re-queues.
-  const preflight = checkPasswallUpgradePreflight({
-    subscriptionHealth: snapshot?.payload.subscriptionHealth ?? null,
-    xrayPackageVersion: snapshot?.payload.packageVersions?.["xray-core"] ?? null,
-    targetVersion: resolved.targetVersion,
-  });
-  if (preflight.blocked) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: `Апгрейд PassWall заблокирован префлайтом:\n- ${preflight.reasons.join("\n- ")}`,
-    });
-  }
 
   const payload = updatePasswallPackagesJobPayloadSchema.parse({
     channel: args.artifactChannel,

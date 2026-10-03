@@ -79,7 +79,19 @@ export const jobTypeSchema = z.enum([
   "validate_firmware",
   "enter_direct_mode",
   "reconnect",
+  // xray-direct engine (Vectra Controller Pro) job types. Additive; only
+  // delivered to routers whose engineMode is "xray-direct".
+  "apply_xray_config",
+  "reload_xray_outbound",
+  "refresh_xray_subscriptions",
+  "update_xray_assets",
+  "connect_router_action",
 ]);
+
+// engineMode discriminates which router controller owns the device. The 18
+// live routers run the legacy PassWall2 path ("passwall", the default); the
+// standalone Vectra Controller Pro reports "xray-direct".
+export const engineModeSchema = z.enum(["passwall", "xray-direct"]);
 
 export const jobStateSchema = z.enum([
   "queued",
@@ -97,6 +109,8 @@ export const artifactTypeSchema = z.enum([
   "passwall_package",
   "passwall_bundle",
   "firmware",
+  // Standalone Xray binary shipped alongside the Vectra Controller Pro feed.
+  "xray_binary",
 ]);
 export const secretBlobScopeSchema = z.enum([
   "router_import",
@@ -371,6 +385,199 @@ export const passwallDesiredConfigSchema = z.object({
   ruleManage: passwallRuleManageSchema,
 });
 
+// ---------------------------------------------------------------------------
+// xray-direct operator config (Vectra Controller Pro engine).
+//
+// This mirrors the canonical Go struct at
+// router/vectra-controller-pro/internal/config/types.go (the `Config` struct,
+// schema version 1) FIELD FOR FIELD. Keep the two in lock-step.
+//
+// Two hard constraints drive the shape below:
+//
+//  1. `internal/config/config.go` decodes with `DisallowUnknownFields()`. Any
+//     key the Go struct does not declare is a FATAL decode error on the router,
+//     not a warning. Every object here is therefore `.strict()` rather than
+//     `.passthrough()`: an unknown key is rejected at the panel boundary, where
+//     an operator sees a validation error, instead of on the router, where it
+//     would fail the apply job.
+//
+//  2. This is the OPERATOR config only. Since the "consume provider JSON"
+//     pivot the panel no longer authors the proxy config at all — no
+//     outbounds/nodes, no dns, no routing, no policy/stats/api. The router
+//     fetches the provider's Xray document itself from the subscription URL and
+//     adopts it byte-for-byte. Routing a provider document through this panel
+//     would corrupt it (stableStringify key sorting, jsonb key reordering,
+//     value masking, zod re-serialization), so the ONLY thing that travels is
+//     the four load-bearing blocks the controller itself needs.
+//
+// Go `omitempty` optionals become `.optional()`. Range checks mirror
+// `internal/config/validate.go` so the panel cannot persist a config the
+// router would refuse.
+// ---------------------------------------------------------------------------
+
+// destOverride values the router accepts. `internal/config/validate.go`
+// explicitly REJECTS "fakedns": the provider document carries no fakedns block,
+// so sniffing into a pool that does not exist is a hard Xray start failure.
+export const XRAY_DEST_OVERRIDE_VALUES = ["http", "tls", "quic"] as const;
+
+const xraySniffingSchema = z
+  .object({
+    enabled: z.boolean(),
+    destOverride: z.array(z.enum(XRAY_DEST_OVERRIDE_VALUES)).optional(),
+    domainsExcluded: z.array(z.string()).optional(),
+    metadataOnly: z.boolean().optional(),
+    routeOnly: z.boolean().optional(),
+  })
+  .strict();
+
+const xrayInstanceSchema = z
+  .object({
+    name: z.string().optional(),
+    logLevel: z.enum(["debug", "info", "warning", "error", "none"]).optional(),
+  })
+  .strict();
+
+// Mirrors validate.go: initialMs > 0, factor >= 1, maxMs >= initialMs.
+const xrayBackoffSchema = z
+  .object({
+    initialMs: z.number().int().positive(),
+    factor: z.number().min(1),
+    maxMs: z.number().int().positive(),
+    reset: z.string().optional(),
+  })
+  .strict()
+  .refine((backoff) => backoff.maxMs >= backoff.initialMs, {
+    message: "restartBackoff.maxMs must be >= restartBackoff.initialMs",
+    path: ["maxMs"],
+  });
+
+const xrayProcessSchema = z
+  .object({
+    // validate.go: required, non-empty.
+    xrayBinary: z.string().min(1),
+    workDir: z.string().min(1),
+    configFile: z.string().optional(),
+    logDir: z.string().optional(),
+    memorySoftMiB: z.number().int().nonnegative().optional(),
+    memoryHardMiB: z.number().int().nonnegative().optional(),
+    // validate.go: -1000..1000. No omitempty on the Go side, so always emitted.
+    oomScoreAdj: z.number().int().min(-1000).max(1000),
+    niceLevel: z.number().int().min(-20).max(19).optional(),
+    gomaxprocs: z.number().int().positive().optional(),
+    restartBackoff: xrayBackoffSchema,
+    reloadGrace: z.string().optional(),
+    startTimeout: z.string().optional(),
+  })
+  .strict();
+
+// The ONE inbound the controller splices into the provider document. The
+// provider's own socks/http inbounds are dropped by the splice (they carry no
+// "listen" key and would bind 0.0.0.0, i.e. an open proxy on the LAN).
+const xrayTproxyInboundSchema = z
+  .object({
+    listenIP: z.string(),
+    port: z.number().int().min(1).max(65535),
+    fwmark: z.number().int().optional(),
+    udpEnabled: z.boolean(),
+    sniffing: xraySniffingSchema,
+    tag: z.string().optional(),
+    // Fail LAN-client traffic CLOSED at the firewall when the proxy is down.
+    // Off by default; the router's own control-plane/DNS traffic is unaffected.
+    killSwitch: z.boolean().optional(),
+  })
+  .strict();
+
+// validate.go treats a missing tproxy inbound as an error ("it is the only
+// inbound the controller splices into the provider config"), so it is required
+// here rather than optional.
+const xrayInboundsSchema = z
+  .object({
+    tproxy: xrayTproxyInboundSchema,
+  })
+  .strict();
+
+const xrayGeoFileSchema = z
+  .object({
+    filename: z.string().min(1),
+    url: z.string(),
+    sha256: z.string().optional(),
+  })
+  .strict();
+
+const xrayGeoSchema = z
+  .object({
+    assetDir: z.string().min(1),
+    geoipUrl: z.string(),
+    geositeUrl: z.string(),
+    updateSchedule: z.string().optional(),
+    updateOnStart: z.boolean(),
+    extraAssets: z.array(xrayGeoFileSchema).optional(),
+  })
+  .strict();
+
+export const XRAY_SUBSCRIPTION_MODES = ["json", "link-list"] as const;
+
+// The upstream provider feed. Fetching it is the ROUTER's job; only the
+// coordinates travel through the panel.
+//
+// `url` is deliberately a bare string, NOT a `.url()` or `https://` check: at
+// rest the panel stores this config with the URL replaced by
+// MASKED_SECRET_PLACEHOLDER (cleartext lives only in the encrypted secret
+// blob), and the masked row still has to re-parse through this schema on read.
+// The https:// requirement from validate.go is enforced at the authoring
+// boundary instead, where cleartext is available.
+const xraySubscriptionSchema = z
+  .object({
+    // validate.go: required, non-empty.
+    id: z.string().min(1),
+    remark: z.string().optional(),
+    url: z.string(),
+    enabled: z.boolean(),
+    // Selects WHICH payload the provider returns. "v2rayNG/1.9.5" yields the
+    // complete JSON config array; "passwall2/*", "Xray/*" and "sing-box/*"
+    // yield the degraded base64 vless:// link list. A "Happ…" agent that is not
+    // the real client's "Happ/<version>/<OS>/<build>" gets the customer's
+    // device deleted by the provider's sweep — the router refuses to send one.
+    userAgent: z.string().optional(),
+    group: z.string().optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    mode: z.enum(XRAY_SUBSCRIPTION_MODES).optional(),
+    // Which document of the provider array to adopt. entryRemark wins when set
+    // (matched exactly against the entry's "remarks"); otherwise entryIndex,
+    // which defaults to 0 — the first profile.
+    entryIndex: z.number().int().nonnegative().optional(),
+    entryRemark: z.string().optional(),
+    maxBytes: z.number().int().nonnegative().optional(),
+    // Disables the refuse-on-`"allowInsecure":true` guard. Default false: a
+    // provider document that disables TLS verification is refused outright.
+    allowInsecureTls: z.boolean().optional(),
+  })
+  .strict();
+
+// The operator's per-router UI policy. `lock` pins the router's own web UI to
+// the owner's simple view (the router enforces it; ADR-0006 customer routers).
+//
+// Emitted ONLY while the lock is on: a vctl that predates this block decodes
+// with DisallowUnknownFields and would refuse `ui` outright, so "unlocked" is
+// represented by the block's absence, never by `{ lock: false }`.
+const xrayUiSchema = z
+  .object({
+    lock: z.boolean(),
+  })
+  .strict();
+
+export const xrayDesiredConfigSchema = z
+  .object({
+    schema: z.literal(1),
+    instance: xrayInstanceSchema,
+    process: xrayProcessSchema,
+    inbounds: xrayInboundsSchema,
+    geo: xrayGeoSchema,
+    subscriptions: z.array(xraySubscriptionSchema).optional(),
+    ui: xrayUiSchema.optional(),
+  })
+  .strict();
+
 export const passwallImportedStateSchema = z.object({
   config: passwallDesiredConfigSchema,
   rawSnapshot: z.record(z.string(), z.unknown()).default({}),
@@ -402,6 +609,10 @@ export const routerServiceHealthSchema = z.object({
   passwall: serviceRuntimeStateSchema.default("unknown"),
   passwallServer: serviceRuntimeStateSchema.default("unknown"),
   dnsmasq: serviceRuntimeStateSchema.default("unknown"),
+  // xray is the proxy process an xray-direct controller owns directly. Optional
+  // so passwall routers (which never report it) are unaffected; an xray-direct
+  // controller always sends it.
+  xray: serviceRuntimeStateSchema.optional(),
 });
 
 export const routerLastRescueSchema = z.object({
@@ -460,6 +671,84 @@ export const routerSafetyEventSchema = z
   })
   .passthrough();
 
+// Optional measurements from a router check-in. Absence remains unknown;
+// heartbeat or a successful configuration apply is never a VPN verdict.
+export const connectRouterActionNameSchema = z.enum([
+  "select_entry",
+  "set_rules",
+  "set_service",
+  "set_wifi",
+  "restart_vpn",
+  "reboot",
+  "update_now",
+  "set_auto_update",
+  "refresh_subscription",
+]);
+
+export const routerConnectTelemetrySchema = z.object({
+  ownerRef: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/)
+    .nullable()
+    .optional(),
+  capabilities: z.array(connectRouterActionNameSchema).max(9).optional(),
+  availableVersion: z.string().min(1).max(128).nullable().optional(),
+  uptimeSec: z.number().int().nonnegative().optional(),
+  verdict: z
+    .enum(["ok", "reserve", "down", "direct", "leak", "stopped"])
+    .optional(),
+  exitCountry: z
+    .string()
+    .regex(/^[A-Z]{2}$/)
+    .nullable()
+    .optional(),
+  lanClients: z.number().int().nonnegative().optional(),
+  location: z
+    .object({ mode: z.enum(["auto", "entry"]), entryId: z.string().nullable() })
+    .optional(),
+  entries: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        name: z.string(),
+        country: z
+          .string()
+          .regex(/^[A-Z]{2}$/)
+          .nullable(),
+      }),
+    )
+    .max(300)
+    .optional(),
+  sites: z
+    .object({
+      direct: z.array(z.string()).max(300),
+      vpn: z.array(z.string()).max(300),
+    })
+    .optional(),
+  services: z
+    .array(z.object({ id: z.string(), entryId: z.string().nullable() }))
+    .max(100)
+    .optional(),
+  // Confidential wire field: the panel strips and encrypts password before
+  // inventory persistence. Only the current owner can hydrate the snapshot.
+  wifi: z
+    .array(
+      z.object({
+        band: z.string(),
+        ssid: z.string(),
+        password: z
+          .string()
+          .regex(/^[\x20-\x7e]{8,63}$/)
+          .optional(),
+      }),
+    )
+    .max(8)
+    .optional(),
+  routerPasswordSet: z.boolean().optional(),
+  supportAccess: z.boolean().optional(),
+  autoUpdate: z.boolean().optional(),
+});
+
 export const routerInventorySchema = z.object({
   protocolVersion: z.literal(VECTRA_PROTOCOL_VERSION),
   deviceIdentifier: z.string().min(1),
@@ -476,20 +765,16 @@ export const routerInventorySchema = z.object({
   openwrtRelease: z.string().min(1),
   openwrtDescription: z.string().optional(),
   passwallEnabled: z.boolean(),
+  // engineMode + xray fields are reported by an xray-direct controller so the
+  // panel can confirm which engine owns the device and see xray health. All
+  // optional/additive — a passwall router omits them and is unaffected.
+  engineMode: engineModeSchema.optional(),
+  xrayEnabled: z.boolean().optional(),
+  xrayVersion: z.string().optional(),
   selectedNodeId: z.string().nullable().optional(),
   selectedNodeLabel: z.string().nullable().optional(),
   nodeCount: z.number().int().nonnegative(),
   subscriptionCount: z.number().int().nonnegative(),
-  // Optional because controllers older than this field simply do not send it,
-  // and their silence must not be read as "the gate is open" — see
-  // hasSubscriptionGateRisk, which treats an absent report as unknown.
-  subscriptionHealth: z
-    .object({
-      hwidEnabled: z.boolean(),
-      scheduleEnabled: z.boolean(),
-      placeholderNodes: z.number().int().nonnegative(),
-    })
-    .optional(),
   configDigest: z.string().min(1).nullable().optional(),
   appliedRevisionId: z.string().uuid().nullable().optional(),
   packageVersions: z.record(z.string(), z.string().nullable()).default({}),
@@ -514,6 +799,7 @@ export const routerInventorySchema = z.object({
   instagramReachability: routerInstagramReachabilitySchema.optional(),
   safetyEvents: z.array(routerSafetyEventSchema).optional(),
   rawSnapshot: z.record(z.string(), z.unknown()).optional(),
+  connect: routerConnectTelemetrySchema.optional(),
 });
 
 export const rescuePolicySchema = z.object({
@@ -551,11 +837,25 @@ export const routerReauthProofSchema = z.object({
   signature: z.string().min(1),
 });
 
+// Proof that a registering router holds its device key (ADR-0006): an
+// ed25519 signature by the key behind inventory.devicePublicKey, standard
+// base64, over exactly the UTF-8 bytes
+//   "vectra-register/v1\n<deviceIdentifier>\n<timestamp>"
+// with the timestamp in unix seconds, base 10. Required only to adopt a record
+// the panel created ahead of the router's first contact (a pre-claimed router).
+export const routerRegisterProofSchema = z.object({
+  timestamp: z.number().int().nonnegative(),
+  signature: z.string().min(1).max(256),
+});
+
 export const routerRegisterRequestSchema = z.object({
   protocolVersion: z.literal(VECTRA_PROTOCOL_VERSION),
   inventory: routerInventorySchema,
   passwallImport: passwallImportedStateSchema.optional(),
   recoveryProof: routerReauthProofSchema.optional(),
+  // Optional, and a malformed one counts as none: an ordinary registration
+  // (older vctl, the PassWall agent) must never fail over it.
+  proof: routerRegisterProofSchema.nullable().optional().catch(null),
 });
 
 export const routerJobSchema = z.object({
@@ -1041,13 +1341,19 @@ export const subscriptionInspectResultPayloadSchema = z
   })
   .passthrough();
 
+// The desired-config carrier accepts either the passwall config (default,
+// unchanged for the 18 live routers) or an xray-direct config. engineMode is
+// the discriminator and defaults to "passwall" so existing payloads parse
+// exactly as before. passwall is listed first in the union so passwall configs
+// continue to parse through the passwall schema unchanged.
 export const desiredRevisionSummarySchema = z.object({
   id: z.string().uuid(),
   revisionNumber: z.number().int().nonnegative(),
   status: z.string().min(1),
   origin: z.string().min(1).default("operator_draft"),
+  engineMode: engineModeSchema.default("passwall"),
   configDigest: z.string().nullable().optional(),
-  config: passwallDesiredConfigSchema,
+  config: z.union([passwallDesiredConfigSchema, xrayDesiredConfigSchema]),
   impact: z.object({
     changedSections: z.array(z.string()),
     requiresRestart: z.boolean(),
@@ -1067,6 +1373,39 @@ export const routerConfigSyncStateSchema = z.object({
   requestImport: z.boolean().default(false),
 });
 
+// ---------------------------------------------------------------------------
+// ADR-0006 — a customer links a router to their Vectra account by QR.
+//
+// A router that is not linked yet reports, on every check-in, the hash of the
+// one-time code it currently shows (never the code itself):
+//   codeHash = hex(sha256("vectra-claim-codehash/v1:" + CODE_UPPERCASE))
+// and when that code stops being valid. `claim` is null/absent once the router
+// is configured. The panel answers (register AND check-in) with the key the
+// router seals its QR to, the Telegram bot for the "open in Telegram" deep
+// link, and — once claimed — a masked label of the owning account.
+// ---------------------------------------------------------------------------
+export const routerClaimSchema = z.object({
+  codeHash: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/, "codeHash must be a hex sha256 digest")
+    .transform((value) => value.toLowerCase()),
+  expiresAt: z.string().datetime({ offset: true }),
+});
+
+export const routerClaimKeySchema = z.object({
+  kid: z.number().int().nonnegative(),
+  // Raw 32-byte X25519 public key, base64.
+  publicKey: z.string().min(1),
+});
+
+export const routerOwnerSchema = z.object({
+  ownerRef: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/)
+    .optional(),
+  label: z.string().min(1),
+});
+
 export const routerRegisterResponseSchema = z.object({
   protocolVersion: z.literal(VECTRA_PROTOCOL_VERSION),
   routerId: z.string().uuid(),
@@ -1078,6 +1417,14 @@ export const routerRegisterResponseSchema = z.object({
   rescuePolicy: rescuePolicySchema,
   updatePolicy: updatePolicySchema,
   operatorMessage: z.string().nullable(),
+  claimKey: routerClaimKeySchema.optional(),
+  botUsername: z.string().min(1).optional(),
+  // null = not linked (vctl reads an absent owner as "no news").
+  owner: routerOwnerSchema.nullable().optional(),
+  // Sent only while the Vectra account has unlinked the router and nobody has
+  // claimed it since: the explicit "drop the previous owner's config" signal.
+  // Absent otherwise — `owner: null` alone is what every fleet router gets.
+  released: z.literal(true).optional(),
 });
 
 export const routerCheckInRequestSchema = z.object({
@@ -1085,6 +1432,7 @@ export const routerCheckInRequestSchema = z.object({
   routerId: z.string().uuid(),
   inventory: routerInventorySchema,
   passwallImport: passwallImportedStateSchema.optional(),
+  claim: routerClaimSchema.nullable().optional(),
   health: z.object({
     currentMode: rescueModeSchema.default("proxy"),
     publicConnectivityFailures: z.number().int().min(0).default(0),
@@ -1133,6 +1481,184 @@ export const routerCheckInResponseSchema = z.object({
   jobs: z.array(routerJobSchema),
   operatorMessage: z.string().nullable(),
   routePolicy: fleetRoutePolicyDirectiveSchema.nullish(),
+  claimKey: routerClaimKeySchema.optional(),
+  botUsername: z.string().min(1).optional(),
+  // null = not linked (vctl reads an absent owner as "no news").
+  owner: routerOwnerSchema.nullable().optional(),
+  // Sent only while the Vectra account has unlinked the router and nobody has
+  // claimed it since: the explicit "drop the previous owner's config" signal.
+  // Absent otherwise — `owner: null` alone is what every fleet router gets.
+  released: z.literal(true).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Partner API (Vectra backend -> panel), server to server only.
+//
+//   POST   /api/partner/router-claims            partnerRouterClaimRequestSchema
+//   DELETE /api/partner/router-claims/:routerId  partnerRouterUnbindRequestSchema
+//
+// All inbound partner requests require canonical method/path/query/body-digest/
+// idempotency-key/timestamp/request-id signature v2 plus durable replay protection.
+// See ai_docs/develop/features/connect-partner-api.json. Outbound webhooks retain
+// their separate timestamp + newline + rawBody body-signature protocol.
+//
+// Objects are .strict(): this is a new contract between two systems, and a
+// misspelt key should fail the integration loudly instead of being dropped.
+// ---------------------------------------------------------------------------
+export const partnerOwnerRefSchema = z
+  .string()
+  .trim()
+  // An opaque account id. No '@' or spaces: the panel stores no personal data.
+  .regex(
+    /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/,
+    "owner.ref must be an opaque account id (letters, digits, . _ : -)",
+  );
+
+const PARTNER_USER_AGENT_BLANK =
+  "userAgent must not be blank — omit it for the router's own signed agent, or state the literal User-Agent to fetch with.";
+
+const PARTNER_USER_AGENT_IS_ROUTER_OWN =
+  'userAgent must not start with "VectraRouter/" — only the router can make that agent; omit the field so the router signs its own.';
+
+function claimsToBeRouterOwnUserAgent(value: string) {
+  return /^vectrarouter\//i.test(value);
+}
+
+function hasNoControlCharacters(value: string) {
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    if (code < 0x20 || code === 0x7f) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export const partnerRouterClaimRequestSchema = z
+  .object({
+    code: z.string().trim().min(1).max(32).nullable().optional(),
+    device: z
+      .object({
+        deviceIdentifier: z.string().trim().min(1).max(128),
+        // The router's ed25519 key (the QR's pk): base64 of 32 bytes. A record
+        // made ahead of first contact is handed only to a router that proves
+        // it holds this key, so it has to be a key.
+        devicePublicKey: z
+          .string()
+          .trim()
+          .regex(
+            /^[A-Za-z0-9+/_-]{43}=?$/,
+            "device.devicePublicKey must be the base64 of a 32-byte ed25519 key",
+          ),
+        // The QR's one-time nonce `n`, standard base64 of its 16 bytes. The
+        // code derived from it must be one the router is showing now.
+        nonce: z
+          .string()
+          .trim()
+          .regex(
+            /^[A-Za-z0-9+/]{22}==$/,
+            "device.nonce must be the standard base64 of the QR's 16-byte nonce",
+          ),
+      })
+      .strict()
+      .nullable()
+      .optional(),
+    owner: z
+      .object({
+        ref: partnerOwnerRefSchema,
+        // Shown on the router's own page, which keeps at most 64 characters.
+        label: z
+          .string()
+          .trim()
+          .min(1)
+          .max(64)
+          .refine(hasNoControlCharacters, "owner.label must be one line"),
+      })
+      .strict(),
+    subscription: z
+      .object({
+        url: z.string().trim().min(1).max(2048),
+        // Absent or null: the router fetches with its OWN signed agent —
+        // `VectraRouter/<version> vr1.<token>`, made fresh per request and
+        // bound to the router's device key (see
+        // router/vectra-controller-pro/cmd/vctl/signed_ua.go) — never
+        // invented by the panel. A present string is the literal the backend
+        // states for a customer's own subscription (e.g. a real JSON
+        // client's agent, for a provider that only serves JSON to one of
+        // those); omitting the field is not inventing one. Blank is refused
+        // as ambiguous, and a value claiming to be the router's own agent
+        // (starting with "VectraRouter/") is refused too: only the router
+        // can make that agent, so the field should be left out instead.
+        userAgent: z
+          .string()
+          .trim()
+          .min(1, PARTNER_USER_AGENT_BLANK)
+          .max(256)
+          .refine(hasNoControlCharacters, "userAgent must be one line")
+          .refine(
+            (value) => !claimsToBeRouterOwnUserAgent(value),
+            PARTNER_USER_AGENT_IS_ROUTER_OWN,
+          )
+          .nullable()
+          .optional(),
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const hasCode = value.code !== null && value.code !== undefined;
+    const hasDevice = value.device !== null && value.device !== undefined;
+    if (hasCode === hasDevice) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Exactly one of code or device is required.",
+        path: hasCode ? ["device"] : ["code"],
+      });
+    }
+  });
+
+export const partnerRouterClaimResponseSchema = z.object({
+  routerId: z.string().uuid(),
+  state: z.literal("claimed"),
+  alreadyClaimed: z.boolean(),
+  deviceIdentifier: z.string().min(1).max(128),
+  devicePublicKey: z
+    .string()
+    .regex(/^[A-Za-z0-9+/]{43}=$/)
+    .nullable(),
+  model: z.string().nullable(),
+});
+
+// The body a DELETE must carry. The signature covers the body only, so the
+// router id is repeated here to bind the signature to the router it unbinds —
+// otherwise a signed DELETE could be replayed against any other router path
+// inside the timestamp window. `ownerRef`, when sent, must still own the
+// router: a late retry from an old owner's flow cannot unbind the next owner.
+export const partnerRouterUnbindRequestSchema = z
+  .object({
+    routerId: z.string().uuid(),
+    ownerRef: partnerOwnerRefSchema.nullable().optional(),
+  })
+  .strict();
+
+export const partnerWebhookEventSchema = z.enum([
+  "router.claimed",
+  "router.ready",
+  "router.failed",
+  "router.online",
+  "router.offline",
+  "router.vpn_down",
+  "router.vpn_up",
+  "router.updated",
+  "router.action",
+]);
+
+export const partnerWebhookPayloadSchema = z.object({
+  event: partnerWebhookEventSchema,
+  routerId: z.string().uuid(),
+  ownerRef: z.string().min(1),
+  at: z.string().datetime(),
+  detail: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
 });
 
 export const incidentTransitionSchema = z.object({
@@ -1206,6 +1732,22 @@ export const rescueEvaluationResultSchema = z.object({
 });
 
 export type PasswallDesiredConfig = z.infer<typeof passwallDesiredConfigSchema>;
+export type XrayDesiredConfig = z.infer<typeof xrayDesiredConfigSchema>;
+export type RouterClaim = z.infer<typeof routerClaimSchema>;
+export type RouterClaimKey = z.infer<typeof routerClaimKeySchema>;
+export type RouterRegisterProof = z.infer<typeof routerRegisterProofSchema>;
+export type PartnerRouterClaimRequest = z.infer<
+  typeof partnerRouterClaimRequestSchema
+>;
+export type PartnerRouterClaimResponse = z.infer<
+  typeof partnerRouterClaimResponseSchema
+>;
+export type PartnerRouterUnbindRequest = z.infer<
+  typeof partnerRouterUnbindRequestSchema
+>;
+export type PartnerWebhookEvent = z.infer<typeof partnerWebhookEventSchema>;
+export type PartnerWebhookPayload = z.infer<typeof partnerWebhookPayloadSchema>;
+export type EngineMode = z.infer<typeof engineModeSchema>;
 export type PasswallImportedState = z.infer<typeof passwallImportedStateSchema>;
 export type PasswallNode = z.infer<typeof passwallNodeSchema>;
 export type PasswallSubscription = z.infer<typeof passwallSubscriptionSchema>;

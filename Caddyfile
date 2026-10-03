@@ -1,17 +1,37 @@
 {
 	email {$ACME_EMAIL}
+	# The default logger also carries reverse_proxy errors, request and all:
+	# the same redaction as the access logs (a router-sub token in the path,
+	# a router token or a sealed router User-Agent in a header).
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Vectra-Router-Token delete
+				request>headers>X-Vectra-Install-Session delete
+				request>headers>User-Agent delete
+				request>uri regexp "^/router-sub/[^/?]+" "/router-sub/REDACTED"
+			}
+		}
 	}
 }
 
 {$OPERATOR_DOMAIN} {
 	encode zstd gzip
 
+	# Access logs without the routers' credentials: a router token or an
+	# install session in a header must not end up in `docker logs`.
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Vectra-Router-Token delete
+				request>headers>X-Vectra-Install-Session delete
+				request>uri regexp "^/router-sub/[^/?]+" "/router-sub/REDACTED"
+			}
+		}
 	}
 
 	handle /artifacts {
@@ -39,8 +59,16 @@
 		respond "ok" 200
 	}
 
+	# The partner API's bodies are small (the route caps them too).
+	request_body /api/partner/* {
+		max_size 16KB
+	}
+
 	handle {
 		reverse_proxy web:3000 {
+			# The rate limiters trust this header: it must be ours, never the client's.
+			header_up X-Vectra-Client-IP {remote_host}
+			header_up X-Real-IP {remote_host}
 			health_uri /api/health
 			health_interval 30s
 			health_timeout 5s
@@ -51,9 +79,19 @@
 {$ROUTER_API_DOMAIN} {
 	encode zstd gzip
 
+	# Access logs without the routers' credentials: a router token or an
+	# install session in a header must not end up in `docker logs`.
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Vectra-Router-Token delete
+				request>headers>X-Vectra-Install-Session delete
+				request>headers>User-Agent delete
+				request>uri regexp "^/router-sub/[^/?]+" "/router-sub/REDACTED"
+			}
+		}
 	}
 
 	handle /artifacts {
@@ -92,7 +130,40 @@
 		}
 	}
 
+	# Vectra Connect router subscriptions (ADR-0006). A router fetches its
+	# first config before it has a tunnel, and Russian ISPs stall TLS to the
+	# app backend host after ~16 KB; this host is not stalled. The backend
+	# verifies the router-signed path and query, not the host.
+	handle /router-sub/* {
+		request_body {
+			max_size 1KB
+		}
+		reverse_proxy https://api-app.vectra-pro.net {
+			header_up Host api-app.vectra-pro.net
+			transport http {
+				dial_timeout 10s
+				response_header_timeout 30s
+			}
+		}
+	}
+
 	handle /api/router/* {
+		reverse_proxy web:3000 {
+			header_up X-Vectra-Client-IP {remote_host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			health_uri /api/health
+			health_interval 30s
+			health_timeout 5s
+		}
+	}
+
+	# Server-to-server API for the Vectra app's backend (router claims,
+	# ADR-0006). Every request is HMAC-signed; the route checks it itself.
+	handle /api/partner/* {
+		request_body {
+			max_size 16KB
+		}
 		reverse_proxy web:3000 {
 			header_up X-Vectra-Client-IP {remote_host}
 			header_up X-Real-IP {remote_host}
