@@ -340,6 +340,22 @@ describe("selectRoutersForSubscriptionRescue", () => {
       ),
     ).toEqual([]);
   });
+
+  // refresh_subscriptions is a PassWall job; vctl would leave it queued until
+  // check-in failed it.
+  it("only considers routers on the PassWall engine", () => {
+    expect(
+      selectRoutersForSubscriptionRescue(
+        [
+          rescue({ routerId: "vctl", engineMode: "xray-direct" }),
+          rescue({ routerId: "passwall", engineMode: "passwall" }),
+          rescue({ routerId: "legacy", engineMode: null }),
+        ],
+        NOW2,
+        { limit: 5, cooldownMs: 1000 },
+      ),
+    ).toEqual(["passwall", "legacy"]);
+  });
 });
 
 describe("subscriptionHasHardwareId", () => {
