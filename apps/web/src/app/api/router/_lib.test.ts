@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { parseJsonBody, toRouteErrorResponse } from "./_lib";
+import { parseJsonBody, redactQueryParams, toRouteErrorResponse } from "./_lib";
 
 describe("toRouteErrorResponse", () => {
   it("preserves explicit route HTTP status codes", async () => {
@@ -23,14 +23,15 @@ describe("toRouteErrorResponse", () => {
   });
 
   // A Drizzle error's message quotes its SQL and bound parameters; register
-  // answers anonymous callers, so nothing of it may reach the response.
+  // answers anonymous callers, so nothing of it may reach the response. The
+  // server log keeps the message and stack, minus the parameters.
   it("never echoes an error that carries no public status", async () => {
     const consoleError = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
     const response = toRouteErrorResponse(
       new Error(
-        'Failed query: select * from "vectra_router_credential" where "token_hash" = $1 params: abc',
+        'Failed query: select * from "vectra_router_credential" where "token_hash" = $1\nparams: s3cret-token-hash',
       ),
     );
 
@@ -38,8 +39,26 @@ describe("toRouteErrorResponse", () => {
     await expect(response.json()).resolves.toEqual({
       error: "Internal server error",
     });
-    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("token_hash");
+    const logged = JSON.stringify(consoleError.mock.calls);
+    expect(logged).toContain("Failed query");
+    expect(logged).toContain("at ");
+    expect(logged).not.toContain("s3cret-token-hash");
     consoleError.mockRestore();
+  });
+});
+
+describe("redactQueryParams", () => {
+  it("cuts the bound parameters and keeps the stack frames", () => {
+    expect(
+      redactQueryParams(
+        "Error: Failed query: insert into x values ($1)\nparams: a,b\nc\n    at run (db.ts:1:1)\n    at main (app.ts:2:2)",
+      ),
+    ).toBe(
+      "Error: Failed query: insert into x values ($1)\nparams: [redacted]\n    at run (db.ts:1:1)\n    at main (app.ts:2:2)",
+    );
+    expect(redactQueryParams("Failed query: select 1\nparams: secret")).toBe(
+      "Failed query: select 1\nparams: [redacted]",
+    );
   });
 });
 

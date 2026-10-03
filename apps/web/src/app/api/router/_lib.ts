@@ -22,6 +22,13 @@ function routeError(status: number, message: string) {
   return Object.assign(new Error(message), { status });
 }
 
+// A Drizzle query error ends its message with "params: <bound values>" —
+// router tokens, keys and configs. Everything from there to the stack frames
+// is cut before the error is logged.
+export function redactQueryParams(text: string) {
+  return text.replace(/params:[\s\S]*?(?=\n\s+at |$)/g, "params: [redacted]");
+}
+
 export async function parseJsonBody(
   request: Request,
   maxBytes = ROUTER_REQUEST_BODY_MAX_BYTES,
@@ -71,16 +78,21 @@ export function toRouteErrorResponse(error: unknown) {
 
   // Only an error that carries its own HTTP status was written for the
   // caller. Anything else is answered generically: register is reachable
-  // anonymously, and a Drizzle error quotes its SQL and parameters — which is
-  // why only the error's class is logged too.
+  // anonymously, and a Drizzle error quotes its SQL and parameters.
   const status = error instanceof Error ? readErrorStatus(error) : null;
   if (error instanceof Error && status !== null) {
     return Response.json({ error: error.message }, { status });
   }
 
-  console.error(
-    "[router-api] unhandled error:",
-    error instanceof Error ? error.constructor.name : typeof error,
-  );
+  if (error instanceof Error) {
+    console.error(
+      "[router-api] unhandled error:",
+      error.constructor.name,
+      redactQueryParams(error.message),
+      redactQueryParams(error.stack ?? ""),
+    );
+  } else {
+    console.error("[router-api] unhandled non-error throw:", typeof error);
+  }
   return Response.json({ error: "Internal server error" }, { status: 500 });
 }
