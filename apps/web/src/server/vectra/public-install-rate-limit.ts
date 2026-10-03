@@ -43,6 +43,14 @@ export class MemoryWindowRateLimiter {
     };
   }
 
+  /** Hits in the key's current window, without counting one. */
+  peek(key: string, now = Date.now()) {
+    const bucket = this.buckets.get(key);
+    return bucket && now - bucket.windowStartedAt < this.windowMs
+      ? bucket.hits
+      : 0;
+  }
+
   get size() {
     return this.buckets.size;
   }
