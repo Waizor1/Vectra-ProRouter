@@ -829,6 +829,7 @@ h3,
   align-items: center;
   gap: 9px;
   height: 36px;
+  padding: 0;
   border: 0;
   background: none;
   color: var(--tx-2);
@@ -1443,8 +1444,12 @@ h3,
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
   gap: 10px;
 }
-.locs.top {
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+/* "Auto" on the countries' own columns, two of them wide: its edge lines up with theirs. */
+.locs.top > li {
+  grid-column: span 2;
+}
+[data-w="s"] .locs.top > li {
+  grid-column: auto;
 }
 .lc {
   display: grid;
@@ -1646,17 +1651,22 @@ h3,
 }
 
 /* ── settings ──────────────────────────────────────────────────────────── */
+/* Two even columns from a tablet up (rows of equal height, no card left alone
+   on a row of three), one on a phone. */
 .setg {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
-  align-items: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+[data-w="s"] .setg {
+  grid-template-columns: minmax(0, 1fr);
 }
 .setg > * {
   min-width: 0;
 }
 .setg .card {
   display: grid;
+  align-content: start;
   gap: 12px;
 }
 .setg .card-h {
@@ -1675,9 +1685,11 @@ h3,
   margin: 0;
 }
 /* The Wi-Fi networks: each band's label over its name. */
+/* The bands side by side where there is room. */
 .fvs {
   display: grid;
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px 20px;
 }
 .fvs dt {
   color: var(--tx-3);
@@ -2735,9 +2747,11 @@ a.btn {
   margin-top: 6px;
   font-size: 13.5px;
 }
+/* A wide screen puts the services side by side: a select never stretches across 1000px. */
 .sv-svc-l {
   display: grid;
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: 10px 28px;
   margin: 0;
   padding: 0;
   list-style: none;

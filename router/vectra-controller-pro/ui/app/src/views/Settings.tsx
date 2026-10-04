@@ -78,7 +78,8 @@ export function Settings() {
     );
   }
   const radios = sd ? sd.wifi.radios.filter(hasAp).sort(byBand) : [];
-  const about = [s.router.model, s.router.release, s.version && 'Vectra ' + s.version, s.engine.xrayVersion && 'Xray ' + s.engine.xrayVersion].filter(Boolean).join(' · ');
+  // Each part whole on its line ("Vectra 0.4.0-r1" never split after "Vectra").
+  const about = [s.router.model, s.router.release, s.version && 'Vectra ' + s.version, s.engine.xrayVersion && 'Xray ' + s.engine.xrayVersion].filter(Boolean);
   return (
     <div class="stack">
       <div class="setg">
@@ -126,10 +127,17 @@ export function Settings() {
         ) : null}
         <Probe />
       </div>
-      {about ? (
+      {about.length ? (
         <p class="fv about">
           <span class="k">{t('set.about')}</span>
-          <span>{about}</span>
+          <span>
+            {about.map((x, i) => (
+              <span key={i}>
+                {i ? ' · ' : null}
+                <span class="nw">{x}</span>
+              </span>
+            ))}
+          </span>
         </p>
       ) : null}
       {pw ? <PasswordDialog first={pw === 'set'} onClose={() => setPw(null)} /> : null}

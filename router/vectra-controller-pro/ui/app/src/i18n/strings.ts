@@ -1171,7 +1171,7 @@ export const S = {
   'ms.ph': ['sberbank.ru', 'example.com', 'example.com'],
   'ms.add': ['Добавить', 'Add', '添加'],
   'ms.sub': [
-    'Поддомены включаются сами: sberbank.ru — это и online.sberbank.ru. Можно вставить ссылку целиком.',
+    'Поддомены включаются сами: sberbank.ru\u00a0— это и online.sberbank.ru. Можно вставить ссылку целиком.',
     'Subdomains are included: example.com also covers mail.example.com. You can paste a whole link.',
     '子域名会自动包含：example.com 也包括 mail.example.com。可以直接粘贴完整链接。',
   ],
