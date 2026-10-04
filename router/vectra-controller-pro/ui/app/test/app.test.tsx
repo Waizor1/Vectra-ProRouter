@@ -89,7 +89,9 @@ describe('what each scenario says', () => {
     const app = start({ lang: 'ru' });
     await settle();
     expect(app.$('.verdict')?.textContent).toBe('Работает, есть замечания');
-    expect(app.text()).toContain('Авто Самый стабильный');
+    // The server reads as the simple view reads it: "Авто", what it does and who chose it under it.
+    expect(app.$('.hero .loc b')?.textContent).toBe('Авто');
+    expect(app.$('.hero .loc .hint')?.textContent).toBe('самый стабильный · по умолчанию');
     expect(app.text()).toContain('vectra-ax3000t');
     expect(app.$('.hdr')?.textContent).not.toContain('vctl');
     expect(app.$('.pill')?.textContent).toBe('Замечания');
@@ -185,7 +187,8 @@ describe('what each scenario says', () => {
     await settle();
     expect(app.all('.srv h3').map((h) => h.textContent)).toEqual(['Recommended', 'Countries', 'Other']);
     const top = app.$('.locs.top .lc')!;
-    expect(top.textContent).toContain('Авто Самый стабильный');
+    expect(top.querySelector('b')?.textContent).toBe('Авто');
+    expect(top.querySelector('.hint')?.textContent).toBe('самый стабильный');
     expect(top.getAttribute('aria-current')).toBe('true');
     const germany = app.all('.lc-g').find((g) => g.textContent?.includes('Германия'))!;
     // The provider names it in Russian; the flag says it in the reader's language.

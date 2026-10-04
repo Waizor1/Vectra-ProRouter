@@ -118,17 +118,22 @@ export function Locations() {
         ? section(
             'vx-sv-top',
             t(auto.length ? 'l.rec' : 'l.panel'),
-            top.map((e) => (
-              <li key={e.index}>
-                {pick(
-                  e,
-                  'lc',
-                  <>
-                    <b>{name(e)}</b>
-                  </>,
-                )}
-              </li>
-            )),
+            top.map((e) => {
+              // "Авто" and what it does under it, as the overview and the simple view say it.
+              const fc = face(e.remark, name(e));
+              return (
+                <li key={e.index}>
+                  {pick(
+                    e,
+                    'lc',
+                    <>
+                      <b>{fc.title}</b>
+                      {fc.sub ? <span class="hint">{fc.sub}</span> : null}
+                    </>,
+                  )}
+                </li>
+              );
+            }),
             'locs top',
           )
         : null}

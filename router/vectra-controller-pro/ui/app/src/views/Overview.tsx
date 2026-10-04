@@ -12,6 +12,7 @@ import { parseRemark } from '../lib/flags';
 import { hasSubscription, health, powerSwitching, simpleVerdict, viaKey, type Health, type SimpleKind } from '../lib/health';
 import { checkText, sortChecks, stateLabel } from '../lib/labels';
 import { nodeName, routeName } from '../lib/names';
+import { face } from '../lib/servers';
 import { buildReport } from '../lib/report';
 import { copyText } from '../lib/storage';
 import { Icon, type IconName } from '../ui/icons';
@@ -67,10 +68,15 @@ function named(t: T, c: Check, routes: Map<string, string>): Check {
   return c;
 }
 
-function Hero({ s, hl, line, flow }: { s: Status; hl: Health; line: string; flow: [Key, Tone] | null }) {
+/** `fix`: the verdict's own fix is a restart (xray is down), so the restart leads, not the server. */
+function Hero({ s, hl, line, flow, fix }: { s: Status; hl: Health; line: string; flow: [Key, Tone] | null; fix: boolean }) {
   const { t, goTab, run, pending } = useApp();
   const sub = s.subscription;
   const loc = parseRemark(sub.entryRemark);
+  // Named as the simple view names it: "Авто", what it does under it, and who chose it.
+  const fc = face(sub.entryRemark, t('l.nothing'));
+  const local = sub.source === 'local';
+  const how = [fc.sub, local || sub.source === 'panel' ? t(local ? 's.loc.mine' : 's.loc.default') : null].filter(Boolean).join(' · ');
   const lv = hl.level;
   const pw = s.power;
   // Being turned on or off (from here, or seen still running while switched off).
@@ -94,45 +100,47 @@ function Hero({ s, hl, line, flow }: { s: Status; hl: Health; line: string; flow
               <b class={'tx-' + flow[1]}>{t(flow[0])}</b>
             </p>
           ) : null}
-          {lv === 'off' && !sw ? (
-            <div class="row">
-              <Button kind="p" icon="power" busy={pending === 'power:on'} disabled={!!pending} onClick={() => power(true)}>
-                {t('s.pw.on')}
-              </Button>
-            </div>
-          ) : null}
-          <PowerActs
-            // Nothing to restart until the router has its settings, or while Vectra is off.
-            restart={
-              s.engine.state === 'idle' || lv === 'off'
-                ? undefined
-                : () =>
-                    void run('restart_xray', {}, {
-                      key: 'restart',
-                      confirm: { title: t('x.restartQ'), body: t('restartWarn'), ok: t('x.restart') },
-                      // An answer of `pending` lands when xray runs again under a new pid.
-                      landed: ({ engine: e }, before) => {
-                        const b = before?.engine;
-                        return e.state === 'running' && (e.pid !== null ? e.pid !== b?.pid : e.uptimeSec !== null && b?.uptimeSec != null && e.uptimeSec < b.uptimeSec);
-                      },
-                    })
-            }
-            off={pw.enabled === true || pw.running === true ? () => void power(false) : undefined}
-          />
         </div>
+        {/* The buttons are the card's own row, not the text column's: a phone gives them its whole width. */}
+        {lv === 'off' && !sw ? (
+          <div class="row">
+            <Button kind="p" icon="power" busy={pending === 'power:on'} disabled={!!pending} onClick={() => power(true)}>
+              {t('s.pw.on')}
+            </Button>
+          </div>
+        ) : null}
+        <PowerActs
+          primary={fix}
+          // Nothing to restart until the router has its settings, or while Vectra is off.
+          restart={
+            s.engine.state === 'idle' || lv === 'off'
+              ? undefined
+              : () =>
+                  void run('restart_xray', {}, {
+                    key: 'restart',
+                    confirm: { title: t('x.restartQ'), body: t('restartWarn'), ok: t('x.restart') },
+                    // An answer of `pending` lands when xray runs again under a new pid.
+                    landed: ({ engine: e }, before) => {
+                      const b = before?.engine;
+                      return e.state === 'running' && (e.pid !== null ? e.pid !== b?.pid : e.uptimeSec !== null && b?.uptimeSec != null && e.uptimeSec < b.uptimeSec);
+                    },
+                  })
+          }
+          off={pw.enabled === true || pw.running === true ? () => void power(false) : undefined}
+        />
       </div>
       {/* Switched off, no server is in use. */}
       {lv === 'off' ? null : (
         <div class="loc">
           <span class="flag" aria-hidden="true">
-            {loc.flag || <Icon name="globe" size={22} />}
+            {fc.auto ? <Icon name="split" size={22} /> : loc.flag || <Icon name="globe" size={22} />}
           </span>
-          <div>
+          <div title={sub.entryRemark ?? undefined}>
             <span class="k">{t('hero.location')}</span>
-            <b>{loc.name || loc.flag || t('l.nothing')}</b>
-            {sub.source === 'local' ? <span class="hint">{t('l.local')}</span> : null}
+            <b>{fc.title}</b>
+            {how ? <span class="hint">{how}</span> : null}
           </div>
-          <Button kind="p" icon="arrow" onClick={() => goTab('locations')}>
+          <Button kind={fix ? undefined : 'p'} icon="arrow" onClick={() => goTab('locations')}>
             {t('hero.change')}
           </Button>
         </div>
@@ -204,7 +212,7 @@ export function Overview() {
   };
   return (
     <div class="stack">
-      <Hero s={s} hl={hl} line={line} flow={traffic(s, d, !!dg.error && !d, lv)} />
+      <Hero s={s} hl={hl} line={line} flow={traffic(s, d, !!dg.error && !d, lv)} fix={simpleVerdict(s, d, !!dg.error && !d).act === 'restart'} />
       <Card
         id="vx-c-diag"
         title={t('d.title')}

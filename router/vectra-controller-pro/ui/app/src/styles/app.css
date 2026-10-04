@@ -1021,10 +1021,24 @@ h3,
   padding: 22px 24px;
 }
 .hero-m {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 16px;
   min-width: 0;
+}
+/* The verdict's buttons stand under its text on a wide screen, across the
+   whole card on a phone (not indented under the sign). */
+.hero-m > .row,
+.hero-m > .acts {
+  grid-column: 2;
+}
+[data-w="s"] .hero-m > .row,
+[data-w="s"] .hero-m > .acts {
+  grid-column: 1 / -1;
+}
+[data-w="s"] .hero-m > .row .btn {
+  width: 100%;
 }
 .beacon {
   position: relative;
@@ -1050,16 +1064,16 @@ h3,
   margin-top: 6px;
   color: var(--tx-2);
 }
+/* The server: a part of the verdict's card, set off by a hairline — not a card of its own inside it. */
 .loc {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 12px 14px;
   width: 340px;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--sunk);
+  padding: 2px 0 2px 28px;
+  border: 0 solid var(--line);
+  border-left-width: 1px;
 }
 .loc .btn {
   grid-column: 1 / -1;
@@ -1097,13 +1111,16 @@ h3,
 [data-w="s"] .loc,
 [data-w="m"] .loc {
   width: auto;
+  padding: 16px 0 0;
+  border-width: 1px 0 0;
 }
 [data-w="s"] .verdict {
   font-size: 23px;
 }
 .checks {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  /* auto-fit: one or two problems take the card's width instead of a narrow first column. */
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
   column-gap: 28px;
 }
 .chk {
@@ -1132,12 +1149,24 @@ h3,
 [data-w="s"] .checks {
   grid-template-columns: minmax(0, 1fr);
 }
-.hero-m .row,
-.hero-m .acts {
-  margin-top: 14px;
+/* A phone gives the sentence the width; its status word goes under it (the sign already says it). */
+[data-w="s"] .chk {
+  grid-template-columns: auto minmax(0, 1fr);
+  row-gap: 2px;
 }
-.hero-m .acts {
+[data-w="s"] .chk-s {
+  grid-column: 2;
+  padding-top: 0;
+}
+.hero-m > .row,
+.hero-m > .acts {
+  margin-top: 16px;
+}
+.hero-m > .acts {
   max-width: 440px;
+}
+[data-w="s"] .hero-m > .acts {
+  max-width: none;
 }
 /* A labelled value: "Трафик — Идёт через VPN", the label small above or beside it. */
 .fv {
