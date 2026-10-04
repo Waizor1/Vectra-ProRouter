@@ -48,6 +48,7 @@ type Service struct {
 type WiFi struct {
 	SSID     string `json:"ssid"`
 	Password string `json:"password"`
+	Band     string `json:"band,omitempty"` // "" = every access point radio
 }
 
 func (WiFi) String() string     { return "wifi parameters (redacted)" }
@@ -123,12 +124,18 @@ func Parse(raw []byte) (Envelope, error) {
 		}
 		e.Params = Service{Service: service, EntryID: entry}
 	case "set_wifi":
-		p, ok := object(params, "ssid", "password")
+		p, ok := object(params, "ssid", "password", "band")
+		if !ok {
+			p, ok = object(params, "ssid", "password")
+		}
 		if !ok {
 			return Envelope{}, ErrInvalidPayload
 		}
 		var wifi WiFi
 		if !stringValue(p["ssid"], &wifi.SSID) || !stringValue(p["password"], &wifi.Password) || len(wifi.SSID) < 1 || len(wifi.SSID) > 32 || len(wifi.Password) < 8 || len(wifi.Password) > 63 {
+			return Envelope{}, ErrInvalidPayload
+		}
+		if raw, has := p["band"]; has && (!stringValue(raw, &wifi.Band) || (wifi.Band != "2g" && wifi.Band != "5g" && wifi.Band != "6g")) {
 			return Envelope{}, ErrInvalidPayload
 		}
 		for _, r := range wifi.SSID {

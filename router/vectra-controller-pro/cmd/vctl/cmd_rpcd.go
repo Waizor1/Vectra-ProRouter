@@ -248,8 +248,7 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 		}
 		res := uiapi.BuildServices(cfg.RouteSource == "", raw, ov, egress)
 		st, _ := state.LoadReadOnly(cfg.StatePath)
-		_, applied := aiDefaultApplied(cfg, ov, st.SpliceKey)
-		markAIDefault(&res, applied)
+		markAIDefaultFor(cfg, &res, ov, st.SpliceKey)
 		return res
 	case "select_entry", "reset_entry", "pin_balancer", "unpin_balancer", "set_probe_interval", "set_rules", "set_service", "restart_xray":
 		return rpcdMutate(ctx, cfg, method, params)

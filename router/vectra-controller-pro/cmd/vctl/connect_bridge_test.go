@@ -118,11 +118,16 @@ func TestConnectBridgeWorker(t *testing.T) {
 		return "applied", true
 	}
 	connectWifiForget = func(agentcfg.Config) error { return nil }
-	connectWifiMark = func(agentcfg.Config, string, string) error { return nil }
-	connectWifiRead = func(agentcfg.Config, string, string) []connectConfidentialWifi { return nil }
+	connectWifiMark = func(agentcfg.Config, []byte, string, string, connectactions.WiFi, []connectWifiOwnedAP) error {
+		return nil
+	}
+	connectWifiRead = func(agentcfg.Config, []byte, string, string) []connectConfidentialWifi { return nil }
 	var executedWifiSecret string
 	if input.ReportWifi {
 		fixture := wifiSecretFixture(t)
+		// The readback fingerprint key derives from the device Ed25519 key;
+		// the shared legacy identity fixture's key is not one.
+		d.st.DevicePrivateKey = wifiTestDeviceKey()
 		connectWifiForget = connectForgetWifiOwner
 		connectWifiMark = connectMarkWifiOwner
 		connectWifiRead = connectReadOwnerWifi

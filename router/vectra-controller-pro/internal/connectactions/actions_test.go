@@ -18,6 +18,7 @@ func TestSevenStrictActions(t *testing.T) {
 		{"set_service", `{"service":"youtube","entryId":null}`},
 		{"set_service", `{"service":"ai","entryId":":auto"}`}, // back to the default
 		{"set_wifi", `{"ssid":"Роутер","password":"secret-123"}`},
+		{"set_wifi", `{"ssid":"Роутер-5","password":"secret-123","band":"5g"}`},
 		{"reboot", `{}`}, {"update_now", `{}`}, {"set_auto_update", `{"enabled":false}`},
 	} {
 		t.Run(tc.action, func(t *testing.T) {
@@ -38,6 +39,10 @@ func TestStrictActionsRejectMalformedWithoutEcho(t *testing.T) {
 		{"set_wifi", `{"ssid":"","password":"secret-123"}`}, {"set_wifi", `{"ssid":"ok\n","password":"secret-123"}`},
 		{"set_wifi", `{"ssid":"ok","password":"парольпароль"}`},
 		{"set_wifi", `{"ssid":"ok","password":"short"}`},
+		{"set_wifi", `{"ssid":"ok","password":"secret-123","band":"60g"}`},
+		{"set_wifi", `{"ssid":"ok","password":"secret-123","band":null}`},
+		{"set_wifi", `{"ssid":"ok","password":"secret-123","band":""}`},
+		{"set_wifi", `{"ssid":"ok","password":"secret-123","band":"5g","band":"2g"}`},
 		{"reboot", `{"force":true}`}, {"update_now", `null`}, {"set_auto_update", `{}`},
 		{"set_auto_update", `{"enabled":null}`}, {"set_auto_update", `{"enabled":"true"}`}, {"shell", `{}`},
 		{"set_wifi", `{"ssid":"ok","password":"secret-123","password":"secret-456"}`},

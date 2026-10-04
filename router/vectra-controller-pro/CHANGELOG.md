@@ -1,5 +1,37 @@
 # Changelog
 
+## vctl 0.7.0-r17 — Wi-Fi per band from the Vectra app, and «Авто» says where it goes
+
+### Connect: Wi-Fi per band
+- **`set_wifi` takes an optional `band`** (`"2g" | "5g" | "6g"`, the ids
+  `connect.wifi[].band` already reports): only that band's access point
+  radios get the name and password. No band is unchanged — every access
+  point radio. A band this router has no access point on answers
+  `unsupported`; any other band value is `invalid_params`. Advertised as the
+  capability `set_wifi_band`, exactly when `set_wifi` is.
+- **The owner's Wi-Fi readback stays the owner's.** After a one-band change
+  the check-in reveals that band's password plus only what the same owner's
+  earlier changes covered — never another band someone else set. The secret
+  and rollback path (forget → apply → verify → mark, the Wi-Fi lock, the
+  private rollback job) is unchanged.
+
+### Router UI
+- **«Авто» and a country no longer read as two choices.** Where the server
+  is shown (the simple view's server card, the Pro overview, «Рекомендуем»
+  in Серверы и сервисы), «Авто» carries the line «выбирает лучший сервер ·
+  сейчас: 🇵🇱 Польша»; a server chosen by name shows just that server. The
+  separate «Сейчас через …» line is gone; the watchdog's «moved» and «does
+  not open blocked sites» notes stay.
+- **A stale service choice says where the service runs meanwhile**: its
+  default by country, or the main VPN; for «Нейросети», Kazakhstan when the
+  router runs that — as the Connect check-in already reports it.
+
+### Deploy
+The panel overlay must carry `set_wifi_band` among its known capabilities
+before an r17 router's per-band Wi-Fi is relied on. An older panel just
+drops the flag (unknown capabilities are dropped since r16) and keeps
+setting every band at once — safe in either order.
+
 ## vctl 0.7.0-r16 — a Pro view an owner acts on, and services the Vectra app can pick
 
 ### Router UI: Pro and the journal

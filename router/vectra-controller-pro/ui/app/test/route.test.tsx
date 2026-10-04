@@ -37,14 +37,29 @@ function start(edit: (w: ReadData) => void) {
   return host.shadowRoot!;
 }
 
-it('says which country the main traffic goes through now', async () => {
+// «Авто» and a country on one card read as two choices (an owner, 2026-10-04):
+// the country is said under «Авто», as where it goes now.
+it('says which country the main traffic goes through now, under «Авто»', async () => {
   const root = start((w) => {
     w.status.route = { nodes: [{ tag: 'bridge-fin5', country: 'FI', egress: null }], movedFrom: null, movedAt: null, reason: null, unfit: [], unfitKept: [] };
   });
   await settle();
   const card = root.querySelector('.sv-loc')!;
-  expect(words(card)).toContain('Сейчас через 🇫🇮 Финляндия');
+  expect(card.querySelector('b')?.textContent).toBe('Авто');
+  expect(words(card.querySelector('.hint'))).toBe('выбирает лучший сервер · сейчас: 🇫🇮 Финляндия · по умолчанию');
+  expect(words(card)).not.toContain('Сейчас через');
   expect(card.querySelector('.sv-route-moved')).toBeNull();
+});
+
+it('names a server chosen by name and nothing else', async () => {
+  const root = start((w) => {
+    w.status.subscription.entryRemark = '🇩🇪 Германия';
+    w.status.route = { nodes: [{ tag: 'bridge-de5', country: 'DE', egress: null }], movedFrom: null, movedAt: null, reason: null, unfit: [], unfitKept: [] };
+  });
+  await settle();
+  const card = root.querySelector('.sv-loc')!;
+  expect(card.querySelector('b')?.textContent).toBe('Германия');
+  expect(words(card)).not.toMatch(/сейчас|выбирает/i);
 });
 
 it('says the watchdog lent another country, and off which node', async () => {
@@ -68,7 +83,7 @@ it('says nothing where the router has no word from its watchdog', async () => {
     w.status.route = null;
   });
   await settle();
-  expect(words(root.querySelector('.sv-loc'))).not.toContain('Сейчас через');
+  expect(words(root.querySelector('.sv-loc .hint'))).toBe('выбирает лучший сервер · по умолчанию');
 });
 
 it('names the server the router left out because blocked sites do not open through it', async () => {
@@ -144,7 +159,7 @@ it('says where a server really leaves when it is not where its name says', async
     };
   });
   await settle();
-  expect(words(root.querySelector('.sv-loc .sv-route'))).toBe('Сейчас через 🇦🇪 ОАЭ (выход: 🇵🇱 Польша), 🇩🇪 Германия');
+  expect(words(root.querySelector('.sv-loc .hint'))).toBe('выбирает лучший сервер · сейчас: 🇦🇪 ОАЭ (выход: 🇵🇱 Польша), 🇩🇪 Германия · по умолчанию');
 });
 
 // 390 px, 30.09: the line broke as «ОАЭ (выход:» / «🇵🇱 Польша)». A flag keeps
@@ -161,7 +176,7 @@ it('never breaks a flag from its country or the real exit in two', async () => {
     };
   });
   await settle();
-  const via = root.querySelector('.sv-loc .sv-route')!.textContent!;
+  const via = root.querySelector('.sv-loc .hint')!.textContent!;
   expect(via).toContain('🇦🇪\u00a0ОАЭ');
   expect(via).toContain('(выход:\u00a0🇵🇱\u00a0Польша)');
   expect(root.querySelector('.sv-loc .sv-route-unfit')!.textContent).toContain('🇺🇸\u00a0США');

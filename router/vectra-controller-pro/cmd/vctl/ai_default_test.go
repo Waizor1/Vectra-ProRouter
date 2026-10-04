@@ -210,6 +210,27 @@ func TestTheAIDefaultIsReportedOnlyWhenTheRenderCarriesIt(t *testing.T) {
 	}
 }
 
+// A stale «Нейросети» choice in the router's own UI does not run: the screen
+// says where they run meanwhile — Kazakhstan, when that is what the router runs.
+func TestAStaleAIChoiceShowsTheKazakhDefaultThatRuns(t *testing.T) {
+	d, c := aiTestCache(t, "🇷🇺🇪🇺 Авто", "🇷🇺🇰🇿 Казахстан")
+	d.cfg.ProviderConfigPath = filepath.Join(t.TempDir(), "provider.json")
+	if err := vault.WriteFile(d.cfg.ProviderConfigPath, c.Entries[1]); err != nil {
+		t.Fatal(err)
+	}
+	ov := localctl.Overrides{Services: map[string]string{"ai": "TR"}}
+	for _, stale := range []bool{true, false} {
+		res := uiapi.Services{Services: []uiapi.ServiceInfo{{ID: "youtube", Stale: true}, {ID: "ai", Stale: stale, Active: !stale}}}
+		markAIDefaultFor(d.cfg, &res, ov, "v1")
+		if got := res.Services[1].DefaultCountry; (got != nil && *got == "KZ") != stale || res.Services[0].DefaultCountry != nil {
+			t.Fatalf("stale %v: %+v", stale, res.Services)
+		}
+	}
+	if ov.Services["ai"] != "TR" {
+		t.Fatal("the owner's choice was dropped")
+	}
+}
+
 // A render the router's xray refuses with the «Нейросети» default is tried
 // again without it — decided by the overrides the render was made from, so
 // an owner's choice being applied right now is never taken for the default.

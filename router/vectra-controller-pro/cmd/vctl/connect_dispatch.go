@@ -101,12 +101,23 @@ func (d *daemon) jobConnectAction(ctx context.Context, j controlplane.Job, respo
 		}
 		return d.connectFinish(ctx, j, journal, b, code, r.OK)
 	case "set_wifi":
+		// The change makes readable back only what it set, plus what this
+		// owner had already set (kept, read before the marker is forgotten)
+		// where the fingerprint shows it is still unchanged: never another
+		// band set by someone else or a later local change.
+		wifi, _ := e.Params.(connectactions.WiFi)
+		k := connectWifiReadbackKey(d.st.DevicePrivateKey)
+		kept := connectWifiOwnerAPs(d.cfg, b.RouterID, b.OwnerRef)
 		if err := connectWifiForget(d.cfg); err != nil {
 			return d.connectFinish(ctx, j, journal, b, "secret_binding_unavailable", false)
 		}
 		code, ok := connectWifiExecute(ctx, d.cfg, params)
-		if ok && connectWifiMark(d.cfg, b.RouterID, b.OwnerRef) != nil {
-			return d.connectFinish(ctx, j, journal, b, "secret_binding_unavailable", false)
+		if ok && connectWifiMark(d.cfg, k, b.RouterID, b.OwnerRef, wifi, kept) != nil {
+			code, ok = "secret_binding_unavailable", false
+		}
+		if !ok && len(kept) > 0 {
+			// Failure: restore this owner's earlier marks that still match.
+			_ = connectWifiMark(d.cfg, k, b.RouterID, b.OwnerRef, connectactions.WiFi{}, kept)
 		}
 		return d.connectFinish(ctx, j, journal, b, code, ok)
 	case "reboot", "update_now", "set_auto_update":
@@ -147,6 +158,7 @@ func (d *daemon) connectCapabilities() map[string]bool {
 	for _, radio := range connectSetup(context.Background()).Wifi.Radios {
 		if radio.AP && radio.Device != "" {
 			out["set_wifi"] = true
+			out["set_wifi_band"] = true // set_wifi takes band: one band's radios only
 			break
 		}
 	}
@@ -173,7 +185,7 @@ func (d *daemon) enrichConnectCheckin(inv *controlplane.RouterInventory) {
 			inv.Connect.AvailableVersion = available
 		}
 	}
-	wifi := connectWifiRead(d.cfg, b.RouterID, b.OwnerRef)
+	wifi := connectWifiRead(d.cfg, connectWifiReadbackKey(d.st.DevicePrivateKey), b.RouterID, b.OwnerRef)
 	if len(wifi) > 0 {
 		safe := make([]controlplane.ConnectWifi, 0, len(wifi))
 		for _, w := range wifi {

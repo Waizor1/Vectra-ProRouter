@@ -12,7 +12,7 @@ import { parseRemark } from '../lib/flags';
 import { hasSubscription, health, powerSwitching, simpleVerdict, viaKey, type Health, type SimpleKind } from '../lib/health';
 import { checkText, sortChecks, stateLabel } from '../lib/labels';
 import { nodeName, routeName } from '../lib/names';
-import { face } from '../lib/servers';
+import { autoLine, face, routeVia } from '../lib/servers';
 import { buildReport } from '../lib/report';
 import { copyText } from '../lib/storage';
 import { Icon, type IconName } from '../ui/icons';
@@ -73,10 +73,10 @@ function Hero({ s, hl, line, flow, fix }: { s: Status; hl: Health; line: string;
   const { t, goTab, run, pending } = useApp();
   const sub = s.subscription;
   const loc = parseRemark(sub.entryRemark);
-  // Named as the simple view names it: "Авто", what it does under it, and who chose it.
+  // Named as the simple view names it: "Авто", that it picks and where it goes now, and who chose it.
   const fc = face(sub.entryRemark, t('l.nothing'));
   const local = sub.source === 'local';
-  const how = [fc.sub, local || sub.source === 'panel' ? t(local ? 's.loc.mine' : 's.loc.default') : null].filter(Boolean).join(' · ');
+  const how = [fc.auto ? autoLine(t, routeVia(t, s.route)) : fc.sub, local || sub.source === 'panel' ? t(local ? 's.loc.mine' : 's.loc.default') : null].filter(Boolean).join(' · ');
   const lv = hl.level;
   const pw = s.power;
   // Being turned on or off (from here, or seen still running while switched off).

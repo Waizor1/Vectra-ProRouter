@@ -1230,15 +1230,23 @@ export const S = {
   'sv.default': ['По умолчанию', 'Default', '默认'],
   'sv.defaultIn': ['По умолчанию · {country}', 'Default · {country}', '默认 · {country}'],
   'sv.country': ['Страна для {service}', 'Country for {service}', '{service} 的国家'],
-  'sv.stale': [
-    'Эта страна сейчас недоступна для сервиса, поэтому он работает по умолчанию.',
-    'This country is not available for the service right now, so it runs on its default.',
-    '该国家目前不可用于此服务，因此该服务按默认运行。',
+  // A choice the router does not run: where the service runs meanwhile.
+  'sv.stale.in': [
+    'Эта страна сейчас недоступна для сервиса — пока он работает по умолчанию, через {country}.',
+    'This country is not available for the service right now — meanwhile it runs on its default, through {country}.',
+    '该国家目前不可用于此服务——暂时按默认经由 {country} 运行。',
+  ],
+  'sv.stale.main': [
+    'Эта страна сейчас недоступна для сервиса — пока он работает по умолчанию, через основной VPN.',
+    'This country is not available for the service right now — meanwhile it runs on its default, through the main VPN.',
+    '该国家目前不可用于此服务——暂时按默认经由主 VPN 运行。',
   ],
   'sv.unavailable': ['недоступна', 'unavailable', '不可用'],
 
   // ── the server card: where the main traffic goes (spec decision 6) ──────
-  's.route.via': ['Сейчас через {via}', 'Now through {via}', '当前经由 {via}'],
+  // Under «Авто»: that it picks by itself, and where it goes now — never read as a second choice.
+  'srv.auto.picks': ['выбирает лучший сервер', 'picks the best server', '自动选择最佳服务器'],
+  'srv.auto.now': ['сейчас: {via}', 'now: {via}', '当前：{via}'],
   // A server that leaves elsewhere than its name says (1111, 2026-09-30).
   // ru/en: the real exit stays in one piece (no-break spaces); Chinese breaks
   // between characters as it always does.

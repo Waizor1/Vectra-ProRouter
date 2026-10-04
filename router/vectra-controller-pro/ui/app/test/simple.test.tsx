@@ -213,9 +213,9 @@ describe('location', () => {
   it('shows the current location and whose choice it is', async () => {
     const app = start({});
     await settle();
-    // The automatic server by what it does: "Авто", then what the provider says about it.
+    // The automatic server by what it does: "Авто", that it picks, where it goes now, and whose choice.
     expect(app.$('.sv-loc b')?.textContent).toBe('Авто');
-    expect(app.$('.sv-loc .hint')?.textContent).toBe('самый стабильный · по умолчанию');
+    expect(app.$('.sv-loc .hint')?.textContent?.replace(/\u00a0/g, ' ')).toBe('выбирает лучший сервер · сейчас: 🇫🇮 Финляндия · по умолчанию');
   });
 
   it('switches through the list, then goes back to the default', async () => {
