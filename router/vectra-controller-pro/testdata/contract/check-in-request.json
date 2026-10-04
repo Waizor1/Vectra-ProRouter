@@ -16,6 +16,34 @@
       "xray": "26.7.28"
     },
     "boardName": "xiaomi,mi-router-ax3000t",
+    "connect": {
+      "services": [
+        {
+          "auto": true,
+          "entryId": null,
+          "id": "ai"
+        },
+        {
+          "auto": true,
+          "entryId": null,
+          "id": "telegram"
+        },
+        {
+          "auto": true,
+          "entryId": null,
+          "id": "tiktok"
+        },
+        {
+          "auto": true,
+          "entryId": null,
+          "id": "youtube"
+        }
+      ],
+      "sites": {
+        "direct": [],
+        "vpn": []
+      }
+    },
     "controllerRuntimeVersion": "dev",
     "controllerVersion": "0.1.0-alpha",
     "deviceIdentifier": "vectra-07bf0887f662",
@@ -31,6 +59,7 @@
     },
     "passwallEnabled": false,
     "protocolVersion": "2026-04-v1",
+    "remoteShell": false,
     "resources": {
       "memoryAvailableMb": 96,
       "memoryTotalMb": 234,
