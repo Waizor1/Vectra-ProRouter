@@ -20,14 +20,17 @@ var connectWifiApply = setup.ApplyWifi
 
 // connectApplyWifi returns only a bounded outcome, never UCI output, keys,
 // SSIDs, or the helper's detail. The Wi-Fi lock spans the final verification.
+// Without a band it names every access point radio; with one, only that
+// band's (capability set_wifi_band) — a band this router lacks is unsupported.
 func connectApplyWifi(ctx context.Context, _ agentcfg.Config, params json.RawMessage) (string, bool) {
 	var p struct {
 		SSID     string `json:"ssid"`
 		Password string `json:"password"`
+		Band     string `json:"band"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(params))
 	dec.DisallowUnknownFields()
-	if dec.Decode(&p) != nil || dec.Decode(new(any)) != io.EOF || !connectWifiParamsValid(p.SSID, p.Password) {
+	if dec.Decode(&p) != nil || dec.Decode(new(any)) != io.EOF || !connectWifiParamsValid(p.SSID, p.Password) || !connectWifiBandValid(p.Band) {
 		return "invalid_params", false
 	}
 	if ctx.Err() != nil {
@@ -49,7 +52,7 @@ func connectApplyWifi(ctx context.Context, _ agentcfg.Config, params json.RawMes
 	w := setup.ReadWifi(ctx, env)
 	req := setup.WifiRequest{Radios: map[string]setup.WifiChange{}}
 	for _, r := range w.Radios {
-		if r.AP {
+		if r.AP && (p.Band == "" || r.Band == p.Band) {
 			req.Radios[r.Device] = setup.WifiChange{SSID: &p.SSID, Key: &p.Password}
 		}
 	}
@@ -112,6 +115,10 @@ func connectApplyWifi(ctx context.Context, _ agentcfg.Config, params json.RawMes
 	default:
 		return "apply_failed", false
 	}
+}
+
+func connectWifiBandValid(band string) bool {
+	return band == "" || band == "2g" || band == "5g" || band == "6g"
 }
 
 func connectWifiParamsValid(ssid, password string) bool {

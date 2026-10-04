@@ -101,11 +101,18 @@ func (d *daemon) jobConnectAction(ctx context.Context, j controlplane.Job, respo
 		}
 		return d.connectFinish(ctx, j, journal, b, code, r.OK)
 	case "set_wifi":
+		// A one-band change makes only that band, plus what this owner had
+		// already set, readable back: never another band set by someone else.
+		wifi, _ := e.Params.(connectactions.WiFi)
+		var kept []connectWifiAP
+		if wifi.Band != "" {
+			kept = connectWifiOwnerAPs(d.cfg, b.RouterID, b.OwnerRef)
+		}
 		if err := connectWifiForget(d.cfg); err != nil {
 			return d.connectFinish(ctx, j, journal, b, "secret_binding_unavailable", false)
 		}
 		code, ok := connectWifiExecute(ctx, d.cfg, params)
-		if ok && connectWifiMark(d.cfg, b.RouterID, b.OwnerRef) != nil {
+		if ok && connectWifiMark(d.cfg, b.RouterID, b.OwnerRef, wifi.Band, kept) != nil {
 			return d.connectFinish(ctx, j, journal, b, "secret_binding_unavailable", false)
 		}
 		return d.connectFinish(ctx, j, journal, b, code, ok)
@@ -147,6 +154,7 @@ func (d *daemon) connectCapabilities() map[string]bool {
 	for _, radio := range connectSetup(context.Background()).Wifi.Radios {
 		if radio.AP && radio.Device != "" {
 			out["set_wifi"] = true
+			out["set_wifi_band"] = true // set_wifi takes band: one band's radios only
 			break
 		}
 	}

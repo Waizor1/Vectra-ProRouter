@@ -150,3 +150,35 @@ func TestConnectWifiUsesRealVerifiedHelper(t *testing.T) {
 		t.Fatal("no final verified state")
 	}
 }
+
+// set_wifi with a band names only that band's access point radios; without
+// one, every access point radio; a band the router lacks touches nothing.
+func TestConnectWifiBandTouchesOnlyThatBand(t *testing.T) {
+	for _, tc := range []struct {
+		params, code string
+		ap0, ap1     bool
+	}{
+		{`{"ssid":"Fixture","password":"fixture-key","band":"5g"}`, "applied", false, true},
+		{`{"ssid":"Fixture","password":"fixture-key","band":"2g"}`, "applied", true, false},
+		{`{"ssid":"Fixture","password":"fixture-key"}`, "applied", true, true},
+		{`{"ssid":"Fixture","password":"fixture-key","band":"6g"}`, "unsupported", false, false},
+		{`{"ssid":"Fixture","password":"fixture-key","band":"60g"}`, "invalid_params", false, false},
+		{`{"ssid":"Fixture","password":"fixture-key","band":5}`, "invalid_params", false, false},
+	} {
+		t.Run(tc.params, func(t *testing.T) {
+			w := connectWifiFixture(t)
+			connectWifiApply = func(_ context.Context, env setup.Env) setup.ApplyState {
+				os.Remove(env.WifiJob)
+				return setup.ApplyState{State: setup.ApplyOK, Radios: map[string]bool{"radio0": true, "radio1": true}}
+			}
+			code, ok := connectApplyWifi(context.Background(), w.cfg, json.RawMessage(tc.params))
+			if code != tc.code || ok != (tc.code == "applied") {
+				t.Fatalf("outcome %s %v", code, ok)
+			}
+			cmds := w.commands()
+			if strings.Contains(cmds, "wireless.ap0.") != tc.ap0 || strings.Contains(cmds, "wireless.ap1.") != tc.ap1 {
+				t.Fatalf("touched the wrong radios:\n%s", cmds)
+			}
+		})
+	}
+}

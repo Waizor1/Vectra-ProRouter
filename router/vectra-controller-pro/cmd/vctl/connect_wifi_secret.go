@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"vectra-controller-pro/internal/agentcfg"
@@ -38,7 +39,9 @@ var errConnectWifiSecret = errors.New("owner-bound Wi-Fi readback is unavailable
 
 // The caller must pass the current adopted binding, and call this only after
 // connectApplyWifi returned applied=true. Runtime verification is also checked.
-func connectMarkWifiOwner(cfg agentcfg.Config, routerID, ownerRef string) error {
+// band "" marks every access point; otherwise only that band's, plus kept: the
+// access points this same owner's previous marker already covered.
+func connectMarkWifiOwner(cfg agentcfg.Config, routerID, ownerRef, band string, kept []connectWifiAP) error {
 	if cfg.StatePath == "" || routerID == "" || ownerRef == "" || len(routerID) > 256 || len(ownerRef) > 256 {
 		return errConnectWifiSecret
 	}
@@ -63,7 +66,12 @@ func connectMarkWifiOwner(cfg agentcfg.Config, routerID, ownerRef string) error 
 	if f == nil {
 		return errConnectWifiSecret
 	}
-	marker := connectWifiOwnerMarker{RouterID: routerID, OwnerRef: ownerRef, APs: connectWifiFirstAPs(f)}
+	marker := connectWifiOwnerMarker{RouterID: routerID, OwnerRef: ownerRef}
+	for _, ap := range connectWifiFirstAPs(f) {
+		if band == "" || connectWifiRadioBand(f, ap.Radio) == band || slices.Contains(kept, ap) {
+			marker.APs = append(marker.APs, ap)
+		}
+	}
 	if len(marker.APs) == 0 || len(marker.APs) > 16 {
 		return errConnectWifiSecret
 	}
@@ -83,14 +91,8 @@ func connectReadOwnerWifi(cfg agentcfg.Config, routerID, ownerRef string) []conn
 	if cfg.StatePath == "" || routerID == "" || ownerRef == "" {
 		return nil
 	}
-	path := cfg.StatePath + ".wifi-owner.json"
-	st, err := os.Lstat(path)
-	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || st.Size() > 8192 {
-		return nil
-	}
-	raw, err := connectWifiSecretReadFile(path)
-	var marker connectWifiOwnerMarker
-	if err != nil || len(raw) > 8192 || json.Unmarshal(raw, &marker) != nil || marker.RouterID != routerID || marker.OwnerRef != ownerRef || len(marker.APs) == 0 || len(marker.APs) > 16 {
+	aps := connectWifiOwnerAPs(cfg, routerID, ownerRef)
+	if len(aps) == 0 {
 		return nil
 	}
 	env := connectWifiSecretEnv()
@@ -108,7 +110,7 @@ func connectReadOwnerWifi(cfg agentcfg.Config, routerID, ownerRef string) []conn
 	}
 	current := connectWifiFirstAPs(f)
 	var out []connectConfidentialWifi
-	for _, want := range marker.APs {
+	for _, want := range aps {
 		matched := false
 		for _, have := range current {
 			if have == want {
@@ -145,6 +147,44 @@ func connectReadOwnerWifi(cfg agentcfg.Config, routerID, ownerRef string) []conn
 		if !connectWifiParamsValid(ssid, password) {
 			return nil
 		}
+		band := connectWifiRadioBand(f, want.Radio)
+		if band == "" {
+			return nil
+		}
+		out = append(out, connectConfidentialWifi{Band: band, SSID: ssid, Password: password})
+	}
+	if !connectWifiSecretStateSafe(env, true) {
+		return nil
+	}
+	return out
+}
+
+// connectWifiOwnerAPs is the access points a private marker for exactly this
+// binding covers; nil without one. It reads no wireless configuration.
+func connectWifiOwnerAPs(cfg agentcfg.Config, routerID, ownerRef string) []connectWifiAP {
+	if cfg.StatePath == "" || routerID == "" || ownerRef == "" {
+		return nil
+	}
+	path := cfg.StatePath + ".wifi-owner.json"
+	st, err := os.Lstat(path)
+	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || st.Size() > 8192 {
+		return nil
+	}
+	raw, err := connectWifiSecretReadFile(path)
+	var marker connectWifiOwnerMarker
+	if err != nil || len(raw) > 8192 || json.Unmarshal(raw, &marker) != nil || marker.RouterID != routerID || marker.OwnerRef != ownerRef || len(marker.APs) == 0 || len(marker.APs) > 16 {
+		return nil
+	}
+	return marker.APs
+}
+
+// connectWifiRadioBand is a wifi-device's band (2g/5g/6g/60g), from its band
+// or legacy hwmode option; "" when unknown.
+func connectWifiRadioBand(f *uci.File, ref string) string {
+	for _, radio := range f.OfType("wifi-device") {
+		if radio.Ref() != ref {
+			continue
+		}
 		band := radio.Get("band")
 		if band == "" {
 			switch radio.Get("hwmode") {
@@ -156,15 +196,11 @@ func connectReadOwnerWifi(cfg agentcfg.Config, routerID, ownerRef string) []conn
 		}
 		switch band {
 		case "2g", "5g", "6g", "60g":
-		default:
-			return nil
+			return band
 		}
-		out = append(out, connectConfidentialWifi{Band: band, SSID: ssid, Password: password})
+		return ""
 	}
-	if !connectWifiSecretStateSafe(env, true) {
-		return nil
-	}
-	return out
+	return ""
 }
 
 func connectWifiSecretFirstMissing(path string) bool {

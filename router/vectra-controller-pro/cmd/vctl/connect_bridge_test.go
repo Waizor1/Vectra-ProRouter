@@ -118,7 +118,7 @@ func TestConnectBridgeWorker(t *testing.T) {
 		return "applied", true
 	}
 	connectWifiForget = func(agentcfg.Config) error { return nil }
-	connectWifiMark = func(agentcfg.Config, string, string) error { return nil }
+	connectWifiMark = func(agentcfg.Config, string, string, string, []connectWifiAP) error { return nil }
 	connectWifiRead = func(agentcfg.Config, string, string) []connectConfidentialWifi { return nil }
 	var executedWifiSecret string
 	if input.ReportWifi {

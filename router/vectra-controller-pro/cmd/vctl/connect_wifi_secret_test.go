@@ -35,7 +35,7 @@ func TestWifiSecretNeedsVerifiedOwnerMarker(t *testing.T) {
 	if got := connectReadOwnerWifi(w.cfg, "router-fixture", "owner-fixture"); len(got) != 0 || reads != 0 {
 		t.Fatal("read preexisting key without marker")
 	}
-	if err := connectMarkWifiOwner(w.cfg, "router-fixture", "owner-fixture"); err != nil {
+	if err := connectMarkWifiOwner(w.cfg, "router-fixture", "owner-fixture", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(w.cfg.StatePath + ".wifi-owner.json")
@@ -68,7 +68,7 @@ func TestWifiSecretRefusesUnsafeState(t *testing.T) {
 	for _, kind := range []string{"pending", "job", "applying", "failed", "permissions", "symlink", "changed-ap", "invalid-key"} {
 		t.Run(kind, func(t *testing.T) {
 			w := wifiSecretFixture(t)
-			if err := connectMarkWifiOwner(w.cfg, "r-fixture", "o-fixture"); err != nil {
+			if err := connectMarkWifiOwner(w.cfg, "r-fixture", "o-fixture", "", nil); err != nil {
 				t.Fatal(err)
 			}
 			marker := w.cfg.StatePath + ".wifi-owner.json"
@@ -99,14 +99,14 @@ func TestWifiSecretRefusesUnsafeState(t *testing.T) {
 func TestWifiSecretMarkerRefusesUnverifiedAndSymlink(t *testing.T) {
 	w := wifiSecretFixture(t)
 	w.write(t, w.env.WifiApply, `{"state":"unverified"}`)
-	if err := connectMarkWifiOwner(w.cfg, "r-fixture", "o-fixture"); err == nil {
+	if err := connectMarkWifiOwner(w.cfg, "r-fixture", "o-fixture", "", nil); err == nil {
 		t.Fatal("marked unverified config")
 	}
 	w.write(t, w.env.WifiApply, lastApply)
 	marker := w.cfg.StatePath + ".wifi-owner.json"
 	w.write(t, marker+"-target", "owner data")
 	os.Symlink(marker+"-target", marker)
-	if err := connectMarkWifiOwner(w.cfg, "r-fixture", "o-fixture"); err == nil {
+	if err := connectMarkWifiOwner(w.cfg, "r-fixture", "o-fixture", "", nil); err == nil {
 		t.Fatal("replaced symlink marker")
 	}
 	raw, _ := os.ReadFile(marker + "-target")
@@ -126,7 +126,7 @@ func TestWifiSecretForgetClearsEligibilityOnFailureOrInterruption(t *testing.T) 
 	for _, interrupted := range []bool{false, true} {
 		t.Run(map[bool]string{false: "failed", true: "interrupted"}[interrupted], func(t *testing.T) {
 			w := wifiSecretFixture(t)
-			if err := connectMarkWifiOwner(w.cfg, "r-fixture", "o-fixture"); err != nil {
+			if err := connectMarkWifiOwner(w.cfg, "r-fixture", "o-fixture", "", nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := connectForgetWifiOwner(w.cfg); err != nil {
@@ -184,5 +184,44 @@ func TestWifiSecretForgetRejectsOtherFilesWithoutDisclosure(t *testing.T) {
 				t.Fatal("removed non-marker file")
 			}
 		})
+	}
+}
+
+// A one-band change makes that band readable, plus only what the same owner's
+// previous marker covered: never a band someone else set.
+func TestWifiSecretMarkerScopedToBandAndOwnersOwn(t *testing.T) {
+	w := wifiSecretFixture(t)
+	both := strings.Replace(wizardWireless, "\toption disabled '1'\n", "", 1)
+	both = strings.Replace(both, "option ssid 'OpenWrt'\n\toption encryption 'none'\n", "option ssid 'Home-2G'\n\toption encryption 'psk2'\n\toption key 'old-2g-key'\n", 1)
+	w.write(t, w.env.WirelessConfig, both)
+	bands := func(owner string) string {
+		var out []string
+		for _, c := range connectReadOwnerWifi(w.cfg, "r-fixture", owner) {
+			out = append(out, c.Band)
+		}
+		return strings.Join(out, ",")
+	}
+	if err := connectMarkWifiOwner(w.cfg, "r-fixture", "o-fixture", "5g", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := bands("o-fixture"); got != "5g" {
+		t.Fatalf("5g change reads back %q", got)
+	}
+	kept := connectWifiOwnerAPs(w.cfg, "r-fixture", "o-fixture")
+	if err := connectMarkWifiOwner(w.cfg, "r-fixture", "o-fixture", "2g", kept); err != nil {
+		t.Fatal(err)
+	}
+	if got := bands("o-fixture"); got != "2g,5g" {
+		t.Fatalf("same owner's two changes read back %q", got)
+	}
+	// Another owner's first one-band change inherits nothing.
+	if err := connectMarkWifiOwner(w.cfg, "r-fixture", "o-other", "2g", connectWifiOwnerAPs(w.cfg, "r-fixture", "o-other")); err != nil {
+		t.Fatal(err)
+	}
+	if got := bands("o-other"); got != "2g" {
+		t.Fatalf("new owner reads back %q", got)
+	}
+	if err := connectMarkWifiOwner(w.cfg, "r-fixture", "o-other", "6g", nil); err == nil {
+		t.Fatal("marked a band the router lacks")
 	}
 }
