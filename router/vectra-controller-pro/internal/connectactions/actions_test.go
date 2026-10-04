@@ -16,6 +16,7 @@ func TestSevenStrictActions(t *testing.T) {
 		{"select_entry", `{"entryId":null}`}, {"select_entry", `{"entryId":"entry:01"}`},
 		{"set_rules", `{"direct":["example.com"],"vpn":[]}`},
 		{"set_service", `{"service":"youtube","entryId":null}`},
+		{"set_service", `{"service":"ai","entryId":":auto"}`}, // back to the default
 		{"set_wifi", `{"ssid":"Роутер","password":"secret-123"}`},
 		{"reboot", `{}`}, {"update_now", `{}`}, {"set_auto_update", `{"enabled":false}`},
 	} {

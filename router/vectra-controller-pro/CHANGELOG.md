@@ -1,5 +1,29 @@
 # Changelog
 
+## vctl 0.7.0-r16
+
+### Connect: services
+- **The check-in says more about each service** (`connect.services[]`), for
+  the Vectra app's per-service server picker. `entryId` keeps its meaning —
+  the location the service runs through now, the «Нейросети» Kazakh default
+  folded in, null for the main VPN — and next to it, all optional:
+  `auto` (the owner has made no choice: the service is on its default),
+  `entries` (the cached locations that carry the service, the ones
+  `set_service` accepts; absent when not known, never cut short past 200)
+  and `stale` (the owner's location left the cache or no longer carries the
+  service: it does not run, the service is on its default meanwhile, and
+  `entryId` is null). Working out `entries` parses every cached location per
+  service, so it is done once per cache (keyed by the index's digests) and
+  not on every check-in.
+- **`set_service` with `entryId: ":auto"`** takes a service back to its
+  default: the owner's location, «as the main VPN» or country is deleted
+  (for «Нейросети», Kazakhstan comes back). `null` stays «as the main VPN».
+  Advertised as the capability `set_service_auto` next to `set_service`.
+- **Panel first.** The panel's check-in schema rejects a capability it does
+  not know — the whole check-in, not the field — so the panel with
+  `set_service_auto` in `connectRouterCapabilitySchema` must be deployed
+  before any router sends it.
+
 ## vctl 0.7.0-r15 — a failed VPN never takes the internet with it
 
 Fault drills on a live router (1111, 2026-10-04), a LAN client measured every

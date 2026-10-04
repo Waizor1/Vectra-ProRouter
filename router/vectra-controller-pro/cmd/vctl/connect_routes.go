@@ -20,6 +20,10 @@ import (
 	"vectra-controller-pro/internal/vault"
 )
 
+// connectServiceAuto as a set_service entryId takes the service back to its
+// default (capability set_service_auto); null stays «as the main VPN».
+const connectServiceAuto = ":auto"
+
 func connectRouteChange(action string, params json.RawMessage, cache *localctl.EntriesCache) (*localctl.Change, string) {
 	var p struct {
 		EntryID *string  `json:"entryId"`
@@ -93,6 +97,11 @@ func connectRouteChange(action string, params json.RawMessage, cache *localctl.E
 	case "set_service":
 		if _, ok := xray.ServiceByID(p.Service); !ok {
 			return nil, "unknown_service"
+		}
+		if p.EntryID != nil && *p.EntryID == connectServiceAuto {
+			// Back to the default: the owner's choice is deleted.
+			c.SetService = &localctl.ServiceChoice{ID: p.Service}
+			break
 		}
 		c.SetService = &localctl.ServiceChoice{ID: p.Service, MainPath: p.EntryID == nil}
 		if p.EntryID != nil {

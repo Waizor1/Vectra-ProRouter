@@ -342,9 +342,19 @@ type ConnectSites struct {
 	Direct []string `json:"direct"`
 	VPN    []string `json:"vpn"`
 }
+
+// ConnectService is where one service runs. EntryID is the location it runs
+// through now (the «Нейросети» default folded in); null is the main VPN.
 type ConnectService struct {
 	ID      string  `json:"id"`
 	EntryID *string `json:"entryId"`
+	// Auto: the owner has made no choice; the service is on its default.
+	Auto *bool `json:"auto,omitempty"`
+	// Entries are the cached locations that carry the service; nil when not
+	// known, never truncated.
+	Entries *[]string `json:"entries,omitempty"`
+	// Stale: the owner's location is gone or no longer carries the service.
+	Stale bool `json:"stale,omitempty"`
 }
 type ConnectWifi struct {
 	Password string `json:"password,omitempty"`
