@@ -37,7 +37,14 @@
 
 	# The installer behind a short link:
 	#   wget -O /tmp/vectra https://router.vectra-pro.net/install && sh /tmp/vectra
-	@installer path /install /install.sh
+	# A browser opening /install still gets the panel page; wget gets the script.
+	@installer {
+		path /install /install.sh
+		not {
+			path /install
+			header Accept *text/html*
+		}
+	}
 	handle @installer {
 		root * /srv/artifacts
 		rewrite * /openwrt/pro-canary/install.sh
@@ -111,7 +118,14 @@
 
 	# The installer behind a short link:
 	#   wget -O /tmp/vectra https://router.vectra-pro.net/install && sh /tmp/vectra
-	@installer path /install /install.sh
+	# A browser opening /install still gets the panel page; wget gets the script.
+	@installer {
+		path /install /install.sh
+		not {
+			path /install
+			header Accept *text/html*
+		}
+	}
 	handle @installer {
 		root * /srv/artifacts
 		rewrite * /openwrt/pro-canary/install.sh
