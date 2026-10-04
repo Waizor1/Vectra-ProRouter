@@ -242,7 +242,7 @@ func readRadios(env Env) Wifi {
 		return w
 	}
 	for _, d := range f.OfType("wifi-device") {
-		r := Radio{Device: d.Ref(), Band: band(d), Channel: fixedChannel(d.Get("channel")), HTMode: d.Get("htmode"),
+		r := Radio{Device: d.Ref(), Band: RadioBand(d), Channel: fixedChannel(d.Get("channel")), HTMode: d.Get("htmode"),
 			Width: widthOf(d.Get("htmode")), Country: d.Get("country"), radioOn: !disabledOpt(d.Get("disabled"))}
 		if p, err := strconv.Atoi(strings.TrimSpace(d.Get("txpower"))); err == nil {
 			r.TxPower = &p
@@ -304,8 +304,11 @@ func encrypted(enc string) bool {
 	return true
 }
 
-// band is a radio's band: its `band` option, or the one its hwmode implies.
-func band(r uci.Section) string {
+// RadioBand is a radio's band (2g/5g/6g/60g): its `band` option when that is
+// one of those, otherwise the one its hwmode implies; "" when unknown. Every
+// reader of a radio's band (the wizard, Connect's set_wifi and its readback
+// marker) resolves it here so they cannot disagree.
+func RadioBand(r uci.Section) string {
 	switch b := r.Get("band"); b {
 	case "2g", "5g", "6g", "60g":
 		return b

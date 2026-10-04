@@ -106,7 +106,7 @@ func TestConnectDispatchWiFiSecretNeverJournalled(t *testing.T) {
 	connectResourceBlocked = func(*daemon, string) bool { return false }
 	calls, forget, mark := 0, 0, 0
 	connectWifiForget = func(agentcfg.Config) error { forget++; return nil }
-	connectWifiMark = func(agentcfg.Config, string, string, string, []connectWifiAP) error { mark++; return nil }
+	connectWifiMark = func(agentcfg.Config, []byte, string, string, connectactions.WiFi, []connectWifiOwnedAP) error { mark++; return nil }
 	connectWifiExecute = func(context.Context, agentcfg.Config, json.RawMessage) (string, bool) {
 		calls++
 		return "applied", true
@@ -150,8 +150,8 @@ func TestConnectDispatchWiFiBandScopesTheOwnerMarker(t *testing.T) {
 	})
 	connectResourceBlocked = func(*daemon, string) bool { return false }
 	b := d.connectBinding()
-	prev := connectWifiAP{Radio: "radio1", Interface: "ap1"}
-	raw, _ := json.Marshal(connectWifiOwnerMarker{RouterID: b.RouterID, OwnerRef: b.OwnerRef, APs: []connectWifiAP{prev}})
+	prev := connectWifiOwnedAP{connectWifiAP{Radio: "radio1", Interface: "ap1"}, "fixture-fp"}
+	raw, _ := json.Marshal(connectWifiOwnerMarker{RouterID: b.RouterID, OwnerRef: b.OwnerRef, APs: []connectWifiOwnedAP{prev}})
 	if err := os.WriteFile(d.cfg.StatePath+".wifi-owner.json", raw, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -162,13 +162,13 @@ func TestConnectDispatchWiFiBandScopesTheOwnerMarker(t *testing.T) {
 		return nil
 	}
 	var gotParams, gotBand string
-	var gotKept []connectWifiAP
+	var gotKept []connectWifiOwnedAP
 	connectWifiExecute = func(_ context.Context, _ agentcfg.Config, p json.RawMessage) (string, bool) {
 		gotParams = string(p)
 		return "applied", true
 	}
-	connectWifiMark = func(_ agentcfg.Config, _, _, band string, kept []connectWifiAP) error {
-		gotBand, gotKept = band, kept
+	connectWifiMark = func(_ agentcfg.Config, _ []byte, _, _ string, want connectactions.WiFi, kept []connectWifiOwnedAP) error {
+		gotBand, gotKept = want.Band, kept
 		return nil
 	}
 	j := connectTestJob("wifi-band", "set_wifi", map[string]interface{}{"ssid": "fake-2g", "password": "fake-fixture-password", "band": "2g"})
@@ -191,7 +191,7 @@ func TestConnectConfidentialEnrichmentClonesAndOwnerBinds(t *testing.T) {
 	oldRead := connectWifiRead
 	t.Cleanup(func() { connectWifiRead = oldRead })
 	calls := 0
-	connectWifiRead = func(agentcfg.Config, string, string) []connectConfidentialWifi {
+	connectWifiRead = func(agentcfg.Config, []byte, string, string) []connectConfidentialWifi {
 		calls++
 		return []connectConfidentialWifi{{Band: "2.4", SSID: "fake", Password: "fake-test-key"}}
 	}
@@ -237,7 +237,7 @@ func TestConnectAllSevenNativeActionsWithFakeDependencies(t *testing.T) {
 	connectResourceBlocked = func(*daemon, string) bool { return false }
 	connectWifiExecute = func(context.Context, agentcfg.Config, json.RawMessage) (string, bool) { return "applied", true }
 	connectWifiForget = func(agentcfg.Config) error { return nil }
-	connectWifiMark = func(agentcfg.Config, string, string, string, []connectWifiAP) error { return nil }
+	connectWifiMark = func(agentcfg.Config, []byte, string, string, connectactions.WiFi, []connectWifiOwnedAP) error { return nil }
 	maintenanceCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		if name == "opkg" && len(args) == 2 && args[0] == "status" {
 			return []byte("Version: 0.6.0-r37\n"), nil

@@ -1,14 +1,18 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/claim"
+	"vectra-controller-pro/internal/connectactions"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/setup"
 	"vectra-controller-pro/internal/uci"
@@ -29,20 +33,69 @@ type connectWifiAP struct {
 	Radio     string `json:"radio"`
 	Interface string `json:"interface"`
 }
+
+// connectWifiOwnedAP is a marked access point plus FP, the fingerprint of the
+// SSID and key this owner set on it (connectWifiFingerprint, hex). A marker
+// entry without one (written before fingerprints existed) is never readable.
+type connectWifiOwnedAP struct {
+	connectWifiAP
+	FP string `json:"fp,omitempty"`
+}
 type connectWifiOwnerMarker struct {
-	RouterID string          `json:"routerId"`
-	OwnerRef string          `json:"ownerRef"`
-	APs      []connectWifiAP `json:"aps"`
+	RouterID string               `json:"routerId"`
+	OwnerRef string               `json:"ownerRef"`
+	APs      []connectWifiOwnedAP `json:"aps"`
 }
 
 var errConnectWifiSecret = errors.New("owner-bound Wi-Fi readback is unavailable")
 
-// The caller must pass the current adopted binding, and call this only after
-// connectApplyWifi returned applied=true. Runtime verification is also checked.
-// band "" marks every access point; otherwise only that band's, plus kept: the
-// access points this same owner's previous marker already covered.
-func connectMarkWifiOwner(cfg agentcfg.Config, routerID, ownerRef, band string, kept []connectWifiAP) error {
-	if cfg.StatePath == "" || routerID == "" || ownerRef == "" || len(routerID) > 256 || len(ownerRef) > 256 {
+// connectWifiReadbackKey is the marker fingerprint key:
+// HMAC-SHA256(device Ed25519 seed, "vctl-wifi-readback-v1"); nil without a
+// device key. The seed is router-local: only its public half ever leaves the
+// router, and it is stored in the vault-sealed state file (whose key lives
+// outside the state directory), never next to the marker in usable form. The
+// distinct label separates this use from the claim derivations of the same
+// seed. A new device key leaves every existing marker unreadable (fail safe).
+func connectWifiReadbackKey(devicePrivateKey string) []byte {
+	device, err := claim.DeviceKey(devicePrivateKey)
+	if err != nil {
+		return nil
+	}
+	m := hmac.New(sha256.New, device.Seed())
+	m.Write([]byte("vctl-wifi-readback-v1"))
+	return m.Sum(nil)
+}
+
+// connectWifiFingerprint is HMAC-SHA256(k, ssid || 0x00 || key). It and k
+// must never be logged or leave the router.
+func connectWifiFingerprint(k []byte, ssid, key string) []byte {
+	m := hmac.New(sha256.New, k)
+	m.Write([]byte(ssid))
+	m.Write([]byte{0})
+	m.Write([]byte(key))
+	return m.Sum(nil)
+}
+
+// connectWifiFingerprintMatches reports whether an access point's current
+// ssid and key are exactly what a marker entry's fingerprint recorded.
+func connectWifiFingerprintMatches(k []byte, fp, ssid, key string) bool {
+	want, err := hex.DecodeString(fp)
+	if err != nil || len(want) != sha256.Size || len(k) != sha256.Size {
+		return false
+	}
+	return hmac.Equal(connectWifiFingerprint(k, ssid, key), want)
+}
+
+// The caller must pass the current adopted binding and k, and call this with
+// the requested set_wifi only after connectApplyWifi returned applied=true;
+// runtime verification is also checked. want.Band "" targets every access
+// point, otherwise only that band's; a target is marked only while it holds
+// exactly want's SSID and password (a local change since the apply is not this
+// owner's). Any other access point stays marked only if kept — this same
+// owner's previous marker — has its fingerprint and it still matches. A want
+// without an SSID re-marks only kept (nil when none still matches).
+func connectMarkWifiOwner(cfg agentcfg.Config, k []byte, routerID, ownerRef string, want connectactions.WiFi, kept []connectWifiOwnedAP) error {
+	if cfg.StatePath == "" || routerID == "" || ownerRef == "" || len(routerID) > 256 || len(ownerRef) > 256 || len(k) != sha256.Size {
 		return errConnectWifiSecret
 	}
 	env := connectWifiSecretEnv()
@@ -67,12 +120,35 @@ func connectMarkWifiOwner(cfg agentcfg.Config, routerID, ownerRef, band string, 
 		return errConnectWifiSecret
 	}
 	marker := connectWifiOwnerMarker{RouterID: routerID, OwnerRef: ownerRef}
+	var requested []byte
+	if want.SSID != "" {
+		requested = connectWifiFingerprint(k, want.SSID, want.Password)
+	}
+	targets := 0
 	for _, ap := range connectWifiFirstAPs(f) {
-		if band == "" || connectWifiRadioBand(f, ap.Radio) == band || slices.Contains(kept, ap) {
-			marker.APs = append(marker.APs, ap)
+		iface := connectWifiSection(f, "wifi-iface", ap.Interface)
+		if iface == nil {
+			continue
+		}
+		fp := connectWifiFingerprint(k, iface.Get("ssid"), iface.Get("key"))
+		if requested != nil && (want.Band == "" || connectWifiRadioBand(f, ap.Radio) == want.Band) {
+			if hmac.Equal(fp, requested) {
+				marker.APs = append(marker.APs, connectWifiOwnedAP{ap, hex.EncodeToString(fp)})
+				targets++
+			}
+			continue
+		}
+		for _, prev := range kept {
+			if prev.connectWifiAP == ap && connectWifiFingerprintMatches(k, prev.FP, iface.Get("ssid"), iface.Get("key")) {
+				marker.APs = append(marker.APs, connectWifiOwnedAP{ap, prev.FP})
+				break
+			}
 		}
 	}
-	if len(marker.APs) == 0 || len(marker.APs) > 16 {
+	if requested == nil && len(marker.APs) == 0 {
+		return nil // nothing of this owner's is left to restore
+	}
+	if (requested != nil && targets == 0) || len(marker.APs) == 0 || len(marker.APs) > 16 {
 		return errConnectWifiSecret
 	}
 	raw, err := json.Marshal(marker)
@@ -87,8 +163,11 @@ func connectMarkWifiOwner(cfg agentcfg.Config, routerID, ownerRef, band string, 
 
 // No wireless file is read without a private matching ownership marker.
 // The caller revalidates adoption and ownerRef before sending these records.
-func connectReadOwnerWifi(cfg agentcfg.Config, routerID, ownerRef string) []connectConfidentialWifi {
-	if cfg.StatePath == "" || routerID == "" || ownerRef == "" {
+// An access point is read back only while it holds exactly the SSID and key
+// this owner set (the marker fingerprint, under k): a local change since —
+// vctl UI, LuCI, raw uci — or an entry without a fingerprint is skipped.
+func connectReadOwnerWifi(cfg agentcfg.Config, k []byte, routerID, ownerRef string) []connectConfidentialWifi {
+	if cfg.StatePath == "" || routerID == "" || ownerRef == "" || len(k) != sha256.Size {
 		return nil
 	}
 	aps := connectWifiOwnerAPs(cfg, routerID, ownerRef)
@@ -113,7 +192,7 @@ func connectReadOwnerWifi(cfg agentcfg.Config, routerID, ownerRef string) []conn
 	for _, want := range aps {
 		matched := false
 		for _, have := range current {
-			if have == want {
+			if have == want.connectWifiAP {
 				matched = true
 				break
 			}
@@ -121,18 +200,12 @@ func connectReadOwnerWifi(cfg agentcfg.Config, routerID, ownerRef string) []conn
 		if !matched {
 			return nil
 		}
-		var radio, ap *uci.Section
-		for i := range f.Sections {
-			s := &f.Sections[i]
-			if s.Type == "wifi-device" && s.Ref() == want.Radio {
-				radio = s
-			}
-			if s.Type == "wifi-iface" && s.Ref() == want.Interface {
-				ap = s
-			}
-		}
+		radio, ap := connectWifiSection(f, "wifi-device", want.Radio), connectWifiSection(f, "wifi-iface", want.Interface)
 		if radio == nil || ap == nil {
 			return nil
+		}
+		if !connectWifiFingerprintMatches(k, want.FP, ap.Get("ssid"), ap.Get("key")) {
+			continue
 		}
 		if radio.Get("disabled") == "1" || radio.Get("disabled") == "true" || ap.Get("disabled") == "1" || ap.Get("disabled") == "true" {
 			continue
@@ -161,7 +234,7 @@ func connectReadOwnerWifi(cfg agentcfg.Config, routerID, ownerRef string) []conn
 
 // connectWifiOwnerAPs is the access points a private marker for exactly this
 // binding covers; nil without one. It reads no wireless configuration.
-func connectWifiOwnerAPs(cfg agentcfg.Config, routerID, ownerRef string) []connectWifiAP {
+func connectWifiOwnerAPs(cfg agentcfg.Config, routerID, ownerRef string) []connectWifiOwnedAP {
 	if cfg.StatePath == "" || routerID == "" || ownerRef == "" {
 		return nil
 	}
@@ -178,29 +251,24 @@ func connectWifiOwnerAPs(cfg agentcfg.Config, routerID, ownerRef string) []conne
 	return marker.APs
 }
 
-// connectWifiRadioBand is a wifi-device's band (2g/5g/6g/60g), from its band
-// or legacy hwmode option; "" when unknown.
+// connectWifiRadioBand is a wifi-device's band as setup resolves it (the
+// same band set_wifi targets); "" when unknown.
 func connectWifiRadioBand(f *uci.File, ref string) string {
-	for _, radio := range f.OfType("wifi-device") {
-		if radio.Ref() != ref {
-			continue
-		}
-		band := radio.Get("band")
-		if band == "" {
-			switch radio.Get("hwmode") {
-			case "11b", "11g":
-				band = "2g"
-			case "11a":
-				band = "5g"
-			}
-		}
-		switch band {
-		case "2g", "5g", "6g", "60g":
-			return band
-		}
-		return ""
+	if radio := connectWifiSection(f, "wifi-device", ref); radio != nil {
+		return setup.RadioBand(*radio)
 	}
 	return ""
+}
+
+// connectWifiSection is the last section of type typ named ref; nil if none.
+func connectWifiSection(f *uci.File, typ, ref string) *uci.Section {
+	var out *uci.Section
+	for i := range f.Sections {
+		if s := &f.Sections[i]; s.Type == typ && s.Ref() == ref {
+			out = s
+		}
+	}
+	return out
 }
 
 func connectWifiSecretFirstMissing(path string) bool {
