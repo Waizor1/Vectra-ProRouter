@@ -16,6 +16,7 @@ import (
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/rescue"
 	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/subscription"
 	"vectra-controller-pro/internal/supervisor"
@@ -467,6 +468,15 @@ func (d *daemon) publishRuntime() {
 	if d.autoRoute {
 		rt.AutoRouteSource = d.cfg.RouteSource
 	}
+	// The rescue's state belongs to the loop: read here, on the loop, never
+	// by the UI's goroutine.
+	rs := d.rescueState()
+	rt.Rescue = &localctl.Rescue{Mode: string(rs.Mode), ProxyFailures: rs.ProxyFailureCount,
+		FailedRetries: rs.FailedRetries, LastReason: d.st.Rescue.LastReason}
+	if !rs.LastTransitionAt.IsZero() {
+		at := rs.LastTransitionAt
+		rt.Rescue.LastTransitionAt = &at
+	}
 	d.claim.setLinked(d.linked())
 	d.runtime.Store(rt)
 }
@@ -498,6 +508,15 @@ func (d *daemon) liveRuntime() *localctl.Runtime {
 	}
 	rt.Claim = d.claim.view(time.Now())
 	rt.Route = d.route.Load()
+	if rt.Rescue != nil {
+		// Built by the loop (publishRuntime); copied, so the live word on
+		// the tunnel does not write into the published snapshot.
+		r := *rt.Rescue
+		if r.Mode == string(rescue.ModeDirect) && r.LastTransitionAt != nil {
+			r.TunnelDead = d.tunnelDead(time.Now(), *r.LastTransitionAt)
+		}
+		rt.Rescue = &r
+	}
 	return &rt
 }
 
@@ -799,12 +818,42 @@ func (d *daemon) waitForTick(ctx context.Context, tick <-chan time.Time) bool {
 	if d.claim != nil {
 		rotated = d.claim.rotated
 	}
+	watch := time.NewTicker(dnsWatchEvery)
+	defer watch.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return false
 		case <-tick:
 			return true
+		case <-watch.C:
+			// xray down: the router's lookups leave the dead inbound within
+			// seconds, not at the next poll (dnsWatchDue).
+			if d.dnsWatchDue(ctx) {
+				d.programFirewallWithin(ctx, d.desired, 0)
+				if d.dnsFailedOpen {
+					// Taken out: the FakeDNS answers lead nowhere now.
+					d.flushResolverCache("xray stopped answering on its DNS inbound")
+				} else if d.fwProgrammed != nil {
+					// Put back only if it went in: xray may have missed the
+					// one question programming asks; the watch tries again.
+					if _, in := redirectPort(*d.fwProgrammed); !in {
+						d.dnsFailedOpen = true
+						d.dnsPutBackAfter = time.Now().Add(dnsPutBackRetry)
+					}
+				}
+				d.publishRuntime()
+			}
+			// A probe through the tunnel just failed, or direct mode may go
+			// back: the rescue looks again now, not at the next poll.
+			if d.rescueRecheckDue(time.Now()) {
+				if dec := d.rescueStep(ctx); dec.ShouldTransition {
+					d.applyRescueTransition(ctx, dec)
+					// A restart before the next poll must find the mode.
+					_ = d.persist()
+					d.publishRuntime()
+				}
+			}
 		case <-rotated:
 			// The UI shows a new claim code: check in now, so the panel knows it.
 			return true

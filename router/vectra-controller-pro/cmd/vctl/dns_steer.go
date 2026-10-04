@@ -14,11 +14,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/logging"
+	"vectra-controller-pro/internal/rescue"
 )
 
 // DNS through the tunnel, the daemon's side (the why is in
@@ -279,6 +281,83 @@ func dnsRedirectKey(spec firewall.Spec) string {
 	return fmt.Sprintf("%d/%v/v6reject=%t/hijack=%t", spec.DNSRedirectPort, spec.DNSResolverUIDs, spec.DNSRejectV6, spec.HijackDNS)
 }
 
+// dnsWatchEvery is how often, between the polls, the loop asks xray's DNS
+// inbound whether it still answers while the data plane sends the router's
+// lookups to it (dnsWatchDue). At the polls' pace alone a crashed xray cost the
+// LAN every name for dnsDeadAfter minutes, while TPROXY itself falls through to
+// the open path within a second: measured on 1111 on 2026-10-04, xray killed
+// in a loop, 90 s without a single lookup before the redirect went.
+const dnsWatchEvery = 3 * time.Second
+
+// dnsPutBackRetry is how long a put-back that did not get the redirect in
+// waits before the next.
+const dnsPutBackRetry = 30 * time.Second
+
+// dnsFastDeadAfter is how many of those checks in a row xray may not answer
+// before the redirect goes: about ten seconds, longer than a reload or a
+// supervised restart takes.
+const dnsFastDeadAfter = 3
+
+// dnsWatchDue: the loaded data plane is to be programmed again now, between
+// the polls — the redirect it holds leads to an inbound that has not answered
+// dnsFastDeadAfter checks in a row, or this watch took it out and xray answers
+// again. Cheap while nothing changes: one query to the inbound it redirects
+// to, or nothing at all.
+func (d *daemon) dnsWatchDue(ctx context.Context) bool {
+	if d.desired == nil || !d.supStarted || d.fwProgrammed == nil {
+		return false
+	}
+	// Direct mode has no data plane to program: loaded again here, it would
+	// run the LAN back into the tunnel the rescue left. Under the kill switch
+	// the router's lookups must not leave the tunnel either; the polls decide
+	// there, as before.
+	if d.rescueState().Mode == rescue.ModeDirect || d.killSwitchArmed() {
+		return false
+	}
+	if port, ok := redirectPort(*d.fwProgrammed); ok {
+		if d.answers(ctx, port) {
+			d.dnsFastMisses = 0
+			return false
+		}
+		d.dnsFastMisses++
+		if d.dnsFastMisses < dnsFastDeadAfter {
+			return false
+		}
+		d.dnsFastMisses = 0
+		d.dnsFailedOpen = true
+		logging.L().Warn("xray stopped answering on its DNS inbound; the router's resolver asks over the open path until it answers again", "port", port)
+		return true
+	}
+	// Back only once xray has run xraySettle: a crash loop answers for a
+	// second at each start, and each put-back costs two loads of the whole
+	// table (and its direct sets) on a 234 MB router.
+	if !d.dnsFailedOpen || !d.xraySettled(time.Now()) || time.Now().Before(d.dnsPutBackAfter) {
+		return false
+	}
+	port, _, ok := d.dnsCandidate()
+	if !ok {
+		d.dnsFailedOpen = false
+		return false
+	}
+	if !d.answers(ctx, port) {
+		return false
+	}
+	d.dnsFailedOpen = false
+	logging.L().Info("xray answers on its DNS inbound again; the router's resolver asks through the tunnel", "port", port)
+	return true
+}
+
+// redirectPort is the port a dnsRedirectKey redirects to; ok is false when it
+// redirects nothing.
+func redirectPort(key string) (int, bool) {
+	head, _, found := strings.Cut(key, "/")
+	if !found {
+		return 0, false
+	}
+	port, err := strconv.Atoi(head)
+	return port, err == nil && port > 0
+}
+
 // dnsDeadAfter is how many loops in a row xray may not answer on its DNS
 // inbound before the redirect is taken out: one miss can be a restart.
 const dnsDeadAfter = 2
@@ -482,6 +561,49 @@ func resolverUIDs(procRoot string) []int {
 	}
 	sort.Ints(out)
 	return out
+}
+
+// resolverPIDs are the dnsmasq processes, by /proc/<pid>/comm.
+func resolverPIDs(procRoot string) []int {
+	dirs, err := os.ReadDir(procRoot)
+	if err != nil {
+		return nil
+	}
+	var out []int
+	for _, e := range dirs {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		comm, err := os.ReadFile(filepath.Join(procRoot, e.Name(), "comm"))
+		if err == nil && strings.TrimSpace(string(comm)) == "dnsmasq" {
+			out = append(out, pid)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+// flushResolverCache empties dnsmasq's cache — SIGHUP: it drops the cache and
+// reads its hosts files again; DHCP and the leases are untouched. What xray
+// answered while it carried the router's lookups leads nowhere once the
+// tunnel is out of the way: the sites that go through it got FakeDNS
+// addresses (198.18.x), and dnsmasq kept handing those out until they
+// expired — Instagram and YouTube dead on the LAN with the internet up.
+func (d *daemon) flushResolverCache(reason string) {
+	hup := d.hupResolver
+	if hup == nil {
+		hup = func(pid int) error { return syscall.Kill(pid, syscall.SIGHUP) }
+	}
+	n := 0
+	for _, pid := range resolverPIDs(d.procRoot()) {
+		if hup(pid) == nil {
+			n++
+		}
+	}
+	if n > 0 {
+		logging.L().Info("emptied the router's resolver cache", "reason", reason, "processes", n)
+	}
 }
 
 // effectiveUID reads the effective uid from a /proc/<pid>/status

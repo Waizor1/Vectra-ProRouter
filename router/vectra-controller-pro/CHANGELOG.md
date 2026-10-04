@@ -1,5 +1,90 @@
 # Changelog
 
+## vctl 0.7.0-r15 — a failed VPN never takes the internet with it
+
+Fault drills on a live router (1111, 2026-10-04), a LAN client measured every
+two seconds: xray killed once, xray killed in a loop, every node blocked, the
+panel cut off. The owner's rule: when the VPN fails the internet stays, the
+VPN comes back by itself.
+
+### Fixed
+- **xray down: the router's DNS left the dead inbound only at the polls.**
+  TPROXY already fell through to the open path within a second, but dnsmasq
+  kept asking xray's DNS inbound until dnsDeadAfter polls (two minutes): the
+  LAN resolved nothing for 90 s in the crash-loop drill. Between the polls
+  the loop now asks the inbound every 3 s (dnsWatchDue); three misses in a
+  row take the redirect out at once, without waiting for an answer, and the
+  first answer puts it back.
+- **Every node dead: 147 s without internet before the rescue went direct.**
+  After a failed probe through the tunnel the rescue looks again every 10 s
+  (rescueRecheckDue), not once a poll; three failures take about half a
+  minute.
+- **Direct mode went back to a dead tunnel, and could not leave it again.**
+  After its cooldown the rescue retried the proxy with every node still
+  blocked (116 s without internet), and the same cooldown held the way back
+  out. Now the way back waits for a node of the main balancer, its reserve
+  or the borrow pool to have answered AFTER the router left — by the
+  connection table (xray's own dials, the observatory's included, answered
+  or not) or the observatory's last_seen_time where it gives one: its
+  "alive" alone is the verdict of its last round, which can predate the
+  outage by the whole probe interval — the second drill round went back to
+  a blocked tunnel on exactly that. With no answer at all for 10 minutes it
+  tries once anyway, the cooldown's doubling spacing the next tries.
+- **The rescue's probe could succeed around a dead tunnel.** In direct mode
+  the ISP's DNS fills dnsmasq, and www.gstatic.com resolves to a Google cache
+  inside the ISP — an address the kernel sends straight out. Back on the
+  proxy, the probe "worked" with every node blocked and the LAN sat offline
+  for five minutes. The probe through the tunnel is now Cloudflare's
+  /cdn-cgi/trace, and an answer from the router's own WAN address (learned
+  around the tunnel every 10 minutes) counts as none. The way out
+  never waits for the cooldown, and the watchdog seeing the main balancer
+  down starts the rescue's rechecks without waiting for the next poll.
+- `vctl status` (ubus `vectra status`) shows the rescue: mode, failures,
+  failed returns, last transition and whether direct mode waits for the
+  tunnel; the rescue logs each failed probe through the tunnel.
+
+- **FakeDNS answers outlived the tunnel.** The sites that go through the
+  tunnel (Instagram, YouTube…) resolve to FakeDNS addresses (198.18.x) that
+  only xray can carry; dnsmasq kept handing them out after xray died or the
+  rescue went direct, so exactly those sites stayed dead with the internet
+  up. Taking the redirect out and entering direct mode (the rescue's or the
+  operator's) now empty dnsmasq's cache (SIGHUP).
+- **The rescue looks again every 3 s after a failed probe** (10 s otherwise),
+  starts on the watchdog's word that the preferred node stopped answering,
+  and needs its failures to span 20 s — so it never beats the failover
+  watchdog, which heals a single dead node in seconds. The probe through
+  the tunnel goes over IPv4 on a fresh connection, and the tunnel counts as
+  working when any trace answer is not the WAN's: at the drill ISP
+  cp.cloudflare.com goes out by the kernel while www.cloudflare.com takes
+  the tunnel.
+- **A vctl killed outright left its xray running, and the next vctl could
+  not start its own.** procd respawns vctl without the init script, whose
+  start_service was the only place orphans were ended: the new xray
+  crash-looped (exit 255, port taken) beside an unsupervised orphan, and when
+  the orphan went the LAN had no xray for the supervisor's backoff (~1 min in
+  the vctl-kill drill). vctl now ends such an xray itself at start (parent
+  init, vctl's own argv), before its supervisor starts.
+- **xray down sent the rescue direct.** A failed probe while xray itself is
+  down or just restarted (under 15 s) no longer counts against the tunnel:
+  TPROXY already lets the LAN past a dead xray, and direct mode then held the
+  VPN off for the whole cooldown after xray was back.
+- **The cooldown is 2 minutes, not 5** — it holds only the way back, and
+  that way now waits for a live node anyway. A return that fails within 5
+  minutes doubles the next cooldown (up to 32 minutes); a proxy that holds
+  for 10 minutes clears it, so a tunnel the observatory calls alive but that
+  carries nothing does not swing the LAN every few minutes.
+- The DNS watch never touches the data plane in direct mode (it would run
+  the LAN back into the tunnel the rescue left) or under the kill switch,
+  and puts the redirect back only once xray has run 15 s: a crash loop no
+  longer reloads the whole table, direct sets included, at every restart.
+
+### Changed
+- **The support shell is on by default** (UCI `remote_shell` '1' on a new
+  router too); the owner switches it off in the router UI, and an upgrade
+  keeps that — including a '0' that r14 and earlier wrote on a new router.
+- The operator's "enter direct" ends by itself as the rescue's does: after
+  the cooldown (2 min, was 5), once a node lives.
+
 ## vctl 0.7.0-r14 — a router taken from PassWall2 keeps its VPN, and its owner gets its code in time
 
 What the migration of a live router (netis NX31, 2026-10-03) from PassWall2

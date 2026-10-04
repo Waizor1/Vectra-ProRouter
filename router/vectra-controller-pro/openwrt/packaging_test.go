@@ -2123,9 +2123,9 @@ func TestTheMemoryReserveFollowsTheRouter(t *testing.T) {
 }
 
 // The support shell (vectra-controller-pro.main.remote_shell) is decided once,
-// by the uci-defaults script: a router an older vctl already ran on — its
-// state is there — keeps the shell it had ('1'); a new one starts without it
-// ('0'). What is set — by this script or the owner — is never changed again.
+// by the uci-defaults script: on ('1') where nothing set it, a new router and
+// an upgraded one alike (since r15). What is set — by this script or the
+// owner — is never changed again.
 func TestUCIDefaultsDecideTheSupportShellOnce(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -2134,7 +2134,7 @@ func TestUCIDefaultsDecideTheSupportShellOnce(t *testing.T) {
 		set   string
 		want  string
 	}{
-		{"a new router", false, "", "0"},
+		{"a new router", false, "", "1"},
 		{"a router upgraded from a vctl without the switch", true, "", "1"},
 		{"the owner turned it off", true, "0", "0"},
 		{"the owner turned it on", false, "1", "1"},
@@ -2176,11 +2176,10 @@ func TestUCIDefaultsDecideTheSupportShellOnce(t *testing.T) {
 	}
 }
 
-// A router that ran the old Vectra agent (vectra-controller-agent, whose state
-// is legacy_state_path, /etc/vectra-controller/state.json) had the support
-// shell through it: moving it to vctl is an upgrade, not a new router, and it
-// keeps the shell. Only a router that had neither vctl nor the old agent
-// starts without it; an empty state file is no state.
+// Since r15 the support shell is on for every router the switch has not been
+// set on — one the old Vectra agent ran, one vctl ran, and a new one alike
+// (the owner's decision of 2026-10-04: support must reach a router whose VPN
+// failed); whatever the state files say.
 func TestUCIDefaultsKeepTheSupportShellOfARouterTheOldAgentRan(t *testing.T) {
 	t.Parallel()
 	const none = "-"
@@ -2191,9 +2190,9 @@ func TestUCIDefaultsKeepTheSupportShellOfARouterTheOldAgentRan(t *testing.T) {
 	}{
 		{"the old agent's state", none, `{"router_id":"r-1","agent_token":"x"}`, "1"},
 		{"both states", `{"router_id":"r-1"}`, `{"router_id":"r-1","agent_token":"x"}`, "1"},
-		{"an empty old agent's state", none, "", "0"},
-		{"both states empty", "", "", "0"},
-		{"neither", none, none, "0"},
+		{"an empty old agent's state", none, "", "1"},
+		{"both states empty", "", "", "1"},
+		{"neither", none, none, "1"},
 	} {
 		r := newLanRouter(t, stockDHCP(), true)
 		statePath := filepath.Join(r.dir, "etc", "vectra-controller-pro", "state.json")

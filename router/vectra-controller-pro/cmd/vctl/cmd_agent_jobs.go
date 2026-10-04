@@ -622,6 +622,7 @@ func (d *daemon) jobEnterDirect(ctx context.Context, job controlplane.Job) error
 	// Tear down the TPROXY firewall so traffic actually flows direct — otherwise
 	// packets keep being tproxy'd into a (possibly dead) Xray and black-holed.
 	d.tearDownFirewall(ctx)
+	d.flushResolverCache("direct mode")
 	d.storeRescueState(rescue.State{Mode: rescue.ModeDirect, LastTransitionAt: time.Now()}, "operator requested direct mode")
 	_ = d.persist()
 	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"enteredDirectMode": true})
@@ -913,12 +914,20 @@ func fileExists(path string) bool {
 // successful check-in confirms and the detached deadman auto-reverts if
 // connectivity never returns.
 func (d *daemon) programFirewall(ctx context.Context, cfg *config.Config) {
+	d.programFirewallWithin(ctx, cfg, dnsRedirectWait)
+}
+
+// programFirewallWithin is programFirewall waiting at most dnsWait for xray
+// to answer on its DNS inbound: none at all when the DNS watch takes a dead
+// inbound's redirect out — every second of waiting is a second the LAN
+// resolves nothing.
+func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, dnsWait time.Duration) {
 	spec, ok := firewallSpecFromConfig(cfg)
 	spec = withLANDevices(withLoadGuards(spec, d.cfg))
 	if !ok {
 		return // no tproxy inbound — nothing kernel-side to program
 	}
-	d.addDNSRedirect(ctx, &spec, dnsRedirectWait)
+	d.addDNSRedirect(ctx, &spec, dnsWait)
 	d.carryFakeDNS(&spec)
 	script, err := firewall.Render(spec)
 	if err != nil {
@@ -992,6 +1001,9 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 		return false
 	}
 	d.directLoaded = ""
+	// Nothing is redirected any more: the DNS watch must not take this for a
+	// loaded data plane to correct.
+	d.fwProgrammed = nil
 	for _, c := range firewall.RevertCommands(spec) {
 		fields := strings.Fields(c)
 		if len(fields) == 0 {
@@ -1076,6 +1088,8 @@ func (d *daemon) applyRescueTransition(ctx context.Context, dec rescue.Decision)
 	case rescue.ModeDirect:
 		logging.L().Warn("rescue: entering direct mode (tearing down proxy firewall)", "reason", dec.Reason)
 		d.tearDownFirewall(ctx)
+		// Out of the tunnel's way, its FakeDNS answers lead nowhere.
+		d.flushResolverCache("direct mode")
 	case rescue.ModeProxy:
 		logging.L().Info("rescue: recovering proxy mode (reapplying firewall)", "reason", dec.Reason)
 		d.reapplyFirewall(ctx)

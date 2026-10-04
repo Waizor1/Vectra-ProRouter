@@ -145,8 +145,8 @@ Ratified, intentional decisions for the canary stage:
   subscriptions) — a downgraded link can't deliver cleartext config/binaries.
 - **`run_terminal_command` runs operator-authored shell** from the authenticated
   panel (HTTPS + per-router token), and only where the router's owner allows it
-  (UCI `remote_shell`: off on a new router, kept on where vctl or the old agent
-  ran before). What the router protects and what it cannot: `docs/SECURITY.md`.
+  (UCI `remote_shell`: on by default since r15, new routers included; the
+  owner switches it off in the router UI and an upgrade keeps that). What the router protects and what it cannot: `docs/SECURITY.md`.
 - **nftables is fail-open-to-direct** (`policy accept`): a broken ruleset or a dead
   Xray lets traffic egress *direct* rather than black-holing the router. This
   matches PassWall2 and is acceptable for canary because PassWall2 remains the

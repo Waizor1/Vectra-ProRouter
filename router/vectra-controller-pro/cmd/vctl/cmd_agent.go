@@ -173,6 +173,27 @@ type daemon struct {
 	// the loops in a row xray has not answered on its DNS inbound.
 	dnsAnswers func(ctx context.Context, port int) bool
 	dnsMisses  int
+	// dnsFastMisses counts dnsWatchDue's checks in a row without an answer;
+	// dnsFailedOpen: that watch took the redirect out, and puts it back.
+	dnsFastMisses int
+	dnsFailedOpen bool
+	// dnsPutBackAfter holds the next put-back while the last one did not
+	// get the redirect in (a failing apply must not reload every 3 s).
+	dnsPutBackAfter time.Time
+	// signalProcess stands in for syscall.Kill in tests (killOrphanXray).
+	signalProcess func(pid int, sig syscall.Signal) error
+	// hupResolver stands in for SIGHUP to dnsmasq in tests.
+	hupResolver func(pid int) error
+	// rescueCheckedAt is when the rescue last probed (rescueStep).
+	rescueCheckedAt time.Time
+	// wanIP is the router's own address as Cloudflare saw it around the
+	// tunnel (refreshWANIP, at wanIPAt); traceAroundSaid: logged once.
+	wanIP           string
+	wanIPAt         time.Time
+	traceAroundSaid bool
+	// tunnelIPs are the exit addresses probes came back from lately (up to
+	// 16): a balancer rotating exits must not re-learn the WAN every step.
+	tunnelIPs map[string]bool
 	// hijackMisses counts the loops in a row nothing served port 53 while
 	// the loaded table hijacks the LAN's DNS to it; ownsAddr stands in for
 	// routerOwns in tests.
@@ -260,6 +281,9 @@ type daemon struct {
 	leakBaseline atomic.Pointer[localctl.LeakBaseline]
 	// route is the main balancer as the failover watchdog last saw it.
 	route atomic.Pointer[localctl.Route]
+	// tunnel is the observatory's word on the main traffic's nodes
+	// (publishTunnel): the rescue goes back to the proxy only when one lives.
+	tunnel atomic.Pointer[tunnelLook]
 	// exits is what the exit check found (cmd/vctl/exitcheck.go).
 	exits exitcheck.State
 	// readCounters reads the vctl table's nft counters; nil = nft. Tests
@@ -551,6 +575,10 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 		// older than ten minutes and open in no process — no update runs
 		// before this daemon starts one).
 		removeLeftoversAtStart()
+		// Before this vctl's xray starts: an xray a killed vctl left must
+		// not hold the tproxy port (procd respawns vctl without the init
+		// script, whose start_service did this alone).
+		d.killOrphanXray()
 		go d.serveUI(ctx)
 		go d.watchMemory(ctx)
 		go d.watchFailover(ctx)
@@ -809,42 +837,8 @@ func (d *daemon) registerProof(now time.Time) *controlplane.RegisterProof {
 // data-plane stand had already measured it from the other side
 // (MODE=killswitch, ks_ctl_unmarked_blocked).
 func (d *daemon) evaluateHealth(ctx context.Context, inv *controlplane.RouterInventory) (controlplane.RouterHealth, rescue.Decision) {
-	// 8 s: the probe's name is now resolved through the tunnel too (dnsmasq's
-	// upstream goes into xray), and a slow but working tunnel must not look
-	// dead three times in a row.
-	hc := &http.Client{Timeout: 8 * time.Second}
 	serverReachable := d.controlPlaneReachable(ctx)
-	publicReachable := rescue.ProbeAny(ctx, hc, d.rescuePolicy.HealthURLs)
-
-	cur := d.rescueState()
-	// Direct reachability is asked AROUND the tunnel: the control plane's
-	// client, whose sockets the output chain returns on and which resolves
-	// names itself (controlplane/resolve.go). It used to be publicReachable
-	// again — the tunnel's own answer — so with the tunnel dead the rescue's
-	// "can we go direct" was false in exactly the case it exists for, and
-	// the router never left proxy mode by itself. Asked only when the tunnel
-	// failed: otherwise there is nothing to decide.
-	directReachable := publicReachable
-	if !publicReachable && cur.Mode == rescue.ModeProxy && !d.killSwitchArmed() {
-		directReachable = rescue.ProbeAnyWithin(ctx, d.client.HTTPClient(), d.rescuePolicy.HealthURLs, directProbeBudget)
-	}
-	// Never direct under the kill switch: it promises the LAN's traffic never
-	// leaves unproxied, and a direct mode is exactly that. It fails closed —
-	// the rescue does not open it.
-	if d.killSwitchArmed() {
-		directReachable = false
-	}
-	decision := rescue.Evaluate(rescue.Input{
-		CurrentState:    cur,
-		PublicReachable: publicReachable,
-		ProxyConclusive: cur.Mode == rescue.ModeProxy,
-		DirectReachable: directReachable,
-		Now:             time.Now(),
-	}, d.rescuePolicy)
-	if decision.NextState.Mode == rescue.ModeDirect && d.st.Rescue.Mode != string(rescue.ModeDirect) {
-		d.incident("RESCUE_DIRECT", reKeyNumber.ReplaceAllString(decision.Reason, "N"), "the rescue switched the router to direct: "+decision.Reason, nil)
-	}
-	d.storeRescueState(decision.NextState, decision.Reason)
+	decision := d.rescueStep(ctx)
 
 	// No ID/Label here: panelReachability is parsed by the panel as
 	// routerGroupedReachabilitySchema, which declares neither, so zod stripped
@@ -879,6 +873,201 @@ func (d *daemon) evaluateHealth(ctx context.Context, inv *controlplane.RouterInv
 	}, decision
 }
 
+// rescueStep probes the way out, tunnel and around it, and moves the rescue
+// state on by one observation (rescue.Evaluate) — once a poll, and between the
+// polls while a probe has just failed (rescueRecheckDue).
+func (d *daemon) rescueStep(ctx context.Context) rescue.Decision {
+	// 8 s: the probe's name is now resolved through the tunnel too (dnsmasq's
+	// upstream goes into xray), and a slow but working tunnel must not look
+	// dead three times in a row.
+	hc := &http.Client{Timeout: 8 * time.Second, Transport: tunnelProbeTransport}
+	cur := d.rescueState()
+	var publicReachable bool
+	if cur.Mode == rescue.ModeProxy {
+		publicReachable = d.probeThroughTunnel(ctx, hc)
+	} else {
+		publicReachable = rescue.ProbeAny(ctx, hc, d.rescuePolicy.HealthURLs)
+	}
+
+	// Direct reachability is asked AROUND the tunnel: the control plane's
+	// client, whose sockets the output chain returns on and which resolves
+	// names itself (controlplane/resolve.go). It used to be publicReachable
+	// again — the tunnel's own answer — so with the tunnel dead the rescue's
+	// "can we go direct" was false in exactly the case it exists for, and
+	// the router never left proxy mode by itself. Asked only when the tunnel
+	// failed: otherwise there is nothing to decide.
+	directReachable := publicReachable
+	if !publicReachable && cur.Mode == rescue.ModeProxy && !d.killSwitchArmed() {
+		directReachable = rescue.ProbeAnyWithin(ctx, d.client.HTTPClient(), d.rescuePolicy.HealthURLs, directProbeBudget)
+	}
+	// Never direct under the kill switch: it promises the LAN's traffic never
+	// leaves unproxied, and a direct mode is exactly that. It fails closed —
+	// the rescue does not open it.
+	if d.killSwitchArmed() {
+		directReachable = false
+	}
+	decision := rescue.Evaluate(rescue.Input{
+		CurrentState:    cur,
+		PublicReachable: publicReachable,
+		// xray itself down — a crash, a restart — is not the tunnel failing:
+		// the kernel already lets the LAN past it (TPROXY falls through), and
+		// direct mode would only keep the VPN off for a cooldown after xray
+		// is back (the crash-loop drill on 1111, 2026-10-04).
+		ProxyConclusive: cur.Mode == rescue.ModeProxy && d.xraySettled(time.Now()),
+		DirectReachable: directReachable,
+		TunnelDead:      d.tunnelDead(time.Now(), cur.LastTransitionAt),
+		Now:             time.Now(),
+	}, d.rescuePolicy)
+	if decision.NextState.Mode == rescue.ModeDirect && d.st.Rescue.Mode != string(rescue.ModeDirect) {
+		d.incident("RESCUE_DIRECT", reKeyNumber.ReplaceAllString(decision.Reason, "N"), "the rescue switched the router to direct: "+decision.Reason, nil)
+	}
+	if !publicReachable && decision.NextState.ProxyFailureCount != cur.ProxyFailureCount {
+		logging.L().Warn("rescue: no answer through the tunnel", "failures", decision.NextState.ProxyFailureCount,
+			"of", d.rescuePolicy.TriggerFailureCount, "direct_reachable", directReachable)
+	}
+	d.storeRescueState(decision.NextState, decision.Reason)
+
+	d.rescueCheckedAt = time.Now()
+	return decision
+}
+
+// probeThroughTunnel asks the trace urls the way the LAN's traffic goes, and
+// counts only an answer that did not come from the router's own WAN address:
+// one that did went around the tunnel and says nothing of it.
+func (d *daemon) probeThroughTunnel(ctx context.Context, hc *http.Client) bool {
+	if len(d.rescuePolicy.TraceURLs) == 0 {
+		return rescue.ProbeAny(ctx, hc, d.rescuePolicy.HealthURLs)
+	}
+	d.refreshWANIP(ctx, time.Now())
+	ips := rescue.ProbeTraceAll(ctx, hc, d.rescuePolicy.TraceURLs, 8*time.Second, d.wanIP)
+	for _, ip := range ips {
+		if ip != d.wanIP && !d.tunnelIPs[ip] {
+			// An address not seen before: learn the WAN's again now, so an
+			// address change (a PPPoE redial, CGNAT) cannot pass a probe
+			// that went around the tunnel until the next look.
+			d.wanIPAt = time.Time{}
+			d.refreshWANIP(ctx, time.Now())
+			break
+		}
+	}
+	through, around := false, false
+	for _, ip := range ips {
+		if d.wanIP != "" && ip == d.wanIP {
+			around = true
+			continue
+		}
+		through = true
+		if d.tunnelIPs == nil || len(d.tunnelIPs) >= 16 {
+			d.tunnelIPs = map[string]bool{}
+		}
+		d.tunnelIPs[ip] = true
+	}
+	if !through && around {
+		if !d.traceAroundSaid {
+			d.traceAroundSaid = true
+			logging.L().Warn("rescue: the probe through the tunnel came back only from the router's own address; it went around the tunnel and counts as no answer")
+		}
+		return false
+	}
+	if through {
+		d.traceAroundSaid = false
+	}
+	return through
+}
+
+// ipv4Transport dials IPv4 only: the path the router carries through the
+// tunnel, and the family its WAN address is learned in (the control plane
+// resolves "ip4"). Over IPv6 the probe could leave around the tunnel and
+// answer from an address no IPv4 comparison catches.
+// A fresh connection every probe (no keep-alive): one kept from before a
+// failure would answer for a tunnel that is gone.
+var tunnelProbeTransport = ipv4Transport()
+
+func ipv4Transport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DisableKeepAlives = true
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	t.DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp4", addr)
+	}
+	return t
+}
+
+// wanIPEvery is how often the router learns its own WAN address: the trace
+// asked around the tunnel, on the control plane's path.
+const wanIPEvery = 10 * time.Minute
+
+func (d *daemon) refreshWANIP(ctx context.Context, now time.Time) {
+	if d.client == nil || (!d.wanIPAt.IsZero() && now.Sub(d.wanIPAt) < wanIPEvery) {
+		return
+	}
+	d.wanIPAt = now
+	if ip, ok := rescue.ProbeTrace(ctx, d.client.HTTPClient(), d.rescuePolicy.TraceURLs, directProbeBudget); ok {
+		d.wanIP = ip
+	}
+}
+
+// xraySettle is how long xray has to run before a failed probe through it
+// says anything about the tunnel.
+const xraySettle = 15 * time.Second
+
+// xraySettled: xray runs, and has for xraySettle. With no supervisor started
+// there is no xray to wait for: yes.
+func (d *daemon) xraySettled(now time.Time) bool {
+	if d.sup == nil || !d.supStarted {
+		return true
+	}
+	st := d.sup.Status()
+	return st.State == supervisor.StateRunning && now.Sub(st.StartedAt) >= xraySettle
+}
+
+// rescueRecheckEvery is how soon, between the polls, the rescue looks again
+// while it is unsure: a probe through the tunnel has just failed, or direct
+// mode may go back to the proxy. At the polls' pace a dead tunnel took three
+// minutes to leave — measured on 1111 on 2026-10-04: every node blocked, the
+// LAN 147 s without internet before the router went direct.
+const rescueRecheckEvery = 10 * time.Second
+
+// rescueFailingEvery is the recheck's pace once a probe through the tunnel
+// has failed: a failed step already takes up to 14 s (the tunnel's timeout,
+// then the probe around it), so three of them at a 10 s pace took a minute.
+const rescueFailingEvery = 3 * time.Second
+
+// rescueRecheckDue: the rescue is to look again now, between the polls.
+func (d *daemon) rescueRecheckDue(now time.Time) bool {
+	if d.killSwitchArmed() {
+		return false
+	}
+	st := d.rescueState()
+	every := rescueRecheckEvery
+	if st.Mode == rescue.ModeProxy && st.ProxyFailureCount > 0 {
+		every = rescueFailingEvery
+	}
+	if now.Sub(d.rescueCheckedAt) < every {
+		return false
+	}
+	switch st.Mode {
+	case rescue.ModeProxy:
+		// Not while xray itself is down or starting: the probe would say
+		// nothing (ProxyConclusive), and the loop would sit in its timeouts
+		// instead of serving the DNS watch and the router UI.
+		// The watchdog seeing the main balancer down starts the looking
+		// too: the polls alone found a blocked tunnel a minute late.
+		// On the watchdog's word alone, at most once a poll's half: while
+		// a borrowed country carries the main traffic the balancer stays
+		// "down" for as long as its own nodes are, and the probe passes.
+		if st.ProxyFailureCount == 0 && d.tunnelFailing(now) && now.Sub(d.rescueCheckedAt) < 30*time.Second {
+			return false
+		}
+		return (st.ProxyFailureCount > 0 || d.tunnelFailing(now)) && d.xraySettled(now)
+	case rescue.ModeDirect:
+		// Once the cooldown allows the way back and a node lives: the
+		// tunnel's return is then taken within seconds, not at the next poll.
+		return now.Sub(st.LastTransitionAt) >= rescue.CooldownAfter(d.rescuePolicy, st.FailedRetries) && !d.tunnelDead(now, st.LastTransitionAt)
+	}
+	return false
+}
+
 // controlPlaneReachable answers "can this router reach its panel".
 //
 // The source is the control plane itself: whether the PREVIOUS loop's
@@ -907,6 +1096,7 @@ func (d *daemon) rescueState() rescue.State {
 		Mode:               rescue.Mode(d.st.Rescue.Mode),
 		ProxyFailureCount:  d.st.Rescue.ProxyFailureCount,
 		DirectSuccessCount: d.st.Rescue.DirectSuccessCount,
+		FailedRetries:      d.st.Rescue.FailedRetries,
 	}
 	if st.Mode == "" {
 		st.Mode = rescue.ModeProxy
@@ -916,6 +1106,11 @@ func (d *daemon) rescueState() rescue.State {
 			st.LastTransitionAt = t
 		}
 	}
+	if d.st.Rescue.FirstFailureAt != "" {
+		if t, err := time.Parse(time.RFC3339, d.st.Rescue.FirstFailureAt); err == nil {
+			st.FirstFailureAt = t
+		}
+	}
 	return st
 }
 
@@ -923,6 +1118,11 @@ func (d *daemon) storeRescueState(s rescue.State, reason string) {
 	d.st.Rescue.Mode = string(s.Mode)
 	d.st.Rescue.ProxyFailureCount = s.ProxyFailureCount
 	d.st.Rescue.DirectSuccessCount = s.DirectSuccessCount
+	d.st.Rescue.FailedRetries = s.FailedRetries
+	d.st.Rescue.FirstFailureAt = ""
+	if !s.FirstFailureAt.IsZero() {
+		d.st.Rescue.FirstFailureAt = s.FirstFailureAt.UTC().Format(time.RFC3339)
+	}
 	if !s.LastTransitionAt.IsZero() {
 		d.st.Rescue.LastTransitionAt = s.LastTransitionAt.UTC().Format(time.RFC3339)
 	}

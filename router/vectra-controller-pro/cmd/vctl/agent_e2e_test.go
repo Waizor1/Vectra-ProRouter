@@ -215,6 +215,7 @@ func newTestDaemonWith(t *testing.T, dir string, panel *panelStub, provider *pro
 	d.confirmer = firewall.NewCommitConfirmer(filepath.Join(dir, "fw-confirm"), time.Second)
 	// Keep connectivity probes hermetic (no real internet) and fast.
 	d.rescuePolicy.HealthURLs = []string{panel.URL}
+	d.rescuePolicy.TraceURLs = nil // the panel stands in for the internet: no trace
 	// The dev host has no /sys/class/net/eth0/address or /tmp/sysinfo/model:
 	// inject the production identity so the provider path is exercised.
 	d.device = subscription.DeviceFacts{

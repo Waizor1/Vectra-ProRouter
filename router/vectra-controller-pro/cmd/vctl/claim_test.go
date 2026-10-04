@@ -170,6 +170,7 @@ func newClaimDaemon(t *testing.T, dir, panelURL string) *daemon {
 		t.Fatal(err)
 	}
 	d.rescuePolicy.HealthURLs = []string{panelURL}
+	d.rescuePolicy.TraceURLs = nil // the panel stands in for the internet: no trace
 	return d
 }
 

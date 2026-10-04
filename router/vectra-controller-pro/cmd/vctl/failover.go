@@ -295,7 +295,11 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 		mctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		if m, err := failoverMetrics(mctx, w.view.MetricsListen); err == nil {
 			for tag, o := range m.Observatory {
-				health[tag] = failover.Health{Alive: o.Alive, DelayMs: o.DelayMs}
+				h := failover.Health{Alive: o.Alive, DelayMs: o.DelayMs}
+				if o.LastSeen > 0 {
+					h.LastSeen = time.Unix(o.LastSeen, 0)
+				}
+				health[tag] = h
 			}
 		}
 		cancel()
@@ -304,6 +308,7 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 	ov, _ := localctl.LoadOverrides(d.cfg.OverridesPath)
 	unfit := d.exits.Unfit()
 	main := ""
+	var mainGroups [][]string
 	var bals []failover.Balancer
 	for _, b := range w.view.Balancers {
 		if b.Role == "main" {
@@ -326,6 +331,9 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 		}
 		bals = append(bals, failover.Balancer{Tag: b.Tag, Members: b.Members, Principle: info.Principle,
 			Override: info.Override, OwnerPin: ov.Pins[b.Tag], Fallback: nodeFallback(w.view, b), Chain: chain, Borrow: borrow})
+		if b.Role == "main" {
+			mainGroups = [][]string{b.Members, chain, borrow}
+		}
 	}
 	for _, a := range w.pol.Decide(now, bals, health, w.det) {
 		d.applyFailover(ctx, w, a, now, main)
@@ -334,6 +342,31 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 		return
 	}
 	d.publishRoute(w, main, infos[main], unfit, now)
+	base := tunnelLook{MainDown: w.pol.DownFor(main, now) > 0}
+	// The nodes the main traffic goes through now stop answering its
+	// connections: the earliest word there is, seconds after the fact —
+	// the policy's "down" can wait while it borrows nodes the observatory
+	// still calls alive from an old round.
+	for _, m := range infos[main].Principle {
+		if w.det.Failing(m, now) {
+			base.PrincipleFailing = true
+			break
+		}
+	}
+	if len(w.eps) > 0 {
+		// The connection table's word too: xray's own dials to the nodes —
+		// the observatory's, at the least — answered or not. It needs no
+		// last_seen_time from the observatory (burstObservatory gives none).
+		base.Watching = true
+		for _, g := range mainGroups {
+			for _, t := range g {
+				if a := w.det.LastAnswered(t); a.After(base.Answered) {
+					base.Answered = a
+				}
+			}
+		}
+	}
+	d.publishTunnel(health, now, base, mainGroups...)
 	if down := w.pol.DownFor(main, now); down >= failoverDownAfter {
 		if !w.downReported[main] {
 			w.downReported[main] = true
@@ -344,6 +377,99 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 	} else {
 		delete(w.downReported, main)
 	}
+}
+
+// tunnelLook is the word on the main traffic's way out, as the watchdog last
+// read it: from xray's observatory, whether a node of the main balancer, its
+// reserve or the entry's other countries is alive (Dead: none is, of those it
+// watches) and when one last answered its probe (LastAlive; Seen: the
+// observatory says when at all); from the watchdog's own policy, whether the
+// main balancer has been down (MainDown: failing, nothing to move to).
+type tunnelLook struct {
+	Dead      bool
+	MainDown  bool
+	Seen      bool
+	LastAlive time.Time
+	// Watching: the watchdog maps the nodes' endpoints, so Answered — when a
+	// connection of xray's to one of them was last answered — is a word.
+	Watching bool
+	Answered time.Time
+	// PrincipleFailing: a node the main balancer prefers now has stopped
+	// answering connections (failover.Detector).
+	PrincipleFailing bool
+	At               time.Time
+}
+
+// publishTunnel records the word on the main traffic's nodes.
+// base carries the watchdog's own word (MainDown, Watching, Answered); the
+// look is complete before it is stored: the loop reads it.
+func (d *daemon) publishTunnel(health map[string]failover.Health, now time.Time, base tunnelLook, groups ...[]string) {
+	l := &base
+	l.At = now
+	observed, alive := false, false
+	for _, g := range groups {
+		for _, t := range g {
+			h, ok := health[t]
+			observed = observed || ok
+			alive = alive || h.Alive
+			if !h.LastSeen.IsZero() {
+				l.Seen = true
+				if h.Alive && h.LastSeen.After(l.LastAlive) {
+					l.LastAlive = h.LastSeen
+				}
+			}
+		}
+	}
+	// A node the observatory does not watch says nothing: with none of them
+	// watched it is no word on the nodes, only the policy's.
+	l.Dead = observed && !alive
+	d.tunnel.Store(l)
+}
+
+// freshTunnel is the watchdog's word if it is under a minute old.
+func (d *daemon) freshTunnel(now time.Time) *tunnelLook {
+	l := d.tunnel.Load()
+	if l == nil || now.Sub(l.At) >= time.Minute {
+		return nil
+	}
+	return l
+}
+
+// tunnelDead: nothing says the main traffic's way out works again since
+// since — the moment the router left it. Where the observatory says when its
+// nodes last answered, a node must have answered after since: its "alive" is
+// a verdict of its last round, which can predate the outage by its whole
+// probe interval (1111, 2026-10-04: direct mode went back to a blocked tunnel
+// on that word). Otherwise: every watched node dead, or the main balancer
+// down. No word (no watchdog, no metrics, an old look) is not dead.
+func (d *daemon) tunnelDead(now, since time.Time) bool {
+	l := d.freshTunnel(now)
+	if l == nil {
+		return false
+	}
+	if !since.IsZero() {
+		// Nothing has answered for long: one blind try, the cooldown's
+		// doubling keeping the next ones apart — never direct for good on
+		// a word that may not come (no observatory probing at all).
+		if now.Sub(since) >= blindRetryAfter {
+			return false
+		}
+		if l.Watching || l.Seen {
+			return !l.Answered.After(since) && !l.LastAlive.After(since)
+		}
+	}
+	return l.Dead || l.MainDown
+}
+
+// blindRetryAfter is how long direct mode waits for a node's answer before
+// it tries the proxy anyway.
+const blindRetryAfter = 10 * time.Minute
+
+// tunnelFailing: the watchdog holds the main balancer down, or every watched
+// node dead — the rescue need not wait for the next poll to look.
+func (d *daemon) tunnelFailing(now time.Time) bool {
+	l := d.freshTunnel(now)
+	return l != nil && (l.MainDown || l.Dead || l.PrincipleFailing)
 }
 
 // lookupEach looks a node's name up within its own budget.
