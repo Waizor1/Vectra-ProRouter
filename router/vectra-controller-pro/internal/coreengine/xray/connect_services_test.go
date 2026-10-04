@@ -442,3 +442,22 @@ func TestTheKazakhCascadeIsATunnelAllTheWayDown(t *testing.T) {
 		t.Fatal("took a cascade whose last way out is direct")
 	}
 }
+
+// ConnectServicesCarried, one parse for all services, answers exactly as
+// ValidateConnectServiceEntry does service by service.
+func TestConnectServicesCarriedAgreesWithValidate(t *testing.T) {
+	for _, doc := range []string{
+		`{"outbounds":[{"tag":"de-1","protocol":"vless"}]}`,
+		`{"outbounds":[{"tag":"nl-1","protocol":"vless"},{"tag":"block","protocol":"blackhole"}],"routing":{"rules":[{"domain":["geosite:youtube"],"outboundTag":"block"}]}}`,
+		`{"outbounds":[{"tag":"direct","protocol":"freedom"}],"routing":{"rules":[]}}`,
+		`{"outbounds":[{"tag":"t","protocol":"vless"}],"routing":{"rules":[{"ip":["geoip:telegram"],"outboundTag":"missing"}]}}`,
+		`not json`,
+	} {
+		got := xray.ConnectServicesCarried([]byte(doc))
+		for _, s := range xray.Services {
+			if want := xray.ValidateConnectServiceEntry([]byte(doc), s.ID) == nil; got[s.ID] != want {
+				t.Fatalf("%s in %s: carried %v, validate %v", s.ID, doc, got[s.ID], want)
+			}
+		}
+	}
+}

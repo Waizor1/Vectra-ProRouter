@@ -68,10 +68,7 @@ func (d *daemon) spliceOptionsOv(providerRaw []byte) (xray.SpliceOptions, localc
 		logging.L().Warn("local overrides unreadable; rendering with defaults", "err", err.Error())
 	}
 	opts, probe := spliceOptionsFor(providerRaw, ov, !d.cfg.NoRussiaDirect)
-	opts.ServiceEntries, err = d.connectServiceOptionsFor(ov, providerRaw)
-	if err != nil {
-		opts.ServiceEntries = map[string]json.RawMessage{"stale": json.RawMessage(`{}`)}
-	}
+	opts.ServiceEntries, ov = d.connectServiceOptionsFor(ov, providerRaw)
 	opts = d.withRuntime(opts, providerRaw)
 	return opts, probe, ov
 }
@@ -192,6 +189,14 @@ func (d *daemon) keepAIRefusedFor(document []byte) {
 			delete(d.aiRefused, k)
 		}
 	}
+}
+
+// changedServiceChoice is the service a change gives a location, or "".
+func changedServiceChoice(change *localctl.Change) string {
+	if change == nil || change.SetService == nil || change.SetService.EntryID == "" {
+		return ""
+	}
+	return change.SetService.ID
 }
 
 // withoutAIDefault is opts without «Нейросети», when they carry them only as
@@ -350,10 +355,13 @@ func (d *daemon) localReapplyOnce(ctx context.Context, change *localctl.Change) 
 	}
 
 	opts, probe := spliceOptionsFor(providerRaw, ov, !d.cfg.NoRussiaDirect)
-	serviceEntries, serviceErr := d.connectServiceOptionsFor(ov, providerRaw)
-	if serviceErr != nil {
+	serviceEntries, effective := d.connectServiceOptionsFor(ov, providerRaw)
+	if s := changedServiceChoice(change); s != "" && effective.ServiceEntries[s] != ov.ServiceEntries[s] {
+		// The choice being made now does not run: say so. One made before
+		// that stopped running is skipped and never refuses the render.
 		return localctl.SocketResponse{Code: "unknown_entry"}
 	}
+	ov = effective
 	opts.ServiceEntries = serviceEntries
 	opts = d.withRuntime(opts, providerRaw)
 	res, err := d.applyRendering(ctx, providerRaw, false, opts, probe, ov)

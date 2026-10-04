@@ -123,7 +123,9 @@ func TestConnectRoutingFailureThenReplayAndStartup(t *testing.T) {
 	}
 }
 
-func TestConnectServiceStartupFailsClosedAndClears(t *testing.T) {
+// A location gone from the cache is skipped at startup — the service takes
+// its default path — rather than refusing the render (fault tolerance, r16).
+func TestConnectServiceStartupSkipsAStaleChoiceAndClears(t *testing.T) {
 	d, _, entries, _ := newLocalUIDaemon(t)
 	ctx := context.Background()
 	raw, _, err := d.fetchProviderDocument(ctx, d.desired)
@@ -145,8 +147,11 @@ func TestConnectServiceStartupFailsClosedAndClears(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts, _ = d.spliceOptions(raw)
-	if _, _, err := xray.Splice(raw, d.applier.Tproxy, opts); err == nil {
-		t.Fatal("missing startup service digest accepted")
+	if opts.ServiceEntries["tiktok"] != nil {
+		t.Fatal("startup kept a service location the cache no longer has")
+	}
+	if _, _, err := xray.Splice(raw, d.applier.Tproxy, opts); err != nil {
+		t.Fatalf("a stale service choice refused the startup render: %v", err)
 	}
 	change, code := connectRouteChange("set_service", json.RawMessage(`{"service":"tiktok","entryId":null}`), nil)
 	if code != "" {

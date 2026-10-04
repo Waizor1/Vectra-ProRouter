@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"maps"
 	"os"
 	"slices"
 	"sort"
@@ -56,7 +57,14 @@ func (d *daemon) publishConnectTelemetry(ctx context.Context, features map[strin
 	if t.Services != nil {
 		markConnectServiceCarriers(*t.Services, connectServiceCarriers(d.cfg.EntriesPath, in.Index))
 	}
-	if id, ok := aiDefaultApplied(d.cfg, overrides, d.st.SpliceKey); ok && settingsErr == nil && t.Services != nil {
+	// A stale «Нейросети» choice is skipped by the render: they run through
+	// their default meanwhile, and that is the entry reported.
+	aiOv := overrides
+	if t.Services != nil && connectServiceStale(*t.Services, "ai") {
+		aiOv.ServiceEntries = maps.Clone(overrides.ServiceEntries)
+		delete(aiOv.ServiceEntries, "ai")
+	}
+	if id, ok := aiDefaultApplied(d.cfg, aiOv, d.st.SpliceKey); ok && settingsErr == nil && t.Services != nil && id != overrides.ServiceEntries["ai"] {
 		setConnectServiceEntry(*t.Services, "ai", id, t.Entries) // «Нейросети» through their default
 	}
 	if settingsErr != nil {
@@ -118,7 +126,9 @@ func connectSettings(in uiapi.Inputs, f setup.Facts) controlplane.RouterConnectT
 	for _, id := range ordered {
 		s := controlplane.ConnectService{ID: id}
 		entry := in.Overrides.ServiceEntries[id]
-		// No location, no «as the main VPN», no country: the default.
+		// No location, no «as the main VPN», no country: the default. A
+		// country chosen in the router's own UI is a choice the Connect
+		// contract has no field for: auto false, entryId null.
 		auto := entry == "" && in.Overrides.Services[id] == ""
 		s.Auto = &auto
 		switch {
@@ -145,12 +155,15 @@ func connectSettings(in uiapi.Inputs, f setup.Facts) controlplane.RouterConnectT
 	return t
 }
 
-// connectValidateServiceEntry is the seam tests count validations through.
+// connectValidateServiceEntry, connectServicesCarried and connectLoadEntries
+// are seams tests count validations and cache reads through.
 var connectValidateServiceEntry = xray.ValidateConnectServiceEntry
+var connectServicesCarried = xray.ConnectServicesCarried
+var connectLoadEntries = localctl.LoadEntries
 
 // connectCarriersMemo keeps the last answer of connectServiceCarriers: the
 // check-in asks every minute, the answer changes only with the cached
-// locations, and working it out parses every one of them per service.
+// locations, and working it out parses every one of them.
 var connectCarriersMemo struct {
 	sync.Mutex
 	key      string
@@ -159,7 +172,8 @@ var connectCarriersMemo struct {
 
 // connectServiceCarriers is, per service, the cached locations (digests, in
 // the index's order) that carry it — those a set_service would accept. Nil
-// when not known: no index, or a cache that does not match it.
+// when not known: no index, or a cache that does not match it (kept until
+// the index changes: the cache is written first, the index second).
 func connectServiceCarriers(entriesPath string, idx *localctl.EntriesIndex) map[string][]string {
 	if idx == nil || len(idx.Entries) > 300 {
 		return nil
@@ -173,12 +187,27 @@ func connectServiceCarriers(entriesPath string, idx *localctl.EntriesIndex) map[
 	}
 	key := hex.EncodeToString(h.Sum(nil))
 	connectCarriersMemo.Lock()
-	defer connectCarriersMemo.Unlock()
 	if connectCarriersMemo.key == key {
-		return connectCarriersMemo.carriers
+		carriers := connectCarriersMemo.carriers
+		connectCarriersMemo.Unlock()
+		return carriers
 	}
-	cache, err := localctl.LoadEntries(entriesPath)
-	if err != nil || len(cache.Entries) != len(idx.Entries) {
+	connectCarriersMemo.Unlock()
+	cache, err := connectLoadEntries(entriesPath)
+	if err != nil {
+		return nil // unreadable now: tried again on the next check-in
+	}
+	carriers := serviceCarriersOf(cache, idx)
+	connectCarriersMemo.Lock()
+	connectCarriersMemo.key, connectCarriersMemo.carriers = key, carriers
+	connectCarriersMemo.Unlock()
+	return carriers
+}
+
+// serviceCarriersOf works the carriers out from a cache that matches idx,
+// each location parsed once; nil when it does not match.
+func serviceCarriersOf(cache *localctl.EntriesCache, idx *localctl.EntriesIndex) map[string][]string {
+	if len(cache.Entries) != len(idx.Entries) {
 		return nil
 	}
 	digests := make([]string, len(cache.Entries))
@@ -186,26 +215,26 @@ func connectServiceCarriers(entriesPath string, idx *localctl.EntriesIndex) map[
 		sum := sha256.Sum256(raw)
 		digests[i] = hex.EncodeToString(sum[:])
 		if digests[i] != idx.Entries[i].Digest {
-			return nil // written between the two reads: next check-in
+			return nil // written between the two reads
 		}
 	}
 	carriers := map[string][]string{}
 	for _, svc := range xray.Services {
-		seen := map[string]bool{}
-		list := []string{}
-		for i, raw := range cache.Entries {
-			id := digests[i]
-			if seen[id] || !validConnectEntryID(id) {
-				continue
-			}
-			seen[id] = true
-			if connectValidateServiceEntry(raw, svc.ID) == nil {
-				list = append(list, id)
+		carriers[svc.ID] = []string{}
+	}
+	seen := map[string]bool{}
+	for i, raw := range cache.Entries {
+		id := digests[i]
+		if seen[id] || !validConnectEntryID(id) {
+			continue
+		}
+		seen[id] = true
+		for svc := range connectServicesCarried(raw) {
+			if _, known := carriers[svc]; known {
+				carriers[svc] = append(carriers[svc], id)
 			}
 		}
-		carriers[svc.ID] = list
 	}
-	connectCarriersMemo.key, connectCarriersMemo.carriers = key, carriers
 	return carriers
 }
 
@@ -228,6 +257,15 @@ func markConnectServiceCarriers(services []controlplane.ConnectService, carriers
 			s.EntryID, s.Stale = nil, true
 		}
 	}
+}
+
+func connectServiceStale(services []controlplane.ConnectService, id string) bool {
+	for _, s := range services {
+		if s.ID == id {
+			return s.Stale
+		}
+	}
+	return false
 }
 
 // setConnectServiceEntry reports service as running through entry, when the

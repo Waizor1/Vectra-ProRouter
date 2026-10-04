@@ -129,6 +129,13 @@ type daemon struct {
 	// aiRefused are the «Нейросети» defaults xray refused, each on the
 	// document it joined (aiRefusedKey): not tried again until either changes.
 	aiRefused map[string]bool
+	// svcSkipped are the owner's service locations the render skips (gone
+	// from the cache, or no longer carrying the service), service → digest:
+	// logged once each (noteSkippedServiceChoices).
+	svcSkipped struct {
+		sync.Mutex
+		m map[string]string
+	}
 	cfg       agentcfg.Config
 	client    *controlplane.Client
 	sup       *supervisor.Process

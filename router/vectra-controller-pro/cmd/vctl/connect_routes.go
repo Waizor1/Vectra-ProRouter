@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/sites"
 	"vectra-controller-pro/internal/uiapi"
 	"vectra-controller-pro/internal/vault"
@@ -136,45 +138,84 @@ func (d *daemon) connectRoutingAction(ctx context.Context, action string, params
 
 var errConnectStaleEntry = errors.New("unknown_service_entry")
 
-func (d *daemon) connectServiceOptions(ov localctl.Overrides) (map[string]json.RawMessage, error) {
-	return d.connectServiceOptionsFor(ov, nil)
-}
-
 // connectServiceOptionsFor is the services' locations for rendering running:
 // the owner's choices, and «Нейросети» through Kazakhstan unless they chose
 // otherwise (a location, «as the main VPN», a country).
-func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte) (map[string]json.RawMessage, error) {
+//
+// A chosen location that is gone from the cache, or no longer carries its
+// service, is skipped — never a reason to refuse the render, which would
+// freeze the router on its last one: the service takes its default path
+// («Нейросети» their Kazakh default, the others the main VPN) and the choice
+// stays in the overrides, to run again when the location does. effective is
+// ov without the skipped choices, what the render is made under.
+func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte) (entries map[string]json.RawMessage, effective localctl.Overrides) {
 	chosen := map[string]string{}
 	for svc, id := range ov.ServiceEntries {
 		if id != localctl.ServiceMainPath { // «as the main VPN» needs no location
 			chosen[svc] = id
 		}
 	}
+	effective = ov
 	cache, err := localctl.LoadEntries(d.cfg.EntriesPath)
-	if err != nil {
-		if len(chosen) == 0 {
-			return nil, nil // no cache, no location chosen: nothing to overlay
-		}
-		return nil, err
+	if err != nil && len(chosen) == 0 {
+		d.noteSkippedServiceChoices(nil)
+		return nil, effective // no cache, no location chosen: nothing to overlay
 	}
 	out := map[string]json.RawMessage{}
+	skipped := map[string]string{}
 	for svc, id := range chosen {
-		raw := connectEntryRaw(cache, id)
-		if raw == nil {
-			return nil, errConnectStaleEntry
+		var raw json.RawMessage
+		if cache != nil {
+			raw = connectEntryRaw(cache, id)
+		}
+		if raw == nil || connectValidateServiceEntry(raw, svc) != nil {
+			skipped[svc] = id
+			continue
 		}
 		if running != nil && bytes.Equal(raw, running) {
 			continue // the router runs that location: its own rule is the path
 		}
 		out[svc] = raw
 	}
-	if _, raw, ok := aiDefault(ov, d.cfg.RouteSource, cache, running, d.aiRefused); ok && !bytes.Equal(raw, running) {
-		out["ai"] = raw
+	if len(skipped) > 0 {
+		effective.ServiceEntries = maps.Clone(ov.ServiceEntries)
+		for svc := range skipped {
+			delete(effective.ServiceEntries, svc)
+		}
+	}
+	d.noteSkippedServiceChoices(skipped)
+	if cache != nil {
+		if _, raw, ok := aiDefault(effective, d.cfg.RouteSource, cache, running, d.aiRefused); ok && !bytes.Equal(raw, running) {
+			out["ai"] = raw
+		}
 	}
 	if len(out) == 0 {
-		return nil, nil
+		return nil, effective
 	}
-	return out, nil
+	return out, effective
+}
+
+// noteSkippedServiceChoices logs a choice the render skips once, not on
+// every render; one that runs again is forgotten, so a later skip is logged.
+func (d *daemon) noteSkippedServiceChoices(skipped map[string]string) {
+	d.svcSkipped.Lock()
+	defer d.svcSkipped.Unlock()
+	for svc, id := range skipped {
+		if d.svcSkipped.m[svc] == id {
+			continue
+		}
+		if d.svcSkipped.m == nil {
+			d.svcSkipped.m = map[string]string{}
+		}
+		d.svcSkipped.m[svc] = id
+		logging.L().Warn("the owner's location for a service is not in the cache or no longer carries it; the service takes its default path until it does",
+			"service", svc, "entry", shortDigest(id))
+	}
+	for svc := range d.svcSkipped.m {
+		if _, still := skipped[svc]; !still {
+			delete(d.svcSkipped.m, svc)
+		}
+	}
 }
 
 func connectEntryRaw(cache *localctl.EntriesCache, id string) json.RawMessage {

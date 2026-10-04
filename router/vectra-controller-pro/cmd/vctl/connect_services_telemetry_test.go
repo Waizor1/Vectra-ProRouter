@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"vectra-controller-pro/internal/apply"
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/coreengine/xray"
@@ -16,6 +18,7 @@ import (
 	"vectra-controller-pro/internal/setup"
 	"vectra-controller-pro/internal/supervisor"
 	"vectra-controller-pro/internal/uiapi"
+	"vectra-controller-pro/internal/vault"
 )
 
 // Three locations: one carries everything, one sends YouTube to a blackhole
@@ -134,21 +137,24 @@ func TestAServiceCountryIsNotAuto(t *testing.T) {
 	}
 }
 
-// The carriers are worked out once per cache: an unchanged cache is not
-// parsed again on the next check-in, a new one is.
+// The carriers are worked out once per cache, each location parsed once:
+// an unchanged cache is not read or parsed again on the next check-in, a
+// new one is, and a cache that does not match its index is not re-read
+// every minute either.
 func TestServiceCarriersAreKeptUntilTheCacheChanges(t *testing.T) {
 	d, ids := servicesTestDaemon(t, localctl.Overrides{})
-	old := connectValidateServiceEntry
-	t.Cleanup(func() { connectValidateServiceEntry = old })
-	calls := 0
-	connectValidateServiceEntry = func(raw []byte, id string) error { calls++; return old(raw, id) }
+	oldCarried, oldLoad := connectServicesCarried, connectLoadEntries
+	t.Cleanup(func() { connectServicesCarried, connectLoadEntries = oldCarried, oldLoad })
+	parses, reads := 0, 0
+	connectServicesCarried = func(raw []byte) map[string]bool { parses++; return oldCarried(raw) }
+	connectLoadEntries = func(p string) (*localctl.EntriesCache, error) { reads++; return oldLoad(p) }
 	idx, err := localctl.LoadEntriesIndex(d.cfg.EntriesIndexPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	first := connectServiceCarriers(d.cfg.EntriesPath, idx)
-	if calls != 3*len(xray.Services) {
-		t.Fatalf("validated %d times, want %d", calls, 3*len(xray.Services))
+	if parses != 3 || reads != 1 {
+		t.Fatalf("parsed %d locations in %d reads, want 3 in 1", parses, reads)
 	}
 	if !slices.Equal(first["youtube"], []string{ids[0], ids[2]}) || len(first["telegram"]) != 3 {
 		t.Fatalf("carriers: %v", first)
@@ -156,8 +162,8 @@ func TestServiceCarriersAreKeptUntilTheCacheChanges(t *testing.T) {
 	for range 3 {
 		connectServiceCarriers(d.cfg.EntriesPath, idx)
 	}
-	if calls != 3*len(xray.Services) {
-		t.Fatalf("an unchanged cache was validated again: %d", calls)
+	if parses != 3 || reads != 1 {
+		t.Fatalf("an unchanged cache was read again: %d parses, %d reads", parses, reads)
 	}
 	c := &localctl.EntriesCache{Remarks: []string{"🇩🇪 Германия"}, Entries: []json.RawMessage{json.RawMessage(svcTestNoYT)}}
 	if _, err := localctl.SaveEntries(d.cfg.EntriesPath, d.cfg.EntriesIndexPath, c); err != nil {
@@ -167,8 +173,23 @@ func TestServiceCarriersAreKeptUntilTheCacheChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := connectServiceCarriers(d.cfg.EntriesPath, idx)
-	if calls != 4*len(xray.Services) || len(next["youtube"]) != 0 || next["youtube"] == nil || len(next["tiktok"]) != 1 {
-		t.Fatalf("a new cache: %d calls, %v", calls, next)
+	if parses != 4 || reads != 2 || len(next["youtube"]) != 0 || next["youtube"] == nil || len(next["tiktok"]) != 1 {
+		t.Fatalf("a new cache: %d parses, %d reads, %v", parses, reads, next)
+	}
+	// The cache rewritten under an index that no longer describes it: not
+	// known, and not read again while the index stays.
+	other := &localctl.EntriesCache{Remarks: []string{"x"}, Entries: []json.RawMessage{json.RawMessage(svcTestAll)}}
+	if _, err := localctl.SaveEntries(d.cfg.EntriesPath, filepath.Join(t.TempDir(), "other.index.json"), other); err != nil {
+		t.Fatal(err)
+	}
+	idx.Entries = append(idx.Entries, localctl.EntrySummary{Digest: strings.Repeat("e", 64)})
+	for range 3 {
+		if got := connectServiceCarriers(d.cfg.EntriesPath, idx); got != nil {
+			t.Fatalf("a mismatched cache: %v", got)
+		}
+	}
+	if reads != 3 || parses != 4 {
+		t.Fatalf("a lasting mismatch was re-read: %d reads, %d parses", reads, parses)
 	}
 	// No index: not known, and nothing is listed.
 	if connectServiceCarriers(d.cfg.EntriesPath, nil) != nil {
@@ -222,5 +243,150 @@ func TestSetServiceAutoIsAdvertisedWithSetService(t *testing.T) {
 	d.cfg.RouteSource = "passwall"
 	if c := d.connectCapabilities(); c["set_service"] || c["set_service_auto"] {
 		t.Fatalf("advertised on a router that renders no services: %v", c)
+	}
+}
+
+// withoutService is entry with the service's own rule sent to a tag the
+// document lacks: the location no longer carries it.
+func withoutService(t *testing.T, entry []byte, svc xray.Service) []byte {
+	t.Helper()
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(entry, &doc); err != nil {
+		t.Fatal(err)
+	}
+	var routing map[string]json.RawMessage
+	_ = json.Unmarshal(doc["routing"], &routing)
+	if routing == nil {
+		routing = map[string]json.RawMessage{}
+	}
+	var rules []json.RawMessage
+	_ = json.Unmarshal(routing["rules"], &rules)
+	rule, _ := json.Marshal(map[string]any{"domain": []string{svc.Domains[0]}, "outboundTag": "vctl-test-missing"})
+	routing["rules"], _ = json.Marshal(append([]json.RawMessage{rule}, rules...))
+	doc["routing"], _ = json.Marshal(routing)
+	out, _ := json.Marshal(doc)
+	if xray.ValidateConnectServiceEntry(out, svc.ID) == nil {
+		t.Fatalf("%s still carried", svc.ID)
+	}
+	return out
+}
+
+// An owner's service location that left the cache, or no longer carries the
+// service, never freezes the router: the render skips it (the service takes
+// its default path), every other change still applies, the choice is kept,
+// and it runs again when the location does.
+func TestAStaleServiceChoiceIsSkippedNotRefused(t *testing.T) {
+	d, _, entries, remarks := newLocalUIDaemon(t)
+	ctx := context.Background()
+	raw, _, err := d.fetchProviderDocument(ctx, d.desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.applyProvider(ctx, raw, false); err != nil {
+		t.Fatal(err)
+	}
+	var svc xray.Service
+	for _, s := range xray.Services {
+		if s.ID != "ai" && xray.ValidateConnectServiceEntry(entries[1], s.ID) == nil {
+			svc = s
+			break
+		}
+	}
+	if svc.ID == "" {
+		t.Fatal("the fixture's second location carries no service")
+	}
+	overlay := "vctl-connect-" + svc.ID + "-"
+	rendered := func() bool {
+		b, err := vault.ReadFile(d.cfg.XrayRenderPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Contains(string(b), overlay)
+	}
+	save := func(docs ...[]byte) {
+		c := &localctl.EntriesCache{}
+		for i, doc := range docs {
+			c.Remarks = append(c.Remarks, remarks[0]+strings.Repeat(" ", i))
+			c.Entries = append(c.Entries, doc)
+		}
+		c.Remarks[0] = remarks[0]
+		if _, err := localctl.SaveEntries(d.cfg.EntriesPath, d.cfg.EntriesIndexPath, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	choose := func(id string) {
+		if _, err := localctl.UpdateOverrides(d.cfg.OverridesPath, func(o *localctl.Overrides) error {
+			o.ServiceEntries = map[string]string{svc.ID: id}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rules := func(site string) localctl.SocketResponse {
+		return d.localReapply(ctx, &localctl.Change{SetRules: &localctl.Rules{Direct: []string{site}, Proxy: []string{}}})
+	}
+	chosen := apply.Digest(entries[1])
+	choose(chosen)
+	if resp := rules("one.example"); !resp.OK || !rendered() {
+		t.Fatalf("a running choice: %+v, overlay %v", resp, rendered())
+	}
+
+	// The location left the cache.
+	save(entries[0])
+	if resp := rules("two.example"); !resp.OK {
+		t.Fatalf("a vanished location refused a change: %+v", resp)
+	}
+	if rendered() {
+		t.Fatal("rendered a location the cache no longer has")
+	}
+	if _, err := d.applyProvider(ctx, entries[0], true); err != nil {
+		t.Fatalf("a vanished location refused the render: %v", err)
+	}
+	if ov, _ := localctl.LoadOverrides(d.cfg.OverridesPath); ov.ServiceEntries[svc.ID] != chosen {
+		t.Fatalf("the choice was dropped: %+v", ov.ServiceEntries)
+	}
+	if d.svcSkipped.m[svc.ID] != chosen {
+		t.Fatalf("the skip was not noted: %v", d.svcSkipped.m)
+	}
+
+	// A location in the cache that no longer carries the service.
+	lacking := withoutService(t, entries[1], svc)
+	save(entries[0], lacking)
+	choose(apply.Digest(lacking))
+	if resp := rules("three.example"); !resp.OK || rendered() {
+		t.Fatalf("a location without the service: %+v, overlay %v", resp, rendered())
+	}
+
+	// Choosing a location that does not carry the service now is refused.
+	if resp := d.localReapply(ctx, &localctl.Change{SetService: &localctl.ServiceChoice{ID: svc.ID, EntryID: apply.Digest(lacking)}}); resp.OK {
+		t.Fatal("a new choice that cannot run was reported applied")
+	}
+
+	// The location is back: the kept choice runs again, and is forgotten as skipped.
+	choose(chosen)
+	save(entries[0], entries[1])
+	if resp := rules("four.example"); !resp.OK || !rendered() {
+		t.Fatalf("the choice did not resume: %+v, overlay %v", resp, rendered())
+	}
+	if _, still := d.svcSkipped.m[svc.ID]; still {
+		t.Fatal("a running choice still noted as skipped")
+	}
+}
+
+// A stale «Нейросети» choice: they run through their Kazakh default
+// meanwhile, and the check-in names that default, stale and not auto.
+func TestAStaleAIChoiceReportsTheDefaultItRunsThrough(t *testing.T) {
+	d, ids := servicesTestDaemon(t, localctl.Overrides{})
+	if _, err := localctl.UpdateOverrides(d.cfg.OverridesPath, func(o *localctl.Overrides) error {
+		o.ServiceEntries = map[string]string{"ai": strings.Repeat("f", 64)}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	d.st.SpliceKey = "v1;svcEntries=ai=" + ids[2] + ";exitprobe=x" // the render took the default
+	got, raw := checkInServices(t, d)
+	s := got["ai"]
+	if !s.Stale || s.Auto == nil || *s.Auto || s.EntryID == nil || *s.EntryID != ids[2] {
+		t.Fatalf("ai: %s", raw)
 	}
 }

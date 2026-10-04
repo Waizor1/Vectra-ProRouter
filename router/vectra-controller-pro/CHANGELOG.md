@@ -12,17 +12,31 @@
   `set_service` accepts; absent when not known, never cut short past 200)
   and `stale` (the owner's location left the cache or no longer carries the
   service: it does not run, the service is on its default meanwhile, and
-  `entryId` is null). Working out `entries` parses every cached location per
-  service, so it is done once per cache (keyed by the index's digests) and
-  not on every check-in.
+  `entryId` is that default — the Kazakh location for «Нейросети» when the
+  render took one, else null). A country chosen in the router's own UI is
+  reported as `auto: false, entryId: null`. Working out `entries` parses
+  each cached location once, for all services, and only when the cache
+  changes (keyed by the index's digests; a cache that does not match its
+  index is not re-read every minute either).
+- **A service location that stopped running no longer freezes the router.**
+  When the owner's location for a service left the cache, or no longer
+  carried the service, every render was refused (`unknown_entry`, or the
+  whole splice failing `service_path_unavailable`): all later changes —
+  sites, location, the provider's own refresh — were refused and the router
+  sat on its last render. Now the render skips that choice (the service
+  takes its default path: «Нейросети» their Kazakh default if there is one,
+  the others the main VPN), says so once at WARN, and keeps the choice: it
+  runs again when the location does. A new choice that cannot run is still
+  refused.
 - **`set_service` with `entryId: ":auto"`** takes a service back to its
   default: the owner's location, «as the main VPN» or country is deleted
   (for «Нейросети», Kazakhstan comes back). `null` stays «as the main VPN».
   Advertised as the capability `set_service_auto` next to `set_service`.
-- **Panel first.** The panel's check-in schema rejects a capability it does
-  not know — the whole check-in, not the field — so the panel with
-  `set_service_auto` in `connectRouterCapabilitySchema` must be deployed
-  before any router sends it.
+- **Panel first, this once.** The deployed panel's check-in schema rejects
+  a capability it does not know — the whole check-in, not the field — so
+  the panel from this release must be deployed before any r16 router sends
+  `set_service_auto`. That panel drops an unknown capability instead, so
+  the next flag needs no such order.
 
 ## vctl 0.7.0-r15 — a failed VPN never takes the internet with it
 
