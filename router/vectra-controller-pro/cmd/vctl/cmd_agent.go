@@ -180,6 +180,8 @@ type daemon struct {
 	// dnsPutBackAfter holds the next put-back while the last one did not
 	// get the redirect in (a failing apply must not reload every 3 s).
 	dnsPutBackAfter time.Time
+	// signalProcess stands in for syscall.Kill in tests (killOrphanXray).
+	signalProcess func(pid int, sig syscall.Signal) error
 	// hupResolver stands in for SIGHUP to dnsmasq in tests.
 	hupResolver func(pid int) error
 	// rescueCheckedAt is when the rescue last probed (rescueStep).
@@ -573,6 +575,10 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 		// older than ten minutes and open in no process — no update runs
 		// before this daemon starts one).
 		removeLeftoversAtStart()
+		// Before this vctl's xray starts: an xray a killed vctl left must
+		// not hold the tproxy port (procd respawns vctl without the init
+		// script, whose start_service did this alone).
+		d.killOrphanXray()
 		go d.serveUI(ctx)
 		go d.watchMemory(ctx)
 		go d.watchFailover(ctx)

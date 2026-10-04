@@ -57,6 +57,13 @@ VPN comes back by itself.
   working when any trace answer is not the WAN's: at the drill ISP
   cp.cloudflare.com goes out by the kernel while www.cloudflare.com takes
   the tunnel.
+- **A vctl killed outright left its xray running, and the next vctl could
+  not start its own.** procd respawns vctl without the init script, whose
+  start_service was the only place orphans were ended: the new xray
+  crash-looped (exit 255, port taken) beside an unsupervised orphan, and when
+  the orphan went the LAN had no xray for the supervisor's backoff (~1 min in
+  the vctl-kill drill). vctl now ends such an xray itself at start (parent
+  init, vctl's own argv), before its supervisor starts.
 - **xray down sent the rescue direct.** A failed probe while xray itself is
   down or just restarted (under 15 s) no longer counts against the tunnel:
   TPROXY already lets the LAN past a dead xray, and direct mode then held the
