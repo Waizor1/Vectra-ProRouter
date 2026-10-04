@@ -1,42 +1,54 @@
 # Changelog
 
-## vctl 0.7.0-r16
+## vctl 0.7.0-r16 — a Pro view an owner acts on, and services the Vectra app can pick
+
+### Router UI: Pro and the journal
+- **Pro is Обзор · Серверы и сервисы · Маршруты · Мои сайты · Настройки ·
+  Журнал.** The read-only Nodes tab is gone; the tags, counters and
+  per-node addresses it and the overview's technical details showed now go
+  into the support report, not onto the screen. Routes name their nodes and
+  backups by human names ("Резервный канал", not "Hysteria2"), with delays
+  in one column and Pin/Unpin. Settings is new: Wi-Fi, router password,
+  support access, probe interval, About.
+- **Design pass.** The overview names the server as the simple view does;
+  the restart / turn-off / «Включить Vectra» buttons are the status card's
+  own row, across the card on a phone; Настройки and Сервисы fill the width
+  without empty halves.
+- **Journal** opens on warnings and errors and folds repeated lines; only
+  vctl's own `time=… level=…` lines are re-levelled by their slog level —
+  another daemon's line that merely says `level=` keeps its syslog level.
 
 ### Connect: services
-- **The check-in says more about each service** (`connect.services[]`), for
-  the Vectra app's per-service server picker. `entryId` keeps its meaning —
-  the location the service runs through now, the «Нейросети» Kazakh default
-  folded in, null for the main VPN — and next to it, all optional:
-  `auto` (the owner has made no choice: the service is on its default),
-  `entries` (the cached locations that carry the service, the ones
-  `set_service` accepts; absent when not known, never cut short past 200)
-  and `stale` (the owner's location left the cache or no longer carries the
-  service: it does not run, the service is on its default meanwhile, and
-  `entryId` is that default — the Kazakh location for «Нейросети» when the
-  render took one, else null). A country chosen in the router's own UI is
-  reported as `auto: false, entryId: null`. Working out `entries` parses
-  each cached location once, for all services, and only when the cache
-  changes (keyed by the index's digests; a cache that does not match its
-  index is not re-read every minute either).
-- **A service location that stopped running no longer freezes the router.**
-  When the owner's location for a service left the cache, or no longer
-  carried the service, every render was refused (`unknown_entry`, or the
-  whole splice failing `service_path_unavailable`): all later changes —
-  sites, location, the provider's own refresh — were refused and the router
-  sat on its last render. Now the render skips that choice (the service
-  takes its default path: «Нейросети» their Kazakh default if there is one,
-  the others the main VPN), says so once at WARN, and keeps the choice: it
-  runs again when the location does. A new choice that cannot run is still
-  refused.
+- **The check-in says more about each service** (`connect.services[]`):
+  next to `entryId` (unchanged: where it runs now, the «Нейросети» Kazakh
+  default folded in, null for the main VPN), optional `auto` (no owner
+  choice), `entries` (cached locations that carry the service — what
+  `set_service` accepts; absent when unknown, never cut short past 200) and
+  `stale` (the owner's location does not run now; `entryId` is the default
+  it runs on meanwhile). A country chosen in the router's own UI reports
+  `auto: false, entryId: null`. `entries` is worked out once per cache, each
+  location parsed once.
 - **`set_service` with `entryId: ":auto"`** takes a service back to its
-  default: the owner's location, «as the main VPN» or country is deleted
-  (for «Нейросети», Kazakhstan comes back). `null` stays «as the main VPN».
-  Advertised as the capability `set_service_auto` next to `set_service`.
-- **Panel first, this once.** The deployed panel's check-in schema rejects
-  a capability it does not know — the whole check-in, not the field — so
-  the panel from this release must be deployed before any r16 router sends
-  `set_service_auto`. That panel drops an unknown capability instead, so
-  the next flag needs no such order.
+  default (for «Нейросети», Kazakhstan); `null` stays «as the main VPN».
+  Advertised as the capability `set_service_auto`.
+
+### Fault tolerance
+- **A service location that stopped running no longer freezes the router.**
+  One gone from the cache, or no longer carrying its service, refused every
+  render (`unknown_entry` / `service_path_unavailable`) and with it every
+  later change. The render now skips that choice — the service takes its
+  default path — logs it once at WARN and keeps it, to run again when the
+  location does; a new choice that cannot run is still refused. A cache
+  that is there but cannot be read now (I/O, vault) moves nothing: that
+  render waits, as before.
+- **A single failed tunnel probe logs at INFO**; WARN from the second in a
+  row.
+
+### Deploy: panel first, this once
+The deployed panel rejects a check-in carrying a capability it does not
+know, so the panel from this release goes out before any r16 router sends
+`set_service_auto`. That panel drops unknown capabilities instead, so the
+next flag needs no such order.
 
 ## vctl 0.7.0-r15 — a failed VPN never takes the internet with it
 
