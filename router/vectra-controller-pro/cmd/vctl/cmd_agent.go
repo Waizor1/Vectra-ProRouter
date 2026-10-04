@@ -871,7 +871,7 @@ func (d *daemon) rescueStep(ctx context.Context) rescue.Decision {
 	// 8 s: the probe's name is now resolved through the tunnel too (dnsmasq's
 	// upstream goes into xray), and a slow but working tunnel must not look
 	// dead three times in a row.
-	hc := &http.Client{Timeout: 8 * time.Second}
+	hc := &http.Client{Timeout: 8 * time.Second, Transport: tunnelProbeTransport}
 	cur := d.rescueState()
 	var publicReachable bool
 	if cur.Mode == rescue.ModeProxy {
@@ -942,6 +942,24 @@ func (d *daemon) probeThroughTunnel(ctx context.Context, hc *http.Client) bool {
 		d.traceAroundSaid = false
 	}
 	return ok
+}
+
+// ipv4Transport dials IPv4 only: the path the router carries through the
+// tunnel, and the family its WAN address is learned in (the control plane
+// resolves "ip4"). Over IPv6 the probe could leave around the tunnel and
+// answer from an address no IPv4 comparison catches.
+// A fresh connection every probe (no keep-alive): one kept from before a
+// failure would answer for a tunnel that is gone.
+var tunnelProbeTransport = ipv4Transport()
+
+func ipv4Transport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DisableKeepAlives = true
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	t.DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp4", addr)
+	}
+	return t
 }
 
 // wanIPEvery is how often the router learns its own WAN address: the trace
