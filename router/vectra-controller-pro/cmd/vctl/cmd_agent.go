@@ -177,6 +177,8 @@ type daemon struct {
 	// dnsFailedOpen: that watch took the redirect out, and puts it back.
 	dnsFastMisses int
 	dnsFailedOpen bool
+	// hupResolver stands in for SIGHUP to dnsmasq in tests.
+	hupResolver func(pid int) error
 	// rescueCheckedAt is when the rescue last probed (rescueStep).
 	rescueCheckedAt time.Time
 	// hijackMisses counts the loops in a row nothing served port 53 while
@@ -885,7 +887,11 @@ func (d *daemon) rescueStep(ctx context.Context) rescue.Decision {
 	decision := rescue.Evaluate(rescue.Input{
 		CurrentState:    cur,
 		PublicReachable: publicReachable,
-		ProxyConclusive: cur.Mode == rescue.ModeProxy,
+		// xray itself down — a crash, a restart — is not the tunnel failing:
+		// the kernel already lets the LAN past it (TPROXY falls through), and
+		// direct mode would only keep the VPN off for a cooldown after xray
+		// is back (the crash-loop drill on 1111, 2026-10-04).
+		ProxyConclusive: cur.Mode == rescue.ModeProxy && d.xraySettled(time.Now()),
 		DirectReachable: directReachable,
 		TunnelDead:      d.tunnelDead(time.Now()),
 		Now:             time.Now(),
@@ -897,6 +903,20 @@ func (d *daemon) rescueStep(ctx context.Context) rescue.Decision {
 
 	d.rescueCheckedAt = time.Now()
 	return decision
+}
+
+// xraySettle is how long xray has to run before a failed probe through it
+// says anything about the tunnel.
+const xraySettle = 15 * time.Second
+
+// xraySettled: xray runs, and has for xraySettle. With no supervisor started
+// there is no xray to wait for: yes.
+func (d *daemon) xraySettled(now time.Time) bool {
+	if d.sup == nil || !d.supStarted {
+		return true
+	}
+	st := d.sup.Status()
+	return st.State == supervisor.StateRunning && now.Sub(st.StartedAt) >= xraySettle
 }
 
 // rescueRecheckEvery is how soon, between the polls, the rescue looks again

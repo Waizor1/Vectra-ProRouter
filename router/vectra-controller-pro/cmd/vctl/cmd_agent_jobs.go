@@ -622,6 +622,7 @@ func (d *daemon) jobEnterDirect(ctx context.Context, job controlplane.Job) error
 	// Tear down the TPROXY firewall so traffic actually flows direct — otherwise
 	// packets keep being tproxy'd into a (possibly dead) Xray and black-holed.
 	d.tearDownFirewall(ctx)
+	d.flushResolverCache("direct mode")
 	d.storeRescueState(rescue.State{Mode: rescue.ModeDirect, LastTransitionAt: time.Now()}, "operator requested direct mode")
 	_ = d.persist()
 	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"enteredDirectMode": true})
@@ -1084,6 +1085,8 @@ func (d *daemon) applyRescueTransition(ctx context.Context, dec rescue.Decision)
 	case rescue.ModeDirect:
 		logging.L().Warn("rescue: entering direct mode (tearing down proxy firewall)", "reason", dec.Reason)
 		d.tearDownFirewall(ctx)
+		// Out of the tunnel's way, its FakeDNS answers lead nowhere.
+		d.flushResolverCache("direct mode")
 	case rescue.ModeProxy:
 		logging.L().Info("rescue: recovering proxy mode (reapplying firewall)", "reason", dec.Reason)
 		d.reapplyFirewall(ctx)

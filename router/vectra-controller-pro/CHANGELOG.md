@@ -26,6 +26,19 @@ VPN comes back by itself.
   main balancer, its reserve or the borrow pool alive (publishTunnel), and
   the way out never waits for the cooldown.
 
+- **FakeDNS answers outlived the tunnel.** The sites that go through the
+  tunnel (Instagram, YouTube…) resolve to FakeDNS addresses (198.18.x) that
+  only xray can carry; dnsmasq kept handing them out after xray died or the
+  rescue went direct, so exactly those sites stayed dead with the internet
+  up. Taking the redirect out and entering direct mode (the rescue's or the
+  operator's) now empty dnsmasq's cache (SIGHUP).
+- **xray down sent the rescue direct.** A failed probe while xray itself is
+  down or just restarted (under 15 s) no longer counts against the tunnel:
+  TPROXY already lets the LAN past a dead xray, and direct mode then held the
+  VPN off for the whole cooldown after xray was back.
+- **The cooldown is 2 minutes, not 5** — it holds only the way back, and
+  that way now waits for a live node anyway.
+
 ### Changed
 - **The support shell is on by default** (UCI `remote_shell` '1' on a new
   router too); the owner switches it off in the router UI, and an upgrade

@@ -46,7 +46,11 @@ func DefaultPolicy() Policy {
 		HealthURLs:           []string{"https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"},
 		TriggerFailureCount:  3,
 		RecoverySuccessCount: 2,
-		Cooldown:             5 * time.Minute,
+		// The way back to the proxy only (the way out never waits), and
+		// only once a node lives (Input.TunnelDead): two minutes keep a
+		// flapping tunnel from swinging the LAN, without holding a working
+		// one off for long.
+		Cooldown: 2 * time.Minute,
 	}
 }
 

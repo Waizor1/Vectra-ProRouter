@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"vectra-controller-pro/internal/coreengine/xray"
@@ -545,6 +546,49 @@ func resolverUIDs(procRoot string) []int {
 	}
 	sort.Ints(out)
 	return out
+}
+
+// resolverPIDs are the dnsmasq processes, by /proc/<pid>/comm.
+func resolverPIDs(procRoot string) []int {
+	dirs, err := os.ReadDir(procRoot)
+	if err != nil {
+		return nil
+	}
+	var out []int
+	for _, e := range dirs {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		comm, err := os.ReadFile(filepath.Join(procRoot, e.Name(), "comm"))
+		if err == nil && strings.TrimSpace(string(comm)) == "dnsmasq" {
+			out = append(out, pid)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+// flushResolverCache empties dnsmasq's cache — SIGHUP: it drops the cache and
+// reads its hosts files again; DHCP and the leases are untouched. What xray
+// answered while it carried the router's lookups leads nowhere once the
+// tunnel is out of the way: the sites that go through it got FakeDNS
+// addresses (198.18.x), and dnsmasq kept handing those out until they
+// expired — Instagram and YouTube dead on the LAN with the internet up.
+func (d *daemon) flushResolverCache(reason string) {
+	hup := d.hupResolver
+	if hup == nil {
+		hup = func(pid int) error { return syscall.Kill(pid, syscall.SIGHUP) }
+	}
+	n := 0
+	for _, pid := range resolverPIDs(d.procRoot()) {
+		if hup(pid) == nil {
+			n++
+		}
+	}
+	if n > 0 {
+		logging.L().Info("emptied the router's resolver cache", "reason", reason, "processes", n)
+	}
 }
 
 // effectiveUID reads the effective uid from a /proc/<pid>/status

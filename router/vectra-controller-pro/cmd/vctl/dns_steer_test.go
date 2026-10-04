@@ -501,3 +501,19 @@ func TestRedirectPort(t *testing.T) {
 		}
 	}
 }
+
+// Taking the tunnel out of the way empties dnsmasq's cache: every dnsmasq,
+// found by its comm, gets SIGHUP; nothing else does.
+func TestTheResolverCacheIsEmptiedByPID(t *testing.T) {
+	d := dnsDaemon(t, renderWithDNS, map[string][2]string{
+		"7":  {"dnsmasq", "453\t453\t453\t453"},
+		"9":  {"xray", "0\t0\t0\t0"},
+		"12": {"dnsmasq", "0\t0\t0\t0"},
+	})
+	var got []int
+	d.hupResolver = func(pid int) error { got = append(got, pid); return nil }
+	d.flushResolverCache("test")
+	if !reflect.DeepEqual(got, []int{7, 12}) {
+		t.Fatalf("signalled %v, want the two dnsmasq [7 12]", got)
+	}
+}

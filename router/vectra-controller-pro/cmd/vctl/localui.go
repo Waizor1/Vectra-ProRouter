@@ -812,6 +812,10 @@ func (d *daemon) waitForTick(ctx context.Context, tick <-chan time.Time) bool {
 			// seconds, not at the next poll (dnsWatchDue).
 			if d.dnsWatchDue(ctx) {
 				d.programFirewallWithin(ctx, d.desired, 0)
+				if d.dnsFailedOpen {
+					// Taken out: the FakeDNS answers lead nowhere now.
+					d.flushResolverCache("xray stopped answering on its DNS inbound")
+				}
 				d.publishRuntime()
 			}
 			// A probe through the tunnel just failed, or direct mode may go
