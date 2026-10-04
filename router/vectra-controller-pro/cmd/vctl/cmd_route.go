@@ -418,10 +418,11 @@ func routeInside(in []netip.Prefix, p netip.Prefix) bool {
 }
 
 // routePreviewOptions preserves the running owner's exact service overlays;
-// missing cache entries refuse the preview before any persistent change.
+// a choice that does not run is skipped, as the render skips it; a cache
+// that cannot be read now refuses the preview.
 func routePreviewOptions(d *daemon, raw []byte, ov localctl.Overrides) (xray.SpliceOptions, error) {
 	opts, _ := spliceOptionsFor(raw, ov, !d.cfg.NoRussiaDirect)
-	entries, err := d.connectServiceOptionsFor(ov, raw)
+	entries, _, err := d.connectServiceOptionsFor(ov, raw)
 	if err != nil {
 		return opts, err
 	}

@@ -725,13 +725,40 @@ export const connectRouterActionNameSchema = z.enum([
   "refresh_subscription",
 ]);
 
+// What a router may advertise for its owner: the actions it executes, plus
+// flags that refine one ("set_service_auto": set_service takes the entryId
+// ":auto", back to the service's default).
+export const connectRouterCapabilitySchema = z.enum([
+  ...connectRouterActionNameSchema.options,
+  "set_service_auto",
+]);
+export type ConnectRouterCapability = z.infer<
+  typeof connectRouterCapabilitySchema
+>;
+const knownConnectCapabilities = new Set<string>(
+  connectRouterCapabilitySchema.options,
+);
+// A capability this panel does not know yet is dropped, never a reason to
+// refuse the whole check-in: a router may advertise a new flag before the
+// panel that understands it is deployed.
+const connectRouterCapabilitiesSchema = z
+  .array(z.string().max(64))
+  .max(64)
+  .transform((caps) =>
+    caps.filter((cap): cap is ConnectRouterCapability =>
+      knownConnectCapabilities.has(cap),
+    ),
+  );
+
+const connectEntryRefSchema = z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/);
+
 export const routerConnectTelemetrySchema = z.object({
   ownerRef: z
     .string()
     .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/)
     .nullable()
     .optional(),
-  capabilities: z.array(connectRouterActionNameSchema).max(9).optional(),
+  capabilities: connectRouterCapabilitiesSchema.optional(),
   availableVersion: z.string().min(1).max(128).nullable().optional(),
   uptimeSec: z.number().int().nonnegative().optional(),
   verdict: z
@@ -765,8 +792,20 @@ export const routerConnectTelemetrySchema = z.object({
       vpn: z.array(z.string()).max(300),
     })
     .optional(),
+  // entryId: where the service runs now (null: the main VPN). auto: the
+  // owner made no choice, the service is on its default. entries: the cached
+  // locations that carry it (absent: not known). stale: the owner's choice
+  // does not run now, the service is on its default meanwhile.
   services: z
-    .array(z.object({ id: z.string(), entryId: z.string().nullable() }))
+    .array(
+      z.object({
+        id: z.string(),
+        entryId: z.string().nullable(),
+        auto: z.boolean().optional(),
+        entries: z.array(connectEntryRefSchema).max(200).optional(),
+        stale: z.boolean().optional(),
+      }),
+    )
     .max(100)
     .optional(),
   // Confidential wire field: the panel strips and encrypts password before

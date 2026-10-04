@@ -1,6 +1,8 @@
-// The Servers tab: the subscription's entries. "Auto" — the entry that picks
-// its nodes by itself — comes first, then one card per country (its variants,
-// such as "· Hysteria2", inside it), then whatever names no country.
+// The "Servers and services" tab: the subscription's entries. "Auto" — the
+// entry that picks its nodes by itself — comes first, then one card per
+// country (its variants, such as "· Hysteria2", inside it), then whatever
+// names no country; under them the services with a country of their own,
+// the same control as in the simple view.
 
 import type { ComponentChildren } from 'preact';
 import type { Entry } from '../api/types';
@@ -10,12 +12,13 @@ import { face } from '../lib/servers';
 import { countryName, flagCountry } from '../lib/names';
 import { Icon } from '../ui/icons';
 import { Badge, Button, Empty, ErrorBox, Note, Skeleton, Spinner } from '../ui/kit';
+import { Services } from './Services';
 
 /** "Авто", "Auto": an entry that chooses by itself. */
 const AUTO = /(^|[\s(«"·-])(авто|auto)/i;
 
 export function Locations() {
-  const { t, f, run, pending, refresh } = useApp();
+  const { t, run, pending, refresh } = useApp();
   const res = useRes('entries');
   const data = res.data;
   if (!data) return res.error ? <ErrorBox t={t} err={res.error} onRetry={refresh} /> : <Skeleton />;
@@ -79,7 +82,6 @@ export function Locations() {
       </button>
     );
   };
-  const nodes = (e: Entry) => (e.nodeCount !== null ? t.n('n.node', e.nodeCount) : '');
   const section = (id: string, title: string, items: ComponentChildren, cls = 'locs') => (
     <section class="srv" aria-labelledby={id}>
       <h3 class="k" id={id}>
@@ -91,50 +93,47 @@ export function Locations() {
 
   return (
     <div class="stack">
-      <div class="toolbar">
-        <p class="lede">{t('l.intro')}</p>
-        <span class="row push">
-          {local || data.source === 'panel' ? <Badge tone={local ? 'warm' : 'info'}>{t(local ? 'l.local' : 'l.panel')}</Badge> : null}
-          {data.fetchedAt ? <span class="hint">{t('l.updated', { when: f.ago(data.fetchedAt) })}</span> : null}
-          {data.cached ? <Badge>{t('l.cached')}</Badge> : null}
-          {local ? (
-            <Button
-              small
-              icon="refresh"
-              busy={pending === 'entry:reset'}
-              disabled={!!pending}
-              onClick={() =>
-                run('reset_entry', {}, {
-                  key: 'entry:reset',
-                  confirm: { title: t('l.resetQ'), body: t('restartWarn'), ok: t('l.reset') },
-                  landed: (s) => s.subscription.source === 'panel',
-                })
-              }
-            >
-              {t('l.reset')}
-            </Button>
-          ) : null}
-        </span>
-      </div>
+      {local ? (
+        <div class="row">
+          <Button
+            small
+            icon="refresh"
+            busy={pending === 'entry:reset'}
+            disabled={!!pending}
+            onClick={() =>
+              run('reset_entry', {}, {
+                key: 'entry:reset',
+                confirm: { title: t('l.resetQ'), body: t('restartWarn'), ok: t('l.reset') },
+                landed: (s) => s.subscription.source === 'panel',
+              })
+            }
+          >
+            {t('l.reset')}
+          </Button>
+        </div>
+      ) : null}
       {data.overrideStale ? <Note tone="warn">{t('src.stale')}</Note> : null}
       {data.entries.length ? null : <Empty icon="globe">{t('l.none')}</Empty>}
       {top.length
         ? section(
             'vx-sv-top',
             t(auto.length ? 'l.rec' : 'l.panel'),
-            top.map((e) => (
-              <li key={e.index}>
-                {pick(
-                  e,
-                  'lc',
-                  <>
-                    <b>{name(e)}</b>
-                    {/* A server with balancers picks among its nodes by itself: that much the router knows. */}
-                    <span class="hint">{e.nodeCount !== null && (e.balancerCount ?? 0) > 0 ? t('l.auto', { n: e.nodeCount }) : nodes(e)}</span>
-                  </>,
-                )}
-              </li>
-            )),
+            top.map((e) => {
+              // "Авто" and what it does under it, as the overview and the simple view say it.
+              const fc = face(e.remark, name(e));
+              return (
+                <li key={e.index}>
+                  {pick(
+                    e,
+                    'lc',
+                    <>
+                      <b>{fc.title}</b>
+                      {fc.sub ? <span class="hint">{fc.sub}</span> : null}
+                    </>,
+                  )}
+                </li>
+              );
+            }),
             'locs top',
           )
         : null}
@@ -155,7 +154,7 @@ export function Locations() {
                     'lc',
                     <>
                       <b>{base}</b>
-                      <span class="hint">{[own !== base ? own : '', nodes(main)].filter(Boolean).join(' · ')}</span>
+                      {own && own !== base ? <span class="hint">{own}</span> : null}
                     </>,
                   )}
                   {list.length > 1 ? (
@@ -183,15 +182,13 @@ export function Locations() {
                 {pick(
                   e,
                   'lc',
-                  <>
-                    <b>{name(e)}</b>
-                    <span class="hint">{nodes(e)}</span>
-                  </>,
+                  <b>{name(e)}</b>,
                 )}
               </li>
             )),
           )
         : null}
+      {data.entries.length ? <Services /> : null}
     </div>
   );
 }

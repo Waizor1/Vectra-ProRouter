@@ -15,8 +15,8 @@ import { Balancing } from '../views/Balancing';
 import { Journal } from '../views/Journal';
 import { Locations } from '../views/Locations';
 import { MySites } from '../views/MySites';
-import { Nodes } from '../views/Nodes';
 import { Overview } from '../views/Overview';
+import { Settings } from '../views/Settings';
 import { Simple } from '../views/Simple';
 import { Ctx, MODES, TABS, useApp, useBusy, useRes, type AppCtx, type ConfirmOpts, type Mode, type RunOpts, type TabId, type ToastTone } from './ctx';
 
@@ -34,12 +34,12 @@ const SETUP_CALM_MS = 60_000;
 const TAB_METHODS: Record<TabId, ReadMethod[]> = {
   overview: ['diagnostics'],
   balancing: ['balancers', 'nodes'],
-  nodes: ['nodes'],
   locations: ['entries'],
   sites: ['rules'],
+  settings: ['setup'],
   journal: ['logs'],
 };
-const TAB_ICON: Record<TabId, IconName> = { overview: 'gauge', balancing: 'split', nodes: 'server', locations: 'globe', sites: 'filter', journal: 'list' };
+const TAB_ICON: Record<TabId, IconName> = { overview: 'gauge', balancing: 'split', locations: 'globe', sites: 'filter', settings: 'sliders', journal: 'list' };
 const DONE_CODE: Record<ActionMethod, string> = {
   select_entry: 'entry_selected',
   reset_entry: 'entry_reset',
@@ -109,11 +109,10 @@ function Header(p: {
         <span class="wm" aria-hidden="true" />
         <span class="word">VECTRA</span>
         {pro && s?.router.hostname ? (
-          <span class="host mono clip" title={s.router.hostname}>
+          <span class="host clip" title={s.router.hostname}>
             {s.router.hostname}
           </span>
         ) : null}
-        {pro && s?.version ? <span class="ver mono">vctl {s.version}</span> : null}
       </div>
       {pro ? (
         <span class={'pill t-' + (level ? LEVEL_TONE[level] : 'mute')} role="status">
@@ -175,7 +174,7 @@ function Tabs({ tab }: { tab: TabId }) {
   );
 }
 
-const VIEWS = { overview: Overview, balancing: Balancing, nodes: Nodes, locations: Locations, sites: MySites };
+const VIEWS = { overview: Overview, balancing: Balancing, locations: Locations, sites: MySites, settings: Settings };
 
 /** Old data whose refresh failed stays on screen, marked as such. */
 function Stale({ err }: { err: ErrInfo | null | undefined }) {

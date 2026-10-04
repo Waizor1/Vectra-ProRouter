@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 	"strings"
@@ -15,10 +16,15 @@ import (
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/sites"
 	"vectra-controller-pro/internal/uiapi"
 	"vectra-controller-pro/internal/vault"
 )
+
+// connectServiceAuto as a set_service entryId takes the service back to its
+// default (capability set_service_auto); null stays «as the main VPN».
+const connectServiceAuto = ":auto"
 
 func connectRouteChange(action string, params json.RawMessage, cache *localctl.EntriesCache) (*localctl.Change, string) {
 	var p struct {
@@ -94,6 +100,11 @@ func connectRouteChange(action string, params json.RawMessage, cache *localctl.E
 		if _, ok := xray.ServiceByID(p.Service); !ok {
 			return nil, "unknown_service"
 		}
+		if p.EntryID != nil && *p.EntryID == connectServiceAuto {
+			// Back to the default: the owner's choice is deleted.
+			c.SetService = &localctl.ServiceChoice{ID: p.Service}
+			break
+		}
 		c.SetService = &localctl.ServiceChoice{ID: p.Service, MainPath: p.EntryID == nil}
 		if p.EntryID != nil {
 			_, raw, code := resolve(*p.EntryID)
@@ -127,45 +138,101 @@ func (d *daemon) connectRoutingAction(ctx context.Context, action string, params
 
 var errConnectStaleEntry = errors.New("unknown_service_entry")
 
-func (d *daemon) connectServiceOptions(ov localctl.Overrides) (map[string]json.RawMessage, error) {
-	return d.connectServiceOptionsFor(ov, nil)
-}
-
 // connectServiceOptionsFor is the services' locations for rendering running:
 // the owner's choices, and «Нейросети» through Kazakhstan unless they chose
 // otherwise (a location, «as the main VPN», a country).
-func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte) (map[string]json.RawMessage, error) {
+//
+// A chosen location that is gone from the cache, or no longer carries its
+// service, is skipped — never a reason to refuse the render, which would
+// freeze the router on its last one: the service takes its default path
+// («Нейросети» their Kazakh default, the others the main VPN) and the choice
+// stays in the overrides, to run again when the location does. effective is
+// ov without the skipped choices, what the render is made under.
+//
+// A cache that is there but cannot be read now (an I/O or vault error, not
+// a missing file) is no reason to move services: err is set and the caller
+// does not render now, as before r16 — skipping would cost a render and an
+// xray restart with every chosen service, and the «Нейросети» default,
+// moved to the main VPN until the next render. A missing cache file means
+// there really are no locations: the choices are skipped.
+func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte) (entries map[string]json.RawMessage, effective localctl.Overrides, err error) {
 	chosen := map[string]string{}
 	for svc, id := range ov.ServiceEntries {
 		if id != localctl.ServiceMainPath { // «as the main VPN» needs no location
 			chosen[svc] = id
 		}
 	}
-	cache, err := localctl.LoadEntries(d.cfg.EntriesPath)
-	if err != nil {
-		if len(chosen) == 0 {
-			return nil, nil // no cache, no location chosen: nothing to overlay
-		}
-		return nil, err
+	effective = ov
+	cache, lerr := localctl.LoadEntries(d.cfg.EntriesPath)
+	if lerr != nil && !errors.Is(lerr, os.ErrNotExist) && (len(chosen) > 0 || aiDefaultConsidered(ov, d.cfg.RouteSource, running)) {
+		return nil, ov, fmt.Errorf("the cached locations cannot be read now: %w", lerr)
+	}
+	if lerr != nil && len(chosen) == 0 {
+		d.noteSkippedServiceChoices(nil)
+		return nil, effective, nil // no cache, no location chosen: nothing to overlay
 	}
 	out := map[string]json.RawMessage{}
+	skipped := map[string]string{}
 	for svc, id := range chosen {
-		raw := connectEntryRaw(cache, id)
-		if raw == nil {
-			return nil, errConnectStaleEntry
+		var raw json.RawMessage
+		if cache != nil {
+			raw = connectEntryRaw(cache, id)
+		}
+		if raw == nil || connectValidateServiceEntry(raw, svc) != nil {
+			skipped[svc] = id
+			continue
 		}
 		if running != nil && bytes.Equal(raw, running) {
 			continue // the router runs that location: its own rule is the path
 		}
 		out[svc] = raw
 	}
-	if _, raw, ok := aiDefault(ov, d.cfg.RouteSource, cache, running, d.aiRefused); ok && !bytes.Equal(raw, running) {
-		out["ai"] = raw
+	if len(skipped) > 0 {
+		effective.ServiceEntries = maps.Clone(ov.ServiceEntries)
+		for svc := range skipped {
+			delete(effective.ServiceEntries, svc)
+		}
+	}
+	d.noteSkippedServiceChoices(skipped)
+	if cache != nil {
+		if _, raw, ok := aiDefault(effective, d.cfg.RouteSource, cache, running, d.aiRefused); ok && !bytes.Equal(raw, running) {
+			out["ai"] = raw
+		}
 	}
 	if len(out) == 0 {
-		return nil, nil
+		return nil, effective, nil
 	}
-	return out, nil
+	return out, effective, nil
+}
+
+// aiDefaultConsidered: aiDefault would look for a Kazakh location in the
+// cache for this render.
+func aiDefaultConsidered(ov localctl.Overrides, routeSource string, running []byte) bool {
+	_, chosen := ov.ServiceEntries["ai"]
+	return routeSource == "" && running != nil && !chosen && ov.Services["ai"] == ""
+}
+
+// noteSkippedServiceChoices logs a choice the render skips once, not on
+// every render; one that runs again is forgotten, so a later skip is logged.
+func (d *daemon) noteSkippedServiceChoices(skipped map[string]string) {
+	d.svcSkipped.Lock()
+	defer d.svcSkipped.Unlock()
+	for svc, id := range skipped {
+		if d.svcSkipped.m[svc] == id {
+			continue
+		}
+		if d.svcSkipped.m == nil {
+			d.svcSkipped.m = map[string]string{}
+		}
+		d.svcSkipped.m[svc] = id
+		logging.L().Warn("the owner's location for a service is not in the cache or no longer carries it; the service takes its default path until it does",
+			"service", svc, "entry", shortDigest(id))
+	}
+	for svc := range d.svcSkipped.m {
+		if _, still := skipped[svc]; !still {
+			delete(d.svcSkipped.m, svc)
+		}
+	}
 }
 
 func connectEntryRaw(cache *localctl.EntriesCache, id string) json.RawMessage {

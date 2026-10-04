@@ -9,7 +9,7 @@ import { describeError } from '../api/errors';
 import { useApp } from '../app/ctx';
 import type { Key } from '../i18n';
 import { Button, Field, Note } from '../ui/kit';
-import { around, SLOT } from './Nodes';
+import { around, SLOT } from '../ui/words';
 
 /** The shortest password the page takes. */
 export const PW_MIN = 8;

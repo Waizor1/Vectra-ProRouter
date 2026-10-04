@@ -77,9 +77,9 @@ func TestTheAIDefaultYieldsToTheOwner(t *testing.T) {
 	d, c := aiTestCache(t, "🇷🇺🇪🇺 Авто", "🇷🇺🇰🇿 Казахстан", "🇩🇪 Германия")
 	sum := localctl.Summarize(c)
 	running := c.Entries[0]
-	got, err := d.connectServiceOptionsFor(localctl.Overrides{}, running)
-	if err != nil || string(got["ai"]) != string(c.Entries[1]) {
-		t.Fatalf("no default: %v %v", got, err)
+	got, _, _ := d.connectServiceOptionsFor(localctl.Overrides{}, running)
+	if string(got["ai"]) != string(c.Entries[1]) {
+		t.Fatalf("no default: %v", got)
 	}
 	// The owner's own location, their «as the main VPN», their country.
 	for name, ov := range map[string]localctl.Overrides{
@@ -87,10 +87,7 @@ func TestTheAIDefaultYieldsToTheOwner(t *testing.T) {
 		"main VPN":     {ServiceEntries: map[string]string{"ai": localctl.ServiceMainPath}},
 		"country":      {Services: map[string]string{"ai": "DE"}},
 	} {
-		got, err := d.connectServiceOptionsFor(ov, running)
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
+		got, _, _ := d.connectServiceOptionsFor(ov, running)
 		switch name {
 		case "own location":
 			if string(got["ai"]) != string(c.Entries[2]) {
@@ -106,14 +103,14 @@ func TestTheAIDefaultYieldsToTheOwner(t *testing.T) {
 	if err := os.Remove(d.cfg.EntriesPath); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := d.connectServiceOptionsFor(localctl.Overrides{ServiceEntries: map[string]string{"ai": localctl.ServiceMainPath}}, running); err != nil || got != nil {
-		t.Fatalf("main VPN without a cache: %v %v", got, err)
+	if got, _, _ := d.connectServiceOptionsFor(localctl.Overrides{ServiceEntries: map[string]string{"ai": localctl.ServiceMainPath}}, running); got != nil {
+		t.Fatalf("main VPN without a cache: %v", got)
 	}
 	if _, err := localctl.SaveEntries(d.cfg.EntriesPath, d.cfg.EntriesIndexPath, c); err != nil {
 		t.Fatal(err)
 	}
 	// A router that runs the cascade itself needs no second copy of it.
-	if got, _ := d.connectServiceOptionsFor(localctl.Overrides{}, c.Entries[1]); got["ai"] != nil {
+	if got, _, _ := d.connectServiceOptionsFor(localctl.Overrides{}, c.Entries[1]); got["ai"] != nil {
 		t.Fatal("overlaid the running location on itself")
 	}
 }
@@ -160,13 +157,13 @@ func TestAnAIDefaultThatWouldGoDirectOrNotImportIsSkipped(t *testing.T) {
 	d, c := aiTestCacheOf(t,
 		[]string{"🇷🇺🇪🇺 Авто", "🇷🇺🇰🇿 Казахстан", "🇷🇺🇰🇿 Казахстан 2", "🇰🇿 Казахстан"},
 		[]string{main, direct, unimportable, chain})
-	got, err := d.connectServiceOptionsFor(localctl.Overrides{}, c.Entries[0])
-	if err != nil || string(got["ai"]) != chain {
-		t.Fatalf("took %s (%v), want the whitelist chain that ends closed", got["ai"], err)
+	got, _, _ := d.connectServiceOptionsFor(localctl.Overrides{}, c.Entries[0])
+	if string(got["ai"]) != chain {
+		t.Fatalf("took %s, want the whitelist chain that ends closed", got["ai"])
 	}
 	d, c = aiTestCacheOf(t, []string{"🇷🇺🇪🇺 Авто", "🇷🇺🇰🇿 Казахстан", "🇰🇿 Казахстан"}, []string{main, direct, unimportable})
-	if got, err := d.connectServiceOptionsFor(localctl.Overrides{}, c.Entries[0]); err != nil || got != nil {
-		t.Fatalf("a default that goes direct or does not import: %v %v", got, err)
+	if got, _, _ := d.connectServiceOptionsFor(localctl.Overrides{}, c.Entries[0]); got != nil {
+		t.Fatalf("a default that goes direct or does not import: %v", got)
 	}
 }
 
@@ -236,12 +233,12 @@ func TestARefusedAIDefaultIsSkippedOnThatDocument(t *testing.T) {
 	d, c := aiTestCache(t, "🇷🇺🇪🇺 Авто", "🇷🇺🇰🇿 Казахстан", "🇰🇿 Казахстан")
 	running := c.Entries[0]
 	d.aiRefused = map[string]bool{aiRefusedKey(c.Entries[1], running): true}
-	got, err := d.connectServiceOptionsFor(localctl.Overrides{}, running)
-	if err != nil || string(got["ai"]) != string(c.Entries[2]) {
-		t.Fatalf("took %s (%v), want the next Kazakh location", got["ai"], err)
+	got, _, _ := d.connectServiceOptionsFor(localctl.Overrides{}, running)
+	if string(got["ai"]) != string(c.Entries[2]) {
+		t.Fatalf("took %s, want the next Kazakh location", got["ai"])
 	}
 	other := json.RawMessage(`{"outbounds":[{"tag":"other","protocol":"vless"}]}`)
-	if got, _ := d.connectServiceOptionsFor(localctl.Overrides{}, other); string(got["ai"]) != string(c.Entries[1]) {
+	if got, _, _ := d.connectServiceOptionsFor(localctl.Overrides{}, other); string(got["ai"]) != string(c.Entries[1]) {
 		t.Fatalf("a new document did not try the cascade again: %s", got["ai"])
 	}
 }

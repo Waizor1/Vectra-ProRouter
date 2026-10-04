@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
+	"maps"
 	"os"
+	"slices"
 	"sort"
+	"sync"
 	"time"
 	"vectra-controller-pro/internal/connecttelemetry"
 	"vectra-controller-pro/internal/controlplane"
@@ -50,7 +54,17 @@ func (d *daemon) publishConnectTelemetry(ctx context.Context, features map[strin
 		in.Overrides = overrides
 	}
 	t := connectSettings(in, connectSetup(ctx))
-	if id, ok := aiDefaultApplied(d.cfg, overrides, d.st.SpliceKey); ok && settingsErr == nil && t.Services != nil {
+	if t.Services != nil {
+		markConnectServiceCarriers(*t.Services, connectServiceCarriers(d.cfg.EntriesPath, in.Index))
+	}
+	// A stale «Нейросети» choice is skipped by the render: they run through
+	// their default meanwhile, and that is the entry reported.
+	aiOv := overrides
+	if t.Services != nil && connectServiceStale(*t.Services, "ai") {
+		aiOv.ServiceEntries = maps.Clone(overrides.ServiceEntries)
+		delete(aiOv.ServiceEntries, "ai")
+	}
+	if id, ok := aiDefaultApplied(d.cfg, aiOv, d.st.SpliceKey); ok && settingsErr == nil && t.Services != nil && id != overrides.ServiceEntries["ai"] {
 		setConnectServiceEntry(*t.Services, "ai", id, t.Entries) // «Нейросети» through their default
 	}
 	if settingsErr != nil {
@@ -112,9 +126,17 @@ func connectSettings(in uiapi.Inputs, f setup.Facts) controlplane.RouterConnectT
 	for _, id := range ordered {
 		s := controlplane.ConnectService{ID: id}
 		entry := in.Overrides.ServiceEntries[id]
-		if valid[entry] {
+		// No location, no «as the main VPN», no country: the default. A
+		// country chosen in the router's own UI is a choice the Connect
+		// contract has no field for: auto false, entryId null.
+		auto := entry == "" && in.Overrides.Services[id] == ""
+		s.Auto = &auto
+		switch {
+		case valid[entry]:
 			e := entry
 			s.EntryID = &e
+		case entry != "" && entry != localctl.ServiceMainPath && t.Entries != nil:
+			s.Stale = true // the owner's location left the cache
 		}
 		services = append(services, s)
 	}
@@ -131,6 +153,120 @@ func connectSettings(in uiapi.Inputs, f setup.Facts) controlplane.RouterConnectT
 		t.Wifi = &wifi
 	}
 	return t
+}
+
+// connectValidateServiceEntry, connectServicesCarried and connectLoadEntries
+// are seams tests count validations and cache reads through.
+var connectValidateServiceEntry = xray.ValidateConnectServiceEntry
+var connectServicesCarried = xray.ConnectServicesCarried
+var connectLoadEntries = localctl.LoadEntries
+
+// connectCarriersMemo keeps the last answer of connectServiceCarriers: the
+// check-in asks every minute, the answer changes only with the cached
+// locations, and working it out parses every one of them.
+var connectCarriersMemo struct {
+	sync.Mutex
+	key      string
+	carriers map[string][]string
+}
+
+// connectServiceCarriers is, per service, the cached locations (digests, in
+// the index's order) that carry it — those a set_service would accept. Nil
+// when not known: no index, or a cache that does not match it. A mismatch is
+// memoized like an answer, and clears on the next index change (the next
+// subscription refresh rewrites the cache, then the index).
+func connectServiceCarriers(entriesPath string, idx *localctl.EntriesIndex) map[string][]string {
+	if idx == nil || len(idx.Entries) > 300 {
+		return nil
+	}
+	// The digests are sha256 of each location's bytes: they name the cache.
+	h := sha256.New()
+	h.Write([]byte(entriesPath))
+	for _, e := range idx.Entries {
+		h.Write([]byte{0})
+		h.Write([]byte(e.Digest))
+	}
+	key := hex.EncodeToString(h.Sum(nil))
+	connectCarriersMemo.Lock()
+	if connectCarriersMemo.key == key {
+		carriers := connectCarriersMemo.carriers
+		connectCarriersMemo.Unlock()
+		return carriers
+	}
+	connectCarriersMemo.Unlock()
+	cache, err := connectLoadEntries(entriesPath)
+	if err != nil {
+		return nil // unreadable now: tried again on the next check-in
+	}
+	carriers := serviceCarriersOf(cache, idx)
+	connectCarriersMemo.Lock()
+	connectCarriersMemo.key, connectCarriersMemo.carriers = key, carriers
+	connectCarriersMemo.Unlock()
+	return carriers
+}
+
+// serviceCarriersOf works the carriers out from a cache that matches idx,
+// each location parsed once; nil when it does not match.
+func serviceCarriersOf(cache *localctl.EntriesCache, idx *localctl.EntriesIndex) map[string][]string {
+	if len(cache.Entries) != len(idx.Entries) {
+		return nil
+	}
+	digests := make([]string, len(cache.Entries))
+	for i, raw := range cache.Entries {
+		sum := sha256.Sum256(raw)
+		digests[i] = hex.EncodeToString(sum[:])
+		if digests[i] != idx.Entries[i].Digest {
+			return nil // written between the two reads
+		}
+	}
+	carriers := map[string][]string{}
+	for _, svc := range xray.Services {
+		carriers[svc.ID] = []string{}
+	}
+	seen := map[string]bool{}
+	for i, raw := range cache.Entries {
+		id := digests[i]
+		if seen[id] || !validConnectEntryID(id) {
+			continue
+		}
+		seen[id] = true
+		for svc := range connectServicesCarried(raw) {
+			if _, known := carriers[svc]; known {
+				carriers[svc] = append(carriers[svc], id)
+			}
+		}
+	}
+	return carriers
+}
+
+// markConnectServiceCarriers lists each service's carriers, and marks an
+// owner's location that no longer carries its service stale: it does not
+// run, the service is on its default meanwhile.
+func markConnectServiceCarriers(services []controlplane.ConnectService, carriers map[string][]string) {
+	if carriers == nil {
+		return
+	}
+	for i := range services {
+		s := &services[i]
+		list := carriers[s.ID]
+		if len(list) > connecttelemetry.MaxServiceEntries {
+			continue // not known rather than cut short
+		}
+		entries := append([]string{}, list...)
+		s.Entries = &entries
+		if s.EntryID != nil && (s.Auto == nil || !*s.Auto) && !slices.Contains(list, *s.EntryID) {
+			s.EntryID, s.Stale = nil, true
+		}
+	}
+}
+
+func connectServiceStale(services []controlplane.ConnectService, id string) bool {
+	for _, s := range services {
+		if s.ID == id {
+			return s.Stale
+		}
+	}
+	return false
 }
 
 // setConnectServiceEntry reports service as running through entry, when the

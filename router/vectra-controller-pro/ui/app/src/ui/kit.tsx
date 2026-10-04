@@ -9,8 +9,8 @@ export type Tone = 'ok' | 'warn' | 'fail' | 'info' | 'warm' | 'mute';
 // ── buttons ─────────────────────────────────────────────────────────────────
 
 type BtnProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'icon'> & {
-  /** p = primary, g = ghost */
-  kind?: 'p' | 'g';
+  /** p = primary, o = outline (secondary), g = ghost */
+  kind?: 'p' | 'o' | 'g';
   small?: boolean;
   icon?: IconName;
   busy?: boolean;
@@ -67,27 +67,6 @@ export const NodeDot = ({ alive, label }: { alive: boolean | null; label: string
   </span>
 );
 
-export const Bars = ({ tone }: { tone: 'good' | 'ok' | 'slow' | null }) => {
-  const lit = tone === 'good' ? 3 : tone === 'ok' ? 2 : tone ? 1 : 0;
-  return (
-    <span class="bars" aria-hidden="true">
-      {[1, 2, 3].map((i) => (
-        <i key={i} class={i <= lit ? 'on' : undefined} />
-      ))}
-    </span>
-  );
-};
-
-export function Meter({ value, max, label, tone }: { value: number | null; max: number | null; label: string; tone?: Tone }) {
-  if (value === null || max === null || max <= 0) return null;
-  const pct = Math.max(0, Math.min(100, (value / max) * 100));
-  return (
-    <span class="meter" role="img" aria-label={label}>
-      <span class={'t-' + (tone ?? (pct >= 90 ? 'fail' : pct >= 75 ? 'warn' : 'ok'))} style={{ width: pct.toFixed(1) + '%' }} />
-    </span>
-  );
-}
-
 // ── layout ──────────────────────────────────────────────────────────────────
 
 export const Card = ({ title, aside, children, class: cls, id }: { title: ComponentChildren; aside?: ComponentChildren; children: ComponentChildren; class?: string; id: string }) => (
@@ -100,22 +79,6 @@ export const Card = ({ title, aside, children, class: cls, id }: { title: Compon
     </header>
     {children}
   </section>
-);
-
-export type Row = [label: ComponentChildren, value: ComponentChildren, extra?: ComponentChildren];
-
-export const KV = ({ rows }: { rows: Row[] }) => (
-  <dl class="kv">
-    {rows.map(([k, v, extra], i) => (
-      <div key={i}>
-        <dt>{k}</dt>
-        <dd>
-          {v}
-          {extra}
-        </dd>
-      </div>
-    ))}
-  </dl>
 );
 
 /** A callout. `action`: the one thing to do about it, at its end (it wraps under the text when narrow). */
@@ -152,7 +115,7 @@ export const ErrorBox = ({ t, err, onRetry, big, note }: { t: T; err: ErrInfo; o
         {t(('err.' + err.kind + '.hint') as Key)}
         {note ? ' ' + note : ''}
       </p>
-      <code>{err.raw}</code>
+      <span class="raw">{err.raw}</span>
     </div>
     {onRetry ? (
       <Button icon="refresh" onClick={onRetry}>

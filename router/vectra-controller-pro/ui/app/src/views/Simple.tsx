@@ -18,6 +18,7 @@ import { Icon, type IconName } from '../ui/icons';
 import { Badge, Button, Note, Skeleton, Spinner } from '../ui/kit';
 import { MySites } from './MySites';
 import { PasswordDialog, PasswordNote } from './Password';
+import { PowerActs } from './PowerActs';
 import { Services } from './Services';
 import { SupportAccess } from './SupportAccess';
 import { face, groupServers } from '../lib/servers';
@@ -65,16 +66,16 @@ function NoLink({ err }: { err: ErrInfo }) {
           {NO_LINK_LINES[err.kind].map((k) => (
             <p key={k}>{t(k)}</p>
           ))}
-          <div class="row sv-acts">
-            <Button kind="p" icon="refresh" onClick={refresh}>
-              {t('retry')}
-            </Button>
-          </div>
-          <details class="sv-raw">
-            <summary>{t('details')}</summary>
-            <code>{err.raw}</code>
-          </details>
         </div>
+        <div class="row sv-acts">
+          <Button kind="p" icon="refresh" onClick={refresh}>
+            {t('retry')}
+          </Button>
+        </div>
+        <details class="more sv-raw">
+          <summary>{t('details')}</summary>
+          <code>{err.raw}</code>
+        </details>
       </section>
     </div>
   );
@@ -89,7 +90,8 @@ interface Acts {
   power(on: boolean): void;
 }
 
-function StatusCard({ v, checkedAt, acts }: { v: SimpleVerdict; checkedAt: number | null; acts: Acts }) {
+/** `restart`: the VPN can be restarted here; `off`: Vectra can be turned off — both in one row under the verdict. */
+function StatusCard({ v, checkedAt, acts, restart, off }: { v: SimpleVerdict; checkedAt: number | null; acts: Acts; restart: boolean; off: boolean }) {
   const { t, f, pending, store } = useApp();
   const [checking, setChecking] = useState(false);
   // Only a click shows as busy: the 10 s poll must not make the button flicker.
@@ -97,12 +99,9 @@ function StatusCard({ v, checkedAt, acts }: { v: SimpleVerdict; checkedAt: numbe
     setChecking(true);
     Promise.all([store.fetch('status'), store.fetch('diagnostics')]).then(() => setChecking(false));
   };
+  // A restart the verdict asks for is the primary of the power row, not a button of its own.
   const act =
-    v.act === 'restart' ? (
-      <Button kind="p" icon="refresh" busy={pending === 'restart'} disabled={!!pending} onClick={acts.restart}>
-        {t('s.act.restart')}
-      </Button>
-    ) : v.act === 'location' ? (
+    v.act === 'location' ? (
       <Button kind="p" icon="globe" disabled={!!pending} onClick={acts.locations}>
         {t('s.act.location')}
       </Button>
@@ -138,15 +137,17 @@ function StatusCard({ v, checkedAt, acts }: { v: SimpleVerdict; checkedAt: numbe
             <p key={k}>{t(k)}</p>
           ))}
         </div>
-        <div class="row sv-acts">
-          {act}
-          <span class="row sv-chk">
-            {checkedAt !== null ? <span class="hint">{t('s.checked', { when: f.agoSec((Date.now() - checkedAt) / 1000) })}</span> : null}
-            <Button kind="g" small icon="refresh" busy={checking} onClick={check}>
-              {t('s.checkNow')}
-            </Button>
-          </span>
-        </div>
+      </div>
+      {/* The card's own row: beside the verdict on a wide screen, across the whole card on a phone. */}
+      <div class="row sv-acts">
+        {act}
+        <PowerActs restart={restart || v.act === 'restart' ? acts.restart : undefined} primary={v.act === 'restart'} off={off ? () => acts.power(false) : undefined} />
+        <span class="row sv-chk">
+          {checkedAt !== null ? <span class="hint">{t('s.checked', { when: f.agoSec((Date.now() - checkedAt) / 1000) })}</span> : null}
+          <Button kind="g" small icon="refresh" busy={checking} onClick={check}>
+            {t('s.checkNow')}
+          </Button>
+        </span>
       </div>
     </section>
   );
@@ -553,7 +554,13 @@ export function Simple() {
       ) : dg.error && dg.data ? (
         <Note tone="warn">{t('s.dgStale')}</Note>
       ) : null}
-      <StatusCard v={v} checkedAt={checkedAt} acts={acts} />
+      <StatusCard
+        v={v}
+        checkedAt={checkedAt}
+        acts={acts}
+        restart={up && s.engine.state !== 'idle'}
+        off={s.power.enabled === true || s.power.running === true}
+      />
       {/* No password: anyone on the LAN can open the settings. LuCI's change sets one. */}
       {setPassword && setup.data?.passwordSet === false ? <PasswordNote onSet={() => setPwDialog('set')} /> : null}
       {/* A router without settings has no location to show and nothing to try:
@@ -567,7 +574,8 @@ export function Simple() {
         </div>
       ) : null}
       {up ? (
-        <HelpCard s={s} acts={acts} manual={manual} bot={bot} restartShown={v.act === 'restart'} />
+        // The restart is in the power row under the verdict: no second one among the steps.
+        <HelpCard s={s} acts={acts} manual={manual} bot={bot} restartShown={s.engine.state !== 'idle'} />
       ) : (
         <>
           {manual ? <ManualCopy text={manual} /> : null}
@@ -608,14 +616,6 @@ export function Simple() {
         {setPassword && setup.data?.passwordSet !== false ? (
           <Button kind="g" small icon="lock" onClick={() => setPwDialog('change')}>
             {t('pw.change')}
-          </Button>
-        ) : null}
-        {/* Quiet on purpose: the way back to PassWall, or to no VPN at all — also
-            while Vectra still runs switched off: a change in flight answers busy,
-            one that stopped half way is tried again. */}
-        {s.power.enabled === true || s.power.running === true ? (
-          <Button kind="g" small icon="power" busy={pending === 'power:off'} disabled={!!pending} onClick={() => acts.power(false)}>
-            {t('s.pw.offBtn')}
           </Button>
         ) : null}
         {/* The router answers its names since the version that has the switch. */}

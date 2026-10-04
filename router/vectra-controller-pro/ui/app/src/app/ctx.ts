@@ -5,9 +5,9 @@ import type { ActionMethod, ReadData, ReadMethod, SetPasswordFn, Status } from '
 import type { Key, Lang, T } from '../i18n';
 import type { Fmt } from '../lib/format';
 
-export type TabId = 'overview' | 'balancing' | 'nodes' | 'locations' | 'sites' | 'journal';
+export type TabId = 'overview' | 'locations' | 'balancing' | 'sites' | 'settings' | 'journal';
 // The servers come second: switching one is what a person does most, after a look at the overview.
-export const TABS: readonly TabId[] = ['overview', 'locations', 'balancing', 'nodes', 'sites', 'journal'];
+export const TABS: readonly TabId[] = ['overview', 'locations', 'balancing', 'sites', 'settings', 'journal'];
 
 /** simple: one screen for the router's owner. pro: the tabs, for whoever runs it. */
 export type Mode = 'simple' | 'pro';

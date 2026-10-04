@@ -56,6 +56,13 @@ function degraded(w: ReadData): void {
   // A real router omits checks whose inputs it cannot read.
   w.diagnostics.checks = w.diagnostics.checks.filter((c) => c.id !== 'no_leak' && c.id !== 'balancer_fallback');
   w.logs.lines.push(
+    // OpenWrt's own chatter under alarming priorities: the journal files it as INFO.
+    { time: at(300), level: 'error', source: 'crond', message: 'crond (busybox 1.36.1) started, log level 5' },
+    { time: at(240), level: 'warn', source: 'dnsmasq', message: 'no servers found in /tmp/resolv.conf.d/resolv.conf.auto, will retry' },
+    { time: at(200), level: 'error', source: 'luci', message: 'accepted login on / for root from 192.168.1.137' },
+    { time: at(120), level: 'info', source: 'vctl', message: 'time=2026-09-27T11:56:00Z level=WARN msg="subscription fetch failed" err="context deadline exceeded"' },
+    { time: at(90), level: 'info', source: 'vctl', message: 'time=2026-09-27T11:56:30Z level=WARN msg="subscription fetch failed" err="context deadline exceeded"' },
+    { time: at(60), level: 'info', source: 'vctl', message: 'time=2026-09-27T11:57:00Z level=WARN msg="subscription fetch failed" err="context deadline exceeded"' },
     { time: at(44), level: 'error', source: 'xray', message: 'Failed to start: main: failed to load config files > infra/conf: failed to build outbound handler' },
     { time: at(42), level: 'error', source: 'vctl', message: 'xray exited: exit status 23' },
     { time: at(41), level: 'warn', source: 'vctl', message: 'supervisor: backing off 30s before restart (attempt 7)' },

@@ -19,14 +19,22 @@
     "connect": {
       "services": [
         {
+          "auto": true,
+          "entryId": null,
+          "id": "ai"
+        },
+        {
+          "auto": true,
           "entryId": null,
           "id": "telegram"
         },
         {
+          "auto": true,
           "entryId": null,
           "id": "tiktok"
         },
         {
+          "auto": true,
           "entryId": null,
           "id": "youtube"
         }

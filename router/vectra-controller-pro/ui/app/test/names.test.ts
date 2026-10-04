@@ -42,9 +42,9 @@ describe('node names from the real subscription', () => {
     'whitelist-lv3-7': ['wl', 'Белый список, уровень 3', null],
     'whitelist-lv3-8': ['wl', 'Белый список, уровень 3', null],
     'bridge-by-tcp': ['bridge', 'Мост → Беларусь', '🇧🇾'],
-    'hy2-de5': ['hy2', 'Hysteria2 → Германия', '🇩🇪'],
-    'hy2-fin5': ['hy2', 'Hysteria2 → Финляндия', '🇫🇮'],
-    'hy2-nl5': ['hy2', 'Hysteria2 → Нидерланды', '🇳🇱'],
+    'hy2-de5': ['hy2', 'Резерв → Германия', '🇩🇪'],
+    'hy2-fin5': ['hy2', 'Резерв → Финляндия', '🇫🇮'],
+    'hy2-nl5': ['hy2', 'Резерв → Нидерланды', '🇳🇱'],
     // The loopback stages the provider chains its balancers with: no convention, shown as they are.
     'stage-wl': ['other', 'stage-wl', null],
     'stage-main': ['other', 'stage-main', null],
@@ -70,14 +70,14 @@ describe('node names from the real subscription', () => {
 
   it('keeps the part before the arrow apart, so a list of one kind can say just the country', () => {
     expect(nodeName(ru, 'bridge-pl5')).toMatchObject({ pre: 'Мост', short: 'Польша' });
-    expect(nodeName(ru, 'hy2-de5')).toMatchObject({ pre: 'Hysteria2', short: 'Германия' });
+    expect(nodeName(ru, 'hy2-de5')).toMatchObject({ pre: 'Резерв', short: 'Германия' });
     expect(nodeName(ru, 'whitelist-lv3-2')).toMatchObject({ pre: null, short: 'Уровень 3' });
   });
 
   it('speaks the reader’s language; the brand and the tag stay as they are', () => {
     expect(nodeName(en, 'bridge-pl5').name).toBe('Bridge → Poland');
     expect(nodeName(en, 'whitelist-lv3-2').name).toBe('Whitelist, level 3');
-    expect(nodeName(en, 'hy2-nl5').name).toBe('Hysteria2 → Netherlands');
+    expect(nodeName(en, 'hy2-nl5').name).toBe('Backup → Netherlands');
     expect(nodeName(zh, 'bridge-pl5').name).toBe('桥接 → 波兰');
     expect(nodeName(zh, 'whitelist-lv2').name).toBe('白名单 · 第 2 级');
     expect(nodeName(en, 'stage-main').name).toBe('stage-main');
@@ -105,7 +105,7 @@ describe('what is not known stays as it is', () => {
 
   it('keeps the kind of a tag without a country and adds no country of its own', () => {
     expect(nodeName(ru, 'bridge-xyz')).toMatchObject({ kind: 'bridge', name: 'Мост', flag: null, known: true });
-    expect(nodeName(ru, 'hysteria2-edge')).toMatchObject({ kind: 'hy2', name: 'Hysteria2', flag: null });
+    expect(nodeName(ru, 'hysteria2-edge')).toMatchObject({ kind: 'hy2', name: 'Резерв', flag: null });
   });
 
   it('takes the router’s hint over its own reading, and names a plain country tag like the router flags it', () => {
@@ -143,7 +143,7 @@ describe('route names from what the rules carry', () => {
     expect(name(ru, 'BL-RU')).toEqual({ name: 'Российские сайты и YouTube', known: true });
     expect(name(ru, 'BL-TK')).toEqual({ name: 'Telegram и TikTok', known: true });
     // Reached only as another's fallback: named by its nodes.
-    expect(name(ru, 'BL-MAIN-BACKUP')).toEqual({ name: 'Резерв Hysteria2', known: true });
+    expect(name(ru, 'BL-MAIN-BACKUP')).toEqual({ name: 'Резервный канал', known: true });
     expect(name(ru, 'BL-WL-LV1')).toEqual({ name: 'Белые списки, уровень 1', known: true }); // no node: read from the selector
     expect(name(ru, 'BL-WL-LV3')).toEqual({ name: 'Белые списки, уровень 3', known: true });
   });
@@ -153,7 +153,7 @@ describe('route names from what the rules carry', () => {
       'Main traffic',
       'Russian sites and YouTube',
       'Telegram and TikTok',
-      'Hysteria2 backup',
+      'Backup channel',
     ]);
     expect(['BL-MAIN', 'BL-RU', 'BL-TK', 'BL-WL-LV2'].map((t) => name(zh, t).name)).toEqual(['主流量', '俄罗斯网站和YouTube', 'Telegram和TikTok', '白名单 · 第 2 级']);
   });

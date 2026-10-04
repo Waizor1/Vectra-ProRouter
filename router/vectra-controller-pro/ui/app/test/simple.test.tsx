@@ -281,7 +281,9 @@ describe('help', () => {
   it('restarts the VPN after saying what happens', async () => {
     const app = start({});
     await settle();
-    app.button('Перезапустить')!.click();
+    // In the power row under the verdict, not again among the help's steps.
+    expect(app.$('.sv-help')?.textContent).not.toContain('Перезапустите VPN');
+    app.button('Перезапустить VPN')!.click();
     await settle();
     const dialog = app.$('[role="alertdialog"]')!;
     expect(dialog.querySelector('h2')?.textContent).toBe('Перезапустить VPN?');
@@ -512,12 +514,18 @@ describe('Vectra on and off', () => {
     expect(app.button('Выключить Vectra')).toBeDefined();
   });
 
-  it('turns Vectra off from the footer, and says the internet goes back to PassWall2', async () => {
+  it('turns Vectra off from the power row under the verdict, and says the internet goes back to PassWall2', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     const app = start({});
     await vi.advanceTimersByTimeAsync(10);
     const off = app.button('Выключить Vectra')!;
-    expect(off.closest('.sv-foot')).not.toBeNull();
+    // One row with the restart, under the verdict: two outlined buttons, the way off the grey one.
+    const row = off.closest('.sv-st .acts')!;
+    expect(Array.from(row.querySelectorAll('.btn')).map((b) => [b.textContent, b.className])).toEqual([
+      ['Перезапустить VPN', 'btn bo'],
+      ['Выключить Vectra', 'btn bo b-off'],
+    ]);
+    expect(app.$('.sv-foot')?.textContent).not.toContain('Выключить Vectra');
     off.click();
     await vi.advanceTimersByTimeAsync(100);
     const dialog = app.$('[role="alertdialog"]')!;

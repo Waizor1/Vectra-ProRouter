@@ -25,6 +25,9 @@ type Snapshot struct {
 
 const MaxObservationAge = 2 * time.Minute
 
+// MaxServiceEntries bounds the locations listed for one service.
+const MaxServiceEntries = 200
+
 func Build(read func(string) ([]byte, error), now time.Time, snapshot Snapshot) *controlplane.RouterConnectTelemetry {
 	// Clone so callers cannot mutate a report while it is being serialized.
 	raw, _ := json.Marshal(snapshot.Telemetry)
@@ -62,6 +65,13 @@ func Build(read func(string) ([]byte, error), now time.Time, snapshot Snapshot) 
 	}
 	if out.Services != nil && len(*out.Services) > 100 {
 		out.Services = nil
+	}
+	if out.Services != nil {
+		for i := range *out.Services {
+			if s := &(*out.Services)[i]; s.Entries != nil && len(*s.Entries) > MaxServiceEntries {
+				s.Entries = nil // not known rather than cut short
+			}
+		}
 	}
 	if out.Wifi != nil {
 		for i := range *out.Wifi {

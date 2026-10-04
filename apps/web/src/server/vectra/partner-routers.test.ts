@@ -15,7 +15,11 @@ import {
   routerInventorySnapshots,
   partnerWebhooks,
 } from "@vectra/db";
-import { routerConnectTelemetrySchema } from "@vectra/contracts";
+import { readFileSync } from "node:fs";
+import {
+  routerCheckInRequestSchema,
+  routerConnectTelemetrySchema,
+} from "@vectra/contracts";
 import { createFakeDb } from "./testing/fake-db";
 import { keyedDigest } from "./secrets";
 import { buildPartnerRequestHeaders } from "./partner-request-signature";
@@ -438,6 +442,160 @@ describe("signed actions", () => {
         await queuePartnerActionWithDb(
           fake.db as never,
           action({ params: { command: "bad" } }),
+          "key",
+          NOW,
+        )
+      ).status,
+    ).toBe(400);
+    expect(fake.inserts(jobs)).toEqual([]);
+  });
+});
+
+// Services telemetry v2: the per-service server picker. The router says
+// where each service runs, whether the owner chose it, which cached
+// locations carry it, and whether the owner's choice no longer runs.
+// The check-in vctl puts on the wire (see tests/contract/vctl-check-in).
+const checkInFixture: unknown = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../../../router/vectra-controller-pro/testdata/contract/check-in-request.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+);
+describe("services telemetry v2", () => {
+  const A = "a".repeat(64);
+  const B = "b".repeat(64);
+  const services = [
+    { id: "ai", entryId: B, auto: true, entries: [A, B] },
+    { id: "telegram", entryId: null, auto: false, entries: [A, B] },
+    { id: "tiktok", entryId: null, auto: false, entries: [B], stale: true },
+    { id: "youtube", entryId: A, auto: false, entries: [] },
+  ];
+  function servicesInventory(capabilities: string[]) {
+    return inventory({
+      connect: routerConnectTelemetrySchema.parse({
+        ownerRef: "acct-42",
+        capabilities,
+        entries: [
+          { id: A, name: "🇩🇪 Германия", country: null },
+          { id: B, name: "🇷🇺🇰🇿 Казахстан", country: null },
+        ],
+        services,
+      }),
+    });
+  }
+  function servicesDb(capabilities: string[]) {
+    return createFakeDb({
+      selects: [
+        [routerInventorySnapshots, [[servicesInventory(capabilities)]]],
+      ],
+      updateReturns: [[routers, [[router()]]]],
+    });
+  }
+  it("keeps auto, entries and stale through the contract and the snapshot", () => {
+    const snapshot = projectPartnerRouter(
+      router(),
+      servicesInventory(["set_service", "set_service_auto"]),
+      NOW,
+    );
+    expect(snapshot.services).toEqual(services);
+    expect(snapshot.capabilities).toEqual(["set_service", "set_service_auto"]);
+  });
+  it("still accepts a router that reports only id and entryId", () => {
+    const parsed = routerConnectTelemetrySchema.parse({
+      services: [{ id: "youtube", entryId: null }],
+    });
+    expect(parsed.services).toEqual([{ id: "youtube", entryId: null }]);
+  });
+  it("bounds the carriers and their ids", () => {
+    for (const entries of [
+      Array.from({ length: 201 }, (_, i) => `e${i}`),
+      ["../bad"],
+      ["a".repeat(65)],
+      [""],
+    ])
+      expect(
+        routerConnectTelemetrySchema.safeParse({
+          services: [{ id: "youtube", entryId: null, entries }],
+        }).success,
+      ).toBe(false);
+    expect(
+      routerConnectTelemetrySchema.safeParse({
+        services: [
+          {
+            id: "youtube",
+            entryId: null,
+            entries: Array.from({ length: 200 }, (_, i) => `e${i}`),
+          },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+  it("drops a capability the panel does not know instead of the check-in", () => {
+    expect(
+      routerConnectTelemetrySchema.parse({
+        capabilities: ["set_service", "some_future_flag", "set_service_auto"],
+      }).capabilities,
+    ).toEqual(["set_service", "set_service_auto"]);
+    const checkIn = structuredClone(checkInFixture) as {
+      inventory: { connect: Record<string, unknown> };
+    };
+    checkIn.inventory.connect.capabilities = ["set_rules", "some_future_flag"];
+    const parsed = routerCheckInRequestSchema.safeParse(checkIn);
+    expect(parsed.success && parsed.data.inventory.connect?.capabilities).toEqual(
+      ["set_rules"],
+    );
+    // Still bounded: a flood is refused.
+    expect(
+      routerConnectTelemetrySchema.safeParse({
+        capabilities: Array.from({ length: 65 }, (_, i) => `f${i}`),
+      }).success,
+    ).toBe(false);
+  });
+  it("queues set_service :auto for a router that understands it", async () => {
+    const fake = servicesDb(["set_service", "set_service_auto"]);
+    const result = await queuePartnerActionWithDb(
+      fake.db as never,
+      action({
+        action: "set_service",
+        params: { service: "ai", entryId: ":auto" },
+      }),
+      "key",
+      NOW,
+    );
+    expect(result.status).toBe(202);
+    expect(fake.inserts(jobs)[0]).toMatchObject({
+      type: "connect_router_action",
+      payload: {
+        action: "set_service",
+        params: { service: "ai", entryId: ":auto" },
+      },
+    });
+  });
+  it("refuses :auto to a router that does not advertise set_service_auto", async () => {
+    const fake = servicesDb(["set_service"]);
+    expect(
+      await queuePartnerActionWithDb(
+        fake.db as never,
+        action({
+          action: "set_service",
+          params: { service: "ai", entryId: ":auto" },
+        }),
+        "key",
+        NOW,
+      ),
+    ).toMatchObject({ status: 409, body: { error: "not_supported" } });
+    expect(fake.inserts(jobs)).toEqual([]);
+  });
+  it("never takes :auto for a location", async () => {
+    const fake = servicesDb(["select_entry", "set_service_auto"]);
+    expect(
+      (
+        await queuePartnerActionWithDb(
+          fake.db as never,
+          action({ action: "select_entry", params: { entryId: ":auto" } }),
           "key",
           NOW,
         )

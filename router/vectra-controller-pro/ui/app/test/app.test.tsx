@@ -11,7 +11,7 @@ import { mount } from '../src/mount';
 
 const BAD_TEXT = /undefined|NaN|\bnull\b|\[object Object\]/;
 // The pin for bridge-de5 in BL-MAIN, as a screen reader hears it.
-const PIN_DE = 'Pin Bridge → Germany (bridge-de5) in “Main traffic”';
+const PIN_DE = 'Pin Bridge → Germany in “Main traffic”';
 
 let cleanup: (() => void)[] = [];
 let consoleErrors: unknown[] = [];
@@ -77,14 +77,28 @@ describe.each(SCENARIOS)('scenario %s', (scenario) => {
 });
 
 describe('what each scenario says', () => {
-  it('healthy: an honest verdict, the location, the header', async () => {
+  it('Pro has six tabs in the owner’s order, and no "Nodes" tab', async () => {
+    expect(TABS).toEqual(['overview', 'locations', 'balancing', 'sites', 'settings', 'journal']);
+    const app = start({ lang: 'ru' });
+    await settle();
+    expect(app.all('[role="tab"]').map((b) => b.textContent)).toEqual(['Обзор', 'Серверы и сервисы', 'Маршруты', 'Мои сайты', 'Настройки', 'Журнал']);
+    expect(app.$('#vx-tab-nodes')).toBeNull();
+  });
+
+  it('healthy: an honest verdict, the location, the header without the raw version', async () => {
     const app = start({ lang: 'ru' });
     await settle();
     expect(app.$('.verdict')?.textContent).toBe('Работает, есть замечания');
-    expect(app.text()).toContain('Авто Самый стабильный');
+    // The server reads as the simple view reads it: "Авто", what it does and who chose it under it.
+    expect(app.$('.hero .loc b')?.textContent).toBe('Авто');
+    expect(app.$('.hero .loc .hint')?.textContent).toBe('самый стабильный · по умолчанию');
     expect(app.text()).toContain('vectra-ax3000t');
-    expect(app.text()).toContain('vctl 0.4.0-r1');
+    expect(app.$('.hdr')?.textContent).not.toContain('vctl');
     expect(app.$('.pill')?.textContent).toBe('Замечания');
+    // The version moved to Settings, under "About the router".
+    app.$('#vx-tab-settings')!.click();
+    await settle();
+    expect(app.$('.about')?.textContent).toContain('Vectra 0.4.0-r1');
   });
 
   it('degraded: not working, with the first failure as the reason — and no route claims to carry anything', async () => {
@@ -92,120 +106,100 @@ describe('what each scenario says', () => {
     await settle();
     expect(app.$('.verdict')?.textContent).toBe('Not working');
     expect(app.text()).toContain('Xray down: Waiting to restart');
-    const guard = app.all('.kv > div').find((r) => r.textContent?.includes('Blocked attempts at the xray API'));
-    expect(guard?.textContent).toContain('3');
+    // The engineer's numbers are in the support report, not on the screen.
     expect(app.text()).not.toContain('vctl_local_guard');
+    expect(app.text()).not.toContain('Blocked attempts at the xray API');
     app.$('#vx-tab-balancing')!.click();
     await settle();
     expect(app.text()).toContain('Cannot tell which nodes are chosen now: xray does not answer');
     // xray is down: the pin the router will re-apply carries nothing yet.
     expect(app.$('.note.t-fail')?.textContent).toContain('Xray down: Waiting to restart');
     expect(app.all('.rt-h .bd').map((b) => b.textContent)).toEqual(['no data', 'no data', 'no data']);
-    expect(app.all('.stop-t .bd').map((b) => b.textContent)).not.toContain('Traffic is here');
     expect(app.text()).toContain('port:25'); // a rule on something other than sites still shows
   });
 
-  it('routes: named by what they carry, each with its chain, tags kept beside the names', async () => {
+  it('routes: each route by what it carries, its nodes by name, where it goes next — no tags, no strategy', async () => {
     const app = start({ lang: 'en' });
     await settle();
     app.$('#vx-tab-balancing')!.click();
     await settle();
+    const panel = app.$('#vx-panel')!;
+    expect(panel.querySelectorAll('.tg, code').length).toBe(0);
+    expect(panel.textContent).not.toMatch(/BL-MAIN|bridge-de5|least loaded|Unused|Samples/);
     const cards = app.all('.rt');
+    // Only the routes traffic can take; none for a balancer nothing leads to.
     expect(cards.map((c) => c.querySelector('h3')?.textContent)).toEqual(['Main traffic', 'Russian sites and YouTube', 'Telegram and TikTok']);
-    expect(cards.map((c) => c.querySelector('.rt-h .tg')?.textContent)).toEqual(['BL-MAIN', 'BL-RU', 'BL-TK']);
     expect(cards.map((c) => c.querySelector('.rt-h .bd')?.textContent)).toEqual(['Working', 'Working', 'Working']);
-    // The main chain: the bridges carry it, then the Hysteria2 backup, then the whitelist levels as one stop.
-    const stops = (c: HTMLElement) => Array.from(c.querySelectorAll<HTMLElement>('.stop')).map((s) => [s.className, s.querySelector('.stop-t b')?.textContent]);
-    expect(stops(cards[0])).toEqual([
-      ['stop here', '8 bridges'],
-      ['stop standby', 'Hysteria2 backup'],
-      ['stop standby', 'Whitelists'],
-    ]);
-    expect(cards[0].textContent).toContain('Everything the other routes do not take');
-    expect(cards[0].textContent).toContain('Down: 🇫🇷France, 🇦🇪United Arab Emirates');
-    expect(cards[0].querySelectorAll('.lvls li').length).toBe(4); // levels 1, 2, 3 and the last backup node
-    // A routed chain: one bridge, then on as the main traffic.
-    expect(cards[1].querySelector('.stop-t')?.textContent).toContain('Bridge → 🇷🇺Russia');
-    expect(cards[1].querySelector('.stop-t .tg')?.textContent).toBe('bridge-ru-tcp');
-    // Its bridge carries it, so the main route waits behind it.
-    expect(stops(cards[1])).toEqual([
-      ['stop here', 'Bridge → 🇷🇺Russia'],
-      ['stop standby', 'Then as “Main traffic”'],
-    ]);
+    expect(cards[0].querySelector('.chips')?.textContent).toContain('Everything the other routes do not take');
+    // The main route's own nodes, read by country: a dot, the name, the delay, the pin.
+    const own = Array.from(cards[0].querySelectorAll(':scope > .mems .mem'));
+    expect(own.length).toBe(8);
+    const fr = own.find((r) => r.textContent?.includes('France'))!;
+    expect(fr.querySelector('.ndot.nd-dead')).not.toBeNull();
+    expect(fr.querySelector('.nn')?.textContent).toBe('🇫🇷France');
+    expect(fr.querySelector('button')?.textContent).toBe('Pin');
+    // Where it goes next, in words, the backups and their pins folded behind it.
+    expect(cards[0].querySelector('details > summary')?.textContent).toBe('If none works, next: Backup channel, Whitelists');
+    expect(cards[0].querySelector<HTMLDetailsElement>('details')!.open).toBe(false);
+    // A routed chain: one bridge, then on as the main traffic (nothing of its own to pin there).
+    expect(cards[1].querySelector('.mem .nn')?.textContent).toBe('🇷🇺Russia');
+    expect(cards[1].querySelector('p.hint')?.textContent).toBe('If none works, next: as “Main traffic”');
     expect(cards[1].querySelector('.chips')?.textContent).toContain('YouTube');
     expect(cards[2].querySelector('.chips')?.textContent).toMatch(/^TikTokTelegram/); // services named, raw domains counted
   });
 
-  it('reserve: the main route runs on its backup, and says which nodes carry it now', async () => {
+  it('reserve: the main route runs on its backup, which opens and says which nodes carry it now', async () => {
     const app = start({ scenario: 'reserve', lang: 'en' });
     await settle();
     app.$('#vx-tab-balancing')!.click();
     await settle();
     const main = app.all('.rt')[0];
     expect(main.querySelector('.rt-h .bd')?.textContent).toBe('On a backup');
-    const [bridges, backup] = Array.from(main.querySelectorAll<HTMLElement>('.stop'));
-    expect(bridges.className).toBe('stop skip');
-    expect(bridges.querySelector('.stop-t .bd')?.textContent).toBe('None working');
-    expect(backup.className).toBe('stop here');
-    expect(backup.querySelector('.then')?.textContent).toBe('If none works');
-    expect(backup.querySelector('.now')?.textContent).toBe('Now: 🇩🇪Germany, 🇳🇱Netherlands');
+    expect(main.querySelectorAll(':scope > .mems .mem .nd-dead').length).toBe(8);
+    const backups = main.querySelector<HTMLDetailsElement>('details')!;
+    expect(backups.open).toBe(true);
+    const hy2 = backups.querySelector('section')!;
+    expect(hy2.querySelector('h4')?.textContent).toBe('Backup channel');
+    expect(Array.from(hy2.querySelectorAll('.mem.on .nn')).map((n) => n.textContent)).toEqual(['🇩🇪Germany', '🇳🇱Netherlands']);
+    expect(hy2.querySelector('.mem.on .bd')?.textContent).toBe('in use');
   });
 
-  it('a pinned balancer shows the strategy’s pick as inactive, not as selected, and one click undoes the pin', async () => {
+  it('a pinned node says so, with "Unpin" beside it, and the strategy’s pick is not shown', async () => {
     const app = start({ lang: 'en' });
     await settle();
     app.$('#vx-tab-balancing')!.click();
     await settle();
     // BL-MAIN: the strategy picks bridge-de5 and bridge-nl5, the pin is bridge-nl5.
-    const stop = app.all('.rt')[0].querySelector<HTMLElement>('.stop')!;
-    expect(stop.querySelector('.note > span')?.textContent).toBe('Pinned by hand: Bridge → Netherlands. The automatic choice is off.');
-    expect(stop.textContent).not.toContain('least loaded'); // no strategy while the pin decides
-    expect(stop.textContent).not.toContain('Now:');
-    const row = (tag: string) => Array.from(stop.querySelectorAll('.mem')).find((r) => r.textContent?.includes(tag))!;
-    expect(row('bridge-de5').querySelector('.bd')?.className).toBe('bd t-mute');
-    expect(row('bridge-de5').textContent).toContain('would be chosen');
-    expect(row('bridge-nl5').textContent).toContain('pinned');
-    expect(stop.textContent).not.toContain('selected');
-    expect(Array.from(stop.querySelectorAll('.mem.on')).map((r) => r.querySelector('.tg')?.textContent)).toEqual(['bridge-nl5']);
-    // The unpinned backup still says which nodes its strategy selected.
-    const backup = app.all('.rt')[0].querySelectorAll<HTMLElement>('.stop')[1];
-    expect(backup.textContent).toContain('selected');
-    expect(backup.textContent).toContain('the 2 least loaded are used');
-    expect(backup.querySelector('.note')).toBeNull();
-    expect(stop.querySelector('.note-act button')?.textContent).toBe('Restore auto choice');
+    const main = app.all('.rt')[0];
+    const rows = Array.from(main.querySelectorAll<HTMLElement>(':scope > .mems .mem'));
+    expect(rows.filter((r) => r.classList.contains('on')).map((r) => r.querySelector('.nn')?.textContent)).toEqual(['🇳🇱Netherlands']);
+    const nl = rows.find((r) => r.classList.contains('on'))!;
+    expect(nl.querySelector('.bd.t-warm')?.textContent).toBe('pinned');
+    expect(nl.querySelector('button')?.textContent).toBe('Unpin');
+    expect(main.textContent).not.toContain('in use');
+    expect(main.textContent).not.toContain('would be chosen');
   });
 
-  it('nodes: grouped by kind, in plain names, each with its tag and the route that uses it', async () => {
-    const app = start({ lang: 'en' });
-    await settle();
-    app.$('#vx-tab-nodes')!.click();
-    await settle();
-    expect(app.all('.grp b').map((b) => b.textContent)).toEqual(['Bridges', 'Hysteria2', 'Whitelists']);
-    expect(app.all('.grp .cnt').map((b) => b.textContent)).toEqual(['10', '3', '9']);
-    const row = (tag: string) => app.all('.tbl tbody tr').find((r) => r.querySelector('.addr')?.textContent?.startsWith(tag + ' '))!;
-    expect(row('bridge-pl5').querySelector('.nn b')?.textContent).toBe('🇵🇱Poland');
-    expect(row('bridge-pl5').querySelector('.c-bal')?.textContent).toBe('Main traffic');
-    expect(row('hy2-de5').querySelector('.c-bal')?.textContent).toBe('Hysteria2 backup');
-    expect(row('whitelist-lv3-2').querySelector('.nn b')?.textContent).toBe('Level 3');
-    expect(row('bridge-ru-tcp').querySelector('.c-bal')?.textContent).toBe('Russian sites and YouTube');
-  });
-
-  it('servers: Auto first and recommended, then one card per country with its variants', async () => {
+  it('servers and services: Auto first, one card per country, no node counts or fetch time, and the services', async () => {
     const app = start({ lang: 'en' });
     await settle();
     app.$('#vx-tab-locations')!.click();
     await settle();
     expect(app.all('.srv h3').map((h) => h.textContent)).toEqual(['Recommended', 'Countries', 'Other']);
     const top = app.$('.locs.top .lc')!;
-    expect(top.textContent).toContain('Авто Самый стабильный');
-    expect(top.textContent).toContain('Chooses a node out of 22 by itself');
+    expect(top.querySelector('b')?.textContent).toBe('Авто');
+    expect(top.querySelector('.hint')?.textContent).toBe('самый стабильный');
     expect(top.getAttribute('aria-current')).toBe('true');
     const germany = app.all('.lc-g').find((g) => g.textContent?.includes('Германия'))!;
     // The provider names it in Russian; the flag says it in the reader's language.
-    expect(germany.querySelector('.lc .hint')?.textContent).toBe('Germany · 4 nodes');
+    expect(germany.querySelector('.lc .hint')?.textContent).toBe('Germany');
     expect(Array.from(germany.querySelectorAll('.lcv')).map((b) => b.textContent)).toEqual(['Hysteria2', 'прямой']);
     expect(app.all('.lc-g').length).toBe(18); // 26 entries: Auto, 18 countries (4 of them with variants), 2 whitelist levels
     expect(app.all('.srv')[2].textContent).toContain('Белые списки · Уровень 1');
+    const panel = app.$('#vx-panel')!.textContent ?? '';
+    expect(panel).not.toMatch(/\d+ nodes?\b|by itself|Subscription fetched|saved copy/);
+    // The services with a country of their own: the simple view's control, here too.
+    expect(app.$('.sv-svc')).not.toBeNull();
     (germany.querySelector('.lcv') as HTMLElement).click();
     await settle();
     const dialog = app.$('[role="alertdialog"]')!;
@@ -213,29 +207,27 @@ describe('what each scenario says', () => {
     expect(dialog.textContent).toContain('The VPN restarts');
   });
 
-  it('overview: the facts in plain words, dead nodes named, the technical details folded away', async () => {
+  it('overview: the verdict, the server, the checks with node names — no fact cards, no technical details', async () => {
     const app = start({ lang: 'en' });
     await settle();
-    expect(app.all('.fact').map((f) => [f.querySelector('.k')?.textContent, f.querySelector('b')?.textContent])).toEqual([
-      ['VPN', 'Running'],
-      ['Traffic', 'Goes through the VPN'],
-      ['Link to Vectra', 'Connected'],
-      ['Router', 'Enough memory'],
-    ]);
+    expect(app.$('.fact')).toBeNull();
+    expect(app.$('details.tech')).toBeNull();
+    expect(app.text()).not.toMatch(/Kill switch|GOMEMLIMIT|Go soft limit|Router ID|Overlay|vctl_/);
     const dead = app.all('.chk').find((c) => c.textContent?.includes('down:'))!;
-    expect(dead.textContent).toContain('2 nodes down: Bridge → 🇫🇷France bridge-fr5, Bridge → 🇦🇪United Arab Emirates bridge-ae5');
-    const tech = app.$<HTMLDetailsElement>('details.tech')!;
-    expect(tech.open).toBe(false);
-    expect(tech.textContent).toContain('Kill switch');
+    expect(dead.textContent).toContain('2 nodes down: Bridge → France, Bridge → United Arab Emirates');
+    expect(dead.textContent).not.toMatch(/bridge-fr5|bridge-ae5/);
+    expect(app.$('#vx-panel')!.querySelectorAll('.tg, code').length).toBe(0);
     expect(app.$('.hero .loc')?.textContent).toContain('Server');
+    expect(app.button('Copy report')).toBeDefined();
   });
 
-  it('overview: says where the traffic goes from the same evidence as the owner’s verdict', async () => {
-    const traffic = (root: ShadowRoot) => Array.from(root.querySelectorAll('.fact')).find((f) => f.querySelector('.k')?.textContent === 'Traffic')!;
+  it('overview: says where the traffic goes when the verdict leaves it open, from the same evidence', async () => {
+    const traffic = (root: ShadowRoot) => root.querySelector('.hero .fv b');
     const reserve = start({ scenario: 'reserve', lang: 'en' });
     await settle();
-    expect(traffic(reserve.root).className).toContain('t-warn');
-    expect(traffic(reserve.root).querySelector('b')?.textContent).toBe('Goes through backup nodes');
+    expect(reserve.$('.hero .fv .k')?.textContent).toBe('Traffic');
+    expect(traffic(reserve.root)?.className).toBe('tx-warn');
+    expect(traffic(reserve.root)?.textContent).toBe('Goes through backup nodes');
     // The main chain ends in freedom: the interception works, and still nothing goes through the VPN.
     const mock = createMock({ latencyMs: 0, live: false });
     const call: CallFn = async (m, p) => {
@@ -247,8 +239,10 @@ describe('what each scenario says', () => {
     };
     const direct = start({ lang: 'en', call });
     await settle();
-    expect(traffic(direct.root).className).toContain('t-fail');
-    expect(traffic(direct.root).querySelector('b')?.textContent).toBe('Bypasses the VPN');
+    expect(traffic(direct.root)?.className).toBe('tx-fail');
+    expect(traffic(direct.root)?.textContent).toBe('Bypasses the VPN');
+    // …and the check names the route, not its tag.
+    expect(direct.all('.chk').map((c) => c.textContent).join(' ')).toContain('no working node in Main traffic');
   });
 
   it('down: the LuCI rejection explained, with the raw message', async () => {
@@ -265,7 +259,6 @@ describe('what each scenario says', () => {
     expect(app.$('.verdict')?.textContent).toBe('尚无订阅');
     for (const [tab, words] of [
       ['balancing', '暂无路由'],
-      ['nodes', '暂无节点'],
       ['locations', '尚无订阅'],
     ]) {
       app.$('#vx-tab-' + tab)!.click();
@@ -296,7 +289,6 @@ describe('actions', () => {
     await vi.advanceTimersByTimeAsync(2100);
     expect(app.text()).toContain('Сервер сменён');
     expect(app.all('.lc.on').map((b) => b.textContent)).toEqual([expect.stringContaining('Германия')]);
-    expect(app.text()).toContain('выбран на роутере');
     // …and back to the default: the panel's choice.
     app.button('Вернуть по умолчанию')!.click();
     await vi.advanceTimersByTimeAsync(10);
@@ -366,15 +358,13 @@ describe('actions', () => {
     await vi.advanceTimersByTimeAsync(10);
     app.$('#vx-tab-balancing')!.click();
     await vi.advanceTimersByTimeAsync(10);
-    // The pins sit behind the stop's "Nodes" disclosure.
-    app.all('details').forEach((d) => ((d as HTMLDetailsElement).open = true));
     const pin = app.all('button').find((b) => b.getAttribute('aria-label') === PIN_DE)!;
     pin.focus();
     pin.click();
     await vi.advanceTimersByTimeAsync(100);
     app.$('[role="alertdialog"]')!.querySelectorAll('button')[1].click();
     await vi.advanceTimersByTimeAsync(200);
-    expect(pin.isConnected).toBe(false); // the button became a "Pinned" badge
+    expect(pin.isConnected).toBe(false); // the button became a "pinned" badge and "Unpin"
     expect(app.root.activeElement?.id).toBe('vx-panel');
   });
 
@@ -394,7 +384,7 @@ describe('actions', () => {
     expect(app.root.activeElement).toBe(ok);
     // Focus pulled behind the dialog comes back to it (a browser without `inert`).
     app.$('.vx-in')!.removeAttribute('inert');
-    app.$<HTMLElement>('#vx-tab-nodes')!.focus();
+    app.$<HTMLElement>('#vx-tab-journal')!.focus();
     expect(app.root.activeElement).toBe(cancel);
     dlg.focus();
     dlg.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
@@ -441,8 +431,10 @@ describe('actions', () => {
     expect(call.mock.calls.map((c) => c[0])).not.toContain('restart_xray');
   });
 
-  it('pins a node, then restores the automatic choice', async () => {
-    const app = start({ lang: 'en' });
+  it('pins a node, then unpins it: pin_balancer and unpin_balancer, nothing else', async () => {
+    const mock = createMock({ latencyMs: 0, live: false, applyMs: 10 });
+    const call = vi.fn(mock.call);
+    const app = start({ lang: 'en', call });
     await settle();
     app.$('#vx-tab-balancing')!.click();
     await settle();
@@ -454,19 +446,22 @@ describe('actions', () => {
     app.$('[role="alertdialog"]')!.querySelectorAll('button')[1].click();
     await settle();
     expect(app.text()).toContain('Node pinned');
+    expect(call.mock.calls.filter(([m]) => m === 'pin_balancer')).toEqual([['pin_balancer', { balancer: 'BL-MAIN', node: 'bridge-de5' }]]);
     const main = app.all('.rt').find((c) => c.querySelector('h3')?.textContent === 'Main traffic')!;
-    expect(main.querySelector('.mem.on .bd.t-warm')?.closest('.mem')?.textContent).toContain('bridge-de5');
-    expect(main.querySelector('.note-act > span')?.textContent).toContain('Bridge → Germany');
-    app.button('Restore auto choice')!.click();
+    expect(main.querySelector('.mem.on .bd.t-warm')?.closest('.mem')?.querySelector('.nn')?.textContent).toBe('🇩🇪Germany');
+    app.button('Unpin')!.click();
     await settle();
+    expect(call.mock.calls.filter(([m]) => m === 'unpin_balancer')).toEqual([['unpin_balancer', { balancer: 'BL-MAIN' }]]);
     expect(app.text()).toContain('Auto choice restored');
-    expect(app.button('Restore auto choice')).toBeUndefined();
+    expect(app.button('Unpin')).toBeUndefined();
   });
 
-  it('changes the probe interval after warning that xray restarts', async () => {
-    const app = start({ lang: 'en' });
+  it('changes the probe interval in Settings after warning that xray restarts', async () => {
+    const mock = createMock({ latencyMs: 0, live: false, applyMs: 10 });
+    const call = vi.fn(mock.call);
+    const app = start({ lang: 'en', call });
     await settle();
-    app.$('#vx-tab-balancing')!.click();
+    app.$('#vx-tab-settings')!.click();
     await settle();
     app.all('[role="radio"]').find((b) => b.textContent === '10 min')!.click();
     await settle();
@@ -476,7 +471,8 @@ describe('actions', () => {
     app.$('[role="alertdialog"]')!.querySelectorAll('button')[1].click();
     await settle();
     expect(app.text()).toContain('Interval updated');
-    expect(app.text()).toContain('Now: every 10 min · set on the router');
+    expect(call.mock.calls.filter(([m]) => m === 'set_probe_interval')).toEqual([['set_probe_interval', { seconds: 600 }]]);
+    expect(app.$('#vx-st-p')!.closest('section')!.querySelector('.fv b')?.textContent).toBe('every 10 min · set on the router');
   });
 
   it('shows an action failure with the router detail', async () => {
@@ -518,13 +514,14 @@ describe('polling', () => {
     await vi.advanceTimersByTimeAsync(50);
     expect(calls.sort()).toEqual(['diagnostics', 'status']);
 
-    app.$('#vx-tab-nodes')!.click();
-    // Opening the tab reads the routes' names once; the polls after it do not.
+    app.$('#vx-tab-settings')!.click();
+    // Opening Settings reads the provider's probe interval once; the polls after it do not.
     await vi.advanceTimersByTimeAsync(50);
     expect(calls).toContain('balancers');
+    expect(calls).toContain('setup');
     calls.length = 0;
     await vi.advanceTimersByTimeAsync(10_050);
-    expect(calls).toContain('nodes');
+    expect(calls).toContain('status');
     expect(calls).not.toContain('balancers');
     // @ts-expect-error restore the prototype getter
     delete document.hidden;
@@ -572,12 +569,12 @@ describe('preferences', () => {
       const again = start({ mode: null });
       await settle();
       expect(again.$('.verdict')).not.toBeNull();
-      expect(again.$('#vx-tab-nodes')).toBeNull();
+      expect(again.$('#vx-tab-settings')).toBeNull();
       again.all('[role="radio"]').find((b) => b.textContent === 'Pro')!.click();
       await settle();
-      again.$('#vx-tab-nodes')!.click();
+      again.$('#vx-tab-settings')!.click();
       await settle();
-      expect(again.$('.tbl')).not.toBeNull();
+      expect(again.$('.setg')).not.toBeNull();
     } finally {
       if (own) Object.defineProperty(window, 'localStorage', own);
       else delete (window as { localStorage?: Storage }).localStorage;
@@ -595,10 +592,8 @@ describe('Vectra on and off, in Pro', () => {
     expect(app.$('.pill')?.textContent).toBe('Off');
     expect(app.$('.hero .loc')).toBeNull();
     expect(app.button(/Restart the VPN/)).toBeUndefined();
-    expect(app.all('.fact').map((f) => [f.querySelector('.k')?.textContent, f.querySelector('b')?.textContent]).slice(0, 2)).toEqual([
-      ['VPN', 'Off'],
-      ['Traffic', 'Through PassWall2'],
-    ]);
+    // The verdict's own line says where the traffic goes: no second line saying it again.
+    expect(app.$('.hero .fv')).toBeNull();
     // The checks judge what Vectra runs: switched off, there is nothing to judge.
     const diag = app.$('#vx-c-diag')!.closest('section')!;
     expect(diag.textContent).toContain('The checks run while Vectra is on.');
@@ -622,7 +617,9 @@ describe('Vectra on and off, in Pro', () => {
     const app = start({ lang: 'en' });
     await vi.advanceTimersByTimeAsync(10);
     const off = app.button('Turn off Vectra')!;
-    expect(off.className).toContain('bg');
+    // A real button, outlined and grey, in one row with the restart.
+    expect(off.className).toContain('bo b-off');
+    expect(off.closest('.acts')?.querySelector('.btn')?.textContent).toBe('Restart the VPN');
     off.click();
     await vi.advanceTimersByTimeAsync(100);
     const dialog = app.$('[role="alertdialog"]')!;

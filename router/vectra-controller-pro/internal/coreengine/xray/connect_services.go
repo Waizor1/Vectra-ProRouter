@@ -123,8 +123,31 @@ func neverDirect(v *xrayview.View, rules []map[string]json.RawMessage, target st
 // default handler. Only a tunnel is a path: a main path that goes direct, is
 // blocked, or is missing refuses the choice instead of quietly unproxying the
 // service.
-func connectServicePath(raw []byte, v *xrayview.View, s Service) (servicePathOf, bool) {
+// ConnectServicesCarried is ValidateConnectServiceEntry for every service at
+// once, the entry parsed once: the services it would accept.
+func ConnectServicesCarried(raw []byte) map[string]bool {
+	out := map[string]bool{}
+	if len(raw) > 1<<20 {
+		return out
+	}
+	v, err := xrayview.Parse(raw)
+	if err != nil {
+		return out
+	}
 	rules := providerRules(raw)
+	for _, s := range Services {
+		if _, ok := connectServicePathIn(rules, v, s); ok {
+			out[s.ID] = true
+		}
+	}
+	return out
+}
+
+func connectServicePath(raw []byte, v *xrayview.View, s Service) (servicePathOf, bool) {
+	return connectServicePathIn(providerRules(raw), v, s)
+}
+
+func connectServicePathIn(rules []map[string]json.RawMessage, v *xrayview.View, s Service) (servicePathOf, bool) {
 	if p, ok := servicePath(rules, v, s); ok {
 		return p, true
 	}

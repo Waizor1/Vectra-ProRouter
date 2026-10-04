@@ -141,7 +141,7 @@ function resolve(t: T, f: Fmt, id: string, p: Record<string, unknown>, good: boo
 }
 
 // Checks whose title is already a word elsewhere in the UI.
-const TITLE: Record<string, string> = { xray_running: 'Xray', dataplane_loaded: 'dp.title', panel_link: 'pl.title', memory: 'x.memory', dead_nodes: 'tab.nodes' };
+const TITLE: Record<string, string> = { xray_running: 'Xray', dataplane_loaded: 'dp.title', panel_link: 'pl.title', memory: 'x.memory' };
 
 /** The localized sentence for one check, params interpolated. Unknown ids fall back to raw. */
 export function checkText(t: T, f: Fmt, c: Check): string {
