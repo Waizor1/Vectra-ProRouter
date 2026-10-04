@@ -96,5 +96,5 @@ done
 ssh "$SSH_ALIAS" "rm -rf '$REMOTE'"
 
 echo "==> published: $URL"
-echo "    wget -qO /tmp/vectra.sh $URL/install.sh && sh /tmp/vectra.sh"
+echo "    wget -O /tmp/vectra $URL/install.sh && sh /tmp/vectra   (this channel's own URL; customers use https://router.vectra-pro.net/install)"
 echo "    installer sha256 $got"

@@ -738,7 +738,7 @@ How a Wi-Fi change (`set_wifi`, `optimize_wifi`) is applied:
 ### Claim codes (ADR-0006)
 
 While a router is not linked, its controller keeps a random 128-bit nonce `n`
-and replaces it every 10 minutes (each stays valid 2 minutes past its
+and replaces it every 20 minutes (each stays valid 10 minutes past its
 replacement). Everything derives from it (`internal/claim`):
 
     code      = Crockford base32 of SHA-256("vectra-claim-code/v1:" || n)[:5]      (8 chars)
