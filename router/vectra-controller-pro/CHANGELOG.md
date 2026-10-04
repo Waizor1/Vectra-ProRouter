@@ -22,9 +22,16 @@ VPN comes back by itself.
 - **Direct mode went back to a dead tunnel, and could not leave it again.**
   After its cooldown the rescue retried the proxy with every node still
   blocked (116 s without internet), and the same cooldown held the way back
-  out. Now the way back waits for xray's observatory to hold a node of the
-  main balancer, its reserve or the borrow pool alive (publishTunnel), and
-  the way out never waits for the cooldown.
+  out. Now the way back waits for a node of the main balancer, its reserve
+  or the borrow pool to have answered xray's observatory AFTER the router
+  left (last_seen_time): its "alive" alone is the verdict of its last round,
+  which can predate the outage by the whole probe interval — the second
+  drill round went back to a blocked tunnel on exactly that. The way out
+  never waits for the cooldown, and the watchdog seeing the main balancer
+  down starts the rescue's rechecks without waiting for the next poll.
+- `vctl status` (ubus `vectra status`) shows the rescue: mode, failures,
+  failed returns, last transition and whether direct mode waits for the
+  tunnel; the rescue logs each failed probe through the tunnel.
 
 - **FakeDNS answers outlived the tunnel.** The sites that go through the
   tunnel (Instagram, YouTube…) resolve to FakeDNS addresses (198.18.x) that

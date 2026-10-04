@@ -30,6 +30,9 @@ type Balancer struct {
 type Health struct {
 	Alive   bool
 	DelayMs int64
+	// LastSeen is when the node last answered the observatory's probe; zero
+	// when the observatory does not say.
+	LastSeen time.Time
 }
 
 // Action re-points a balancer: Target "" releases the override.

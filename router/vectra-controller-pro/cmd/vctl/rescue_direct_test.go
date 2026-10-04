@@ -154,21 +154,44 @@ func TestTheRescueRechecksBetweenPollsOnlyWhenUnsure(t *testing.T) {
 }
 
 // The observatory's word: dead only when no node of the main balancer, its
-// reserve or the borrow pool is alive.
+// reserve or the borrow pool is alive; and once it says when its nodes last
+// answered, only a node that answered after the router left counts.
 func TestTheTunnelIsDeadOnlyWithEveryNodeDead(t *testing.T) {
 	d := &daemon{}
 	now := time.Now()
-	if d.tunnelDead(now) {
+	if d.tunnelDead(now, time.Time{}) {
 		t.Fatal("dead with no word at all")
 	}
 	health := map[string]failover.Health{"a": {}, "b": {}, "c": {Alive: true}}
-	d.publishTunnel(health, now, []string{"a"}, []string{"b"}, []string{"c"})
-	if d.tunnelDead(now) {
+	d.publishTunnel(health, now, false, []string{"a"}, []string{"b"}, []string{"c"})
+	if d.tunnelDead(now, time.Time{}) {
 		t.Fatal("a borrowable node lives, and yet dead")
 	}
-	d.publishTunnel(health, now, []string{"a"}, []string{"b"})
-	if !d.tunnelDead(now) {
+	d.publishTunnel(health, now, false, []string{"a"}, []string{"b"})
+	if !d.tunnelDead(now, time.Time{}) {
 		t.Fatal("every node the main traffic can take is dead, and yet alive")
+	}
+	d.publishTunnel(map[string]failover.Health{"a": {Alive: true}}, now, true, []string{"a"})
+	if !d.tunnelDead(now, time.Time{}) || !d.tunnelFailing(now) {
+		t.Fatal("the watchdog holds the main balancer down, and yet the tunnel lives")
+	}
+}
+
+// "Alive" from a round before the outage is not a way back: a node must have
+// answered after the router went direct (1111, 2026-10-04).
+func TestOnlyAnAnswerAfterLeavingIsAWayBack(t *testing.T) {
+	d := &daemon{}
+	now := time.Now()
+	left := now.Add(-2 * time.Minute)
+	stale := map[string]failover.Health{"a": {Alive: true, LastSeen: left.Add(-time.Minute)}}
+	d.publishTunnel(stale, now, false, []string{"a"})
+	if !d.tunnelDead(now, left) {
+		t.Fatal("an answer from before the outage took the router back")
+	}
+	fresh := map[string]failover.Health{"a": {Alive: true, LastSeen: now.Add(-10 * time.Second)}, "b": {LastSeen: now}}
+	d.publishTunnel(fresh, now, false, []string{"a", "b"})
+	if d.tunnelDead(now, left) {
+		t.Fatal("a node answered after the router left, and yet no way back")
 	}
 }
 
@@ -177,8 +200,8 @@ func TestTheTunnelIsDeadOnlyWithEveryNodeDead(t *testing.T) {
 func TestUnobservedNodesAreNoWord(t *testing.T) {
 	d := &daemon{}
 	now := time.Now()
-	d.publishTunnel(map[string]failover.Health{"other": {}}, now, []string{"a"}, []string{"b"})
-	if d.tunnelDead(now) {
+	d.publishTunnel(map[string]failover.Health{"other": {}}, now, false, []string{"a"}, []string{"b"})
+	if d.tunnelDead(now, time.Time{}) {
 		t.Fatal("nothing it names is watched, and yet the tunnel is dead")
 	}
 }

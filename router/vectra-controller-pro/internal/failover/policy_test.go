@@ -17,7 +17,7 @@ func failingDetector(t0 time.Time) *Detector {
 }
 
 var main3 = Balancer{Tag: "BL-MAIN", Members: []string{"bridge-de5", "bridge-nl5", "bridge-pl5"}, Principle: []string{"bridge-nl5"}}
-var alive = map[string]Health{"bridge-de5": {true, 80}, "bridge-nl5": {true, 40}, "bridge-pl5": {true, 60}}
+var alive = map[string]Health{"bridge-de5": {Alive: true, DelayMs: 80}, "bridge-nl5": {Alive: true, DelayMs: 40}, "bridge-pl5": {Alive: true, DelayMs: 60}}
 
 func TestAFailingPrincipleMovesToTheFastestLiveMember(t *testing.T) {
 	t0 := time.Unix(1790000000, 0)
@@ -47,7 +47,7 @@ func TestSomebodyElsesOverrideIsLeftAlone(t *testing.T) {
 
 func TestNoLiveCandidateMeansNoOverrideAndDownTime(t *testing.T) {
 	t0 := time.Unix(1790000000, 0)
-	dead := map[string]Health{"bridge-de5": {false, 0}, "bridge-nl5": {true, 40}, "bridge-pl5": {false, 0}}
+	dead := map[string]Health{"bridge-de5": {Alive: false, DelayMs: 0}, "bridge-nl5": {Alive: true, DelayMs: 40}, "bridge-pl5": {Alive: false, DelayMs: 0}}
 	p := NewPolicy()
 	if acts := p.Decide(t0.Add(2*time.Second), []Balancer{main3}, dead, failingDetector(t0)); len(acts) != 0 {
 		t.Fatalf("%+v", acts)
@@ -152,7 +152,7 @@ func TestAnOverrideWhoseNodeFailsTooWithNoOtherCandidateIsLetGo(t *testing.T) {
 		return conntrack.Entry{Proto: "tcp", State: "SYN_SENT", Src: netip.MustParseAddr("198.51.100.7"), Dst: pl.Addr(), SPort: sport, DPort: pl.Port()}
 	}
 	two := Balancer{Tag: "BL-MAIN", Members: []string{"bridge-nl5", "bridge-pl5"}, Principle: []string{"bridge-nl5"}}
-	health := map[string]Health{"bridge-nl5": {true, 40}, "bridge-pl5": {true, 60}}
+	health := map[string]Health{"bridge-nl5": {Alive: true, DelayMs: 40}, "bridge-pl5": {Alive: true, DelayMs: 60}}
 	p := NewPolicy()
 	det := failingDetector(t0)
 	acts := p.Decide(t0.Add(2*time.Second), []Balancer{two}, health, det)
@@ -268,7 +268,7 @@ func TestAnExhaustedOverrideGoesOntoTheFallbackWhenThereIsOne(t *testing.T) {
 		return conntrack.Entry{Proto: "tcp", State: "SYN_SENT", Src: netip.MustParseAddr("198.51.100.7"), Dst: pl.Addr(), SPort: sport, DPort: pl.Port()}
 	}
 	two := Balancer{Tag: "BL-MAIN", Members: []string{"bridge-nl5", "bridge-pl5"}, Principle: []string{"bridge-nl5"}, Fallback: "stage-bridge"}
-	health := map[string]Health{"bridge-nl5": {true, 40}, "bridge-pl5": {true, 60}}
+	health := map[string]Health{"bridge-nl5": {Alive: true, DelayMs: 40}, "bridge-pl5": {Alive: true, DelayMs: 60}}
 	p := NewPolicy()
 	det := failingDetector(t0)
 	acts := p.Decide(t0.Add(2*time.Second), []Balancer{two}, health, det)
@@ -291,8 +291,8 @@ func TestAnExhaustedOverrideGoesOntoTheFallbackWhenThereIsOne(t *testing.T) {
 // alive — and nothing moved, for 26 minutes, until it was moved by hand.
 var mainDE = Balancer{Tag: "BL-MAIN", Members: []string{"sticky-de5"}, Fallback: "stage-bridge",
 	Chain: []string{"bridge-de5", "whitelist-lv1"}, Borrow: []string{"sticky-by5", "direct-by-raw"}}
-var deDead = map[string]Health{"sticky-de5": {false, 0}, "bridge-de5": {false, 0}, "whitelist-lv1": {false, 0},
-	"sticky-by5": {true, 359}, "direct-by-raw": {true, 268}}
+var deDead = map[string]Health{"sticky-de5": {Alive: false, DelayMs: 0}, "bridge-de5": {Alive: false, DelayMs: 0}, "whitelist-lv1": {Alive: false, DelayMs: 0},
+	"sticky-by5": {Alive: true, DelayMs: 359}, "direct-by-raw": {Alive: true, DelayMs: 268}}
 
 func TestABalancerWhoseNodesAndReserveAreAllDeadBorrowsTheEntrysFastestLiveCountry(t *testing.T) {
 	t0 := time.Unix(1790000000, 0)
@@ -306,12 +306,12 @@ func TestABalancerWhoseNodesAndReserveAreAllDeadBorrowsTheEntrysFastestLiveCount
 // not probed yet, and borrowing then would move a healthy balancer.
 func TestNothingIsBorrowedWithoutTheObservatorysWord(t *testing.T) {
 	t0 := time.Unix(1790000000, 0)
-	h := map[string]Health{"sticky-by5": {true, 359}, "direct-by-raw": {true, 268}}
+	h := map[string]Health{"sticky-by5": {Alive: true, DelayMs: 359}, "direct-by-raw": {Alive: true, DelayMs: 268}}
 	if acts := NewPolicy().Decide(t0, []Balancer{mainDE}, h, NewDetector()); len(acts) != 0 {
 		t.Fatalf("%+v", acts)
 	}
 	// One node of the reserve alive: xray's own fallback carries it.
-	h = map[string]Health{"sticky-de5": {false, 0}, "bridge-de5": {true, 90}, "whitelist-lv1": {false, 0}, "sticky-by5": {true, 359}}
+	h = map[string]Health{"sticky-de5": {Alive: false, DelayMs: 0}, "bridge-de5": {Alive: true, DelayMs: 90}, "whitelist-lv1": {Alive: false, DelayMs: 0}, "sticky-by5": {Alive: true, DelayMs: 359}}
 	if acts := NewPolicy().Decide(t0, []Balancer{mainDE}, h, NewDetector()); len(acts) != 0 {
 		t.Fatalf("borrowed while the reserve lives: %+v", acts)
 	}
@@ -325,8 +325,8 @@ func TestABorrowIsReturnedWhenTheEntrysOwnNodeAnswersAgainNotSooner(t *testing.T
 	p.Applied(acts[0], t0)
 	b := mainDE
 	b.Override = "direct-by-raw"
-	back := map[string]Health{"sticky-de5": {true, 70}, "bridge-de5": {false, 0}, "whitelist-lv1": {false, 0},
-		"sticky-by5": {true, 359}, "direct-by-raw": {true, 268}}
+	back := map[string]Health{"sticky-de5": {Alive: true, DelayMs: 70}, "bridge-de5": {Alive: false, DelayMs: 0}, "whitelist-lv1": {Alive: false, DelayMs: 0},
+		"sticky-by5": {Alive: true, DelayMs: 359}, "direct-by-raw": {Alive: true, DelayMs: 268}}
 	if acts := p.Decide(t0.Add(10*time.Second), []Balancer{b}, back, det); len(acts) != 0 {
 		t.Fatalf("returned inside the hold: %+v", acts)
 	}
@@ -346,8 +346,8 @@ func TestABorrowedNodeThatDiesIsTradedForTheNextOne(t *testing.T) {
 	p.Applied(p.Decide(t0, []Balancer{mainDE}, deDead, det)[0], t0)
 	b := mainDE
 	b.Override = "direct-by-raw"
-	h := map[string]Health{"sticky-de5": {false, 0}, "bridge-de5": {false, 0}, "whitelist-lv1": {false, 0},
-		"sticky-by5": {true, 359}, "direct-by-raw": {false, 0}}
+	h := map[string]Health{"sticky-de5": {Alive: false, DelayMs: 0}, "bridge-de5": {Alive: false, DelayMs: 0}, "whitelist-lv1": {Alive: false, DelayMs: 0},
+		"sticky-by5": {Alive: true, DelayMs: 359}, "direct-by-raw": {Alive: false, DelayMs: 0}}
 	acts := p.Decide(t0.Add(4*time.Second), []Balancer{b}, h, det)
 	if len(acts) != 1 || acts[0].Target != "sticky-by5" || acts[0].Reason != "borrowed" {
 		t.Fatalf("%+v", acts)
@@ -381,8 +381,8 @@ func TestABorrowIsReturnedOnlyOnWordThatTheOwnPathAnswers(t *testing.T) {
 	p.Applied(p.Decide(t0, []Balancer{mainDE}, deDead, det)[0], t0)
 	b := mainDE
 	b.Override = "direct-by-raw"
-	noWord := map[string]Health{"sticky-de5": {false, 0}, "bridge-de5": {false, 0},
-		"sticky-by5": {true, 359}, "direct-by-raw": {true, 268}} // whitelist-lv1: no word
+	noWord := map[string]Health{"sticky-de5": {Alive: false, DelayMs: 0}, "bridge-de5": {Alive: false, DelayMs: 0},
+		"sticky-by5": {Alive: true, DelayMs: 359}, "direct-by-raw": {Alive: true, DelayMs: 268}} // whitelist-lv1: no word
 	if acts := p.Decide(t0.Add(ReleaseHold+time.Second), []Balancer{b}, noWord, det); len(acts) != 0 {
 		t.Fatalf("handed back without word of the own path: %+v", acts)
 	}

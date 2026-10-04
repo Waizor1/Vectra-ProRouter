@@ -896,11 +896,15 @@ func (d *daemon) rescueStep(ctx context.Context) rescue.Decision {
 		// is back (the crash-loop drill on 1111, 2026-10-04).
 		ProxyConclusive: cur.Mode == rescue.ModeProxy && d.xraySettled(time.Now()),
 		DirectReachable: directReachable,
-		TunnelDead:      d.tunnelDead(time.Now()),
+		TunnelDead:      d.tunnelDead(time.Now(), cur.LastTransitionAt),
 		Now:             time.Now(),
 	}, d.rescuePolicy)
 	if decision.NextState.Mode == rescue.ModeDirect && d.st.Rescue.Mode != string(rescue.ModeDirect) {
 		d.incident("RESCUE_DIRECT", reKeyNumber.ReplaceAllString(decision.Reason, "N"), "the rescue switched the router to direct: "+decision.Reason, nil)
+	}
+	if !publicReachable && decision.NextState.ProxyFailureCount != cur.ProxyFailureCount {
+		logging.L().Warn("rescue: no answer through the tunnel", "failures", decision.NextState.ProxyFailureCount,
+			"of", d.rescuePolicy.TriggerFailureCount, "direct_reachable", directReachable)
 	}
 	d.storeRescueState(decision.NextState, decision.Reason)
 
@@ -940,11 +944,13 @@ func (d *daemon) rescueRecheckDue(now time.Time) bool {
 		// Not while xray itself is down or starting: the probe would say
 		// nothing (ProxyConclusive), and the loop would sit in its timeouts
 		// instead of serving the DNS watch and the router UI.
-		return st.ProxyFailureCount > 0 && d.xraySettled(now)
+		// The watchdog seeing the main balancer down starts the looking
+		// too: the polls alone found a blocked tunnel a minute late.
+		return (st.ProxyFailureCount > 0 || d.tunnelFailing(now)) && d.xraySettled(now)
 	case rescue.ModeDirect:
 		// Once the cooldown allows the way back and a node lives: the
 		// tunnel's return is then taken within seconds, not at the next poll.
-		return now.Sub(st.LastTransitionAt) >= rescue.CooldownAfter(d.rescuePolicy, st.FailedRetries) && !d.tunnelDead(now)
+		return now.Sub(st.LastTransitionAt) >= rescue.CooldownAfter(d.rescuePolicy, st.FailedRetries) && !d.tunnelDead(now, st.LastTransitionAt)
 	}
 	return false
 }

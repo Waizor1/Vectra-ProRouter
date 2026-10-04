@@ -174,6 +174,21 @@ type Runtime struct {
 	// Route is where the main balancer sends the LAN's traffic, as the
 	// failover watchdog last saw it; nil before its first look.
 	Route *Route `json:"route,omitempty"`
+	// Rescue is the rescue's state: proxy, or direct after the tunnel
+	// failed, and what it waits for.
+	Rescue *Rescue `json:"rescue,omitempty"`
+}
+
+// Rescue is the rescue's state as the router UI and the operator read it.
+type Rescue struct {
+	Mode             string     `json:"mode"`
+	ProxyFailures    int        `json:"proxyFailures"`
+	FailedRetries    int        `json:"failedRetries,omitempty"`
+	LastTransitionAt *time.Time `json:"lastTransitionAt,omitempty"`
+	LastReason       string     `json:"lastReason,omitempty"`
+	// TunnelDead: nothing says the tunnel works again since the router
+	// left it — direct mode waits.
+	TunnelDead bool `json:"tunnelDead"`
 }
 
 // ServiceMainPath in Overrides.ServiceEntries is the owner's «as the main

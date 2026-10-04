@@ -16,6 +16,7 @@ import (
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/rescue"
 	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/subscription"
 	"vectra-controller-pro/internal/supervisor"
@@ -498,6 +499,16 @@ func (d *daemon) liveRuntime() *localctl.Runtime {
 	}
 	rt.Claim = d.claim.view(time.Now())
 	rt.Route = d.route.Load()
+	rs := d.rescueState()
+	rt.Rescue = &localctl.Rescue{Mode: string(rs.Mode), ProxyFailures: rs.ProxyFailureCount,
+		FailedRetries: rs.FailedRetries, LastReason: d.st.Rescue.LastReason}
+	if !rs.LastTransitionAt.IsZero() {
+		at := rs.LastTransitionAt
+		rt.Rescue.LastTransitionAt = &at
+	}
+	if rs.Mode == rescue.ModeDirect {
+		rt.Rescue.TunnelDead = d.tunnelDead(time.Now(), rs.LastTransitionAt)
+	}
 	return &rt
 }
 
