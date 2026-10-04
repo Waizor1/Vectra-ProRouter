@@ -12,6 +12,13 @@ describe("Connect typed action params", () => {
         entryId: "entry-1",
       }).success,
     ).toBe(true);
+    // ":auto": back to the service's default (capability set_service_auto).
+    expect(
+      parseConnectActionParams("set_service", {
+        service: "ai",
+        entryId: ":auto",
+      }),
+    ).toMatchObject({ success: true, data: { service: "ai", entryId: ":auto" } });
     for (const params of [
       { entryId: "../bad" },
       { entryId: "a".repeat(65) },
