@@ -457,6 +457,23 @@ describe("reported events", () => {
       ),
     ).toEqual([]);
   });
+  it("compares with the last measured verdict across check-ins without one", () => {
+    // down → (no verdict: vctl's measurement was stale) → ok is a recovery.
+    expect(
+      reportedPartnerTransitions(
+        inventory().payload,
+        inventory({ connect: { verdict: "ok" } }).payload,
+        "direct",
+      ),
+    ).toEqual([{ event: "router.vpn_up", detail: { verdict: "ok" } }]);
+    expect(
+      reportedPartnerTransitions(
+        inventory().payload,
+        inventory({ connect: { verdict: "ok" } }).payload,
+        "ok",
+      ),
+    ).toEqual([]);
+  });
   it("reports measured VPN transitions and observed runtime updates", () => {
     expect(
       reportedPartnerTransitions(
