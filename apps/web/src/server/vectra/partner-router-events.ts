@@ -1,21 +1,26 @@
 import type { PartnerWebhookEvent, RouterInventory } from "@vectra/contracts";
 import { type jobs, routers, routerInventorySnapshots } from "@vectra/db";
-import { and, desc, eq, isNotNull, isNull, lt, ne } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import type { db } from "~/server/db";
 import { PARTNER_ACTION_DEDUPE_PREFIX } from "./partner-action-key";
 import { enqueuePartnerWebhookWithDb } from "./partner-webhooks";
 
 type Client = Pick<typeof db, "select" | "insert" | "update" | "transaction">;
 type Router = typeof routers.$inferSelect;
+// previousVerdict is the router's last MEASURED verdict, which may be older
+// than previous: a check-in without one (vctl leaves it out while its own
+// measurement is stale) is not a state, and compared with it a
+// down → (none) → ok never said vpn_up.
 export function reportedPartnerTransitions(
   previous: RouterInventory | null,
   next: RouterInventory,
+  previousVerdict: string | undefined = previous?.connect?.verdict,
 ) {
   const events: Array<{
     event: PartnerWebhookEvent;
     detail?: Record<string, unknown>;
   }> = [];
-  const before = previous?.connect?.verdict;
+  const before = previousVerdict;
   const after = next.connect?.verdict;
   const working = (v: string | undefined) => v === "ok" || v === "reserve";
   const failed = (v: string | undefined) =>
@@ -62,9 +67,25 @@ export async function notifyPartnerCheckInWithDb(
       .where(eq(routerInventorySnapshots.routerId, previousRouter.id))
       .orderBy(desc(routerInventorySnapshots.createdAt))
       .limit(1);
+    let previousVerdict = prior?.payload?.connect?.verdict;
+    if (prior && !previousVerdict) {
+      const [measured] = await tx
+        .select({ payload: routerInventorySnapshots.payload })
+        .from(routerInventorySnapshots)
+        .where(
+          and(
+            eq(routerInventorySnapshots.routerId, previousRouter.id),
+            sql`${routerInventorySnapshots.payload}->'connect'->>'verdict' is not null`,
+          ),
+        )
+        .orderBy(desc(routerInventorySnapshots.createdAt))
+        .limit(1);
+      previousVerdict = measured?.payload?.connect?.verdict;
+    }
     const transitions = reportedPartnerTransitions(
       prior?.payload ?? null,
       next,
+      previousVerdict,
     );
     if (
       !previousRouter.lastSeenAt ||
