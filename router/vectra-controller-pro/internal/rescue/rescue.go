@@ -48,6 +48,18 @@ const (
 // maxBackoffShift caps the cooldown's doubling (2 min << 4 = 32 min).
 const maxBackoffShift = 4
 
+// CooldownAfter is the cooldown on the way back after failed returns to the
+// proxy in a row: p.Cooldown, doubled for each, up to 16×.
+func CooldownAfter(p Policy, failed int) time.Duration {
+	if failed > maxBackoffShift {
+		failed = maxBackoffShift
+	}
+	if failed < 0 {
+		failed = 0
+	}
+	return p.Cooldown << failed
+}
+
 // Policy tunes the evaluator.
 type Policy struct {
 	HealthURLs           []string
@@ -105,11 +117,7 @@ func Evaluate(in Input, p Policy) Decision {
 	}
 	d := Decision{NextMode: st.Mode, NextState: st}
 
-	shift := st.FailedRetries
-	if shift > maxBackoffShift {
-		shift = maxBackoffShift
-	}
-	cooldownOK := st.LastTransitionAt.IsZero() || in.Now.Sub(st.LastTransitionAt) >= p.Cooldown<<shift
+	cooldownOK := st.LastTransitionAt.IsZero() || in.Now.Sub(st.LastTransitionAt) >= CooldownAfter(p, st.FailedRetries)
 
 	switch st.Mode {
 	case ModeProxy:

@@ -49,7 +49,9 @@ VPN comes back by itself.
 ### Changed
 - **The support shell is on by default** (UCI `remote_shell` '1' on a new
   router too); the owner switches it off in the router UI, and an upgrade
-  keeps that.
+  keeps that — including a '0' that r14 and earlier wrote on a new router.
+- The operator's "enter direct" ends by itself as the rescue's does: after
+  the cooldown (2 min, was 5), once a node lives.
 
 ## vctl 0.7.0-r14 — a router taken from PassWall2 keeps its VPN, and its owner gets its code in time
 

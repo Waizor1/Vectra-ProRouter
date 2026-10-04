@@ -820,6 +820,7 @@ func (d *daemon) waitForTick(ctx context.Context, tick <-chan time.Time) bool {
 					// one question programming asks; the watch tries again.
 					if _, in := redirectPort(*d.fwProgrammed); !in {
 						d.dnsFailedOpen = true
+						d.dnsPutBackAfter = time.Now().Add(dnsPutBackRetry)
 					}
 				}
 				d.publishRuntime()

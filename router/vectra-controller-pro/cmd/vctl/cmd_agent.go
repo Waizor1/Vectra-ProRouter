@@ -177,6 +177,9 @@ type daemon struct {
 	// dnsFailedOpen: that watch took the redirect out, and puts it back.
 	dnsFastMisses int
 	dnsFailedOpen bool
+	// dnsPutBackAfter holds the next put-back while the last one did not
+	// get the redirect in (a failing apply must not reload every 3 s).
+	dnsPutBackAfter time.Time
 	// hupResolver stands in for SIGHUP to dnsmasq in tests.
 	hupResolver func(pid int) error
 	// rescueCheckedAt is when the rescue last probed (rescueStep).
@@ -941,11 +944,7 @@ func (d *daemon) rescueRecheckDue(now time.Time) bool {
 	case rescue.ModeDirect:
 		// Once the cooldown allows the way back and a node lives: the
 		// tunnel's return is then taken within seconds, not at the next poll.
-		shift := st.FailedRetries
-		if shift > 4 {
-			shift = 4
-		}
-		return now.Sub(st.LastTransitionAt) >= d.rescuePolicy.Cooldown<<shift && !d.tunnelDead(now)
+		return now.Sub(st.LastTransitionAt) >= rescue.CooldownAfter(d.rescuePolicy, st.FailedRetries) && !d.tunnelDead(now)
 	}
 	return false
 }

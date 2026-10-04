@@ -289,6 +289,10 @@ func dnsRedirectKey(spec firewall.Spec) string {
 // in a loop, 90 s without a single lookup before the redirect went.
 const dnsWatchEvery = 3 * time.Second
 
+// dnsPutBackRetry is how long a put-back that did not get the redirect in
+// waits before the next.
+const dnsPutBackRetry = 30 * time.Second
+
 // dnsFastDeadAfter is how many of those checks in a row xray may not answer
 // before the redirect goes: about ten seconds, longer than a reload or a
 // supervised restart takes.
@@ -327,7 +331,7 @@ func (d *daemon) dnsWatchDue(ctx context.Context) bool {
 	// Back only once xray has run xraySettle: a crash loop answers for a
 	// second at each start, and each put-back costs two loads of the whole
 	// table (and its direct sets) on a 234 MB router.
-	if !d.dnsFailedOpen || !d.xraySettled(time.Now()) {
+	if !d.dnsFailedOpen || !d.xraySettled(time.Now()) || time.Now().Before(d.dnsPutBackAfter) {
 		return false
 	}
 	port, _, ok := d.dnsCandidate()
