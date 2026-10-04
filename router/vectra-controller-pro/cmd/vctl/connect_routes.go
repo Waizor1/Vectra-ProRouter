@@ -422,6 +422,20 @@ func markAIDefault(res *uiapi.Services, applied bool) {
 	}
 }
 
+// markAIDefaultFor marks the Kazakh default the router runs «Нейросети» on.
+// A stale choice does not run — the service is on its default meanwhile — so,
+// as the Connect check-in does, it is left out when asking what runs.
+func markAIDefaultFor(cfg agentcfg.Config, res *uiapi.Services, ov localctl.Overrides, spliceKey string) {
+	for _, s := range res.Services {
+		if s.ID == "ai" && s.Stale {
+			ov.Services = maps.Clone(ov.Services)
+			delete(ov.Services, "ai")
+		}
+	}
+	_, applied := aiDefaultApplied(cfg, ov, spliceKey)
+	markAIDefault(res, applied)
+}
+
 // aiRefusedKey names a default location on the document it joined.
 func aiRefusedKey(entry, document []byte) string {
 	a, b := sha256.Sum256(entry), sha256.Sum256(document)

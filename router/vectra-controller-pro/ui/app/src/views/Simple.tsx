@@ -5,12 +5,11 @@
 import type { ComponentChildren, RefObject } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ErrInfo } from '../api/errors';
-import type { Entry, Status } from '../api/types';
+import type { Entry, NodeRef, Status } from '../api/types';
 import { useApp, useRes } from '../app/ctx';
 import { powerOpts, powerParams } from '../app/power';
 import type { Key } from '../i18n';
 import { parseRemark } from '../lib/flags';
-import { flagged } from '../lib/names';
 import { hasSubscription, powerSwitching, simpleVerdict, type LinkState, type SimpleVerdict } from '../lib/health';
 import { buildReport } from '../lib/report';
 import { copyText } from '../lib/storage';
@@ -21,7 +20,7 @@ import { PasswordDialog, PasswordNote } from './Password';
 import { PowerActs } from './PowerActs';
 import { Services } from './Services';
 import { SupportAccess } from './SupportAccess';
-import { face, groupServers } from '../lib/servers';
+import { autoLine, face, groupServers, nodePlace, routeVia } from '../lib/servers';
 import { CONFIG_SLOW_MS, needsSetup, owned, Setup, useLate, WayIn, type Screen } from './Setup';
 import { Tour, tourSeen } from './Tour';
 
@@ -263,6 +262,10 @@ function LocationCard(p: { s: Status; open: 0 | 1 | 2; setOpen: (v: 0 | 1 | 2) =
   const loc = parseRemark(sub.entryRemark);
   const fc = face(sub.entryRemark, t('hero.noLocation'));
   const local = sub.source === 'local';
+  // «Авто» says it picks by itself and where it goes now; a server chosen by name is just that server.
+  const how = [fc.auto ? autoLine(t, routeVia(t, p.s.route)) : fc.sub, local || sub.source === 'panel' ? t(local ? 's.loc.mine' : 's.loc.default') : null]
+    .filter(Boolean)
+    .join(' · ');
   const canChange = has && p.s.controller.running !== false;
   const reset = () =>
     run('reset_entry', {}, {
@@ -281,9 +284,7 @@ function LocationCard(p: { s: Status; open: 0 | 1 | 2; setOpen: (v: 0 | 1 | 2) =
             {t('s.loc')}
           </h3>
           <b>{has ? fc.title : t('hero.noLocation')}</b>
-          {has && (fc.sub || local || sub.source === 'panel') ? (
-            <span class="hint">{[fc.sub, local || sub.source === 'panel' ? t(local ? 's.loc.mine' : 's.loc.default') : null].filter(Boolean).join(' · ')}</span>
-          ) : null}
+          {has && how ? <span class="hint">{how}</span> : null}
         </div>
         {canChange ? (
           <Button
@@ -324,24 +325,22 @@ function LocationCard(p: { s: Status; open: 0 | 1 | 2; setOpen: (v: 0 | 1 | 2) =
   );
 }
 
-/** Where the main traffic goes now and, after the watchdog moved it, off what (spec decision 6). */
+/**
+ * After the watchdog moved the main traffic, off what and onto what (spec decision 6),
+ * and servers left out. Where it goes now is said under «Авто» itself.
+ */
 function RouteLine({ s }: { s: Status }) {
   const { t, f } = useApp();
   const r = s.route;
-  if (!r || !r.nodes.length) return null;
-  const where = (cc: string) => flagged(t.lang, cc);
-  const place = (n: { tag: string; country: string | null; egress?: string | null }) => {
-    const name = n.country ? where(n.country) : n.tag;
-    return n.egress ? t('x.egress', { name, egress: where(n.egress) }) : name;
-  };
-  const via = Array.from(new Set(r.nodes.map(place))).join(', ');
+  const via = routeVia(t, r);
+  if (!r || !via) return null;
+  const place = (n: NodeRef) => nodePlace(t, n);
   const moved = r.movedFrom;
   const key: Key = r.reason === 'failing' ? 's.route.failing' : r.reason === 'fallback' ? 's.route.fallback' : 's.route.borrowed';
   const unfit = Array.from(new Set((r.unfit || []).map(place)));
   const kept = Array.from(new Set((r.unfitKept || []).map(place)));
   return (
     <>
-      <p class="hint sv-route">{t('s.route.via', { via })}</p>
       {unfit.length ? (
         <div class="sv-route-unfit">
           <Note tone="info">{t(unfit.length === 1 ? 's.route.unfit.one' : 's.route.unfit.many', { what: unfit.join(', ') })}</Note>

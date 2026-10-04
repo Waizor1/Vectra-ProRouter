@@ -4,8 +4,10 @@
 // needs (a protocol, "direct", whitelists for mobile networks), folded away.
 // Only the remarks are read; nothing is invented about a server.
 
-import type { Entries, Entry } from '../api/types';
+import type { Entries, Entry, NodeRef, RouteView } from '../api/types';
+import type { T } from '../i18n';
 import { parseRemark } from './flags';
+import { flagged } from './names';
 
 export interface ServerGroups {
   /** The one to recommend: the panel's default, else the first automatic, else the first. */
@@ -60,4 +62,24 @@ export function groupServers(data: Entries | null): ServerGroups {
   const panel = list.find((e) => e.index === data?.panelIndex);
   const recommended = panel?.index ?? auto[0]?.index ?? list[0]?.index ?? null;
   return { recommended, auto, countries, other };
+}
+
+/** A node as a person reads it: its country, and where it really exits when that is elsewhere. */
+export function nodePlace(t: T, n: NodeRef): string {
+  const name = n.country ? flagged(t.lang, n.country) : n.tag;
+  return n.egress ? t('x.egress', { name, egress: flagged(t.lang, n.egress) }) : name;
+}
+
+/** Where the main traffic goes now: "🇵🇱 Польша"; null before the router has said. */
+export function routeVia(t: T, r: RouteView | null | undefined): string | null {
+  if (!r || !r.nodes.length) return null;
+  return Array.from(new Set(r.nodes.map((n) => nodePlace(t, n)))).join(', ');
+}
+
+/**
+ * The line under «Авто»: it picks by itself, and where it goes now — so «Авто»
+ * and a country read as one choice, not two. A server chosen by name needs neither.
+ */
+export function autoLine(t: T, via: string | null): string {
+  return via ? t('srv.auto.picks') + ' · ' + t('srv.auto.now', { via }) : t('srv.auto.picks');
 }

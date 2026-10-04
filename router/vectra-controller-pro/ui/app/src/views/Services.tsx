@@ -83,7 +83,9 @@ export function Services() {
                 ))}
               </select>
             </span>
-            {s.stale ? <p class="hint sv-svc-w">{t('sv.stale')}</p> : null}
+            {s.stale ? (
+              <p class="hint sv-svc-w">{s.defaultCountry ? t('sv.stale.in', { country: place(s.defaultCountry) }) : t('sv.stale.main')}</p>
+            ) : null}
           </li>
         ))}
       </ul>

@@ -8,7 +8,7 @@ import type { ComponentChildren } from 'preact';
 import type { Entry } from '../api/types';
 import { useApp, useRes } from '../app/ctx';
 import { parseRemark } from '../lib/flags';
-import { face } from '../lib/servers';
+import { autoLine, face, routeVia } from '../lib/servers';
 import { countryName, flagCountry } from '../lib/names';
 import { Icon } from '../ui/icons';
 import { Badge, Button, Empty, ErrorBox, Note, Skeleton, Spinner } from '../ui/kit';
@@ -21,6 +21,7 @@ export function Locations() {
   const { t, run, pending, refresh } = useApp();
   const res = useRes('entries');
   const data = res.data;
+  const route = useRes('status').data?.route;
   if (!data) return res.error ? <ErrorBox t={t} err={res.error} onRetry={refresh} /> : <Skeleton />;
 
   const name = (e: Entry) => {
@@ -119,8 +120,9 @@ export function Locations() {
             'vx-sv-top',
             t(auto.length ? 'l.rec' : 'l.panel'),
             top.map((e) => {
-              // "Авто" and what it does under it, as the overview and the simple view say it.
+              // "Авто", that it picks, and — the one in use — where it goes now, as the overview and the simple view say it.
               const fc = face(e.remark, name(e));
+              const sub = fc.auto ? autoLine(t, e.index === data.active ? routeVia(t, route) : null) : fc.sub;
               return (
                 <li key={e.index}>
                   {pick(
@@ -128,7 +130,7 @@ export function Locations() {
                     'lc',
                     <>
                       <b>{fc.title}</b>
-                      {fc.sub ? <span class="hint">{fc.sub}</span> : null}
+                      {sub ? <span class="hint">{sub}</span> : null}
                     </>,
                   )}
                 </li>

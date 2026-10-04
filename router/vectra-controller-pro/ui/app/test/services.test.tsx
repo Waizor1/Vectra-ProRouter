@@ -103,7 +103,8 @@ it('says a choice the router does not run is on the default, and lets it be clea
   const tk = app.all('.sv-svc-r')[1];
   const sel = tk.querySelector('select')!;
   expect(sel.value).toBe('NL');
-  expect(tk.querySelector('.sv-svc-w')?.textContent).toBe('Эта страна сейчас недоступна для сервиса, поэтому он работает по умолчанию.');
+  // Where it runs meanwhile: its default, by the country the router names for it.
+  expect(words(tk.querySelector('.sv-svc-w')?.textContent)).toBe('Эта страна сейчас недоступна для сервиса — пока он работает по умолчанию, через 🇧🇾 Беларусь.');
   sel.value = '';
   sel.dispatchEvent(new Event('change'));
   await vi.advanceTimersByTimeAsync(100);
@@ -137,6 +138,22 @@ it('shows a service the entry has no path for only while it holds a choice, mark
     ['NL', true, '🇳🇱 Нидерланды · недоступна'],
   ]);
   expect(rows[0].querySelector('select')!.value).toBe('NL');
+  // No path of its own: it goes with everything else.
+  expect(rows[0].querySelector('.sv-svc-w')?.textContent).toBe('Эта страна сейчас недоступна для сервиса — пока он работает по умолчанию, через основной VPN.');
+});
+
+it('says a stale «Нейросети» choice runs on the Kazakh default when that is what runs', async () => {
+  const app = start(
+    world((w) => {
+      const ai = w.services.services.find((s) => s.id === 'ai');
+      const row = { id: 'ai', choice: 'TR', defaultCountry: 'KZ', countries: [], active: false, stale: true, egress: {} };
+      if (ai) Object.assign(ai, row);
+      else w.services.services.push(row);
+    }),
+  );
+  await settle();
+  const ai = app.all('.sv-svc-r').find((r) => r.querySelector('.sv-svc-n')?.textContent === 'Нейросети')!;
+  expect(words(ai.querySelector('.sv-svc-w')?.textContent)).toBe('Эта страна сейчас недоступна для сервиса — пока он работает по умолчанию, через 🇰🇿 Казахстан.');
 });
 
 it('changes a service’s country through the router, after asking, and shows it landed', async () => {

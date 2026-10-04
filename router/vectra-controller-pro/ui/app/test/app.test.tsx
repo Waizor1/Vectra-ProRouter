@@ -91,7 +91,8 @@ describe('what each scenario says', () => {
     expect(app.$('.verdict')?.textContent).toBe('Работает, есть замечания');
     // The server reads as the simple view reads it: "Авто", what it does and who chose it under it.
     expect(app.$('.hero .loc b')?.textContent).toBe('Авто');
-    expect(app.$('.hero .loc .hint')?.textContent).toBe('самый стабильный · по умолчанию');
+    // «Авто» says it picks, and where it goes now: one choice, not «Авто» and a country.
+    expect(app.$('.hero .loc .hint')?.textContent?.replace(/\u00a0/g, ' ')).toBe('выбирает лучший сервер · сейчас: 🇫🇮 Финляндия · по умолчанию');
     expect(app.text()).toContain('vectra-ax3000t');
     expect(app.$('.hdr')?.textContent).not.toContain('vctl');
     expect(app.$('.pill')?.textContent).toBe('Замечания');
@@ -188,7 +189,7 @@ describe('what each scenario says', () => {
     expect(app.all('.srv h3').map((h) => h.textContent)).toEqual(['Recommended', 'Countries', 'Other']);
     const top = app.$('.locs.top .lc')!;
     expect(top.querySelector('b')?.textContent).toBe('Авто');
-    expect(top.querySelector('.hint')?.textContent).toBe('самый стабильный');
+    expect(top.querySelector('.hint')?.textContent?.replace(/\u00a0/g, ' ')).toBe('picks the best server · now: 🇫🇮 Finland');
     expect(top.getAttribute('aria-current')).toBe('true');
     const germany = app.all('.lc-g').find((g) => g.textContent?.includes('Германия'))!;
     // The provider names it in Russian; the flag says it in the reader's language.
