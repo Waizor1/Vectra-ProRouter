@@ -148,7 +148,14 @@ var errConnectStaleEntry = errors.New("unknown_service_entry")
 // («Нейросети» their Kazakh default, the others the main VPN) and the choice
 // stays in the overrides, to run again when the location does. effective is
 // ov without the skipped choices, what the render is made under.
-func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte) (entries map[string]json.RawMessage, effective localctl.Overrides) {
+//
+// A cache that is there but cannot be read now (an I/O or vault error, not
+// a missing file) is no reason to move services: err is set and the caller
+// does not render now, as before r16 — skipping would cost a render and an
+// xray restart with every chosen service, and the «Нейросети» default,
+// moved to the main VPN until the next render. A missing cache file means
+// there really are no locations: the choices are skipped.
+func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte) (entries map[string]json.RawMessage, effective localctl.Overrides, err error) {
 	chosen := map[string]string{}
 	for svc, id := range ov.ServiceEntries {
 		if id != localctl.ServiceMainPath { // «as the main VPN» needs no location
@@ -156,10 +163,13 @@ func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte)
 		}
 	}
 	effective = ov
-	cache, err := localctl.LoadEntries(d.cfg.EntriesPath)
-	if err != nil && len(chosen) == 0 {
+	cache, lerr := localctl.LoadEntries(d.cfg.EntriesPath)
+	if lerr != nil && !errors.Is(lerr, os.ErrNotExist) && (len(chosen) > 0 || aiDefaultConsidered(ov, d.cfg.RouteSource, running)) {
+		return nil, ov, fmt.Errorf("the cached locations cannot be read now: %w", lerr)
+	}
+	if lerr != nil && len(chosen) == 0 {
 		d.noteSkippedServiceChoices(nil)
-		return nil, effective // no cache, no location chosen: nothing to overlay
+		return nil, effective, nil // no cache, no location chosen: nothing to overlay
 	}
 	out := map[string]json.RawMessage{}
 	skipped := map[string]string{}
@@ -190,9 +200,16 @@ func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte)
 		}
 	}
 	if len(out) == 0 {
-		return nil, effective
+		return nil, effective, nil
 	}
-	return out, effective
+	return out, effective, nil
+}
+
+// aiDefaultConsidered: aiDefault would look for a Kazakh location in the
+// cache for this render.
+func aiDefaultConsidered(ov localctl.Overrides, routeSource string, running []byte) bool {
+	_, chosen := ov.ServiceEntries["ai"]
+	return routeSource == "" && running != nil && !chosen && ov.Services["ai"] == ""
 }
 
 // noteSkippedServiceChoices logs a choice the render skips once, not on

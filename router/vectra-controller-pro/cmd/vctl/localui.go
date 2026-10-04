@@ -68,7 +68,14 @@ func (d *daemon) spliceOptionsOv(providerRaw []byte) (xray.SpliceOptions, localc
 		logging.L().Warn("local overrides unreadable; rendering with defaults", "err", err.Error())
 	}
 	opts, probe := spliceOptionsFor(providerRaw, ov, !d.cfg.NoRussiaDirect)
-	opts.ServiceEntries, ov = d.connectServiceOptionsFor(ov, providerRaw)
+	var serviceErr error
+	opts.ServiceEntries, ov, serviceErr = d.connectServiceOptionsFor(ov, providerRaw)
+	if serviceErr != nil {
+		// Not now: an entry no service may join refuses this render, and the
+		// running one stays (as before r16), rather than move the services.
+		logging.L().Warn("the services' locations cannot be read; this render waits", "err", serviceErr.Error())
+		opts.ServiceEntries = map[string]json.RawMessage{"unreadable": json.RawMessage(`{}`)}
+	}
 	opts = d.withRuntime(opts, providerRaw)
 	return opts, probe, ov
 }
@@ -355,7 +362,10 @@ func (d *daemon) localReapplyOnce(ctx context.Context, change *localctl.Change) 
 	}
 
 	opts, probe := spliceOptionsFor(providerRaw, ov, !d.cfg.NoRussiaDirect)
-	serviceEntries, effective := d.connectServiceOptionsFor(ov, providerRaw)
+	serviceEntries, effective, serviceErr := d.connectServiceOptionsFor(ov, providerRaw)
+	if serviceErr != nil {
+		return localctl.SocketResponse{Code: "no_entries_cache", Detail: serviceErr.Error()}
+	}
 	if s := changedServiceChoice(change); s != "" && effective.ServiceEntries[s] != ov.ServiceEntries[s] {
 		// The choice being made now does not run: say so. One made before
 		// that stopped running is skipped and never refuses the render.

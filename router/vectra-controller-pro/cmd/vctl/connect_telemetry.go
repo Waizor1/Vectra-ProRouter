@@ -172,8 +172,9 @@ var connectCarriersMemo struct {
 
 // connectServiceCarriers is, per service, the cached locations (digests, in
 // the index's order) that carry it — those a set_service would accept. Nil
-// when not known: no index, or a cache that does not match it (kept until
-// the index changes: the cache is written first, the index second).
+// when not known: no index, or a cache that does not match it. A mismatch is
+// memoized like an answer, and clears on the next index change (the next
+// subscription refresh rewrites the cache, then the index).
 func connectServiceCarriers(entriesPath string, idx *localctl.EntriesIndex) map[string][]string {
 	if idx == nil || len(idx.Entries) > 300 {
 		return nil

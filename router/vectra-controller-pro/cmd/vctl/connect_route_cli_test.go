@@ -42,18 +42,23 @@ func TestConnectServicePreviewPreservesExactOverlayAndSkipsStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	ov := localctl.Overrides{ConnectRules: true, Direct: []string{"_service.example"}, ServiceEntries: map[string]string{"tiktok": apply.Digest(entries[1])}}
-	opts := routePreviewOptions(d, entries[0], ov)
+	opts, err := routePreviewOptions(d, entries[0], ov)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !opts.Rules.Connect || !bytes.Equal(opts.ServiceEntries["tiktok"], entries[1]) {
 		t.Fatal("preview dropped Connect settings")
 	}
 	// A location gone from the cache is skipped, as the render skips it.
 	ov.ServiceEntries["tiktok"] = strings.Repeat("a", 64)
-	if opts := routePreviewOptions(d, entries[0], ov); opts.ServiceEntries["tiktok"] != nil || !opts.Rules.Connect {
+	if opts, err := routePreviewOptions(d, entries[0], ov); err != nil || opts.ServiceEntries["tiktok"] != nil || !opts.Rules.Connect {
 		t.Fatal("preview kept a stale service entry")
 	}
 	// CLI applies the legacy parser so its carried IP/CIDR sites remain rules.
 	ov = localctl.Overrides{Direct: []string{"5.255.255.5"}, Proxy: []string{"example.org"}}
-	opts = routePreviewOptions(d, entries[0], ov)
+	if opts, err = routePreviewOptions(d, entries[0], ov); err != nil {
+		t.Fatal(err)
+	}
 	_, res, err := xray.Splice(entries[0], d.desired.Inbounds.Tproxy, opts)
 	if err != nil {
 		t.Fatal(err)

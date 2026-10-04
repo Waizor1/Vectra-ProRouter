@@ -208,7 +208,10 @@ var routeCheck = func(ctx context.Context, cfg agentcfg.Config, entryIndex int, 
 		return "", fmt.Errorf("entry #%d is not among the %d cached", entryIndex, len(cache.Entries))
 	}
 	raw := cache.Entries[entryIndex]
-	opts := routePreviewOptions(d, raw, ov)
+	opts, err := routePreviewOptions(d, raw, ov)
+	if err != nil {
+		return "", err
+	}
 	spliced, res, err := xray.Splice(raw, desired.Inbounds.Tproxy, opts)
 	if err != nil {
 		return "", err
@@ -415,9 +418,14 @@ func routeInside(in []netip.Prefix, p netip.Prefix) bool {
 }
 
 // routePreviewOptions preserves the running owner's exact service overlays;
-// a choice that does not run is skipped, as the render skips it.
-func routePreviewOptions(d *daemon, raw []byte, ov localctl.Overrides) xray.SpliceOptions {
+// a choice that does not run is skipped, as the render skips it; a cache
+// that cannot be read now refuses the preview.
+func routePreviewOptions(d *daemon, raw []byte, ov localctl.Overrides) (xray.SpliceOptions, error) {
 	opts, _ := spliceOptionsFor(raw, ov, !d.cfg.NoRussiaDirect)
-	opts.ServiceEntries, _ = d.connectServiceOptionsFor(ov, raw)
-	return d.withRuntime(opts, raw)
+	entries, _, err := d.connectServiceOptionsFor(ov, raw)
+	if err != nil {
+		return opts, err
+	}
+	opts.ServiceEntries = entries
+	return d.withRuntime(opts, raw), nil
 }

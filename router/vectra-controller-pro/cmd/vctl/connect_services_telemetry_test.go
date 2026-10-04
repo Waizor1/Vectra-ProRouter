@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -388,5 +390,96 @@ func TestAStaleAIChoiceReportsTheDefaultItRunsThrough(t *testing.T) {
 	s := got["ai"]
 	if !s.Stale || s.Auto == nil || *s.Auto || s.EntryID == nil || *s.EntryID != ids[2] {
 		t.Fatalf("ai: %s", raw)
+	}
+}
+
+// A cache that is there but cannot be read now moves nothing: the render and
+// the local change wait (the running render stays, overlay and all), and run
+// as soon as the cache reads again. A cache that is gone — no locations at
+// all — skips the choices instead.
+func TestAnUnreadableCacheWaitsAMissingOneSkips(t *testing.T) {
+	d, _, entries, remarks := newLocalUIDaemon(t)
+	ctx := context.Background()
+	raw, _, err := d.fetchProviderDocument(ctx, d.desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.applyProvider(ctx, raw, false); err != nil {
+		t.Fatal(err)
+	}
+	var svc xray.Service
+	for _, s := range xray.Services {
+		if s.ID != "ai" && xray.ValidateConnectServiceEntry(entries[1], s.ID) == nil {
+			svc = s
+			break
+		}
+	}
+	overlay := "vctl-connect-" + svc.ID + "-"
+	rendered := func() bool {
+		b, err := vault.ReadFile(d.cfg.XrayRenderPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Contains(string(b), overlay)
+	}
+	if _, err := localctl.UpdateOverrides(d.cfg.OverridesPath, func(o *localctl.Overrides) error {
+		o.ServiceEntries = map[string]string{svc.ID: apply.Digest(entries[1])}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rules := func(site string) localctl.SocketResponse {
+		return d.localReapply(ctx, &localctl.Change{SetRules: &localctl.Rules{Direct: []string{site}, Proxy: []string{}}})
+	}
+	if resp := rules("one.example"); !resp.OK || !rendered() {
+		t.Fatalf("a running choice: %+v", resp)
+	}
+	saved := func() {
+		c := &localctl.EntriesCache{Remarks: remarks, Entries: []json.RawMessage{entries[0], entries[1]}}
+		if _, err := localctl.SaveEntries(d.cfg.EntriesPath, d.cfg.EntriesIndexPath, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Unreadable now: bytes the vault cannot open.
+	if err := os.WriteFile(d.cfg.EntriesPath, []byte("not sealed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, lerr := localctl.LoadEntries(d.cfg.EntriesPath); lerr == nil || errors.Is(lerr, os.ErrNotExist) {
+		t.Fatalf("the fixture is not an unreadable cache: %v", lerr)
+	}
+	if resp := rules("two.example"); resp.OK {
+		t.Fatal("a change rendered without reading the services' locations")
+	}
+	if _, err := d.applyProvider(ctx, entries[0], true); err == nil {
+		t.Fatal("a render went ahead without reading the services' locations")
+	}
+	if !rendered() {
+		t.Fatal("the running render lost its service location")
+	}
+	if _, _, err := d.connectServiceOptionsFor(localctl.Overrides{}, entries[0]); err == nil {
+		t.Fatal("the «Нейросети» default was given up on a read error")
+	}
+	if _, err := routePreviewOptions(d, entries[0], localctl.Overrides{ServiceEntries: map[string]string{svc.ID: apply.Digest(entries[1])}}); err == nil {
+		t.Fatal("the preview went ahead without reading the services' locations")
+	}
+	_ = os.Remove(d.cfg.EntriesPath)
+	saved()
+	if resp := rules("three.example"); !resp.OK || !rendered() {
+		t.Fatalf("readable again: %+v, overlay %v", resp, rendered())
+	}
+
+	// Gone: no locations at all — the choice is skipped and kept.
+	if err := vault.RemoveFile(d.cfg.EntriesPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.applyProvider(ctx, entries[0], true); err != nil {
+		t.Fatalf("a missing cache refused the render: %v", err)
+	}
+	if rendered() {
+		t.Fatal("rendered a location with no cache")
+	}
+	if ov, _ := localctl.LoadOverrides(d.cfg.OverridesPath); ov.ServiceEntries[svc.ID] != apply.Digest(entries[1]) {
+		t.Fatalf("the choice was dropped: %+v", ov.ServiceEntries)
 	}
 }
