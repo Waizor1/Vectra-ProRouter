@@ -922,7 +922,14 @@ func (d *daemon) rescueStep(ctx context.Context) rescue.Decision {
 		d.incident("RESCUE_DIRECT", reKeyNumber.ReplaceAllString(decision.Reason, "N"), "the rescue switched the router to direct: "+decision.Reason, nil)
 	}
 	if !publicReachable && decision.NextState.ProxyFailureCount != cur.ProxyFailureCount {
-		logging.L().Warn("rescue: no answer through the tunnel", "failures", decision.NextState.ProxyFailureCount,
+		// One miss is a slow answer, as often as not (1111 saw two a day, each
+		// gone at the next look): a warning in the owner's journal only from
+		// the second in a row.
+		log := logging.L().Info
+		if decision.NextState.ProxyFailureCount >= 2 {
+			log = logging.L().Warn
+		}
+		log("rescue: no answer through the tunnel", "failures", decision.NextState.ProxyFailureCount,
 			"of", d.rescuePolicy.TriggerFailureCount, "direct_reachable", directReachable)
 	}
 	d.storeRescueState(decision.NextState, decision.Reason)
