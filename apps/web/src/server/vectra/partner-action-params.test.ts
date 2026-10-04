@@ -85,8 +85,26 @@ describe("Connect typed action params", () => {
       { ssid: "fake", password: "пароль123" },
       { ssid: "fake", password: "a".repeat(64) },
       { ssid: "fake", password: "fake-pass-123", command: "bad" },
+      { ssid: "fake", password: "fake-pass-123", band: "60g" },
+      { ssid: "fake", password: "fake-pass-123", band: "" },
+      { ssid: "fake", password: "fake-pass-123", band: null },
     ])
       expect(parseConnectActionParams("set_wifi", params).success).toBe(false);
+  });
+  it("takes an optional band for one band's Wi-Fi", () => {
+    for (const band of ["2g", "5g", "6g"])
+      expect(
+        parseConnectActionParams("set_wifi", {
+          ssid: "fake",
+          password: "fake-pass-123",
+          band,
+        }),
+      ).toMatchObject({ success: true, data: { band } });
+    const all = parseConnectActionParams("set_wifi", {
+      ssid: "fake",
+      password: "fake-pass-123",
+    });
+    expect(all.success && "band" in all.data).toBe(false);
   });
   it("requires an actual boolean and empty params for parameterless commands", () => {
     expect(

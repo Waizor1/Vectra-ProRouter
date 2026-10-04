@@ -269,6 +269,14 @@ export async function queuePartnerActionWithDb(
       params.entryId === CONNECT_SERVICE_AUTO;
     if (serviceAuto && !snapshot.capabilities.includes("set_service_auto"))
       return { ok: false, status: 409, body: { error: "not_supported" } };
+    // One band's Wi-Fi: an older router would refuse the unknown field.
+    if (
+      input.action === "set_wifi" &&
+      "band" in params &&
+      params.band !== undefined &&
+      !snapshot.capabilities.includes("set_wifi_band")
+    )
+      return { ok: false, status: 409, body: { error: "not_supported" } };
     if (
       (input.action === "select_entry" || input.action === "set_service") &&
       "entryId" in params &&

@@ -727,10 +727,12 @@ export const connectRouterActionNameSchema = z.enum([
 
 // What a router may advertise for its owner: the actions it executes, plus
 // flags that refine one ("set_service_auto": set_service takes the entryId
-// ":auto", back to the service's default).
+// ":auto", back to the service's default; "set_wifi_band": set_wifi takes a
+// band, "2g" | "5g" | "6g", and names only that band's networks).
 export const connectRouterCapabilitySchema = z.enum([
   ...connectRouterActionNameSchema.options,
   "set_service_auto",
+  "set_wifi_band",
 ]);
 export type ConnectRouterCapability = z.infer<
   typeof connectRouterCapabilitySchema

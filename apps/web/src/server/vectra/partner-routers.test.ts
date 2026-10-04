@@ -589,6 +589,63 @@ describe("services telemetry v2", () => {
     ).toMatchObject({ status: 409, body: { error: "not_supported" } });
     expect(fake.inserts(jobs)).toEqual([]);
   });
+  it("queues a one-band set_wifi for a router that advertises set_wifi_band", async () => {
+    const fake = servicesDb(["set_wifi", "set_wifi_band"]);
+    const result = await queuePartnerActionWithDb(
+      fake.db as never,
+      action({
+        action: "set_wifi",
+        params: { ssid: "Fake 5G", password: "fake-guest-pass-123", band: "5g" },
+      }),
+      "key",
+      NOW,
+    );
+    expect(result.status).toBe(202);
+    // The band travels in the sealed parameters, with the password.
+    const { hydratePartnerJobPayload } =
+      await import("./partner-router-secrets");
+    const job = fake.inserts(jobs)[0] as unknown as typeof jobs.$inferSelect;
+    expect(hydratePartnerJobPayload(job, "acct-42")).toMatchObject({
+      action: "set_wifi",
+      params: { ssid: "Fake 5G", band: "5g" },
+    });
+    expect(
+      projectPartnerRouter(
+        router(),
+        servicesInventory(["set_wifi", "set_wifi_band"]),
+        NOW,
+      ).capabilities,
+    ).toEqual(["set_wifi", "set_wifi_band"]);
+  });
+  it("refuses a band to a router without set_wifi_band, still takes all bands", async () => {
+    const band = servicesDb(["set_wifi"]);
+    expect(
+      await queuePartnerActionWithDb(
+        band.db as never,
+        action({
+          action: "set_wifi",
+          params: { ssid: "Fake 2G", password: "fake-guest-pass-123", band: "2g" },
+        }),
+        "key",
+        NOW,
+      ),
+    ).toMatchObject({ status: 409, body: { error: "not_supported" } });
+    expect(band.inserts(jobs)).toEqual([]);
+    const all = servicesDb(["set_wifi"]);
+    expect(
+      (
+        await queuePartnerActionWithDb(
+          all.db as never,
+          action({
+            action: "set_wifi",
+            params: { ssid: "Fake", password: "fake-guest-pass-123" },
+          }),
+          "key",
+          NOW,
+        )
+      ).status,
+    ).toBe(202);
+  });
   it("never takes :auto for a location", async () => {
     const fake = servicesDb(["select_entry", "set_service_auto"]);
     expect(
