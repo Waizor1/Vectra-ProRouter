@@ -1679,7 +1679,8 @@ h3,
   max-width: 780px;
   margin: 0 auto;
 }
-.m-simple .vx-in:has(.wz) {
+.m-simple .vx-in:has(.wz),
+.m-simple .vx-in:has(.sv:not(.sv-home)) {
   max-width: 780px;
 }
 /* A monitor: the verdict across the top; the server and "My sites" on the
@@ -1719,18 +1720,18 @@ h3,
   justify-self: start;
 }
 /* The verdict on the left, what to do and "checked" on the right. */
-[data-w="l"] .sv-st-split .sv-st-m,
-[data-w="x"] .sv-st-split .sv-st-m {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 28px;
+[data-w="l"] .sv-st-split,
+[data-w="x"] .sv-st-split {
+  grid-template-columns: auto minmax(0, 1fr) auto;
 }
-[data-w="l"] .sv-st-split .sv-acts,
-[data-w="x"] .sv-st-split .sv-acts {
+[data-w="l"] .sv-st-split > .sv-acts,
+[data-w="x"] .sv-st-split > .sv-acts {
+  grid-column: 3;
+  grid-row: 1;
   flex-direction: column;
   align-items: flex-end;
-  margin-top: 0;
+  align-self: center;
+  margin-left: 8px;
 }
 .sv {
   display: grid;
@@ -1785,6 +1786,14 @@ h3,
   gap: 10px 14px;
   margin-top: 18px;
 }
+/* The status card's own row: under the verdict's text, as wide as the card on a phone. */
+.sv-st > .sv-acts {
+  grid-column: 2;
+  margin-top: 0;
+}
+[data-w="s"] .sv-st > .sv-acts {
+  grid-column: 1 / -1;
+}
 .sv-chk {
   gap: 4px;
   margin-left: auto;
@@ -1794,12 +1803,19 @@ h3,
   margin-left: 0;
 }
 .sv-raw {
-  margin-top: 14px;
   color: var(--tx-3);
   font-size: 12.5px;
 }
-.sv-raw summary {
-  cursor: pointer;
+/* The raw error is for support: the same disclosure as elsewhere, in the quiet ink. */
+.sv-raw.more > summary {
+  color: var(--tx-3);
+}
+.sv-st > .sv-raw {
+  grid-column: 2;
+  margin-top: -8px;
+}
+[data-w="s"] .sv-st > .sv-raw {
+  grid-column: 1 / -1;
 }
 .sv-raw code {
   display: block;

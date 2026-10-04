@@ -66,16 +66,16 @@ function NoLink({ err }: { err: ErrInfo }) {
           {NO_LINK_LINES[err.kind].map((k) => (
             <p key={k}>{t(k)}</p>
           ))}
-          <div class="row sv-acts">
-            <Button kind="p" icon="refresh" onClick={refresh}>
-              {t('retry')}
-            </Button>
-          </div>
-          <details class="sv-raw">
-            <summary>{t('details')}</summary>
-            <code>{err.raw}</code>
-          </details>
         </div>
+        <div class="row sv-acts">
+          <Button kind="p" icon="refresh" onClick={refresh}>
+            {t('retry')}
+          </Button>
+        </div>
+        <details class="more sv-raw">
+          <summary>{t('details')}</summary>
+          <code>{err.raw}</code>
+        </details>
       </section>
     </div>
   );
@@ -137,16 +137,17 @@ function StatusCard({ v, checkedAt, acts, restart, off }: { v: SimpleVerdict; ch
             <p key={k}>{t(k)}</p>
           ))}
         </div>
-        <div class="row sv-acts">
-          {act}
-          <PowerActs restart={restart || v.act === 'restart' ? acts.restart : undefined} primary={v.act === 'restart'} off={off ? () => acts.power(false) : undefined} />
-          <span class="row sv-chk">
-            {checkedAt !== null ? <span class="hint">{t('s.checked', { when: f.agoSec((Date.now() - checkedAt) / 1000) })}</span> : null}
-            <Button kind="g" small icon="refresh" busy={checking} onClick={check}>
-              {t('s.checkNow')}
-            </Button>
-          </span>
-        </div>
+      </div>
+      {/* The card's own row: beside the verdict on a wide screen, across the whole card on a phone. */}
+      <div class="row sv-acts">
+        {act}
+        <PowerActs restart={restart || v.act === 'restart' ? acts.restart : undefined} primary={v.act === 'restart'} off={off ? () => acts.power(false) : undefined} />
+        <span class="row sv-chk">
+          {checkedAt !== null ? <span class="hint">{t('s.checked', { when: f.agoSec((Date.now() - checkedAt) / 1000) })}</span> : null}
+          <Button kind="g" small icon="refresh" busy={checking} onClick={check}>
+            {t('s.checkNow')}
+          </Button>
+        </span>
       </div>
     </section>
   );
