@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"slices"
 	"sort"
+	"sync"
 	"time"
 	"vectra-controller-pro/internal/connecttelemetry"
 	"vectra-controller-pro/internal/controlplane"
@@ -50,6 +53,9 @@ func (d *daemon) publishConnectTelemetry(ctx context.Context, features map[strin
 		in.Overrides = overrides
 	}
 	t := connectSettings(in, connectSetup(ctx))
+	if t.Services != nil {
+		markConnectServiceCarriers(*t.Services, connectServiceCarriers(d.cfg.EntriesPath, in.Index))
+	}
 	if id, ok := aiDefaultApplied(d.cfg, overrides, d.st.SpliceKey); ok && settingsErr == nil && t.Services != nil {
 		setConnectServiceEntry(*t.Services, "ai", id, t.Entries) // «Нейросети» through their default
 	}
@@ -112,9 +118,15 @@ func connectSettings(in uiapi.Inputs, f setup.Facts) controlplane.RouterConnectT
 	for _, id := range ordered {
 		s := controlplane.ConnectService{ID: id}
 		entry := in.Overrides.ServiceEntries[id]
-		if valid[entry] {
+		// No location, no «as the main VPN», no country: the default.
+		auto := entry == "" && in.Overrides.Services[id] == ""
+		s.Auto = &auto
+		switch {
+		case valid[entry]:
 			e := entry
 			s.EntryID = &e
+		case entry != "" && entry != localctl.ServiceMainPath && t.Entries != nil:
+			s.Stale = true // the owner's location left the cache
 		}
 		services = append(services, s)
 	}
@@ -131,6 +143,91 @@ func connectSettings(in uiapi.Inputs, f setup.Facts) controlplane.RouterConnectT
 		t.Wifi = &wifi
 	}
 	return t
+}
+
+// connectValidateServiceEntry is the seam tests count validations through.
+var connectValidateServiceEntry = xray.ValidateConnectServiceEntry
+
+// connectCarriersMemo keeps the last answer of connectServiceCarriers: the
+// check-in asks every minute, the answer changes only with the cached
+// locations, and working it out parses every one of them per service.
+var connectCarriersMemo struct {
+	sync.Mutex
+	key      string
+	carriers map[string][]string
+}
+
+// connectServiceCarriers is, per service, the cached locations (digests, in
+// the index's order) that carry it — those a set_service would accept. Nil
+// when not known: no index, or a cache that does not match it.
+func connectServiceCarriers(entriesPath string, idx *localctl.EntriesIndex) map[string][]string {
+	if idx == nil || len(idx.Entries) > 300 {
+		return nil
+	}
+	// The digests are sha256 of each location's bytes: they name the cache.
+	h := sha256.New()
+	h.Write([]byte(entriesPath))
+	for _, e := range idx.Entries {
+		h.Write([]byte{0})
+		h.Write([]byte(e.Digest))
+	}
+	key := hex.EncodeToString(h.Sum(nil))
+	connectCarriersMemo.Lock()
+	defer connectCarriersMemo.Unlock()
+	if connectCarriersMemo.key == key {
+		return connectCarriersMemo.carriers
+	}
+	cache, err := localctl.LoadEntries(entriesPath)
+	if err != nil || len(cache.Entries) != len(idx.Entries) {
+		return nil
+	}
+	digests := make([]string, len(cache.Entries))
+	for i, raw := range cache.Entries {
+		sum := sha256.Sum256(raw)
+		digests[i] = hex.EncodeToString(sum[:])
+		if digests[i] != idx.Entries[i].Digest {
+			return nil // written between the two reads: next check-in
+		}
+	}
+	carriers := map[string][]string{}
+	for _, svc := range xray.Services {
+		seen := map[string]bool{}
+		list := []string{}
+		for i, raw := range cache.Entries {
+			id := digests[i]
+			if seen[id] || !validConnectEntryID(id) {
+				continue
+			}
+			seen[id] = true
+			if connectValidateServiceEntry(raw, svc.ID) == nil {
+				list = append(list, id)
+			}
+		}
+		carriers[svc.ID] = list
+	}
+	connectCarriersMemo.key, connectCarriersMemo.carriers = key, carriers
+	return carriers
+}
+
+// markConnectServiceCarriers lists each service's carriers, and marks an
+// owner's location that no longer carries its service stale: it does not
+// run, the service is on its default meanwhile.
+func markConnectServiceCarriers(services []controlplane.ConnectService, carriers map[string][]string) {
+	if carriers == nil {
+		return
+	}
+	for i := range services {
+		s := &services[i]
+		list := carriers[s.ID]
+		if len(list) > connecttelemetry.MaxServiceEntries {
+			continue // not known rather than cut short
+		}
+		entries := append([]string{}, list...)
+		s.Entries = &entries
+		if s.EntryID != nil && (s.Auto == nil || !*s.Auto) && !slices.Contains(list, *s.EntryID) {
+			s.EntryID, s.Stale = nil, true
+		}
+	}
 }
 
 // setConnectServiceEntry reports service as running through entry, when the

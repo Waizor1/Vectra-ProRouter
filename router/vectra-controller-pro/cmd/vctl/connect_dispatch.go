@@ -141,6 +141,7 @@ func (d *daemon) connectCapabilities() map[string]bool {
 	if d.cfg.RouteSource == "" && d.desired != nil {
 		if _, err := localctl.LoadEntries(d.cfg.EntriesPath); err == nil {
 			out["select_entry"], out["set_rules"], out["set_service"] = true, true, true
+			out["set_service_auto"] = true // set_service takes entryId ":auto"
 		}
 	}
 	for _, radio := range connectSetup(context.Background()).Wifi.Radios {
