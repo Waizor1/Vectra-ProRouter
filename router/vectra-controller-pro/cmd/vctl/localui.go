@@ -815,6 +815,12 @@ func (d *daemon) waitForTick(ctx context.Context, tick <-chan time.Time) bool {
 				if d.dnsFailedOpen {
 					// Taken out: the FakeDNS answers lead nowhere now.
 					d.flushResolverCache("xray stopped answering on its DNS inbound")
+				} else if d.fwProgrammed != nil {
+					// Put back only if it went in: xray may have missed the
+					// one question programming asks; the watch tries again.
+					if _, in := redirectPort(*d.fwProgrammed); !in {
+						d.dnsFailedOpen = true
+					}
 				}
 				d.publishRuntime()
 			}
@@ -823,6 +829,8 @@ func (d *daemon) waitForTick(ctx context.Context, tick <-chan time.Time) bool {
 			if d.rescueRecheckDue(time.Now()) {
 				if dec := d.rescueStep(ctx); dec.ShouldTransition {
 					d.applyRescueTransition(ctx, dec)
+					// A restart before the next poll must find the mode.
+					_ = d.persist()
 					d.publishRuntime()
 				}
 			}

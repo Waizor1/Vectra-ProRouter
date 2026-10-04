@@ -171,3 +171,14 @@ func TestTheTunnelIsDeadOnlyWithEveryNodeDead(t *testing.T) {
 		t.Fatal("every node the main traffic can take is dead, and yet alive")
 	}
 }
+
+// Nodes the observatory does not watch say nothing: with none of them watched
+// there is no word, not a dead tunnel.
+func TestUnobservedNodesAreNoWord(t *testing.T) {
+	d := &daemon{}
+	now := time.Now()
+	d.publishTunnel(map[string]failover.Health{"other": {}}, now, []string{"a"}, []string{"b"})
+	if d.tunnelDead(now) {
+		t.Fatal("nothing it names is watched, and yet the tunnel is dead")
+	}
+}

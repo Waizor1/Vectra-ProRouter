@@ -1001,6 +1001,9 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 		return false
 	}
 	d.directLoaded = ""
+	// Nothing is redirected any more: the DNS watch must not take this for a
+	// loaded data plane to correct.
+	d.fwProgrammed = nil
 	for _, c := range firewall.RevertCommands(spec) {
 		fields := strings.Fields(c)
 		if len(fields) == 0 {

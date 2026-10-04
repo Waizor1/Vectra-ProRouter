@@ -934,11 +934,18 @@ func (d *daemon) rescueRecheckDue(now time.Time) bool {
 	st := d.rescueState()
 	switch st.Mode {
 	case rescue.ModeProxy:
-		return st.ProxyFailureCount > 0
+		// Not while xray itself is down or starting: the probe would say
+		// nothing (ProxyConclusive), and the loop would sit in its timeouts
+		// instead of serving the DNS watch and the router UI.
+		return st.ProxyFailureCount > 0 && d.xraySettled(now)
 	case rescue.ModeDirect:
 		// Once the cooldown allows the way back and a node lives: the
 		// tunnel's return is then taken within seconds, not at the next poll.
-		return now.Sub(st.LastTransitionAt) >= d.rescuePolicy.Cooldown && !d.tunnelDead(now)
+		shift := st.FailedRetries
+		if shift > 4 {
+			shift = 4
+		}
+		return now.Sub(st.LastTransitionAt) >= d.rescuePolicy.Cooldown<<shift && !d.tunnelDead(now)
 	}
 	return false
 }
@@ -971,6 +978,7 @@ func (d *daemon) rescueState() rescue.State {
 		Mode:               rescue.Mode(d.st.Rescue.Mode),
 		ProxyFailureCount:  d.st.Rescue.ProxyFailureCount,
 		DirectSuccessCount: d.st.Rescue.DirectSuccessCount,
+		FailedRetries:      d.st.Rescue.FailedRetries,
 	}
 	if st.Mode == "" {
 		st.Mode = rescue.ModeProxy
@@ -987,6 +995,7 @@ func (d *daemon) storeRescueState(s rescue.State, reason string) {
 	d.st.Rescue.Mode = string(s.Mode)
 	d.st.Rescue.ProxyFailureCount = s.ProxyFailureCount
 	d.st.Rescue.DirectSuccessCount = s.DirectSuccessCount
+	d.st.Rescue.FailedRetries = s.FailedRetries
 	if !s.LastTransitionAt.IsZero() {
 		d.st.Rescue.LastTransitionAt = s.LastTransitionAt.UTC().Format(time.RFC3339)
 	}

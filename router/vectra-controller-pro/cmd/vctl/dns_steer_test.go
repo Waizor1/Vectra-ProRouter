@@ -15,6 +15,7 @@ import (
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/firewall"
+	"vectra-controller-pro/internal/rescue"
 )
 
 // fakeProc writes /proc/<pid>/{comm,status} for each process.
@@ -474,7 +475,7 @@ func TestTheDNSWatchFailsOpenWithinSeconds(t *testing.T) {
 	if !d.dnsWatchDue(ctx) {
 		t.Fatalf("%d misses in a row and the redirect stays", dnsFastDeadAfter)
 	}
-	none := "fakedns=198.18.0.0/16"
+	none := ";fakedns=198.18.0.0/16"
 	d.fwProgrammed = &none
 	if d.dnsWatchDue(ctx) {
 		t.Fatal("still dead, and yet due without the redirect")
@@ -495,7 +496,7 @@ func TestTheDNSWatchFailsOpenWithinSeconds(t *testing.T) {
 }
 
 func TestRedirectPort(t *testing.T) {
-	for key, want := range map[string]int{"10053/[453]/v6reject=false/hijack=false": 10053, "": 0, "fakedns=198.18.0.0/16": 0, "10053/[453]/v6reject=true/hijack=truefakedns=198.18.0.0/16": 10053} {
+	for key, want := range map[string]int{"10053/[453]/v6reject=false/hijack=false": 10053, "": 0, ";fakedns=198.18.0.0/16": 0, "10053/[453]/v6reject=true/hijack=true;fakedns=198.18.0.0/16": 10053} {
 		if got, _ := redirectPort(key); got != want {
 			t.Errorf("redirectPort(%q) = %d, want %d", key, got, want)
 		}
@@ -515,5 +516,30 @@ func TestTheResolverCacheIsEmptiedByPID(t *testing.T) {
 	d.flushResolverCache("test")
 	if !reflect.DeepEqual(got, []int{7, 12}) {
 		t.Fatalf("signalled %v, want the two dnsmasq [7 12]", got)
+	}
+}
+
+// In direct mode there is no data plane for the watch to correct: reloaded,
+// it would run the LAN back into the tunnel the rescue left. Under the kill
+// switch the polls decide, as before.
+func TestTheDNSWatchLeavesDirectModeAndTheKillSwitchAlone(t *testing.T) {
+	d := dnsDaemon(t, renderWithDNS, dnsmasqAs453)
+	d.desired = &config.Config{}
+	d.supStarted = true
+	d.dnsAnswers = func(context.Context, int) bool { return false }
+	cur := "10053/[453]/v6reject=false/hijack=false"
+	d.fwProgrammed = &cur
+	d.storeRescueState(rescue.State{Mode: rescue.ModeDirect}, "")
+	for i := 0; i < dnsFastDeadAfter+1; i++ {
+		if d.dnsWatchDue(context.Background()) {
+			t.Fatal("the DNS watch reprograms the data plane in direct mode")
+		}
+	}
+	d.storeRescueState(rescue.State{Mode: rescue.ModeProxy}, "")
+	d.desired = &config.Config{Inbounds: config.Inbounds{Tproxy: &config.TproxyInbound{Port: 12345, FwMark: 1, KillSwitch: true}}}
+	for i := 0; i < dnsFastDeadAfter+1; i++ {
+		if d.dnsWatchDue(context.Background()) {
+			t.Fatal("the DNS watch opened the router's lookups under the kill switch")
+		}
 	}
 }

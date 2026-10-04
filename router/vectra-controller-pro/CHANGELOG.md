@@ -37,7 +37,14 @@ VPN comes back by itself.
   TPROXY already lets the LAN past a dead xray, and direct mode then held the
   VPN off for the whole cooldown after xray was back.
 - **The cooldown is 2 minutes, not 5** — it holds only the way back, and
-  that way now waits for a live node anyway.
+  that way now waits for a live node anyway. A return that fails within 5
+  minutes doubles the next cooldown (up to 32 minutes); a proxy that holds
+  for 10 minutes clears it, so a tunnel the observatory calls alive but that
+  carries nothing does not swing the LAN every few minutes.
+- The DNS watch never touches the data plane in direct mode (it would run
+  the LAN back into the tunnel the rescue left) or under the kill switch,
+  and puts the redirect back only once xray has run 15 s: a crash loop no
+  longer reloads the whole table, direct sets included, at every restart.
 
 ### Changed
 - **The support shell is on by default** (UCI `remote_shell` '1' on a new

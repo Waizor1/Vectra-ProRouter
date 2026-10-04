@@ -358,16 +358,23 @@ type tunnelLook struct {
 }
 
 // publishTunnel records whether any node the main traffic can take is alive.
+// A node the observatory does not watch says nothing: with none of them
+// watched there is no word at all.
 func (d *daemon) publishTunnel(health map[string]failover.Health, now time.Time, groups ...[]string) {
+	observed := false
 	for _, g := range groups {
 		for _, t := range g {
-			if health[t].Alive {
+			h, ok := health[t]
+			if h.Alive {
 				d.tunnel.Store(&tunnelLook{At: now})
 				return
 			}
+			observed = observed || ok
 		}
 	}
-	d.tunnel.Store(&tunnelLook{Dead: true, At: now})
+	if observed {
+		d.tunnel.Store(&tunnelLook{Dead: true, At: now})
+	}
 }
 
 // tunnelDead: the observatory, read within the last minute, holds every node

@@ -158,3 +158,34 @@ func TestProbeAnyAsksAllAtOnce(t *testing.T) {
 		t.Fatalf("the budget was not kept: %s", el)
 	}
 }
+
+// A return to the proxy that fails within RetryWindow doubles the next
+// cooldown; a proxy that holds for StableAfter clears the count.
+func TestFailedReturnsBackTheWayBackOff(t *testing.T) {
+	p := DefaultPolicy()
+	now := time.Now()
+	// Back on the proxy a minute ago, and it fails again.
+	st := State{Mode: ModeProxy, ProxyFailureCount: p.TriggerFailureCount - 1, LastTransitionAt: now.Add(-time.Minute)}
+	d := Evaluate(Input{CurrentState: st, ProxyConclusive: true, DirectReachable: true, Now: now}, p)
+	if !d.ShouldTransition || d.NextState.FailedRetries != 1 {
+		t.Fatalf("a failed return not counted: %+v", d)
+	}
+	direct := d.NextState
+	direct.DirectSuccessCount = p.RecoverySuccessCount
+	if d := Evaluate(Input{CurrentState: direct, PublicReachable: true, Now: now.Add(p.Cooldown + time.Second)}, p); d.ShouldTransition {
+		t.Fatalf("one failed return and the plain cooldown still lets it back: %+v", d)
+	}
+	if d := Evaluate(Input{CurrentState: direct, PublicReachable: true, Now: now.Add(2*p.Cooldown + time.Second)}, p); !d.ShouldTransition {
+		t.Fatalf("the doubled cooldown is over and no return: %+v", d)
+	}
+	// Long on the proxy: the count goes.
+	held := State{Mode: ModeProxy, FailedRetries: 3, LastTransitionAt: now.Add(-StableAfter)}
+	if d := Evaluate(Input{CurrentState: held, PublicReachable: true, Now: now}, p); d.NextState.FailedRetries != 0 {
+		t.Fatalf("a proxy that held kept the count: %+v", d)
+	}
+	// The first fall to direct after a long proxy is not a failed return.
+	first := State{Mode: ModeProxy, ProxyFailureCount: p.TriggerFailureCount - 1, LastTransitionAt: now.Add(-time.Hour)}
+	if d := Evaluate(Input{CurrentState: first, ProxyConclusive: true, DirectReachable: true, Now: now}, p); d.NextState.FailedRetries != 0 {
+		t.Fatalf("counted as a failed return: %+v", d)
+	}
+}

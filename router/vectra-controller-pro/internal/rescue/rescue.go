@@ -30,7 +30,23 @@ type State struct {
 	DirectSuccessCount int
 	ProxySuccessCount  int
 	LastTransitionAt   time.Time
+	// FailedRetries counts the returns to the proxy in a row that failed
+	// within RetryWindow: each doubles the cooldown of the next (up to 16×),
+	// so a tunnel the observatory calls alive but that carries nothing does
+	// not swing the LAN every few minutes. A proxy that holds for StableAfter
+	// clears it.
+	FailedRetries int
 }
+
+// RetryWindow: a proxy that fails this soon after the router entered it was a
+// failed return. StableAfter: a proxy that works this long clears the count.
+const (
+	RetryWindow = 5 * time.Minute
+	StableAfter = 10 * time.Minute
+)
+
+// maxBackoffShift caps the cooldown's doubling (2 min << 4 = 32 min).
+const maxBackoffShift = 4
 
 // Policy tunes the evaluator.
 type Policy struct {
@@ -89,13 +105,20 @@ func Evaluate(in Input, p Policy) Decision {
 	}
 	d := Decision{NextMode: st.Mode, NextState: st}
 
-	cooldownOK := st.LastTransitionAt.IsZero() || in.Now.Sub(st.LastTransitionAt) >= p.Cooldown
+	shift := st.FailedRetries
+	if shift > maxBackoffShift {
+		shift = maxBackoffShift
+	}
+	cooldownOK := st.LastTransitionAt.IsZero() || in.Now.Sub(st.LastTransitionAt) >= p.Cooldown<<shift
 
 	switch st.Mode {
 	case ModeProxy:
 		if in.PublicReachable {
 			d.NextState.ProxyFailureCount = 0
 			d.NextState.ProxySuccessCount = st.ProxySuccessCount + 1
+			if st.FailedRetries > 0 && !st.LastTransitionAt.IsZero() && in.Now.Sub(st.LastTransitionAt) >= StableAfter {
+				d.NextState.FailedRetries = 0
+			}
 			return d
 		}
 		if !in.ProxyConclusive {
@@ -110,6 +133,9 @@ func Evaluate(in Input, p Policy) Decision {
 			d.NextMode = ModeDirect
 			d.NextState.Mode = ModeDirect
 			d.NextState.DirectSuccessCount = 0
+			if !st.LastTransitionAt.IsZero() && in.Now.Sub(st.LastTransitionAt) < RetryWindow {
+				d.NextState.FailedRetries = st.FailedRetries + 1
+			}
 			d.NextState.LastTransitionAt = in.Now
 			d.Reason = "proxy path unreachable; falling back to direct"
 		}

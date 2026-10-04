@@ -20,6 +20,7 @@ import (
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/logging"
+	"vectra-controller-pro/internal/rescue"
 )
 
 // DNS through the tunnel, the daemon's side (the why is in
@@ -302,6 +303,13 @@ func (d *daemon) dnsWatchDue(ctx context.Context) bool {
 	if d.desired == nil || !d.supStarted || d.fwProgrammed == nil {
 		return false
 	}
+	// Direct mode has no data plane to program: loaded again here, it would
+	// run the LAN back into the tunnel the rescue left. Under the kill switch
+	// the router's lookups must not leave the tunnel either; the polls decide
+	// there, as before.
+	if d.rescueState().Mode == rescue.ModeDirect || d.killSwitchArmed() {
+		return false
+	}
 	if port, ok := redirectPort(*d.fwProgrammed); ok {
 		if d.answers(ctx, port) {
 			d.dnsFastMisses = 0
@@ -316,7 +324,10 @@ func (d *daemon) dnsWatchDue(ctx context.Context) bool {
 		logging.L().Warn("xray stopped answering on its DNS inbound; the router's resolver asks over the open path until it answers again", "port", port)
 		return true
 	}
-	if !d.dnsFailedOpen {
+	// Back only once xray has run xraySettle: a crash loop answers for a
+	// second at each start, and each put-back costs two loads of the whole
+	// table (and its direct sets) on a 234 MB router.
+	if !d.dnsFailedOpen || !d.xraySettled(time.Now()) {
 		return false
 	}
 	port, _, ok := d.dnsCandidate()
