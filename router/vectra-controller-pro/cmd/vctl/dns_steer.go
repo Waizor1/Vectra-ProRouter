@@ -595,14 +595,15 @@ const resolverFlushDedupe = 5 * time.Second
 // addresses (198.18.x), and dnsmasq kept handing those out until they
 // expired — Instagram and YouTube dead on the LAN with the internet up.
 //
-// The same reason again within resolverFlushDedupe is not repeated: one
-// change of path, one flush, however many steps carry it out.
+// The same reason again within resolverFlushDedupe, the resolver's path
+// unchanged since (dnsPathGen), is not repeated: one change of path, one
+// flush, however many steps carry it out — and every change its own.
 func (d *daemon) flushResolverCache(reason string) {
 	now := time.Now()
-	if reason == d.flushedFor && !d.flushedAt.IsZero() && now.Sub(d.flushedAt) < resolverFlushDedupe {
+	if reason == d.flushedFor && d.flushedGen == d.dnsPathGen && !d.flushedAt.IsZero() && now.Sub(d.flushedAt) < resolverFlushDedupe {
 		return
 	}
-	d.flushedFor, d.flushedAt = reason, now
+	d.flushedFor, d.flushedAt, d.flushedGen = reason, now, d.dnsPathGen
 	hup := d.hupResolver
 	if hup == nil {
 		hup = func(pid int) error { return syscall.Kill(pid, syscall.SIGHUP) }

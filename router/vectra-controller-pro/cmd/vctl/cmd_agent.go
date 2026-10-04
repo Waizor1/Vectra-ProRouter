@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -169,6 +171,10 @@ type daemon struct {
 	// applyRuleset stands in for the commit-confirmer's Apply in tests
 	// (programFirewall); nil is the real one.
 	applyRuleset func(script string, spec firewall.Spec) error
+	// reloadXrayFn and xrayStatusFn stand in for the supervisor's Reload and
+	// Status in tests (reloadXray, waitXrayAfter, flushAfterXrayRestart).
+	reloadXrayFn func(ctx context.Context) error
+	xrayStatusFn func() supervisor.Status
 	// tableLoaded tells whether the kernel has vctl's nft table (the seam
 	// tests stand in for nft).
 	tableLoaded func(ctx context.Context, name string) bool
@@ -194,10 +200,18 @@ type daemon struct {
 	signalProcess func(pid int, sig syscall.Signal) error
 	// hupResolver stands in for SIGHUP to dnsmasq in tests.
 	hupResolver func(pid int) error
-	// flushedFor/flushedAt: the last resolver flush's reason and time — the
-	// same one again within resolverFlushDedupe is not repeated.
+	// flushedFor/flushedAt/flushedGen: the last resolver flush's reason, time
+	// and dnsPathGen — the same one again within resolverFlushDedupe, with
+	// the resolver's path unchanged since, is not repeated.
 	flushedFor string
 	flushedAt  time.Time
+	flushedGen int
+	// dnsPathGen counts the changes of the resolver's path: the DNS redirect
+	// going in or out.
+	dnsPathGen int
+	// flushedStart is the xray start the resolver's cache was last emptied
+	// for (flushAfterXrayRestart).
+	flushedStart time.Time
 	// rescueCheckedAt is when the rescue last probed (rescueStep).
 	rescueCheckedAt time.Time
 	// reconfiguredAt is when an apply last put a new config in (rescueAfresh):
@@ -899,6 +913,12 @@ func (d *daemon) rescueStep(ctx context.Context) rescue.Decision {
 	// dead three times in a row.
 	hc := &http.Client{Timeout: 8 * time.Second, Transport: tunnelProbeTransport}
 	cur := d.rescueState()
+	if d.operatorDirect() {
+		// The operator's direct mode is the operator's: it lasts until a
+		// reconnect, whatever the tunnel does.
+		d.rescueCheckedAt = time.Now()
+		return rescue.Decision{NextMode: cur.Mode, NextState: cur}
+	}
 	if cur.Mode == rescue.ModeProxy && d.desired == nil && (cur.ProxyFailureCount > 0 || !cur.FirstFailureAt.IsZero()) {
 		// No owner's config — a router released, or not yet given one after
 		// a claim: there is no tunnel, the LAN goes out directly, and a run of
@@ -1074,19 +1094,183 @@ func (d *daemon) tunnelJudgeable(now time.Time) bool {
 // rescueAfresh: an apply has just put a new config in and loaded the data
 // plane for it. The failures counted before were another tunnel's — or none
 // at all — so the rescue's window starts again, once xray settles on the new
-// one. In direct mode the apply has just put the router back on the tunnel:
-// the rescue says so (proxy) and judges it like any other, instead of sitting
-// out its cooldown while the data plane is loaded.
+// one. In the rescue's direct mode, an apply directMayEnd allowed has just put
+// the router back on the tunnel: the rescue says so (proxy) and judges it
+// like any other. The operator's direct mode is never ended here.
 func (d *daemon) rescueAfresh(now time.Time) {
 	d.reconfiguredAt = now
 	st := d.rescueState()
 	st.ProxyFailureCount, st.FirstFailureAt = 0, time.Time{}
 	reason := ""
-	if st.Mode == rescue.ModeDirect && d.fwProgrammed != nil {
+	if st.Mode == rescue.ModeDirect && d.fwProgrammed != nil && !d.operatorDirect() {
 		st.Mode, st.DirectSuccessCount, st.LastTransitionAt = rescue.ModeProxy, 0, now
 		reason = "a new config was applied; judging its tunnel afresh"
 	}
 	d.storeRescueState(st, reason)
+}
+
+// operatorDirectReason is the reason the direct-mode job records.
+const operatorDirectReason = "operator requested direct mode"
+
+// rescueSourceOperator marks the operator's direct mode (RescueSnapshot.Source).
+const rescueSourceOperator = "operator"
+
+// operatorDirect: the router is direct because the operator asked
+// (jobEnterDirect). It stays so until the operator reconnects: neither the
+// rescue nor an apply takes it back to the proxy. A state file from before
+// r18 has no source; its reason tells.
+func (d *daemon) operatorDirect() bool {
+	r := d.st.Rescue
+	if r.Mode != string(rescue.ModeDirect) {
+		return false
+	}
+	return r.Source == rescueSourceOperator || r.Source == "" && r.LastReason == operatorDirectReason
+}
+
+// directMayEnd: an apply in direct mode may load the data plane and put the
+// router on the new tunnel now — otherwise the config waits on disk for the
+// rescue's own way back (reapplyFirewall reads it), and the LAN keeps its
+// internet. Never out of the operator's direct mode. Other nodes or
+// credentials than the ones the rescue left — likely the fix — at once,
+// unless returns have already failed in a row: then only after the backoff's
+// cooldown, so applies of dead nodes do not swing the LAN. The same nodes only
+// when the rescue itself would go back: the cooldown over, the tunnel not
+// known dead.
+func (d *daemon) directMayEnd(now time.Time, nodesChanged bool) bool {
+	if d.operatorDirect() {
+		return false
+	}
+	st := d.rescueState()
+	cooldownOK := st.LastTransitionAt.IsZero() || now.Sub(st.LastTransitionAt) >= rescue.CooldownAfter(d.rescuePolicy, st.FailedRetries)
+	if nodesChanged {
+		return st.FailedRetries == 0 || cooldownOK
+	}
+	return cooldownOK && !d.tunnelDead(now, st.LastTransitionAt)
+}
+
+// renderNodesKey fingerprints the nodes the running render dials: every
+// outbound but xray's own (freedom, blackhole, dns, loopback), with its
+// settings — addresses and credentials. "" when there is no render.
+func (d *daemon) renderNodesKey() string {
+	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
+	if err != nil {
+		return ""
+	}
+	var doc struct {
+		Outbounds []struct {
+			Protocol       string          `json:"protocol"`
+			Settings       json.RawMessage `json:"settings"`
+			StreamSettings json.RawMessage `json:"streamSettings"`
+		} `json:"outbounds"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return ""
+	}
+	h := sha256.New()
+	for _, o := range doc.Outbounds {
+		switch o.Protocol {
+		case "freedom", "blackhole", "dns", "loopback":
+			continue
+		}
+		h.Write([]byte(o.Protocol))
+		h.Write([]byte{0})
+		h.Write(o.Settings)
+		h.Write([]byte{0})
+		h.Write(o.StreamSettings)
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// xrayRestartWait bounds the wait for xray to come back after a reload (a
+// var: tests shorten it); xrayRestartPoll is how often it looks.
+var xrayRestartWait = 10 * time.Second
+
+const xrayRestartPoll = 100 * time.Millisecond
+
+func (d *daemon) xrayStatus() supervisor.Status {
+	if d.xrayStatusFn != nil {
+		return d.xrayStatusFn()
+	}
+	if d.sup == nil {
+		return supervisor.Status{}
+	}
+	return d.sup.Status()
+}
+
+// reloadXray restarts xray and waits, at most xrayRestartWait, for the new
+// process. Reload only signals the old one, which goes on answering — on its
+// DNS inbound too — for a moment: a data plane programmed then put the DNS
+// redirect on a process about to exit, and the cache emptied then filled
+// again with FakeDNS answers the new one does not know. false: no new xray
+// within the bound. With no xray started there is nothing to wait for: true.
+func (d *daemon) reloadXray(ctx context.Context) bool {
+	if !d.supStarted {
+		return true
+	}
+	t0 := time.Now()
+	reload := d.reloadXrayFn
+	if reload == nil {
+		reload = func(ctx context.Context) error { return d.sup.Reload(d.supCtx) }
+	}
+	if err := reload(ctx); err != nil {
+		// Between two starts (a crash's backoff): the supervisor's next start
+		// is as good a new xray.
+		logging.L().Debug("xray reload", "err", err.Error())
+	}
+	return d.waitXrayAfter(ctx, t0)
+}
+
+// waitXrayAfter waits, at most xrayRestartWait from t0, for an xray started
+// after t0 to run.
+func (d *daemon) waitXrayAfter(ctx context.Context, t0 time.Time) bool {
+	deadline := t0.Add(xrayRestartWait)
+	for {
+		if st := d.xrayStatus(); st.State == supervisor.StateRunning && st.StartedAt.After(t0) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			logging.L().Warn("xray did not come back within its bound after a restart", "waited", xrayRestartWait.String())
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(xrayRestartPoll):
+		}
+	}
+}
+
+// flushAfterXrayRestart: xray has started anew since the last look — a
+// reload after a subscription refresh or a location change, the failover
+// watchdog's restart, a crash — and its render hands out FakeDNS addresses
+// through the DNS redirect: the old process's pool went with it, and what
+// dnsmasq cached from it leads nowhere. Once the new one answers on its DNS
+// inbound the cache is emptied, once per start. The first look only notes
+// the start: the data plane's programming at it empties the cache.
+func (d *daemon) flushAfterXrayRestart(ctx context.Context) {
+	if !d.supStarted {
+		return
+	}
+	st := d.xrayStatus()
+	if st.State != supervisor.StateRunning || st.StartedAt.IsZero() || st.StartedAt.Equal(d.flushedStart) {
+		return
+	}
+	if d.flushedStart.IsZero() || d.fwProgrammed == nil || d.rescueState().Mode == rescue.ModeDirect {
+		d.flushedStart = st.StartedAt
+		return
+	}
+	port, in := redirectPort(*d.fwProgrammed)
+	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
+	if !in || err != nil || len(xray.RenderFakeDNSPools(raw)) == 0 {
+		d.flushedStart = st.StartedAt
+		return
+	}
+	if !d.answers(ctx, port) {
+		return // not back yet: the next look
+	}
+	d.flushedStart = st.StartedAt
+	d.flushResolverCache("xray restarted; the FakeDNS answers it gave are gone")
 }
 
 // rescueRecheckEvery is how soon, between the polls, the rescue looks again
@@ -1131,6 +1315,10 @@ func (d *daemon) rescueRecheckDue(now time.Time) bool {
 	case rescue.ModeDirect:
 		// Once the cooldown allows the way back and a node lives: the
 		// tunnel's return is then taken within seconds, not at the next poll.
+		// Never out of the operator's direct mode.
+		if d.operatorDirect() {
+			return false
+		}
 		return now.Sub(st.LastTransitionAt) >= rescue.CooldownAfter(d.rescuePolicy, st.FailedRetries) && !d.tunnelDead(now, st.LastTransitionAt)
 	}
 	return false
@@ -1188,6 +1376,9 @@ func (d *daemon) storeRescueState(s rescue.State, reason string) {
 	d.st.Rescue.DirectSuccessCount = s.DirectSuccessCount
 	d.st.Rescue.FailedRetries = s.FailedRetries
 	d.st.Rescue.FirstFailureAt = ""
+	if s.Mode != rescue.ModeDirect {
+		d.st.Rescue.Source = ""
+	}
 	if !s.FirstFailureAt.IsZero() {
 		d.st.Rescue.FirstFailureAt = s.FirstFailureAt.UTC().Format(time.RFC3339)
 	}
