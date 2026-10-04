@@ -17,7 +17,9 @@ const BENIGN = [
 ];
 
 // vctl logs through slog: `time=… level=WARN msg="…" key=value`, whatever the syslog priority.
-const SLOG_LEVEL = /(?:^|\s)level=(\w+)/;
+// Only a line of that shape is re-levelled: any other daemon's line that merely
+// says "level=" (a crond banner, a hostapd note) keeps its syslog level.
+const SLOG_LEVEL = /^\s*time=\S+ level=(\w+)(?:\s+|$)/;
 const LEVELS: Record<string, string> = { debug: 'debug', info: 'info', notice: 'info', warn: 'warn', warning: 'warn', err: 'error', error: 'error' };
 
 export interface LogRow {
@@ -39,7 +41,6 @@ export function lineLevel(l: LogLine): string {
 export function lineText(message: string): string {
   if (!SLOG_LEVEL.test(message)) return message;
   return message
-    .replace(/(^|\s)time=\S+/, '')
     .replace(SLOG_LEVEL, '')
     .trim()
     .replace(/^msg=("((?:[^"\\]|\\.)*)"|\S+)/, (_, raw: string, quoted?: string) => (quoted !== undefined ? quoted.replace(/\\(.)/g, '$1') : raw));
