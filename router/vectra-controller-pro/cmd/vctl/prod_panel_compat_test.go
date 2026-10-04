@@ -154,6 +154,7 @@ func newProdDaemon(t *testing.T, dir string, panel *prodPanelStub) *daemon {
 		t.Fatalf("new daemon: %v", err)
 	}
 	d.rescuePolicy.HealthURLs = []string{panel.URL}
+	d.rescuePolicy.TraceURLs = nil // the panel stands in for the internet: no trace
 	return d
 }
 

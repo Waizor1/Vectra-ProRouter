@@ -189,3 +189,20 @@ func TestFailedReturnsBackTheWayBackOff(t *testing.T) {
 		t.Fatalf("counted as a failed return: %+v", d)
 	}
 }
+
+// The trace's "ip=" is what the probe reports; a 4xx or a body without it is
+// no answer.
+func TestProbeTraceReadsTheAddress(t *testing.T) {
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("fl=1\nh=x\nip=203.0.113.7\nloc=PL\n"))
+	}))
+	defer ok.Close()
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusForbidden) }))
+	defer bad.Close()
+	if ip, got := ProbeTrace(context.Background(), nil, []string{bad.URL, ok.URL}, 2*time.Second); !got || ip != "203.0.113.7" {
+		t.Fatalf("got %q %v", ip, got)
+	}
+	if _, got := ProbeTrace(context.Background(), nil, []string{bad.URL}, 2*time.Second); got {
+		t.Fatal("a 403 counted as an answer")
+	}
+}

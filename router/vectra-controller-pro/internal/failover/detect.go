@@ -139,6 +139,10 @@ func (d *Detector) Failing(tag string, now time.Time) bool {
 	return n >= UnansweredMin
 }
 
+// LastAnswered is when an answered connection to the node last first
+// appeared; zero when none has been seen.
+func (d *Detector) LastAnswered(tag string) time.Time { return d.lastAnswered[tag] }
+
 // AnsweredSince reports whether an answered connection to the node first
 // appeared at or after t.
 func (d *Detector) AnsweredSince(tag string, t time.Time) bool {

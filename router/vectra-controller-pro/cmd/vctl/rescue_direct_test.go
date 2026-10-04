@@ -37,6 +37,7 @@ func TestRescueGoesDirectWhenOnlyTheTunnelIsDead(t *testing.T) {
 	// Only the marked client reaches it; the tunnel's plain client cannot
 	// even resolve the name.
 	d.rescuePolicy.HealthURLs = []string{"http://only-around-the-tunnel.invalid/generate_204"}
+	d.rescuePolicy.TraceURLs = []string{"http://only-around-the-tunnel.invalid/cdn-cgi/trace"}
 	d.rescuePolicy.Cooldown = 0
 	d.client = controlplane.NewClient(controlplane.Options{BaseURL: srv.URL, HTTPClient: &http.Client{Transport: toServer{srv}}})
 
@@ -56,6 +57,7 @@ func TestRescueStaysWhenTheLineIsDeadToo(t *testing.T) {
 	defer srv.Close()
 	d := confirmDaemon(t, srv.URL, filepath.Join(t.TempDir(), "fw-confirm"), &http.Client{Transport: toServer{srv}})
 	d.rescuePolicy.HealthURLs = []string{"http://only-around-the-tunnel.invalid/generate_204"}
+	d.rescuePolicy.TraceURLs = []string{"http://only-around-the-tunnel.invalid/cdn-cgi/trace"}
 	d.rescuePolicy.Cooldown = 0
 	d.client = controlplane.NewClient(controlplane.Options{BaseURL: srv.URL, HTTPClient: &http.Client{Transport: toServer{srv}}})
 
@@ -73,6 +75,7 @@ func TestRescueNeverGoesDirectUnderTheKillSwitch(t *testing.T) {
 	defer srv.Close()
 	d := confirmDaemon(t, srv.URL, filepath.Join(t.TempDir(), "fw-confirm"), &http.Client{Transport: toServer{srv}})
 	d.rescuePolicy.HealthURLs = []string{"http://only-around-the-tunnel.invalid/generate_204"}
+	d.rescuePolicy.TraceURLs = []string{"http://only-around-the-tunnel.invalid/cdn-cgi/trace"}
 	d.rescuePolicy.Cooldown = 0
 	d.client = controlplane.NewClient(controlplane.Options{BaseURL: srv.URL, HTTPClient: &http.Client{Transport: toServer{srv}}})
 	d.desired = &config.Config{Inbounds: config.Inbounds{Tproxy: &config.TproxyInbound{Port: 12345, FwMark: 1, KillSwitch: true}}}
@@ -163,15 +166,15 @@ func TestTheTunnelIsDeadOnlyWithEveryNodeDead(t *testing.T) {
 		t.Fatal("dead with no word at all")
 	}
 	health := map[string]failover.Health{"a": {}, "b": {}, "c": {Alive: true}}
-	d.publishTunnel(health, now, false, []string{"a"}, []string{"b"}, []string{"c"})
+	d.publishTunnel(health, now, tunnelLook{}, []string{"a"}, []string{"b"}, []string{"c"})
 	if d.tunnelDead(now, time.Time{}) {
 		t.Fatal("a borrowable node lives, and yet dead")
 	}
-	d.publishTunnel(health, now, false, []string{"a"}, []string{"b"})
+	d.publishTunnel(health, now, tunnelLook{}, []string{"a"}, []string{"b"})
 	if !d.tunnelDead(now, time.Time{}) {
 		t.Fatal("every node the main traffic can take is dead, and yet alive")
 	}
-	d.publishTunnel(map[string]failover.Health{"a": {Alive: true}}, now, true, []string{"a"})
+	d.publishTunnel(map[string]failover.Health{"a": {Alive: true}}, now, tunnelLook{MainDown: true}, []string{"a"})
 	if !d.tunnelDead(now, time.Time{}) || !d.tunnelFailing(now) {
 		t.Fatal("the watchdog holds the main balancer down, and yet the tunnel lives")
 	}
@@ -184,12 +187,12 @@ func TestOnlyAnAnswerAfterLeavingIsAWayBack(t *testing.T) {
 	now := time.Now()
 	left := now.Add(-2 * time.Minute)
 	stale := map[string]failover.Health{"a": {Alive: true, LastSeen: left.Add(-time.Minute)}}
-	d.publishTunnel(stale, now, false, []string{"a"})
+	d.publishTunnel(stale, now, tunnelLook{}, []string{"a"})
 	if !d.tunnelDead(now, left) {
 		t.Fatal("an answer from before the outage took the router back")
 	}
 	fresh := map[string]failover.Health{"a": {Alive: true, LastSeen: now.Add(-10 * time.Second)}, "b": {LastSeen: now}}
-	d.publishTunnel(fresh, now, false, []string{"a", "b"})
+	d.publishTunnel(fresh, now, tunnelLook{}, []string{"a", "b"})
 	if d.tunnelDead(now, left) {
 		t.Fatal("a node answered after the router left, and yet no way back")
 	}
@@ -200,8 +203,30 @@ func TestOnlyAnAnswerAfterLeavingIsAWayBack(t *testing.T) {
 func TestUnobservedNodesAreNoWord(t *testing.T) {
 	d := &daemon{}
 	now := time.Now()
-	d.publishTunnel(map[string]failover.Health{"other": {}}, now, false, []string{"a"}, []string{"b"})
+	d.publishTunnel(map[string]failover.Health{"other": {}}, now, tunnelLook{}, []string{"a"}, []string{"b"})
 	if d.tunnelDead(now, time.Time{}) {
 		t.Fatal("nothing it names is watched, and yet the tunnel is dead")
+	}
+}
+
+// The connection table's word: a node xray dialled and that answered after
+// the router left is a way back; none since, no way back — until the blind
+// retry after blindRetryAfter.
+func TestTheConnectionTableIsAWayBack(t *testing.T) {
+	d := &daemon{}
+	now := time.Now()
+	left := now.Add(-3 * time.Minute)
+	health := map[string]failover.Health{"a": {Alive: true}}
+	d.publishTunnel(health, now, tunnelLook{Watching: true, Answered: left.Add(-time.Minute)}, []string{"a"})
+	if !d.tunnelDead(now, left) {
+		t.Fatal("no node answered since the router left, and yet a way back")
+	}
+	d.publishTunnel(health, now, tunnelLook{Watching: true, Answered: now.Add(-5 * time.Second)}, []string{"a"})
+	if d.tunnelDead(now, left) {
+		t.Fatal("a node answered since the router left, and yet no way back")
+	}
+	d.publishTunnel(health, now, tunnelLook{Watching: true}, []string{"a"})
+	if d.tunnelDead(now, now.Add(-blindRetryAfter)) {
+		t.Fatal("no blind try after blindRetryAfter")
 	}
 }

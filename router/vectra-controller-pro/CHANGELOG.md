@@ -23,10 +23,20 @@ VPN comes back by itself.
   After its cooldown the rescue retried the proxy with every node still
   blocked (116 s without internet), and the same cooldown held the way back
   out. Now the way back waits for a node of the main balancer, its reserve
-  or the borrow pool to have answered xray's observatory AFTER the router
-  left (last_seen_time): its "alive" alone is the verdict of its last round,
-  which can predate the outage by the whole probe interval — the second
-  drill round went back to a blocked tunnel on exactly that. The way out
+  or the borrow pool to have answered AFTER the router left — by the
+  connection table (xray's own dials, the observatory's included, answered
+  or not) or the observatory's last_seen_time where it gives one: its
+  "alive" alone is the verdict of its last round, which can predate the
+  outage by the whole probe interval — the second drill round went back to
+  a blocked tunnel on exactly that. With no answer at all for 10 minutes it
+  tries once anyway, the cooldown's doubling spacing the next tries.
+- **The rescue's probe could succeed around a dead tunnel.** In direct mode
+  the ISP's DNS fills dnsmasq, and www.gstatic.com resolves to a Google cache
+  inside the ISP — an address the kernel sends straight out. Back on the
+  proxy, the probe "worked" with every node blocked and the LAN sat offline
+  for five minutes. The probe through the tunnel is now Cloudflare's
+  /cdn-cgi/trace, and an answer from the router's own WAN address (learned
+  around the tunnel every 10 minutes) counts as none. The way out
   never waits for the cooldown, and the watchdog seeing the main balancer
   down starts the rescue's rechecks without waiting for the next poll.
 - `vctl status` (ubus `vectra status`) shows the rescue: mode, failures,

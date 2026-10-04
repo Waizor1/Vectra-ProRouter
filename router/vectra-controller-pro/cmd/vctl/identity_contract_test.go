@@ -73,6 +73,7 @@ func newIdentityDaemon(t *testing.T, dir, controlURL, legacyStatePath string) *d
 		t.Fatalf("new daemon: %v", err)
 	}
 	d.rescuePolicy.HealthURLs = []string{controlURL}
+	d.rescuePolicy.TraceURLs = nil // the panel stands in for the internet: no trace
 	return d
 }
 

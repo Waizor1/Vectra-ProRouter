@@ -11,7 +11,9 @@ package rescue
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -62,7 +64,9 @@ func CooldownAfter(p Policy, failed int) time.Duration {
 
 // Policy tunes the evaluator.
 type Policy struct {
-	HealthURLs           []string
+	HealthURLs []string
+	// TraceURLs are asked through the tunnel (see TraceURLs).
+	TraceURLs            []string
 	TriggerFailureCount  int           // consecutive proxy failures before going direct
 	RecoverySuccessCount int           // consecutive direct successes before retrying proxy
 	Cooldown             time.Duration // minimum gap between transitions
@@ -72,6 +76,7 @@ type Policy struct {
 func DefaultPolicy() Policy {
 	return Policy{
 		HealthURLs:           []string{"https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"},
+		TraceURLs:            TraceURLs,
 		TriggerFailureCount:  3,
 		RecoverySuccessCount: 2,
 		// The way back to the proxy only (the way out never waits), and
@@ -213,4 +218,63 @@ func ProbeAnyWithin(ctx context.Context, client *http.Client, urls []string, d t
 	ctx, cancel := context.WithTimeout(ctx, d)
 	defer cancel()
 	return ProbeAny(ctx, client, urls)
+}
+
+// TraceURLs answer with the address the request came from ("ip=" in
+// Cloudflare's /cdn-cgi/trace): asked through the tunnel, an answer from the
+// router's own WAN address went around it. A plain 2xx proves nothing there —
+// www.gstatic.com resolves to a Google cache inside the ISP, whose address the
+// kernel sends straight out, so the probe "worked" with every node dead
+// (1111, 2026-10-04).
+var TraceURLs = []string{"https://www.cloudflare.com/cdn-cgi/trace", "https://cp.cloudflare.com/cdn-cgi/trace"}
+
+// ProbeTrace asks the trace urls at once, within d, and returns the address
+// the first answer saw the request come from.
+func ProbeTrace(ctx context.Context, client *http.Client, urls []string, d time.Duration) (string, bool) {
+	if client == nil {
+		client = &http.Client{Timeout: d}
+	}
+	if len(urls) == 0 {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+	type answer struct {
+		ip string
+		ok bool
+	}
+	results := make(chan answer, len(urls))
+	for _, u := range urls {
+		go func(u string) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+			if err != nil {
+				results <- answer{}
+				return
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				results <- answer{}
+				return
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			if resp.StatusCode >= 400 {
+				results <- answer{}
+				return
+			}
+			for _, line := range strings.Split(string(body), "\n") {
+				if ip, found := strings.CutPrefix(strings.TrimSpace(line), "ip="); found && ip != "" {
+					results <- answer{ip: ip, ok: true}
+					return
+				}
+			}
+			results <- answer{}
+		}(u)
+	}
+	for range urls {
+		if a := <-results; a.ok {
+			return a.ip, true
+		}
+	}
+	return "", false
 }

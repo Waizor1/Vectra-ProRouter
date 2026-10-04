@@ -342,7 +342,21 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 		return
 	}
 	d.publishRoute(w, main, infos[main], unfit, now)
-	d.publishTunnel(health, now, w.pol.DownFor(main, now) > 0, mainGroups...)
+	base := tunnelLook{MainDown: w.pol.DownFor(main, now) > 0}
+	if len(w.eps) > 0 {
+		// The connection table's word too: xray's own dials to the nodes —
+		// the observatory's, at the least — answered or not. It needs no
+		// last_seen_time from the observatory (burstObservatory gives none).
+		base.Watching = true
+		for _, g := range mainGroups {
+			for _, t := range g {
+				if a := w.det.LastAnswered(t); a.After(base.Answered) {
+					base.Answered = a
+				}
+			}
+		}
+	}
+	d.publishTunnel(health, now, base, mainGroups...)
 	if down := w.pol.DownFor(main, now); down >= failoverDownAfter {
 		if !w.downReported[main] {
 			w.downReported[main] = true
@@ -366,12 +380,19 @@ type tunnelLook struct {
 	MainDown  bool
 	Seen      bool
 	LastAlive time.Time
-	At        time.Time
+	// Watching: the watchdog maps the nodes' endpoints, so Answered — when a
+	// connection of xray's to one of them was last answered — is a word.
+	Watching bool
+	Answered time.Time
+	At       time.Time
 }
 
 // publishTunnel records the word on the main traffic's nodes.
-func (d *daemon) publishTunnel(health map[string]failover.Health, now time.Time, mainDown bool, groups ...[]string) {
-	l := &tunnelLook{MainDown: mainDown, At: now}
+// base carries the watchdog's own word (MainDown, Watching, Answered); the
+// look is complete before it is stored: the loop reads it.
+func (d *daemon) publishTunnel(health map[string]failover.Health, now time.Time, base tunnelLook, groups ...[]string) {
+	l := &base
+	l.At = now
 	observed, alive := false, false
 	for _, g := range groups {
 		for _, t := range g {
@@ -413,11 +434,23 @@ func (d *daemon) tunnelDead(now, since time.Time) bool {
 	if l == nil {
 		return false
 	}
-	if l.Seen && !since.IsZero() {
-		return !l.LastAlive.After(since)
+	if !since.IsZero() {
+		// Nothing has answered for long: one blind try, the cooldown's
+		// doubling keeping the next ones apart — never direct for good on
+		// a word that may not come (no observatory probing at all).
+		if now.Sub(since) >= blindRetryAfter {
+			return false
+		}
+		if l.Watching || l.Seen {
+			return !l.Answered.After(since) && !l.LastAlive.After(since)
+		}
 	}
 	return l.Dead || l.MainDown
 }
+
+// blindRetryAfter is how long direct mode waits for a node's answer before
+// it tries the proxy anyway.
+const blindRetryAfter = 10 * time.Minute
 
 // tunnelFailing: the watchdog holds the main balancer down, or every watched
 // node dead — the rescue need not wait for the next poll to look.

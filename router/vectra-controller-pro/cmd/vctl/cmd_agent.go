@@ -184,6 +184,11 @@ type daemon struct {
 	hupResolver func(pid int) error
 	// rescueCheckedAt is when the rescue last probed (rescueStep).
 	rescueCheckedAt time.Time
+	// wanIP is the router's own address as Cloudflare saw it around the
+	// tunnel (refreshWANIP, at wanIPAt); traceAroundSaid: logged once.
+	wanIP           string
+	wanIPAt         time.Time
+	traceAroundSaid bool
 	// hijackMisses counts the loops in a row nothing served port 53 while
 	// the loaded table hijacks the LAN's DNS to it; ownsAddr stands in for
 	// routerOwns in tests.
@@ -867,9 +872,14 @@ func (d *daemon) rescueStep(ctx context.Context) rescue.Decision {
 	// upstream goes into xray), and a slow but working tunnel must not look
 	// dead three times in a row.
 	hc := &http.Client{Timeout: 8 * time.Second}
-	publicReachable := rescue.ProbeAny(ctx, hc, d.rescuePolicy.HealthURLs)
-
 	cur := d.rescueState()
+	var publicReachable bool
+	if cur.Mode == rescue.ModeProxy {
+		publicReachable = d.probeThroughTunnel(ctx, hc)
+	} else {
+		publicReachable = rescue.ProbeAny(ctx, hc, d.rescuePolicy.HealthURLs)
+	}
+
 	// Direct reachability is asked AROUND the tunnel: the control plane's
 	// client, whose sockets the output chain returns on and which resolves
 	// names itself (controlplane/resolve.go). It used to be publicReachable
@@ -910,6 +920,42 @@ func (d *daemon) rescueStep(ctx context.Context) rescue.Decision {
 
 	d.rescueCheckedAt = time.Now()
 	return decision
+}
+
+// probeThroughTunnel asks the trace urls the way the LAN's traffic goes, and
+// counts only an answer that did not come from the router's own WAN address:
+// one that did went around the tunnel and says nothing of it.
+func (d *daemon) probeThroughTunnel(ctx context.Context, hc *http.Client) bool {
+	if len(d.rescuePolicy.TraceURLs) == 0 {
+		return rescue.ProbeAny(ctx, hc, d.rescuePolicy.HealthURLs)
+	}
+	d.refreshWANIP(ctx, time.Now())
+	ip, ok := rescue.ProbeTrace(ctx, hc, d.rescuePolicy.TraceURLs, 8*time.Second)
+	if ok && d.wanIP != "" && ip == d.wanIP {
+		if !d.traceAroundSaid {
+			d.traceAroundSaid = true
+			logging.L().Warn("rescue: the probe through the tunnel came back from the router's own address; it went around the tunnel and counts as no answer")
+		}
+		return false
+	}
+	if ok {
+		d.traceAroundSaid = false
+	}
+	return ok
+}
+
+// wanIPEvery is how often the router learns its own WAN address: the trace
+// asked around the tunnel, on the control plane's path.
+const wanIPEvery = 10 * time.Minute
+
+func (d *daemon) refreshWANIP(ctx context.Context, now time.Time) {
+	if d.client == nil || (!d.wanIPAt.IsZero() && now.Sub(d.wanIPAt) < wanIPEvery) {
+		return
+	}
+	d.wanIPAt = now
+	if ip, ok := rescue.ProbeTrace(ctx, d.client.HTTPClient(), d.rescuePolicy.TraceURLs, directProbeBudget); ok {
+		d.wanIP = ip
+	}
 }
 
 // xraySettle is how long xray has to run before a failed probe through it
