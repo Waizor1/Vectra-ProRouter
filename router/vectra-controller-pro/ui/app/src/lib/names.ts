@@ -92,7 +92,7 @@ export const levelOf = (tag: string): number | null => {
 
 export interface Named {
   kind: Kind;
-  /** What comes before the arrow: "Мост", "Hysteria2"; null when nothing does. */
+  /** What comes before the arrow: "Мост", "Резерв" (a Hysteria2 node); null when nothing does. */
   pre: string | null;
   flag: string | null;
   /** Inside a list already grouped by kind: "Польша", "Уровень 3"; the tag when nothing is known. */
@@ -118,7 +118,7 @@ export function nodeName(t: T, tag: string, hint?: string | null): Named {
   } else if (kind === 'direct' || kind === 'block') {
     short = name = t(kind === 'direct' ? 'nm.direct' : 'nm.block');
   } else {
-    pre = kind === 'bridge' ? t('nm.bridge') : kind === 'hy2' ? 'Hysteria2' : null;
+    pre = kind === 'bridge' ? t('nm.bridge') : kind === 'hy2' ? t('nm.hy2') : null;
     cc = hint || tagCountry(tag);
     if (cc) {
       short = countryName(t.lang, cc);
@@ -140,8 +140,8 @@ export interface RouteName {
  * A balancer's name, from what the routing rules that point at it carry: the
  * catch-all → "Основной трафик", geosite:telegram + tiktok → "Telegram и
  * TikTok", geoip:ru / domain:ru → "Российские сайты". A balancer reached only
- * as another's fallback is named by its nodes: whitelist levels, a Hysteria2
- * backup, or just a backup. Nothing tells → the tag.
+ * as another's fallback is named by its nodes: whitelist levels, a backup
+ * channel (Hysteria2 nodes), or just a backup. Nothing tells → the tag.
  */
 export function routeName(t: T, b: Balancer): RouteName {
   if (b.role === 'main' || b.matchers.some((m) => m.kind === 'all')) return { name: t('rt.main'), known: true };

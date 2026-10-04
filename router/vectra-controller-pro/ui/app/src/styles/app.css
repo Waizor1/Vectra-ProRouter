@@ -1277,6 +1277,22 @@ h3,
   border-radius: 8px;
   overflow: hidden;
 }
+/* One set of columns for the whole list: the delays line up whatever a row
+   holds at its end (a pin, "in use", "pinned · Unpin"). */
+@supports (grid-template-columns: subgrid) {
+  .mems {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    column-gap: 10px;
+  }
+  .mems > .mem {
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+  }
+  [data-w="s"] .mems {
+    column-gap: 8px;
+  }
+}
 .mem {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
@@ -1293,10 +1309,18 @@ h3,
 .mem.on {
   background: var(--ac-bg);
 }
+/* A pin is a hand-made choice: Vectra's violet, as its badge. */
+.mem.pinned {
+  background: var(--vi-bg);
+}
 .mem .nn {
   flex-wrap: nowrap;
   gap: 0 8px;
   min-width: 0;
+}
+/* Delays read down a column: right-aligned, digits of equal width. */
+.mem .dly {
+  justify-self: end;
 }
 .mem-b {
   display: flex;
@@ -1318,11 +1342,22 @@ h3,
 [data-w="s"] .mem-b .bd.t-warm {
   display: none;
 }
-[data-w="s"] .mem .pin {
+[data-w="s"] .mem-b .bd.t-info {
+  padding: 0 5px;
+}
+[data-w="s"] .mem .pin,
+[data-w="s"] .mem .unpin {
   width: 40px;
   padding: 0;
 }
-[data-w="s"] .pin-t {
+/* A phone's unpin is the pin itself, held down: violet, on its own tint. */
+[data-w="s"] .mem .unpin {
+  border-color: var(--vi-ln);
+  background: var(--vi-bg);
+  color: var(--vi);
+}
+[data-w="s"] .pin-t,
+[data-w="s"] .mem-b .bd-t {
   position: absolute;
   width: 1px;
   height: 1px;

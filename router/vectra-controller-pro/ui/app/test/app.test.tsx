@@ -139,7 +139,7 @@ describe('what each scenario says', () => {
     expect(fr.querySelector('.nn')?.textContent).toBe('🇫🇷France');
     expect(fr.querySelector('button')?.textContent).toBe('Pin');
     // Where it goes next, in words, the backups and their pins folded behind it.
-    expect(cards[0].querySelector('details > summary')?.textContent).toBe('If none works, next: Hysteria2 backup, Whitelists');
+    expect(cards[0].querySelector('details > summary')?.textContent).toBe('If none works, next: Backup channel, Whitelists');
     expect(cards[0].querySelector<HTMLDetailsElement>('details')!.open).toBe(false);
     // A routed chain: one bridge, then on as the main traffic (nothing of its own to pin there).
     expect(cards[1].querySelector('.mem .nn')?.textContent).toBe('🇷🇺Russia');
@@ -159,7 +159,7 @@ describe('what each scenario says', () => {
     const backups = main.querySelector<HTMLDetailsElement>('details')!;
     expect(backups.open).toBe(true);
     const hy2 = backups.querySelector('section')!;
-    expect(hy2.querySelector('h4')?.textContent).toBe('Hysteria2 backup');
+    expect(hy2.querySelector('h4')?.textContent).toBe('Backup channel');
     expect(Array.from(hy2.querySelectorAll('.mem.on .nn')).map((n) => n.textContent)).toEqual(['🇩🇪Germany', '🇳🇱Netherlands']);
     expect(hy2.querySelector('.mem.on .bd')?.textContent).toBe('in use');
   });

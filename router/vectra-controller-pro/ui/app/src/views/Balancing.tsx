@@ -99,7 +99,7 @@ function Members({ b, ctx, route, picks }: { b: Balancer; ctx: Ctx; route: strin
           const tone = delayTone(n?.delayMs);
           const aria = t('b.pinAria', { node: nm.name, bal: route });
           return (
-            <li key={m} class={'mem' + (on ? ' on' : '')}>
+            <li key={m} class={'mem' + (on ? ' on' : '') + (b.pinned === m ? ' pinned' : '')}>
               <NodeDot alive={alive} label={t(alive ? 'nd.alive' : alive === false ? 'nd.dead' : 'nd.unprobed')} />
               <span class="nn">
                 <span class="clip" title={nm.name}>
@@ -113,13 +113,19 @@ function Members({ b, ctx, route, picks }: { b: Balancer; ctx: Ctx; route: strin
                     <Badge tone="warm" icon="pin">
                       {t('b.pinned')}
                     </Badge>
-                    <Button key="unpin" kind="g" small icon="pin" busy={pending === 'unpin:' + b.tag} disabled={!!pending} onClick={unpin}>
-                      {t('b.unpin')}
+                    <Button key="unpin" kind="g" small icon="pin" class="unpin" title={t('b.unpin')} busy={pending === 'unpin:' + b.tag} disabled={!!pending} onClick={unpin}>
+                      {/* A phone keeps the icon (in the pin's colour): the delays stay in one column. */}
+                      <span class="pin-t">{t('b.unpin')}</span>
                     </Button>
                   </>
                 ) : (
                   <>
-                    {on ? <Badge tone="info">{t('b.selected')}</Badge> : null}
+                    {on ? (
+                      // A tick as in the servers' list; a phone keeps the tick alone, the name of the node needs the room.
+                      <Badge tone="info" icon="ok">
+                        <span class="bd-t">{t('b.selected')}</span>
+                      </Badge>
+                    ) : null}
                     <Button
                       key="pin"
                       kind="g"

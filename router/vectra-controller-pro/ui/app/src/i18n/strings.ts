@@ -295,7 +295,8 @@ export const S = {
   'rt.main': ['Основной трафик', 'Main traffic', '主流量'],
   'rt.all': ['Всё, что не попало в другие маршруты', 'Everything the other routes do not take', '其他路由未匹配的全部流量'],
   'rt.reserve': ['Резерв', 'Backup', '备用'],
-  'rt.hy2': ['Резерв Hysteria2', 'Hysteria2 backup', 'Hysteria2 备用'],
+  // A backup on another protocol (Hysteria2): named by what it is to the owner, not by the protocol.
+  'rt.hy2': ['Резервный канал', 'Backup channel', '备用通道'],
   'rt.wl': ['Белые списки, уровень {n}', 'Whitelists, level {n}', '白名单 · 第 {n} 级'],
   'rt.ok': ['Работает', 'Working', '正常'],
   'rt.backup': ['Через резерв', 'On a backup', '正走备用'],
@@ -359,6 +360,7 @@ export const S = {
   // Node kinds, from the provider's tag conventions (lib/names.ts).
   'ng.wl': ['Белые списки', 'Whitelists', '白名单'],
   'nm.bridge': ['Мост', 'Bridge', '桥接'],
+  'nm.hy2': ['Резерв', 'Backup', '备用'],
   'nm.wl': ['Белый список, уровень {n}', 'Whitelist, level {n}', '白名单 · 第 {n} 级'],
   'nm.wl0': ['Белый список', 'Whitelist', '白名单'],
   'nm.lv': ['Уровень {n}', 'Level {n}', '第 {n} 级'],
