@@ -189,6 +189,8 @@ type daemon struct {
 	wanIP           string
 	wanIPAt         time.Time
 	traceAroundSaid bool
+	// lastTunnelIP is the address the last answered probe came from.
+	lastTunnelIP string
 	// hijackMisses counts the loops in a row nothing served port 53 while
 	// the loaded table hijacks the LAN's DNS to it; ownsAddr stands in for
 	// routerOwns in tests.
@@ -931,6 +933,16 @@ func (d *daemon) probeThroughTunnel(ctx context.Context, hc *http.Client) bool {
 	}
 	d.refreshWANIP(ctx, time.Now())
 	ip, ok := rescue.ProbeTrace(ctx, hc, d.rescuePolicy.TraceURLs, 8*time.Second)
+	if ok && ip != d.wanIP && ip != d.lastTunnelIP {
+		// An address not seen before: learn the WAN's again now, so an
+		// address change (a PPPoE redial, CGNAT) cannot pass a probe that
+		// went around the tunnel for the ten minutes until the next look.
+		d.wanIPAt = time.Time{}
+		d.refreshWANIP(ctx, time.Now())
+	}
+	if ok {
+		d.lastTunnelIP = ip
+	}
 	if ok && d.wanIP != "" && ip == d.wanIP {
 		if !d.traceAroundSaid {
 			d.traceAroundSaid = true
@@ -1010,6 +1022,12 @@ func (d *daemon) rescueRecheckDue(now time.Time) bool {
 		// instead of serving the DNS watch and the router UI.
 		// The watchdog seeing the main balancer down starts the looking
 		// too: the polls alone found a blocked tunnel a minute late.
+		// On the watchdog's word alone, at most once a poll's half: while
+		// a borrowed country carries the main traffic the balancer stays
+		// "down" for as long as its own nodes are, and the probe passes.
+		if st.ProxyFailureCount == 0 && d.tunnelFailing(now) && now.Sub(d.rescueCheckedAt) < 30*time.Second {
+			return false
+		}
 		return (st.ProxyFailureCount > 0 || d.tunnelFailing(now)) && d.xraySettled(now)
 	case rescue.ModeDirect:
 		// Once the cooldown allows the way back and a node lives: the

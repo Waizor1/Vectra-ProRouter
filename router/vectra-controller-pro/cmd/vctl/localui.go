@@ -468,6 +468,15 @@ func (d *daemon) publishRuntime() {
 	if d.autoRoute {
 		rt.AutoRouteSource = d.cfg.RouteSource
 	}
+	// The rescue's state belongs to the loop: read here, on the loop, never
+	// by the UI's goroutine.
+	rs := d.rescueState()
+	rt.Rescue = &localctl.Rescue{Mode: string(rs.Mode), ProxyFailures: rs.ProxyFailureCount,
+		FailedRetries: rs.FailedRetries, LastReason: d.st.Rescue.LastReason}
+	if !rs.LastTransitionAt.IsZero() {
+		at := rs.LastTransitionAt
+		rt.Rescue.LastTransitionAt = &at
+	}
 	d.claim.setLinked(d.linked())
 	d.runtime.Store(rt)
 }
@@ -499,15 +508,14 @@ func (d *daemon) liveRuntime() *localctl.Runtime {
 	}
 	rt.Claim = d.claim.view(time.Now())
 	rt.Route = d.route.Load()
-	rs := d.rescueState()
-	rt.Rescue = &localctl.Rescue{Mode: string(rs.Mode), ProxyFailures: rs.ProxyFailureCount,
-		FailedRetries: rs.FailedRetries, LastReason: d.st.Rescue.LastReason}
-	if !rs.LastTransitionAt.IsZero() {
-		at := rs.LastTransitionAt
-		rt.Rescue.LastTransitionAt = &at
-	}
-	if rs.Mode == rescue.ModeDirect {
-		rt.Rescue.TunnelDead = d.tunnelDead(time.Now(), rs.LastTransitionAt)
+	if rt.Rescue != nil {
+		// Built by the loop (publishRuntime); copied, so the live word on
+		// the tunnel does not write into the published snapshot.
+		r := *rt.Rescue
+		if r.Mode == string(rescue.ModeDirect) && r.LastTransitionAt != nil {
+			r.TunnelDead = d.tunnelDead(time.Now(), *r.LastTransitionAt)
+		}
+		rt.Rescue = &r
 	}
 	return &rt
 }
