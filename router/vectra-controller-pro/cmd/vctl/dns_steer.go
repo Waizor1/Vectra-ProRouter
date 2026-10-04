@@ -584,13 +584,25 @@ func resolverPIDs(procRoot string) []int {
 	return out
 }
 
+// resolverFlushDedupe: a flush for the same reason this soon after the last
+// is not repeated.
+const resolverFlushDedupe = 5 * time.Second
+
 // flushResolverCache empties dnsmasq's cache — SIGHUP: it drops the cache and
 // reads its hosts files again; DHCP and the leases are untouched. What xray
 // answered while it carried the router's lookups leads nowhere once the
 // tunnel is out of the way: the sites that go through it got FakeDNS
 // addresses (198.18.x), and dnsmasq kept handing those out until they
 // expired — Instagram and YouTube dead on the LAN with the internet up.
+//
+// The same reason again within resolverFlushDedupe is not repeated: one
+// change of path, one flush, however many steps carry it out.
 func (d *daemon) flushResolverCache(reason string) {
+	now := time.Now()
+	if reason == d.flushedFor && !d.flushedAt.IsZero() && now.Sub(d.flushedAt) < resolverFlushDedupe {
+		return
+	}
+	d.flushedFor, d.flushedAt = reason, now
 	hup := d.hupResolver
 	if hup == nil {
 		hup = func(pid int) error { return syscall.Kill(pid, syscall.SIGHUP) }

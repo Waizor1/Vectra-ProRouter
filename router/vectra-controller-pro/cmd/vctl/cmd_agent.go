@@ -166,6 +166,9 @@ type daemon struct {
 	// runFirewallCmd executes one firewall revert command. Injectable so the
 	// shutdown path is testable without root or nftables.
 	runFirewallCmd func(ctx context.Context, name string, args ...string) error
+	// applyRuleset stands in for the commit-confirmer's Apply in tests
+	// (programFirewall); nil is the real one.
+	applyRuleset func(script string, spec firewall.Spec) error
 	// tableLoaded tells whether the kernel has vctl's nft table (the seam
 	// tests stand in for nft).
 	tableLoaded func(ctx context.Context, name string) bool
@@ -191,8 +194,15 @@ type daemon struct {
 	signalProcess func(pid int, sig syscall.Signal) error
 	// hupResolver stands in for SIGHUP to dnsmasq in tests.
 	hupResolver func(pid int) error
+	// flushedFor/flushedAt: the last resolver flush's reason and time — the
+	// same one again within resolverFlushDedupe is not repeated.
+	flushedFor string
+	flushedAt  time.Time
 	// rescueCheckedAt is when the rescue last probed (rescueStep).
 	rescueCheckedAt time.Time
+	// reconfiguredAt is when an apply last put a new config in (rescueAfresh):
+	// the rescue judges the tunnel only xraySettle after it.
+	reconfiguredAt time.Time
 	// wanIP is the router's own address as Cloudflare saw it around the
 	// tunnel (refreshWANIP, at wanIPAt); traceAroundSaid: logged once.
 	wanIP           string
@@ -889,6 +899,13 @@ func (d *daemon) rescueStep(ctx context.Context) rescue.Decision {
 	// dead three times in a row.
 	hc := &http.Client{Timeout: 8 * time.Second, Transport: tunnelProbeTransport}
 	cur := d.rescueState()
+	if cur.Mode == rescue.ModeProxy && d.desired == nil && (cur.ProxyFailureCount > 0 || !cur.FirstFailureAt.IsZero()) {
+		// No owner's config — a router released, or not yet given one after
+		// a claim: there is no tunnel, the LAN goes out directly, and a run of
+		// "failures" counted against it is not an outage to carry into the
+		// first config.
+		cur.ProxyFailureCount, cur.FirstFailureAt = 0, time.Time{}
+	}
 	var publicReachable bool
 	if cur.Mode == rescue.ModeProxy {
 		publicReachable = d.probeThroughTunnel(ctx, hc)
@@ -919,8 +936,10 @@ func (d *daemon) rescueStep(ctx context.Context) rescue.Decision {
 		// xray itself down — a crash, a restart — is not the tunnel failing:
 		// the kernel already lets the LAN past it (TPROXY falls through), and
 		// direct mode would only keep the VPN off for a cooldown after xray
-		// is back (the crash-loop drill on 1111, 2026-10-04).
-		ProxyConclusive: cur.Mode == rescue.ModeProxy && d.xraySettled(time.Now()),
+		// is back (the crash-loop drill on 1111, 2026-10-04). Nor is a
+		// router with no tunnel at all, or one whose new config has not
+		// settled yet (tunnelJudgeable).
+		ProxyConclusive: cur.Mode == rescue.ModeProxy && d.tunnelJudgeable(time.Now()),
 		DirectReachable: directReachable,
 		TunnelDead:      d.tunnelDead(time.Now(), cur.LastTransitionAt),
 		Now:             time.Now(),
@@ -1035,6 +1054,41 @@ func (d *daemon) xraySettled(now time.Time) bool {
 	return st.State == supervisor.StateRunning && now.Sub(st.StartedAt) >= xraySettle
 }
 
+// tunnelJudgeable: there is a tunnel for the rescue to judge — an owner's
+// config, xraySettle past the last apply (rescueAfresh), and xray settled.
+// Without a config (released, or claimed and not given one yet) a probe
+// "through the tunnel" goes out the WAN and fails by design: counted, it sent
+// a router just claimed in the Vectra app to direct mode 20 s after the claim,
+// and kept its first config off the VPN for the two-minute cooldown (vctl
+// r17, 2026-10-04).
+func (d *daemon) tunnelJudgeable(now time.Time) bool {
+	if d.desired == nil {
+		return false
+	}
+	if !d.reconfiguredAt.IsZero() && now.Sub(d.reconfiguredAt) < xraySettle {
+		return false
+	}
+	return d.xraySettled(now)
+}
+
+// rescueAfresh: an apply has just put a new config in and loaded the data
+// plane for it. The failures counted before were another tunnel's — or none
+// at all — so the rescue's window starts again, once xray settles on the new
+// one. In direct mode the apply has just put the router back on the tunnel:
+// the rescue says so (proxy) and judges it like any other, instead of sitting
+// out its cooldown while the data plane is loaded.
+func (d *daemon) rescueAfresh(now time.Time) {
+	d.reconfiguredAt = now
+	st := d.rescueState()
+	st.ProxyFailureCount, st.FirstFailureAt = 0, time.Time{}
+	reason := ""
+	if st.Mode == rescue.ModeDirect && d.fwProgrammed != nil {
+		st.Mode, st.DirectSuccessCount, st.LastTransitionAt = rescue.ModeProxy, 0, now
+		reason = "a new config was applied; judging its tunnel afresh"
+	}
+	d.storeRescueState(st, reason)
+}
+
 // rescueRecheckEvery is how soon, between the polls, the rescue looks again
 // while it is unsure: a probe through the tunnel has just failed, or direct
 // mode may go back to the proxy. At the polls' pace a dead tunnel took three
@@ -1073,7 +1127,7 @@ func (d *daemon) rescueRecheckDue(now time.Time) bool {
 		if st.ProxyFailureCount == 0 && d.tunnelFailing(now) && now.Sub(d.rescueCheckedAt) < 30*time.Second {
 			return false
 		}
-		return (st.ProxyFailureCount > 0 || d.tunnelFailing(now)) && d.xraySettled(now)
+		return (st.ProxyFailureCount > 0 || d.tunnelFailing(now)) && d.tunnelJudgeable(now)
 	case rescue.ModeDirect:
 		// Once the cooldown allows the way back and a node lives: the
 		// tunnel's return is then taken within seconds, not at the next poll.

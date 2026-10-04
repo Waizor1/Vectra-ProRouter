@@ -1,5 +1,45 @@
 # Changelog
 
+## vctl 0.7.0-r18 — a router just claimed in the Vectra app is on the VPN at once
+
+Seen live on 2026-10-04 (vctl r17): a router released and claimed again by
+code went direct 20 s after the claim, the owner's first config arrived while
+it was direct, and the LAN sat off the VPN for two minutes — Instagram dead
+behind the ISP's forged DNS. Back on the proxy, dnsmasq still held what it
+had answered meanwhile, and those sites kept going around the tunnel until
+their answers expired.
+
+### Fixed
+- **The rescue judged a tunnel that did not exist.** A released router (or
+  one claimed and not yet given the owner's config) has no xray and no data
+  plane; its probe "through the tunnel" goes out the WAN and fails by
+  design. With no supervisor started xray counted as settled, so those
+  failures were conclusive, and 20 s later the rescue sent the router direct
+  — then held the owner's first config off the VPN for its cooldown. Now
+  with no config there is nothing to judge: no failures are counted and an
+  old run is cleared. After an apply the failure window starts again and the
+  rescue waits xraySettle (15 s) for the new config before it counts
+  anything. An apply that loads the data plane while the rescue holds direct
+  mode puts it back to proxy, judged afresh, instead of sitting out the
+  cooldown with the tunnel loaded. A dead tunnel still goes direct as in
+  r15: three failures spanning 20 s once xray has settled; direct mode still
+  keeps the internet.
+- **Back from direct mode, the resolver kept direct-era answers.** The cache
+  was emptied on the way into direct mode, not on the way back. Now every
+  time the DNS redirect goes back in — the rescue's return to the proxy, an
+  operator reconnect, an apply after a claim, the DNS watch putting the
+  redirect back once xray answers — dnsmasq's cache is emptied after the
+  redirect is in place: no real address, and no address the ISP forged for
+  a blocked site, survives. The rescue (and reconnect) reload xray first and
+  load the data plane second, so FakeDNS answers handed out in between do not
+  lead nowhere after the reload. A release empties the cache too (the LAN
+  goes out directly, xray's FakeDNS addresses lead nowhere). The same flush
+  is not repeated within 5 s.
+
+### Deploy
+No change to the router UI, the check-in or the panel contract: nothing to
+deploy first.
+
 ## vctl 0.7.0-r17 — Wi-Fi per band from the Vectra app, and «Авто» says where it goes
 
 ### Connect: Wi-Fi per band

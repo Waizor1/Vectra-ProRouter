@@ -43,6 +43,9 @@ func (d *daemon) release(ctx context.Context) {
 	var removed []string
 	if d.desired != nil && d.unloadDataPlane(ctx, d.desired) {
 		removed = append(removed, "the data plane")
+		// The LAN goes out directly now: what xray answered (FakeDNS
+		// addresses) leads nowhere.
+		d.flushResolverCache("released by the owner")
 	}
 	if d.supStarted {
 		d.stopXray(ctx)

@@ -4,7 +4,7 @@ PKG_NAME:=vectra-controller-pro
 # Versioned independently from vectra-controller-agent: this is a separate,
 # additive controller package (xray-direct engine), not a replacement.
 VECTRA_VERSION?=0.7.0
-VECTRA_RELEASE?=17
+VECTRA_RELEASE?=18
 PKG_VERSION:=$(VECTRA_VERSION)
 PKG_RELEASE:=$(VECTRA_RELEASE)
 

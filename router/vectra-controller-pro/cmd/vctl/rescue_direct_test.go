@@ -41,6 +41,7 @@ func TestRescueGoesDirectWhenOnlyTheTunnelIsDead(t *testing.T) {
 	d.rescuePolicy.Cooldown = 0
 	d.rescuePolicy.MinFailSpan = 0
 	d.client = controlplane.NewClient(controlplane.Options{BaseURL: srv.URL, HTTPClient: &http.Client{Transport: toServer{srv}}})
+	d.desired = &config.Config{} // an owner's config: there is a tunnel to judge
 
 	inv := controlplane.RouterInventory{}
 	var last rescue.Decision
@@ -119,7 +120,7 @@ func TestAStartInDirectModeLoadsNothing(t *testing.T) {
 // failed probe through the tunnel, or in direct mode once the cooldown allows
 // the way back and a node lives — never under the kill switch.
 func TestTheRescueRechecksBetweenPollsOnlyWhenUnsure(t *testing.T) {
-	d := &daemon{rescuePolicy: rescue.DefaultPolicy()}
+	d := &daemon{rescuePolicy: rescue.DefaultPolicy(), desired: &config.Config{}}
 	now := time.Now()
 	if d.rescueRecheckDue(now) {
 		t.Fatal("rechecked a healthy proxy between the polls")
