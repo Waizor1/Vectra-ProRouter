@@ -19,6 +19,7 @@
 
 {$OPERATOR_DOMAIN} {
 	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
 
 	# Access logs without the routers' credentials: a router token or an
 	# install session in a header must not end up in `docker logs`.
@@ -34,9 +35,27 @@
 		}
 	}
 
+	# The installer behind a short link:
+	#   wget -O /tmp/vectra https://router.vectra-pro.net/install && sh /tmp/vectra
+	# A browser opening /install still gets the panel page; wget gets the script.
+	@installer {
+		path /install /install.sh
+		not {
+			path /install
+			header Accept *text/html*
+		}
+	}
+	handle @installer {
+		root * /srv/artifacts
+		rewrite * /openwrt/pro-canary/install.sh
+		header Content-Type "text/x-shellscript; charset=utf-8"
+		header Cache-Control "no-cache"
+		file_server
+	}
+
 	handle /artifacts {
 		root * /srv/artifacts
-		file_server browse
+		file_server
 	}
 
 	handle_path /artifacts/* {
@@ -50,6 +69,8 @@
 	# vermagic-locked kmods install via the VPS (which reaches upstream over IPv4).
 	# Signature-transparent: opkg verifies the original OpenWrt usign signatures.
 	handle_path /openwrt-cache/* {
+		@owcwrite not method GET HEAD
+		respond @owcwrite 405
 		reverse_proxy https://downloads.openwrt.org {
 			header_up Host downloads.openwrt.org
 		}
@@ -78,6 +99,7 @@
 
 {$ROUTER_API_DOMAIN} {
 	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
 
 	# Access logs without the routers' credentials: a router token or an
 	# install session in a header must not end up in `docker logs`.
@@ -94,9 +116,27 @@
 		}
 	}
 
+	# The installer behind a short link:
+	#   wget -O /tmp/vectra https://router.vectra-pro.net/install && sh /tmp/vectra
+	# A browser opening /install still gets the panel page; wget gets the script.
+	@installer {
+		path /install /install.sh
+		not {
+			path /install
+			header Accept *text/html*
+		}
+	}
+	handle @installer {
+		root * /srv/artifacts
+		rewrite * /openwrt/pro-canary/install.sh
+		header Content-Type "text/x-shellscript; charset=utf-8"
+		header Cache-Control "no-cache"
+		file_server
+	}
+
 	handle /artifacts {
 		root * /srv/artifacts
-		file_server browse
+		file_server
 	}
 
 	handle_path /artifacts/* {
@@ -110,6 +150,8 @@
 	# vermagic-locked kmods install via the VPS (which reaches upstream over IPv4).
 	# Signature-transparent: opkg verifies the original OpenWrt usign signatures.
 	handle_path /openwrt-cache/* {
+		@owcwrite not method GET HEAD
+		respond @owcwrite 405
 		reverse_proxy https://downloads.openwrt.org {
 			header_up Host downloads.openwrt.org
 		}
@@ -134,6 +176,17 @@
 	# first config before it has a tunnel, and Russian ISPs stall TLS to the
 	# app backend host after ~16 KB; this host is not stalled. The backend
 	# verifies the router-signed path and query, not the host.
+	@routersubbad {
+		path /router-sub/*
+		not {
+			method GET HEAD
+			path_regexp ^/router-sub/[A-Za-z0-9._~-]+(/json)?$
+		}
+	}
+	handle @routersubbad {
+		respond 404
+	}
+
 	handle /router-sub/* {
 		request_body {
 			max_size 1KB
@@ -148,6 +201,9 @@
 	}
 
 	handle /api/router/* {
+		request_body {
+			max_size 8MB
+		}
 		reverse_proxy web:3000 {
 			header_up X-Vectra-Client-IP {remote_host}
 			header_up X-Real-IP {remote_host}

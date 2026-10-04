@@ -5,8 +5,14 @@ every CPU Go builds for. OpenWrt 25 (apk) is refused by name until it is
 supported.
 
 ```sh
-wget -qO /tmp/vectra.sh https://api.vectra-pro.net/artifacts/openwrt/<channel>/install.sh && sh /tmp/vectra.sh
+wget -O /tmp/vectra https://router.vectra-pro.net/install && sh /tmp/vectra
 ```
+
+Keep the download-to-file form: the installer copies itself for `--uninstall`
+and reads answers from the terminal, so `| sh` and `sh -c "$(…)"` do not work.
+`https://router.vectra-pro.net/install` serves the signed `pro-canary` installer;
+an operator can fetch another channel's from
+`https://api.vectra-pro.net/artifacts/openwrt/<channel>/install.sh`.
 
 | flag | what it does |
 |---|---|

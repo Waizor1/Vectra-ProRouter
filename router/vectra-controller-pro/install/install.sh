@@ -1,14 +1,14 @@
 #!/bin/sh
 # Vectra on an OpenWrt router: one installer for every architecture.
 #
-#   wget -qO /tmp/vectra.sh https://router.vectra-pro.net/install.sh && sh /tmp/vectra.sh
+#   wget -O /tmp/vectra https://router.vectra-pro.net/install && sh /tmp/vectra
 #
-#   sh vectra.sh              install, or update what is installed
-#   sh vectra.sh --standby    install, but leave Vectra off: whatever carries the
+#   sh /tmp/vectra            install, or update what is installed
+#   sh /tmp/vectra --standby  install, but leave Vectra off: whatever carries the
 #                             traffic now (PassWall2, the old Vectra agent) keeps
 #                             it until `vectra on`
-#   sh vectra.sh --check      only the checks: nothing on the router changes
-#   sh vectra.sh --uninstall  remove Vectra (add --purge to forget the router's
+#   sh /tmp/vectra --check    only the checks: nothing on the router changes
+#   sh /tmp/vectra --uninstall remove Vectra (add --purge to forget the router's
 #                             Vectra identity and settings too)
 #   --yes                     do not ask (a router with PassWall2: Vectra takes
 #                             over the traffic, `vectra off` gives it back; after
@@ -447,7 +447,7 @@ check_conflicts() {
 
 add_feed() {
 	step "Фиды"
-	[ -n "$FEED_URL" ] && [ -n "$FEED_KEY" ] && [ -n "$FEED_KEY_ID" ] || refuse NO_FEED_KEY "этот файл — шаблон без ключа фида. Скачайте установщик с router.vectra-pro.net."
+	[ -n "$FEED_URL" ] && [ -n "$FEED_KEY" ] && [ -n "$FEED_KEY_ID" ] || refuse NO_FEED_KEY "этот файл — шаблон без ключа фида. Скачайте установщик: wget -O /tmp/vectra https://router.vectra-pro.net/install && sh /tmp/vectra"
 	mkdir -p "$KEYS" "$WORK"
 	if [ -f "$KEYS/$FEED_KEY_ID" ]; then
 		[ "$(sed -n 2p "$KEYS/$FEED_KEY_ID")" = "$FEED_KEY" ] || refuse FEED_KEY_CLASH "в $KEYS уже лежит другой ключ с номером $FEED_KEY_ID."
