@@ -8,6 +8,8 @@ import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import {
   CONNECT_ACTION_NAMES,
+  CONNECT_CAPABILITY_FLAGS,
+  CONNECT_SERVICE_AUTO,
   parseConnectActionParams,
 } from "./partner-action-params";
 import {
@@ -123,8 +125,8 @@ export function projectPartnerRouter(
       capable &&
       measured?.capabilities &&
       measured.ownerRef === router.ownerRef
-        ? CONNECT_ACTION_NAMES.filter((action) =>
-            measured.capabilities!.includes(action),
+        ? [...CONNECT_ACTION_NAMES, ...CONNECT_CAPABILITY_FLAGS].filter(
+            (capability) => measured.capabilities!.includes(capability),
           )
         : [],
   };
@@ -259,10 +261,19 @@ export async function queuePartnerActionWithDb(
     if (!parsedParams.success)
       return { ok: false, status: 400, body: { error: "invalid_params" } };
     const params = parsedParams.data;
+    // ":auto" names no entry: back to the service's default, for a router
+    // that says it understands it.
+    const serviceAuto =
+      input.action === "set_service" &&
+      "entryId" in params &&
+      params.entryId === CONNECT_SERVICE_AUTO;
+    if (serviceAuto && !snapshot.capabilities.includes("set_service_auto"))
+      return { ok: false, status: 409, body: { error: "not_supported" } };
     if (
       (input.action === "select_entry" || input.action === "set_service") &&
       "entryId" in params &&
       params.entryId !== null &&
+      !serviceAuto &&
       !snapshot.entries.some((entry) => entry.id === params.entryId)
     )
       return { ok: false, status: 400, body: { error: "invalid_params" } };

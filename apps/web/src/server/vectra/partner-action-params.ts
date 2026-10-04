@@ -12,6 +12,11 @@ export const CONNECT_ACTION_NAMES = [
   "refresh_subscription",
 ] as const;
 export type ConnectActionName = (typeof CONNECT_ACTION_NAMES)[number];
+/** Flags a router advertises next to its actions, refining one of them. */
+export const CONNECT_CAPABILITY_FLAGS = ["set_service_auto"] as const;
+/** set_service's entryId taking a service back to its default; only a router
+ * advertising set_service_auto understands it. */
+export const CONNECT_SERVICE_AUTO = ":auto";
 const id = z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/);
 const entryId = id.nullable();
 // Match the established Connect validator: IDN, underscore, wildcard/suffix
