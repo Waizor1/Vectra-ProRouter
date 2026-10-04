@@ -189,8 +189,9 @@ type daemon struct {
 	wanIP           string
 	wanIPAt         time.Time
 	traceAroundSaid bool
-	// lastTunnelIP is the address the last answered probe came from.
-	lastTunnelIP string
+	// tunnelIPs are the exit addresses probes came back from lately (up to
+	// 16): a balancer rotating exits must not re-learn the WAN every step.
+	tunnelIPs map[string]bool
 	// hijackMisses counts the loops in a row nothing served port 53 while
 	// the loaded table hijacks the LAN's DNS to it; ownsAddr stands in for
 	// routerOwns in tests.
@@ -932,9 +933,9 @@ func (d *daemon) probeThroughTunnel(ctx context.Context, hc *http.Client) bool {
 		return rescue.ProbeAny(ctx, hc, d.rescuePolicy.HealthURLs)
 	}
 	d.refreshWANIP(ctx, time.Now())
-	ips := rescue.ProbeTraceAll(ctx, hc, d.rescuePolicy.TraceURLs, 8*time.Second)
+	ips := rescue.ProbeTraceAll(ctx, hc, d.rescuePolicy.TraceURLs, 8*time.Second, d.wanIP)
 	for _, ip := range ips {
-		if ip != d.wanIP && ip != d.lastTunnelIP {
+		if ip != d.wanIP && !d.tunnelIPs[ip] {
 			// An address not seen before: learn the WAN's again now, so an
 			// address change (a PPPoE redial, CGNAT) cannot pass a probe
 			// that went around the tunnel until the next look.
@@ -950,7 +951,10 @@ func (d *daemon) probeThroughTunnel(ctx context.Context, hc *http.Client) bool {
 			continue
 		}
 		through = true
-		d.lastTunnelIP = ip
+		if d.tunnelIPs == nil || len(d.tunnelIPs) >= 16 {
+			d.tunnelIPs = map[string]bool{}
+		}
+		d.tunnelIPs[ip] = true
 	}
 	if !through && around {
 		if !d.traceAroundSaid {
@@ -1096,6 +1100,11 @@ func (d *daemon) rescueState() rescue.State {
 			st.LastTransitionAt = t
 		}
 	}
+	if d.st.Rescue.FirstFailureAt != "" {
+		if t, err := time.Parse(time.RFC3339, d.st.Rescue.FirstFailureAt); err == nil {
+			st.FirstFailureAt = t
+		}
+	}
 	return st
 }
 
@@ -1104,6 +1113,10 @@ func (d *daemon) storeRescueState(s rescue.State, reason string) {
 	d.st.Rescue.ProxyFailureCount = s.ProxyFailureCount
 	d.st.Rescue.DirectSuccessCount = s.DirectSuccessCount
 	d.st.Rescue.FailedRetries = s.FailedRetries
+	d.st.Rescue.FirstFailureAt = ""
+	if !s.FirstFailureAt.IsZero() {
+		d.st.Rescue.FirstFailureAt = s.FirstFailureAt.UTC().Format(time.RFC3339)
+	}
 	if !s.LastTransitionAt.IsZero() {
 		d.st.Rescue.LastTransitionAt = s.LastTransitionAt.UTC().Format(time.RFC3339)
 	}

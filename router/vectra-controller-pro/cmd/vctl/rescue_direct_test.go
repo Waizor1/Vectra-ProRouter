@@ -39,6 +39,7 @@ func TestRescueGoesDirectWhenOnlyTheTunnelIsDead(t *testing.T) {
 	d.rescuePolicy.HealthURLs = []string{"http://only-around-the-tunnel.invalid/generate_204"}
 	d.rescuePolicy.TraceURLs = []string{"http://only-around-the-tunnel.invalid/cdn-cgi/trace"}
 	d.rescuePolicy.Cooldown = 0
+	d.rescuePolicy.MinFailSpan = 0
 	d.client = controlplane.NewClient(controlplane.Options{BaseURL: srv.URL, HTTPClient: &http.Client{Transport: toServer{srv}}})
 
 	inv := controlplane.RouterInventory{}

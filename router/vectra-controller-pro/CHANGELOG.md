@@ -49,6 +49,14 @@ VPN comes back by itself.
   rescue went direct, so exactly those sites stayed dead with the internet
   up. Taking the redirect out and entering direct mode (the rescue's or the
   operator's) now empty dnsmasq's cache (SIGHUP).
+- **The rescue looks again every 3 s after a failed probe** (10 s otherwise),
+  starts on the watchdog's word that the preferred node stopped answering,
+  and needs its failures to span 20 s — so it never beats the failover
+  watchdog, which heals a single dead node in seconds. The probe through
+  the tunnel goes over IPv4 on a fresh connection, and the tunnel counts as
+  working when any trace answer is not the WAN's: at the drill ISP
+  cp.cloudflare.com goes out by the kernel while www.cloudflare.com takes
+  the tunnel.
 - **xray down sent the rescue direct.** A failed probe while xray itself is
   down or just restarted (under 15 s) no longer counts against the tunnel:
   TPROXY already lets the LAN past a dead xray, and direct mode then held the

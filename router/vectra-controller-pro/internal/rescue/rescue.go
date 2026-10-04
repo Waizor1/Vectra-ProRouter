@@ -32,6 +32,9 @@ type State struct {
 	DirectSuccessCount int
 	ProxySuccessCount  int
 	LastTransitionAt   time.Time
+	// FirstFailureAt is when the current run of failed probes began: the
+	// failures must span MinFailSpan before the router leaves the tunnel.
+	FirstFailureAt time.Time
 	// FailedRetries counts the returns to the proxy in a row that failed
 	// within RetryWindow: each doubles the cooldown of the next (up to 16×),
 	// so a tunnel the observatory calls alive but that carries nothing does
@@ -46,6 +49,13 @@ const (
 	RetryWindow = 5 * time.Minute
 	StableAfter = 10 * time.Minute
 )
+
+// MinFailSpan is the default Policy.MinFailSpan: how long failed probes must
+// span before the router goes direct. Rechecked every few seconds, three fast
+// failures (a reset refused at once) would otherwise beat the failover
+// watchdog, which moves off a dead node within seconds and may already have
+// healed the tunnel.
+const MinFailSpan = 20 * time.Second
 
 // maxBackoffShift caps the cooldown's doubling (2 min << 4 = 32 min).
 const maxBackoffShift = 4
@@ -70,6 +80,7 @@ type Policy struct {
 	TriggerFailureCount  int           // consecutive proxy failures before going direct
 	RecoverySuccessCount int           // consecutive direct successes before retrying proxy
 	Cooldown             time.Duration // minimum gap between transitions
+	MinFailSpan          time.Duration // failures must span this before going direct
 }
 
 // DefaultPolicy returns sane defaults (mirrors the agent's thresholds).
@@ -83,7 +94,8 @@ func DefaultPolicy() Policy {
 		// only once a node lives (Input.TunnelDead): two minutes keep a
 		// flapping tunnel from swinging the LAN, without holding a working
 		// one off for long.
-		Cooldown: 2 * time.Minute,
+		Cooldown:    2 * time.Minute,
+		MinFailSpan: MinFailSpan,
 	}
 }
 
@@ -128,6 +140,7 @@ func Evaluate(in Input, p Policy) Decision {
 	case ModeProxy:
 		if in.PublicReachable {
 			d.NextState.ProxyFailureCount = 0
+			d.NextState.FirstFailureAt = time.Time{}
 			d.NextState.ProxySuccessCount = st.ProxySuccessCount + 1
 			if st.FailedRetries > 0 && !st.LastTransitionAt.IsZero() && in.Now.Sub(st.LastTransitionAt) >= StableAfter {
 				d.NextState.FailedRetries = 0
@@ -138,14 +151,19 @@ func Evaluate(in Input, p Policy) Decision {
 			return d // transient probe failure — don't count it
 		}
 		d.NextState.ProxyFailureCount = st.ProxyFailureCount + 1
+		if st.ProxyFailureCount == 0 || st.FirstFailureAt.IsZero() {
+			d.NextState.FirstFailureAt = in.Now
+		}
 		// No cooldown on the way out: the internet must not wait for it. The
 		// way back keeps it, so a flapping tunnel still swings at most once
 		// a cooldown.
-		if d.NextState.ProxyFailureCount >= p.TriggerFailureCount && in.DirectReachable {
+		if d.NextState.ProxyFailureCount >= p.TriggerFailureCount && in.DirectReachable &&
+			in.Now.Sub(d.NextState.FirstFailureAt) >= p.MinFailSpan {
 			d.ShouldTransition = true
 			d.NextMode = ModeDirect
 			d.NextState.Mode = ModeDirect
 			d.NextState.DirectSuccessCount = 0
+			d.NextState.FirstFailureAt = time.Time{}
 			if !st.LastTransitionAt.IsZero() && in.Now.Sub(st.LastTransitionAt) < RetryWindow {
 				d.NextState.FailedRetries = st.FailedRetries + 1
 			}
@@ -231,7 +249,7 @@ var TraceURLs = []string{"https://www.cloudflare.com/cdn-cgi/trace", "https://cp
 // ProbeTrace asks the trace urls at once, within d, and returns the address
 // the first answer saw the request come from.
 func ProbeTrace(ctx context.Context, client *http.Client, urls []string, d time.Duration) (string, bool) {
-	ips := probeTrace(ctx, client, urls, d, true)
+	ips := probeTrace(ctx, client, urls, d, true, "")
 	if len(ips) == 0 {
 		return "", false
 	}
@@ -243,11 +261,14 @@ func ProbeTrace(ctx context.Context, client *http.Client, urls []string, d time.
 // kernel (an address in the direct sets) while another takes the tunnel, and
 // only the second says the tunnel works (1111, 2026-10-04: cp.cloudflare.com
 // answered from the WAN while www.cloudflare.com came through Poland).
-func ProbeTraceAll(ctx context.Context, client *http.Client, urls []string, d time.Duration) []string {
-	return probeTrace(ctx, client, urls, d, false)
+//
+// around, when not empty, is the router's own address: the first answer from
+// any other ends the asking — the tunnel is proven, the rest need not time out.
+func ProbeTraceAll(ctx context.Context, client *http.Client, urls []string, d time.Duration, around string) []string {
+	return probeTrace(ctx, client, urls, d, false, around)
 }
 
-func probeTrace(ctx context.Context, client *http.Client, urls []string, d time.Duration, first bool) []string {
+func probeTrace(ctx context.Context, client *http.Client, urls []string, d time.Duration, first bool, around string) []string {
 	if client == nil {
 		client = &http.Client{Timeout: d}
 	}
@@ -288,7 +309,7 @@ func probeTrace(ctx context.Context, client *http.Client, urls []string, d time.
 	for range urls {
 		if ip := <-results; ip != "" {
 			ips = append(ips, ip)
-			if first {
+			if first || (around != "" && ip != around) {
 				return ips
 			}
 		}

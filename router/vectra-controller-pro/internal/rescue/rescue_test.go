@@ -26,7 +26,7 @@ func TestProxyStaysWhenReachable(t *testing.T) {
 func TestProxyToDirectAfterFailures(t *testing.T) {
 	p := DefaultPolicy()
 	now := time.Now()
-	st := State{Mode: ModeProxy, ProxyFailureCount: p.TriggerFailureCount - 1}
+	st := State{Mode: ModeProxy, ProxyFailureCount: p.TriggerFailureCount - 1, FirstFailureAt: now.Add(-p.MinFailSpan)}
 	d := Evaluate(Input{
 		CurrentState:    st,
 		PublicReachable: false,
@@ -78,7 +78,7 @@ func TestCooldownHoldsOnlyTheWayBack(t *testing.T) {
 	p := DefaultPolicy()
 	now := time.Now()
 	d := Evaluate(Input{
-		CurrentState:    State{Mode: ModeProxy, ProxyFailureCount: p.TriggerFailureCount - 1, LastTransitionAt: now},
+		CurrentState:    State{Mode: ModeProxy, ProxyFailureCount: p.TriggerFailureCount - 1, LastTransitionAt: now, FirstFailureAt: now.Add(-p.MinFailSpan)},
 		PublicReachable: false,
 		ProxyConclusive: true,
 		DirectReachable: true,
@@ -165,7 +165,7 @@ func TestFailedReturnsBackTheWayBackOff(t *testing.T) {
 	p := DefaultPolicy()
 	now := time.Now()
 	// Back on the proxy a minute ago, and it fails again.
-	st := State{Mode: ModeProxy, ProxyFailureCount: p.TriggerFailureCount - 1, LastTransitionAt: now.Add(-time.Minute)}
+	st := State{Mode: ModeProxy, ProxyFailureCount: p.TriggerFailureCount - 1, LastTransitionAt: now.Add(-time.Minute), FirstFailureAt: now.Add(-p.MinFailSpan)}
 	d := Evaluate(Input{CurrentState: st, ProxyConclusive: true, DirectReachable: true, Now: now}, p)
 	if !d.ShouldTransition || d.NextState.FailedRetries != 1 {
 		t.Fatalf("a failed return not counted: %+v", d)
@@ -184,7 +184,7 @@ func TestFailedReturnsBackTheWayBackOff(t *testing.T) {
 		t.Fatalf("a proxy that held kept the count: %+v", d)
 	}
 	// The first fall to direct after a long proxy is not a failed return.
-	first := State{Mode: ModeProxy, ProxyFailureCount: p.TriggerFailureCount - 1, LastTransitionAt: now.Add(-time.Hour)}
+	first := State{Mode: ModeProxy, ProxyFailureCount: p.TriggerFailureCount - 1, LastTransitionAt: now.Add(-time.Hour), FirstFailureAt: now.Add(-p.MinFailSpan)}
 	if d := Evaluate(Input{CurrentState: first, ProxyConclusive: true, DirectReachable: true, Now: now}, p); d.NextState.FailedRetries != 0 {
 		t.Fatalf("counted as a failed return: %+v", d)
 	}
@@ -214,8 +214,23 @@ func TestProbeTraceAllKeepsEveryAnswer(t *testing.T) {
 	defer a.Close()
 	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ip=203.0.113.9\n")) }))
 	defer b.Close()
-	ips := ProbeTraceAll(context.Background(), nil, []string{a.URL, b.URL}, 2*time.Second)
+	ips := ProbeTraceAll(context.Background(), nil, []string{a.URL, b.URL}, 2*time.Second, "")
 	if len(ips) != 2 {
 		t.Fatalf("answers %v, want both", ips)
+	}
+}
+
+// Three failures in a few seconds do not take the router out of the tunnel:
+// they must span MinFailSpan, time the failover watchdog has to heal it.
+func TestFailuresMustSpanMinFailSpan(t *testing.T) {
+	p := DefaultPolicy()
+	now := time.Now()
+	st := State{Mode: ModeProxy, ProxyFailureCount: p.TriggerFailureCount - 1, FirstFailureAt: now.Add(-5 * time.Second)}
+	if d := Evaluate(Input{CurrentState: st, ProxyConclusive: true, DirectReachable: true, Now: now}, p); d.ShouldTransition {
+		t.Fatalf("went direct on failures spanning 5 s: %+v", d)
+	}
+	st.FirstFailureAt = now.Add(-p.MinFailSpan)
+	if d := Evaluate(Input{CurrentState: st, ProxyConclusive: true, DirectReachable: true, Now: now}, p); !d.ShouldTransition {
+		t.Fatalf("failures spanning MinFailSpan and no direct: %+v", d)
 	}
 }
