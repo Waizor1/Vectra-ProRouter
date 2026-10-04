@@ -343,6 +343,16 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 	}
 	d.publishRoute(w, main, infos[main], unfit, now)
 	base := tunnelLook{MainDown: w.pol.DownFor(main, now) > 0}
+	// The nodes the main traffic goes through now stop answering its
+	// connections: the earliest word there is, seconds after the fact —
+	// the policy's "down" can wait while it borrows nodes the observatory
+	// still calls alive from an old round.
+	for _, m := range infos[main].Principle {
+		if w.det.Failing(m, now) {
+			base.PrincipleFailing = true
+			break
+		}
+	}
 	if len(w.eps) > 0 {
 		// The connection table's word too: xray's own dials to the nodes —
 		// the observatory's, at the least — answered or not. It needs no
@@ -384,7 +394,10 @@ type tunnelLook struct {
 	// connection of xray's to one of them was last answered — is a word.
 	Watching bool
 	Answered time.Time
-	At       time.Time
+	// PrincipleFailing: a node the main balancer prefers now has stopped
+	// answering connections (failover.Detector).
+	PrincipleFailing bool
+	At               time.Time
 }
 
 // publishTunnel records the word on the main traffic's nodes.
@@ -456,7 +469,7 @@ const blindRetryAfter = 10 * time.Minute
 // node dead — the rescue need not wait for the next poll to look.
 func (d *daemon) tunnelFailing(now time.Time) bool {
 	l := d.freshTunnel(now)
-	return l != nil && (l.MainDown || l.Dead)
+	return l != nil && (l.MainDown || l.Dead || l.PrincipleFailing)
 }
 
 // lookupEach looks a node's name up within its own budget.

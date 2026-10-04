@@ -206,3 +206,16 @@ func TestProbeTraceReadsTheAddress(t *testing.T) {
 		t.Fatal("a 403 counted as an answer")
 	}
 }
+
+// ProbeTraceAll keeps every answer: one url out by the kernel must not hide
+// another that came through the tunnel.
+func TestProbeTraceAllKeepsEveryAnswer(t *testing.T) {
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ip=198.51.100.1\n")) }))
+	defer a.Close()
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ip=203.0.113.9\n")) }))
+	defer b.Close()
+	ips := ProbeTraceAll(context.Background(), nil, []string{a.URL, b.URL}, 2*time.Second)
+	if len(ips) != 2 {
+		t.Fatalf("answers %v, want both", ips)
+	}
+}

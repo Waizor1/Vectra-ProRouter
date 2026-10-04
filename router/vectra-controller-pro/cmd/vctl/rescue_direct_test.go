@@ -128,8 +128,11 @@ func TestTheRescueRechecksBetweenPollsOnlyWhenUnsure(t *testing.T) {
 		t.Fatal("a probe through the tunnel failed and nothing looks again before the next poll")
 	}
 	d.rescueCheckedAt = now
-	if d.rescueRecheckDue(now.Add(rescueRecheckEvery / 2)) {
-		t.Fatal("looked again sooner than rescueRecheckEvery")
+	if d.rescueRecheckDue(now.Add(rescueFailingEvery / 2)) {
+		t.Fatal("looked again sooner than rescueFailingEvery")
+	}
+	if !d.rescueRecheckDue(now.Add(rescueFailingEvery)) {
+		t.Fatal("a probe failed and the next waits longer than rescueFailingEvery")
 	}
 
 	d.rescueCheckedAt = time.Time{}

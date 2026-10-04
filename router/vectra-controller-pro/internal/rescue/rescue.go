@@ -231,50 +231,67 @@ var TraceURLs = []string{"https://www.cloudflare.com/cdn-cgi/trace", "https://cp
 // ProbeTrace asks the trace urls at once, within d, and returns the address
 // the first answer saw the request come from.
 func ProbeTrace(ctx context.Context, client *http.Client, urls []string, d time.Duration) (string, bool) {
+	ips := probeTrace(ctx, client, urls, d, true)
+	if len(ips) == 0 {
+		return "", false
+	}
+	return ips[0], true
+}
+
+// ProbeTraceAll asks the trace urls at once, within d, and returns the address
+// each answer saw — all of them: through the tunnel one url may go out by the
+// kernel (an address in the direct sets) while another takes the tunnel, and
+// only the second says the tunnel works (1111, 2026-10-04: cp.cloudflare.com
+// answered from the WAN while www.cloudflare.com came through Poland).
+func ProbeTraceAll(ctx context.Context, client *http.Client, urls []string, d time.Duration) []string {
+	return probeTrace(ctx, client, urls, d, false)
+}
+
+func probeTrace(ctx context.Context, client *http.Client, urls []string, d time.Duration, first bool) []string {
 	if client == nil {
 		client = &http.Client{Timeout: d}
 	}
 	if len(urls) == 0 {
-		return "", false
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, d)
 	defer cancel()
-	type answer struct {
-		ip string
-		ok bool
-	}
-	results := make(chan answer, len(urls))
+	results := make(chan string, len(urls))
 	for _, u := range urls {
 		go func(u string) {
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 			if err != nil {
-				results <- answer{}
+				results <- ""
 				return
 			}
 			resp, err := client.Do(req)
 			if err != nil {
-				results <- answer{}
+				results <- ""
 				return
 			}
 			defer resp.Body.Close()
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			if resp.StatusCode >= 400 {
-				results <- answer{}
+				results <- ""
 				return
 			}
 			for _, line := range strings.Split(string(body), "\n") {
 				if ip, found := strings.CutPrefix(strings.TrimSpace(line), "ip="); found && ip != "" {
-					results <- answer{ip: ip, ok: true}
+					results <- ip
 					return
 				}
 			}
-			results <- answer{}
+			results <- ""
 		}(u)
 	}
+	var ips []string
 	for range urls {
-		if a := <-results; a.ok {
-			return a.ip, true
+		if ip := <-results; ip != "" {
+			ips = append(ips, ip)
+			if first {
+				return ips
+			}
 		}
 	}
-	return "", false
+	return ips
 }

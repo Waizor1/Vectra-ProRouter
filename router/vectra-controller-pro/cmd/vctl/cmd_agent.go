@@ -932,28 +932,37 @@ func (d *daemon) probeThroughTunnel(ctx context.Context, hc *http.Client) bool {
 		return rescue.ProbeAny(ctx, hc, d.rescuePolicy.HealthURLs)
 	}
 	d.refreshWANIP(ctx, time.Now())
-	ip, ok := rescue.ProbeTrace(ctx, hc, d.rescuePolicy.TraceURLs, 8*time.Second)
-	if ok && ip != d.wanIP && ip != d.lastTunnelIP {
-		// An address not seen before: learn the WAN's again now, so an
-		// address change (a PPPoE redial, CGNAT) cannot pass a probe that
-		// went around the tunnel for the ten minutes until the next look.
-		d.wanIPAt = time.Time{}
-		d.refreshWANIP(ctx, time.Now())
+	ips := rescue.ProbeTraceAll(ctx, hc, d.rescuePolicy.TraceURLs, 8*time.Second)
+	for _, ip := range ips {
+		if ip != d.wanIP && ip != d.lastTunnelIP {
+			// An address not seen before: learn the WAN's again now, so an
+			// address change (a PPPoE redial, CGNAT) cannot pass a probe
+			// that went around the tunnel until the next look.
+			d.wanIPAt = time.Time{}
+			d.refreshWANIP(ctx, time.Now())
+			break
+		}
 	}
-	if ok {
+	through, around := false, false
+	for _, ip := range ips {
+		if d.wanIP != "" && ip == d.wanIP {
+			around = true
+			continue
+		}
+		through = true
 		d.lastTunnelIP = ip
 	}
-	if ok && d.wanIP != "" && ip == d.wanIP {
+	if !through && around {
 		if !d.traceAroundSaid {
 			d.traceAroundSaid = true
-			logging.L().Warn("rescue: the probe through the tunnel came back from the router's own address; it went around the tunnel and counts as no answer")
+			logging.L().Warn("rescue: the probe through the tunnel came back only from the router's own address; it went around the tunnel and counts as no answer")
 		}
 		return false
 	}
-	if ok {
+	if through {
 		d.traceAroundSaid = false
 	}
-	return ok
+	return through
 }
 
 // ipv4Transport dials IPv4 only: the path the router carries through the
@@ -1009,12 +1018,24 @@ func (d *daemon) xraySettled(now time.Time) bool {
 // LAN 147 s without internet before the router went direct.
 const rescueRecheckEvery = 10 * time.Second
 
+// rescueFailingEvery is the recheck's pace once a probe through the tunnel
+// has failed: a failed step already takes up to 14 s (the tunnel's timeout,
+// then the probe around it), so three of them at a 10 s pace took a minute.
+const rescueFailingEvery = 3 * time.Second
+
 // rescueRecheckDue: the rescue is to look again now, between the polls.
 func (d *daemon) rescueRecheckDue(now time.Time) bool {
-	if now.Sub(d.rescueCheckedAt) < rescueRecheckEvery || d.killSwitchArmed() {
+	if d.killSwitchArmed() {
 		return false
 	}
 	st := d.rescueState()
+	every := rescueRecheckEvery
+	if st.Mode == rescue.ModeProxy && st.ProxyFailureCount > 0 {
+		every = rescueFailingEvery
+	}
+	if now.Sub(d.rescueCheckedAt) < every {
+		return false
+	}
 	switch st.Mode {
 	case rescue.ModeProxy:
 		// Not while xray itself is down or starting: the probe would say
