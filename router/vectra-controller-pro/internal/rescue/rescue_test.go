@@ -234,3 +234,14 @@ func TestFailuresMustSpanMinFailSpan(t *testing.T) {
 		t.Fatalf("failures spanning MinFailSpan and no direct: %+v", d)
 	}
 }
+
+// Failures kept from before a restart do not count with a new one.
+func TestAStaleFailureRunStartsAgain(t *testing.T) {
+	p := DefaultPolicy()
+	now := time.Now()
+	st := State{Mode: ModeProxy, ProxyFailureCount: p.TriggerFailureCount - 1, FirstFailureAt: now.Add(-time.Hour)}
+	d := Evaluate(Input{CurrentState: st, ProxyConclusive: true, DirectReachable: true, Now: now}, p)
+	if d.ShouldTransition || d.NextState.ProxyFailureCount != 1 || !d.NextState.FirstFailureAt.Equal(now) {
+		t.Fatalf("an hour-old run counted with a new failure: %+v", d)
+	}
+}

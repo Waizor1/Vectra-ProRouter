@@ -50,6 +50,19 @@ func (d *daemon) killOrphanXray() int {
 	for _, pid := range pids {
 		_ = kill(pid, syscall.SIGKILL)
 	}
+	// A moment for the kernel to let its sockets go, or the supervisor's
+	// first xray loses the bind and sits out a backoff.
+	for end := time.Now().Add(time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+		alive := 0
+		for _, pid := range pids {
+			if kill(pid, 0) == nil {
+				alive++
+			}
+		}
+		if alive == 0 {
+			break
+		}
+	}
 	return len(pids)
 }
 

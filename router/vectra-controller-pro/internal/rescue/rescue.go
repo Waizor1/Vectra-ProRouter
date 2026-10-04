@@ -57,6 +57,10 @@ const (
 // healed the tunnel.
 const MinFailSpan = 20 * time.Second
 
+// staleFailureRun: failed probes older than this are not counted with new
+// ones.
+const staleFailureRun = 5 * time.Minute
+
 // maxBackoffShift caps the cooldown's doubling (2 min << 4 = 32 min).
 const maxBackoffShift = 4
 
@@ -151,7 +155,14 @@ func Evaluate(in Input, p Policy) Decision {
 			return d // transient probe failure — don't count it
 		}
 		d.NextState.ProxyFailureCount = st.ProxyFailureCount + 1
-		if st.ProxyFailureCount == 0 || st.FirstFailureAt.IsZero() {
+		switch {
+		case !st.FirstFailureAt.IsZero() && in.Now.Sub(st.FirstFailureAt) > staleFailureRun:
+			// A run older than staleFailureRun — kept across a restart, a
+			// nightly reboot — is not this outage: it starts again here.
+			d.NextState.ProxyFailureCount = 1
+			d.NextState.FirstFailureAt = in.Now
+		case st.ProxyFailureCount == 0 || st.FirstFailureAt.IsZero():
+			// The first failure, or a count kept by a vctl before r15.
 			d.NextState.FirstFailureAt = in.Now
 		}
 		// No cooldown on the way out: the internet must not wait for it. The
