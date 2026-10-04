@@ -15,7 +15,11 @@ import {
   routerInventorySnapshots,
   partnerWebhooks,
 } from "@vectra/db";
-import { routerConnectTelemetrySchema } from "@vectra/contracts";
+import { readFileSync } from "node:fs";
+import {
+  routerCheckInRequestSchema,
+  routerConnectTelemetrySchema,
+} from "@vectra/contracts";
 import { createFakeDb } from "./testing/fake-db";
 import { keyedDigest } from "./secrets";
 import { buildPartnerRequestHeaders } from "./partner-request-signature";
@@ -450,6 +454,16 @@ describe("signed actions", () => {
 // Services telemetry v2: the per-service server picker. The router says
 // where each service runs, whether the owner chose it, which cached
 // locations carry it, and whether the owner's choice no longer runs.
+// The check-in vctl puts on the wire (see tests/contract/vctl-check-in).
+const checkInFixture: unknown = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../../../router/vectra-controller-pro/testdata/contract/check-in-request.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+);
 describe("services telemetry v2", () => {
   const A = "a".repeat(64);
   const B = "b".repeat(64);
@@ -519,10 +533,25 @@ describe("services telemetry v2", () => {
       }).success,
     ).toBe(true);
   });
-  it("rejects a capability the panel does not know", () => {
+  it("drops a capability the panel does not know instead of the check-in", () => {
     expect(
-      routerConnectTelemetrySchema.safeParse({ capabilities: ["shell"] })
-        .success,
+      routerConnectTelemetrySchema.parse({
+        capabilities: ["set_service", "some_future_flag", "set_service_auto"],
+      }).capabilities,
+    ).toEqual(["set_service", "set_service_auto"]);
+    const checkIn = structuredClone(checkInFixture) as {
+      inventory: { connect: Record<string, unknown> };
+    };
+    checkIn.inventory.connect.capabilities = ["set_rules", "some_future_flag"];
+    const parsed = routerCheckInRequestSchema.safeParse(checkIn);
+    expect(parsed.success && parsed.data.inventory.connect?.capabilities).toEqual(
+      ["set_rules"],
+    );
+    // Still bounded: a flood is refused.
+    expect(
+      routerConnectTelemetrySchema.safeParse({
+        capabilities: Array.from({ length: 65 }, (_, i) => `f${i}`),
+      }).success,
     ).toBe(false);
   });
   it("queues set_service :auto for a router that understands it", async () => {
