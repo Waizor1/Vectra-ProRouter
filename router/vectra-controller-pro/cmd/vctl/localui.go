@@ -862,6 +862,9 @@ func (d *daemon) waitForTick(ctx context.Context, tick <-chan time.Time) bool {
 				}
 				d.publishRuntime()
 			}
+			// xray started anew (a reload, a crash): its FakeDNS answers in
+			// dnsmasq's cache lead nowhere.
+			d.flushAfterXrayRestart(ctx)
 			// A probe through the tunnel just failed, or direct mode may go
 			// back: the rescue looks again now, not at the next poll.
 			if d.rescueRecheckDue(time.Now()) {

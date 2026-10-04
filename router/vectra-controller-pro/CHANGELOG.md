@@ -1,5 +1,68 @@
 # Changelog
 
+## vctl 0.7.0-r18 — a router just claimed in the Vectra app is on the VPN at once
+
+Seen live on 2026-10-04 (vctl r17): a router released and claimed again by
+code went direct 20 s after the claim, the owner's first config arrived while
+it was direct, and the LAN sat off the VPN for two minutes — Instagram dead
+behind the ISP's forged DNS. Back on the proxy, dnsmasq still held what it
+had answered meanwhile, and those sites kept going around the tunnel until
+their answers expired.
+
+### Fixed
+- **The rescue judged a tunnel that did not exist.** A released router (or
+  one claimed and not yet given the owner's config) has no xray and no data
+  plane; its probe "through the tunnel" goes out the WAN and fails by
+  design. With no supervisor started xray counted as settled, so those
+  failures were conclusive, and 20 s later the rescue sent the router direct
+  — then held the owner's first config off the VPN for its cooldown. Now
+  with no config there is nothing to judge: no failures are counted and an
+  old run is cleared. After an apply the failure window starts again and the
+  rescue waits xraySettle (15 s) for the new config before it counts
+  anything. A dead tunnel still goes direct as in r15: three failures
+  spanning 20 s once xray has settled; direct mode still keeps the internet.
+- **An apply in direct mode no longer loads a dead tunnel.** r17 loaded the
+  data plane on every changed apply, direct or not, while the rescue went on
+  saying "direct". Now, in the rescue's direct mode, an apply loads it — and
+  the rescue judges the new tunnel from proxy mode — only with other nodes or
+  credentials than the ones it left (at once, unless returns have already
+  failed in a row: then after the backoff's cooldown, up to 32 min), or, with
+  the same nodes, when the rescue itself would go back (cooldown over, a node
+  answered since). Otherwise the config waits on disk for the rescue's own
+  way back, and the LAN keeps its internet; a run of applies of dead nodes
+  does not swing it.
+- **The operator's direct mode is the operator's.** It is recorded as such
+  (state `rescue.source: "operator"`; an r17 state file is recognised by its
+  reason) and lasts until the operator reconnects: neither an apply nor the
+  rescue's way back ends it any more.
+- **The way back waits for the new xray.** A reload only signals the old
+  xray, which answers on its DNS inbound a moment longer. The rescue's return
+  and the operator's reconnect now reload xray and wait (at most 10 s) for
+  the new process before loading the data plane; an apply waits the same way.
+  An xray that does not come back leaves the router direct (the rescue) or
+  as it was (a reconnect fails).
+- **Back from direct mode, the resolver kept direct-era answers.** The cache
+  was emptied on the way into direct mode, not on the way back. Now every
+  time the DNS redirect goes back in — the rescue's return to the proxy, an
+  operator reconnect, an apply after a claim, the DNS watch putting the
+  redirect back once xray answers — dnsmasq's cache is emptied after the
+  redirect is in place: no real address, and no address the ISP forged for
+  a blocked site, survives. The rescue (and reconnect) reload xray first and
+  load the data plane second, so FakeDNS answers handed out in between do not
+  lead nowhere after the reload. A release empties the cache too (the LAN
+  goes out directly, xray's FakeDNS addresses lead nowhere).
+- **A restarted xray's FakeDNS answers no longer outlive it.** Any new xray
+  start while the DNS redirect hands out FakeDNS addresses — the reload after
+  a changed subscription, a location change, the failover watchdog, a crash —
+  empties dnsmasq's cache once the new xray answers, once per start.
+- A flush for the same reason is not repeated within 5 s unless the
+  resolver's path changed in between: every return of the DNS redirect is
+  its own flush.
+
+### Deploy
+No change to the router UI, the check-in or the panel contract: nothing to
+deploy first.
+
 ## vctl 0.7.0-r17 — Wi-Fi per band from the Vectra app, and «Авто» says where it goes
 
 ### Connect: Wi-Fi per band

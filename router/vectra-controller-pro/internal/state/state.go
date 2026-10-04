@@ -34,6 +34,9 @@ type RescueSnapshot struct {
 	LastTransitionAt   string `json:"last_transition_at,omitempty"`
 	FailedRetries      int    `json:"failed_retries,omitempty"`
 	FirstFailureAt     string `json:"first_failure_at,omitempty"`
+	// Source is who chose a direct mode: "operator" (the direct-mode job),
+	// "" the rescue. Cleared with any other mode.
+	Source string `json:"source,omitempty"`
 }
 
 // CurrentJob tracks the job being executed so a crash mid-job is reported as

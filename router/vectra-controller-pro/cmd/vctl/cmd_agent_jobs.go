@@ -33,6 +33,7 @@ import (
 	"vectra-controller-pro/internal/rescue"
 	"vectra-controller-pro/internal/state"
 	"vectra-controller-pro/internal/subscription"
+	"vectra-controller-pro/internal/supervisor"
 )
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
@@ -277,15 +278,30 @@ func (d *daemon) jobApplyXrayConfig(ctx context.Context, job controlplane.Job, r
 
 	// A changed tproxy inbound must be re-spliced even when the provider bytes
 	// are unchanged, so force a re-render by declaring the current one stale.
+	nodesBefore := d.renderNodesKey()
 	res, err := d.applyProvider(ctx, providerRaw, operatorChanged)
 	if err != nil {
 		return d.submitFailure(ctx, job, "apply: "+err.Error())
 	}
+	reloadedAt := time.Now()
 	d.reloadAfterApply(ctx, res, providerRaw)
 	// The firewall follows the OPERATOR config (tproxy port/mark/kill-switch),
 	// never the provider document.
 	if res.Changed || operatorChanged {
-		d.programFirewall(ctx, cfg)
+		if d.rescueState().Mode == rescue.ModeDirect && !d.directMayEnd(time.Now(), d.renderNodesKey() != nodesBefore) {
+			// Direct mode stays: the data plane is not loaded onto a tunnel
+			// known dead, nor out of the operator's direct mode. The rescue's
+			// way back (or the operator's reconnect) loads the new config.
+			logging.L().Info("a new config is applied in direct mode; the router goes back to the tunnel when the rescue or the operator takes it there")
+		} else {
+			if res.Changed && d.supStarted {
+				// The new xray, not the one the reload signalled, gets the
+				// DNS redirect (reloadXray).
+				d.waitXrayAfter(ctx, reloadedAt)
+			}
+			d.programFirewall(ctx, cfg)
+			d.rescueAfresh(time.Now())
+		}
 	}
 	d.st.AppliedRevisionID = rev.ID
 
@@ -623,18 +639,24 @@ func (d *daemon) jobEnterDirect(ctx context.Context, job controlplane.Job) error
 	// packets keep being tproxy'd into a (possibly dead) Xray and black-holed.
 	d.tearDownFirewall(ctx)
 	d.flushResolverCache("direct mode")
-	d.storeRescueState(rescue.State{Mode: rescue.ModeDirect, LastTransitionAt: time.Now()}, "operator requested direct mode")
+	d.storeRescueState(rescue.State{Mode: rescue.ModeDirect, LastTransitionAt: time.Now()}, operatorDirectReason)
+	// It lasts until the operator reconnects (operatorDirect).
+	d.st.Rescue.Source = rescueSourceOperator
 	_ = d.persist()
 	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"enteredDirectMode": true})
 }
 
 func (d *daemon) jobReconnect(ctx context.Context, job controlplane.Job) error {
-	// Re-program the firewall (behind commit-confirm) and reload Xray so the
-	// proxy data plane is actually restored.
-	d.reapplyFirewall(ctx)
-	if d.supStarted {
-		_ = d.sup.Reload(d.supCtx)
+	// Reload Xray and re-program the firewall (behind commit-confirm) so the
+	// proxy data plane is actually restored. Xray first, and the new one
+	// running (reloadXray): the resolver's cache is emptied once the DNS
+	// redirect is in (programFirewall), and FakeDNS answers handed out before
+	// a reload would lead nowhere after it. An xray that does not come back
+	// leaves the router as it was.
+	if !d.reloadXray(ctx) {
+		return d.submitFailure(ctx, job, "reconnect: xray did not come back after its reload")
 	}
+	d.reapplyFirewall(ctx)
 	d.storeRescueState(rescue.State{Mode: rescue.ModeProxy, LastTransitionAt: time.Now()}, "operator requested reconnect")
 	_ = d.persist()
 	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"reconnected": true})
@@ -934,9 +956,17 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 		logging.L().Error("firewall render failed", "err", err.Error())
 		return
 	}
-	if err := d.confirmer.Apply(script, spec); err != nil {
+	applyRuleset := d.confirmer.Apply
+	if d.applyRuleset != nil {
+		applyRuleset = d.applyRuleset
+	}
+	if err := applyRuleset(script, spec); err != nil {
 		logging.L().Error("firewall apply failed (deadman armed; auto-reverts unless a check-in confirms)", "err", err.Error())
 		return
+	}
+	redirected := false
+	if d.fwProgrammed != nil {
+		_, redirected = redirectPort(*d.fwProgrammed)
 	}
 	key := dnsRedirectKey(spec) + fakeDNSKey(spec)
 	d.fwProgrammed = &key
@@ -944,6 +974,23 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 	d.directLoaded, d.directFailKey, d.directPartial, d.directCount = "", "", false, 0
 	if key != "" {
 		logging.L().Info("the router's resolver asks through the tunnel", "redirect", key)
+	}
+	_, nowRedirected := redirectPort(key)
+	if nowRedirected != redirected {
+		d.dnsPathGen++
+	}
+	if nowRedirected && !redirected {
+		// The resolver asked over the open path until now — direct mode, a
+		// released router, a first config, xray's DNS inbound down: what it
+		// cached then are real addresses, and the ISP's forged ones for
+		// blocked sites, which would keep those sites off the tunnel until
+		// they expire.
+		d.flushResolverCache("the resolver asks through the tunnel again")
+		if st := d.xrayStatus(); d.supStarted && st.State == supervisor.StateRunning {
+			// This start's FakeDNS answers are flushed already
+			// (flushAfterXrayRestart).
+			d.flushedStart = st.StartedAt
+		}
 	}
 	d.confirmIfPanelReachable(ctx)
 	d.maybeLoadDirect(ctx)
@@ -1001,6 +1048,11 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 		return false
 	}
 	d.directLoaded = ""
+	if d.fwProgrammed != nil {
+		if _, in := redirectPort(*d.fwProgrammed); in {
+			d.dnsPathGen++
+		}
+	}
 	// Nothing is redirected any more: the DNS watch must not take this for a
 	// loaded data plane to correct.
 	d.fwProgrammed = nil
@@ -1092,10 +1144,23 @@ func (d *daemon) applyRescueTransition(ctx context.Context, dec rescue.Decision)
 		d.flushResolverCache("direct mode")
 	case rescue.ModeProxy:
 		logging.L().Info("rescue: recovering proxy mode (reapplying firewall)", "reason", dec.Reason)
-		d.reapplyFirewall(ctx)
-		if d.supStarted {
-			_ = d.sup.Reload(d.supCtx)
+		// Xray first, the new one running (reloadXray), then the data plane:
+		// programming it waits for xray to answer on its DNS inbound and then
+		// empties the resolver's cache (programFirewall), so no answer from
+		// direct mode — a real address, or one the ISP forged for a blocked
+		// site — keeps those sites around the tunnel until it expires (vctl
+		// r17, 2026-10-04: www.youtube.com on a real IPv6 a minute after the
+		// return). The other way round, FakeDNS answers handed out between
+		// the two would lead nowhere after the reload.
+		if !d.reloadXray(ctx) {
+			// No xray to carry the LAN: direct stays, the cooldown before
+			// the next try.
+			st := d.rescueState()
+			st.Mode, st.DirectSuccessCount, st.LastTransitionAt = rescue.ModeDirect, 0, time.Now()
+			d.storeRescueState(st, "xray did not come back after its reload; staying direct")
+			return
 		}
+		d.reapplyFirewall(ctx)
 	}
 }
 
