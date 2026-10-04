@@ -21,7 +21,7 @@ import { tuneInPlace, tuneWords } from '../lib/tune';
 import { Icon, type IconName } from '../ui/icons';
 import { Button, Field, Note, Skeleton, Spinner } from '../ui/kit';
 import { Qr } from '../ui/Qr';
-import { around, SLOT } from './Nodes';
+import { around, SLOT } from '../ui/words';
 import { PasswordFields, usePasswordForm } from './Password';
 
 export type StepId = 'password' | 'internet' | 'wifi' | 'vectra' | 'server';
@@ -343,13 +343,13 @@ export const wifiEsc = (v: string) => v.replace(/([\\;,:"])/g, '\\$1');
 
 const BAND_KEY: Record<string, Key> = { '2g': 'w.wifi.band.2g', '5g': 'w.wifi.band.5g', '6g': 'w.wifi.band.6g', '60g': 'w.wifi.band.60g' };
 const BAND_ORDER = ['2g', '5g', '6g', '60g'];
-const bandName = (t: (k: Key) => string, band: string | null) => (band && BAND_KEY[band] ? t(BAND_KEY[band]) : band || '—');
-const byBand = (a: WifiRadio, b: WifiRadio) => BAND_ORDER.indexOf(a.band ?? '') - BAND_ORDER.indexOf(b.band ?? '');
+export const bandName = (t: (k: Key) => string, band: string | null) => (band && BAND_KEY[band] ? t(BAND_KEY[band]) : band || '—');
+export const byBand = (a: WifiRadio, b: WifiRadio) => BAND_ORDER.indexOf(a.band ?? '') - BAND_ORDER.indexOf(b.band ?? '');
 /** OpenWrt's own name, or none: a network nobody named yet. */
 const unnamed = (r: WifiRadio) => !r.ssid || r.ssid === 'OpenWrt';
 
 /** A radio that carries an access point: the network a name and a password are for. */
-const hasAp = (r: WifiRadio) => r.ap === true;
+export const hasAp = (r: WifiRadio) => r.ap === true;
 
 /** A change the router has not finished, or finished without every band. */
 const UNSETTLED = ['applying', 'partial', 'failed'];

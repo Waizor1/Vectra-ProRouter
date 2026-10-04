@@ -82,7 +82,7 @@ describe('translation', () => {
 
   it('falls back to the raw key for a key it does not know', () => {
     const t = makeT('en');
-    expect(t.has('tab.nodes')).toBe(true);
+    expect(t.has('tab.settings')).toBe(true);
     expect(t.has('no.such.key')).toBe(false);
   });
 

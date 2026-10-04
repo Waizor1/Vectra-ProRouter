@@ -305,7 +305,6 @@ h3,
   color: var(--tx-2);
 }
 .k,
-.tbl th,
 .chk-s {
   color: var(--tx-3);
   font-size: 11px;
@@ -365,14 +364,6 @@ h3,
   color: var(--tx-2);
   font-size: 12.5px;
 }
-.ver {
-  padding: 1px 7px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--tx-3);
-  font-size: 11.5px;
-  white-space: nowrap;
-}
 .pill {
   display: inline-flex;
   align-items: center;
@@ -419,7 +410,6 @@ h3,
 /* A phone: the logo and the verdict on one line, the switches on the next.
    The router's name, the refresh clock and "full screen" are desk matters. */
 [data-w="s"] .upd,
-[data-w="s"] .ver,
 [data-w="s"] .host,
 [data-w="s"] .to-full {
   display: none;
@@ -472,7 +462,16 @@ h3,
   justify-content: space-between;
 }
 [data-w="s"] .tab {
-  padding: 0 11px;
+  padding: 0 9px;
+}
+/* A phone: the open tab's name may take two short lines ("Серверы и / сервисы")
+   rather than push the last tab out of the row. */
+[data-w="s"] .tab[aria-selected="true"] {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+[data-w="s"] .tab[aria-selected="true"] span {
+  line-height: 1.1;
 }
 
 /* ── surfaces ──────────────────────────────────────────────────────────── */
@@ -519,20 +518,6 @@ h3,
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
-.meter {
-  display: block;
-  height: 6px;
-  margin-top: 7px;
-  overflow: hidden;
-  border-radius: 9px;
-  background: var(--track);
-}
-.meter span {
-  display: block;
-  height: 100%;
-  background: var(--c-f);
-}
-
 /* Tones set --c (text), --c-f (fill), --c-bg, --c-ln; components pick. */
 .t-ok {
   --c: var(--ok);
@@ -687,6 +672,35 @@ h3,
 .bg {
   background: none;
   color: var(--ac);
+}
+/* Outline: a secondary action with a shape of its own (Vectra Connect's outlined button). */
+.bo {
+  border-color: var(--ac-ln);
+  background: none;
+  color: var(--ac-l);
+}
+/* Turning Vectra off: the same shape in grey — there when wanted, never inviting. */
+.bo.b-off {
+  border-color: var(--line-2);
+  color: var(--tx-2);
+}
+.bo.b-off .ic {
+  color: var(--tx-3);
+}
+/* The power row: restart and off side by side, equal widths; stacked full width on a phone. */
+.acts {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 10px;
+}
+.acts .btn {
+  width: 100%;
+  min-width: 0;
+}
+[data-w="s"] .acts {
+  grid-auto-flow: row;
+  width: 100%;
 }
 .bg:not(.bi) {
   padding-inline: 2px;
@@ -944,7 +958,7 @@ h3,
   color: var(--tx);
   font-weight: 700;
 }
-.err code {
+.err .raw {
   display: block;
   margin-top: 8px;
   padding: 7px 10px;
@@ -1087,34 +1101,6 @@ h3,
 [data-w="s"] .verdict {
   font-size: 23px;
 }
-.g4 {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-template-areas: "x d r" "x p r";
-}
-.a-x {
-  grid-area: x;
-}
-.a-d {
-  grid-area: d;
-}
-.a-p {
-  grid-area: p;
-}
-.a-r {
-  grid-area: r;
-}
-[data-w="x"] .g4 {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  grid-template-areas: "x d p r";
-}
-[data-w="m"] .g4 {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-areas: "x r" "d p";
-}
-[data-w="s"] .g4 {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "x" "d" "p" "r";
-}
 .checks {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
@@ -1146,47 +1132,35 @@ h3,
 [data-w="s"] .checks {
   grid-template-columns: minmax(0, 1fr);
 }
-.hero-m .btn {
-  margin-top: 12px;
+.hero-m .row,
+.hero-m .acts {
+  margin-top: 14px;
 }
-/* The key facts under the verdict: a tone dot, the word, what it means. */
-.facts {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+.hero-m .acts {
+  max-width: 440px;
 }
-[data-w="m"] .facts,
-[data-w="s"] .facts {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-[data-w="s"] .facts {
-  gap: 8px;
-}
-.fact {
-  display: grid;
-  align-content: start;
-  gap: 4px;
-  padding: 12px 14px;
-}
-.fact b {
+/* A labelled value: "Трафик — Идёт через VPN", the label small above or beside it. */
+.fv {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+}
+.fv b {
   color: var(--tx);
-  font-size: 15px;
-  font-weight: 700;
-  line-height: 1.3;
+  font-weight: 600;
 }
-.fact b i {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--c-f);
-  box-shadow: 0 0 0 3px var(--c-bg);
+.fv b.tx-ok {
+  color: var(--ok);
 }
-.tech .g4 {
-  margin-top: 4px;
+.fv b.tx-warn {
+  color: var(--warn);
+}
+.fv b.tx-fail {
+  color: var(--fail);
+}
+.hero-m .fv {
+  margin-top: 10px;
 }
 
 /* ── routes ────────────────────────────────────────────────────────────── */
@@ -1198,9 +1172,6 @@ h3,
   margin-bottom: 16px;
   break-inside: avoid;
 }
-.probe .row {
-  margin: 12px 0 10px;
-}
 .rt {
   display: grid;
   gap: 12px;
@@ -1208,8 +1179,7 @@ h3,
 .rt.bad {
   border-color: var(--fail-ln);
 }
-.rt-h,
-.stop-t {
+.rt-h {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1222,98 +1192,17 @@ h3,
   line-height: 1.3;
   letter-spacing: -0.02em;
 }
-.rt-h .bd,
-.stop-t .bd {
+.rt-h .bd {
   margin-left: auto;
 }
-/* The provider's tag, kept beside every plain name for support. */
-.tg {
-  padding: 0 6px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--tx-3);
-  font-size: 11px;
-  line-height: 18px;
-  white-space: nowrap;
-}
-/* The chain: a rail down the left with a dot per stop; the dot where the traffic is glows. */
-.stop {
-  position: relative;
+/* A route's backups, folded under the line that names them. */
+.bk {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
-  gap: 12px;
-  padding-bottom: 16px;
+  gap: 14px;
+  margin-top: 4px;
 }
-.stop:last-child {
-  padding-bottom: 0;
-}
-.stop:not(:last-child)::before {
-  content: "";
-  position: absolute;
-  top: 26px;
-  bottom: 2px;
-  left: 10px;
-  width: 2px;
-  background: var(--line-2);
-}
-.stop.skip:not(:last-child)::before {
-  background: repeating-linear-gradient(180deg, var(--fail-ln) 0 5px, transparent 0 9px);
-}
-.stop > i {
-  width: 22px;
-  height: 22px;
-  border: 2px solid var(--line-s);
-  border-radius: 50%;
-  background: var(--bg-el);
-}
-.stop.here > i {
-  border-color: var(--ac);
-  background: radial-gradient(circle, var(--ac) 0 4px, transparent 5px), var(--bg-el);
-  box-shadow: 0 0 0 5px var(--ac-bg);
-}
-.stop.skip > i {
-  border: 2px dashed var(--fail-ln);
-}
-.stop.unknown > i {
-  border-style: dashed;
-}
-.stop > div {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-.stop-t b {
-  color: var(--tx);
-  font-weight: 600;
-}
-.then {
-  font-size: 10.5px;
-}
-.ctry {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 12px;
-  color: var(--tx-2);
-  font-size: 12.5px;
-}
-.now {
-  color: var(--tx);
-  font-weight: 600;
-}
-.down {
-  color: var(--fail);
-  font-size: 13px;
-}
-.lvls li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0 8px;
-  color: var(--tx-2);
-}
-.lvls .here {
-  color: var(--tx);
-  font-weight: 600;
+.bk h4 {
+  margin-bottom: 6px;
 }
 /* A disclosure: cyan text and a chevron that turns when it opens. */
 .more > summary {
@@ -1376,24 +1265,41 @@ h3,
   background: var(--ac-bg);
 }
 .mem .nn {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0 8px;
   min-width: 0;
 }
 .mem-b {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: 6px;
   min-width: 84px;
 }
+/* A phone: the pin stays on the node's own line; the pinned one says it with
+   its "Unpin" and pin icon, the badge beside it is for wider screens. */
 [data-w="s"] .mem {
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 4px 4px 4px 10px;
 }
 [data-w="s"] .mem-b {
-  grid-column: 2 / -1;
-  justify-content: flex-start;
+  min-width: 0;
+}
+[data-w="s"] .mem-b .bd.t-warm {
+  display: none;
+}
+[data-w="s"] .mem .pin {
+  width: 40px;
+  padding: 0;
+}
+[data-w="s"] .pin-t {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 .fl {
   flex: none;
@@ -1426,26 +1332,6 @@ h3,
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.bars {
-  display: inline-flex;
-  align-items: flex-end;
-  gap: 2px;
-}
-.bars i {
-  width: 3px;
-  height: 5px;
-  border-radius: 1px;
-  background: var(--track);
-}
-.bars i + i {
-  height: 8px;
-}
-.bars i + i + i {
-  height: 12px;
-}
-.bars .on {
-  background: currentColor;
-}
 .ndot {
   position: relative;
   display: inline-block;
@@ -1476,155 +1362,11 @@ h3,
   transform: rotate(-45deg);
 }
 
-/* ── nodes ─────────────────────────────────────────────────────────────── */
-.tbl-w {
-  padding: 4px 6px;
-  overflow-x: auto;
-}
-.tbl {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-.tbl th {
-  padding: 10px 10px 8px;
-  border-bottom: 1px solid var(--line-2);
-  letter-spacing: 0.06em;
-  text-align: left;
-}
-.tbl td {
-  padding: 10px;
-  border-bottom: 1px solid var(--line);
-}
-.tbl tr:last-child td {
-  border: 0;
-}
-.tbl .num {
-  text-align: right;
-}
-/* A kind of node, as a heading row: "Мосты 9 — сначала в Россию…". */
-.tbl .grp th {
-  padding: 18px 10px 8px;
-  color: var(--tx);
-  font-size: 13px;
-  letter-spacing: 0;
-  text-transform: none;
-}
-.grp b {
-  margin-right: 6px;
-}
-.grp .hint {
-  display: inline;
-  margin-left: 8px;
-  font-weight: 500;
-}
-.dead td:first-child {
-  box-shadow: inset 3px 0 0 var(--fail-f);
-}
-[data-w="s"] .tbl tr.dead {
-  border-color: var(--fail-ln);
-  box-shadow: inset 3px 0 0 var(--fail-f);
-}
-[data-w="s"] .tbl tr.dead td:first-child {
-  box-shadow: none;
-}
-[data-w="s"] .nd-bar > .seg:first-child {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  width: 100%;
-}
-[data-w="s"] .c-proto .chip {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--tx-3);
-  font-weight: 500;
-}
-[data-w="s"] .c-proto .chip + .chip::before {
-  content: "· ";
-}
+/* A node's name beside its dot, in the routes' lists. */
 .nn {
   display: flex;
   align-items: center;
   gap: 7px;
-}
-.nn b {
-  color: var(--tx);
-  font-weight: 600;
-  white-space: nowrap;
-}
-.nn small {
-  color: var(--fail);
-  font-size: 11.5px;
-}
-.unprobed .nn small {
-  color: var(--tx-3);
-}
-.addr {
-  max-width: 280px;
-  margin-top: 2px;
-  font-size: 11.5px;
-}
-.trf {
-  display: grid;
-  white-space: nowrap;
-}
-[data-w="s"] .tbl-w {
-  padding: 0;
-  border: 0;
-  background: none;
-  box-shadow: none;
-}
-[data-w="s"] table,
-[data-w="s"] tbody {
-  display: block;
-}
-[data-w="s"] thead {
-  display: none;
-}
-[data-w="s"] .tbl tr {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 8px 10px;
-  margin-bottom: 10px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--card);
-}
-[data-w="s"] .tbl td {
-  padding: 0;
-  border: 0;
-}
-[data-w="s"] .tbl tr.grp {
-  display: block;
-  margin: 18px 0 8px;
-  padding: 0 2px;
-  border: 0;
-  background: none;
-}
-[data-w="s"] .tbl .grp th {
-  display: block;
-  padding: 0;
-  border: 0;
-}
-[data-w="s"] .grp .hint {
-  display: block;
-  margin: 2px 0 0;
-}
-[data-w="s"] .tbl .c-st {
-  padding-top: 4px;
-}
-[data-w="s"] .tbl .c-dly {
-  grid-area: 1 / 3;
-}
-[data-w="s"] .tbl .c-proto,
-[data-w="s"] .tbl .c-bal {
-  grid-column: 2 / -1;
-}
-[data-w="s"] .tbl .c-chk {
-  grid-column: 2;
 }
 
 /* ── servers ───────────────────────────────────────────────────────────── */
@@ -1819,6 +1561,81 @@ h3,
 }
 [data-w="s"] .ll span:last-child {
   grid-column: 1 / -1;
+}
+[data-w="s"] .ll span:first-of-type {
+  justify-self: start;
+  padding: 0 6px;
+}
+/* The same line again and again: shown once, with how many times. */
+.rep {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  color: var(--tx-3);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+/* ── settings ──────────────────────────────────────────────────────────── */
+.setg {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  align-items: start;
+  gap: 16px;
+}
+.setg > * {
+  min-width: 0;
+}
+.setg .card {
+  display: grid;
+  gap: 12px;
+}
+.setg .card-h {
+  margin: 0;
+}
+.setg .card > .btn {
+  justify-self: start;
+  margin: 0;
+}
+.set-a {
+  gap: 8px;
+}
+.setg .sv-sa {
+  gap: 6px;
+  justify-items: start;
+  margin: 0;
+}
+/* The Wi-Fi networks: each band's label over its name. */
+.fvs {
+  display: grid;
+  gap: 10px;
+}
+.fvs dt {
+  color: var(--tx-3);
+  font-size: 12.5px;
+}
+.fvs dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  margin: 0;
+  color: var(--tx);
+}
+.fvs .hint {
+  display: inline;
+}
+.about {
+  color: var(--tx-2);
+  font-size: 13px;
+}
+.btn.back .ic {
+  transform: scaleX(-1);
 }
 
 /* ── simple view ───────────────────────────────────────────────────────── */

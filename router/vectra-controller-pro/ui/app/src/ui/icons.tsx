@@ -27,6 +27,7 @@ const PATHS = {
   lock: 'M6.2 10.8h11.6v8.9H6.2zM8.6 10.8V8a3.4 3.4 0 0 1 6.8 0v2.8M12 14.3v2.2',
   shield: 'M12 3.4l7.2 2.9v5.2c0 4.3-3 7.8-7.2 9.2-4.2-1.4-7.2-4.9-7.2-9.2V6.3zM9 12l2.2 2.2L15.2 10',
   power: 'M12 3.5v8M7.3 6.4a7.4 7.4 0 1 0 9.4 0',
+  sliders: 'M4 7h8M16 7h4M4 17h4M12 17h8M14 4.5v5M10 14.5v5',
 } as const;
 
 export type IconName = keyof typeof PATHS;
