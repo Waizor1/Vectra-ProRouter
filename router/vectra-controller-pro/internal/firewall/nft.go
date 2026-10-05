@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -1075,6 +1076,19 @@ func steerAddrs(addrs []string, v6 bool) []string {
 		}
 	}
 	return out
+}
+
+// SteeredUpstreams are the WAN resolvers the script for s takes, sorted:
+// the IPv4 ones it redirects, the IPv6 ones it refuses — those only where it
+// refuses IPv6 at all. Exactly what is rendered, for a fingerprint of it.
+func SteeredUpstreams(s Spec) (v4, v6 []string) {
+	v4 = steerAddrs(s.DNSUpstreamV4, false)
+	if s.IPv6Enabled && s.DNSRejectV6 {
+		v6 = steerAddrs(s.DNSUpstreamV6, true)
+	}
+	sort.Strings(v4)
+	sort.Strings(v6)
+	return v4, v6
 }
 
 // RoutingCommands returns the ip rule/route commands needed alongside nft.

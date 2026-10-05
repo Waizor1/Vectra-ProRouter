@@ -35,7 +35,7 @@ func (d *daemon) dnsOptions() *xray.DNSOptions {
 	if d.cfg.NoDNSTunnel {
 		return nil
 	}
-	wanV4, _ := d.wanResolvers()
+	wanV4, _ := d.steeredWANResolvers()
 	return &xray.DNSOptions{
 		Listen: xray.DefaultDNSListen,
 		// PassWall's routing answers its lists' domains with FakeDNS; the
@@ -190,7 +190,7 @@ func (d *daemon) addDNSRedirect(ctx context.Context, spec *firewall.Spec, wait t
 	}
 	spec.DNSRedirectPort, spec.DNSResolverUIDs = port, uids
 	spec.DNSRejectV6 = hasIPv4Upstream(d.etcRoot())
-	spec.DNSUpstreamV4, spec.DNSUpstreamV6 = d.wanResolvers()
+	spec.DNSUpstreamV4, spec.DNSUpstreamV6 = d.steeredWANResolvers()
 	spec.HijackDNS = d.hijacksDNS()
 }
 
@@ -247,6 +247,31 @@ func (d *daemon) wanResolvers() (v4, v6 []string) {
 		}
 	}
 	return v4, v6
+}
+
+// wanResolversGrace is how long the WAN's last resolvers stand in for none:
+// a WAN or PPPoE flap empties resolv.conf.auto for seconds, and each change
+// of the list reprograms the table and renders xray again.
+const wanResolversGrace = 60 * time.Second
+
+// steeredWANResolvers are wanResolvers, the last ones seen while the file
+// has none, for up to wanResolversGrace after they were last there.
+//
+// A DHCP renewal that changes them is seen at the next loop that compares
+// the table (dnsRedirectStale, one poll): until then dnsmasq may ask a new
+// resolver over the open path. The reprogram then empties its cache once
+// (programFirewallWithin), so nothing it answered meanwhile stays.
+func (d *daemon) steeredWANResolvers() (v4, v6 []string) {
+	v4, v6 = d.wanResolvers()
+	now := time.Now()
+	if len(v4)+len(v6) > 0 {
+		d.wanSeenV4, d.wanSeenV6, d.wanSeenAt = v4, v6, now
+		return v4, v6
+	}
+	if !d.wanSeenAt.IsZero() && now.Sub(d.wanSeenAt) < wanResolversGrace {
+		return d.wanSeenV4, d.wanSeenV6
+	}
+	return nil, nil
 }
 
 // wanInterfaces are netifd's interfaces on the WAN side: the networks of the
@@ -431,8 +456,11 @@ func dnsRedirectKey(spec firewall.Spec) string {
 		return ""
 	}
 	key := fmt.Sprintf("%d/%v/v6reject=%t/hijack=%t", spec.DNSRedirectPort, spec.DNSResolverUIDs, spec.DNSRejectV6, spec.HijackDNS)
-	if up := append(append([]string(nil), spec.DNSUpstreamV4...), spec.DNSUpstreamV6...); len(up) > 0 {
-		key += "/up=" + strings.Join(up, ",")
+	// The WAN resolvers as the script takes them — sorted, each once, the
+	// IPv6 ones only where they are refused: the same servers in another
+	// order, or a family not rendered, is no change of the table.
+	if v4, v6 := firewall.SteeredUpstreams(spec); len(v4)+len(v6) > 0 {
+		key += "/up=" + strings.Join(append(v4, v6...), ",")
 	}
 	return key
 }
@@ -449,6 +477,21 @@ func redirectUpstreams(key string) string {
 		up = up[:j]
 	}
 	return up
+}
+
+// upstreamsAdded: a redirect's upstreams (redirectUpstreams) now hold one
+// they did not before.
+func upstreamsAdded(before, now string) bool {
+	had := map[string]bool{}
+	for _, a := range strings.Split(before, ",") {
+		had[a] = true
+	}
+	for _, a := range strings.Split(now, ",") {
+		if a != "" && !had[a] {
+			return true
+		}
+	}
+	return false
 }
 
 // dnsWatchEvery is how often, between the polls, the loop asks xray's DNS
@@ -556,8 +599,9 @@ func (d *daemon) dnsRedirectStale(ctx context.Context) bool {
 				d.hijackMisses++
 				hijack = d.hijackMisses < dnsDeadAfter
 			}
-			v4, v6 := d.wanResolvers()
-			want = dnsRedirectKey(firewall.Spec{DNSRedirectPort: port, DNSResolverUIDs: uids, DNSRejectV6: hasIPv4Upstream(d.etcRoot()), DNSUpstreamV4: v4, DNSUpstreamV6: v6, HijackDNS: hijack})
+			v4, v6 := d.steeredWANResolvers()
+			// IPv6Enabled as firewallSpecFromConfig has it: always.
+			want = dnsRedirectKey(firewall.Spec{IPv6Enabled: true, DNSRedirectPort: port, DNSResolverUIDs: uids, DNSRejectV6: hasIPv4Upstream(d.etcRoot()), DNSUpstreamV4: v4, DNSUpstreamV6: v6, HijackDNS: hijack})
 		} else {
 			d.dnsMisses++
 			if *d.fwProgrammed != "" && d.dnsMisses < dnsDeadAfter {

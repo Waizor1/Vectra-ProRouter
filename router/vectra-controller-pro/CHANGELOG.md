@@ -27,8 +27,14 @@ answered every one of them with FakeDNS. 1111 (same version) was clean.
   the wan zone, a `server=` — all are asked as before. Not a warm-up after an
   xray start: xray's DNS never fell back outside the tunnel for these names.
 - **New WAN resolvers under a redirect already in force empty the cache.**
-  They are part of the redirect's fingerprint: a DHCP renewal that changes
-  them reprograms the table and empties dnsmasq's cache once.
+  They are part of the redirect's fingerprint — sorted, each once, the IPv6
+  ones only where they are refused, so a reorder is no change: a DHCP
+  renewal that brings a new one reprograms the table and empties dnsmasq's
+  cache once. It is seen at the next poll that compares the table, so for
+  up to one poll dnsmasq may ask the new resolver over the open path; the
+  flush then drops whatever it answered. A WAN or PPPoE flap that empties
+  `resolv.conf.auto` changes nothing for 60 s: the last resolvers stand in,
+  so a flap does not reprogram, flush and re-render twice.
 
 ## vctl 0.7.0-r19 — the Vectra app no longer says "unknown" every other minute
 

@@ -237,6 +237,10 @@ type daemon struct {
 	lanDevs      []string
 	lanDevsAsked bool
 	devNets      func(dev string) []*net.IPNet
+	// wanSeenV4/V6 are the WAN resolvers last seen, at wanSeenAt
+	// (steeredWANResolvers: they outlive a flap's empty file).
+	wanSeenV4, wanSeenV6 []string
+	wanSeenAt            time.Time
 	// PassWall-compatible routing (passwall_source.go): the sniffing of
 	// PassWall's tproxy inbound, and what the last sync was made from.
 	passwallSniffing *config.Sniffing

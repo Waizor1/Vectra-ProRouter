@@ -995,9 +995,10 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 			// (flushAfterXrayRestart).
 			d.flushedStart = st.StartedAt
 		}
-	} else if nowRedirected && redirectUpstreams(key) != upstreams {
-		// The WAN's resolvers changed under a redirect already in force (a
-		// DHCP renewal): one the redirect did not take may have answered.
+	} else if nowRedirected && upstreamsAdded(upstreams, redirectUpstreams(key)) {
+		// New WAN resolvers under a redirect already in force (a DHCP
+		// renewal): one the redirect did not take may have answered. One
+		// that is gone leaves nothing to empty.
 		d.dnsPathGen++
 		d.flushResolverCache("the resolver's servers changed")
 	}

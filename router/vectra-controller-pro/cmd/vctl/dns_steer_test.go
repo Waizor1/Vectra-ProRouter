@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/vault"
 
@@ -565,10 +566,10 @@ func TestTheRedirectTakesTheWANsOwnResolvers(t *testing.T) {
 		t.Fatalf("WAN resolvers = %v / %v", spec.DNSUpstreamV4, spec.DNSUpstreamV6)
 	}
 	key := dnsRedirectKey(spec)
-	if want := "10053/[453]/v6reject=true/hijack=false/up=77.37.1.2,192.168.1.254,fe80::1"; key != want {
+	if want := "10053/[453]/v6reject=true/hijack=false/up=192.168.1.254,77.37.1.2,fe80::1"; key != want {
 		t.Fatalf("redirect = %q, want %q", key, want)
 	}
-	if got := redirectUpstreams(key + ";fakedns=198.18.0.0/16"); got != "77.37.1.2,192.168.1.254,fe80::1" {
+	if got := redirectUpstreams(key + ";fakedns=198.18.0.0/16"); got != "192.168.1.254,77.37.1.2,fe80::1" {
 		t.Fatalf("upstreams read back as %q", got)
 	}
 	out, err := firewall.Render(spec)
@@ -684,5 +685,48 @@ func TestThePrivateOnlyResolverAnswersTheDirectNamesFirst(t *testing.T) {
 	}
 	if o.DirectResolvers[0] != xray.DefaultDirectResolvers[0] {
 		t.Fatalf("direct resolvers = %v, want the public ones kept as fallbacks", o.DirectResolvers)
+	}
+}
+
+// The redirect's fingerprint holds the WAN resolvers as the script takes
+// them: sorted, each once, the IPv6 ones only where they are refused. The
+// same servers in another order are no change of the table.
+func TestTheRedirectFingerprintIsWhatIsRendered(t *testing.T) {
+	spec := firewall.DefaultSpec(12345, 1)
+	spec.DNSRedirectPort, spec.DNSResolverUIDs = 10053, []int{453}
+	spec.DNSUpstreamV4 = []string{"77.37.1.2", "192.168.1.254", "77.37.1.2"}
+	spec.DNSUpstreamV6 = []string{"fe80::1"}
+	a := dnsRedirectKey(spec)
+	spec.DNSUpstreamV4 = []string{"192.168.1.254", "77.37.1.2"}
+	if b := dnsRedirectKey(spec); a != b || !strings.HasSuffix(a, "/up=192.168.1.254,77.37.1.2") {
+		t.Fatalf("fingerprints %q / %q: order, repeats or an unrendered IPv6 resolver count", a, b)
+	}
+	spec.DNSRejectV6 = true
+	if k := dnsRedirectKey(spec); !strings.HasSuffix(k, "/up=192.168.1.254,77.37.1.2,fe80::1") {
+		t.Fatalf("refused IPv6 resolver not in the fingerprint: %q", k)
+	}
+	if upstreamsAdded("192.168.1.254,77.37.1.2", "77.37.1.2") || !upstreamsAdded("77.37.1.2", "192.168.1.254,77.37.1.2") || upstreamsAdded("", "") {
+		t.Fatal("upstreamsAdded: only a resolver not there before is new")
+	}
+}
+
+// A WAN or PPPoE flap empties resolv.conf.auto for seconds: the last
+// resolvers stand in for wanResolversGrace, so the table is not reprogrammed
+// (nor the cache emptied, nor xray rendered again) twice per flap.
+func TestAnEmptyResolverFileDuringAFlapKeepsTheLastResolvers(t *testing.T) {
+	d := dnsDaemon(t, renderWithDNS, dnsmasqAs453)
+	d.lanDevsAsked = true
+	d.devNets = func(string) []*net.IPNet { return nil }
+	withWANResolver(t, d, "192.168.1.254")
+	if v4, _ := d.steeredWANResolvers(); !reflect.DeepEqual(v4, []string{"192.168.1.254"}) {
+		t.Fatalf("resolvers = %v", v4)
+	}
+	writeRouterFile(t, d.rootDir, "tmp/resolv.conf.d/resolv.conf.auto", "")
+	if v4, _ := d.steeredWANResolvers(); !reflect.DeepEqual(v4, []string{"192.168.1.254"}) {
+		t.Fatalf("within the grace, resolvers = %v, want the last ones", v4)
+	}
+	d.wanSeenAt = time.Now().Add(-wanResolversGrace - time.Second)
+	if v4, v6 := d.steeredWANResolvers(); v4 != nil || v6 != nil {
+		t.Fatalf("after the grace, resolvers = %v / %v, want none", v4, v6)
 	}
 }
