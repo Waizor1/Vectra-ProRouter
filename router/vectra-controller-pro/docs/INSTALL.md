@@ -111,16 +111,19 @@ Then:
    port 53). Before anything is removed, the old dnsmasq (or dnsmasq-dhcpv6)
    is kept twice: its package, with what it depends on already installed, and
    its files with opkg's record of them. They go to
-   `/root/vectra-dnsmasq-saved` when there is room on flash, so a reboot does
-   not lose them, and to `/tmp` otherwise. Only the system dnsmasq is stopped,
+   `/root/vectra-dnsmasq-saved/<run>` when there is room on flash, so a reboot
+   does not lose them, and to `/tmp` otherwise. Each run has its own directory,
+   so a copy an earlier failed run left for the owner is never taken away. Only the system dnsmasq is stopped,
    started and, if a leftover of it still holds port 53, killed: the instances
    procd runs for `/etc/config/dhcp` (`-C /var/etc/dnsmasq.conf.<section>`),
    found by name and command line. It is never `pgrep -x dnsmasq`, which
    matches `argv[0]`, and never PassWall2's copies. From the old dnsmasq's
-   stop to a dnsmasq that answers, all stages share one deadline (90 s): a
-   third for dnsmasq-full, then the way back with no network, from the package
-   or, when opkg cannot, from the files (DNSMASQ_FULL_ROLLED_BACK, the install
-   stops). If even that does not answer, dnsmasq is run by hand until a reboot
+   stop to a dnsmasq that answers, all stages share one deadline
+   (`VECTRA_DNS_DEADLINE`, 120 s): a third for dnsmasq-full, then the way back
+   with no network, from the package or, when opkg cannot, from the files
+   (DNSMASQ_FULL_ROLLED_BACK, the install stops). Each start still gets at
+   least 20 s counted from that start (the files 15 s, by hand 10 s), so a slow
+   router's opkg is not charged to its dnsmasq. If even that does not answer, dnsmasq is run by hand until a reboot
    and the run ends DNSMASQ_FULL_BROKEN, saying what to run; the saved copy
    stays. What dnsmasq looked like at each failed try (processes, port 53,
    procd's view, logread) is in the install log.
@@ -288,7 +291,7 @@ leave the router byte for byte as it was (packages, feeds, keys, `/etc/config`,
 | `passwall` | refused without `--yes`; with it: taken over, official xray-core upgraded to the minimum, Vectra's own geo data, PassWall2 back on `vectra off` |
 | `passwall-upgrade` | taken over from PassWall2, then upgraded: vctl restarted in place, and PassWall2 never ran for the file swap (an upgrade is no hand-back) |
 | `passwall-retire` | taken over from PassWall2 as opkg has it; refused while vctl carries nothing and with `retire_passwall '0'`; then carrying (the data-plane stand's operator config, a freedom outbound) and `vctl retire-passwall --now`: PassWall2's packages gone, xray-core and dnsmasq-full kept, its configuration in a 0600 backup, nothing owed, status `retired`; a bare stop restarted by the dead-man; `vectra off` leaves plain internet, a minute later too |
-| `dnsmasq-rollback` | a dnsmasq-full that never runs: the old dnsmasq back and answering, the same version, enabled, within 90 s, kept on flash meanwhile — with every download failing from the moment the swap begins |
+| `dnsmasq-rollback` | a dnsmasq-full that never runs: the old dnsmasq back and answering, the same version, enabled, within 120 s, kept on flash meanwhile; a second run leaves an earlier run's copy — with every download failing from the moment the swap begins |
 | `dnsmasq-rollback-files` | the same, and opkg refuses to put the old package back: its saved files and opkg record go back by hand, and it answers |
 | `dnsmasq-stale` | a frozen dnsmasq holds port 53 while dnsmasq-full starts (the 0.7.0-r18 installer: DNSMASQ_FULL_BROKEN): killed, installed |
 | `nojail` | a router without procd's jail: its unjailed dnsmasq found, swapped, installed |

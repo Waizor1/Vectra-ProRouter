@@ -87,12 +87,16 @@ RETRY_DELAYS="$(printf '%s\n' "${VECTRA_RETRY_DELAYS:-10 30}" | awk 'NR > 1 { ex
 # All the pauses of one run together: a router whose feeds stay away is
 # refused (or failed) as before, after two minutes at most, not after ten.
 RETRY_BUDGET=120
-# The longest the dnsmasq swap may leave the network without a dnsmasq that
-# answers, in seconds: from the old one's stop to dnsmasq-full answering, or,
-# if it does not, to the old one back (a third for dnsmasq-full, then the way
-# back from the package, from the files, and dnsmasq run by hand).
-DNS_DEADLINE="$(printf '%s\n' "${VECTRA_DNS_DEADLINE:-90}" | awk 'NR == 1 && /^[0-9]+$/ && $1 >= 15 { print $1 + 0 }')"
-[ -n "$DNS_DEADLINE" ] || DNS_DEADLINE=90
+# How long, in seconds, the dnsmasq swap may leave the network without a
+# dnsmasq that answers. It runs from the old one's stop to dnsmasq-full
+# answering or, if that fails, to the old one being back. Stages share it: a
+# third for dnsmasq-full, then the way back from the package, then from the
+# files, then dnsmasq run by hand. Each start still gets a floor of its own,
+# counted from that start (dnsmasq-full and the package 20 s, the files 15 s,
+# by hand 10 s), so a slow router's opkg is not counted against its dnsmasq.
+# The total goes past the deadline only by those floors.
+DNS_DEADLINE="$(printf '%s\n' "${VECTRA_DNS_DEADLINE:-120}" | awk 'NR == 1 && /^[0-9]+$/ && $1 >= 15 { print $1 + 0 }')"
+[ -n "$DNS_DEADLINE" ] || DNS_DEADLINE=120
 DNS_T0=0
 
 PKG=vectra-controller-pro
@@ -106,9 +110,11 @@ SELF_COPY=/etc/vectra-controller-pro/vectra-install.sh
 GEO_OWN=/usr/share/vectra-controller-pro/geo
 # The dnsmasq the swap replaces, kept for the way back: on flash when there is
 # room (a reboot does not lose it), in RAM otherwise. On a router the swap left
-# broken it stays there for the owner.
-SAVED_FLASH=/root/vectra-dnsmasq-saved
-SAVED_RAM=/tmp/vectra-dnsmasq-saved
+# broken it stays there for the owner. Each run has its own directory, so a
+# later run never takes away what an earlier one left.
+SAVED_RUN="$(date +%Y%m%d-%H%M%S)-$$"
+SAVED_FLASH="/root/vectra-dnsmasq-saved/$SAVED_RUN"
+SAVED_RAM="/tmp/vectra-dnsmasq-saved/$SAVED_RUN"
 SAVED="$SAVED_RAM"
 OPKG_INFO=/usr/lib/opkg/info
 OPKG_STATUS=/usr/lib/opkg/status
@@ -393,7 +399,10 @@ cleanup() {
 	fi
 	rm -rf "$WORK/pkgs" "$WORK/attempt.log"
 	# Only what this run kept: a copy an earlier run left for the owner stays.
-	if [ "$SAVED_MADE" = 1 ] && [ "$DNSMASQ_KEEP" != 1 ]; then rm -rf "$SAVED_RAM" "$SAVED_FLASH"; fi
+	if [ "$SAVED_MADE" = 1 ] && [ "$DNSMASQ_KEEP" != 1 ]; then
+		rm -rf "$SAVED_RAM" "$SAVED_FLASH"
+		rmdir "${SAVED_RAM%/*}" "${SAVED_FLASH%/*}" 2> /dev/null
+	fi
 }
 
 remove_feed() {
@@ -796,10 +805,10 @@ swap_dnsmasq() {
 
 	DNS_T0="$(date +%s)"
 	if ! run opkg remove "$OLD"; then
-		installed "$OLD" && dnsmasq_up "$(dns_by 1 3)" && fail DNSMASQ_REMOVE "opkg remove $OLD не прошёл; $OLD работает как прежде."
+		installed "$OLD" && dnsmasq_up 1 3 20 && fail DNSMASQ_REMOVE "opkg remove $OLD не прошёл; $OLD работает как прежде."
 		dnsmasq_back
 	fi
-	if run opkg install "$full" && restore_dhcp && dnsmasq_up "$(dns_by 1 3)"; then
+	if run opkg install "$full" && restore_dhcp && dnsmasq_up 1 3 20; then
 		ok "dnsmasq-full $(installed_version dnsmasq-full): DHCP и DNS работают (без DNS $(($(date +%s) - DNS_T0)) с)"
 		return 0
 	fi
@@ -829,9 +838,9 @@ dnsmasq_back() {
 rollback_dnsmasq() {
 	dnsmasq_stop
 	installed dnsmasq-full && { run opkg remove dnsmasq-full || run opkg remove --force-depends dnsmasq-full; }
-	run opkg install "$old" && restore_dhcp && dnsmasq_up "$(dns_by 2 3)" && return 0
+	run opkg install "$old" && restore_dhcp && dnsmasq_up 2 3 20 && return 0
 	say "    ! opkg не вернул прежний $OLD; восстанавливаю его файлы, сохранённые до замены"
-	restore_saved_dnsmasq && restore_dhcp && dnsmasq_up "$(dns_by 5 6)"
+	restore_saved_dnsmasq && restore_dhcp && dnsmasq_up 5 6 15
 }
 
 restore_dhcp() {
@@ -878,12 +887,14 @@ save_dnsmasq() {
 	awk -v p="$OLD" '/^Package: / { k = ($2 == p) } k' "$OPKG_STATUS" > "$SAVED/status"
 	grep -qx "Package: $OLD" "$SAVED/status" || return 1
 	sv_kb="$(du -sk "$SAVED" | awk '{ print $1; exit }')"
-	if [ "$(free_kb "${SAVED_FLASH%/*}")" -ge $((${sv_kb:-0} + MARGIN_KB)) ] 2> /dev/null &&
-		mkdir -p "$SAVED_FLASH" && cp -a "$SAVED/." "$SAVED_FLASH/"; then
+	if mkdir -p "$SAVED_FLASH" && [ "$(free_kb "$SAVED_FLASH")" -ge $((${sv_kb:-0} + MARGIN_KB)) ] 2> /dev/null &&
+		cp -a "$SAVED/." "$SAVED_FLASH/"; then
 		rm -rf "$SAVED"
+		rmdir "${SAVED_RAM%/*}" 2> /dev/null
 		SAVED="$SAVED_FLASH"
 	else
 		rm -rf "$SAVED_FLASH"
+		rmdir "${SAVED_FLASH%/*}" 2> /dev/null
 		printf '# no room on flash for the way back (%s KB): kept in RAM only\n' "$sv_kb" >> "$LOG"
 	fi
 	return 0
@@ -925,12 +936,12 @@ dns_answers() {
 	nslookup -timeout=1 -retry=1 localhost 127.0.0.1 2> /dev/null | grep -q '^Name:'
 }
 
-# dns_by <num> <den>: the time (date +%s) a stage of the swap has until: its
-# share of DNS_DEADLINE from the moment the old dnsmasq stopped, and at least
-# 5 s from now.
+# dns_by <num> <den> <floor>: the time (date +%s) a stage of the swap has
+# until. That is its share of DNS_DEADLINE from the moment the old dnsmasq
+# stopped, and at least <floor> s from now (the start it waits on).
 dns_by() {
 	db=$((DNS_T0 + DNS_DEADLINE * $1 / $2))
-	dn=$(($(date +%s) + 5))
+	dn=$(($(date +%s) + $3))
 	[ "$db" -ge "$dn" ] || db="$dn"
 	echo "$db"
 }
@@ -959,22 +970,26 @@ dnsmasq_stop() {
 	wait_for 1 no_dnsmasq
 }
 
-# dnsmasq_up <time>: the dnsmasq on the router started afresh by its init
-# script, and answering (DNS_CHECK) by that time. Enabled again: opkg's
-# remove disabled it, and the checks refused a router whose owner had.
+# dnsmasq_up <num> <den> <floor>: the dnsmasq on the router started afresh by
+# its init script, and answering (DNS_CHECK) within its stage of the deadline
+# (dns_by, counted once it is started). Enabled again: opkg's remove disabled
+# it, and the checks refused a router whose owner had.
 dnsmasq_up() {
 	[ -x /etc/init.d/dnsmasq ] || { dns_diag "нет /etc/init.d/dnsmasq"; return 1; }
 	run /etc/init.d/dnsmasq enable
 	dnsmasq_stop
 	run /etc/init.d/dnsmasq start
-	until_time "$1" "$DNS_CHECK" && return 0
+	until_time "$(dns_by "$1" "$2" "$3")" "$DNS_CHECK" && return 0
 	dns_diag "dnsmasq не ответил ($DNS_CHECK) за $(($(date +%s) - DNS_T0)) с от остановки прежнего"
 	return 1
 }
 
 # dnsmasq_rescue: the last resort, the dnsmasq binary run straight, outside
 # procd and its jail, with the configuration its init script wrote last.
-# Until a reboot.
+# Until a reboot. Only the first dnsmasq section of /etc/config/dhcp (the one
+# every stock router has) is served this way. A router with several dnsmasq
+# instances gets its first one back by hand. The rest come back with the fix
+# the message names, or with a reboot.
 dnsmasq_rescue() {
 	[ -x /usr/sbin/dnsmasq ] || return 1
 	c=""
@@ -982,7 +997,7 @@ dnsmasq_rescue() {
 	[ -n "$c" ] || return 1
 	say "    ! запускаю dnsmasq вручную (до перезагрузки), чтобы в сети были DHCP и DNS"
 	dnsmasq_stop
-	run /usr/sbin/dnsmasq -C "$c" -x /var/run/dnsmasq-rescue.pid && until_time "$(dns_by 1 1)" "$DNS_CHECK"
+	run /usr/sbin/dnsmasq -C "$c" -x /var/run/dnsmasq-rescue.pid && until_time "$(dns_by 1 1 10)" "$DNS_CHECK"
 }
 
 # dns_diag <what>: DNS on the router as it is now, into the log. What an owner

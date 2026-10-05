@@ -822,7 +822,15 @@ dnsmasq-rollback)
 	check rollback_saved_gone "what was kept for the way back is gone once it is not needed" \
 		sh -c '[ ! -e /tmp/vectra-dnsmasq-saved ] && [ ! -e /root/vectra-dnsmasq-saved ]'
 	down="$(sed -n 's/.*без DNS было \([0-9]*\) с.*/\1/p' /tmp/installer.out)"
-	check rollback_bounded "DNS was down ${down:-?} s in all, within the installer's 90 s" sh -c "[ -n '$down' ] && [ '$down' -le 90 ]"
+	check rollback_bounded "DNS was down ${down:-?} s in all, within the installer's 120 s" sh -c "[ -n '$down' ] && [ '$down' -le 120 ]"
+	# A copy an earlier failed run left for the owner is not this run's to take.
+	mkdir -p /root/vectra-dnsmasq-saved/earlier
+	echo kept > /root/vectra-dnsmasq-saved/earlier/README
+	rm -f /tmp/offline /tmp/offline.calls
+	installer
+	check rollback_again "a second run: rolled back again, exit $INSTALL_RC" sh -c "[ $INSTALL_RC = 1 ] && grep -q 'прежний dnsmasq возвращён' /tmp/installer.out"
+	check rollback_earlier_kept "it leaves the copy an earlier run left in /root/vectra-dnsmasq-saved" \
+		sh -c '[ "$(cat /root/vectra-dnsmasq-saved/earlier/README)" = kept ] && [ "$(ls /root/vectra-dnsmasq-saved)" = earlier ]'
 	;;
 
 dnsmasq-rollback-files)
@@ -835,7 +843,7 @@ dnsmasq-rollback-files)
 	cat > /bin/opkg <<-'EOF'
 		#!/bin/sh
 		case "$1 $2" in
-		"install /root/vectra-dnsmasq-saved/dnsmasq_"* | "install /tmp/vectra-dnsmasq-saved/dnsmasq_"*) echo "stand: opkg refuses to put dnsmasq back"; exit 255 ;;
+		"install /root/vectra-dnsmasq-saved/"*/dnsmasq_* | "install /tmp/vectra-dnsmasq-saved/"*/dnsmasq_*) echo "stand: opkg refuses to put dnsmasq back"; exit 255 ;;
 		esac
 		exec /bin/opkg.real "$@"
 	EOF
