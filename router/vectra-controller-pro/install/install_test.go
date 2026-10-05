@@ -31,7 +31,7 @@ type router struct {
 // asked in log. The feeds' outages: offline (how many of opkg's next
 // updates, downloads, installs fail to download, as opkg says it), broken
 // (how many fail otherwise), wget-offline (how many of wget's next fetches
-// fail).
+// fail), wget-404 (the next fetch finds nothing there).
 const fakeOpkg = `#!/bin/sh
 d="$FAKE"
 # take <file>: one of the failures it counts down, if any are left.
@@ -79,6 +79,11 @@ while [ $# -gt 0 ]; do
 	shift
 done
 echo "wget $url" >> "$FAKE/log"
+if [ -f "$FAKE/wget-404" ]; then
+	rm -f "$FAKE/wget-404"
+	echo "HTTP error 404" >&2
+	exit 8
+fi
 n="$(cat "$FAKE/wget-offline" 2> /dev/null)"
 if [ "${n:-0}" -gt 0 ]; then
 	echo $((n - 1)) > "$FAKE/wget-offline"
@@ -506,7 +511,7 @@ func TestADownloadThatFailsIsTriedAgain(t *testing.T) {
 		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
 	}
 	for _, n := range []string{"2/3", "3/3"} {
-		if !strings.Contains(out, "Сервер пакетов OpenWrt не ответил — повторяю ("+n+")…") {
+		if !strings.Contains(out, "Сервер пакетов не ответил — повторяю ("+n+")…") {
 			t.Fatalf("does not say retry %s:\n%s", n, out)
 		}
 	}
@@ -556,4 +561,90 @@ func TestTheInstallAndThePinRideOutAnOutage(t *testing.T) {
 		!strings.Contains(r.read("log"), "opkg install ") {
 		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
 	}
+}
+
+// opkg update fails whenever any feed does — a third party's down for good,
+// too. That is no reason to wait: only a package this run needs that is still
+// missing is. And with OpenWrt's feeds gone altogether (a router that cannot
+// reach downloads.openwrt.org), the mirror is next, not a wait.
+func TestAnUpdateIsTriedAgainOnlyForWhatTheRunNeeds(t *testing.T) {
+	r := newRouter(t)
+	all := "vectra-controller-pro - 0.7.0-r18\ndnsmasq-full - 2.93-r1\nkmod-nft-tproxy - 6.6\nkmod-nft-socket - 6.6\nkmod-nft-nat - 6.6\n"
+	need := `OPENWRT_NEED="dnsmasq-full kmod-nft-tproxy kmod-nft-socket kmod-nft-nat"; RT_UNTIL=feeds_ready; retry opkg update`
+	for _, c := range []struct {
+		what, available string
+		attempts        int
+	}{
+		{"everything it needs is there", all, 1},
+		{"OpenWrt's feeds gone altogether: the mirror next", "vectra-controller-pro - 0.7.0-r18\n", 1},
+		{"Vectra's feed missing", strings.Replace(all, "vectra-controller-pro - 0.7.0-r18\n", "", 1), 3},
+		{"a kmod missing", strings.Replace(all, "kmod-nft-nat - 6.6\n", "", 1), 3},
+	} {
+		r.write("log", "")
+		r.write("offline", "9")
+		r.write("available", c.available)
+		out, _ := r.run(need)
+		if n := strings.Count(r.read("log"), "opkg update\n"); n != c.attempts {
+			t.Errorf("%s: %d attempts, want %d:\n%s", c.what, n, c.attempts, out)
+		}
+	}
+	// A kmod already installed is not needed from a feed.
+	r.write("log", "")
+	r.write("offline", "9")
+	r.write("available", strings.Replace(all, "kmod-nft-nat - 6.6\n", "", 1))
+	r.write("installed", "kmod-nft-nat - 6.6\n")
+	if out, _ := r.run(need); strings.Count(r.read("log"), "opkg update\n") != 1 {
+		t.Errorf("an installed kmod: %s\n%s", r.read("log"), out)
+	}
+}
+
+// The pauses of a run share one budget: once it is spent a failed download
+// fails as before, without another pause.
+func TestTheRetriesShareOneBudget(t *testing.T) {
+	r := newRouter(t)
+	r.write("offline", "9")
+	out, code := r.run("RETRY_DELAYS='1 1'; RT_SPENT=120; retry opkg install dnsmasq-full")
+	if code != 255 || strings.Count(r.read("log"), "opkg install") != 1 || strings.Contains(out, "повторяю") ||
+		!strings.Contains(r.read("install.log"), "retries are spent") {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), r.read("install.log"))
+	}
+	// RT_SPENT counts what was slept.
+	r.write("log", "")
+	r.write("offline", "1")
+	if out, _ := r.run("RETRY_DELAYS='0 1'; retry opkg update; echo SPENT=$RT_SPENT"); !strings.Contains(out, "SPENT=0") {
+		t.Fatalf("%s", out)
+	}
+}
+
+// fetch says the HTTP status: a 404 is not there to be fetched again.
+func TestA404IsNotTriedAgain(t *testing.T) {
+	r := newRouter(t)
+	r.write("download", "x")
+	r.write("wget-404", "")
+	_, code := r.run("retry fetch https://example.invalid/x " + filepath.Join(r.dir, "work", "x"))
+	if code != 8 || strings.Count(r.read("log"), "wget ") != 1 {
+		t.Fatalf("exit %d, log:\n%s", code, r.read("log"))
+	}
+}
+
+// VECTRA_RETRY_DELAYS: whole seconds, or the default.
+func TestRetryDelaysAreWholeSeconds(t *testing.T) {
+	r := newRouter(t)
+	for in, want := range map[string]string{
+		"0 0": "0 0", " 08  3 ": "8 3", "5; reboot": "10 30", "*": "10 30", "1.5": "10 30", "  ": "10 30", "-1": "10 30",
+	} {
+		out, _ := r.run("VECTRA_RETRY_DELAYS='" + in + "' . '" + mustAbs(t, "install.sh") + "'; echo \"[$RETRY_DELAYS]\"")
+		if strings.TrimSpace(out) != "["+want+"]" {
+			t.Errorf("%q: %q, want %q", in, out, want)
+		}
+	}
+}
+
+func mustAbs(t *testing.T, p string) string {
+	t.Helper()
+	a, err := filepath.Abs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
 }

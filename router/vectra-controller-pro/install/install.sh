@@ -78,11 +78,15 @@ UPDATE_FLOOR_KB=16384
 UNPACK_FACTOR=3
 # TLS needs a clock later than this (2026-01-01).
 CLOCK_FLOOR=1767225600
-# OpenWrt's feeds (downloads.openwrt.org) go away for a minute now and then: on
-# 2026-10-04 for about 40 s, and a router whose installer was fine was left
-# with DNSMASQ_DEPENDENCY. A step that downloads from them is tried three
-# times, this many seconds apart (40 s in all: the outage of that day).
-RETRY_DELAYS="${VECTRA_RETRY_DELAYS:-10 30}"
+# The feeds (downloads.openwrt.org above all) go away for a minute now and
+# then: on 2026-10-04 for about 40 s, and a router whose installer was fine was
+# left with DNSMASQ_DEPENDENCY. A step that downloads is tried three times,
+# this many seconds apart (40 s in all: the outage of that day). Whole
+# seconds, and nothing else: anything else is the default ("0 0" for tests).
+RETRY_DELAYS="$(printf '%s\n' "${VECTRA_RETRY_DELAYS:-10 30}" | awk 'NR > 1 { exit 1 } { for (i = 1; i <= NF; i++) { if ($i !~ /^[0-9]+$/) exit 1; printf "%s%d", (i > 1 ? " " : ""), $i } }')" && [ -n "$RETRY_DELAYS" ] || RETRY_DELAYS="10 30"
+# All the pauses of one run together: a router whose feeds stay away is
+# refused (or failed) as before, after two minutes at most, not after ten.
+RETRY_BUDGET=120
 # How many times, a second apart, the dnsmasq swap asks a dnsmasq it has just
 # started to answer before it starts it again (twice in all), then goes back.
 DNS_WAIT="${VECTRA_DNS_WAIT:-30}"
@@ -223,29 +227,49 @@ run() { # a command whose output goes to the log only
 	printf '$ %s\n' "$*" >> "$LOG"
 	"$@" >> "$LOG" 2>&1
 }
-# retry <command...>: run, and run again (RETRY_DELAYS) while it fails on a
-# download. Only for steps a second run takes up where the first stopped —
-# opkg update, download, install, upgrade; fetch — never for one that changes
-# the router otherwise (the dnsmasq swap: its remove, its installs and the
-# way back, which need no network). opkg
-# fails for many reasons, and only its "Failed to download" is the network: a
-# signature, a package that does not unpack or a postinst that fails is said
-# at once, not hidden behind a second try. fetch only downloads: any failure.
+# retry <command...>: run (its output to the log), and run again (RETRY_DELAYS)
+# while it fails on a download. Only for steps a second run takes up where the
+# first stopped — opkg update, download, install, upgrade; fetch — never for
+# one that changes the router otherwise (the dnsmasq swap: its remove, its
+# installs and the way back, which need no network). opkg fails for many
+# reasons, and only its "Failed to download" is the network: a signature, a
+# package that does not unpack or a postinst that fails is said at once, not
+# hidden behind a second try. opkg runs wget quiet, so its 404 and a CDN's 503
+# read the same ("wget returned 8"): both are tried again — a package in a list
+# just downloaded is rarely missing, and an outage often answers 5xx. fetch
+# says the status: a 4xx is final, anything else (no connection, TLS, a
+# timeout, a 5xx) is tried again.
+# RT_UNTIL: a command that says the step got what this run needs from it even
+# though it failed — opkg update fails whenever any feed does (a third party's
+# that is down for good, too), and that is no reason to wait.
+RT_UNTIL=""
+RT_SPENT=0
 retry() {
 	rt_of=1
 	for rt_wait in $RETRY_DELAYS; do rt_of=$((rt_of + 1)); done
 	rt_n=1
 	for rt_wait in $RETRY_DELAYS -; do
+		rt_at=$(($(cat "$LOG" 2> /dev/null | wc -c)))
 		printf '$ %s\n' "$*" >> "$LOG"
-		"$@" > "$WORK/attempt.log" 2>&1
+		"$@" >> "$LOG" 2>&1
 		rt_rc=$?
-		cat "$WORK/attempt.log" >> "$LOG"
 		[ "$rt_rc" = 0 ] && return 0
 		[ "$rt_wait" != - ] || return "$rt_rc"
-		[ "$1" = fetch ] || grep -q 'Failed to download\|wget returned' "$WORK/attempt.log" || return "$rt_rc"
+		tail -c "+$((rt_at + 1))" "$LOG" > "$WORK/attempt.log"
+		if [ "$1" = fetch ]; then
+			grep -q -e 'HTTP error 4' "$WORK/attempt.log" && return "$rt_rc"
+		else
+			grep -q -e 'Failed to download' -e 'wget returned' "$WORK/attempt.log" || return "$rt_rc"
+		fi
+		[ -n "$RT_UNTIL" ] && $RT_UNTIL && return "$rt_rc"
+		if [ $((RT_SPENT + rt_wait)) -gt "$RETRY_BUDGET" ]; then
+			printf '# a download failed (exit %s); the %s s of retries are spent\n' "$rt_rc" "$RETRY_BUDGET" >> "$LOG"
+			return "$rt_rc"
+		fi
+		RT_SPENT=$((RT_SPENT + rt_wait))
 		rt_n=$((rt_n + 1))
 		printf '# a download failed (exit %s): attempt %s/%s in %s s\n' "$rt_rc" "$rt_n" "$rt_of" "$rt_wait" >> "$LOG"
-		note "Сервер пакетов OpenWrt не ответил — повторяю ($rt_n/$rt_of)…"
+		note "Сервер пакетов не ответил — повторяю ($rt_n/$rt_of)…"
 		sleep "$rt_wait"
 	done
 }
@@ -270,6 +294,10 @@ version_ge() {
 installed() { opkg list-installed "$1" 2>/dev/null | grep -q "^$1 - "; }
 installed_version() { opkg list-installed "$1" 2>/dev/null | sed -n "s/^$1 - //p" | head -n 1; }
 available() { opkg list "$1" 2>/dev/null | grep -q "^$1 - "; }
+# have_all <pkg...>: each installed already, or in a feed's list.
+have_all() {
+	for hv in "$@"; do installed "$hv" || available "$hv" || return 1; done
+}
 field() { opkg info "$1" 2>/dev/null | sed -n "s/^$2: //p" | head -n 1; }
 # A field of a package in the Vectra feed's own list (opkg info lists every
 # feed's version of a package, in no order that says which is which). opkg keeps
@@ -322,7 +350,8 @@ wait_for() { # <seconds> <command...>
 }
 
 fetch() { # <url> <file>: uclient-fetch (wget) with TLS, as opkg itself fetches
-	wget -q -T 20 -O "$2" "$1" >> "$LOG" 2>&1
+	# Not quiet: its "HTTP error 404" in the log is what tells retry a 4xx.
+	wget -T 20 -O "$2" "$1" >> "$LOG" 2>&1
 }
 
 xray_version() { xray version 2>/dev/null | awk 'NR == 1 { print $2; exit }'; }
@@ -508,12 +537,18 @@ add_feed() {
 	fetch "$FEED_URL/$ARCH/Packages.sig" "$WORK/Packages.sig" || refuse FEED_UNREACHABLE "фид Vectra недоступен ($FEED_URL). Проверьте интернет и DNS роутера: nslookup ${FEED_URL#*://}"
 
 	note "opkg update (до минуты)"
+	# What this run takes from OpenWrt's feeds.
+	OPENWRT_NEED="dnsmasq-full kmod-nft-tproxy kmod-nft-socket kmod-nft-nat"
+	[ "$LUCI" = 1 ] && OPENWRT_NEED="$OPENWRT_NEED luci"
+	RT_UNTIL=feeds_ready
 	retry opkg update
+	RT_UNTIL=""
 	# Vectra's feed must be there, and verified: opkg drops a list whose
 	# signature does not check out.
 	available "$PKG" || refuse FEED_UNVERIFIED "фид Vectra не прошёл проверку подписи или пуст (opkg update, см. лог)."
 	ok "фид Vectra $FEED_URL/$ARCH, подпись ключом $FEED_KEY_ID"
-	if ! available dnsmasq-full; then
+	# shellcheck disable=SC2086 # a list of packages
+	if ! have_all $OPENWRT_NEED; then
 		use_openwrt_mirror || refuse OPENWRT_FEEDS_UNREACHABLE "фиды OpenWrt недоступны (downloads.openwrt.org не отвечает) и прокси Vectra тоже. Проверьте DNS и IPv6 на WAN."
 	fi
 	ok "фиды OpenWrt"
@@ -527,8 +562,22 @@ use_openwrt_mirror() {
 	cp "$DISTFEEDS" "$WORK/distfeeds.conf.orig" || return 1
 	DISTFEEDS_SWAPPED=1
 	sed -e "s#https\{0,1\}://downloads.openwrt.org#$mirror#g" "$WORK/distfeeds.conf.orig" > "$DISTFEEDS" || return 1
+	RT_UNTIL=openwrt_ready
 	retry opkg update
-	available dnsmasq-full
+	RT_UNTIL=""
+	openwrt_ready
+}
+
+# After an opkg update that failed: is what this run needs there? Vectra's
+# feed, and OpenWrt's either whole or not there at all — none of it is what a
+# router that cannot reach downloads.openwrt.org sees, and the mirror is the
+# next step for that, not a wait (a Cudy behind a broken IPv6).
+# shellcheck disable=SC2086 # a list of packages
+openwrt_ready() { have_all $OPENWRT_NEED; }
+feeds_ready() {
+	have_all "$PKG" || return 1
+	have_all dnsmasq-full || return 0
+	openwrt_ready
 }
 
 # ------------------------------------------------------------------ plan ----
@@ -827,7 +876,7 @@ dns_diag() {
 	{
 		printf '# ---- %s: dnsmasq now\n' "$1"
 		opkg list-installed 'dnsmasq*'
-		ps w | grep '[d]nsmasq\|[u]jail'
+		ps w | grep -e '[d]nsmasq' -e '[u]jail'
 		netstat -lnup | grep ':53 '
 		netstat -lntp | grep ':53 '
 		ubus call service list '{"name":"dnsmasq"}'

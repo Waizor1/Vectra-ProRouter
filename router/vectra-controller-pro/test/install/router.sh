@@ -887,7 +887,8 @@ dnsmasq-stale)
 
 feed-outage)
 	# downloads.openwrt.org away for a moment (2026-10-04: about 40 s), at
-	# each step that needs it: one package list in opkg update, one package
+	# each step that needs it: the kmods list in opkg update (one the run
+	# needs: a list it does not need is no reason to wait), one package
 	# before the dnsmasq swap (DNSMASQ_DEPENDENCY or DNSMASQ_DOWNLOAD) and one
 	# after it (PKG_INSTALL) fail to download once, as opkg sees a feed that
 	# does not answer. The installer tries again and installs — through
@@ -900,7 +901,7 @@ feed-outage)
 		for a; do url="\$a"; done
 		k=""
 		case "\$url" in
-		https://downloads.openwrt.org/*/Packages.gz) k=list ;;
+		https://downloads.openwrt.org/*/kmods/*/Packages.gz) k=list ;;
 		https://downloads.openwrt.org/*.ipk) [ -f /usr/lib/opkg/info/dnsmasq-full.control ] && k=after || k=before ;;
 		esac
 		if [ -n "\$k" ] && [ ! -e "/tmp/outage.\$k" ]; then
@@ -915,10 +916,10 @@ feed-outage)
 	sed "s/^/LOG| /" /tmp/vectra-install.log
 	for k in list before after; do info "away once ($k): $(cat "/tmp/outage.$k" 2> /dev/null)"; done
 	check outage_exit "exit 0, got $INSTALL_RC" test "$INSTALL_RC" = 0
-	check outage_injected "a package list, a package before the dnsmasq swap and one after it each failed to download once" \
+	check outage_injected "the kmods list (Vectra needs kmod-nft-*), a package before the dnsmasq swap and one after it each failed to download once" \
 		test -s /tmp/outage.list -a -s /tmp/outage.before -a -s /tmp/outage.after
 	check outage_retried "says it tries again: $(grep -c 'повторяю (2/3)' /tmp/installer.out) times" \
-		sh -c "[ \"\$(grep -c 'Сервер пакетов OpenWrt не ответил — повторяю (2/3)' /tmp/installer.out)\" -ge 3 ]"
+		sh -c "[ \"\$(grep -c 'Сервер пакетов не ответил — повторяю (2/3)' /tmp/installer.out)\" -ge 3 ]"
 	check outage_logged "each retry is in the install log" sh -c "[ \"\$(grep -c '^# a download failed' /tmp/vectra-install.log)\" -ge 3 ]"
 	check outage_no_mirror "OpenWrt's own feeds, not the mirror" not said "беру фиды OpenWrt через"
 	assert_installed_and_on outage
