@@ -9,7 +9,9 @@ import postgres from "postgres";
 
 import * as schema from "@vectra/db";
 
-type LockModule = typeof import("./background-lock");
+import type * as BackgroundLock from "./background-lock";
+
+type LockModule = typeof BackgroundLock;
 
 /**
  * The background loops' single-runner guarantee, against a real PostgreSQL.

@@ -19,8 +19,15 @@ COPY apps/web ./apps/web
 COPY packages/contracts ./packages/contracts
 COPY packages/db ./packages/db
 
-RUN SKIP_ENV_VALIDATION=1 pnpm --filter @vectra/web build
+RUN SKIP_ENV_VALIDATION=1 pnpm --filter @vectra/web build \
+ && pnpm --filter @vectra/web build:worker
 
+# Long-running processes are plain `node`, not `pnpm`: no package-manager
+# process sitting in front of Next, and SIGTERM reaches Node directly (exec).
+# The working directory stays /app (runbooks `docker compose exec web node
+# ./apps/web/scripts/...` rely on it); Next runs from apps/web, as it did under
+# `pnpm --filter`. The worker (compose service `worker`) runs
+# apps/web/dist/worker/main.mjs from this same image.
 EXPOSE 3000
 
-CMD ["pnpm", "--filter", "@vectra/web", "start", "--hostname", "0.0.0.0", "--port", "3000"]
+CMD ["/bin/sh", "-c", "cd apps/web && exec node node_modules/next/dist/bin/next start --hostname 0.0.0.0 --port 3000"]

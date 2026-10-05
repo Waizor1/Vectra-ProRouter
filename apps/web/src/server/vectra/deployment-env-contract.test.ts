@@ -28,15 +28,35 @@ function serverEnvKeys() {
   return new Set(source.match(/VECTRA_[A-Z0-9_]+/g) ?? []);
 }
 
-function composeForwardedKeys() {
-  const source = readFileSync(resolve(REPO_ROOT, "docker-compose.yml"), "utf8");
-  const environmentBlock = /\n {4}environment:\n((?: {6}.*\n|\n)*)/g;
+function composeSource() {
+  return readFileSync(resolve(REPO_ROOT, "docker-compose.yml"), "utf8");
+}
+
+/** The body of one top-level service, up to the next top-level service. */
+function serviceBlock(source: string, service: string) {
+  const match = new RegExp(`\\n  ${service}:\\n((?: {4}.*\\n|\\n)*)`).exec(source);
+  return match?.[1] ?? "";
+}
+
+// Web and worker share one environment, declared once under the
+// `x-vectra-app-environment` anchor; a service-level `environment:` block may
+// add to it.
+function composeForwardedKeys(service = "web") {
+  const source = composeSource();
   const forwarded = new Set<string>();
-  for (const match of source.matchAll(environmentBlock)) {
-    for (const key of match[1]?.match(/^ {6}(VECTRA_[A-Z0-9_]+):/gm) ?? []) {
+  const collect = (block: string | undefined, indent: number) => {
+    const keyLine = new RegExp(`^ {${indent}}(VECTRA_[A-Z0-9_]+):`, "gm");
+    for (const key of block?.match(keyLine) ?? []) {
       forwarded.add(key.trim().replace(":", ""));
     }
+  };
+  const body = serviceBlock(source, service);
+  if (/\n? {4}environment: \*vectra-app-environment\n|^ {6}<<: \*vectra-app-environment$/m.test(body)) {
+    const anchor = /\nx-vectra-app-environment: &vectra-app-environment\n((?: {2}.*\n|\n)*)/.exec(source);
+    collect(anchor?.[1], 2);
   }
+  const own = /(?:^|\n) {4}environment:\n((?: {6}.*\n|\n)*)/.exec(body);
+  collect(own?.[1], 6);
   return forwarded;
 }
 
@@ -51,6 +71,15 @@ describe("deployment env contract", () => {
       missing,
       `docker-compose.yml does not forward these keys, so the server will read them as undefined and fall back to schema defaults: ${missing.join(", ")}`,
     ).toEqual([]);
+  });
+
+  it("gives the background worker the same keys as the web", () => {
+    // The worker runs the same loops the web used to; a key it lacks falls
+    // back to its schema default there just as silently.
+    const web = composeForwardedKeys("web");
+    const worker = composeForwardedKeys("worker");
+    expect([...web].filter((key) => !worker.has(key)).sort()).toEqual([]);
+    expect(worker).toContain("VECTRA_BACKGROUND_MODE");
   });
 
   it("forwards the auto-rescue switch specifically", () => {

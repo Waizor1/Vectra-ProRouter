@@ -476,6 +476,56 @@ true (its default), and again when the token or the chat-id allowlist is empty.
 Get the chat id by messaging the bot and reading
 `https://api.telegram.org/bot<token>/getUpdates`.
 
+## 5.5. Background worker (second CPU core)
+
+The background loops — auto-rescue, browser-push monitor, stuck-job janitor,
+snapshot/revision/history retention, route-health verifier and the partner
+webhook sweep — run in one of two places, chosen by `VECTRA_BACKGROUND_MODE`
+in `.env` (both `web` and `worker` read it from the shared
+`x-vectra-app-environment` block of `docker-compose.yml`):
+
+| Mode | Loops run in | `worker` container |
+|------|--------------|--------------------|
+| `in-web` (default) | the web process, started by the first `/api/health` call (as before) | idles |
+| `worker-separate` | the `worker` service (`node apps/web/dist/worker/main.mjs`, same image) | runs them |
+
+Either way every tick holds a PostgreSQL advisory lock for its loop
+(`pg_try_advisory_lock(0x56540001, <loop id>)`), so two processes never run
+the same loop at once — a web still on `in-web` next to a worker, or two webs
+during a deploy, take turns instead of doubling up. The operator's
+"cancel stuck jobs" trigger takes the same lock and answers `CONFLICT` while a
+sweep runs in any process.
+
+Switch (or roll back) with one value and one command:
+
+```bash
+# .env: VECTRA_BACKGROUND_MODE=worker-separate   (or in-web to roll back)
+docker compose --env-file .env build web          # the worker runs the web image
+docker compose --env-file .env up -d web worker   # both recreated with the new value
+```
+
+Verify:
+
+```bash
+curl -s https://router.vectra-pro.net/api/health | jq '{backgroundMode, checks}'
+docker compose --env-file .env logs --tail=20 worker   # "[worker] started loops: ..."
+```
+
+In `worker-separate` mode the web's `/api/health` reports each loop as `true`
+only while a live worker holds that loop's presence lock (classid
+`0x56540002` in `pg_locks`), so a dead worker shows up as `false` there; the
+web's own HTTP status does not depend on it. The worker exits (and is
+restarted) if its presence session is lost, drains in-flight ticks for up to
+25 s on `SIGTERM` (`stop_grace_period: 30s`), and is capped at `mem_limit:
+512m` / `--max-old-space-size=384`. Its compose healthcheck is a heartbeat
+file it refreshes every 15 s.
+
+Both long-running processes are plain `node` exec'd from `/bin/sh` (no `pnpm`
+wrapper), with `init: true`; `db:migrate` still runs through pnpm before the
+web starts. The base image is `node:22-bookworm-slim` — if `public.ecr.aws`
+times out on the VPS, pre-pull `node:22-bookworm-slim` and tag it as
+`public.ecr.aws/docker/library/node:22-bookworm-slim` as done for Node 20.
+
 ## 6. Health checks
 
 Local container health:
