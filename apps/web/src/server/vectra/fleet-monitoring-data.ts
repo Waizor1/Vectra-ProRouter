@@ -772,3 +772,67 @@ export async function loadFleetMonitoringSnapshot(
     }),
   });
 }
+
+/**
+ * How long one fleet snapshot is shared between the background monitors.
+ *
+ * Auto-rescue and the browser-push monitor each built the whole fleet
+ * snapshot every minute, on timers started by the same health call — so the
+ * two full reads ran in parallel at the same second. They now share one:
+ * whichever monitor asks first loads it, and the other, asking within this
+ * window, gets the same snapshot (or joins the read still in flight). Well
+ * below the 30-second minimum of either monitor's interval, so a monitor
+ * never reuses its own previous tick.
+ */
+export const SHARED_FLEET_SNAPSHOT_MAX_AGE_MS = 25_000;
+
+type SharedFleetSnapshot = {
+  database: object;
+  loadedAt: number;
+  snapshot: ReturnType<typeof loadFleetMonitoringSnapshot>;
+};
+
+let sharedFleetSnapshot: SharedFleetSnapshot | null = null;
+
+export function resetSharedFleetMonitoringSnapshotForTest() {
+  sharedFleetSnapshot = null;
+}
+
+/**
+ * loadFleetMonitoringSnapshot for the background monitors, single-flight and
+ * shared for SHARED_FLEET_SNAPSHOT_MAX_AGE_MS.
+ *
+ * A reused snapshot is the fleet as of the instant it was loaded (its own
+ * `now`), exactly what the old parallel read computed at that same second;
+ * the caller's later `now` is not mixed into it. A failed load is not kept,
+ * so the next caller reads again. The operator pages keep calling
+ * loadFleetMonitoringSnapshot directly and always read fresh.
+ */
+export function loadSharedFleetMonitoringSnapshot(
+  database: FleetMonitoringDatabaseClient,
+  now = new Date(),
+): ReturnType<typeof loadFleetMonitoringSnapshot> {
+  const at = now.getTime();
+  const current = sharedFleetSnapshot;
+  if (
+    current &&
+    current.database === database &&
+    at >= current.loadedAt &&
+    at - current.loadedAt < SHARED_FLEET_SNAPSHOT_MAX_AGE_MS
+  ) {
+    return current.snapshot;
+  }
+
+  const entry: SharedFleetSnapshot = {
+    database,
+    loadedAt: at,
+    snapshot: loadFleetMonitoringSnapshot(database, now),
+  };
+  sharedFleetSnapshot = entry;
+  entry.snapshot.catch(() => {
+    if (sharedFleetSnapshot === entry) {
+      sharedFleetSnapshot = null;
+    }
+  });
+  return entry.snapshot;
+}
