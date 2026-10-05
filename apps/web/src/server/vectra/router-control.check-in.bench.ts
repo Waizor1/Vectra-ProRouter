@@ -18,6 +18,8 @@ import {
 } from "@vectra/db";
 import { bench, describe, vi } from "vitest";
 
+import type { StaticDbQuery } from "./testing/static-db";
+
 const envMock = vi.hoisted(() => ({
   env: {
     NODE_ENV: "test",
@@ -29,66 +31,15 @@ const envMock = vi.hoisted(() => ({
 vi.mock("~/env", () => envMock);
 
 const state = vi.hoisted(() => ({
-  rowsFor: (() => []) as (table: unknown, params: Set<unknown>, ordered: boolean) => unknown[],
+  rowsFor: (() => []) as (query: StaticDbQuery) => unknown[],
 }));
 
-vi.mock("~/server/db", () => {
-  function paramValues(node: unknown, out: Set<unknown>, seen: WeakSet<object>) {
-    if (!node || typeof node !== "object" || seen.has(node)) return out;
-    seen.add(node);
-    const record = node as Record<string, unknown>;
-    if (record.constructor?.name === "Param") out.add(record.value);
-    if (Array.isArray(record.queryChunks)) {
-      for (const chunk of record.queryChunks) paramValues(chunk, out, seen);
-    }
-    return out;
-  }
-  const chainFor = (table: unknown) => {
-    let params = new Set<unknown>();
-    let ordered = false;
-    const rows = () => state.rowsFor(table, params, ordered);
-    const chain = {
-      where(cond: unknown) {
-        params = paramValues(cond, new Set(), new WeakSet());
-        return chain;
-      },
-      orderBy() {
-        ordered = true;
-        return chain;
-      },
-      for: () => chain,
-      limit: () => Promise.resolve(rows()),
-      then: (ok: (v: unknown[]) => unknown, err?: (e: unknown) => unknown) =>
-        Promise.resolve().then(rows).then(ok, err),
-    };
-    return chain;
+vi.mock("~/server/db", async () => {
+  const { createStaticDb } = await import("./testing/static-db");
+  const { routers: routersTable } = await import("@vectra/db");
+  return {
+    db: createStaticDb((query) => state.rowsFor(query), { routersTable }).db,
   };
-  const db = {
-    select: () => ({ from: chainFor }),
-    insert: () => ({
-      values: (values: Record<string, unknown>) => ({
-        onConflictDoNothing() {
-          return this;
-        },
-        returning: () => Promise.resolve([values]),
-        then: (ok: (v: unknown[]) => unknown) => Promise.resolve([]).then(ok),
-      }),
-    }),
-    update: (table: unknown) => ({
-      set: (set: Record<string, unknown>) => ({
-        where: () => ({
-          returning: () =>
-            Promise.resolve(
-              table === routers ? [{ ...state.rowsFor(routers, new Set(), false)[0] as object, ...set }] : [set],
-            ),
-          then: (ok: (v: unknown[]) => unknown) => Promise.resolve([]).then(ok),
-        }),
-      }),
-    }),
-    delete: () => ({ where: () => Promise.resolve([]) }),
-    transaction: async <T>(run: (tx: unknown) => Promise<T>) => run(db),
-  };
-  return { db };
 });
 
 const { checkInRouter } = await import("./router-control");
@@ -228,7 +179,7 @@ const routerRow = {
   updatedAt: new Date("2026-09-01T00:00:00Z"),
 };
 
-state.rowsFor = (table, params, ordered) => {
+state.rowsFor = ({ table, params, ordered }) => {
   if (table === routers) return [routerRow];
   if (table === passwallDesiredRevisions) {
     if (params.has(ACTIVE_ID)) return [activeRow];
