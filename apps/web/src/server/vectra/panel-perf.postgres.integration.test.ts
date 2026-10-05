@@ -491,4 +491,54 @@ describe.skipIf(!port)("panel performance SQL on a real PostgreSQL", () => {
     await next;
     resetSharedFleetMonitoringSnapshotForTest();
   });
+  it("history retention: resolved rescue cases past the window and the newest 50, unless a job references them", async () => {
+    const router = await newRouter("rescue-retention");
+    const other = await newRouter("rescue-retention-other");
+    const cases: string[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      const startedAt = daysAgo(41 + i);
+      const [row] = await db
+        .insert(schema.rescueCases)
+        .values({
+          routerId: router.id,
+          trigger: "direct_mode",
+          // One active (escalated) case is never touched, however old.
+          state: i === 57 ? "escalated" : "resolved",
+          startedAt,
+          resolvedAt: i === 57 ? null : new Date(startedAt.getTime() + DAY),
+        })
+        .returning();
+      cases.push(row!.id);
+    }
+    // Recent resolved cases elsewhere, and old ones within the newest 50.
+    await db.insert(schema.rescueCases).values([
+      { routerId: other.id, trigger: "stale_check_in", state: "resolved", startedAt: daysAgo(80), resolvedAt: daysAgo(79) },
+      { routerId: other.id, trigger: "stale_check_in", state: "resolved", startedAt: daysAgo(5), resolvedAt: daysAgo(4) },
+    ]);
+    // Referenced by a job: its payload (run_rescue_repair) or its dedupe key.
+    await db.insert(schema.jobs).values([
+      { routerId: router.id, type: "run_rescue_repair", state: "queued", payload: { caseId: cases[52]!, actions: [] } },
+      { routerId: router.id, type: "collect_router_logs", state: "succeeded", dedupeKey: `auto_rescue_logs:${cases[55]!}`, createdAt: daysAgo(90) },
+    ]);
+    const expected = cases.filter((_, i) => i >= 50 && ![52, 55, 57].includes(i));
+
+    const options = { enabled: true, retentionDays: 30, batchSize: 3, pauseMs: 0, now: new Date(now) } as const;
+    const counted = await runHistoryRetentionTick(db, { ...options, dryRun: false, rescueCaseDryRun: true });
+    expect(counted.rescueCaseDryRun).toBe(true);
+    expect(counted.counts.rescue_case).toBe(expected.length);
+    const all = async () =>
+      new Set(((await db.execute(sql`select id from vectra_rescue_case where router_id in (${router.id}, ${other.id})`)) as unknown as Array<{ id: string }>).map((row) => row.id));
+    expect((await all()).size).toBe(62);
+
+    const pruned = await runHistoryRetentionTick(db, { ...options, dryRun: false, rescueCaseDryRun: false });
+    expect(pruned.counts.rescue_case).toBe(expected.length);
+    const remaining = await all();
+    expect(remaining.size).toBe(62 - expected.length);
+    for (const id of expected) {
+      expect(remaining.has(id)).toBe(false);
+    }
+    for (const i of [0, 49, 52, 55, 57]) {
+      expect(remaining.has(cases[i]!)).toBe(true);
+    }
+  });
 });

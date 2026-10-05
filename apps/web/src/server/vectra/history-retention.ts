@@ -26,12 +26,26 @@
 //   operator_push_alert resolved before the window (its dedupe key carries the
 //                       episode start, so a later episode is a new key)
 //
-// Open incidents, unresolved alerts, unfinished jobs and their results are
-// never touched. Rescue cases, applied-revision records and partner webhooks
-// are not swept here. Desired revisions are pruned by revision-retention.ts.
+//   rescue_case         resolved before the window (resolved_at, or
+//                       updated_at for a row without one), beyond the newest
+//                       50 cases of its router (the rescue list shows the
+//                       newest 50 fleet-wide), and not referenced by any job:
+//                       a job carrying the case id in its payload
+//                       (run_rescue_repair) or keyed by it (auto_rescue_repair:
+//                       / auto_rescue_logs:). Nothing has a foreign key into
+//                       the table; the code reads only active cases, one case
+//                       by id, and the newest 50. A job's results go with the
+//                       job, so they cannot outlive the reference.
+//
+// Open incidents, unresolved alerts, unfinished jobs and their results, and
+// active rescue cases are never touched. Applied-revision records and partner
+// webhooks are not swept here. Desired revisions are pruned by
+// revision-retention.ts.
 //
 // VECTRA_RETENTION_DRY_RUN (default true) makes a tick count and log instead
-// of delete.
+// of delete. Rescue cases have a second switch,
+// VECTRA_RESCUE_CASE_RETENTION_DRY_RUN (default true): they are deleted only
+// when both are false, and counted otherwise.
 
 import { sql, type SQL } from "drizzle-orm";
 
@@ -44,11 +58,17 @@ export type HistoryRetentionTable =
   | "event_log"
   | "job"
   | "health_incident"
-  | "operator_push_alert";
+  | "operator_push_alert"
+  | "rescue_case";
+
+/** Rescue cases a router keeps however old: the newest this many. */
+export const RESCUE_CASE_KEEP_PER_ROUTER = 50;
 
 export type HistoryRetentionResult = {
   enabled: boolean;
   dryRun: boolean;
+  /** Rescue cases were only counted (either switch still on). */
+  rescueCaseDryRun: boolean;
   /** Rows deleted (or, in dry-run, that would be) per table. */
   counts: Record<HistoryRetentionTable, number>;
   /** Job results that go with the jobs above (FK cascade). */
@@ -113,6 +133,26 @@ function expiredRows(cutoffDate: Date): Record<HistoryRetentionTable, SQL> {
       where resolved_at is not null
         and resolved_at < ${cutoff}
     `,
+    rescue_case: sql`
+      select c.id from (
+        select id, state, coalesce(resolved_at, updated_at) as closed_at,
+          row_number() over (
+            partition by router_id order by started_at desc, id desc
+          ) as recency
+        from vectra_rescue_case
+      ) c
+      where c.state = 'resolved'
+        and c.closed_at < ${cutoff}
+        and c.recency > ${RESCUE_CASE_KEEP_PER_ROUTER}
+        and not exists (
+          select 1 from vectra_job j where j.payload ->> 'caseId' = c.id
+        )
+        and not exists (
+          select 1 from vectra_job j
+          where j.dedupe_key in ('auto_rescue_repair:' || c.id, 'auto_rescue_logs:' || c.id)
+        )
+      order by c.closed_at
+    `,
   };
 }
 
@@ -143,18 +183,26 @@ export async function runHistoryRetentionTick(
     maxBatchesPerTable?: number;
     pauseMs?: number;
     now?: Date;
+    /** Rescue cases only; deleted when this and `dryRun` are both false. */
+    rescueCaseDryRun?: boolean;
   },
 ): Promise<HistoryRetentionResult> {
   const enabled = options?.enabled ?? env.VECTRA_HISTORY_RETENTION_ENABLED;
   const dryRun = options?.dryRun ?? env.VECTRA_RETENTION_DRY_RUN;
+  // Anything but an explicit false keeps the rescue cases.
+  const rescueCaseDryRun =
+    dryRun ||
+    (options?.rescueCaseDryRun ??
+      env.VECTRA_RESCUE_CASE_RETENTION_DRY_RUN !== false);
   const counts: Record<HistoryRetentionTable, number> = {
     event_log: 0,
     job: 0,
     health_incident: 0,
     operator_push_alert: 0,
+    rescue_case: 0,
   };
   if (!enabled) {
-    return { enabled: false, dryRun, counts, jobResults: 0 };
+    return { enabled: false, dryRun, rescueCaseDryRun, counts, jobResults: 0 };
   }
 
   const retentionDays = options?.retentionDays ?? env.VECTRA_RETENTION_DAYS;
@@ -176,11 +224,15 @@ export async function runHistoryRetentionTick(
       database,
       sql`select id from vectra_job_result where job_id in (${expired.job})`,
     );
-    return { enabled: true, dryRun, counts, jobResults };
+    return { enabled: true, dryRun, rescueCaseDryRun, counts, jobResults };
   }
 
   let jobResults = 0;
   for (const table of Object.keys(expired) as HistoryRetentionTable[]) {
+    if (table === "rescue_case" && rescueCaseDryRun) {
+      counts[table] = await countOf(database, expired[table]);
+      continue;
+    }
     for (let batch = 0; batch < maxBatchesPerTable; batch += 1) {
       const ids = sql`select id from (${expired[table]}) expired limit ${batchSize}`;
       if (table === "job") {
@@ -201,11 +253,11 @@ export async function runHistoryRetentionTick(
       await sleep(pauseMs);
     }
   }
-  return { enabled: true, dryRun, counts, jobResults };
+  return { enabled: true, dryRun, rescueCaseDryRun, counts, jobResults };
 }
 
 function summarize(result: HistoryRetentionResult) {
-  return `event_log=${result.counts.event_log} job=${result.counts.job} job_result=${result.jobResults} health_incident=${result.counts.health_incident} operator_push_alert=${result.counts.operator_push_alert}`;
+  return `event_log=${result.counts.event_log} job=${result.counts.job} job_result=${result.jobResults} health_incident=${result.counts.health_incident} operator_push_alert=${result.counts.operator_push_alert} rescue_case=${result.counts.rescue_case}${!result.dryRun && result.rescueCaseDryRun ? " (rescue_case dry-run: counted, not deleted)" : ""}`;
 }
 
 const globalForRetention = globalThis as typeof globalThis & {

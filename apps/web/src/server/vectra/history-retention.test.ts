@@ -93,4 +93,27 @@ describe("runHistoryRetentionTick", () => {
     const first = executed.find((statement) => statement.text.includes("delete from vectra_event_log"));
     expect(first?.params).toContain(10_000);
   });
+
+  it("counts but keeps rescue cases until their own switch is off too", async () => {
+    const kept = createMockDb(0);
+    const keptResult = await runHistoryRetentionTick(kept.db as never, { enabled: true, dryRun: false, now: NOW, retentionDays: 30, pauseMs: 0 });
+    expect(keptResult.rescueCaseDryRun).toBe(true);
+    expect(kept.executed.some((statement) => statement.text.includes("delete from vectra_rescue_case"))).toBe(false);
+    expect(kept.executed.some((statement) => statement.text.includes("from vectra_rescue_case"))).toBe(true);
+    expect(keptResult.counts.rescue_case).toBe(7);
+
+    // The global dry-run wins over the table's own switch.
+    const dry = await runHistoryRetentionTick(createMockDb(0).db as never, { enabled: true, dryRun: true, rescueCaseDryRun: false, now: NOW, retentionDays: 30 });
+    expect(dry.rescueCaseDryRun).toBe(true);
+
+    const pruned = createMockDb(0);
+    await runHistoryRetentionTick(pruned.db as never, { enabled: true, dryRun: false, rescueCaseDryRun: false, now: NOW, retentionDays: 30, pauseMs: 0 });
+    const deletes = pruned.executed.filter((statement) => statement.text.trimStart().startsWith("delete"));
+    const caseDelete = deletes.find((statement) => statement.text.includes("delete from vectra_rescue_case"));
+    expect(caseDelete?.text).toContain("c.state = 'resolved'");
+    expect(caseDelete?.text).toContain("partition by router_id order by started_at desc");
+    expect(caseDelete?.params).toContain(50);
+    expect(caseDelete?.text).toContain("j.payload ->> 'caseId' = c.id");
+    expect(caseDelete?.text).toContain("'auto_rescue_repair:' || c.id");
+  });
 });
