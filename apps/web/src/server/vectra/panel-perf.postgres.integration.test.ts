@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 vi.mock("~/server/db", () => ({ db: {} }));
+vi.mock("server-only", () => ({}));
 import { drizzle } from "drizzle-orm/postgres-js";
 import { sql } from "drizzle-orm";
 import postgres from "postgres";
@@ -7,11 +8,16 @@ import postgres from "postgres";
 import { passwallDesiredConfigSchema, type PasswallDesiredConfig } from "@vectra/contracts";
 import * as schema from "@vectra/db";
 
+import { detectBlockedReachabilityTriggers } from "./auto-rescue";
+import { buildFleetPushCandidates } from "./browser-push-monitor";
 import {
+  loadFleetMonitoringSnapshot,
   loadLatestFleetPolicyConfigRows,
   loadLatestFleetPolicyConfigSummaries,
   loadLatestSnapshots,
+  loadSharedFleetMonitoringSnapshot,
   resetFleetPolicyConfigSummaryCacheForTest,
+  resetSharedFleetMonitoringSnapshotForTest,
 } from "./fleet-monitoring-data";
 import { runHistoryRetentionTick } from "./history-retention";
 import {
@@ -399,5 +405,90 @@ describe.skipIf(!port)("panel performance SQL on a real PostgreSQL", () => {
     // A shim without `execute` takes the original path.
     const selectOnly = { select: db.select.bind(db) } as unknown as Parameters<typeof loadLatestRouteVerifications>[0];
     expect(await loadLatestRouteVerifications(selectOnly, ids)).toEqual(reference);
+  });
+  it("auto-rescue blocked-reachability scan: one batched read decides exactly what the per-router reads decided", async () => {
+    const minute = 60 * 1000;
+    const reach = (status: string, checkedAt: string | null, extra: Record<string, unknown> = {}) => ({
+      status,
+      reachable: status === "healthy",
+      ...(checkedAt ? { checkedAt } : {}),
+      ...extra,
+    });
+    type Shape = Array<Record<string, unknown> | null>;
+    const fixtures: Array<{ label: string; approved: boolean; released?: boolean; snapshots: Shape }> = [
+      { label: "foreign-blocked", approved: true, snapshots: [0, 1, 2].map((n) => ({ foreignReachability: reach("blocked", `f${n}`) })) },
+      { label: "telegram-blocked", approved: true, snapshots: [0, 1, 2].map((n) => ({ telegramReachability: reach("failed", `t${n}`) })) },
+      { label: "both-blocked", approved: true, snapshots: [0, 1, 2, 3].map((n) => ({ foreignReachability: reach("partial", `f${n}`), telegramReachability: { reachable: false, checkedAt: `t${n}` } })) },
+      { label: "same-checked-at", approved: true, snapshots: [0, 1, 2].map(() => ({ foreignReachability: reach("blocked", "same") })) },
+      { label: "two-snapshots", approved: true, snapshots: [0, 1].map((n) => ({ foreignReachability: reach("blocked", `f${n}`) })) },
+      { label: "recovered-newest", approved: true, snapshots: [reach("healthy", "f9"), ...[0, 1, 2].map((n) => reach("blocked", `f${n}`))].map((value) => ({ foreignReachability: value })) },
+      { label: "older-blocked-only", approved: true, snapshots: [{}, ...[0, 1, 2].map((n) => ({ foreignReachability: reach("blocked", `f${n}`) }))] },
+      { label: "null-field", approved: true, snapshots: [0, 1, 2].map(() => ({ foreignReachability: null })) },
+      { label: "unapproved", approved: false, snapshots: [0, 1, 2].map((n) => ({ foreignReachability: reach("blocked", `f${n}`) })) },
+      { label: "released", approved: true, released: true, snapshots: [0, 1, 2].map((n) => ({ foreignReachability: reach("blocked", `f${n}`) })) },
+      { label: "no-snapshots", approved: true, snapshots: [] },
+    ];
+    const ids: string[] = [];
+    for (const [index, fixture] of fixtures.entries()) {
+      const [router] = await db
+        .insert(schema.routers)
+        .values({
+          deviceIdentifier: `blocked-${fixture.label}-${crypto.randomUUID()}`,
+          status: "active",
+          importState: "approved",
+          approvedAt: fixture.approved ? new Date() : null,
+          releasedAt: fixture.released ? new Date() : null,
+        })
+        .returning();
+      ids.push(router!.id);
+      // Inserted oldest first; the first entry of `snapshots` is the newest.
+      const ordered = [...fixture.snapshots].reverse();
+      for (const [n, payload] of ordered.entries()) {
+        await db.insert(schema.routerInventorySnapshots).values({
+          routerId: router!.id,
+          // The rest of a real inventory, which the batched read leaves out.
+          payload: { hostname: `h${index}`, packageVersions: { big: "x".repeat(3000) }, ...payload } as never,
+          createdAt: new Date(now - (60 - index) * minute + n * 1000),
+        });
+      }
+    }
+
+    const at = new Date(now);
+    const selectOnly = { select: db.select.bind(db) } as unknown as Parameters<typeof detectBlockedReachabilityTriggers>[0];
+    const [batched, perRouter] = [
+      await detectBlockedReachabilityTriggers(db as never, at),
+      await detectBlockedReachabilityTriggers(selectOnly, at),
+    ];
+    expect(batched).toEqual(perRouter);
+    const fired = batched
+      .filter((trigger) => ids.includes(trigger.routerId))
+      .map((trigger) => `${fixtures[ids.indexOf(trigger.routerId)]!.label}:${trigger.trigger}`);
+    expect(fired).toEqual([
+      "foreign-blocked:foreign_reachability_blocked",
+      "telegram-blocked:telegram_blocked",
+      "both-blocked:foreign_reachability_blocked",
+      "both-blocked:telegram_blocked",
+    ]);
+  });
+
+  it("shared fleet snapshot: the monitors get exactly the snapshot a direct load computes, read once per window", async () => {
+    resetSharedFleetMonitoringSnapshotForTest();
+    resetFleetPolicyConfigSummaryCacheForTest();
+    // Earlier cases stored minimal payloads; a real inventory always has these.
+    await db.execute(sql`update vectra_router_inventory_snapshot set payload = payload || '{"packageVersions":{},"binaryVersions":{}}'::jsonb where not payload ? 'packageVersions'`);
+    const at = new Date(now);
+    const direct = await loadFleetMonitoringSnapshot(db, at);
+    const first = loadSharedFleetMonitoringSnapshot(db, at);
+    // The second monitor, 15 s later, joins the same read.
+    const second = loadSharedFleetMonitoringSnapshot(db, new Date(now + 15_000));
+    expect(second).toBe(first);
+    const shared = await first;
+    expect(shared).toEqual(direct);
+    expect(buildFleetPushCandidates(shared)).toEqual(buildFleetPushCandidates(direct));
+    // A minute later is a new tick and a new read.
+    const next = loadSharedFleetMonitoringSnapshot(db, new Date(now + 60_000));
+    expect(next).not.toBe(first);
+    await next;
+    resetSharedFleetMonitoringSnapshotForTest();
   });
 });
