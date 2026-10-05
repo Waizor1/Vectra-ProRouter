@@ -41,6 +41,7 @@ const {
   checkInRouter,
   resetRevisionSummaryCacheForTest,
   routerAlreadyHoldsDesiredRevision,
+  vctlIgnoresNullDesiredRevision,
 } = await import("./router-control");
 const { resetFleetNodeHealthCache } = await import("./fleet-node-health-cache");
 
@@ -151,14 +152,25 @@ function revisionReads() {
   ).length;
 }
 
-function payloadFrom(path: string, appliedRevisionId: string | null) {
+/** A released vctl build (the fixture itself carries a dev version). */
+const VCTL_RELEASE = "0.7.0-r20";
+
+function payloadFrom(
+  path: string,
+  appliedRevisionId: string | null,
+  controllerVersion?: string,
+) {
   const raw = fixture(path);
   // The claim is irrelevant here and needs claim keys this test does not set.
   delete raw.claim;
   return {
     ...raw,
     routerId: ROUTER_ID,
-    inventory: { ...raw.inventory, appliedRevisionId: appliedRevisionId ?? undefined },
+    inventory: {
+      ...raw.inventory,
+      appliedRevisionId: appliedRevisionId ?? undefined,
+      ...(controllerVersion ? { controllerVersion } : {}),
+    },
   };
 }
 
@@ -195,11 +207,11 @@ describe("check-in fast path: vctl that already runs the desired revision", () =
   });
 
   it("answers without the revision and without reading it, otherwise identically", async () => {
-    const full = await checkInRouter(ROUTER_ID, payloadFrom(VCTL_FIXTURE, null));
+    const full = await checkInRouter(ROUTER_ID, payloadFrom(VCTL_FIXTURE, null, VCTL_RELEASE));
     expect(full.desiredRevision?.id).toBe(XRAY_REVISION);
 
     state.queries.length = 0;
-    const fast = await checkInRouter(ROUTER_ID, payloadFrom(VCTL_FIXTURE, XRAY_REVISION));
+    const fast = await checkInRouter(ROUTER_ID, payloadFrom(VCTL_FIXTURE, XRAY_REVISION, VCTL_RELEASE));
     expect(fast.desiredRevision).toBeNull();
     expect(revisionReads()).toBe(0);
 
@@ -208,10 +220,30 @@ describe("check-in fast path: vctl that already runs the desired revision", () =
     expect({ ...fast, desiredRevision: undefined }).toEqual({ ...full, desiredRevision: undefined });
   });
 
+  it("still sends the revision to a vctl build not known to ignore null (dev, pre-0.6)", async () => {
+    for (const version of [undefined /* the fixture's own 0.1.0-alpha */, "0.5.9-r40", "dev"]) {
+      const response = await checkInRouter(ROUTER_ID, payloadFrom(VCTL_FIXTURE, XRAY_REVISION, version));
+      expect(response.desiredRevision?.id).toBe(XRAY_REVISION);
+    }
+  });
+
+  it("knows which vctl builds ignore a null desiredRevision", () => {
+    expect(vctlIgnoresNullDesiredRevision("0.6.0-r1")).toBe(true);
+    expect(vctlIgnoresNullDesiredRevision("0.6.0-r36")).toBe(true);
+    expect(vctlIgnoresNullDesiredRevision("0.7.0-r20")).toBe(true);
+    expect(vctlIgnoresNullDesiredRevision("1.0.0-r1")).toBe(true);
+    expect(vctlIgnoresNullDesiredRevision("0.6.0-r0")).toBe(false);
+    expect(vctlIgnoresNullDesiredRevision("0.5.9-r99")).toBe(false);
+    expect(vctlIgnoresNullDesiredRevision("0.2.3")).toBe(false);
+    expect(vctlIgnoresNullDesiredRevision("0.1.0-alpha")).toBe(false);
+    expect(vctlIgnoresNullDesiredRevision("dev")).toBe(false);
+    expect(vctlIgnoresNullDesiredRevision(undefined)).toBe(false);
+  });
+
   it("still sends the revision when vctl reports another applied revision", async () => {
     const response = await checkInRouter(
       ROUTER_ID,
-      payloadFrom(VCTL_FIXTURE, "1a2b3c4d-0000-4000-8000-0000000000ff"),
+      payloadFrom(VCTL_FIXTURE, "1a2b3c4d-0000-4000-8000-0000000000ff", VCTL_RELEASE),
     );
     expect(response.desiredRevision?.id).toBe(XRAY_REVISION);
   });
@@ -232,7 +264,7 @@ describe("check-in fast path: vctl that already runs the desired revision", () =
         createdAt: new Date(),
       },
     ];
-    const response = await checkInRouter(ROUTER_ID, payloadFrom(VCTL_FIXTURE, XRAY_REVISION));
+    const response = await checkInRouter(ROUTER_ID, payloadFrom(VCTL_FIXTURE, XRAY_REVISION, VCTL_RELEASE));
     expect(response.jobs.map((job) => job.type)).toEqual(["apply_xray_config"]);
     expect(response.desiredRevision?.id).toBe(XRAY_REVISION);
   });
@@ -262,6 +294,7 @@ describe("legacy PassWall agent keeps today's behaviour", () => {
       routerAlreadyHoldsDesiredRevision({
         router,
         reportedEngineMode: undefined,
+        reportedControllerVersion: "0.1.13-r42",
         reportedAppliedRevisionId: XRAY_REVISION,
         deliverableJobs: [],
       }),
@@ -270,6 +303,7 @@ describe("legacy PassWall agent keeps today's behaviour", () => {
       routerAlreadyHoldsDesiredRevision({
         router: routerRow("passwall", PASSWALL_REVISION) as never,
         reportedEngineMode: "xray-direct",
+        reportedControllerVersion: VCTL_RELEASE,
         reportedAppliedRevisionId: PASSWALL_REVISION,
         deliverableJobs: [],
       }),
