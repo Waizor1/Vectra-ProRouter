@@ -36,6 +36,8 @@ export function createStaticDb(
   options: { routersTable?: unknown } = {},
 ) {
   const queries: StaticDbQuery[] = [];
+  /** Every insert, in order (writes are otherwise no-ops). */
+  const inserts: Array<{ table: unknown; values: unknown }> = [];
   // A `then` that makes a query builder awaitable, as Drizzle's are.
   const thenOf =
     (rows: () => unknown[]) =>
@@ -68,9 +70,10 @@ export function createStaticDb(
         },
       };
     },
-    insert() {
+    insert(table?: unknown) {
       return {
         values(values: Record<string, unknown>) {
+          inserts.push({ table, values });
           const statement = {
             onConflictDoNothing: () => statement,
             returning: () => Promise.resolve([values]),
@@ -111,5 +114,5 @@ export function createStaticDb(
     transaction: async <T>(run: (tx: unknown) => Promise<T>) => run(db),
   };
 
-  return { db, queries };
+  return { db, queries, inserts };
 }

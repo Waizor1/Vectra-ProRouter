@@ -9,6 +9,7 @@ import {
   jobs,
   passwallDesiredRevisions,
   passwallSecretBlobs,
+  routerInventorySnapshots,
   routers,
 } from "@vectra/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,12 +29,14 @@ vi.mock("~/env", () => envMock);
 const state = vi.hoisted(() => ({
   rowsFor: (() => []) as (query: StaticDbQuery) => unknown[],
   queries: [] as StaticDbQuery[],
+  inserts: [] as Array<{ table: unknown; values: unknown }>,
 }));
 vi.mock("~/server/db", async () => {
   const { createStaticDb } = await import("./testing/static-db");
   const { routers: routersTable } = await import("@vectra/db");
   const created = createStaticDb((query) => state.rowsFor(query), { routersTable });
   state.queries = created.queries;
+  state.inserts = created.inserts;
   return { db: created.db };
 });
 
@@ -308,5 +311,103 @@ describe("legacy PassWall agent keeps today's behaviour", () => {
         deliverableJobs: [],
       }),
     ).toBe(false);
+  });
+});
+
+describe("check-in reads the router row and the latest snapshot once", () => {
+  const DEVICE_KEY = "bGVnYWN5LWRldmljZS1wdWJsaWMta2V5";
+  let latestSnapshot: { payload: unknown; createdAt: Date } | null;
+
+  beforeEach(() => {
+    const vctl = fixture(VCTL_FIXTURE);
+    world = {
+      router: {
+        ...routerRow("xray-direct", XRAY_REVISION),
+        deviceIdentifier: String(vctl.inventory.deviceIdentifier),
+        // Owned by a Vectra account: the partner check-in event runs.
+        ownerRef: "owner-1" as string | null,
+        lastSeenAt: new Date(),
+      } as unknown as ReturnType<typeof routerRow>,
+      revision: revisionRow(XRAY_REVISION, "xray-direct"),
+      queuedJobs: [],
+    };
+    latestSnapshot = null;
+    const base = state.rowsFor;
+    state.rowsFor = (query) =>
+      query.table === routerInventorySnapshots
+        ? latestSnapshot
+          ? [latestSnapshot]
+          : []
+        : base(query);
+  });
+
+  const reads = (table: unknown) =>
+    state.queries.filter((query) => query.table === table).length;
+  const snapshotWrites = () =>
+    state.inserts.filter((insert) => insert.table === routerInventorySnapshots).length;
+
+  async function run(options: { passRouter: boolean; owned: boolean }) {
+    world.router = {
+      ...world.router,
+      ownerRef: (options.owned ? "owner-1" : null) as null,
+    };
+    state.queries.length = 0;
+    state.inserts.length = 0;
+    const response = await checkInRouter(
+      ROUTER_ID,
+      payloadFrom(VCTL_FIXTURE, XRAY_REVISION, VCTL_RELEASE),
+      {
+        devicePublicKey: DEVICE_KEY,
+        ...(options.passRouter ? { router: world.router as never } : {}),
+      },
+    );
+    return {
+      response,
+      routerReads: reads(routers),
+      snapshotReads: reads(routerInventorySnapshots),
+      snapshotWrites: snapshotWrites(),
+    };
+  }
+
+  beforeEach(async () => {
+    // Warm the fleet ledger first: its one-off build reads routers and
+    // snapshots too, and is not what is counted here.
+    await run({ passRouter: true, owned: false });
+  });
+
+  it("uses the row authentication already read, and answers identically", async () => {
+    const reread = await run({ passRouter: false, owned: true });
+    const passed = await run({ passRouter: true, owned: true });
+    expect(passed.routerReads).toBe(reread.routerReads - 1);
+    expect(passed.response).toEqual(reread.response);
+  });
+
+  it("an owned router's snapshot dedupe reuses the partner event's read and decides the same", async () => {
+    const inventory = routerCheckInRequestSchema.parse(
+      payloadFrom(VCTL_FIXTURE, XRAY_REVISION, VCTL_RELEASE),
+    ).inventory;
+    const decisions: number[] = [];
+    for (const stored of [
+      null, // nothing stored yet: write
+      { payload: inventory, createdAt: new Date(Date.now() - 60_000) }, // unchanged and fresh: skip
+      { payload: inventory, createdAt: new Date(Date.now() - 60 * 60_000) }, // heartbeat due: write
+      { payload: { ...inventory, hostname: "renamed" }, createdAt: new Date(Date.now() - 60_000) }, // changed: write
+    ]) {
+      latestSnapshot = stored;
+      const unowned = await run({ passRouter: true, owned: false });
+      const owned = await run({ passRouter: true, owned: true });
+      // The newest snapshot is read once either way: the owned check-in's
+      // partner event reads it and the dedupe reuses that, the unowned one
+      // reads it for the dedupe itself. (The partner event's separate look
+      // for the last MEASURED verdict, when the newest row has none, is a
+      // different query and stays.)
+      const verdictLookup =
+        stored && !(stored.payload as typeof inventory).connect?.verdict ? 1 : 0;
+      expect(unowned.snapshotReads).toBe(1);
+      expect(owned.snapshotReads).toBe(1 + verdictLookup);
+      expect(owned.snapshotWrites).toBe(unowned.snapshotWrites);
+      decisions.push(owned.snapshotWrites);
+    }
+    expect(decisions).toEqual([1, 0, 1, 1]);
   });
 });
