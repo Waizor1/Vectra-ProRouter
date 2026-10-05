@@ -483,15 +483,15 @@ describe.skipIf(!port)("panel performance SQL on a real PostgreSQL", () => {
     await db.execute(sql`update vectra_router_inventory_snapshot set payload = payload || '{"packageVersions":{},"binaryVersions":{}}'::jsonb where not payload ? 'packageVersions'`);
     const at = new Date(now);
     const direct = await loadFleetMonitoringSnapshot(db, at);
-    const first = loadSharedFleetMonitoringSnapshot(db, at);
+    const first = loadSharedFleetMonitoringSnapshot(db, at, 10_000);
     // The second monitor, 15 s later, joins the same read.
-    const second = loadSharedFleetMonitoringSnapshot(db, new Date(now + 15_000));
+    const second = loadSharedFleetMonitoringSnapshot(db, new Date(now + 15_000), 20_000);
     expect(second).toBe(first);
     const shared = await first;
     expect(shared).toEqual(direct);
     expect(buildFleetPushCandidates(shared)).toEqual(buildFleetPushCandidates(direct));
     // A minute later is a new tick and a new read.
-    const next = loadSharedFleetMonitoringSnapshot(db, new Date(now + 60_000));
+    const next = loadSharedFleetMonitoringSnapshot(db, new Date(now + 60_000), 10_000);
     expect(next).not.toBe(first);
     await next;
     resetSharedFleetMonitoringSnapshotForTest();

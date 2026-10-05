@@ -182,10 +182,10 @@ describe.skipIf(!db)("one monitor minute (auto-rescue + push monitor)", () => {
     resetSharedFleetMonitoringSnapshotForTest();
     const now = new Date();
     await Promise.all([
-      loadSharedFleetMonitoringSnapshot(db!, now),
+      loadSharedFleetMonitoringSnapshot(db!, now, 10_000),
       detectBlockedReachabilityTriggers(db! as never, now),
     ]);
     // The push monitor, 15 s later, reuses it.
-    await loadSharedFleetMonitoringSnapshot(db!, new Date(now.getTime() + 15_000));
+    await loadSharedFleetMonitoringSnapshot(db!, new Date(now.getTime() + 15_000), 20_000);
   }, options);
 });

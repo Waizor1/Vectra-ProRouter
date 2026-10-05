@@ -774,17 +774,23 @@ export async function loadFleetMonitoringSnapshot(
 }
 
 /**
- * How long one fleet snapshot is shared between the background monitors.
+ * How old a shared fleet snapshot each background monitor accepts.
  *
  * Auto-rescue and the browser-push monitor each built the whole fleet
  * snapshot every minute, on timers started by the same health call — so the
  * two full reads ran in parallel at the same second. They now share one:
- * whichever monitor asks first loads it, and the other, asking within this
- * window, gets the same snapshot (or joins the read still in flight). Well
- * below the 30-second minimum of either monitor's interval, so a monitor
- * never reuses its own previous tick.
+ * whichever monitor asks first loads it, and the other, asking within its
+ * window, gets the same snapshot (or joins the read still in flight).
+ *
+ * The windows are per monitor because two setInterval timers drift apart
+ * over days: the push monitor's 15 s offset will not hold forever. Auto-rescue
+ * acts on the snapshot (opens cases, queues repairs), so it takes one at most
+ * 10 s old and otherwise reads fresh, whatever the push monitor did; the push
+ * monitor only notifies and takes one up to 20 s old. Both are below the 30 s
+ * minimum of either interval, so no monitor reuses its own previous tick.
  */
-export const SHARED_FLEET_SNAPSHOT_MAX_AGE_MS = 25_000;
+export const AUTO_RESCUE_FLEET_SNAPSHOT_MAX_AGE_MS = 10_000;
+export const PUSH_MONITOR_FLEET_SNAPSHOT_MAX_AGE_MS = 20_000;
 
 type SharedFleetSnapshot = {
   database: object;
@@ -800,7 +806,8 @@ export function resetSharedFleetMonitoringSnapshotForTest() {
 
 /**
  * loadFleetMonitoringSnapshot for the background monitors, single-flight and
- * shared for SHARED_FLEET_SNAPSHOT_MAX_AGE_MS.
+ * shared: a snapshot loaded (or being loaded) at most `maxAgeMs` before `now`
+ * is reused, anything older is read again.
  *
  * A reused snapshot is the fleet as of the instant it was loaded (its own
  * `now`), exactly what the old parallel read computed at that same second;
@@ -810,7 +817,8 @@ export function resetSharedFleetMonitoringSnapshotForTest() {
  */
 export function loadSharedFleetMonitoringSnapshot(
   database: FleetMonitoringDatabaseClient,
-  now = new Date(),
+  now: Date,
+  maxAgeMs: number,
 ): ReturnType<typeof loadFleetMonitoringSnapshot> {
   const at = now.getTime();
   const current = sharedFleetSnapshot;
@@ -818,7 +826,7 @@ export function loadSharedFleetMonitoringSnapshot(
     current &&
     current.database === database &&
     at >= current.loadedAt &&
-    at - current.loadedAt < SHARED_FLEET_SNAPSHOT_MAX_AGE_MS
+    at - current.loadedAt <= maxAgeMs
   ) {
     return current.snapshot;
   }

@@ -10,7 +10,10 @@ import {
   isBrowserPushConfigured,
 } from "./browser-push";
 import { type FleetMonitoringSnapshot } from "./fleet-monitoring";
-import { loadSharedFleetMonitoringSnapshot } from "./fleet-monitoring-data";
+import {
+  loadSharedFleetMonitoringSnapshot,
+  PUSH_MONITOR_FLEET_SNAPSHOT_MAX_AGE_MS,
+} from "./fleet-monitoring-data";
 
 type PushCandidate = {
   dedupeKey: string;
@@ -83,8 +86,12 @@ export async function reconcileFleetPushAlerts(now = new Date()) {
   }
 
   // Shared with auto-rescue, which loads it a few seconds earlier each minute
-  // (see BROWSER_PUSH_MONITOR_OFFSET_MS).
-  const snapshot = await loadSharedFleetMonitoringSnapshot(db, now);
+  // (see BROWSER_PUSH_MONITOR_OFFSET_MS); read afresh when older than 20 s.
+  const snapshot = await loadSharedFleetMonitoringSnapshot(
+    db,
+    now,
+    PUSH_MONITOR_FLEET_SNAPSHOT_MAX_AGE_MS,
+  );
   const candidates = buildFleetPushCandidates(snapshot);
   const unresolvedAlerts = await db
     .select()
@@ -157,9 +164,10 @@ export async function reconcileFleetPushAlerts(now = new Date()) {
 
 /**
  * Both monitors are started by the same health call. Starting this one
- * fifteen seconds later keeps its tick off auto-rescue's second, and well
- * inside SHARED_FLEET_SNAPSHOT_MAX_AGE_MS, so it reuses the fleet snapshot
- * auto-rescue has just loaded instead of reading the fleet a second time.
+ * fifteen seconds later keeps its tick off auto-rescue's second, and inside
+ * PUSH_MONITOR_FLEET_SNAPSHOT_MAX_AGE_MS, so it reuses the fleet snapshot
+ * auto-rescue has just loaded instead of reading the fleet a second time. If
+ * the timers drift apart it simply reads its own.
  */
 export const BROWSER_PUSH_MONITOR_OFFSET_MS = 15_000;
 

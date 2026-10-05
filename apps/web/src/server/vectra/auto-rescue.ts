@@ -18,7 +18,10 @@ import { env } from "~/env";
 import { db } from "~/server/db";
 import { isControlPlaneRecoveryIncident } from "~/server/vectra/control-plane-recovery-incident";
 import { buildRouterManagementTaskLog } from "~/server/vectra/editor-surface";
-import { loadSharedFleetMonitoringSnapshot } from "~/server/vectra/fleet-monitoring-data";
+import {
+  AUTO_RESCUE_FLEET_SNAPSHOT_MAX_AGE_MS,
+  loadSharedFleetMonitoringSnapshot,
+} from "~/server/vectra/fleet-monitoring-data";
 import { getFleetRoutePolicyExceptionReason } from "~/server/vectra/fleet-route-policy";
 import { isReleasedAwaitingOwner } from "~/server/vectra/router-claim-state";
 import { isRouterReachable } from "~/server/vectra/router-presence";
@@ -870,7 +873,11 @@ async function detectFleetCriticalTriggers(
   database: DatabaseClient,
   now: Date,
 ): Promise<CriticalTrigger[]> {
-  const snapshot = await loadSharedFleetMonitoringSnapshot(database, now);
+  const snapshot = await loadSharedFleetMonitoringSnapshot(
+    database,
+    now,
+    AUTO_RESCUE_FLEET_SNAPSHOT_MAX_AGE_MS,
+  );
   return snapshot.alerts.flatMap((alert) => {
     if (alert.severity !== "critical") {
       return [];
