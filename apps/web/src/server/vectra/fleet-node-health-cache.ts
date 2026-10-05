@@ -154,20 +154,20 @@ async function rebuild(
 }
 
 /**
- * Never throws and never blocks a check-in on a bad read: a failure here means
- * "no health opinion", which is exactly the pre-existing behaviour.
+ * How long a check-in waits for the very first build after a start. Past it
+ * the check-in proceeds with no health opinion (EMPTY) — the same answer a
+ * failed build has always produced — and the build finishes in the
+ * background for the check-ins after it.
  */
-export async function getFleetPolicyContext(
+export const FIRST_BUILD_WAIT_MS = 2_000;
+
+function startRebuild(
   database: DatabaseClient,
-  now = Date.now(),
+  now: number,
 ): Promise<FleetPolicyContext> {
-  if (cached && cached.expiresAt > now) {
-    return cached.value;
-  }
   if (inFlight) {
     return inFlight;
   }
-
   inFlight = rebuild(database, now)
     .then((value) => {
       cached = { value, expiresAt: Date.now() + TTL_MS };
@@ -177,8 +177,41 @@ export async function getFleetPolicyContext(
     .finally(() => {
       inFlight = null;
     });
-
   return inFlight;
+}
+
+/**
+ * Never throws and never blocks a check-in on a bad read: a failure here means
+ * "no health opinion", which is exactly the pre-existing behaviour.
+ *
+ * Stale-while-revalidate: once anything has been built, a check-in gets the
+ * last value at once and an expired one is rebuilt in the background
+ * (single-flight). Every five minutes one check-in used to wait for the whole
+ * fleet read — the p99 tail of the check-in. Only the first build after a
+ * start is awaited, and at most FIRST_BUILD_WAIT_MS.
+ */
+export async function getFleetPolicyContext(
+  database: DatabaseClient,
+  now = Date.now(),
+): Promise<FleetPolicyContext> {
+  if (cached) {
+    if (cached.expiresAt <= now) {
+      void startRebuild(database, now);
+    }
+    return cached.value;
+  }
+
+  const build = startRebuild(database, now);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const fallback = new Promise<FleetPolicyContext>((resolve) => {
+    timer = setTimeout(() => resolve(EMPTY), FIRST_BUILD_WAIT_MS);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([build, fallback]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function fleetRoutePolicyOptions(
