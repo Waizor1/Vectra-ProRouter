@@ -997,6 +997,65 @@ async function createImportedBaselineRevision(
   return updatedRouter ?? router;
 }
 
+function preferredDesiredRevisionId(
+  router: Pick<RouterRow, "activeRevisionId" | "lastAppliedRevisionId">,
+  queuedJobs: Pick<JobRow, "desiredRevisionId">[],
+) {
+  const jobRevisionId = queuedJobs.find(
+    (job) => job.desiredRevisionId,
+  )?.desiredRevisionId;
+  return (
+    jobRevisionId ??
+    router.activeRevisionId ??
+    router.lastAppliedRevisionId ??
+    null
+  );
+}
+
+/**
+ * True when the answer to this check-in may leave `desiredRevision` out (null)
+ * because the router provably has no use for it.
+ *
+ * Only vctl qualifies, and only on a check-in that carries no job:
+ *
+ *  - vctl (router/vectra-controller-pro, cmd/vctl/cmd_agent.go, the check-in
+ *    loop) adopts `desiredRevision` only when it is present and non-null, and
+ *    otherwise keeps the copy it stored earlier. The stored copy is read in
+ *    exactly one place — jobApplyXrayConfig (cmd_agent_jobs.go), as a
+ *    fallback when THE SAME response carries no revision — and every response
+ *    that delivers a job still carries the full revision, so a job never runs
+ *    on the stored copy because of this.
+ *  - It must report the revision the panel would send as the one it applied
+ *    (inventory.appliedRevisionId, set only after a successful apply), so the
+ *    router already runs exactly that config.
+ *
+ * The legacy PassWall agent (router/vectra-controller-agent) does NOT qualify
+ * and always gets the full revision: its check-in self-heal rebinds shunt
+ * slots from the last desired revision it received (main.go,
+ * persisted.LastDesiredRevision), and it reports nothing that proves which
+ * revision it holds. It never reports inventory.engineMode, which is what
+ * tells the two apart here (as in selectDeliverableJobsForCheckIn).
+ */
+export function routerAlreadyHoldsDesiredRevision(args: {
+  router: Pick<
+    RouterRow,
+    "engineMode" | "importState" | "activeRevisionId" | "lastAppliedRevisionId"
+  >;
+  reportedEngineMode: string | null | undefined;
+  reportedAppliedRevisionId: string | null | undefined;
+  deliverableJobs: Pick<JobRow, "desiredRevisionId">[];
+}) {
+  if (
+    args.reportedEngineMode !== "xray-direct" ||
+    args.router.engineMode !== "xray-direct" ||
+    args.deliverableJobs.length > 0
+  ) {
+    return false;
+  }
+  const preferred = preferredDesiredRevisionId(args.router, args.deliverableJobs);
+  return Boolean(preferred) && args.reportedAppliedRevisionId === preferred;
+}
+
 export async function resolveDesiredRevisionWithDb(
   client: DatabaseClient,
   router: RouterRow,
@@ -1006,14 +1065,7 @@ export async function resolveDesiredRevisionWithDb(
     return null;
   }
 
-  const jobRevisionId = queuedJobs.find(
-    (job) => job.desiredRevisionId,
-  )?.desiredRevisionId;
-  const preferredRevisionId =
-    jobRevisionId ??
-    router.activeRevisionId ??
-    router.lastAppliedRevisionId ??
-    null;
+  const preferredRevisionId = preferredDesiredRevisionId(router, queuedJobs);
 
   const summary = await getRevisionSummaryWithDb(
     client,
@@ -1903,8 +1955,16 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     vctlRemoteShell,
   );
 
+  const skipDesiredRevision = routerAlreadyHoldsDesiredRevision({
+    router,
+    reportedEngineMode: parsed.inventory.engineMode,
+    reportedAppliedRevisionId: parsed.inventory.appliedRevisionId,
+    deliverableJobs,
+  });
   const [desiredRevision, policyContext] = await Promise.all([
-    resolveDesiredRevision(router, deliverableJobs),
+    skipDesiredRevision
+      ? Promise.resolve(null)
+      : resolveDesiredRevision(router, deliverableJobs),
     getFleetPolicyContext(db),
   ]);
   // A steady router reports no config (the panel only asks when the digest has
