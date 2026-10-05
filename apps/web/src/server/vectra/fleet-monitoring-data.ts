@@ -15,10 +15,12 @@ import type { db as appDb } from "~/server/db";
 import { formatControllerVersion } from "~/lib/controller-version";
 
 import { buildConfigTrustState } from "./config-trust";
+import { BoundedLru } from "./bounded-lru";
 import {
   buildFleetRoutePolicyIdentity,
   collectFleetNodeHealthSample,
   evaluateFleetRoutePolicy,
+  type FleetPolicyConfigView,
 } from "./fleet-route-policy";
 import { buildFleetNodeHealth } from "./fleet-node-health";
 import {
@@ -297,21 +299,195 @@ export async function loadLatestFleetPolicyConfigRows(
   return latest;
 }
 
+/**
+ * Inventory keys the fleet-wide monitors never read but that dominate a
+ * snapshot's size: a Connect router's telemetry (up to 300 entries, 600
+ * sites, its services) and an occasional raw UCI snapshot.
+ */
+const MONITORING_OMITTED_PAYLOAD_KEYS = ["connect", "rawSnapshot"] as const;
+
+/**
+ * What the fleet-wide monitors read from a router's live config: the node
+ * list and shunt rules (route policy, node health) and each subscription's
+ * extras (the hwid gate in subscription rescue).
+ */
+export type FleetPolicyConfigSummary = FleetPolicyConfigView & {
+  subscriptions: { items: Array<{ extras: Record<string, unknown> }> };
+};
+
+export type FleetPolicyConfigSummaryRow = Omit<FleetPolicyConfigRow, "config"> & {
+  config: FleetPolicyConfigSummary;
+};
+
+function summarizeFleetPolicyConfig(
+  config: PasswallDesiredConfig,
+): FleetPolicyConfigSummary {
+  return {
+    nodes: config.nodes,
+    basicSettings: { shuntRules: config.basicSettings.shuntRules },
+    subscriptions: {
+      items: config.subscriptions.items.map((item) => ({ extras: item.extras })),
+    },
+  };
+}
+
+// Revision configs never change after insert, so a summary is cached by
+// revision id (null: the stored config does not parse). The monitors read the
+// latest import of every router every minute; with this they fetch and parse
+// only the revisions that are new since the last read. Bounded by approximate
+// JSON size: 64 MB holds a summary for well over a thousand routers.
+const POLICY_CONFIG_SUMMARY_CACHE_BYTES = 64 * 1024 * 1024;
+const policyConfigSummaryCache = new BoundedLru<
+  string,
+  FleetPolicyConfigSummary | null
+>(POLICY_CONFIG_SUMMARY_CACHE_BYTES);
+
+export function resetFleetPolicyConfigSummaryCacheForTest() {
+  policyConfigSummaryCache.clear();
+}
+
+/**
+ * The latest router_import/operator_reimport revision per router, as
+ * loadLatestFleetPolicyConfigRows picks it, but carrying only the compact
+ * FleetPolicyConfigSummary — for the background loops. A revision whose
+ * config is already cached is not read from Postgres again.
+ */
+export async function loadLatestFleetPolicyConfigSummaries(
+  database: FleetMonitoringDatabaseClient,
+  routerIds: string[],
+) {
+  const latest = new Map<string, FleetPolicyConfigSummaryRow>();
+  if (routerIds.length === 0) {
+    return latest;
+  }
+
+  const metadataRows = supportsSnapshotExecute(database)
+    ? await database.execute(sql`
+          select
+            s.id,
+            s.router_id as "routerId",
+            s.origin,
+            s.created_at as "createdAt"
+          from (
+            values ${sql.join(
+              routerIds.map((routerId) => sql`(${routerId})`),
+              sql`, `,
+            )}
+          ) as r(router_id)
+          join lateral (
+            select rev.id, rev.router_id, rev.origin, rev.created_at
+            from vectra_passwall_desired_revision rev
+            where rev.router_id = r.router_id
+              and rev.origin in ('router_import', 'operator_reimport')
+            order by rev.created_at desc
+            limit 1
+          ) s on true
+        `)
+    : await database
+        .select({
+          id: passwallDesiredRevisions.id,
+          routerId: passwallDesiredRevisions.routerId,
+          origin: passwallDesiredRevisions.origin,
+          createdAt: passwallDesiredRevisions.createdAt,
+        })
+        .from(passwallDesiredRevisions)
+        .where(inArray(passwallDesiredRevisions.routerId, routerIds))
+        .orderBy(desc(passwallDesiredRevisions.createdAt));
+
+  const latestMetadata = new Map<string, Omit<FleetPolicyConfigRow, "config">>();
+  for (const row of metadataRows as unknown[]) {
+    if (!row || typeof row !== "object") continue;
+    const record = row as Record<string, unknown>;
+    const id = readStringField(record, "id");
+    const routerId = readStringField(record, "routerId", "router_id");
+    const origin = readStringField(record, "origin");
+    if (
+      !id ||
+      !routerId ||
+      (origin !== "router_import" && origin !== "operator_reimport") ||
+      latestMetadata.has(routerId)
+    ) {
+      continue;
+    }
+    latestMetadata.set(routerId, {
+      id,
+      routerId,
+      origin,
+      createdAt: readDateField(record, "createdAt", "created_at"),
+    });
+  }
+
+  const missing = [...latestMetadata.values()]
+    .map((row) => row.id)
+    .filter((id) => policyConfigSummaryCache.get(id) === undefined);
+  if (missing.length > 0) {
+    const configRows = supportsSnapshotExecute(database)
+      ? await database.execute(sql`
+            select rev.id, rev.config
+            from vectra_passwall_desired_revision rev
+            where rev.id in (${sql.join(
+              missing.map((id) => sql`${id}`),
+              sql`, `,
+            )})
+          `)
+      : await database
+          .select({
+            id: passwallDesiredRevisions.id,
+            config: passwallDesiredRevisions.config,
+          })
+          .from(passwallDesiredRevisions)
+          .where(inArray(passwallDesiredRevisions.id, missing));
+    for (const row of configRows as unknown[]) {
+      if (!row || typeof row !== "object") continue;
+      const record = row as Record<string, unknown>;
+      const id = readStringField(record, "id");
+      if (!id) continue;
+      const config = normalizePasswallConfig(readUnknownField(record, "config"));
+      const summary = config ? summarizeFleetPolicyConfig(config) : null;
+      policyConfigSummaryCache.set(
+        id,
+        summary,
+        summary ? JSON.stringify(summary).length : 1,
+      );
+    }
+  }
+
+  for (const [routerId, metadata] of latestMetadata) {
+    const summary = policyConfigSummaryCache.get(metadata.id);
+    if (summary) {
+      latest.set(routerId, { ...metadata, config: summary });
+    }
+  }
+  return latest;
+}
+
 export async function loadLatestSnapshots(
   database: FleetMonitoringDatabaseClient,
   routerIds: string[],
+  options: {
+    /**
+     * Leave out MONITORING_OMITTED_PAYLOAD_KEYS, in SQL, for the background
+     * monitors that read every router's latest snapshot every minute.
+     */
+    monitoringPayload?: boolean;
+  } = {},
 ) {
   if (routerIds.length === 0) {
     return new Map<string, typeof routerInventorySnapshots.$inferSelect>();
   }
 
+  const payloadColumn = options.monitoringPayload
+    ? sql.raw(
+        `s.payload${MONITORING_OMITTED_PAYLOAD_KEYS.map((key) => ` - '${key}'`).join("")} as payload`,
+      )
+    : sql.raw("s.payload");
   const rows = supportsSnapshotExecute(database)
     ? await database.execute(sql`
           select
             s.id,
             s.router_id as "routerId",
             s.source,
-            s.payload,
+            ${payloadColumn},
             s.passwall_enabled as "passwallEnabled",
             s.selected_node_id as "selectedNodeId",
             s.node_count as "nodeCount",
@@ -346,6 +522,13 @@ export async function loadLatestSnapshots(
   for (const row of rows) {
     const snapshot = normalizeSnapshotRow(row);
     if (snapshot && !latest.has(snapshot.routerId)) {
+      if (options.monitoringPayload) {
+        const payload: Record<string, unknown> = { ...snapshot.payload };
+        for (const key of MONITORING_OMITTED_PAYLOAD_KEYS) {
+          delete payload[key];
+        }
+        snapshot.payload = payload as typeof snapshot.payload;
+      }
       latest.set(snapshot.routerId, snapshot);
     }
   }
@@ -391,7 +574,7 @@ export async function loadFleetMonitoringSnapshot(
     routeVerifications,
   ] =
     await Promise.all([
-      loadLatestSnapshots(database, routerIds),
+      loadLatestSnapshots(database, routerIds, { monitoringPayload: true }),
       routerIds.length
         ? database
             .select()
@@ -421,7 +604,7 @@ export async function loadFleetMonitoringSnapshot(
             origins: ["router_import", "operator_reimport"],
           })
         : Promise.resolve([]),
-      loadLatestFleetPolicyConfigRows(database, routerIds),
+      loadLatestFleetPolicyConfigSummaries(database, routerIds),
       loadLatestRouteVerifications(database, routerIds),
     ]);
 

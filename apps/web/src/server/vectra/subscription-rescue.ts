@@ -14,7 +14,7 @@ import {
   subscriptionHasHardwareId,
   type SubscriptionRescueCandidate,
 } from "./route-health-verifier";
-import { loadLatestFleetPolicyConfigRows } from "./fleet-monitoring-data";
+import { loadLatestFleetPolicyConfigSummaries } from "./fleet-monitoring-data";
 import { queueSubscriptionMd5Reset } from "./subscription-refresh-guard";
 
 type DatabaseClient = typeof appDb;
@@ -123,7 +123,7 @@ export async function runSubscriptionRescueTick(
   // The revision each picked router is currently importing FROM. This is the
   // node list a destructive refresh would take away, so it is what the guard
   // restores to. Read before the refresh is queued, never after.
-  const restoreRevisions = await loadLatestFleetPolicyConfigRows(
+  const restoreRevisions = await loadLatestFleetPolicyConfigSummaries(
     database,
     picked,
   );

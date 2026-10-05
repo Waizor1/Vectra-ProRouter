@@ -52,6 +52,19 @@ export type FleetRoutePolicyRouterIdentity = {
   routePolicyExemptReason?: string | null;
 };
 
+/**
+ * The part of a router's PassWall config the route policy reads: the node list
+ * and the shunt rules. Everything that only evaluates (compliance, the
+ * check-in directive, fleet node health, stranded slots) takes this, so the
+ * fleet-wide monitors can hold a compact per-router copy instead of every
+ * router's full config. Only normalizeFleetRoutePolicy, which writes a new
+ * revision, needs the whole PasswallDesiredConfig.
+ */
+export type FleetPolicyConfigView = {
+  nodes: PasswallDesiredConfig["nodes"];
+  basicSettings: Pick<PasswallDesiredConfig["basicSettings"], "shuntRules">;
+};
+
 type PasswallNode = PasswallDesiredConfig["nodes"][number];
 type PasswallShuntRule =
   PasswallDesiredConfig["basicSettings"]["shuntRules"][number];
@@ -592,12 +605,12 @@ function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
   }
 }
 
-function slotRules(config: PasswallDesiredConfig) {
+function slotRules(config: FleetPolicyConfigView) {
   return config.basicSettings.shuntRules;
 }
 
 function findRule(
-  config: PasswallDesiredConfig,
+  config: FleetPolicyConfigView,
   slot: PolicySlot,
 ): PasswallShuntRule | null {
   const normalizedId = normalizeText(slot.id);
@@ -621,14 +634,14 @@ function findRuleIndex(rules: PasswallShuntRule[], slot: PolicySlot): number {
   );
 }
 
-function findNodeById(config: PasswallDesiredConfig, nodeId?: string | null) {
+function findNodeById(config: FleetPolicyConfigView, nodeId?: string | null) {
   if (!nodeId) {
     return null;
   }
   return config.nodes.find((node) => node.id === nodeId) ?? null;
 }
 
-function readShuntBinding(config: PasswallDesiredConfig, slot: PolicySlot) {
+function readShuntBinding(config: FleetPolicyConfigView, slot: PolicySlot) {
   const keys = [slot.id, slot.label].filter(Boolean);
   for (const shunt of config.nodes) {
     if (shunt.protocol !== "shunt") {
@@ -671,7 +684,7 @@ function spreadKey(identity?: FleetRoutePolicyRouterIdentity | null) {
 }
 
 function findBestTarget(
-  config: PasswallDesiredConfig,
+  config: FleetPolicyConfigView,
   slot: PolicySlot,
   identity?: FleetRoutePolicyRouterIdentity | null,
   currentNodeId?: string | null,
@@ -841,7 +854,7 @@ function extraMismatch(
 }
 
 function readRuleBindingId(
-  config: PasswallDesiredConfig,
+  config: FleetPolicyConfigView,
   rule: PasswallShuntRule,
   slot: PolicySlot,
 ) {
@@ -888,7 +901,7 @@ const STALE_PROBE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 export function collectFleetNodeHealthSample(
   routerId: string,
-  config: PasswallDesiredConfig | null | undefined,
+  config: FleetPolicyConfigView | null | undefined,
   probes: {
     telegram?: { status?: string | null; checkedAt?: string | null } | null;
     youtube?: { status?: string | null; checkedAt?: string | null } | null;
@@ -1020,7 +1033,7 @@ export function collectFleetNodeHealthSample(
 }
 
 export function evaluateFleetRoutePolicy(
-  config: PasswallDesiredConfig | null | undefined,
+  config: FleetPolicyConfigView | null | undefined,
   identity?: FleetRoutePolicyRouterIdentity | null,
   options?: FleetRoutePolicyOptions | null,
 ): FleetRoutePolicyCompliance {
@@ -1336,7 +1349,7 @@ export function normalizeFleetRoutePolicy(
  * does not contain that router.
  */
 export function buildFleetRoutePolicyDirective(
-  config: PasswallDesiredConfig | null | undefined,
+  config: FleetPolicyConfigView | null | undefined,
   identity?: FleetRoutePolicyRouterIdentity | null,
   options?: FleetRoutePolicyOptions | null,
 ): {
@@ -1451,7 +1464,7 @@ export function buildFleetRoutePolicyDirective(
  * that state is what lets the system fix itself instead of shuffling corpses.
  */
 export function findStrandedSlots(
-  config: PasswallDesiredConfig | null | undefined,
+  config: FleetPolicyConfigView | null | undefined,
   identity?: FleetRoutePolicyRouterIdentity | null,
   options?: FleetRoutePolicyOptions | null,
 ): FleetRoutePolicySlotId[] {
