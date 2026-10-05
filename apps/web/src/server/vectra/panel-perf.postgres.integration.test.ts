@@ -21,8 +21,13 @@ import {
 } from "./fleet-monitoring-data";
 import { runHistoryRetentionTick } from "./history-retention";
 import {
+  getFleetPolicyContext,
+  resetFleetNodeHealthCache,
+} from "./fleet-node-health-cache";
+import {
   loadLatestRouteVerifications,
   loadLatestRouteVerificationsBySelect,
+  loadRouteHealthCandidates,
 } from "./route-health-verifier";
 import { runRevisionRetentionTick } from "./revision-retention";
 import {
@@ -540,5 +545,78 @@ describe.skipIf(!port)("panel performance SQL on a real PostgreSQL", () => {
     for (const i of [0, 49, 52, 55, 57]) {
       expect(remaining.has(cases[i]!)).toBe(true);
     }
+  });
+  it("monitor decisions: the new SQL paths and the original select paths reach the same verdicts", async () => {
+    // Three routers whose own verify runs saw dead.example fail while
+    // alive.example answered on the same router: the ledger condemns it.
+    const twoNodes = (password: string) =>
+      passwallDesiredConfigSchema.parse({
+        basicSettings: { main: { mainSwitch: true, selectedNodeId: "myshunt" }, dns: {}, log: {}, maintenance: {} },
+        nodes: [
+          { id: "node-dead", label: "dead", protocol: "vless", address: "dead.example", port: 443, password },
+          { id: "node-alive", label: "alive", protocol: "vless", address: "alive.example", port: 443, password },
+        ],
+        subscriptions: { items: [] },
+        appUpdate: {},
+        ruleManage: { geoipUrl: "https://example.test/geoip.dat", geositeUrl: "https://example.test/geosite.dat" },
+      });
+    for (let i = 0; i < 3; i += 1) {
+      const router = await newRouter(`decisions-${i}`);
+      await db.update(schema.routers).set({ lastSeenAt: new Date(now - 60_000), engineMode: "passwall" }).where(sql`id = ${router.id}`);
+      await newRevision(router.id, 1, { secret: twoNodes(`pw-${i}`), createdAt: daysAgo(2) });
+      await db.insert(schema.routerInventorySnapshots).values({
+        routerId: router.id,
+        payload: { hostname: `d${i}`, packageVersions: {}, binaryVersions: {}, telegramReachability: { status: "healthy", checkedAt: "x" } } as never,
+      });
+      const [job] = await db
+        .insert(schema.jobs)
+        .values({ routerId: router.id, type: "verify_passwall_routes", state: "succeeded", createdAt: daysAgo(1) })
+        .returning();
+      await db.insert(schema.jobResults).values([
+        { jobId: job!.id, routerId: router.id, status: "accepted", payload: { accepted: true }, reportedAt: new Date(daysAgo(1).getTime() + 1000) },
+        {
+          jobId: job!.id,
+          routerId: router.id,
+          status: "success",
+          payload: {
+            routeVerification: {
+              slots: [
+                { slot: "WorldProxy", boundNodeId: "node-dead", smokeOk: false, statusCode: 0 },
+                { slot: "Special", boundNodeId: "node-alive", smokeOk: true, statusCode: 204 },
+              ],
+            },
+          },
+          reportedAt: new Date(daysAgo(1).getTime() + 2000),
+        },
+      ]);
+    }
+    const selectOnly = { select: db.select.bind(db) } as never;
+    const at = new Date(now);
+
+    // Node-health ledger (check-in directive input).
+    resetFleetNodeHealthCache();
+    resetFleetPolicyConfigSummaryCacheForTest();
+    const ledger = await getFleetPolicyContext(db, now);
+    resetFleetNodeHealthCache();
+    resetFleetPolicyConfigSummaryCacheForTest();
+    const ledgerBySelect = await getFleetPolicyContext(selectOnly, now);
+    resetFleetNodeHealthCache();
+    expect(ledger.nodeHealth.unhealthyHosts).toContain("dead.example:443");
+    expect(ledger.nodeHealth.unhealthyHosts).toEqual(ledgerBySelect.nodeHealth.unhealthyHosts);
+    expect([...ledger.configByRouter.keys()].sort()).toEqual([...ledgerBySelect.configByRouter.keys()].sort());
+
+    // Fleet monitoring: alerts (auto-rescue's and push's input) and per-router compliance.
+    resetFleetPolicyConfigSummaryCacheForTest();
+    const fleet = await loadFleetMonitoringSnapshot(db, at);
+    resetFleetPolicyConfigSummaryCacheForTest();
+    const fleetBySelect = await loadFleetMonitoringSnapshot(selectOnly, at);
+    expect(fleet.alerts).toEqual(fleetBySelect.alerts);
+    expect(fleet.routers.map((router) => [router.id, router.fleetPolicyCompliance])).toEqual(
+      fleetBySelect.routers.map((router) => [router.id, router.fleetPolicyCompliance]),
+    );
+    expect(buildFleetPushCandidates(fleet)).toEqual(buildFleetPushCandidates(fleetBySelect));
+
+    // Route-health verifier: which routers are due a probe.
+    expect(await loadRouteHealthCandidates(db as never)).toEqual(await loadRouteHealthCandidates(selectOnly));
   });
 });
