@@ -55,3 +55,22 @@ describe("POST /api/router/check-in", () => {
     expect(checkInRouter).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("POST /api/router/check-in observability and reads", () => {
+  it("hands the authenticated router row to the check-in and reports Server-Timing", async () => {
+    checkInRouter.mockClear();
+    const response = await checkIn("router-timing");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("server-timing")).toMatch(/^app;dur=\d+\.\d$/);
+    expect(checkInRouter).toHaveBeenCalledWith("router-timing", {}, {
+      devicePublicKey: "key",
+      router: { id: "router-timing" },
+    });
+
+    const unauthorized = await POST(
+      new Request("https://example.test/api/router/check-in", { method: "POST", body: "{}" }),
+    );
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("server-timing")).toMatch(/^app;dur=/);
+  });
+});

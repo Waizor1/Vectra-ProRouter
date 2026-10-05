@@ -461,7 +461,7 @@ describe("checkInRouter claim", () => {
 
   it("persists measured Connect telemetry and emits observed transitions on real check-in", async () => {
     const router = routerRow({ownerRef: "acct-42", approvedAt: new Date(), status: "active"});
-    fake.reset({selects: [[routers, [[router]]], [routerInventorySnapshots, [[{payload: inventory({connect: {verdict: "ok"}})}]]], [healthIncidents, [[]]], [jobs, [[]]]], updateReturns: [[routers, [[router], [router]]]]});
+    fake.reset({selects: [[routers, [[router]]], [routerInventorySnapshots, [[{payload: inventory({connect: {verdict: "ok"}}), createdAt: new Date(Date.now() - 60_000)}]]], [healthIncidents, [[]]], [jobs, [[]]]], updateReturns: [[routers, [[router], [router]]]]});
     await checkInRouter(ROUTER_ID, checkInPayload({inventory: inventory({connect: {verdict: "down", exitCountry: null, lanClients: 2}})}));
     expect(fake.inserts(routerInventorySnapshots)[0]).toMatchObject({payload: {connect: {verdict: "down", lanClients: 2}}});
     expect(fake.inserts(partnerWebhooks).map(row => row.payload)).toEqual(expect.arrayContaining([expect.objectContaining({event: "router.vpn_down", ownerRef: "acct-42", detail: {verdict: "down"}})]));

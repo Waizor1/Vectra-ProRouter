@@ -12,7 +12,20 @@ import {
   toRouteErrorResponse,
 } from "../_lib";
 
+// How long this handler took, for the access log and the client: Caddy logs
+// response headers, so check-in latency is visible per request.
+function serverTiming(startedAt: number) {
+  return `app;dur=${(performance.now() - startedAt).toFixed(1)}`;
+}
+
 export async function POST(request: Request) {
+  const startedAt = performance.now();
+  const response = await handleCheckIn(request);
+  response.headers.set("Server-Timing", serverTiming(startedAt));
+  return response;
+}
+
+async function handleCheckIn(request: Request): Promise<Response> {
   try {
     const auth = await authenticateRouter(request.headers);
     if (!auth) {
@@ -29,7 +42,10 @@ export async function POST(request: Request) {
       request,
       AUTHENTICATED_ROUTER_BODY_MAX_BYTES,
     );
-    const response = await checkInRouter(auth.router.id, payload, {devicePublicKey: auth.credential.devicePublicKey});
+    const response = await checkInRouter(auth.router.id, payload, {
+      devicePublicKey: auth.credential.devicePublicKey,
+      router: auth.router,
+    });
     await safelyMaybeAdvanceRouterOnboarding(auth.router.id);
     return Response.json(response);
   } catch (error) {

@@ -40,13 +40,23 @@ export function reportedPartnerTransitions(
   return events;
 }
 
+/**
+ * The router's newest stored snapshot as read here, before this check-in's
+ * own is written — `null` when it has none, `undefined` when it was not read.
+ * The check-in hands it to the snapshot dedupe instead of reading it again.
+ */
+export type PartnerCheckInReadback = {
+  latestSnapshot?: { payload: RouterInventory; createdAt: Date } | null;
+};
+
 export async function notifyPartnerCheckInWithDb(
   client: Client,
   previousRouter: Router,
   next: RouterInventory,
   now = new Date(),
-) {
-  if (!previousRouter.ownerRef || previousRouter.releasedAt) return;
+): Promise<PartnerCheckInReadback> {
+  const readback: PartnerCheckInReadback = {};
+  if (!previousRouter.ownerRef || previousRouter.releasedAt) return readback;
   await client.transaction(async (tx) => {
     const [current] = await tx
       .update(routers)
@@ -67,6 +77,9 @@ export async function notifyPartnerCheckInWithDb(
       .where(eq(routerInventorySnapshots.routerId, previousRouter.id))
       .orderBy(desc(routerInventorySnapshots.createdAt))
       .limit(1);
+    readback.latestSnapshot = prior
+      ? { payload: prior.payload, createdAt: prior.createdAt }
+      : null;
     let previousVerdict = prior?.payload?.connect?.verdict;
     if (prior && !previousVerdict) {
       const [measured] = await tx
@@ -100,6 +113,7 @@ export async function notifyPartnerCheckInWithDb(
         at: now,
       });
   });
+  return readback;
 }
 
 export async function sweepPartnerOfflineWithDb(

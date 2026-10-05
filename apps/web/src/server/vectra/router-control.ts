@@ -1,6 +1,10 @@
 import { devicePublicKeysMatch } from "./router-claim-state";
 import { protectConnectInventory, hydratePartnerJobPayload } from "./partner-router-secrets";
-import { notifyPartnerCheckInWithDb, notifyPartnerActionResultWithDb } from "~/server/vectra/partner-router-events";
+import {
+  notifyPartnerActionResultWithDb,
+  notifyPartnerCheckInWithDb,
+  type PartnerCheckInReadback,
+} from "~/server/vectra/partner-router-events";
 import {
   artifactMetadataSchema,
   MASKED_SECRET_PLACEHOLDER,
@@ -473,6 +477,11 @@ async function insertInventorySnapshot(
   routerId: string,
   inventory: RouterInventory,
   source: string,
+  /**
+   * The router's newest snapshot when the caller has just read it (the
+   * partner check-in event does, for owned routers); `undefined` reads it.
+   */
+  knownLatest?: { payload: RouterInventory; createdAt: Date } | null,
 ) {
   const carriesWifiSecret =
     inventory.connect?.wifi?.some((item) => item.password) ?? false;
@@ -485,15 +494,20 @@ async function insertInventorySnapshot(
   // change) and only lands in connectSecretCiphertext, which the owner's
   // snapshot reads from the newest row.
   if (source === "check_in" && !carriesWifiSecret) {
-    const [latest] = await db
-      .select({
-        payload: routerInventorySnapshots.payload,
-        createdAt: routerInventorySnapshots.createdAt,
-      })
-      .from(routerInventorySnapshots)
-      .where(eq(routerInventorySnapshots.routerId, routerId))
-      .orderBy(desc(routerInventorySnapshots.createdAt))
-      .limit(1);
+    const [latest] =
+      knownLatest !== undefined
+        ? knownLatest
+          ? [knownLatest]
+          : []
+        : await db
+            .select({
+              payload: routerInventorySnapshots.payload,
+              createdAt: routerInventorySnapshots.createdAt,
+            })
+            .from(routerInventorySnapshots)
+            .where(eq(routerInventorySnapshots.routerId, routerId))
+            .orderBy(desc(routerInventorySnapshots.createdAt))
+            .limit(1);
 
     const shouldWrite = shouldWriteInventorySnapshot({
       inventory,
@@ -1807,7 +1821,18 @@ async function logTruncatedRouterPayload(
   });
 }
 
-export async function checkInRouter(routerId: string, input: unknown, auth?: {devicePublicKey: string}) {
+export async function checkInRouter(
+  routerId: string,
+  input: unknown,
+  auth?: {
+    devicePublicKey: string;
+    /**
+     * The row authenticateRouter has just read for this request; passing it
+     * saves reading the same row again.
+     */
+    router?: typeof routers.$inferSelect;
+  },
+) {
   const bounded = boundRouterCheckInPayload(input);
   const parsed = routerCheckInRequestSchema.parse(bounded.payload);
   if (parsed.routerId !== routerId) {
@@ -1818,11 +1843,14 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     configDigest: parsed.inventory.configDigest,
   });
 
-  const [existingRouter] = await db
-    .select()
-    .from(routers)
-    .where(eq(routers.id, routerId))
-    .limit(1);
+  const [existingRouter] =
+    auth?.router?.id === routerId
+      ? [auth.router]
+      : await db
+          .select()
+          .from(routers)
+          .where(eq(routers.id, routerId))
+          .limit(1);
 
   if (!existingRouter) {
     throw Object.assign(new Error("Router not found."), { status: 404 });
@@ -1898,11 +1926,14 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     throw new Error("Router check-in update failed.");
   }
 
+  let knownLatestSnapshot: PartnerCheckInReadback["latestSnapshot"];
   try {
     // Only a router a Vectra account owns has partner events; waking the
     // dispatcher on every check-in of the whole fleet cost a query each.
     if (existingRouter.ownerRef && !existingRouter.releasedAt) {
-      await notifyPartnerCheckInWithDb(db, existingRouter, parsed.inventory, now);
+      knownLatestSnapshot = (
+        await notifyPartnerCheckInWithDb(db, existingRouter, parsed.inventory, now)
+      ).latestSnapshot;
       schedulePartnerWebhookDelivery();
     }
   } catch (error) {
@@ -1912,6 +1943,7 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     persistedRouter.id,
     parsed.inventory,
     "check_in",
+    knownLatestSnapshot,
   );
 
   const [openIncident] = await db
