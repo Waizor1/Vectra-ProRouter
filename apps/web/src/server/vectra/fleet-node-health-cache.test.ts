@@ -122,19 +122,26 @@ describe("getFleetPolicyContext (stale-while-revalidate)", () => {
     const context = await pending;
     expect(context.configByRouter.size).toBe(0);
     expect(context.nodeHealth.unhealthyHosts).toEqual([]);
+    // "Not known yet", not "known and empty": no directive is built from it.
+    expect(context.unavailable).toBe(true);
 
     release();
     await vi.advanceTimersByTimeAsync(0);
     await flush();
     // The build kept going and the next check-in has it.
-    expect(generationOf(await getFleetPolicyContext(database, Date.now()))).toBe(1);
+    const built = await getFleetPolicyContext(database, Date.now());
+    expect(generationOf(built)).toBe(1);
+    expect(built.unavailable).toBeUndefined();
     expect(state.generation).toBe(1);
   });
 
   it("a failed rebuild keeps the last value; with none, it is no opinion", async () => {
     state.fail = true;
     const t0 = Date.now();
-    expect((await getFleetPolicyContext(database, t0)).configByRouter.size).toBe(0);
+    const failed = await getFleetPolicyContext(database, t0);
+    expect(failed.configByRouter.size).toBe(0);
+    // A failed build has always meant "no health opinion", directive included.
+    expect(failed.unavailable).toBeUndefined();
 
     state.fail = false;
     expect(generationOf(await getFleetPolicyContext(database, t0))).toBe(2);
