@@ -1130,6 +1130,18 @@ async function ensureRescueCase(
 }
 
 /** A rescue action refused for a reason the operator is meant to read (400). */
+/**
+ * The case id names no case — e.g. a resolved case the 30-day history
+ * retention has since deleted. Callers answer "not found", not a 500.
+ */
+export class RescueCaseNotFoundError extends Error {
+  readonly status = 404;
+  constructor() {
+    super("Rescue case not found.");
+    this.name = "RescueCaseNotFoundError";
+  }
+}
+
 export class RescueActionRefusedError extends Error {
   readonly status = 400;
 }
@@ -1373,7 +1385,7 @@ export async function silenceRescueCase(
     .where(eq(rescueCases.id, caseId))
     .returning();
   if (!updated) {
-    throw new Error("Rescue case not found.");
+    throw new RescueCaseNotFoundError();
   }
   return updated;
 }
@@ -1385,7 +1397,7 @@ async function getRescueCaseOrThrow(caseId: string, database: DatabaseClient) {
     .where(eq(rescueCases.id, caseId))
     .limit(1);
   if (!rescueCase) {
-    throw new Error("Rescue case not found.");
+    throw new RescueCaseNotFoundError();
   }
   return rescueCase;
 }
