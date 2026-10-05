@@ -476,6 +476,82 @@ true (its default), and again when the token or the chat-id allowlist is empty.
 Get the chat id by messaging the bot and reading
 `https://api.telegram.org/bot<token>/getUpdates`.
 
+## 5.5. Background worker (second CPU core)
+
+The background loops — auto-rescue, browser-push monitor, stuck-job janitor,
+snapshot/revision/history retention, route-health verifier and the partner
+webhook sweep — run in one of two places, chosen by `VECTRA_BACKGROUND_MODE`
+in `.env` (both `web` and `worker` read it from the shared
+`x-vectra-app-environment` block of `docker-compose.yml`):
+
+| Mode | Loops run in | `worker` container |
+|------|--------------|--------------------|
+| `in-web` (default) | the web process, started by the first `/api/health` call (as before) | idles |
+| `worker-separate` | the `worker` service (`node apps/web/dist/worker/main.mjs`, same image) | runs them |
+
+Either way every tick holds a PostgreSQL advisory lock for its loop
+(`pg_try_advisory_lock(0x56540001, <loop id>)`), so two processes never run
+the same loop at once — a web still on `in-web` next to a worker, or two webs
+during a deploy, take turns instead of doubling up. The operator's
+"cancel stuck jobs" trigger takes the same lock and answers `CONFLICT` while a
+sweep runs in any process.
+
+Switch (or roll back) with one value and one command:
+
+```bash
+# .env: VECTRA_BACKGROUND_MODE=worker-separate   (or in-web to roll back)
+docker compose --env-file .env build web          # the worker runs the web image
+docker compose --env-file .env up -d web worker   # both recreated with the new value
+```
+
+Verify:
+
+```bash
+curl -s https://router.vectra-pro.net/api/health | jq '{backgroundMode, checks, loopTicks}'
+docker compose --env-file .env logs --tail=20 worker   # "[worker] started loops: ..."
+```
+
+**Rolling the code back to a release without the worker** (anything before
+this change, e.g. production overlay 20) needs a fixed order. Releases before
+it run every loop inside the web *without* advisory locks, and once the
+`worker` service is gone from `docker-compose.yml`, `docker compose up` no
+longer manages a `vectra-worker` container that is still running — it would
+keep running the same loops next to the old web: double auto-rescue and
+route-health jobs. So, BEFORE syncing the old release slice:
+
+```bash
+# 1. .env: VECTRA_BACKGROUND_MODE=in-web
+docker compose --env-file .env up -d web          # loops back in the web, with locks
+docker compose --env-file .env stop worker
+docker compose --env-file .env rm -f worker       # no vectra-worker left behind
+docker ps --filter name=vectra-worker              # must list nothing
+# 2. only now sync the old slice, then:
+docker compose --env-file .env up -d --remove-orphans web
+```
+
+`--remove-orphans` on the last step also removes a leftover `vectra-worker`
+if step 1 was skipped. A worker never runs loops unless its own env says
+`worker-separate`, so a worker container left idle (mode `in-web`) is
+harmless, but it should not outlive the code that knows about it.
+
+In `worker-separate` mode the web's `/api/health` reports each loop as `true`
+only while a live worker holds that loop's presence lock (classid
+`0x56540002` in `pg_locks`), so a dead worker shows up as `false` there; the
+web's own HTTP status does not depend on it. The worker exits (and is
+restarted) if its presence session is lost or if any of its loops has not
+settled a tick for max(3 × its interval, 5 min) — `loopTicks` in
+`/api/health` shows each loop's last-tick age, read from the worker's presence
+ping — drains in-flight ticks for up to
+25 s on `SIGTERM` (`stop_grace_period: 30s`), and is capped at `mem_limit:
+512m` / `--max-old-space-size=384`. Its compose healthcheck is a heartbeat
+file it refreshes every 15 s.
+
+Both long-running processes are plain `node` exec'd from `/bin/sh` (no `pnpm`
+wrapper), with `init: true`; `db:migrate` still runs through pnpm before the
+web starts. The base image is `node:22-bookworm-slim` — if `public.ecr.aws`
+times out on the VPS, pre-pull `node:22-bookworm-slim` and tag it as
+`public.ecr.aws/docker/library/node:22-bookworm-slim` as done for Node 20.
+
 ## 6. Health checks
 
 Local container health:

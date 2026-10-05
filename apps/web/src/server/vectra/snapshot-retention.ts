@@ -21,6 +21,7 @@ import { sql } from "drizzle-orm";
 
 import { env } from "~/env";
 import { db } from "~/server/db";
+import { withLoopLock } from "./background-lock";
 
 type DatabaseClient = typeof db;
 
@@ -109,7 +110,13 @@ export function startSnapshotRetention() {
     }
     globalForRetention.__vectraSnapshotRetentionRunning = true;
     try {
-      const result = await runSnapshotRetentionTick(db);
+      // Another process (the worker, or a second web during a deploy) may
+      // be running this sweep right now; then this tick is skipped.
+      const locked = await withLoopLock("snapshotRetention", () => runSnapshotRetentionTick(db));
+      if (!locked.acquired) {
+        return;
+      }
+      const result = locked.value;
       if (result.deleted > 0) {
         console.warn(
           "[snapshot-retention] pruned %d inventory snapshot(s)",

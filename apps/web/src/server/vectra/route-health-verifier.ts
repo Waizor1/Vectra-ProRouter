@@ -545,6 +545,8 @@ export async function queueRouteHealthJobs(
   return queued;
 }
 
+export const ROUTE_HEALTH_VERIFIER_INTERVAL_MS = 15 * 60 * 1000;
+
 const globalForVerifier = globalThis as unknown as {
   __vectraRouteHealthVerifierTimer?: NodeJS.Timeout;
   __vectraRouteHealthVerifierRunning?: boolean;
@@ -562,53 +564,59 @@ export function startRouteHealthVerifier() {
     globalForVerifier.__vectraRouteHealthVerifierRunning = true;
     try {
       const { db } = await import("~/server/db");
-      // Its own failure must not cost the subscription rescue below its tick.
-      try {
-        const result = await runRouteHealthVerifierTick(db);
-        if (result.queued > 0) {
-          console.info(
-            "[route-health] queued route verification for %d router(s)",
-            result.queued,
+      const { withLoopLock } = await import("./background-lock");
+      // One sweep fleet-wide: another process (the worker, or a second web
+      // during a deploy) may be running it right now; then this tick is
+      // skipped.
+      await withLoopLock("routeHealthVerifier", async () => {
+        // Its own failure must not cost the subscription rescue below its tick.
+        try {
+          const result = await runRouteHealthVerifierTick(db);
+          if (result.queued > 0) {
+            console.info(
+              "[route-health] queued route verification for %d router(s)",
+              result.queued,
+            );
+          }
+        } catch (error) {
+          console.error("[route-health] verification", error);
+        }
+        // The refresh now runs unattended, because the condition this lane was
+        // held back for is finally met.
+        //
+        // It was detection-only since 2026-08-24, when refreshing yuranrod-msk
+        // WITH hwid=1 set returned a payload that left him with zero proxy nodes
+        // (≈20 hosts before, none after) and all five slots pointing at an id
+        // that no longer existed. The hardware id gate is necessary but NOT
+        // sufficient, so an unattended refresh can take a customer's node list
+        // away — and the rule was that reporting is safe while acting is not,
+        // "until the wipe can be detected and undone".
+        //
+        // Detected: the controller judges a refresh by what it left behind
+        // (VerifySubscriptionRefresh) and reports placeholder_nodes / no_nodes
+        // to the panel. Undone: subscription-refresh-guard turns that verdict
+        // into a restore of the node list the rescue recorded before queueing
+        // the refresh, and raises an incident either way. The worst case is no
+        // longer "a customer loses every node" but "a refresh achieved nothing
+        // and the operator is told".
+        //
+        // One more thing had to change for the refresh to be worth running at
+        // all: it now clears the md5 lock first. Measured 2026-09-22 on
+        // ar-filicity — a plain refresh returned the identical dead node list,
+        // and the same refresh after clearing md5 returned live hosts and
+        // brought the stranded slot back to 204. Without that this lane would
+        // have fired on schedule and changed nothing.
+        const { runSubscriptionRescueTick } =
+          await import("./subscription-rescue");
+        const rescue = await runSubscriptionRescueTick(db);
+        if (rescue.queued > 0) {
+          console.warn(
+            "[route-health] node list exhausted, queued subscription re-roll for %d router(s): %o",
+            rescue.queued,
+            rescue.routerIds,
           );
         }
-      } catch (error) {
-        console.error("[route-health] verification", error);
-      }
-      // The refresh now runs unattended, because the condition this lane was
-      // held back for is finally met.
-      //
-      // It was detection-only since 2026-08-24, when refreshing yuranrod-msk
-      // WITH hwid=1 set returned a payload that left him with zero proxy nodes
-      // (≈20 hosts before, none after) and all five slots pointing at an id
-      // that no longer existed. The hardware id gate is necessary but NOT
-      // sufficient, so an unattended refresh can take a customer's node list
-      // away — and the rule was that reporting is safe while acting is not,
-      // "until the wipe can be detected and undone".
-      //
-      // Detected: the controller judges a refresh by what it left behind
-      // (VerifySubscriptionRefresh) and reports placeholder_nodes / no_nodes
-      // to the panel. Undone: subscription-refresh-guard turns that verdict
-      // into a restore of the node list the rescue recorded before queueing
-      // the refresh, and raises an incident either way. The worst case is no
-      // longer "a customer loses every node" but "a refresh achieved nothing
-      // and the operator is told".
-      //
-      // One more thing had to change for the refresh to be worth running at
-      // all: it now clears the md5 lock first. Measured 2026-09-22 on
-      // ar-filicity — a plain refresh returned the identical dead node list,
-      // and the same refresh after clearing md5 returned live hosts and
-      // brought the stranded slot back to 204. Without that this lane would
-      // have fired on schedule and changed nothing.
-      const { runSubscriptionRescueTick } =
-        await import("./subscription-rescue");
-      const rescue = await runSubscriptionRescueTick(db);
-      if (rescue.queued > 0) {
-        console.warn(
-          "[route-health] node list exhausted, queued subscription re-roll for %d router(s): %o",
-          rescue.queued,
-          rescue.routerIds,
-        );
-      }
+      });
     } catch (error) {
       console.error("[route-health]", error);
     } finally {
@@ -625,7 +633,7 @@ export function startRouteHealthVerifier() {
 
   globalForVerifier.__vectraRouteHealthVerifierTimer = setInterval(
     () => void run(),
-    15 * 60 * 1000,
+    ROUTE_HEALTH_VERIFIER_INTERVAL_MS,
   );
   globalForVerifier.__vectraRouteHealthVerifierTimer.unref?.();
   return true;

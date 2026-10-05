@@ -127,6 +127,15 @@ export const env = createEnv({
     // all check-ins. Default 10 min between sweeps; default 60 min threshold
     // (no observed production job exceeds ~10 min, so 1 h is a safe upper
     // bound — replace with per-job-type SLAs in r31).
+    // Where the background loops (auto-rescue, push monitor, janitor,
+    // retention, route health, partner webhooks) run. "in-web" (default):
+    // started inside the web process by the first /api/health call, as
+    // always. "worker-separate": the web never starts them and the `worker`
+    // compose service runs them instead. Either way each tick holds a
+    // PostgreSQL advisory lock, so two processes never run one loop at once.
+    VECTRA_BACKGROUND_MODE: z
+      .enum(["in-web", "worker-separate"])
+      .default("in-web"),
     VECTRA_STUCK_JOB_JANITOR_ENABLED: booleanFlagSchema(true),
     VECTRA_STUCK_JOB_JANITOR_INTERVAL_SECONDS: z.coerce
       .number()
@@ -304,6 +313,7 @@ export const env = createEnv({
       process.env.VECTRA_AUTO_RESCUE_STALE_SECONDS,
     VECTRA_AUTO_RESCUE_ESCALATION_SECONDS:
       process.env.VECTRA_AUTO_RESCUE_ESCALATION_SECONDS,
+    VECTRA_BACKGROUND_MODE: process.env.VECTRA_BACKGROUND_MODE,
     VECTRA_STUCK_JOB_JANITOR_ENABLED:
       process.env.VECTRA_STUCK_JOB_JANITOR_ENABLED,
     VECTRA_STUCK_JOB_JANITOR_INTERVAL_SECONDS:

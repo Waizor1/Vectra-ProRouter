@@ -1,18 +1,35 @@
+import { env } from "~/env";
 import { db } from "~/server/db";
-import { startAutoRescueMonitor } from "~/server/vectra/auto-rescue";
-import { startBrowserPushMonitor } from "~/server/vectra/browser-push-monitor";
+import {
+  type LoopTickTimes,
+  loadRunningLoopPresence,
+  loopTickTimes,
+} from "~/server/vectra/background-lock";
+import { startBackgroundLoops } from "~/server/vectra/background-loops";
 import {
   checkDatabaseRead,
   checkDatabaseWrite,
 } from "~/server/vectra/health-probe";
-import { startPartnerWebhookDispatcher } from "~/server/vectra/partner-webhooks";
-import { startHistoryRetention } from "~/server/vectra/history-retention";
-import { startRevisionRetention } from "~/server/vectra/revision-retention";
-import { startRouteHealthVerifier } from "~/server/vectra/route-health-verifier";
-import { startSnapshotRetention } from "~/server/vectra/snapshot-retention";
-import { startStuckJobJanitor } from "~/server/vectra/stuck-job-janitor";
 
 export const dynamic = "force-dynamic";
+
+/** Seconds since each loop last completed a tick / found it running elsewhere. */
+function tickAges(
+  ticks: Partial<Record<string, LoopTickTimes>>,
+  now: number,
+) {
+  const age = (at: number | null) =>
+    at === null ? null : Math.max(0, Math.round((now - at) / 1000));
+  return Object.fromEntries(
+    Object.entries(ticks).map(([loop, times]) => [
+      loop,
+      {
+        completedSecondsAgo: age(times?.completedAt ?? null),
+        busyElsewhereSecondsAgo: age(times?.busyAt ?? null),
+      },
+    ]),
+  );
+}
 
 export async function GET() {
   const checkedAt = new Date().toISOString();
@@ -29,6 +46,10 @@ export async function GET() {
     dbWriteProbe: false,
   };
 
+  // "Running" is not "ticking": the age of each loop's last tick shows a loop
+  // that is up but stuck. Informational only — never part of `ok`.
+  let loopTicks: ReturnType<typeof tickAges> = {};
+
   try {
     // Each start* returns whether that lane is actually RUNNING, not merely
     // whether the call returned. Every one of these no-ops when its feature
@@ -39,14 +60,26 @@ export async function GET() {
     // whole self-repair layer was dark while /api/health said it was up, and a
     // customer sat in direct mode for two days waiting for an unpark sweep that
     // could not run. A check that cannot report false is not a check.
-    checks.browserPushMonitor = startBrowserPushMonitor();
-    checks.autoRescueMonitor = startAutoRescueMonitor();
-    checks.stuckJobJanitor = startStuckJobJanitor();
-    checks.snapshotRetention = startSnapshotRetention();
-    checks.revisionRetention = startRevisionRetention();
-    checks.historyRetention = startHistoryRetention();
-    checks.routeHealthVerifier = startRouteHealthVerifier();
-    checks.partnerWebhookDispatcher = startPartnerWebhookDispatcher();
+    //
+    // In worker-separate mode the web starts none of them; each check then
+    // reports whether a live worker holds that loop's presence lock, which a
+    // worker that died cannot (its connection, and the lock, are gone). The
+    // web's own health does not depend on it: a failed read leaves them false.
+    if (env.VECTRA_BACKGROUND_MODE === "worker-separate") {
+      const presence = await loadRunningLoopPresence(db).catch(
+        (error: unknown) => {
+          console.error("[health] worker presence", error);
+          return null;
+        },
+      );
+      for (const loop of presence?.running ?? []) {
+        checks[loop] = true;
+      }
+      loopTicks = tickAges(presence?.ticks ?? {}, Date.now());
+    } else {
+      Object.assign(checks, startBackgroundLoops());
+      loopTicks = tickAges(loopTickTimes(), Date.now());
+    }
     await checkDatabaseRead(db);
     checks.dbRead = true;
     // At most one insert+delete probe per 30 s (see health-probe.ts); a call
@@ -59,7 +92,9 @@ export async function GET() {
         ok: true,
         service: "vectra-web",
         checkedAt,
+        backgroundMode: env.VECTRA_BACKGROUND_MODE,
         checks,
+        loopTicks,
       },
       { status: 200 },
     );
@@ -70,7 +105,9 @@ export async function GET() {
         ok: false,
         service: "vectra-web",
         checkedAt,
+        backgroundMode: env.VECTRA_BACKGROUND_MODE,
         checks,
+        loopTicks,
         error: error instanceof Error ? error.message : "health check failed",
       },
       { status: 503 },

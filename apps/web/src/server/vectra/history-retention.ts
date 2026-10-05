@@ -51,6 +51,7 @@ import { sql, type SQL } from "drizzle-orm";
 
 import { env } from "~/env";
 import { db } from "~/server/db";
+import { withLoopLock } from "./background-lock";
 
 type DatabaseClient = Pick<typeof db, "execute">;
 
@@ -280,7 +281,13 @@ export function startHistoryRetention() {
     }
     globalForRetention.__vectraHistoryRetentionRunning = true;
     try {
-      const result = await runHistoryRetentionTick(db);
+      // Another process (the worker, or a second web during a deploy) may
+      // be running this sweep right now; then this tick is skipped.
+      const locked = await withLoopLock("historyRetention", () => runHistoryRetentionTick(db));
+      if (!locked.acquired) {
+        return;
+      }
+      const result = locked.value;
       if (result.dryRun) {
         console.warn(
           "[history-retention] dry-run: older than %d days, would delete %s; set VECTRA_RETENTION_DRY_RUN=false to apply",

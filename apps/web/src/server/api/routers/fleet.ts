@@ -42,6 +42,7 @@ import {
   getEffectiveRouterStatus,
   isRouterReachable,
 } from "~/server/vectra/router-presence";
+import { withLoopLock } from "~/server/vectra/background-lock";
 import { runStuckJobJanitorTick } from "~/server/vectra/stuck-job-janitor";
 import {
   createOperatorDraftRevisionWithDb,
@@ -1029,29 +1030,24 @@ export const fleetRouter = createTRPCRouter({
         .optional(),
     )
     .mutation(async ({ ctx, input }) => {
-      // Re-use the singleton "sweep in progress" flag so an operator
-      // flood-clicking the trigger button can't pile up concurrent sweeps
-      // against each other or against the background timer. Production
-      // single-process deployments only — mirrors the auto-rescue pattern.
-      const flagHolder = globalThis as typeof globalThis & {
-        __vectraStuckJobJanitorRunning?: boolean;
-      };
-      if (flagHolder.__vectraStuckJobJanitorRunning) {
+      // Takes the same advisory lock as the background janitor tick, so an
+      // operator flood-clicking the trigger cannot pile up concurrent sweeps
+      // against each other or against the timer — whichever process (web or
+      // worker) that timer runs in.
+      const locked = await withLoopLock("stuckJobJanitor", () =>
+        runStuckJobJanitorTick(new Date(), ctx.db, {
+          staleSeconds: input?.staleSeconds,
+          enabled: true,
+          triggeredBy: "operator",
+          operatorUser: ctx.operatorSession.user,
+        }),
+      );
+      if (!locked.acquired) {
         throw new TRPCError({
           code: "CONFLICT",
           message: "Stuck-job sweep already in progress; retry shortly.",
         });
       }
-      flagHolder.__vectraStuckJobJanitorRunning = true;
-      try {
-        return await runStuckJobJanitorTick(new Date(), ctx.db, {
-          staleSeconds: input?.staleSeconds,
-          enabled: true,
-          triggeredBy: "operator",
-          operatorUser: ctx.operatorSession.user,
-        });
-      } finally {
-        flagHolder.__vectraStuckJobJanitorRunning = false;
-      }
+      return locked.value;
     }),
 });
