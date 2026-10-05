@@ -88,7 +88,7 @@ function createDb(revisions: Revision[]) {
               const byId = revisions.filter((revision) => params.has(revision.id));
               if (byId.length > 0) return byId.map(rowOf);
               if (ordered) {
-                const below = [...params].find((value) => typeof value === "number") as number;
+                const below = [...params].find((value): value is number => typeof value === "number") ?? 0;
                 const previous = revisions
                   .filter((revision) => revision.revisionNumber < below)
                   .sort((a, b) => b.revisionNumber - a.revisionNumber)[0];

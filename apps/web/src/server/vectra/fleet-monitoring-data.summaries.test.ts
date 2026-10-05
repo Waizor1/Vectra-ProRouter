@@ -188,7 +188,10 @@ describe("loadLatestSnapshots for the monitors", () => {
     const slim = (await loadLatestSnapshots(db as never, [ROUTER_A], { monitoringPayload: true })).get(ROUTER_A);
     const fullSnapshot = (await loadLatestSnapshots(db as never, [ROUTER_A])).get(ROUTER_A);
     expect(fullSnapshot?.payload).toEqual(payload);
-    const { connect: _connect, rawSnapshot: _raw, ...expected } = payload;
-    expect(slim?.payload).toEqual(expected);
+    expect(slim?.payload).toEqual({
+      hostname: payload.hostname,
+      telegramReachability: payload.telegramReachability,
+      packageVersions: payload.packageVersions,
+    });
   });
 });
