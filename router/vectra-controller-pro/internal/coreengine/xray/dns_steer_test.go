@@ -457,12 +457,17 @@ func TestTheWANsResolversAnswerTheDirectNamesFirst(t *testing.T) {
 	if wan.Address != "192.168.1.1" || wan.Port != 53 || wan.Tag != xray.DNSWANTag || !wan.SkipFallback || len(wan.Domains) == 0 {
 		t.Fatalf("first server = %+v, want the box over UDP, tagged %s", wan, xray.DNSWANTag)
 	}
+	// The box's admin names from the box alone, after the direct names.
+	n := len(wan.Domains) - len(xray.BoxAdminDomains)
+	if n <= 0 || !reflect.DeepEqual(wan.Domains[n:], xray.BoxAdminDomains) {
+		t.Fatalf("WAN server's names = %v, want the box's admin names last", wan.Domains)
+	}
 	for i, r := range []string{"8.8.8.8", "77.88.8.8"} {
 		var s dnsServer
 		if err := json.Unmarshal(servers[i+1], &s); err != nil {
 			t.Fatal(err)
 		}
-		if s.Address != "tcp+local://"+r || !reflect.DeepEqual(s.Domains, wan.Domains) {
+		if s.Address != "tcp+local://"+r || !reflect.DeepEqual(s.Domains, wan.Domains[:n]) {
 			t.Fatalf("server %d = %+v, want tcp+local://%s for the same names behind the box", i+1, s, r)
 		}
 	}

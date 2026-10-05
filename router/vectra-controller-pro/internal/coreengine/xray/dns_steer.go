@@ -76,6 +76,22 @@ const (
 // the end of the tunnel.
 var DefaultDirectResolvers = []string{"8.8.8.8", "77.88.8.8"}
 
+// BoxAdminDomains are the names only the box in front of the router answers
+// with itself — its admin page. Asked of the WAN's resolvers alone
+// (DNSOptions.WANResolvers), so the box stays reachable by name with DNS in
+// the tunnel. A small explicit list, not a pattern: any other name a box
+// answers is the ISP's to answer. dnsmasq's rebind protection (OpenWrt's
+// default) still drops a private answer unless the owner allows the name.
+var BoxAdminDomains = []string{
+	"full:my.keenetic.net",
+	"full:tplinkwifi.net",
+	"full:tplinklogin.net",
+	"full:fritz.box",
+	"full:router.asus.com",
+	"full:routerlogin.net",
+	"full:miwifi.com",
+}
+
 // DNSOptions switch DNS through the tunnel on. The zero value (nil in
 // SpliceOptions) leaves the provider's "dns" and routing exactly as they were.
 type DNSOptions struct {
@@ -323,8 +339,10 @@ func planDNS(providerRaw []byte, o *DNSOptions) (dnsPlan, error) {
 		domains = append(domains, "full:"+h)
 	}
 	domains = append(domains, o.DirectDomains...)
-	if len(o.WANResolvers) > 0 && len(domains) > 0 {
+	if len(o.WANResolvers) > 0 {
 		if via, add := wanDirectVia(providerRaw); via != "" {
+			// The box's own names too, from it alone (BoxAdminDomains).
+			wanDomains := append(append([]string(nil), domains...), BoxAdminDomains...)
 			for _, r := range o.WANResolvers {
 				plan.servers = append(plan.servers, marshalNoEscape(struct {
 					Address      string   `json:"address"`
@@ -332,7 +350,7 @@ func planDNS(providerRaw []byte, o *DNSOptions) (dnsPlan, error) {
 					Domains      []string `json:"domains"`
 					SkipFallback bool     `json:"skipFallback"`
 					Tag          string   `json:"tag"`
-				}{r, 53, domains, true, DNSWANTag}))
+				}{r, 53, wanDomains, true, DNSWANTag}))
 			}
 			plan.wanRule = marshalNoEscape(userRule{Type: "field", InboundTag: []string{DNSWANTag}, OutboundTag: via})
 			plan.wanVia, plan.addDirect, plan.res.WANVia = via, add, via
