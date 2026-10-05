@@ -1,16 +1,11 @@
+import { env } from "~/env";
 import { db } from "~/server/db";
-import { startAutoRescueMonitor } from "~/server/vectra/auto-rescue";
-import { startBrowserPushMonitor } from "~/server/vectra/browser-push-monitor";
+import { loadRunningLoopPresence } from "~/server/vectra/background-lock";
+import { startBackgroundLoops } from "~/server/vectra/background-loops";
 import {
   checkDatabaseRead,
   checkDatabaseWrite,
 } from "~/server/vectra/health-probe";
-import { startPartnerWebhookDispatcher } from "~/server/vectra/partner-webhooks";
-import { startHistoryRetention } from "~/server/vectra/history-retention";
-import { startRevisionRetention } from "~/server/vectra/revision-retention";
-import { startRouteHealthVerifier } from "~/server/vectra/route-health-verifier";
-import { startSnapshotRetention } from "~/server/vectra/snapshot-retention";
-import { startStuckJobJanitor } from "~/server/vectra/stuck-job-janitor";
 
 export const dynamic = "force-dynamic";
 
@@ -39,14 +34,22 @@ export async function GET() {
     // whole self-repair layer was dark while /api/health said it was up, and a
     // customer sat in direct mode for two days waiting for an unpark sweep that
     // could not run. A check that cannot report false is not a check.
-    checks.browserPushMonitor = startBrowserPushMonitor();
-    checks.autoRescueMonitor = startAutoRescueMonitor();
-    checks.stuckJobJanitor = startStuckJobJanitor();
-    checks.snapshotRetention = startSnapshotRetention();
-    checks.revisionRetention = startRevisionRetention();
-    checks.historyRetention = startHistoryRetention();
-    checks.routeHealthVerifier = startRouteHealthVerifier();
-    checks.partnerWebhookDispatcher = startPartnerWebhookDispatcher();
+    //
+    // In worker-separate mode the web starts none of them; each check then
+    // reports whether a live worker holds that loop's presence lock, which a
+    // worker that died cannot (its connection, and the lock, are gone). The
+    // web's own health does not depend on it: a failed read leaves them false.
+    if (env.VECTRA_BACKGROUND_MODE === "worker-separate") {
+      const running = await loadRunningLoopPresence(db).catch((error) => {
+        console.error("[health] worker presence", error);
+        return new Set<string>();
+      });
+      for (const loop of running) {
+        checks[loop as keyof typeof checks] = true;
+      }
+    } else {
+      Object.assign(checks, startBackgroundLoops());
+    }
     await checkDatabaseRead(db);
     checks.dbRead = true;
     // At most one insert+delete probe per 30 s (see health-probe.ts); a call
@@ -59,6 +62,7 @@ export async function GET() {
         ok: true,
         service: "vectra-web",
         checkedAt,
+        backgroundMode: env.VECTRA_BACKGROUND_MODE,
         checks,
       },
       { status: 200 },
@@ -70,6 +74,7 @@ export async function GET() {
         ok: false,
         service: "vectra-web",
         checkedAt,
+        backgroundMode: env.VECTRA_BACKGROUND_MODE,
         checks,
         error: error instanceof Error ? error.message : "health check failed",
       },

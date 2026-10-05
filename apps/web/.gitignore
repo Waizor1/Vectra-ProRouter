@@ -44,3 +44,5 @@ yarn-error.log*
 
 # idea files
 .idea
+# background worker bundle (pnpm build:worker)
+/dist/
