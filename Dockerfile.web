@@ -1,4 +1,4 @@
-FROM public.ecr.aws/docker/library/node:20-bookworm-slim
+FROM public.ecr.aws/docker/library/node:22-bookworm-slim
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=${PNPM_HOME}:${PATH}
