@@ -55,7 +55,11 @@ answered every one of them with FakeDNS. 1111 (same version) was clean.
   unloading the data plane) now forgets those flows through ctnetlink before
   the cache is emptied; putting it back forgets the router's own DNS flows
   that went out unredirected, so no query rides one past the flush. Without
-  ctnetlink they end on their own, as before.
+  ctnetlink they end on their own, as before. The same when the table goes
+  without the daemon: `dataplane-teardown.sh` (stop, the hand-back before an
+  update, removal) and the commit-confirm deadman run the new
+  `vctl forget-dns-flows` after it — best effort, bounded to 5 s, always
+  exit 0, skipped without vctl.
 - **The box's admin page by name.** `my.keenetic.net`, `tplinkwifi.net`,
   `tplinklogin.net`, `fritz.box`, `router.asus.com`, `routerlogin.net`,
   `miwifi.com` are asked of the WAN's PRIVATE resolvers alone (the box), first.

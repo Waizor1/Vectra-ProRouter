@@ -99,6 +99,12 @@ func (c *CommitConfirmer) armedPath() string {
 	return c.ConfirmPath + ".armed"
 }
 
+// ForgetDNSFlows is what a revert runs after the table is gone: the
+// resolver's flows the DNS redirect took keep its NAT to the dead loopback
+// inbound for up to three minutes from their last packet (vctl
+// forget-dns-flows; best effort, bounded, always exits 0).
+const ForgetDNSFlows = "vctl forget-dns-flows"
+
 // BuildDeadmanScript renders the detached watchdog shell. The revert commands
 // are vctl's own constants (not external input). It reverts only if the
 // confirm sentinel is absent after the grace period, then cleans up.
@@ -123,6 +129,11 @@ func BuildDeadmanScriptFor(revert []string, timeout time.Duration, confirmPath, 
 	fmt.Fprintf(&b, "if [ ! -f %q ]; then\n", confirmPath)
 	for _, cmd := range revert {
 		fmt.Fprintf(&b, "  %s 2>/dev/null || true\n", cmd)
+	}
+	if len(revert) > 0 {
+		// The resolver's flows the table's DNS redirect took outlive it; the
+		// daemon may be the reason no confirmation came (ForgetDNSFlows).
+		fmt.Fprintf(&b, "  command -v vctl >/dev/null 2>&1 && %s >/dev/null 2>&1 || true\n", ForgetDNSFlows)
 	}
 	b.WriteString("  logger -t vctl 'firewall commit-confirm: auto-reverted (no confirmation)'\n")
 	b.WriteString("fi\n")

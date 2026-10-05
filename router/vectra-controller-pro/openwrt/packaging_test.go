@@ -2422,3 +2422,36 @@ func TestPrivateStdinXrayOwnershipPatternIsScoped(t *testing.T) {
 		t.Fatalf("orphan query lacks parent scope: %v", events)
 	}
 }
+
+// After the table, the resolver's flows its DNS redirect took are forgotten
+// (vctl forget-dns-flows): they keep the redirect's NAT to the dead inbound.
+// A vctl that fails — one that predates the command — or none at all never
+// fails the teardown.
+func TestTeardownForgetsTheDNSFlowsAfterTheTable(t *testing.T) {
+	for _, vctlExit := range []string{"0", "1"} {
+		r := newTeardownRun(t, 1)
+		writeExec(t, filepath.Join(r.binDir, "vctl"), "#!/bin/sh\necho \"vctl $*\" >>\"$STUB_LOG\"\n"+
+			"[ \"$1\" = teardown-mark ] && exit 1\nexit "+vctlExit+"\n")
+		cfg := r.writeDesiredConfig(`{"schema":1,"inbounds":{"tproxy":{"listenIP":"0.0.0.0","port":12345,"fwmark":1}}}`)
+		lines := r.run("STUB_UCI_XRAY_CONFIG_PATH=" + cfg)
+		del, forget := -1, -1
+		for i, l := range lines {
+			switch l {
+			case "nft delete table inet vctl":
+				del = i
+			case "vctl forget-dns-flows":
+				forget = i
+			}
+		}
+		if del < 0 || forget < del {
+			t.Errorf("vctl exiting %s: the flows are not forgotten after the table\ngot:\n  %s", vctlExit, strings.Join(lines, "\n  "))
+		}
+	}
+	// Without our table nothing is ours to forget.
+	r := newTeardownRun(t, 1)
+	writeExec(t, filepath.Join(r.binDir, "nft"), "#!/bin/sh\necho \"nft $*\" >>\"$STUB_LOG\"\nexit 1\n")
+	writeExec(t, filepath.Join(r.binDir, "vctl"), "#!/bin/sh\necho \"vctl $*\" >>\"$STUB_LOG\"\nexit 1\n")
+	if lines := r.run(); containsLine(lines, "vctl forget-dns-flows") {
+		t.Errorf("no table of ours, yet flows forgotten:\n  %s", strings.Join(lines, "\n  "))
+	}
+}
