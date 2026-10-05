@@ -40,6 +40,7 @@ import { eventLog, jobs } from "@vectra/db";
 import { env } from "~/env";
 import { db } from "~/server/db";
 
+import { withLoopLock } from "./background-lock";
 import { PARTNER_ACTION_DEDUPE_PREFIX } from "./partner-action-key";
 
 type DatabaseClient = typeof db;
@@ -283,7 +284,15 @@ export function startStuckJobJanitor() {
     }
     globalForJanitor.__vectraStuckJobJanitorRunning = true;
     try {
-      const result = await runStuckJobJanitorTick(new Date(), db);
+      // Another process (the worker, or a second web during a deploy) may
+      // be running this sweep right now; then this tick is skipped.
+      const locked = await withLoopLock("stuckJobJanitor", () =>
+        runStuckJobJanitorTick(new Date(), db),
+      );
+      if (!locked.acquired) {
+        return;
+      }
+      const result = locked.value;
       if (result.cancelled > 0) {
         console.warn(
           "[stuck-job-janitor] auto-cancelled %d stuck job(s): %o",

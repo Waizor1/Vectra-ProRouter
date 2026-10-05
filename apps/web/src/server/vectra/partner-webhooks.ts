@@ -1,3 +1,4 @@
+import { withLoopLock } from "./background-lock";
 import { sweepPartnerOfflineWithDb } from "./partner-router-events";
 import {
   type PartnerWebhookEvent,
@@ -329,9 +330,14 @@ export function startPartnerWebhookDispatcher() {
 
   globalForWebhooks.__vectraPartnerWebhookTimer = setInterval(() => {
     if (resolvePartnerWebhookTarget()) {
-      void sweepPartnerOfflineWithDb(db)
-        .catch(error => console.error("[partner-webhooks] offline sweep failed", error))
-        .then(() => runDispatch(db));
+      // The offline sweep runs in one process at a time. Delivery itself is
+      // already safe across processes (each row is leased by compare-and-swap),
+      // which is why the web may still deliver what it has just queued.
+      void withLoopLock("partnerWebhookDispatcher", () =>
+        sweepPartnerOfflineWithDb(db)
+          .catch(error => console.error("[partner-webhooks] offline sweep failed", error))
+          .then(() => runDispatch(db)),
+      ).catch(error => console.error("[partner-webhooks]", error));
     }
   }, SWEEP_INTERVAL_MS);
   globalForWebhooks.__vectraPartnerWebhookTimer.unref?.();
