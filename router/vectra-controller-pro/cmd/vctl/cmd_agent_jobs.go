@@ -967,9 +967,9 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 		logging.L().Error("firewall apply failed (deadman armed; auto-reverts unless a check-in confirms)", "err", err.Error())
 		return
 	}
-	redirected, upstreams := false, ""
+	oldPort, redirected, upstreams := 0, false, ""
 	if d.fwProgrammed != nil {
-		_, redirected = redirectPort(*d.fwProgrammed)
+		oldPort, redirected = redirectPort(*d.fwProgrammed)
 		upstreams = redirectUpstreams(*d.fwProgrammed)
 	}
 	key := dnsRedirectKey(spec) + fakeDNSKey(spec)
@@ -979,9 +979,18 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 	if key != "" {
 		logging.L().Info("the router's resolver asks through the tunnel", "redirect", key)
 	}
-	_, nowRedirected := redirectPort(key)
+	newPort, nowRedirected := redirectPort(key)
 	if nowRedirected != redirected {
 		d.dnsPathGen++
+	}
+	// The table changed; the flows the kernel already tracks did not
+	// (forgetRedirectedFlows, forgetOpenPathDNS). Before the cache is
+	// emptied, so the resolver asks again by the table as it is now.
+	if redirected && (!nowRedirected || newPort != oldPort) {
+		d.forgetRedirectedFlows(oldPort)
+	}
+	if nowRedirected && (!redirected || newPort != oldPort || upstreamsAdded(upstreams, redirectUpstreams(key))) {
+		d.forgetOpenPathDNS()
 	}
 	if nowRedirected && !redirected {
 		// The resolver asked over the open path until now — direct mode, a
@@ -1058,8 +1067,9 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 		return false
 	}
 	d.directLoaded = ""
+	oldPort, redirected := 0, false
 	if d.fwProgrammed != nil {
-		if _, in := redirectPort(*d.fwProgrammed); in {
+		if oldPort, redirected = redirectPort(*d.fwProgrammed); redirected {
 			d.dnsPathGen++
 		}
 	}
@@ -1072,6 +1082,9 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 			continue
 		}
 		_ = d.runFirewallCmd(ctx, fields[0], fields[1:]...)
+	}
+	if redirected {
+		d.forgetRedirectedFlows(oldPort)
 	}
 	_ = d.confirmer.Confirm()
 	return true

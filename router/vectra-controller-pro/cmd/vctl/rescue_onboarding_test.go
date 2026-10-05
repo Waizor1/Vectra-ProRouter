@@ -12,10 +12,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"vectra-controller-pro/internal/config"
+	"vectra-controller-pro/internal/conntrack"
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/failover"
 	"vectra-controller-pro/internal/firewall"
@@ -479,5 +481,91 @@ func TestNewWANResolversEmptyTheResolverCache(t *testing.T) {
 	d.reapplyFirewall(context.Background())
 	if hup != 2 || redirectUpstreams(*d.fwProgrammed) != "192.168.1.254" {
 		t.Fatalf("new WAN resolvers: flushes %d, redirect %q", hup, *d.fwProgrammed)
+	}
+}
+
+// 1111, 2026-10-05, drill dr2 (xray killed every 3 s): the DNS watch took the
+// redirect out of the table within seconds, and yet the LAN resolved nothing
+// for ~40 s more. The resolver's flows to the WAN's resolvers kept the
+// redirect's NAT — answered from 127.0.0.1:10053, three minutes from their
+// last packet — and dnsmasq reuses its source ports. Taking the redirect out
+// forgets those flows before the cache is emptied; putting it back forgets
+// the router's own flows that went out unredirected; unloading the data
+// plane forgets the redirected ones too.
+func TestTheRedirectsFlowsLeaveWithIt(t *testing.T) {
+	d, _, _ := shutdownDaemon(t)
+	if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(renderWithDNS)); err != nil {
+		t.Fatal(err)
+	}
+	d.procDir = fakeProc(t, dnsmasqAs453)
+	d.rootDir = t.TempDir()
+	answering := true
+	d.dnsAnswers = func(context.Context, int) bool { return answering }
+	d.ownsAddr = func(ip net.IP) bool { return ip.Equal(net.IPv4(192, 168, 0, 2)) }
+	d.applyRuleset = func(string, firewall.Spec) error { return nil }
+	var events []string
+	d.hupResolver = func(int) error { events = append(events, "flush"); return nil }
+	withWANResolver(t, d, "77.37.251.33")
+
+	const table = `ipv4     2 udp      17 178 src=192.168.0.2 dst=77.37.251.33 sport=41234 dport=53 src=127.0.0.1 dst=192.168.0.2 sport=10053 dport=41234 [ASSURED] mark=0 zone=0 use=2
+ipv4     2 udp      17 178 src=192.168.0.2 dst=77.37.255.30 sport=41235 dport=53 src=127.0.0.1 dst=192.168.0.2 sport=10053 dport=41235 [ASSURED] mark=0 zone=0 use=2
+ipv4     2 udp      17 170 src=192.168.0.2 dst=77.37.255.30 sport=41300 dport=53 src=77.37.255.30 dst=192.168.0.2 sport=53 dport=41300 [ASSURED] mark=0 zone=0 use=2
+ipv4     2 udp      17 170 src=192.168.1.141 dst=8.8.8.8 sport=5353 dport=53 src=192.168.1.1 dst=192.168.1.141 sport=53 dport=5353 [ASSURED] mark=0 zone=0 use=2`
+	prevRead, prevForget := dnsFlowsRead, dnsFlowsForget
+	t.Cleanup(func() { dnsFlowsRead, dnsFlowsForget = prevRead, prevForget })
+	dnsFlowsRead = func() ([]conntrack.Entry, error) { return conntrack.Parse(strings.NewReader(table)), nil }
+	var forgotten [][]uint16
+	dnsFlowsForget = func(es []conntrack.Entry) (int, error) {
+		var ports []uint16
+		for _, e := range es {
+			ports = append(ports, e.SPort)
+		}
+		forgotten = append(forgotten, ports)
+		events = append(events, "forget")
+		return len(es), nil
+	}
+	ctx := context.Background()
+
+	// In: the router's own unredirected DNS flow is forgotten, then the cache
+	// emptied.
+	d.reapplyFirewall(ctx)
+	if _, in := redirectPort(*d.fwProgrammed); !in {
+		t.Fatalf("redirect not in: %q", *d.fwProgrammed)
+	}
+	if !reflect.DeepEqual(forgotten, [][]uint16{{41300}}) || !reflect.DeepEqual(events, []string{"forget", "flush"}) {
+		t.Fatalf("redirect in: forgotten %v, events %v", forgotten, events)
+	}
+
+	// xray stops answering; the DNS watch takes the redirect out, as the
+	// loop does (waitForTick): the redirected flows go before the flush.
+	answering = false
+	forgotten, events = nil, nil
+	cfg, err := d.loadDesiredConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.programFirewallWithin(ctx, cfg, 0)
+	d.flushResolverCache("xray stopped answering on its DNS inbound")
+	if _, in := redirectPort(*d.fwProgrammed); in {
+		t.Fatalf("redirect still in: %q", *d.fwProgrammed)
+	}
+	if !reflect.DeepEqual(forgotten, [][]uint16{{41234, 41235}}) || !reflect.DeepEqual(events, []string{"forget", "flush"}) {
+		t.Fatalf("redirect out: forgotten %v, events %v; want the two flows into 10053 forgotten, then the flush", forgotten, events)
+	}
+
+	// The same table again: nothing to forget.
+	forgotten = nil
+	d.programFirewallWithin(ctx, cfg, 0)
+	if forgotten != nil {
+		t.Fatalf("no change of the redirect, yet flows forgotten: %v", forgotten)
+	}
+
+	// Back in, then the data plane unloaded: the redirected flows go with it.
+	answering = true
+	d.reapplyFirewall(ctx)
+	forgotten = nil
+	d.unloadDataPlane(ctx, cfg)
+	if !reflect.DeepEqual(forgotten, [][]uint16{{41234, 41235}}) {
+		t.Fatalf("data plane unloaded: forgotten %v", forgotten)
 	}
 }

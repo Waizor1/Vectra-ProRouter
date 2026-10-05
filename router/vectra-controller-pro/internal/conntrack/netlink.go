@@ -20,8 +20,11 @@ const (
 	nlmFMulti   = 0x2
 	nlmFDump    = 0x300
 
-	ctnlMsgNew = 1 << 8 // NFNL_SUBSYS_CTNETLINK << 8 | IPCTNL_MSG_CT_NEW: an entry of a dump
-	ctnlMsgGet = ctnlMsgNew | 1
+	ctnlMsgNew    = 1 << 8 // NFNL_SUBSYS_CTNETLINK << 8 | IPCTNL_MSG_CT_NEW: an entry of a dump
+	ctnlMsgGet    = ctnlMsgNew | 1
+	ctnlMsgDelete = ctnlMsgNew | 2
+
+	nlmFAck = 0x4
 
 	nlaFNested  = 1 << 15
 	nlaTypeMask = 1<<14 - 1 // without NLA_F_NESTED and NLA_F_NET_BYTEORDER
@@ -152,6 +155,25 @@ func parseEntry(body []byte) (Entry, bool) {
 	var e Entry
 	var proto byte
 	orig, status := false, false
+	// The reply tuple: where the answers come from.
+	reply := func(v []byte) {
+		walkAttrs(v, func(typ uint16, v []byte) {
+			switch typ {
+			case ctaTupleIP:
+				walkAttrs(v, func(typ uint16, v []byte) {
+					if typ == ctaIPv4Src || typ == ctaIPv6Src {
+						e.ReplySrc, _ = netip.AddrFromSlice(v)
+					}
+				})
+			case ctaTupleProto:
+				walkAttrs(v, func(typ uint16, v []byte) {
+					if typ == ctaProtoSrcPort && len(v) >= 2 {
+						e.ReplySPort = binary.BigEndian.Uint16(v)
+					}
+				})
+			}
+		})
+	}
 	state := -1
 	walkAttrs(body[4:], func(typ uint16, v []byte) {
 		switch typ {
@@ -181,6 +203,8 @@ func parseEntry(body []byte) (Entry, bool) {
 					})
 				}
 			})
+		case ctaTupleReply:
+			reply(v)
 		case ctaStatus:
 			if len(v) >= 4 {
 				status = true
@@ -213,4 +237,78 @@ func parseEntry(body []byte) (Entry, bool) {
 		return Entry{}, false
 	}
 	return e, true
+}
+
+// deleteRequest asks the kernel to forget the entry whose original tuple is
+// e's (IPCTNL_MSG_CT_DELETE), acknowledged.
+func deleteRequest(seq uint32, e Entry) []byte {
+	attr := func(typ uint16, payload []byte) []byte {
+		l := 4 + len(payload)
+		b := make([]byte, (l+3)&^3)
+		binary.NativeEndian.PutUint16(b[0:], uint16(l))
+		binary.NativeEndian.PutUint16(b[2:], typ)
+		copy(b[4:], payload)
+		return b
+	}
+	cat := func(parts ...[]byte) []byte {
+		var b []byte
+		for _, p := range parts {
+			b = append(b, p...)
+		}
+		return b
+	}
+	port := func(p uint16) []byte { return binary.BigEndian.AppendUint16(nil, p) }
+	family, srcT, dstT := byte(2), uint16(ctaIPv4Src), uint16(ctaIPv4Dst) // AF_INET
+	if e.Src.Is6() {
+		family, srcT, dstT = 10, ctaIPv6Src, ctaIPv6Dst // AF_INET6
+	}
+	proto := byte(17)
+	if e.Proto == "tcp" {
+		proto = 6
+	}
+	tuple := attr(ctaTupleOrig|nlaFNested, cat(
+		attr(ctaTupleIP|nlaFNested, cat(attr(srcT, e.Src.AsSlice()), attr(dstT, e.Dst.AsSlice()))),
+		attr(ctaTupleProto|nlaFNested, cat(attr(ctaProtoNum, []byte{proto}),
+			attr(ctaProtoSrcPort, port(e.SPort)), attr(ctaProtoDstPort, port(e.DPort)))),
+	))
+	b := make([]byte, 20, 20+len(tuple))
+	binary.NativeEndian.PutUint32(b[0:], uint32(20+len(tuple)))
+	binary.NativeEndian.PutUint16(b[4:], ctnlMsgDelete)
+	binary.NativeEndian.PutUint16(b[6:], nlmFRequest|nlmFAck)
+	binary.NativeEndian.PutUint32(b[8:], seq)
+	b[16] = family // nfgenmsg: family, NFNETLINK_V0, res_id 0
+	return append(b, tuple...)
+}
+
+// ackErrno reads the kernel's answer to request seq: 0, or the errno it
+// refused with; ok is false when b holds no answer to seq.
+func ackErrno(b []byte, seq uint32) (errno int, ok bool) {
+	for len(b) >= 16 {
+		l := int(binary.NativeEndian.Uint32(b[0:]))
+		if l < 16 || l > len(b) {
+			return 0, false
+		}
+		typ := binary.NativeEndian.Uint16(b[4:])
+		s := binary.NativeEndian.Uint32(b[8:])
+		body := b[16:l]
+		b = b[min((l+3)&^3, len(b)):]
+		if s == seq && typ == nlmsgError && len(body) >= 4 {
+			return int(-int32(binary.NativeEndian.Uint32(body))), true
+		}
+	}
+	return 0, false
+}
+
+// deleteNetlink stands in for the kernel in tests.
+var deleteNetlink = deleteEntries
+
+// Delete makes the kernel forget each entry — the next packet of such a
+// connection starts a new one, which the ruleset as it is now decides. An
+// entry gone already is no failure. How many were forgotten; an error when
+// ctnetlink is not there to ask.
+func Delete(es []Entry) (int, error) {
+	if len(es) == 0 {
+		return 0, nil
+	}
+	return deleteNetlink(es)
 }

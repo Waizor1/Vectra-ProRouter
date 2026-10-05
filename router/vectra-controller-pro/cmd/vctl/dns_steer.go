@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"vectra-controller-pro/internal/conntrack"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/logging"
@@ -492,6 +494,67 @@ func upstreamsAdded(before, now string) bool {
 		}
 	}
 	return false
+}
+
+// dnsFlowsRead and dnsFlowsForget are the kernel's connection table (a
+// variable for tests).
+var (
+	dnsFlowsRead   = conntrack.Read
+	dnsFlowsForget = conntrack.Delete
+)
+
+// forgetRedirectedFlows: the redirect to port has left the ruleset; the
+// resolver's flows it took have not. A NAT binding is made once, at a
+// connection's first packet, and lives as long as the connection — a UDP one
+// that was answered, three minutes from its LAST packet — and dnsmasq asks
+// each server from source ports it reuses. So with the rule gone its queries
+// kept going to the dead inbound: measured on 1111 on 2026-10-05 (drill dr2,
+// xray killed every 3 s), ~180 such flows, the LAN without names for ~40 s
+// after the redirect went. Forgotten, their next packet is a new connection,
+// which the ruleset as it is now sends where the resolver means.
+func (d *daemon) forgetRedirectedFlows(port int) {
+	if port <= 0 || port > 65535 {
+		return
+	}
+	es, err := dnsFlowsRead()
+	if err != nil {
+		logging.L().Warn("could not read the connection table; the resolver's flows into the tunnel end on their own within three minutes", "err", err.Error())
+		return
+	}
+	n, err := dnsFlowsForget(conntrack.RedirectedTo(es, uint16(port)))
+	if err != nil {
+		logging.L().Warn("could not forget the resolver's flows into the tunnel; they end on their own within three minutes", "forgotten", n, "err", err.Error())
+		return
+	}
+	if n > 0 {
+		logging.L().Info("forgot the resolver's flows into the tunnel", "flows", n, "port", port)
+	}
+}
+
+// forgetOpenPathDNS: the redirect has gone in (or takes more servers); the
+// router's own DNS flows that went out unredirected still do, for the same
+// three minutes — a query on one of them is asked over the open path, and
+// its answer, the ISP's forged one too, cached past the flush that follows.
+// Forgotten, their next packet meets the redirect.
+func (d *daemon) forgetOpenPathDNS() {
+	es, err := dnsFlowsRead()
+	if err != nil {
+		logging.L().Warn("could not read the connection table; the resolver's flows over the open path end on their own within three minutes", "err", err.Error())
+		return
+	}
+	owned := d.ownsAddr
+	if owned == nil {
+		owned = routerOwns
+	}
+	own := func(a netip.Addr) bool { return owned(net.IP(a.AsSlice())) }
+	n, err := dnsFlowsForget(conntrack.DNSFrom(es, own))
+	if err != nil {
+		logging.L().Warn("could not forget the resolver's flows over the open path; they end on their own within three minutes", "forgotten", n, "err", err.Error())
+		return
+	}
+	if n > 0 {
+		logging.L().Info("forgot the resolver's flows over the open path", "flows", n)
+	}
 }
 
 // dnsWatchEvery is how often, between the polls, the loop asks xray's DNS

@@ -45,6 +45,17 @@ answered every one of them with FakeDNS. 1111 (same version) was clean.
   resolver may be the ISP's, which forges answers for blocked names, and a
   forged node address would keep the tunnel down. Proxied names still get
   FakeDNS. Needs xray's per-server DNS `tag` (in 26.3.27).
+- **The resolver's flows follow the redirect in and out.** Drill dr2 on 1111
+  (xray killed every 3 s): the DNS watch took the redirect out within
+  seconds, yet the LAN resolved nothing for ~40 s more. A NAT redirect is
+  bound to a connection at its first packet and lives with it — an answered
+  UDP flow three minutes past its last packet (~180 of them, answered from
+  127.0.0.1:10053) — and dnsmasq reuses its source ports, so its queries kept
+  going to the dead inbound with the rule gone. Taking the redirect out (or
+  unloading the data plane) now forgets those flows through ctnetlink before
+  the cache is emptied; putting it back forgets the router's own DNS flows
+  that went out unredirected, so no query rides one past the flush. Without
+  ctnetlink they end on their own, as before.
 - **The box's admin page by name.** `my.keenetic.net`, `tplinkwifi.net`,
   `tplinklogin.net`, `fritz.box`, `router.asus.com`, `routerlogin.net`,
   `miwifi.com` are asked of the WAN's PRIVATE resolvers alone (the box), first.
