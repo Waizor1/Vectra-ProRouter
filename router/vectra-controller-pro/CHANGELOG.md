@@ -1,5 +1,71 @@
 # Changelog
 
+## vctl 0.7.0-r20 — the router's resolver no longer asks a private WAN resolver over the open path
+
+Seen live on 2026-10-05 (artem-lutfulin, r19, right after the update): the
+router's resolver answered www.facebook.com and www.instagram.com with the
+ISP's forged NXDOMAIN and facebook.com, www.youtube.com, chatgpt.com with
+real addresses, minute by minute mixed with FakeDNS, while xray's DNS inbound
+answered every one of them with FakeDNS. 1111 (same version) was clean.
+
+### Fixed
+- **The WAN's own resolvers are redirected wherever they are.** The
+  redirect into the tunnel took dnsmasq's upstream queries to public
+  addresses only. artem's router sits behind the provider's box, whose DHCP
+  hands out two public resolvers and its own 192.168.x.1: dnsmasq asked that
+  one over the open path beside the redirected ones (conntrack: replies from
+  port 53 of 192.168.x.1, the public ones from 10053) and cached whichever
+  answered first, the ISP's forged answers included. 1111's resolvers are
+  all public, so it never showed. Now the WAN's resolvers are redirected
+  by address too, and over IPv6 a link-local or ULA one is refused with the
+  public ones. Only the WAN's: `resolv.conf.auto` lists every netifd
+  interface's servers under `# Interface <name>`, and only those of the
+  firewall's `wan` zone are taken (without such a zone, those of the
+  interface the default route leaves by; neither known, none). An address
+  reached through a LAN device is never taken, so an owner's Pi-hole or
+  AdGuard on the LAN, a corporate resolver, a WireGuard peer's `dns` outside
+  the wan zone, a `server=` — all are asked as before. Not a warm-up after an
+  xray start: xray's DNS never fell back outside the tunnel for these names.
+- **New WAN resolvers under a redirect already in force empty the cache.**
+  They are part of the redirect's fingerprint — sorted, each once, the IPv6
+  ones only where they are refused, so a reorder is no change: a DHCP
+  renewal that brings a new one reprograms the table and empties dnsmasq's
+  cache once. It is seen at the next poll that compares the table, so for
+  up to one poll dnsmasq may ask the new resolver over the open path; the
+  flush then drops whatever it answered. A WAN or PPPoE flap that empties
+  `resolv.conf.auto` changes nothing for 60 s: the last resolvers stand in,
+  so a flap does not reprogram, flush and re-render twice.
+- **The WAN's own resolvers are the direct names' last fallback.** With its
+  private resolver in the tunnel too, a router behind a box resolved its
+  nodes' and its panel's names only over TCP — 8.8.8.8, 77.88.8.8, the box
+  last — where a network keeps the outside's DNS closed. xray now also asks
+  the WAN zone's IPv4 resolvers over plain UDP, by a rule of the router's
+  own (`vctl-dns-wan`) to a plain freedom (the provider's, else
+  `vctl-direct` added), never the tunnel — LAST, after the TCP ones: a WAN
+  resolver may be the ISP's, which forges answers for blocked names, and a
+  forged node address would keep the tunnel down. Proxied names still get
+  FakeDNS. Needs xray's per-server DNS `tag` (in 26.3.27).
+- **The resolver's flows follow the redirect in and out.** Drill dr2 on 1111
+  (xray killed every 3 s): the DNS watch took the redirect out within
+  seconds, yet the LAN resolved nothing for ~40 s more. A NAT redirect is
+  bound to a connection at its first packet and lives with it — an answered
+  UDP flow three minutes past its last packet (~180 of them, answered from
+  127.0.0.1:10053) — and dnsmasq reuses its source ports, so its queries kept
+  going to the dead inbound with the rule gone. Taking the redirect out (or
+  unloading the data plane) now forgets those flows through ctnetlink before
+  the cache is emptied; putting it back forgets the router's own DNS flows
+  that went out unredirected, so no query rides one past the flush. Without
+  ctnetlink they end on their own, as before. The same when the table goes
+  without the daemon: `dataplane-teardown.sh` (stop, the hand-back before an
+  update, removal) and the commit-confirm deadman run the new
+  `vctl forget-dns-flows` after it — best effort, bounded to 5 s, always
+  exit 0, skipped without vctl.
+- **The box's admin page by name.** `my.keenetic.net`, `tplinkwifi.net`,
+  `tplinklogin.net`, `fritz.box`, `router.asus.com`, `routerlogin.net`,
+  `miwifi.com` are asked of the WAN's PRIVATE resolvers alone (the box), first.
+  dnsmasq's rebind protection (on by default) still drops a private answer
+  unless the owner allows the name (`rebind_domain`).
+
 ## vctl 0.7.0-r19 — the Vectra app no longer says "unknown" every other minute
 
 Seen live on 2026-10-05 (vctl r18, 1111 after its nightly reboot): about

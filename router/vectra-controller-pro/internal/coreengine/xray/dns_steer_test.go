@@ -424,3 +424,148 @@ func TestDNSLevelWhenTheProviderHasNoPolicy(t *testing.T) {
 		t.Fatalf("policy levels %v", d.Policy.Levels)
 	}
 }
+
+type wanDNSServer struct {
+	Address      string   `json:"address"`
+	Port         int      `json:"port"`
+	Domains      []string `json:"domains"`
+	SkipFallback bool     `json:"skipFallback"`
+	Tag          string   `json:"tag"`
+}
+
+// The WAN's resolvers never answer a node's name before the tcp+local ones:
+// one may be the ISP's, which forges answers for blocked names, and a forged
+// node address keeps the tunnel down. They come LAST for the direct names —
+// plain UDP by the router's own rule to a plain freedom, never the tunnel —
+// so a router whose only resolver is the box in front of it, on a network
+// that keeps the outside's DNS closed, still resolves them. The box's admin
+// names go first, to the private one (the box) alone.
+func TestTheWANsResolversAreTheDirectNamesLastFallback(t *testing.T) {
+	opts := dnsOptions()
+	opts.WANResolvers = []string{"77.37.1.2", "192.168.1.1"}
+	spliced, res, err := xray.Splice(providerFixture(t), testTproxy(), xray.SpliceOptions{DNS: opts})
+	if err != nil {
+		t.Fatalf("splice: %v", err)
+	}
+	if res.DNS.WANVia != "DIRECT" {
+		t.Fatalf("WAN resolvers via %q, want the provider's plain freedom DIRECT", res.DNS.WANVia)
+	}
+	d := decodeDNSDoc(t, spliced)
+	servers := dnsServers(t, d)
+	decode := func(i int) wanDNSServer {
+		var s wanDNSServer
+		if err := json.Unmarshal(servers[i], &s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	box := decode(0)
+	if box.Address != "192.168.1.1" || box.Port != 53 || box.Tag != xray.DNSWANTag || !box.SkipFallback || !reflect.DeepEqual(box.Domains, xray.BoxAdminDomains) {
+		t.Fatalf("first server = %+v, want the box's admin names from the private resolver", box)
+	}
+	nodeName := "full:ru10.provider.invalid"
+	sawTCP := false
+	var wanFor []string
+	for i := 1; i < len(servers); i++ {
+		s := decode(i)
+		has := false
+		for _, n := range s.Domains {
+			has = has || n == nodeName
+		}
+		if !has {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(s.Address, "tcp+local://"):
+			if len(wanFor) > 0 {
+				t.Fatalf("WAN resolver %v answers a node's name before %s", wanFor, s.Address)
+			}
+			sawTCP = true
+		default:
+			if s.Tag != xray.DNSWANTag || s.Port != 53 {
+				t.Fatalf("server %d = %+v, want a WAN resolver tagged %s", i, s, xray.DNSWANTag)
+			}
+			wanFor = append(wanFor, s.Address)
+		}
+		if s.Address == "77.37.1.2" && reflect.DeepEqual(s.Domains, xray.BoxAdminDomains) {
+			t.Fatal("the ISP's public resolver is asked for the box's names")
+		}
+	}
+	if !sawTCP || !reflect.DeepEqual(wanFor, []string{"77.37.1.2", "192.168.1.1"}) {
+		t.Fatalf("node name: tcp+local %v, WAN fallbacks %v; want tcp+local first, then both WAN resolvers", sawTCP, wanFor)
+	}
+	rule := d.Routing.Rules[1]
+	if string(rule["inboundTag"]) != `["`+xray.DNSWANTag+`"]` || string(rule["outboundTag"]) != `"DIRECT"` {
+		t.Fatalf("second rule = %v, want the WAN resolvers' queries to DIRECT", rule)
+	}
+	for _, o := range d.Outbounds {
+		if o.Tag == xray.DirectTag {
+			t.Fatal("a direct outbound was added beside the provider's plain freedom")
+		}
+	}
+
+	// The box alone: still asked, last, for the node names.
+	opts.WANResolvers = []string{"192.168.1.1"}
+	if spliced, _, err = xray.Splice(providerFixture(t), testTproxy(), xray.SpliceOptions{DNS: opts}); err != nil {
+		t.Fatal(err)
+	}
+	servers = dnsServers(t, decodeDNSDoc(t, spliced))
+	lastTCP, boxFallback := -1, -1
+	for i := range servers {
+		s := decode(i)
+		if strings.HasPrefix(s.Address, "tcp+local://") {
+			lastTCP = i
+		}
+		if s.Address == "192.168.1.1" && s.Tag == xray.DNSWANTag && len(s.Domains) > 0 && !reflect.DeepEqual(s.Domains, xray.BoxAdminDomains) {
+			boxFallback = i
+		}
+	}
+	if lastTCP < 0 || boxFallback <= lastTCP {
+		t.Fatalf("box fallback at %d, last tcp+local at %d: want the box asked for the direct names after them", boxFallback, lastTCP)
+	}
+
+	// Only a public ISP resolver: nothing asks it for the box's names.
+	opts.WANResolvers = []string{"77.37.1.2"}
+	if spliced, _, err = xray.Splice(providerFixture(t), testTproxy(), xray.SpliceOptions{DNS: opts}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(spliced), "my.keenetic.net") {
+		t.Fatal("the box's names asked of a public resolver")
+	}
+	opts.WANResolvers = []string{"77.37.1.2", "192.168.1.1"}
+
+	// No freedom of the provider's: the router's own is added for them.
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(providerFixture(t), &doc); err != nil {
+		t.Fatal(err)
+	}
+	var obs []map[string]json.RawMessage
+	if err := json.Unmarshal(doc["outbounds"], &obs); err != nil {
+		t.Fatal(err)
+	}
+	kept := obs[:0]
+	for _, o := range obs {
+		if string(o["protocol"]) != `"freedom"` {
+			kept = append(kept, o)
+		}
+	}
+	doc["outbounds"], _ = json.Marshal(kept)
+	raw, _ := json.Marshal(doc)
+	spliced, res, err = xray.Splice(raw, testTproxy(), xray.SpliceOptions{DNS: opts})
+	if err != nil {
+		t.Fatalf("splice without a plain freedom: %v", err)
+	}
+	d = decodeDNSDoc(t, spliced)
+	if res.DNS.WANVia != xray.DirectTag || string(d.Routing.Rules[1]["outboundTag"]) != `"`+xray.DirectTag+`"` {
+		t.Fatalf("WAN resolvers via %q, rule %v; want the added %s", res.DNS.WANVia, d.Routing.Rules[1], xray.DirectTag)
+	}
+
+	// Validated like the direct ones: an address on the router or not an
+	// IPv4 address is refused.
+	for _, bad := range []string{"127.0.0.1", "0.0.0.0", "fd00::1", "1.2.3.4; x", "192.168.001.1"} {
+		opts.WANResolvers = []string{bad}
+		if _, _, err := xray.Splice(providerFixture(t), testTproxy(), xray.SpliceOptions{DNS: opts}); err == nil {
+			t.Errorf("WAN resolver %q accepted", bad)
+		}
+	}
+}

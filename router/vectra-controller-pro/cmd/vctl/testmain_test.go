@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"vectra-controller-pro/internal/conntrack"
 	"vectra-controller-pro/internal/incident"
 )
 
@@ -16,6 +17,11 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	incident.Dir, incident.CrashDir = filepath.Join(dir, "inbox"), filepath.Join(dir, "crash")
+	// No test asks the host's netifd: the WAN is "wan" wherever a test
+	// writes no firewall zones of its own (wanInterfaces).
+	defaultRouteIfaces = func() []string { return []string{"wan"} }
+	// Nor the host's connection table.
+	dnsFlowsRead = func() ([]conntrack.Entry, error) { return nil, nil }
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)

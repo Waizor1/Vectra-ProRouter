@@ -1,13 +1,13 @@
 package main
 
 import (
- "vectra-controller-pro/internal/vault"
 	"bufio"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,10 +17,13 @@ import (
 	"syscall"
 	"time"
 
+	"vectra-controller-pro/internal/conntrack"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/rescue"
+	"vectra-controller-pro/internal/uci"
+	"vectra-controller-pro/internal/vault"
 )
 
 // DNS through the tunnel, the daemon's side (the why is in
@@ -34,12 +37,18 @@ func (d *daemon) dnsOptions() *xray.DNSOptions {
 	if d.cfg.NoDNSTunnel {
 		return nil
 	}
+	wanV4, _ := d.steeredWANResolvers()
 	return &xray.DNSOptions{
 		Listen: xray.DefaultDNSListen,
 		// PassWall's routing answers its lists' domains with FakeDNS; the
 		// data plane then carries those addresses (carryFakeDNS).
 		AllowFakeDNS:    d.passwallMode(),
 		DirectResolvers: directResolvers(d.etcRoot()),
+		// The WAN's own (the box in front of the router, the ISP's), plain
+		// UDP straight out: the last fallback for those names, where a
+		// network keeps the outside's DNS closed — never before the public
+		// ones, an ISP's forges — and the box's admin names from a private one.
+		WANResolvers: wanV4,
 		// The panel's names, and NTP's: the clock TLS needs must not wait
 		// for the tunnel either.
 		DirectDomains: append(controlPlaneDomains(d.cfg.ControlURL, d.cfg.PanelURL), "domain:pool.ntp.org"),
@@ -183,7 +192,177 @@ func (d *daemon) addDNSRedirect(ctx context.Context, spec *firewall.Spec, wait t
 	}
 	spec.DNSRedirectPort, spec.DNSResolverUIDs = port, uids
 	spec.DNSRejectV6 = hasIPv4Upstream(d.etcRoot())
+	spec.DNSUpstreamV4, spec.DNSUpstreamV6 = d.steeredWANResolvers()
 	spec.HijackDNS = d.hijacksDNS()
+}
+
+// wanResolvers are the WAN's own resolvers — the servers dnsmasq asks that
+// the WAN's DHCP, PPPoE or static config gave — by family, the IPv6 ones
+// without their zone. The redirect takes them wherever they are
+// (firewall.Spec.DNSUpstreamV4): a box in front of the router hands out its
+// private address, which the public-only redirect left on the open path.
+//
+// Only the WAN's: netifd's resolv.conf.auto holds the servers of EVERY
+// interface, each under a "# Interface <name>" line — the LAN's own `option
+// dns` (an owner's Pi-hole at 192.168.1.10), a WireGuard peer's, a corporate
+// 10.x one. Those are the owner's and are asked as before. The WAN is the
+// interfaces of the firewall's wan zone (wanInterfaces); and an address
+// reached through a LAN device (lanRouted) is never taken, whatever section
+// it is in.
+func (d *daemon) wanResolvers() (v4, v6 []string) {
+	wan := wanInterfaces(d.etcRoot())
+	if len(wan) == 0 {
+		return nil, nil
+	}
+	lanDevs := d.knownLANDevices()
+	var lanNets []*net.IPNet
+	for _, dev := range lanDevs {
+		lanNets = append(lanNets, d.deviceNets(dev)...)
+	}
+	seen := map[string]bool{}
+	for _, f := range []string{"tmp/resolv.conf.d/resolv.conf.auto", "tmp/resolv.conf.auto"} {
+		b, err := os.ReadFile(filepath.Join(d.etcRoot(), f))
+		if err != nil {
+			continue
+		}
+		iface := ""
+		for _, line := range strings.Split(string(b), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 && fields[0] == "#" && fields[1] == "Interface" {
+				iface = fields[2]
+				continue
+			}
+			if len(fields) < 2 || fields[0] != "nameserver" || !wan[iface] {
+				continue
+			}
+			addr, zone, _ := strings.Cut(fields[1], "%")
+			ip := net.ParseIP(addr)
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || seen[ip.String()] || lanRouted(ip, zone, lanDevs, lanNets) {
+				continue
+			}
+			seen[ip.String()] = true
+			if ip.To4() != nil {
+				v4 = append(v4, ip.String())
+			} else {
+				v6 = append(v6, ip.String())
+			}
+		}
+	}
+	return v4, v6
+}
+
+// wanResolversGrace is how long the WAN's last resolvers stand in for none:
+// a WAN or PPPoE flap empties resolv.conf.auto for seconds, and each change
+// of the list reprograms the table and renders xray again.
+const wanResolversGrace = 60 * time.Second
+
+// steeredWANResolvers are wanResolvers, the last ones seen while the file
+// has none, for up to wanResolversGrace after they were last there.
+//
+// A DHCP renewal that changes them is seen at the next loop that compares
+// the table (dnsRedirectStale, one poll): until then dnsmasq may ask a new
+// resolver over the open path. The reprogram then empties its cache once
+// (programFirewallWithin), so nothing it answered meanwhile stays.
+func (d *daemon) steeredWANResolvers() (v4, v6 []string) {
+	v4, v6 = d.wanResolvers()
+	now := time.Now()
+	if len(v4)+len(v6) > 0 {
+		d.wanSeenV4, d.wanSeenV6, d.wanSeenAt = v4, v6, now
+		return v4, v6
+	}
+	if !d.wanSeenAt.IsZero() && now.Sub(d.wanSeenAt) < wanResolversGrace {
+		return d.wanSeenV4, d.wanSeenV6
+	}
+	return nil, nil
+}
+
+// wanInterfaces are netifd's interfaces on the WAN side: the networks of the
+// firewall's "wan" zone (a zone with nothing attached covers the network of
+// its own name, as fw4 has it). Where /etc/config/firewall has no such zone,
+// the interfaces a default route leaves by (defaultRouteIfaces); none on any
+// doubt — then only the public resolvers are redirected, as before r20.
+func wanInterfaces(root string) map[string]bool {
+	set := map[string]bool{}
+	if f, err := uci.Load(filepath.Join(root, "etc/config/firewall")); err == nil {
+		found := false
+		for _, z := range f.OfType("zone") {
+			if z.Get("name") != "wan" {
+				continue
+			}
+			found = true
+			nets := append(strings.Fields(z.Get("network")), z.Lists["network"]...)
+			for _, n := range nets {
+				set[n] = true
+			}
+			if len(nets) == 0 && z.Get("device") == "" && len(z.Lists["device"]) == 0 && z.Get("subnet") == "" && len(z.Lists["subnet"]) == 0 {
+				set["wan"] = true
+			}
+		}
+		if found {
+			return set
+		}
+	}
+	for _, n := range defaultRouteIfaces() {
+		set[n] = true
+	}
+	return set
+}
+
+// lanRouted: ip is reached through one of the LAN's devices — in a subnet of
+// one of their addresses, or, for a link-local IPv6 one, scoped to one. Such
+// a resolver is the owner's, never the WAN's.
+func lanRouted(ip net.IP, zone string, lanDevs []string, lanNets []*net.IPNet) bool {
+	for _, dev := range lanDevs {
+		if zone != "" && zone == dev {
+			return true
+		}
+	}
+	if ip.IsLinkLocalUnicast() {
+		// Every device has fe80::/64; only the scope says which one.
+		return false
+	}
+	for _, n := range lanNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// knownLANDevices are the LAN's devices (lanDevices): the ones the last
+// ruleset was loaded with, else netifd's, asked once; "br-lan" when neither
+// is known, as the LAN egress guard has it.
+func (d *daemon) knownLANDevices() []string {
+	if d.lanDevs == nil && !d.lanDevsAsked {
+		d.lanDevsAsked = true
+		d.lanDevs = lanDevices()
+	}
+	if len(d.lanDevs) > 0 {
+		return d.lanDevs
+	}
+	return []string{"br-lan"}
+}
+
+// deviceNets are the subnets of a device's addresses (or the tests' stand-in).
+func (d *daemon) deviceNets(dev string) []*net.IPNet {
+	if d.devNets != nil {
+		return d.devNets(dev)
+	}
+	ifc, err := net.InterfaceByName(dev)
+	if err != nil {
+		return nil
+	}
+	addrs, err := ifc.Addrs()
+	if err != nil {
+		return nil
+	}
+	var out []*net.IPNet
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // hijacksDNS: the LAN's queries to public resolvers are answered by the
@@ -278,7 +457,104 @@ func dnsRedirectKey(spec firewall.Spec) string {
 	if spec.DNSRedirectPort == 0 || len(spec.DNSResolverUIDs) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%d/%v/v6reject=%t/hijack=%t", spec.DNSRedirectPort, spec.DNSResolverUIDs, spec.DNSRejectV6, spec.HijackDNS)
+	key := fmt.Sprintf("%d/%v/v6reject=%t/hijack=%t", spec.DNSRedirectPort, spec.DNSResolverUIDs, spec.DNSRejectV6, spec.HijackDNS)
+	// The WAN resolvers as the script takes them — sorted, each once, the
+	// IPv6 ones only where they are refused: the same servers in another
+	// order, or a family not rendered, is no change of the table.
+	if v4, v6 := firewall.SteeredUpstreams(spec); len(v4)+len(v6) > 0 {
+		key += "/up=" + strings.Join(append(v4, v6...), ",")
+	}
+	return key
+}
+
+// redirectUpstreams is the "/up=" part of a dnsRedirectKey: the WAN resolvers
+// the redirect takes ("" = none).
+func redirectUpstreams(key string) string {
+	i := strings.Index(key, "/up=")
+	if i < 0 {
+		return ""
+	}
+	up := key[i+len("/up="):]
+	if j := strings.IndexAny(up, "/;"); j >= 0 {
+		up = up[:j]
+	}
+	return up
+}
+
+// upstreamsAdded: a redirect's upstreams (redirectUpstreams) now hold one
+// they did not before.
+func upstreamsAdded(before, now string) bool {
+	had := map[string]bool{}
+	for _, a := range strings.Split(before, ",") {
+		had[a] = true
+	}
+	for _, a := range strings.Split(now, ",") {
+		if a != "" && !had[a] {
+			return true
+		}
+	}
+	return false
+}
+
+// dnsFlowsRead and dnsFlowsForget are the kernel's connection table (a
+// variable for tests).
+var (
+	dnsFlowsRead   = conntrack.Read
+	dnsFlowsForget = conntrack.Delete
+)
+
+// forgetRedirectedFlows: the redirect to port has left the ruleset; the
+// resolver's flows it took have not. A NAT binding is made once, at a
+// connection's first packet, and lives as long as the connection — a UDP one
+// that was answered, three minutes from its LAST packet — and dnsmasq asks
+// each server from source ports it reuses. So with the rule gone its queries
+// kept going to the dead inbound: measured on 1111 on 2026-10-05 (drill dr2,
+// xray killed every 3 s), ~180 such flows, the LAN without names for ~40 s
+// after the redirect went. Forgotten, their next packet is a new connection,
+// which the ruleset as it is now sends where the resolver means.
+func (d *daemon) forgetRedirectedFlows(port int) {
+	if port <= 0 || port > 65535 {
+		return
+	}
+	es, err := dnsFlowsRead()
+	if err != nil {
+		logging.L().Warn("could not read the connection table; the resolver's flows into the tunnel end on their own within three minutes", "err", err.Error())
+		return
+	}
+	n, err := dnsFlowsForget(conntrack.RedirectedTo(es, uint16(port)))
+	if err != nil {
+		logging.L().Warn("could not forget the resolver's flows into the tunnel; they end on their own within three minutes", "forgotten", n, "err", err.Error())
+		return
+	}
+	if n > 0 {
+		logging.L().Info("forgot the resolver's flows into the tunnel", "flows", n, "port", port)
+	}
+}
+
+// forgetOpenPathDNS: the redirect has gone in (or takes more servers); the
+// router's own DNS flows that went out unredirected still do, for the same
+// three minutes — a query on one of them is asked over the open path, and
+// its answer, the ISP's forged one too, cached past the flush that follows.
+// Forgotten, their next packet meets the redirect.
+func (d *daemon) forgetOpenPathDNS() {
+	es, err := dnsFlowsRead()
+	if err != nil {
+		logging.L().Warn("could not read the connection table; the resolver's flows over the open path end on their own within three minutes", "err", err.Error())
+		return
+	}
+	owned := d.ownsAddr
+	if owned == nil {
+		owned = routerOwns
+	}
+	own := func(a netip.Addr) bool { return owned(net.IP(a.AsSlice())) }
+	n, err := dnsFlowsForget(conntrack.DNSFrom(es, own))
+	if err != nil {
+		logging.L().Warn("could not forget the resolver's flows over the open path; they end on their own within three minutes", "forgotten", n, "err", err.Error())
+		return
+	}
+	if n > 0 {
+		logging.L().Info("forgot the resolver's flows over the open path", "flows", n)
+	}
 }
 
 // dnsWatchEvery is how often, between the polls, the loop asks xray's DNS
@@ -386,7 +662,9 @@ func (d *daemon) dnsRedirectStale(ctx context.Context) bool {
 				d.hijackMisses++
 				hijack = d.hijackMisses < dnsDeadAfter
 			}
-			want = dnsRedirectKey(firewall.Spec{DNSRedirectPort: port, DNSResolverUIDs: uids, DNSRejectV6: hasIPv4Upstream(d.etcRoot()), HijackDNS: hijack})
+			v4, v6 := d.steeredWANResolvers()
+			// IPv6Enabled as firewallSpecFromConfig has it: always.
+			want = dnsRedirectKey(firewall.Spec{IPv6Enabled: true, DNSRedirectPort: port, DNSResolverUIDs: uids, DNSRejectV6: hasIPv4Upstream(d.etcRoot()), DNSUpstreamV4: v4, DNSUpstreamV6: v6, HijackDNS: hijack})
 		} else {
 			d.dnsMisses++
 			if *d.fwProgrammed != "" && d.dnsMisses < dnsDeadAfter {

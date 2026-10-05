@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os/exec"
 	"sort"
+	"sync"
+	"time"
 
 	"vectra-controller-pro/internal/firewall"
 )
@@ -61,6 +64,73 @@ func lanDevicesFrom(dump []byte) []string {
 		}
 		seen[dev] = true
 		out = append(out, dev)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// defaultRouteIfaces are netifd's interfaces a default route leaves by — the
+// WAN, where the firewall's zones do not say which interfaces are
+// (wanInterfaces). nil on any doubt: then no resolver is taken by address.
+var defaultRouteIfaces = cachedDefaultRouteIfaces
+
+// routeIfacesEvery is how long netifd's answer stands: wanInterfaces runs on
+// every loop's comparison of the table, and ubus is asked at most this
+// often, for at most routeIfacesTimeout — a hanging ubus never stalls the
+// loop for longer, and an answer it failed to give counts as none until then.
+const (
+	routeIfacesEvery   = 60 * time.Second
+	routeIfacesTimeout = 3 * time.Second
+)
+
+var routeIfaces struct {
+	sync.Mutex
+	at  time.Time
+	val []string
+}
+
+func cachedDefaultRouteIfaces() []string {
+	routeIfaces.Lock()
+	defer routeIfaces.Unlock()
+	if !routeIfaces.at.IsZero() && time.Since(routeIfaces.at) < routeIfacesEvery {
+		return routeIfaces.val
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), routeIfacesTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ubus", "-t", "2", "call", "network.interface", "dump").Output()
+	routeIfaces.at, routeIfaces.val = time.Now(), nil
+	if err == nil {
+		routeIfaces.val = defaultRouteIfacesFrom(out)
+	}
+	return routeIfaces.val
+}
+
+// defaultRouteIfacesFrom reads `ubus call network.interface dump`: the up
+// interfaces with a default route, by netifd's name.
+func defaultRouteIfacesFrom(dump []byte) []string {
+	var d struct {
+		Interface []struct {
+			Name  string `json:"interface"`
+			Up    bool   `json:"up"`
+			Route []struct {
+				Mask int `json:"mask"`
+			} `json:"route"`
+		} `json:"interface"`
+	}
+	if json.Unmarshal(dump, &d) != nil {
+		return nil
+	}
+	var out []string
+	for _, i := range d.Interface {
+		if !i.Up || i.Name == "" {
+			continue
+		}
+		for _, r := range i.Route {
+			if r.Mask == 0 {
+				out = append(out, i.Name)
+				break
+			}
+		}
 	}
 	sort.Strings(out)
 	return out

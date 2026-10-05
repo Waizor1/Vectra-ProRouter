@@ -157,3 +157,39 @@ func TestSupersededDeadmanStandsDown(t *testing.T) {
 		t.Fatal("an unconfirmed latest apply was not reverted")
 	}
 }
+
+// A revert forgets the resolver's DNS flows after the table is gone — the
+// redirect's NAT outlives the table — and a vctl that fails, or none at all,
+// costs the revert nothing.
+func TestTheDeadmanForgetsTheDNSFlowsAfterTheTable(t *testing.T) {
+	script := BuildDeadmanScript([]string{"nft delete table inet vctl"}, time.Second, "/nonexistent/confirm")
+	del, forget := strings.Index(script, "nft delete table inet vctl"), strings.Index(script, ForgetDNSFlows)
+	if del < 0 || forget < del || forget > strings.Index(script, "fi\n") {
+		t.Fatalf("the flows are not forgotten after the table, inside the revert:\n%s", script)
+	}
+	if s := BuildDeadmanScript(nil, time.Second, "/tmp/c"); strings.Contains(s, ForgetDNSFlows) {
+		t.Fatal("nothing reverted, yet flows forgotten")
+	}
+
+	dir := t.TempDir()
+	log := filepath.Join(dir, "log")
+	for name, body := range map[string]string{
+		"vctl":   "#!/bin/sh\necho \"vctl $*\" >>" + log + "\nexit 3\n",
+		"nft":    "#!/bin/sh\necho \"nft $*\" >>" + log + "\n",
+		"logger": "#!/bin/sh\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	confirm := filepath.Join(dir, "confirm")
+	cmd := exec.Command("sh", "-c", BuildDeadmanScript([]string{"nft delete table inet vctl"}, time.Second, confirm))
+	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("deadman failed with a failing vctl: %v\n%s", err, out)
+	}
+	raw, _ := os.ReadFile(log)
+	if got := string(raw); got != "nft delete table inet vctl\nvctl forget-dns-flows\n" {
+		t.Fatalf("deadman ran:\n%s", got)
+	}
+}

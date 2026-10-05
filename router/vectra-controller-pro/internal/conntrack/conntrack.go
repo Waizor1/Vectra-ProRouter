@@ -25,6 +25,11 @@ type Entry struct {
 	// Replied is false while the line carries [UNREPLIED]: nothing ever came
 	// back the other way.
 	Replied bool
+	// ReplySrc and ReplySPort are where the answers come from: the original
+	// destination, unless a NAT rule took the connection elsewhere (a
+	// redirect to a loopback port answers from 127.0.0.1 and that port).
+	ReplySrc   netip.Addr
+	ReplySPort uint16
 }
 
 // readProc parses the kernel's table as text.
@@ -78,9 +83,19 @@ func parseLine(line string) (Entry, bool) {
 			continue // a flag
 		}
 		if seen[k] {
-			// The reply direction repeats the keys: only the original
-			// direction counts, and a line that got this far is whole.
+			// The reply direction repeats the keys: a line that got this
+			// far is whole; of the reply, where the answers come from.
 			reply = true
+			if !seen["reply "+k] {
+				seen["reply "+k] = true
+				switch k {
+				case "src":
+					e.ReplySrc, _ = netip.ParseAddr(v)
+				case "sport":
+					p, _ := strconv.ParseUint(v, 10, 16)
+					e.ReplySPort = uint16(p)
+				}
+			}
 			continue
 		}
 		seen[k] = true
@@ -101,4 +116,31 @@ func parseLine(line string) (Entry, bool) {
 		return Entry{}, false
 	}
 	return e, true
+}
+
+// RedirectedTo are the connections a NAT redirect sent to a loopback port:
+// to port 53 originally, answered from loopback:port. They keep that
+// binding for as long as they live — a UDP one that was answered, three
+// minutes from its last packet — whatever the ruleset says by then.
+func RedirectedTo(es []Entry, port uint16) []Entry {
+	var out []Entry
+	for _, e := range es {
+		if e.DPort == 53 && e.ReplySPort == port && e.ReplySrc.IsLoopback() {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// DNSFrom are the connections own() addresses opened to port 53 that go
+// where they were sent — no NAT took them anywhere — on a non-loopback
+// address.
+func DNSFrom(es []Entry, own func(netip.Addr) bool) []Entry {
+	var out []Entry
+	for _, e := range es {
+		if e.DPort == 53 && e.ReplySPort == 53 && e.ReplySrc == e.Dst && !e.Dst.IsLoopback() && own(e.Src) {
+			out = append(out, e)
+		}
+	}
+	return out
 }

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/vault"
 
@@ -541,5 +542,191 @@ func TestTheDNSWatchLeavesDirectModeAndTheKillSwitchAlone(t *testing.T) {
 		if d.dnsWatchDue(context.Background()) {
 			t.Fatal("the DNS watch opened the router's lookups under the kill switch")
 		}
+	}
+}
+
+// The redirect takes the WAN's resolvers by address, the private one a box in
+// front of the router hands out included (artem-lutfulin, r19: 192.168.x.1
+// beside two public ones, asked over the open path, the ISP's forged
+// NXDOMAIN cached). They are part of the redirect's fingerprint, so a DHCP
+// renewal that changes them reprograms the table.
+func TestTheRedirectTakesTheWANsOwnResolvers(t *testing.T) {
+	d := dnsDaemon(t, renderWithDNS, dnsmasqAs453)
+	dir := filepath.Join(d.rootDir, "tmp", "resolv.conf.d")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conf := "# Interface wan\nnameserver 77.37.1.2\nnameserver 192.168.1.254\nnameserver fe80::1%wan\nnameserver 127.0.0.1\nnameserver 77.37.1.2\n"
+	if err := os.WriteFile(filepath.Join(dir, "resolv.conf.auto"), []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := firewall.DefaultSpec(12345, 1)
+	d.addDNSRedirect(context.Background(), &spec, 0)
+	if !reflect.DeepEqual(spec.DNSUpstreamV4, []string{"77.37.1.2", "192.168.1.254"}) || !reflect.DeepEqual(spec.DNSUpstreamV6, []string{"fe80::1"}) {
+		t.Fatalf("WAN resolvers = %v / %v", spec.DNSUpstreamV4, spec.DNSUpstreamV6)
+	}
+	key := dnsRedirectKey(spec)
+	if want := "10053/[453]/v6reject=true/hijack=false/up=192.168.1.254,77.37.1.2,fe80::1"; key != want {
+		t.Fatalf("redirect = %q, want %q", key, want)
+	}
+	if got := redirectUpstreams(key + ";fakedns=198.18.0.0/16"); got != "192.168.1.254,77.37.1.2,fe80::1" {
+		t.Fatalf("upstreams read back as %q", got)
+	}
+	out, err := firewall.Render(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "ip daddr { 77.37.1.2, 192.168.1.254 } meta l4proto { tcp, udp } th dport 53") {
+		t.Fatalf("the private WAN resolver is not redirected:\n%s", out)
+	}
+
+	d.desired = &config.Config{}
+	d.supStarted = true
+	d.fwProgrammed = &key
+	if d.dnsRedirectStale(context.Background()) {
+		t.Fatal("stale while the redirect takes exactly the WAN's resolvers")
+	}
+	withWANResolver(t, d, "192.168.1.254")
+	if !d.dnsRedirectStale(context.Background()) {
+		t.Fatal("the WAN's resolvers changed and the redirect is not reprogrammed")
+	}
+}
+
+// writeRouterFile puts a file under the test router's root.
+func writeRouterFile(t *testing.T, root, rel, body string) {
+	t.Helper()
+	p := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Only the WAN's resolvers are taken: resolv.conf.auto holds every
+// interface's — the LAN's own `option dns` (an owner's Pi-hole), a WireGuard
+// peer's — and those are the owner's, asked as before. A WireGuard interface
+// the owner put in the wan zone is the WAN's. Whatever its section, an
+// address reached through a LAN device is never taken.
+func TestOnlyTheWANsResolversAreTaken(t *testing.T) {
+	d := &daemon{rootDir: t.TempDir(), lanDevsAsked: true, lanDevs: []string{"br-lan"}}
+	d.devNets = func(dev string) []*net.IPNet {
+		if dev != "br-lan" {
+			return nil
+		}
+		_, n, _ := net.ParseCIDR("192.168.1.1/24")
+		return []*net.IPNet{n}
+	}
+	writeRouterFile(t, d.rootDir, "tmp/resolv.conf.d/resolv.conf.auto",
+		"# Interface lan\nnameserver 192.168.1.10\n"+
+			"# Interface wg0\nnameserver 10.8.0.1\n"+
+			"# Interface wan\nnameserver 192.168.0.1\nnameserver 77.37.1.2\nnameserver 192.168.1.10\n"+
+			"# Interface wan6\nnameserver fe80::1%wan\nnameserver fe80::2%br-lan\n")
+	writeRouterFile(t, d.rootDir, "etc/config/firewall",
+		"config zone\n\toption name 'lan'\n\tlist network 'lan'\n\nconfig zone\n\toption name 'wan'\n\tlist network 'wan'\n\tlist network 'wan6'\n")
+	v4, v6 := d.wanResolvers()
+	if !reflect.DeepEqual(v4, []string{"192.168.0.1", "77.37.1.2"}) || !reflect.DeepEqual(v6, []string{"fe80::1"}) {
+		t.Fatalf("WAN resolvers = %v / %v, want the wan zone's, none behind br-lan", v4, v6)
+	}
+
+	// The owner put the WireGuard interface in the wan zone: it is the WAN's.
+	writeRouterFile(t, d.rootDir, "etc/config/firewall",
+		"config zone\n\toption name 'wan'\n\toption network 'wan wan6 wg0'\n")
+	if v4, _ = d.wanResolvers(); !reflect.DeepEqual(v4, []string{"10.8.0.1", "192.168.0.1", "77.37.1.2"}) {
+		t.Fatalf("WireGuard in the wan zone: %v", v4)
+	}
+
+	// A wan zone with nothing attached covers the network "wan" (fw4).
+	writeRouterFile(t, d.rootDir, "etc/config/firewall", "config zone\n\toption name 'wan'\n")
+	if v4, v6 = d.wanResolvers(); !reflect.DeepEqual(v4, []string{"192.168.0.1", "77.37.1.2"}) || v6 != nil {
+		t.Fatalf("bare wan zone: %v / %v", v4, v6)
+	}
+}
+
+// Without a wan zone, the WAN is the interfaces a default route leaves by;
+// without those either, nothing is taken by address.
+func TestWithoutAWANZoneTheDefaultRouteDecides(t *testing.T) {
+	prev := defaultRouteIfaces
+	t.Cleanup(func() { defaultRouteIfaces = prev })
+	d := &daemon{rootDir: t.TempDir(), lanDevsAsked: true}
+	d.devNets = func(string) []*net.IPNet { return nil }
+	writeRouterFile(t, d.rootDir, "tmp/resolv.conf.d/resolv.conf.auto",
+		"# Interface lan\nnameserver 192.168.1.10\n# Interface wwan\nnameserver 192.168.43.1\n")
+	defaultRouteIfaces = func() []string { return []string{"wwan"} }
+	if v4, _ := d.wanResolvers(); !reflect.DeepEqual(v4, []string{"192.168.43.1"}) {
+		t.Fatalf("default-route interface's resolvers = %v", v4)
+	}
+	defaultRouteIfaces = func() []string { return nil }
+	if v4, v6 := d.wanResolvers(); v4 != nil || v6 != nil {
+		t.Fatalf("no WAN known, yet resolvers taken: %v / %v", v4, v6)
+	}
+	got := defaultRouteIfacesFrom([]byte(`{"interface":[` +
+		`{"interface":"lan","up":true,"route":[]},` +
+		`{"interface":"wan","up":true,"route":[{"target":"0.0.0.0","mask":0}]},` +
+		`{"interface":"wan6","up":true,"route":[{"target":"::","mask":0}]},` +
+		`{"interface":"wg0","up":false,"route":[{"target":"0.0.0.0","mask":0}]}]}`))
+	if !reflect.DeepEqual(got, []string{"wan", "wan6"}) {
+		t.Fatalf("default-route interfaces = %v", got)
+	}
+}
+
+// A router whose only resolver is the box in front of it: every render gives
+// it to xray (WANResolvers: the direct names' last fallback, the box's admin
+// names), the public ones staying first as before.
+func TestThePrivateOnlyResolverReachesTheRender(t *testing.T) {
+	d := dnsDaemon(t, renderWithDNS, dnsmasqAs453)
+	d.lanDevsAsked = true
+	d.devNets = func(string) []*net.IPNet { return nil }
+	withWANResolver(t, d, "192.168.1.254")
+	o := d.dnsOptions()
+	if !reflect.DeepEqual(o.WANResolvers, []string{"192.168.1.254"}) {
+		t.Fatalf("WAN resolvers in the render = %v", o.WANResolvers)
+	}
+	if o.DirectResolvers[0] != xray.DefaultDirectResolvers[0] {
+		t.Fatalf("direct resolvers = %v, want the public ones kept as fallbacks", o.DirectResolvers)
+	}
+}
+
+// The redirect's fingerprint holds the WAN resolvers as the script takes
+// them: sorted, each once, the IPv6 ones only where they are refused. The
+// same servers in another order are no change of the table.
+func TestTheRedirectFingerprintIsWhatIsRendered(t *testing.T) {
+	spec := firewall.DefaultSpec(12345, 1)
+	spec.DNSRedirectPort, spec.DNSResolverUIDs = 10053, []int{453}
+	spec.DNSUpstreamV4 = []string{"77.37.1.2", "192.168.1.254", "77.37.1.2"}
+	spec.DNSUpstreamV6 = []string{"fe80::1"}
+	a := dnsRedirectKey(spec)
+	spec.DNSUpstreamV4 = []string{"192.168.1.254", "77.37.1.2"}
+	if b := dnsRedirectKey(spec); a != b || !strings.HasSuffix(a, "/up=192.168.1.254,77.37.1.2") {
+		t.Fatalf("fingerprints %q / %q: order, repeats or an unrendered IPv6 resolver count", a, b)
+	}
+	spec.DNSRejectV6 = true
+	if k := dnsRedirectKey(spec); !strings.HasSuffix(k, "/up=192.168.1.254,77.37.1.2,fe80::1") {
+		t.Fatalf("refused IPv6 resolver not in the fingerprint: %q", k)
+	}
+	if upstreamsAdded("192.168.1.254,77.37.1.2", "77.37.1.2") || !upstreamsAdded("77.37.1.2", "192.168.1.254,77.37.1.2") || upstreamsAdded("", "") {
+		t.Fatal("upstreamsAdded: only a resolver not there before is new")
+	}
+}
+
+// A WAN or PPPoE flap empties resolv.conf.auto for seconds: the last
+// resolvers stand in for wanResolversGrace, so the table is not reprogrammed
+// (nor the cache emptied, nor xray rendered again) twice per flap.
+func TestAnEmptyResolverFileDuringAFlapKeepsTheLastResolvers(t *testing.T) {
+	d := dnsDaemon(t, renderWithDNS, dnsmasqAs453)
+	d.lanDevsAsked = true
+	d.devNets = func(string) []*net.IPNet { return nil }
+	withWANResolver(t, d, "192.168.1.254")
+	if v4, _ := d.steeredWANResolvers(); !reflect.DeepEqual(v4, []string{"192.168.1.254"}) {
+		t.Fatalf("resolvers = %v", v4)
+	}
+	writeRouterFile(t, d.rootDir, "tmp/resolv.conf.d/resolv.conf.auto", "")
+	if v4, _ := d.steeredWANResolvers(); !reflect.DeepEqual(v4, []string{"192.168.1.254"}) {
+		t.Fatalf("within the grace, resolvers = %v, want the last ones", v4)
+	}
+	d.wanSeenAt = time.Now().Add(-wanResolversGrace - time.Second)
+	if v4, v6 := d.steeredWANResolvers(); v4 != nil || v6 != nil {
+		t.Fatalf("after the grace, resolvers = %v / %v, want none", v4, v6)
 	}
 }

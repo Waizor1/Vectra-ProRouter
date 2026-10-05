@@ -101,6 +101,16 @@ ip route del local 0.0.0.0/0 dev lo table "$RT_TABLE" 2>/dev/null || true
 delete_rules "-6" "$HEXMARK"
 ip -6 route del local ::/0 dev lo table "$RT_TABLE" 2>/dev/null || true
 
+# The table is gone; the resolver's flows its DNS redirect took are not. Each
+# keeps the redirect to xray's loopback DNS inbound for up to three minutes
+# from its last packet, and dnsmasq reuses its source ports: its queries keep
+# going to a dead inbound. Forgotten, they start anew on the open path. Best
+# effort and bounded (vctl gives up within seconds); without vctl — removed,
+# mid-upgrade, or one that predates the command — they end on their own.
+if command -v vctl >/dev/null 2>&1; then
+	vctl forget-dns-flows >/dev/null 2>&1 || true
+fi
+
 logger -t vectra-controller-pro "data plane unloaded (table inet $TABLE, fwmark $HEXMARK, table $RT_TABLE)" 2>/dev/null || true
 
 exit 0

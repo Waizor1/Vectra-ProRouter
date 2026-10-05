@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -116,8 +117,10 @@ func TestParseDumpReadsTheOriginalTupleAndWhetherItWasAnswered(t *testing.T) {
 		t.Fatalf("done=%v err=%v", done, err)
 	}
 	want := []Entry{
-		{Proto: "tcp", State: "SYN_SENT", Src: netip.MustParseAddr("198.51.100.7"), Dst: netip.MustParseAddr("203.0.113.5"), SPort: 51054, DPort: 50055, Replied: false},
-		{Proto: "udp", Src: netip.MustParseAddr("2001:db8::1"), Dst: netip.MustParseAddr("2001:db8::2"), SPort: 41000, DPort: 443, Replied: true},
+		{Proto: "tcp", State: "SYN_SENT", Src: netip.MustParseAddr("198.51.100.7"), Dst: netip.MustParseAddr("203.0.113.5"), SPort: 51054, DPort: 50055, Replied: false,
+			ReplySrc: netip.MustParseAddr("203.0.113.5"), ReplySPort: 50055},
+		{Proto: "udp", Src: netip.MustParseAddr("2001:db8::1"), Dst: netip.MustParseAddr("2001:db8::2"), SPort: 41000, DPort: 443, Replied: true,
+			ReplySrc: netip.MustParseAddr("2001:db8::2"), ReplySPort: 443},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %+v", got)
@@ -217,5 +220,81 @@ func TestReadAsksNetlinkAgainAfterATransientFailure(t *testing.T) {
 	}
 	if es, err := Read(); err != nil || len(es) != 0 || *calls != 2 {
 		t.Fatalf("second read: es=%+v err=%v calls=%d", es, err, *calls)
+	}
+}
+
+// The router's resolver after the DNS redirect into xray went out (1111,
+// 2026-10-05, drill dr2: xray killed every 3 s): its upstream flows to the
+// WAN's resolvers still carried the redirect's NAT — answered from
+// 127.0.0.1:10053, three minutes from their last packet — and dnsmasq reuses
+// its source ports, so its queries kept going to the dead inbound for ~40 s
+// with the rule long gone. Those are the flows to forget; and, putting the
+// redirect back, the router's own ones that go out unredirected.
+func TestTheRedirectsFlowsAreFoundAndForgotten(t *testing.T) {
+	const table = `ipv4     2 udp      17 178 src=192.168.0.2 dst=77.37.251.33 sport=41234 dport=53 packets=4 bytes=240 src=127.0.0.1 dst=192.168.0.2 sport=10053 dport=41234 packets=4 bytes=480 [ASSURED] mark=0 zone=0 use=2
+ipv4     2 tcp      6 100 ESTABLISHED src=192.168.0.2 dst=77.37.255.30 sport=40000 dport=53 src=127.0.0.1 dst=192.168.0.2 sport=10053 dport=40000 [ASSURED] mark=0 zone=0 use=2
+ipv4     2 udp      17 170 src=192.168.0.2 dst=77.37.255.30 sport=41300 dport=53 src=77.37.255.30 dst=192.168.0.2 sport=53 dport=41300 [ASSURED] mark=0 zone=0 use=2
+ipv4     2 udp      17 170 src=192.168.1.141 dst=8.8.8.8 sport=5353 dport=53 src=192.168.1.1 dst=192.168.1.141 sport=53 dport=5353 [ASSURED] mark=0 zone=0 use=2
+ipv4     2 udp      17 170 src=192.168.1.141 dst=1.1.1.1 sport=5354 dport=53 src=1.1.1.1 dst=192.168.0.2 sport=53 dport=5354 [ASSURED] mark=0 zone=0 use=2
+ipv4     2 udp      17 20 src=192.168.0.2 dst=77.37.251.33 sport=123 dport=123 src=77.37.251.33 dst=192.168.0.2 sport=123 dport=123 mark=0 zone=0 use=2`
+	es := Parse(strings.NewReader(table))
+	red := RedirectedTo(es, 10053)
+	if len(red) != 2 || red[0].SPort != 41234 || red[1].Proto != "tcp" || red[1].SPort != 40000 {
+		t.Fatalf("redirected flows = %+v, want the two answered from 127.0.0.1:10053", red)
+	}
+	if len(RedirectedTo(es, 10054)) != 0 {
+		t.Fatal("flows redirected to another port taken")
+	}
+	own := func(a netip.Addr) bool { return a == netip.MustParseAddr("192.168.0.2") }
+	open := DNSFrom(es, own)
+	if len(open) != 1 || open[0].SPort != 41300 {
+		t.Fatalf("the router's open-path DNS flows = %+v, want only its own unredirected one", open)
+	}
+
+	prev := deleteNetlink
+	t.Cleanup(func() { deleteNetlink = prev })
+	var asked []Entry
+	deleteNetlink = func(es []Entry) (int, error) { asked = append(asked, es...); return len(es), nil }
+	if n, err := Delete(red); n != 2 || err != nil || len(asked) != 2 {
+		t.Fatalf("Delete = %d, %v; asked %+v", n, err, asked)
+	}
+	if n, err := Delete(nil); n != 0 || err != nil || len(asked) != 2 {
+		t.Fatal("nothing to forget asked the kernel")
+	}
+}
+
+// The delete asks for the entry by its original tuple, as the kernel encodes
+// one, and the kernel's acknowledgement is read by sequence.
+func TestDeleteRequestNamesTheOriginalTuple(t *testing.T) {
+	e := Entry{Proto: "udp", Src: netip.MustParseAddr("192.168.0.2"), Dst: netip.MustParseAddr("77.37.251.33"), SPort: 41234, DPort: 53}
+	req := deleteRequest(7, e)
+	if typ := binary.NativeEndian.Uint16(req[4:]); typ != ctnlMsgDelete {
+		t.Fatalf("type %#x", typ)
+	}
+	if flags := binary.NativeEndian.Uint16(req[6:]); flags != nlmFRequest|nlmFAck || req[16] != 2 {
+		t.Fatalf("flags %#x family %d", flags, req[16])
+	}
+	if l := binary.NativeEndian.Uint32(req[0:]); int(l) != len(req) {
+		t.Fatalf("length %d of %d", l, len(req))
+	}
+	// Read back as a dump entry would be: the same tuple.
+	body := append([]byte{2, 0, 0, 0}, req[20:]...)
+	body = append(body, nlAttr(ctaStatus, be32(ipsConfirmed))...)
+	got, ok := parseEntry(body)
+	if !ok || got.Src != e.Src || got.Dst != e.Dst || got.SPort != e.SPort || got.DPort != e.DPort || got.Proto != "udp" {
+		t.Fatalf("tuple read back as %+v (%v)", got, ok)
+	}
+	ack := nlMsg(nlmsgError, 0, 7, be32(0))
+	binary.NativeEndian.PutUint32(ack[16:], uint32(0))
+	if errno, ok := ackErrno(ack, 7); !ok || errno != 0 {
+		t.Fatalf("ack = %d, %v", errno, ok)
+	}
+	nack := nlMsg(nlmsgError, 0, 8, []byte{0, 0, 0, 0})
+	binary.NativeEndian.PutUint32(nack[16:], uint32(0xfffffffe)) // -ENOENT
+	if errno, ok := ackErrno(nack, 8); !ok || errno != 2 {
+		t.Fatalf("ENOENT ack = %d, %v", errno, ok)
+	}
+	if _, ok := ackErrno(ack, 9); ok {
+		t.Fatal("another request's answer taken")
 	}
 }
