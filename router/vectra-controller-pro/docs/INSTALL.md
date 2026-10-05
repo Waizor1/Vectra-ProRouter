@@ -97,8 +97,18 @@ Then:
 9. **dnsmasq → dnsmasq-full** without a moment without DHCP/DNS: its libraries
    first, both packages downloaded, the swap, `/etc/config/dhcp` restored, and
    dnsmasq must do again what it did before (answer from `/etc/hosts`, or at
-   least run when another DNS server owns port 53). Otherwise the old dnsmasq
-   is put back from the download and the install stops.
+   least run when another DNS server owns port 53). Before anything is
+   removed the old dnsmasq is kept twice, in `/tmp/vectra-dnsmasq-saved`: its
+   package, with what it depends on already installed, and its files with
+   opkg's record of them. Each dnsmasq is started afresh — none left holding
+   port 53 (a stale one is killed), found by name (`pidof`; BusyBox's
+   `pgrep -x dnsmasq` matches `argv[0]` and never finds it) — and given two
+   starts of 30 tries. Otherwise the old dnsmasq is put back with no network,
+   from its package or, when opkg cannot, from its files, and the install stops
+   (DNSMASQ_FULL_ROLLED_BACK). If even that does not answer, dnsmasq is run by
+   hand until a reboot and the run ends DNSMASQ_FULL_BROKEN, saying what to
+   run; the saved package stays. What dnsmasq looked like at each failed try
+   (processes, port 53, procd's view, logread) is in the install log.
 10. **The packages**: the planned xray-core first, then
    `vectra-controller-pro`, which pulls `xray-core (>= minimum)`, the kmods
    and the rest; `vectra-geodata` and `vectra-reporter` are named too on a
@@ -233,13 +243,18 @@ nothing about uncommitted work.
 ## The stand
 
 ```sh
-DOCKER_CONTEXT=colima ./test/install/run.sh                 # 21 scenarios on aarch64_generic
+DOCKER_CONTEXT=colima ./test/install/run.sh                 # 25 scenarios on aarch64_generic
 
 The routers share the docker host's kernel, which needs nftables' `fib`
 (vctl's ruleset): the run checks that first and stops on a kernel without it
 (Docker Desktop's linuxkit) — Colima's has it.
 INSTALL_ARCHS="x86_64 arm_cortex-a15_neon-vfpv4 mips_24kc" ./test/install/run.sh lifecycle
+INSTALL_REPEAT=10 INSTALL_STRESS=4 ./test/install/run.sh feed-outage   # 10 runs, 4 busy loops in each router
 ```
+
+A run that fails (the installer's, or the end's checks) leaves `DIAG|` lines in
+its scenario log: dnsmasq's packages and processes, port 53, procd's view of
+the service, logread and the install log.
 
 Each scenario boots a fresh `openwrt/rootfs:<arch>-24.10.8` (procd, ubusd,
 logd, rpcd, uhttpd, dnsmasq), serves a feed signed with a throwaway key from a
@@ -258,7 +273,11 @@ leave the router byte for byte as it was (packages, feeds, keys, `/etc/config`,
 | `passwall` | refused without `--yes`; with it: taken over, official xray-core upgraded to the minimum, Vectra's own geo data, PassWall2 back on `vectra off` |
 | `passwall-upgrade` | taken over from PassWall2, then upgraded: vctl restarted in place, and PassWall2 never ran for the file swap (an upgrade is no hand-back) |
 | `passwall-retire` | taken over from PassWall2 as opkg has it; refused while vctl carries nothing and with `retire_passwall '0'`; then carrying (the data-plane stand's operator config, a freedom outbound) and `vctl retire-passwall --now`: PassWall2's packages gone, xray-core and dnsmasq-full kept, its configuration in a 0600 backup, nothing owed, status `retired`; a bare stop restarted by the dead-man; `vectra off` leaves plain internet, a minute later too |
-| `dnsmasq-rollback` | a dnsmasq-full that never runs: the old dnsmasq back and answering |
+| `dnsmasq-rollback` | a dnsmasq-full that never runs: the old dnsmasq back and answering, the same version, enabled — with every download failing from the moment the swap begins |
+| `dnsmasq-rollback-files` | the same, and opkg refuses to put the old package back: its saved files and opkg record go back by hand, and it answers |
+| `dnsmasq-stale` | a frozen dnsmasq holds port 53 while dnsmasq-full starts (the 0.7.0-r18 installer: DNSMASQ_FULL_BROKEN): killed, installed |
+| `nojail` | a router without procd's jail: its unjailed dnsmasq found, swapped, installed |
+| `feed-outage` | downloads.openwrt.org away for a moment at each step that needs it: tried again, installed |
 | `mirror` | downloads.openwrt.org unreachable: through a mirror, `distfeeds.conf` restored |
 | `refuse-*` | arch, apk, release, memory, storage, conflict, fleet, agent-old, signature, feed-down: exit 1, the router byte for byte as it was |
 | `check-json` | `--check --json` next to the old agent without `--standby`: JSON lines in ASCII, why `--standby`, the rest checked, exit 1 |

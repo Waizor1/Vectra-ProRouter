@@ -51,9 +51,11 @@ version_of() { opkg list-installed "$1" 2>/dev/null | sed -n "s/^$1 - //p"; }
 running() { [ -x "/etc/init.d/$1" ] && "/etc/init.d/$1" running; }
 enabled() { [ -x "/etc/init.d/$1" ] && "/etc/init.d/$1" enabled; }
 dns_answers() { nslookup localhost 127.0.0.1 2>/dev/null | grep -q '^Name:'; }
-# DNS=runs (qemu-mips, see run.sh): the process is all that can be observed.
+# DNS=runs (qemu-mips, see run.sh): the process is all that can be observed —
+# by name (pidof): BusyBox's pgrep -x matches argv[0], /usr/sbin/dnsmasq, and
+# finds only procd's jail wrapper, none at all with the jail off (JAIL=0).
 dns_ok() {
-	if [ "${DNS:-answers}" = runs ]; then pgrep -x dnsmasq; else dns_answers; fi
+	if [ "${DNS:-answers}" = runs ]; then pidof dnsmasq; else dns_answers; fi
 }
 not() { ! "$@"; }
 # /etc/config/dhcp as it was before the install, byte for byte, but for the
@@ -168,13 +170,43 @@ install_fixture() { # <package>
 }
 
 # The installer as a person runs it: no terminal on stdin (a pipe or ssh -T).
+# A run that changed the router and failed (or whose end's checks found it
+# broken) leaves what the router looked like right then in the scenario log.
 installer() { # <args...> -> INSTALL_RC, output in /tmp/installer.out
 	sh "$INSTALLER" "$@" < /dev/null > /tmp/installer.out 2>&1
 	INSTALL_RC=$?
 	sed 's/^/     | /' /tmp/installer.out
+	if grep -q 'ОШИБКА\|но не работает' /tmp/installer.out; then
+		diagnose "the installer failed (exit $INSTALL_RC): $(sed -n 's/^Итог: //p' /tmp/installer.out | tail -n 1)"
+	fi
 }
 said() { grep -q -- "$1" /tmp/installer.out; }
 
+# What the router looks like, into the scenario log (DIAG| lines): DNS and
+# DHCP first — what an owner loses when the dnsmasq swap goes wrong — then the
+# system log and the installer's own.
+diagnose() { # <why>
+	echo "DIAG ==== $1"
+	{
+		echo "## opkg list-installed dnsmasq*"
+		opkg list-installed 'dnsmasq*'
+		echo "## processes"
+		ps w
+		echo "## listening on :53"
+		netstat -lnup | grep ':53 '
+		netstat -lntp | grep ':53 '
+		echo "## procd: the dnsmasq service"
+		ubus call service list '{"name":"dnsmasq"}'
+		echo "## nslookup localhost 127.0.0.1"
+		nslookup localhost 127.0.0.1
+		echo "## /etc/config/dhcp vs before"
+		diff /tmp/dhcp.before /etc/config/dhcp
+		echo "## logread (last 120)"
+		logread | tail -n 120
+		echo "## /tmp/vectra-install.log (last 200)"
+		tail -n 200 /tmp/vectra-install.log
+	} 2>&1 | sed 's/^/DIAG| /'
+}
 # --------------------------------------------------------------- asserts ----
 
 # The directory vctl reads its geo files from: uci geo_asset_dir, where the
@@ -196,7 +228,7 @@ assert_installed_and_on() { # <prefix>
 	check "${p}_geo_accepted" "xray accepts every category the provider routes by, from $geo" \
 		env XRAY_LOCATION_ASSET="$geo" xray run -test -c /usr/share/vectra-controller-pro/geo/check.json
 	check "${p}_dnsmasq_full" "dnsmasq-full $(version_of dnsmasq-full) replaced dnsmasq and answers" \
-		sh -c "! opkg list-installed dnsmasq | grep -q '^dnsmasq - ' && pgrep -x dnsmasq && { [ \"\${DNS:-answers}\" = runs ] || nslookup localhost 127.0.0.1 | grep -q '^Name:'; }"
+		sh -c "! opkg list-installed dnsmasq | grep -q '^dnsmasq - ' && pidof dnsmasq && { [ \"\${DNS:-answers}\" = runs ] || nslookup localhost 127.0.0.1 | grep -q '^Name:'; }"
 	check "${p}_kmods" "kmod-nft-tproxy, kmod-nft-socket, kmod-nft-nat installed" \
 		sh -c 'for k in kmod-nft-tproxy kmod-nft-socket kmod-nft-nat rpcd-mod-iwinfo; do opkg list-installed $k | grep -q "^$k - " || exit 1; done'
 	check "${p}_feed" "src/gz vectra_pro in customfeeds.conf, key in /etc/opkg/keys" \
@@ -206,6 +238,37 @@ assert_installed_and_on() { # <prefix>
 	check "${p}_luci" "uhttpd serves the Vectra bundle" wget -q -O /dev/null http://127.0.0.1/luci-static/vectra/vectra-app.js
 	check "${p}_distfeeds" "OpenWrt's distfeeds.conf left as it was" cmp -s /etc/opkg/distfeeds.conf /tmp/distfeeds.before
 	check "${p}_dhcp_config" "/etc/config/dhcp kept (the swap restores it), plus vectra.lan and my.vectra-pro.net on the LAN" dhcp_as_before named
+}
+
+# The dnsmasq the router had before the install, back: the same version,
+# running, answering, and nothing of dnsmasq-full or Vectra left.
+assert_old_dnsmasq_back() { # <prefix>
+	check "$1_dnsmasq" "dnsmasq $(version_of dnsmasq) back (was $(cat /tmp/dnsmasq.version)), running, answering" \
+		sh -c "[ \"\$(opkg list-installed dnsmasq | sed -n 's/^dnsmasq - //p')\" = \"$(cat /tmp/dnsmasq.version)\" ] && ! opkg list-installed dnsmasq-full | grep -q . && pidof dnsmasq && { [ \"\${DNS:-answers}\" = runs ] || nslookup localhost 127.0.0.1 | grep -q '^Name:'; }"
+	check "$1_enabled" "dnsmasq enabled: it starts again after a reboot" /etc/init.d/dnsmasq enabled
+	check "$1_no_vectra" "Vectra not installed" not installed "$PKG"
+	check "$1_dhcp_config" "/etc/config/dhcp as before" cmp -s /etc/config/dhcp /tmp/dhcp.before
+}
+
+# From the moment dnsmasq-full is on the router, no download goes out: each
+# attempt fails, and is written to /tmp/offline.calls (every one before it, to
+# /tmp/wget.calls: the wrapper is the one opkg runs).
+offline_after_swap() {
+	real="$(readlink -f /usr/bin/wget)"
+	[ -x "$real" ] || die "no wget to wrap ($real)"
+	rm -f /usr/bin/wget
+	cat > /usr/bin/wget <<-EOF
+		#!/bin/sh
+		for a; do url="\$a"; done
+		[ -f /usr/lib/opkg/info/dnsmasq-full.control ] && touch /tmp/offline
+		if [ -e /tmp/offline ]; then
+			echo "\$url" >> /tmp/offline.calls
+			exit 4
+		fi
+		echo "\$url" >> /tmp/wget.calls
+		exec $real "\$@"
+	EOF
+	chmod 0755 /usr/bin/wget
 }
 
 assert_unchanged() { # <name> <what>
@@ -287,8 +350,19 @@ deadman() { BOOT_SETTLE=0 /usr/libexec/vectra-controller-pro/deadman.sh; }
 
 cp /etc/opkg/distfeeds.conf /tmp/distfeeds.before
 ls /etc/opkg/keys > /tmp/keys.before
+# nojail: a router built without procd-ujail runs dnsmasq as it is, no jail.
+[ "$SCENARIO" = nojail ] && JAIL=0
 boot
 cp /etc/config/dhcp /tmp/dhcp.before
+version_of dnsmasq > /tmp/dnsmasq.version
+# STRESS (run.sh: INSTALL_STRESS): busy loops beside the scenario, for the
+# races a router under load runs into and an idle stand does not.
+i=0
+while [ "$i" -lt "${STRESS:-0}" ]; do
+	(while :; do :; done) &
+	i=$((i + 1))
+done
+[ "${STRESS:-0}" = 0 ] || info "stress: $STRESS busy loops"
 
 case "$SCENARIO" in
 lifecycle)
@@ -326,7 +400,7 @@ lifecycle)
 	check uninstall_ubus "the vectra ubus object is gone" not ubus call vectra status
 	check uninstall_feed "the feed line and the key are gone" \
 		sh -c "! grep -q '^src/gz vectra_pro ' /etc/opkg/customfeeds.conf && ls /etc/opkg/keys | cmp -s - /tmp/keys.before"
-	check uninstall_dns "dnsmasq-full stays and still answers" sh -c "opkg list-installed dnsmasq-full | grep -q . && pgrep -x dnsmasq && { [ \"\${DNS:-answers}\" = runs ] || nslookup localhost 127.0.0.1 | grep -q '^Name:'; }"
+	check uninstall_dns "dnsmasq-full stays and still answers" sh -c "opkg list-installed dnsmasq-full | grep -q . && pidof dnsmasq && { [ \"\${DNS:-answers}\" = runs ] || nslookup localhost 127.0.0.1 | grep -q '^Name:'; }"
 	check uninstall_dhcp_config "/etc/config/dhcp as before the install: vectra.lan and my.vectra-pro.net gone with the package" dhcp_as_before
 	check uninstall_keeps_identity "without --purge the router's Vectra identity stays" test -d /etc/vectra-controller-pro
 	sh /etc/vectra-controller-pro/vectra-install.sh --uninstall --purge < /dev/null > /dev/null 2>&1
@@ -722,15 +796,93 @@ refuse-feed-down)
 	;;
 
 dnsmasq-rollback)
-	# dnsmasq-full that installs and never runs: the old dnsmasq must come back.
+	# dnsmasq-full that installs and never runs: the old dnsmasq must come back
+	# — with no network: from the moment dnsmasq-full is on the router every
+	# download fails, and is counted.
 	export VECTRA_FEED="${FEED_BASE}/broken"
+	offline_after_swap
 	installer
 	check rollback_exit "exit 1, got $INSTALL_RC" test "$INSTALL_RC" = 1
 	check rollback_says "says the old dnsmasq is back" said "прежний dnsmasq возвращён"
-	check rollback_dnsmasq "dnsmasq $(version_of dnsmasq) back, running, answering" \
-		sh -c "opkg list-installed dnsmasq | grep -q '^dnsmasq - ' && ! opkg list-installed dnsmasq-full | grep -q . && pgrep -x dnsmasq && { [ \"\${DNS:-answers}\" = runs ] || nslookup localhost 127.0.0.1 | grep -q '^Name:'; }"
-	check rollback_no_vectra "Vectra not installed" not installed "$PKG"
-	check rollback_dhcp_config "/etc/config/dhcp as before" cmp -s /etc/config/dhcp /tmp/dhcp.before
+	assert_old_dnsmasq_back rollback
+	check rollback_offline "the way back downloaded nothing ($(wc -l < /tmp/offline.calls 2> /dev/null || echo 0) attempts after the swap began)" \
+		sh -c '[ -s /tmp/wget.calls ] && [ ! -s /tmp/offline.calls ]'
+	check rollback_saved_gone "what was kept for the way back is gone once it is not needed" test ! -e /tmp/vectra-dnsmasq-saved
+	;;
+
+dnsmasq-rollback-files)
+	# The way back when opkg cannot put the old package back (a lock, a broken
+	# status file): its files and opkg's record of them, kept before the swap,
+	# go back by hand — still with no network.
+	export VECTRA_FEED="${FEED_BASE}/broken"
+	offline_after_swap
+	mv /bin/opkg /bin/opkg.real
+	cat > /bin/opkg <<-'EOF'
+		#!/bin/sh
+		case "$1 $2" in
+		"install /tmp/vectra-dnsmasq-saved/dnsmasq_"*) echo "stand: opkg refuses to put dnsmasq back"; exit 255 ;;
+		esac
+		exec /bin/opkg.real "$@"
+	EOF
+	chmod 0755 /bin/opkg
+	installer
+	rm -f /bin/opkg
+	mv /bin/opkg.real /bin/opkg
+	check files_exit "exit 1, got $INSTALL_RC" test "$INSTALL_RC" = 1
+	check files_says "says it put the old dnsmasq's files back, and that it works" \
+		sh -c "grep -q 'восстанавливаю его файлы' /tmp/installer.out && grep -q 'прежний dnsmasq возвращён и работает' /tmp/installer.out"
+	assert_old_dnsmasq_back files
+	check files_opkg_record "opkg knows dnsmasq as installed, with its files: $(opkg files dnsmasq 2> /dev/null | grep -c /)" \
+		sh -c "opkg files dnsmasq | grep -qx /usr/sbin/dnsmasq && opkg status dnsmasq | grep -q '^Status: install ok installed'"
+	check files_offline "the way back downloaded nothing ($(wc -l < /tmp/offline.calls 2> /dev/null || echo 0) attempts)" \
+		sh -c '[ -s /tmp/wget.calls ] && [ ! -s /tmp/offline.calls ]'
+	;;
+
+nojail)
+	# A router without procd's jail (no procd-ujail at the swap): its dnsmasq
+	# runs as /usr/sbin/dnsmasq, which `pgrep -x dnsmasq` (the installer of
+	# 0.7.0-r18 and before) never finds — it found the jail wrapper, or an
+	# init script that happened to run. Found by name now, swapped, installed.
+	check nojail_unjailed "dnsmasq runs without the jail: $(tr '\0' ' ' < "/proc/$(pidof dnsmasq | cut -d ' ' -f 1)/cmdline" 2> /dev/null)" \
+		sh -c '[ ! -e /sbin/ujail ] && p="$(pidof dnsmasq)" && [ -n "$p" ] && ! grep -q ujail /proc/${p%% *}/cmdline'
+	installer
+	check nojail_exit "exit 0, got $INSTALL_RC" test "$INSTALL_RC" = 0
+	assert_installed_and_on nojail
+	;;
+
+dnsmasq-stale)
+	# A dnsmasq left holding port 53 while dnsmasq-full starts — one that
+	# outlived procd's stop, frozen, answering nobody: every dnsmasq started
+	# after it dies with "Address in use" (the installer of 0.7.0-r18 and before
+	# then could not put the old one back either: DNSMASQ_FULL_BROKEN). It is
+	# found and killed, and dnsmasq-full answers.
+	mkdir -p /tmp/stale
+	cp /usr/sbin/dnsmasq /tmp/stale/dnsmasq
+	mv /bin/opkg /bin/opkg.real
+	cat > /bin/opkg <<-'EOF'
+		#!/bin/sh
+		/bin/opkg.real "$@"
+		rc=$?
+		case "$1 $2" in
+		"install /tmp/vectra-install/pkgs/dnsmasq-full_"*)
+			if [ ! -e /tmp/stale.pid ]; then
+				/tmp/stale/dnsmasq --conf-file=/dev/null --no-resolv --no-hosts --pid-file=/tmp/stale.pid
+				sleep 1
+				kill -STOP "$(cat /tmp/stale.pid)"
+			fi
+			;;
+		esac
+		exit "$rc"
+	EOF
+	chmod 0755 /bin/opkg
+	installer
+	rm -f /bin/opkg
+	mv /bin/opkg.real /bin/opkg
+	check stale_injected "a frozen dnsmasq held port 53 during the swap (pid $(cat /tmp/stale.pid 2> /dev/null))" test -s /tmp/stale.pid
+	check stale_exit "exit 0, got $INSTALL_RC" test "$INSTALL_RC" = 0
+	check stale_killed "the frozen dnsmasq was found and killed (the install log says so)" \
+		sh -c "case \"\$(cut -d ' ' -f 3 /proc/\$(cat /tmp/stale.pid)/stat 2> /dev/null)\" in '' | Z) ;; *) exit 1 ;; esac && grep -q '^# dnsmasq still runs after its stop' /tmp/vectra-install.log"
+	assert_installed_and_on stale
 	;;
 
 feed-outage)
@@ -787,5 +939,6 @@ mirror)
 	;;
 esac
 
+[ "$FAILS" = 0 ] || diagnose "the end: $FAILS check(s) failed"
 echo "INSTALL-EXIT $FAILS"
 exit "$FAILS"
