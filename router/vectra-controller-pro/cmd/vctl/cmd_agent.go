@@ -317,10 +317,9 @@ type daemon struct {
 	tunnel atomic.Pointer[tunnelLook]
 	// exits is what the exit check found (cmd/vctl/exitcheck.go).
 	exits exitcheck.State
-	// connectVerdict is the last verdict judged for Connect, at
-	// connectVerdictAt (holdConnectVerdict; the daemon loop only).
-	connectVerdict   connectJudged
-	connectVerdictAt time.Time
+	// connectHeld is the last verdict judged for Connect
+	// (holdConnectVerdict; the daemon loop only). A release forgets it.
+	connectHeld connectJudged
 	// readCounters reads the vctl table's nft counters; nil = nft. Tests
 	// replace it.
 	readCounters func(ctx context.Context) (map[string]int64, bool)

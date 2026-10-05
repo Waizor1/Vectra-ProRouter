@@ -37,6 +37,8 @@ import (
 // ui_lock. The subscription URL is never logged: the one line says what was
 // removed, by name.
 func (d *daemon) release(ctx context.Context) {
+	// The tunnel's word was the previous owner's.
+	d.connectHeld = connectJudged{}
 	if err := connectForgetWifiOwner(d.cfg); err != nil {
 		logging.L().Warn("connect Wi-Fi eligibility unavailable")
 	}

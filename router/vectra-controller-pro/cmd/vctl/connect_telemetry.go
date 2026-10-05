@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 	"vectra-controller-pro/internal/connecttelemetry"
@@ -76,9 +77,16 @@ func (d *daemon) publishConnectTelemetry(ctx context.Context, features map[strin
 		t.SupportAccess = &support
 	}
 	t.Verdict, t.ExitCountry = connectVerdict(in, d.exits.EgressSnapshot())
-	t.Verdict, t.ExitCountry = d.holdConnectVerdict(in, t.Verdict, t.ExitCountry)
+	owner := ""
+	if d.st.ClaimOwner != nil {
+		owner = d.st.ClaimOwner.OwnerRef
+	}
+	// A held verdict keeps the time it was judged: connecttelemetry.Build
+	// drops it once that is older than MaxObservationAge.
+	var judgedAt time.Time
+	t.Verdict, t.ExitCountry, judgedAt = d.holdConnectVerdict(in, owner, t.Verdict, t.ExitCountry)
 	connectOwnerCapabilities(&t, d.st.ClaimOwner, features)
-	d.collector.SetConnect(connecttelemetry.Snapshot{Telemetry: t, ObservedAt: in.Now})
+	d.collector.SetConnect(connecttelemetry.Snapshot{Telemetry: t, ObservedAt: judgedAt})
 }
 
 func connectSettings(in uiapi.Inputs, f setup.Facts) controlplane.RouterConnectTelemetry {
@@ -315,25 +323,56 @@ func freshObservation(at, ref, now time.Time, age time.Duration) bool {
 
 // holdConnectVerdict: a check-in that cannot judge the tunnel right now (a
 // probe still under way, an API slow to answer) reports the last verdict the
-// router did judge, with its country, while that is no older than the
-// verdict's own lifetime (connecttelemetry.MaxObservationAge): the owner's
-// app does not flip to "unknown" for one unlucky read. Older, or with no
-// configuration to judge at all, the verdict stays out: unknown.
-func (d *daemon) holdConnectVerdict(in uiapi.Inputs, verdict string, country *string) (string, *string) {
+// router did judge, with its country, and the time it was judged — the
+// snapshot's ObservedAt — so connecttelemetry.Build drops it once that is
+// older than MaxObservationAge: a failure the router cannot judge never
+// reads as the old verdict for longer. The hold is the same owner's and the
+// same route's only: another owner (a claim, a release) or another route (a
+// location switch, the watchdog's move) is unknown; a route not readable
+// now keeps the verdict without a country. With no configuration to judge
+// at all, unknown.
+func (d *daemon) holdConnectVerdict(in uiapi.Inputs, owner, verdict string, country *string) (string, *string, time.Time) {
+	route := connectRouteKey(in.Runtime)
 	if verdict != "" {
-		d.connectVerdict, d.connectVerdictAt = connectJudged{verdict: verdict, country: country}, in.Now
-		return verdict, country
+		d.connectHeld = connectJudged{verdict: verdict, country: country, at: in.Now, route: route, owner: owner}
+		return verdict, country, in.Now
 	}
-	if in.Runtime == nil || d.connectVerdict.verdict == "" || !freshConnect(d.connectVerdictAt, in.Now, connecttelemetry.MaxObservationAge) {
-		return "", nil
+	h := d.connectHeld
+	if in.Runtime == nil || h.verdict == "" || h.owner != owner || !freshConnect(h.at, in.Now, connecttelemetry.MaxObservationAge) ||
+		(route != "" && route != h.route) {
+		d.connectHeld = connectJudged{}
+		return "", nil, in.Now
 	}
-	return d.connectVerdict.verdict, d.connectVerdict.country
+	if route == "" {
+		country = nil
+	} else {
+		country = h.country
+	}
+	return h.verdict, country, h.at
 }
 
-// connectJudged is the last verdict the router judged for Connect.
+// connectJudged is the last verdict the router judged for Connect, when, for
+// which owner and over which route.
 type connectJudged struct {
 	verdict string
 	country *string
+	at      time.Time
+	route   string
+	owner   string
+}
+
+// connectRouteKey names the nodes the main traffic goes through: the pin or
+// the watchdog's move, else the balancer's picks; "" when not known.
+func connectRouteKey(rt *localctl.Runtime) string {
+	if rt == nil || rt.Route == nil {
+		return ""
+	}
+	if rt.Route.Override != "" {
+		return "=" + rt.Route.Override
+	}
+	nodes := slices.Clone(rt.Route.Nodes)
+	slices.Sort(nodes)
+	return rt.Route.Balancer + ":" + strings.Join(nodes, ",")
 }
 
 // Verdict uses the same diagnostics decisions as the local UI, but requires

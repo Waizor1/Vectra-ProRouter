@@ -20,13 +20,18 @@ working (Cloudflare FR, YouTube 204, Instagram 200).
   later than now is still no observation.
 - **One check-in that cannot judge keeps the last verdict.** A read that
   cannot judge the tunnel right now reports the last verdict the router did
-  judge, with its country, for at most the verdict's own lifetime (2 min,
-  `connecttelemetry.MaxObservationAge`); older, or with no configuration to
-  judge, the verdict stays out (unknown) as before.
+  judge, with its country, published with the time it was judged: the
+  check-in's freshness gate ends it 2 min after the judgement
+  (`connecttelemetry.MaxObservationAge`), however many check-ins hold it.
+  The hold is one owner's and one route's: a claim, a release, a location
+  switch or the watchdog's move ends it; a route not readable at the moment
+  keeps the verdict without the country. With no configuration to judge,
+  the verdict stays out (unknown) as before.
 
 ### Deploy
-No change to the check-in or the panel contract. The panel also keeps the
-last measured verdict over a short gap for routers still on r15–r18.
+No change to the check-in or the panel contract. The panel keeps the last
+measured verdict over a gap of at most 3 min for routers older than r19
+only (they have the race); r19 and later are taken as they report.
 
 ## vctl 0.7.0-r18 — a router just claimed in the Vectra app is on the VPN at once
 

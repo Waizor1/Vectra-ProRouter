@@ -4,7 +4,7 @@ import {
   partnerOwnerRefSchema,
 } from "@vectra/contracts";
 import { jobs, routerInventorySnapshots, routers } from "@vectra/db";
-import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   CONNECT_ACTION_NAMES,
@@ -16,6 +16,8 @@ import {
   hydrateConnectWifi,
   protectPartnerParams,
 } from "./partner-router-secrets";
+import { env } from "~/env";
+import { compareControllerVersions } from "~/lib/controller-version";
 import { db } from "~/server/db";
 import {
   defaultDeps,
@@ -28,7 +30,7 @@ import {
   type PartnerApiDeps,
 } from "./partner-api";
 import { PARTNER_ACTION_DEDUPE_PREFIX } from "./partner-action-key";
-import { keyedDigest } from "./secrets";
+import { keyedDigest, stableStringify } from "./secrets";
 import {
   canRunDestructiveAction,
   describeEffectiveRouterSupport,
@@ -53,12 +55,15 @@ export const partnerActionRequestSchema = z
   .strict();
 
 // How long a check-in without a verdict leaves the last measured one
-// standing. Absence is not a state (partner-router-events.ts): vctl leaves
-// the verdict out while it cannot judge, and r15–r18 left it out of every
-// other check-in by a race in the router's own freshness check (1111 after
-// its reboot, 2026-10-05: the app said "unknown" with the VPN working). A
-// longer gap is unknown.
+// standing, for vctl r15–r18 only: they left it out of every other check-in
+// by a race in their own freshness check (1111 after its reboot, 2026-10-05:
+// the app said "unknown" with the VPN working). r19 holds its own verdict
+// for its lifetime and no more; a hold here on top would show a failure it
+// cannot judge as the old verdict for minutes longer. A longer gap is
+// unknown.
 export const PARTNER_VERDICT_HOLD_MS = 180_000;
+/** The first controller that holds its verdict itself. */
+export const PARTNER_VERDICT_SELF_HELD_VERSION = "0.7.0-r19";
 
 /** The newest snapshot that carried a verdict, and when the gap after it began. */
 export type HeldVerdict = { inventory: Inventory; unknownSince: Date };
@@ -88,8 +93,12 @@ export function projectPartnerRouter(
     now.getTime() - held.unknownSince.getTime() <= PARTNER_VERDICT_HOLD_MS
       ? ownersConnect(router, held.inventory)
       : undefined;
-  // Verdict and country expire together: both from the same snapshot.
-  const judged = kept?.verdict ? kept : measured;
+  // The held country only where the router still goes the same way: after
+  // a location switch it may be the old route's.
+  const sameWay =
+    !!kept &&
+    stableStringify(kept.location ?? null) ===
+      stableStringify(measured?.location ?? null);
   const capable =
     router.status !== "disabled" &&
     router.engineMode === "xray-direct" &&
@@ -123,8 +132,12 @@ export function projectPartnerRouter(
             ),
           )
         : null,
-    verdict: judged?.verdict ?? null,
-    exitCountry: judged?.exitCountry ?? null,
+    verdict: kept?.verdict ?? measured?.verdict ?? null,
+    exitCountry: kept?.verdict
+      ? sameWay
+        ? (kept.exitCountry ?? null)
+        : null
+      : (measured?.exitCountry ?? null),
     lanClients: measured?.lanClients ?? null,
     location: measured?.location ?? null,
     entries: measured?.entries ?? [],
@@ -166,21 +179,38 @@ async function latestInventory(client: Client, routerId: string) {
   return inventory ?? null;
 }
 
-// When the newest snapshot carries no verdict: the newest one that did, and
-// the first snapshot after it — rows are written on a change, so that one is
-// where the verdict went missing. Nothing to look up otherwise.
+// When the newest snapshot of a router older than r19 carries Connect
+// telemetry but no verdict: the newest one that did, and the first snapshot
+// after it — rows are written on a change, so that one is where the verdict
+// went missing. Nothing is looked up otherwise. Both reads are bounded in
+// time and walk (router_id, created_at desc): the last verdict row is at
+// most one heartbeat older than a gap still within the hold.
 export async function heldVerdictWithDb(
   client: Client,
   routerId: string,
   latest: Inventory | null,
+  now = new Date(),
 ): Promise<HeldVerdict | null> {
-  if (!latest || latest.payload?.connect?.verdict) return null;
+  const payload = latest?.payload;
+  if (!latest || !payload?.connect || payload.connect.verdict) return null;
+  const version =
+    payload.controllerRuntimeVersion ?? payload.controllerVersion;
+  const order = compareControllerVersions(
+    version,
+    PARTNER_VERDICT_SELF_HELD_VERSION,
+  );
+  if (order === null || order >= 0) return null;
+  const heartbeatMs = (env.VECTRA_SNAPSHOT_HEARTBEAT_MINUTES ?? 15) * 60_000;
+  const since = new Date(
+    now.getTime() - PARTNER_VERDICT_HOLD_MS - heartbeatMs - 60_000,
+  );
   const [measured] = await client
     .select()
     .from(routerInventorySnapshots)
     .where(
       and(
         eq(routerInventorySnapshots.routerId, routerId),
+        gt(routerInventorySnapshots.createdAt, since),
         lt(routerInventorySnapshots.createdAt, latest.createdAt),
         sql`${routerInventorySnapshots.payload}->'connect'->>'verdict' is not null`,
       ),
@@ -195,11 +225,15 @@ export async function heldVerdictWithDb(
       and(
         eq(routerInventorySnapshots.routerId, routerId),
         gt(routerInventorySnapshots.createdAt, measured.createdAt),
+        lte(routerInventorySnapshots.createdAt, latest.createdAt),
       ),
     )
     .orderBy(asc(routerInventorySnapshots.createdAt))
     .limit(1);
-  return { inventory: measured, unknownSince: gap?.createdAt ?? latest.createdAt };
+  return {
+    inventory: measured,
+    unknownSince: gap?.createdAt ?? latest.createdAt,
+  };
 }
 
 export async function readPartnerRoutersWithDb(
@@ -248,7 +282,7 @@ export async function readPartnerRoutersWithDb(
           current,
           inventory,
           now,
-          await heldVerdictWithDb(tx, current.id, inventory),
+          await heldVerdictWithDb(tx, current.id, inventory, now),
         );
       }),
     ),

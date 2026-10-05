@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("~/env", () => ({
   env: {
@@ -30,6 +32,7 @@ import {
   handlePartnerRouterAction,
   handlePartnerRouterActionCancel,
   handlePartnerRoutersRead,
+  heldVerdictWithDb,
   projectPartnerRouter,
   queuePartnerActionWithDb,
   readPartnerRoutersWithDb,
@@ -40,6 +43,7 @@ import {
   reportedPartnerTransitions,
   sweepPartnerOfflineWithDb,
 } from "./partner-router-events";
+const dialect = new PgDialect();
 const ID = "6f0c2d8e-4b1a-4c3e-9d57-2a8b1c0e9f31";
 const OTHER = "6f0c2d8e-4b1a-4c3e-9d57-2a8b1c0e9f32";
 const NOW = new Date("2026-10-01T15:00:00Z");
@@ -277,6 +281,29 @@ describe("partner snapshot ownership and measured truth", () => {
     });
     const beforeClaim = router({ claimedAt: new Date(NOW.getTime() - 10_000) });
     expect(projectPartnerRouter(beforeClaim, gapless, NOW, held).verdict).toBeNull();
+    // After a location switch the held country may be the old route's.
+    const moved = inventory({
+      connect: {
+        ownerRef: "acct-42",
+        location: { mode: "entry", entryId: "e2" },
+      },
+    });
+    expect(projectPartnerRouter(owned, moved, NOW, held)).toMatchObject({
+      verdict: "ok",
+      exitCountry: null,
+    });
+    // A row the router reported for another owner is never held.
+    const foreign = {
+      ...held,
+      inventory: {
+        ...measuredRow,
+        payload: {
+          ...measuredRow.payload,
+          connect: { ownerRef: "acct-7", verdict: "ok", exitCountry: "PL" },
+        },
+      } as typeof measuredRow,
+    };
+    expect(projectPartnerRouter(owned, gapless, NOW, foreign).verdict).toBeNull();
     const down = inventory({ connect: { ownerRef: "acct-42", verdict: "down" } });
     expect(projectPartnerRouter(owned, down, NOW, held)).toMatchObject({
       verdict: "down",
@@ -314,6 +341,49 @@ describe("partner snapshot ownership and measured truth", () => {
     const [own] = await readPartnerRoutersWithDb(plain.db as never, "acct-42", ID, NOW);
     expect(own?.verdict).toBe("down");
     expect(plain.calls.filter((c) => c.table === routerInventorySnapshots)).toHaveLength(1);
+  });
+  it("looks up a held verdict only for routers older than r19, in a bounded window", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const rows: unknown[][] = [
+      [
+        {
+          ...inventory({ connect: { ownerRef: "acct-42", verdict: "ok" } }),
+          createdAt: new Date(NOW.getTime() - 60_000),
+        },
+      ],
+      [{ createdAt: new Date(NOW.getTime() - 30_000) }],
+    ];
+    const chain = {
+      where(condition: SQL) {
+        queries.push(dialect.sqlToQuery(condition));
+        return chain;
+      },
+      orderBy: () => chain,
+      limit: () => Promise.resolve(rows.shift() ?? []),
+    };
+    const client = { select: () => ({ from: () => chain }) };
+    const gap = inventory({ connect: { ownerRef: "acct-42" } });
+    const held = await heldVerdictWithDb(client as never, ID, gap, NOW);
+    expect(held?.unknownSince).toEqual(new Date(NOW.getTime() - 30_000));
+    expect(queries).toHaveLength(2);
+    // Never further back than the hold plus one heartbeat (15 min) and a minute.
+    const since = new Date(NOW.getTime() - 180_000 - 15 * 60_000 - 60_000);
+    expect(queries[0]!.sql).toMatch(/"created_at" > \$\d+/);
+    expect(queries[0]!.params).toContainEqual(since.toISOString());
+    expect(queries[1]!.sql).toMatch(/"created_at" <= \$\d+/);
+    // r19 holds its own verdict; no Connect telemetry or a verdict present:
+    // nothing to look up.
+    queries.length = 0;
+    for (const latest of [
+      inventory({
+        controllerRuntimeVersion: "0.7.0-r19",
+        connect: { ownerRef: "acct-42" },
+      }),
+      inventory(),
+      inventory({ connect: { ownerRef: "acct-42", verdict: "down" } }),
+    ])
+      expect(await heldVerdictWithDb(client as never, ID, latest, NOW)).toBeNull();
+    expect(queries).toHaveLength(0);
   });
   it("filters foreign, released, and wrong-target rows even with an injected provider", async () => {
     const fake = createFakeDb({
