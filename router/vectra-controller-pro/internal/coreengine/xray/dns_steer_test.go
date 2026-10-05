@@ -424,3 +424,90 @@ func TestDNSLevelWhenTheProviderHasNoPolicy(t *testing.T) {
 		t.Fatalf("policy levels %v", d.Policy.Levels)
 	}
 }
+
+type wanDNSServer struct {
+	Address      string   `json:"address"`
+	Port         int      `json:"port"`
+	Domains      []string `json:"domains"`
+	SkipFallback bool     `json:"skipFallback"`
+	Tag          string   `json:"tag"`
+}
+
+// A router whose only resolver is the box in front of it (192.168.x.1):
+// the direct names are asked of the box FIRST, plain UDP, by a rule of the
+// router's own to a plain freedom — never the tunnel — and the tcp+local
+// servers stay behind it as fallbacks. Where the network keeps port 53 to
+// the outside closed, the direct names resolve exactly as before r20.
+func TestTheWANsResolversAnswerTheDirectNamesFirst(t *testing.T) {
+	opts := dnsOptions()
+	opts.WANResolvers = []string{"192.168.1.1"}
+	spliced, res, err := xray.Splice(providerFixture(t), testTproxy(), xray.SpliceOptions{DNS: opts})
+	if err != nil {
+		t.Fatalf("splice: %v", err)
+	}
+	if res.DNS.WANVia != "DIRECT" {
+		t.Fatalf("WAN resolvers via %q, want the provider's plain freedom DIRECT", res.DNS.WANVia)
+	}
+	d := decodeDNSDoc(t, spliced)
+	servers := dnsServers(t, d)
+	var wan wanDNSServer
+	if err := json.Unmarshal(servers[0], &wan); err != nil {
+		t.Fatal(err)
+	}
+	if wan.Address != "192.168.1.1" || wan.Port != 53 || wan.Tag != xray.DNSWANTag || !wan.SkipFallback || len(wan.Domains) == 0 {
+		t.Fatalf("first server = %+v, want the box over UDP, tagged %s", wan, xray.DNSWANTag)
+	}
+	for i, r := range []string{"8.8.8.8", "77.88.8.8"} {
+		var s dnsServer
+		if err := json.Unmarshal(servers[i+1], &s); err != nil {
+			t.Fatal(err)
+		}
+		if s.Address != "tcp+local://"+r || !reflect.DeepEqual(s.Domains, wan.Domains) {
+			t.Fatalf("server %d = %+v, want tcp+local://%s for the same names behind the box", i+1, s, r)
+		}
+	}
+	rule := d.Routing.Rules[1]
+	if string(rule["inboundTag"]) != `["`+xray.DNSWANTag+`"]` || string(rule["outboundTag"]) != `"DIRECT"` {
+		t.Fatalf("second rule = %v, want the WAN resolvers' queries to DIRECT", rule)
+	}
+	for _, o := range d.Outbounds {
+		if o.Tag == xray.DirectTag {
+			t.Fatal("a direct outbound was added beside the provider's plain freedom")
+		}
+	}
+
+	// No freedom of the provider's: the router's own is added for them.
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(providerFixture(t), &doc); err != nil {
+		t.Fatal(err)
+	}
+	var obs []map[string]json.RawMessage
+	if err := json.Unmarshal(doc["outbounds"], &obs); err != nil {
+		t.Fatal(err)
+	}
+	kept := obs[:0]
+	for _, o := range obs {
+		if string(o["protocol"]) != `"freedom"` {
+			kept = append(kept, o)
+		}
+	}
+	doc["outbounds"], _ = json.Marshal(kept)
+	raw, _ := json.Marshal(doc)
+	spliced, res, err = xray.Splice(raw, testTproxy(), xray.SpliceOptions{DNS: opts})
+	if err != nil {
+		t.Fatalf("splice without a plain freedom: %v", err)
+	}
+	d = decodeDNSDoc(t, spliced)
+	if res.DNS.WANVia != xray.DirectTag || string(d.Routing.Rules[1]["outboundTag"]) != `"`+xray.DirectTag+`"` {
+		t.Fatalf("WAN resolvers via %q, rule %v; want the added %s", res.DNS.WANVia, d.Routing.Rules[1], xray.DirectTag)
+	}
+
+	// Validated like the direct ones: an address on the router or not an
+	// IPv4 address is refused.
+	for _, bad := range []string{"127.0.0.1", "0.0.0.0", "fd00::1", "1.2.3.4; x", "192.168.001.1"} {
+		opts.WANResolvers = []string{bad}
+		if _, _, err := xray.Splice(providerFixture(t), testTproxy(), xray.SpliceOptions{DNS: opts}); err == nil {
+			t.Errorf("WAN resolver %q accepted", bad)
+		}
+	}
+}

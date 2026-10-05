@@ -35,12 +35,18 @@ func (d *daemon) dnsOptions() *xray.DNSOptions {
 	if d.cfg.NoDNSTunnel {
 		return nil
 	}
+	wanV4, _ := d.wanResolvers()
 	return &xray.DNSOptions{
 		Listen: xray.DefaultDNSListen,
 		// PassWall's routing answers its lists' domains with FakeDNS; the
 		// data plane then carries those addresses (carryFakeDNS).
 		AllowFakeDNS:    d.passwallMode(),
 		DirectResolvers: directResolvers(d.etcRoot()),
+		// The WAN's own (the box in front of the router), asked first for
+		// those names, plain UDP straight out: they answer as they did
+		// before DNS went through the tunnel, where a network keeps port 53
+		// to the outside closed too.
+		WANResolvers: wanV4,
 		// The panel's names, and NTP's: the clock TLS needs must not wait
 		// for the tunnel either.
 		DirectDomains: append(controlPlaneDomains(d.cfg.ControlURL, d.cfg.PanelURL), "domain:pool.ntp.org"),

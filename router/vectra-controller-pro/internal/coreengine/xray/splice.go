@@ -142,6 +142,10 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 		}
 		dp = p
 		res.DNS = dp.res
+		if dp.addDirect {
+			// The WAN resolvers leave by the added freedom (planDNS).
+			plan.addDirect = true
+		}
 	}
 	// Every name a rule proxies answered with a FakeDNS address (FakeDNS).
 	fakeOn := false
@@ -169,6 +173,9 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 	var rules []json.RawMessage
 	if dp.on {
 		rules = append(rules, dp.rule)
+		if dp.wanRule != nil {
+			rules = append(rules, dp.wanRule)
+		}
 	}
 	// The exit probe's rules next — for its inbound alone, and above every
 	// rule that names no inbound, so nothing takes a probe elsewhere.
@@ -636,6 +643,26 @@ func checkSpliced(spliced []byte, t *config.TproxyInbound, opts SpliceOptions, p
 			return fmt.Errorf("xray splice: the added %s is not a dns outbound after the provider's — refusing", DNSOutboundTag)
 		}
 		offset = 1
+		if dp.wanRule != nil {
+			var w struct {
+				InboundTag  []string `json:"inboundTag"`
+				OutboundTag string   `json:"outboundTag"`
+			}
+			if len(added.Routing.Rules) < 2 || json.Unmarshal(added.Routing.Rules[1], &w) != nil ||
+				len(w.InboundTag) != 1 || w.InboundTag[0] != DNSWANTag || w.OutboundTag != dp.wanVia {
+				return fmt.Errorf("xray splice: the result's second routing rule does not send the WAN resolvers' queries to %s — refusing", dp.wanVia)
+			}
+			free := false
+			for _, raw := range added.Outbounds {
+				if o := readOutbound(raw); o.Tag == dp.wanVia {
+					free = o.plainDirect()
+				}
+			}
+			if !free {
+				return fmt.Errorf("xray splice: %s, which the WAN resolvers are asked through, is not a plain freedom — refusing", dp.wanVia)
+			}
+			offset = 2
+		}
 	}
 	// The exit probe's rules: its inbound alone, one account each, to that
 	// account's exit.

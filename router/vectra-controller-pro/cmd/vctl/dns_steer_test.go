@@ -669,3 +669,20 @@ func TestWithoutAWANZoneTheDefaultRouteDecides(t *testing.T) {
 		t.Fatalf("default-route interfaces = %v", got)
 	}
 }
+
+// A router whose only resolver is the box in front of it: every render asks
+// the box first for the names resolved directly (xray's WANResolvers), with
+// the public ones behind it as before.
+func TestThePrivateOnlyResolverAnswersTheDirectNamesFirst(t *testing.T) {
+	d := dnsDaemon(t, renderWithDNS, dnsmasqAs453)
+	d.lanDevsAsked = true
+	d.devNets = func(string) []*net.IPNet { return nil }
+	withWANResolver(t, d, "192.168.1.254")
+	o := d.dnsOptions()
+	if !reflect.DeepEqual(o.WANResolvers, []string{"192.168.1.254"}) {
+		t.Fatalf("WAN resolvers in the render = %v", o.WANResolvers)
+	}
+	if o.DirectResolvers[0] != xray.DefaultDirectResolvers[0] {
+		t.Fatalf("direct resolvers = %v, want the public ones kept as fallbacks", o.DirectResolvers)
+	}
+}
