@@ -44,8 +44,13 @@ ipv4     2 udp      17 170 src=192.168.0.2 dst=8.8.8.8 sport=41301 dport=53 src=
 
 	// A table that never answers: given up on, no error.
 	forgetDNSFlowsWithin = 50 * time.Millisecond
+	// cmdForgetDNSFlows abandons its worker here (the process exits in
+	// production; the test does not): release it and wait for it to finish
+	// before the hooks are restored, so it never reads them mid-restore.
 	block := make(chan struct{})
-	t.Cleanup(func() { close(block) })
+	finished := make(chan struct{})
+	t.Cleanup(func() { close(block); <-finished })
+	dnsFlowsForget = func([]conntrack.Entry) (int, error) { close(finished); return 0, nil }
 	dnsFlowsRead = func() ([]conntrack.Entry, error) { <-block; return nil, nil }
 	start := time.Now()
 	if err := cmdForgetDNSFlows(nil); err != nil || time.Since(start) > 2*time.Second {

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -225,18 +226,28 @@ func TestTheWayBackWaitsForTheNewXray(t *testing.T) {
 	s := steerDaemon(t, renderWithDNS)
 	d := s.d
 	d.supStarted = true
-	var newStartAt time.Time
+	// The fake "new xray" starts on its own goroutine (like the real
+	// supervisor's), so its start time is shared state: guard it.
+	var startMu sync.Mutex
+	var newStart time.Time
+	getNewStart := func() time.Time {
+		startMu.Lock()
+		defer startMu.Unlock()
+		return newStart
+	}
 	d.reloadXrayFn = func(context.Context) error {
 		s.reloads++
 		go func() {
 			time.Sleep(300 * time.Millisecond)
-			newStartAt = time.Now()
+			startMu.Lock()
+			newStart = time.Now()
+			startMu.Unlock()
 		}()
 		return nil
 	}
 	d.xrayStatusFn = func() supervisor.Status {
-		if !newStartAt.IsZero() {
-			return supervisor.Status{State: supervisor.StateRunning, StartedAt: newStartAt}
+		if at := getNewStart(); !at.IsZero() {
+			return supervisor.Status{State: supervisor.StateRunning, StartedAt: at}
 		}
 		return supervisor.Status{State: supervisor.StateRunning, StartedAt: s.started} // the old one, still up
 	}
@@ -248,7 +259,7 @@ func TestTheWayBackWaitsForTheNewXray(t *testing.T) {
 	if s.reloads != 1 || s.applied != 1 {
 		t.Fatalf("reloads %d, data plane loads %d", s.reloads, s.applied)
 	}
-	if newStartAt.IsZero() || appliedAt.Before(newStartAt) {
+	if newStartAt := getNewStart(); newStartAt.IsZero() || appliedAt.Before(newStartAt) {
 		t.Fatalf("the data plane went in at %v, before the new xray ran (%v)", appliedAt, newStartAt)
 	}
 	if s.hup != 1 {
