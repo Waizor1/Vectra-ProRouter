@@ -84,13 +84,18 @@ export function createStaticDb(
       return {
         set(set: Record<string, unknown>) {
           return {
-            where: () => ({
+            where: (condition: unknown) => ({
               returning: () =>
                 Promise.resolve(
                   table === options.routersTable
                     ? [
                         {
-                          ...(rowsFor({ table, params: new Set(), ordered: false, fields: undefined })[0] as object),
+                          ...(rowsFor({
+                            table,
+                            params: paramValues(condition, new Set(), new WeakSet()),
+                            ordered: false,
+                            fields: undefined,
+                          })[0] as object),
                           ...set,
                         },
                       ]

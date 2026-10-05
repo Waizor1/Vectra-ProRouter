@@ -16,6 +16,8 @@ import {
   passwallSecretBlobs,
   routers,
 } from "@vectra/db";
+import { readFileSync } from "node:fs";
+
 import { bench, describe, vi } from "vitest";
 
 import type { StaticDbQuery } from "./testing/static-db";
@@ -179,9 +181,45 @@ const routerRow = {
   updatedAt: new Date("2026-09-01T00:00:00Z"),
 };
 
+// vctl (xray-direct) on its applied operator config revision.
+const VCTL_ROUTER_ID = "7a1d3e5f-2b4c-4d6e-8f01-23456789abcd";
+const XRAY_REVISION_ID = "0c9a8b7d-6e5f-4a3b-8c2d-1e0f9a8b7c03";
+const vctlRouterRow = {
+  ...routerRow,
+  id: VCTL_ROUTER_ID,
+  deviceIdentifier: "vectra-0a1b2c3d4e5f",
+  engineMode: "xray-direct",
+  activeRevisionId: XRAY_REVISION_ID,
+  lastAppliedRevisionId: XRAY_REVISION_ID,
+};
+const xrayRevisionRow = {
+  ...revisionRow(XRAY_REVISION_ID, 7, activeConfig, "operator_draft"),
+  routerId: VCTL_ROUTER_ID,
+  engineMode: "xray-direct",
+  secretBlobId: null,
+  config: {
+    schema: 1,
+    instance: { name: "r" },
+    process: {
+      xrayBinary: "/usr/bin/xray",
+      workDir: "/var/run/vectra-controller-pro",
+      oomScoreAdj: -500,
+      restartBackoff: { initialMs: 500, factor: 2, maxMs: 60_000 },
+    },
+    inbounds: { tproxy: { listenIP: "0.0.0.0", port: 12345, udpEnabled: true, sniffing: { enabled: true } } },
+    geo: {
+      assetDir: "/usr/share/v2ray",
+      geoipUrl: "https://example.test/geoip.dat",
+      geositeUrl: "https://example.test/geosite.dat",
+      updateOnStart: false,
+    },
+  },
+};
+
 state.rowsFor = ({ table, params, ordered }) => {
-  if (table === routers) return [routerRow];
+  if (table === routers) return [params.has(VCTL_ROUTER_ID) ? vctlRouterRow : routerRow];
   if (table === passwallDesiredRevisions) {
+    if (params.has(XRAY_REVISION_ID)) return [xrayRevisionRow];
     if (params.has(ACTIVE_ID)) return [activeRow];
     if (params.has(PREVIOUS_ID)) return [previousRow];
     // "previous passwall revision" and "latest import per router" lookups.
@@ -222,11 +260,33 @@ const checkInPayload = {
   health: { currentMode: "proxy" },
 };
 
-describe("checkInRouter, legacy PassWall agent, steady state (no jobs)", () => {
+// vctl's own wire payload (its contract fixture), reporting the revision it runs.
+const vctlFixture = JSON.parse(
+  readFileSync(
+    new URL("../../../../../router/vectra-controller-pro/testdata/contract/check-in-request.json", import.meta.url),
+    "utf8",
+  ),
+) as { claim?: unknown; inventory: Record<string, unknown> };
+delete vctlFixture.claim;
+const vctlPayload = {
+  ...vctlFixture,
+  routerId: VCTL_ROUTER_ID,
+  inventory: { ...vctlFixture.inventory, deviceIdentifier: "vectra-0a1b2c3d4e5f", appliedRevisionId: XRAY_REVISION_ID },
+};
+
+// Each case includes serializing the answer, as Response.json does.
+describe("checkInRouter, steady state (no jobs)", () => {
   bench(
-    "check-in with two ~140 KB revisions",
+    "legacy PassWall agent, two ~140 KB revisions",
     async () => {
-      await checkInRouter(ROUTER_ID, structuredClone(checkInPayload));
+      JSON.stringify(await checkInRouter(ROUTER_ID, structuredClone(checkInPayload)));
+    },
+    { time: 3000, warmupTime: 500 },
+  );
+  bench(
+    "vctl on its applied revision",
+    async () => {
+      JSON.stringify(await checkInRouter(VCTL_ROUTER_ID, structuredClone(vctlPayload)));
     },
     { time: 3000, warmupTime: 500 },
   );
@@ -239,6 +299,12 @@ const sampleConfig = sample.desiredRevision?.config as PasswallDesiredConfig | u
 if (sampleConfig?.nodes.length !== 220 || !sample.routePolicy) {
   throw new Error("bench fixture did not exercise the full revision path");
 }
+const vctlSample = await checkInRouter(VCTL_ROUTER_ID, structuredClone(vctlPayload));
+console.log(
+  "[bench] vctl answer carries desiredRevision: %s, response ≈ %d B",
+  vctlSample.desiredRevision ? vctlSample.desiredRevision.id : "null",
+  JSON.stringify(vctlSample).length,
+);
 console.log(
   "[bench] stored revision config ≈ %d KB, secret blob ≈ %d KB, response ≈ %d KB",
   Math.round(JSON.stringify(activeRow.config).length / 1024),
