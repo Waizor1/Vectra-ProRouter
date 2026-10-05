@@ -183,7 +183,41 @@ func (d *daemon) addDNSRedirect(ctx context.Context, spec *firewall.Spec, wait t
 	}
 	spec.DNSRedirectPort, spec.DNSResolverUIDs = port, uids
 	spec.DNSRejectV6 = hasIPv4Upstream(d.etcRoot())
+	spec.DNSUpstreamV4, spec.DNSUpstreamV6 = wanResolvers(d.etcRoot())
 	spec.HijackDNS = d.hijacksDNS()
+}
+
+// wanResolvers are the WAN's own resolvers, from netifd's resolv.conf.auto —
+// the servers dnsmasq asks — by family, the IPv6 ones without their zone.
+// The redirect takes them wherever they are (firewall.Spec.DNSUpstreamV4): a
+// box in front of the router hands out its private address, which the
+// public-only redirect left on the open path.
+func wanResolvers(root string) (v4, v6 []string) {
+	seen := map[string]bool{}
+	for _, f := range []string{"tmp/resolv.conf.d/resolv.conf.auto", "tmp/resolv.conf.auto"} {
+		b, err := os.ReadFile(filepath.Join(root, f))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 || fields[0] != "nameserver" {
+				continue
+			}
+			addr, _, _ := strings.Cut(fields[1], "%")
+			ip := net.ParseIP(addr)
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || seen[ip.String()] {
+				continue
+			}
+			seen[ip.String()] = true
+			if ip.To4() != nil {
+				v4 = append(v4, ip.String())
+			} else {
+				v6 = append(v6, ip.String())
+			}
+		}
+	}
+	return v4, v6
 }
 
 // hijacksDNS: the LAN's queries to public resolvers are answered by the
@@ -278,7 +312,25 @@ func dnsRedirectKey(spec firewall.Spec) string {
 	if spec.DNSRedirectPort == 0 || len(spec.DNSResolverUIDs) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%d/%v/v6reject=%t/hijack=%t", spec.DNSRedirectPort, spec.DNSResolverUIDs, spec.DNSRejectV6, spec.HijackDNS)
+	key := fmt.Sprintf("%d/%v/v6reject=%t/hijack=%t", spec.DNSRedirectPort, spec.DNSResolverUIDs, spec.DNSRejectV6, spec.HijackDNS)
+	if up := append(append([]string(nil), spec.DNSUpstreamV4...), spec.DNSUpstreamV6...); len(up) > 0 {
+		key += "/up=" + strings.Join(up, ",")
+	}
+	return key
+}
+
+// redirectUpstreams is the "/up=" part of a dnsRedirectKey: the WAN resolvers
+// the redirect takes ("" = none).
+func redirectUpstreams(key string) string {
+	i := strings.Index(key, "/up=")
+	if i < 0 {
+		return ""
+	}
+	up := key[i+len("/up="):]
+	if j := strings.IndexAny(up, "/;"); j >= 0 {
+		up = up[:j]
+	}
+	return up
 }
 
 // dnsWatchEvery is how often, between the polls, the loop asks xray's DNS
@@ -386,7 +438,8 @@ func (d *daemon) dnsRedirectStale(ctx context.Context) bool {
 				d.hijackMisses++
 				hijack = d.hijackMisses < dnsDeadAfter
 			}
-			want = dnsRedirectKey(firewall.Spec{DNSRedirectPort: port, DNSResolverUIDs: uids, DNSRejectV6: hasIPv4Upstream(d.etcRoot()), HijackDNS: hijack})
+			v4, v6 := wanResolvers(d.etcRoot())
+			want = dnsRedirectKey(firewall.Spec{DNSRedirectPort: port, DNSResolverUIDs: uids, DNSRejectV6: hasIPv4Upstream(d.etcRoot()), DNSUpstreamV4: v4, DNSUpstreamV6: v6, HijackDNS: hijack})
 		} else {
 			d.dnsMisses++
 			if *d.fwProgrammed != "" && d.dnsMisses < dnsDeadAfter {

@@ -964,9 +964,10 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 		logging.L().Error("firewall apply failed (deadman armed; auto-reverts unless a check-in confirms)", "err", err.Error())
 		return
 	}
-	redirected := false
+	redirected, upstreams := false, ""
 	if d.fwProgrammed != nil {
 		_, redirected = redirectPort(*d.fwProgrammed)
+		upstreams = redirectUpstreams(*d.fwProgrammed)
 	}
 	key := dnsRedirectKey(spec) + fakeDNSKey(spec)
 	d.fwProgrammed = &key
@@ -991,6 +992,11 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 			// (flushAfterXrayRestart).
 			d.flushedStart = st.StartedAt
 		}
+	} else if nowRedirected && redirectUpstreams(key) != upstreams {
+		// The WAN's resolvers changed under a redirect already in force (a
+		// DHCP renewal): one the redirect did not take may have answered.
+		d.dnsPathGen++
+		d.flushResolverCache("the resolver's servers changed")
 	}
 	d.confirmIfPanelReachable(ctx)
 	d.maybeLoadDirect(ctx)

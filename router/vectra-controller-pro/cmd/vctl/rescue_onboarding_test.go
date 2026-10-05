@@ -448,3 +448,36 @@ func TestAppliesInDirectModeDoNotSwingTheLAN(t *testing.T) {
 		t.Fatalf("new nodes: data plane loads %d, mode %s", applied, d.rescueState().Mode)
 	}
 }
+
+// The WAN's resolvers changing under a redirect already in force empties the
+// resolver's cache once: a resolver the redirect did not take until now may
+// have answered over the open path. The same resolvers again do not.
+func TestNewWANResolversEmptyTheResolverCache(t *testing.T) {
+	d, _, _ := shutdownDaemon(t)
+	if err := vault.WriteFile(d.cfg.XrayRenderPath, []byte(renderWithDNS)); err != nil {
+		t.Fatal(err)
+	}
+	d.procDir = fakeProc(t, dnsmasqAs453)
+	d.rootDir = t.TempDir()
+	d.dnsAnswers = func(context.Context, int) bool { return true }
+	d.ownsAddr = func(ip net.IP) bool { return ip.Equal(net.IPv4(192, 168, 1, 1)) }
+	d.applyRuleset = func(string, firewall.Spec) error { return nil }
+	var hup int
+	d.hupResolver = func(int) error { hup++; return nil }
+
+	withWANResolver(t, d, "77.37.1.2")
+	d.reapplyFirewall(context.Background())
+	if d.fwProgrammed == nil || hup != 1 {
+		t.Fatalf("first redirect: programmed %v, flushes %d", d.fwProgrammed, hup)
+	}
+	d.flushedAt = time.Time{}
+	d.reapplyFirewall(context.Background())
+	if hup != 1 {
+		t.Fatalf("the same resolvers again emptied the cache: %d", hup)
+	}
+	withWANResolver(t, d, "192.168.1.254")
+	d.reapplyFirewall(context.Background())
+	if hup != 2 || redirectUpstreams(*d.fwProgrammed) != "192.168.1.254" {
+		t.Fatalf("new WAN resolvers: flushes %d, redirect %q", hup, *d.fwProgrammed)
+	}
+}

@@ -543,3 +543,50 @@ func TestTheDNSWatchLeavesDirectModeAndTheKillSwitchAlone(t *testing.T) {
 		}
 	}
 }
+
+// The redirect takes the WAN's resolvers by address, the private one a box in
+// front of the router hands out included (artem-lutfulin, r19: 192.168.x.1
+// beside two public ones, asked over the open path, the ISP's forged
+// NXDOMAIN cached). They are part of the redirect's fingerprint, so a DHCP
+// renewal that changes them reprograms the table.
+func TestTheRedirectTakesTheWANsOwnResolvers(t *testing.T) {
+	d := dnsDaemon(t, renderWithDNS, dnsmasqAs453)
+	dir := filepath.Join(d.rootDir, "tmp", "resolv.conf.d")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conf := "# Interface wan\nnameserver 77.37.1.2\nnameserver 192.168.1.254\nnameserver fe80::1%wan\nnameserver 127.0.0.1\nnameserver 77.37.1.2\n"
+	if err := os.WriteFile(filepath.Join(dir, "resolv.conf.auto"), []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := firewall.DefaultSpec(12345, 1)
+	d.addDNSRedirect(context.Background(), &spec, 0)
+	if !reflect.DeepEqual(spec.DNSUpstreamV4, []string{"77.37.1.2", "192.168.1.254"}) || !reflect.DeepEqual(spec.DNSUpstreamV6, []string{"fe80::1"}) {
+		t.Fatalf("WAN resolvers = %v / %v", spec.DNSUpstreamV4, spec.DNSUpstreamV6)
+	}
+	key := dnsRedirectKey(spec)
+	if want := "10053/[453]/v6reject=true/hijack=false/up=77.37.1.2,192.168.1.254,fe80::1"; key != want {
+		t.Fatalf("redirect = %q, want %q", key, want)
+	}
+	if got := redirectUpstreams(key + ";fakedns=198.18.0.0/16"); got != "77.37.1.2,192.168.1.254,fe80::1" {
+		t.Fatalf("upstreams read back as %q", got)
+	}
+	out, err := firewall.Render(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "ip daddr { 77.37.1.2, 192.168.1.254 } meta l4proto { tcp, udp } th dport 53") {
+		t.Fatalf("the private WAN resolver is not redirected:\n%s", out)
+	}
+
+	d.desired = &config.Config{}
+	d.supStarted = true
+	d.fwProgrammed = &key
+	if d.dnsRedirectStale(context.Background()) {
+		t.Fatal("stale while the redirect takes exactly the WAN's resolvers")
+	}
+	withWANResolver(t, d, "192.168.1.254")
+	if !d.dnsRedirectStale(context.Background()) {
+		t.Fatal("the WAN's resolvers changed and the redirect is not reprogrammed")
+	}
+}

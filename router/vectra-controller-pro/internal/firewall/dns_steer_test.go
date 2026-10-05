@@ -185,3 +185,45 @@ func killCounter(armed bool) string {
 	}
 	return CounterKillSwitchShadow
 }
+
+// The WAN's own resolvers are redirected wherever they are: a box in front of
+// the router hands out its private address (192.168.x.1), which the
+// public-only rule left on the open path — dnsmasq asked it beside the
+// redirected ones and cached the ISP's forged answers (artem-lutfulin, r19).
+// Over IPv6 such a resolver is refused with the public ones. Only plain
+// addresses reach the script; loopback never.
+func TestRenderSteersTheWANsPrivateResolversToo(t *testing.T) {
+	s := DefaultSpec(12345, 1)
+	s.DNSRedirectPort = 10053
+	s.DNSResolverUIDs = []int{453}
+	s.DNSRejectV6 = true
+	s.DNSUpstreamV4 = []string{"192.168.1.1", "77.37.1.2", "127.0.0.1", "0.0.0.0", "1.2.3.4; flush ruleset", "fd00::1", "192.168.1.1"}
+	s.DNSUpstreamV6 = []string{"fe80::1", "192.168.1.1", "::1"}
+	out, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steer := chainBody(t, out, "dns_steer")
+	for _, must := range []string{
+		`meta skuid { 453 } ip daddr != @bypass4 meta l4proto { tcp, udp } th dport 53 counter name "` + CounterDNSRedirected + `" redirect to :10053`,
+		`meta skuid { 453 } ip daddr { 192.168.1.1, 77.37.1.2 } meta l4proto { tcp, udp } th dport 53 counter name "` + CounterDNSRedirected + `" redirect to :10053`,
+	} {
+		if !strings.Contains(steer, must) {
+			t.Errorf("missing %q in:\n%s", must, steer)
+		}
+	}
+	if !strings.Contains(chainBody(t, out, "dns_steer6"), "meta skuid { 453 } ip6 daddr { fe80::1 } meta l4proto { tcp, udp } th dport 53 reject") {
+		t.Errorf("the WAN's link-local resolver is not refused:\n%s", out)
+	}
+	both := steer + chainBody(t, out, "dns_steer6")
+	if strings.Contains(out, "flush ruleset") || strings.Contains(both, "127.0.0.1") || strings.Contains(both, "{ ::1") || strings.Contains(both, ", ::1") || strings.Contains(both, "0.0.0.0") {
+		t.Errorf("something other than a WAN resolver's address reached the script:\n%s", out)
+	}
+
+	// Without the redirect, no rule for them either: dnsmasq asks them as it
+	// would without vctl.
+	s.DNSRedirectPort = 0
+	if out, _ = Render(s); strings.Contains(out, "192.168.1.1") || strings.Contains(out, "fe80::1") {
+		t.Errorf("WAN resolvers redirected with DNS through the tunnel off:\n%s", out)
+	}
+}

@@ -1,5 +1,30 @@
 # Changelog
 
+## vctl 0.7.0-r20 — the router's resolver no longer asks a private WAN resolver over the open path
+
+Seen live on 2026-10-05 (artem-lutfulin, r19, right after the update): the
+router's resolver answered www.facebook.com and www.instagram.com with the
+ISP's forged NXDOMAIN and facebook.com, www.youtube.com, chatgpt.com with
+real addresses, minute by minute mixed with FakeDNS, while xray's DNS inbound
+answered every one of them with FakeDNS. 1111 (same version) was clean.
+
+### Fixed
+- **The WAN's own resolvers are redirected wherever they are.** The
+  redirect into the tunnel took dnsmasq's upstream queries to public
+  addresses only. artem's router sits behind the provider's box, whose DHCP
+  hands out two public resolvers and its own 192.168.x.1: dnsmasq asked that
+  one over the open path beside the redirected ones (conntrack: replies from
+  port 53 of 192.168.x.1, the public ones from 10053) and cached whichever
+  answered first, the ISP's forged answers included. 1111's resolvers are
+  all public, so it never showed. Now netifd's resolvers
+  (`resolv.conf.auto`) are redirected by address too, and over IPv6 a
+  link-local or ULA one is refused with the public ones; an owner's
+  `server=` on the LAN is still asked as before. Not a warm-up after an
+  xray start: xray's DNS never fell back outside the tunnel for these names.
+- **New WAN resolvers under a redirect already in force empty the cache.**
+  They are part of the redirect's fingerprint: a DHCP renewal that changes
+  them reprograms the table and empties dnsmasq's cache once.
+
 ## vctl 0.7.0-r19 — the Vectra app no longer says "unknown" every other minute
 
 Seen live on 2026-10-05 (vctl r18, 1111 after its nightly reboot): about

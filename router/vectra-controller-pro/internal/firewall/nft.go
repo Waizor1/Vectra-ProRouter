@@ -15,6 +15,7 @@ package firewall
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -317,6 +318,20 @@ type Spec struct {
 	// so it asks its IPv4 servers (redirected). Set only when it has one: with
 	// IPv6 servers alone, refusing them would leave the router without DNS.
 	DNSRejectV6 bool
+	// DNSUpstreamV4 are the WAN's own IPv4 resolvers (netifd's resolv.conf.auto)
+	// that sit in a bypass4 range — a provider's box in front of the router
+	// hands out its LAN address (192.168.x.1) as the resolver. The redirect
+	// above skips private addresses, so dnsmasq kept asking that one over the
+	// open path, beside the redirected public ones, and cached whichever
+	// answered first: measured on artem-lutfulin 2026-10-05 (r19), the
+	// ISP's forged NXDOMAIN for www.instagram.com and real addresses for
+	// youtube and chatgpt, mixed with FakeDNS, changing minute to minute.
+	// These are redirected too; a server= of the owner's on the LAN is not
+	// in resolv.conf.auto and is asked as before.
+	DNSUpstreamV4 []string
+	// DNSUpstreamV6: the same over IPv6 (a link-local or ULA resolver on the
+	// WAN), refused with the public ones while DNSRejectV6 holds.
+	DNSUpstreamV6 []string
 	// HijackDNS answers the LAN's DNS queries to PUBLIC resolvers — a TV or a
 	// phone with 8.8.8.8 set by hand — with the router's own resolver: from a
 	// LAN source (@bypass4, @bypass6) to port 53 of a public address that is
@@ -892,6 +907,10 @@ table inet {{ .TableName }} {
   chain dns_steer {
     type nat hook output priority dstnat; policy accept;
     meta skuid { {{ joinInts .DNSResolverUIDs ", " }} } ip daddr != @bypass4 meta l4proto { tcp, udp } th dport 53 counter name "{{ .CounterDNSRedirected }}" redirect to :{{ .DNSRedirectPort }}
+{{- if .SteerUpstreamV4 }}
+    # The WAN's own resolvers, at private addresses too (Spec.DNSUpstreamV4).
+    meta skuid { {{ joinInts .DNSResolverUIDs ", " }} } ip daddr { {{ join .SteerUpstreamV4 ", " }} } meta l4proto { tcp, udp } th dport 53 counter name "{{ .CounterDNSRedirected }}" redirect to :{{ .DNSRedirectPort }}
+{{- end }}
   }
 {{- if and .IPv6Enabled .DNSRejectV6 }}
 
@@ -900,6 +919,9 @@ table inet {{ .TableName }} {
   chain dns_steer6 {
     type filter hook output priority filter; policy accept;
     meta skuid { {{ joinInts .DNSResolverUIDs ", " }} } ip6 daddr != @bypass6 meta l4proto { tcp, udp } th dport 53 reject
+{{- if .SteerUpstreamV6 }}
+    meta skuid { {{ joinInts .DNSResolverUIDs ", " }} } ip6 daddr { {{ join .SteerUpstreamV6 ", " }} } meta l4proto { tcp, udp } th dport 53 reject
+{{- end }}
   }
 {{- end }}
 {{- end }}
@@ -963,6 +985,9 @@ type tmplData struct {
 	LANDevs string
 	// SteersDNS: Spec.DNSRedirectPort is in force (Spec.steersDNS).
 	SteersDNS bool
+	// SteerUpstreamV4/V6: Spec.DNSUpstreamV4/V6, each a plain address of its
+	// family (steerAddrs) — nothing else reaches the script.
+	SteerUpstreamV4, SteerUpstreamV6 []string
 	// KillCounter is the kill-switch instrument's name for THIS spec:
 	// CounterKillSwitchDrops when the switch is on, CounterKillSwitchShadow when
 	// it is off. Two names rather than one because a counter that means "packets
@@ -1019,12 +1044,33 @@ func Render(s Spec) (string, error) {
 		RefuseV6:              s.RefuseIPv6 && s.IPv6Enabled,
 		LANDevs:               quotedDevices(s.LANDevices),
 		SteersDNS:             s.steersDNS(),
+		SteerUpstreamV4:       steerAddrs(s.DNSUpstreamV4, false),
+		SteerUpstreamV6:       steerAddrs(s.DNSUpstreamV6, true),
 		KillCounter:           killCounter,
 	}
 	if err := t.Execute(&buf, data); err != nil {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// steerAddrs are the resolver addresses of one family, each once, as net.IP
+// prints them; loopback, unspecified and anything unparsable left out (a
+// resolver on the router itself is not the WAN's).
+func steerAddrs(addrs []string, v6 bool) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, a := range addrs {
+		ip := net.ParseIP(strings.TrimSpace(a))
+		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || (ip.To4() == nil) != v6 {
+			continue
+		}
+		if k := ip.String(); !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // RoutingCommands returns the ip rule/route commands needed alongside nft.
