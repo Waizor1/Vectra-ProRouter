@@ -252,6 +252,69 @@ describe("partner snapshot ownership and measured truth", () => {
       ).capabilities,
     ).toEqual([]);
   });
+  // vctl r15–r18 left the verdict out of every other check-in after a
+  // reboot (1111, 2026-10-05): a short gap keeps the last measured verdict
+  // and its country; a long one, or one from before the claim, is unknown.
+  it("keeps the last measured verdict over a short gap without one", () => {
+    const owned = router({ claimedAt: new Date(NOW.getTime() - 3_600_000) });
+    const gapless = inventory({ connect: { ownerRef: "acct-42", uptimeSec: 74 } });
+    const measuredRow = {
+      ...inventory({
+        connect: { ownerRef: "acct-42", verdict: "ok", exitCountry: "PL" },
+      }),
+      createdAt: new Date(NOW.getTime() - 45_000),
+    };
+    const held = { inventory: measuredRow, unknownSince: new Date(NOW.getTime() - 30_000) };
+    expect(projectPartnerRouter(owned, gapless, NOW, held)).toMatchObject({
+      verdict: "ok",
+      exitCountry: "PL",
+      uptimeSec: 74,
+    });
+    const long = { ...held, unknownSince: new Date(NOW.getTime() - 181_000) };
+    expect(projectPartnerRouter(owned, gapless, NOW, long)).toMatchObject({
+      verdict: null,
+      exitCountry: null,
+    });
+    const beforeClaim = router({ claimedAt: new Date(NOW.getTime() - 10_000) });
+    expect(projectPartnerRouter(beforeClaim, gapless, NOW, held).verdict).toBeNull();
+    const down = inventory({ connect: { ownerRef: "acct-42", verdict: "down" } });
+    expect(projectPartnerRouter(owned, down, NOW, held)).toMatchObject({
+      verdict: "down",
+      exitCountry: null,
+    });
+  });
+  it("reads the held verdict from the snapshot before the gap", async () => {
+    const owned = router({ claimedAt: new Date(NOW.getTime() - 3_600_000) });
+    const latest = inventory({ connect: { ownerRef: "acct-42" } });
+    const measuredRow = {
+      ...inventory({ connect: { ownerRef: "acct-42", verdict: "ok" } }),
+      createdAt: new Date(NOW.getTime() - 90_000),
+    };
+    const fake = createFakeDb({
+      selects: [
+        [routers, [[owned], [owned]]],
+        [
+          routerInventorySnapshots,
+          [[latest], [measuredRow], [{ createdAt: new Date(NOW.getTime() - 45_000) }]],
+        ],
+      ],
+    });
+    const [snapshot] = await readPartnerRoutersWithDb(fake.db as never, "acct-42", ID, NOW);
+    expect(snapshot?.verdict).toBe("ok");
+    // A snapshot with a verdict needs no second look.
+    const plain = createFakeDb({
+      selects: [
+        [routers, [[owned], [owned]]],
+        [
+          routerInventorySnapshots,
+          [[inventory({ connect: { ownerRef: "acct-42", verdict: "down" } })], [measuredRow]],
+        ],
+      ],
+    });
+    const [own] = await readPartnerRoutersWithDb(plain.db as never, "acct-42", ID, NOW);
+    expect(own?.verdict).toBe("down");
+    expect(plain.calls.filter((c) => c.table === routerInventorySnapshots)).toHaveLength(1);
+  });
   it("filters foreign, released, and wrong-target rows even with an injected provider", async () => {
     const fake = createFakeDb({
       selects: [

@@ -4,7 +4,7 @@ import {
   partnerOwnerRefSchema,
 } from "@vectra/contracts";
 import { jobs, routerInventorySnapshots, routers } from "@vectra/db";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   CONNECT_ACTION_NAMES,
@@ -52,20 +52,44 @@ export const partnerActionRequestSchema = z
   })
   .strict();
 
+// How long a check-in without a verdict leaves the last measured one
+// standing. Absence is not a state (partner-router-events.ts): vctl leaves
+// the verdict out while it cannot judge, and r15–r18 left it out of every
+// other check-in by a race in the router's own freshness check (1111 after
+// its reboot, 2026-10-05: the app said "unknown" with the VPN working). A
+// longer gap is unknown.
+export const PARTNER_VERDICT_HOLD_MS = 180_000;
+
+/** The newest snapshot that carried a verdict, and when the gap after it began. */
+export type HeldVerdict = { inventory: Inventory; unknownSince: Date };
+
+// Connect telemetry of the router's current owner only: never a snapshot
+// from before the claim or one the router reported for someone else.
+function ownersConnect(router: Router, inventory: Inventory | null) {
+  const reported =
+    inventory && (!router.claimedAt || inventory.createdAt >= router.claimedAt)
+      ? inventory.payload?.connect
+      : undefined;
+  return reported?.ownerRef !== undefined && reported.ownerRef !== router.ownerRef
+    ? undefined
+    : reported;
+}
+
 export function projectPartnerRouter(
   router: Router,
   inventory: Inventory | null,
   now = new Date(),
+  held: HeldVerdict | null = null,
 ) {
   const payload = inventory?.payload;
-  const reported =
-    inventory && (!router.claimedAt || inventory.createdAt >= router.claimedAt)
-      ? payload?.connect
+  const measured = ownersConnect(router, inventory);
+  const kept =
+    measured && !measured.verdict && held &&
+    now.getTime() - held.unknownSince.getTime() <= PARTNER_VERDICT_HOLD_MS
+      ? ownersConnect(router, held.inventory)
       : undefined;
-  const measured =
-    reported?.ownerRef !== undefined && reported.ownerRef !== router.ownerRef
-      ? undefined
-      : reported;
+  // Verdict and country expire together: both from the same snapshot.
+  const judged = kept?.verdict ? kept : measured;
   const capable =
     router.status !== "disabled" &&
     router.engineMode === "xray-direct" &&
@@ -99,8 +123,8 @@ export function projectPartnerRouter(
             ),
           )
         : null,
-    verdict: measured?.verdict ?? null,
-    exitCountry: measured?.exitCountry ?? null,
+    verdict: judged?.verdict ?? null,
+    exitCountry: judged?.exitCountry ?? null,
     lanClients: measured?.lanClients ?? null,
     location: measured?.location ?? null,
     entries: measured?.entries ?? [],
@@ -140,6 +164,42 @@ async function latestInventory(client: Client, routerId: string) {
     .orderBy(desc(routerInventorySnapshots.createdAt))
     .limit(1);
   return inventory ?? null;
+}
+
+// When the newest snapshot carries no verdict: the newest one that did, and
+// the first snapshot after it — rows are written on a change, so that one is
+// where the verdict went missing. Nothing to look up otherwise.
+export async function heldVerdictWithDb(
+  client: Client,
+  routerId: string,
+  latest: Inventory | null,
+): Promise<HeldVerdict | null> {
+  if (!latest || latest.payload?.connect?.verdict) return null;
+  const [measured] = await client
+    .select()
+    .from(routerInventorySnapshots)
+    .where(
+      and(
+        eq(routerInventorySnapshots.routerId, routerId),
+        lt(routerInventorySnapshots.createdAt, latest.createdAt),
+        sql`${routerInventorySnapshots.payload}->'connect'->>'verdict' is not null`,
+      ),
+    )
+    .orderBy(desc(routerInventorySnapshots.createdAt))
+    .limit(1);
+  if (!measured?.payload?.connect?.verdict) return null;
+  const [gap] = await client
+    .select({ createdAt: routerInventorySnapshots.createdAt })
+    .from(routerInventorySnapshots)
+    .where(
+      and(
+        eq(routerInventorySnapshots.routerId, routerId),
+        gt(routerInventorySnapshots.createdAt, measured.createdAt),
+      ),
+    )
+    .orderBy(asc(routerInventorySnapshots.createdAt))
+    .limit(1);
+  return { inventory: measured, unknownSince: gap?.createdAt ?? latest.createdAt };
 }
 
 export async function readPartnerRoutersWithDb(
@@ -183,10 +243,12 @@ export async function readPartnerRoutersWithDb(
           .for("share")
           .limit(1);
         if (current?.ownerRef !== ownerRef || current.releasedAt) return null;
+        const inventory = await latestInventory(tx, current.id);
         return projectPartnerRouter(
           current,
-          await latestInventory(tx, current.id),
+          inventory,
           now,
+          await heldVerdictWithDb(tx, current.id, inventory),
         );
       }),
     ),
