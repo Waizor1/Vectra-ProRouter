@@ -1,5 +1,38 @@
 # Changelog
 
+## vctl 0.7.0-r19 — the Vectra app no longer says "unknown" every other minute
+
+Seen live on 2026-10-05 (vctl r18, 1111 after its nightly reboot): about
+half of the check-ins carried no `connect.verdict` — "ok" and nothing,
+45 s apart — so the Vectra app showed the router as "unknown" with the VPN
+working (Cloudflare FR, YouTube 204, Instagram 200).
+
+### Fixed
+- **A route published during the check-in's gather counted as from the
+  future.** The verdict judged the failover watchdog's route (published
+  every 2 s), the observatory's probe time and the exit check's egress
+  against the moment the gather began; one published while the gather ran
+  is later than that and was rejected, so the verdict (and the country) was
+  left out. With a 45 s poll against the 2 s watchdog the check-ins fall in
+  and out of that window by turns: every other one after a reboot set the
+  phase. Now an observation is fresh when it is no older than its age limit
+  at the gather's start and no later than the judgement itself; a time
+  later than now is still no observation.
+- **One check-in that cannot judge keeps the last verdict.** A read that
+  cannot judge the tunnel right now reports the last verdict the router did
+  judge, with its country, published with the time it was judged: the
+  check-in's freshness gate ends it 2 min after the judgement
+  (`connecttelemetry.MaxObservationAge`), however many check-ins hold it.
+  The hold is one owner's and one route's: a claim, a release, a location
+  switch or the watchdog's move ends it; a route not readable at the moment
+  keeps the verdict without the country. With no configuration to judge,
+  the verdict stays out (unknown) as before.
+
+### Deploy
+No change to the check-in or the panel contract. The panel keeps the last
+measured verdict over a gap of at most 3 min for routers older than r19
+only (they have the race); r19 and later are taken as they report.
+
 ## vctl 0.7.0-r18 — a router just claimed in the Vectra app is on the VPN at once
 
 Seen live on 2026-10-04 (vctl r17): a router released and claimed again by

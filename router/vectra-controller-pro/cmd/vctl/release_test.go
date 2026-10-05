@@ -22,6 +22,7 @@ import (
 	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/state"
 	"vectra-controller-pro/internal/supervisor"
+	"vectra-controller-pro/internal/uiapi"
 )
 
 // releasePanel is a panel that can configure the router (a desired revision
@@ -475,5 +476,31 @@ func TestReleasedWithTheFirstOwnerInTheSameAnswerDoesNotWipe(t *testing.T) {
 	}
 	if r.d.desired == nil || r.d.st.AppliedRevisionID == "" || len(r.fw.snapshot()) != 0 {
 		t.Fatal("wiped a router that had no owner before this answer")
+	}
+}
+
+// The tunnel's word was the previous owner's: a release forgets the verdict
+// held for Connect, so a claim right after it starts from unknown.
+func TestAReleaseForgetsTheHeldConnectVerdict(t *testing.T) {
+	r := newReleaseRouter(t, true)
+	owner := ""
+	if r.d.st.ClaimOwner != nil {
+		owner = r.d.st.ClaimOwner.OwnerRef
+	}
+	old := connectGather
+	t.Cleanup(func() { connectGather = old })
+	// The check-in before the release judges and holds a verdict.
+	connectGather = func(context.Context, *daemon) uiapi.Inputs {
+		return uiapi.Inputs{Now: time.Now(), Runtime: &localctl.Runtime{}}
+	}
+	r.d.connectHeld = connectJudged{verdict: "ok", at: time.Now(), owner: owner}
+	r.panel.next(func(p *releasePanel) {
+		p.info = controlplane.ClaimInfo{Released: true, Owner: json.RawMessage(`null`)}
+	})
+	if err := r.d.runOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if r.d.connectHeld != (connectJudged{}) {
+		t.Fatalf("the release kept the previous owner's verdict: %+v", r.d.connectHeld)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 	"vectra-controller-pro/internal/connecttelemetry"
@@ -76,8 +77,16 @@ func (d *daemon) publishConnectTelemetry(ctx context.Context, features map[strin
 		t.SupportAccess = &support
 	}
 	t.Verdict, t.ExitCountry = connectVerdict(in, d.exits.EgressSnapshot())
+	owner := ""
+	if d.st.ClaimOwner != nil {
+		owner = d.st.ClaimOwner.OwnerRef
+	}
+	// A held verdict keeps the time it was judged: connecttelemetry.Build
+	// drops it once that is older than MaxObservationAge.
+	var judgedAt time.Time
+	t.Verdict, t.ExitCountry, judgedAt = d.holdConnectVerdict(in, owner, t.Verdict, t.ExitCountry)
 	connectOwnerCapabilities(&t, d.st.ClaimOwner, features)
-	d.collector.SetConnect(connecttelemetry.Snapshot{Telemetry: t, ObservedAt: in.Now})
+	d.collector.SetConnect(connecttelemetry.Snapshot{Telemetry: t, ObservedAt: judgedAt})
 }
 
 func connectSettings(in uiapi.Inputs, f setup.Facts) controlplane.RouterConnectTelemetry {
@@ -300,10 +309,77 @@ func freshConnect(at, now time.Time, age time.Duration) bool {
 	return !at.IsZero() && !now.Before(at) && now.Sub(at) <= age
 }
 
+// freshObservation: at is no older than age at ref (when the gather began)
+// and no later than now (when it is judged). The failover watchdog publishes
+// the route every 2 s, the exit check its egress, beside the gather: one
+// published while the gather ran is later than ref, and it is the freshest
+// word there is, not a future one. Judged against ref alone it left the
+// verdict out whenever a publish fell inside the gather — on 1111 after its
+// reboot (2026-10-05) every other check-in, the 45 s poll against the 2 s
+// watchdog alternating in and out of that window: Connect showed "unknown".
+func freshObservation(at, ref, now time.Time, age time.Duration) bool {
+	return !at.IsZero() && !at.After(now) && ref.Sub(at) <= age
+}
+
+// holdConnectVerdict: a check-in that cannot judge the tunnel right now (a
+// probe still under way, an API slow to answer) reports the last verdict the
+// router did judge, with its country, and the time it was judged — the
+// snapshot's ObservedAt — so connecttelemetry.Build drops it once that is
+// older than MaxObservationAge: a failure the router cannot judge never
+// reads as the old verdict for longer. The hold is the same owner's and the
+// same route's only: another owner (a claim, a release) or another route (a
+// location switch, the watchdog's move) is unknown; a route not readable
+// now keeps the verdict without a country. With no configuration to judge
+// at all, unknown.
+func (d *daemon) holdConnectVerdict(in uiapi.Inputs, owner, verdict string, country *string) (string, *string, time.Time) {
+	route := connectRouteKey(in.Runtime)
+	if verdict != "" {
+		d.connectHeld = connectJudged{verdict: verdict, country: country, at: in.Now, route: route, owner: owner}
+		return verdict, country, in.Now
+	}
+	h := d.connectHeld
+	if in.Runtime == nil || h.verdict == "" || h.owner != owner || !freshConnect(h.at, in.Now, connecttelemetry.MaxObservationAge) ||
+		(route != "" && route != h.route) {
+		d.connectHeld = connectJudged{}
+		return "", nil, in.Now
+	}
+	if route == "" {
+		country = nil
+	} else {
+		country = h.country
+	}
+	return h.verdict, country, h.at
+}
+
+// connectJudged is the last verdict the router judged for Connect, when, for
+// which owner and over which route.
+type connectJudged struct {
+	verdict string
+	country *string
+	at      time.Time
+	route   string
+	owner   string
+}
+
+// connectRouteKey names the nodes the main traffic goes through: the pin or
+// the watchdog's move, else the balancer's picks; "" when not known.
+func connectRouteKey(rt *localctl.Runtime) string {
+	if rt == nil || rt.Route == nil {
+		return ""
+	}
+	if rt.Route.Override != "" {
+		return "=" + rt.Route.Override
+	}
+	nodes := slices.Clone(rt.Route.Nodes)
+	slices.Sort(nodes)
+	return rt.Route.Balancer + ":" + strings.Join(nodes, ",")
+}
+
 // Verdict uses the same diagnostics decisions as the local UI, but requires
 // fresh selected-node observatory data. Missing data remains unknown.
 func connectVerdict(in uiapi.Inputs, egress map[string]exitcheck.Located) (string, *string) {
-	if !freshConnect(in.Now, time.Now(), connecttelemetry.MaxObservationAge) {
+	now := time.Now()
+	if !freshConnect(in.Now, now, connecttelemetry.MaxObservationAge) {
 		return "", nil
 	}
 	if in.Runtime == nil {
@@ -322,7 +398,7 @@ func connectVerdict(in uiapi.Inputs, egress map[string]exitcheck.Located) (strin
 	if rt.Engine.State != "running" {
 		return "down", nil
 	}
-	if !in.TableLoaded || in.Counters == nil || rt.Route == nil || !freshConnect(rt.Route.At, in.Now, connecttelemetry.MaxObservationAge) {
+	if !in.TableLoaded || in.Counters == nil || rt.Route == nil || !freshObservation(rt.Route.At, in.Now, now, connecttelemetry.MaxObservationAge) {
 		return "", nil
 	}
 	nodes := rt.Route.Nodes
@@ -339,7 +415,7 @@ func connectVerdict(in uiapi.Inputs, egress map[string]exitcheck.Located) (strin
 		}
 		// The classic observatory dates its probe; xray's burst observatory
 		// (healthCheck) does not, and then this live scrape is the observation.
-		if ob.LastTry > 0 && !freshConnect(time.Unix(ob.LastTry, 0), in.Now, connecttelemetry.MaxObservationAge) {
+		if ob.LastTry > 0 && !freshObservation(time.Unix(ob.LastTry, 0), in.Now, now, connecttelemetry.MaxObservationAge) {
 			return "", nil
 		}
 		if !ob.Alive {
@@ -388,7 +464,7 @@ func connectVerdict(in uiapi.Inputs, egress map[string]exitcheck.Located) (strin
 	var country *string
 	for _, tag := range nodes {
 		e, ok := egress[tag]
-		if !ok || !freshConnect(e.At, in.Now, 24*time.Hour) {
+		if !ok || !freshObservation(e.At, in.Now, now, 24*time.Hour) {
 			return verdict, nil
 		}
 		if country != nil && *country != e.CC {
