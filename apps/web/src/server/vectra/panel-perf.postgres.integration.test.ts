@@ -198,6 +198,38 @@ describe.skipIf(!port)("panel performance SQL on a real PostgreSQL", () => {
     expect((blobCount as unknown as Array<{ count: number }>)[0]?.count).toBe(kept.size - 1);
   });
 
+  it("revision retention: skips a revision a job is being queued for right now", async () => {
+    const router = await newRouter("retention-race");
+    const old = daysAgo(40);
+    const revisions: string[] = [];
+    for (let n = 1; n <= 6; n += 1) {
+      revisions.push((await newRevision(router.id, n, { status: "failed", origin: "operator_draft", createdAt: new Date(old.getTime() + n * 1000) })).id);
+    }
+    // Revisions 1-3 are past keep-3 and unreferenced. A second connection is
+    // queueing an apply for revision 1 and has not committed yet.
+    const other = postgres({ host: "127.0.0.1", port: Number(port), username: "panel_test", database: "postgres", max: 1 });
+    try {
+      const reserved = await other.reserve();
+      await reserved`begin`;
+      await reserved`insert into vectra_job (id, router_id, type, state, desired_revision_id) values (${crypto.randomUUID()}, ${router.id}, 'apply_passwall_config', 'queued', ${revisions[0]!})`;
+
+      const result = await runRevisionRetentionTick(db, { enabled: true, retentionHours: 168, keepPerRouter: 3, retentionDays: 30, dryRun: false });
+      await reserved`commit`;
+      reserved.release();
+
+      expect(result.deleted).toBe(2);
+      const remaining = new Set(
+        (await db.select({ id: schema.passwallDesiredRevisions.id }).from(schema.passwallDesiredRevisions).where(sql`router_id = ${router.id}`)).map((row) => row.id),
+      );
+      expect(remaining.has(revisions[0]!)).toBe(true);
+      expect(remaining.has(revisions[1]!) || remaining.has(revisions[2]!)).toBe(false);
+      const [queued] = (await db.execute(sql`select desired_revision_id from vectra_job where router_id = ${router.id}`)) as unknown as Array<{ desired_revision_id: string | null }>;
+      expect(queued?.desired_revision_id).toBe(revisions[0]);
+    } finally {
+      await other.end();
+    }
+  });
+
   it("history retention: batches old journal, finished jobs (with results), resolved incidents and alerts", async () => {
     const router = await newRouter("history");
     const old = daysAgo(31);

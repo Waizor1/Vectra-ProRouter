@@ -87,6 +87,17 @@ describe("runRevisionRetentionTick", () => {
     }
   });
 
+  it("locks what it deletes and skips a revision someone else holds", async () => {
+    const { db, executed } = createRetentionMockDb();
+
+    await runRevisionRetentionTick(
+      db as unknown as Parameters<typeof runRevisionRetentionTick>[0],
+      { enabled: true, retentionDays: null },
+    );
+
+    expect(executed[0]!.text).toContain("for update of target skip locked");
+  });
+
   it("keeps at least three revisions per router whatever is configured", async () => {
     const { db, executed } = createRetentionMockDb();
 

@@ -145,9 +145,21 @@ async function deleteInBatches(
   let deleted = 0;
   while (deleted < maxPerTick) {
     const batch = Math.min(REVISION_BATCH_LIMIT, maxPerTick - deleted);
+    // Rows are locked FOR UPDATE SKIP LOCKED before they go. A job being
+    // queued for one of them right now (its FK check holds a KEY SHARE lock
+    // until it commits) makes that revision skipped instead of deleted from
+    // under it - the job's desired_revision_id would otherwise be nulled by
+    // the SET NULL FK. A job inserted after the lock fails its FK check
+    // loudly instead.
     const result = await database.execute(sql`
       delete from vectra_passwall_desired_revision
-      where id in (select id from (${candidates}) c limit ${batch})
+      where id in (
+        select target.id
+        from vectra_passwall_desired_revision target
+        where target.id in (select id from (${candidates}) c)
+        limit ${batch}
+        for update of target skip locked
+      )
     `);
     const count = affectedRows(result);
     deleted += count;
