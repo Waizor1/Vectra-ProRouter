@@ -50,15 +50,17 @@ async function main() {
 
   // Only now load the application: env validation, the database pool and the
   // loop modules.
-  const { startBackgroundLoops } = await import(
+  const { findStalledLoops, startBackgroundLoops } = await import(
     "~/server/vectra/background-loops"
   );
   const {
     backgroundTicksInFlight,
     beginBackgroundDrain,
     holdLoopPresence,
+    loopTickTimes,
   } = await import("~/server/vectra/background-lock");
 
+  const startedAt = Date.now();
   const started = startBackgroundLoops();
   const running = (Object.keys(started) as Array<keyof typeof started>).filter(
     (loop) => started[loop],
@@ -71,13 +73,32 @@ async function main() {
   let stopping = false;
   // Not unref'd: the loop timers are, so this is what keeps the worker alive.
   const heartbeat = setInterval(() => {
-    presence.ping().then(beat, (error: unknown) => {
-      if (stopping) return;
-      // The presence locks went with the connection; restart cleanly rather
-      // than run on invisibly (restart: unless-stopped brings us back).
-      console.error("[worker] presence connection lost; exiting", error);
-      process.exit(1);
-    });
+    const ticks = loopTickTimes();
+    presence.ping(ticks).then(
+      () => {
+        if (stopping) return;
+        // Alive is not the same as ticking: a loop whose tick hangs keeps
+        // the process up while doing nothing. Past max(3 intervals, 5 min)
+        // without a settled tick, exit and let the restart policy start a
+        // fresh process; its locks die with this one.
+        const stalled = findStalledLoops(running, ticks, startedAt, Date.now());
+        if (stalled.length > 0) {
+          console.error(
+            "[worker] loop(s) stalled; exiting for a restart: %o",
+            stalled,
+          );
+          process.exit(1);
+        }
+        beat();
+      },
+      (error: unknown) => {
+        if (stopping) return;
+        // The presence locks went with the connection; restart cleanly rather
+        // than run on invisibly (restart: unless-stopped brings us back).
+        console.error("[worker] presence connection lost; exiting", error);
+        process.exit(1);
+      },
+    );
   }, HEARTBEAT_INTERVAL_MS);
 
   const shutdown = (signal: string) => {
