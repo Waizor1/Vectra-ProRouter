@@ -35,20 +35,21 @@ answered every one of them with FakeDNS. 1111 (same version) was clean.
   flush then drops whatever it answered. A WAN or PPPoE flap that empties
   `resolv.conf.auto` changes nothing for 60 s: the last resolvers stand in,
   so a flap does not reprogram, flush and re-render twice.
-- **The WAN's own resolvers answer the direct names first.** With its
+- **The WAN's own resolvers are the direct names' last fallback.** With its
   private resolver in the tunnel too, a router behind a box resolved its
   nodes' and its panel's names only over TCP — 8.8.8.8, 77.88.8.8, the box
-  last — each after the one before timed out, where a network keeps port 53
-  to the outside closed. xray now asks
-  the WAN zone's IPv4 resolvers first for those names, plain UDP, by a rule
-  of the router's own (`vctl-dns-wan`) to a plain freedom (the provider's,
-  else `vctl-direct` added), never the tunnel; the TCP ones stay behind them.
-  Proxied names still get FakeDNS.
+  last — where a network keeps the outside's DNS closed. xray now also asks
+  the WAN zone's IPv4 resolvers over plain UDP, by a rule of the router's
+  own (`vctl-dns-wan`) to a plain freedom (the provider's, else
+  `vctl-direct` added), never the tunnel — LAST, after the TCP ones: a WAN
+  resolver may be the ISP's, which forges answers for blocked names, and a
+  forged node address would keep the tunnel down. Proxied names still get
+  FakeDNS. Needs xray's per-server DNS `tag` (in 26.3.27).
 - **The box's admin page by name.** `my.keenetic.net`, `tplinkwifi.net`,
   `tplinklogin.net`, `fritz.box`, `router.asus.com`, `routerlogin.net`,
-  `miwifi.com` are asked of the WAN's resolvers alone. dnsmasq's rebind
-  protection (on by default) still drops a private answer unless the owner
-  allows the name (`rebind_domain`).
+  `miwifi.com` are asked of the WAN's PRIVATE resolvers alone (the box), first.
+  dnsmasq's rebind protection (on by default) still drops a private answer
+  unless the owner allows the name (`rebind_domain`).
 
 ## vctl 0.7.0-r19 — the Vectra app no longer says "unknown" every other minute
 

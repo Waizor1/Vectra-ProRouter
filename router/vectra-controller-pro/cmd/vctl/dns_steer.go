@@ -42,10 +42,10 @@ func (d *daemon) dnsOptions() *xray.DNSOptions {
 		// data plane then carries those addresses (carryFakeDNS).
 		AllowFakeDNS:    d.passwallMode(),
 		DirectResolvers: directResolvers(d.etcRoot()),
-		// The WAN's own (the box in front of the router), asked first for
-		// those names, plain UDP straight out: they answer as they did
-		// before DNS went through the tunnel, where a network keeps port 53
-		// to the outside closed too.
+		// The WAN's own (the box in front of the router, the ISP's), plain
+		// UDP straight out: the last fallback for those names, where a
+		// network keeps the outside's DNS closed — never before the public
+		// ones, an ISP's forges — and the box's admin names from a private one.
 		WANResolvers: wanV4,
 		// The panel's names, and NTP's: the clock TLS needs must not wait
 		// for the tunnel either.

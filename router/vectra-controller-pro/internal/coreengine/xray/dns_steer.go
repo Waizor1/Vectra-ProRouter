@@ -38,13 +38,15 @@ import (
 // dials them itself, around its routing, so no rule and no outbound of the
 // provider's is involved, and nothing the provider routes can change it.
 //
-// Ahead of those, the WAN's own resolvers (DNSOptions.WANResolvers): plain
-// UDP, as dnsmasq asked them before DNS went through the tunnel, sent by a
-// rule of the router's own (DNSWANTag) to a plain freedom — never the
-// tunnel. A router behind a provider's box whose only resolver is the box's
-// 192.168.x.1, on a network that keeps port 53 to the outside closed, would
-// otherwise resolve its nodes' and its panel's names only once 8.8.8.8 and
-// 77.88.8.8 time out over TCP.
+// Behind those, the last fallback: the WAN's own resolvers
+// (DNSOptions.WANResolvers), plain UDP, as dnsmasq asked them before DNS
+// went through the tunnel, sent by a rule of the router's own (DNSWANTag) to
+// a plain freedom — never the tunnel. A router behind a provider's box whose
+// only resolver is the box's 192.168.x.1, on a network that keeps port 53 to
+// the outside closed (and TCP to it too), still resolves its nodes' and its
+// panel's names. Never ahead of the tcp+local ones: a WAN resolver may be the
+// ISP's, which forges answers for blocked names. Only the box's admin names
+// (BoxAdminDomains) go first, to the private ones alone.
 
 const (
 	// DNSInboundTag is the loopback inbound dnsmasq's redirected queries land on.
@@ -77,9 +79,9 @@ const (
 var DefaultDirectResolvers = []string{"8.8.8.8", "77.88.8.8"}
 
 // BoxAdminDomains are the names only the box in front of the router answers
-// with itself — its admin page. Asked of the WAN's resolvers alone
-// (DNSOptions.WANResolvers), so the box stays reachable by name with DNS in
-// the tunnel. A small explicit list, not a pattern: any other name a box
+// with itself — its admin page. Asked of the WAN's PRIVATE resolvers alone
+// (DNSOptions.WANResolvers: the box; an ISP's public one does not know them),
+// so the box stays reachable by name with DNS in the tunnel. A small explicit list, not a pattern: any other name a box
 // answers is the ISP's to answer. dnsmasq's rebind protection (OpenWrt's
 // default) still drops a private answer unless the owner allows the name.
 var BoxAdminDomains = []string{
@@ -101,10 +103,10 @@ type DNSOptions struct {
 	// server for the direct names.
 	DirectResolvers []string
 	// WANResolvers are the WAN's own IPv4 resolvers (the box in front of the
-	// router, the ISP's): asked FIRST for the direct names, over plain UDP
-	// through a plain freedom outbound — the provider's, else DirectTag
-	// added — never through the tunnel. The DirectResolvers stay behind them
-	// as fallbacks.
+	// router, the ISP's): asked over plain UDP through a plain freedom
+	// outbound — the provider's, else DirectTag added — never through the
+	// tunnel. For the direct names, LAST, after the DirectResolvers; the
+	// private ones FIRST for the box's admin names (BoxAdminDomains).
 	WANResolvers []string
 	// DirectDomains are xray domain matchers ("full:api.example.com",
 	// "domain:example.com") resolved directly besides the nodes' own names,
@@ -215,15 +217,15 @@ type DNSResult struct {
 // dnsPlan is what DNS through the tunnel becomes in one provider document.
 type dnsPlan struct {
 	on      bool
-	inbound []byte            // the DNS inbound
-	rule    json.RawMessage   // for the top of routing.rules
-	wanRule json.RawMessage   // after it: the WAN resolvers' queries to wanVia
-	wanVia  string            // the plain freedom they leave by
+	inbound []byte          // the DNS inbound
+	rule    json.RawMessage // for the top of routing.rules
+	wanRule json.RawMessage // after it: the WAN resolvers' queries to wanVia
+	wanVia  string          // the plain freedom they leave by
 	// addDirect: wanVia is DirectTag, appended by the splice.
 	addDirect bool
-	servers []json.RawMessage // for the front of dns.servers
-	level   uint32            // the DNS sessions' policy level (dnsLevelPolicy)
-	res     DNSResult
+	servers   []json.RawMessage // for the front of dns.servers
+	level     uint32            // the DNS sessions' policy level (dnsLevelPolicy)
+	res       DNSResult
 }
 
 // DNS sessions live seconds, not the provider's minutes. dnsmasq asks from a
@@ -339,23 +341,39 @@ func planDNS(providerRaw []byte, o *DNSOptions) (dnsPlan, error) {
 		domains = append(domains, "full:"+h)
 	}
 	domains = append(domains, o.DirectDomains...)
+	// The WAN's resolvers, plain UDP, by the router's own rule to a plain
+	// freedom (DNSWANTag): the box's admin names from a PRIVATE one (the box)
+	// first, and every name above from all of them LAST — never ahead of the
+	// tcp+local ones: a WAN resolver may be the ISP's, which forges answers
+	// for blocked names, and xray takes the first answer it gets. A forged
+	// node address and the tunnel never comes up.
+	wanServer := func(r string, names []string) json.RawMessage {
+		return marshalNoEscape(struct {
+			Address      string   `json:"address"`
+			Port         int      `json:"port"`
+			Domains      []string `json:"domains"`
+			SkipFallback bool     `json:"skipFallback"`
+			Tag          string   `json:"tag"`
+		}{r, 53, names, true, DNSWANTag})
+	}
+	var boxFirst, wanLast []json.RawMessage
 	if len(o.WANResolvers) > 0 {
 		if via, add := wanDirectVia(providerRaw); via != "" {
-			// The box's own names too, from it alone (BoxAdminDomains).
-			wanDomains := append(append([]string(nil), domains...), BoxAdminDomains...)
 			for _, r := range o.WANResolvers {
-				plan.servers = append(plan.servers, marshalNoEscape(struct {
-					Address      string   `json:"address"`
-					Port         int      `json:"port"`
-					Domains      []string `json:"domains"`
-					SkipFallback bool     `json:"skipFallback"`
-					Tag          string   `json:"tag"`
-				}{r, 53, wanDomains, true, DNSWANTag}))
+				if ip := net.ParseIP(r); ip != nil && ip.IsPrivate() {
+					boxFirst = append(boxFirst, wanServer(r, BoxAdminDomains))
+				}
+				if len(domains) > 0 {
+					wanLast = append(wanLast, wanServer(r, domains))
+				}
 			}
-			plan.wanRule = marshalNoEscape(userRule{Type: "field", InboundTag: []string{DNSWANTag}, OutboundTag: via})
-			plan.wanVia, plan.addDirect, plan.res.WANVia = via, add, via
+			if len(boxFirst)+len(wanLast) > 0 {
+				plan.wanRule = marshalNoEscape(userRule{Type: "field", InboundTag: []string{DNSWANTag}, OutboundTag: via})
+				plan.wanVia, plan.addDirect, plan.res.WANVia = via, add, via
+			}
 		}
 	}
+	plan.servers = append(plan.servers, boxFirst...)
 	for _, r := range o.DirectResolvers {
 		if len(domains) == 0 {
 			// No node name to loop on, no control-plane name asked for.
@@ -367,6 +385,7 @@ func planDNS(providerRaw []byte, o *DNSOptions) (dnsPlan, error) {
 			SkipFallback bool     `json:"skipFallback"`
 		}{"tcp+local://" + r, domains, true}))
 	}
+	plan.servers = append(plan.servers, wanLast...)
 
 	plan.level = freeLevel(providerRaw)
 	plan.res.Level = plan.level

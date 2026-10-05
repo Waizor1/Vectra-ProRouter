@@ -671,10 +671,10 @@ func TestWithoutAWANZoneTheDefaultRouteDecides(t *testing.T) {
 	}
 }
 
-// A router whose only resolver is the box in front of it: every render asks
-// the box first for the names resolved directly (xray's WANResolvers), with
-// the public ones behind it as before.
-func TestThePrivateOnlyResolverAnswersTheDirectNamesFirst(t *testing.T) {
+// A router whose only resolver is the box in front of it: every render gives
+// it to xray (WANResolvers: the direct names' last fallback, the box's admin
+// names), the public ones staying first as before.
+func TestThePrivateOnlyResolverReachesTheRender(t *testing.T) {
 	d := dnsDaemon(t, renderWithDNS, dnsmasqAs453)
 	d.lanDevsAsked = true
 	d.devNets = func(string) []*net.IPNet { return nil }
