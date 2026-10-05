@@ -109,6 +109,11 @@ describe.skipIf(!port)("background loop locks on a real PostgreSQL", () => {
       acquired: true,
       value: "web",
     });
+
+    // Both outcomes count as a settled tick for the stall watchdog.
+    expect(typeof workerLock.loopTickTimes().autoRescueMonitor?.completedAt).toBe("number");
+    const webTimes = webLock.loopTickTimes().autoRescueMonitor;
+    expect([typeof webTimes?.completedAt, typeof webTimes?.busyAt]).toEqual(["number", "number"]);
   });
 
   it("releases the lock when the holder's connection dies mid-tick", async () => {
@@ -126,6 +131,12 @@ describe.skipIf(!port)("background loop locks on a real PostgreSQL", () => {
     `;
     expect(holder).toBeDefined();
     await webApp`select pg_terminate_backend(${holder!.pid})`;
+    // pg_terminate_backend only signals; wait until the backend is gone.
+    for (let i = 0; i < 100; i += 1) {
+      const [alive] = await webApp`select 1 from pg_stat_activity where pid = ${holder!.pid}`;
+      if (!alive) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
 
     // A crashed worker must not wedge the loop: the lock went with the session.
     expect(await webLock.withLoopLock("snapshotRetention", async () => "taken over")).toEqual({
@@ -151,15 +162,23 @@ describe.skipIf(!port)("background loop locks on a real PostgreSQL", () => {
       ["autoRescueMonitor", "stuckJobJanitor"],
       `postgres://panel_test@127.0.0.1:${port}/${database}`,
     );
-    await presence.ping();
+    await presence.ping({
+      autoRescueMonitor: { completedAt: 1_700_000_000_000, busyAt: null },
+      stuckJobJanitor: { completedAt: 1_700_000_001_000, busyAt: 1_700_000_002_000 },
+    });
 
-    expect([...(await webLock.loadRunningLoopPresence(webDb))].sort()).toEqual([
-      "autoRescueMonitor",
-      "stuckJobJanitor",
-    ]);
+    const seen = await webLock.loadRunningLoopPresence(webDb);
+    expect([...seen.running].sort()).toEqual(["autoRescueMonitor", "stuckJobJanitor"]);
+    // The tick times travel in the ping's own SQL (pg_stat_activity.query).
+    expect(seen.ticks).toEqual({
+      autoRescueMonitor: { completedAt: 1_700_000_000_000, busyAt: null },
+      stuckJobJanitor: { completedAt: 1_700_000_001_000, busyAt: 1_700_000_002_000 },
+    });
 
     await presence.release();
-    expect((await webLock.loadRunningLoopPresence(webDb)).size).toBe(0);
+    const gone = await webLock.loadRunningLoopPresence(webDb);
+    expect(gone.running.size).toBe(0);
+    expect(gone.ticks).toEqual({});
   });
 
   it("refuses the operator's stuck-job sweep while the worker is running one", async () => {

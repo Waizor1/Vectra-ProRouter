@@ -545,6 +545,8 @@ export async function queueRouteHealthJobs(
   return queued;
 }
 
+export const ROUTE_HEALTH_VERIFIER_INTERVAL_MS = 15 * 60 * 1000;
+
 const globalForVerifier = globalThis as unknown as {
   __vectraRouteHealthVerifierTimer?: NodeJS.Timeout;
   __vectraRouteHealthVerifierRunning?: boolean;
@@ -631,7 +633,7 @@ export function startRouteHealthVerifier() {
 
   globalForVerifier.__vectraRouteHealthVerifierTimer = setInterval(
     () => void run(),
-    15 * 60 * 1000,
+    ROUTE_HEALTH_VERIFIER_INTERVAL_MS,
   );
   globalForVerifier.__vectraRouteHealthVerifierTimer.unref?.();
   return true;

@@ -150,6 +150,10 @@ services:
   # Background loops in their own process (second CPU core). Idle unless
   # VECTRA_BACKGROUND_MODE=worker-separate. Same image as web: build it with
   # `docker compose build web` first. No ports.
+  # Rolling the CODE back to a release without this service: set the mode to
+  # in-web and `stop` + `rm -f` this container FIRST (deploy/README.md §5.5) —
+  # older webs run the loops without locks, and compose stops managing a
+  # container whose service has left this file.
   worker:
     image: ${COMPOSE_PROJECT_NAME:-vectra-prorouter}-web
     pull_policy: never

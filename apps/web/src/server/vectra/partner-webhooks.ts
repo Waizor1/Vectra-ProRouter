@@ -1,4 +1,4 @@
-import { withLoopLock } from "./background-lock";
+import { recordLoopTick, withLoopLock } from "./background-lock";
 import { sweepPartnerOfflineWithDb } from "./partner-router-events";
 import {
   type PartnerWebhookEvent,
@@ -40,7 +40,8 @@ const DELIVERY_TIMEOUT_MS = 10_000;
 // sweep cannot send it at the same time.
 const DELIVERY_LEASE_MS = 60_000;
 const DETAIL_MAX_LENGTH = 500;
-const SWEEP_INTERVAL_MS = 30_000;
+export const PARTNER_WEBHOOK_SWEEP_INTERVAL_MS = 30_000;
+const SWEEP_INTERVAL_MS = PARTNER_WEBHOOK_SWEEP_INTERVAL_MS;
 
 // Delay before attempt N+1, by attempts already made (~16 h in total).
 export const PARTNER_WEBHOOK_BACKOFF_SECONDS = [
@@ -338,6 +339,10 @@ export function startPartnerWebhookDispatcher() {
           .catch(error => console.error("[partner-webhooks] offline sweep failed", error))
           .then(() => runDispatch(db)),
       ).catch(error => console.error("[partner-webhooks]", error));
+    } else {
+      // Nothing to deliver to: an idle tick is still a tick, so the worker's
+      // stall watchdog does not take "no partner configured" for a hang.
+      recordLoopTick("partnerWebhookDispatcher", "completed");
     }
   }, SWEEP_INTERVAL_MS);
   globalForWebhooks.__vectraPartnerWebhookTimer.unref?.();

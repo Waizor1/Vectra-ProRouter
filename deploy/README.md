@@ -507,15 +507,41 @@ docker compose --env-file .env up -d web worker   # both recreated with the new 
 Verify:
 
 ```bash
-curl -s https://router.vectra-pro.net/api/health | jq '{backgroundMode, checks}'
+curl -s https://router.vectra-pro.net/api/health | jq '{backgroundMode, checks, loopTicks}'
 docker compose --env-file .env logs --tail=20 worker   # "[worker] started loops: ..."
 ```
+
+**Rolling the code back to a release without the worker** (anything before
+this change, e.g. production overlay 20) needs a fixed order. Releases before
+it run every loop inside the web *without* advisory locks, and once the
+`worker` service is gone from `docker-compose.yml`, `docker compose up` no
+longer manages a `vectra-worker` container that is still running — it would
+keep running the same loops next to the old web: double auto-rescue and
+route-health jobs. So, BEFORE syncing the old release slice:
+
+```bash
+# 1. .env: VECTRA_BACKGROUND_MODE=in-web
+docker compose --env-file .env up -d web          # loops back in the web, with locks
+docker compose --env-file .env stop worker
+docker compose --env-file .env rm -f worker       # no vectra-worker left behind
+docker ps --filter name=vectra-worker              # must list nothing
+# 2. only now sync the old slice, then:
+docker compose --env-file .env up -d --remove-orphans web
+```
+
+`--remove-orphans` on the last step also removes a leftover `vectra-worker`
+if step 1 was skipped. A worker never runs loops unless its own env says
+`worker-separate`, so a worker container left idle (mode `in-web`) is
+harmless, but it should not outlive the code that knows about it.
 
 In `worker-separate` mode the web's `/api/health` reports each loop as `true`
 only while a live worker holds that loop's presence lock (classid
 `0x56540002` in `pg_locks`), so a dead worker shows up as `false` there; the
 web's own HTTP status does not depend on it. The worker exits (and is
-restarted) if its presence session is lost, drains in-flight ticks for up to
+restarted) if its presence session is lost or if any of its loops has not
+settled a tick for max(3 × its interval, 5 min) — `loopTicks` in
+`/api/health` shows each loop's last-tick age, read from the worker's presence
+ping — drains in-flight ticks for up to
 25 s on `SIGTERM` (`stop_grace_period: 30s`), and is capped at `mem_limit:
 512m` / `--max-old-space-size=384`. Its compose healthcheck is a heartbeat
 file it refreshes every 15 s.

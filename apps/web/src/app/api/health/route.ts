@@ -1,6 +1,10 @@
 import { env } from "~/env";
 import { db } from "~/server/db";
-import { loadRunningLoopPresence } from "~/server/vectra/background-lock";
+import {
+  type LoopTickTimes,
+  loadRunningLoopPresence,
+  loopTickTimes,
+} from "~/server/vectra/background-lock";
 import { startBackgroundLoops } from "~/server/vectra/background-loops";
 import {
   checkDatabaseRead,
@@ -8,6 +12,24 @@ import {
 } from "~/server/vectra/health-probe";
 
 export const dynamic = "force-dynamic";
+
+/** Seconds since each loop last completed a tick / found it running elsewhere. */
+function tickAges(
+  ticks: Partial<Record<string, LoopTickTimes>>,
+  now: number,
+) {
+  const age = (at: number | null) =>
+    at === null ? null : Math.max(0, Math.round((now - at) / 1000));
+  return Object.fromEntries(
+    Object.entries(ticks).map(([loop, times]) => [
+      loop,
+      {
+        completedSecondsAgo: age(times?.completedAt ?? null),
+        busyElsewhereSecondsAgo: age(times?.busyAt ?? null),
+      },
+    ]),
+  );
+}
 
 export async function GET() {
   const checkedAt = new Date().toISOString();
@@ -23,6 +45,10 @@ export async function GET() {
     dbRead: false,
     dbWriteProbe: false,
   };
+
+  // "Running" is not "ticking": the age of each loop's last tick shows a loop
+  // that is up but stuck. Informational only — never part of `ok`.
+  let loopTicks: ReturnType<typeof tickAges> = {};
 
   try {
     // Each start* returns whether that lane is actually RUNNING, not merely
@@ -40,15 +66,19 @@ export async function GET() {
     // worker that died cannot (its connection, and the lock, are gone). The
     // web's own health does not depend on it: a failed read leaves them false.
     if (env.VECTRA_BACKGROUND_MODE === "worker-separate") {
-      const running = await loadRunningLoopPresence(db).catch((error) => {
-        console.error("[health] worker presence", error);
-        return new Set<string>();
-      });
-      for (const loop of running) {
-        checks[loop as keyof typeof checks] = true;
+      const presence = await loadRunningLoopPresence(db).catch(
+        (error: unknown) => {
+          console.error("[health] worker presence", error);
+          return null;
+        },
+      );
+      for (const loop of presence?.running ?? []) {
+        checks[loop] = true;
       }
+      loopTicks = tickAges(presence?.ticks ?? {}, Date.now());
     } else {
       Object.assign(checks, startBackgroundLoops());
+      loopTicks = tickAges(loopTickTimes(), Date.now());
     }
     await checkDatabaseRead(db);
     checks.dbRead = true;
@@ -64,6 +94,7 @@ export async function GET() {
         checkedAt,
         backgroundMode: env.VECTRA_BACKGROUND_MODE,
         checks,
+        loopTicks,
       },
       { status: 200 },
     );
@@ -76,6 +107,7 @@ export async function GET() {
         checkedAt,
         backgroundMode: env.VECTRA_BACKGROUND_MODE,
         checks,
+        loopTicks,
         error: error instanceof Error ? error.message : "health check failed",
       },
       { status: 503 },

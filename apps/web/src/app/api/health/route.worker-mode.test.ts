@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 const state = vi.hoisted(() => ({
   presence: new Set<string>(),
+  ticks: {} as Record<string, { completedAt: number | null; busyAt: number | null }>,
   presenceError: null as Error | null,
 }));
 
@@ -25,7 +26,10 @@ vi.mock("~/server/vectra/background-loops", () => ({ startBackgroundLoops }));
 vi.mock("~/server/vectra/background-lock", () => ({
   loadRunningLoopPresence: async () => {
     if (state.presenceError) throw state.presenceError;
-    return state.presence;
+    return { running: state.presence, ticks: state.ticks };
+  },
+  loopTickTimes: () => {
+    throw new Error("the web has no loop ticks of its own in worker-separate mode");
   },
 }));
 
@@ -36,6 +40,7 @@ type HealthBody = {
   ok: boolean;
   backgroundMode: string;
   checks: Record<string, boolean>;
+  loopTicks: Record<string, { completedSecondsAgo: number | null; busyElsewhereSecondsAgo: number | null }>;
 };
 
 async function call() {
@@ -47,12 +52,17 @@ describe("/api/health with the loops in a separate worker", () => {
   beforeEach(() => {
     resetHealthProbeForTest();
     state.presence = new Set();
+    state.ticks = {};
     state.presenceError = null;
     startBackgroundLoops.mockClear();
   });
 
   it("starts no loop and reports the ones a live worker holds", async () => {
     state.presence = new Set(["autoRescueMonitor", "stuckJobJanitor"]);
+    state.ticks = {
+      autoRescueMonitor: { completedAt: Date.now() - 42_000, busyAt: null },
+      stuckJobJanitor: { completedAt: null, busyAt: Date.now() - 7_000 },
+    };
     const { status, body } = await call();
 
     expect(startBackgroundLoops).not.toHaveBeenCalled();
@@ -69,6 +79,11 @@ describe("/api/health with the loops in a separate worker", () => {
       partnerWebhookDispatcher: false,
       dbRead: true,
       dbWriteProbe: true,
+    });
+    // Up is not the same as ticking: the worker's last tick ages ride along.
+    expect(body.loopTicks).toEqual({
+      autoRescueMonitor: { completedSecondsAgo: 42, busyElsewhereSecondsAgo: null },
+      stuckJobJanitor: { completedSecondsAgo: null, busyElsewhereSecondsAgo: 7 },
     });
   });
 
