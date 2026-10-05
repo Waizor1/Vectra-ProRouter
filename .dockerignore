@@ -19,3 +19,4 @@ scripts
 *.log
 *.tmp
 *.bak
+apps/web/dist
