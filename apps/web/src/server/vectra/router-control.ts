@@ -2118,7 +2118,13 @@ export async function checkInRouter(
     // Tell the controller which nodes to bind rather than letting it re-derive
     // them from its own compiled-in scorer. Computed from the config the router
     // just reported, so the node IDs are the ones currently on the device.
-    routePolicy: buildFleetRoutePolicyDirective(
+    // No directive while the ledger is still being built after a start (the
+    // first build outran its wait): one computed without it could bind the
+    // router to a host the fleet already knows is dead. The router keeps its
+    // current bindings until the next check-in.
+    routePolicy: policyContext.unavailable
+      ? null
+      : buildFleetRoutePolicyDirective(
       routePolicyConfig,
       {
         id: router.id,

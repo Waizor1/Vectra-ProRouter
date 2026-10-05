@@ -55,12 +55,22 @@ const EMPTY_HEALTH: FleetNodeHealth = { unhealthyHosts: [], index: new Set() };
 type FleetPolicyContext = {
   nodeHealth: FleetNodeHealth;
   configByRouter: Map<string, FleetPolicyConfigSummary>;
+  /**
+   * Set only when the first build after a start did not finish within
+   * FIRST_BUILD_WAIT_MS: the ledger is not known yet, as opposed to built and
+   * empty. The check-in sends no route-policy directive then — a directive
+   * from an empty ledger cannot tell a dead host from a live one and could
+   * pin the router to one.
+   */
+  unavailable?: true;
 };
 
 const EMPTY: FleetPolicyContext = {
   nodeHealth: EMPTY_HEALTH,
   configByRouter: new Map(),
 };
+
+const UNAVAILABLE: FleetPolicyContext = { ...EMPTY, unavailable: true };
 
 let cached: { value: FleetPolicyContext; expiresAt: number } | null = null;
 let inFlight: Promise<FleetPolicyContext> | null = null;
@@ -155,9 +165,9 @@ async function rebuild(
 
 /**
  * How long a check-in waits for the very first build after a start. Past it
- * the check-in proceeds with no health opinion (EMPTY) — the same answer a
- * failed build has always produced — and the build finishes in the
- * background for the check-ins after it.
+ * the check-in proceeds without the ledger (UNAVAILABLE: no health opinion
+ * and no route-policy directive) and the build finishes in the background
+ * for the check-ins after it.
  */
 export const FIRST_BUILD_WAIT_MS = 2_000;
 
@@ -204,7 +214,7 @@ export async function getFleetPolicyContext(
   const build = startRebuild(database, now);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const fallback = new Promise<FleetPolicyContext>((resolve) => {
-    timer = setTimeout(() => resolve(EMPTY), FIRST_BUILD_WAIT_MS);
+    timer = setTimeout(() => resolve(UNAVAILABLE), FIRST_BUILD_WAIT_MS);
     timer.unref?.();
   });
   try {

@@ -40,6 +40,20 @@ vi.mock("~/server/db", async () => {
   return { db: created.db };
 });
 
+const ledger = vi.hoisted(() => ({
+  override: null as null | ((actual: unknown) => unknown),
+}));
+vi.mock("./fleet-node-health-cache", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./fleet-node-health-cache")>();
+  return {
+    ...actual,
+    getFleetPolicyContext: (...args: Parameters<typeof actual.getFleetPolicyContext>) =>
+      ledger.override
+        ? Promise.resolve(ledger.override(null))
+        : actual.getFleetPolicyContext(...args),
+  };
+});
+
 const {
   checkInRouter,
   resetRevisionSummaryCacheForTest,
@@ -280,6 +294,28 @@ describe("legacy PassWall agent keeps today's behaviour", () => {
       revision: revisionRow(PASSWALL_REVISION, "passwall"),
       queuedJobs: [],
     };
+  });
+
+  it("gets no route-policy directive while the fleet ledger is not built yet", async () => {
+    // The router's stored config, which the ledger carries for it.
+    const built = {
+      nodeHealth: { unhealthyHosts: [], index: new Set<string>() },
+      configByRouter: new Map([[ROUTER_ID, passwallConfig]]),
+    };
+    try {
+      ledger.override = () => built;
+      const withLedger = await checkInRouter(ROUTER_ID, payloadFrom(AGENT_FIXTURE, PASSWALL_REVISION));
+      expect(withLedger.routePolicy).toBeTruthy();
+
+      // The first build after a start outran its wait.
+      ledger.override = () => ({ ...built, configByRouter: new Map(), unavailable: true });
+      const withoutLedger = await checkInRouter(ROUTER_ID, payloadFrom(AGENT_FIXTURE, PASSWALL_REVISION));
+      expect(withoutLedger.routePolicy).toBeNull();
+      // Nothing else in the answer changes.
+      expect({ ...withoutLedger, routePolicy: undefined }).toEqual({ ...withLedger, routePolicy: undefined });
+    } finally {
+      ledger.override = null;
+    }
   });
 
   it("gets the full desired revision on every check-in, even when it applied it", async () => {
