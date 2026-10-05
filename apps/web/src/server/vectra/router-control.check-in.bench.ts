@@ -17,6 +17,8 @@ import {
   routers,
 } from "@vectra/db";
 import { readFileSync } from "node:fs";
+import v8 from "node:v8";
+import vm from "node:vm";
 
 import { bench, describe, vi } from "vitest";
 
@@ -28,6 +30,7 @@ const envMock = vi.hoisted(() => ({
     VECTRA_SECRETS_KEY: Buffer.alloc(32).toString("base64"),
     VECTRA_POLLING_INTERVAL_SECONDS: "45",
     VECTRA_SNAPSHOT_HEARTBEAT_MINUTES: 30,
+    VECTRA_CONFIG_CACHE_MB: process.env.VECTRA_CONFIG_CACHE_MB,
   } as Record<string, unknown>,
 }));
 vi.mock("~/env", () => envMock);
@@ -44,7 +47,7 @@ vi.mock("~/server/db", async () => {
   };
 });
 
-const { checkInRouter } = await import("./router-control");
+const { checkInRouter, revisionSummaryCacheStatsForTest } = await import("./router-control");
 const { createSecretPayload, sanitizePasswallConfig } = await import("./secrets");
 
 const ROUTER_ID = "6f0c2d8e-4b1a-4c3e-9d57-2a8b1c0e9f31";
@@ -216,9 +219,36 @@ const xrayRevisionRow = {
   },
 };
 
+// BENCH_HEAP_ROUTERS=N: N more PassWall routers, each with its own ~131 KB
+// desired revision (sharing one ciphertext; every decrypt still builds its own
+// objects), to measure what the check-in cache holds on the heap.
+const heapRouters = new Map<string, { router: typeof routerRow; revision: typeof activeRow }>();
+const heapRevisions = new Map<string, typeof activeRow>();
+for (let i = 0; i < Number(process.env.BENCH_HEAP_ROUTERS ?? 0); i += 1) {
+  const suffix = i.toString(16).padStart(12, "0");
+  const routerId = `11111111-2222-4333-8444-${suffix}`;
+  const revisionId = `aaaaaaaa-bbbb-4ccc-8ddd-${suffix}`;
+  const revision = { ...activeRow, id: revisionId, routerId, secretBlobId: `secret-42` };
+  heapRouters.set(routerId, {
+    router: { ...routerRow, id: routerId, activeRevisionId: revisionId, lastAppliedRevisionId: revisionId },
+    revision,
+  });
+  heapRevisions.set(revisionId, revision);
+}
+
 state.rowsFor = ({ table, params, ordered }) => {
-  if (table === routers) return [params.has(VCTL_ROUTER_ID) ? vctlRouterRow : routerRow];
+  if (table === routers) {
+    for (const value of params) {
+      const heapRouter = typeof value === "string" ? heapRouters.get(value) : undefined;
+      if (heapRouter) return [heapRouter.router];
+    }
+    return [params.has(VCTL_ROUTER_ID) ? vctlRouterRow : routerRow];
+  }
   if (table === passwallDesiredRevisions) {
+    for (const value of params) {
+      const heapRevision = typeof value === "string" ? heapRevisions.get(value) : undefined;
+      if (heapRevision) return [heapRevision];
+    }
     if (params.has(XRAY_REVISION_ID)) return [xrayRevisionRow];
     if (params.has(ACTIVE_ID)) return [activeRow];
     if (params.has(PREVIOUS_ID)) return [previousRow];
@@ -311,3 +341,30 @@ console.log(
   Math.round(secretRows[1]!.ciphertext.length / 1024),
   Math.round(JSON.stringify(sample).length / 1024),
 );
+
+if (heapRouters.size > 0) {
+  v8.setFlagsFromString("--expose_gc");
+  const gc = vm.runInNewContext("gc") as () => void;
+  const heapMb = () => {
+    gc();
+    return process.memoryUsage().heapUsed / 1024 / 1024;
+  };
+  const before = heapMb();
+  for (let round = 0; round < 2; round += 1) {
+    for (const [routerId] of heapRouters) {
+      await checkInRouter(routerId, { ...structuredClone(checkInPayload), routerId });
+    }
+  }
+  const after = heapMb();
+  const stats = revisionSummaryCacheStatsForTest();
+  console.log(
+    "[bench] heap: %d routers x ~131 KB revisions, VECTRA_CONFIG_CACHE_MB=%s: heapUsed %s MB -> %s MB (+%s MB); cache holds %d routers, weighed %s MB",
+    heapRouters.size,
+    process.env.VECTRA_CONFIG_CACHE_MB ?? "16 (default)",
+    before.toFixed(1),
+    after.toFixed(1),
+    (after - before).toFixed(1),
+    stats.size,
+    (stats.weight / 1024 / 1024).toFixed(1),
+  );
+}

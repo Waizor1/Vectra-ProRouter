@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   resetRevisionSummaryCacheForTest,
   resolveDesiredRevisionWithDb,
+  revisionSummaryCacheStatsForTest,
 } from "./router-control";
 import { createSecretPayload, sanitizePasswallConfig } from "./secrets";
 
@@ -192,6 +193,8 @@ describe("desired revision summary cache", () => {
     revisions.push(rev42);
     const next = await resolveDesiredRevisionWithDb(db, routerOn(REV_42), []);
     expect(next).toEqual(uncachedSummary(rev42, rev41));
+    // The superseded revision's entry is gone: one entry per router.
+    expect(revisionSummaryCacheStatsForTest().size).toBe(1);
   });
 
   it("re-hydrates when the revision's secret blob is replaced", async () => {
