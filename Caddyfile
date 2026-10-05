@@ -19,7 +19,15 @@
 
 {$OPERATOR_DOMAIN} {
 	encode zstd gzip
-	header Strict-Transport-Security "max-age=31536000"
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Content-Security-Policy "frame-ancestors 'none'"
+		-Server
+		-X-Powered-By
+	}
 
 	# Access logs without the routers' credentials: a router token or an
 	# install session in a header must not end up in `docker logs`.
@@ -37,18 +45,18 @@
 
 	# The installer behind a short link:
 	#   wget -O /tmp/vectra https://router.vectra-pro.net/install && sh /tmp/vectra
-	# A browser opening /install still gets the panel page; wget gets the script.
-	@installer {
-		path /install /install.sh
-		not {
-			path /install
-			header Accept *text/html*
-		}
+	# The retired PassWall install flow (page scripts, UCI baselines, helper
+	# apps) is not served to anyone any more: Vectra installs with /install.
+	@legacyinstall path /install/* /api/install/* /install-helper/*
+	handle @legacyinstall {
+		respond 404
 	}
+
+	@installer path /install /install.sh
 	handle @installer {
 		root * /srv/artifacts
 		rewrite * /openwrt/pro-canary/install.sh
-		header Content-Type "text/x-shellscript; charset=utf-8"
+		header Content-Type "text/plain; charset=utf-8"
 		header Cache-Control "no-cache"
 		file_server
 	}
@@ -99,7 +107,15 @@
 
 {$ROUTER_API_DOMAIN} {
 	encode zstd gzip
-	header Strict-Transport-Security "max-age=31536000"
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Content-Security-Policy "frame-ancestors 'none'"
+		-Server
+		-X-Powered-By
+	}
 
 	# Access logs without the routers' credentials: a router token or an
 	# install session in a header must not end up in `docker logs`.
@@ -118,18 +134,18 @@
 
 	# The installer behind a short link:
 	#   wget -O /tmp/vectra https://router.vectra-pro.net/install && sh /tmp/vectra
-	# A browser opening /install still gets the panel page; wget gets the script.
-	@installer {
-		path /install /install.sh
-		not {
-			path /install
-			header Accept *text/html*
-		}
+	# The retired PassWall install flow (page scripts, UCI baselines, helper
+	# apps) is not served to anyone any more: Vectra installs with /install.
+	@legacyinstall path /install/* /api/install/* /install-helper/*
+	handle @legacyinstall {
+		respond 404
 	}
+
+	@installer path /install /install.sh
 	handle @installer {
 		root * /srv/artifacts
 		rewrite * /openwrt/pro-canary/install.sh
-		header Content-Type "text/x-shellscript; charset=utf-8"
+		header Content-Type "text/plain; charset=utf-8"
 		header Cache-Control "no-cache"
 		file_server
 	}
