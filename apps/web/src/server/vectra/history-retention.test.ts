@@ -59,6 +59,13 @@ describe("runHistoryRetentionTick", () => {
     ]);
     expect(deletes[1]!.text).toContain("state in ('succeeded', 'failed', 'cancelled')");
     expect(deletes[1]!.text).toContain("dedupe_key is null");
+    // Rows an attempt cap still counts, an onboarding run's last job, and the
+    // newest job of each type per router are kept.
+    expect(deletes[1]!.text).toContain("i.state = 'open'");
+    expect(deletes[1]!.text).toContain("j.created_at >= i.opened_at");
+    expect(deletes[1]!.text).toContain("j.created_at >= c.started_at");
+    expect(deletes[1]!.text).toContain("r.last_job_id = j.id");
+    expect(deletes[1]!.text).toContain("newer.created_at > j.created_at");
     expect(deletes[2]!.text).toContain("state = 'resolved'");
     expect(deletes[3]!.text).toContain("resolved_at is not null");
   });

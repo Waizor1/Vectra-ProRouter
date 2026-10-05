@@ -16,8 +16,12 @@
 //                       without a dedupe key. A finished job keeps its key only
 //                       for onboarding and partner actions, where the key is an
 //                       idempotency guarantee (resolveJobDedupeKeyAfterResult),
-//                       so those rows stay. Results go with their job (FK
-//                       cascade).
+//                       so those rows stay. Also kept: jobs an attempt cap
+//                       still counts (created since an open incident opened or
+//                       an active rescue case started, same router), a job an
+//                       onboarding run points at (last_job_id), and the newest
+//                       job of each type per router. Results go with their
+//                       job (FK cascade).
 //   health_incident     resolved before the window
 //   operator_push_alert resolved before the window (its dedupe key carries the
 //                       episode start, so a later episode is a new key)
@@ -64,12 +68,40 @@ function expiredRows(cutoffDate: Date): Record<HistoryRetentionTable, SQL> {
       order by created_at
     `,
     job: sql`
-      select id from vectra_job
-      where state in ${TERMINAL_JOB_STATES}
-        and dedupe_key is null
-        and created_at < ${cutoff}
-        and (completed_at is null or completed_at < ${cutoff})
-      order by created_at
+      select j.id from vectra_job j
+      where j.state in ${TERMINAL_JOB_STATES}
+        and j.dedupe_key is null
+        and j.created_at < ${cutoff}
+        and (j.completed_at is null or j.completed_at < ${cutoff})
+        -- Attempt caps count job rows since an anchor, not by age: auto-rescue's
+        -- reconnect cap since the open incident's opened_at, its repair cap
+        -- since the active rescue case's started_at. Those rows stay for as
+        -- long as the incident / case does, or the cap would reset.
+        and not exists (
+          select 1 from vectra_health_incident i
+          where i.router_id = j.router_id
+            and i.state = 'open'
+            and j.created_at >= i.opened_at
+        )
+        and not exists (
+          select 1 from vectra_rescue_case c
+          where c.router_id = j.router_id
+            and c.state in ('open', 'repairing', 'escalated', 'silenced')
+            and j.created_at >= c.started_at
+        )
+        -- The FK from an onboarding run (SET NULL) would hollow it out.
+        and not exists (
+          select 1 from vectra_router_onboarding_run r where r.last_job_id = j.id
+        )
+        -- The newest job of each type per router stays: "the last X" reads
+        -- (latest route verification, last refresh/apply for cooldowns).
+        and exists (
+          select 1 from vectra_job newer
+          where newer.router_id = j.router_id
+            and newer.type = j.type
+            and newer.created_at > j.created_at
+        )
+      order by j.created_at
     `,
     health_incident: sql`
       select id from vectra_health_incident
