@@ -590,3 +590,82 @@ func TestTheRedirectTakesTheWANsOwnResolvers(t *testing.T) {
 		t.Fatal("the WAN's resolvers changed and the redirect is not reprogrammed")
 	}
 }
+
+// writeRouterFile puts a file under the test router's root.
+func writeRouterFile(t *testing.T, root, rel, body string) {
+	t.Helper()
+	p := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Only the WAN's resolvers are taken: resolv.conf.auto holds every
+// interface's — the LAN's own `option dns` (an owner's Pi-hole), a WireGuard
+// peer's — and those are the owner's, asked as before. A WireGuard interface
+// the owner put in the wan zone is the WAN's. Whatever its section, an
+// address reached through a LAN device is never taken.
+func TestOnlyTheWANsResolversAreTaken(t *testing.T) {
+	d := &daemon{rootDir: t.TempDir(), lanDevsAsked: true, lanDevs: []string{"br-lan"}}
+	d.devNets = func(dev string) []*net.IPNet {
+		if dev != "br-lan" {
+			return nil
+		}
+		_, n, _ := net.ParseCIDR("192.168.1.1/24")
+		return []*net.IPNet{n}
+	}
+	writeRouterFile(t, d.rootDir, "tmp/resolv.conf.d/resolv.conf.auto",
+		"# Interface lan\nnameserver 192.168.1.10\n"+
+			"# Interface wg0\nnameserver 10.8.0.1\n"+
+			"# Interface wan\nnameserver 192.168.0.1\nnameserver 77.37.1.2\nnameserver 192.168.1.10\n"+
+			"# Interface wan6\nnameserver fe80::1%wan\nnameserver fe80::2%br-lan\n")
+	writeRouterFile(t, d.rootDir, "etc/config/firewall",
+		"config zone\n\toption name 'lan'\n\tlist network 'lan'\n\nconfig zone\n\toption name 'wan'\n\tlist network 'wan'\n\tlist network 'wan6'\n")
+	v4, v6 := d.wanResolvers()
+	if !reflect.DeepEqual(v4, []string{"192.168.0.1", "77.37.1.2"}) || !reflect.DeepEqual(v6, []string{"fe80::1"}) {
+		t.Fatalf("WAN resolvers = %v / %v, want the wan zone's, none behind br-lan", v4, v6)
+	}
+
+	// The owner put the WireGuard interface in the wan zone: it is the WAN's.
+	writeRouterFile(t, d.rootDir, "etc/config/firewall",
+		"config zone\n\toption name 'wan'\n\toption network 'wan wan6 wg0'\n")
+	if v4, _ = d.wanResolvers(); !reflect.DeepEqual(v4, []string{"10.8.0.1", "192.168.0.1", "77.37.1.2"}) {
+		t.Fatalf("WireGuard in the wan zone: %v", v4)
+	}
+
+	// A wan zone with nothing attached covers the network "wan" (fw4).
+	writeRouterFile(t, d.rootDir, "etc/config/firewall", "config zone\n\toption name 'wan'\n")
+	if v4, v6 = d.wanResolvers(); !reflect.DeepEqual(v4, []string{"192.168.0.1", "77.37.1.2"}) || v6 != nil {
+		t.Fatalf("bare wan zone: %v / %v", v4, v6)
+	}
+}
+
+// Without a wan zone, the WAN is the interfaces a default route leaves by;
+// without those either, nothing is taken by address.
+func TestWithoutAWANZoneTheDefaultRouteDecides(t *testing.T) {
+	prev := defaultRouteIfaces
+	t.Cleanup(func() { defaultRouteIfaces = prev })
+	d := &daemon{rootDir: t.TempDir(), lanDevsAsked: true}
+	d.devNets = func(string) []*net.IPNet { return nil }
+	writeRouterFile(t, d.rootDir, "tmp/resolv.conf.d/resolv.conf.auto",
+		"# Interface lan\nnameserver 192.168.1.10\n# Interface wwan\nnameserver 192.168.43.1\n")
+	defaultRouteIfaces = func() []string { return []string{"wwan"} }
+	if v4, _ := d.wanResolvers(); !reflect.DeepEqual(v4, []string{"192.168.43.1"}) {
+		t.Fatalf("default-route interface's resolvers = %v", v4)
+	}
+	defaultRouteIfaces = func() []string { return nil }
+	if v4, v6 := d.wanResolvers(); v4 != nil || v6 != nil {
+		t.Fatalf("no WAN known, yet resolvers taken: %v / %v", v4, v6)
+	}
+	got := defaultRouteIfacesFrom([]byte(`{"interface":[` +
+		`{"interface":"lan","up":true,"route":[]},` +
+		`{"interface":"wan","up":true,"route":[{"target":"0.0.0.0","mask":0}]},` +
+		`{"interface":"wan6","up":true,"route":[{"target":"::","mask":0}]},` +
+		`{"interface":"wg0","up":false,"route":[{"target":"0.0.0.0","mask":0}]}]}`))
+	if !reflect.DeepEqual(got, []string{"wan", "wan6"}) {
+		t.Fatalf("default-route interfaces = %v", got)
+	}
+}

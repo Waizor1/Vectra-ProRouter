@@ -949,6 +949,9 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 	if !ok {
 		return // no tproxy inbound — nothing kernel-side to program
 	}
+	if len(spec.LANDevices) > 0 {
+		d.lanDevs = spec.LANDevices
+	}
 	d.addDNSRedirect(ctx, &spec, dnsWait)
 	d.carryFakeDNS(&spec)
 	script, err := firewall.Render(spec)

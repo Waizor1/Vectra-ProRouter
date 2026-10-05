@@ -230,6 +230,13 @@ type daemon struct {
 	// routerOwns in tests.
 	hijackMisses int
 	ownsAddr     func(net.IP) bool
+	// lanDevs are the LAN's devices the last ruleset was loaded with
+	// (knownLANDevices; lanDevsAsked: netifd asked already); devNets stands
+	// in for a device's subnets in tests. A resolver behind them is never
+	// redirected (wanResolvers).
+	lanDevs      []string
+	lanDevsAsked bool
+	devNets      func(dev string) []*net.IPNet
 	// PassWall-compatible routing (passwall_source.go): the sniffing of
 	// PassWall's tproxy inbound, and what the last sync was made from.
 	passwallSniffing *config.Sniffing

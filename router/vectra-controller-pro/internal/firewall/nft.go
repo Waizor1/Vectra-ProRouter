@@ -326,8 +326,12 @@ type Spec struct {
 	// answered first: measured on artem-lutfulin 2026-10-05 (r19), the
 	// ISP's forged NXDOMAIN for www.instagram.com and real addresses for
 	// youtube and chatgpt, mixed with FakeDNS, changing minute to minute.
-	// These are redirected too; a server= of the owner's on the LAN is not
-	// in resolv.conf.auto and is asked as before.
+	// These are redirected too — the WAN's only: resolv.conf.auto holds
+	// every netifd interface's servers, and the daemon takes those of the
+	// firewall's wan zone (else of the default route's interface), never one
+	// reached through a LAN device. An owner's resolver on the LAN (a
+	// Pi-hole as the LAN's `option dns` or a server=), a WireGuard peer's
+	// outside the wan zone, is asked as before.
 	DNSUpstreamV4 []string
 	// DNSUpstreamV6: the same over IPv6 (a link-local or ULA resolver on the
 	// WAN), refused with the public ones while DNSRejectV6 holds.

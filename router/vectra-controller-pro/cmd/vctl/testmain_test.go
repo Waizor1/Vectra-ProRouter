@@ -16,6 +16,9 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	incident.Dir, incident.CrashDir = filepath.Join(dir, "inbox"), filepath.Join(dir, "crash")
+	// No test asks the host's netifd: the WAN is "wan" wherever a test
+	// writes no firewall zones of its own (wanInterfaces).
+	defaultRouteIfaces = func() []string { return []string{"wan"} }
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)

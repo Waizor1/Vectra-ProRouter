@@ -16,10 +16,15 @@ answered every one of them with FakeDNS. 1111 (same version) was clean.
   one over the open path beside the redirected ones (conntrack: replies from
   port 53 of 192.168.x.1, the public ones from 10053) and cached whichever
   answered first, the ISP's forged answers included. 1111's resolvers are
-  all public, so it never showed. Now netifd's resolvers
-  (`resolv.conf.auto`) are redirected by address too, and over IPv6 a
-  link-local or ULA one is refused with the public ones; an owner's
-  `server=` on the LAN is still asked as before. Not a warm-up after an
+  all public, so it never showed. Now the WAN's resolvers are redirected
+  by address too, and over IPv6 a link-local or ULA one is refused with the
+  public ones. Only the WAN's: `resolv.conf.auto` lists every netifd
+  interface's servers under `# Interface <name>`, and only those of the
+  firewall's `wan` zone are taken (without such a zone, those of the
+  interface the default route leaves by; neither known, none). An address
+  reached through a LAN device is never taken, so an owner's Pi-hole or
+  AdGuard on the LAN, a corporate resolver, a WireGuard peer's `dns` outside
+  the wan zone, a `server=` — all are asked as before. Not a warm-up after an
   xray start: xray's DNS never fell back outside the tunnel for these names.
 - **New WAN resolvers under a redirect already in force empty the cache.**
   They are part of the redirect's fingerprint: a DHCP renewal that changes

@@ -1,7 +1,6 @@
 package main
 
 import (
- "vectra-controller-pro/internal/vault"
 	"bufio"
 	"context"
 	"encoding/binary"
@@ -21,6 +20,8 @@ import (
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/rescue"
+	"vectra-controller-pro/internal/uci"
+	"vectra-controller-pro/internal/vault"
 )
 
 // DNS through the tunnel, the daemon's side (the why is in
@@ -183,30 +184,52 @@ func (d *daemon) addDNSRedirect(ctx context.Context, spec *firewall.Spec, wait t
 	}
 	spec.DNSRedirectPort, spec.DNSResolverUIDs = port, uids
 	spec.DNSRejectV6 = hasIPv4Upstream(d.etcRoot())
-	spec.DNSUpstreamV4, spec.DNSUpstreamV6 = wanResolvers(d.etcRoot())
+	spec.DNSUpstreamV4, spec.DNSUpstreamV6 = d.wanResolvers()
 	spec.HijackDNS = d.hijacksDNS()
 }
 
-// wanResolvers are the WAN's own resolvers, from netifd's resolv.conf.auto —
-// the servers dnsmasq asks — by family, the IPv6 ones without their zone.
-// The redirect takes them wherever they are (firewall.Spec.DNSUpstreamV4): a
-// box in front of the router hands out its private address, which the
-// public-only redirect left on the open path.
-func wanResolvers(root string) (v4, v6 []string) {
+// wanResolvers are the WAN's own resolvers — the servers dnsmasq asks that
+// the WAN's DHCP, PPPoE or static config gave — by family, the IPv6 ones
+// without their zone. The redirect takes them wherever they are
+// (firewall.Spec.DNSUpstreamV4): a box in front of the router hands out its
+// private address, which the public-only redirect left on the open path.
+//
+// Only the WAN's: netifd's resolv.conf.auto holds the servers of EVERY
+// interface, each under a "# Interface <name>" line — the LAN's own `option
+// dns` (an owner's Pi-hole at 192.168.1.10), a WireGuard peer's, a corporate
+// 10.x one. Those are the owner's and are asked as before. The WAN is the
+// interfaces of the firewall's wan zone (wanInterfaces); and an address
+// reached through a LAN device (lanRouted) is never taken, whatever section
+// it is in.
+func (d *daemon) wanResolvers() (v4, v6 []string) {
+	wan := wanInterfaces(d.etcRoot())
+	if len(wan) == 0 {
+		return nil, nil
+	}
+	lanDevs := d.knownLANDevices()
+	var lanNets []*net.IPNet
+	for _, dev := range lanDevs {
+		lanNets = append(lanNets, d.deviceNets(dev)...)
+	}
 	seen := map[string]bool{}
 	for _, f := range []string{"tmp/resolv.conf.d/resolv.conf.auto", "tmp/resolv.conf.auto"} {
-		b, err := os.ReadFile(filepath.Join(root, f))
+		b, err := os.ReadFile(filepath.Join(d.etcRoot(), f))
 		if err != nil {
 			continue
 		}
+		iface := ""
 		for _, line := range strings.Split(string(b), "\n") {
 			fields := strings.Fields(line)
-			if len(fields) < 2 || fields[0] != "nameserver" {
+			if len(fields) >= 3 && fields[0] == "#" && fields[1] == "Interface" {
+				iface = fields[2]
 				continue
 			}
-			addr, _, _ := strings.Cut(fields[1], "%")
+			if len(fields) < 2 || fields[0] != "nameserver" || !wan[iface] {
+				continue
+			}
+			addr, zone, _ := strings.Cut(fields[1], "%")
 			ip := net.ParseIP(addr)
-			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || seen[ip.String()] {
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || seen[ip.String()] || lanRouted(ip, zone, lanDevs, lanNets) {
 				continue
 			}
 			seen[ip.String()] = true
@@ -218,6 +241,95 @@ func wanResolvers(root string) (v4, v6 []string) {
 		}
 	}
 	return v4, v6
+}
+
+// wanInterfaces are netifd's interfaces on the WAN side: the networks of the
+// firewall's "wan" zone (a zone with nothing attached covers the network of
+// its own name, as fw4 has it). Where /etc/config/firewall has no such zone,
+// the interfaces a default route leaves by (defaultRouteIfaces); none on any
+// doubt — then only the public resolvers are redirected, as before r20.
+func wanInterfaces(root string) map[string]bool {
+	set := map[string]bool{}
+	if f, err := uci.Load(filepath.Join(root, "etc/config/firewall")); err == nil {
+		found := false
+		for _, z := range f.OfType("zone") {
+			if z.Get("name") != "wan" {
+				continue
+			}
+			found = true
+			nets := append(strings.Fields(z.Get("network")), z.Lists["network"]...)
+			for _, n := range nets {
+				set[n] = true
+			}
+			if len(nets) == 0 && z.Get("device") == "" && len(z.Lists["device"]) == 0 && z.Get("subnet") == "" && len(z.Lists["subnet"]) == 0 {
+				set["wan"] = true
+			}
+		}
+		if found {
+			return set
+		}
+	}
+	for _, n := range defaultRouteIfaces() {
+		set[n] = true
+	}
+	return set
+}
+
+// lanRouted: ip is reached through one of the LAN's devices — in a subnet of
+// one of their addresses, or, for a link-local IPv6 one, scoped to one. Such
+// a resolver is the owner's, never the WAN's.
+func lanRouted(ip net.IP, zone string, lanDevs []string, lanNets []*net.IPNet) bool {
+	for _, dev := range lanDevs {
+		if zone != "" && zone == dev {
+			return true
+		}
+	}
+	if ip.IsLinkLocalUnicast() {
+		// Every device has fe80::/64; only the scope says which one.
+		return false
+	}
+	for _, n := range lanNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// knownLANDevices are the LAN's devices (lanDevices): the ones the last
+// ruleset was loaded with, else netifd's, asked once; "br-lan" when neither
+// is known, as the LAN egress guard has it.
+func (d *daemon) knownLANDevices() []string {
+	if d.lanDevs == nil && !d.lanDevsAsked {
+		d.lanDevsAsked = true
+		d.lanDevs = lanDevices()
+	}
+	if len(d.lanDevs) > 0 {
+		return d.lanDevs
+	}
+	return []string{"br-lan"}
+}
+
+// deviceNets are the subnets of a device's addresses (or the tests' stand-in).
+func (d *daemon) deviceNets(dev string) []*net.IPNet {
+	if d.devNets != nil {
+		return d.devNets(dev)
+	}
+	ifc, err := net.InterfaceByName(dev)
+	if err != nil {
+		return nil
+	}
+	addrs, err := ifc.Addrs()
+	if err != nil {
+		return nil
+	}
+	var out []*net.IPNet
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // hijacksDNS: the LAN's queries to public resolvers are answered by the
@@ -438,7 +550,7 @@ func (d *daemon) dnsRedirectStale(ctx context.Context) bool {
 				d.hijackMisses++
 				hijack = d.hijackMisses < dnsDeadAfter
 			}
-			v4, v6 := wanResolvers(d.etcRoot())
+			v4, v6 := d.wanResolvers()
 			want = dnsRedirectKey(firewall.Spec{DNSRedirectPort: port, DNSResolverUIDs: uids, DNSRejectV6: hasIPv4Upstream(d.etcRoot()), DNSUpstreamV4: v4, DNSUpstreamV6: v6, HijackDNS: hijack})
 		} else {
 			d.dnsMisses++
