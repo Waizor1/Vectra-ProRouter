@@ -9,6 +9,7 @@ import {
   type BrowserPushPayload,
   isBrowserPushConfigured,
 } from "./browser-push";
+import { withLoopLock } from "./background-lock";
 import { type FleetMonitoringSnapshot } from "./fleet-monitoring";
 import {
   loadSharedFleetMonitoringSnapshot,
@@ -192,7 +193,11 @@ export function startBrowserPushMonitor() {
 
     globalForPushMonitor.__vectraBrowserPushMonitorRunning = true;
     try {
-      await reconcileFleetPushAlerts(new Date());
+      // Another process (the worker, or a second web during a deploy) may
+      // be running this sweep right now; then this tick is skipped.
+      await withLoopLock("browserPushMonitor", () =>
+        reconcileFleetPushAlerts(new Date()),
+      );
     } catch (error) {
       console.error("[browser-push-monitor]", error);
     } finally {

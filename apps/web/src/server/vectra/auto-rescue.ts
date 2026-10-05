@@ -31,6 +31,7 @@ import {
   describeEffectiveRouterSupport,
 } from "~/server/vectra/support";
 
+import { withLoopLock } from "./background-lock";
 import { sendTelegramRescueMessage } from "./telegram-rescue";
 
 type DatabaseClient = typeof db;
@@ -2020,7 +2021,15 @@ export function startAutoRescueMonitor() {
 
     globalForAutoRescue.__vectraAutoRescueMonitorRunning = true;
     try {
-      const tick = await runAutoRescueMonitorTick(new Date(), db);
+      // Another process (the worker, or a second web during a deploy) may
+      // be running this sweep right now; then this tick is skipped.
+      const locked = await withLoopLock("autoRescueMonitor", () =>
+        runAutoRescueMonitorTick(new Date(), db),
+      );
+      if (!locked.acquired) {
+        return;
+      }
+      const tick = locked.value;
       // The tick result was previously discarded, which made every failure
       // mode in here invisible in production. Only speak up when the monitor
       // actually did something, so a quiet fleet stays quiet in the logs.
