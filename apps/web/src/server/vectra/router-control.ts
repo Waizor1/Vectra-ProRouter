@@ -1020,7 +1020,8 @@ function preferredDesiredRevisionId(
  * True when the answer to this check-in may leave `desiredRevision` out (null)
  * because the router provably has no use for it.
  *
- * Only vctl qualifies, and only on a check-in that carries no job:
+ * Only vctl qualifies (a release known to behave as below, see
+ * vctlIgnoresNullDesiredRevision), and only on a check-in that carries no job:
  *
  *  - vctl (router/vectra-controller-pro, cmd/vctl/cmd_agent.go, the check-in
  *    loop) adopts `desiredRevision` only when it is present and non-null, and
@@ -1040,17 +1041,49 @@ function preferredDesiredRevisionId(
  * revision it holds. It never reports inventory.engineMode, which is what
  * tells the two apart here (as in selectDeliverableJobsForCheckIn).
  */
+/**
+ * vctl builds that provably ignore a null desiredRevision and read their stored
+ * copy only as a job fallback: every packaged release from 0.6.0-r1 on. Both
+ * halves of that behaviour predate it - the null check in the check-in loop
+ * (cmd_agent.go, "if len(resp.DesiredRevision) > 0", since 2026-05-31) and
+ * "the revision on THIS response wins" in jobApplyXrayConfig (49b4f7a3,
+ * 2026-08-05) - and are unchanged through 0.7.0-r20. vctl reports
+ * controllerVersion as "<PKG_VERSION>-r<PKG_RELEASE>" (openwrt/Makefile
+ * ldflags main.Version). Anything else - a dev build, a pre-0.6 canary, an
+ * unparseable string - gets the full revision.
+ */
+const VCTL_NULL_REVISION_SAFE_FROM = [0, 6, 0, 1] as const;
+
+export function vctlIgnoresNullDesiredRevision(
+  controllerVersion: string | null | undefined,
+) {
+  const match = /^(\d+)\.(\d+)\.(\d+)-r(\d+)$/.exec(controllerVersion ?? "");
+  if (!match) {
+    return false;
+  }
+  const parts = match.slice(1).map(Number);
+  for (const [index, minimum] of VCTL_NULL_REVISION_SAFE_FROM.entries()) {
+    const part = parts[index]!;
+    if (part !== minimum) {
+      return part > minimum;
+    }
+  }
+  return true;
+}
+
 export function routerAlreadyHoldsDesiredRevision(args: {
   router: Pick<
     RouterRow,
     "engineMode" | "importState" | "activeRevisionId" | "lastAppliedRevisionId"
   >;
   reportedEngineMode: string | null | undefined;
+  reportedControllerVersion: string | null | undefined;
   reportedAppliedRevisionId: string | null | undefined;
   deliverableJobs: Pick<JobRow, "desiredRevisionId">[];
 }) {
   if (
     args.reportedEngineMode !== "xray-direct" ||
+    !vctlIgnoresNullDesiredRevision(args.reportedControllerVersion) ||
     args.router.engineMode !== "xray-direct" ||
     args.deliverableJobs.length > 0
   ) {
@@ -1962,6 +1995,7 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
   const skipDesiredRevision = routerAlreadyHoldsDesiredRevision({
     router,
     reportedEngineMode: parsed.inventory.engineMode,
+    reportedControllerVersion: parsed.inventory.controllerVersion,
     reportedAppliedRevisionId: parsed.inventory.appliedRevisionId,
     deliverableJobs,
   });

@@ -301,7 +301,12 @@ delete vctlFixture.claim;
 const vctlPayload = {
   ...vctlFixture,
   routerId: VCTL_ROUTER_ID,
-  inventory: { ...vctlFixture.inventory, deviceIdentifier: "vectra-0a1b2c3d4e5f", appliedRevisionId: XRAY_REVISION_ID },
+  inventory: {
+    ...vctlFixture.inventory,
+    deviceIdentifier: "vectra-0a1b2c3d4e5f",
+    controllerVersion: "0.7.0-r20",
+    appliedRevisionId: XRAY_REVISION_ID,
+  },
 };
 
 // Each case includes serializing the answer, as Response.json does.
