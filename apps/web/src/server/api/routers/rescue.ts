@@ -17,6 +17,7 @@ import {
   listRescueCases,
   loadRescueCaseDetails,
   RescueActionRefusedError,
+  RescueCaseNotFoundError,
   queueRescueCaseLogCollection,
   queueRescueCaseReconnectProxy,
   queueRescueCaseSafeRepair,
@@ -70,6 +71,13 @@ async function assertCertifiedRouterForRescue(
   }
 }
 
+/** A case id that names no case (e.g. one retention deleted) is a 404. */
+function rethrowCaseNotFound(error: unknown) {
+  if (error instanceof RescueCaseNotFoundError) {
+    throw new TRPCError({ code: "NOT_FOUND", message: error.message });
+  }
+}
+
 export const rescueRouter = createTRPCRouter({
   policy: protectedProcedure.query(() => createDefaultRescuePolicy()),
 
@@ -107,6 +115,7 @@ export const rescueRouter = createTRPCRouter({
           ctx.db,
         );
       } catch (error) {
+        rethrowCaseNotFound(error);
         throw new TRPCError({
           code: "BAD_REQUEST",
           message:
@@ -125,6 +134,7 @@ export const rescueRouter = createTRPCRouter({
           ctx.db,
         );
       } catch (error) {
+        rethrowCaseNotFound(error);
         throw new TRPCError({
           code: "BAD_REQUEST",
           message:
@@ -141,6 +151,7 @@ export const rescueRouter = createTRPCRouter({
       try {
         return await queueRescueCaseLogCollection(input.caseId, ctx.db);
       } catch (error) {
+        rethrowCaseNotFound(error);
         if (error instanceof RescueActionRefusedError) {
           throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
         }
@@ -161,9 +172,18 @@ export const rescueRouter = createTRPCRouter({
         durationSeconds: z.number().int().min(300).max(86400).default(3600),
       }),
     )
-    .mutation(async ({ ctx, input }) =>
-      silenceRescueCase(input.caseId, input.durationSeconds, ctx.db),
-    ),
+    .mutation(async ({ ctx, input }) => {
+      try {
+        return await silenceRescueCase(
+          input.caseId,
+          input.durationSeconds,
+          ctx.db,
+        );
+      } catch (error) {
+        rethrowCaseNotFound(error);
+        throw error;
+      }
+    }),
 
   openIncidents: protectedProcedure.query(async ({ ctx }) => {
     return ctx.db

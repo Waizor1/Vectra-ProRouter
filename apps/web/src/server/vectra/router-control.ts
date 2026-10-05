@@ -1,6 +1,10 @@
 import { devicePublicKeysMatch } from "./router-claim-state";
 import { protectConnectInventory, hydratePartnerJobPayload } from "./partner-router-secrets";
-import { notifyPartnerCheckInWithDb, notifyPartnerActionResultWithDb } from "~/server/vectra/partner-router-events";
+import {
+  notifyPartnerActionResultWithDb,
+  notifyPartnerCheckInWithDb,
+  type PartnerCheckInReadback,
+} from "~/server/vectra/partner-router-events";
 import {
   artifactMetadataSchema,
   MASKED_SECRET_PLACEHOLDER,
@@ -108,6 +112,10 @@ import {
   boundRouterCheckInPayload,
 } from "~/server/vectra/router-payload-bounds";
 import { MemoryWindowRateLimiter } from "~/server/vectra/public-install-rate-limit";
+import {
+  CACHED_CONFIG_HEAP_FACTOR,
+  PerRouterCache,
+} from "~/server/vectra/per-router-cache";
 
 type RouterRow = typeof routers.$inferSelect;
 type RevisionRow = typeof passwallDesiredRevisions.$inferSelect;
@@ -469,6 +477,11 @@ async function insertInventorySnapshot(
   routerId: string,
   inventory: RouterInventory,
   source: string,
+  /**
+   * The router's newest snapshot when the caller has just read it (the
+   * partner check-in event does, for owned routers); `undefined` reads it.
+   */
+  knownLatest?: { payload: RouterInventory; createdAt: Date } | null,
 ) {
   const carriesWifiSecret =
     inventory.connect?.wifi?.some((item) => item.password) ?? false;
@@ -481,15 +494,20 @@ async function insertInventorySnapshot(
   // change) and only lands in connectSecretCiphertext, which the owner's
   // snapshot reads from the newest row.
   if (source === "check_in" && !carriesWifiSecret) {
-    const [latest] = await db
-      .select({
-        payload: routerInventorySnapshots.payload,
-        createdAt: routerInventorySnapshots.createdAt,
-      })
-      .from(routerInventorySnapshots)
-      .where(eq(routerInventorySnapshots.routerId, routerId))
-      .orderBy(desc(routerInventorySnapshots.createdAt))
-      .limit(1);
+    const [latest] =
+      knownLatest !== undefined
+        ? knownLatest
+          ? [knownLatest]
+          : []
+        : await db
+            .select({
+              payload: routerInventorySnapshots.payload,
+              createdAt: routerInventorySnapshots.createdAt,
+            })
+            .from(routerInventorySnapshots)
+            .where(eq(routerInventorySnapshots.routerId, routerId))
+            .orderBy(desc(routerInventorySnapshots.createdAt))
+            .limit(1);
 
     const shouldWrite = shouldWriteInventorySnapshot({
       inventory,
@@ -580,45 +598,135 @@ async function upsertRevisionSecretBlob(
   );
 }
 
-async function hydrateRevisionConfigWithDb(
-  client: DatabaseClient,
-  revision: RevisionRow,
+type DesiredRevisionSummary = ReturnType<
+  typeof desiredRevisionSummarySchema.parse
+>;
+
+// The newest secret blob of the revision on the same row, so a summary's cache
+// key can name the exact ciphertext it was hydrated from. Same ordering as
+// getSecretCiphertextForRevisionWithDb. Spelled out with qualified names:
+// drizzle renders column references in a select list unqualified, which would
+// turn the correlation into the blob's own `id`.
+const latestSecretBlobId = sql<string | null>`(
+  select sb.id
+  from vectra_passwall_secret_blob sb
+  where sb.desired_revision_id = "vectra_passwall_desired_revision"."id"
+  order by sb.created_at desc
+  limit 1
+)`;
+
+// Every revision column the summary reads, except the heavy jsonb ones.
+const revisionSummaryMetadataColumns = {
+  id: passwallDesiredRevisions.id,
+  revisionNumber: passwallDesiredRevisions.revisionNumber,
+  status: passwallDesiredRevisions.status,
+  origin: passwallDesiredRevisions.origin,
+  engineMode: passwallDesiredRevisions.engineMode,
+  configDigest: passwallDesiredRevisions.configDigest,
+  secretBlobId: latestSecretBlobId,
+};
+
+type RevisionSummaryMetadata = {
+  id: string;
+  revisionNumber: number;
+  status: string;
+  origin: string;
+  engineMode: RevisionRow["engineMode"];
+  configDigest: string | null;
+  secretBlobId?: string | null;
+};
+
+// Decrypted, diffed and validated revision summaries, so a router checking in
+// every 45 s does not pull two ~140 kB revisions out of Postgres, decrypt,
+// gunzip and zod-parse both and diff them each time (measured: ~21 ms of the
+// single Node thread per legacy-agent check-in).
+//
+// Keyed by everything the summary is computed from: a revision's config never
+// changes after insert (only its status does, and the status is in the key),
+// and a secret re-import writes a NEW blob row (upsertRevisionSecretBlob is
+// delete + insert), so a changed ciphertext is a changed key. The diff base is
+// in the key too, so deleting or re-keying the previous revision misses.
+//
+// One entry per router (a new key replaces it), a 10-minute TTL so decrypted
+// secrets do not linger, and a small heap budget (VECTRA_CONFIG_CACHE_MB,
+// default 16): a parsed config measures ~2x its JSON length on the heap, so
+// an entry is weighed at 3x. Past the budget a router is simply not cached.
+const REVISION_SUMMARY_TTL_MS = 10 * 60 * 1000;
+const revisionSummaryCache = new PerRouterCache<DesiredRevisionSummary>(
+  Number(env.VECTRA_CONFIG_CACHE_MB ?? 16) * 1024 * 1024,
+  REVISION_SUMMARY_TTL_MS,
+);
+
+export function resetRevisionSummaryCacheForTest() {
+  revisionSummaryCache.clear();
+}
+
+export function revisionSummaryCacheStatsForTest() {
+  return { size: revisionSummaryCache.size, weight: revisionSummaryCache.weight };
+}
+
+function revisionSummaryCacheKey(
+  current: RevisionSummaryMetadata,
+  previous: Pick<RevisionSummaryMetadata, "id" | "secretBlobId"> | null,
 ) {
-  const ciphertext = await getSecretCiphertextForRevisionWithDb(
-    client,
-    revision.id,
-  );
-  if (revision.engineMode === "xray-direct") {
-    // The jsonb column is typed as the passwall config for the (many) existing
-    // consumers; an xray revision stores an XrayDesiredConfig there, so narrow
-    // at this boundary before hydrating through the xray schema.
+  return [
+    current.id,
+    current.secretBlobId ?? "-",
+    current.status,
+    previous?.id ?? "-",
+    previous?.secretBlobId ?? "-",
+  ].join("|");
+}
+
+async function hydrateRevisionByIdWithDb(
+  client: DatabaseClient,
+  revision: Pick<RevisionSummaryMetadata, "id" | "secretBlobId">,
+) {
+  const [row] = await client
+    .select({
+      id: passwallDesiredRevisions.id,
+      engineMode: passwallDesiredRevisions.engineMode,
+      config: passwallDesiredRevisions.config,
+    })
+    .from(passwallDesiredRevisions)
+    .where(eq(passwallDesiredRevisions.id, revision.id))
+    .limit(1);
+  if (!row) {
+    return null;
+  }
+  let ciphertext: string | null = null;
+  if (revision.secretBlobId) {
+    const [secret] = await client
+      .select({ ciphertext: passwallSecretBlobs.ciphertext })
+      .from(passwallSecretBlobs)
+      .where(eq(passwallSecretBlobs.id, revision.secretBlobId))
+      .limit(1);
+    ciphertext = secret?.ciphertext ?? null;
+  }
+  if (row.engineMode === "xray-direct") {
     return hydrateXrayConfig(
-      revision.config as unknown as XrayDesiredConfig,
+      row.config as unknown as XrayDesiredConfig,
       ciphertext,
     );
   }
-  return hydratePasswallConfig(revision.config, ciphertext);
+  return hydratePasswallConfig(row.config, ciphertext);
 }
 
 async function getRevisionSummaryWithDb(
   client: DatabaseClient,
   routerId: string,
   revisionId: string | null | undefined,
-) {
+): Promise<DesiredRevisionSummary | null> {
   if (!revisionId) {
     return null;
   }
 
-  // Fetch only the two rows this summary needs. The previous implementation
-  // selected EVERY revision for the router — with the full `config` and
-  // `raw_imported_snapshot` JSONB on each row — and then picked two out of the
-  // array in JS. On the check-in path that ran once per router per minute
-  // against a table averaging ~160 revisions per router at ~90 kB per row, so
-  // the panel allocated hundreds of MB a minute and repeatedly hit V8's
-  // ~1 GB heap limit ("Ineffective mark-compacts near heap limit"), crashing
-  // the container every 15-40 minutes.
-  const [current] = await client
-    .select()
+  // Metadata only: the jsonb config and raw_imported_snapshot are read on a
+  // cache miss alone. (Before that, an implementation that selected EVERY
+  // revision for the router with both jsonb columns ran the container out of
+  // its ~1 GB heap every 15-40 minutes.)
+  const [current] = (await client
+    .select(revisionSummaryMetadataColumns)
     .from(passwallDesiredRevisions)
     .where(
       and(
@@ -626,16 +734,76 @@ async function getRevisionSummaryWithDb(
         eq(passwallDesiredRevisions.id, revisionId),
       ),
     )
-    .limit(1);
+    .limit(1)) as RevisionSummaryMetadata[];
   if (!current) {
     return null;
   }
 
+  // passwall path: diffed against the previous passwall revision — the next
+  // lower revision number, skipping any xray-direct revision in between.
+  // xray-direct revisions are not diffed at all.
+  const [previous = null] =
+    current.engineMode === "xray-direct"
+      ? []
+      : ((await client
+          .select({
+            id: passwallDesiredRevisions.id,
+            secretBlobId: latestSecretBlobId,
+          })
+          .from(passwallDesiredRevisions)
+          .where(
+            and(
+              eq(passwallDesiredRevisions.routerId, routerId),
+              lt(passwallDesiredRevisions.revisionNumber, current.revisionNumber),
+              eq(passwallDesiredRevisions.engineMode, "passwall"),
+            ),
+          )
+          .orderBy(desc(passwallDesiredRevisions.revisionNumber))
+          .limit(1)) as Array<Pick<RevisionSummaryMetadata, "id" | "secretBlobId">>);
+
+  const cacheKey = revisionSummaryCacheKey(current, previous);
+  const cached = revisionSummaryCache.get(routerId, cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const summary = await buildRevisionSummaryWithDb(client, current, previous);
+  if (summary) {
+    // Shared by every check-in that hits it: frozen, so a caller that tried to
+    // edit it in place would throw instead of corrupting other answers.
+    revisionSummaryCache.set(
+      routerId,
+      cacheKey,
+      deepFreeze(summary),
+      JSON.stringify(summary).length * CACHED_CONFIG_HEAP_FACTOR,
+    );
+  }
+  return summary;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) {
+      deepFreeze(child);
+    }
+  }
+  return value;
+}
+
+async function buildRevisionSummaryWithDb(
+  client: DatabaseClient,
+  current: RevisionSummaryMetadata,
+  previous: Pick<RevisionSummaryMetadata, "id" | "secretBlobId"> | null,
+): Promise<DesiredRevisionSummary | null> {
   if (current.engineMode === "xray-direct") {
     // xray-direct revisions are not diffed by the passwall differ. The pro
     // controller computes its own apply impact from the desired config; the
     // panel just delivers the config with a neutral, restart-safe summary.
-    const currentConfig = await hydrateRevisionConfigWithDb(client, current);
+    const currentConfig = await hydrateRevisionByIdWithDb(client, current);
+    if (!currentConfig) {
+      return null;
+    }
     return desiredRevisionSummarySchema.parse({
       id: current.id,
       revisionNumber: current.revisionNumber,
@@ -655,26 +823,15 @@ async function getRevisionSummaryWithDb(
     });
   }
 
-  // passwall path: diff against the previous passwall revision — the next
-  // lower revision number, skipping any xray-direct revision in between.
-  const [previous = null] = await client
-    .select()
-    .from(passwallDesiredRevisions)
-    .where(
-      and(
-        eq(passwallDesiredRevisions.routerId, routerId),
-        lt(passwallDesiredRevisions.revisionNumber, current.revisionNumber),
-        eq(passwallDesiredRevisions.engineMode, "passwall"),
-      ),
-    )
-    .orderBy(desc(passwallDesiredRevisions.revisionNumber))
-    .limit(1);
   const [currentConfig, previousConfig] = await Promise.all([
-    hydrateRevisionConfigWithDb(client, current),
+    hydrateRevisionByIdWithDb(client, current),
     previous
-      ? hydrateRevisionConfigWithDb(client, previous)
+      ? hydrateRevisionByIdWithDb(client, previous)
       : Promise.resolve(null),
   ]);
+  if (!currentConfig) {
+    return null;
+  }
 
   return desiredRevisionSummarySchema.parse({
     id: current.id,
@@ -858,6 +1015,98 @@ async function createImportedBaselineRevision(
   return updatedRouter ?? router;
 }
 
+function preferredDesiredRevisionId(
+  router: Pick<RouterRow, "activeRevisionId" | "lastAppliedRevisionId">,
+  queuedJobs: Pick<JobRow, "desiredRevisionId">[],
+) {
+  const jobRevisionId = queuedJobs.find(
+    (job) => job.desiredRevisionId,
+  )?.desiredRevisionId;
+  return (
+    jobRevisionId ??
+    router.activeRevisionId ??
+    router.lastAppliedRevisionId ??
+    null
+  );
+}
+
+/**
+ * True when the answer to this check-in may leave `desiredRevision` out (null)
+ * because the router provably has no use for it.
+ *
+ * Only vctl qualifies (a release known to behave as below, see
+ * vctlIgnoresNullDesiredRevision), and only on a check-in that carries no job:
+ *
+ *  - vctl (router/vectra-controller-pro, cmd/vctl/cmd_agent.go, the check-in
+ *    loop) adopts `desiredRevision` only when it is present and non-null, and
+ *    otherwise keeps the copy it stored earlier. The stored copy is read in
+ *    exactly one place — jobApplyXrayConfig (cmd_agent_jobs.go), as a
+ *    fallback when THE SAME response carries no revision — and every response
+ *    that delivers a job still carries the full revision, so a job never runs
+ *    on the stored copy because of this.
+ *  - It must report the revision the panel would send as the one it applied
+ *    (inventory.appliedRevisionId, set only after a successful apply), so the
+ *    router already runs exactly that config.
+ *
+ * The legacy PassWall agent (router/vectra-controller-agent) does NOT qualify
+ * and always gets the full revision: its check-in self-heal rebinds shunt
+ * slots from the last desired revision it received (main.go,
+ * persisted.LastDesiredRevision), and it reports nothing that proves which
+ * revision it holds. It never reports inventory.engineMode, which is what
+ * tells the two apart here (as in selectDeliverableJobsForCheckIn).
+ */
+/**
+ * vctl builds that provably ignore a null desiredRevision and read their stored
+ * copy only as a job fallback: every packaged release from 0.6.0-r1 on. Both
+ * halves of that behaviour predate it - the null check in the check-in loop
+ * (cmd_agent.go, "if len(resp.DesiredRevision) > 0", since 2026-05-31) and
+ * "the revision on THIS response wins" in jobApplyXrayConfig (49b4f7a3,
+ * 2026-08-05) - and are unchanged through 0.7.0-r20. vctl reports
+ * controllerVersion as "<PKG_VERSION>-r<PKG_RELEASE>" (openwrt/Makefile
+ * ldflags main.Version). Anything else - a dev build, a pre-0.6 canary, an
+ * unparseable string - gets the full revision.
+ */
+const VCTL_NULL_REVISION_SAFE_FROM = [0, 6, 0, 1] as const;
+
+export function vctlIgnoresNullDesiredRevision(
+  controllerVersion: string | null | undefined,
+) {
+  const match = /^(\d+)\.(\d+)\.(\d+)-r(\d+)$/.exec(controllerVersion ?? "");
+  if (!match) {
+    return false;
+  }
+  const parts = match.slice(1).map(Number);
+  for (const [index, minimum] of VCTL_NULL_REVISION_SAFE_FROM.entries()) {
+    const part = parts[index]!;
+    if (part !== minimum) {
+      return part > minimum;
+    }
+  }
+  return true;
+}
+
+export function routerAlreadyHoldsDesiredRevision(args: {
+  router: Pick<
+    RouterRow,
+    "engineMode" | "importState" | "activeRevisionId" | "lastAppliedRevisionId"
+  >;
+  reportedEngineMode: string | null | undefined;
+  reportedControllerVersion: string | null | undefined;
+  reportedAppliedRevisionId: string | null | undefined;
+  deliverableJobs: Pick<JobRow, "desiredRevisionId">[];
+}) {
+  if (
+    args.reportedEngineMode !== "xray-direct" ||
+    !vctlIgnoresNullDesiredRevision(args.reportedControllerVersion) ||
+    args.router.engineMode !== "xray-direct" ||
+    args.deliverableJobs.length > 0
+  ) {
+    return false;
+  }
+  const preferred = preferredDesiredRevisionId(args.router, args.deliverableJobs);
+  return Boolean(preferred) && args.reportedAppliedRevisionId === preferred;
+}
+
 export async function resolveDesiredRevisionWithDb(
   client: DatabaseClient,
   router: RouterRow,
@@ -867,14 +1116,7 @@ export async function resolveDesiredRevisionWithDb(
     return null;
   }
 
-  const jobRevisionId = queuedJobs.find(
-    (job) => job.desiredRevisionId,
-  )?.desiredRevisionId;
-  const preferredRevisionId =
-    jobRevisionId ??
-    router.activeRevisionId ??
-    router.lastAppliedRevisionId ??
-    null;
+  const preferredRevisionId = preferredDesiredRevisionId(router, queuedJobs);
 
   const summary = await getRevisionSummaryWithDb(
     client,
@@ -1579,7 +1821,18 @@ async function logTruncatedRouterPayload(
   });
 }
 
-export async function checkInRouter(routerId: string, input: unknown, auth?: {devicePublicKey: string}) {
+export async function checkInRouter(
+  routerId: string,
+  input: unknown,
+  auth?: {
+    devicePublicKey: string;
+    /**
+     * The row authenticateRouter has just read for this request; passing it
+     * saves reading the same row again.
+     */
+    router?: typeof routers.$inferSelect;
+  },
+) {
   const bounded = boundRouterCheckInPayload(input);
   const parsed = routerCheckInRequestSchema.parse(bounded.payload);
   if (parsed.routerId !== routerId) {
@@ -1590,11 +1843,14 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     configDigest: parsed.inventory.configDigest,
   });
 
-  const [existingRouter] = await db
-    .select()
-    .from(routers)
-    .where(eq(routers.id, routerId))
-    .limit(1);
+  const [existingRouter] =
+    auth?.router?.id === routerId
+      ? [auth.router]
+      : await db
+          .select()
+          .from(routers)
+          .where(eq(routers.id, routerId))
+          .limit(1);
 
   if (!existingRouter) {
     throw Object.assign(new Error("Router not found."), { status: 404 });
@@ -1670,11 +1926,14 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     throw new Error("Router check-in update failed.");
   }
 
+  let knownLatestSnapshot: PartnerCheckInReadback["latestSnapshot"];
   try {
     // Only a router a Vectra account owns has partner events; waking the
     // dispatcher on every check-in of the whole fleet cost a query each.
     if (existingRouter.ownerRef && !existingRouter.releasedAt) {
-      await notifyPartnerCheckInWithDb(db, existingRouter, parsed.inventory, now);
+      knownLatestSnapshot = (
+        await notifyPartnerCheckInWithDb(db, existingRouter, parsed.inventory, now)
+      ).latestSnapshot;
       schedulePartnerWebhookDelivery();
     }
   } catch (error) {
@@ -1684,6 +1943,7 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     persistedRouter.id,
     parsed.inventory,
     "check_in",
+    knownLatestSnapshot,
   );
 
   const [openIncident] = await db
@@ -1764,8 +2024,17 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     vctlRemoteShell,
   );
 
+  const skipDesiredRevision = routerAlreadyHoldsDesiredRevision({
+    router,
+    reportedEngineMode: parsed.inventory.engineMode,
+    reportedControllerVersion: parsed.inventory.controllerVersion,
+    reportedAppliedRevisionId: parsed.inventory.appliedRevisionId,
+    deliverableJobs,
+  });
   const [desiredRevision, policyContext] = await Promise.all([
-    resolveDesiredRevision(router, deliverableJobs),
+    skipDesiredRevision
+      ? Promise.resolve(null)
+      : resolveDesiredRevision(router, deliverableJobs),
     getFleetPolicyContext(db),
   ]);
   // A steady router reports no config (the panel only asks when the digest has
@@ -1831,7 +2100,11 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
   }
   const serializedJobs = serialization.delivered;
 
-  return routerCheckInResponseSchema.parse({
+  // desiredRevision is already the output of desiredRevisionSummarySchema.parse
+  // (and frozen in the summary cache); validating its ~140 kB config again on
+  // every check-in was the larger part of what a cached check-in still cost.
+  // The rest of the answer is validated as before.
+  const response = routerCheckInResponseSchema.parse({
     protocolVersion: parsed.protocolVersion,
     routerId: router.id,
     status: router.status,
@@ -1839,13 +2112,19 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     configSyncState: buildConfigSyncState(router, { requestImport }),
     rescuePolicy: createDefaultRescuePolicy(),
     updatePolicy: createDefaultUpdatePolicy(),
-    desiredRevision,
+    desiredRevision: null,
     jobs: serializedJobs,
     operatorMessage: buildCheckInMessage(router, parsed.health.currentMode),
     // Tell the controller which nodes to bind rather than letting it re-derive
     // them from its own compiled-in scorer. Computed from the config the router
     // just reported, so the node IDs are the ones currently on the device.
-    routePolicy: buildFleetRoutePolicyDirective(
+    // No directive while the ledger is still being built after a start (the
+    // first build outran its wait): one computed without it could bind the
+    // router to a host the fleet already knows is dead. The router keeps its
+    // current bindings until the next check-in.
+    routePolicy: policyContext.unavailable
+      ? null
+      : buildFleetRoutePolicyDirective(
       routePolicyConfig,
       {
         id: router.id,
@@ -1862,6 +2141,7 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     ),
     ...buildRouterClaimResponseFields(router),
   });
+  return { ...response, desiredRevision };
 }
 
 const UNDELIVERABLE_JOB_CODE = "payload_unavailable";
@@ -2618,7 +2898,7 @@ export async function createOperatorDraftRevisionWithDb(
         engineMode: "xray-direct",
         configDigest,
         // The column is typed as the passwall config for existing consumers;
-        // narrow at this write boundary (mirrored by hydrateRevisionConfigWithDb).
+        // narrow at this write boundary (mirrored by hydrateRevisionByIdWithDb).
         config: maskedXrayConfig as unknown as RevisionRow["config"],
         createdBy: "operator",
         note: input.note,

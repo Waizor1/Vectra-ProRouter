@@ -162,6 +162,13 @@
       "when": 1790956800000,
       "tag": "0022_partner_idempotency_reservation",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1791100800000,
+      "tag": "0023_history_retention_created_idx",
+      "breakpoints": true
     }
   ]
 }

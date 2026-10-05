@@ -15,10 +15,14 @@ import type { db as appDb } from "~/server/db";
 import { formatControllerVersion } from "~/lib/controller-version";
 
 import { buildConfigTrustState } from "./config-trust";
+import { env } from "~/env";
+
+import { CACHED_CONFIG_HEAP_FACTOR, PerRouterCache } from "./per-router-cache";
 import {
   buildFleetRoutePolicyIdentity,
   collectFleetNodeHealthSample,
   evaluateFleetRoutePolicy,
+  type FleetPolicyConfigView,
 } from "./fleet-route-policy";
 import { buildFleetNodeHealth } from "./fleet-node-health";
 import {
@@ -297,21 +301,210 @@ export async function loadLatestFleetPolicyConfigRows(
   return latest;
 }
 
+/**
+ * Inventory keys the fleet-wide monitors never read but that dominate a
+ * snapshot's size: a Connect router's telemetry (up to 300 entries, 600
+ * sites, its services) and an occasional raw UCI snapshot.
+ */
+const MONITORING_OMITTED_PAYLOAD_KEYS = ["connect", "rawSnapshot"] as const;
+
+/**
+ * What the fleet-wide monitors read from a router's live config: the node
+ * list and shunt rules (route policy, node health) and each subscription's
+ * extras (the hwid gate in subscription rescue).
+ */
+export type FleetPolicyConfigSummary = FleetPolicyConfigView & {
+  subscriptions: { items: Array<{ extras: Record<string, unknown> }> };
+};
+
+export type FleetPolicyConfigSummaryRow = Omit<FleetPolicyConfigRow, "config"> & {
+  config: FleetPolicyConfigSummary;
+};
+
+function summarizeFleetPolicyConfig(
+  config: PasswallDesiredConfig,
+): FleetPolicyConfigSummary {
+  return {
+    nodes: config.nodes,
+    basicSettings: { shuntRules: config.basicSettings.shuntRules },
+    subscriptions: {
+      items: config.subscriptions.items.map((item) => ({ extras: item.extras })),
+    },
+  };
+}
+
+// Revision configs never change after insert, so a router's summary is cached
+// under its revision id (null: the stored config does not parse). The monitors
+// read the latest import of every router every minute; with this they fetch
+// and parse only the routers whose revision changed. One entry per router,
+// 10-minute TTL, VECTRA_CONFIG_CACHE_MB heap budget (see PerRouterCache).
+const POLICY_CONFIG_SUMMARY_TTL_MS = 10 * 60 * 1000;
+const policyConfigSummaryCache = new PerRouterCache<FleetPolicyConfigSummary | null>(
+  Number(env.VECTRA_CONFIG_CACHE_MB ?? 16) * 1024 * 1024,
+  POLICY_CONFIG_SUMMARY_TTL_MS,
+);
+
+export function resetFleetPolicyConfigSummaryCacheForTest() {
+  policyConfigSummaryCache.clear();
+}
+
+/**
+ * The latest router_import/operator_reimport revision per router, as
+ * loadLatestFleetPolicyConfigRows picks it, but carrying only the compact
+ * FleetPolicyConfigSummary — for the background loops. A revision whose
+ * config is already cached is not read from Postgres again.
+ */
+export async function loadLatestFleetPolicyConfigSummaries(
+  database: FleetMonitoringDatabaseClient,
+  routerIds: string[],
+) {
+  const latest = new Map<string, FleetPolicyConfigSummaryRow>();
+  if (routerIds.length === 0) {
+    return latest;
+  }
+
+  const metadataRows = supportsSnapshotExecute(database)
+    ? await database.execute(sql`
+          select
+            s.id,
+            s.router_id as "routerId",
+            s.origin,
+            s.created_at as "createdAt"
+          from (
+            values ${sql.join(
+              routerIds.map((routerId) => sql`(${routerId})`),
+              sql`, `,
+            )}
+          ) as r(router_id)
+          join lateral (
+            select rev.id, rev.router_id, rev.origin, rev.created_at
+            from vectra_passwall_desired_revision rev
+            where rev.router_id = r.router_id
+              and rev.origin in ('router_import', 'operator_reimport')
+            order by rev.created_at desc
+            limit 1
+          ) s on true
+        `)
+    : await database
+        .select({
+          id: passwallDesiredRevisions.id,
+          routerId: passwallDesiredRevisions.routerId,
+          origin: passwallDesiredRevisions.origin,
+          createdAt: passwallDesiredRevisions.createdAt,
+        })
+        .from(passwallDesiredRevisions)
+        .where(inArray(passwallDesiredRevisions.routerId, routerIds))
+        .orderBy(desc(passwallDesiredRevisions.createdAt));
+
+  const latestMetadata = new Map<string, Omit<FleetPolicyConfigRow, "config">>();
+  for (const row of metadataRows as unknown[]) {
+    if (!row || typeof row !== "object") continue;
+    const record = row as Record<string, unknown>;
+    const id = readStringField(record, "id");
+    const routerId = readStringField(record, "routerId", "router_id");
+    const origin = readStringField(record, "origin");
+    if (
+      !id ||
+      !routerId ||
+      (origin !== "router_import" && origin !== "operator_reimport") ||
+      latestMetadata.has(routerId)
+    ) {
+      continue;
+    }
+    latestMetadata.set(routerId, {
+      id,
+      routerId,
+      origin,
+      createdAt: readDateField(record, "createdAt", "created_at"),
+    });
+  }
+
+  // Held for the whole call: a cache refusal or eviction while this tick is
+  // still filling it must not leave a router without its config.
+  const resolved = new Map<string, FleetPolicyConfigSummary | null>();
+  const missing: string[] = [];
+  for (const metadata of latestMetadata.values()) {
+    const cached = policyConfigSummaryCache.get(metadata.routerId, metadata.id);
+    if (cached === undefined) {
+      missing.push(metadata.id);
+    } else {
+      resolved.set(metadata.id, cached);
+    }
+  }
+  if (missing.length > 0) {
+    const routerByRevision = new Map(
+      [...latestMetadata.values()].map((row) => [row.id, row.routerId]),
+    );
+    const configRows = supportsSnapshotExecute(database)
+      ? await database.execute(sql`
+            select rev.id, rev.config
+            from vectra_passwall_desired_revision rev
+            where rev.id in (${sql.join(
+              missing.map((id) => sql`${id}`),
+              sql`, `,
+            )})
+          `)
+      : await database
+          .select({
+            id: passwallDesiredRevisions.id,
+            config: passwallDesiredRevisions.config,
+          })
+          .from(passwallDesiredRevisions)
+          .where(inArray(passwallDesiredRevisions.id, missing));
+    for (const row of configRows as unknown[]) {
+      if (!row || typeof row !== "object") continue;
+      const record = row as Record<string, unknown>;
+      const id = readStringField(record, "id");
+      const routerId = id ? routerByRevision.get(id) : undefined;
+      if (!id || !routerId) continue;
+      const config = normalizePasswallConfig(readUnknownField(record, "config"));
+      const summary = config ? summarizeFleetPolicyConfig(config) : null;
+      resolved.set(id, summary);
+      policyConfigSummaryCache.set(
+        routerId,
+        id,
+        summary,
+        summary ? JSON.stringify(summary).length * CACHED_CONFIG_HEAP_FACTOR : 1,
+      );
+    }
+  }
+
+  for (const [routerId, metadata] of latestMetadata) {
+    const summary = resolved.get(metadata.id);
+    if (summary) {
+      latest.set(routerId, { ...metadata, config: summary });
+    }
+  }
+  return latest;
+}
+
 export async function loadLatestSnapshots(
   database: FleetMonitoringDatabaseClient,
   routerIds: string[],
+  options: {
+    /**
+     * Leave out MONITORING_OMITTED_PAYLOAD_KEYS, in SQL, for the background
+     * monitors that read every router's latest snapshot every minute.
+     */
+    monitoringPayload?: boolean;
+  } = {},
 ) {
   if (routerIds.length === 0) {
     return new Map<string, typeof routerInventorySnapshots.$inferSelect>();
   }
 
+  const payloadColumn = options.monitoringPayload
+    ? sql.raw(
+        `s.payload${MONITORING_OMITTED_PAYLOAD_KEYS.map((key) => ` - '${key}'`).join("")} as payload`,
+      )
+    : sql.raw("s.payload");
   const rows = supportsSnapshotExecute(database)
     ? await database.execute(sql`
           select
             s.id,
             s.router_id as "routerId",
             s.source,
-            s.payload,
+            ${payloadColumn},
             s.passwall_enabled as "passwallEnabled",
             s.selected_node_id as "selectedNodeId",
             s.node_count as "nodeCount",
@@ -346,6 +539,13 @@ export async function loadLatestSnapshots(
   for (const row of rows) {
     const snapshot = normalizeSnapshotRow(row);
     if (snapshot && !latest.has(snapshot.routerId)) {
+      if (options.monitoringPayload) {
+        const payload: Record<string, unknown> = { ...snapshot.payload };
+        for (const key of MONITORING_OMITTED_PAYLOAD_KEYS) {
+          delete payload[key];
+        }
+        snapshot.payload = payload as typeof snapshot.payload;
+      }
       latest.set(snapshot.routerId, snapshot);
     }
   }
@@ -391,7 +591,7 @@ export async function loadFleetMonitoringSnapshot(
     routeVerifications,
   ] =
     await Promise.all([
-      loadLatestSnapshots(database, routerIds),
+      loadLatestSnapshots(database, routerIds, { monitoringPayload: true }),
       routerIds.length
         ? database
             .select()
@@ -421,7 +621,7 @@ export async function loadFleetMonitoringSnapshot(
             origins: ["router_import", "operator_reimport"],
           })
         : Promise.resolve([]),
-      loadLatestFleetPolicyConfigRows(database, routerIds),
+      loadLatestFleetPolicyConfigSummaries(database, routerIds),
       loadLatestRouteVerifications(database, routerIds),
     ]);
 
@@ -571,4 +771,76 @@ export async function loadFleetMonitoringSnapshot(
       };
     }),
   });
+}
+
+/**
+ * How old a shared fleet snapshot each background monitor accepts.
+ *
+ * Auto-rescue and the browser-push monitor each built the whole fleet
+ * snapshot every minute, on timers started by the same health call — so the
+ * two full reads ran in parallel at the same second. They now share one:
+ * whichever monitor asks first loads it, and the other, asking within its
+ * window, gets the same snapshot (or joins the read still in flight).
+ *
+ * The windows are per monitor because two setInterval timers drift apart
+ * over days: the push monitor's 15 s offset will not hold forever. Auto-rescue
+ * acts on the snapshot (opens cases, queues repairs), so it takes one at most
+ * 10 s old and otherwise reads fresh, whatever the push monitor did; the push
+ * monitor only notifies and takes one up to 20 s old. Both are below the 30 s
+ * minimum of either interval, so no monitor reuses its own previous tick.
+ */
+export const AUTO_RESCUE_FLEET_SNAPSHOT_MAX_AGE_MS = 10_000;
+export const PUSH_MONITOR_FLEET_SNAPSHOT_MAX_AGE_MS = 20_000;
+
+type SharedFleetSnapshot = {
+  database: object;
+  loadedAt: number;
+  snapshot: ReturnType<typeof loadFleetMonitoringSnapshot>;
+};
+
+let sharedFleetSnapshot: SharedFleetSnapshot | null = null;
+
+export function resetSharedFleetMonitoringSnapshotForTest() {
+  sharedFleetSnapshot = null;
+}
+
+/**
+ * loadFleetMonitoringSnapshot for the background monitors, single-flight and
+ * shared: a snapshot loaded (or being loaded) at most `maxAgeMs` before `now`
+ * is reused, anything older is read again.
+ *
+ * A reused snapshot is the fleet as of the instant it was loaded (its own
+ * `now`), exactly what the old parallel read computed at that same second;
+ * the caller's later `now` is not mixed into it. A failed load is not kept,
+ * so the next caller reads again. The operator pages keep calling
+ * loadFleetMonitoringSnapshot directly and always read fresh.
+ */
+export function loadSharedFleetMonitoringSnapshot(
+  database: FleetMonitoringDatabaseClient,
+  now: Date,
+  maxAgeMs: number,
+): ReturnType<typeof loadFleetMonitoringSnapshot> {
+  const at = now.getTime();
+  const current = sharedFleetSnapshot;
+  if (
+    current &&
+    current.database === database &&
+    at >= current.loadedAt &&
+    at - current.loadedAt <= maxAgeMs
+  ) {
+    return current.snapshot;
+  }
+
+  const entry: SharedFleetSnapshot = {
+    database,
+    loadedAt: at,
+    snapshot: loadFleetMonitoringSnapshot(database, now),
+  };
+  sharedFleetSnapshot = entry;
+  entry.snapshot.catch(() => {
+    if (sharedFleetSnapshot === entry) {
+      sharedFleetSnapshot = null;
+    }
+  });
+  return entry.snapshot;
 }

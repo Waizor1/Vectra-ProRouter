@@ -3,6 +3,14 @@ import { and, eq, isNull } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 
 import { db } from "~/server/db";
+import { MemoryWindowRateLimiter } from "~/server/vectra/public-install-rate-limit";
+
+// lastUsedAt is bookkeeping (no code reads it to decide anything; presence
+// and "online" come from routers.last_seen_at, written by the check-in
+// itself). Writing it on every authenticated request was one UPDATE per
+// router every ~45 s; once a minute per credential carries the same signal.
+const LAST_USED_WRITE_INTERVAL_MS = 60_000;
+const lastUsedWrites = new MemoryWindowRateLimiter(1, LAST_USED_WRITE_INTERVAL_MS);
 
 export function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -68,10 +76,12 @@ export async function authenticateRouter(headers: Headers) {
     return null;
   }
 
-  await db
-    .update(routerCredentials)
-    .set({ lastUsedAt: new Date() })
-    .where(eq(routerCredentials.id, credential.id));
+  if (lastUsedWrites.consume(credential.id).allowed) {
+    await db
+      .update(routerCredentials)
+      .set({ lastUsedAt: new Date() })
+      .where(eq(routerCredentials.id, credential.id));
+  }
 
   return { router, credential };
 }

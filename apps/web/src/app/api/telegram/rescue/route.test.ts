@@ -17,6 +17,7 @@ const autoRescue = vi.hoisted(() => {
   return {
     RescueActionRefusedError,
     queueRescueCaseLogCollection: vi.fn(),
+    silenceRescueCase: vi.fn(),
   };
 });
 const telegram = vi.hoisted(() => ({
@@ -30,7 +31,7 @@ vi.mock("~/server/vectra/auto-rescue", () => ({
   queueRescueCaseLogCollection: autoRescue.queueRescueCaseLogCollection,
   queueRescueCaseReconnectProxy: vi.fn(),
   queueRescueCaseSafeRepair: vi.fn(),
-  silenceRescueCase: vi.fn(),
+  silenceRescueCase: autoRescue.silenceRescueCase,
 }));
 vi.mock("~/server/vectra/telegram-rescue", () => telegram);
 
@@ -103,6 +104,39 @@ describe("POST /api/telegram/rescue", () => {
     });
     expect(telegram.answerTelegramCallback).toHaveBeenCalledWith(
       expect.objectContaining({ text: "vctl routers: logs come from vctl" }),
+    );
+  });
+
+  // A button on a case the 30-day retention has since deleted: a plain
+  // answer and a 400, never a 500.
+  it("answers a button for a deleted case with 'not found'", async () => {
+    telegram.verifyTelegramRescueActionToken.mockReturnValueOnce({
+      caseId: "deleted-case",
+      action: "silence_1h",
+    });
+    autoRescue.silenceRescueCase.mockRejectedValueOnce(
+      Object.assign(new Error("Rescue case not found."), { status: 404 }),
+    );
+
+    const response = await POST(
+      new Request("https://example.test/api/telegram/rescue", {
+        method: "POST",
+        headers: {
+          "x-telegram-bot-api-secret-token": "webhook-secret-0123456789",
+        },
+        body: JSON.stringify({
+          callback_query: {
+            id: "cb-2",
+            data: "rescue:token",
+            message: { chat: { id: 1 } },
+          },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(telegram.answerTelegramCallback).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Rescue case not found.", alert: true }),
     );
   });
 });

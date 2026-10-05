@@ -12,13 +12,16 @@ import {
   collectRouterLogsJobPayloadSchema,
   runRescueRepairJobPayloadSchema,
 } from "@vectra/contracts";
-import { and, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 
 import { env } from "~/env";
 import { db } from "~/server/db";
 import { isControlPlaneRecoveryIncident } from "~/server/vectra/control-plane-recovery-incident";
 import { buildRouterManagementTaskLog } from "~/server/vectra/editor-surface";
-import { loadFleetMonitoringSnapshot } from "~/server/vectra/fleet-monitoring-data";
+import {
+  AUTO_RESCUE_FLEET_SNAPSHOT_MAX_AGE_MS,
+  loadSharedFleetMonitoringSnapshot,
+} from "~/server/vectra/fleet-monitoring-data";
 import { getFleetRoutePolicyExceptionReason } from "~/server/vectra/fleet-route-policy";
 import { isReleasedAwaitingOwner } from "~/server/vectra/router-claim-state";
 import { isRouterReachable } from "~/server/vectra/router-presence";
@@ -579,6 +582,81 @@ async function loadRecentSnapshots(
     .limit(limit);
 }
 
+type RecentReachabilitySnapshot = Pick<SnapshotRow, "id" | "createdAt"> & {
+  payload: unknown;
+};
+
+/**
+ * The newest `limit` snapshots of each router, in one statement, carrying
+ * only the two payload fields the blocked-reachability scan reads.
+ *
+ * The scan used to run loadRecentSnapshots once per router, one after the
+ * other — 38 sequential full-payload reads every minute. The payload keeps
+ * a field only when the snapshot has it, so asRecord(payload)[field] reads
+ * the same value (or the same undefined) as on the full row.
+ */
+async function loadRecentReachabilitySnapshots(
+  database: DatabaseClient,
+  routerIds: string[],
+  limit = blockedSnapshotWindow,
+): Promise<Map<string, RecentReachabilitySnapshot[]>> {
+  const byRouter = new Map<string, RecentReachabilitySnapshot[]>();
+  if (routerIds.length === 0) {
+    return byRouter;
+  }
+  // Select-only test shims keep the original per-router read.
+  if (typeof (database as Partial<DatabaseClient>).execute !== "function") {
+    for (const routerId of routerIds) {
+      byRouter.set(routerId, await loadRecentSnapshots(database, routerId, limit));
+    }
+    return byRouter;
+  }
+
+  const rows = (await database.execute(sql`
+    select
+      r.router_id as "routerId",
+      s.id,
+      s.created_at as "createdAt",
+      (
+        select coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb)
+        from jsonb_each(
+          case when jsonb_typeof(s.payload) = 'object' then s.payload else '{}'::jsonb end
+        ) e
+        where e.key in ('foreignReachability', 'telegramReachability')
+      ) as payload
+    from (
+      values ${sql.join(
+        routerIds.map((routerId, index) => sql`(${routerId}, ${index}::int)`),
+        sql`, `,
+      )}
+    ) as r(router_id, ord)
+    join lateral (
+      select snap.id, snap.created_at, snap.payload
+      from vectra_router_inventory_snapshot snap
+      where snap.router_id = r.router_id
+      order by snap.created_at desc
+      limit ${limit}
+    ) s on true
+    order by r.ord, s.created_at desc
+  `)) as unknown as Array<Record<string, unknown>>;
+
+  for (const row of rows) {
+    const routerId = String(row.routerId);
+    const createdAt =
+      row.createdAt instanceof Date
+        ? row.createdAt
+        : new Date(String(row.createdAt));
+    const payload =
+      typeof row.payload === "string"
+        ? (JSON.parse(row.payload) as unknown)
+        : row.payload;
+    const list = byRouter.get(routerId) ?? [];
+    list.push({ id: String(row.id), createdAt, payload });
+    byRouter.set(routerId, list);
+  }
+  return byRouter;
+}
+
 async function loadLatestSnapshot(database: DatabaseClient, routerId: string) {
   const [snapshot] = await database
     .select()
@@ -730,19 +808,24 @@ export async function detectBlockedReachabilityTriggers(
   const routerRows = await database.select().from(routers);
   const triggers: CriticalTrigger[] = [];
 
-  for (const router of routerRows) {
-    // A released router (ADR-0006) has dropped its owner's proxy config on
-    // purpose; blocked probes are expected and nobody is to be paged. Its
-    // offline/direct/incident alerts are suppressed in fleet monitoring,
-    // which is where the other auto-rescue triggers come from.
-    if (isReleasedAwaitingOwner(router)) {
-      continue;
-    }
-    // Nor is an unapproved one scanned: anyone can register a router.
-    if (!router.approvedAt) {
-      continue;
-    }
-    const recentSnapshots = await loadRecentSnapshots(database, router.id);
+  const scanned = routerRows.filter(
+    (router) =>
+      // A released router (ADR-0006) has dropped its owner's proxy config on
+      // purpose; blocked probes are expected and nobody is to be paged. Its
+      // offline/direct/incident alerts are suppressed in fleet monitoring,
+      // which is where the other auto-rescue triggers come from.
+      !isReleasedAwaitingOwner(router) &&
+      // Nor is an unapproved one scanned: anyone can register a router.
+      Boolean(router.approvedAt),
+  );
+  const recentByRouter = await loadRecentReachabilitySnapshots(
+    database,
+    scanned.map((router) => router.id),
+  );
+
+  // Same order as the rows, so the triggers come out in the order they did.
+  for (const router of scanned) {
+    const recentSnapshots = recentByRouter.get(router.id) ?? [];
     if (recentSnapshots.length < blockedSnapshotWindow) {
       continue;
     }
@@ -790,7 +873,11 @@ async function detectFleetCriticalTriggers(
   database: DatabaseClient,
   now: Date,
 ): Promise<CriticalTrigger[]> {
-  const snapshot = await loadFleetMonitoringSnapshot(database, now);
+  const snapshot = await loadSharedFleetMonitoringSnapshot(
+    database,
+    now,
+    AUTO_RESCUE_FLEET_SNAPSHOT_MAX_AGE_MS,
+  );
   return snapshot.alerts.flatMap((alert) => {
     if (alert.severity !== "critical") {
       return [];
@@ -1043,6 +1130,18 @@ async function ensureRescueCase(
 }
 
 /** A rescue action refused for a reason the operator is meant to read (400). */
+/**
+ * The case id names no case — e.g. a resolved case the 30-day history
+ * retention has since deleted. Callers answer "not found", not a 500.
+ */
+export class RescueCaseNotFoundError extends Error {
+  readonly status = 404;
+  constructor() {
+    super("Rescue case not found.");
+    this.name = "RescueCaseNotFoundError";
+  }
+}
+
 export class RescueActionRefusedError extends Error {
   readonly status = 400;
 }
@@ -1286,7 +1385,7 @@ export async function silenceRescueCase(
     .where(eq(rescueCases.id, caseId))
     .returning();
   if (!updated) {
-    throw new Error("Rescue case not found.");
+    throw new RescueCaseNotFoundError();
   }
   return updated;
 }
@@ -1298,7 +1397,7 @@ async function getRescueCaseOrThrow(caseId: string, database: DatabaseClient) {
     .where(eq(rescueCases.id, caseId))
     .limit(1);
   if (!rescueCase) {
-    throw new Error("Rescue case not found.");
+    throw new RescueCaseNotFoundError();
   }
   return rescueCase;
 }

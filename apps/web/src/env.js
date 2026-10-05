@@ -203,6 +203,35 @@ export const env = createEnv({
       .int()
       .min(5)
       .default(20),
+    // 30-day history retention (owner's decision 2026-10-05): event journal,
+    // finished jobs with their results, resolved incidents and push alerts,
+    // and desired revisions of any origin that nothing references. Deletes
+    // run in batches; with DRY_RUN on (the default) a tick only logs what it
+    // would delete, so the first deploy shows the numbers before any row goes.
+    VECTRA_HISTORY_RETENTION_ENABLED: booleanFlagSchema(true),
+    VECTRA_HISTORY_RETENTION_INTERVAL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(300)
+      .max(86400)
+      .default(3600),
+    VECTRA_RETENTION_DAYS: z.coerce.number().int().min(7).default(30),
+    VECTRA_RETENTION_DRY_RUN: booleanFlagSchema(true),
+    // Resolved rescue cases (22k rows on 2026-10-05) have their own switch on
+    // top of VECTRA_RETENTION_DRY_RUN: they are only deleted when BOTH are
+    // false, so this table can be enabled after the others.
+    VECTRA_RESCUE_CASE_RETENTION_DRY_RUN: booleanFlagSchema(true),
+    VECTRA_RETENTION_BATCH_SIZE: z.coerce
+      .number()
+      .int()
+      .min(100)
+      .max(10000)
+      .default(5000),
+    // Heap budget, in MB, of EACH in-memory config cache (the check-in's
+    // decrypted desired revisions; the monitors' per-router config summaries).
+    // One entry per router, 10-minute TTL; past the budget a router is not
+    // cached and is served from Postgres as before. 0 turns caching off.
+    VECTRA_CONFIG_CACHE_MB: z.coerce.number().int().min(0).max(256).default(16),
     VECTRA_TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
     VECTRA_TELEGRAM_ALLOWED_CHAT_IDS: z.string().min(1).optional(),
     VECTRA_TELEGRAM_WEBHOOK_SECRET: z.string().min(16).optional(),
@@ -299,6 +328,16 @@ export const env = createEnv({
       process.env.VECTRA_REVISION_RETENTION_HOURS,
     VECTRA_REVISION_RETENTION_KEEP_PER_ROUTER:
       process.env.VECTRA_REVISION_RETENTION_KEEP_PER_ROUTER,
+    VECTRA_HISTORY_RETENTION_ENABLED:
+      process.env.VECTRA_HISTORY_RETENTION_ENABLED,
+    VECTRA_HISTORY_RETENTION_INTERVAL_SECONDS:
+      process.env.VECTRA_HISTORY_RETENTION_INTERVAL_SECONDS,
+    VECTRA_RETENTION_DAYS: process.env.VECTRA_RETENTION_DAYS,
+    VECTRA_RETENTION_DRY_RUN: process.env.VECTRA_RETENTION_DRY_RUN,
+    VECTRA_RESCUE_CASE_RETENTION_DRY_RUN:
+      process.env.VECTRA_RESCUE_CASE_RETENTION_DRY_RUN,
+    VECTRA_RETENTION_BATCH_SIZE: process.env.VECTRA_RETENTION_BATCH_SIZE,
+    VECTRA_CONFIG_CACHE_MB: process.env.VECTRA_CONFIG_CACHE_MB,
     VECTRA_TELEGRAM_BOT_TOKEN: process.env.VECTRA_TELEGRAM_BOT_TOKEN,
     VECTRA_TELEGRAM_ALLOWED_CHAT_IDS:
       process.env.VECTRA_TELEGRAM_ALLOWED_CHAT_IDS,

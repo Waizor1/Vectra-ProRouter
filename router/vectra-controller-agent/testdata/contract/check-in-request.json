@@ -1,0 +1,68 @@
+{
+  "protocolVersion": "2026-04-v1",
+  "routerId": "bdfdb919-5e06-4344-ad8b-67a16f3b6fcf",
+  "inventory": {
+    "protocolVersion": "2026-04-v1",
+    "deviceIdentifier": "vectra-07bf0887f662",
+    "devicePublicKey": "bGVnYWN5LWRldmljZS1wdWJsaWMta2V5",
+    "controllerVersion": "0.1.13-r42",
+    "controllerRuntimeVersion": "0.1.13-r42",
+    "hostname": "fleet-router",
+    "panelDomain": "https://router.vectra-pro.net",
+    "model": "Xiaomi Mi Router AX3000T",
+    "boardName": "xiaomi,mi-router-ax3000t",
+    "layoutFamily": "ubootmod",
+    "target": "mediatek/filogic",
+    "architecture": "aarch64_cortex-a53",
+    "openwrtRelease": "24.10.6",
+    "passwallEnabled": true,
+    "selectedNodeId": "myshunt",
+    "selectedNodeLabel": "myshunt",
+    "nodeCount": 42,
+    "subscriptionCount": 1,
+    "subscriptionHealth": {
+      "hwidEnabled": true,
+      "scheduleEnabled": true,
+      "placeholderNodes": 0
+    },
+    "packageVersions": {
+      "luci-app-passwall2": "26.8.10-r1",
+      "xray-core": "26.3.27-r1"
+    },
+    "binaryVersions": {
+      "xray": "26.3.27"
+    },
+    "rulesAssets": {
+      "assetDirectory": "/usr/share/v2ray/"
+    },
+    "resources": {
+      "memoryTotalMb": 234,
+      "memoryAvailableMb": 92,
+      "swapTotalMb": 117,
+      "swapFreeMb": 100,
+      "overlayFreeMb": 18,
+      "tmpFreeMb": 60
+    },
+    "serviceHealth": {
+      "controller": "running",
+      "passwall": "running",
+      "passwallServer": "stopped",
+      "dnsmasq": "running"
+    },
+    "telegramReachability": {
+      "reachable": true,
+      "checkedAt": "2026-10-05T09:00:00Z",
+      "status": "reachable"
+    },
+    "configDigest": "3f1c0d9a4b6e5f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a",
+    "appliedRevisionId": "1a2b3c4d-0000-4000-8000-000000000042"
+  },
+  "health": {
+    "currentMode": "proxy",
+    "publicConnectivityFailures": 0,
+    "directConnectivitySuccesses": 0,
+    "proxyConnectivitySuccesses": 2,
+    "serverReachable": true,
+    "recoveryPhase": "idle"
+  }
+}

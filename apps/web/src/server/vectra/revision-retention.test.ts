@@ -17,7 +17,8 @@ function createRetentionMockDb() {
       execute: (query: unknown) => {
         const { sql: text, params } = dialect.sqlToQuery(query as SQL);
         executed.push({ text, params });
-        return Promise.resolve({ count: 4 });
+        // postgres.js: the rows, with the affected-row count on the array.
+        return Promise.resolve(Object.assign([{ count: 4 }], { count: 4 }));
       },
     },
     executed,
@@ -59,7 +60,83 @@ describe("runRevisionRetentionTick", () => {
     // An applied revision is the record of what a router was running. Losing it
     // breaks rollback and leaves an applied-revision row pointing at nothing.
     expect(executed[0]!.text).toContain("vectra_passwall_applied_revision");
-    expect(executed[0]!.text).toContain("not in");
+    expect(executed[0]!.text).toContain("not exists");
+  });
+
+  it("never touches a revision a router, a job or an onboarding run points at", async () => {
+    const { db, executed } = createRetentionMockDb();
+
+    await runRevisionRetentionTick(
+      db as unknown as Parameters<typeof runRevisionRetentionTick>[0],
+      { enabled: true, retentionDays: null },
+    );
+
+    const text = executed[0]!.text;
+    for (const reference of [
+      "active_revision_id from vectra_router",
+      "last_applied_revision_id from vectra_router",
+      "pending_import_revision_id from vectra_router",
+      "desired_revision_id from vectra_job",
+      "payload->>'restoreRevisionId' from vectra_job",
+      "active_revision_id from vectra_router_onboarding_run",
+      // the route-policy fallback config and the check-in's diff base
+      "distinct on (router_id) id",
+      "prev.revision_number < cur.revision_number",
+    ]) {
+      expect(text).toContain(reference);
+    }
+  });
+
+  it("locks what it deletes and skips a revision someone else holds", async () => {
+    const { db, executed } = createRetentionMockDb();
+
+    await runRevisionRetentionTick(
+      db as unknown as Parameters<typeof runRevisionRetentionTick>[0],
+      { enabled: true, retentionDays: null },
+    );
+
+    expect(executed[0]!.text).toContain("for update of target skip locked");
+  });
+
+  it("keeps at least three revisions per router whatever is configured", async () => {
+    const { db, executed } = createRetentionMockDb();
+
+    await runRevisionRetentionTick(
+      db as unknown as Parameters<typeof runRevisionRetentionTick>[0],
+      { enabled: true, keepPerRouter: 0, retentionDays: null },
+    );
+
+    expect(executed[0]!.params).toContain(3);
+    expect(executed[0]!.params).not.toContain(0);
+  });
+
+  it("only counts what the 30-day rule would delete while dry-run is on", async () => {
+    const { db, executed } = createRetentionMockDb();
+
+    const result = await runRevisionRetentionTick(
+      db as unknown as Parameters<typeof runRevisionRetentionTick>[0],
+      { enabled: true, retentionDays: 30, dryRun: true },
+    );
+
+    expect(executed).toHaveLength(2);
+    expect(executed[0]!.text.trimStart()).toMatch(/^delete/);
+    expect(executed[1]!.text.trimStart()).toMatch(/^select count/);
+    expect(executed[1]!.params).toEqual(expect.arrayContaining(["draft", "queued", 30]));
+    expect(result.wouldDelete).toBeDefined();
+  });
+
+  it("deletes with the 30-day rule once dry-run is off, never an open draft or a queued apply", async () => {
+    const { db, executed } = createRetentionMockDb();
+
+    await runRevisionRetentionTick(
+      db as unknown as Parameters<typeof runRevisionRetentionTick>[0],
+      { enabled: true, retentionDays: 30, dryRun: false },
+    );
+
+    const history = executed.find((statement) => statement.params.includes(30));
+    expect(history?.text.trimStart()).toMatch(/^delete/);
+    expect(history?.text).toContain("status not in");
+    expect(history?.params).toEqual(expect.arrayContaining(["draft", "queued"]));
   });
 
   it("only prunes auto-generated imports, never operator work", async () => {
@@ -70,8 +147,9 @@ describe("runRevisionRetentionTick", () => {
       { enabled: true },
     );
 
-    // 95% of the table is router_import churn; operator_draft rows are the
-    // things a human actually authored and must survive regardless of age.
+    // 95% of the table is router_import churn, and this rule removes only that
+    // after a week. Anything else waits for the 30-day rule, and an applied
+    // operator revision is protected by its applied record forever.
     expect(executed[0]!.params).toContain("router_import");
     expect(executed[0]!.params).toContain("approved");
   });

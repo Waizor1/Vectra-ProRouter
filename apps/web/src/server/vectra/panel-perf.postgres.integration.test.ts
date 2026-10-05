@@ -1,0 +1,622 @@
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+vi.mock("~/server/db", () => ({ db: {} }));
+vi.mock("server-only", () => ({}));
+import { drizzle } from "drizzle-orm/postgres-js";
+import { sql } from "drizzle-orm";
+import postgres from "postgres";
+
+import { passwallDesiredConfigSchema, type PasswallDesiredConfig } from "@vectra/contracts";
+import * as schema from "@vectra/db";
+
+import { detectBlockedReachabilityTriggers } from "./auto-rescue";
+import { buildFleetPushCandidates } from "./browser-push-monitor";
+import {
+  loadFleetMonitoringSnapshot,
+  loadLatestFleetPolicyConfigRows,
+  loadLatestFleetPolicyConfigSummaries,
+  loadLatestSnapshots,
+  loadSharedFleetMonitoringSnapshot,
+  resetFleetPolicyConfigSummaryCacheForTest,
+  resetSharedFleetMonitoringSnapshotForTest,
+} from "./fleet-monitoring-data";
+import { runHistoryRetentionTick } from "./history-retention";
+import {
+  getFleetPolicyContext,
+  resetFleetNodeHealthCache,
+} from "./fleet-node-health-cache";
+import {
+  loadLatestRouteVerifications,
+  loadLatestRouteVerificationsBySelect,
+  loadRouteHealthCandidates,
+} from "./route-health-verifier";
+import { runRevisionRetentionTick } from "./revision-retention";
+import {
+  resetRevisionSummaryCacheForTest,
+  resolveDesiredRevisionWithDb,
+} from "./router-control";
+import { createSecretPayload, sanitizePasswallConfig } from "./secrets";
+
+/**
+ * The raw SQL of the check-in revision cache, the monitors' compact config
+ * loader and both retention sweeps, against a real PostgreSQL with every
+ * migration applied. Runs only against a throwaway local cluster named by
+ * PANEL_PERF_PG_PORT on 127.0.0.1 — never DATABASE_URL or .env:
+ *
+ *   initdb -D <dir> -U panel_test --auth=trust --no-locale -E UTF8
+ *   pg_ctl -D <dir> -o "-k '' -p 55441 -c listen_addresses=127.0.0.1" start
+ *   for f in packages/db/drizzle/*.sql; do psql -h 127.0.0.1 -p 55441 -U panel_test -d postgres -f $f; done
+ *   PANEL_PERF_PG_PORT=55441 npx vitest run src/server/vectra/panel-perf.postgres.integration.test.ts
+ */
+const port = process.env.PANEL_PERF_PG_PORT;
+
+const DAY = 24 * 60 * 60 * 1000;
+const now = Date.now();
+const daysAgo = (days: number) => new Date(now - days * DAY);
+
+function config(label: string, password: string): PasswallDesiredConfig {
+  return passwallDesiredConfigSchema.parse({
+    basicSettings: { main: { mainSwitch: true, selectedNodeId: "myshunt" }, dns: {}, log: {}, maintenance: {} },
+    nodes: [{ id: "node-a", label, protocol: "vless", address: "a.example", port: 443, password }],
+    subscriptions: { items: [] },
+    appUpdate: {},
+    ruleManage: { geoipUrl: "https://example.test/geoip.dat", geositeUrl: "https://example.test/geosite.dat" },
+  });
+}
+
+describe.skipIf(!port)("panel performance SQL on a real PostgreSQL", () => {
+  const client = postgres({ host: "127.0.0.1", port: Number(port), username: "panel_test", database: "postgres", max: 4 });
+  const db = drizzle(client, { schema });
+
+  async function newRouter(label: string) {
+    const [router] = await db
+      .insert(schema.routers)
+      .values({ deviceIdentifier: `perf-${label}-${crypto.randomUUID()}`, status: "active", importState: "approved", approvedAt: new Date() })
+      .returning();
+    return router!;
+  }
+
+  async function newRevision(
+    routerId: string,
+    revisionNumber: number,
+    values: Partial<typeof schema.passwallDesiredRevisions.$inferInsert> & { secret?: PasswallDesiredConfig } = {},
+  ) {
+    const cfg = values.secret ?? config(`rev ${revisionNumber}`, "pw");
+    const [revision] = await db
+      .insert(schema.passwallDesiredRevisions)
+      .values({
+        routerId,
+        revisionNumber,
+        status: "approved",
+        origin: "router_import",
+        configDigest: `d${revisionNumber}`,
+        config: sanitizePasswallConfig(cfg),
+        rawImportedSnapshot: { big: "x".repeat(100) },
+        ...values,
+      })
+      .returning();
+    await db.insert(schema.passwallSecretBlobs).values({
+      routerId,
+      desiredRevisionId: revision!.id,
+      scope: "router_import",
+      ciphertext: createSecretPayload(cfg),
+    });
+    return revision!;
+  }
+
+  beforeAll(async () => {
+    resetRevisionSummaryCacheForTest();
+    resetFleetPolicyConfigSummaryCacheForTest();
+    // A throwaway cluster: start every run from empty tables, since the
+    // retention sweeps count fleet-wide.
+    await db.execute(sql`truncate vectra_router cascade`);
+  });
+  afterAll(async () => {
+    await client.end();
+  });
+
+  it("check-in revision cache: correlates each revision with its own newest secret blob", async () => {
+    const router = await newRouter("cache");
+    await newRevision(router.id, 1, { secret: config("one", "pw-1") });
+    const active = await newRevision(router.id, 2, { secret: config("two", "pw-2"), origin: "operator_draft" });
+    const routerRow = { ...router, activeRevisionId: active.id };
+
+    const first = await resolveDesiredRevisionWithDb(db, routerRow, []);
+    expect((first?.config as PasswallDesiredConfig).nodes[0]?.password).toBe("pw-2");
+    expect(first?.impact.changedSections.length).toBeGreaterThan(0);
+
+    // A re-imported secret is delete + insert of the blob: a new id, a new key.
+    await db.delete(schema.passwallSecretBlobs).where(sql`desired_revision_id = ${active.id}`);
+    await db.insert(schema.passwallSecretBlobs).values({
+      routerId: router.id,
+      desiredRevisionId: active.id,
+      scope: "desired_revision",
+      ciphertext: createSecretPayload(config("two", "pw-rotated")),
+    });
+    const second = await resolveDesiredRevisionWithDb(db, routerRow, []);
+    expect((second?.config as PasswallDesiredConfig).nodes[0]?.password).toBe("pw-rotated");
+  });
+
+  it("monitor loaders: compact summaries match the full loader, snapshots drop telemetry in SQL", async () => {
+    const router = await newRouter("monitor");
+    await newRevision(router.id, 1, { createdAt: daysAgo(2) });
+    const latest = await newRevision(router.id, 2, { createdAt: daysAgo(1), secret: config("latest", "pw") });
+    await newRevision(router.id, 3, { origin: "operator_draft", createdAt: new Date() });
+
+    const [summaries, full] = await Promise.all([
+      loadLatestFleetPolicyConfigSummaries(db, [router.id]),
+      loadLatestFleetPolicyConfigRows(db, [router.id]),
+    ]);
+    expect(summaries.get(router.id)?.id).toBe(latest.id);
+    expect(full.get(router.id)?.id).toBe(latest.id);
+    expect(summaries.get(router.id)?.config.nodes).toEqual(full.get(router.id)?.config.nodes);
+
+    await db.insert(schema.routerInventorySnapshots).values({
+      routerId: router.id,
+      payload: { hostname: "h", connect: { entries: [] }, rawSnapshot: { a: 1 } } as never,
+    });
+    const slim = await loadLatestSnapshots(db, [router.id], { monitoringPayload: true });
+    expect(slim.get(router.id)?.payload).toEqual({ hostname: "h" });
+  });
+
+  it("revision retention: deletes only unreferenced, old revisions beyond the newest N", async () => {
+    const router = await newRouter("retention");
+    const other = await newRouter("retention-other");
+    const old = daysAgo(40);
+    const revs: Record<string, string> = {};
+    for (let n = 1; n <= 20; n += 1) {
+      revs[n] = (await newRevision(router.id, n, { status: "import_review", createdAt: new Date(old.getTime() + n * 1000) })).id;
+    }
+    // Statuses that are never pruned.
+    revs.draft = (await newRevision(router.id, 21, { origin: "operator_draft", status: "draft", createdAt: old })).id;
+    revs.queued = (await newRevision(router.id, 22, { origin: "operator_draft", status: "queued", createdAt: old })).id;
+    // Newest three (keep-N), recent.
+    for (const n of [23, 24, 25]) {
+      revs[n] = (await newRevision(router.id, n, { origin: "operator_draft", status: "failed", createdAt: daysAgo(1) })).id;
+    }
+
+    // References: active and last applied (each with its diff base: 4 and
+    // 6), pending import, a finished job, an applied record, an onboarding
+    // run, and an unfinished job's restore target.
+    await db.update(schema.routers).set({ activeRevisionId: revs[5], lastAppliedRevisionId: revs[7], pendingImportRevisionId: revs[9] }).where(sql`id = ${router.id}`);
+    await db.insert(schema.jobs).values({ routerId: router.id, type: "apply_passwall_config", state: "succeeded", desiredRevisionId: revs[11], createdAt: old });
+    await db.insert(schema.jobs).values({ routerId: router.id, type: "refresh_subscriptions", state: "queued", payload: { restoreRevisionId: revs[13] } });
+    await db.insert(schema.passwallAppliedRevisions).values({ routerId: router.id, desiredRevisionId: revs[15] });
+    const [profile] = await db.insert(schema.routerOnboardingProfiles).values({ routerId: router.id }).returning();
+    await db.insert(schema.routerOnboardingRuns).values({ routerId: router.id, profileId: profile!.id, activeRevisionId: revs[17] });
+    // Another router's revision is not this router's keep-N.
+    const otherOld = (await newRevision(other.id, 1, { status: "import_review", createdAt: old })).id;
+
+    const dry = await runRevisionRetentionTick(db, { enabled: true, retentionHours: 168, keepPerRouter: 3, retentionDays: 30, dryRun: true });
+    const kept = new Set([
+      revs[4], revs[5], revs[6], revs[7], revs[9], revs[11], revs[13], revs[15], revs[17],
+      // the latest router_import of the router: revision 20
+      revs[20],
+      revs.draft, revs.queued, revs[23], revs[24], revs[25],
+      // the other router's only revision is its own newest
+      otherOld,
+    ]);
+    const all = Object.values(revs).concat(otherOld);
+    const expectedDeleted = all.filter((id) => !kept.has(id));
+    expect(dry.deleted).toBe(0);
+    expect(dry.wouldDelete).toBe(expectedDeleted.length);
+
+    const result = await runRevisionRetentionTick(db, { enabled: true, retentionHours: 168, keepPerRouter: 3, retentionDays: 30, dryRun: false });
+    expect(result.deleted).toBe(expectedDeleted.length);
+    const remaining = new Set(
+      (await db.select({ id: schema.passwallDesiredRevisions.id }).from(schema.passwallDesiredRevisions).where(sql`router_id in (${router.id}, ${other.id})`)).map((row) => row.id),
+    );
+    expect([...remaining].sort()).toEqual([...kept].sort());
+    // Secret blobs went with their revisions.
+    const orphanBlobs = await db.execute(sql`select count(*)::int as count from vectra_passwall_secret_blob where router_id = ${router.id} and desired_revision_id is not null and desired_revision_id not in (select id from vectra_passwall_desired_revision)`);
+    expect((orphanBlobs as unknown as Array<{ count: number }>)[0]?.count).toBe(0);
+    const blobCount = await db.execute(sql`select count(*)::int as count from vectra_passwall_secret_blob where router_id = ${router.id}`);
+    expect((blobCount as unknown as Array<{ count: number }>)[0]?.count).toBe(kept.size - 1);
+  });
+
+  it("revision retention: skips a revision a job is being queued for right now", async () => {
+    const router = await newRouter("retention-race");
+    const old = daysAgo(40);
+    const revisions: string[] = [];
+    for (let n = 1; n <= 6; n += 1) {
+      revisions.push((await newRevision(router.id, n, { status: "failed", origin: "operator_draft", createdAt: new Date(old.getTime() + n * 1000) })).id);
+    }
+    // Revisions 1-3 are past keep-3 and unreferenced. A second connection is
+    // queueing an apply for revision 1 and has not committed yet.
+    const other = postgres({ host: "127.0.0.1", port: Number(port), username: "panel_test", database: "postgres", max: 1 });
+    try {
+      const reserved = await other.reserve();
+      await reserved`begin`;
+      await reserved`insert into vectra_job (id, router_id, type, state, desired_revision_id) values (${crypto.randomUUID()}, ${router.id}, 'apply_passwall_config', 'queued', ${revisions[0]!})`;
+
+      const result = await runRevisionRetentionTick(db, { enabled: true, retentionHours: 168, keepPerRouter: 3, retentionDays: 30, dryRun: false });
+      await reserved`commit`;
+      reserved.release();
+
+      expect(result.deleted).toBe(2);
+      const remaining = new Set(
+        (await db.select({ id: schema.passwallDesiredRevisions.id }).from(schema.passwallDesiredRevisions).where(sql`router_id = ${router.id}`)).map((row) => row.id),
+      );
+      expect(remaining.has(revisions[0]!)).toBe(true);
+      expect(remaining.has(revisions[1]!) || remaining.has(revisions[2]!)).toBe(false);
+      const [queued] = (await db.execute(sql`select desired_revision_id from vectra_job where router_id = ${router.id}`)) as unknown as Array<{ desired_revision_id: string | null }>;
+      expect(queued?.desired_revision_id).toBe(revisions[0]);
+    } finally {
+      await other.end();
+    }
+  });
+
+  it("history retention: batches old journal, finished jobs (with results), resolved incidents and alerts", async () => {
+    const router = await newRouter("history");
+    const old = daysAgo(31);
+    const recent = daysAgo(29);
+    await db.insert(schema.eventLog).values([
+      { routerId: router.id, type: "t", message: "old-1", createdAt: old },
+      { routerId: router.id, type: "t", message: "old-2", createdAt: old },
+      { routerId: router.id, type: "t", message: "old-3", createdAt: old },
+      { routerId: router.id, type: "t", message: "recent", createdAt: recent },
+    ]);
+    const job = async (values: Partial<typeof schema.jobs.$inferInsert>, routerId = router.id) =>
+      (await db.insert(schema.jobs).values({ routerId, type: "refresh_subscriptions", createdAt: old, ...values }).returning())[0]!;
+    const at = (days: number, seconds = 0) => new Date(daysAgo(days).getTime() + seconds * 1000);
+    const oldDone = await job({ state: "succeeded", completedAt: old, createdAt: at(40, 1) });
+    const oldFailed = await job({ state: "failed", completedAt: old, createdAt: at(40, 2) });
+    const oldKeyed = await job({ state: "succeeded", completedAt: old, createdAt: at(40, 3), dedupeKey: `partner-action:${crypto.randomUUID()}` });
+    const oldRunning = await job({ state: "running", createdAt: at(40, 4) });
+    const finishedRecently = await job({ state: "succeeded", completedAt: recent, createdAt: at(40, 5) });
+    // The newest job of its type on this router stays, however old.
+    const newestOfType = await job({ type: "verify_passwall_routes", state: "succeeded", completedAt: old, createdAt: at(45) });
+    const olderOfThatType = await job({ type: "verify_passwall_routes", state: "succeeded", completedAt: old, createdAt: at(50) });
+    // Still referenced by an onboarding run (cancelled: its dedupe key was cleared).
+    const onboardingJob = await job({ type: "apply_passwall_config", state: "cancelled", completedAt: at(60), createdAt: at(60) });
+    await job({ type: "apply_passwall_config", state: "succeeded", completedAt: at(1), createdAt: at(1) });
+    const [profile] = await db.insert(schema.routerOnboardingProfiles).values({ routerId: router.id }).returning();
+    await db.insert(schema.routerOnboardingRuns).values({ routerId: router.id, profileId: profile!.id, lastJobId: onboardingJob.id });
+
+    // A router with an incident open for 40 days and an active rescue case
+    // started 40 days ago: the reconnects and repairs the caps count stay.
+    const capped = await newRouter("history-capped");
+    await db.insert(schema.healthIncidents).values({ routerId: capped.id, type: "proxy_outage", state: "open", reason: "r", openedAt: at(40) });
+    const beforeIncident = await job({ type: "reconnect", state: "succeeded", completedAt: at(41), createdAt: at(41) }, capped.id);
+    const counted = await job({ type: "reconnect", state: "succeeded", completedAt: at(39), createdAt: at(39) }, capped.id);
+    await job({ type: "reconnect", state: "failed", completedAt: at(35), createdAt: at(35) }, capped.id);
+    const cased = await newRouter("history-case");
+    await db.insert(schema.rescueCases).values({ routerId: cased.id, trigger: "direct_mode", state: "escalated", startedAt: at(38) });
+    const repairBeforeCase = await job({ type: "run_rescue_repair", state: "failed", completedAt: at(39), createdAt: at(39) }, cased.id);
+    const repairCounted = await job({ type: "run_rescue_repair", state: "failed", completedAt: at(37), createdAt: at(37) }, cased.id);
+    await job({ type: "run_rescue_repair", state: "failed", completedAt: at(36), createdAt: at(36) }, cased.id);
+    for (const parent of [oldDone, oldFailed, oldKeyed, oldRunning, finishedRecently]) {
+      await db.insert(schema.jobResults).values([
+        { jobId: parent.id, routerId: router.id, status: "accepted", reportedAt: old },
+        { jobId: parent.id, routerId: router.id, status: "success", reportedAt: old },
+      ]);
+    }
+    await db.insert(schema.healthIncidents).values([
+      { routerId: router.id, type: "proxy_outage", state: "resolved", reason: "r", openedAt: old, resolvedAt: old },
+      { routerId: router.id, type: "proxy_outage", state: "open", reason: "r", openedAt: old },
+      { routerId: router.id, type: "proxy_outage", state: "resolved", reason: "r", openedAt: old, resolvedAt: recent },
+    ]);
+    await db.insert(schema.operatorPushAlerts).values([
+      { routerId: router.id, kind: "offline", dedupeKey: `a-${crypto.randomUUID()}`, title: "t", body: "b", href: "/", createdAt: old, resolvedAt: old },
+      { routerId: router.id, kind: "offline", dedupeKey: `b-${crypto.randomUUID()}`, title: "t", body: "b", href: "/", createdAt: old },
+    ]);
+
+    const options = { enabled: true, retentionDays: 30, batchSize: 2, pauseMs: 0, now: new Date(now) } as const;
+    const dry = await runHistoryRetentionTick(db, { ...options, dryRun: true });
+    expect(dry.counts.job).toBe(5);
+    const before = await db.execute(sql`select count(*)::int as count from vectra_event_log where router_id = ${router.id}`);
+    expect((before as unknown as Array<{ count: number }>)[0]?.count).toBe(4);
+
+    const result = await runHistoryRetentionTick(db, { ...options, dryRun: false });
+    expect(result.counts.event_log).toBeGreaterThanOrEqual(3);
+
+    const rows = async (query: ReturnType<typeof sql>) => (await db.execute(query)) as unknown as Array<Record<string, unknown>>;
+    expect((await rows(sql`select message from vectra_event_log where router_id = ${router.id}`)).map((row) => row.message)).toEqual(["recent"]);
+    const deletedJobs = new Set(
+      [oldDone, oldFailed, olderOfThatType, beforeIncident, repairBeforeCase].map((row) => row.id),
+    );
+    const remainingJobs = new Set(
+      (await rows(sql`select id from vectra_job where router_id in (${router.id}, ${capped.id}, ${cased.id})`)).map((row) => row.id),
+    );
+    for (const kept of [oldKeyed, oldRunning, finishedRecently, newestOfType, onboardingJob, counted, repairCounted]) {
+      expect(remainingJobs.has(kept.id)).toBe(true);
+    }
+    for (const id of deletedJobs) {
+      expect(remainingJobs.has(id)).toBe(false);
+    }
+    expect(result.counts.job).toBe(deletedJobs.size);
+    const [run] = await rows(sql`select last_job_id from vectra_router_onboarding_run where router_id = ${router.id}`);
+    expect(run?.last_job_id).toBe(onboardingJob.id);
+    const resultJobIds = new Set((await rows(sql`select job_id from vectra_job_result where router_id = ${router.id}`)).map((row) => row.job_id));
+    expect([...resultJobIds].sort()).toEqual([oldKeyed.id, oldRunning.id, finishedRecently.id].sort());
+    expect((await rows(sql`select state, resolved_at from vectra_health_incident where router_id = ${router.id}`)).length).toBe(2);
+    expect((await rows(sql`select id from vectra_operator_push_alert where router_id = ${router.id} and resolved_at is null`)).length).toBe(1);
+    expect((await rows(sql`select id from vectra_operator_push_alert where router_id = ${router.id}`)).length).toBe(1);
+  });
+  it("route verifications: the per-router SQL picks exactly what the original two-select loader picked", async () => {
+    const routerIds: string[] = [];
+    const base = daysAgo(3).getTime();
+    const minute = 60 * 1000;
+    const slots = (ok: boolean, tag: string) => [
+      { slot: "WorldProxy", boundNodeId: `n-${tag}`, smokeOk: ok, statusCode: ok ? 204 : 0 },
+      { slot: "Special", boundNodeId: `s-${tag}`, smokeOk: true, statusCode: 204 },
+    ];
+    const expectedFor = new Map<string, unknown>();
+    for (let i = 0; i < 40; i += 1) {
+      const router = await newRouter(`rv-${i}`);
+      routerIds.push(router.id);
+      const t0 = base + i * 1000 * minute;
+      const jobCount = i % 6; // 0..5 verify jobs; router 0, 6, 12... have none
+      const verifyJobs: string[] = [];
+      for (let j = 0; j < jobCount; j += 1) {
+        const [job] = await db
+          .insert(schema.jobs)
+          .values({ routerId: router.id, type: "verify_passwall_routes", state: "succeeded", createdAt: new Date(t0 + j * 10 * minute) })
+          .returning();
+        verifyJobs.push(job!.id);
+        const reported = t0 + j * 10 * minute;
+        // The receipt a job emits first never carries slots.
+        await db.insert(schema.jobResults).values({ jobId: job!.id, routerId: router.id, status: "accepted", payload: { accepted: true }, reportedAt: new Date(reported + minute) });
+        const last = j === jobCount - 1;
+        if (last && i % 5 === 1) {
+          continue; // newest job still in flight: only its receipt exists
+        }
+        const shape = (i + j) % 6;
+        const filler = i % 3 === 0 ? { raw: "x".repeat(4000) } : {};
+        const payload =
+          shape === 0
+            ? { routeVerification: { slots: slots(j % 2 === 0, `${i}-${j}`), checkedAt: "c" }, ...filler }
+            : shape === 1
+              ? { slots: slots(true, `${i}-${j}`), ...filler }
+              : shape === 2
+                ? { routeVerification: null, slots: slots(false, `${i}-${j}`) }
+                : shape === 3
+                  ? { routeVerification: {}, slots: slots(true, "ignored: routeVerification wins") }
+                  : shape === 4
+                    ? { routeVerification: false, error: "x" }
+                    : { error: "url_test_node timed out", ...filler };
+        await db.insert(schema.jobResults).values({ jobId: job!.id, routerId: router.id, status: shape >= 4 ? "failure" : "success", payload, reportedAt: new Date(reported + 2 * minute) });
+      }
+      // A late result for the OLDEST job, reported after everything else: the
+      // original picked by reported_at, so it wins over newer jobs' results.
+      if (jobCount >= 2 && i % 7 === 3) {
+        const late = { routeVerification: { slots: slots(true, `late-${i}`) } };
+        await db.insert(schema.jobResults).values({ jobId: verifyJobs[0]!, routerId: router.id, status: "success", payload: late, reportedAt: new Date(t0 + 500 * minute) });
+        expectedFor.set(router.id, late.routeVerification);
+      }
+      // Another job type carrying slots, reported last: never a verdict.
+      const [other] = await db
+        .insert(schema.jobs)
+        .values({ routerId: router.id, type: "refresh_subscriptions", state: "succeeded", createdAt: new Date(t0 + 600 * minute) })
+        .returning();
+      await db.insert(schema.jobResults).values({ jobId: other!.id, routerId: router.id, status: "success", payload: { slots: slots(false, "other-type") }, reportedAt: new Date(t0 + 601 * minute) });
+    }
+
+    const ids = [...routerIds, "no-such-router", routerIds[1]!];
+    const [fast, reference] = await Promise.all([
+      loadLatestRouteVerifications(db, ids),
+      loadLatestRouteVerificationsBySelect(db, ids),
+    ]);
+    expect(fast).toEqual(reference);
+    expect(fast.size).toBeGreaterThan(15);
+    expect(expectedFor.size).toBeGreaterThan(0);
+    for (const [routerId, verification] of expectedFor) {
+      expect(fast.get(routerId)?.verification).toEqual(verification);
+    }
+    // Nothing from another job type ever leaks in.
+    for (const { verification } of fast.values()) {
+      expect(JSON.stringify(verification)).not.toContain("other-type");
+      expect(JSON.stringify(verification)).not.toContain("ignored");
+    }
+    // A shim without `execute` takes the original path.
+    const selectOnly = { select: db.select.bind(db) } as unknown as Parameters<typeof loadLatestRouteVerifications>[0];
+    expect(await loadLatestRouteVerifications(selectOnly, ids)).toEqual(reference);
+  });
+  it("auto-rescue blocked-reachability scan: one batched read decides exactly what the per-router reads decided", async () => {
+    const minute = 60 * 1000;
+    const reach = (status: string, checkedAt: string | null, extra: Record<string, unknown> = {}) => ({
+      status,
+      reachable: status === "healthy",
+      ...(checkedAt ? { checkedAt } : {}),
+      ...extra,
+    });
+    type Shape = Array<Record<string, unknown> | null>;
+    const fixtures: Array<{ label: string; approved: boolean; released?: boolean; snapshots: Shape }> = [
+      { label: "foreign-blocked", approved: true, snapshots: [0, 1, 2].map((n) => ({ foreignReachability: reach("blocked", `f${n}`) })) },
+      { label: "telegram-blocked", approved: true, snapshots: [0, 1, 2].map((n) => ({ telegramReachability: reach("failed", `t${n}`) })) },
+      { label: "both-blocked", approved: true, snapshots: [0, 1, 2, 3].map((n) => ({ foreignReachability: reach("partial", `f${n}`), telegramReachability: { reachable: false, checkedAt: `t${n}` } })) },
+      { label: "same-checked-at", approved: true, snapshots: [0, 1, 2].map(() => ({ foreignReachability: reach("blocked", "same") })) },
+      { label: "two-snapshots", approved: true, snapshots: [0, 1].map((n) => ({ foreignReachability: reach("blocked", `f${n}`) })) },
+      { label: "recovered-newest", approved: true, snapshots: [reach("healthy", "f9"), ...[0, 1, 2].map((n) => reach("blocked", `f${n}`))].map((value) => ({ foreignReachability: value })) },
+      { label: "older-blocked-only", approved: true, snapshots: [{}, ...[0, 1, 2].map((n) => ({ foreignReachability: reach("blocked", `f${n}`) }))] },
+      { label: "null-field", approved: true, snapshots: [0, 1, 2].map(() => ({ foreignReachability: null })) },
+      { label: "unapproved", approved: false, snapshots: [0, 1, 2].map((n) => ({ foreignReachability: reach("blocked", `f${n}`) })) },
+      { label: "released", approved: true, released: true, snapshots: [0, 1, 2].map((n) => ({ foreignReachability: reach("blocked", `f${n}`) })) },
+      { label: "no-snapshots", approved: true, snapshots: [] },
+    ];
+    const ids: string[] = [];
+    for (const [index, fixture] of fixtures.entries()) {
+      const [router] = await db
+        .insert(schema.routers)
+        .values({
+          deviceIdentifier: `blocked-${fixture.label}-${crypto.randomUUID()}`,
+          status: "active",
+          importState: "approved",
+          approvedAt: fixture.approved ? new Date() : null,
+          releasedAt: fixture.released ? new Date() : null,
+        })
+        .returning();
+      ids.push(router!.id);
+      // Inserted oldest first; the first entry of `snapshots` is the newest.
+      const ordered = [...fixture.snapshots].reverse();
+      for (const [n, payload] of ordered.entries()) {
+        await db.insert(schema.routerInventorySnapshots).values({
+          routerId: router!.id,
+          // The rest of a real inventory, which the batched read leaves out.
+          payload: { hostname: `h${index}`, packageVersions: { big: "x".repeat(3000) }, ...payload } as never,
+          createdAt: new Date(now - (60 - index) * minute + n * 1000),
+        });
+      }
+    }
+
+    const at = new Date(now);
+    const selectOnly = { select: db.select.bind(db) } as unknown as Parameters<typeof detectBlockedReachabilityTriggers>[0];
+    const [batched, perRouter] = [
+      await detectBlockedReachabilityTriggers(db as never, at),
+      await detectBlockedReachabilityTriggers(selectOnly, at),
+    ];
+    expect(batched).toEqual(perRouter);
+    const fired = batched
+      .filter((trigger) => ids.includes(trigger.routerId))
+      .map((trigger) => `${fixtures[ids.indexOf(trigger.routerId)]!.label}:${trigger.trigger}`);
+    expect(fired).toEqual([
+      "foreign-blocked:foreign_reachability_blocked",
+      "telegram-blocked:telegram_blocked",
+      "both-blocked:foreign_reachability_blocked",
+      "both-blocked:telegram_blocked",
+    ]);
+  });
+
+  it("shared fleet snapshot: the monitors get exactly the snapshot a direct load computes, read once per window", async () => {
+    resetSharedFleetMonitoringSnapshotForTest();
+    resetFleetPolicyConfigSummaryCacheForTest();
+    // Earlier cases stored minimal payloads; a real inventory always has these.
+    await db.execute(sql`update vectra_router_inventory_snapshot set payload = payload || '{"packageVersions":{},"binaryVersions":{}}'::jsonb where not payload ? 'packageVersions'`);
+    const at = new Date(now);
+    const direct = await loadFleetMonitoringSnapshot(db, at);
+    const first = loadSharedFleetMonitoringSnapshot(db, at, 10_000);
+    // The second monitor, 15 s later, joins the same read.
+    const second = loadSharedFleetMonitoringSnapshot(db, new Date(now + 15_000), 20_000);
+    expect(second).toBe(first);
+    const shared = await first;
+    expect(shared).toEqual(direct);
+    expect(buildFleetPushCandidates(shared)).toEqual(buildFleetPushCandidates(direct));
+    // A minute later is a new tick and a new read.
+    const next = loadSharedFleetMonitoringSnapshot(db, new Date(now + 60_000), 10_000);
+    expect(next).not.toBe(first);
+    await next;
+    resetSharedFleetMonitoringSnapshotForTest();
+  });
+  it("history retention: resolved rescue cases past the window and the newest 50, unless a job references them", async () => {
+    const router = await newRouter("rescue-retention");
+    const other = await newRouter("rescue-retention-other");
+    const cases: string[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      const startedAt = daysAgo(41 + i);
+      const [row] = await db
+        .insert(schema.rescueCases)
+        .values({
+          routerId: router.id,
+          trigger: "direct_mode",
+          // One active (escalated) case is never touched, however old.
+          state: i === 57 ? "escalated" : "resolved",
+          startedAt,
+          resolvedAt: i === 57 ? null : new Date(startedAt.getTime() + DAY),
+        })
+        .returning();
+      cases.push(row!.id);
+    }
+    // Recent resolved cases elsewhere, and old ones within the newest 50.
+    await db.insert(schema.rescueCases).values([
+      { routerId: other.id, trigger: "stale_check_in", state: "resolved", startedAt: daysAgo(80), resolvedAt: daysAgo(79) },
+      { routerId: other.id, trigger: "stale_check_in", state: "resolved", startedAt: daysAgo(5), resolvedAt: daysAgo(4) },
+    ]);
+    // Referenced by a job: its payload (run_rescue_repair) or its dedupe key.
+    await db.insert(schema.jobs).values([
+      { routerId: router.id, type: "run_rescue_repair", state: "queued", payload: { caseId: cases[52]!, actions: [] } },
+      { routerId: router.id, type: "collect_router_logs", state: "succeeded", dedupeKey: `auto_rescue_logs:${cases[55]!}`, createdAt: daysAgo(90) },
+    ]);
+    const expected = cases.filter((_, i) => i >= 50 && ![52, 55, 57].includes(i));
+
+    const options = { enabled: true, retentionDays: 30, batchSize: 3, pauseMs: 0, now: new Date(now) } as const;
+    const counted = await runHistoryRetentionTick(db, { ...options, dryRun: false, rescueCaseDryRun: true });
+    expect(counted.rescueCaseDryRun).toBe(true);
+    expect(counted.counts.rescue_case).toBe(expected.length);
+    const all = async () =>
+      new Set(((await db.execute(sql`select id from vectra_rescue_case where router_id in (${router.id}, ${other.id})`)) as unknown as Array<{ id: string }>).map((row) => row.id));
+    expect((await all()).size).toBe(62);
+
+    const pruned = await runHistoryRetentionTick(db, { ...options, dryRun: false, rescueCaseDryRun: false });
+    expect(pruned.counts.rescue_case).toBe(expected.length);
+    const remaining = await all();
+    expect(remaining.size).toBe(62 - expected.length);
+    for (const id of expected) {
+      expect(remaining.has(id)).toBe(false);
+    }
+    for (const i of [0, 49, 52, 55, 57]) {
+      expect(remaining.has(cases[i]!)).toBe(true);
+    }
+  });
+  it("monitor decisions: the new SQL paths and the original select paths reach the same verdicts", async () => {
+    // Three routers whose own verify runs saw dead.example fail while
+    // alive.example answered on the same router: the ledger condemns it.
+    const twoNodes = (password: string) =>
+      passwallDesiredConfigSchema.parse({
+        basicSettings: { main: { mainSwitch: true, selectedNodeId: "myshunt" }, dns: {}, log: {}, maintenance: {} },
+        nodes: [
+          { id: "node-dead", label: "dead", protocol: "vless", address: "dead.example", port: 443, password },
+          { id: "node-alive", label: "alive", protocol: "vless", address: "alive.example", port: 443, password },
+        ],
+        subscriptions: { items: [] },
+        appUpdate: {},
+        ruleManage: { geoipUrl: "https://example.test/geoip.dat", geositeUrl: "https://example.test/geosite.dat" },
+      });
+    for (let i = 0; i < 3; i += 1) {
+      const router = await newRouter(`decisions-${i}`);
+      await db.update(schema.routers).set({ lastSeenAt: new Date(now - 60_000), engineMode: "passwall" }).where(sql`id = ${router.id}`);
+      await newRevision(router.id, 1, { secret: twoNodes(`pw-${i}`), createdAt: daysAgo(2) });
+      await db.insert(schema.routerInventorySnapshots).values({
+        routerId: router.id,
+        payload: { hostname: `d${i}`, packageVersions: {}, binaryVersions: {}, telegramReachability: { status: "healthy", checkedAt: "x" } } as never,
+      });
+      const [job] = await db
+        .insert(schema.jobs)
+        .values({ routerId: router.id, type: "verify_passwall_routes", state: "succeeded", createdAt: daysAgo(1) })
+        .returning();
+      await db.insert(schema.jobResults).values([
+        { jobId: job!.id, routerId: router.id, status: "accepted", payload: { accepted: true }, reportedAt: new Date(daysAgo(1).getTime() + 1000) },
+        {
+          jobId: job!.id,
+          routerId: router.id,
+          status: "success",
+          payload: {
+            routeVerification: {
+              slots: [
+                { slot: "WorldProxy", boundNodeId: "node-dead", smokeOk: false, statusCode: 0 },
+                { slot: "Special", boundNodeId: "node-alive", smokeOk: true, statusCode: 204 },
+              ],
+            },
+          },
+          reportedAt: new Date(daysAgo(1).getTime() + 2000),
+        },
+      ]);
+    }
+    const selectOnly = { select: db.select.bind(db) } as never;
+    const at = new Date(now);
+
+    // Node-health ledger (check-in directive input).
+    resetFleetNodeHealthCache();
+    resetFleetPolicyConfigSummaryCacheForTest();
+    const ledger = await getFleetPolicyContext(db, now);
+    resetFleetNodeHealthCache();
+    resetFleetPolicyConfigSummaryCacheForTest();
+    const ledgerBySelect = await getFleetPolicyContext(selectOnly, now);
+    resetFleetNodeHealthCache();
+    expect(ledger.nodeHealth.unhealthyHosts).toContain("dead.example:443");
+    expect(ledger.nodeHealth.unhealthyHosts).toEqual(ledgerBySelect.nodeHealth.unhealthyHosts);
+    expect([...ledger.configByRouter.keys()].sort()).toEqual([...ledgerBySelect.configByRouter.keys()].sort());
+
+    // Fleet monitoring: alerts (auto-rescue's and push's input) and per-router compliance.
+    resetFleetPolicyConfigSummaryCacheForTest();
+    const fleet = await loadFleetMonitoringSnapshot(db, at);
+    resetFleetPolicyConfigSummaryCacheForTest();
+    const fleetBySelect = await loadFleetMonitoringSnapshot(selectOnly, at);
+    expect(fleet.alerts).toEqual(fleetBySelect.alerts);
+    expect(fleet.routers.map((router) => [router.id, router.fleetPolicyCompliance])).toEqual(
+      fleetBySelect.routers.map((router) => [router.id, router.fleetPolicyCompliance]),
+    );
+    expect(buildFleetPushCandidates(fleet)).toEqual(buildFleetPushCandidates(fleetBySelect));
+
+    // Route-health verifier: which routers are due a probe.
+    expect(await loadRouteHealthCandidates(db as never)).toEqual(await loadRouteHealthCandidates(selectOnly));
+  });
+});

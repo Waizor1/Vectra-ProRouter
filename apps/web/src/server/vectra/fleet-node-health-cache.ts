@@ -1,8 +1,6 @@
 import { routers } from "@vectra/db";
 import { desc } from "drizzle-orm";
 
-import type { PasswallDesiredConfig } from "@vectra/contracts";
-
 import type { db as appDb } from "~/server/db";
 
 import {
@@ -14,7 +12,8 @@ import {
   type FleetRoutePolicyOptions,
 } from "./fleet-route-policy";
 import {
-  loadLatestFleetPolicyConfigRows,
+  type FleetPolicyConfigSummary,
+  loadLatestFleetPolicyConfigSummaries,
   loadLatestSnapshots,
 } from "./fleet-monitoring-data";
 import {
@@ -55,13 +54,23 @@ const EMPTY_HEALTH: FleetNodeHealth = { unhealthyHosts: [], index: new Set() };
  */
 type FleetPolicyContext = {
   nodeHealth: FleetNodeHealth;
-  configByRouter: Map<string, PasswallDesiredConfig>;
+  configByRouter: Map<string, FleetPolicyConfigSummary>;
+  /**
+   * Set only when the first build after a start did not finish within
+   * FIRST_BUILD_WAIT_MS: the ledger is not known yet, as opposed to built and
+   * empty. The check-in sends no route-policy directive then — a directive
+   * from an empty ledger cannot tell a dead host from a live one and could
+   * pin the router to one.
+   */
+  unavailable?: true;
 };
 
 const EMPTY: FleetPolicyContext = {
   nodeHealth: EMPTY_HEALTH,
   configByRouter: new Map(),
 };
+
+const UNAVAILABLE: FleetPolicyContext = { ...EMPTY, unavailable: true };
 
 let cached: { value: FleetPolicyContext; expiresAt: number } | null = null;
 let inFlight: Promise<FleetPolicyContext> | null = null;
@@ -76,7 +85,7 @@ async function rebuild(
   now: number,
 ): Promise<FleetPolicyContext> {
   const routerRows = await database
-    .select()
+    .select({ id: routers.id })
     .from(routers)
     .orderBy(desc(routers.lastSeenAt));
   const routerIds = routerRows.map((router) => router.id);
@@ -85,12 +94,14 @@ async function rebuild(
   }
 
   const [snapshots, policyConfigRows, routeVerifications] = await Promise.all([
-    loadLatestSnapshots(database, routerIds),
-    loadLatestFleetPolicyConfigRows(database, routerIds),
+    loadLatestSnapshots(database, routerIds, { monitoringPayload: true }),
+    // Incremental: only revisions new since the last rebuild are read and
+    // parsed; the rest come from the per-revision summary cache.
+    loadLatestFleetPolicyConfigSummaries(database, routerIds),
     loadLatestRouteVerifications(database, routerIds),
   ]);
 
-  const configByRouter = new Map<string, PasswallDesiredConfig>();
+  const configByRouter = new Map<string, FleetPolicyConfigSummary>();
   for (const routerId of routerIds) {
     const config = policyConfigRows.get(routerId)?.config;
     if (config) {
@@ -153,20 +164,20 @@ async function rebuild(
 }
 
 /**
- * Never throws and never blocks a check-in on a bad read: a failure here means
- * "no health opinion", which is exactly the pre-existing behaviour.
+ * How long a check-in waits for the very first build after a start. Past it
+ * the check-in proceeds without the ledger (UNAVAILABLE: no health opinion
+ * and no route-policy directive) and the build finishes in the background
+ * for the check-ins after it.
  */
-export async function getFleetPolicyContext(
+export const FIRST_BUILD_WAIT_MS = 2_000;
+
+function startRebuild(
   database: DatabaseClient,
-  now = Date.now(),
+  now: number,
 ): Promise<FleetPolicyContext> {
-  if (cached && cached.expiresAt > now) {
-    return cached.value;
-  }
   if (inFlight) {
     return inFlight;
   }
-
   inFlight = rebuild(database, now)
     .then((value) => {
       cached = { value, expiresAt: Date.now() + TTL_MS };
@@ -176,8 +187,41 @@ export async function getFleetPolicyContext(
     .finally(() => {
       inFlight = null;
     });
-
   return inFlight;
+}
+
+/**
+ * Never throws and never blocks a check-in on a bad read: a failure here means
+ * "no health opinion", which is exactly the pre-existing behaviour.
+ *
+ * Stale-while-revalidate: once anything has been built, a check-in gets the
+ * last value at once and an expired one is rebuilt in the background
+ * (single-flight). Every five minutes one check-in used to wait for the whole
+ * fleet read — the p99 tail of the check-in. Only the first build after a
+ * start is awaited, and at most FIRST_BUILD_WAIT_MS.
+ */
+export async function getFleetPolicyContext(
+  database: DatabaseClient,
+  now = Date.now(),
+): Promise<FleetPolicyContext> {
+  if (cached) {
+    if (cached.expiresAt <= now) {
+      void startRebuild(database, now);
+    }
+    return cached.value;
+  }
+
+  const build = startRebuild(database, now);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const fallback = new Promise<FleetPolicyContext>((resolve) => {
+    timer = setTimeout(() => resolve(UNAVAILABLE), FIRST_BUILD_WAIT_MS);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([build, fallback]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function fleetRoutePolicyOptions(

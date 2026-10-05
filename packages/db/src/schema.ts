@@ -370,6 +370,12 @@ export const jobs = createTable(
   (table) => [
     index("vectra_job_router_state_idx").on(table.routerId, table.state),
     uniqueIndex("vectra_job_dedupe_idx").on(table.dedupeKey),
+    index("vectra_job_created_idx").on(table.createdAt),
+    index("vectra_job_router_type_created_idx").on(
+      table.routerId,
+      table.type,
+      table.createdAt,
+    ),
   ],
 );
 
@@ -663,6 +669,7 @@ export const eventLog = createTable(
   },
   (table) => [
     index("vectra_event_log_router_idx").on(table.routerId),
+    index("vectra_event_log_created_idx").on(table.createdAt),
     index("vectra_event_log_fleet_recent_idx")
       .on(table.createdAt.desc())
       .where(sql`${table.routerId} is null`),
