@@ -36,10 +36,11 @@ export function createStaticDb(
   options: { routersTable?: unknown } = {},
 ) {
   const queries: StaticDbQuery[] = [];
-  const thenable = (rows: () => unknown[]) => ({
-    then: (ok: (value: unknown[]) => unknown, err?: (error: unknown) => unknown) =>
-      Promise.resolve().then(rows).then(ok, err),
-  });
+  // A `then` that makes a query builder awaitable, as Drizzle's are.
+  const thenOf =
+    (rows: () => unknown[]) =>
+    (ok: (value: unknown[]) => unknown, err?: (error: unknown) => unknown) =>
+      Promise.resolve().then(rows).then(ok, err);
 
   const db = {
     select(fields?: Record<string, unknown>) {
@@ -61,7 +62,7 @@ export function createStaticDb(
             },
             for: () => chain,
             limit: () => Promise.resolve().then(rows),
-            ...thenable(rows),
+            then: thenOf(rows),
           };
           return chain;
         },
@@ -73,7 +74,7 @@ export function createStaticDb(
           const statement = {
             onConflictDoNothing: () => statement,
             returning: () => Promise.resolve([values]),
-            ...thenable(() => []),
+            then: thenOf(() => []),
           };
           return statement;
         },
@@ -95,7 +96,7 @@ export function createStaticDb(
                       ]
                     : [set],
                 ),
-              ...thenable(() => []),
+              then: thenOf(() => []),
             }),
           };
         },
