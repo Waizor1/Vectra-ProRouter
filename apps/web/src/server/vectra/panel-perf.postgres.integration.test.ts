@@ -208,13 +208,35 @@ describe.skipIf(!port)("panel performance SQL on a real PostgreSQL", () => {
       { routerId: router.id, type: "t", message: "old-3", createdAt: old },
       { routerId: router.id, type: "t", message: "recent", createdAt: recent },
     ]);
-    const job = async (values: Partial<typeof schema.jobs.$inferInsert>) =>
-      (await db.insert(schema.jobs).values({ routerId: router.id, type: "refresh_subscriptions", createdAt: old, ...values }).returning())[0]!;
-    const oldDone = await job({ state: "succeeded", completedAt: old });
-    const oldFailed = await job({ state: "failed", completedAt: old });
-    const oldKeyed = await job({ state: "succeeded", completedAt: old, dedupeKey: `partner-action:${crypto.randomUUID()}` });
-    const oldRunning = await job({ state: "running" });
-    const finishedRecently = await job({ state: "succeeded", completedAt: recent });
+    const job = async (values: Partial<typeof schema.jobs.$inferInsert>, routerId = router.id) =>
+      (await db.insert(schema.jobs).values({ routerId, type: "refresh_subscriptions", createdAt: old, ...values }).returning())[0]!;
+    const at = (days: number, seconds = 0) => new Date(daysAgo(days).getTime() + seconds * 1000);
+    const oldDone = await job({ state: "succeeded", completedAt: old, createdAt: at(40, 1) });
+    const oldFailed = await job({ state: "failed", completedAt: old, createdAt: at(40, 2) });
+    const oldKeyed = await job({ state: "succeeded", completedAt: old, createdAt: at(40, 3), dedupeKey: `partner-action:${crypto.randomUUID()}` });
+    const oldRunning = await job({ state: "running", createdAt: at(40, 4) });
+    const finishedRecently = await job({ state: "succeeded", completedAt: recent, createdAt: at(40, 5) });
+    // The newest job of its type on this router stays, however old.
+    const newestOfType = await job({ type: "verify_passwall_routes", state: "succeeded", completedAt: old, createdAt: at(45) });
+    const olderOfThatType = await job({ type: "verify_passwall_routes", state: "succeeded", completedAt: old, createdAt: at(50) });
+    // Still referenced by an onboarding run (cancelled: its dedupe key was cleared).
+    const onboardingJob = await job({ type: "apply_passwall_config", state: "cancelled", completedAt: at(60), createdAt: at(60) });
+    await job({ type: "apply_passwall_config", state: "succeeded", completedAt: at(1), createdAt: at(1) });
+    const [profile] = await db.insert(schema.routerOnboardingProfiles).values({ routerId: router.id }).returning();
+    await db.insert(schema.routerOnboardingRuns).values({ routerId: router.id, profileId: profile!.id, lastJobId: onboardingJob.id });
+
+    // A router with an incident open for 40 days and an active rescue case
+    // started 40 days ago: the reconnects and repairs the caps count stay.
+    const capped = await newRouter("history-capped");
+    await db.insert(schema.healthIncidents).values({ routerId: capped.id, type: "proxy_outage", state: "open", reason: "r", openedAt: at(40) });
+    const beforeIncident = await job({ type: "reconnect", state: "succeeded", completedAt: at(41), createdAt: at(41) }, capped.id);
+    const counted = await job({ type: "reconnect", state: "succeeded", completedAt: at(39), createdAt: at(39) }, capped.id);
+    await job({ type: "reconnect", state: "failed", completedAt: at(35), createdAt: at(35) }, capped.id);
+    const cased = await newRouter("history-case");
+    await db.insert(schema.rescueCases).values({ routerId: cased.id, trigger: "direct_mode", state: "escalated", startedAt: at(38) });
+    const repairBeforeCase = await job({ type: "run_rescue_repair", state: "failed", completedAt: at(39), createdAt: at(39) }, cased.id);
+    const repairCounted = await job({ type: "run_rescue_repair", state: "failed", completedAt: at(37), createdAt: at(37) }, cased.id);
+    await job({ type: "run_rescue_repair", state: "failed", completedAt: at(36), createdAt: at(36) }, cased.id);
     for (const parent of [oldDone, oldFailed, oldKeyed, oldRunning, finishedRecently]) {
       await db.insert(schema.jobResults).values([
         { jobId: parent.id, routerId: router.id, status: "accepted", reportedAt: old },
@@ -233,7 +255,7 @@ describe.skipIf(!port)("panel performance SQL on a real PostgreSQL", () => {
 
     const options = { enabled: true, retentionDays: 30, batchSize: 2, pauseMs: 0, now: new Date(now) } as const;
     const dry = await runHistoryRetentionTick(db, { ...options, dryRun: true });
-    expect(dry.counts.job).toBeGreaterThanOrEqual(2);
+    expect(dry.counts.job).toBe(5);
     const before = await db.execute(sql`select count(*)::int as count from vectra_event_log where router_id = ${router.id}`);
     expect((before as unknown as Array<{ count: number }>)[0]?.count).toBe(4);
 
@@ -242,10 +264,23 @@ describe.skipIf(!port)("panel performance SQL on a real PostgreSQL", () => {
 
     const rows = async (query: ReturnType<typeof sql>) => (await db.execute(query)) as unknown as Array<Record<string, unknown>>;
     expect((await rows(sql`select message from vectra_event_log where router_id = ${router.id}`)).map((row) => row.message)).toEqual(["recent"]);
-    const jobIds = (await rows(sql`select id from vectra_job where router_id = ${router.id}`)).map((row) => row.id).sort();
-    expect(jobIds).toEqual([oldKeyed.id, oldRunning.id, finishedRecently.id].sort());
+    const deletedJobs = new Set(
+      [oldDone, oldFailed, olderOfThatType, beforeIncident, repairBeforeCase].map((row) => row.id),
+    );
+    const remainingJobs = new Set(
+      (await rows(sql`select id from vectra_job where router_id in (${router.id}, ${capped.id}, ${cased.id})`)).map((row) => row.id),
+    );
+    for (const kept of [oldKeyed, oldRunning, finishedRecently, newestOfType, onboardingJob, counted, repairCounted]) {
+      expect(remainingJobs.has(kept.id)).toBe(true);
+    }
+    for (const id of deletedJobs) {
+      expect(remainingJobs.has(id)).toBe(false);
+    }
+    expect(result.counts.job).toBe(deletedJobs.size);
+    const [run] = await rows(sql`select last_job_id from vectra_router_onboarding_run where router_id = ${router.id}`);
+    expect(run?.last_job_id).toBe(onboardingJob.id);
     const resultJobIds = new Set((await rows(sql`select job_id from vectra_job_result where router_id = ${router.id}`)).map((row) => row.job_id));
-    expect([...resultJobIds].sort()).toEqual(jobIds);
+    expect([...resultJobIds].sort()).toEqual([oldKeyed.id, oldRunning.id, finishedRecently.id].sort());
     expect((await rows(sql`select state, resolved_at from vectra_health_incident where router_id = ${router.id}`)).length).toBe(2);
     expect((await rows(sql`select id from vectra_operator_push_alert where router_id = ${router.id} and resolved_at is null`)).length).toBe(1);
     expect((await rows(sql`select id from vectra_operator_push_alert where router_id = ${router.id}`)).length).toBe(1);

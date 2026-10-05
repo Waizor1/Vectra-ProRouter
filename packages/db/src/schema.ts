@@ -371,6 +371,11 @@ export const jobs = createTable(
     index("vectra_job_router_state_idx").on(table.routerId, table.state),
     uniqueIndex("vectra_job_dedupe_idx").on(table.dedupeKey),
     index("vectra_job_created_idx").on(table.createdAt),
+    index("vectra_job_router_type_created_idx").on(
+      table.routerId,
+      table.type,
+      table.createdAt,
+    ),
   ],
 );
 
