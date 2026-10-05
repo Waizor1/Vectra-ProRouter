@@ -582,11 +582,22 @@ passwall)
 	printf '\012\030\012\007PRIVATE\022\015\010\002\022\011localhost' > /usr/share/v2ray/geosite.dat
 	echo "not the provider's geoip" > /usr/share/v2ray/geoip.dat
 	pw_geo="$(md5sum /usr/share/v2ray/geosite.dat /usr/share/v2ray/geoip.dat)"
+	# PassWall2's own dnsmasq, as app.sh runs it (ln_run: a link named
+	# dnsmasq, its configuration under /tmp/etc/passwall2, port 11400). The
+	# swap stops and kills only the system dnsmasq, never this one.
+	mkdir -p /tmp/etc/passwall2/bin /tmp/etc/passwall2/acl/default
+	ln -s /usr/sbin/dnsmasq /tmp/etc/passwall2/bin/dnsmasq
+	printf 'port=11400\nlisten-address=127.0.0.1\nbind-interfaces\nno-resolv\nno-hosts\naddress=/pw.test/10.9.9.9\n' > /tmp/etc/passwall2/acl/default/dns_default_direct.conf
+	/tmp/etc/passwall2/bin/dnsmasq -C /tmp/etc/passwall2/acl/default/dns_default_direct.conf -x /tmp/etc/passwall2/dnsmasq.pid
+	wait_for 5 test -s /tmp/etc/passwall2/dnsmasq.pid || die "PassWall2's dnsmasq stand-in did not start"
+	pw_dns="$(cat /tmp/etc/passwall2/dnsmasq.pid)"
 	snapshot /tmp/before
 	installer
 	refused passwall_needs_yes "--yes"
 	installer --yes
 	check passwall_exit "with --yes: exit 0, got $INSTALL_RC" test "$INSTALL_RC" = 0
+	check passwall_own_dnsmasq "PassWall2's own dnsmasq (pid $pw_dns, :11400) still runs after the swap" \
+		sh -c "case \"\$(cut -d ' ' -f 3 /proc/$pw_dns/stat 2> /dev/null)\" in S | R) ;; *) exit 1 ;; esac && netstat -lnu | grep -q '127.0.0.1:11400 '"
 	assert_installed_and_on passwall
 	check passwall_xray_upgraded "the older xray-core was upgraded to Vectra's" test "$(version_of xray-core)" = "26.3.27-r1"
 	check passwall_geo_own "PassWall's geo data lacks the provider's categories: Vectra reads its own" \
@@ -807,7 +818,11 @@ dnsmasq-rollback)
 	assert_old_dnsmasq_back rollback
 	check rollback_offline "the way back downloaded nothing ($(wc -l < /tmp/offline.calls 2> /dev/null || echo 0) attempts after the swap began)" \
 		sh -c '[ -s /tmp/wget.calls ] && [ ! -s /tmp/offline.calls ]'
-	check rollback_saved_gone "what was kept for the way back is gone once it is not needed" test ! -e /tmp/vectra-dnsmasq-saved
+	check rollback_saved_flash "the way back was kept on flash, where a reboot does not lose it" said "сохранён для отката: /root/vectra-dnsmasq-saved"
+	check rollback_saved_gone "what was kept for the way back is gone once it is not needed" \
+		sh -c '[ ! -e /tmp/vectra-dnsmasq-saved ] && [ ! -e /root/vectra-dnsmasq-saved ]'
+	down="$(sed -n 's/.*без DNS было \([0-9]*\) с.*/\1/p' /tmp/installer.out)"
+	check rollback_bounded "DNS was down ${down:-?} s in all, within the installer's 90 s" sh -c "[ -n '$down' ] && [ '$down' -le 90 ]"
 	;;
 
 dnsmasq-rollback-files)
@@ -820,7 +835,7 @@ dnsmasq-rollback-files)
 	cat > /bin/opkg <<-'EOF'
 		#!/bin/sh
 		case "$1 $2" in
-		"install /tmp/vectra-dnsmasq-saved/dnsmasq_"*) echo "stand: opkg refuses to put dnsmasq back"; exit 255 ;;
+		"install /root/vectra-dnsmasq-saved/dnsmasq_"* | "install /tmp/vectra-dnsmasq-saved/dnsmasq_"*) echo "stand: opkg refuses to put dnsmasq back"; exit 255 ;;
 		esac
 		exec /bin/opkg.real "$@"
 	EOF
@@ -850,12 +865,59 @@ nojail)
 	assert_installed_and_on nojail
 	;;
 
+dnsmasq-dhcpv6)
+	# A router whose dnsmasq is the dnsmasq-dhcpv6 package (it has
+	# /usr/sbin/dnsmasq too, and opkg's "installed dnsmasq" does not see it).
+	# First a dnsmasq-full that never runs: dnsmasq-dhcpv6 back, answering,
+	# with no network. Then OpenWrt's: swapped, Vectra installed.
+	feed_retry opkg update || die "OpenWrt's feeds did not answer"
+	opkg remove dnsmasq > /dev/null 2>&1
+	feed_retry opkg install dnsmasq-dhcpv6 || die "dnsmasq-dhcpv6 did not install"
+	rm -f /etc/config/dhcp-opkg
+	/etc/init.d/dnsmasq enable
+	/etc/init.d/dnsmasq restart
+	wait_for 15 dns_ok || die "dnsmasq-dhcpv6 never answered"
+	cp /etc/config/dhcp /tmp/dhcp.before
+	v6="$(version_of dnsmasq-dhcpv6)"
+	info "dnsmasq-dhcpv6 $v6 runs the router's DNS"
+	offline_after_swap
+	export VECTRA_FEED="${FEED_BASE}/broken"
+	installer
+	unset VECTRA_FEED
+	check v6_rollback_exit "a dnsmasq-full that never runs: exit 1, got $INSTALL_RC" test "$INSTALL_RC" = 1
+	check v6_rollback_says "says dnsmasq-dhcpv6 is back" said "прежний dnsmasq-dhcpv6 возвращён"
+	check v6_back "dnsmasq-dhcpv6 $(version_of dnsmasq-dhcpv6) back (was $v6), enabled, answering" \
+		sh -c "[ \"\$(opkg list-installed dnsmasq-dhcpv6 | sed -n 's/^dnsmasq-dhcpv6 - //p')\" = '$v6' ] && ! opkg list-installed dnsmasq-full | grep -q . && /etc/init.d/dnsmasq enabled && pidof dnsmasq && { [ \"\${DNS:-answers}\" = runs ] || nslookup localhost 127.0.0.1 | grep -q '^Name:'; }"
+	check v6_offline "the way back downloaded nothing ($(wc -l < /tmp/offline.calls 2> /dev/null || echo 0) attempts)" \
+		sh -c '[ -s /tmp/wget.calls ] && [ ! -s /tmp/offline.calls ]'
+	rm -f /usr/bin/wget /tmp/offline
+	ln -s "$real" /usr/bin/wget
+	installer
+	check v6_exit "OpenWrt's dnsmasq-full: exit 0, got $INSTALL_RC" test "$INSTALL_RC" = 0
+	check v6_replaced "dnsmasq-dhcpv6 replaced by dnsmasq-full" not installed dnsmasq-dhcpv6
+	assert_installed_and_on v6
+	;;
+
+dnsmasq-disabled)
+	# DNS and DHCP done by another program (AdGuard Home and the like): the
+	# owner stopped dnsmasq and took it out of the boot. Refused before any
+	# change; dnsmasq stays off.
+	/etc/init.d/dnsmasq stop
+	/etc/init.d/dnsmasq disable
+	snapshot /tmp/before
+	installer
+	refused disabled "выключен"
+	check disabled_code "the code says why: DNSMASQ_NOT_ACTIVE" said "DNSMASQ_NOT_ACTIVE"
+	check disabled_stays_off "dnsmasq still stopped and not enabled" sh -c '! /etc/init.d/dnsmasq enabled && ! /etc/init.d/dnsmasq running && ! pidof dnsmasq'
+	;;
+
 dnsmasq-stale)
-	# A dnsmasq left holding port 53 while dnsmasq-full starts — one that
-	# outlived procd's stop, frozen, answering nobody: every dnsmasq started
-	# after it dies with "Address in use" (the installer of 0.7.0-r18 and before
-	# then could not put the old one back either: DNSMASQ_FULL_BROKEN). It is
-	# found and killed, and dnsmasq-full answers.
+	# A system dnsmasq left holding port 53 while dnsmasq-full starts — one
+	# that outlived procd's stop (procd thinks it stopped), frozen, answering
+	# nobody: every dnsmasq started after it dies with "Address in use" (the
+	# installer of 0.7.0-r18 and before then could not put the old one back
+	# either: DNSMASQ_FULL_BROKEN). It is found and killed, and dnsmasq-full
+	# answers.
 	mkdir -p /tmp/stale
 	cp /usr/sbin/dnsmasq /tmp/stale/dnsmasq
 	mv /bin/opkg /bin/opkg.real
@@ -866,7 +928,9 @@ dnsmasq-stale)
 		case "$1 $2" in
 		"install /tmp/vectra-install/pkgs/dnsmasq-full_"*)
 			if [ ! -e /tmp/stale.pid ]; then
-				/tmp/stale/dnsmasq --conf-file=/dev/null --no-resolv --no-hosts --pid-file=/tmp/stale.pid
+				/etc/init.d/dnsmasq stop
+				sleep 1
+				/tmp/stale/dnsmasq -C "$(ls /var/etc/dnsmasq.conf.* | head -n 1)" -x /tmp/stale.pid
 				sleep 1
 				kill -STOP "$(cat /tmp/stale.pid)"
 			fi

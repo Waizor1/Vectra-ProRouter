@@ -43,6 +43,11 @@
 #                     found and killed, installed
 #   nojail            a router without procd's jail (no procd-ujail): its
 #                     dnsmasq, unjailed, is found, swapped, installed
+#   dnsmasq-dhcpv6    the router's dnsmasq is the dnsmasq-dhcpv6 package: put
+#                     back offline when dnsmasq-full does not run, swapped
+#                     when it does
+#   dnsmasq-disabled  dnsmasq stopped and disabled (another DNS/DHCP server):
+#                     refused, unchanged, still off
 #   feed-outage       downloads.openwrt.org away for a moment at each step
 #                     that needs it: tried again, installed
 #   mirror            downloads.openwrt.org unreachable: through a mirror
@@ -72,7 +77,7 @@ PARALLEL="${INSTALL_PARALLEL:-4}"
 # busy loops inside each router while it runs: a rare race shows itself.
 REPEAT="${INSTALL_REPEAT:-1}"
 STRESS="${INSTALL_STRESS:-0}"
-ALL=(lifecycle geodata-links check standby standby-upgrade passwall passwall-upgrade passwall-retire dnsmasq-rollback dnsmasq-rollback-files dnsmasq-stale nojail feed-outage mirror
+ALL=(lifecycle geodata-links check standby standby-upgrade passwall passwall-upgrade passwall-retire dnsmasq-rollback dnsmasq-rollback-files dnsmasq-stale nojail dnsmasq-dhcpv6 dnsmasq-disabled feed-outage mirror
 	refuse-arch refuse-apk refuse-release refuse-memory refuse-storage
 	refuse-conflict refuse-fleet refuse-agent-old refuse-signature refuse-feed-down check-json)
 

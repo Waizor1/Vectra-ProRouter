@@ -64,13 +64,23 @@ Nothing changes until every check has passed:
    it reads the identity Vectra seals and never starts beside it); an older
    one is to be updated first. `--check` without `--standby` next to the
    agent says why, checks the rest as with it, and exits 1.
-6. **The feeds**: the Vectra feed's key goes to `/etc/opkg/keys/<id>` (baked
+6. **dnsmasq** (unless dnsmasq-full is there already): which package runs
+   it, `dnsmasq` or `dnsmasq-dhcpv6`. Another package, a binary no package
+   owns, or no dnsmasq at all is refused (DNSMASQ_UNKNOWN_PACKAGE,
+   DNSMASQ_ABSENT). The owner must also run it, enabled and running. One
+   switched off (AdGuard Home or the like does DNS and DHCP) is refused
+   (DNSMASQ_NOT_ACTIVE): the installer never turns on what the owner turned
+   off.
+7. **The feeds**: the Vectra feed's key goes to `/etc/opkg/keys/<id>` (baked
    into the installer at signing), the feed to `customfeeds.conf`, then
    `opkg update` — a list that fails its signature is dropped by opkg and the
    install stops. If OpenWrt's own feeds do not answer (a broken ISP IPv6 is the
    usual cause), `distfeeds.conf` is pointed at a mirror for this run
-   (`<feed host>/openwrt-cache` by default) and put back at the end.
-7. **xray without its package** (PassWall2's, swapped in by hand): opkg
+   (`<feed host>/openwrt-cache` by default) and put back at the end. If they
+   all answered and a package is still missing (a kmod for a firmware built by
+   hand), that is said as it is: OPENWRT_PACKAGE_MISSING, not
+   OPENWRT_FEEDS_UNREACHABLE.
+8. **xray without its package** (PassWall2's, swapped in by hand): opkg
    would satisfy Vectra's `xray-core` dependency with another feed's version
    written over it — an older one on the router migrated on 2026-10-03. The
    `xray-core` of the binary's own version, from whichever feed has it, is
@@ -86,7 +96,7 @@ Nothing changes until every check has passed:
    over a binary swapped in by hand. Before raising the minimum in the feed,
    put an xray-core package of the fleet's binaries' version in it (the
    installer then pins it), or swap those binaries back to their package.
-8. **Storage**: Vectra's packages by the `Installed-Size` of the feed's own
+9. **Storage**: Vectra's packages by the `Installed-Size` of the feed's own
    index, OpenWrt's by download size × 3 (their index has none), plus 4 MB;
    an xray binary its package replaces counts as freed. What would be left is
    held against what Vectra's own update needs free (16 MB): less is a
@@ -94,36 +104,41 @@ Nothing changes until every check has passed:
 
 Then:
 
-9. **dnsmasq → dnsmasq-full** without a moment without DHCP/DNS: its libraries
-   first, both packages downloaded, the swap, `/etc/config/dhcp` restored, and
-   dnsmasq must do again what it did before (answer from `/etc/hosts`, or at
-   least run when another DNS server owns port 53). Before anything is
-   removed the old dnsmasq is kept twice, in `/tmp/vectra-dnsmasq-saved`: its
-   package, with what it depends on already installed, and its files with
-   opkg's record of them. Each dnsmasq is started afresh — none left holding
-   port 53 (a stale one is killed), found by name (`pidof`; BusyBox's
-   `pgrep -x dnsmasq` matches `argv[0]` and never finds it) — and given two
-   starts of 30 tries. Otherwise the old dnsmasq is put back with no network,
-   from its package or, when opkg cannot, from its files, and the install stops
-   (DNSMASQ_FULL_ROLLED_BACK). If even that does not answer, dnsmasq is run by
-   hand until a reboot and the run ends DNSMASQ_FULL_BROKEN, saying what to
-   run; the saved package stays. What dnsmasq looked like at each failed try
-   (processes, port 53, procd's view, logread) is in the install log.
-10. **The packages**: the planned xray-core first, then
+10. **dnsmasq → dnsmasq-full**, with the network as short a time as possible
+   without DNS: its libraries first, both packages downloaded, the swap,
+   `/etc/config/dhcp` restored, and dnsmasq must do again what it did before
+   (answer from `/etc/hosts`, or at least run when another DNS server owns
+   port 53). Before anything is removed, the old dnsmasq (or dnsmasq-dhcpv6)
+   is kept twice: its package, with what it depends on already installed, and
+   its files with opkg's record of them. They go to
+   `/root/vectra-dnsmasq-saved` when there is room on flash, so a reboot does
+   not lose them, and to `/tmp` otherwise. Only the system dnsmasq is stopped,
+   started and, if a leftover of it still holds port 53, killed: the instances
+   procd runs for `/etc/config/dhcp` (`-C /var/etc/dnsmasq.conf.<section>`),
+   found by name and command line. It is never `pgrep -x dnsmasq`, which
+   matches `argv[0]`, and never PassWall2's copies. From the old dnsmasq's
+   stop to a dnsmasq that answers, all stages share one deadline (90 s): a
+   third for dnsmasq-full, then the way back with no network, from the package
+   or, when opkg cannot, from the files (DNSMASQ_FULL_ROLLED_BACK, the install
+   stops). If even that does not answer, dnsmasq is run by hand until a reboot
+   and the run ends DNSMASQ_FULL_BROKEN, saying what to run; the saved copy
+   stays. What dnsmasq looked like at each failed try (processes, port 53,
+   procd's view, logread) is in the install log.
+11. **The packages**: the planned xray-core first, then
    `vectra-controller-pro`, which pulls `xray-core (>= minimum)`, the kmods
    and the rest; `vectra-geodata` and `vectra-reporter` are named too on a
    first install, not left to the package's Depends (that Depends is the pro
    feed's, and a feed or package without it left a router without its geo
    data). An update upgrades Vectra's own packages only: xray-core may be
    PassWall's, and its version is the Depends' business.
-11. **Geo data**: Vectra reads its own set, vectra-geodata's, in
+12. **Geo data**: Vectra reads its own set, vectra-geodata's, in
     `/usr/share/vectra-controller-pro/geo`, and never replaces a file in
     `/usr/share/v2ray` (PassWall2's packages'; only links to its own set for
     a vctl older than 0.6.0-r18, which read them there). `uci geo_asset_dir`
     naming the fleet's old `/usr/share/v2ray` reads as Vectra's own. Another
     directory named there that lacks a category the provider routes by gets
     Vectra's own instead; its files stay untouched.
-12. **The end is checked**: the installed version against the feed's own
+13. **The end is checked**: the installed version against the feed's own
     list (not the version the installer was signed with), `xray version` ≥
     minimum, xray accepting every geo category, the service running (off in
     `--standby`), `ubus call vectra status`, LuCI serving the page, and free
@@ -243,7 +258,7 @@ nothing about uncommitted work.
 ## The stand
 
 ```sh
-DOCKER_CONTEXT=colima ./test/install/run.sh                 # 25 scenarios on aarch64_generic
+DOCKER_CONTEXT=colima ./test/install/run.sh                 # 27 scenarios on aarch64_generic
 
 The routers share the docker host's kernel, which needs nftables' `fib`
 (vctl's ruleset): the run checks that first and stops on a kernel without it
@@ -273,10 +288,12 @@ leave the router byte for byte as it was (packages, feeds, keys, `/etc/config`,
 | `passwall` | refused without `--yes`; with it: taken over, official xray-core upgraded to the minimum, Vectra's own geo data, PassWall2 back on `vectra off` |
 | `passwall-upgrade` | taken over from PassWall2, then upgraded: vctl restarted in place, and PassWall2 never ran for the file swap (an upgrade is no hand-back) |
 | `passwall-retire` | taken over from PassWall2 as opkg has it; refused while vctl carries nothing and with `retire_passwall '0'`; then carrying (the data-plane stand's operator config, a freedom outbound) and `vctl retire-passwall --now`: PassWall2's packages gone, xray-core and dnsmasq-full kept, its configuration in a 0600 backup, nothing owed, status `retired`; a bare stop restarted by the dead-man; `vectra off` leaves plain internet, a minute later too |
-| `dnsmasq-rollback` | a dnsmasq-full that never runs: the old dnsmasq back and answering, the same version, enabled — with every download failing from the moment the swap begins |
+| `dnsmasq-rollback` | a dnsmasq-full that never runs: the old dnsmasq back and answering, the same version, enabled, within 90 s, kept on flash meanwhile — with every download failing from the moment the swap begins |
 | `dnsmasq-rollback-files` | the same, and opkg refuses to put the old package back: its saved files and opkg record go back by hand, and it answers |
 | `dnsmasq-stale` | a frozen dnsmasq holds port 53 while dnsmasq-full starts (the 0.7.0-r18 installer: DNSMASQ_FULL_BROKEN): killed, installed |
 | `nojail` | a router without procd's jail: its unjailed dnsmasq found, swapped, installed |
+| `dnsmasq-dhcpv6` | the router's dnsmasq is `dnsmasq-dhcpv6`: put back offline when dnsmasq-full does not run, then swapped and installed |
+| `dnsmasq-disabled` | dnsmasq stopped and disabled (another DNS/DHCP server): refused, unchanged, still off |
 | `feed-outage` | downloads.openwrt.org away for a moment at each step that needs it: tried again, installed |
 | `mirror` | downloads.openwrt.org unreachable: through a mirror, `distfeeds.conf` restored |
 | `refuse-*` | arch, apk, release, memory, storage, conflict, fleet, agent-old, signature, feed-down: exit 1, the router byte for byte as it was |

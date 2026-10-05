@@ -87,22 +87,29 @@ RETRY_DELAYS="$(printf '%s\n' "${VECTRA_RETRY_DELAYS:-10 30}" | awk 'NR > 1 { ex
 # All the pauses of one run together: a router whose feeds stay away is
 # refused (or failed) as before, after two minutes at most, not after ten.
 RETRY_BUDGET=120
-# How many times, a second apart, the dnsmasq swap asks a dnsmasq it has just
-# started to answer before it starts it again (twice in all), then goes back.
-DNS_WAIT="${VECTRA_DNS_WAIT:-30}"
+# The longest the dnsmasq swap may leave the network without a dnsmasq that
+# answers, in seconds: from the old one's stop to dnsmasq-full answering, or,
+# if it does not, to the old one back (a third for dnsmasq-full, then the way
+# back from the package, from the files, and dnsmasq run by hand).
+DNS_DEADLINE="$(printf '%s\n' "${VECTRA_DNS_DEADLINE:-90}" | awk 'NR == 1 && /^[0-9]+$/ && $1 >= 15 { print $1 + 0 }')"
+[ -n "$DNS_DEADLINE" ] || DNS_DEADLINE=90
+DNS_T0=0
 
 PKG=vectra-controller-pro
 FEED_NAME=vectra_pro
 CUSTOMFEEDS=/etc/opkg/customfeeds.conf
-DISTFEEDS=/etc/opkg/distfeeds.conf
+DISTFEEDS="${VECTRA_DISTFEEDS:-/etc/opkg/distfeeds.conf}"
 LOG=/tmp/vectra-install.log
 WORK=/tmp/vectra-install
 KEYS=/etc/opkg/keys
 SELF_COPY=/etc/vectra-controller-pro/vectra-install.sh
 GEO_OWN=/usr/share/vectra-controller-pro/geo
-# The dnsmasq the swap replaces, kept for the way back; on a router the swap
-# left broken, kept there for the owner.
-SAVED=/tmp/vectra-dnsmasq-saved
+# The dnsmasq the swap replaces, kept for the way back: on flash when there is
+# room (a reboot does not lose it), in RAM otherwise. On a router the swap left
+# broken it stays there for the owner.
+SAVED_FLASH=/root/vectra-dnsmasq-saved
+SAVED_RAM=/tmp/vectra-dnsmasq-saved
+SAVED="$SAVED_RAM"
 OPKG_INFO=/usr/lib/opkg/info
 OPKG_STATUS=/usr/lib/opkg/status
 # Where opkg keeps the feeds' lists, and its feed configuration.
@@ -368,7 +375,11 @@ FEED_ADDED=0
 KEY_ADDED=0
 INSTALLED_SOMETHING=0
 DNSMASQ_KEEP=0
-HAD_DNSMASQ=0
+SAVED_MADE=0
+# The package that runs the router's dnsmasq (check_dnsmasq), the one the swap
+# replaces: dnsmasq or dnsmasq-dhcpv6.
+DNSMASQ_PKG=""
+OLD=""
 
 cleanup() {
 	# OpenWrt's own feeds go back to their mirrors: the proxy was for this run.
@@ -381,7 +392,8 @@ cleanup() {
 		[ "$KEY_ADDED" = 1 ] && rm -f "$KEYS/$FEED_KEY_ID"
 	fi
 	rm -rf "$WORK/pkgs" "$WORK/attempt.log"
-	[ "$DNSMASQ_KEEP" = 1 ] || rm -rf "$SAVED"
+	# Only what this run kept: a copy an earlier run left for the owner stays.
+	if [ "$SAVED_MADE" = 1 ] && [ "$DNSMASQ_KEEP" != 1 ]; then rm -rf "$SAVED_RAM" "$SAVED_FLASH"; fi
 }
 
 remove_feed() {
@@ -515,6 +527,31 @@ check_conflicts() {
 	fi
 }
 
+# check_dnsmasq: the dnsmasq the swap will replace, before anything changes —
+# which package runs it (dnsmasq or dnsmasq-dhcpv6; another one the installer
+# does not take apart), and that the owner runs it: enabled and running. A
+# router whose DNS and DHCP another program does (AdGuard Home, dnsmasq
+# switched off) is refused, not given a dnsmasq the owner turned off.
+check_dnsmasq() {
+	installed dnsmasq-full && return 0
+	step "DNS и DHCP роутера"
+	DNSMASQ_PKG=""
+	for p in dnsmasq dnsmasq-dhcpv6; do
+		installed "$p" && { DNSMASQ_PKG="$p"; break; }
+	done
+	if [ -z "$DNSMASQ_PKG" ]; then
+		owner="$(opkg search /usr/sbin/dnsmasq 2> /dev/null | sed -n 's/ - .*//p' | head -n 1)"
+		[ -n "$owner" ] && refuse DNSMASQ_UNKNOWN_PACKAGE "dnsmasq на роутере из пакета $owner: установщик заменяет на dnsmasq-full только dnsmasq и dnsmasq-dhcpv6. Замените его на dnsmasq-full сами и запустите установщик снова."
+		[ -e /usr/sbin/dnsmasq ] && refuse DNSMASQ_UNKNOWN_PACKAGE "dnsmasq на роутере поставлен не пакетом: установщик не знает, как вернуть его, если dnsmasq-full не заработает. Поставьте dnsmasq-full сами и запустите установщик снова."
+		refuse DNSMASQ_ABSENT "на роутере нет dnsmasq: DNS и DHCP делает другая программа. Vectra работает через dnsmasq-full как DNS роутера, а ставить его рядом с чужим DNS/DHCP установщик не будет."
+	fi
+	if ! /etc/init.d/dnsmasq enabled > /dev/null 2>&1 || ! /etc/init.d/dnsmasq running > /dev/null 2>&1; then
+		refuse DNSMASQ_NOT_ACTIVE "$DNSMASQ_PKG выключен (не запущен или убран из автозапуска): DNS и DHCP, видимо, делает другая программа (например, AdGuard Home). Vectra работает через dnsmasq-full как DNS роутера, а установщик не включает то, что выключил владелец."
+	fi
+	ok "$DNSMASQ_PKG $(installed_version "$DNSMASQ_PKG") работает; его заменит dnsmasq-full"
+	jcheck ok DNSMASQ "$DNSMASQ_PKG"
+}
+
 # ----------------------------------------------------------------- feeds ----
 
 add_feed() {
@@ -549,7 +586,10 @@ add_feed() {
 	ok "фид Vectra $FEED_URL/$ARCH, подпись ключом $FEED_KEY_ID"
 	# shellcheck disable=SC2086 # a list of packages
 	if ! have_all $OPENWRT_NEED; then
-		use_openwrt_mirror || refuse OPENWRT_FEEDS_UNREACHABLE "фиды OpenWrt недоступны (downloads.openwrt.org не отвечает) и прокси Vectra тоже. Проверьте DNS и IPv6 на WAN."
+		# Every OpenWrt feed answered and a package is still missing: the
+		# mirror would not have it either.
+		[ -n "$(openwrt_feeds_down)" ] || openwrt_missing
+		use_openwrt_mirror || { [ -n "$(openwrt_feeds_down)" ] || openwrt_missing; refuse OPENWRT_FEEDS_UNREACHABLE "фиды OpenWrt недоступны (не скачались списки:$(openwrt_feeds_down)) и прокси Vectra тоже. Проверьте DNS и IPv6 на WAN."; }
 	fi
 	ok "фиды OpenWrt"
 }
@@ -574,6 +614,22 @@ use_openwrt_mirror() {
 # next step for that, not a wait (a Cudy behind a broken IPv6).
 # shellcheck disable=SC2086 # a list of packages
 openwrt_ready() { have_all $OPENWRT_NEED; }
+# The OpenWrt feeds (distfeeds.conf) whose list opkg update did not get.
+openwrt_feeds_down() {
+	[ -f "$DISTFEEDS" ] || return 0
+	for fd in $(awk '($1 == "src/gz" || $1 == "src") { print $2 }' "$DISTFEEDS"); do
+		[ -s "$LISTS/$fd" ] || printf ' %s' "$fd"
+	done
+}
+# openwrt_missing: OpenWrt's feeds answered, and what this run needs is not in
+# them — a kmod built for another kernel (a firmware built by hand, a
+# snapshot), not an outage.
+# shellcheck disable=SC2086 # a list of packages
+openwrt_missing() {
+	om=""
+	for p in $OPENWRT_NEED; do installed "$p" || available "$p" || om="$om $p"; done
+	refuse OPENWRT_PACKAGE_MISSING "в фидах OpenWrt нет нужных Vectra пакетов:$om. Фиды ответили — пакетов в них нет; обычно это модули ядра (kmod) для прошивки, собранной не официально, или снапшота. Нужна официальная прошивка OpenWrt 23.05 или 24.10."
+}
 feeds_ready() {
 	have_all "$PKG" || return 1
 	have_all dnsmasq-full || return 0
@@ -686,42 +742,51 @@ install_xray_pin() {
 }
 
 # The swap of dnsmasq for dnsmasq-full, and its way back, which needs no
-# network: before anything is removed the old dnsmasq is kept twice — its
-# package, with everything it depends on already on the router (opkg puts it
-# back), and its files as they are on the router with opkg's record of them
-# (put back by hand when opkg cannot). "Works" is checked, not assumed: the
-# dnsmasq that runs is started afresh, with no other one left holding port 53,
-# and answers (DNS_CHECK) — or the way back is taken, and checked the same way.
+# network. Before anything is removed, the dnsmasq that runs now is kept twice:
+# - its package, with everything it depends on already on the router, so opkg
+#   can put it back;
+# - its files as they are on the router, with opkg's record of them, put back
+#   by hand when opkg cannot.
+# It goes on flash when there is room, so the way back survives a reboot.
+# "Works" is checked, not assumed. Each start is of the system dnsmasq only,
+# afresh, with no leftover of it holding port 53, and it must answer
+# (DNS_CHECK). Otherwise the way back is taken and checked the same way. From
+# the moment the old dnsmasq stops to a dnsmasq that answers, everything
+# shares one deadline (DNS_DEADLINE): one try per stage, each with its share.
 swap_dnsmasq() {
 	installed dnsmasq-full && { ok "dnsmasq-full уже стоит"; return 0; }
-	step "dnsmasq -> dnsmasq-full"
+	OLD="$DNSMASQ_PKG"
+	[ -n "$OLD" ] || fail DNSMASQ_ABSENT "не найден пакет dnsmasq, который нужно заменить (проверка не выполнялась). dnsmasq не тронут."
+	step "$OLD -> dnsmasq-full"
 	rm -rf "$WORK/pkgs"
 	mkdir -p "$WORK/pkgs"
 	# Its libraries first: they do not clash with dnsmasq.
-	for d in $(ipk_depends_of "$(field dnsmasq-full Depends)"); do
-		installed "$d" || retry opkg install "$d" || fail DNSMASQ_DEPENDENCY "не удалось поставить $d (зависимость dnsmasq-full). dnsmasq не тронут."
+	for d in $(depends_of "$(field dnsmasq-full Depends)"); do
+		installed "$d" || retry opkg install "$d" || fail DNSMASQ_DEPENDENCY "не удалось поставить $d (зависимость dnsmasq-full). $OLD не тронут."
 	done
 	INSTALLED_SOMETHING=1
-	( cd "$WORK/pkgs" && retry opkg download dnsmasq-full ) || fail DNSMASQ_DOWNLOAD "не удалось скачать dnsmasq-full. dnsmasq не тронут."
+	download dnsmasq-full || fail DNSMASQ_DOWNLOAD "не удалось скачать dnsmasq-full. $OLD не тронут."
 	full=""
 	for f in "$WORK"/pkgs/dnsmasq-full_*.ipk; do [ -f "$f" ] && full="$f"; done
-	[ -n "$full" ] || fail DNSMASQ_DOWNLOAD "dnsmasq-full не скачался. dnsmasq не тронут."
+	[ -n "$full" ] || fail DNSMASQ_DOWNLOAD "dnsmasq-full не скачался. $OLD не тронут."
+	download "$OLD" || fail DNSMASQ_DOWNLOAD "не удалось скачать $OLD (для отката). $OLD не тронут."
 	old=""
-	HAD_DNSMASQ=0
-	if installed dnsmasq; then
-		HAD_DNSMASQ=1
-		( cd "$WORK/pkgs" && retry opkg download dnsmasq ) || fail DNSMASQ_DOWNLOAD "не удалось скачать dnsmasq (для отката). dnsmasq не тронут."
-		for f in "$WORK"/pkgs/dnsmasq_*.ipk; do [ -f "$f" ] && old="$f"; done
-		[ -n "$old" ] || fail DNSMASQ_DOWNLOAD "dnsmasq (для отката) не скачался. dnsmasq не тронут."
-		# Putting it back must not need the network: what it depends on is
-		# on the router before anything is removed.
-		for d in $(ipk_depends_of "$(ipk_field "$old" Depends)"); do
-			installed "$d" || retry opkg install "$d" || fail DNSMASQ_DEPENDENCY "не удалось поставить $d (зависимость dnsmasq, для отката). dnsmasq не тронут."
-		done
-		save_dnsmasq || fail DNSMASQ_DOWNLOAD "не удалось сохранить прежний dnsmasq для отката (место в /tmp?). dnsmasq не тронут."
-		cp "$old" "$SAVED/" && old="$SAVED/${old##*/}"
-		note "прежний dnsmasq $(installed_version dnsmasq) сохранён для отката: $SAVED"
-	fi
+	for f in "$WORK/pkgs/${OLD}"_*.ipk; do [ -f "$f" ] && old="$f"; done
+	[ -n "$old" ] || fail DNSMASQ_DOWNLOAD "$OLD (для отката) не скачался. $OLD не тронут."
+	# Putting it back must not need the network: what it depends on is on
+	# the router before anything is removed. A package whose control cannot
+	# be read (or names no dependency: dnsmasq needs at least libc) is not
+	# one to count on.
+	deps="$(ipk_field "$old" Depends)"
+	[ -n "$deps" ] || fail DNSMASQ_DOWNLOAD "скачанный $OLD (для отката) не читается или пуст (нет Depends): откат на него не гарантирован. $OLD не тронут."
+	for d in $(depends_of "$deps"); do
+		installed "$d" || retry opkg install "$d" || fail DNSMASQ_DEPENDENCY "не удалось поставить $d (зависимость $OLD, для отката). $OLD не тронут."
+	done
+	[ "$(ipk_field "$old" Version)" = "$(installed_version "$OLD")" ] ||
+		printf '# the feed has %s %s, the router %s: the way back puts the feed'"'"'s back first, the router'"'"'s files if that fails\n' "$OLD" "$(ipk_field "$old" Version)" "$(installed_version "$OLD")" >> "$LOG"
+	save_dnsmasq "$old" || fail DNSMASQ_DOWNLOAD "не удалось сохранить прежний $OLD для отката (место в /tmp?). $OLD не тронут."
+	old="$SAVED/${old##*/}"
+	note "прежний $OLD $(installed_version "$OLD") сохранён для отката: $SAVED"
 	[ -f /etc/config/dhcp ] && cp /etc/config/dhcp "$WORK/dhcp.before"
 	# What "works" means here is what worked before: a dnsmasq that answered
 	# must answer again; one that only hands out addresses (another DNS server
@@ -729,41 +794,44 @@ swap_dnsmasq() {
 	DNS_CHECK=dnsmasq_runs
 	dns_answers && DNS_CHECK=dns_answers
 
-	if [ "$HAD_DNSMASQ" = 1 ] && ! run opkg remove dnsmasq; then
-		installed dnsmasq && dnsmasq_up && fail DNSMASQ_REMOVE "opkg remove dnsmasq не прошёл; dnsmasq работает как прежде."
+	DNS_T0="$(date +%s)"
+	if ! run opkg remove "$OLD"; then
+		installed "$OLD" && dnsmasq_up "$(dns_by 1 3)" && fail DNSMASQ_REMOVE "opkg remove $OLD не прошёл; $OLD работает как прежде."
 		dnsmasq_back
 	fi
-	if run opkg install "$full" && restore_dhcp && dnsmasq_up; then
-		ok "dnsmasq-full $(installed_version dnsmasq-full): DHCP и DNS работают"
+	if run opkg install "$full" && restore_dhcp && dnsmasq_up "$(dns_by 1 3)"; then
+		ok "dnsmasq-full $(installed_version dnsmasq-full): DHCP и DNS работают (без DNS $(($(date +%s) - DNS_T0)) с)"
 		return 0
 	fi
-	say "    ! dnsmasq-full не поднялся; возвращаю прежний dnsmasq"
+	say "    ! dnsmasq-full не поднялся; возвращаю прежний $OLD"
 	dnsmasq_back
 }
 
-# dnsmasq_back: the way back, and the end of the run — said loudly when even it
+# dnsmasq_back: the way back, and the end of the run. Said loudly when even it
 # leaves the router without the dnsmasq it had.
 dnsmasq_back() {
 	if rollback_dnsmasq; then
-		[ "$HAD_DNSMASQ" = 1 ] || fail DNSMASQ_FULL_ROLLED_BACK "dnsmasq-full не заработал и удалён; на роутере всё как было. Vectra не установлена."
-		fail DNSMASQ_FULL_ROLLED_BACK "dnsmasq-full не заработал; прежний dnsmasq возвращён и работает. Vectra не установлена."
+		fail DNSMASQ_FULL_ROLLED_BACK "dnsmasq-full не заработал; прежний $OLD возвращён и работает (без DNS было $(($(date +%s) - DNS_T0)) с). Vectra не установлена."
 	fi
 	DNSMASQ_KEEP=1
+	where="$SAVED"
+	case "$SAVED" in /tmp/*) where="$SAVED — в памяти: после перезагрузки его не будет, сохраните заранее" ;; esac
 	if dnsmasq_rescue; then
-		fail DNSMASQ_FULL_BROKEN "dnsmasq-full не заработал, и прежний dnsmasq не запускается как служба. Запущен временный dnsmasq: DHCP и DNS работают, но только до перезагрузки роутера. Подключитесь кабелем и выполните: kill \$(cat /var/run/dnsmasq-rescue.pid); opkg install --force-reinstall $old && /etc/init.d/dnsmasq restart (пакет и файлы прежнего dnsmasq сохранены в $SAVED)"
+		fail DNSMASQ_FULL_BROKEN "dnsmasq-full не заработал, и прежний $OLD не запускается как служба. Запущен временный dnsmasq: DHCP и DNS работают, но только до перезагрузки роутера. Подключитесь кабелем и выполните: kill \$(cat /var/run/dnsmasq-rescue.pid); opkg install --force-reinstall $old && /etc/init.d/dnsmasq enable && /etc/init.d/dnsmasq restart (пакет и файлы прежнего dnsmasq: $where)"
 	fi
-	fail DNSMASQ_FULL_BROKEN "dnsmasq-full не заработал, и прежний dnsmasq не вернулся: у устройств в сети может не быть DHCP/DNS. Подключитесь кабелем и выполните: opkg install --force-reinstall ${old:-dnsmasq} && /etc/init.d/dnsmasq restart (пакет и файлы прежнего dnsmasq сохранены в $SAVED)"
+	fail DNSMASQ_FULL_BROKEN "dnsmasq-full не заработал, и прежний $OLD не вернулся: у устройств в сети может не быть DHCP/DNS. Подключитесь кабелем и выполните: opkg install --force-reinstall $old && /etc/init.d/dnsmasq enable && /etc/init.d/dnsmasq restart (пакет и файлы прежнего dnsmasq: $where)"
 }
 
 # rollback_dnsmasq: dnsmasq-full gone, and the dnsmasq that was there back and
-# answering — from its package, else from its files. No network.
+# answering, from its package or else from its files. No network. It starts
+# again what it stops: the old dnsmasq is always there to put back (the
+# checks refused a router without one).
 rollback_dnsmasq() {
 	dnsmasq_stop
 	installed dnsmasq-full && { run opkg remove dnsmasq-full || run opkg remove --force-depends dnsmasq-full; }
-	[ "$HAD_DNSMASQ" = 1 ] || return 0
-	run opkg install "$old" && restore_dhcp && dnsmasq_up && return 0
-	say "    ! opkg не вернул прежний dnsmasq; восстанавливаю его файлы, сохранённые до замены"
-	restore_saved_dnsmasq && restore_dhcp && dnsmasq_up
+	run opkg install "$old" && restore_dhcp && dnsmasq_up "$(dns_by 2 3)" && return 0
+	say "    ! opkg не вернул прежний $OLD; восстанавливаю его файлы, сохранённые до замены"
+	restore_saved_dnsmasq && restore_dhcp && dnsmasq_up "$(dns_by 5 6)"
 }
 
 restore_dhcp() {
@@ -774,90 +842,137 @@ restore_dhcp() {
 	return 0
 }
 
-# The dependencies of a package, by name: "a, b (>= 1)" -> a b (libc is
-# always there, and opkg lists it under another name on some releases).
-ipk_depends_of() { echo "$1" | tr ',' '\n' | sed 's/ *(.*//; s/^ *//; s/ *$//' | grep -v '^libc$'; }
+# download <pkg>: opkg download into $WORK/pkgs. Run in this shell, not a
+# subshell, so retry's pauses count against this run's budget. Then back to
+# the directory it ran from ($0 may be relative to it).
+download() {
+	dl_from="$(pwd)"
+	cd "$WORK/pkgs" || return 1
+	retry opkg download "$1"
+	dl_rc=$?
+	cd "$dl_from" || cd /
+	return "$dl_rc"
+}
+
+# The dependencies of a package, by name: "a, b (>= 1)" -> a b. libc is
+# always there, and opkg lists it under another name on some releases.
+depends_of() { echo "$1" | tr ',' '\n' | sed 's/ *(.*//; s/^ *//; s/ *$//' | grep -v -e '^libc$' -e '^$'; }
 # A field of a downloaded package's control.
 ipk_field() { tar -xzOf "$1" ./control.tar.gz 2> /dev/null | tar -xzOf - ./control 2> /dev/null | sed -n "s/^$2: //p" | head -n 1; }
 
-# save_dnsmasq: the installed dnsmasq's files as they are now, and opkg's
-# record of it, in $SAVED.
+# save_dnsmasq <ipk>: the package for the way back, and the installed $OLD's
+# files as they are now with opkg's record of it. Built in /tmp, then moved to
+# flash ($SAVED_FLASH) when there is room, so it survives a reboot.
 save_dnsmasq() {
-	rm -rf "$SAVED"
-	mkdir -p "$SAVED" && [ -f "$OPKG_INFO/dnsmasq.list" ] || return 1
+	SAVED_MADE=1
+	rm -rf "$SAVED_RAM" "$SAVED_FLASH"
+	SAVED="$SAVED_RAM"
+	mkdir -p "$SAVED" && [ -f "$OPKG_INFO/$OLD.list" ] && cp "$1" "$SAVED/" || return 1
 	{
-		cat "$OPKG_INFO/dnsmasq.list"
-		ls "$OPKG_INFO"/dnsmasq.*
+		cat "$OPKG_INFO/$OLD.list"
+		ls "$OPKG_INFO/$OLD".*
 	} | while read -r f; do
 		if [ -e "$f" ] || [ -L "$f" ]; then echo "${f#/}"; fi
 	done > "$SAVED/files"
 	grep -qx 'usr/sbin/dnsmasq' "$SAVED/files" && tar -czf "$SAVED/files.tar.gz" -C / -T "$SAVED/files" || return 1
-	awk '/^Package: / { p = ($2 == "dnsmasq") } p' "$OPKG_STATUS" > "$SAVED/status"
-	grep -qx 'Package: dnsmasq' "$SAVED/status"
+	awk -v p="$OLD" '/^Package: / { k = ($2 == p) } k' "$OPKG_STATUS" > "$SAVED/status"
+	grep -qx "Package: $OLD" "$SAVED/status" || return 1
+	sv_kb="$(du -sk "$SAVED" | awk '{ print $1; exit }')"
+	if [ "$(free_kb "${SAVED_FLASH%/*}")" -ge $((${sv_kb:-0} + MARGIN_KB)) ] 2> /dev/null &&
+		mkdir -p "$SAVED_FLASH" && cp -a "$SAVED/." "$SAVED_FLASH/"; then
+		rm -rf "$SAVED"
+		SAVED="$SAVED_FLASH"
+	else
+		rm -rf "$SAVED_FLASH"
+		printf '# no room on flash for the way back (%s KB): kept in RAM only\n' "$sv_kb" >> "$LOG"
+	fi
+	return 0
 }
 
 # restore_saved_dnsmasq: what save_dnsmasq kept, back in place, under opkg's
-# own record of it — for when opkg cannot put the package back.
+# own record of it. For when opkg cannot put the package back.
 restore_saved_dnsmasq() {
 	[ -s "$SAVED/files.tar.gz" ] && [ -s "$SAVED/status" ] || return 1
 	dnsmasq_stop
 	installed dnsmasq-full && run opkg remove --force-depends dnsmasq-full
-	installed dnsmasq && run opkg remove --force-depends dnsmasq
+	installed "$OLD" && run opkg remove --force-depends "$OLD"
 	run tar -xzf "$SAVED/files.tar.gz" -C / || return 1
-	grep -qx 'Package: dnsmasq' "$OPKG_STATUS" || { echo; cat "$SAVED/status"; } >> "$OPKG_STATUS"
+	grep -qx "Package: $OLD" "$OPKG_STATUS" || { echo; cat "$SAVED/status"; } >> "$OPKG_STATUS"
 }
 
-# The dnsmasq processes that are alive, by name — not `pgrep -x dnsmasq`:
-# BusyBox's pgrep -x matches argv[0], "/usr/sbin/dnsmasq" as procd starts it,
-# and finds only the jail wrapper procd's ujail names dnsmasq. A dnsmasq run
-# without the jail (a router without procd-ujail) was never found: the swap
-# and its way back both failed though DNS answered (DNSMASQ_FULL_BROKEN), and
-# a dnsmasq left behind holding port 53 went unseen. One that has exited and
-# is not yet reaped does not count.
+# The system dnsmasq's processes: the instances procd runs for /etc/config/dhcp
+# (each reads the configuration its init script writes, -C
+# /var/etc/dnsmasq.conf.<section>; the jail wrapper around one says so too),
+# and the one dnsmasq_rescue starts with that file. Not PassWall2's copies,
+# which read their own files under /tmp/etc/passwall2. By name and command
+# line, not `pgrep -x dnsmasq`: BusyBox's pgrep -x matches argv[0],
+# "/usr/sbin/dnsmasq" as procd starts it, and finds only the jail wrapper or
+# an init script that happens to run. A process that has exited and is not
+# yet reaped does not count.
 dnsmasq_pids() {
 	for p in $(pidof dnsmasq); do
-		case "$(cut -d ' ' -f 3 "/proc/$p/stat" 2> /dev/null)" in "" | Z | X) ;; *) echo "$p" ;; esac
+		case "$(cut -d ' ' -f 3 "/proc/$p/stat" 2> /dev/null)" in "" | Z | X) continue ;; esac
+		tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null | grep -q -e ' -C /var/etc/dnsmasq\.conf\.' && echo "$p"
 	done
 }
 dnsmasq_runs() { [ -n "$(dnsmasq_pids)" ]; }
 no_dnsmasq() { ! dnsmasq_runs; }
 # dnsmasq answers from /etc/hosts itself: no upstream (a WAN whose DNS is down)
 # can make this fail. An answer has a Name: line; the Server: header alone,
-# printed even when nothing answers, does not count.
+# printed even when nothing answers, does not count. A second at most per try.
 dns_answers() {
 	dnsmasq_runs || return 1
-	nslookup localhost 127.0.0.1 2>/dev/null | grep -q '^Name:'
+	nslookup -timeout=1 -retry=1 localhost 127.0.0.1 2> /dev/null | grep -q '^Name:'
 }
 
-# dnsmasq_stop: procd's dnsmasq stopped, and no dnsmasq left that still holds
-# port 53 — one procd no longer tracks (its jail gone before it) would keep
-# every dnsmasq started after it from answering.
+# dns_by <num> <den>: the time (date +%s) a stage of the swap has until: its
+# share of DNS_DEADLINE from the moment the old dnsmasq stopped, and at least
+# 5 s from now.
+dns_by() {
+	db=$((DNS_T0 + DNS_DEADLINE * $1 / $2))
+	dn=$(($(date +%s) + 5))
+	[ "$db" -ge "$dn" ] || db="$dn"
+	echo "$db"
+}
+# until_time <time> <command...>: the command, once a second, until it holds or
+# the time comes.
+until_time() {
+	ut="$1"
+	shift
+	while :; do
+		"$@" > /dev/null 2>&1 && return 0
+		[ "$(date +%s)" -lt "$ut" ] || return 1
+		sleep 1
+	done
+}
+
+# dnsmasq_stop: procd's dnsmasq stopped, and none of the system dnsmasq left
+# holding port 53. One procd no longer tracks (its jail gone before it) would
+# keep every dnsmasq started after it from answering.
 dnsmasq_stop() {
 	[ -x /etc/init.d/dnsmasq ] && run /etc/init.d/dnsmasq stop
-	wait_for 10 no_dnsmasq && return 0
+	wait_for 5 no_dnsmasq && return 0
 	printf '# dnsmasq still runs after its stop (%s): killed\n' "$(dnsmasq_pids | tr '\n' ' ')" >> "$LOG"
 	for p in $(dnsmasq_pids); do kill "$p" 2> /dev/null; done
-	wait_for 3 no_dnsmasq && return 0
+	wait_for 2 no_dnsmasq && return 0
 	for p in $(dnsmasq_pids); do kill -9 "$p" 2> /dev/null; done
-	wait_for 3 no_dnsmasq
+	wait_for 1 no_dnsmasq
 }
 
-# dnsmasq_up: the dnsmasq on the router started afresh by its init script, and
-# answering (DNS_CHECK) within DNS_WAIT tries — given a second start, since
-# procd stops respawning a service whose starts die.
+# dnsmasq_up <time>: the dnsmasq on the router started afresh by its init
+# script, and answering (DNS_CHECK) by that time. Enabled again: opkg's
+# remove disabled it, and the checks refused a router whose owner had.
 dnsmasq_up() {
 	[ -x /etc/init.d/dnsmasq ] || { dns_diag "нет /etc/init.d/dnsmasq"; return 1; }
 	run /etc/init.d/dnsmasq enable
-	for a in 1 2; do
-		dnsmasq_stop
-		run /etc/init.d/dnsmasq start
-		wait_for "$DNS_WAIT" "$DNS_CHECK" && return 0
-		dns_diag "dnsmasq не ответил ($DNS_CHECK), попытка $a"
-	done
+	dnsmasq_stop
+	run /etc/init.d/dnsmasq start
+	until_time "$1" "$DNS_CHECK" && return 0
+	dns_diag "dnsmasq не ответил ($DNS_CHECK) за $(($(date +%s) - DNS_T0)) с от остановки прежнего"
 	return 1
 }
 
-# dnsmasq_rescue: the last resort — the dnsmasq binary run straight, outside
+# dnsmasq_rescue: the last resort, the dnsmasq binary run straight, outside
 # procd and its jail, with the configuration its init script wrote last.
 # Until a reboot.
 dnsmasq_rescue() {
@@ -867,11 +982,11 @@ dnsmasq_rescue() {
 	[ -n "$c" ] || return 1
 	say "    ! запускаю dnsmasq вручную (до перезагрузки), чтобы в сети были DHCP и DNS"
 	dnsmasq_stop
-	run /usr/sbin/dnsmasq -C "$c" -x /var/run/dnsmasq-rescue.pid && wait_for "$DNS_WAIT" "$DNS_CHECK"
+	run /usr/sbin/dnsmasq -C "$c" -x /var/run/dnsmasq-rescue.pid && until_time "$(dns_by 1 1)" "$DNS_CHECK"
 }
 
-# dns_diag <what>: DNS on the router as it is now, into the log — what an
-# owner (and support) needs to see why dnsmasq does not answer.
+# dns_diag <what>: DNS on the router as it is now, into the log. What an owner
+# (and support) needs to see why dnsmasq does not answer.
 dns_diag() {
 	{
 		printf '# ---- %s: dnsmasq now\n' "$1"
@@ -880,7 +995,7 @@ dns_diag() {
 		netstat -lnup | grep ':53 '
 		netstat -lntp | grep ':53 '
 		ubus call service list '{"name":"dnsmasq"}'
-		nslookup localhost 127.0.0.1
+		nslookup -timeout=1 -retry=1 localhost 127.0.0.1
 		logread | tail -n 40
 		printf '# ----\n'
 	} >> "$LOG" 2>&1
@@ -1138,6 +1253,7 @@ main() {
 	check_router
 	check_clock
 	check_conflicts
+	check_dnsmasq
 	installed luci-base || LUCI=1
 	add_feed
 	plan_xray
