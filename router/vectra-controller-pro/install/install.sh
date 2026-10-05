@@ -35,6 +35,7 @@
 # package of its own version first: nothing replaces it with another). The
 # end is checked, not assumed: the service runs, the
 # "vectra" ubus object answers, xray accepts the geo data, LuCI serves the page.
+# A download from the feeds that fails is tried again, three times in all.
 # Everything opkg says goes to /tmp/vectra-install.log.
 #
 # This file is a template until scripts/sign-pro-feed.sh bakes the block below
@@ -77,16 +78,46 @@ UPDATE_FLOOR_KB=16384
 UNPACK_FACTOR=3
 # TLS needs a clock later than this (2026-01-01).
 CLOCK_FLOOR=1767225600
+# The feeds (downloads.openwrt.org above all) go away for a minute now and
+# then: on 2026-10-04 for about 40 s, and a router whose installer was fine was
+# left with DNSMASQ_DEPENDENCY. A step that downloads is tried three times,
+# this many seconds apart (40 s in all: the outage of that day). Whole
+# seconds, and nothing else: anything else is the default ("0 0" for tests).
+RETRY_DELAYS="$(printf '%s\n' "${VECTRA_RETRY_DELAYS:-10 30}" | awk 'NR > 1 { exit 1 } { for (i = 1; i <= NF; i++) { if ($i !~ /^[0-9]+$/) exit 1; printf "%s%d", (i > 1 ? " " : ""), $i } }')" && [ -n "$RETRY_DELAYS" ] || RETRY_DELAYS="10 30"
+# All the pauses of one run together: a router whose feeds stay away is
+# refused (or failed) as before, after two minutes at most, not after ten.
+RETRY_BUDGET=120
+# How long, in seconds, the dnsmasq swap may leave the network without a
+# dnsmasq that answers. It runs from the old one's stop to dnsmasq-full
+# answering or, if that fails, to the old one being back. Stages share it: a
+# third for dnsmasq-full, then the way back from the package, then from the
+# files, then dnsmasq run by hand. Each start still gets a floor of its own,
+# counted from that start (dnsmasq-full and the package 20 s, the files 15 s,
+# by hand 10 s), so a slow router's opkg is not counted against its dnsmasq.
+# The total goes past the deadline only by those floors.
+DNS_DEADLINE="$(printf '%s\n' "${VECTRA_DNS_DEADLINE:-120}" | awk 'NR == 1 && /^[0-9]+$/ && $1 >= 15 { print $1 + 0 }')"
+[ -n "$DNS_DEADLINE" ] || DNS_DEADLINE=120
+DNS_T0=0
 
 PKG=vectra-controller-pro
 FEED_NAME=vectra_pro
 CUSTOMFEEDS=/etc/opkg/customfeeds.conf
-DISTFEEDS=/etc/opkg/distfeeds.conf
+DISTFEEDS="${VECTRA_DISTFEEDS:-/etc/opkg/distfeeds.conf}"
 LOG=/tmp/vectra-install.log
 WORK=/tmp/vectra-install
 KEYS=/etc/opkg/keys
 SELF_COPY=/etc/vectra-controller-pro/vectra-install.sh
 GEO_OWN=/usr/share/vectra-controller-pro/geo
+# The dnsmasq the swap replaces, kept for the way back: on flash when there is
+# room (a reboot does not lose it), in RAM otherwise. On a router the swap left
+# broken it stays there for the owner. Each run has its own directory, so a
+# later run never takes away what an earlier one left.
+SAVED_RUN="$(date +%Y%m%d-%H%M%S)-$$"
+SAVED_FLASH="/root/vectra-dnsmasq-saved/$SAVED_RUN"
+SAVED_RAM="/tmp/vectra-dnsmasq-saved/$SAVED_RUN"
+SAVED="$SAVED_RAM"
+OPKG_INFO=/usr/lib/opkg/info
+OPKG_STATUS=/usr/lib/opkg/status
 # Where opkg keeps the feeds' lists, and its feed configuration.
 LISTS="${VECTRA_OPKG_LISTS:-/var/opkg-lists}"
 OPKG_CONFS="${VECTRA_OPKG_CONFS:-/etc/opkg.conf /etc/opkg/*.conf}"
@@ -209,6 +240,52 @@ run() { # a command whose output goes to the log only
 	printf '$ %s\n' "$*" >> "$LOG"
 	"$@" >> "$LOG" 2>&1
 }
+# retry <command...>: run (its output to the log), and run again (RETRY_DELAYS)
+# while it fails on a download. Only for steps a second run takes up where the
+# first stopped — opkg update, download, install, upgrade; fetch — never for
+# one that changes the router otherwise (the dnsmasq swap: its remove, its
+# installs and the way back, which need no network). opkg fails for many
+# reasons, and only its "Failed to download" is the network: a signature, a
+# package that does not unpack or a postinst that fails is said at once, not
+# hidden behind a second try. opkg runs wget quiet, so its 404 and a CDN's 503
+# read the same ("wget returned 8"): both are tried again — a package in a list
+# just downloaded is rarely missing, and an outage often answers 5xx. fetch
+# says the status: a 4xx is final, anything else (no connection, TLS, a
+# timeout, a 5xx) is tried again.
+# RT_UNTIL: a command that says the step got what this run needs from it even
+# though it failed — opkg update fails whenever any feed does (a third party's
+# that is down for good, too), and that is no reason to wait.
+RT_UNTIL=""
+RT_SPENT=0
+retry() {
+	rt_of=1
+	for rt_wait in $RETRY_DELAYS; do rt_of=$((rt_of + 1)); done
+	rt_n=1
+	for rt_wait in $RETRY_DELAYS -; do
+		rt_at=$(($(cat "$LOG" 2> /dev/null | wc -c)))
+		printf '$ %s\n' "$*" >> "$LOG"
+		"$@" >> "$LOG" 2>&1
+		rt_rc=$?
+		[ "$rt_rc" = 0 ] && return 0
+		[ "$rt_wait" != - ] || return "$rt_rc"
+		tail -c "+$((rt_at + 1))" "$LOG" > "$WORK/attempt.log"
+		if [ "$1" = fetch ]; then
+			grep -q -e 'HTTP error 4' "$WORK/attempt.log" && return "$rt_rc"
+		else
+			grep -q -e 'Failed to download' -e 'wget returned' "$WORK/attempt.log" || return "$rt_rc"
+		fi
+		[ -n "$RT_UNTIL" ] && $RT_UNTIL && return "$rt_rc"
+		if [ $((RT_SPENT + rt_wait)) -gt "$RETRY_BUDGET" ]; then
+			printf '# a download failed (exit %s); the %s s of retries are spent\n' "$rt_rc" "$RETRY_BUDGET" >> "$LOG"
+			return "$rt_rc"
+		fi
+		RT_SPENT=$((RT_SPENT + rt_wait))
+		rt_n=$((rt_n + 1))
+		printf '# a download failed (exit %s): attempt %s/%s in %s s\n' "$rt_rc" "$rt_n" "$rt_of" "$rt_wait" >> "$LOG"
+		note "Сервер пакетов не ответил — повторяю ($rt_n/$rt_of)…"
+		sleep "$rt_wait"
+	done
+}
 
 # ---------------------------------------------------------------- helpers ----
 
@@ -230,6 +307,10 @@ version_ge() {
 installed() { opkg list-installed "$1" 2>/dev/null | grep -q "^$1 - "; }
 installed_version() { opkg list-installed "$1" 2>/dev/null | sed -n "s/^$1 - //p" | head -n 1; }
 available() { opkg list "$1" 2>/dev/null | grep -q "^$1 - "; }
+# have_all <pkg...>: each installed already, or in a feed's list.
+have_all() {
+	for hv in "$@"; do installed "$hv" || available "$hv" || return 1; done
+}
 field() { opkg info "$1" 2>/dev/null | sed -n "s/^$2: //p" | head -n 1; }
 # A field of a package in the Vectra feed's own list (opkg info lists every
 # feed's version of a package, in no order that says which is which). opkg keeps
@@ -282,7 +363,8 @@ wait_for() { # <seconds> <command...>
 }
 
 fetch() { # <url> <file>: uclient-fetch (wget) with TLS, as opkg itself fetches
-	wget -q -T 20 -O "$2" "$1" >> "$LOG" 2>&1
+	# Not quiet: its "HTTP error 404" in the log is what tells retry a 4xx.
+	wget -T 20 -O "$2" "$1" >> "$LOG" 2>&1
 }
 
 xray_version() { xray version 2>/dev/null | awk 'NR == 1 { print $2; exit }'; }
@@ -298,6 +380,12 @@ DISTFEEDS_SWAPPED=0
 FEED_ADDED=0
 KEY_ADDED=0
 INSTALLED_SOMETHING=0
+DNSMASQ_KEEP=0
+SAVED_MADE=0
+# The package that runs the router's dnsmasq (check_dnsmasq), the one the swap
+# replaces: dnsmasq or dnsmasq-dhcpv6.
+DNSMASQ_PKG=""
+OLD=""
 
 cleanup() {
 	# OpenWrt's own feeds go back to their mirrors: the proxy was for this run.
@@ -309,7 +397,12 @@ cleanup() {
 		[ "$FEED_ADDED" = 1 ] && remove_feed
 		[ "$KEY_ADDED" = 1 ] && rm -f "$KEYS/$FEED_KEY_ID"
 	fi
-	rm -rf "$WORK/pkgs"
+	rm -rf "$WORK/pkgs" "$WORK/attempt.log"
+	# Only what this run kept: a copy an earlier run left for the owner stays.
+	if [ "$SAVED_MADE" = 1 ] && [ "$DNSMASQ_KEEP" != 1 ]; then
+		rm -rf "$SAVED_RAM" "$SAVED_FLASH"
+		rmdir "${SAVED_RAM%/*}" "${SAVED_FLASH%/*}" 2> /dev/null
+	fi
 }
 
 remove_feed() {
@@ -443,6 +536,31 @@ check_conflicts() {
 	fi
 }
 
+# check_dnsmasq: the dnsmasq the swap will replace, before anything changes —
+# which package runs it (dnsmasq or dnsmasq-dhcpv6; another one the installer
+# does not take apart), and that the owner runs it: enabled and running. A
+# router whose DNS and DHCP another program does (AdGuard Home, dnsmasq
+# switched off) is refused, not given a dnsmasq the owner turned off.
+check_dnsmasq() {
+	installed dnsmasq-full && return 0
+	step "DNS и DHCP роутера"
+	DNSMASQ_PKG=""
+	for p in dnsmasq dnsmasq-dhcpv6; do
+		installed "$p" && { DNSMASQ_PKG="$p"; break; }
+	done
+	if [ -z "$DNSMASQ_PKG" ]; then
+		owner="$(opkg search /usr/sbin/dnsmasq 2> /dev/null | sed -n 's/ - .*//p' | head -n 1)"
+		[ -n "$owner" ] && refuse DNSMASQ_UNKNOWN_PACKAGE "dnsmasq на роутере из пакета $owner: установщик заменяет на dnsmasq-full только dnsmasq и dnsmasq-dhcpv6. Замените его на dnsmasq-full сами и запустите установщик снова."
+		[ -e /usr/sbin/dnsmasq ] && refuse DNSMASQ_UNKNOWN_PACKAGE "dnsmasq на роутере поставлен не пакетом: установщик не знает, как вернуть его, если dnsmasq-full не заработает. Поставьте dnsmasq-full сами и запустите установщик снова."
+		refuse DNSMASQ_ABSENT "на роутере нет dnsmasq: DNS и DHCP делает другая программа. Vectra работает через dnsmasq-full как DNS роутера, а ставить его рядом с чужим DNS/DHCP установщик не будет."
+	fi
+	if ! /etc/init.d/dnsmasq enabled > /dev/null 2>&1 || ! /etc/init.d/dnsmasq running > /dev/null 2>&1; then
+		refuse DNSMASQ_NOT_ACTIVE "$DNSMASQ_PKG выключен (не запущен или убран из автозапуска): DNS и DHCP, видимо, делает другая программа (например, AdGuard Home). Vectra работает через dnsmasq-full как DNS роутера, а установщик не включает то, что выключил владелец."
+	fi
+	ok "$DNSMASQ_PKG $(installed_version "$DNSMASQ_PKG") работает; его заменит dnsmasq-full"
+	jcheck ok DNSMASQ "$DNSMASQ_PKG"
+}
+
 # ----------------------------------------------------------------- feeds ----
 
 add_feed() {
@@ -465,13 +583,22 @@ add_feed() {
 	fetch "$FEED_URL/$ARCH/Packages.sig" "$WORK/Packages.sig" || refuse FEED_UNREACHABLE "фид Vectra недоступен ($FEED_URL). Проверьте интернет и DNS роутера: nslookup ${FEED_URL#*://}"
 
 	note "opkg update (до минуты)"
-	run opkg update
+	# What this run takes from OpenWrt's feeds.
+	OPENWRT_NEED="dnsmasq-full kmod-nft-tproxy kmod-nft-socket kmod-nft-nat"
+	[ "$LUCI" = 1 ] && OPENWRT_NEED="$OPENWRT_NEED luci"
+	RT_UNTIL=feeds_ready
+	retry opkg update
+	RT_UNTIL=""
 	# Vectra's feed must be there, and verified: opkg drops a list whose
 	# signature does not check out.
 	available "$PKG" || refuse FEED_UNVERIFIED "фид Vectra не прошёл проверку подписи или пуст (opkg update, см. лог)."
 	ok "фид Vectra $FEED_URL/$ARCH, подпись ключом $FEED_KEY_ID"
-	if ! available dnsmasq-full; then
-		use_openwrt_mirror || refuse OPENWRT_FEEDS_UNREACHABLE "фиды OpenWrt недоступны (downloads.openwrt.org не отвечает) и прокси Vectra тоже. Проверьте DNS и IPv6 на WAN."
+	# shellcheck disable=SC2086 # a list of packages
+	if ! have_all $OPENWRT_NEED; then
+		# Every OpenWrt feed answered and a package is still missing: the
+		# mirror would not have it either.
+		[ -n "$(openwrt_feeds_down)" ] || openwrt_missing
+		use_openwrt_mirror || { [ -n "$(openwrt_feeds_down)" ] || openwrt_missing; refuse OPENWRT_FEEDS_UNREACHABLE "фиды OpenWrt недоступны (не скачались списки:$(openwrt_feeds_down)) и прокси Vectra тоже. Проверьте DNS и IPv6 на WAN."; }
 	fi
 	ok "фиды OpenWrt"
 }
@@ -484,8 +611,38 @@ use_openwrt_mirror() {
 	cp "$DISTFEEDS" "$WORK/distfeeds.conf.orig" || return 1
 	DISTFEEDS_SWAPPED=1
 	sed -e "s#https\{0,1\}://downloads.openwrt.org#$mirror#g" "$WORK/distfeeds.conf.orig" > "$DISTFEEDS" || return 1
-	run opkg update
-	available dnsmasq-full
+	RT_UNTIL=openwrt_ready
+	retry opkg update
+	RT_UNTIL=""
+	openwrt_ready
+}
+
+# After an opkg update that failed: is what this run needs there? Vectra's
+# feed, and OpenWrt's either whole or not there at all — none of it is what a
+# router that cannot reach downloads.openwrt.org sees, and the mirror is the
+# next step for that, not a wait (a Cudy behind a broken IPv6).
+# shellcheck disable=SC2086 # a list of packages
+openwrt_ready() { have_all $OPENWRT_NEED; }
+# The OpenWrt feeds (distfeeds.conf) whose list opkg update did not get.
+openwrt_feeds_down() {
+	[ -f "$DISTFEEDS" ] || return 0
+	for fd in $(awk '($1 == "src/gz" || $1 == "src") { print $2 }' "$DISTFEEDS"); do
+		[ -s "$LISTS/$fd" ] || printf ' %s' "$fd"
+	done
+}
+# openwrt_missing: OpenWrt's feeds answered, and what this run needs is not in
+# them — a kmod built for another kernel (a firmware built by hand, a
+# snapshot), not an outage.
+# shellcheck disable=SC2086 # a list of packages
+openwrt_missing() {
+	om=""
+	for p in $OPENWRT_NEED; do installed "$p" || available "$p" || om="$om $p"; done
+	refuse OPENWRT_PACKAGE_MISSING "в фидах OpenWrt нет нужных Vectra пакетов:$om. Фиды ответили — пакетов в них нет; обычно это модули ядра (kmod) для прошивки, собранной не официально, или снапшота. Нужна официальная прошивка OpenWrt 23.05 или 24.10."
+}
+feeds_ready() {
+	have_all "$PKG" || return 1
+	have_all dnsmasq-full || return 0
+	openwrt_ready
 }
 
 # ------------------------------------------------------------------ plan ----
@@ -584,37 +741,61 @@ install_xray_pin() {
 	rm -rf "$WORK/pkgs"
 	mkdir -p "$WORK/pkgs"
 	f="$WORK/pkgs/${3##*/}"
-	fetch "$base/$3" "$f" || refuse XRAY_PIN_DOWNLOAD "не удалось скачать xray-core $2 ($base/$3)."
+	retry fetch "$base/$3" "$f" || refuse XRAY_PIN_DOWNLOAD "не удалось скачать xray-core $2 ($base/$3)."
 	if [ "$(sha256sum "$f" 2> /dev/null | awk '{ print $1 }')" != "$4" ]; then
 		refuse XRAY_PIN_CHECKSUM "xray-core $2 скачался не тот: sha256 не совпадает со списком фида $1."
 	fi
 	INSTALLED_SOMETHING=1
-	run opkg install "$f" || fail XRAY_PIN_INSTALL "opkg install xray-core $2 не прошёл (см. лог). Vectra не установлена."
+	retry opkg install "$f" || fail XRAY_PIN_INSTALL "opkg install xray-core $2 не прошёл (см. лог). Vectra не установлена."
 	ok "xray-core $(installed_version xray-core): теперь xray — пакет, и его версия остаётся прежней"
 }
 
+# The swap of dnsmasq for dnsmasq-full, and its way back, which needs no
+# network. Before anything is removed, the dnsmasq that runs now is kept twice:
+# - its package, with everything it depends on already on the router, so opkg
+#   can put it back;
+# - its files as they are on the router, with opkg's record of them, put back
+#   by hand when opkg cannot.
+# It goes on flash when there is room, so the way back survives a reboot.
+# "Works" is checked, not assumed. Each start is of the system dnsmasq only,
+# afresh, with no leftover of it holding port 53, and it must answer
+# (DNS_CHECK). Otherwise the way back is taken and checked the same way. From
+# the moment the old dnsmasq stops to a dnsmasq that answers, everything
+# shares one deadline (DNS_DEADLINE): one try per stage, each with its share.
 swap_dnsmasq() {
 	installed dnsmasq-full && { ok "dnsmasq-full уже стоит"; return 0; }
-	step "dnsmasq -> dnsmasq-full"
+	OLD="$DNSMASQ_PKG"
+	[ -n "$OLD" ] || fail DNSMASQ_ABSENT "не найден пакет dnsmasq, который нужно заменить (проверка не выполнялась). dnsmasq не тронут."
+	step "$OLD -> dnsmasq-full"
 	rm -rf "$WORK/pkgs"
 	mkdir -p "$WORK/pkgs"
 	# Its libraries first: they do not clash with dnsmasq.
-	deps="$(field dnsmasq-full Depends | tr ',' '\n' | sed 's/ *(.*//; s/^ *//; s/ *$//' | grep -v '^libc$')"
-	for d in $deps; do
-		installed "$d" || run opkg install "$d" || fail DNSMASQ_DEPENDENCY "не удалось поставить $d (зависимость dnsmasq-full). dnsmasq не тронут."
+	for d in $(depends_of "$(field dnsmasq-full Depends)"); do
+		installed "$d" || retry opkg install "$d" || fail DNSMASQ_DEPENDENCY "не удалось поставить $d (зависимость dnsmasq-full). $OLD не тронут."
 	done
 	INSTALLED_SOMETHING=1
-	# Both packages on the router before anything is removed: the swap and the
-	# way back need no network.
-	( cd "$WORK/pkgs" && run opkg download dnsmasq-full ) || fail DNSMASQ_DOWNLOAD "не удалось скачать dnsmasq-full. dnsmasq не тронут."
-	if installed dnsmasq; then
-		( cd "$WORK/pkgs" && run opkg download dnsmasq ) || fail DNSMASQ_DOWNLOAD "не удалось скачать dnsmasq (для отката). dnsmasq не тронут."
-	fi
+	download dnsmasq-full || fail DNSMASQ_DOWNLOAD "не удалось скачать dnsmasq-full. $OLD не тронут."
 	full=""
-	old=""
 	for f in "$WORK"/pkgs/dnsmasq-full_*.ipk; do [ -f "$f" ] && full="$f"; done
-	for f in "$WORK"/pkgs/dnsmasq_*.ipk; do [ -f "$f" ] && old="$f"; done
-	[ -n "$full" ] || fail DNSMASQ_DOWNLOAD "dnsmasq-full не скачался. dnsmasq не тронут."
+	[ -n "$full" ] || fail DNSMASQ_DOWNLOAD "dnsmasq-full не скачался. $OLD не тронут."
+	download "$OLD" || fail DNSMASQ_DOWNLOAD "не удалось скачать $OLD (для отката). $OLD не тронут."
+	old=""
+	for f in "$WORK/pkgs/${OLD}"_*.ipk; do [ -f "$f" ] && old="$f"; done
+	[ -n "$old" ] || fail DNSMASQ_DOWNLOAD "$OLD (для отката) не скачался. $OLD не тронут."
+	# Putting it back must not need the network: what it depends on is on
+	# the router before anything is removed. A package whose control cannot
+	# be read (or names no dependency: dnsmasq needs at least libc) is not
+	# one to count on.
+	deps="$(ipk_field "$old" Depends)"
+	[ -n "$deps" ] || fail DNSMASQ_DOWNLOAD "скачанный $OLD (для отката) не читается или пуст (нет Depends): откат на него не гарантирован. $OLD не тронут."
+	for d in $(depends_of "$deps"); do
+		installed "$d" || retry opkg install "$d" || fail DNSMASQ_DEPENDENCY "не удалось поставить $d (зависимость $OLD, для отката). $OLD не тронут."
+	done
+	[ "$(ipk_field "$old" Version)" = "$(installed_version "$OLD")" ] ||
+		printf '# the feed has %s %s, the router %s: the way back puts the feed'"'"'s back first, the router'"'"'s files if that fails\n' "$OLD" "$(ipk_field "$old" Version)" "$(installed_version "$OLD")" >> "$LOG"
+	save_dnsmasq "$old" || fail DNSMASQ_DOWNLOAD "не удалось сохранить прежний $OLD для отката (место в /tmp?). $OLD не тронут."
+	old="$SAVED/${old##*/}"
+	note "прежний $OLD $(installed_version "$OLD") сохранён для отката: $SAVED"
 	[ -f /etc/config/dhcp ] && cp /etc/config/dhcp "$WORK/dhcp.before"
 	# What "works" means here is what worked before: a dnsmasq that answered
 	# must answer again; one that only hands out addresses (another DNS server
@@ -622,17 +803,44 @@ swap_dnsmasq() {
 	DNS_CHECK=dnsmasq_runs
 	dns_answers && DNS_CHECK=dns_answers
 
-	installed dnsmasq && { run opkg remove dnsmasq || fail DNSMASQ_REMOVE "opkg remove dnsmasq не прошёл. dnsmasq не тронут."; }
-	if run opkg install "$full" && restore_dhcp && run /etc/init.d/dnsmasq restart && wait_for 15 "$DNS_CHECK"; then
-		ok "dnsmasq-full $(installed_version dnsmasq-full): DHCP и DNS работают"
+	DNS_T0="$(date +%s)"
+	if ! run opkg remove "$OLD"; then
+		installed "$OLD" && dnsmasq_up 1 3 20 && fail DNSMASQ_REMOVE "opkg remove $OLD не прошёл; $OLD работает как прежде."
+		dnsmasq_back
+	fi
+	if run opkg install "$full" && restore_dhcp && dnsmasq_up 1 3 20; then
+		ok "dnsmasq-full $(installed_version dnsmasq-full): DHCP и DNS работают (без DNS $(($(date +%s) - DNS_T0)) с)"
 		return 0
 	fi
-	say "    ! dnsmasq-full не поднялся; возвращаю прежний dnsmasq"
-	installed dnsmasq-full && run opkg remove dnsmasq-full
-	if [ -n "$old" ] && run opkg install "$old" && restore_dhcp && run /etc/init.d/dnsmasq restart && wait_for 15 "$DNS_CHECK"; then
-		fail DNSMASQ_FULL_ROLLED_BACK "dnsmasq-full не заработал; прежний dnsmasq возвращён и работает. Vectra не установлена."
+	say "    ! dnsmasq-full не поднялся; возвращаю прежний $OLD"
+	dnsmasq_back
+}
+
+# dnsmasq_back: the way back, and the end of the run. Said loudly when even it
+# leaves the router without the dnsmasq it had.
+dnsmasq_back() {
+	if rollback_dnsmasq; then
+		fail DNSMASQ_FULL_ROLLED_BACK "dnsmasq-full не заработал; прежний $OLD возвращён и работает (без DNS было $(($(date +%s) - DNS_T0)) с). Vectra не установлена."
 	fi
-	fail DNSMASQ_FULL_BROKEN "dnsmasq-full не заработал, и прежний dnsmasq не вернулся: у устройств в сети может не быть DHCP/DNS. Подключитесь кабелем и выполните: opkg install $old && /etc/init.d/dnsmasq restart"
+	DNSMASQ_KEEP=1
+	where="$SAVED"
+	case "$SAVED" in /tmp/*) where="$SAVED — в памяти: после перезагрузки его не будет, сохраните заранее" ;; esac
+	if dnsmasq_rescue; then
+		fail DNSMASQ_FULL_BROKEN "dnsmasq-full не заработал, и прежний $OLD не запускается как служба. Запущен временный dnsmasq: DHCP и DNS работают, но только до перезагрузки роутера. Подключитесь кабелем и выполните: kill \$(cat /var/run/dnsmasq-rescue.pid); opkg install --force-reinstall $old && /etc/init.d/dnsmasq enable && /etc/init.d/dnsmasq restart (пакет и файлы прежнего dnsmasq: $where)"
+	fi
+	fail DNSMASQ_FULL_BROKEN "dnsmasq-full не заработал, и прежний $OLD не вернулся: у устройств в сети может не быть DHCP/DNS. Подключитесь кабелем и выполните: opkg install --force-reinstall $old && /etc/init.d/dnsmasq enable && /etc/init.d/dnsmasq restart (пакет и файлы прежнего dnsmasq: $where)"
+}
+
+# rollback_dnsmasq: dnsmasq-full gone, and the dnsmasq that was there back and
+# answering, from its package or else from its files. No network. It starts
+# again what it stops: the old dnsmasq is always there to put back (the
+# checks refused a router without one).
+rollback_dnsmasq() {
+	dnsmasq_stop
+	installed dnsmasq-full && { run opkg remove dnsmasq-full || run opkg remove --force-depends dnsmasq-full; }
+	run opkg install "$old" && restore_dhcp && dnsmasq_up 2 3 20 && return 0
+	say "    ! opkg не вернул прежний $OLD; восстанавливаю его файлы, сохранённые до замены"
+	restore_saved_dnsmasq && restore_dhcp && dnsmasq_up 5 6 15
 }
 
 restore_dhcp() {
@@ -643,20 +851,176 @@ restore_dhcp() {
 	return 0
 }
 
-dnsmasq_runs() { pgrep -x dnsmasq > /dev/null; }
+# download <pkg>: opkg download into $WORK/pkgs. Run in this shell, not a
+# subshell, so retry's pauses count against this run's budget. Then back to
+# the directory it ran from ($0 may be relative to it).
+download() {
+	dl_from="$(pwd)"
+	cd "$WORK/pkgs" || return 1
+	retry opkg download "$1"
+	dl_rc=$?
+	cd "$dl_from" || cd /
+	return "$dl_rc"
+}
+
+# The dependencies of a package, by name: "a, b (>= 1)" -> a b. libc is
+# always there, and opkg lists it under another name on some releases.
+depends_of() { echo "$1" | tr ',' '\n' | sed 's/ *(.*//; s/^ *//; s/ *$//' | grep -v -e '^libc$' -e '^$'; }
+# A field of a downloaded package's control.
+ipk_field() { tar -xzOf "$1" ./control.tar.gz 2> /dev/null | tar -xzOf - ./control 2> /dev/null | sed -n "s/^$2: //p" | head -n 1; }
+
+# save_dnsmasq <ipk>: the package for the way back, and the installed $OLD's
+# files as they are now with opkg's record of it. Built in /tmp, then moved to
+# flash ($SAVED_FLASH) when there is room, so it survives a reboot.
+save_dnsmasq() {
+	SAVED_MADE=1
+	rm -rf "$SAVED_RAM" "$SAVED_FLASH"
+	SAVED="$SAVED_RAM"
+	mkdir -p "$SAVED" && [ -f "$OPKG_INFO/$OLD.list" ] && cp "$1" "$SAVED/" || return 1
+	{
+		cat "$OPKG_INFO/$OLD.list"
+		ls "$OPKG_INFO/$OLD".*
+	} | while read -r f; do
+		if [ -e "$f" ] || [ -L "$f" ]; then echo "${f#/}"; fi
+	done > "$SAVED/files"
+	grep -qx 'usr/sbin/dnsmasq' "$SAVED/files" && tar -czf "$SAVED/files.tar.gz" -C / -T "$SAVED/files" || return 1
+	awk -v p="$OLD" '/^Package: / { k = ($2 == p) } k' "$OPKG_STATUS" > "$SAVED/status"
+	grep -qx "Package: $OLD" "$SAVED/status" || return 1
+	sv_kb="$(du -sk "$SAVED" | awk '{ print $1; exit }')"
+	if mkdir -p "$SAVED_FLASH" && [ "$(free_kb "$SAVED_FLASH")" -ge $((${sv_kb:-0} + MARGIN_KB)) ] 2> /dev/null &&
+		cp -a "$SAVED/." "$SAVED_FLASH/"; then
+		rm -rf "$SAVED"
+		rmdir "${SAVED_RAM%/*}" 2> /dev/null
+		SAVED="$SAVED_FLASH"
+	else
+		rm -rf "$SAVED_FLASH"
+		rmdir "${SAVED_FLASH%/*}" 2> /dev/null
+		printf '# no room on flash for the way back (%s KB): kept in RAM only\n' "$sv_kb" >> "$LOG"
+	fi
+	return 0
+}
+
+# restore_saved_dnsmasq: what save_dnsmasq kept, back in place, under opkg's
+# own record of it. For when opkg cannot put the package back.
+restore_saved_dnsmasq() {
+	[ -s "$SAVED/files.tar.gz" ] && [ -s "$SAVED/status" ] || return 1
+	dnsmasq_stop
+	installed dnsmasq-full && run opkg remove --force-depends dnsmasq-full
+	installed "$OLD" && run opkg remove --force-depends "$OLD"
+	run tar -xzf "$SAVED/files.tar.gz" -C / || return 1
+	grep -qx "Package: $OLD" "$OPKG_STATUS" || { echo; cat "$SAVED/status"; } >> "$OPKG_STATUS"
+}
+
+# The system dnsmasq's processes: the instances procd runs for /etc/config/dhcp
+# (each reads the configuration its init script writes, -C
+# /var/etc/dnsmasq.conf.<section>; the jail wrapper around one says so too),
+# and the one dnsmasq_rescue starts with that file. Not PassWall2's copies,
+# which read their own files under /tmp/etc/passwall2. By name and command
+# line, not `pgrep -x dnsmasq`: BusyBox's pgrep -x matches argv[0],
+# "/usr/sbin/dnsmasq" as procd starts it, and finds only the jail wrapper or
+# an init script that happens to run. A process that has exited and is not
+# yet reaped does not count.
+dnsmasq_pids() {
+	for p in $(pidof dnsmasq); do
+		case "$(cut -d ' ' -f 3 "/proc/$p/stat" 2> /dev/null)" in "" | Z | X) continue ;; esac
+		tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null | grep -q -e ' -C /var/etc/dnsmasq\.conf\.' && echo "$p"
+	done
+}
+dnsmasq_runs() { [ -n "$(dnsmasq_pids)" ]; }
+no_dnsmasq() { ! dnsmasq_runs; }
 # dnsmasq answers from /etc/hosts itself: no upstream (a WAN whose DNS is down)
 # can make this fail. An answer has a Name: line; the Server: header alone,
-# printed even when nothing answers, does not count.
+# printed even when nothing answers, does not count. A second at most per try.
 dns_answers() {
 	dnsmasq_runs || return 1
-	nslookup localhost 127.0.0.1 2>/dev/null | grep -q '^Name:'
+	nslookup -timeout=1 -retry=1 localhost 127.0.0.1 2> /dev/null | grep -q '^Name:'
+}
+
+# dns_by <num> <den> <floor>: the time (date +%s) a stage of the swap has
+# until. That is its share of DNS_DEADLINE from the moment the old dnsmasq
+# stopped, and at least <floor> s from now (the start it waits on).
+dns_by() {
+	db=$((DNS_T0 + DNS_DEADLINE * $1 / $2))
+	dn=$(($(date +%s) + $3))
+	[ "$db" -ge "$dn" ] || db="$dn"
+	echo "$db"
+}
+# until_time <time> <command...>: the command, once a second, until it holds or
+# the time comes.
+until_time() {
+	ut="$1"
+	shift
+	while :; do
+		"$@" > /dev/null 2>&1 && return 0
+		[ "$(date +%s)" -lt "$ut" ] || return 1
+		sleep 1
+	done
+}
+
+# dnsmasq_stop: procd's dnsmasq stopped, and none of the system dnsmasq left
+# holding port 53. One procd no longer tracks (its jail gone before it) would
+# keep every dnsmasq started after it from answering.
+dnsmasq_stop() {
+	[ -x /etc/init.d/dnsmasq ] && run /etc/init.d/dnsmasq stop
+	wait_for 5 no_dnsmasq && return 0
+	printf '# dnsmasq still runs after its stop (%s): killed\n' "$(dnsmasq_pids | tr '\n' ' ')" >> "$LOG"
+	for p in $(dnsmasq_pids); do kill "$p" 2> /dev/null; done
+	wait_for 2 no_dnsmasq && return 0
+	for p in $(dnsmasq_pids); do kill -9 "$p" 2> /dev/null; done
+	wait_for 1 no_dnsmasq
+}
+
+# dnsmasq_up <num> <den> <floor>: the dnsmasq on the router started afresh by
+# its init script, and answering (DNS_CHECK) within its stage of the deadline
+# (dns_by, counted once it is started). Enabled again: opkg's remove disabled
+# it, and the checks refused a router whose owner had.
+dnsmasq_up() {
+	[ -x /etc/init.d/dnsmasq ] || { dns_diag "нет /etc/init.d/dnsmasq"; return 1; }
+	run /etc/init.d/dnsmasq enable
+	dnsmasq_stop
+	run /etc/init.d/dnsmasq start
+	until_time "$(dns_by "$1" "$2" "$3")" "$DNS_CHECK" && return 0
+	dns_diag "dnsmasq не ответил ($DNS_CHECK) за $(($(date +%s) - DNS_T0)) с от остановки прежнего"
+	return 1
+}
+
+# dnsmasq_rescue: the last resort, the dnsmasq binary run straight, outside
+# procd and its jail, with the configuration its init script wrote last.
+# Until a reboot. Only the first dnsmasq section of /etc/config/dhcp (the one
+# every stock router has) is served this way. A router with several dnsmasq
+# instances gets its first one back by hand. The rest come back with the fix
+# the message names, or with a reboot.
+dnsmasq_rescue() {
+	[ -x /usr/sbin/dnsmasq ] || return 1
+	c=""
+	for f in /var/etc/dnsmasq.conf.*; do [ -f "$f" ] && c="$f" && break; done
+	[ -n "$c" ] || return 1
+	say "    ! запускаю dnsmasq вручную (до перезагрузки), чтобы в сети были DHCP и DNS"
+	dnsmasq_stop
+	run /usr/sbin/dnsmasq -C "$c" -x /var/run/dnsmasq-rescue.pid && until_time "$(dns_by 1 1 10)" "$DNS_CHECK"
+}
+
+# dns_diag <what>: DNS on the router as it is now, into the log. What an owner
+# (and support) needs to see why dnsmasq does not answer.
+dns_diag() {
+	{
+		printf '# ---- %s: dnsmasq now\n' "$1"
+		opkg list-installed 'dnsmasq*'
+		ps w | grep -e '[d]nsmasq' -e '[u]jail'
+		netstat -lnup | grep ':53 '
+		netstat -lntp | grep ':53 '
+		ubus call service list '{"name":"dnsmasq"}'
+		nslookup -timeout=1 -retry=1 localhost 127.0.0.1
+		logread | tail -n 40
+		printf '# ----\n'
+	} >> "$LOG" 2>&1
 }
 
 LUCI=0
 install_packages() {
 	if [ "$LUCI" = 1 ]; then
 		step "LuCI (веб-интерфейс роутера)"
-		run opkg install luci || fail LUCI_INSTALL "не удалось поставить LuCI."
+		retry opkg install luci || fail LUCI_INSTALL "не удалось поставить LuCI."
 		INSTALLED_SOMETHING=1
 		ok "LuCI $(installed_version luci-base)"
 	fi
@@ -674,9 +1038,9 @@ install_packages() {
 		# with a binary swapped in by hand), and `opkg upgrade` would take the
 		# newest from ANY feed. The package's own Depends, xray-core (>= the
 		# minimum), upgrades it only when it is too old.
-		run opkg upgrade "$PKG" vectra-geodata vectra-reporter
-		installed vectra-geodata || run opkg install vectra-geodata
-		installed vectra-reporter || run opkg install vectra-reporter
+		retry opkg upgrade "$PKG" vectra-geodata vectra-reporter
+		installed vectra-geodata || retry opkg install vectra-geodata
+		installed vectra-reporter || retry opkg install vectra-reporter
 	fi
 	pkgs="$PKG"
 	if [ -z "$was" ]; then
@@ -689,7 +1053,7 @@ install_packages() {
 		for p in vectra-geodata vectra-reporter; do available "$p" && pkgs="$pkgs $p"; done
 	fi
 	# shellcheck disable=SC2086 # a list of packages
-	run opkg install $pkgs || fail PKG_INSTALL "opkg install $pkgs не прошёл (см. лог). Интернет роутера работает как прежде."
+	retry opkg install $pkgs || fail PKG_INSTALL "opkg install $pkgs не прошёл (см. лог). Интернет роутера работает как прежде."
 	if [ "$STANDBY" = 1 ]; then
 		unset VECTRA_SKIP_POSTINST_RESTART
 		run uci set "$PKG.main.enabled=0"
@@ -904,6 +1268,7 @@ main() {
 	check_router
 	check_clock
 	check_conflicts
+	check_dnsmasq
 	installed luci-base || LUCI=1
 	add_feed
 	plan_xray

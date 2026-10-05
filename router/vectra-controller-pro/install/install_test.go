@@ -28,15 +28,35 @@ type router struct {
 // The fakes read their answers from files in the router's directory:
 // installed and available ("<pkg> - <version>" lines), xray-version, df-free
 // (KB), download (what wget fetches); opkg and wget note what they were
-// asked in log.
+// asked in log. The feeds' outages: offline (how many of opkg's next
+// updates, downloads, installs fail to download, as opkg says it), broken
+// (how many fail otherwise), wget-offline (how many of wget's next fetches
+// fail), wget-404 (the next fetch finds nothing there).
 const fakeOpkg = `#!/bin/sh
 d="$FAKE"
+# take <file>: one of the failures it counts down, if any are left.
+take() {
+	n="$(cat "$d/$1" 2> /dev/null)"
+	[ "${n:-0}" -gt 0 ] || return 1
+	echo $((n - 1)) > "$d/$1"
+}
 case "$1" in
 list-installed) grep "^$2 - " "$d/installed" 2> /dev/null ;;
 list) grep "^$2 - " "$d/available" 2> /dev/null ;;
+search) cat "$d/search" 2> /dev/null ;;
 print-architecture) echo "arch all 1"; echo "arch aarch64_cortex-a53 10" ;;
 info) ;;
-*) echo "opkg $*" >> "$d/log" ;;
+*)
+	echo "opkg $*" >> "$d/log"
+	if take offline; then
+		echo " * opkg_download: Failed to download https://downloads.openwrt.org/releases/24.10.8/packages/aarch64_cortex-a53/base/x.ipk, wget returned 4."
+		exit 255
+	fi
+	if take broken; then
+		echo " * pkg_run_script: package \"x\" postinst script returned status 1."
+		exit 255
+	fi
+	;;
 esac
 exit 0
 `
@@ -60,6 +80,16 @@ while [ $# -gt 0 ]; do
 	shift
 done
 echo "wget $url" >> "$FAKE/log"
+if [ -f "$FAKE/wget-404" ]; then
+	rm -f "$FAKE/wget-404"
+	echo "HTTP error 404" >&2
+	exit 8
+fi
+n="$(cat "$FAKE/wget-offline" 2> /dev/null)"
+if [ "${n:-0}" -gt 0 ]; then
+	echo $((n - 1)) > "$FAKE/wget-offline"
+	exit 4
+fi
 [ -f "$FAKE/download" ] || exit 1
 cp "$FAKE/download" "$out"
 `
@@ -103,6 +133,8 @@ func newRouter(t *testing.T) *router {
 		"VECTRA_OPKG_CONFS="+filepath.Join(dir, "opkg", "*.conf"),
 		"VECTRA_LEGACY_AGENT_MARKER="+filepath.Join(dir, "vault-read-v1"),
 		"VECTRA_XRAY_MIN=26.3.27",
+		// Three attempts, as on a router, without the router's pauses.
+		"VECTRA_RETRY_DELAYS=0 0",
 	)
 	r.write("df-free", "60000")
 	return r
@@ -153,6 +185,7 @@ func (r *router) run(script string) (string, int) {
 		r.t.Fatal(err)
 	}
 	prelude := ". '" + src + "'\nLOG='" + filepath.Join(r.dir, "install.log") + "'\nWORK='" + filepath.Join(r.dir, "work") +
+		"'\nSAVED_RAM='" + filepath.Join(r.dir, "saved-ram") + "'\nSAVED_FLASH='" + filepath.Join(r.dir, "saved-flash") +
 		"'\nARCH=aarch64_cortex-a53\nSTORE=/overlay\n"
 	cmd := exec.Command(shell, "-c", prelude+script)
 	cmd.Env = r.env
@@ -465,6 +498,212 @@ func TestJSONValuesAreASCII(t *testing.T) {
 	out, _ := r.run(`JSON=1; jcheck ok ROUTER 'OpenWrt 24.10.4 "netis" \ nx31 — роутер'`)
 	lines := jsonLines(t, out)
 	if len(lines) != 1 || lines[0]["value"] != `OpenWrt 24.10.4 "netis" \ nx31  ` {
+		t.Fatalf("%q", out)
+	}
+}
+
+// OpenWrt's feeds went away for about 40 s on 2026-10-04, and the installer
+// stand failed DNSMASQ_DEPENDENCY on code that was fine. A step that downloads
+// is tried three times; each retry is said, and logged.
+func TestADownloadThatFailsIsTriedAgain(t *testing.T) {
+	r := newRouter(t)
+	r.write("offline", "2")
+	out, code := r.run("retry opkg install dnsmasq-full")
+	if code != 0 || strings.Count(r.read("log"), "opkg install dnsmasq-full\n") != 3 {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
+	}
+	for _, n := range []string{"2/3", "3/3"} {
+		if !strings.Contains(out, "Сервер пакетов не ответил — повторяю ("+n+")…") {
+			t.Fatalf("does not say retry %s:\n%s", n, out)
+		}
+	}
+	if l := r.read("install.log"); strings.Count(l, "Failed to download") != 2 || !strings.Contains(l, "attempt 3/3") {
+		t.Fatalf("the install log:\n%s", l)
+	}
+
+	// Down for longer: three attempts, then opkg's own failure.
+	r.write("log", "")
+	r.write("offline", "5")
+	if out, code := r.run("retry opkg update"); code != 255 || strings.Count(r.read("log"), "opkg update\n") != 3 {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
+	}
+
+	// Not the network: said at once, not hidden behind a second try.
+	r.write("log", "")
+	r.write("offline", "0")
+	r.write("broken", "1")
+	out, code = r.run("retry opkg install vectra-controller-pro")
+	if code != 255 || strings.Count(r.read("log"), "opkg install") != 1 || strings.Contains(out, "повторяю") {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
+	}
+}
+
+// The steps that download from the feeds are the ones retried: the package
+// install (PKG_INSTALL) and the xray-core of the binary's version (fetched
+// with wget).
+func TestTheInstallAndThePinRideOutAnOutage(t *testing.T) {
+	r := newRouter(t)
+	r.write("available", "vectra-controller-pro - 0.7.0-r14\nvectra-geodata - 2026.9.28-r2\n")
+	r.write("offline", "1")
+	out, code := r.run("install_packages")
+	if code != 0 || strings.Count(r.read("log"), "opkg install vectra-controller-pro vectra-geodata\n") != 2 {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
+	}
+
+	r = newRouter(t)
+	r.write("xray-version", "26.7.28")
+	ipk := "an xray-core package"
+	sum := sha256.Sum256([]byte(ipk))
+	r.write("download", ipk)
+	r.write("wget-offline", "1")
+	r.feed("passwall_packages", "https://example.invalid/passwall",
+		pkg("xray-core", "26.7.28-r1", "xray-core_26.7.28-r1_aarch64_cortex-a53.ipk", hex.EncodeToString(sum[:])))
+	out, code = r.run("plan_xray; install_xray_pin")
+	if code != 0 || strings.Count(r.read("log"), "wget https://example.invalid/passwall/xray-core_26.7.28-r1_aarch64_cortex-a53.ipk") != 2 ||
+		!strings.Contains(r.read("log"), "opkg install ") {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
+	}
+}
+
+// opkg update fails whenever any feed does — a third party's down for good,
+// too. That is no reason to wait: only a package this run needs that is still
+// missing is. And with OpenWrt's feeds gone altogether (a router that cannot
+// reach downloads.openwrt.org), the mirror is next, not a wait.
+func TestAnUpdateIsTriedAgainOnlyForWhatTheRunNeeds(t *testing.T) {
+	r := newRouter(t)
+	all := "vectra-controller-pro - 0.7.0-r18\ndnsmasq-full - 2.93-r1\nkmod-nft-tproxy - 6.6\nkmod-nft-socket - 6.6\nkmod-nft-nat - 6.6\n"
+	need := `OPENWRT_NEED="dnsmasq-full kmod-nft-tproxy kmod-nft-socket kmod-nft-nat"; RT_UNTIL=feeds_ready; retry opkg update`
+	for _, c := range []struct {
+		what, available string
+		attempts        int
+	}{
+		{"everything it needs is there", all, 1},
+		{"OpenWrt's feeds gone altogether: the mirror next", "vectra-controller-pro - 0.7.0-r18\n", 1},
+		{"Vectra's feed missing", strings.Replace(all, "vectra-controller-pro - 0.7.0-r18\n", "", 1), 3},
+		{"a kmod missing", strings.Replace(all, "kmod-nft-nat - 6.6\n", "", 1), 3},
+	} {
+		r.write("log", "")
+		r.write("offline", "9")
+		r.write("available", c.available)
+		out, _ := r.run(need)
+		if n := strings.Count(r.read("log"), "opkg update\n"); n != c.attempts {
+			t.Errorf("%s: %d attempts, want %d:\n%s", c.what, n, c.attempts, out)
+		}
+	}
+	// A kmod already installed is not needed from a feed.
+	r.write("log", "")
+	r.write("offline", "9")
+	r.write("available", strings.Replace(all, "kmod-nft-nat - 6.6\n", "", 1))
+	r.write("installed", "kmod-nft-nat - 6.6\n")
+	if out, _ := r.run(need); strings.Count(r.read("log"), "opkg update\n") != 1 {
+		t.Errorf("an installed kmod: %s\n%s", r.read("log"), out)
+	}
+}
+
+// The pauses of a run share one budget: once it is spent a failed download
+// fails as before, without another pause.
+func TestTheRetriesShareOneBudget(t *testing.T) {
+	r := newRouter(t)
+	r.write("offline", "9")
+	out, code := r.run("RETRY_DELAYS='1 1'; RT_SPENT=120; retry opkg install dnsmasq-full")
+	if code != 255 || strings.Count(r.read("log"), "opkg install") != 1 || strings.Contains(out, "повторяю") ||
+		!strings.Contains(r.read("install.log"), "retries are spent") {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), r.read("install.log"))
+	}
+	// RT_SPENT counts what was slept.
+	r.write("log", "")
+	r.write("offline", "1")
+	if out, _ := r.run("RETRY_DELAYS='0 1'; retry opkg update; echo SPENT=$RT_SPENT"); !strings.Contains(out, "SPENT=0") {
+		t.Fatalf("%s", out)
+	}
+}
+
+// fetch says the HTTP status: a 404 is not there to be fetched again.
+func TestA404IsNotTriedAgain(t *testing.T) {
+	r := newRouter(t)
+	r.write("download", "x")
+	r.write("wget-404", "")
+	_, code := r.run("retry fetch https://example.invalid/x " + filepath.Join(r.dir, "work", "x"))
+	if code != 8 || strings.Count(r.read("log"), "wget ") != 1 {
+		t.Fatalf("exit %d, log:\n%s", code, r.read("log"))
+	}
+}
+
+// VECTRA_RETRY_DELAYS: whole seconds, or the default.
+func TestRetryDelaysAreWholeSeconds(t *testing.T) {
+	r := newRouter(t)
+	for in, want := range map[string]string{
+		"0 0": "0 0", " 08  3 ": "8 3", "5; reboot": "10 30", "*": "10 30", "1.5": "10 30", "  ": "10 30", "-1": "10 30",
+	} {
+		out, _ := r.run("VECTRA_RETRY_DELAYS='" + in + "' . '" + mustAbs(t, "install.sh") + "'; echo \"[$RETRY_DELAYS]\"")
+		if strings.TrimSpace(out) != "["+want+"]" {
+			t.Errorf("%q: %q, want %q", in, out, want)
+		}
+	}
+}
+
+func mustAbs(t *testing.T, p string) string {
+	t.Helper()
+	a, err := filepath.Abs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// OpenWrt's feeds all answered and a kmod is still missing: not an outage
+// (OPENWRT_FEEDS_UNREACHABLE) but a package that is not there — a firmware
+// built by hand, a snapshot. A list that did not download is an outage.
+func TestAMissingPackageIsNotAnOutage(t *testing.T) {
+	r := newRouter(t)
+	r.write("distfeeds.conf", "src/gz openwrt_base https://downloads.openwrt.org/b\nsrc/gz openwrt_kmods https://downloads.openwrt.org/k\n")
+	r.write("lists/openwrt_base", "Package: dnsmasq-full\n")
+	r.write("available", "dnsmasq-full - 2.93-r1\nkmod-nft-tproxy - 6.6\nkmod-nft-socket - 6.6\n")
+	script := `DISTFEEDS='` + filepath.Join(r.dir, "distfeeds.conf") + `'; OPENWRT_NEED="dnsmasq-full kmod-nft-tproxy kmod-nft-socket kmod-nft-nat"; echo "down=[$(openwrt_feeds_down)]"; [ -n "$(openwrt_feeds_down)" ] || openwrt_missing`
+	out, code := r.run(script)
+	if code != 0 || !strings.Contains(out, "down=[ openwrt_kmods]") {
+		t.Fatalf("a list not downloaded is an outage: exit %d\n%s", code, out)
+	}
+	r.write("lists/openwrt_kmods", "Package: kmod-nft-tproxy\n")
+	out, code = r.run(script)
+	if code != 1 || !strings.Contains(out, "OPENWRT_PACKAGE_MISSING") || !strings.Contains(out, "kmod-nft-nat") || strings.Contains(out, "недоступны") {
+		t.Fatalf("every list there, a kmod missing: exit %d\n%s", code, out)
+	}
+}
+
+// The dnsmasq the swap replaces is found before anything changes: a router
+// with none, or with one from a package the installer cannot put back, or
+// one the owner turned off, is refused (exit 1) with its own code.
+func TestTheDnsmasqToReplaceIsCheckedFirst(t *testing.T) {
+	r := newRouter(t)
+	for _, c := range []struct {
+		what, installed, search, code string
+	}{
+		{"no dnsmasq at all", "", "", "DNSMASQ_ABSENT"},
+		{"dnsmasq from another package", "", "dnsmasq-custom - 1.0 - /usr/sbin/dnsmasq\n", "DNSMASQ_UNKNOWN_PACKAGE"},
+		// The test host has no /etc/init.d/dnsmasq: neither enabled nor running.
+		{"dnsmasq-dhcpv6, off", "dnsmasq-dhcpv6 - 2.93-r1\n", "", "DNSMASQ_NOT_ACTIVE"},
+		{"dnsmasq, off", "dnsmasq - 2.93-r1\n", "", "DNSMASQ_NOT_ACTIVE"},
+	} {
+		r.write("installed", c.installed)
+		r.write("search", c.search)
+		out, code := r.run("check_dnsmasq; echo PKG=$DNSMASQ_PKG")
+		if code != 1 || !strings.Contains(out, c.code) {
+			t.Errorf("%s: exit %d, want 1 and %s:\n%s", c.what, code, c.code, out)
+		}
+	}
+	// dnsmasq-full already there: nothing to replace, nothing refused.
+	r.write("installed", "dnsmasq-full - 2.93-r1\n")
+	if out, code := r.run("check_dnsmasq; echo PKG=[$DNSMASQ_PKG]"); code != 0 || !strings.Contains(out, "PKG=[]") {
+		t.Fatalf("dnsmasq-full: exit %d\n%s", code, out)
+	}
+}
+
+// The dependencies of a package by name, without versions and libc.
+func TestDependsOf(t *testing.T) {
+	r := newRouter(t)
+	out, _ := r.run(`depends_of "libc, libubus20250102, libnettle8 (>= 3.9.1), kmod-x" | tr '\n' ' '`)
+	if strings.TrimSpace(out) != "libubus20250102 libnettle8 kmod-x" {
 		t.Fatalf("%q", out)
 	}
 }

@@ -4,6 +4,9 @@
 #   ./test/install/run.sh                        # every scenario, aarch64_generic
 #   ./test/install/run.sh lifecycle standby      # just these
 #   INSTALL_ARCHS="aarch64_generic x86_64" ./test/install/run.sh lifecycle
+#   INSTALL_REPEAT=10 INSTALL_STRESS=4 ./test/install/run.sh feed-outage
+#                                                # each 10 times, 4 CPU hogs
+#                                                # inside each router: races
 #
 # It builds the pro feed for the architectures under test, signs it with a
 # throwaway key, serves it from a container on a private docker network, and
@@ -31,7 +34,22 @@
 #                     traffic): its packages gone, xray-core and dnsmasq-full
 #                     kept, its configuration backed up; refused before that;
 #                     `vectra off` leaves plain internet, the dead-man too
-#   dnsmasq-rollback  a dnsmasq-full that never runs: the old dnsmasq comes back
+#   dnsmasq-rollback  a dnsmasq-full that never runs: the old dnsmasq comes back,
+#                     with no network from the moment the swap begins
+#   dnsmasq-rollback-files
+#                     the same, and opkg cannot put the old package back: its
+#                     files, kept before the swap, go back by hand
+#   dnsmasq-stale     a frozen dnsmasq holds port 53 while dnsmasq-full starts:
+#                     found and killed, installed
+#   nojail            a router without procd's jail (no procd-ujail): its
+#                     dnsmasq, unjailed, is found, swapped, installed
+#   dnsmasq-dhcpv6    the router's dnsmasq is the dnsmasq-dhcpv6 package: put
+#                     back offline when dnsmasq-full does not run, swapped
+#                     when it does
+#   dnsmasq-disabled  dnsmasq stopped and disabled (another DNS/DHCP server):
+#                     refused, unchanged, still off
+#   feed-outage       downloads.openwrt.org away for a moment at each step
+#                     that needs it: tried again, installed
 #   mirror            downloads.openwrt.org unreachable: through a mirror
 #   refuse-*          arch, apk, release, memory, storage, conflict, fleet,
 #                     agent-old, signature, feed-down: refused (exit 1), the
@@ -55,7 +73,11 @@ FEED_BASE="http://$FEED_NAME:8080"
 # host that runs openwrt-cache is the control plane every router checks in with).
 OPENWRT_MIRROR="${OPENWRT_MIRROR:-https://mirror-03.infra.openwrt.org}"
 PARALLEL="${INSTALL_PARALLEL:-4}"
-ALL=(lifecycle geodata-links check standby standby-upgrade passwall passwall-upgrade passwall-retire dnsmasq-rollback mirror
+# Each scenario this many times (logs <arch>-<scenario>.<n>.log), and this many
+# busy loops inside each router while it runs: a rare race shows itself.
+REPEAT="${INSTALL_REPEAT:-1}"
+STRESS="${INSTALL_STRESS:-0}"
+ALL=(lifecycle geodata-links check standby standby-upgrade passwall passwall-upgrade passwall-retire dnsmasq-rollback dnsmasq-rollback-files dnsmasq-stale nojail dnsmasq-dhcpv6 dnsmasq-disabled feed-outage mirror
 	refuse-arch refuse-apk refuse-release refuse-memory refuse-storage
 	refuse-conflict refuse-fleet refuse-agent-old refuse-signature refuse-feed-down check-json)
 
@@ -244,26 +266,32 @@ emulation_env() { # <arch> -> -e flags
 	esac
 }
 
-run_one() { # <arch> <scenario>
-	local log="$LOGS/$1-$2.log" emu
+# log_of <arch> <scenario> <n>: one run's log.
+log_of() { if [[ $REPEAT -gt 1 ]]; then echo "$LOGS/$1-$2.$3.log"; else echo "$LOGS/$1-$2.log"; fi; }
+
+run_one() { # <arch> <scenario> <n>
+	local log emu
+	log="$(log_of "$1" "$2" "$3")"
 	read -r -a emu <<< "$(emulation_env "$1")"
 	docker run --rm --privileged --network "$NET" --platform "$(platform_of "$1")" \
-		-e "SCENARIO=$2" -e "FEED_BASE=$FEED_BASE" -e "OPENWRT_MIRROR=$OPENWRT_MIRROR" "${emu[@]}" \
+		-e "SCENARIO=$2" -e "FEED_BASE=$FEED_BASE" -e "OPENWRT_MIRROR=$OPENWRT_MIRROR" -e "STRESS=$STRESS" "${emu[@]}" \
 		-v "$BUILD/fixtures:/fixtures:ro" \
 		-v "$HERE/router.sh:/test/router.sh:ro" \
 		-v "$MODULE/test/dataplane/stand/legacy-stub:/stub:ro" \
 		"openwrt/rootfs:$1-$OPENWRT_VERSION" /bin/sh /test/router.sh > "$log" 2>&1 || true
-	printf '  %-18s %-17s %s\n' "$1" "$2" "$(grep -c '^RESULT .* PASS' "$log" || true) pass, $(grep -c '^RESULT .* FAIL' "$log" || true) fail$(grep -q '^INSTALL-EXIT ' "$log" || echo ', DID NOT FINISH')"
+	printf '  %-18s %-20s %s\n' "$1" "$2$([[ $REPEAT -eq 1 ]] || echo "#$3")" "$(grep -c '^RESULT .* PASS' "$log" || true) pass, $(grep -c '^RESULT .* FAIL' "$log" || true) fail$(grep -q '^INSTALL-EXIT ' "$log" || echo ', DID NOT FINISH')"
 }
 
-step "scenarios (${#SELECTED[@]} x ${#ARCHS[@]}, $PARALLEL at a time)"
-for a in "${ARCHS[@]}"; do for s in "${SELECTED[@]}"; do rm -f "$LOGS/$a-$s.log"; done; done
+step "scenarios (${#SELECTED[@]} x ${#ARCHS[@]} x $REPEAT, $PARALLEL at a time, $STRESS busy loops in each)"
+for a in "${ARCHS[@]}"; do for s in "${SELECTED[@]}"; do rm -f "$LOGS/$a-$s.log" "$LOGS/$a-$s".*.log; done; done
 n=0
-for a in "${ARCHS[@]}"; do
-	for s in "${SELECTED[@]}"; do
-		run_one "$a" "$s" &
-		n=$((n + 1))
-		[[ $((n % PARALLEL)) -ne 0 ]] || wait
+for i in $(seq 1 "$REPEAT"); do
+	for a in "${ARCHS[@]}"; do
+		for s in "${SELECTED[@]}"; do
+			run_one "$a" "$s" "$i" &
+			n=$((n + 1))
+			[[ $((n % PARALLEL)) -ne 0 ]] || wait
+		done
 	done
 done
 wait
@@ -274,14 +302,18 @@ step "results"
 bad=0
 total=0
 passed=0
-for a in "${ARCHS[@]}"; do
-	for s in "${SELECTED[@]}"; do
-		log="$LOGS/$a-$s.log"
-		grep '^RESULT' "$log" | sed "s/^RESULT /  [$a $s] /" | grep -v ' PASS ' || true
-		grep -q '^INSTALL-EXIT 0$' "$log" || { bad=1; grep -E '^STAND-FATAL' "$log" || true; }
-		[[ $(grep -c '^RESULT' "$log" || true) -gt 0 ]] || { bad=1; echo "  [$a $s] no assertions ran"; }
-		total=$((total + $(grep -c '^RESULT' "$log" || true)))
-		passed=$((passed + $(grep -c '^RESULT .* PASS' "$log" || true)))
+for i in $(seq 1 "$REPEAT"); do
+	for a in "${ARCHS[@]}"; do
+		for s in "${SELECTED[@]}"; do
+			log="$(log_of "$a" "$s" "$i")"
+			tag="$s"
+			[[ $REPEAT -eq 1 ]] || tag="$s#$i"
+			grep '^RESULT' "$log" | sed "s/^RESULT /  [$a $tag] /" | grep -v ' PASS ' || true
+			grep -q '^INSTALL-EXIT 0$' "$log" || { bad=1; grep -E '^STAND-FATAL' "$log" || true; }
+			[[ $(grep -c '^RESULT' "$log" || true) -gt 0 ]] || { bad=1; echo "  [$a $tag] no assertions ran"; }
+			total=$((total + $(grep -c '^RESULT' "$log" || true)))
+			passed=$((passed + $(grep -c '^RESULT .* PASS' "$log" || true)))
+		done
 	done
 done
 if [[ $bad -eq 0 ]]; then
