@@ -150,6 +150,19 @@ stubs() { # PassWall2 and the legacy agent as services, as the dataplane stand h
 	chmod +x /etc/init.d/passwall2 /etc/init.d/vectra-controller
 }
 
+# feed_retry <command...>: a setup step that downloads from OpenWrt's feeds,
+# tried three times, 10 s then 30 s apart, as the installer tries its own:
+# downloads.openwrt.org goes away for a minute now and then (2026-10-04), and
+# no scenario is about the stand's own setup.
+feed_retry() {
+	for pause in 10 30 -; do
+		"$@" > /dev/null 2>&1 && return 0
+		[ "$pause" != - ] || return 1
+		info "OpenWrt's feeds did not answer ($*): again in ${pause}s"
+		sleep "$pause"
+	done
+}
+
 install_fixture() { # <package>
 	opkg install "/fixtures/$1.ipk" > /dev/null 2>&1 || die "fixture $1 did not install"
 }
@@ -381,9 +394,9 @@ standby-upgrade)
 	echo '{"device_identifier":"install-stand"}' > /etc/vectra-controller/state.json
 	install_fixture luci-app-passwall2
 	for s in passwall2 vectra-controller; do "/etc/init.d/$s" enable; "/etc/init.d/$s" start; done
-	opkg update > /dev/null 2>&1
+	feed_retry opkg update
 	opkg remove dnsmasq > /dev/null 2>&1
-	opkg install dnsmasq-full > /dev/null 2>&1 || die "dnsmasq-full did not install"
+	feed_retry opkg install dnsmasq-full || die "dnsmasq-full did not install"
 	/etc/init.d/dnsmasq restart
 	opkg install /fixtures/xray-core-passwall.ipk > /dev/null 2>&1 || die "PassWall's xray-core did not install"
 	export VECTRA_SKIP_POSTINST_RESTART=1
@@ -486,8 +499,8 @@ passwall)
 	install_fixture luci-app-passwall2
 	/etc/init.d/passwall2 enable
 	/etc/init.d/passwall2 start
-	opkg update > /dev/null 2>&1
-	opkg install xray-core > /dev/null 2>&1 || die "the official xray-core did not install"
+	feed_retry opkg update
+	feed_retry opkg install xray-core || die "the official xray-core did not install"
 	info "official xray-core $(version_of xray-core) installed, as PassWall2 has it"
 	# PassWall's own geo data: a valid geosite that has PRIVATE and nothing else,
 	# so it lacks what the provider routes by (xray: code not found).
@@ -526,8 +539,8 @@ passwall-retire)
 	mkdir -p /stand
 	cp -R /stub /stand/legacy-stub
 	chmod +x /stand/legacy-stub/*
-	opkg update > /dev/null 2>&1
-	opkg install xray-core > /dev/null 2>&1 || die "the official xray-core did not install"
+	feed_retry opkg update
+	feed_retry opkg install xray-core || die "the official xray-core did not install"
 	for p in geoview tcping chinadns-ng luci-app-passwall2-full luci-i18n-passwall2-ru; do install_fixture "$p"; done
 	/etc/init.d/passwall2 enable
 	/etc/init.d/passwall2 start
@@ -718,6 +731,45 @@ dnsmasq-rollback)
 		sh -c "opkg list-installed dnsmasq | grep -q '^dnsmasq - ' && ! opkg list-installed dnsmasq-full | grep -q . && pgrep -x dnsmasq && { [ \"\${DNS:-answers}\" = runs ] || nslookup localhost 127.0.0.1 | grep -q '^Name:'; }"
 	check rollback_no_vectra "Vectra not installed" not installed "$PKG"
 	check rollback_dhcp_config "/etc/config/dhcp as before" cmp -s /etc/config/dhcp /tmp/dhcp.before
+	;;
+
+feed-outage)
+	# downloads.openwrt.org away for a moment (2026-10-04: about 40 s), at
+	# each step that needs it: one package list in opkg update, one package
+	# before the dnsmasq swap (DNSMASQ_DEPENDENCY or DNSMASQ_DOWNLOAD) and one
+	# after it (PKG_INSTALL) fail to download once, as opkg sees a feed that
+	# does not answer. The installer tries again and installs — through
+	# OpenWrt's own feeds, not the mirror.
+	real="$(readlink -f /usr/bin/wget)"
+	[ -x "$real" ] || die "no wget to wrap ($real)"
+	rm -f /usr/bin/wget
+	cat > /usr/bin/wget <<-EOF
+		#!/bin/sh
+		for a; do url="\$a"; done
+		k=""
+		case "\$url" in
+		https://downloads.openwrt.org/*/Packages.gz) k=list ;;
+		https://downloads.openwrt.org/*.ipk) [ -f /usr/lib/opkg/info/dnsmasq-full.control ] && k=after || k=before ;;
+		esac
+		if [ -n "\$k" ] && [ ! -e "/tmp/outage.\$k" ]; then
+			echo "\$url" > "/tmp/outage.\$k"
+			exit 4
+		fi
+		exec $real "\$@"
+	EOF
+	chmod 0755 /usr/bin/wget
+	installer
+	# What the retries met: opkg's own words, from the install log.
+	sed "s/^/LOG| /" /tmp/vectra-install.log
+	for k in list before after; do info "away once ($k): $(cat "/tmp/outage.$k" 2> /dev/null)"; done
+	check outage_exit "exit 0, got $INSTALL_RC" test "$INSTALL_RC" = 0
+	check outage_injected "a package list, a package before the dnsmasq swap and one after it each failed to download once" \
+		test -s /tmp/outage.list -a -s /tmp/outage.before -a -s /tmp/outage.after
+	check outage_retried "says it tries again: $(grep -c 'повторяю (2/3)' /tmp/installer.out) times" \
+		sh -c "[ \"\$(grep -c 'Сервер пакетов OpenWrt не ответил — повторяю (2/3)' /tmp/installer.out)\" -ge 3 ]"
+	check outage_logged "each retry is in the install log" sh -c "[ \"\$(grep -c '^# a download failed' /tmp/vectra-install.log)\" -ge 3 ]"
+	check outage_no_mirror "OpenWrt's own feeds, not the mirror" not said "беру фиды OpenWrt через"
+	assert_installed_and_on outage
 	;;
 
 mirror)

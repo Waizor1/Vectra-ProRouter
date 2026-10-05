@@ -35,6 +35,7 @@
 # package of its own version first: nothing replaces it with another). The
 # end is checked, not assumed: the service runs, the
 # "vectra" ubus object answers, xray accepts the geo data, LuCI serves the page.
+# A download from the feeds that fails is tried again, three times in all.
 # Everything opkg says goes to /tmp/vectra-install.log.
 #
 # This file is a template until scripts/sign-pro-feed.sh bakes the block below
@@ -77,6 +78,11 @@ UPDATE_FLOOR_KB=16384
 UNPACK_FACTOR=3
 # TLS needs a clock later than this (2026-01-01).
 CLOCK_FLOOR=1767225600
+# OpenWrt's feeds (downloads.openwrt.org) go away for a minute now and then: on
+# 2026-10-04 for about 40 s, and a router whose installer was fine was left
+# with DNSMASQ_DEPENDENCY. A step that downloads from them is tried three
+# times, this many seconds apart (40 s in all: the outage of that day).
+RETRY_DELAYS="${VECTRA_RETRY_DELAYS:-10 30}"
 
 PKG=vectra-controller-pro
 FEED_NAME=vectra_pro
@@ -209,6 +215,32 @@ run() { # a command whose output goes to the log only
 	printf '$ %s\n' "$*" >> "$LOG"
 	"$@" >> "$LOG" 2>&1
 }
+# retry <command...>: run, and run again (RETRY_DELAYS) while it fails on a
+# download. Only for steps a second run takes up where the first stopped —
+# opkg update, download, install, upgrade; fetch — never for one that changes
+# the router otherwise (the dnsmasq swap: its remove, its installs and the
+# way back, which need no network). opkg
+# fails for many reasons, and only its "Failed to download" is the network: a
+# signature, a package that does not unpack or a postinst that fails is said
+# at once, not hidden behind a second try. fetch only downloads: any failure.
+retry() {
+	rt_of=1
+	for rt_wait in $RETRY_DELAYS; do rt_of=$((rt_of + 1)); done
+	rt_n=1
+	for rt_wait in $RETRY_DELAYS -; do
+		printf '$ %s\n' "$*" >> "$LOG"
+		"$@" > "$WORK/attempt.log" 2>&1
+		rt_rc=$?
+		cat "$WORK/attempt.log" >> "$LOG"
+		[ "$rt_rc" = 0 ] && return 0
+		[ "$rt_wait" != - ] || return "$rt_rc"
+		[ "$1" = fetch ] || grep -q 'Failed to download\|wget returned' "$WORK/attempt.log" || return "$rt_rc"
+		rt_n=$((rt_n + 1))
+		printf '# a download failed (exit %s): attempt %s/%s in %s s\n' "$rt_rc" "$rt_n" "$rt_of" "$rt_wait" >> "$LOG"
+		note "Сервер пакетов OpenWrt не ответил — повторяю ($rt_n/$rt_of)…"
+		sleep "$rt_wait"
+	done
+}
 
 # ---------------------------------------------------------------- helpers ----
 
@@ -309,7 +341,7 @@ cleanup() {
 		[ "$FEED_ADDED" = 1 ] && remove_feed
 		[ "$KEY_ADDED" = 1 ] && rm -f "$KEYS/$FEED_KEY_ID"
 	fi
-	rm -rf "$WORK/pkgs"
+	rm -rf "$WORK/pkgs" "$WORK/attempt.log"
 }
 
 remove_feed() {
@@ -465,7 +497,7 @@ add_feed() {
 	fetch "$FEED_URL/$ARCH/Packages.sig" "$WORK/Packages.sig" || refuse FEED_UNREACHABLE "фид Vectra недоступен ($FEED_URL). Проверьте интернет и DNS роутера: nslookup ${FEED_URL#*://}"
 
 	note "opkg update (до минуты)"
-	run opkg update
+	retry opkg update
 	# Vectra's feed must be there, and verified: opkg drops a list whose
 	# signature does not check out.
 	available "$PKG" || refuse FEED_UNVERIFIED "фид Vectra не прошёл проверку подписи или пуст (opkg update, см. лог)."
@@ -484,7 +516,7 @@ use_openwrt_mirror() {
 	cp "$DISTFEEDS" "$WORK/distfeeds.conf.orig" || return 1
 	DISTFEEDS_SWAPPED=1
 	sed -e "s#https\{0,1\}://downloads.openwrt.org#$mirror#g" "$WORK/distfeeds.conf.orig" > "$DISTFEEDS" || return 1
-	run opkg update
+	retry opkg update
 	available dnsmasq-full
 }
 
@@ -584,12 +616,12 @@ install_xray_pin() {
 	rm -rf "$WORK/pkgs"
 	mkdir -p "$WORK/pkgs"
 	f="$WORK/pkgs/${3##*/}"
-	fetch "$base/$3" "$f" || refuse XRAY_PIN_DOWNLOAD "не удалось скачать xray-core $2 ($base/$3)."
+	retry fetch "$base/$3" "$f" || refuse XRAY_PIN_DOWNLOAD "не удалось скачать xray-core $2 ($base/$3)."
 	if [ "$(sha256sum "$f" 2> /dev/null | awk '{ print $1 }')" != "$4" ]; then
 		refuse XRAY_PIN_CHECKSUM "xray-core $2 скачался не тот: sha256 не совпадает со списком фида $1."
 	fi
 	INSTALLED_SOMETHING=1
-	run opkg install "$f" || fail XRAY_PIN_INSTALL "opkg install xray-core $2 не прошёл (см. лог). Vectra не установлена."
+	retry opkg install "$f" || fail XRAY_PIN_INSTALL "opkg install xray-core $2 не прошёл (см. лог). Vectra не установлена."
 	ok "xray-core $(installed_version xray-core): теперь xray — пакет, и его версия остаётся прежней"
 }
 
@@ -601,14 +633,14 @@ swap_dnsmasq() {
 	# Its libraries first: they do not clash with dnsmasq.
 	deps="$(field dnsmasq-full Depends | tr ',' '\n' | sed 's/ *(.*//; s/^ *//; s/ *$//' | grep -v '^libc$')"
 	for d in $deps; do
-		installed "$d" || run opkg install "$d" || fail DNSMASQ_DEPENDENCY "не удалось поставить $d (зависимость dnsmasq-full). dnsmasq не тронут."
+		installed "$d" || retry opkg install "$d" || fail DNSMASQ_DEPENDENCY "не удалось поставить $d (зависимость dnsmasq-full). dnsmasq не тронут."
 	done
 	INSTALLED_SOMETHING=1
 	# Both packages on the router before anything is removed: the swap and the
 	# way back need no network.
-	( cd "$WORK/pkgs" && run opkg download dnsmasq-full ) || fail DNSMASQ_DOWNLOAD "не удалось скачать dnsmasq-full. dnsmasq не тронут."
+	( cd "$WORK/pkgs" && retry opkg download dnsmasq-full ) || fail DNSMASQ_DOWNLOAD "не удалось скачать dnsmasq-full. dnsmasq не тронут."
 	if installed dnsmasq; then
-		( cd "$WORK/pkgs" && run opkg download dnsmasq ) || fail DNSMASQ_DOWNLOAD "не удалось скачать dnsmasq (для отката). dnsmasq не тронут."
+		( cd "$WORK/pkgs" && retry opkg download dnsmasq ) || fail DNSMASQ_DOWNLOAD "не удалось скачать dnsmasq (для отката). dnsmasq не тронут."
 	fi
 	full=""
 	old=""
@@ -656,7 +688,7 @@ LUCI=0
 install_packages() {
 	if [ "$LUCI" = 1 ]; then
 		step "LuCI (веб-интерфейс роутера)"
-		run opkg install luci || fail LUCI_INSTALL "не удалось поставить LuCI."
+		retry opkg install luci || fail LUCI_INSTALL "не удалось поставить LuCI."
 		INSTALLED_SOMETHING=1
 		ok "LuCI $(installed_version luci-base)"
 	fi
@@ -674,9 +706,9 @@ install_packages() {
 		# with a binary swapped in by hand), and `opkg upgrade` would take the
 		# newest from ANY feed. The package's own Depends, xray-core (>= the
 		# minimum), upgrades it only when it is too old.
-		run opkg upgrade "$PKG" vectra-geodata vectra-reporter
-		installed vectra-geodata || run opkg install vectra-geodata
-		installed vectra-reporter || run opkg install vectra-reporter
+		retry opkg upgrade "$PKG" vectra-geodata vectra-reporter
+		installed vectra-geodata || retry opkg install vectra-geodata
+		installed vectra-reporter || retry opkg install vectra-reporter
 	fi
 	pkgs="$PKG"
 	if [ -z "$was" ]; then
@@ -689,7 +721,7 @@ install_packages() {
 		for p in vectra-geodata vectra-reporter; do available "$p" && pkgs="$pkgs $p"; done
 	fi
 	# shellcheck disable=SC2086 # a list of packages
-	run opkg install $pkgs || fail PKG_INSTALL "opkg install $pkgs не прошёл (см. лог). Интернет роутера работает как прежде."
+	retry opkg install $pkgs || fail PKG_INSTALL "opkg install $pkgs не прошёл (см. лог). Интернет роутера работает как прежде."
 	if [ "$STANDBY" = 1 ]; then
 		unset VECTRA_SKIP_POSTINST_RESTART
 		run uci set "$PKG.main.enabled=0"

@@ -32,6 +32,8 @@
 #                     kept, its configuration backed up; refused before that;
 #                     `vectra off` leaves plain internet, the dead-man too
 #   dnsmasq-rollback  a dnsmasq-full that never runs: the old dnsmasq comes back
+#   feed-outage       downloads.openwrt.org away for a moment at each step
+#                     that needs it: tried again, installed
 #   mirror            downloads.openwrt.org unreachable: through a mirror
 #   refuse-*          arch, apk, release, memory, storage, conflict, fleet,
 #                     agent-old, signature, feed-down: refused (exit 1), the
@@ -55,7 +57,7 @@ FEED_BASE="http://$FEED_NAME:8080"
 # host that runs openwrt-cache is the control plane every router checks in with).
 OPENWRT_MIRROR="${OPENWRT_MIRROR:-https://mirror-03.infra.openwrt.org}"
 PARALLEL="${INSTALL_PARALLEL:-4}"
-ALL=(lifecycle geodata-links check standby standby-upgrade passwall passwall-upgrade passwall-retire dnsmasq-rollback mirror
+ALL=(lifecycle geodata-links check standby standby-upgrade passwall passwall-upgrade passwall-retire dnsmasq-rollback feed-outage mirror
 	refuse-arch refuse-apk refuse-release refuse-memory refuse-storage
 	refuse-conflict refuse-fleet refuse-agent-old refuse-signature refuse-feed-down check-json)
 
