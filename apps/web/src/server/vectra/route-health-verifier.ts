@@ -1,5 +1,5 @@
 import { jobResults, jobs, routers } from "@vectra/db";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
 import type { db as appDb } from "~/server/db";
 
@@ -9,8 +9,10 @@ import { nodeEndpointKey } from "./fleet-node-health";
 type DatabaseClient = typeof appDb;
 
 // Read-only surface: the monitoring loader passes a narrower client than the
-// full drizzle instance, and this function only ever selects.
-type ReadOnlyDatabase = Pick<DatabaseClient, "select">;
+// full drizzle instance, and this function only ever reads. `execute` is
+// optional so the select-only shims the unit tests use keep working.
+type ReadOnlyDatabase = Pick<DatabaseClient, "select"> &
+  Partial<Pick<DatabaseClient, "execute">>;
 
 /**
  * Periodic per-node route health, measured on the router itself.
@@ -255,25 +257,134 @@ export function routeHealthDedupeKey(routerId: string) {
   return `${ROUTE_HEALTH_DEDUPE_PREFIX}${routerId}`;
 }
 
+type LatestRouteVerifications = Map<
+  string,
+  { verifiedAt: Date; verification: RouteVerification }
+>;
+
+/** A job emits an "accepted" receipt before the real result; only the one
+ * carrying slots is a verdict. */
+function readRouteVerification(payload: unknown): RouteVerification | null {
+  const record = payload as
+    | ({ routeVerification?: RouteVerification | null } & RouteVerification)
+    | null
+    | undefined;
+  const verification = record?.routeVerification ?? record ?? null;
+  if (!verification || !Array.isArray(verification.slots)) {
+    return null;
+  }
+  return verification;
+}
+
 /**
  * Loads the newest route verification per router, whatever queued it —
  * onboarding, an operator, or this lane. A fresh verdict is a fresh verdict.
+ *
+ * "Newest" is the result REPORTED last that carries slots, across all of the
+ * router's verify jobs — a late result for an older job still wins over an
+ * earlier one for a newer job, exactly as the original two-select version
+ * (kept below as the fallback) decided it.
+ *
+ * On Postgres this is one statement that returns at most one row per router.
+ * The original read every verify result of the fleet into Node on each call
+ * (7,616 rows, ~14 MB of JSON on 2026-10-05) only to keep 35 of them, and the
+ * two monitors and the node-health rebuild each did so every minute.
  */
 export async function loadLatestRouteVerifications(
   database: ReadOnlyDatabase,
   routerIds: string[],
-): Promise<Map<string, { verifiedAt: Date; verification: RouteVerification }>> {
-  const latest = new Map<
-    string,
-    { verifiedAt: Date; verification: RouteVerification }
-  >();
+): Promise<LatestRouteVerifications> {
+  if (routerIds.length === 0) {
+    return new Map();
+  }
+  if (typeof database.execute !== "function") {
+    return loadLatestRouteVerificationsBySelect(database, routerIds);
+  }
+
+  // Per router: its verify results newest-reported first, then the first one
+  // whose payload is a verdict (routeVerification ?? payload has a `slots`
+  // array — the same test readRouteVerification makes). The inner ORDER BY
+  // with OFFSET 0 sorts before the filter, so the payload is only inspected
+  // until the first verdict instead of for every row.
+  const rows = await database.execute(sql`
+    select r.router_id as "routerId", v.reported_at as "reportedAt", v.payload
+    from (
+      values ${sql.join(
+        routerIds.map((routerId) => sql`(${routerId})`),
+        sql`, `,
+      )}
+    ) as r(router_id)
+    join lateral (
+      select ordered.reported_at, ordered.payload
+      from (
+        select jr.reported_at, jr.payload
+        from vectra_job j
+        join vectra_job_result jr on jr.job_id = j.id
+        where j.router_id = r.router_id
+          and j.type = ${ROUTE_HEALTH_JOB_TYPE}
+        order by jr.reported_at desc, jr.id desc
+        offset 0
+      ) ordered
+      where jsonb_typeof(
+        case
+          when ordered.payload -> 'routeVerification' is null
+            or jsonb_typeof(ordered.payload -> 'routeVerification') = 'null'
+          then ordered.payload
+          else ordered.payload -> 'routeVerification'
+        end -> 'slots'
+      ) = 'array'
+      limit 1
+    ) v on true
+  `);
+
+  const latest: LatestRouteVerifications = new Map();
+  if (!Array.isArray(rows)) {
+    return latest;
+  }
+  for (const row of rows as Array<Record<string, unknown>>) {
+    const routerId = row.routerId;
+    if (typeof routerId !== "string" || latest.has(routerId)) {
+      continue;
+    }
+    let payload = row.payload;
+    if (typeof payload === "string") {
+      try {
+        payload = JSON.parse(payload) as unknown;
+      } catch {
+        continue;
+      }
+    }
+    const verification = readRouteVerification(payload);
+    const reportedAt = row.reportedAt;
+    // The same conversion drizzle applies to a timestamptz column.
+    const verifiedAt =
+      reportedAt instanceof Date
+        ? reportedAt
+        : new Date(String(reportedAt));
+    if (!verification || Number.isNaN(verifiedAt.getTime())) {
+      continue;
+    }
+    latest.set(routerId, { verifiedAt, verification });
+  }
+  return latest;
+}
+
+/**
+ * The original two-select version: every verify result of the given routers,
+ * newest reported first, first verdict per router wins. Used where the client
+ * has no `execute`, and as the reference the Postgres test compares against.
+ */
+export async function loadLatestRouteVerificationsBySelect(
+  database: Pick<DatabaseClient, "select">,
+  routerIds: string[],
+): Promise<LatestRouteVerifications> {
+  const latest: LatestRouteVerifications = new Map();
   if (routerIds.length === 0) {
     return latest;
   }
 
   // Two plain selects instead of a join: the job rows carry the type, the
-  // result rows carry the payload. Keeps this readable and avoids depending on
-  // join support in every database shim the tests use.
+  // result rows carry the payload.
   // Telemetry must never break its caller: a client shim that does not return
   // rows for these tables yields "no verdicts", not an exception.
   const verifyJobs = await database
@@ -310,13 +421,8 @@ export async function loadLatestRouteVerifications(
     if (!routerId || latest.has(routerId)) {
       continue;
     }
-    const payload = row.payload as {
-      routeVerification?: RouteVerification | null;
-    } & RouteVerification;
-    // A job emits an "accepted" receipt before the real result; only the one
-    // carrying slots is a verdict.
-    const verification = payload?.routeVerification ?? payload ?? null;
-    if (!verification || !Array.isArray(verification.slots)) {
+    const verification = readRouteVerification(row.payload);
+    if (!verification) {
       continue;
     }
     latest.set(routerId, { verifiedAt: row.reportedAt, verification });

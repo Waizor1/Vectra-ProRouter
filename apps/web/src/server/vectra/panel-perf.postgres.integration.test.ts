@@ -14,6 +14,10 @@ import {
   resetFleetPolicyConfigSummaryCacheForTest,
 } from "./fleet-monitoring-data";
 import { runHistoryRetentionTick } from "./history-retention";
+import {
+  loadLatestRouteVerifications,
+  loadLatestRouteVerificationsBySelect,
+} from "./route-health-verifier";
 import { runRevisionRetentionTick } from "./revision-retention";
 import {
   resetRevisionSummaryCacheForTest,
@@ -316,5 +320,84 @@ describe.skipIf(!port)("panel performance SQL on a real PostgreSQL", () => {
     expect((await rows(sql`select state, resolved_at from vectra_health_incident where router_id = ${router.id}`)).length).toBe(2);
     expect((await rows(sql`select id from vectra_operator_push_alert where router_id = ${router.id} and resolved_at is null`)).length).toBe(1);
     expect((await rows(sql`select id from vectra_operator_push_alert where router_id = ${router.id}`)).length).toBe(1);
+  });
+  it("route verifications: the per-router SQL picks exactly what the original two-select loader picked", async () => {
+    const routerIds: string[] = [];
+    const base = daysAgo(3).getTime();
+    const minute = 60 * 1000;
+    const slots = (ok: boolean, tag: string) => [
+      { slot: "WorldProxy", boundNodeId: `n-${tag}`, smokeOk: ok, statusCode: ok ? 204 : 0 },
+      { slot: "Special", boundNodeId: `s-${tag}`, smokeOk: true, statusCode: 204 },
+    ];
+    const expectedFor = new Map<string, unknown>();
+    for (let i = 0; i < 40; i += 1) {
+      const router = await newRouter(`rv-${i}`);
+      routerIds.push(router.id);
+      const t0 = base + i * 1000 * minute;
+      const jobCount = i % 6; // 0..5 verify jobs; router 0, 6, 12... have none
+      const verifyJobs: string[] = [];
+      for (let j = 0; j < jobCount; j += 1) {
+        const [job] = await db
+          .insert(schema.jobs)
+          .values({ routerId: router.id, type: "verify_passwall_routes", state: "succeeded", createdAt: new Date(t0 + j * 10 * minute) })
+          .returning();
+        verifyJobs.push(job!.id);
+        const reported = t0 + j * 10 * minute;
+        // The receipt a job emits first never carries slots.
+        await db.insert(schema.jobResults).values({ jobId: job!.id, routerId: router.id, status: "accepted", payload: { accepted: true }, reportedAt: new Date(reported + minute) });
+        const last = j === jobCount - 1;
+        if (last && i % 5 === 1) {
+          continue; // newest job still in flight: only its receipt exists
+        }
+        const shape = (i + j) % 6;
+        const filler = i % 3 === 0 ? { raw: "x".repeat(4000) } : {};
+        const payload =
+          shape === 0
+            ? { routeVerification: { slots: slots(j % 2 === 0, `${i}-${j}`), checkedAt: "c" }, ...filler }
+            : shape === 1
+              ? { slots: slots(true, `${i}-${j}`), ...filler }
+              : shape === 2
+                ? { routeVerification: null, slots: slots(false, `${i}-${j}`) }
+                : shape === 3
+                  ? { routeVerification: {}, slots: slots(true, "ignored: routeVerification wins") }
+                  : shape === 4
+                    ? { routeVerification: false, error: "x" }
+                    : { error: "url_test_node timed out", ...filler };
+        await db.insert(schema.jobResults).values({ jobId: job!.id, routerId: router.id, status: shape >= 4 ? "failure" : "success", payload, reportedAt: new Date(reported + 2 * minute) });
+      }
+      // A late result for the OLDEST job, reported after everything else: the
+      // original picked by reported_at, so it wins over newer jobs' results.
+      if (jobCount >= 2 && i % 7 === 3) {
+        const late = { routeVerification: { slots: slots(true, `late-${i}`) } };
+        await db.insert(schema.jobResults).values({ jobId: verifyJobs[0]!, routerId: router.id, status: "success", payload: late, reportedAt: new Date(t0 + 500 * minute) });
+        expectedFor.set(router.id, late.routeVerification);
+      }
+      // Another job type carrying slots, reported last: never a verdict.
+      const [other] = await db
+        .insert(schema.jobs)
+        .values({ routerId: router.id, type: "refresh_subscriptions", state: "succeeded", createdAt: new Date(t0 + 600 * minute) })
+        .returning();
+      await db.insert(schema.jobResults).values({ jobId: other!.id, routerId: router.id, status: "success", payload: { slots: slots(false, "other-type") }, reportedAt: new Date(t0 + 601 * minute) });
+    }
+
+    const ids = [...routerIds, "no-such-router", routerIds[1]!];
+    const [fast, reference] = await Promise.all([
+      loadLatestRouteVerifications(db, ids),
+      loadLatestRouteVerificationsBySelect(db, ids),
+    ]);
+    expect(fast).toEqual(reference);
+    expect(fast.size).toBeGreaterThan(15);
+    expect(expectedFor.size).toBeGreaterThan(0);
+    for (const [routerId, verification] of expectedFor) {
+      expect(fast.get(routerId)?.verification).toEqual(verification);
+    }
+    // Nothing from another job type ever leaks in.
+    for (const { verification } of fast.values()) {
+      expect(JSON.stringify(verification)).not.toContain("other-type");
+      expect(JSON.stringify(verification)).not.toContain("ignored");
+    }
+    // A shim without `execute` takes the original path.
+    const selectOnly = { select: db.select.bind(db) } as unknown as Parameters<typeof loadLatestRouteVerifications>[0];
+    expect(await loadLatestRouteVerifications(selectOnly, ids)).toEqual(reference);
   });
 });
