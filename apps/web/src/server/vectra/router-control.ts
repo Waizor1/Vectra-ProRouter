@@ -108,6 +108,7 @@ import {
   boundRouterCheckInPayload,
 } from "~/server/vectra/router-payload-bounds";
 import { MemoryWindowRateLimiter } from "~/server/vectra/public-install-rate-limit";
+import { BoundedLru } from "~/server/vectra/bounded-lru";
 
 type RouterRow = typeof routers.$inferSelect;
 type RevisionRow = typeof passwallDesiredRevisions.$inferSelect;
@@ -580,45 +581,135 @@ async function upsertRevisionSecretBlob(
   );
 }
 
-async function hydrateRevisionConfigWithDb(
-  client: DatabaseClient,
-  revision: RevisionRow,
+type DesiredRevisionSummary = ReturnType<
+  typeof desiredRevisionSummarySchema.parse
+>;
+
+// The newest secret blob of the revision on the same row, so a summary's cache
+// key can name the exact ciphertext it was hydrated from. Same ordering as
+// getSecretCiphertextForRevisionWithDb. Spelled out with qualified names:
+// drizzle renders column references in a select list unqualified, which would
+// turn the correlation into the blob's own `id`.
+const latestSecretBlobId = sql<string | null>`(
+  select sb.id
+  from vectra_passwall_secret_blob sb
+  where sb.desired_revision_id = "vectra_passwall_desired_revision"."id"
+  order by sb.created_at desc
+  limit 1
+)`;
+
+// Every revision column the summary reads, except the heavy jsonb ones.
+const revisionSummaryMetadataColumns = {
+  id: passwallDesiredRevisions.id,
+  revisionNumber: passwallDesiredRevisions.revisionNumber,
+  status: passwallDesiredRevisions.status,
+  origin: passwallDesiredRevisions.origin,
+  engineMode: passwallDesiredRevisions.engineMode,
+  configDigest: passwallDesiredRevisions.configDigest,
+  secretBlobId: latestSecretBlobId,
+};
+
+type RevisionSummaryMetadata = {
+  id: string;
+  revisionNumber: number;
+  status: string;
+  origin: string;
+  engineMode: RevisionRow["engineMode"];
+  configDigest: string | null;
+  secretBlobId?: string | null;
+};
+
+// Decrypted, diffed and validated revision summaries, so a router checking in
+// every 45 s does not pull two ~140 kB revisions out of Postgres, decrypt,
+// gunzip and zod-parse both and diff them each time (measured: ~30 ms of the
+// single Node thread per legacy-agent check-in).
+//
+// Keyed by everything the summary is computed from: a revision's config never
+// changes after insert (only its status does, and the status is in the key),
+// and a secret re-import writes a NEW blob row (upsertRevisionSecretBlob is
+// delete + insert), so a changed ciphertext is a changed key. The diff base is
+// in the key too, so deleting or re-keying the previous revision misses.
+// Nothing needs explicit invalidation; stale keys age out of the LRU.
+//
+// Bounded by approximate JSON size. 64 MB holds ~2000 production-sized
+// summaries (~30 kB each) — every router's desired revision for a fleet of
+// 1000+. Below the working set an LRU over round-robin check-ins would miss
+// on every request, which is only as slow as no cache at all.
+const REVISION_SUMMARY_CACHE_BYTES = 64 * 1024 * 1024;
+const revisionSummaryCache = new BoundedLru<string, DesiredRevisionSummary>(
+  REVISION_SUMMARY_CACHE_BYTES,
+);
+
+export function resetRevisionSummaryCacheForTest() {
+  revisionSummaryCache.clear();
+}
+
+export function revisionSummaryCacheSizeForTest() {
+  return revisionSummaryCache.size;
+}
+
+function revisionSummaryCacheKey(
+  current: RevisionSummaryMetadata,
+  previous: Pick<RevisionSummaryMetadata, "id" | "secretBlobId"> | null,
 ) {
-  const ciphertext = await getSecretCiphertextForRevisionWithDb(
-    client,
-    revision.id,
-  );
-  if (revision.engineMode === "xray-direct") {
-    // The jsonb column is typed as the passwall config for the (many) existing
-    // consumers; an xray revision stores an XrayDesiredConfig there, so narrow
-    // at this boundary before hydrating through the xray schema.
+  return [
+    current.id,
+    current.secretBlobId ?? "-",
+    current.status,
+    previous?.id ?? "-",
+    previous?.secretBlobId ?? "-",
+  ].join("|");
+}
+
+async function hydrateRevisionByIdWithDb(
+  client: DatabaseClient,
+  revision: Pick<RevisionSummaryMetadata, "id" | "secretBlobId">,
+) {
+  const [row] = await client
+    .select({
+      id: passwallDesiredRevisions.id,
+      engineMode: passwallDesiredRevisions.engineMode,
+      config: passwallDesiredRevisions.config,
+    })
+    .from(passwallDesiredRevisions)
+    .where(eq(passwallDesiredRevisions.id, revision.id))
+    .limit(1);
+  if (!row) {
+    return null;
+  }
+  let ciphertext: string | null = null;
+  if (revision.secretBlobId) {
+    const [secret] = await client
+      .select({ ciphertext: passwallSecretBlobs.ciphertext })
+      .from(passwallSecretBlobs)
+      .where(eq(passwallSecretBlobs.id, revision.secretBlobId))
+      .limit(1);
+    ciphertext = secret?.ciphertext ?? null;
+  }
+  if (row.engineMode === "xray-direct") {
     return hydrateXrayConfig(
-      revision.config as unknown as XrayDesiredConfig,
+      row.config as unknown as XrayDesiredConfig,
       ciphertext,
     );
   }
-  return hydratePasswallConfig(revision.config, ciphertext);
+  return hydratePasswallConfig(row.config, ciphertext);
 }
 
 async function getRevisionSummaryWithDb(
   client: DatabaseClient,
   routerId: string,
   revisionId: string | null | undefined,
-) {
+): Promise<DesiredRevisionSummary | null> {
   if (!revisionId) {
     return null;
   }
 
-  // Fetch only the two rows this summary needs. The previous implementation
-  // selected EVERY revision for the router — with the full `config` and
-  // `raw_imported_snapshot` JSONB on each row — and then picked two out of the
-  // array in JS. On the check-in path that ran once per router per minute
-  // against a table averaging ~160 revisions per router at ~90 kB per row, so
-  // the panel allocated hundreds of MB a minute and repeatedly hit V8's
-  // ~1 GB heap limit ("Ineffective mark-compacts near heap limit"), crashing
-  // the container every 15-40 minutes.
-  const [current] = await client
-    .select()
+  // Metadata only: the jsonb config and raw_imported_snapshot are read on a
+  // cache miss alone. (Before that, an implementation that selected EVERY
+  // revision for the router with both jsonb columns ran the container out of
+  // its ~1 GB heap every 15-40 minutes.)
+  const [current] = (await client
+    .select(revisionSummaryMetadataColumns)
     .from(passwallDesiredRevisions)
     .where(
       and(
@@ -626,16 +717,75 @@ async function getRevisionSummaryWithDb(
         eq(passwallDesiredRevisions.id, revisionId),
       ),
     )
-    .limit(1);
+    .limit(1)) as RevisionSummaryMetadata[];
   if (!current) {
     return null;
   }
 
+  // passwall path: diffed against the previous passwall revision — the next
+  // lower revision number, skipping any xray-direct revision in between.
+  // xray-direct revisions are not diffed at all.
+  const [previous = null] =
+    current.engineMode === "xray-direct"
+      ? []
+      : ((await client
+          .select({
+            id: passwallDesiredRevisions.id,
+            secretBlobId: latestSecretBlobId,
+          })
+          .from(passwallDesiredRevisions)
+          .where(
+            and(
+              eq(passwallDesiredRevisions.routerId, routerId),
+              lt(passwallDesiredRevisions.revisionNumber, current.revisionNumber),
+              eq(passwallDesiredRevisions.engineMode, "passwall"),
+            ),
+          )
+          .orderBy(desc(passwallDesiredRevisions.revisionNumber))
+          .limit(1)) as Array<Pick<RevisionSummaryMetadata, "id" | "secretBlobId">>);
+
+  const cacheKey = revisionSummaryCacheKey(current, previous);
+  const cached = revisionSummaryCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const summary = await buildRevisionSummaryWithDb(client, current, previous);
+  if (summary) {
+    // Shared by every check-in that hits it: frozen, so a caller that tried to
+    // edit it in place would throw instead of corrupting other answers.
+    revisionSummaryCache.set(
+      cacheKey,
+      deepFreeze(summary),
+      JSON.stringify(summary).length,
+    );
+  }
+  return summary;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) {
+      deepFreeze(child);
+    }
+  }
+  return value;
+}
+
+async function buildRevisionSummaryWithDb(
+  client: DatabaseClient,
+  current: RevisionSummaryMetadata,
+  previous: Pick<RevisionSummaryMetadata, "id" | "secretBlobId"> | null,
+): Promise<DesiredRevisionSummary | null> {
   if (current.engineMode === "xray-direct") {
     // xray-direct revisions are not diffed by the passwall differ. The pro
     // controller computes its own apply impact from the desired config; the
     // panel just delivers the config with a neutral, restart-safe summary.
-    const currentConfig = await hydrateRevisionConfigWithDb(client, current);
+    const currentConfig = await hydrateRevisionByIdWithDb(client, current);
+    if (!currentConfig) {
+      return null;
+    }
     return desiredRevisionSummarySchema.parse({
       id: current.id,
       revisionNumber: current.revisionNumber,
@@ -655,26 +805,15 @@ async function getRevisionSummaryWithDb(
     });
   }
 
-  // passwall path: diff against the previous passwall revision — the next
-  // lower revision number, skipping any xray-direct revision in between.
-  const [previous = null] = await client
-    .select()
-    .from(passwallDesiredRevisions)
-    .where(
-      and(
-        eq(passwallDesiredRevisions.routerId, routerId),
-        lt(passwallDesiredRevisions.revisionNumber, current.revisionNumber),
-        eq(passwallDesiredRevisions.engineMode, "passwall"),
-      ),
-    )
-    .orderBy(desc(passwallDesiredRevisions.revisionNumber))
-    .limit(1);
   const [currentConfig, previousConfig] = await Promise.all([
-    hydrateRevisionConfigWithDb(client, current),
+    hydrateRevisionByIdWithDb(client, current),
     previous
-      ? hydrateRevisionConfigWithDb(client, previous)
+      ? hydrateRevisionByIdWithDb(client, previous)
       : Promise.resolve(null),
   ]);
+  if (!currentConfig) {
+    return null;
+  }
 
   return desiredRevisionSummarySchema.parse({
     id: current.id,
@@ -1831,7 +1970,11 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
   }
   const serializedJobs = serialization.delivered;
 
-  return routerCheckInResponseSchema.parse({
+  // desiredRevision is already the output of desiredRevisionSummarySchema.parse
+  // (and frozen in the summary cache); validating its ~140 kB config again on
+  // every check-in was the larger part of what a cached check-in still cost.
+  // The rest of the answer is validated as before.
+  const response = routerCheckInResponseSchema.parse({
     protocolVersion: parsed.protocolVersion,
     routerId: router.id,
     status: router.status,
@@ -1839,7 +1982,7 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     configSyncState: buildConfigSyncState(router, { requestImport }),
     rescuePolicy: createDefaultRescuePolicy(),
     updatePolicy: createDefaultUpdatePolicy(),
-    desiredRevision,
+    desiredRevision: null,
     jobs: serializedJobs,
     operatorMessage: buildCheckInMessage(router, parsed.health.currentMode),
     // Tell the controller which nodes to bind rather than letting it re-derive
@@ -1862,6 +2005,7 @@ export async function checkInRouter(routerId: string, input: unknown, auth?: {de
     ),
     ...buildRouterClaimResponseFields(router),
   });
+  return { ...response, desiredRevision };
 }
 
 const UNDELIVERABLE_JOB_CODE = "payload_unavailable";
@@ -2618,7 +2762,7 @@ export async function createOperatorDraftRevisionWithDb(
         engineMode: "xray-direct",
         configDigest,
         // The column is typed as the passwall config for existing consumers;
-        // narrow at this write boundary (mirrored by hydrateRevisionConfigWithDb).
+        // narrow at this write boundary (mirrored by hydrateRevisionByIdWithDb).
         config: maskedXrayConfig as unknown as RevisionRow["config"],
         createdBy: "operator",
         note: input.note,
