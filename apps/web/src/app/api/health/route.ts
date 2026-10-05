@@ -4,6 +4,7 @@ import { db } from "~/server/db";
 import { startAutoRescueMonitor } from "~/server/vectra/auto-rescue";
 import { startBrowserPushMonitor } from "~/server/vectra/browser-push-monitor";
 import { startPartnerWebhookDispatcher } from "~/server/vectra/partner-webhooks";
+import { startHistoryRetention } from "~/server/vectra/history-retention";
 import { startRevisionRetention } from "~/server/vectra/revision-retention";
 import { startRouteHealthVerifier } from "~/server/vectra/route-health-verifier";
 import { startSnapshotRetention } from "~/server/vectra/snapshot-retention";
@@ -19,6 +20,7 @@ export async function GET() {
     stuckJobJanitor: false,
     snapshotRetention: false,
     revisionRetention: false,
+    historyRetention: false,
     routeHealthVerifier: false,
     partnerWebhookDispatcher: false,
     dbRead: false,
@@ -40,6 +42,7 @@ export async function GET() {
     checks.stuckJobJanitor = startStuckJobJanitor();
     checks.snapshotRetention = startSnapshotRetention();
     checks.revisionRetention = startRevisionRetention();
+    checks.historyRetention = startHistoryRetention();
     checks.routeHealthVerifier = startRouteHealthVerifier();
     checks.partnerWebhookDispatcher = startPartnerWebhookDispatcher();
     await db.execute(sql`select 1`);
