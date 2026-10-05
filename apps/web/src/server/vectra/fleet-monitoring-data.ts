@@ -15,7 +15,9 @@ import type { db as appDb } from "~/server/db";
 import { formatControllerVersion } from "~/lib/controller-version";
 
 import { buildConfigTrustState } from "./config-trust";
-import { BoundedLru } from "./bounded-lru";
+import { env } from "~/env";
+
+import { CACHED_CONFIG_HEAP_FACTOR, PerRouterCache } from "./per-router-cache";
 import {
   buildFleetRoutePolicyIdentity,
   collectFleetNodeHealthSample,
@@ -331,16 +333,16 @@ function summarizeFleetPolicyConfig(
   };
 }
 
-// Revision configs never change after insert, so a summary is cached by
-// revision id (null: the stored config does not parse). The monitors read the
-// latest import of every router every minute; with this they fetch and parse
-// only the revisions that are new since the last read. Bounded by approximate
-// JSON size: 64 MB holds a summary for well over a thousand routers.
-const POLICY_CONFIG_SUMMARY_CACHE_BYTES = 64 * 1024 * 1024;
-const policyConfigSummaryCache = new BoundedLru<
-  string,
-  FleetPolicyConfigSummary | null
->(POLICY_CONFIG_SUMMARY_CACHE_BYTES);
+// Revision configs never change after insert, so a router's summary is cached
+// under its revision id (null: the stored config does not parse). The monitors
+// read the latest import of every router every minute; with this they fetch
+// and parse only the routers whose revision changed. One entry per router,
+// 10-minute TTL, VECTRA_CONFIG_CACHE_MB heap budget (see PerRouterCache).
+const POLICY_CONFIG_SUMMARY_TTL_MS = 10 * 60 * 1000;
+const policyConfigSummaryCache = new PerRouterCache<FleetPolicyConfigSummary | null>(
+  Number(env.VECTRA_CONFIG_CACHE_MB ?? 16) * 1024 * 1024,
+  POLICY_CONFIG_SUMMARY_TTL_MS,
+);
 
 export function resetFleetPolicyConfigSummaryCacheForTest() {
   policyConfigSummaryCache.clear();
@@ -417,10 +419,22 @@ export async function loadLatestFleetPolicyConfigSummaries(
     });
   }
 
-  const missing = [...latestMetadata.values()]
-    .map((row) => row.id)
-    .filter((id) => policyConfigSummaryCache.get(id) === undefined);
+  // Held for the whole call: a cache refusal or eviction while this tick is
+  // still filling it must not leave a router without its config.
+  const resolved = new Map<string, FleetPolicyConfigSummary | null>();
+  const missing: string[] = [];
+  for (const metadata of latestMetadata.values()) {
+    const cached = policyConfigSummaryCache.get(metadata.routerId, metadata.id);
+    if (cached === undefined) {
+      missing.push(metadata.id);
+    } else {
+      resolved.set(metadata.id, cached);
+    }
+  }
   if (missing.length > 0) {
+    const routerByRevision = new Map(
+      [...latestMetadata.values()].map((row) => [row.id, row.routerId]),
+    );
     const configRows = supportsSnapshotExecute(database)
       ? await database.execute(sql`
             select rev.id, rev.config
@@ -441,19 +455,22 @@ export async function loadLatestFleetPolicyConfigSummaries(
       if (!row || typeof row !== "object") continue;
       const record = row as Record<string, unknown>;
       const id = readStringField(record, "id");
-      if (!id) continue;
+      const routerId = id ? routerByRevision.get(id) : undefined;
+      if (!id || !routerId) continue;
       const config = normalizePasswallConfig(readUnknownField(record, "config"));
       const summary = config ? summarizeFleetPolicyConfig(config) : null;
+      resolved.set(id, summary);
       policyConfigSummaryCache.set(
+        routerId,
         id,
         summary,
-        summary ? JSON.stringify(summary).length : 1,
+        summary ? JSON.stringify(summary).length * CACHED_CONFIG_HEAP_FACTOR : 1,
       );
     }
   }
 
   for (const [routerId, metadata] of latestMetadata) {
-    const summary = policyConfigSummaryCache.get(metadata.id);
+    const summary = resolved.get(metadata.id);
     if (summary) {
       latest.set(routerId, { ...metadata, config: summary });
     }

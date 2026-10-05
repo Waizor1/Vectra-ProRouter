@@ -3,7 +3,7 @@ import {
   type PasswallDesiredConfig,
 } from "@vectra/contracts";
 import { passwallDesiredRevisions, routerInventorySnapshots } from "@vectra/db";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   loadLatestFleetPolicyConfigRows,
@@ -62,10 +62,10 @@ function liveConfig(worldNode: string): PasswallDesiredConfig {
 
 type Revision = { id: string; routerId: string; origin: string; createdAt: Date; config: PasswallDesiredConfig };
 
-function createDb(revisions: Revision[]) {
+function createDb(revisions: Revision[], revisionsTable: unknown = passwallDesiredRevisions) {
   const configReads: string[][] = [];
   const { db } = createStaticDb(({ table, params, fields }: StaticDbQuery) => {
-    if (table !== passwallDesiredRevisions) return [];
+    if (table !== revisionsTable) return [];
     if (fields && "config" in fields) {
       const ids = revisions.filter((revision) => params.has(revision.id)).map((revision) => revision.id);
       configReads.push(ids);
@@ -193,5 +193,29 @@ describe("loadLatestSnapshots for the monitors", () => {
       telegramReachability: payload.telegramReachability,
       packageVersions: payload.packageVersions,
     });
+  });
+});
+
+describe("loadLatestFleetPolicyConfigSummaries with no cache room", () => {
+  it("still gives every router its config for the tick that read it", async () => {
+    vi.stubEnv("VECTRA_CONFIG_CACHE_MB", "0");
+    vi.resetModules();
+    try {
+      const fresh = await import("./fleet-monitoring-data");
+      // A fresh module graph has its own table objects.
+      const freshSchema = await import("@vectra/db");
+      const { db, configReads } = createDb([
+        { id: "rev-a1", routerId: ROUTER_A, origin: "router_import", createdAt: new Date(1_000), config: liveConfig("node-pl2") },
+        { id: "rev-b1", routerId: ROUTER_B, origin: "router_import", createdAt: new Date(1_000), config: liveConfig("node-de") },
+      ], freshSchema.passwallDesiredRevisions);
+      const summaries = await fresh.loadLatestFleetPolicyConfigSummaries(db, [ROUTER_A, ROUTER_B]);
+      expect([...summaries.keys()].sort()).toEqual([ROUTER_A, ROUTER_B]);
+      // Nothing was cached, so the next tick reads both again.
+      await fresh.loadLatestFleetPolicyConfigSummaries(db, [ROUTER_A, ROUTER_B]);
+      expect(configReads).toHaveLength(2);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
   });
 });

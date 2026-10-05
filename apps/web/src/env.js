@@ -223,6 +223,11 @@ export const env = createEnv({
       .min(100)
       .max(10000)
       .default(5000),
+    // Heap budget, in MB, of EACH in-memory config cache (the check-in's
+    // decrypted desired revisions; the monitors' per-router config summaries).
+    // One entry per router, 10-minute TTL; past the budget a router is not
+    // cached and is served from Postgres as before. 0 turns caching off.
+    VECTRA_CONFIG_CACHE_MB: z.coerce.number().int().min(0).max(256).default(16),
     VECTRA_TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
     VECTRA_TELEGRAM_ALLOWED_CHAT_IDS: z.string().min(1).optional(),
     VECTRA_TELEGRAM_WEBHOOK_SECRET: z.string().min(16).optional(),
@@ -326,6 +331,7 @@ export const env = createEnv({
     VECTRA_RETENTION_DAYS: process.env.VECTRA_RETENTION_DAYS,
     VECTRA_RETENTION_DRY_RUN: process.env.VECTRA_RETENTION_DRY_RUN,
     VECTRA_RETENTION_BATCH_SIZE: process.env.VECTRA_RETENTION_BATCH_SIZE,
+    VECTRA_CONFIG_CACHE_MB: process.env.VECTRA_CONFIG_CACHE_MB,
     VECTRA_TELEGRAM_BOT_TOKEN: process.env.VECTRA_TELEGRAM_BOT_TOKEN,
     VECTRA_TELEGRAM_ALLOWED_CHAT_IDS:
       process.env.VECTRA_TELEGRAM_ALLOWED_CHAT_IDS,

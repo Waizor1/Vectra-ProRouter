@@ -108,7 +108,10 @@ import {
   boundRouterCheckInPayload,
 } from "~/server/vectra/router-payload-bounds";
 import { MemoryWindowRateLimiter } from "~/server/vectra/public-install-rate-limit";
-import { BoundedLru } from "~/server/vectra/bounded-lru";
+import {
+  CACHED_CONFIG_HEAP_FACTOR,
+  PerRouterCache,
+} from "~/server/vectra/per-router-cache";
 
 type RouterRow = typeof routers.$inferSelect;
 type RevisionRow = typeof passwallDesiredRevisions.$inferSelect;
@@ -621,7 +624,7 @@ type RevisionSummaryMetadata = {
 
 // Decrypted, diffed and validated revision summaries, so a router checking in
 // every 45 s does not pull two ~140 kB revisions out of Postgres, decrypt,
-// gunzip and zod-parse both and diff them each time (measured: ~30 ms of the
+// gunzip and zod-parse both and diff them each time (measured: ~21 ms of the
 // single Node thread per legacy-agent check-in).
 //
 // Keyed by everything the summary is computed from: a revision's config never
@@ -629,23 +632,23 @@ type RevisionSummaryMetadata = {
 // and a secret re-import writes a NEW blob row (upsertRevisionSecretBlob is
 // delete + insert), so a changed ciphertext is a changed key. The diff base is
 // in the key too, so deleting or re-keying the previous revision misses.
-// Nothing needs explicit invalidation; stale keys age out of the LRU.
 //
-// Bounded by approximate JSON size. 64 MB holds ~2000 production-sized
-// summaries (~30 kB each) — every router's desired revision for a fleet of
-// 1000+. Below the working set an LRU over round-robin check-ins would miss
-// on every request, which is only as slow as no cache at all.
-const REVISION_SUMMARY_CACHE_BYTES = 64 * 1024 * 1024;
-const revisionSummaryCache = new BoundedLru<string, DesiredRevisionSummary>(
-  REVISION_SUMMARY_CACHE_BYTES,
+// One entry per router (a new key replaces it), a 10-minute TTL so decrypted
+// secrets do not linger, and a small heap budget (VECTRA_CONFIG_CACHE_MB,
+// default 16): a parsed config measures ~2x its JSON length on the heap, so
+// an entry is weighed at 3x. Past the budget a router is simply not cached.
+const REVISION_SUMMARY_TTL_MS = 10 * 60 * 1000;
+const revisionSummaryCache = new PerRouterCache<DesiredRevisionSummary>(
+  Number(env.VECTRA_CONFIG_CACHE_MB ?? 16) * 1024 * 1024,
+  REVISION_SUMMARY_TTL_MS,
 );
 
 export function resetRevisionSummaryCacheForTest() {
   revisionSummaryCache.clear();
 }
 
-export function revisionSummaryCacheSizeForTest() {
-  return revisionSummaryCache.size;
+export function revisionSummaryCacheStatsForTest() {
+  return { size: revisionSummaryCache.size, weight: revisionSummaryCache.weight };
 }
 
 function revisionSummaryCacheKey(
@@ -745,7 +748,7 @@ async function getRevisionSummaryWithDb(
           .limit(1)) as Array<Pick<RevisionSummaryMetadata, "id" | "secretBlobId">>);
 
   const cacheKey = revisionSummaryCacheKey(current, previous);
-  const cached = revisionSummaryCache.get(cacheKey);
+  const cached = revisionSummaryCache.get(routerId, cacheKey);
   if (cached) {
     return cached;
   }
@@ -755,9 +758,10 @@ async function getRevisionSummaryWithDb(
     // Shared by every check-in that hits it: frozen, so a caller that tried to
     // edit it in place would throw instead of corrupting other answers.
     revisionSummaryCache.set(
+      routerId,
       cacheKey,
       deepFreeze(summary),
-      JSON.stringify(summary).length,
+      JSON.stringify(summary).length * CACHED_CONFIG_HEAP_FACTOR,
     );
   }
   return summary;
