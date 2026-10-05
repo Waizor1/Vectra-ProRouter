@@ -217,6 +217,10 @@ export const env = createEnv({
       .default(3600),
     VECTRA_RETENTION_DAYS: z.coerce.number().int().min(7).default(30),
     VECTRA_RETENTION_DRY_RUN: booleanFlagSchema(true),
+    // Resolved rescue cases (22k rows on 2026-10-05) have their own switch on
+    // top of VECTRA_RETENTION_DRY_RUN: they are only deleted when BOTH are
+    // false, so this table can be enabled after the others.
+    VECTRA_RESCUE_CASE_RETENTION_DRY_RUN: booleanFlagSchema(true),
     VECTRA_RETENTION_BATCH_SIZE: z.coerce
       .number()
       .int()
@@ -330,6 +334,8 @@ export const env = createEnv({
       process.env.VECTRA_HISTORY_RETENTION_INTERVAL_SECONDS,
     VECTRA_RETENTION_DAYS: process.env.VECTRA_RETENTION_DAYS,
     VECTRA_RETENTION_DRY_RUN: process.env.VECTRA_RETENTION_DRY_RUN,
+    VECTRA_RESCUE_CASE_RETENTION_DRY_RUN:
+      process.env.VECTRA_RESCUE_CASE_RETENTION_DRY_RUN,
     VECTRA_RETENTION_BATCH_SIZE: process.env.VECTRA_RETENTION_BATCH_SIZE,
     VECTRA_CONFIG_CACHE_MB: process.env.VECTRA_CONFIG_CACHE_MB,
     VECTRA_TELEGRAM_BOT_TOKEN: process.env.VECTRA_TELEGRAM_BOT_TOKEN,
