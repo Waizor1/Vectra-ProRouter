@@ -175,6 +175,8 @@ function revisionRow(id: string, revisionNumber: number, config: PasswallDesired
     note: null,
     approvedAt: new Date("2026-10-01T00:00:00Z"),
     createdAt: new Date("2026-10-01T00:00:00Z"),
+    // What the metadata query's correlated subquery returns.
+    secretBlobId: `secret-${revisionNumber}`,
   };
 }
 
