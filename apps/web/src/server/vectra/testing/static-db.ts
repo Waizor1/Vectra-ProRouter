@@ -19,6 +19,10 @@ export type StaticDbQuery = {
 function paramValues(node: unknown, out: Set<unknown>, seen: WeakSet<object>) {
   if (!node || typeof node !== "object" || seen.has(node)) return out;
   seen.add(node);
+  if (Array.isArray(node)) {
+    for (const item of node) paramValues(item, out, seen);
+    return out;
+  }
   const record = node as Record<string, unknown>;
   if (record.constructor?.name === "Param") out.add(record.value);
   if (Array.isArray(record.queryChunks)) {

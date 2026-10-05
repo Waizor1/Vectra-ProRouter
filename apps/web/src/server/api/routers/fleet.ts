@@ -24,6 +24,7 @@ import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
 import {
   loadFleetMonitoringSnapshot,
   loadLatestFleetPolicyConfigRows,
+  loadLatestFleetPolicyConfigSummaries,
   loadLatestSnapshots,
 } from "~/server/vectra/fleet-monitoring-data";
 import { buildConfigTrustState } from "~/server/vectra/config-trust";
@@ -134,7 +135,7 @@ export const fleetRouter = createTRPCRouter({
               .where(inArray(jobs.routerId, routerIds))
               .orderBy(desc(jobs.createdAt))
           : Promise.resolve([]),
-        loadLatestFleetPolicyConfigRows(ctx.db, routerIds),
+        loadLatestFleetPolicyConfigSummaries(ctx.db, routerIds),
       ]);
 
     const incidentMap = new Map<string, typeof healthIncidents.$inferSelect>();

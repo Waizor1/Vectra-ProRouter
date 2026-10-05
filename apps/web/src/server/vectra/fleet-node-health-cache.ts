@@ -1,8 +1,6 @@
 import { routers } from "@vectra/db";
 import { desc } from "drizzle-orm";
 
-import type { PasswallDesiredConfig } from "@vectra/contracts";
-
 import type { db as appDb } from "~/server/db";
 
 import {
@@ -14,7 +12,8 @@ import {
   type FleetRoutePolicyOptions,
 } from "./fleet-route-policy";
 import {
-  loadLatestFleetPolicyConfigRows,
+  type FleetPolicyConfigSummary,
+  loadLatestFleetPolicyConfigSummaries,
   loadLatestSnapshots,
 } from "./fleet-monitoring-data";
 import {
@@ -55,7 +54,7 @@ const EMPTY_HEALTH: FleetNodeHealth = { unhealthyHosts: [], index: new Set() };
  */
 type FleetPolicyContext = {
   nodeHealth: FleetNodeHealth;
-  configByRouter: Map<string, PasswallDesiredConfig>;
+  configByRouter: Map<string, FleetPolicyConfigSummary>;
 };
 
 const EMPTY: FleetPolicyContext = {
@@ -76,7 +75,7 @@ async function rebuild(
   now: number,
 ): Promise<FleetPolicyContext> {
   const routerRows = await database
-    .select()
+    .select({ id: routers.id })
     .from(routers)
     .orderBy(desc(routers.lastSeenAt));
   const routerIds = routerRows.map((router) => router.id);
@@ -85,12 +84,14 @@ async function rebuild(
   }
 
   const [snapshots, policyConfigRows, routeVerifications] = await Promise.all([
-    loadLatestSnapshots(database, routerIds),
-    loadLatestFleetPolicyConfigRows(database, routerIds),
+    loadLatestSnapshots(database, routerIds, { monitoringPayload: true }),
+    // Incremental: only revisions new since the last rebuild are read and
+    // parsed; the rest come from the per-revision summary cache.
+    loadLatestFleetPolicyConfigSummaries(database, routerIds),
     loadLatestRouteVerifications(database, routerIds),
   ]);
 
-  const configByRouter = new Map<string, PasswallDesiredConfig>();
+  const configByRouter = new Map<string, FleetPolicyConfigSummary>();
   for (const routerId of routerIds) {
     const config = policyConfigRows.get(routerId)?.config;
     if (config) {
