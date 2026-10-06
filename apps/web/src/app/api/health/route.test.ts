@@ -29,6 +29,11 @@ vi.mock("~/server/db", () => ({
     },
   },
 }));
+// The check-in count runs its own query; keep it out of the read/write probe
+// accounting below (it has its own tests in health-checkins.test.ts).
+vi.mock("~/server/vectra/health-checkins", () => ({
+  loadHealthCheckinCounts: async () => ({ checkedInLast5m: 25, active: 28 }),
+}));
 vi.mock("~/server/vectra/auto-rescue", () => ({ startAutoRescueMonitor: () => true }));
 vi.mock("~/server/vectra/browser-push-monitor", () => ({ startBrowserPushMonitor: () => true }));
 vi.mock("~/server/vectra/partner-webhooks", () => ({ startPartnerWebhookDispatcher: () => true }));
@@ -48,6 +53,7 @@ type HealthBody = {
   service: string;
   checkedAt: string;
   checks: Record<string, boolean>;
+  routers?: { checkedInLast5m: number; active: number } | null;
   error?: string;
 };
 
@@ -71,6 +77,7 @@ describe("/api/health", () => {
     const first = await call();
     expect(first.status).toBe(200);
     expect(first.body).toMatchObject({ ok: true, service: "vectra-web" });
+    expect(first.body.routers).toEqual({ checkedInLast5m: 25, active: 28 });
     expect(first.body.checks).toEqual({
       browserPushMonitor: true,
       autoRescueMonitor: true,
