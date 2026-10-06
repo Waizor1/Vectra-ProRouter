@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,12 +26,23 @@ import (
 // server can answer them from the router's own WAN address.
 type panelGone struct {
 	panelHost string
-	panelHits *int64
+	panelHits *int64 // check-ins and registrations it refused
+	back      *atomic.Bool
 }
 
 func (p panelGone) RoundTrip(r *http.Request) (*http.Response, error) {
 	if r.URL.Host == p.panelHost {
-		atomic.AddInt64(p.panelHits, 1)
+		if p.back != nil && p.back.Load() {
+			if strings.HasPrefix(r.URL.Path, "/api/router/") {
+				atomic.AddInt64(p.panelHits, 1)
+			}
+			// Back, and with nothing to say: an empty answer.
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+				Body: io.NopCloser(strings.NewReader(`{"status":"ok"}`)), Request: r}, nil
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/router/") {
+			atomic.AddInt64(p.panelHits, 1)
+		}
 		return nil, errors.New("dial tcp: connect: connection refused")
 	}
 	r2 := r.Clone(r.Context())
@@ -66,16 +78,23 @@ func internetUp(t *testing.T, down *atomic.Bool) *httptest.Server {
 // there; returns the counter of requests the panel would have received.
 func withoutPanel(t *testing.T, d *daemon, net *httptest.Server) *int64 {
 	t.Helper()
-	hits := new(int64)
+	hits, _ := withoutPanelUntil(t, d, net)
+	return hits
+}
+
+// withoutPanelUntil is withoutPanel with a switch that brings the panel back.
+func withoutPanelUntil(t *testing.T, d *daemon, net *httptest.Server) (*int64, *atomic.Bool) {
+	t.Helper()
+	hits, back := new(int64), new(atomic.Bool)
 	const panelURL = "http://panel.invalid"
 	d.cfg.ControlURL = panelURL
 	d.client = controlplane.NewClient(controlplane.Options{
 		BaseURL:    panelURL,
-		HTTPClient: &http.Client{Timeout: 2 * time.Second, Transport: panelGone{panelHost: "panel.invalid", panelHits: hits}},
+		HTTPClient: &http.Client{Timeout: 2 * time.Second, Transport: panelGone{panelHost: "panel.invalid", panelHits: hits, back: back}},
 	})
 	d.rescuePolicy.HealthURLs = []string{net.URL + "/generate_204"}
 	d.rescuePolicy.TraceURLs = []string{net.URL + "/cdn-cgi/trace"}
-	return hits
+	return hits, back
 }
 
 // THE FINDING. A ruleset loaded while the panel is unreachable is confirmed
@@ -167,8 +186,9 @@ func TestThePanelStillConfirmsButIsNotWaitedFor(t *testing.T) {
 	}
 }
 
-// The check-in's backoff: the poll after one failure, doubling, at most
-// five minutes, drawn between half and the whole.
+// The check-in's backoff: none after one failure (the next poll asks
+// again), then doubling from two polls, at most five minutes, drawn between
+// half and the whole.
 func TestCheckInBackoff(t *testing.T) {
 	poll := 45 * time.Second
 	for _, c := range []struct {
@@ -176,7 +196,7 @@ func TestCheckInBackoff(t *testing.T) {
 		lo, hi time.Duration
 	}{
 		{0, 0, 0},
-		{1, poll / 2, poll},
+		{1, 0, 0},
 		{2, poll, 2 * poll},
 		{3, 2 * poll, 4 * poll},
 		{4, 150 * time.Second, checkInMaxBackoff},
@@ -185,6 +205,9 @@ func TestCheckInBackoff(t *testing.T) {
 		lo := checkInBackoff(poll, c.n, func() float64 { return 0 })
 		hi := checkInBackoff(poll, c.n, func() float64 { return 0.999999 })
 		if lo != c.lo || hi < c.hi-time.Second || hi > c.hi {
+			if c.hi == 0 && hi == 0 && lo == 0 {
+				continue
+			}
 			t.Errorf("failures %d: [%s, %s], want [%s, %s]", c.n, lo, hi, c.lo, c.hi)
 		}
 	}
@@ -472,5 +495,58 @@ func TestALateProofDoesNotConfirm(t *testing.T) {
 	set(t0.Add(10 * time.Second))
 	if !d.confirmFirewall(context.Background(), t0) {
 		t.Fatal("a proof in time did not confirm")
+	}
+}
+
+// Backed off from a panel that was gone for an hour, the router checks in at
+// the first poll after the panel's health answers again — not at the end of
+// a five-minute wait — and the backoff is reset.
+func TestCheckInsResumeAtTheFirstPollAfterThePanelIsBack(t *testing.T) {
+	s := steerDaemon(t, renderWithDNS)
+	d := s.d
+	hits, back := withoutPanelUntil(t, d, internetUp(t, nil))
+	t0 := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	now := t0
+	d.clock = func() time.Time { return now }
+	ctx := context.Background()
+	poll := d.cfg.PollInterval()
+	for ; now.Before(t0.Add(time.Hour)); now = now.Add(poll) {
+		_ = d.runOnce(ctx)
+	}
+	if h := atomic.LoadInt64(hits); h < 3 || h > 40 {
+		t.Fatalf("%d check-ins in an hour of 45 s polls: want a backoff (3..40)", h)
+	}
+	// The next due check-in fails too; one poll later the router is deep
+	// in its wait when the panel comes back.
+	now = d.cpRetryAt
+	_ = d.runOnce(ctx)
+	now = now.Add(poll)
+	if !now.Before(d.cpRetryAt) {
+		t.Fatalf("not backed off: the next check-in is due %s from now", d.cpRetryAt.Sub(now))
+	}
+	before := atomic.LoadInt64(hits)
+	back.Store(true)
+	_ = d.runOnce(ctx)
+	if atomic.LoadInt64(hits) == before {
+		t.Fatal("the panel is back and the next poll did not check in: it waits out the backoff")
+	}
+	if d.cpFailures != 0 || !d.cpRetryAt.IsZero() {
+		t.Errorf("the backoff was not reset after the check-in: failures %d", d.cpFailures)
+	}
+}
+
+// One failure costs no poll: the next poll asks again.
+func TestOneFailedCheckInDoesNotSkipAPoll(t *testing.T) {
+	s := steerDaemon(t, renderWithDNS)
+	d := s.d
+	hits := withoutPanel(t, d, internetUp(t, nil))
+	t0 := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	now := t0
+	d.clock = func() time.Time { return now }
+	_ = d.runOnce(context.Background())
+	now = now.Add(d.cfg.PollInterval())
+	_ = d.runOnce(context.Background())
+	if h := atomic.LoadInt64(hits); h != 2 {
+		t.Fatalf("%d check-ins in two polls after one failure; want 2", h)
 	}
 }

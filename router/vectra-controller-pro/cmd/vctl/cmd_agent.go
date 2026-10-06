@@ -784,9 +784,10 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	}
 
 	// The panel failed the last exchanges: the next waits its turn
-	// (checkInBackoff). Everything above — the rescue, the data plane —
-	// does not.
-	if d.now().Before(d.cpRetryAt) {
+	// (checkInBackoff) — unless its health answers, asked cheaply every poll
+	// meanwhile, so a panel that is back is checked in with within a poll.
+	// Everything above — the rescue, the data plane — does not wait.
+	if d.now().Before(d.cpRetryAt) && !d.panelBack(ctx) {
 		return nil
 	}
 
@@ -1412,18 +1413,31 @@ func (d *daemon) noteControlPlane(ok bool) {
 	d.cpRetryAt = d.now().Add(checkInBackoff(d.cfg.PollInterval(), d.cpFailures, rand.Float64))
 }
 
+// panelHealthBudget bounds the backed-off poll's look at the panel's health.
+const panelHealthBudget = 3 * time.Second
+
+// panelBack: the panel's health answers again (a backed-off check-in may go
+// now).
+func (d *daemon) panelBack(ctx context.Context) bool {
+	if d.client == nil {
+		return false
+	}
+	return rescue.ProbeAnyWithin(ctx, d.client.HTTPClient(), serverHealthURLs(d.cfg.ControlURL), panelHealthBudget)
+}
+
 // checkInMaxBackoff caps the wait between exchanges with a panel that does
 // not answer.
 const checkInMaxBackoff = 5 * time.Minute
 
-// checkInBackoff is the wait after failures exchanges in a row failed: the
-// poll interval doubled for each one after the first, at most
+// checkInBackoff is the wait after failures exchanges in a row failed: none
+// after one (the next poll asks again — one failure must not cost two
+// polls), then the poll interval doubled for each, at most
 // checkInMaxBackoff, drawn between its half and the whole (rnd in [0,1)) —
-// so a fleet the panel lost does not come back all at once, and a router
-// does not spend its loop on a panel that is gone. The data plane never
-// waits for it.
+// so a router does not spend its loop on a panel that is gone. Meanwhile
+// each poll asks the panel's health (panelBack), and the check-in goes as
+// soon as it answers. The data plane never waits for any of it.
 func checkInBackoff(poll time.Duration, failures int, rnd func() float64) time.Duration {
-	if failures <= 0 {
+	if failures <= 1 {
 		return 0
 	}
 	wait := poll
