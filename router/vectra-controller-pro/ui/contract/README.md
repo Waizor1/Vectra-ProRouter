@@ -39,6 +39,8 @@ Change a shape here first, then both sides.
 | `set_service` | `{"id": "tiktok", "country": "DE"}` (`""` = the entry's own path) | `action.json` |
 | `set_power` | `{"on": true}` (`false` turns Vectra off; `"force": true` also where it would carry nothing — see Power) | `action.json` |
 | `set_remote_shell` | `{"on": false}` (`true` lets support in — see Support shell) | `action.json` |
+| `port_forwards` | — | `port_forwards.json` |
+| `set_port_forwards` | `{"rules": [{"preset": "minecraft", "destIp": "192.168.1.50", "port": "25565", "proto": "tcp", "direct": false, "enabled": true}]}` (the whole list; `id` for a rule kept — see Port forwards) | `action.json` |
 
 `select_entry`, `reset_entry`, `set_probe_interval`, `set_rules` and
 `restart_xray` restart xray: client connections drop for a few seconds. The UI
@@ -59,7 +61,9 @@ call — nothing restarts.
 - `status.ui.locked` is `true` while the lock is on; the UI then offers only
   the simple view.
 - The router refuses the Pro view's methods itself, before doing any work:
-  `balancers`, `nodes`, `logs`, `pin_balancer`, `set_probe_interval` answer
+  `balancers`, `nodes`, `logs`, `pin_balancer`, `set_probe_interval`,
+  `port_forwards` and `set_port_forwards` (an owner whose router is locked
+  manages port forwards from Vectra Connect) answer
   `{"ok": false, "code": "locked", "detail": null}`. A refused READ method
   answers with this action object instead of its usual shape — check for it
   before reading the answer.
@@ -237,6 +241,69 @@ THROUGH it (`proxy` — blocked, but in none of the provider's lists).
   `http`, `tls` and `quic` with `routeOnly` whatever the operator's config
   says, and still connects to the address the client resolved.
 
+## Port forwards
+
+Simple on purpose (the owner, 06.10): a rule is a device, a port or a range
+that is the SAME outside and on the device, a protocol, «through the VPN or
+past it», on or off.
+
+- `port_forwards` answers `rules` (the router's own, in the order it keeps
+  them), `devices` (`{name, ip}` from the DHCP leases and static hosts, LAN
+  only, sorted by address, at most 64; `name` is `null` when the device gave
+  none — no MAC address is ever sent), `cgnat`, `directActive` and `max`
+  (32). A rule:
+  `id` (8 hex), `preset` (the UI's tag for what the forward is for —
+  `minecraft`, `playstation` — or `null`; 1-24 of `a-z`, `0-9`, `-`, else
+  `invalid_params`; the router keeps the tag and never checks it against a
+  list: the UI owns the catalogue), `destIp`, `deviceName` (read-only: the device's name now, or
+  `null`), `port` (`"25565"` or `"3478-3480"`), `proto` (`tcp`, `udp`,
+  `both`), `direct` (the device's own new connections go out past the VPN —
+  blocked sites still go through it: their FakeDNS addresses are never sent
+  past), `enabled`.
+- `cgnat: true`: the WAN's address is the provider's shared one
+  (100.64.0.0/10) or a private one — nothing from the internet reaches a
+  forward (or it must be forwarded on the router in front too). One line in
+  the UI, only when true.
+- `directActive`: whether «past the VPN» is in effect for every enabled rule
+  that asks for it. `null` when none asks; `false` when some rule's `direct`
+  is not carried out right now — Vectra is off or stopped, or the router could
+  not write its data plane set (it keeps trying) — so a `direct: true` never
+  reads as working when it is not; `true` otherwise (also in the rescue's
+  direct mode, where every device goes past the VPN).
+- «Past the VPN» and the kill switch: the owner's choice for one device wins
+  over the router-wide kill switch — that device's own new connections leave
+  by the WAN even with the switch armed. What stays in the tunnel all the
+  same: blocked sites (their FakeDNS addresses) and the device's DNS (ports
+  53 and 853, which the ISP forges even from public resolvers).
+- `set_port_forwards` REPLACES the list: send every rule, always; `[]` removes
+  them all, and a list left out is refused. A rule without `id` is new (the
+  router picks one); `preset` may be left out or `null`; `deviceName` is not
+  sent. Inbound through the VPN is not
+  possible: a forward reaches the router's WAN address only.
+- Answers: `port_forwards_set`; `invalid_params` (a field missing, unknown or
+  of the wrong type, an `id` twice, a `proto` or `port` out of range, a
+  `destIp` that is not IPv4), `too_many` (more than 32), `dest_not_lan` (the
+  address is outside the LAN, its network or broadcast address, or the LAN
+  could not be read), `dest_is_router`, `port_conflict` (an enabled rule
+  shares a protocol and a port with another enabled rule — this list's, a
+  redirect made in LuCI, which is never shown, or a port the router itself
+  takes from the WAN, such as DHCP renewals or SSH opened there; a wan rule
+  with no port, or a wan zone accepting everything, opens the whole router
+  and is not counted — which ports it serves is not known),
+  `busy` (another change is being applied, or uncommitted firewall edits wait
+  in uci), `apply_failed` (nothing changed: when fw4 failed to reload the
+  new rules, the previous config was put back and reloaded), `internal` (fw4
+  failed to reload even the previous config — it is back on disk), `locked`
+  (see Operator lock). Vectra Connect's `set_port_forwards` answers the same
+  codes, `applied` on success; more than 32 rules is `too_many` there too.
+- How the router applies it: each rule is an fw4 `config redirect` named
+  `vectra_pf_<id>` (`name 'Vectra: <device name or address>'`, or
+  `'Vectra: <preset> → <device name or address>'`, the tag kept in
+  `option vectra_preset`; DNAT from
+  wan, `src_dport` = `dest_port`, hairpin on), so it works with vctl stopped
+  and shows in LuCI; vctl changes only those sections. `direct` puts the
+  device into vctl's data plane set `vctl_pf_direct4`.
+
 ## Services
 
 A few services — only those a person really picks a country for: `youtube`,
@@ -369,7 +436,7 @@ The router answers in CODES, never in prose, so the UI can speak ru, en and zh.
 - `action.code` on success: `entry_selected`, `entry_reset`, `balancer_pinned`,
   `balancer_unpinned`, `probe_interval_set`, `rules_set`, `service_set`, `xray_restarted`,
   `wifi_set`, `wifi_optimized`, `setup_finished`, `power_on`, `power_off`,
-  `remote_shell_set`,
+  `remote_shell_set`, `port_forwards_set`,
   `pending` (the controller accepted the request and is still applying it; it
   is remembered only if it succeeds — poll `status`, or `rules`, to see it
   land).
@@ -380,7 +447,8 @@ The router answers in CODES, never in prose, so the UI can speak ru, en and zh.
   (set_power: see Power), `locked` (the
   operator's lock refuses this method on this router — see Operator lock),
   `unsupported` (the router has a radio the Wi-Fi tuning has no rules for —
-  see Setup wizard).
+  see Setup wizard), `too_many`, `dest_not_lan`, `dest_is_router`,
+  `port_conflict` (see Port forwards).
 
 ## Diagnostics
 

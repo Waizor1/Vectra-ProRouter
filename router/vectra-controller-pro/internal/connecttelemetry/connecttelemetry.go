@@ -114,8 +114,33 @@ func Build(read func(string) ([]byte, error), now time.Time, snapshot Snapshot) 
 	if out.Capabilities != nil && len(*out.Capabilities) > 64 {
 		out.Capabilities = nil
 	}
+	if pf := out.PortForwards; pf != nil {
+		// More rules than the router keeps is not a list the router made:
+		// not known rather than cut short. Devices are only a picker: cut.
+		if len(pf.Rules) > MaxPortForwardRules {
+			out.PortForwards = nil
+		} else {
+			if pf.Rules == nil {
+				pf.Rules = []controlplane.ConnectPortForward{}
+			}
+			if len(pf.Devices) > MaxPortForwardDevices {
+				pf.Devices = pf.Devices[:MaxPortForwardDevices]
+			}
+			if pf.Devices == nil {
+				pf.Devices = []controlplane.ConnectPortForwardDevice{}
+			}
+		}
+	}
 	return out
 }
+
+// Bounds of the port forwards' telemetry (internal/portfwd.MaxRules,
+// MaxDevices).
+const (
+	MaxPortForwardRules   = 32
+	MaxPortForwardDevices = 64
+)
+
 func validCountry(s string) bool {
 	return len(s) == 2 && s[0] >= 'A' && s[0] <= 'Z' && s[1] >= 'A' && s[1] <= 'Z'
 }

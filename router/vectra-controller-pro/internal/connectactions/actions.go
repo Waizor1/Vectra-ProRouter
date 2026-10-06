@@ -12,6 +12,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"vectra-controller-pro/internal/portfwd"
 )
 
 const JobType = "connect_router_action"
@@ -54,6 +56,17 @@ type WiFi struct {
 func (WiFi) String() string     { return "wifi parameters (redacted)" }
 func (p WiFi) GoString() string { return p.String() }
 
+// PortForwards replaces the owner's port forwards (capability
+// set_port_forwards): the whole list, as the router UI's set_port_forwards.
+// Parse holds each rule to its shape and syntax (portfwd.CheckSyntax); where
+// it points and what it collides with the router decides when it applies it,
+// against its own configuration, and answers in codes (dest_not_lan,
+// port_conflict, …). A rule is {id?, preset?, destIp, port, proto, direct,
+// enabled}; preset may be null.
+type PortForwards struct {
+	Rules []portfwd.Rule `json:"rules"`
+}
+
 type Empty struct{}
 type AutoUpdate struct {
 	Enabled bool `json:"enabled"`
@@ -63,7 +76,7 @@ type AutoUpdate struct {
 type Binding struct{ RouterID, OwnerRef string }
 
 func Capabilities() []string {
-	return []string{"select_entry", "set_rules", "set_service", "set_wifi", "reboot", "update_now", "set_auto_update"}
+	return []string{"select_entry", "set_rules", "set_service", "set_wifi", "reboot", "update_now", "set_auto_update", "set_port_forwards"}
 }
 
 // Parse rejects unknown, duplicate, missing and incorrectly typed fields. All
@@ -149,6 +162,16 @@ func Parse(raw []byte) (Envelope, error) {
 			}
 		}
 		e.Params = wifi
+	case "set_port_forwards":
+		p, ok := object(params, "rules")
+		if !ok {
+			return Envelope{}, ErrInvalidPayload
+		}
+		rules, ok := portForwardList(p["rules"])
+		if !ok {
+			return Envelope{}, ErrInvalidPayload
+		}
+		e.Params = PortForwards{Rules: rules}
 	case "reboot", "update_now":
 		if _, ok := object(params); !ok {
 			return Envelope{}, ErrInvalidPayload
@@ -266,4 +289,65 @@ func domainList(raw json.RawMessage) ([]string, bool) {
 		}
 	}
 	return out, true
+}
+
+// portForwardKeys are a rule's fields; "id" (a new rule has none) and
+// "preset" are optional.
+var portForwardKeys = []string{"destIp", "port", "proto", "direct", "enabled"}
+
+// portForwardList reads the rules: an array of objects, each with exactly
+// portForwardKeys (and maybe "id", "preset"), strings and booleans of their
+// types, each rule's syntax valid. How many is the router's to judge — more
+// than portfwd.MaxRules is answered too_many, not refused as malformed (the
+// payload's own bound, MaxPayloadBytes, keeps the list small).
+func portForwardList(raw json.RawMessage) ([]portfwd.Rule, bool) {
+	var items []json.RawMessage
+	if len(raw) == 0 || raw[0] != '[' || json.Unmarshal(raw, &items) != nil {
+		return nil, false
+	}
+	out := make([]portfwd.Rule, 0, len(items))
+	for _, item := range items {
+		var f map[string]json.RawMessage
+		ok := false
+		for _, optional := range [][]string{{"id", "preset"}, {"id"}, {"preset"}, nil} {
+			if f, ok = object(item, append(optional, portForwardKeys...)...); ok {
+				break
+			}
+		}
+		if !ok {
+			return nil, false
+		}
+		var r portfwd.Rule
+		if _, has := f["id"]; has && !stringValue(f["id"], &r.ID) {
+			return nil, false
+		}
+		if raw, has := f["preset"]; has && string(raw) != "null" {
+			var p string
+			if !stringValue(raw, &p) {
+				return nil, false
+			}
+			r.Preset = &p
+		}
+		if !stringValue(f["destIp"], &r.DestIP) || !stringValue(f["port"], &r.Port) || !stringValue(f["proto"], &r.Proto) ||
+			!boolValue(f["direct"], &r.Direct) || !boolValue(f["enabled"], &r.Enabled) {
+			return nil, false
+		}
+		if portfwd.CheckSyntax(r) != nil {
+			return nil, false
+		}
+		out = append(out, r)
+	}
+	return out, true
+}
+
+func boolValue(raw json.RawMessage, out *bool) bool {
+	switch string(raw) {
+	case "true":
+		*out = true
+		return true
+	case "false":
+		*out = false
+		return true
+	}
+	return false
 }

@@ -328,6 +328,36 @@ type RouterConnectTelemetry struct {
 	RouterPasswordSet *bool             `json:"routerPasswordSet,omitempty"`
 	SupportAccess     *bool             `json:"supportAccess,omitempty"`
 	AutoUpdate        *bool             `json:"autoUpdate,omitempty"`
+	// PortForwards are the owner's port forwards, the devices one can point
+	// at and whether the WAN is behind CGNAT; nil when the router has no fw4
+	// config. No MAC address, no secret.
+	PortForwards *ConnectPortForwards `json:"portForwards,omitempty"`
+}
+
+// ConnectPortForwards: the owner's rules (internal/portfwd), the LAN
+// devices one can point at, and whether the WAN is behind CGNAT — the same
+// simple shape as the router UI's port_forwards.
+type ConnectPortForwards struct {
+	Rules   []ConnectPortForward       `json:"rules"`
+	Devices []ConnectPortForwardDevice `json:"devices"`
+	CGNAT   bool                       `json:"cgnat"`
+	// DirectActive: null when no rule asks for «past the VPN», false when
+	// some rule's flag is not in effect (portfwd.DirectActive).
+	DirectActive *bool `json:"directActive"`
+}
+type ConnectPortForward struct {
+	ID         string  `json:"id"`
+	Preset     *string `json:"preset"`
+	DestIP     string  `json:"destIp"`
+	DeviceName *string `json:"deviceName"`
+	Port       string  `json:"port"`
+	Proto      string  `json:"proto"`
+	Direct     bool    `json:"direct"`
+	Enabled    bool    `json:"enabled"`
+}
+type ConnectPortForwardDevice struct {
+	Name *string `json:"name"`
+	IP   string  `json:"ip"`
 }
 type ConnectLocation struct {
 	Mode    string  `json:"mode"`

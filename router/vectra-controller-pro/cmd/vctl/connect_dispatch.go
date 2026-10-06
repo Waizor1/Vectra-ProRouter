@@ -6,11 +6,13 @@ import (
 	"errors"
 	"os"
 	"regexp"
+	"time"
 
 	"vectra-controller-pro/internal/connectactions"
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/jobsafety"
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/portfwd"
 	"vectra-controller-pro/internal/state"
 )
 
@@ -27,6 +29,34 @@ func (d *daemon) connectBinding() connectactions.Binding {
 var connectRouteExecute = func(d *daemon, c context.Context, a string, p json.RawMessage) localctl.SocketResponse {
 	return d.connectRoutingAction(c, a, p)
 }
+
+// connectPortForwardsExecute applies Vectra Connect's set_port_forwards: the
+// same apply as the router UI's (portfwd.Apply), then the «past the VPN» set
+// written at once — this already runs on the daemon's loop, so no socket.
+// The answer is a code only: never a label, an address or uci's output.
+//
+// It runs on the daemon's loop, like every Connect action: jobs and the
+// router's own changes are serialized there by design (set_rules and
+// set_wifi hold it for an xray restart or a Wi-Fi check just the same). What
+// it holds the loop for is bounded — connectPortForwardsWait for the apply,
+// a failed reload's restore included, then one small nft write — so a
+// hanging fw4 costs one poll, never the loop.
+var connectPortForwardsExecute = func(d *daemon, ctx context.Context, rules []portfwd.Rule) (string, bool) {
+	c, cancel := context.WithTimeout(ctx, connectPortForwardsWait)
+	_, err := portfwd.Apply(c, portfwdEnv(), rules)
+	cancel()
+	if err != nil {
+		return err.Code, false
+	}
+	// A set that could not be written is tried again by the loop; the
+	// forwards themselves are in.
+	_ = d.maybeSyncPortForwards(ctx, true)
+	return "applied", true
+}
+
+// connectPortForwardsWait bounds a Connect port forward apply on the loop.
+const connectPortForwardsWait = 20 * time.Second
+
 var connectWifiExecute = connectApplyWifi
 var connectWifiMark = connectMarkWifiOwner
 var connectWifiForget = connectForgetWifiOwner
@@ -120,6 +150,10 @@ func (d *daemon) jobConnectAction(ctx context.Context, j controlplane.Job, respo
 			_ = connectWifiMark(d.cfg, k, b.RouterID, b.OwnerRef, connectactions.WiFi{}, kept)
 		}
 		return d.connectFinish(ctx, j, journal, b, code, ok)
+	case "set_port_forwards":
+		pf, _ := e.Params.(connectactions.PortForwards)
+		code, ok := connectPortForwardsExecute(d, ctx, pf.Rules)
+		return d.connectFinish(ctx, j, journal, b, code, ok)
 	case "reboot", "update_now", "set_auto_update":
 		p := map[string]interface{}{}
 		if json.Unmarshal(params, &p) != nil {
@@ -161,6 +195,10 @@ func (d *daemon) connectCapabilities() map[string]bool {
 			out["set_wifi_band"] = true // set_wifi takes band: one band's radios only
 			break
 		}
+	}
+	// Port forwards are fw4 redirects: offered where fw4 keeps its config.
+	if fi, err := os.Stat(portfwdEnv().FirewallConfig); err == nil && fi.Mode().IsRegular() {
+		out["set_port_forwards"] = true
 	}
 	if fi, err := os.Stat("/sbin/reboot"); err == nil && fi.Mode().IsRegular() && fi.Mode()&0111 != 0 {
 		out["reboot"] = true

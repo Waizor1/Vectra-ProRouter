@@ -978,8 +978,10 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 	}
 	key := dnsRedirectKey(spec) + fakeDNSKey(spec)
 	d.fwProgrammed = &key
-	// A new table: its direct sets are empty until loaded again.
+	// A new table: its direct sets are empty until loaded again, and so is
+	// the port forwards' set.
 	d.directLoaded, d.directFailKey, d.directPartial, d.directCount = "", "", false, 0
+	d.pfLoaded = ""
 	if key != "" {
 		logging.L().Info("the router's resolver asks through the tunnel", "redirect", key)
 	}
@@ -1019,6 +1021,7 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 	d.fwSpec = &programmed
 	d.confirmFirewall(ctx, armedAt)
 	d.maybeLoadDirect(ctx)
+	d.maybeSyncPortForwards(ctx, true)
 }
 
 // tearDownFirewall removes the vctl TPROXY table + ip rules so traffic flows
@@ -1040,7 +1043,7 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 	if !ok {
 		return false
 	}
-	d.directLoaded = ""
+	d.directLoaded, d.pfLoaded = "", ""
 	oldPort, redirected := 0, false
 	if d.fwProgrammed != nil {
 		if oldPort, redirected = redirectPort(*d.fwProgrammed); redirected {
@@ -1060,6 +1063,9 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 	if redirected {
 		d.forgetRedirectedFlows(oldPort)
 	}
+	// The set went with the table: «past the VPN» is recorded as it is now
+	// (not in effect — or, in rescue's direct mode, everything is).
+	_ = d.maybeSyncPortForwards(ctx, false)
 	_ = d.confirmer.Confirm()
 	d.firewallConfirmed()
 	d.fwSpec = nil

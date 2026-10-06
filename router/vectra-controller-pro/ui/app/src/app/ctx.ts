@@ -5,9 +5,10 @@ import type { ActionMethod, ReadData, ReadMethod, SetPasswordFn, Status } from '
 import type { Key, Lang, T } from '../i18n';
 import type { Fmt } from '../lib/format';
 
-export type TabId = 'overview' | 'locations' | 'balancing' | 'sites' | 'settings' | 'journal';
+export type TabId = 'overview' | 'locations' | 'balancing' | 'sites' | 'ports' | 'settings' | 'journal';
 // The servers come second: switching one is what a person does most, after a look at the overview.
-export const TABS: readonly TabId[] = ['overview', 'locations', 'balancing', 'sites', 'settings', 'journal'];
+// Port forwarding sits by My sites: both are the owner's own exceptions.
+export const TABS: readonly TabId[] = ['overview', 'locations', 'balancing', 'sites', 'ports', 'settings', 'journal'];
 
 /** simple: one screen for the router's owner. pro: the tabs, for whoever runs it. */
 export type Mode = 'simple' | 'pro';
@@ -31,6 +32,11 @@ export interface RunOpts {
   quiet?: boolean;
   /** A failure this action explains better than the generic sentence for its code. */
   fail?: Partial<Record<string, Key>>;
+  /**
+   * A refusal the caller shows itself, beside the fields it is about: true
+   * when it did, and then no toast says it again.
+   */
+  onFail?: (code: string, detail: string | null) => boolean;
   /** For a `pending` answer that shows in another read than `status`: which one to poll, and when it has landed. */
   settled?: { read: ReadMethod; ok: (data: unknown) => boolean };
   /** How long a `pending` answer is watched for landing, ms (30 s when not said). */

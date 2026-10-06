@@ -30,6 +30,8 @@ table inet vctl {
   counter vctl_inbound_guard { }
   counter vctl_lan_dial { }
   counter vctl_direct_new { }
+  counter vctl_pf_direct { }
+  set vctl_pf_direct4 { type ipv4_addr; }
   counter vctl_admit_held { }
   set vctl_admit4 { type ipv4_addr; flags dynamic, timeout; timeout 1m; size 1024; }
   set vctl_admit6 { type ipv6_addr; flags dynamic, timeout; timeout 1m; size 1024; }
@@ -77,6 +79,14 @@ table inet vctl {
     ct mark and 0x10000000 == 0x10000000 return
     ct state new ip  daddr @vctl_direct4 ct mark set ct mark or 0x10000000 counter name "vctl_direct_new" return
     ct state new ip6 daddr @vctl_direct6 ct mark set ct mark or 0x10000000 counter name "vctl_direct_new" return
+    # A port forward's device «past the VPN» (SetPortForwardDirect4): its own
+    # new connections go out by the kernel — but never to a FakeDNS address,
+    # which only xray can carry, and never its DNS (53, DoT 853), which the
+    # ISP forges. Ahead of the P2P and admission guards and TPROXY; the
+    # forward guard lets the bit through, kill switch or not (the owner's
+    # choice for this device wins).
+    ct state new ip saddr @vctl_pf_direct4 meta l4proto { tcp, udp } th dport != { 53, 853 } ct mark set ct mark or 0x10000000 counter name "vctl_pf_direct" return
+    ct state new ip saddr @vctl_pf_direct4 meta l4proto != { tcp, udp } ct mark set ct mark or 0x10000000 counter name "vctl_pf_direct" return
     # A device's storm waits at the door (Spec.AdmitRate).
     iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit4 { ip saddr limit rate over 15/second burst 60 packets } counter name "vctl_admit_held" drop
     iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit6 { ip6 saddr limit rate over 15/second burst 60 packets } counter name "vctl_admit_held" drop

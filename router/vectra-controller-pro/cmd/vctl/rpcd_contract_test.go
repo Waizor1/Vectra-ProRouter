@@ -55,15 +55,16 @@ func generic(t *testing.T, raw []byte) interface{} {
 // re-encodes to the same JSON: a renamed, retyped or dropped field fails here.
 func TestContractFixturesRoundTripThroughTheGoTypes(t *testing.T) {
 	for name, target := range map[string]interface{}{
-		"status.json":      &uiapi.Status{},
-		"balancers.json":   &uiapi.Balancers{},
-		"nodes.json":       &uiapi.Nodes{},
-		"entries.json":     &uiapi.Entries{},
-		"diagnostics.json": &uiapi.Diagnostics{},
-		"logs.json":        &uiapi.Logs{},
-		"rules.json":       &uiapi.Rules{},
-		"services.json":    &uiapi.Services{},
-		"action.json":      &uiapi.Action{},
+		"status.json":        &uiapi.Status{},
+		"balancers.json":     &uiapi.Balancers{},
+		"nodes.json":         &uiapi.Nodes{},
+		"entries.json":       &uiapi.Entries{},
+		"diagnostics.json":   &uiapi.Diagnostics{},
+		"logs.json":          &uiapi.Logs{},
+		"rules.json":         &uiapi.Rules{},
+		"services.json":      &uiapi.Services{},
+		"port_forwards.json": &uiapi.PortForwards{},
+		"action.json":        &uiapi.Action{},
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw := readContract(t, name)
@@ -258,6 +259,21 @@ func TestEveryCodeTheRouterEmitsIsInTheContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	src = append(src, powerSrc...)
+	pfSrc, err := os.ReadFile("rpcd_portfwd.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src = append(src, pfSrc...)
+	// portfwd's refusals reach the UI as codes too.
+	for _, f := range []string{"../../internal/portfwd/portfwd.go"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range regexp.MustCompile(`Code\w+\s+= "([a-z_]+)"`).FindAllStringSubmatch(string(b), -1) {
+			src = append(src, []byte(` action(false, "`+m[1]+`"`)...)
+		}
+	}
 	daemonSrc, _ := os.ReadFile("localui.go")
 	codeRe := regexp.MustCompile(`action\((?:true|false), "([a-z_]+)"|Code: "([a-z_]+)"|okCode = "([a-z_]+)"|localctl\.Op\w+, "([a-z_]+)"`)
 	codes := map[string]bool{}
@@ -470,6 +486,7 @@ func TestRPCDACLMatchesTheMethods(t *testing.T) {
 	g := acl["vectra-controller-pro"]
 	reads := map[string]bool{"status": true, "balancers": true, "nodes": true, "entries": true, "diagnostics": true, "logs": true, "rules": true, "services": true}
 	reads["setup"], reads["wan_check"], reads["wifi_scan"] = true, true, true // the setup wizard's reads
+	reads["port_forwards"] = true
 	granted := map[string]string{}
 	for _, m := range g.Read.Ubus["vectra"] {
 		granted[m] = "read"

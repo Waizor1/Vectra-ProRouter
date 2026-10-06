@@ -17,7 +17,7 @@ import status from './real/status.json';
 // Captured from vctl 0.3, before the setup wizard and "My sites": that router
 // answers those methods the way LuCI reports an unknown ubus method.
 const REAL: Partial<Record<ReadMethod, unknown>> = { status, balancers, nodes, entries, diagnostics, logs };
-const NEWER: string[] = ['setup', 'wan_check', 'rules'];
+const NEWER: string[] = ['setup', 'wan_check', 'rules', 'port_forwards'];
 const realCall: CallFn = (m) =>
   NEWER.indexOf(m) >= 0
     ? Promise.reject(new Error(`RPC call to vectra/${m} failed with ubus code 3: Method not found`))
@@ -51,7 +51,7 @@ describe('real router answers', () => {
   it('normalize without losing a field', () => {
     for (const m of Object.keys(REAL) as ReadMethod[]) expect(normalize(m, REAL[m]), m).toMatchObject(REAL[m] as object);
     // An older router without the wizard: no setup data, no wizard, no crash.
-    expect(NEWER.length).toBe(3);
+    expect(NEWER.length).toBe(4);
     // Captured from vctl 0.3, before the operator's lock: an older router means "not locked".
     expect(normalize('status', REAL.status).ui).toEqual({ locked: null });
   });

@@ -1,0 +1,37 @@
+{
+  "rules": [
+    {
+      "id": "3fa1c09e",
+      "preset": "minecraft",
+      "destIp": "192.168.1.50",
+      "deviceName": "gaming-pc",
+      "port": "25565",
+      "proto": "tcp",
+      "direct": false,
+      "enabled": true
+    },
+    {
+      "id": "b7d204aa",
+      "preset": "playstation",
+      "destIp": "192.168.1.60",
+      "deviceName": null,
+      "port": "3478-3480",
+      "proto": "both",
+      "direct": true,
+      "enabled": true
+    }
+  ],
+  "devices": [
+    {
+      "name": "gaming-pc",
+      "ip": "192.168.1.50"
+    },
+    {
+      "name": null,
+      "ip": "192.168.1.60"
+    }
+  ],
+  "cgnat": false,
+  "directActive": true,
+  "max": 32
+}

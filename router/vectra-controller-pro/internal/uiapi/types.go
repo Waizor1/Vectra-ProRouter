@@ -332,3 +332,44 @@ type Action struct {
 	Code   string  `json:"code"`
 	Detail *string `json:"detail"`
 }
+
+// PortForwards answers `port_forwards` (ui/contract/README.md, "Port
+// forwards"): the owner's port forwards as the router keeps them (fw4
+// redirects vectra_pf_*), the devices a forward can point at, and whether the
+// WAN cannot be reached from outside at all. No MAC address is ever part of
+// it, and nobody else's redirects are listed.
+type PortForwards struct {
+	Rules   []PortForward       `json:"rules"`
+	Devices []PortForwardDevice `json:"devices"`
+	// CGNAT: the WAN's IPv4 address is the provider's shared one
+	// (100.64.0.0/10) or a private one — a forward is not reachable from the
+	// internet (portfwd.CGNAT).
+	CGNAT bool `json:"cgnat"`
+	// DirectActive: whether «past the VPN» is in effect for every enabled rule
+	// asking for it — null when none asks, false when some rule's flag is not
+	// carried out (Vectra off or stopped, the data plane's set not written;
+	// portfwd.DirectActive).
+	DirectActive *bool `json:"directActive"`
+	// Max is how many rules of its own the router keeps.
+	Max int `json:"max"`
+}
+
+// PortForward is one of the owner's rules: the same port outside and on the
+// device. DeviceName is read from the DHCP leases and static hosts.
+type PortForward struct {
+	ID string `json:"id"`
+	// Preset is the UI's tag for what the forward is for; null for none.
+	Preset     *string `json:"preset"`
+	DestIP     string  `json:"destIp"`
+	DeviceName *string `json:"deviceName"`
+	Port       string  `json:"port"`
+	Proto      string  `json:"proto"`
+	Direct     bool    `json:"direct"`
+	Enabled    bool    `json:"enabled"`
+}
+
+// PortForwardDevice is a LAN device a forward can point at.
+type PortForwardDevice struct {
+	Name *string `json:"name"`
+	IP   string  `json:"ip"`
+}

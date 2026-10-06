@@ -388,8 +388,11 @@ func TestForwardCountsWhatTproxyCapturedAndStillForwarded(t *testing.T) {
 // the DNS door of r35: one counter, two sets and the dns_guard chain
 // (TestADevicesDNSStormWaitsAtTheRoutersDoor) — and for r12's two guards:
 // two counters and the inbound_guard and lan_egress_guard chains, nothing
-// else touched (TestRender_InboundGuard*, TestRender_LANEgressGuard*). With
-// the switch, what is dropped is unchanged.
+// else touched (TestRender_InboundGuard*, TestRender_LANEgressGuard*) — and
+// for the port forwards' «past the VPN» devices: one counter, one set and two
+// prerouting rules ahead of the guards (tcp/udp but DNS, and the rest),
+// nothing else touched
+// (portfwd_test.go). With the switch, what is dropped is unchanged.
 func TestKillSwitchArmedRulesetIsUnchanged(t *testing.T) {
 	want, err := os.ReadFile(filepath.Join("testdata", "killswitch-on.nft"))
 	if err != nil {

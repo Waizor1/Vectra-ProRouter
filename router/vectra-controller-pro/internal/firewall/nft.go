@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"sort"
 	"strconv"
@@ -404,6 +405,42 @@ const DefaultDirectCtMark = 0x10000000
 // (Spec.DirectCtMark): one packet per connection, its first.
 const CounterDirectNew = "vctl_direct_new"
 
+// Port forwards' «device past the VPN» (internal/portfwd, a rule's direct
+// flag): the LAN addresses whose own NEW connections go out by the kernel
+// (DirectCtMark), not through xray. A game server or a NAS reached through a
+// port forward usually also wants its own traffic — updates, matchmaking, a
+// peer it calls back — to leave from the router's real WAN address, which is
+// the one the outside world just reached it on. Two things are left alone:
+//
+//   - The FakeDNS pools (CarriedV4). The router's resolver answers blocked
+//     domains with addresses only xray can turn back into the domain; sent
+//     out by the kernel they lead nowhere. So a blocked site keeps working on
+//     such a device, through the tunnel — the UI says so.
+//   - Replies. A forwarded connection's answers are the reply direction and
+//     returned at the top of the chain; this only ever sees what the device
+//     itself opens.
+//   - DNS (53) and DNS over TLS (853) to anywhere. The ISP forges the answers
+//     for blocked names even from 8.8.8.8 and 1.1.1.1 (measured on the fleet);
+//     a device that asks a public resolver itself must still get its answer
+//     through the tunnel, or «blocked sites still work on it» breaks. Such
+//     queries fall through to the hijack (Spec.HijackDNS) or to TPROXY, as
+//     for every other device.
+//
+// The kill switch does not hold such a device back: the forward guard
+// returns on the direct bit, and the owner's explicit choice for one device
+// wins over the router-wide «never unproxied». That is on purpose, and the
+// contract says so (ui/contract/README.md, "Port forwards"). Only what the
+// device itself opens leaves unproxied; FakeDNS and DNS stay with xray.
+//
+// The set is its own, apart from the table's script: vctl writes its elements
+// with PortForwardDirectScript (flush + add, one transaction), so a rule
+// switched on or off never reloads the table — and since a reload replaces
+// the table, the daemon writes them again after every one.
+const (
+	SetPortForwardDirect4    = "vctl_pf_direct4"
+	CounterPortForwardDirect = "vctl_pf_direct"
+)
+
 // Load guards (Spec.P2PBypass, AdmitRate, PaceRate): a P2P host's
 // connections sent out by the kernel, a device's new connections held at the
 // door, xray's dials to one node held back.
@@ -524,6 +561,8 @@ table inet {{ .TableName }} {
 {{- end }}
 {{- if .DirectCtMark }}
   counter {{ .CounterDirectNew }} { }
+  counter {{ .CounterPortForwardDirect }} { }
+  set {{ .SetPortForwardDirect4 }} { type ipv4_addr; }
 {{- end }}
 {{- if .P2P }}
   counter {{ .CounterP2PDirect }} { }
@@ -626,6 +665,14 @@ table inet {{ .TableName }} {
 {{- if .IPv6Enabled }}
     ct state new ip6 daddr @{{ .DirectSetV6 }} ct mark set ct mark or 0x{{ printf "%x" .DirectCtMark }} counter name "{{ .CounterDirectNew }}" return
 {{- end }}
+    # A port forward's device «past the VPN» (SetPortForwardDirect4): its own
+    # new connections go out by the kernel — but never to a FakeDNS address,
+    # which only xray can carry, and never its DNS (53, DoT 853), which the
+    # ISP forges. Ahead of the P2P and admission guards and TPROXY; the
+    # forward guard lets the bit through, kill switch or not (the owner's
+    # choice for this device wins).
+    ct state new ip saddr @{{ .SetPortForwardDirect4 }}{{ if .CarriedPools }} ip daddr != { {{ join .CarriedPools ", " }} }{{ end }} meta l4proto { tcp, udp } th dport != { 53, 853 } ct mark set ct mark or 0x{{ printf "%x" .DirectCtMark }} counter name "{{ .CounterPortForwardDirect }}" return
+    ct state new ip saddr @{{ .SetPortForwardDirect4 }}{{ if .CarriedPools }} ip daddr != { {{ join .CarriedPools ", " }} }{{ end }} meta l4proto != { tcp, udp } ct mark set ct mark or 0x{{ printf "%x" .DirectCtMark }} counter name "{{ .CounterPortForwardDirect }}" return
 {{- else }}
     ip  daddr @{{ .DirectSetV4 }} return
 {{- if .IPv6Enabled }}
@@ -979,6 +1026,13 @@ type tmplData struct {
 	CounterIPv6Refused    string
 	CounterInboundGuard   string
 	CounterLANDial        string
+	// SetPortForwardDirect4 / CounterPortForwardDirect: the port forwards'
+	// «past the VPN» devices and their counter.
+	SetPortForwardDirect4    string
+	CounterPortForwardDirect string
+	// CarriedPools: Spec.CarriedV4, each an IPv4 prefix (carriedPools) —
+	// nothing else reaches the script.
+	CarriedPools []string
 	// EgressLANDevs: the LAN-side devices xray may not dial into, quoted for
 	// an nft set — Spec.LANDevices, or "br-lan" when none is known.
 	EgressLANDevs string
@@ -1026,32 +1080,35 @@ func Render(s Spec) (string, error) {
 		killCounter = CounterKillSwitchDrops
 	}
 	data := tmplData{
-		Spec:                  s,
-		CounterTproxyHits:     CounterTproxyHits,
-		CounterEgressExempt:   CounterEgressExempt,
-		CounterOutputMarked:   CounterOutputMarked,
-		CounterLocalGuard:     CounterLocalGuard,
-		CounterUnproxiedOther: CounterUnproxiedOther,
-		CounterTproxyEscaped:  CounterTproxyEscaped,
-		CounterDNSRedirected:  CounterDNSRedirected,
-		CounterDNSHijacked:    CounterDNSHijacked,
-		CounterDirectNew:      CounterDirectNew,
-		CounterP2PDirect:      CounterP2PDirect,
-		CounterAdmitHeld:      CounterAdmitHeld,
-		CounterAdmitTotalHeld: CounterAdmitTotalHeld,
-		CounterPaced:          CounterPaced,
-		CounterDNSHeld:        CounterDNSHeld,
-		CounterIPv6Refused:    CounterIPv6Refused,
-		CounterInboundGuard:   CounterInboundGuard,
-		CounterLANDial:        CounterLANDial,
-		EgressLANDevs:         egressLANDevices(s.LANDevices),
-		P2P:                   s.P2PBypass && s.DirectCtMark != 0 && !s.KillSwitch,
-		RefuseV6:              s.RefuseIPv6 && s.IPv6Enabled,
-		LANDevs:               quotedDevices(s.LANDevices),
-		SteersDNS:             s.steersDNS(),
-		SteerUpstreamV4:       steerAddrs(s.DNSUpstreamV4, false),
-		SteerUpstreamV6:       steerAddrs(s.DNSUpstreamV6, true),
-		KillCounter:           killCounter,
+		Spec:                     s,
+		CounterTproxyHits:        CounterTproxyHits,
+		CounterEgressExempt:      CounterEgressExempt,
+		CounterOutputMarked:      CounterOutputMarked,
+		CounterLocalGuard:        CounterLocalGuard,
+		CounterUnproxiedOther:    CounterUnproxiedOther,
+		CounterTproxyEscaped:     CounterTproxyEscaped,
+		CounterDNSRedirected:     CounterDNSRedirected,
+		CounterDNSHijacked:       CounterDNSHijacked,
+		CounterDirectNew:         CounterDirectNew,
+		CounterP2PDirect:         CounterP2PDirect,
+		CounterAdmitHeld:         CounterAdmitHeld,
+		CounterAdmitTotalHeld:    CounterAdmitTotalHeld,
+		CounterPaced:             CounterPaced,
+		CounterDNSHeld:           CounterDNSHeld,
+		CounterIPv6Refused:       CounterIPv6Refused,
+		CounterInboundGuard:      CounterInboundGuard,
+		CounterLANDial:           CounterLANDial,
+		SetPortForwardDirect4:    SetPortForwardDirect4,
+		CounterPortForwardDirect: CounterPortForwardDirect,
+		CarriedPools:             carriedPools(s.CarriedV4),
+		EgressLANDevs:            egressLANDevices(s.LANDevices),
+		P2P:                      s.P2PBypass && s.DirectCtMark != 0 && !s.KillSwitch,
+		RefuseV6:                 s.RefuseIPv6 && s.IPv6Enabled,
+		LANDevs:                  quotedDevices(s.LANDevices),
+		SteersDNS:                s.steersDNS(),
+		SteerUpstreamV4:          steerAddrs(s.DNSUpstreamV4, false),
+		SteerUpstreamV6:          steerAddrs(s.DNSUpstreamV6, true),
+		KillCounter:              killCounter,
 	}
 	if err := t.Execute(&buf, data); err != nil {
 		return "", err
@@ -1076,6 +1133,53 @@ func steerAddrs(addrs []string, v6 bool) []string {
 		}
 	}
 	return out
+}
+
+// carriedPools are the FakeDNS pools as IPv4 prefixes, masked, each once;
+// anything else is left out. Spec.CarriedV4 was informational until the port
+// forwards' rule named the pools in the script: a value that is not a prefix
+// must never become nft syntax.
+func carriedPools(pools []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range pools {
+		pfx, err := netip.ParsePrefix(strings.TrimSpace(p))
+		if err != nil || !pfx.Addr().Is4() {
+			continue
+		}
+		if k := pfx.Masked().String(); !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// PortForwardDirectScript is one nft transaction that makes the port
+// forwards' «past the VPN» set hold exactly addrs: flushed and filled
+// together, so no new connection finds it half written, and without touching
+// anything else of the table. Only IPv4 addresses are taken (the rule is
+// `ip saddr`); none empties the set.
+func PortForwardDirectScript(table string, addrs []netip.Addr) string {
+	if table == "" {
+		table = "vctl"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "flush set inet %s %s\n", table, SetPortForwardDirect4)
+	var elems []string
+	seen := map[netip.Addr]bool{}
+	for _, a := range addrs {
+		a = a.Unmap()
+		if !a.Is4() || seen[a] {
+			continue
+		}
+		seen[a] = true
+		elems = append(elems, a.String())
+	}
+	if len(elems) > 0 {
+		fmt.Fprintf(&b, "add element inet %s %s { %s }\n", table, SetPortForwardDirect4, strings.Join(elems, ", "))
+	}
+	return b.String()
 }
 
 // SteeredUpstreams are the WAN resolvers the script for s takes, sorted:

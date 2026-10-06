@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"vectra-controller-pro/internal/portfwd"
 )
 
 func payload(action, params string) []byte {
@@ -146,5 +148,66 @@ func TestRulesNormalizePartnerDomains(t *testing.T) {
 	raw, _ = json.Marshal(Rules{Direct: []string{domain + "x"}, VPN: []string{}})
 	if _, err := Parse(payload("set_rules", string(raw))); err != ErrInvalidPayload {
 		t.Fatal("254 character domain accepted")
+	}
+}
+
+// set_port_forwards: the whole list, each rule exactly {id?, preset?, destIp,
+// port, proto, direct, enabled} of the right types and syntax, at most 32.
+func TestSetPortForwardsIsStrict(t *testing.T) {
+	minecraft := "minecraft"
+	r := `{"destIp":"192.168.1.50","port":"25565","proto":"tcp","direct":false,"enabled":true}`
+	withID := `{"id":"3fa1c09e","destIp":"192.168.1.60","port":"3478-3480","proto":"both","direct":true,"enabled":false}`
+	withPreset := `{"preset":"minecraft","destIp":"192.168.1.70","port":"25565","proto":"tcp","direct":false,"enabled":true}`
+	both := `{"id":"0badc0de","preset":null,"destIp":"192.168.1.80","port":"80","proto":"udp","direct":false,"enabled":true}`
+	e, err := Parse(payload("set_port_forwards", `{"rules":[`+r+`,`+withID+`,`+withPreset+`,`+both+`]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := PortForwards{Rules: []portfwd.Rule{
+		{DestIP: "192.168.1.50", Port: "25565", Proto: "tcp", Enabled: true},
+		{ID: "3fa1c09e", DestIP: "192.168.1.60", Port: "3478-3480", Proto: "both", Direct: true},
+		{Preset: &minecraft, DestIP: "192.168.1.70", Port: "25565", Proto: "tcp", Enabled: true},
+		{ID: "0badc0de", DestIP: "192.168.1.80", Port: "80", Proto: "udp", Enabled: true},
+	}}
+	if !reflect.DeepEqual(e.Params, want) {
+		t.Fatalf("params = %+v", e.Params)
+	}
+	if _, err := Parse(payload("set_port_forwards", `{"rules":[]}`)); err != nil {
+		t.Fatal("an empty list (every forward removed) rejected")
+	}
+	max := make([]string, 32)
+	for i := range max {
+		max[i] = r
+	}
+	if _, err := Parse(payload("set_port_forwards", `{"rules":[`+strings.Join(max, ",")+`]}`)); err != nil {
+		t.Fatal("32 rules rejected")
+	}
+	// More is the router's to answer (too_many), not a malformed payload.
+	if e, err := Parse(payload("set_port_forwards", `{"rules":[`+strings.Join(append(max, r), ",")+`]}`)); err != nil || len(e.Params.(PortForwards).Rules) != 33 {
+		t.Fatal("33 rules refused by the parser")
+	}
+	for _, bad := range []string{
+		`{}`, `{"rules":null}`, `{"rules":{}}`, `{"rules":[],"x":1}`,
+		`{"rules":[{"destIp":"192.168.1.50","port":"25565","proto":"tcp","direct":false}]}`,
+		`{"rules":[{"destIp":"192.168.1.50","port":"25565","proto":"tcp","direct":false,"enabled":true,"label":"x"}]}`,
+		`{"rules":[{"destIp":"192.168.1.50","port":"25565","proto":"tcp","direct":false,"enabled":true,"enabled":true}]}`,
+		`{"rules":[{"destIp":"192.168.1.50","port":25565,"proto":"tcp","direct":false,"enabled":true}]}`,
+		`{"rules":[{"destIp":"192.168.1.50","port":"25565","proto":"tcp","direct":"false","enabled":true}]}`,
+		`{"rules":[{"destIp":"192.168.1.50","port":"0","proto":"tcp","direct":false,"enabled":true}]}`,
+		`{"rules":[{"destIp":"192.168.1.50","port":"25565","proto":"tcp+udp","direct":false,"enabled":true}]}`,
+		`{"rules":[{"destIp":"fd00::1","port":"25565","proto":"tcp","direct":false,"enabled":true}]}`,
+		`{"rules":[{"id":"NOTHEX!!","destIp":"192.168.1.50","port":"25565","proto":"tcp","direct":false,"enabled":true}]}`,
+		`{"rules":[{"id":null,"destIp":"192.168.1.50","port":"25565","proto":"tcp","direct":false,"enabled":true}]}`,
+		`{"rules":["x"]}`,
+		`{"rules":[{"preset":"Mine Craft","destIp":"192.168.1.50","port":"25565","proto":"tcp","direct":false,"enabled":true}]}`,
+		`{"rules":[{"preset":7,"destIp":"192.168.1.50","port":"25565","proto":"tcp","direct":false,"enabled":true}]}`,
+		`{"rules":[{"preset":"","destIp":"192.168.1.50","port":"25565","proto":"tcp","direct":false,"enabled":true}]}`,
+	} {
+		if _, err := Parse(payload("set_port_forwards", bad)); err != ErrInvalidPayload {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+	if !reflect.DeepEqual(Capabilities()[len(Capabilities())-1], "set_port_forwards") {
+		t.Error("set_port_forwards is not a capability")
 	}
 }

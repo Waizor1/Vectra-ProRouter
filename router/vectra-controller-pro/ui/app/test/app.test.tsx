@@ -77,11 +77,11 @@ describe.each(SCENARIOS)('scenario %s', (scenario) => {
 });
 
 describe('what each scenario says', () => {
-  it('Pro has six tabs in the owner’s order, and no "Nodes" tab', async () => {
-    expect(TABS).toEqual(['overview', 'locations', 'balancing', 'sites', 'settings', 'journal']);
+  it('Pro has seven tabs in the owner’s order, and no "Nodes" tab', async () => {
+    expect(TABS).toEqual(['overview', 'locations', 'balancing', 'sites', 'ports', 'settings', 'journal']);
     const app = start({ lang: 'ru' });
     await settle();
-    expect(app.all('[role="tab"]').map((b) => b.textContent)).toEqual(['Обзор', 'Серверы и сервисы', 'Маршруты', 'Мои сайты', 'Настройки', 'Журнал']);
+    expect(app.all('[role="tab"]').map((b) => b.textContent)).toEqual(['Обзор', 'Серверы', 'Маршруты', 'Мои сайты', 'Порты', 'Настройки', 'Журнал']);
     expect(app.$('#vx-tab-nodes')).toBeNull();
   });
 

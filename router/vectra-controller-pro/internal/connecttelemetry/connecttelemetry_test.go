@@ -2,6 +2,7 @@ package connecttelemetry
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -49,5 +50,28 @@ func TestMeasuredCountryAndFalseSurvive(t *testing.T) {
 	b, _ := json.Marshal(out)
 	if !strings.Contains(string(b), `"supportAccess":false`) || out.ExitCountry == nil || *out.ExitCountry != "DE" {
 		t.Fatalf("%s", b)
+	}
+}
+
+// Port forwards: devices are a picker, cut to 64; more rules than the router
+// keeps is not a list the router made, and is not reported at all.
+func TestPortForwardsAreBounded(t *testing.T) {
+	pf := &controlplane.ConnectPortForwards{}
+	for i := 0; i < 70; i++ {
+		pf.Devices = append(pf.Devices, controlplane.ConnectPortForwardDevice{IP: fmt.Sprintf("192.168.1.%d", i+2)})
+	}
+	read := func(string) ([]byte, error) { return nil, os.ErrNotExist }
+	out := Build(read, time.Now(), Snapshot{Telemetry: controlplane.RouterConnectTelemetry{PortForwards: pf}})
+	if out.PortForwards == nil || len(out.PortForwards.Devices) != MaxPortForwardDevices || out.PortForwards.Rules == nil {
+		t.Fatalf("bounded = %+v", out.PortForwards)
+	}
+	if len(pf.Devices) != 70 {
+		t.Fatal("Build changed the caller's snapshot")
+	}
+	for i := 0; i < MaxPortForwardRules+1; i++ {
+		pf.Rules = append(pf.Rules, controlplane.ConnectPortForward{ID: fmt.Sprintf("%08x", i)})
+	}
+	if out := Build(read, time.Now(), Snapshot{Telemetry: controlplane.RouterConnectTelemetry{PortForwards: pf}}); out.PortForwards != nil {
+		t.Fatal("more rules than the router keeps were reported")
 	}
 }

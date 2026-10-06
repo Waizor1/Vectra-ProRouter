@@ -28,6 +28,12 @@ const PATHS = {
   shield: 'M12 3.4l7.2 2.9v5.2c0 4.3-3 7.8-7.2 9.2-4.2-1.4-7.2-4.9-7.2-9.2V6.3zM9 12l2.2 2.2L15.2 10',
   power: 'M12 3.5v8M7.3 6.4a7.4 7.4 0 1 0 9.4 0',
   sliders: 'M4 7h8M16 7h4M4 17h4M12 17h8M14 4.5v5M10 14.5v5',
+  // A way in from outside to a box at home: port forwarding.
+  ports: 'M13.5 4.5h6v15h-6M3.5 12h11.5M11.5 8.5 15 12l-3.5 3.5',
+  cube: 'M12 3.5l7.5 4.2v8.6L12 20.5l-7.5-4.2V7.7zM4.5 7.7 12 12l7.5-4.3M12 12v8.5',
+  pad: 'M7.5 8h9a4.5 4.5 0 0 1 4.3 5.8l-.9 3a2.3 2.3 0 0 1-3.9.9L14.3 16H9.7l-1.7 1.7a2.3 2.3 0 0 1-3.9-.9l-.9-3A4.5 4.5 0 0 1 7.5 8zM8 11v3M6.5 12.5h3M15.5 11.5h.2M17 13.5h.2',
+  play: 'M12 3.2a8.8 8.8 0 1 0 0 17.6 8.8 8.8 0 0 0 0-17.6zM10 8.5v7l5.5-3.5z',
+  down: 'M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14',
 } as const;
 
 export type IconName = keyof typeof PATHS;

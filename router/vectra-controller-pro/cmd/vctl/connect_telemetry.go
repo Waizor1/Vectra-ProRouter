@@ -16,6 +16,7 @@ import (
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/exitcheck"
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/portfwd"
 	"vectra-controller-pro/internal/power"
 	"vectra-controller-pro/internal/setup"
 	"vectra-controller-pro/internal/uiapi"
@@ -41,6 +42,39 @@ var connectGather = func(ctx context.Context, d *daemon) uiapi.Inputs {
 }
 var connectSetup = func(ctx context.Context) setup.Facts { return setup.Read(ctx, setup.RouterEnv()) }
 
+// connectPortForwardState reads the port forwards for the telemetry; ok is
+// false on a router without fw4's config (no port forwards to offer).
+var connectPortForwardState = func(ctx context.Context) (portfwd.State, bool) {
+	env := portfwdEnv()
+	if fi, err := os.Stat(env.FirewallConfig); err != nil || !fi.Mode().IsRegular() {
+		return portfwd.State{}, false
+	}
+	return portfwd.Read(ctx, env), true
+}
+
+// connectPortForwards is the port forwards as Vectra Connect shows them: the
+// same answer as the router UI's port_forwards (rules with their device's
+// name, the devices, CGNAT, whether «past the VPN» is in effect), no MAC
+// address in it. connecttelemetry.Build bounds it.
+func connectPortForwards(st portfwd.State, wanIPv4 string, directActive *bool) *controlplane.ConnectPortForwards {
+	ui := uiapi.BuildPortForwards(st, portfwd.CGNAT(wanIPv4), directActive)
+	out := &controlplane.ConnectPortForwards{
+		Rules:   make([]controlplane.ConnectPortForward, 0, len(ui.Rules)),
+		Devices: make([]controlplane.ConnectPortForwardDevice, 0, len(ui.Devices)),
+		CGNAT:   ui.CGNAT,
+		// The same pointer: null stays null on the wire.
+		DirectActive: ui.DirectActive,
+	}
+	for _, r := range ui.Rules {
+		out.Rules = append(out.Rules, controlplane.ConnectPortForward{ID: r.ID, Preset: r.Preset, DestIP: r.DestIP, DeviceName: r.DeviceName,
+			Port: r.Port, Proto: r.Proto, Direct: r.Direct, Enabled: r.Enabled})
+	}
+	for _, d := range ui.Devices {
+		out.Devices = append(out.Devices, controlplane.ConnectPortForwardDevice{Name: d.Name, IP: d.IP})
+	}
+	return out
+}
+
 // publishConnectTelemetry is called on the daemon loop before Collect.
 // Feature flags must correspond to handlers actually enabled for this owner;
 // advertised support is never assumed from version or heartbeat.
@@ -54,7 +88,11 @@ func (d *daemon) publishConnectTelemetry(ctx context.Context, features map[strin
 	if settingsErr == nil {
 		in.Overrides = overrides
 	}
-	t := connectSettings(in, connectSetup(ctx))
+	facts := connectSetup(ctx)
+	t := connectSettings(in, facts)
+	if st, ok := connectPortForwardState(ctx); ok {
+		t.PortForwards = connectPortForwards(st, facts.Wan.IPv4, portForwardsDirectActive(st.Rules))
+	}
 	if t.Services != nil {
 		markConnectServiceCarriers(*t.Services, connectServiceCarriers(d.cfg.EntriesPath, in.Index))
 	}

@@ -4,8 +4,8 @@
 import type { Check, Holder, ReadData } from '../api/types';
 import { FIXTURES, FIXTURE_NOW, radio } from './fixtures';
 
-export type Scenario = 'healthy' | 'reserve' | 'degraded' | 'down' | 'empty' | 'unboxed' | 'boxed' | 'off' | 'unfit';
-export const SCENARIOS: readonly Scenario[] = ['healthy', 'reserve', 'degraded', 'down', 'empty', 'unboxed', 'boxed', 'off', 'unfit'];
+export type Scenario = 'healthy' | 'reserve' | 'degraded' | 'down' | 'empty' | 'unboxed' | 'boxed' | 'off' | 'unfit' | 'cgnat';
+export const SCENARIOS: readonly Scenario[] = ['healthy', 'reserve', 'degraded', 'down', 'empty', 'unboxed', 'boxed', 'off', 'unfit', 'cgnat'];
 
 export const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
 const at = (secondsBeforeFixtureNow: number) => new Date(FIXTURE_NOW - secondsBeforeFixtureNow * 1000).toISOString().replace('.000Z', 'Z');
@@ -260,6 +260,21 @@ export function off(w: ReadData, holder: Holder): void {
   w.diagnostics.checks.sort((a, b) => rank[a.status] - rank[b.status]);
 }
 
+/**
+ * A home behind the provider's CGNAT, before any rule: the one warning line,
+ * an empty list, and devices to pick from.
+ */
+function cgnat(w: ReadData): void {
+  w.port_forwards.cgnat = true;
+  w.port_forwards.rules = [];
+  w.port_forwards.devices = [
+    { name: 'gaming-pc', ip: '192.168.1.50' },
+    { name: 'MacBook-Air', ip: '192.168.1.64' },
+    { name: 'synology-nas', ip: '192.168.1.10' },
+    { name: null, ip: '192.168.1.77' },
+  ];
+}
+
 /** A fresh copy of the router's data for a scenario; `down` has none. */
 export function buildWorld(scenario: Scenario, holder: Holder = 'passwall2'): ReadData | null {
   if (scenario === 'down') return null;
@@ -271,5 +286,6 @@ export function buildWorld(scenario: Scenario, holder: Holder = 'passwall2'): Re
   if (scenario === 'boxed') boxed(w);
   if (scenario === 'off') off(w, holder);
   if (scenario === 'unfit') unfit(w);
+  if (scenario === 'cgnat') cgnat(w);
   return w;
 }

@@ -416,6 +416,8 @@ func (d *daemon) handleUIRequest(ctx context.Context, op string, change *localct
 		return d.rerenderRunning(ctx)
 	case localctl.OpRetirePassWall, opRetirePassWallNow:
 		return d.retirePassWall(ctx, retireEnv(), time.Now(), op == opRetirePassWallNow)
+	case localctl.OpSyncPortForwards:
+		return d.syncPortForwardsNow(ctx)
 	}
 	return localctl.SocketResponse{Code: "invalid_params", Detail: "unknown operation " + op}
 }
@@ -427,7 +429,7 @@ func (d *daemon) serveUI(ctx context.Context) {
 		switch req.Op {
 		case localctl.OpRuntime:
 			return localctl.SocketResponse{OK: true, Runtime: d.liveRuntime()}
-		case localctl.OpReapply, localctl.OpRestartXray, localctl.OpRetirePassWall:
+		case localctl.OpReapply, localctl.OpRestartXray, localctl.OpRetirePassWall, localctl.OpSyncPortForwards:
 			op, wait := req.Op, uiReplyWait
 			if req.Op == localctl.OpRetirePassWall {
 				// A person at the console waits for opkg and PassWall2's own
