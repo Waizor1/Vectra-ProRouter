@@ -1,5 +1,71 @@
 # Changelog
 
+## vctl 0.7.0-r21 — the VPN no longer needs the panel to stay up
+
+The owner's rule: the internet and the VPN keep working while the panel is
+unreachable — the VPS down, its address blocked, its certificate expired —
+for hours or days. An architecture review found the one place they did not
+(read in the code; not yet seen live — drill plan for 1111 alongside).
+
+### Fixed
+- **The firewall is confirmed by the router's own proof.** Every ruleset
+  (re)programming arms the 90 s commit-confirm deadman, and until now only
+  the panel disarmed it: its `/healthz` right after the apply, or the next
+  successful check-in. Without the panel each ruleset was reverted 90 s
+  later and loaded again by `ensureDataPlane` — after the nightly 04:30
+  reboot, a DNS-watch correction, a WAN resolver change, the rescue's way
+  back — so the VPN flapped every ~2 min for as long as the panel stayed
+  away (a fake-clock daemon test counts 180 reverts in 6 h on r20). Now
+  every programming, a panel job's included, is confirmed by local proof
+  first: the rescue's public health URLs on the control plane's own marked
+  client (the panel probe's path, without the panel), or the LAN's way
+  through the tunnel; tried again every 10 s until 5 s before the deadman
+  wakes. The panel still confirms too — its probe while it is not known to
+  be down, every successful check-in — but nothing waits for it. A ruleset
+  after which the router can prove nothing is still reverted.
+- **…and only with the LAN clients' path whole.** Those proofs (and the
+  check-in) leave on the marked sockets, which the output chain returns on
+  at its first rule: they never crossed the LAN's path, so a ruleset that
+  broke it was confirmed in seconds (the panel's confirmation had the same
+  blind spot). With xray running, a proof now confirms only if the loaded
+  prerouting has the TPROXY rule to xray's port, the fwmark rule and its
+  local route are in the kernel, xray listens on the port, and over 2 s
+  neither `vctl_tproxy_escaped` nor (kill switch on) `vctl_killswitch_drops`
+  climbs. Structure and counters, not the nodes: dead nodes stay the
+  rescue's business and do not bring the flapping back.
+- **A confirmation never lands after the revert**: the deadline runs from
+  the deadman's arming (taken before the apply), the last try starts 27 s
+  before it wakes, and a proof back after timeout − 5 s writes nothing.
+- **The rescue's mode survives a reboot without the panel.** A transition
+  decided in the poll was written to `state.json` only with a successful
+  check-in's state; without the panel a reboot started from the mode before.
+
+### Added
+- **Check-ins back off from a panel that does not answer**: none after one
+  failure, then doubling from two polls, at most 5 min, drawn between half
+  and the whole; meanwhile each poll asks the panel's `/healthz` (3 s), and
+  the check-in goes as soon as it answers — back within a poll of the
+  panel's return, not 5 min later. Only the exchange waits; the rescue, the
+  data plane and the DNS watch run every loop.
+- **The panel's known address.** When neither the direct resolvers nor the
+  system's give the panel's name an address that answers, the control plane
+  dials the last address that answered, then the owner's (UCI
+  `list control_ip`), then the built-in one (api/router.vectra-pro.net ->
+  72.56.14.52). Each address counts only after a completed TLS handshake
+  verified for the name (an ISP stub accepting :443 does not stop the
+  next), and only such an address is remembered.
+
+### Audited, unchanged (keeps working without the panel)
+- A failed check-in only logs; the router is released only on the panel's
+  explicit answer, never for want of one. Claim codes rotate locally.
+- The provider's subscription (router-sub, behind the panel's Caddy): a
+  failed or non-2xx/non-JSON refresh keeps the last good document and
+  render, tried again in 30 min; native subscriptions and geo files keep
+  theirs too. After a reboot the render is rebuilt from the documents on
+  /etc, never fetched.
+- `deadman.sh` watches vctl's process, the trial's deadman its own minutes:
+  neither asks the panel.
+
 ## vctl 0.7.0-r20 — the router's resolver no longer asks a private WAN resolver over the open path
 
 Seen live on 2026-10-05 (artem-lutfulin, r19, right after the update): the

@@ -2,7 +2,10 @@ package controlplane
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"net"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -41,46 +44,185 @@ func directResolver(control func(network, address string, c syscall.RawConn) err
 // resolve while the node it names is dead.
 func MarkedResolver(mark int) *net.Resolver { return directResolver(setSocketMark(mark)) }
 
+// KnownAddrs are the control plane's addresses as built in: dialled when
+// neither the direct resolvers nor the system's give the panel's name an
+// address that answers — the name blocked or forged, every resolver down.
+// The URL keeps the name, so TLS still sends it (SNI) and checks the
+// certificate against it: a stale address fails the handshake, it cannot
+// impersonate the panel.
+var KnownAddrs = map[string][]string{
+	"api.vectra-pro.net":    {"72.56.14.52"},
+	"router.vectra-pro.net": {"72.56.14.52"},
+}
+
+// fallbackAddrs are the addresses a name is dialled at when resolving it
+// failed: the last one that answered in this process, then the owner's (UCI
+// control_ip, Options.FallbackAddrs), then KnownAddrs.
+type fallbackAddrs struct {
+	host       string   // the name configured applies to
+	configured []string // Options.FallbackAddrs
+
+	mu      sync.Mutex
+	learned map[string]string
+}
+
+func (f *fallbackAddrs) learn(host string, c net.Conn) {
+	if f == nil || c == nil {
+		return
+	}
+	a, ok := c.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.learned == nil {
+		f.learned = map[string]string{}
+	}
+	f.learned[host] = a.IP.String()
+}
+
+func (f *fallbackAddrs) addrs(host string) []string {
+	if f == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(ips ...string) {
+		for _, ip := range ips {
+			if net.ParseIP(ip) != nil && !seen[ip] {
+				seen[ip] = true
+				out = append(out, ip)
+			}
+		}
+	}
+	f.mu.Lock()
+	if ip := f.learned[host]; ip != "" {
+		add(ip)
+	}
+	f.mu.Unlock()
+	if host == f.host {
+		add(f.configured...)
+	}
+	add(KnownAddrs[host]...)
+	return out
+}
+
 // resolvingDial dials addr with d, having resolved its host with r first —
 // IPv4, the path the router carries — and trying each address in turn. A
 // lookup that fails leaves the name to d, i.e. to the system's resolver.
-func resolvingDial(d *net.Dialer, r *net.Resolver) func(ctx context.Context, network, addr string) (net.Conn, error) {
+// When neither gives an address that answers, the name's fallback addresses
+// are tried (fallbackAddrs; fb nil: none).
+func resolvingDial(d *net.Dialer, r *net.Resolver, fb *fallbackAddrs) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return candidateDial(d, r, fb, nil)
+}
+
+// resolvingTLSDial is resolvingDial for https: an address counts as
+// answering only once a TLS handshake with it completed and its certificate
+// was verified for the name (cfg, ServerName = the host unless cfg names
+// one). An ISP's stub that accepts :443 — or an address that is not the
+// panel's any more — fails its handshake and the next address is tried; only
+// one that completed is remembered as the last good.
+func resolvingTLSDial(d *net.Dialer, r *net.Resolver, fb *fallbackAddrs, cfg *tls.Config) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return candidateDial(d, r, fb, func(ctx context.Context, c net.Conn, host string) (net.Conn, error) {
+		conf := &tls.Config{}
+		if cfg != nil {
+			conf = cfg.Clone()
+		}
+		if conf.ServerName == "" {
+			conf.ServerName = host
+		}
+		if len(conf.NextProtos) == 0 {
+			conf.NextProtos = []string{"http/1.1"}
+		}
+		tc := tls.Client(c, conf)
+		if err := tc.HandshakeContext(ctx); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
+		return tc, nil
+	})
+}
+
+// candidateDial tries addr's host at each candidate address in turn — the
+// direct resolvers' answers, or the name itself for the system's resolver
+// when they have none, then the fallbacks — each with its share of d's
+// timeout, and hs (nil: none) on each connection: a candidate answers only
+// when hs succeeds. The one that answers is remembered (fallbackAddrs.learn).
+func candidateDial(d *net.Dialer, r *net.Resolver, fb *fallbackAddrs, hs func(ctx context.Context, c net.Conn, host string) (net.Conn, error)) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
-		if err != nil || net.ParseIP(host) != nil || r == nil {
-			return d.DialContext(ctx, network, addr)
-		}
-		lctx, cancel := context.WithTimeout(ctx, lookupBudget)
-		ips, lerr := r.LookupIP(lctx, "ip4", host)
-		cancel()
-		if lerr != nil || len(ips) == 0 {
-			return d.DialContext(ctx, network, addr)
-		}
-		// Each address gets its share of the dial timeout, as net.Dialer
-		// shares it between the addresses it resolved itself: one dead
-		// address must not use up the whole request.
-		per := d.Timeout
-		if per > 0 && len(ips) > 1 {
-			per /= time.Duration(len(ips))
-			if per < 2*time.Second {
-				per = 2 * time.Second
+		if err != nil || net.ParseIP(host) != nil {
+			c, err := d.DialContext(ctx, network, addr)
+			if err != nil || hs == nil {
+				return c, err
 			}
+			return hs(ctx, c, host)
 		}
-		var first error
+		var ips []net.IP
+		if r != nil {
+			lctx, cancel := context.WithTimeout(ctx, lookupBudget)
+			ips, _ = r.LookupIP(lctx, "ip4", host)
+			cancel()
+		}
+		// "" is the name itself, left to the system's resolver.
+		var cands []string
+		seen := map[string]bool{}
+		if len(ips) == 0 {
+			cands = append(cands, "")
+		}
 		for _, ip := range ips {
-			dctx, cancel := ctx, context.CancelFunc(func() {})
-			if per > 0 {
-				dctx, cancel = context.WithTimeout(ctx, per)
+			if !seen[ip.String()] {
+				seen[ip.String()] = true
+				cands = append(cands, ip.String())
 			}
-			c, err := d.DialContext(dctx, network, net.JoinHostPort(ip.String(), port))
+		}
+		for _, a := range fb.addrs(host) {
+			if !seen[a] {
+				seen[a] = true
+				cands = append(cands, a)
+			}
+		}
+		// Each its share of the dial timeout, as net.Dialer shares it
+		// between the addresses it resolved itself: one dead address — or a
+		// stub that never answers the handshake — must not use up the whole
+		// request.
+		per := d.Timeout
+		if per > 0 && len(cands) > 1 {
+			per /= time.Duration(len(cands))
+			if per < 3*time.Second {
+				per = 3 * time.Second
+			}
+		}
+		var errs []error
+		for _, a := range cands {
+			if ctx.Err() != nil {
+				break
+			}
+			target := addr
+			if a != "" {
+				target = net.JoinHostPort(a, port)
+			}
+			cctx, cancel := ctx, context.CancelFunc(func() {})
+			if per > 0 {
+				cctx, cancel = context.WithTimeout(ctx, per)
+			}
+			c, err := d.DialContext(cctx, network, target)
+			if err == nil && hs != nil {
+				c, err = hs(cctx, c, host)
+			}
 			cancel()
 			if err == nil {
+				fb.learn(host, c)
 				return c, nil
 			}
-			if first == nil {
-				first = err
-			}
+			errs = append(errs, err)
 		}
-		return nil, first
+		if len(errs) == 0 {
+			return nil, ctx.Err()
+		}
+		// Every address's reason: the name's lookup, a refusal, a
+		// certificate that is not the panel's.
+		return nil, errors.Join(errs...)
 	}
 }

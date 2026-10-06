@@ -932,9 +932,11 @@ func fileExists(path string) bool {
 // config.Read, which cannot work now that the proxy config is a provider
 // document (config.Read uses DisallowUnknownFields and would reject it).
 //
-// It confirms immediately if the panel is still reachable; otherwise the next
-// successful check-in confirms and the detached deadman auto-reverts if
-// connectivity never returns.
+// It is confirmed by the router's own proof that it still reaches the
+// internet (confirmFirewall, fw_confirm.go), tried again until shortly before
+// the deadman wakes; the panel's probe and a successful check-in confirm too,
+// but nothing waits for them. The detached deadman reverts a ruleset nothing
+// confirmed.
 func (d *daemon) programFirewall(ctx context.Context, cfg *config.Config) {
 	d.programFirewallWithin(ctx, cfg, dnsRedirectWait)
 }
@@ -963,8 +965,10 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 	if d.applyRuleset != nil {
 		applyRuleset = d.applyRuleset
 	}
+	// The deadman is armed inside the apply: its clock starts no later.
+	armedAt := d.now()
 	if err := applyRuleset(script, spec); err != nil {
-		logging.L().Error("firewall apply failed (deadman armed; auto-reverts unless a check-in confirms)", "err", err.Error())
+		logging.L().Error("firewall apply failed (deadman armed; it reverts the ruleset)", "err", err.Error())
 		return
 	}
 	oldPort, redirected, upstreams := 0, false, ""
@@ -1011,40 +1015,10 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 		d.dnsPathGen++
 		d.flushResolverCache("the resolver's servers changed")
 	}
-	d.confirmIfPanelReachable(ctx)
+	programmed := spec
+	d.fwSpec = &programmed
+	d.confirmFirewall(ctx, armedAt)
 	d.maybeLoadDirect(ctx)
-}
-
-// confirmIfPanelReachable disarms the commit-confirm deadman when the panel is
-// still reachable AFTER the ruleset went in. Returns whether it confirmed.
-//
-// It probes through the CONTROL-PLANE client, not a fresh &http.Client{}. That
-// is the whole correctness of this function. The ruleset just applied ends its
-// output chain by stamping FwMark on unmarked local tcp/udp egress, and the
-// fwmark policy route resolves that to `local 0.0.0.0/0 dev lo` — so an
-// unmarked probe cannot leave the box, and this branch could never be taken on
-// a real router. It was a fast path that was structurally dead, and the
-// data-plane stand had already measured it from the other side: with the
-// ruleset loaded, the daemon's unmarked /healthz and /api/health probes never
-// arrived while its marked check-in did.
-//
-// When it does not confirm, nothing is lost: the next successful check-in calls
-// Confirm() unconditionally, and if connectivity never returns the deadman
-// reverts at its timeout. That fallback is also why the deadman must stay the
-// DAEMON's business — `vctl apply-local` deliberately does not program the
-// firewall, because a command that arms this deadman and then exits leaves
-// nothing to confirm it, and the stand measured that ruleset disappearing 90
-// seconds after it had carried real traffic.
-func (d *daemon) confirmIfPanelReachable(ctx context.Context) bool {
-	if !rescue.ProbeAny(ctx, d.client.HTTPClient(), serverHealthURLs(d.cfg.ControlURL)) {
-		return false
-	}
-	if err := d.confirmer.Confirm(); err != nil {
-		logging.L().Warn("firewall commit-confirm sentinel write failed", "err", err.Error())
-		return false
-	}
-	logging.L().Info("firewall change confirmed immediately (panel reachable)")
-	return true
 }
 
 // tearDownFirewall removes the vctl TPROXY table + ip rules so traffic flows
@@ -1087,6 +1061,8 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 		d.forgetRedirectedFlows(oldPort)
 	}
 	_ = d.confirmer.Confirm()
+	d.firewallConfirmed()
+	d.fwSpec = nil
 	return true
 }
 

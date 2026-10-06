@@ -169,8 +169,9 @@ func cmdApplyLocal(args []string) error {
 	// firewall and it does not start xray, and that is the design, not a gap.
 	//
 	// The daemon is the single owner of the kernel state: on boot it programs
-	// the ruleset whenever a rendered config exists, and its check-in is the
-	// only thing that can confirm the commit-confirm deadman. A command that
+	// the ruleset whenever a rendered config exists, and only its loop proves
+	// the router healthy and confirms the commit-confirm deadman (its own
+	// probes, its check-in — fw_confirm.go). A command that
 	// armed that deadman and then exited would leave nothing to confirm it — the
 	// data-plane stand demonstrated exactly that, carrying real traffic through
 	// an apply-local ruleset and then losing the table and the policy route

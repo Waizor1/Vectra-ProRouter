@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -302,6 +303,32 @@ type daemon struct {
 	// panel. nil until one has been attempted. It is the ground truth behind
 	// serverReachable — see controlPlaneReachable.
 	lastControlPlaneOK *bool
+	// cpFailures counts the register/check-in exchanges that failed in a
+	// row; cpRetryAt is when the next may go (checkInBackoff).
+	cpFailures int
+	cpRetryAt  time.Time
+	// cpHealthBypassed: this wait's check-in already went early on the
+	// panel's health (runOnce); a failed one waits the wait out.
+	cpHealthBypassed bool
+
+	// fwConfirmBy is when the tries to confirm the last firewall
+	// programming end (shortly before its deadman wakes), zero with none
+	// pending; fwConfirmNext is the next try (fw_confirm.go). clock stands
+	// in for time.Now there in tests.
+	fwConfirmBy, fwConfirmNext time.Time
+	clock                      func() time.Time
+	// fwConfirmDeadline is the latest the sentinel may be written (the
+	// deadman's wake less fwConfirmMargin); fwConfirmFault why the last try
+	// did not confirm. fwSpec is the ruleset last programmed (nil: none),
+	// whose LAN path clientChainFault checks; nftOutput stands in for nft's
+	// output in tests.
+	fwConfirmDeadline time.Time
+	// fwUnconfirmedUntil is when the unconfirmed ruleset's deadman wakes
+	// (zero: none unconfirmed); see unconfirmed.
+	fwUnconfirmedUntil time.Time
+	fwConfirmFault     string
+	fwSpec             *firewall.Spec
+	nftOutput          func(ctx context.Context, args ...string) ([]byte, error)
 
 	// The router UI (localui.go). All written on the loop goroutine only;
 	// the socket goroutine reads the published snapshot.
@@ -411,6 +438,9 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 		// Keep vctl->panel traffic out of the provider's routing: the nft
 		// output chain returns on this mark before any TPROXY rule.
 		SocketMark: firewall.DefaultControlMark,
+		// The panel's name unresolvable (blocked, forged, every resolver
+		// down): its last known addresses, the name still checked by TLS.
+		FallbackAddrs: cfg.ControlFallbackIPs,
 	})
 
 	// No operator config yet on a router PassWall2 routes: vctl routes by its
@@ -676,6 +706,7 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 			logging.L().Error("loop iteration failed", "err", err.Error())
 		}
 		d.ensureDataPlane(ctx)
+		d.retryFirewallConfirm(ctx, d.now())
 		d.maybeRefreshNative(ctx, time.Now())
 		d.maybeUpdateNativeGeo(ctx, time.Now())
 		d.maybeSyncPassWall(ctx)
@@ -753,6 +784,24 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	health, rescueDecision := d.evaluateHealth(ctx, &inv)
 	if rescueDecision.ShouldTransition {
 		d.applyRescueTransition(ctx, rescueDecision)
+		// Kept now, not with the check-in's state: without the panel there
+		// is none, and a reboot would start from the mode before.
+		_ = d.persist()
+	}
+
+	// The panel failed the last exchanges: the next waits its turn
+	// (checkInBackoff) — unless its health answers, asked cheaply every poll
+	// meanwhile, so a panel that is back is checked in with within a poll.
+	// Everything above — the rescue, the data plane — does not wait.
+	if d.now().Before(d.cpRetryAt) {
+		// Once per wait: a panel whose health answers but whose check-in
+		// fails (half up) is not asked every poll.
+		if d.cpHealthBypassed || !d.panelBack(ctx) {
+			return nil
+		}
+		d.cpHealthBypassed = true
+	} else {
+		d.cpHealthBypassed = false
 	}
 
 	// Register if we have no identity yet; next loop will check in.
@@ -793,15 +842,15 @@ func (d *daemon) runOnce(ctx context.Context) error {
 		logging.L().Warn("connect maintenance unavailable")
 	}
 
-	// A successful check-in proves the panel link is healthy, so (re)write the
-	// firewall commit-confirm sentinel. This disarms a pending auto-revert even
-	// one armed by a PREVIOUS process before a restart (the durable signal is
-	// the sentinel, not an in-memory flag). If a firewall change had severed the
-	// panel link, CheckIn above would have errored and we would never reach
-	// here — so the detached deadman correctly reverts.
-	if err := d.confirmer.Confirm(); err != nil {
-		logging.L().Debug("firewall commit-confirm sentinel write failed", "err", err.Error())
-	}
+	// A successful check-in proves the router's marked path out is healthy,
+	// so (re)write the firewall commit-confirm sentinel. This disarms a
+	// pending auto-revert even one armed by a PREVIOUS process before a
+	// restart (the durable signal is the sentinel, not an in-memory flag). It
+	// is one proof among others (fw_confirm.go): without the panel the
+	// router's own confirms.
+	// A ruleset still unconfirmed only with the LAN's path whole
+	// (checkInConfirm).
+	d.checkInConfirm(ctx)
 
 	if len(resp.DesiredRevision) > 0 {
 		if rev, err := decodeDesiredRevision(resp.DesiredRevision); err == nil && rev != nil {
@@ -1358,8 +1407,53 @@ func (d *daemon) controlPlaneReachable(ctx context.Context) bool {
 }
 
 // noteControlPlane records the outcome of a register/check-in for the next
-// loop's serverReachable.
-func (d *daemon) noteControlPlane(ok bool) { d.lastControlPlaneOK = &ok }
+// loop's serverReachable, and the backoff of the next exchange.
+func (d *daemon) noteControlPlane(ok bool) {
+	d.lastControlPlaneOK = &ok
+	if ok {
+		d.cpFailures, d.cpRetryAt, d.cpHealthBypassed = 0, time.Time{}, false
+		return
+	}
+	d.cpFailures++
+	d.cpRetryAt = d.now().Add(checkInBackoff(d.cfg.PollInterval(), d.cpFailures, rand.Float64))
+}
+
+// panelHealthBudget bounds the backed-off poll's look at the panel's health.
+const panelHealthBudget = 3 * time.Second
+
+// panelBack: the panel's health answers again (a backed-off check-in may go
+// now).
+func (d *daemon) panelBack(ctx context.Context) bool {
+	if d.client == nil {
+		return false
+	}
+	return rescue.ProbeAnyWithin(ctx, d.client.HTTPClient(), serverHealthURLs(d.cfg.ControlURL), panelHealthBudget)
+}
+
+// checkInMaxBackoff caps the wait between exchanges with a panel that does
+// not answer.
+const checkInMaxBackoff = 5 * time.Minute
+
+// checkInBackoff is the wait after failures exchanges in a row failed: none
+// after one (the next poll asks again — one failure must not cost two
+// polls), then the poll interval doubled for each, at most
+// checkInMaxBackoff, drawn between its half and the whole (rnd in [0,1)) —
+// so a router does not spend its loop on a panel that is gone. Meanwhile
+// each poll asks the panel's health (panelBack), and the check-in goes as
+// soon as it answers. The data plane never waits for any of it.
+func checkInBackoff(poll time.Duration, failures int, rnd func() float64) time.Duration {
+	if failures <= 1 {
+		return 0
+	}
+	wait := poll
+	for i := 1; i < failures && wait < checkInMaxBackoff; i++ {
+		wait *= 2
+	}
+	if wait > checkInMaxBackoff {
+		wait = checkInMaxBackoff
+	}
+	return wait/2 + time.Duration(rnd()*float64(wait/2))
+}
 
 func (d *daemon) rescueState() rescue.State {
 	st := rescue.State{

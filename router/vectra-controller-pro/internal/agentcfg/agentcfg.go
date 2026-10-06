@@ -28,6 +28,10 @@ type Config struct {
 	PanelURL   string `json:"panelUrl,omitempty"`
 	RouterID   string `json:"routerId,omitempty"`
 	AgentToken string `json:"agentToken,omitempty"`
+	// ControlFallbackIPs are where controlUrl's host is dialled when no
+	// resolver gives it an address that answers (UCI list control_ip), before
+	// the built-in ones (controlplane.KnownAddrs). Not an address: ignored.
+	ControlFallbackIPs []string `json:"controlFallbackIps,omitempty"`
 
 	// Filesystem paths.
 	StatePath      string `json:"statePath"`      // persisted identity + journal

@@ -862,6 +862,9 @@ func (d *daemon) waitForTick(ctx context.Context, tick <-chan time.Time) bool {
 				}
 				d.publishRuntime()
 			}
+			// The last ruleset's confirmation, proven by the router itself
+			// while the deadman still waits (fw_confirm.go).
+			d.retryFirewallConfirm(ctx, d.now())
 			// xray started anew (a reload, a crash): its FakeDNS answers in
 			// dnsmasq's cache lead nowhere.
 			d.flushAfterXrayRestart(ctx)
