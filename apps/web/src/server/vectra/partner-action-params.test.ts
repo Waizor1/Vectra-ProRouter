@@ -125,4 +125,140 @@ describe("Connect typed action params", () => {
       );
     }
   });
+
+  // set_port_forwards mirrors vctl's portForwardList (connectactions): the
+  // contract's keys exactly, the router's syntax for each.
+  describe("set_port_forwards", () => {
+    const contractExample = {
+      rules: [
+        {
+          id: "3fa1c09e",
+          preset: "minecraft-java",
+          destIp: "192.168.1.50",
+          port: "25565",
+          proto: "tcp",
+          direct: false,
+          enabled: true,
+        },
+        {
+          destIp: "192.168.1.60",
+          port: "3478-3479",
+          proto: "both",
+          direct: true,
+          enabled: true,
+        },
+      ],
+    };
+    const rule = {
+      destIp: "192.168.1.50",
+      port: "25565",
+      proto: "udp",
+      direct: false,
+      enabled: false,
+    };
+    const parse = (params: unknown) =>
+      parseConnectActionParams("set_port_forwards", params);
+
+    it("accepts the contract example as it is, and an empty list", () => {
+      expect(parse(contractExample)).toEqual({
+        success: true,
+        data: contractExample,
+      });
+      expect(parse({ rules: [] })).toEqual({
+        success: true,
+        data: { rules: [] },
+      });
+    });
+    it("accepts a null preset, single ports and the bounds of the range", () => {
+      for (const extra of [
+        { preset: null },
+        { port: "1" },
+        { port: "65535" },
+        { port: "1-65535" },
+        { port: "80-80" },
+        { destIp: "10.0.0.255" },
+        { proto: "both" },
+      ])
+        expect(parse({ rules: [{ ...rule, ...extra }] }).success).toBe(true);
+      expect(
+        parse({
+          rules: Array.from({ length: 32 }, (_, i) => ({
+            ...rule,
+            port: String(1000 + i),
+          })),
+        }).success,
+      ).toBe(true);
+    });
+    it("refuses unknown keys, deviceName and a missing required key", () => {
+      for (const params of [
+        { rules: [{ ...rule, deviceName: "gaming-pc" }] },
+        { rules: [{ ...rule, mac: "aa:bb:cc:dd:ee:ff" }] },
+        { rules: [{ ...rule, extra: true }] },
+        { rules: [], extra: true },
+        {},
+        ...(["destIp", "port", "proto", "direct", "enabled"] as const).map(
+          (key) => {
+            const { [key]: _, ...rest } = rule;
+            return { rules: [rest] };
+          },
+        ),
+      ])
+        expect(parse(params).success).toBe(false);
+    });
+    it("refuses a bad port, proto, address, id or preset", () => {
+      for (const extra of [
+        { port: "0" },
+        { port: "65536" },
+        { port: "200-100" },
+        { port: "100-" },
+        { port: "80,443" },
+        { port: "80:81" },
+        { port: " 80" },
+        { port: "123456" },
+        { port: 25565 },
+        { proto: "tcpudp" },
+        { proto: "TCP" },
+        { proto: "" },
+        { destIp: "192.168.1.256" },
+        { destIp: "192.168.1" },
+        { destIp: "192.168.01.5" },
+        { destIp: "::1" },
+        { destIp: "fe80::1" },
+        { destIp: "gaming-pc" },
+        { destIp: "" },
+        { id: "3FA1C09E" },
+        { id: "3fa1c09" },
+        { id: "3fa1c09ea" },
+        { id: null },
+        { id: "" },
+        { preset: "" },
+        { preset: "Minecraft" },
+        { preset: "a".repeat(25) },
+        { preset: "mine craft" },
+        { direct: "true" },
+        { enabled: 1 },
+      ])
+        expect(parse({ rules: [{ ...rule, ...extra }] }).success).toBe(false);
+    });
+    it("refuses more than 32 rules, duplicate ids and a non-array", () => {
+      expect(
+        parse({
+          rules: Array.from({ length: 33 }, (_, i) => ({
+            ...rule,
+            port: String(1000 + i),
+          })),
+        }).success,
+      ).toBe(false);
+      expect(
+        parse({
+          rules: [
+            { ...rule, id: "3fa1c09e" },
+            { ...rule, id: "3fa1c09e", port: "25566" },
+          ],
+        }).success,
+      ).toBe(false);
+      for (const rules of [rule, "[]", null, { 0: rule }])
+        expect(parse({ rules }).success).toBe(false);
+    });
+  });
 });

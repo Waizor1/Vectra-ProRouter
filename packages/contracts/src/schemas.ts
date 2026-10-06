@@ -723,6 +723,7 @@ export const connectRouterActionNameSchema = z.enum([
   "update_now",
   "set_auto_update",
   "refresh_subscription",
+  "set_port_forwards",
 ]);
 
 // What a router may advertise for its owner: the actions it executes, plus
@@ -753,6 +754,43 @@ const connectRouterCapabilitiesSchema = z
   );
 
 const connectEntryRefSchema = z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/);
+
+// The owner's port forwards as vctl reports them (contract:
+// router/vectra-controller-pro/docs/superpowers/specs/2026-10-06-port-forwards-contract.md).
+// id, preset and proto are canonical on the router; destIp and port are read
+// back from the firewall config as they stand, so they are bounded here, not
+// syntax-checked: a forward edited by hand in LuCI must not cost the router
+// its check-in. Unknown keys are dropped like everywhere in this telemetry,
+// and the partner projection whitelists the fields again.
+const connectPortForwardsTelemetrySchema = z.object({
+  rules: z
+    .array(
+      z.object({
+        id: z.string().regex(/^[0-9a-f]{8}$/),
+        preset: z
+          .string()
+          .regex(/^[a-z0-9-]{1,24}$/)
+          .nullable(),
+        destIp: z.string().max(64),
+        deviceName: z.string().max(256).nullable(),
+        port: z.string().max(64),
+        proto: z.enum(["tcp", "udp", "both"]),
+        direct: z.boolean(),
+        enabled: z.boolean(),
+      }),
+    )
+    .max(32),
+  devices: z
+    .array(
+      z.object({
+        name: z.string().max(256).nullable(),
+        ip: z.string().max(64),
+      }),
+    )
+    .max(64),
+  cgnat: z.boolean(),
+  directActive: z.boolean().nullable(),
+});
 
 export const routerConnectTelemetrySchema = z.object({
   ownerRef: z
@@ -828,6 +866,8 @@ export const routerConnectTelemetrySchema = z.object({
   routerPasswordSet: z.boolean().optional(),
   supportAccess: z.boolean().optional(),
   autoUpdate: z.boolean().optional(),
+  // null: the router has no fw4 config; absent: it predates the feature.
+  portForwards: connectPortForwardsTelemetrySchema.nullable().optional(),
 });
 
 export const routerInventorySchema = z.object({
