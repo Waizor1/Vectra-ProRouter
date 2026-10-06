@@ -16,6 +16,7 @@ import { Journal } from '../views/Journal';
 import { Locations } from '../views/Locations';
 import { MySites } from '../views/MySites';
 import { Overview } from '../views/Overview';
+import { PortForwards } from '../views/PortForwards';
 import { Settings } from '../views/Settings';
 import { Simple } from '../views/Simple';
 import { Ctx, MODES, TABS, useApp, useBusy, useRes, type AppCtx, type ConfirmOpts, type Mode, type RunOpts, type TabId, type ToastTone } from './ctx';
@@ -36,10 +37,11 @@ const TAB_METHODS: Record<TabId, ReadMethod[]> = {
   balancing: ['balancers', 'nodes'],
   locations: ['entries'],
   sites: ['rules'],
+  ports: ['port_forwards'],
   settings: ['setup'],
   journal: ['logs'],
 };
-const TAB_ICON: Record<TabId, IconName> = { overview: 'gauge', balancing: 'split', locations: 'globe', sites: 'filter', settings: 'sliders', journal: 'list' };
+const TAB_ICON: Record<TabId, IconName> = { overview: 'gauge', balancing: 'split', locations: 'globe', sites: 'filter', ports: 'ports', settings: 'sliders', journal: 'list' };
 const DONE_CODE: Record<ActionMethod, string> = {
   select_entry: 'entry_selected',
   reset_entry: 'entry_reset',
@@ -54,6 +56,7 @@ const DONE_CODE: Record<ActionMethod, string> = {
   set_service: 'service_set',
   set_power: 'power_on',
   set_remote_shell: 'remote_shell_set',
+  set_port_forwards: 'port_forwards_set',
 };
 const LEVEL_TONE: Record<Level, string> = { ok: 'ok', warn: 'warn', fail: 'fail', setup: 'info', unknown: 'mute', off: 'mute' };
 
@@ -142,6 +145,21 @@ function Header(p: {
 function Tabs({ tab }: { tab: TabId }) {
   const { t, goTab } = useApp();
   const ref = useRef<HTMLDivElement>(null);
+  // A row wider than the app scrolls: the open section stays in view, and the
+  // edge with more sections past it fades.
+  const edges = () => {
+    const el = ref.current;
+    if (!el) return;
+    const more = (el.scrollLeft > 2 ? 'l' : '') + (el.scrollLeft + el.clientWidth < el.scrollWidth - 2 ? 'r' : '');
+    if (more) el.setAttribute('data-more', more);
+    else el.removeAttribute('data-more');
+  };
+  useEffect(() => {
+    const el = ref.current!;
+    const on = el.children[TABS.indexOf(tab)] as HTMLElement | undefined;
+    if (on && el.scrollWidth > el.clientWidth) el.scrollLeft = on.offsetLeft - (el.clientWidth - on.offsetWidth) / 2;
+    edges();
+  }, [tab]);
   const onKey = (e: KeyboardEvent) => {
     const i = TABS.indexOf(tab);
     const n = TABS.length;
@@ -153,7 +171,7 @@ function Tabs({ tab }: { tab: TabId }) {
     (ref.current?.children[to] as HTMLElement | undefined)?.focus();
   };
   return (
-    <div ref={ref} class="tabs" role="tablist" aria-label={t('app.tabs')} onKeyDown={onKey}>
+    <div ref={ref} class="tabs" role="tablist" aria-label={t('app.tabs')} onKeyDown={onKey} onScroll={edges}>
       {TABS.map((id) => (
         <button
           type="button"
@@ -174,7 +192,7 @@ function Tabs({ tab }: { tab: TabId }) {
   );
 }
 
-const VIEWS = { overview: Overview, balancing: Balancing, locations: Locations, sites: MySites, settings: Settings };
+const VIEWS = { overview: Overview, balancing: Balancing, locations: Locations, sites: MySites, ports: PortForwards, settings: Settings };
 
 /** Old data whose refresh failed stays on screen, marked as such. */
 function Stale({ err }: { err: ErrInfo | null | undefined }) {
@@ -366,8 +384,10 @@ export function App({ call, setPassword = null, lang: hostLang, root }: { call: 
       } else {
         // The simple view speaks to the router's owner: its own words, no raw detail.
         const simple = L.mode === 'simple';
+        // A refusal the screen shows beside its fields needs no toast as well.
+        const inline = !res.ok && !!o.onFail?.(res.code, res.detail);
         const first =
-          res.ok && o.quiet && res.code !== 'pending'
+          inline || (res.ok && o.quiet && res.code !== 'pending')
             ? 0
             : toast(
                 res.ok ? (res.code === 'pending' ? 'info' : 'ok') : 'fail',

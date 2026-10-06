@@ -164,7 +164,6 @@ textarea {
   color: inherit;
 }
 code,
-.mono,
 time {
   /* Technical values (tags, addresses, versions, times): the app's own face
      with digits of equal width. A system monospace sat squashed and wide next
@@ -229,8 +228,7 @@ h3,
 }
 
 /* ── utilities ─────────────────────────────────────────────────────────── */
-.sr,
-[data-w="s"] .tab:not([aria-selected="true"]) span {
+.sr {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -432,6 +430,24 @@ h3,
   border-radius: 8px;
   background: var(--sunk);
   scrollbar-width: none;
+  scroll-behavior: smooth;
+}
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+/* More sections past the edge: they fade out there, so the row reads as one to scroll. */
+.tabs[data-more] {
+  -webkit-mask-image: linear-gradient(90deg, var(--fl, #000), #000 36px, #000 calc(100% - 36px), var(--fr, #000));
+  mask-image: linear-gradient(90deg, var(--fl, #000), #000 36px, #000 calc(100% - 36px), var(--fr, #000));
+}
+.tabs[data-more*="l"] {
+  --fl: transparent;
+}
+.tabs[data-more*="r"] {
+  --fr: transparent;
+}
+.ic.flip {
+  transform: scaleX(-1);
 }
 .tab {
   display: flex;
@@ -458,20 +474,21 @@ h3,
 .tab[aria-selected="true"] .ic {
   color: var(--ac);
 }
+/* A phone: every section keeps its name — the row scrolls, the open one in view. */
 [data-w="s"] .tabs {
-  justify-content: space-between;
+  margin: 0 -2px 14px;
 }
 [data-w="s"] .tab {
-  padding: 0 9px;
+  gap: 6px;
+  padding: 0 12px;
+  white-space: nowrap;
 }
-/* A phone: the open tab's name may take two short lines ("Серверы и / сервисы")
-   rather than push the last tab out of the row. */
-[data-w="s"] .tab[aria-selected="true"] {
-  flex: 0 1 auto;
-  min-width: 0;
+/* A phone: narrower gutters, so the content gets the width. */
+.vx[data-w="s"] {
+  padding: 14px 12px 18px;
 }
-[data-w="s"] .tab[aria-selected="true"] span {
-  line-height: 1.1;
+[data-w="s"] .hdr {
+  padding-bottom: 12px;
 }
 
 /* ── surfaces ──────────────────────────────────────────────────────────── */
@@ -700,7 +717,15 @@ h3,
 }
 [data-w="s"] .acts {
   grid-auto-flow: row;
+  gap: 4px;
   width: 100%;
+}
+/* A phone: turning Vectra off is there, quietly — not a second big button. */
+[data-w="s"] .acts .b-off {
+  min-height: 38px;
+  border-color: transparent;
+  background: none;
+  font-size: 13px;
 }
 .bg:not(.bi) {
   padding-inline: 2px;
@@ -2218,26 +2243,38 @@ h3,
   resize: vertical;
 }
 .sv-foot {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  padding: 14px 18px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sunk);
+  color: var(--tx-3);
+  font-size: 12.5px;
+}
+/* What the owner can do here, as one row of quiet links. */
+.sv-foot-a {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
-  align-items: center;
-  gap: 2px 18px;
-  padding: 4px 0 0;
-  color: var(--tx-3);
-  font-size: 12px;
-  text-align: center;
+  gap: 4px 22px;
 }
-.sv-dev,
-.sv-lan {
-  flex-basis: 100%;
+.sv-foot-a:empty {
+  display: none;
+}
+.sv-dev {
+  font-size: 12px;
 }
 /* Support access: a quiet switch of the owner's, the sentence of what it allows under it. */
 .sv-sa {
-  flex-basis: 100%;
   display: grid;
-  justify-items: center;
-  margin-top: 6px;
+  justify-items: start;
+  gap: 2px;
+}
+.sv-foot .sv-sa {
+  width: 100%;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
 }
 .sv-sa .hint {
   max-width: 56ch;
@@ -2922,6 +2959,391 @@ a.btn {
 }
 [data-w="s"] .ms-add {
   grid-template-columns: minmax(0, 1fr);
+}
+
+/* ── port forwarding ───────────────────────────────────────────────────── */
+/* What is open reads at a glance: a program's icon, its name, the device
+   under it, the switch at the end. Adding is a short wizard of big choices. */
+.pf {
+  max-width: 720px;
+}
+.pf-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+.pf-list {
+  display: grid;
+  gap: 8px;
+}
+.pf-r,
+.pf-ch,
+.pf-line {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--sunk);
+  transition: border-color 0.16s, background-color 0.16s;
+}
+.pf-r {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 14px;
+}
+.pf-main {
+  border: 0;
+  background: none;
+}
+.pf-main,
+.pf-ch,
+.pf-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  color: var(--tx-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pf-main {
+  flex: 1;
+  padding: 12px 8px 12px 12px;
+  border-radius: 12px;
+}
+.pf-main:disabled {
+  cursor: default;
+}
+.pf-ic {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--ac-ln);
+  border-radius: 12px;
+  background: var(--ac-soft);
+  color: var(--ac);
+}
+.pf-txt {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.pf-t {
+  color: var(--tx);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.pf-s {
+  color: var(--tx-3);
+  font-size: 13px;
+}
+.pf-around {
+  color: var(--vi);
+  font-weight: 600;
+}
+.pf-r.off .pf-main {
+  opacity: 0.5;
+}
+.pf-card > .pf-add {
+  justify-self: start;
+  margin: 0;
+}
+/* Nothing yet: what it is for, and the one thing to do. */
+.pf-none {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  padding: 28px 16px 24px;
+  color: var(--tx-2);
+  text-align: center;
+  text-wrap: pretty;
+}
+.pf-none p {
+  max-width: 34ch;
+}
+.pf-none .pf-add {
+  margin: 0;
+}
+.pf-big {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border: 1px solid var(--ac-ln);
+  border-radius: 20px;
+  background: var(--ac-soft);
+  color: var(--ac);
+}
+@media (hover: hover) and (pointer: fine) {
+  .pf-r:hover,
+  .pf-ch:hover,
+  .pf-cat:hover,
+  .pf-line:hover {
+    border-color: var(--ac-ln);
+  }
+}
+/* The wizard: a dialog on a desk, a sheet from the bottom on a phone. */
+.pf-sheet {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  max-width: 520px;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.pf-sheet-h {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+}
+.dlg.pf-sheet {
+  max-width: 560px;
+}
+.dlg.pf-sheet h2 {
+  flex: 1;
+  min-width: 0;
+}
+.pf-sheet-h .bi:first-child {
+  margin-left: -6px;
+}
+.pf-body {
+  display: grid;
+  gap: 14px;
+}
+.dlg.pf-sheet p {
+  margin: 0;
+}
+.pf-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.pf-ch {
+  width: 100%;
+  min-height: 60px;
+  padding: 10px 14px;
+  border-color: var(--line-2);
+}
+.pf-ch[aria-pressed="true"],
+.pf-ch[aria-checked="true"] {
+  border-color: var(--ac);
+  background: var(--ac-soft);
+}
+/* A tile: the icon over the name, as on a phone's home screen. */
+.pf-tile {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 104px;
+  padding: 14px;
+}
+.pf-devs {
+  display: grid;
+  gap: 8px;
+}
+.pf-other {
+  justify-self: start;
+}
+.pf-go {
+  justify-self: stretch;
+}
+.pf-port {
+  display: grid;
+  gap: 12px;
+}
+.pf-port .seg {
+  justify-self: start;
+}
+/* The rule summed up: each line leads back to what it says. */
+.pf-sum {
+  display: grid;
+  gap: 8px;
+}
+.pf-line {
+  justify-content: space-between;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 14px;
+}
+.pf-line .k {
+  font-size: 10.5px;
+}
+.pf-line-s {
+  min-height: 44px;
+  color: var(--tx-2);
+  font-size: 13.5px;
+}
+.pf-chg {
+  flex: none;
+  color: var(--ac);
+  font-size: 13px;
+  font-weight: 600;
+}
+.pf-vpn {
+  display: grid;
+  gap: 8px;
+}
+.pf-vpn .k {
+  margin-bottom: 2px;
+}
+.pf-opt {
+  align-items: flex-start;
+  padding: 12px 14px;
+}
+/* A radio's ring, filled when chosen. */
+.pf-opt i {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  border: 2px solid var(--line-2);
+  border-radius: 50%;
+}
+.pf-opt[aria-checked="true"] i {
+  border-color: var(--ac);
+  box-shadow: inset 0 0 0 3px var(--card), inset 0 0 0 9px var(--ac);
+}
+.pf-sheet-a {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.pf-sheet-a .pf-rm {
+  margin-right: auto;
+  color: var(--fail);
+}
+/* A preset's ports, one rule a row: the port, then its protocol beside it. */
+.pf-pr {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 12px;
+}
+.pf-pr .fld {
+  flex: 1 1 8.5em;
+}
+.pf-pr .seg {
+  margin-top: 27px;
+}
+/* All presets: a search, the categories as chips, the list under them. */
+.pf-find {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.pf-find .ic {
+  position: absolute;
+  left: 12px;
+  color: var(--tx-3);
+  pointer-events: none;
+}
+.pf-find .in {
+  padding-left: 38px;
+  font-size: 16px;
+}
+.pf-cats {
+  display: flex;
+  gap: 6px;
+  padding-bottom: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+}
+.pf-cats::-webkit-scrollbar {
+  display: none;
+}
+.pf-cat {
+  flex: none;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: var(--sunk);
+  color: var(--tx-2);
+  font: 600 13px var(--font);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pf-cat[aria-pressed="true"] {
+  border-color: var(--ac);
+  background: var(--ac-soft);
+  color: var(--ac);
+}
+/* All presets: the title, the search and the chips stay; the list under them scrolls. */
+.dlg.pf-sheet-all {
+  display: flex;
+  flex-direction: column;
+  height: min(680px, calc(100vh - 32px));
+  height: min(680px, calc(100dvh - 32px));
+  overflow: hidden;
+}
+.pf-sheet-all .pf-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.pf-scroll {
+  display: grid;
+  flex: 1;
+  align-content: start;
+  gap: 14px;
+  min-height: 0;
+  margin: 0 -4px;
+  padding: 0 4px 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.pf-sec {
+  display: grid;
+  gap: 8px;
+}
+.pf-sec h3 {
+  margin: 6px 0 0;
+}
+@keyframes vx-sheet {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}
+[data-w="l"] .pf-grid,
+[data-w="x"] .pf-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+[data-w="s"] .pf-scrim {
+  place-items: end stretch;
+  padding: 12px 0 0;
+}
+[data-w="s"] .dlg.pf-sheet {
+  max-width: none;
+  max-height: calc(100vh - 12px);
+  max-height: calc(100dvh - 12px);
+  padding: 16px 16px calc(18px + env(safe-area-inset-bottom));
+  border-bottom: 0;
+  border-radius: 20px 20px 0 0;
+  animation: vx-sheet 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+[data-w="s"] .pf-sheet-a .bp {
+  flex: 1;
+}
+[data-w="s"] .dlg.pf-sheet-all {
+  height: calc(100vh - 12px);
+  height: calc(100dvh - 12px);
+}
+/* On a phone the chips run to the sheet's edges. */
+[data-w="s"] .pf-cats {
+  margin: 0 -16px;
+  padding: 0 16px 2px;
+  scroll-padding: 0 16px;
 }
 
 /* ── overlays ──────────────────────────────────────────────────────────── */

@@ -589,7 +589,35 @@ export function Simple() {
           ) : null}
         </>
       )}
-      <footer class="sv-foot">
+      {/* The router's own corner: what to do with it, support's access, and where this page opens. */}
+      <footer class="sv-foot" aria-label={t('rp.router')}>
+        <div class="sv-foot-a">
+          {setup.data && !off ? (
+            <Button kind="g" small icon="arrow" onClick={() => setWizard('welcome')}>
+              {t('w.reopen')}
+            </Button>
+          ) : null}
+          {up ? (
+            <Button kind="g" small icon="info" onClick={() => setTour(true)}>
+              {t('tour.replay')}
+            </Button>
+          ) : null}
+          {/* The note above sets a first password; this changes one. */}
+          {setPassword && setup.data?.passwordSet !== false ? (
+            <Button kind="g" small icon="lock" onClick={() => setPwDialog('change')}>
+              {t('pw.change')}
+            </Button>
+          ) : null}
+        </div>
+        {/* Whether support may run commands here is the owner's (a router older than the switch says nothing). */}
+        {typeof s.remoteShell === 'boolean' ? <SupportAccess on={s.remoteShell} /> : null}
+        {locked ? <span>{t('s.lockedNote')}</span> : null}
+        {/* The router answers its names since the version that has the switch. */}
+        {s.power.enabled !== null ? (
+          <span class="sv-lan">
+            <WayIn ip={setup.data?.lan.ipv4} links />
+          </span>
+        ) : null}
         <span class="sv-dev">
           {[s.router.model, s.router.release, s.version ? 'Vectra ' + s.version : null]
             .filter(Boolean)
@@ -600,31 +628,6 @@ export function Simple() {
               </span>
             ))}
         </span>
-        {locked ? <span>{t('s.lockedNote')}</span> : null}
-        {setup.data && !off ? (
-          <Button kind="g" small icon="arrow" onClick={() => setWizard('welcome')}>
-            {t('w.reopen')}
-          </Button>
-        ) : null}
-        {up ? (
-          <Button kind="g" small icon="info" onClick={() => setTour(true)}>
-            {t('tour.replay')}
-          </Button>
-        ) : null}
-        {/* The note above sets a first password; this changes one. */}
-        {setPassword && setup.data?.passwordSet !== false ? (
-          <Button kind="g" small icon="lock" onClick={() => setPwDialog('change')}>
-            {t('pw.change')}
-          </Button>
-        ) : null}
-        {/* The router answers its names since the version that has the switch. */}
-        {s.power.enabled !== null ? (
-          <span class="sv-lan">
-            <WayIn ip={setup.data?.lan.ipv4} links />
-          </span>
-        ) : null}
-        {/* Whether support may run commands here is the owner's (a router older than the switch says nothing). */}
-        {typeof s.remoteShell === 'boolean' ? <SupportAccess on={s.remoteShell} /> : null}
       </footer>
       {tour ? <Tour onDone={() => setTour(false)} /> : null}
       {pwDialog ? <PasswordDialog first={pwDialog === 'set'} onClose={() => setPwDialog(null)} /> : null}

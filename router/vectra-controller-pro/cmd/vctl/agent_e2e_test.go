@@ -223,6 +223,19 @@ func newTestDaemonWith(t *testing.T, dir string, panel *panelStub, provider *pro
 		HWID: subscription.ComputeHWID(e2eMAC, e2eModel),
 	}
 	d.subClient = provider.Client()
+	// xray (the fake's sleep) and its supervisor outlive a test that started
+	// them, and their start hooks read the vault — which recreates
+	// .vault/lock while t.TempDir is being removed ("directory not empty").
+	// Registered after the caller's TempDir, this runs before its removal
+	// (cleanups are LIFO): stop both, then wait for the hooks. Only a
+	// supervisor ensureSupervisor started (a test may mark one started
+	// without it).
+	t.Cleanup(func() {
+		if d.supStarted && d.supCancel != nil {
+			d.stopXray(context.Background())
+		}
+		d.sup.WaitHooks()
+	})
 	return d
 }
 

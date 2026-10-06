@@ -60,7 +60,13 @@ type Process struct {
 	// xrayLog is the size-capped sink for xray's stdout/stderr, shared across
 	// restarts; nil until the first start with a log dir.
 	xrayLog *cappedLog
+	// hooks counts the onStart/onExit goroutines still running (WaitHooks).
+	hooks sync.WaitGroup
 }
+
+// WaitHooks waits for the start and exit hooks still running. Call it after
+// Run has returned: Run is what starts them, so none can begin after that.
+func (p *Process) WaitHooks() { p.hooks.Wait() }
 
 // SetOnStart registers fn to run after every successful xray start — the
 // first one and every restart, intentional or not. It runs in its own
@@ -229,7 +235,8 @@ func (p *Process) Run(ctx context.Context) error {
 				"attempt", p.backoff.Attempt(),
 			)
 			if hook := p.onExit.Load(); hook != nil && ctx.Err() == nil {
-				go (*hook)(exitCodeOf(exitErr), exitErr, runDuration)
+				p.hooks.Add(1)
+				go func() { defer p.hooks.Done(); (*hook)(exitCodeOf(exitErr), exitErr, runDuration) }()
 			}
 			p.updateStatus(StateBackoff, exitCodeOf(exitErr), exitErr)
 		}
@@ -381,7 +388,9 @@ func (p *Process) startOnce(ctx context.Context) error {
 	p.mu.Unlock()
 	p.updateStatus(StateRunning, 0, nil)
 	if hook := p.onStart.Load(); hook != nil && cmd.Process != nil {
-		go (*hook)(cmd.Process.Pid)
+		pid := cmd.Process.Pid
+		p.hooks.Add(1)
+		go func() { defer p.hooks.Done(); (*hook)(pid) }()
 	}
 	if cmd.Process != nil && (p.adjPinned || p.oomScoreAdj != 0) {
 		adj := p.oomScoreAdj

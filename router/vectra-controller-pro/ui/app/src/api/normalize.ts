@@ -232,6 +232,15 @@ const SPECS: Record<ReadMethod, Spec> = {
   },
   rules: { direct: 'S', proxy: 'S', max: 'n', catalog: 'S', missing: 'S' },
   services: { available: 'b', services: [{ id: 'T', choice: 's', defaultCountry: 's', countries: 'S', active: 'b', stale: 'b', egress: 'M' }] },
+  // A rule without an id is kept, never dropped: the whole list goes back on
+  // every save, and a dropped rule would be deleted from the router.
+  port_forwards: {
+    rules: [{ id: 's', preset: 's', destIp: 's:', deviceName: 's', port: 's:', proto: 's:tcp', direct: 'b', enabled: 'b' }],
+    devices: [{ name: 's', ip: 'T' }],
+    cgnat: 'b',
+    directActive: 'b',
+    max: 'n',
+  },
 };
 
 export const normalize = <M extends ReadMethod>(m: M, raw: unknown): ReadData[M] => norm(SPECS[m], raw) as ReadData[M];

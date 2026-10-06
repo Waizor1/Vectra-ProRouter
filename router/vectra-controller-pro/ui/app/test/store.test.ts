@@ -4,7 +4,7 @@ import { deflateRawSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 import { createStore } from '../src/api/store';
 import { S } from '../src/i18n/strings';
-import { inflate, unpack } from '../src/lib/inflate';
+import { inflate, pack91, unpack, unpack91 } from '../src/lib/inflate';
 
 describe('store', () => {
   it('never runs two requests for the same method at once', async () => {
@@ -92,8 +92,20 @@ describe('inflate', () => {
     expect(Buffer.from(inflate(packed)).toString()).toBe('fixed huffman, fixed huffman');
   });
 
-  it('unpacks base64 text the way the build packs it', () => {
-    expect(unpack(deflateRawSync(Buffer.from(table), { level: 9 }).toString('base64'))).toBe(table);
+  it('unpacks text the way the build packs it', () => {
+    expect(unpack(pack91(deflateRawSync(Buffer.from(table), { level: 9 })))).toBe(table);
+    expect(unpack(pack91(deflateRawSync(Buffer.from(css), { level: 9 })))).toBe(css);
+  });
+
+  it('packs any bytes into quote-free printable ASCII and back, at every length', () => {
+    for (let len = 0; len < 40; len++) {
+      const bytes = random.subarray(len * 3, len * 4);
+      const text = pack91(bytes);
+      expect(text).toMatch(/^[ !#-&(-\[\]-_a-~]*$/);
+      expect(Buffer.from(unpack91(text).subarray(0, bytes.length))).toEqual(Buffer.from(bytes));
+      expect(unpack91(text).length - bytes.length).toBeLessThanOrEqual(1);
+    }
+    expect(Buffer.from(unpack91(pack91(random)).subarray(0, random.length))).toEqual(random);
   });
 
   it('fails loudly on truncated input', () => {

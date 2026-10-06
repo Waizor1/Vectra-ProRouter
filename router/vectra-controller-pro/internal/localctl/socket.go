@@ -26,6 +26,11 @@ const (
 	// OpRetirePassWall takes PassWall2 off the router now, when every
 	// condition holds (`vctl retire-passwall`, internal/retire).
 	OpRetirePassWall = "retire_passwall"
+	// OpSyncPortForwards writes the port forwards' «past the VPN» devices
+	// into the data plane's set now (firewall.SetPortForwardDirect4), from the
+	// firewall config `vctl rpcd` has just committed — without it the set
+	// would follow at the daemon's next loop.
+	OpSyncPortForwards = "sync_port_forwards"
 )
 
 // SocketRequest is one call.

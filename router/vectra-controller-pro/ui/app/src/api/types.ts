@@ -29,9 +29,23 @@ export type Method =
   | 'services'
   | 'set_service'
   | 'set_power'
-  | 'set_remote_shell';
+  | 'set_remote_shell'
+  | 'port_forwards'
+  | 'set_port_forwards';
 
-export type ReadMethod = 'status' | 'balancers' | 'nodes' | 'entries' | 'diagnostics' | 'logs' | 'setup' | 'wan_check' | 'rules' | 'wifi_scan' | 'services';
+export type ReadMethod =
+  | 'status'
+  | 'balancers'
+  | 'nodes'
+  | 'entries'
+  | 'diagnostics'
+  | 'logs'
+  | 'setup'
+  | 'wan_check'
+  | 'rules'
+  | 'wifi_scan'
+  | 'services'
+  | 'port_forwards';
 export type ActionMethod = Exclude<Method, ReadMethod>;
 
 /** The transport the host page hands to mount(): LuCI rpc in production, fixtures in dev. */
@@ -445,6 +459,52 @@ export interface Services {
   services: ServiceInfo[];
 }
 
+// ── port forwarding (contract: port_forwards.json) ──────────────────────────
+
+export type PfProto = Open<'tcp' | 'udp' | 'both'>;
+
+/** One forward: a port (or range, the same outside and inside) to a device, and whether its own traffic goes around the VPN. */
+export interface PortForward {
+  /** 8 hex; null only from a router that did not say (it is then sent back without one). */
+  id: string | null;
+  /** The UI catalogue's tag ("minecraft"); null: the owner's own port. */
+  preset: string | null;
+  destIp: string;
+  /** The device's name from its lease or static host; null when it has none. */
+  deviceName: string | null;
+  /** "25565" or "3478-3480". */
+  port: string;
+  proto: PfProto;
+  direct: boolean | null;
+  enabled: boolean | null;
+}
+
+export interface LanDevice {
+  name: string | null;
+  ip: string;
+}
+
+export interface PortForwards {
+  rules: PortForward[];
+  devices: LanDevice[];
+  /** The provider gave no public address: ports will not open from outside. */
+  cgnat: boolean | null;
+  /** «Around the VPN» in effect: null — no such rule (or an older router); false — set on a rule, not in effect now. */
+  directActive: boolean | null;
+  max: number | null;
+}
+
+/** One rule as `set_port_forwards` takes it: the whole list is sent each time. */
+export interface PortForwardIn {
+  id?: string;
+  preset: string | null;
+  destIp: string;
+  port: string;
+  proto: string;
+  direct: boolean;
+  enabled: boolean;
+}
+
 export interface ReadData {
   status: Status;
   balancers: Balancers;
@@ -457,4 +517,5 @@ export interface ReadData {
   rules: Rules;
   wifi_scan: WifiScan;
   services: Services;
+  port_forwards: PortForwards;
 }

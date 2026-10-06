@@ -286,6 +286,15 @@ type daemon struct {
 	// reading the router's memory (nil = nft, memguard.Read).
 	directLoad func(ctx context.Context, script string) error
 	readMem    func() (memguard.Info, error)
+	// The port forwards' «past the VPN» set (portfwd_direct.go): the stamp of
+	// the firewall config it was last written from ("" = not since the table
+	// was last programmed), the last failed write, and a stand-in for nft in
+	// tests (nil = nft).
+	pfLoaded string
+	pfFailAt time.Time
+	// pfStatusKey is what the «past the VPN» status file last recorded.
+	pfStatusKey string
+	pfLoad      func(ctx context.Context, script string) error
 
 	supCtx     context.Context
 	supCancel  context.CancelFunc
@@ -711,6 +720,7 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 		d.maybeUpdateNativeGeo(ctx, time.Now())
 		d.maybeSyncPassWall(ctx)
 		d.maybeLoadDirect(ctx)
+		d.maybeSyncPortForwards(ctx, false)
 		d.maybeRefreshSubscription(ctx, time.Now())
 		d.maybeRetirePassWall(ctx, time.Now())
 		d.publishRuntime()

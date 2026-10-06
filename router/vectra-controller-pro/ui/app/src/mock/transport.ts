@@ -2,8 +2,9 @@
 // tests. It answers with the contract fixtures, waits like a small router, and
 // applies mutations so every flow can be exercised without hardware.
 
-import type { Action, CallFn, Holder, ReadData, ReadMethod, SetPasswordFn, Setup, WifiRadio, WifiScanRadio, WifiVerdict } from '../api/types';
+import type { Action, CallFn, Holder, PortForward, ReadData, ReadMethod, SetPasswordFn, Setup, WifiRadio, WifiScanRadio, WifiVerdict } from '../api/types';
 import { FIXTURE_NOW, FIXTURES } from './fixtures';
+import { ipv4, overlaps, parsePorts, PF_MAX, portText } from '../lib/portForwards';
 import { normalizeSite } from '../lib/sites';
 import { buildWorld, clone, off, wifiAs, type Scenario, type WifiAs } from './scenarios';
 
@@ -29,6 +30,10 @@ export interface MockOptions {
   passwordFails?: 'refused' | 'denied' | 'offline';
   /** The Wi-Fi as an owner may have it (scenarios.ts, `wifiAs`): the wizard's verdicts. */
   wifi?: WifiAs;
+  /** `set_port_forwards` answers `pending` and lands later. */
+  pfPending?: boolean;
+  /** `set_port_forwards` refuses with this code whatever it is sent (dev: `&pffail=`). */
+  pfFail?: string;
 }
 
 export interface Mock {
@@ -38,7 +43,7 @@ export interface Mock {
   dispose(): void;
 }
 
-const READS: ReadMethod[] = ['status', 'balancers', 'nodes', 'entries', 'diagnostics', 'logs', 'setup', 'wan_check', 'rules', 'wifi_scan', 'services'];
+const READS: ReadMethod[] = ['status', 'balancers', 'nodes', 'entries', 'diagnostics', 'logs', 'setup', 'wan_check', 'rules', 'wifi_scan', 'services', 'port_forwards'];
 /**
  * The channels the router takes for a radio (contract: "Changes"): 1–11 on
  * 2.4 GHz (HT40+ up to 9, HT40- from 5); on 5 GHz no DFS channel, 165 only at
@@ -112,7 +117,7 @@ function listen(r: WifiRadio, around: WifiScanRadio[]): WifiScanRadio {
   };
 }
 /** What vctl refuses under the operator's lock (contract/README.md, "Operator lock"). */
-export const PRO_ONLY = ['balancers', 'nodes', 'logs', 'pin_balancer', 'set_probe_interval'];
+export const PRO_ONLY = ['balancers', 'nodes', 'logs', 'pin_balancer', 'set_probe_interval', 'port_forwards', 'set_port_forwards'];
 const DEFAULT_PROBE_SEC = 300;
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d+Z$/, 'Z');
@@ -523,6 +528,54 @@ export function createMock(opts: MockOptions = {}): Mock {
         if (!opts.rulesPending) {
           land();
           return ok('rules_set');
+        }
+        later(applyMs, land);
+        return ok('pending');
+      }
+      case 'set_port_forwards': {
+        // Like the router (spec 2026-10-06): the whole list, checked in full before anything changes.
+        if (opts.pfFail) return fail(opts.pfFail, `${opts.pfFail} (mock)`);
+        if (!Array.isArray(p.rules)) return fail('invalid_params', 'rules is required; [] removes every rule');
+        const raw = p.rules as Record<string, unknown>[];
+        if (raw.length > PF_MAX) return fail('too_many', `${raw.length} rules; at most ${PF_MAX}`);
+        const pf = w.port_forwards;
+        // The mock's LAN: the router's /24.
+        const router = ipv4(w.setup.lan.ipv4 ?? '192.168.1.1')!;
+        const net = router - (router % 256);
+        const next: PortForward[] = [];
+        for (let i = 0; i < raw.length; i++) {
+          const r = raw[i] || {};
+          const at = `rules[${i}]`;
+          if (r.proto !== 'tcp' && r.proto !== 'udp' && r.proto !== 'both') return fail('invalid_params', `${at}.proto: tcp, udp or both`);
+          const port = typeof r.port === 'string' ? parsePorts(r.port) : null;
+          if (!port) return fail('invalid_params', `${at}.port: 1-65535 or a range`);
+          const ip = typeof r.destIp === 'string' ? r.destIp : '';
+          const n = ipv4(ip);
+          if (n === router) return fail('dest_is_router', `${at}.destIp ${ip} is the router`);
+          if (n === null || n < net + 1 || n > net + 254) return fail('dest_not_lan', `${at}.destIp ${ip || '""'} is not on the LAN`);
+          const rule = { proto: r.proto, port: portText(port) };
+          // A forward made in LuCI on 5000 and a router service on 8443 take their ports too.
+          const clash = next.some((x) => x.enabled !== false && overlaps(rule, x)) || overlaps(rule, { proto: 'tcp', port: '5000' }) || overlaps(rule, { proto: 'tcp', port: '8443' });
+          if (r.enabled !== false && clash) return fail('port_conflict', `${at}: ${r.proto}/${rule.port} is taken`);
+          const old = typeof r.id === 'string' ? pf.rules.find((x) => x.id === r.id) : undefined;
+          next.push({
+            id: old?.id ?? Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, '0'),
+            preset: typeof r.preset === 'string' && /^[a-z0-9-]{1,24}$/.test(r.preset) ? r.preset : null,
+            destIp: ip,
+            deviceName: pf.devices.find((x) => x.ip === ip)?.name ?? null,
+            port: rule.port,
+            proto: r.proto,
+            direct: r.direct === true,
+            enabled: r.enabled !== false,
+          });
+        }
+        const land = () => {
+          pf.rules = next;
+          log(`port forwards set: ${next.length} rules`);
+        };
+        if (!opts.pfPending) {
+          land();
+          return ok('port_forwards_set');
         }
         later(applyMs, land);
         return ok('pending');

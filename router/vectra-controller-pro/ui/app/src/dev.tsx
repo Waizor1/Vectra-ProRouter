@@ -5,6 +5,7 @@
 //   ?scenario=off&holder=passwall2|agent|direct (Vectra switched off: who carries the traffic)
 //   ?pwfail=refused|denied|offline (LuCI's password change fails so)
 //   ?wifi=manual|overlap|down (the Wi-Fi as an owner may have it: the wizard's verdicts)
+//   ?scenario=cgnat (port forwarding behind the provider's CGNAT)   ?pfPending=1   ?pffail=port_conflict|dest_not_lan|…
 import { createMock } from './mock/transport';
 import { SCENARIOS, type Scenario } from './mock/scenarios';
 import { mount } from './mount';
@@ -41,6 +42,8 @@ const mock = createMock({
   holder: holder === 'agent' || holder === 'direct' ? holder : undefined,
   passwordFails: pw === 'refused' || pw === 'denied' || pw === 'offline' ? pw : undefined,
   wifi: wifi === 'manual' || wifi === 'overlap' || wifi === 'down' ? wifi : undefined,
+  pfPending: q.get('pfPending') === '1',
+  pfFail: q.get('pffail') || undefined,
 });
 const host = document.getElementById('vectra-host') as HTMLElement;
 const unmount = mount(host, { call: mock.call, setPassword: mock.setPassword, lang: document.documentElement.lang });

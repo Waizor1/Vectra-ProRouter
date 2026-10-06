@@ -128,7 +128,20 @@ export const ErrorBox = ({ t, err, onRetry, big, note }: { t: T; err: ErrInfo; o
 // ── inputs ──────────────────────────────────────────────────────────────────
 
 /** A labelled text field; its error (or else its hint) under it, tied to the input. */
-export function Field(p: { id: string; label: string; value: string; onInput: (v: string) => void; type?: string; error?: string | null; hint?: string; auto?: string }) {
+export function Field(p: {
+  id: string;
+  label: string;
+  value: string;
+  onInput: (v: string) => void;
+  type?: string;
+  error?: string | null;
+  hint?: string;
+  auto?: string;
+  /** An example in the empty field. */
+  ph?: string;
+  /** The keyboard a phone shows ("numeric", "decimal"). */
+  mode?: 'text' | 'numeric' | 'decimal';
+}) {
   return (
     <div class="fld">
       <label for={p.id}>{p.label}</label>
@@ -138,6 +151,8 @@ export function Field(p: { id: string; label: string; value: string; onInput: (v
         type={p.type || 'text'}
         value={p.value}
         autoComplete={p.auto || 'off'}
+        placeholder={p.ph}
+        inputMode={p.mode}
         autoCapitalize="none"
         spellcheck={false}
         aria-invalid={p.error ? true : undefined}

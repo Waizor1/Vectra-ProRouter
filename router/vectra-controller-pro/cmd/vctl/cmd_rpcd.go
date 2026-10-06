@@ -114,7 +114,8 @@ const rpcdMutationWait = 14 * time.Second
 // daemon — so the lock does not rest on the UI hiding a tab. unpin_balancer
 // stays: it only hands a balancer back to the provider's own choice, and the
 // simple view needs it to undo a pin made earlier in Pro. rules / set_rules
-// ("My sites") are the simple view's own.
+// ("My sites") are the simple view's own. port_forwards / set_port_forwards
+// join this list in rpcd_portfwd.go.
 var rpcdProOnly = map[string]bool{
 	"balancers": true, "nodes": true, "logs": true, "pin_balancer": true, "set_probe_interval": true,
 }
@@ -206,6 +207,9 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 		return action(false, "locked", "")
 	}
 	if out, ok := rpcdSetupCall(ctx, cfg, method, params); ok {
+		return out
+	}
+	if out, ok := rpcdPortForwardsCall(ctx, cfg, method, params); ok {
 		return out
 	}
 	env := uiapi.RouterEnv(cfg, controllerVersion())

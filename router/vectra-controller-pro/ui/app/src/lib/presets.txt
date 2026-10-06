@@ -1,0 +1,35 @@
+minecraft-java|g|Minecraft Java|25565?
+minecraft-bedrock|g|Minecraft Bedrock|19132?
+cs2-srcds|g|Counter-Strike 2|27015b
+rust|g||28015u,28017u
+valheim|g||2456-2457?
+terraria|g||7777t
+ark-survival-evolved|g|ARK: Survival Evolved|7777-7778u,27015u
+palworld|g||8211u
+factorio|g||34197u
+satisfactory|g||7777b,8888t
+project-zomboid|g|Project Zomboid|16261-16262u
+enshrouded|g||15637?
+dont-starve-together|g|Don't Starve Together|10999u
+playstation|c|PlayStation|3478-3479b,3480t
+xbox|c||3074b,9002u
+steam-remote-play|r|Steam Remote Play|27031-27036u,27036t
+sunshine|r||47984t,47989t,48010t,47998-48000u
+rdp|r|~|3389b
+vnc|r|VNC|5900t
+ssh|r|SSH|22t
+anydesk|r|AnyDesk|7070t
+plex|m||32400t
+jellyfin|m||8096t,8920t
+emby|m||8096t,8920t
+transmission|m|~|51413b
+synology-dsm|m|Synology DSM|5000t,5001t
+web-server|m|~|80t,443t
+nextcloud|m||443t
+home-assistant|h|Home Assistant|8123t
+hikvision|h||80t,8000t,554t
+dahua|h||80t,37777t
+teamspeak3|v|TeamSpeak 3|9987u,30033t
+mumble|v||64738b
+wireguard|n|WireGuard|51820u
+openvpn|n|OpenVPN|1194u
