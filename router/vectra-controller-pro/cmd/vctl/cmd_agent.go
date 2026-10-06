@@ -307,6 +307,9 @@ type daemon struct {
 	// row; cpRetryAt is when the next may go (checkInBackoff).
 	cpFailures int
 	cpRetryAt  time.Time
+	// cpHealthBypassed: this wait's check-in already went early on the
+	// panel's health (runOnce); a failed one waits the wait out.
+	cpHealthBypassed bool
 
 	// fwConfirmBy is when the tries to confirm the last firewall
 	// programming end (shortly before its deadman wakes), zero with none
@@ -320,9 +323,12 @@ type daemon struct {
 	// whose LAN path clientChainFault checks; nftOutput stands in for nft's
 	// output in tests.
 	fwConfirmDeadline time.Time
-	fwConfirmFault    string
-	fwSpec            *firewall.Spec
-	nftOutput         func(ctx context.Context, args ...string) ([]byte, error)
+	// fwUnconfirmedUntil is when the unconfirmed ruleset's deadman wakes
+	// (zero: none unconfirmed); see unconfirmed.
+	fwUnconfirmedUntil time.Time
+	fwConfirmFault     string
+	fwSpec             *firewall.Spec
+	nftOutput          func(ctx context.Context, args ...string) ([]byte, error)
 
 	// The router UI (localui.go). All written on the loop goroutine only;
 	// the socket goroutine reads the published snapshot.
@@ -787,8 +793,15 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	// (checkInBackoff) — unless its health answers, asked cheaply every poll
 	// meanwhile, so a panel that is back is checked in with within a poll.
 	// Everything above — the rescue, the data plane — does not wait.
-	if d.now().Before(d.cpRetryAt) && !d.panelBack(ctx) {
-		return nil
+	if d.now().Before(d.cpRetryAt) {
+		// Once per wait: a panel whose health answers but whose check-in
+		// fails (half up) is not asked every poll.
+		if d.cpHealthBypassed || !d.panelBack(ctx) {
+			return nil
+		}
+		d.cpHealthBypassed = true
+	} else {
+		d.cpHealthBypassed = false
 	}
 
 	// Register if we have no identity yet; next loop will check in.
@@ -835,17 +848,9 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	// restart (the durable signal is the sentinel, not an in-memory flag). It
 	// is one proof among others (fw_confirm.go): without the panel the
 	// router's own confirms.
-	// A ruleset still waiting is confirmed only with the LAN's path whole:
-	// the check-in went out on the marked sockets, which never cross it.
-	if d.confirmPending() {
-		if fault := d.clientChainFault(ctx); fault != "" {
-			logging.L().Warn("firewall commit-confirm: the panel answers but the LAN's path is not whole; not confirmed", "fault", fault)
-		} else if err := d.confirmer.Confirm(); err == nil {
-			d.firewallConfirmed()
-		}
-	} else if err := d.confirmer.Confirm(); err != nil {
-		logging.L().Debug("firewall commit-confirm sentinel write failed", "err", err.Error())
-	}
+	// A ruleset still unconfirmed only with the LAN's path whole
+	// (checkInConfirm).
+	d.checkInConfirm(ctx)
 
 	if len(resp.DesiredRevision) > 0 {
 		if rev, err := decodeDesiredRevision(resp.DesiredRevision); err == nil && rev != nil {
@@ -1406,7 +1411,7 @@ func (d *daemon) controlPlaneReachable(ctx context.Context) bool {
 func (d *daemon) noteControlPlane(ok bool) {
 	d.lastControlPlaneOK = &ok
 	if ok {
-		d.cpFailures, d.cpRetryAt = 0, time.Time{}
+		d.cpFailures, d.cpRetryAt, d.cpHealthBypassed = 0, time.Time{}, false
 		return
 	}
 	d.cpFailures++

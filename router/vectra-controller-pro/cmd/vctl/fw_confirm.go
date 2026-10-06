@@ -71,6 +71,7 @@ func (d *daemon) confirmFirewall(ctx context.Context, armedAt time.Time) bool {
 	if d.confirmer != nil && d.confirmer.Timeout > 0 {
 		timeout = d.confirmer.Timeout
 	}
+	d.fwUnconfirmedUntil = armedAt.Add(timeout)
 	d.fwConfirmDeadline = armedAt.Add(timeout - fwConfirmMargin)
 	d.fwConfirmBy = d.fwConfirmDeadline.Add(-fwConfirmMaxTry)
 	d.fwConfirmNext, d.fwConfirmFault = d.now(), ""
@@ -112,17 +113,50 @@ func (d *daemon) retryFirewallConfirm(ctx context.Context, now time.Time) bool {
 		logging.L().Warn("firewall commit-confirm sentinel write failed", "err", err.Error())
 		return false
 	}
-	d.fwConfirmBy, d.fwConfirmFault = time.Time{}, ""
+	d.firewallConfirmed()
+	d.fwConfirmFault = ""
 	logging.L().Info("firewall change confirmed", "by", how)
 	return true
 }
 
-// firewallConfirmed: something else confirmed (a check-in) or nothing is
-// loaded any more (a teardown); no retries are owed.
-func (d *daemon) firewallConfirmed() { d.fwConfirmBy = time.Time{} }
+// firewallConfirmed: the ruleset was confirmed (by a try, by a check-in) or
+// nothing is loaded any more (a teardown): no retries are owed and nothing
+// is unconfirmed.
+func (d *daemon) firewallConfirmed() { d.fwConfirmBy, d.fwUnconfirmedUntil = time.Time{}, time.Time{} }
 
-// confirmPending: a ruleset waits for its confirmation.
-func (d *daemon) confirmPending() bool { return !d.fwConfirmBy.IsZero() }
+// unconfirmed: the last ruleset has not been confirmed and its deadman has
+// not woken yet. Apart from the tries (which end before it), only this says
+// whether a check-in may write the sentinel unchecked: while it holds, never
+// without the LAN path's check (checkInConfirm).
+func (d *daemon) unconfirmed(now time.Time) bool {
+	return !d.fwUnconfirmedUntil.IsZero() && now.Before(d.fwUnconfirmedUntil)
+}
+
+// checkInConfirm is what a successful check-in does for the commit-confirm:
+// with nothing unconfirmed it rewrites the sentinel, which disarms a deadman
+// a previous process armed before a restart; with a ruleset unconfirmed, it
+// confirms only in time and with the LAN's path whole — the check-in went
+// out on the marked sockets, which never cross it.
+func (d *daemon) checkInConfirm(ctx context.Context) {
+	now := d.now()
+	if !d.unconfirmed(now) {
+		if err := d.confirmer.Confirm(); err != nil {
+			logging.L().Debug("firewall commit-confirm sentinel write failed", "err", err.Error())
+		}
+		return
+	}
+	if !now.Before(d.fwConfirmDeadline) {
+		return // too late: the deadman decides
+	}
+	if fault := d.clientChainFault(ctx); fault != "" {
+		logging.L().Warn("firewall commit-confirm: the panel answers but the LAN's path is not whole; not confirmed", "fault", fault)
+		return
+	}
+	if err := d.confirmer.Confirm(); err == nil {
+		d.firewallConfirmed()
+		logging.L().Info("firewall change confirmed", "by", "the panel's check-in")
+	}
+}
 
 // firewallHealthProof says how the router proved, after a ruleset went in,
 // that the ruleset did not cut it off; "" when it could not.
@@ -167,7 +201,8 @@ var chainWindow = 2 * time.Second
 //
 //   - prerouting: the TPROXY rule to xray's port;
 //   - the policy route: `ip rule fwmark <mark> lookup <table>` and its local
-//     default route;
+//     default route — for IPv6 too when the LAN's IPv6 goes through TPROXY
+//     (not refused);
 //   - xray listening on the TPROXY port;
 //   - over chainWindow, packets that TPROXY captured escaping to the WAN
 //     (vctl_tproxy_escaped) and, with the kill switch on, its drops
@@ -196,6 +231,17 @@ func (d *daemon) clientChainFault(ctx context.Context) string {
 	if err != nil || !hasLocalDefault(string(routes)) {
 		return fmt.Sprintf("its local route in table %d is not in the kernel", spec.RtTable)
 	}
+	if spec.IPv6Enabled && !spec.RefuseIPv6 {
+		// The LAN's IPv6 goes through TPROXY too: its policy route as well.
+		rules6, err := d.ipShow(ctx, "-6", "rule", "show")
+		if err != nil || !hasFwmarkRule(string(rules6), spec.FwMark, spec.RtTable) {
+			return fmt.Sprintf("its IPv6 policy rule (fwmark 0x%x lookup %d) is not in the kernel", spec.FwMark, spec.RtTable)
+		}
+		routes6, err := d.ipShow(ctx, "-6", "route", "show", "table", fmt.Sprint(spec.RtTable))
+		if err != nil || !hasLocalDefault6(string(routes6)) {
+			return fmt.Sprintf("its IPv6 local route in table %d is not in the kernel", spec.RtTable)
+		}
+	}
 	if !tcpListening(d.procRoot(), spec.TproxyPort) {
 		return fmt.Sprintf("nothing listens on the TPROXY port %d", spec.TproxyPort)
 	}
@@ -219,6 +265,17 @@ func (d *daemon) clientChainFault(ctx context.Context) string {
 		return "the kill switch is dropping the LAN's traffic"
 	}
 	return ""
+}
+
+// hasLocalDefault6: `ip -6 route show table N` has the local default route.
+func hasLocalDefault6(routes string) bool {
+	for _, line := range strings.Split(routes, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "local default ") || strings.HasPrefix(line, "local ::/0 ") || line == "local default" {
+			return true
+		}
+	}
+	return false
 }
 
 // nftShow runs nft for its output (d.nftOutput in tests).

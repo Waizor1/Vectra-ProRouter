@@ -28,9 +28,17 @@ type panelGone struct {
 	panelHost string
 	panelHits *int64 // check-ins and registrations it refused
 	back      *atomic.Bool
+	halfUp    *atomic.Bool // its health answers, its check-in does not
 }
 
 func (p panelGone) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Host == p.panelHost && p.halfUp != nil && p.halfUp.Load() {
+		if strings.HasPrefix(r.URL.Path, "/api/router/") {
+			atomic.AddInt64(p.panelHits, 1)
+			return nil, errors.New("read: connection reset by peer")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+	}
 	if r.URL.Host == p.panelHost {
 		if p.back != nil && p.back.Load() {
 			if strings.HasPrefix(r.URL.Path, "/api/router/") {
@@ -85,16 +93,24 @@ func withoutPanel(t *testing.T, d *daemon, net *httptest.Server) *int64 {
 // withoutPanelUntil is withoutPanel with a switch that brings the panel back.
 func withoutPanelUntil(t *testing.T, d *daemon, net *httptest.Server) (*int64, *atomic.Bool) {
 	t.Helper()
-	hits, back := new(int64), new(atomic.Bool)
+	p := withoutPanelSwitches(t, d, net)
+	return p.panelHits, p.back
+}
+
+// withoutPanelSwitches is withoutPanel with its switches: the panel back,
+// or half up.
+func withoutPanelSwitches(t *testing.T, d *daemon, net *httptest.Server) panelGone {
+	t.Helper()
+	p := panelGone{panelHost: "panel.invalid", panelHits: new(int64), back: new(atomic.Bool), halfUp: new(atomic.Bool)}
 	const panelURL = "http://panel.invalid"
 	d.cfg.ControlURL = panelURL
 	d.client = controlplane.NewClient(controlplane.Options{
 		BaseURL:    panelURL,
-		HTTPClient: &http.Client{Timeout: 2 * time.Second, Transport: panelGone{panelHost: "panel.invalid", panelHits: hits, back: back}},
+		HTTPClient: &http.Client{Timeout: 2 * time.Second, Transport: p},
 	})
 	d.rescuePolicy.HealthURLs = []string{net.URL + "/generate_204"}
 	d.rescuePolicy.TraceURLs = []string{net.URL + "/cdn-cgi/trace"}
-	return hits, back
+	return p
 }
 
 // THE FINDING. A ruleset loaded while the panel is unreachable is confirmed
@@ -332,6 +348,7 @@ func TestTheDeadmanStillRevertsWithoutAnyProof(t *testing.T) {
 type clientChain struct {
 	refresh                                 func()
 	noTproxy, noRule, noRoute, notListening bool
+	noRule6                                 bool
 	escaping, dropping                      bool // the counter climbs
 	escaped, drops                          int64
 }
@@ -366,6 +383,13 @@ func fakeClientChain(t *testing.T, d *daemon) *clientChain {
 				return nil, nil
 			}
 			return []byte("local default dev lo scope host\n"), nil
+		case "-6 rule show":
+			if c.noRule6 {
+				return []byte("0:\tfrom all lookup local\n"), nil
+			}
+			return []byte(fmt.Sprintf("100:\tfrom all fwmark 0x%x lookup %d\n", spec.FwMark, spec.RtTable)), nil
+		case fmt.Sprintf("-6 route show table %d", spec.RtTable):
+			return []byte("local default dev lo metric 1024 pref medium\n"), nil
 		}
 		return nil, fmt.Errorf("unexpected ip %v", args)
 	}
@@ -548,5 +572,113 @@ func TestOneFailedCheckInDoesNotSkipAPoll(t *testing.T) {
 	_ = d.runOnce(context.Background())
 	if h := atomic.LoadInt64(hits); h != 2 {
 		t.Fatalf("%d check-ins in two polls after one failure; want 2", h)
+	}
+}
+
+// THE WINDOW. The tries end ~27 s before the deadman wakes; a check-in in
+// that window must not write the sentinel for a ruleset whose LAN path
+// failed every check — nor at all once the confirmation's deadline passed.
+// After the deadman woke (the ruleset reverted), the check-in's usual
+// rewrite is back.
+func TestACheckInBeforeTheRevertDoesNotConfirmABrokenRuleset(t *testing.T) {
+	s := steerDaemon(t, renderWithDNS)
+	d := s.d
+	withoutPanel(t, d, internetUp(t, nil))
+	d.supStarted = true
+	c := fakeClientChain(t, d)
+	c.noRule = true
+	confirmPath := filepath.Join(t.TempDir(), "fw-confirm")
+	d.confirmer = firewall.NewCommitConfirmer(confirmPath, 90*time.Second)
+	d.applyRuleset = func(string, firewall.Spec) error { _ = os.Remove(confirmPath); return nil }
+	t0 := time.Date(2026, 10, 6, 4, 31, 0, 0, time.UTC)
+	now := t0
+	d.clock = func() time.Time { return now }
+	ctx := context.Background()
+
+	d.programFirewall(ctx, d.desired)
+	for ; now.Before(t0.Add(73 * time.Second)); now = now.Add(dnsWatchEvery) {
+		d.retryFirewallConfirm(ctx, now)
+	}
+	if !d.fwConfirmBy.IsZero() {
+		t.Fatal("the tries did not end before the window")
+	}
+	for _, at := range []time.Duration{73 * time.Second, 84 * time.Second, 86 * time.Second, 89 * time.Second} {
+		now = t0.Add(at)
+		d.checkInConfirm(ctx)
+		if fileExists(confirmPath) {
+			t.Fatalf("a check-in at +%s confirmed a ruleset whose LAN path failed every check", at)
+		}
+	}
+	// The LAN path whole again, but past the deadline: the deadman decides.
+	c.noRule = false
+	now = t0.Add(86 * time.Second)
+	d.checkInConfirm(ctx)
+	if fileExists(confirmPath) {
+		t.Fatal("a check-in after the confirmation's deadline wrote the sentinel")
+	}
+	// In time and whole: the check-in confirms.
+	d.programFirewall(ctx, d.desired)
+	t1 := now
+	now = t1.Add(70 * time.Second)
+	d.fwConfirmBy = time.Time{} // the tries over
+	d.checkInConfirm(ctx)
+	if !fileExists(confirmPath) {
+		t.Fatal("a check-in in time with the LAN path whole did not confirm")
+	}
+	if d.unconfirmed(now) {
+		t.Error("still unconfirmed after the check-in confirmed")
+	}
+	// After the deadman woke, nothing is unconfirmed: the rewrite is back.
+	_ = os.Remove(confirmPath)
+	d.fwUnconfirmedUntil = now.Add(-time.Second)
+	d.checkInConfirm(ctx)
+	if !fileExists(confirmPath) {
+		t.Error("with nothing unconfirmed the check-in no longer rewrites the sentinel")
+	}
+}
+
+// With the LAN's IPv6 through TPROXY (not refused), its policy rule is part
+// of the path; refused, it is not asked.
+func TestTheIPv6PolicyRuleCountsWhenIPv6IsCarried(t *testing.T) {
+	s := steerDaemon(t, renderWithDNS)
+	d := s.d
+	d.supStarted = true
+	c := fakeClientChain(t, d)
+	c.noRule6 = true
+	spec, _ := firewallSpecFromConfig(d.desired)
+	spec.IPv6Enabled, spec.RefuseIPv6 = true, true
+	d.fwSpec = &spec
+	if f := d.clientChainFault(context.Background()); f != "" {
+		t.Fatalf("IPv6 refused, yet its policy rule was asked: %s", f)
+	}
+	spec.RefuseIPv6 = false
+	if f := d.clientChainFault(context.Background()); !strings.Contains(f, "IPv6 policy rule") {
+		t.Fatalf("IPv6 carried and its policy rule missing: fault %q", f)
+	}
+	c.noRule6 = false
+	if f := d.clientChainFault(context.Background()); f != "" {
+		t.Fatalf("IPv6 carried, its policy route whole: fault %q", f)
+	}
+}
+
+// A panel half up — its health answers, its check-in fails — gets one early
+// check-in per wait, not one every poll: the backoff holds.
+func TestAHalfUpPanelDoesNotBypassTheBackoff(t *testing.T) {
+	s := steerDaemon(t, renderWithDNS)
+	d := s.d
+	p := withoutPanelSwitches(t, d, internetUp(t, nil))
+	p.halfUp.Store(true)
+	t0 := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	now := t0
+	d.clock = func() time.Time { return now }
+	poll := d.cfg.PollInterval()
+	polls := 0
+	for ; now.Before(t0.Add(time.Hour)); now = now.Add(poll) {
+		_ = d.runOnce(context.Background())
+		polls++
+	}
+	// Backoff alone: ~16 in an hour; one early try per wait at most doubles it.
+	if h := atomic.LoadInt64(p.panelHits); h > 40 || h >= int64(polls)/2 {
+		t.Fatalf("%d check-ins in %d polls to a half-up panel: the health answers bypass the backoff", h, polls)
 	}
 }
