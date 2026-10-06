@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"vectra-controller-pro/internal/controlplane"
+	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/portfwd"
 	"vectra-controller-pro/internal/rescue"
@@ -399,5 +400,56 @@ func TestConnectTelemetryCarriesPortForwards(t *testing.T) {
 	}
 	if pf := connectPortForwards(portfwd.State{}, "100.64.3.4", nil); !pf.CGNAT || pf.Rules == nil || pf.Devices == nil || pf.DirectActive != nil {
 		t.Fatalf("empty state = %+v", pf)
+	}
+}
+
+// The same Connect action delivered twice (a lost answer, a retried poll)
+// changes the firewall once: the second is answered from the journal.
+func TestConnectSetPortForwardsReplayAppliesOnce(t *testing.T) {
+	d, results := connectTestDaemon(t)
+	oldExec, oldGate := connectPortForwardsExecute, connectResourceBlocked
+	t.Cleanup(func() { connectPortForwardsExecute, connectResourceBlocked = oldExec, oldGate })
+	connectResourceBlocked = func(*daemon, string) bool { return false }
+	calls := 0
+	connectPortForwardsExecute = func(*daemon, context.Context, []portfwd.Rule) (string, bool) {
+		calls++
+		return "applied", true
+	}
+	job := connectTestJob("pf-replay", "set_port_forwards", map[string]interface{}{"rules": []interface{}{
+		map[string]interface{}{"destIp": "192.168.1.50", "port": "25565", "proto": "tcp", "direct": false, "enabled": true},
+	}})
+	for n := 0; n < 2; n++ {
+		if err := d.executeJob(context.Background(), job, controlplane.CheckInResponse{RouterID: d.st.RouterID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("applied %d times, want once", calls)
+	}
+	if last := (*results)[len(*results)-1]; last.Status != "success" || last.Result["code"] != "replayed" {
+		t.Fatalf("replay outcome %+v", last)
+	}
+}
+
+// A load of the data plane replaces the whole table, the set with it: the
+// daemon writes the set again right after, even when the firewall config did
+// not change since the last write.
+func TestATableLoadRewritesThePortForwardsSet(t *testing.T) {
+	fakePortForwardRouter(t)
+	d, _, _ := shutdownDaemon(t)
+	d.applyRuleset = func(string, firewall.Spec) error { return nil }
+	d.directLoad = func(context.Context, string) error { return nil }
+	programmed := ""
+	d.fwProgrammed = &programmed
+	var scripts []string
+	d.pfLoad = func(_ context.Context, s string) error { scripts = append(scripts, s); return nil }
+	ctx := context.Background()
+	if err := d.maybeSyncPortForwards(ctx, false); err != nil || len(scripts) != 1 {
+		t.Fatalf("first sync: %v %q", err, scripts)
+	}
+	d.programFirewallWithin(ctx, d.desired, 0)
+	want := "flush set inet vctl vctl_pf_direct4\nadd element inet vctl vctl_pf_direct4 { 192.168.1.60 }\n"
+	if len(scripts) != 2 || scripts[1] != want {
+		t.Fatalf("after a table load the set was not written again: %q", scripts)
 	}
 }
