@@ -5,7 +5,6 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { deflateRawSync, gzipSync } from 'node:zlib';
 import preact from '@preact/preset-vite';
-import { pack91 } from './src/lib/inflate';
 import { defineConfig, type Plugin } from 'vite';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -79,15 +78,22 @@ function analyze(): Plugin {
 }
 
 /**
- * The bundle's two big text payloads — the CSS and the ru/en/zh string table —
- * ship raw-deflated (as pack91 text, denser than base64) and are inflated once
- * at startup by src/lib/inflate.ts. uhttpd serves LuCI's files uncompressed,
- * so this is ~28 KB less on flash and on the wire. Dev mode and the tests keep using the plain sources.
+ * The bundle's big text payloads — the CSS, the ru/en/zh string table and the
+ * port-preset catalogue — ship raw-deflated (as pack91 text, denser than
+ * base64) and are inflated once at startup by src/lib/inflate.ts. uhttpd
+ * serves LuCI's files uncompressed, so this is ~30 KB less on flash and on
+ * the wire. Dev mode and the tests keep using the plain sources.
  */
 function packText(): Plugin {
   const strings = resolve(here, 'src/i18n/strings.ts');
-  const unpack = `import { unpack } from ${JSON.stringify(resolve(here, 'src/lib/inflate.ts'))};`;
-  const pack = (text: string) => JSON.stringify(pack91(deflateRawSync(Buffer.from(text), { level: 9 })));
+  const inflate = resolve(here, 'src/lib/inflate.ts');
+  const unpack = `import { unpack } from ${JSON.stringify(inflate)};`;
+  // Files whose `export default "…"` is packed as it is.
+  const TEXT = ['/src/styles/app.css?inline', '/src/lib/presets.txt?raw'];
+  const pack = async (text: string) => {
+    const { pack91 } = (await import(pathToFileURL(inflate).href)) as typeof import('./src/lib/inflate');
+    return JSON.stringify(pack91(deflateRawSync(Buffer.from(text), { level: 9 })));
+  };
   return {
     name: 'vectra-pack-text',
     apply: 'build',
@@ -96,14 +102,17 @@ function packText(): Plugin {
       if (id !== strings) return null;
       const { S } = (await import(pathToFileURL(strings).href)) as { S: Record<string, readonly string[]> };
       const keys = Object.keys(S);
-      const table = JSON.stringify([keys, ...[0, 1, 2].map((i) => keys.map((k) => S[k][i]))]);
-      return `${unpack}const [K,...C]=JSON.parse(unpack(${pack(table)}));export const S={};K.forEach((k,i)=>{S[k]=C.map((c)=>c[i])});`;
+      // Columns (the keys, then each language) as plain lines: shorter packed than JSON.
+      const cols = [keys, ...[0, 1, 2].map((i) => keys.map((k) => S[k][i]))];
+      if (cols.some((c) => c.some((x) => /[\x01\x02]/.test(x)))) this.error('a string holds the table separator');
+      const table = cols.map((c) => c.join('\x01')).join('\x02');
+      return `${unpack}const [K,...C]=unpack(${await pack(table)}).split("\\x02").map((c)=>c.split("\\x01"));export const S={};K.forEach((k,i)=>{S[k]=C.map((c)=>c[i])});`;
     },
-    transform(code, id) {
-      if (!id.endsWith('/src/styles/app.css?inline')) return null;
+    async transform(code, id) {
+      if (!TEXT.some((x) => id.endsWith(x))) return null;
       const m = /export default\s*("(?:[^"\\]|\\.)*")/.exec(code);
-      if (!m) this.error('app.css?inline has an unexpected shape');
-      return `${unpack}export default unpack(${pack(JSON.parse(m[1]))});`;
+      if (!m) this.error(id + ' has an unexpected shape');
+      return `${unpack}export default unpack(${await pack(JSON.parse(m[1]))});`;
     },
   };
 }

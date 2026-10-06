@@ -3219,6 +3219,76 @@ a.btn {
   margin-right: auto;
   color: var(--fail);
 }
+/* A preset's ports, one rule a row: the port, then its protocol beside it. */
+.pf-pr {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 12px;
+}
+.pf-pr .fld {
+  flex: 1 1 8.5em;
+}
+.pf-pr .seg {
+  margin-top: 23px;
+}
+/* All presets: a search, the categories as chips, the list under them. */
+.pf-find {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.pf-find .ic {
+  position: absolute;
+  left: 12px;
+  color: var(--tx-3);
+  pointer-events: none;
+}
+.pf-find .in {
+  padding-left: 38px;
+  font-size: 16px;
+}
+.pf-cats {
+  display: flex;
+  gap: 6px;
+  padding-bottom: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+}
+.pf-cats::-webkit-scrollbar {
+  display: none;
+}
+.pf-cat {
+  flex: none;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: var(--sunk);
+  color: var(--tx-2);
+  font: 600 13px var(--font);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.16s, background-color 0.16s, color 0.16s;
+}
+.pf-cat[aria-pressed="true"] {
+  border-color: var(--ac);
+  background: var(--ac-soft);
+  color: var(--ac);
+}
+.pf-sec {
+  display: grid;
+  gap: 8px;
+}
+.pf-sec h3 {
+  margin: 6px 0 0;
+}
+@media (hover: hover) and (pointer: fine) {
+  .pf-cat:hover {
+    border-color: var(--ac-ln);
+  }
+}
 @keyframes vx-sheet {
   from {
     transform: translateY(24px);
@@ -3244,6 +3314,11 @@ a.btn {
 }
 [data-w="s"] .pf-sheet-a .bp {
   flex: 1;
+}
+/* On a phone the chips run to the sheet's edges. */
+[data-w="s"] .pf-cats {
+  margin: 0 -16px;
+  padding: 0 16px 2px;
 }
 
 /* ── overlays ──────────────────────────────────────────────────────────── */

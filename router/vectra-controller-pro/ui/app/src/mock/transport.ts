@@ -560,7 +560,7 @@ export function createMock(opts: MockOptions = {}): Mock {
           const old = typeof r.id === 'string' ? pf.rules.find((x) => x.id === r.id) : undefined;
           next.push({
             id: old?.id ?? Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, '0'),
-            preset: typeof r.preset === 'string' && /^[a-z0-9_-]{1,24}$/.test(r.preset) ? r.preset : null,
+            preset: typeof r.preset === 'string' && /^[a-z0-9-]{1,24}$/.test(r.preset) ? r.preset : null,
             destIp: ip,
             deviceName: pf.devices.find((x) => x.ip === ip)?.name ?? null,
             port: rule.port,

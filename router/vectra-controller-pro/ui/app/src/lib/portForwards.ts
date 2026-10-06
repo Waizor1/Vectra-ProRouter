@@ -6,34 +6,11 @@
 
 import type { PortForward, PortForwardIn, PortForwards } from '../api/types';
 import type { Key } from '../i18n';
+import { presetOf, type Preset } from './presets';
 
 export const PF_MAX = 32;
 export const PROTOS = ['tcp', 'udp', 'both'] as const;
 export type Proto = (typeof PROTOS)[number];
-
-// ── presets: the UI's catalogue; the router keeps only the tag ──────────────
-
-export interface Preset {
-  id: string;
-  /** The program's own name; null: said in the UI's words (`pf.pre.<id>`). */
-  name: string | null;
-  port: string;
-  proto: Proto;
-  /** Consoles want their own traffic past the VPN (an open NAT). */
-  direct: boolean;
-}
-
-export const PRESETS: readonly Preset[] = [
-  { id: 'minecraft', name: 'Minecraft', port: '25565', proto: 'tcp', direct: false },
-  { id: 'playstation', name: 'PlayStation', port: '3478-3480', proto: 'both', direct: true },
-  { id: 'xbox', name: 'Xbox', port: '3074', proto: 'both', direct: true },
-  { id: 'rdp', name: null, port: '3389', proto: 'tcp', direct: false },
-  { id: 'plex', name: 'Plex', port: '32400', proto: 'tcp', direct: false },
-  { id: 'torrent', name: null, port: '51413', proto: 'both', direct: false },
-];
-
-/** A preset the UI knows, by the tag the router kept; undefined for none or a newer one. */
-export const presetOf = (id: string | null): Preset | undefined => (id ? PRESETS.find((p) => p.id === id) : undefined);
 
 // ── ports ───────────────────────────────────────────────────────────────────
 
@@ -81,14 +58,38 @@ export function ipv4(s: string): number | null {
   return n;
 }
 
+// ── the list: a preset's rules for one device are one line ─────────────────
+
+/**
+ * The rules as lines, in the list's order: each line the indexes of its rules.
+ * The rules of a preset the UI knows, for one device, are one line (they were
+ * made together); any other rule — one's own port, a tag this UI does not
+ * know — is a line of its own.
+ */
+export function groups(rules: PortForward[]): number[][] {
+  const out: number[][] = [];
+  const at: Record<string, number[]> = {};
+  rules.forEach((r, i) => {
+    const key = presetOf(r.preset) ? r.preset + ' ' + r.destIp : '';
+    if (key && at[key]) at[key].push(i);
+    else out.push((at[key || i] = [i]));
+  });
+  return out;
+}
+
 // ── the form ────────────────────────────────────────────────────────────────
+
+export interface DraftRule {
+  port: string;
+  /** null until the person picks it, where the program's makers do not say. */
+  proto: Proto | null;
+}
 
 export interface Draft {
   /** The catalogue's tag; null: the owner's own port. */
   preset: string | null;
   destIp: string;
-  port: string;
-  proto: Proto;
+  rules: DraftRule[];
   direct: boolean;
   enabled: boolean;
 }
@@ -96,38 +97,57 @@ export interface Draft {
 export const emptyDraft = (p?: Preset): Draft => ({
   preset: p ? p.id : null,
   destIp: '',
-  port: p ? p.port : '',
-  proto: p ? p.proto : 'tcp',
+  rules: p ? p.rules.map((r) => ({ ...r })) : [{ port: '', proto: 'tcp' }],
   direct: p ? p.direct : false,
   enabled: true,
 });
 
-export const draftOf = (r: PortForward): Draft => ({
-  preset: r.preset,
-  destIp: r.destIp,
-  port: r.port,
-  proto: (PROTOS as readonly string[]).indexOf(r.proto) >= 0 ? (r.proto as Proto) : 'tcp',
-  direct: r.direct === true,
-  enabled: r.enabled !== false,
-});
+const protoOf = (p: string): Proto => ((PROTOS as readonly string[]).indexOf(p) >= 0 ? (p as Proto) : 'tcp');
+
+/** A line of saved rules as the form: theirs, not the catalogue's. */
+export const draftOf = (all: PortForward[], at: number[]): Draft => {
+  const r = all[at[0]];
+  return {
+    preset: r.preset,
+    destIp: r.destIp,
+    rules: at.map((i) => ({ port: all[i].port, proto: protoOf(all[i].proto) })),
+    direct: r.direct === true,
+    enabled: at.some((i) => all[i].enabled !== false),
+  };
+};
 
 export type Field = 'destIp' | 'port';
 
+export interface Errors {
+  destIp?: Key;
+  /** Beside each rule's port, by its place in the form. */
+  port: (Key | undefined)[];
+  /** A rule still waits for its protocol to be picked. */
+  proto: boolean;
+}
+
 /**
- * The form's mistakes, beside their fields. `index`: the rule being edited
- * (-1 for a new one), so it does not clash with itself. Rules made elsewhere
- * (LuCI) the screen does not see: the router names that clash itself.
+ * The form's mistakes, beside their fields. `at`: the saved rules the form
+ * replaces (none for a new line), so they do not clash with themselves. Rules
+ * made elsewhere (LuCI) the screen does not see: the router names that clash.
  */
-export function checkDraft(d: Draft, rules: PortForward[], index: number): Partial<Record<Field, Key>> {
-  const e: Partial<Record<Field, Key>> = {};
+export function checkDraft(d: Draft, rules: PortForward[], at: number[]): Errors {
+  const e: Errors = { port: [], proto: d.rules.some((r) => !r.proto) };
   if (!d.destIp.trim()) e.destIp = 'pf.e.device';
   else if (ipv4(d.destIp) === null) e.destIp = 'pf.e.ip';
-  const port = parsePorts(d.port);
-  if (!d.port.trim()) e.port = 'w.req';
-  else if (!port) e.port = 'pf.e.port';
-  else if (d.enabled && rules.some((r, i) => i !== index && r.enabled !== false && overlaps({ proto: d.proto, port: portText(port) }, r))) e.port = 'a.port_conflict';
+  const others: { proto: string | null; port: string | null }[] = d.enabled ? rules.filter((r, i) => at.indexOf(i) < 0 && r.enabled !== false) : [];
+  d.rules.forEach((r, i) => {
+    const port = parsePorts(r.port);
+    const mine = { proto: r.proto, port: port && portText(port) };
+    e.port[i] = !r.port.trim() ? 'w.req' : !port ? 'pf.e.port' : others.some((x) => overlaps(mine, x)) ? 'a.port_conflict' : undefined;
+    // The form's own rules must not take one port twice either.
+    if (d.enabled) others.push(mine);
+  });
   return e;
 }
+
+/** Nothing stands in the way of saving. */
+export const clean = (e: Errors): boolean => !e.destIp && !e.proto && e.port.every((x) => !x);
 
 // ── the wire ────────────────────────────────────────────────────────────────
 
@@ -138,13 +158,30 @@ export function wireOf(r: PortForward): PortForwardIn {
   return out;
 }
 
-/** The form as a rule; `id` when it replaces a saved one. */
-export function wireOfDraft(d: Draft, id: string | null): PortForwardIn {
-  const port = parsePorts(d.port);
-  const out: PortForwardIn = { preset: d.preset, destIp: d.destIp.trim(), port: port ? portText(port) : d.port.trim(), proto: d.proto, direct: d.direct, enabled: d.enabled };
-  if (id) out.id = id;
-  return out;
+/**
+ * The whole list with one line replaced by the form (or the form added at
+ * the end): its rules take the saved ids in order; a rule the form no longer
+ * has goes. Only for a form with every protocol picked.
+ */
+export function withDraft(all: PortForward[], at: number[], d: Draft): PortForwardIn[] {
+  const mine = d.rules.map((r, k): PortForwardIn => {
+    const port = parsePorts(r.port);
+    const out: PortForwardIn = { preset: d.preset, destIp: d.destIp.trim(), port: port ? portText(port) : r.port.trim(), proto: r.proto!, direct: d.direct, enabled: d.enabled };
+    const id = k < at.length ? all[at[k]].id : null;
+    if (id) out.id = id;
+    return out;
+  });
+  const out: PortForwardIn[] = [];
+  all.forEach((r, i) => (i === at[0] ? out.push(...mine) : at.indexOf(i) < 0 && out.push(wireOf(r))));
+  return at.length ? out : out.concat(mine);
 }
+
+/** The whole list without a line. */
+export const without = (all: PortForward[], at: number[]): PortForwardIn[] => all.filter((_, i) => at.indexOf(i) < 0).map(wireOf);
+
+/** The whole list with a line switched on or off. */
+export const switched = (all: PortForward[], at: number[], on: boolean): PortForwardIn[] =>
+  all.map((r, i) => (at.indexOf(i) < 0 ? wireOf(r) : { ...wireOf(r), enabled: on }));
 
 const sig = (r: PortForwardIn) => [r.preset, r.destIp, r.port, r.proto, r.direct, r.enabled].join('\u0001');
 
