@@ -423,6 +423,9 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 		// Keep vctl->panel traffic out of the provider's routing: the nft
 		// output chain returns on this mark before any TPROXY rule.
 		SocketMark: firewall.DefaultControlMark,
+		// The panel's name unresolvable (blocked, forged, every resolver
+		// down): its last known addresses, the name still checked by TLS.
+		FallbackAddrs: cfg.ControlFallbackIPs,
 	})
 
 	// No operator config yet on a router PassWall2 routes: vctl routes by its

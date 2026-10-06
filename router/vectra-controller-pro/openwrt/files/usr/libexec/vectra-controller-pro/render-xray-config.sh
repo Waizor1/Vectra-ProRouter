@@ -12,7 +12,7 @@ IPKG_INSTROOT="${IPKG_INSTROOT-}"
 # Field names and types MUST match internal/agentcfg/agentcfg.go exactly:
 #   controlUrl, panelUrl, statePath, statusPath, xrayConfigPath,
 #   providerConfigPath, xrayRenderPath, xrayBinary, geoAssetDir,
-#   legacyStatePath (strings),
+#   legacyStatePath (strings), controlFallbackIps (strings, UCI list control_ip),
 #   pollIntervalSeconds, requestTimeoutSeconds, claimRotateSeconds (ints),
 #   jobSafety{ heavyMemoryFloorMb, ... (ints), preDropCaches (bool) }.
 OUTPUT_PATH="${1:-/var/run/vectra-controller-pro/agent.json}"
@@ -52,6 +52,9 @@ fi
 if [ -z "$panel_url" ]; then
 	panel_url="$control_url"
 fi
+
+control_ips=""
+config_get control_ips "$SECTION" control_ip ""
 
 poll_interval="$(int_or_default "$(uci_get_or_default poll_interval 45)" 45)"
 request_timeout="$(int_or_default "$(uci_get_or_default request_timeout 10)" 10)"
@@ -139,6 +142,13 @@ mkdir -p "$(dirname "$OUTPUT_PATH")"
 json_init
 json_add_string controlUrl "$control_url"
 json_add_string panelUrl "$panel_url"
+if [ -n "$control_ips" ]; then
+	json_add_array controlFallbackIps
+	for ip in $control_ips; do
+		case "$ip" in *[!0-9.]* | '') ;; *) json_add_string "" "$ip" ;; esac
+	done
+	json_close_array
+fi
 json_add_string statePath "$state_path"
 json_add_string statusPath "$status_path"
 json_add_string xrayConfigPath "$xray_config_path"

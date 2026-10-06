@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -24,6 +25,10 @@ type Options struct {
 	// controller->panel traffic out of the provider's routing. Ignored when
 	// HTTPClient is supplied (tests) or off Linux. 0 disables.
 	SocketMark int
+	// FallbackAddrs are where BaseURL's host is dialled when it does not
+	// resolve to an address that answers (UCI control_ip), before the
+	// built-in KnownAddrs. Ignored like SocketMark.
+	FallbackAddrs []string
 }
 
 // Client is a thin HTTPS client for the panel's router-facing API.
@@ -42,7 +47,11 @@ func NewClient(opts Options) *Client {
 	}
 	client := opts.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: timeout, Transport: markedTransport(opts.SocketMark), CheckRedirect: noRedirect}
+		fb := &fallbackAddrs{configured: opts.FallbackAddrs}
+		if u, err := url.Parse(opts.BaseURL); err == nil {
+			fb.host = u.Hostname()
+		}
+		client = &http.Client{Timeout: timeout, Transport: markedTransport(opts.SocketMark, fb), CheckRedirect: noRedirect}
 	}
 	return &Client{
 		baseURL:    strings.TrimRight(opts.BaseURL, "/"),
@@ -54,7 +63,7 @@ func NewClient(opts Options) *Client {
 
 // markedTransport returns an http.Transport whose dialer stamps SO_MARK on
 // every connection. Returns nil (i.e. http.DefaultTransport) when unmarked.
-func markedTransport(mark int) http.RoundTripper {
+func markedTransport(mark int, fb *fallbackAddrs) http.RoundTripper {
 	control := setSocketMark(mark)
 	if control == nil {
 		return nil
@@ -63,7 +72,7 @@ func markedTransport(mark int) http.RoundTripper {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	// Names resolved on this same marked path (resolve.go), not by dnsmasq:
 	// its upstream goes through the tunnel while vctl carries the router.
-	t.DialContext = resolvingDial(d, directResolver(control))
+	t.DialContext = resolvingDial(d, directResolver(control), fb)
 	return t
 }
 
@@ -189,7 +198,7 @@ func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastRe
 // followed (noRedirect).
 func MarkedHTTPClient(mark int, timeout time.Duration) *http.Client {
 	c := &http.Client{Timeout: timeout, CheckRedirect: noRedirect}
-	if t := markedTransport(mark); t != nil {
+	if t := markedTransport(mark, &fallbackAddrs{}); t != nil {
 		c.Transport = t
 	}
 	return c
