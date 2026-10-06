@@ -69,18 +69,21 @@ Line numbers refer to 290f2b6a.
 | Piece | Change |
 |---|---|
 | Watchdog dead-man | Stale contact only arms the switch. It goes direct **only if every candidate node fails `test.sh url_test_node`**. The candidates are the selected node, or each concrete shunt slot, the same set as `proxyNodeReachableForRecovery`. If a node answers, or the result is inconclusive (no test.sh, virtual selection, MemAvailable < 40 MB), the proxy stays on. Decisions are logged once per state change. |
-| Watchdog return path | The direct it creates is owned through `/etc/vectra-controller/watchdog-direct`, which persists across reboot and sysupgrade. The watchdog restores proxy once a node answers while the panel is still silent. If contact comes back or the agent's recovery takes over, ownership is released. It never touches a direct it did not create. |
-| Watchdog vs agent | It does nothing while the agent is in `passwall_retry_wait` with a retry younger than 15 min. It flips PassWall at most once per 15 min. A lock directory serializes overlapping cron runs, and a lock older than 10 min is treated as stale. Cron install was already idempotent; that is now tested. |
+| Watchdog return path | The direct it creates is owned through `/etc/vectra-controller/watchdog-direct`, which persists across reboot and sysupgrade. The watchdog keeps it until a node answers `url_test_node`, then restores proxy. This holds whatever the panel contact says, including fresh contact, a clock behind after reboot, a missing timestamp in boot grace, or threshold 0. An ISP drop therefore comes back within about 15 min of the switch. Ownership passes to the agent only when it writes the main switch on purpose (rescue, recovery, resume, the operator's `enter_direct_mode`; the agent deletes the marker), or when its recovery parks the router. The watchdog never touches a direct it did not create. The install hook drops a stale marker when PassWall is on. |
+| Watchdog vs agent | It does nothing while the agent is in `passwall_retry_wait` with a retry younger than 15 min. It flips PassWall at most once per 15 min and reaches at most one proxy verdict per 15 min. `url_test_node` runs under `/var/run/vectra-url-test.lock`, which the agent shares (`internal/passwall/url_test_lock.go`). Without it, test.sh kills every `url_test_<node>` process when it finishes, so two probes of one node would read each other as dead; a busy lock makes the node unjudged. A probe is killed after 30 s without needing `timeout` (BusyBox has no such applet). Its leftover `url_test_<node>` xray and config are reaped. Cron runs are serialized by a lock that is released only by its owner. Cron install is idempotent (tested). |
 | Agent direct fallback | Under a panel outage it is vetoed while the node answers `url_test_node`. A genuinely dead node still goes direct. |
 | Agent way back | `direct_settle` with a dead panel, and `operator_attention` with any panel state, retry proxy on node proof every 15 min. The blind dead-panel retry keeps its 12 h interval. The node verdict is cached for 5 min, so pollers do not start an xray every 45 s. |
-| Check-ins | `SkipControlPlane` is now advisory. A paced check-in still goes out every 2 min, backing off to 4 min and then 5 min after failures. It is never sent during `reboot_wait`. Paced check-ins skip the shunt/route-policy self-heals so they cannot restart PassWall during a warmup. |
+| Check-ins | `SkipControlPlane` is now advisory. A paced check-in still goes out every 2 min, backing off to 4 min and then 5 min after failures. It is never sent during `reboot_wait`, inside a settle/warmup window (`direct_settle` 45 s, `passwall_retry_wait` 75 s, `post_reboot_check` 4 min), or in the tick that just switched PassWall, because a delivered job could restart PassWall under the phase's measurement. Recovery state is saved before the call. Paced check-ins also skip the shunt/route-policy self-heals. |
 
 Panel unreachability can now only cause the agent's own logging, a controller
 restart, and `server_unreachable` incidents. It can no longer turn the VPN off.
 
-Tests: Go `panel_independence_test.go` (7 cases) and `checkin_pacing_test.go`;
-the shell suite `openwrt/tests/watchdog_deadman_test.sh` (78 cases, run from
-`go test` via `watchdog_script_test.go`). The recovery and watchdog tests were
+Tests:
+
+- Go: `panel_independence_test.go`, `checkin_pacing_test.go`,
+  `watchdog_ownership_test.go` and `internal/passwall/url_test_lock_test.go`.
+- Shell: `openwrt/tests/watchdog_deadman_test.sh`, 106 cases under sh, dash
+  and bash. It runs from `go test` via `watchdog_script_test.go`. The recovery and watchdog tests were
 checked by mutation: with the proof gates removed they fail.
 
 ## Rollout plan
@@ -163,14 +166,32 @@ package version alone is not.
 
 ### 5. Rollback
 
+A rollback restores r45 **behaviour**, including the faults r46 fixes. On r45:
+
+- a panel outage of 15 min or more switches PassWall off on every onboarded
+  router, and the watchdog re-cuts the agent's resume every 5 min;
+- check-ins starve whenever the 5 s health probe fails;
+- a recovery park waits for the panel or the 12 h RebootCooldown.
+
+So roll back only for a defect worse than these, and do not roll back during
+a panel outage.
+
 - **One router:** run `update controller <router> --channel stable` while
-  stable is still r45. The r45 watchdog ignores the
-  `/etc/vectra-controller/watchdog-direct` marker, which is harmless. If the
-  router is in a watchdog-owned direct at that moment, local rescue restores
-  proxy when the node answers. Check `uci -q get passwall2.@global[0].enabled`
-  afterwards.
+  stable is still r45. The r45 watchdog and agent never read
+  `/etc/vectra-controller/watchdog-direct`, so the file cannot confuse them.
+  If the router is in a watchdog-owned direct at that moment, the r45 agent's
+  local rescue restores proxy after two `url_test_node` successes, provided
+  its recovery is idle or monitoring. In a recovery phase, the 12 h gate
+  applies. Check `uci -q get passwall2.@global[0].enabled` afterwards.
+- **Before re-upgrading such a router to r46:** an r45 agent does not delete
+  the marker when an operator sets direct. If PassWall is still off, remove
+  the leftover marker with an operator-approved terminal job:
+  `rm -f /etc/vectra-controller/watchdog-direct`. Otherwise r46 would treat
+  that direct as its own and restore it once a node answers. If PassWall is
+  on, the r46 install hook removes the marker by itself.
 - **Feed:** restore the backed-up feed dir with `sync-runtime-artifacts.sh`,
   then re-run `sync-artifact-metadata.mjs --apply`.
 - **Emergency stop of the dead-man on one router** (operator approval needed;
   this is a live write): `uci set vectra-controller.main.deadman_threshold=0; uci commit vectra-controller`.
-  Threshold 0 disables the switch in both r45 and r46.
+  In r45 this disables the switch entirely. In r46 it stops new switches to
+  direct; an already-owned direct is still restored once a node answers.
