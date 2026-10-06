@@ -70,6 +70,52 @@ describe("vctl check-in payload against the panel contract", () => {
     expect(dropped).toEqual([]);
   });
 
+  // Port forwards (contract 2026-10-06): the shape of vctl's
+  // ui/contract/port_forwards.json without its UI-only `max`. Until the
+  // router regenerates the fixture with it, the sample is put in here; once
+  // it is there this still holds.
+  it("keeps every port forwards field vctl reports", () => {
+    const payload = structuredClone(checkInFixture) as {
+      inventory: { connect?: Record<string, unknown> };
+    };
+    payload.inventory.connect = {
+      ...payload.inventory.connect,
+      portForwards: {
+        rules: [
+          {
+            id: "3fa1c09e",
+            preset: "minecraft",
+            destIp: "192.168.1.50",
+            deviceName: "gaming-pc",
+            port: "25565",
+            proto: "tcp",
+            direct: false,
+            enabled: true,
+          },
+          {
+            id: "b7d204aa",
+            preset: null,
+            destIp: "192.168.1.60",
+            deviceName: null,
+            port: "3478-3480",
+            proto: "both",
+            direct: true,
+            enabled: true,
+          },
+        ],
+        devices: [
+          { name: "gaming-pc", ip: "192.168.1.50" },
+          { name: null, ip: "192.168.1.60" },
+        ],
+        cgnat: false,
+        directActive: true,
+      },
+    };
+    const parsed = routerCheckInRequestSchema.parse(payload);
+    const kept = new Set(keyPaths(parsed));
+    expect(keyPaths(payload).filter((p) => !kept.has(p))).toEqual([]);
+  });
+
   // The teeth. If the schema accepted these too, the assertion above would be
   // vacuous — and these five are exactly the fields that produced the live 400.
   it.each([

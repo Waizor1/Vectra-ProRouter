@@ -141,6 +141,9 @@ export function materialInventoryFingerprint(inventory: RouterInventory) {
           routerPasswordSet: inventory.connect.routerPasswordSet ?? null,
           supportAccess: inventory.connect.supportAccess ?? null,
           autoUpdate: inventory.connect.autoUpdate ?? null,
+          // The partner reads a new rule's id from the newest row after the
+          // action applied: a change must write one.
+          portForwards: inventory.connect.portForwards ?? null,
         }
       : null,
   };

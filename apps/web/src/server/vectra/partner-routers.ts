@@ -80,6 +80,37 @@ function ownersConnect(router: Router, inventory: Inventory | null) {
     : reported;
 }
 
+type ConnectTelemetry = NonNullable<
+  NonNullable<Inventory["payload"]>["connect"]
+>;
+
+// Port forwards field by field, the contract's fields and nothing else: a
+// stored payload is never passed through as it is (no MAC, no future field
+// the partner has not agreed to). null: not known.
+function projectPortForwards(
+  reported: ConnectTelemetry["portForwards"] | undefined,
+) {
+  if (!reported) return null;
+  return {
+    rules: reported.rules.map((rule) => ({
+      id: rule.id,
+      preset: rule.preset ?? null,
+      destIp: rule.destIp,
+      deviceName: rule.deviceName ?? null,
+      port: rule.port,
+      proto: rule.proto,
+      direct: rule.direct,
+      enabled: rule.enabled,
+    })),
+    devices: reported.devices.map((device) => ({
+      name: device.name ?? null,
+      ip: device.ip,
+    })),
+    cgnat: reported.cgnat,
+    directActive: reported.directActive ?? null,
+  };
+}
+
 export function projectPartnerRouter(
   router: Router,
   inventory: Inventory | null,
@@ -146,6 +177,7 @@ export function projectPartnerRouter(
     wifi: measured ? (hydrateConnectWifi(router, inventory) ?? null) : null,
     routerPasswordSet: measured?.routerPasswordSet ?? null,
     supportAccess: measured?.supportAccess ?? null,
+    portForwards: projectPortForwards(measured?.portForwards),
     version: {
       current:
         payload?.controllerRuntimeVersion ?? payload?.controllerVersion ?? null,
