@@ -498,8 +498,8 @@ deadman_unlock() {
 }
 
 # Run test.sh url_test_node <node> with a timeout that needs nothing but sh:
-# BusyBox on OpenWrt 24.10 ships no `timeout` applet, and coreutils-timeout is
-# only present where PassWall 26.7.16+ pulled it in. Prints test.sh's answer;
+# the `timeout` applet is not guaranteed in OpenWrt's BusyBox (PassWall
+# 26.7.16+ had to add a coreutils-timeout dependency), so nothing relies on it. Prints test.sh's answer;
 # returns 124 when it had to be killed (after reaping its leftovers).
 deadman_url_test_node() {
 	rm -f "$DEADMAN_PROBE_TIMEOUT_FLAG" 2>/dev/null || true
