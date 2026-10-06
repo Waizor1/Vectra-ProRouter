@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -172,15 +173,15 @@ func TestResolvingDialUsesTheBuiltInAddresses(t *testing.T) {
 }
 
 // An address dialled for a name is still checked by TLS against the name:
-// the request keeps it (SNI and the certificate's names), so a stale or
+// the handshake keeps it (SNI and the certificate's names), so a stale or
 // wrong address cannot pass for the panel.
 func TestTheFallbackAddressDoesNotWeakenTLS(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
 	defer srv.Close()
 	_, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "https://"))
-	tr := srv.Client().Transport.(*http.Transport).Clone()
-	tr.DialContext = resolvingDial(&net.Dialer{Timeout: 2 * time.Second}, noResolver,
-		&fallbackAddrs{host: "panel.invalid", configured: []string{"127.0.0.1"}})
+	cfg := srv.Client().Transport.(*http.Transport).TLSClientConfig // trusts the test CA
+	tr := &http.Transport{DialTLSContext: resolvingTLSDial(&net.Dialer{Timeout: 2 * time.Second}, noResolver,
+		&fallbackAddrs{host: "panel.invalid", configured: []string{"127.0.0.1"}}, cfg)}
 	hc := &http.Client{Transport: tr, Timeout: 5 * time.Second}
 	resp, err := hc.Get("https://panel.invalid:" + port + "/healthz")
 	if err == nil {
@@ -189,5 +190,47 @@ func TestTheFallbackAddressDoesNotWeakenTLS(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "certificate") {
 		t.Fatalf("want a certificate error, got %v", err)
+	}
+}
+
+// An address that accepts the connection but is not the panel — an ISP's
+// stub on :443 — does not stop the next one: a candidate answers only with a
+// completed, verified handshake, and only that one is remembered.
+func TestAStubThatAcceptsDoesNotBlockTheFallbacks(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("panel")) }))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "https://"))
+	stub, err := net.Listen("tcp", "[::1]:"+port)
+	if err != nil {
+		t.Skipf("no IPv6 loopback on the panel's port: %v", err)
+	}
+	defer stub.Close()
+	var stubbed int64
+	go func() {
+		for {
+			c, err := stub.Accept()
+			if err != nil {
+				return
+			}
+			atomic.AddInt64(&stubbed, 1)
+			_, _ = c.Write([]byte("HTTP/1.1 403 Forbidden\r\n\r\nblocked"))
+			_ = c.Close()
+		}
+	}()
+	cfg := srv.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	cfg.ServerName = "example.com" // what the test certificate is for
+	fb := &fallbackAddrs{host: "panel.invalid", configured: []string{"::1", "127.0.0.1"}}
+	tr := &http.Transport{DialTLSContext: resolvingTLSDial(&net.Dialer{Timeout: 2 * time.Second}, noResolver, fb, cfg)}
+	hc := &http.Client{Transport: tr, Timeout: 10 * time.Second}
+	resp, err := hc.Get("https://panel.invalid:" + port + "/")
+	if err != nil {
+		t.Fatalf("the stub's address stopped the panel's: %v", err)
+	}
+	resp.Body.Close()
+	if atomic.LoadInt64(&stubbed) == 0 {
+		t.Fatal("the stub was never tried first; the test proves nothing")
+	}
+	if got := fb.addrs("panel.invalid"); len(got) == 0 || got[0] != "127.0.0.1" {
+		t.Fatalf("remembered %v; want the address that completed its handshake first", got)
 	}
 }

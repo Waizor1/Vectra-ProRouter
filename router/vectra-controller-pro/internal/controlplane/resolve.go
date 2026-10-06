@@ -2,6 +2,8 @@ package controlplane
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -69,7 +71,7 @@ func (f *fallbackAddrs) learn(host string, c net.Conn) {
 		return
 	}
 	a, ok := c.RemoteAddr().(*net.TCPAddr)
-	if !ok || a.IP.To4() == nil || a.IP.IsLoopback() {
+	if !ok {
 		return
 	}
 	f.mu.Lock()
@@ -112,10 +114,50 @@ func (f *fallbackAddrs) addrs(host string) []string {
 // When neither gives an address that answers, the name's fallback addresses
 // are tried (fallbackAddrs; fb nil: none).
 func resolvingDial(d *net.Dialer, r *net.Resolver, fb *fallbackAddrs) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return candidateDial(d, r, fb, nil)
+}
+
+// resolvingTLSDial is resolvingDial for https: an address counts as
+// answering only once a TLS handshake with it completed and its certificate
+// was verified for the name (cfg, ServerName = the host unless cfg names
+// one). An ISP's stub that accepts :443 — or an address that is not the
+// panel's any more — fails its handshake and the next address is tried; only
+// one that completed is remembered as the last good.
+func resolvingTLSDial(d *net.Dialer, r *net.Resolver, fb *fallbackAddrs, cfg *tls.Config) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return candidateDial(d, r, fb, func(ctx context.Context, c net.Conn, host string) (net.Conn, error) {
+		conf := &tls.Config{}
+		if cfg != nil {
+			conf = cfg.Clone()
+		}
+		if conf.ServerName == "" {
+			conf.ServerName = host
+		}
+		if len(conf.NextProtos) == 0 {
+			conf.NextProtos = []string{"http/1.1"}
+		}
+		tc := tls.Client(c, conf)
+		if err := tc.HandshakeContext(ctx); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
+		return tc, nil
+	})
+}
+
+// candidateDial tries addr's host at each candidate address in turn — the
+// direct resolvers' answers, or the name itself for the system's resolver
+// when they have none, then the fallbacks — each with its share of d's
+// timeout, and hs (nil: none) on each connection: a candidate answers only
+// when hs succeeds. The one that answers is remembered (fallbackAddrs.learn).
+func candidateDial(d *net.Dialer, r *net.Resolver, fb *fallbackAddrs, hs func(ctx context.Context, c net.Conn, host string) (net.Conn, error)) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil || net.ParseIP(host) != nil {
-			return d.DialContext(ctx, network, addr)
+			c, err := d.DialContext(ctx, network, addr)
+			if err != nil || hs == nil {
+				return c, err
+			}
+			return hs(ctx, c, host)
 		}
 		var ips []net.IP
 		if r != nil {
@@ -123,65 +165,64 @@ func resolvingDial(d *net.Dialer, r *net.Resolver, fb *fallbackAddrs) func(ctx c
 			ips, _ = r.LookupIP(lctx, "ip4", host)
 			cancel()
 		}
-		tried := map[string]bool{}
-		var first error
+		// "" is the name itself, left to the system's resolver.
+		var cands []string
+		seen := map[string]bool{}
 		if len(ips) == 0 {
-			c, err := d.DialContext(ctx, network, addr)
-			if err == nil {
-				fb.learn(host, c)
-				return c, nil
-			}
-			first = err
-		} else {
-			c, err := dialEach(ctx, d, network, ips, port, tried)
-			if err == nil {
-				fb.learn(host, c)
-				return c, nil
-			}
-			first = err
+			cands = append(cands, "")
 		}
-		var rest []net.IP
+		for _, ip := range ips {
+			if !seen[ip.String()] {
+				seen[ip.String()] = true
+				cands = append(cands, ip.String())
+			}
+		}
 		for _, a := range fb.addrs(host) {
-			if !tried[a] {
-				rest = append(rest, net.ParseIP(a))
+			if !seen[a] {
+				seen[a] = true
+				cands = append(cands, a)
 			}
 		}
-		if len(rest) == 0 || ctx.Err() != nil {
-			return nil, first
+		// Each its share of the dial timeout, as net.Dialer shares it
+		// between the addresses it resolved itself: one dead address — or a
+		// stub that never answers the handshake — must not use up the whole
+		// request.
+		per := d.Timeout
+		if per > 0 && len(cands) > 1 {
+			per /= time.Duration(len(cands))
+			if per < 3*time.Second {
+				per = 3 * time.Second
+			}
 		}
-		if c, err := dialEach(ctx, d, network, rest, port, tried); err == nil {
-			return c, nil
+		var errs []error
+		for _, a := range cands {
+			if ctx.Err() != nil {
+				break
+			}
+			target := addr
+			if a != "" {
+				target = net.JoinHostPort(a, port)
+			}
+			cctx, cancel := ctx, context.CancelFunc(func() {})
+			if per > 0 {
+				cctx, cancel = context.WithTimeout(ctx, per)
+			}
+			c, err := d.DialContext(cctx, network, target)
+			if err == nil && hs != nil {
+				c, err = hs(cctx, c, host)
+			}
+			cancel()
+			if err == nil {
+				fb.learn(host, c)
+				return c, nil
+			}
+			errs = append(errs, err)
 		}
-		return nil, first
+		if len(errs) == 0 {
+			return nil, ctx.Err()
+		}
+		// Every address's reason: the name's lookup, a refusal, a
+		// certificate that is not the panel's.
+		return nil, errors.Join(errs...)
 	}
-}
-
-// dialEach dials ips in turn, each its share of d's timeout, as net.Dialer
-// shares it between the addresses it resolved itself: one dead address must
-// not use up the whole request.
-func dialEach(ctx context.Context, d *net.Dialer, network string, ips []net.IP, port string, tried map[string]bool) (net.Conn, error) {
-	per := d.Timeout
-	if per > 0 && len(ips) > 1 {
-		per /= time.Duration(len(ips))
-		if per < 2*time.Second {
-			per = 2 * time.Second
-		}
-	}
-	var first error
-	for _, ip := range ips {
-		tried[ip.String()] = true
-		dctx, cancel := ctx, context.CancelFunc(func() {})
-		if per > 0 {
-			dctx, cancel = context.WithTimeout(ctx, per)
-		}
-		c, err := d.DialContext(dctx, network, net.JoinHostPort(ip.String(), port))
-		cancel()
-		if err == nil {
-			return c, nil
-		}
-		if first == nil {
-			first = err
-		}
-	}
-	return nil, first
 }

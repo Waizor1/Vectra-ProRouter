@@ -72,7 +72,10 @@ func markedTransport(mark int, fb *fallbackAddrs) http.RoundTripper {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	// Names resolved on this same marked path (resolve.go), not by dnsmasq:
 	// its upstream goes through the tunnel while vctl carries the router.
-	t.DialContext = resolvingDial(d, directResolver(control), fb)
+	r := directResolver(control)
+	t.DialContext = resolvingDial(d, r, fb)
+	// https: an address answers only with a completed, verified handshake.
+	t.DialTLSContext = resolvingTLSDial(d, r, fb, t.TLSClientConfig)
 	return t
 }
 
