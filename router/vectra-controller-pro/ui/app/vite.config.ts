@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { deflateRawSync, gzipSync } from 'node:zlib';
 import preact from '@preact/preset-vite';
+import { pack91 } from './src/lib/inflate';
 import { defineConfig, type Plugin } from 'vite';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -79,14 +80,14 @@ function analyze(): Plugin {
 
 /**
  * The bundle's two big text payloads — the CSS and the ru/en/zh string table —
- * ship raw-deflated and are inflated once at startup by src/lib/inflate.ts.
- * uhttpd serves LuCI's files uncompressed, so this is ~24 KB less on flash and
- * on the wire. Dev mode and the tests keep using the plain sources.
+ * ship raw-deflated (as pack91 text, denser than base64) and are inflated once
+ * at startup by src/lib/inflate.ts. uhttpd serves LuCI's files uncompressed,
+ * so this is ~28 KB less on flash and on the wire. Dev mode and the tests keep using the plain sources.
  */
 function packText(): Plugin {
   const strings = resolve(here, 'src/i18n/strings.ts');
   const unpack = `import { unpack } from ${JSON.stringify(resolve(here, 'src/lib/inflate.ts'))};`;
-  const pack = (text: string) => JSON.stringify(deflateRawSync(Buffer.from(text), { level: 9 }).toString('base64'));
+  const pack = (text: string) => JSON.stringify(pack91(deflateRawSync(Buffer.from(text), { level: 9 })));
   return {
     name: 'vectra-pack-text',
     apply: 'build',

@@ -133,10 +133,51 @@ export function inflate(src: Uint8Array): Uint8Array {
   return out.subarray(0, n);
 }
 
-/** Base64 of raw-deflated UTF-8 text → the text. */
-export function unpack(b64: string): string {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new TextDecoder().decode(inflate(bytes));
+// The packed bytes go in a JS string as text: 91 printable ASCII characters
+// (no quote, apostrophe, backtick or backslash, so nothing needs escaping),
+// two of them for every 13 bits — 1.23 characters a byte against base64's
+// 1.33, ~4 KB less on flash for the bundle's CSS and strings.
+const A91: string[] = [];
+for (let c = 32; c < 127; c++) if (c !== 34 && c !== 39 && c !== 92 && c !== 96) A91.push(String.fromCharCode(c));
+
+/** Bytes as text, 13 bits per two characters (the build's side; not in the bundle). */
+export function pack91(bytes: Uint8Array): string {
+  let acc = 0;
+  let n = 0;
+  let out = '';
+  const put = (v: number) => (out += A91[v % 91] + A91[(v / 91) | 0]);
+  for (const b of bytes) {
+    acc |= b << n;
+    n += 8;
+    if (n >= 13) {
+      put(acc & 8191);
+      acc >>= 13;
+      n -= 13;
+    }
+  }
+  if (n) put(acc);
+  return out;
+}
+
+/** pack91's text → the bytes (a padding byte may follow: inflate stops at its last block). */
+export function unpack91(s: string): Uint8Array {
+  const idx: Record<string, number> = {};
+  A91.forEach((c, i) => (idx[c] = i));
+  const out = new Uint8Array(((s.length * 13) >> 4) + 1);
+  let acc = 0;
+  let n = 0;
+  let o = 0;
+  for (let i = 0; i < s.length; i += 2) {
+    acc |= (idx[s[i]] + 91 * idx[s[i + 1]]) << n;
+    for (n += 13; n >= 8; n -= 8) {
+      out[o++] = acc & 255;
+      acc >>= 8;
+    }
+  }
+  return out.subarray(0, o);
+}
+
+/** pack91 of raw-deflated UTF-8 text → the text. */
+export function unpack(s: string): string {
+  return new TextDecoder().decode(inflate(unpack91(s)));
 }
