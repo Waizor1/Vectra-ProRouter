@@ -1,5 +1,55 @@
 # Changelog
 
+## vctl 0.7.0-r21 — the VPN no longer needs the panel to stay up
+
+The owner's rule: the internet and the VPN keep working while the panel is
+unreachable — the VPS down, its address blocked, its certificate expired —
+for hours or days. An architecture review found the one place they did not
+(read in the code; not yet seen live — drill plan for 1111 alongside).
+
+### Fixed
+- **The firewall is confirmed by the router's own proof.** Every ruleset
+  (re)programming arms the 90 s commit-confirm deadman, and until now only
+  the panel disarmed it: its `/healthz` right after the apply, or the next
+  successful check-in. Without the panel each ruleset was reverted 90 s
+  later and loaded again by `ensureDataPlane` — after the nightly 04:30
+  reboot, a DNS-watch correction, a WAN resolver change, the rescue's way
+  back — so the VPN flapped every ~2 min for as long as the panel stayed
+  away (a fake-clock daemon test counts 180 reverts in 6 h on r20). Now
+  every programming, a panel job's included, is confirmed by local proof
+  first: the rescue's public health URLs on the control plane's own marked
+  client (the panel probe's path, without the panel), or the LAN's way
+  through the tunnel; tried again every 10 s until 5 s before the deadman
+  wakes. The panel still confirms too — its probe while it is not known to
+  be down, every successful check-in — but nothing waits for it. A ruleset
+  after which the router can prove nothing is still reverted.
+- **The rescue's mode survives a reboot without the panel.** A transition
+  decided in the poll was written to `state.json` only with a successful
+  check-in's state; without the panel a reboot started from the mode before.
+
+### Added
+- **Check-ins back off from a panel that does not answer**: the poll after
+  one failure, then doubling, at most 5 min, drawn between half and the
+  whole — no loop spent on a panel that is gone, no fleet stampeding back.
+  Only the exchange waits; the rescue, the data plane and the DNS watch run
+  every loop.
+- **The panel's known address.** When neither the direct resolvers nor the
+  system's give the panel's name an address that answers, the control plane
+  dials the last address that answered, then the owner's (UCI
+  `list control_ip`), then the built-in one (api/router.vectra-pro.net ->
+  72.56.14.52). TLS still checks the certificate against the name.
+
+### Audited, unchanged (keeps working without the panel)
+- A failed check-in only logs; the router is released only on the panel's
+  explicit answer, never for want of one. Claim codes rotate locally.
+- The provider's subscription (router-sub, behind the panel's Caddy): a
+  failed or non-2xx/non-JSON refresh keeps the last good document and
+  render, tried again in 30 min; native subscriptions and geo files keep
+  theirs too. After a reboot the render is rebuilt from the documents on
+  /etc, never fetched.
+- `deadman.sh` watches vctl's process, the trial's deadman its own minutes:
+  neither asks the panel.
+
 ## vctl 0.7.0-r20 — the router's resolver no longer asks a private WAN resolver over the open path
 
 Seen live on 2026-10-05 (artem-lutfulin, r19, right after the update): the
