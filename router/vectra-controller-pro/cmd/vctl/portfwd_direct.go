@@ -28,7 +28,9 @@ import (
 //
 // It is the daemon's only while the daemon has loaded the data plane in proxy
 // mode: in rescue's direct mode everything goes out by the kernel anyway, and
-// without the direct conntrack bit the rule is not in the table at all.
+// without the direct conntrack bit, or with the kill switch armed, the rule is
+// not in the table at all (firewall.PortForwardDirectInTable) — then no device
+// is past the VPN, and the status says so (directActive false).
 
 // portForwardsWanted: the set is in a table this process loaded, and means
 // something there.
@@ -37,7 +39,7 @@ func (d *daemon) portForwardsWanted() (firewall.Spec, bool) {
 		return firewall.Spec{}, false
 	}
 	spec, ok := firewallSpecFromConfig(d.desired)
-	if !ok || spec.DirectCtMark == 0 {
+	if !ok || !firewall.PortForwardDirectInTable(spec) {
 		return firewall.Spec{}, false
 	}
 	return spec, true

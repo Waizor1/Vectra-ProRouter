@@ -9,9 +9,10 @@ import (
 // The port forwards' «past the VPN» devices: a rule in prerouting after every
 // exemption and the direct sets, ahead of the P2P and admission guards and
 // TPROXY, marking the connection with the direct bit; its set and counter
-// declared. With the kill switch on and off alike.
+// declared. (With the kill switch armed it is not rendered at all:
+// TestPortForwardDirectIsNeverPastTheKillSwitch.)
 func TestPortForwardDirectRuleSitsBeforeTheGuardsAndTproxy(t *testing.T) {
-	for _, ks := range []bool{false, true} {
+	for _, ks := range []bool{false} {
 		s := DefaultSpec(12345, 1)
 		s.KillSwitch = ks
 		out := mustRender(t, s)
@@ -71,22 +72,26 @@ func TestPortForwardDirectNeedsTheBit(t *testing.T) {
 	}
 }
 
-// A device «past the VPN» is not cut by the kill switch: the forward guard
-// returns on the direct bit before its counted drop, and the bit is what the
-// prerouting rule sets.
-func TestKillSwitchLetsAPortForwardDirectDeviceOut(t *testing.T) {
+// The kill switch wins over «past the VPN»: armed, the ruleset has neither
+// the rule nor its set, so such a device's traffic meets TPROXY and the
+// switch like every other's — no silent leak past it. The daemon reads the
+// same predicate and reports directActive false (cmd/vctl), so the UI says
+// the device goes through the VPN for now.
+func TestPortForwardDirectIsNeverPastTheKillSwitch(t *testing.T) {
 	out := mustRender(t, killSwitchSpec())
-	fwd := forwardChain(t, out)
-	ret := ruleIndex(fwd, "ct mark and 0x10000000 == 0x10000000 return")
-	drop := ruleIndex(fwd, `counter name "`+CounterKillSwitchDrops+`" drop`)
-	if ret < 0 || drop < 0 || ret > drop {
-		t.Fatalf("the armed forward guard does not let the direct bit through before its drop (%d, %d):\n%s", ret, drop, fwd)
+	if strings.Contains(out, "vctl_pf_direct") {
+		t.Fatalf("the armed ruleset carries the «past the VPN» rule or set:\n%s", chainNamed(t, out, "prerouting"))
 	}
-	pre := chainNamed(t, out, "prerouting")
-	pf := ruleIndex(pre, "@vctl_pf_direct4", "ct mark set ct mark or 0x10000000", "return")
-	kill := ruleIndex(pre, `counter name "`+CounterKillSwitchDrops+`" drop`)
-	if pf < 0 || kill < 0 || pf > kill {
-		t.Fatalf("the device's connection reaches the prerouting drop before it is marked (%d, %d):\n%s", pf, kill, pre)
+	if PortForwardDirectInTable(killSwitchSpec()) {
+		t.Fatal("PortForwardDirectInTable says the rule is in an armed ruleset")
+	}
+	off := DefaultSpec(12345, 1)
+	if !PortForwardDirectInTable(off) || !strings.Contains(mustRender(t, off), "set vctl_pf_direct4 { type ipv4_addr; }") {
+		t.Fatal("switch off: the rule must be in the table, and the predicate say so")
+	}
+	off.DirectCtMark = 0
+	if PortForwardDirectInTable(off) {
+		t.Fatal("no direct bit: PortForwardDirectInTable must be false")
 	}
 }
 
@@ -103,6 +108,9 @@ func TestPortForwardRepliesNeverReachTproxy(t *testing.T) {
 		reply := ruleIndex(pre, "ct direction reply return")
 		pf := ruleIndex(pre, "@vctl_pf_direct4")
 		tproxy := ruleIndex(pre, "tproxy to :12345")
+		if ks && pf < 0 {
+			pf = reply + 1 // not rendered when armed; only the reply's place matters
+		}
 		if reply < 0 || !(reply < pf && pf < tproxy) {
 			t.Fatalf("killswitch=%v: replies must return first (reply %d, pf %d, tproxy %d):\n%s", ks, reply, pf, tproxy, pre)
 		}

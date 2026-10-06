@@ -37,7 +37,7 @@
 ct state new ip saddr @vctl_pf_direct4 ip daddr != { <CarriedV4 FakeDNS-пулы> } ct mark set ct mark or <DirectCtMark> counter name "vctl_pf_direct" return
 ```
 - Наполнение = `dest_ip` всех включённых правил с `vectra_direct '1'`. Набор обновляется `nft add/delete element` без перезагрузки всей таблицы.
-- Kill switch: `forward` уже пропускает `ct mark DirectCtMark` → не режется.
+- Kill switch: **побеждает** (ревью 06.10). При включённом kill switch правило и набор не рендерятся (как P2P-обход), `directActive=false` — UI показывает строку «пока через VPN». Тихой утечки мимо выключателя нет. DNS (53/853) и FakeDNS — всегда в туннеле, независимо от HijackDNS.
 - Требует `DirectCtMark` (есть по умолчанию). В rescue-direct режиме набор не нужен (и так всё напрямую).
 
 ### Валидация (роутер авторитетен)

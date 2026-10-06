@@ -294,7 +294,7 @@ type daemon struct {
 	pfFailAt time.Time
 	// pfStatusKey is what the «past the VPN» status file last recorded.
 	pfStatusKey string
-	pfLoad   func(ctx context.Context, script string) error
+	pfLoad      func(ctx context.Context, script string) error
 
 	supCtx     context.Context
 	supCancel  context.CancelFunc

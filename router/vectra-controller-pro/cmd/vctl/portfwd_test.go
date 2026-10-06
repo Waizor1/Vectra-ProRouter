@@ -280,6 +280,20 @@ func TestTheDaemonSyncsThePortForwardsSet(t *testing.T) {
 	}
 	programmed := ""
 	d.fwProgrammed = &programmed
+	// The kill switch armed: the rule is not in the table (the switch wins),
+	// so nothing is written and the status reads not in effect.
+	d.pfStatusKey = ""
+	d.desired.Inbounds.Tproxy.KillSwitch = true
+	if resp := d.syncPortForwardsNow(ctx); !resp.OK || len(scripts) != n {
+		t.Fatalf("wrote the set under the kill switch: %+v %q", resp, scripts[n:])
+	}
+	if st := status(); st.Active {
+		t.Fatalf("kill switch armed, recorded as in effect: %+v", st)
+	}
+	if got := portfwd.DirectActive([]portfwd.Rule{{DestIP: "192.168.1.60", Enabled: true, Direct: true}}, r.env.DirectStatus, portfwdAlive); got == nil || *got {
+		t.Fatalf("directActive under the kill switch = %v, want false", got)
+	}
+	d.desired.Inbounds.Tproxy.KillSwitch = false
 	d.st.Rescue.Mode = string(rescue.ModeDirect)
 	_ = d.maybeSyncPortForwards(ctx, true)
 	if len(scripts) != n {

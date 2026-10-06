@@ -266,15 +266,17 @@ past it», on or off.
   the UI, only when true.
 - `directActive`: whether «past the VPN» is in effect for every enabled rule
   that asks for it. `null` when none asks; `false` when some rule's `direct`
-  is not carried out right now — Vectra is off or stopped, or the router could
-  not write its data plane set (it keeps trying) — so a `direct: true` never
-  reads as working when it is not; `true` otherwise (also in the rescue's
-  direct mode, where every device goes past the VPN).
-- «Past the VPN» and the kill switch: the owner's choice for one device wins
-  over the router-wide kill switch — that device's own new connections leave
-  by the WAN even with the switch armed. What stays in the tunnel all the
-  same: blocked sites (their FakeDNS addresses) and the device's DNS (ports
-  53 and 853, which the ISP forges even from public resolvers).
+  is not carried out right now — Vectra is off or stopped, the kill switch is
+  armed, or the router could not write its data plane set (it keeps trying) —
+  so a `direct: true` never reads as working when it is not; `true` otherwise
+  (also in the rescue's direct mode, where every device goes past the VPN).
+- «Past the VPN» and the kill switch: the kill switch wins. With it armed the
+  router does not let any device past the VPN (the rule is not in its data
+  plane, as for the P2P bypass), and `directActive` is `false`: the UI shows
+  its one muted line, the device goes through the VPN for now. Even past the
+  VPN, what stays in the tunnel: blocked sites (their FakeDNS addresses) and
+  the device's DNS (ports 53 and 853, which the ISP forges even from public
+  resolvers) — with the router's DNS hijack on or off.
 - `set_port_forwards` REPLACES the list: send every rule, always; `[]` removes
   them all, and a list left out is refused. A rule without `id` is new (the
   router picks one); `preset` may be left out or `null`; `deviceName` is not

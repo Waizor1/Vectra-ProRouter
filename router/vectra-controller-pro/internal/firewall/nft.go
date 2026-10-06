@@ -426,11 +426,13 @@ const CounterDirectNew = "vctl_direct_new"
 //     queries fall through to the hijack (Spec.HijackDNS) or to TPROXY, as
 //     for every other device.
 //
-// The kill switch does not hold such a device back: the forward guard
-// returns on the direct bit, and the owner's explicit choice for one device
-// wins over the router-wide «never unproxied». That is on purpose, and the
-// contract says so (ui/contract/README.md, "Port forwards"). Only what the
-// device itself opens leaves unproxied; FakeDNS and DNS stay with xray.
+// The kill switch wins: with Spec.KillSwitch armed the rule (and its set) is
+// not rendered at all, as for the P2P bypass — the owner who armed «never
+// unproxied» gets exactly that, and such a device goes through the VPN like
+// every other. The daemon reads the same decision (PortForwardDirectInTable)
+// and reports the rule's direct flag as not in effect (directActive false,
+// ui/contract/README.md "Port forwards"), so the UI says so instead of a
+// silent leak past the switch — or a silent no-op.
 //
 // The set is its own, apart from the table's script: vctl writes its elements
 // with PortForwardDirectScript (flush + add, one transaction), so a rule
@@ -440,6 +442,11 @@ const (
 	SetPortForwardDirect4    = "vctl_pf_direct4"
 	CounterPortForwardDirect = "vctl_pf_direct"
 )
+
+// PortForwardDirectInTable reports whether the script for s carries the port
+// forwards' «past the VPN» rule and set: the direct bit is there, and the
+// kill switch is not armed.
+func PortForwardDirectInTable(s Spec) bool { return s.DirectCtMark != 0 && !s.KillSwitch }
 
 // Load guards (Spec.P2PBypass, AdmitRate, PaceRate): a P2P host's
 // connections sent out by the kernel, a device's new connections held at the
@@ -561,8 +568,10 @@ table inet {{ .TableName }} {
 {{- end }}
 {{- if .DirectCtMark }}
   counter {{ .CounterDirectNew }} { }
+{{- if .PFDirect }}
   counter {{ .CounterPortForwardDirect }} { }
   set {{ .SetPortForwardDirect4 }} { type ipv4_addr; }
+{{- end }}
 {{- end }}
 {{- if .P2P }}
   counter {{ .CounterP2PDirect }} { }
@@ -665,14 +674,15 @@ table inet {{ .TableName }} {
 {{- if .IPv6Enabled }}
     ct state new ip6 daddr @{{ .DirectSetV6 }} ct mark set ct mark or 0x{{ printf "%x" .DirectCtMark }} counter name "{{ .CounterDirectNew }}" return
 {{- end }}
+{{- if .PFDirect }}
     # A port forward's device «past the VPN» (SetPortForwardDirect4): its own
     # new connections go out by the kernel — but never to a FakeDNS address,
     # which only xray can carry, and never its DNS (53, DoT 853), which the
-    # ISP forges. Ahead of the P2P and admission guards and TPROXY; the
-    # forward guard lets the bit through, kill switch or not (the owner's
-    # choice for this device wins).
+    # ISP forges. Ahead of the P2P and admission guards and TPROXY. Never
+    # with the kill switch armed (PortForwardDirectInTable).
     ct state new ip saddr @{{ .SetPortForwardDirect4 }}{{ if .CarriedPools }} ip daddr != { {{ join .CarriedPools ", " }} }{{ end }} meta l4proto { tcp, udp } th dport != { 53, 853 } ct mark set ct mark or 0x{{ printf "%x" .DirectCtMark }} counter name "{{ .CounterPortForwardDirect }}" return
     ct state new ip saddr @{{ .SetPortForwardDirect4 }}{{ if .CarriedPools }} ip daddr != { {{ join .CarriedPools ", " }} }{{ end }} meta l4proto != { tcp, udp } ct mark set ct mark or 0x{{ printf "%x" .DirectCtMark }} counter name "{{ .CounterPortForwardDirect }}" return
+{{- end }}
 {{- else }}
     ip  daddr @{{ .DirectSetV4 }} return
 {{- if .IPv6Enabled }}
@@ -1030,6 +1040,9 @@ type tmplData struct {
 	// «past the VPN» devices and their counter.
 	SetPortForwardDirect4    string
 	CounterPortForwardDirect string
+	// PFDirect: the «past the VPN» rule and set are rendered
+	// (PortForwardDirectInTable).
+	PFDirect bool
 	// CarriedPools: Spec.CarriedV4, each an IPv4 prefix (carriedPools) —
 	// nothing else reaches the script.
 	CarriedPools []string
@@ -1100,6 +1113,7 @@ func Render(s Spec) (string, error) {
 		CounterLANDial:           CounterLANDial,
 		SetPortForwardDirect4:    SetPortForwardDirect4,
 		CounterPortForwardDirect: CounterPortForwardDirect,
+		PFDirect:                 PortForwardDirectInTable(s),
 		CarriedPools:             carriedPools(s.CarriedV4),
 		EgressLANDevs:            egressLANDevices(s.LANDevices),
 		P2P:                      s.P2PBypass && s.DirectCtMark != 0 && !s.KillSwitch,
