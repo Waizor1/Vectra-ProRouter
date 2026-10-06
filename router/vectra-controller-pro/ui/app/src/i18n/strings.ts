@@ -1330,7 +1330,7 @@ export const S = {
   'pf.proto.both': ['Оба', 'Both', '两者'],
   'pf.line.port': ['Порт {list}', 'Port {list}', '端口 {list}'],
   'pf.line.ports': ['Порты {list}', 'Ports {list}', '端口 {list}'],
-  'pf.proto.q': ['В документации игры протокол не указан — выберите.', 'The game’s docs do not say which protocol — pick one.', '游戏文档未说明协议，请选择。'],
+  'pf.proto.q': ['В документации игры протокол не указан.', 'The game’s docs do not say which protocol.', '游戏文档未说明使用哪种协议。'],
   'pf.change': ['изменить', 'change', '更改'],
   'pf.vpn.t': ['Трафик устройства', 'The device’s traffic', '设备流量'],
   'pf.vpn.via': ['Через VPN', 'Through VPN', '经由 VPN'],

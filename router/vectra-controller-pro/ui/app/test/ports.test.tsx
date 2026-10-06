@@ -584,7 +584,7 @@ describe('the port forwarding tab', () => {
     // The ports are open for the choice; nothing is picked; Save waits.
     expect(app.$<HTMLInputElement>('#vx-pf-port')?.value).toBe('25565');
     expect(app.all('.pf-pr [role="radio"]').map((b) => b.getAttribute('aria-checked'))).toEqual(['false', 'false', 'false']);
-    expect(app.$('.pf-port .hint')?.textContent).toBe('The game’s docs do not say which protocol — pick one.');
+    expect(app.$('.pf-port .hint')?.textContent).toBe('The game’s docs do not say which protocol.');
     expect(save(app).disabled).toBe(true);
     save(app).click();
     await settle(20);

@@ -3080,6 +3080,7 @@ a.btn {
 @media (hover: hover) and (pointer: fine) {
   .pf-r:hover,
   .pf-ch:hover,
+  .pf-cat:hover,
   .pf-line:hover {
     border-color: var(--ac-ln);
   }
@@ -3230,7 +3231,7 @@ a.btn {
   flex: 1 1 8.5em;
 }
 .pf-pr .seg {
-  margin-top: 23px;
+  margin-top: 27px;
 }
 /* All presets: a search, the categories as chips, the list under them. */
 .pf-find {
@@ -3270,12 +3271,36 @@ a.btn {
   font: 600 13px var(--font);
   white-space: nowrap;
   cursor: pointer;
-  transition: border-color 0.16s, background-color 0.16s, color 0.16s;
 }
 .pf-cat[aria-pressed="true"] {
   border-color: var(--ac);
   background: var(--ac-soft);
   color: var(--ac);
+}
+/* All presets: the title, the search and the chips stay; the list under them scrolls. */
+.dlg.pf-sheet-all {
+  display: flex;
+  flex-direction: column;
+  height: min(680px, calc(100vh - 32px));
+  height: min(680px, calc(100dvh - 32px));
+  overflow: hidden;
+}
+.pf-sheet-all .pf-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.pf-scroll {
+  display: grid;
+  flex: 1;
+  align-content: start;
+  gap: 14px;
+  min-height: 0;
+  margin: 0 -4px;
+  padding: 0 4px 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .pf-sec {
   display: grid;
@@ -3283,11 +3308,6 @@ a.btn {
 }
 .pf-sec h3 {
   margin: 6px 0 0;
-}
-@media (hover: hover) and (pointer: fine) {
-  .pf-cat:hover {
-    border-color: var(--ac-ln);
-  }
 }
 @keyframes vx-sheet {
   from {
@@ -3315,10 +3335,15 @@ a.btn {
 [data-w="s"] .pf-sheet-a .bp {
   flex: 1;
 }
+[data-w="s"] .dlg.pf-sheet-all {
+  height: calc(100vh - 12px);
+  height: calc(100dvh - 12px);
+}
 /* On a phone the chips run to the sheet's edges. */
 [data-w="s"] .pf-cats {
   margin: 0 -16px;
   padding: 0 16px 2px;
+  scroll-padding: 0 16px;
 }
 
 /* ── overlays ──────────────────────────────────────────────────────────── */

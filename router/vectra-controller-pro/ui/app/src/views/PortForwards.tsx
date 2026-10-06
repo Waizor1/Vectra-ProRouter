@@ -228,8 +228,8 @@ function Sheet(p: { data: Data; at: number[]; save: (rules: PortForwardIn[], o: 
   };
 
   const preset = presetOf(d.preset);
-  const title =
-    step === 'what' ? t('pf.q.what') : step === 'all' ? t('pf.q.all') : step === 'port' ? t('pf.q.port') : step === 'device' ? t('pf.q.device') : titleOf(t, d.preset, d.rules[0].port);
+  // Each step asks its question (pf.q.<step>); the last one names the rule.
+  const title = step === 'done' ? titleOf(t, d.preset, d.rules[0].port) : t(('pf.q.' + step) as Key);
   const dev = deviceOf(data.devices, d.destIp);
   const many = d.rules.length > 1;
   const option = (x: Preset, cls?: string) => (
@@ -298,24 +298,33 @@ function Sheet(p: { data: Data; at: number[]; save: (rules: PortForwardIn[], o: 
         </div>
         <div class="pf-cats" role="group" aria-label={t('pf.q.all')}>
           {[null, ...CATS].map((c) => (
-            <button key={String(c)} type="button" class="pf-cat" aria-pressed={cat === c} onClick={() => setCat(c)}>
+            <button
+              key={String(c)}
+              type="button"
+              class="pf-cat"
+              aria-pressed={cat === c}
+              // A chip half off the edge comes in whole when chosen.
+              onClick={(e) => (setCat(c), e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'nearest' }))}
+            >
               {c ? catName(t, c) : t('pf.cat.all')}
             </button>
           ))}
         </div>
-        {shown.length ? (
-          CATS.filter((c) => shown.some((x) => x.cat === c)).map((c) => (
-            <section key={c} class="pf-sec" aria-label={catName(t, c)}>
-              {cat ? null : <h3 class="k">{catName(t, c)}</h3>}
-              {shown.filter((x) => x.cat === c).map((x) => option(x))}
-            </section>
-          ))
-        ) : (
-          <div class="pf-sec">
-            <p class="hint">{t('pf.none')}</p>
-            {custom()}
-          </div>
-        )}
+        <div class="pf-scroll">
+          {shown.length ? (
+            CATS.filter((c) => shown.some((x) => x.cat === c)).map((c) => (
+              <section key={c} class="pf-sec">
+                {cat ? null : <h3 class="k">{catName(t, c)}</h3>}
+                {shown.filter((x) => x.cat === c).map((x) => option(x))}
+              </section>
+            ))
+          ) : (
+            <div class="pf-sec">
+              <p class="hint">{t('pf.none')}</p>
+              {custom()}
+            </div>
+          )}
+        </div>
       </>
     );
   } else if (step === 'port') {
@@ -419,7 +428,7 @@ function Sheet(p: { data: Data; at: number[]; save: (rules: PortForwardIn[], o: 
 
   return (
     <div class="scrim pf-scrim" onMouseDown={(e) => e.target === e.currentTarget && shut()}>
-      <div ref={ref} class="dlg pf-sheet" role="dialog" aria-modal="true" aria-labelledby="vx-pf-t" onKeyDown={onKey}>
+      <div ref={ref} class={'dlg pf-sheet' + (step === 'all' ? ' pf-sheet-all' : '')} role="dialog" aria-modal="true" aria-labelledby="vx-pf-t" onKeyDown={onKey}>
         <div class="pf-sheet-h">
           {trail.length > 1 ? (
             <button type="button" class="btn bi bs bg" aria-label={t('pf.back')} title={t('pf.back')} disabled={busy} onClick={() => setTrail((tr) => tr.slice(0, -1))}>
