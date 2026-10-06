@@ -18,6 +18,7 @@ import {
   failKey,
   groups,
   ipv4,
+  locate,
   landed,
   overlaps,
   parsePorts,
@@ -154,6 +155,35 @@ describe('the list’s lines', () => {
     expect(groups([])).toEqual([]);
   });
 
+  it('keeps a rule changed on its own (past the VPN, on/off) as a line of its own, so one form never overwrites it', () => {
+    const rules = [
+      rule({ preset: 'rust', port: '28015', proto: 'udp' }),
+      rule({ preset: 'rust', port: '28017', proto: 'udp', direct: true }),
+      rule({ preset: 'rust', port: '28016', proto: 'udp', enabled: false }),
+      rule({ preset: 'rust', port: '28018', proto: 'udp', direct: null, enabled: null }),
+    ];
+    expect(groups(rules)).toEqual([[0, 3], [1], [2]]);
+  });
+
+  it('finds a line again in a changed list by its ids and content, never by its place', () => {
+    const a = rule({ id: 'aaaaaaaa', port: '80' });
+    const b = rule({ id: 'bbbbbbbb', preset: 'rust', port: '28015', proto: 'udp' });
+    const b2 = rule({ id: 'cccccccc', preset: 'rust', port: '28017', proto: 'udp' });
+    const c = rule({ id: 'dddddddd', port: '81' });
+    expect(locate([a, b, b2, c], [b, b2])).toEqual([1, 2]);
+    // A neighbour gone: the line is where it is now.
+    expect(locate([b, b2, c], [b, b2])).toEqual([0, 1]);
+    // The line itself gone, or changed elsewhere: nothing to save over.
+    expect(locate([a, b2, c], [b, b2])).toBeNull();
+    expect(locate([a, { ...b, port: '28099' }, b2, c], [b, b2])).toBeNull();
+    expect(locate([a, { ...b, enabled: false }, b2, c], [b, b2])).toBeNull();
+    // Without ids: an unchanged rule not taken yet.
+    const n = rule({ port: '90' });
+    expect(locate([a, n, n], [n, n])).toEqual([1, 2]);
+    expect(locate([a, n], [n, n])).toBeNull();
+    expect(locate([a], [])).toEqual([]);
+  });
+
   it('switches and removes a line as a whole', () => {
     const rules = [rule({ id: 'aaaaaaaa', preset: 'rust', port: '28015', proto: 'udp' }), rule({ id: 'bbbbbbbb', port: '80' }), rule({ id: 'cccccccc', preset: 'rust', port: '28017', proto: 'udp' })];
     expect(switched(rules, [0, 2], false).map((r) => [r.id, r.enabled])).toEqual([
@@ -194,7 +224,7 @@ describe('a preset as a form', () => {
   });
 
   it('reads a saved line as the form: its own ports, not the catalogue’s', () => {
-    const rules = [rule({ preset: 'rust', port: '28015', proto: 'udp', enabled: false }), rule({ preset: 'rust', port: '28099', proto: 'udp', direct: true })];
+    const rules = [rule({ preset: 'rust', port: '28015', proto: 'udp' }), rule({ preset: 'rust', port: '28099', proto: 'udp' })];
     expect(draftOf(rules, [0, 1])).toEqual({
       preset: 'rust',
       destIp: '192.168.1.50',
@@ -401,7 +431,7 @@ function withList(rules: PortForward[], more: MockOptions = {}) {
     }
     return out;
   };
-  return start({ ...more, call });
+  return { ...start({ ...more, call }), setList: (next: PortForward[]) => void (list = next) };
 }
 
 const RUST = [
@@ -834,6 +864,96 @@ describe('the port forwarding tab', () => {
       expect(app.$('.toast')).toBeNull();
     });
   }
+
+  describe('when the list changes under an open sheet (Connect, LuCI)', () => {
+    const [A, B, C] = [
+      rule({ id: 'aaaaaaaa', port: '8080', deviceName: 'gaming-pc' }),
+      rule({ id: 'bbbbbbbb', port: '8081', deviceName: 'gaming-pc' }),
+      rule({ id: 'cccccccc', port: '8082', deviceName: 'gaming-pc' }),
+    ];
+    const D = rule({ id: 'eeeeeeee', port: '9000', deviceName: 'gaming-pc' });
+    const sentRules = (app: App) => (app.sent('set_port_forwards').at(-1) as { rules: PortForwardIn[] } | undefined)?.rules;
+    const openB = async (app: App) => {
+      await settle();
+      app.all('.pf-main')[1].click();
+      await settle();
+      expect(title(app)).toBe('Port 8081');
+    };
+
+    it('a neighbour gone: Save writes this rule where it is now, and keeps every other', async () => {
+      const app = withList([A, B, C]);
+      await openB(app);
+      app.setList([B, C]);
+      app.$<HTMLButtonElement>('.pf-line-s')!.click();
+      await settle();
+      app.type('#vx-pf-port', '8091');
+      await settle();
+      app.button('Save')!.click();
+      await settle(20);
+      expect(sentRules(app)!.map((r) => [r.id, r.port])).toEqual([
+        ['bbbbbbbb', '8091'],
+        ['cccccccc', '8082'],
+      ]);
+    });
+
+    it('a neighbour gone: Remove takes this rule out and nothing else', async () => {
+      const app = withList([A, B, C]);
+      await openB(app);
+      app.setList([B, C]);
+      app.button('Remove')!.click();
+      await settle();
+      app.confirm();
+      await settle(20);
+      expect(sentRules(app)!.map((r) => r.id)).toEqual(['cccccccc']);
+    });
+
+    it('a rule added meanwhile stays: a new line goes at the end of the list as it is now', async () => {
+      const app = withList([A, B]);
+      await settle();
+      open(app);
+      await settle();
+      tile(app, 'Plex');
+      await settle();
+      device(app, 'gaming-pc');
+      await settle();
+      app.setList([A, B, D]);
+      app.button('Save')!.click();
+      await settle(20);
+      expect(sentRules(app)!.map((r) => r.id ?? r.preset)).toEqual(['aaaaaaaa', 'bbbbbbbb', 'eeeeeeee', 'plex']);
+    });
+
+    for (const [what, next] of [
+      ['the rule itself gone', [A, C]],
+      ['the rule itself changed', [A, { ...B, port: '8085' }, C]],
+      ['the rule switched off elsewhere', [A, { ...B, enabled: false }, C]],
+    ] as const) {
+      it(`${what}: neither Save nor Remove sends anything; it says to open it again`, async () => {
+        const app = withList([A, B, C]);
+        await openB(app);
+        app.setList([...next]);
+        app.button('Save')!.click();
+        await settle(20);
+        expect(app.sent('set_port_forwards')).toEqual([]);
+        expect(app.all('.pf-sheet .note').map((n) => n.textContent)).toEqual(['The list has changed — open it again.']);
+        expect(app.$<HTMLButtonElement>('.pf-sheet-a .bp')!.disabled).toBe(true);
+        expect(app.button('Remove')!.hasAttribute('disabled')).toBe(true);
+        // The list on screen is the router's again.
+        expect(app.all('.pf-r .pf-main .pf-t').map((x) => x.textContent)).toEqual(next.map((r) => 'Port ' + r.port));
+      });
+    }
+
+    it('the rule itself gone while «Remove?» was asked: nothing is sent', async () => {
+      const app = withList([A, B, C]);
+      await openB(app);
+      app.button('Remove')!.click();
+      await settle();
+      app.setList([A, C]);
+      app.confirm();
+      await settle(20);
+      expect(app.sent('set_port_forwards')).toEqual([]);
+      expect(app.$('.pf-sheet .note')?.textContent).toBe('The list has changed — open it again.');
+    });
+  });
 
   it('opens a saved rule on its summary, and removes it after asking', async () => {
     const app = start();

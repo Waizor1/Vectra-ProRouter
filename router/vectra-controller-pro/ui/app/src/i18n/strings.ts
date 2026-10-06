@@ -1343,6 +1343,7 @@ export const S = {
   ],
   'pf.save': ['Сохранить', 'Save', '保存'],
   'pf.del': ['Удалить', 'Remove', '删除'],
+  'pf.stale': ['Список изменился — откройте заново.', 'The list has changed — open it again.', '列表已更改，请重新打开。'],
   'pf.delQ': ['Удалить правило?', 'Remove the rule?', '删除此规则？'],
   'pf.delD': ['{name} перестанет открываться снаружи.', '{name} will no longer open from outside.', '{name} 将无法再从外部访问。'],
   'pf.e.device': ['Выберите устройство.', 'Choose a device.', '请选择设备。'],

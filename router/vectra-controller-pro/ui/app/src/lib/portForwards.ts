@@ -62,15 +62,16 @@ export function ipv4(s: string): number | null {
 
 /**
  * The rules as lines, in the list's order: each line the indexes of its rules.
- * The rules of a preset the UI knows, for one device, are one line (they were
- * made together); any other rule — one's own port, a tag this UI does not
- * know — is a line of its own.
+ * The rules of a preset the UI knows, for one device, alike in «past the VPN»
+ * and on/off, are one line (they were made together; one switch and one form
+ * can stand for them all). Any other rule — one's own port, a tag this UI does
+ * not know, a rule changed on its own in Connect or LuCI — is a line of its own.
  */
 export function groups(rules: PortForward[]): number[][] {
   const out: number[][] = [];
   const at: Record<string, number[]> = {};
   rules.forEach((r, i) => {
-    const key = presetOf(r.preset) ? r.preset + ' ' + r.destIp : '';
+    const key = presetOf(r.preset) ? [r.preset, r.destIp, r.direct === true, r.enabled !== false].join(' ') : '';
     if (key && at[key]) at[key].push(i);
     else out.push((at[key || i] = [i]));
   });
@@ -112,7 +113,7 @@ export const draftOf = (all: PortForward[], at: number[]): Draft => {
     destIp: r.destIp,
     rules: at.map((i) => ({ port: all[i].port, proto: protoOf(all[i].proto) })),
     direct: r.direct === true,
-    enabled: at.some((i) => all[i].enabled !== false),
+    enabled: r.enabled !== false,
   };
 };
 
@@ -184,6 +185,23 @@ export const switched = (all: PortForward[], at: number[], on: boolean): PortFor
   all.map((r, i) => (at.indexOf(i) < 0 ? wireOf(r) : { ...wireOf(r), enabled: on }));
 
 const sig = (r: PortForwardIn) => [r.preset, r.destIp, r.port, r.proto, r.direct, r.enabled].join('\u0001');
+
+/**
+ * Where the rules a form was opened on are in the list now (it is read again
+ * every few seconds; Connect or LuCI may have changed it meanwhile): each by
+ * its id and unchanged (one without an id: an unchanged one not taken yet).
+ * null when any is gone or changed — the form must not be saved over it.
+ */
+export function locate(all: PortForward[], were: PortForward[]): number[] | null {
+  const out: number[] = [];
+  for (const w of were) {
+    const want = sig(wireOf(w));
+    const i = all.findIndex((r, k) => out.indexOf(k) < 0 && (r.id ?? null) === (w.id ?? null) && sig(wireOf(r)) === want);
+    if (i < 0) return null;
+    out.push(i);
+  }
+  return out;
+}
 
 /** The router shows the list that was sent (ids aside: a new rule gets its id there): a `pending` save has landed. */
 export function landed(sent: PortForwardIn[], now: PortForwards | null): boolean {

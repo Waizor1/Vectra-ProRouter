@@ -20,6 +20,7 @@ import {
   FIELD_OF,
   groups,
   landed,
+  locate,
   PF_MAX,
   portLabel,
   switched,
@@ -106,11 +107,17 @@ const Choice = (p: { icon?: IconName; title: ComponentChildren; sub?: ComponentC
  * line opens on the last step, which sums it up; every line there leads back
  * to its step, and Back retraces the way.
  */
-function Sheet(p: { data: Data; at: number[]; save: (rules: PortForwardIn[], o: Partial<RunOpts>) => Promise<boolean>; onClose: () => void }) {
-  const { t, pending, root } = useApp();
-  const { data, at } = p;
-  const editing = at.length > 0;
-  const [d, setD] = useState<Draft>(() => (editing ? draftOf(data.rules, at) : emptyDraft()));
+function Sheet(p: { data: Data; were: PortForward[]; save: (rules: PortForwardIn[], o: Partial<RunOpts>) => Promise<boolean>; onClose: () => void }) {
+  const { t, pending, root, store, confirm } = useApp();
+  // `were`: the line's rules as they were when the sheet opened ([] for a new
+  // one). The list is read again every few seconds and Connect or LuCI may
+  // change it: the line is found again in it by id and content, never by place.
+  const { data, were } = p;
+  const editing = were.length > 0;
+  const latest = useRef(data);
+  latest.current = data;
+  const [d, setD] = useState<Draft>(() => (editing ? draftOf(were, were.map((_, i) => i)) : emptyDraft()));
+  const [stale, setStale] = useState(false);
   // The way here: Back steps along it; going to a step on it again cuts it there.
   const [trail, setTrail] = useState<Step[]>([editing ? 'done' : 'what']);
   const [manual, setManual] = useState(() => editing && !deviceOf(data.devices, d.destIp));
@@ -175,7 +182,8 @@ function Sheet(p: { data: Data; at: number[]; save: (rules: PortForwardIn[], o: 
     else shut();
   };
 
-  const errors = checkDraft(d, data.rules, at);
+  const at = locate(data.rules, were);
+  const errors = checkDraft(d, data.rules, at ?? []);
   const known = refusal ? failKey(refusal.code) : null;
   const refusalText = refusal ? (known ? t(known) : actionText(t, refusal.code, false, false)) : '';
   const refusalAt = refusal ? FIELD_OF[refusal.code] : undefined;
@@ -207,24 +215,33 @@ function Sheet(p: { data: Data; at: number[]; save: (rules: PortForwardIn[], o: 
     setTried(true);
     if (!errors.destIp) go('done');
   };
+  /**
+   * The line in the list as the router has it right now (read again first);
+   * null — and nothing is sent — when it changed since the sheet opened.
+   */
+  const now = async () => {
+    await store.fetch('port_forwards', 0);
+    const all = (store.get('port_forwards').data ?? latest.current).rules;
+    const where = locate(all, were);
+    if (!where) setStale(true);
+    return where && { all, where };
+  };
   const submit = async () => {
     setTried(true);
     setRefusal(null);
     if (errors.port.some(Boolean)) return setPortOpen(true);
     if (errors.destIp) return go('device');
     if (!clean(errors)) return;
-    if (await p.save(withDraft(data.rules, at, d), { key: 'pf-sheet', onFail })) p.onClose();
+    // A new line goes at the end of the list as it is now.
+    const x = await now();
+    if (x && (await p.save(withDraft(x.all, x.where, d), { key: 'pf-sheet', onFail }))) p.onClose();
   };
   const remove = async () => {
-    const first = data.rules[at[0]];
-    const name = titleOf(t, first.preset, first.port);
-    const ok = await p.save(without(data.rules, at), {
-      key: 'pf-sheet-del',
-      quiet: true,
-      onFail,
-      confirm: { title: t('pf.delQ'), body: t('pf.delD', { name }), ok: t('pf.del') },
-    });
-    if (ok) p.onClose();
+    const name = titleOf(t, were[0].preset, were[0].port);
+    if (!(await confirm({ title: t('pf.delQ'), body: t('pf.delD', { name }), ok: t('pf.del') }))) return;
+    // The list may have changed while the question was open: what goes back is the list after it.
+    const x = await now();
+    if (x && (await p.save(without(x.all, x.where), { key: 'pf-sheet-del', quiet: true, onFail }))) p.onClose();
   };
 
   const preset = presetOf(d.preset);
@@ -411,14 +428,14 @@ function Sheet(p: { data: Data; at: number[]; save: (rules: PortForwardIn[], o: 
             </button>
           ))}
         </div>
-        {refusal && !refusalAt ? <Note tone="fail">{refusalText}</Note> : null}
+        {stale ? <Note tone="warn">{t('pf.stale')}</Note> : refusal && !refusalAt ? <Note tone="fail">{refusalText}</Note> : null}
         <div class="pf-sheet-a">
           {editing ? (
-            <Button kind="g" class="pf-rm" busy={pending === 'pf-sheet-del'} disabled={!!pending} onClick={() => void remove()}>
+            <Button kind="g" class="pf-rm" busy={pending === 'pf-sheet-del'} disabled={!!pending || stale} onClick={() => void remove()}>
               {t('pf.del')}
             </Button>
           ) : null}
-          <Button kind="p" busy={pending === 'pf-sheet'} disabled={!!pending || errors.proto} onClick={() => void submit()}>
+          <Button kind="p" busy={pending === 'pf-sheet'} disabled={!!pending || errors.proto || stale} onClick={() => void submit()}>
             {t('pf.save')}
           </Button>
         </div>
@@ -454,7 +471,8 @@ export function PortForwards() {
   const { t, run, store, pending } = useApp();
   const res = useRes('port_forwards');
   // The line being edited, by its rules' places; [] for a new one.
-  const [edit, setEdit] = useState<number[] | null>(null);
+  // The line being edited: its rules as they were when it opened; [] for a new one.
+  const [edit, setEdit] = useState<PortForward[] | null>(null);
   const data = res.data;
 
   useEffect(() => void store.fetch('port_forwards', 5000), [store]);
@@ -498,7 +516,7 @@ export function PortForwards() {
                     rules={rules}
                     devices={data.devices}
                     onToggle={() => void save(switched(data.rules, at, !rules.some((r) => r.enabled !== false)), { key: 'pf-' + at[0], quiet: true })}
-                    onOpen={() => setEdit(at)}
+                    onOpen={() => setEdit(rules)}
                   />
                 );
               })}
@@ -516,7 +534,7 @@ export function PortForwards() {
           </div>
         )}
       </section>
-      {edit && edit.every((i) => i < data.rules.length) ? <Sheet data={data} at={edit} save={save} onClose={() => setEdit(null)} /> : null}
+      {edit ? <Sheet data={data} were={edit} save={save} onClose={() => setEdit(null)} /> : null}
     </div>
   );
 }
