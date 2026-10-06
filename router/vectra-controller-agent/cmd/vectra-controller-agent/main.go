@@ -280,9 +280,14 @@ func runOnce(
 	health.AwaitingOperator = persisted.ControlPlaneRecovery.AwaitingOperator
 	// The skip is advisory: a paced check-in still goes out so recovery can
 	// never hide the router from the panel (see checkin_pacing.go).
+	// Not inside a settle/warmup window, nor in the tick that just switched
+	// PassWall (a warmup starts now): a job delivered by that check-in could
+	// restart PassWall under the measurement the phase is waiting for.
 	pacedRecoveryCheckIn := recoveryOutcome.SkipControlPlane
 	if recoveryOutcome.SkipControlPlane &&
-		!controlPlaneCheckInPacer.dueDuringRecovery(time.Now().UTC(), persisted.ControlPlaneRecovery.Phase) {
+		(recoveryOutcome.SettleWindow ||
+			recoveryOutcome.InventoryChanged ||
+			!controlPlaneCheckInPacer.dueDuringRecovery(time.Now().UTC(), persisted.ControlPlaneRecovery.Phase)) {
 		runtimeStatus.LastError = ""
 		if err := state.SaveRuntimeStatus(cfg.StatusPath, runtimeStatus); err != nil {
 			return fmt.Errorf("persist runtime status: %w", err)
@@ -291,6 +296,18 @@ func runOnce(
 			return err
 		}
 		return nil
+	}
+	if pacedRecoveryCheckIn {
+		// Commit what recovery just decided before the network call: a check-in
+		// that hangs until the watchdog restarts us must not lose the phase.
+		runtimeStatus.LastError = ""
+		if err := state.SaveRuntimeStatus(cfg.StatusPath, runtimeStatus); err != nil {
+			return fmt.Errorf("persist runtime status: %w", err)
+		}
+		if err := persistStateIfChanged(cfg.StatePath, persistedBefore, persisted); err != nil {
+			return err
+		}
+		persistedBefore = *persisted
 	}
 
 	importSource := "check_in"

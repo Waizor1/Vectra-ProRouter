@@ -317,3 +317,61 @@ func TestProbeProxyPathIsInconclusiveWhileTheWatchdogHoldsTheURLTestLock(t *test
 		t.Fatalf("test.sh ran under the watchdog's lock: %#v", backend.runCommands)
 	}
 }
+
+// Paced check-ins stay out of settle/warmup windows: a job they deliver could
+// restart PassWall under the measurement the phase is waiting for. Outside the
+// window the router is visible again.
+func TestRecoverySettleWindowsAreFlagged(t *testing.T) {
+	panelURL := deadPanelForeignBlocked(t)
+	now := time.Now()
+	cfg := baseControlPlaneRecoveryConfig(panelURL)
+
+	cases := []struct {
+		name       string
+		recovery   recovery.State
+		rescue     rescue.State
+		enabled    bool
+		wantWindow bool
+	}{
+		{
+			name:       "direct_settle inside DirectSettle",
+			recovery:   recovery.State{Phase: recovery.PhaseDirectSettle, LastAutoRebootAt: recovery.FormatTime(now.Add(-time.Hour))},
+			rescue:     rescue.State{Mode: rescue.ModeDirect, LastTransitionAt: now.Add(-10 * time.Second)},
+			wantWindow: true,
+		},
+		{
+			name:       "passwall_retry_wait inside PasswallWarmup",
+			recovery:   recovery.State{Phase: recovery.PhasePasswallRetryWait, LastPasswallRetryAt: recovery.FormatTime(now.Add(-20 * time.Second))},
+			rescue:     rescue.State{Mode: rescue.ModeProxy},
+			enabled:    true,
+			wantWindow: true,
+		},
+		{
+			name:       "post_reboot_check inside PostRebootSettle",
+			recovery:   recovery.State{Phase: recovery.PhasePostRebootCheck, LastAutoRebootAt: recovery.FormatTime(now.Add(-time.Minute))},
+			rescue:     rescue.State{Mode: rescue.ModeDirect},
+			wantWindow: true,
+		},
+		{
+			name:       "direct_settle after DirectSettle, no way out",
+			recovery:   recovery.State{Phase: recovery.PhaseDirectSettle, LastAutoRebootAt: recovery.FormatTime(now.Add(-time.Hour)), LastPasswallRetryAt: recovery.FormatTime(now.Add(-time.Minute))},
+			rescue:     rescue.State{Mode: rescue.ModeDirect, LastTransitionAt: now.Add(-10 * time.Minute)},
+			wantWindow: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetControlPlaneProbeCache()
+			persisted := state.PersistedState{ControlPlaneRecovery: tc.recovery}
+			rescueState := tc.rescue
+			inventory := controlplane.RouterInventory{PasswallEnabled: tc.enabled}
+			outcome := advanceOnce(t, cfg, &fakeRescueBackend{}, &persisted, &rescueState, &inventory)
+			if outcome.SettleWindow != tc.wantWindow {
+				t.Fatalf("SettleWindow = %v, want %v (phase now %q)", outcome.SettleWindow, tc.wantWindow, persisted.ControlPlaneRecovery.Phase)
+			}
+			if tc.wantWindow && !outcome.SkipControlPlane {
+				t.Fatal("a settle window must also skip control-plane work")
+			}
+		})
+	}
+}

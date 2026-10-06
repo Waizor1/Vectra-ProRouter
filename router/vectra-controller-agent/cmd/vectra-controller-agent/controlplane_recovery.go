@@ -19,6 +19,10 @@ import (
 type controlPlaneRecoveryOutcome struct {
 	SkipControlPlane bool
 	InventoryChanged bool
+	// SettleWindow: the phase is waiting out its settle/warmup clock and the
+	// measurement at its end must not be disturbed -- no check-in, so no job
+	// can restart PassWall in the middle of it. Bounded by the phase timers.
+	SettleWindow bool
 }
 
 type probeTarget struct {
@@ -275,6 +279,7 @@ func advanceControlPlaneRecovery(
 	case recovery.PhaseDirectSettle:
 		outcome.SkipControlPlane = true
 		if now.Sub(rescueState.LastTransitionAt) < cfg.Rescue.DirectSettle {
+			outcome.SettleWindow = true
 			break
 		}
 		if panelProbe.Reachable {
@@ -359,6 +364,7 @@ func advanceControlPlaneRecovery(
 	case recovery.PhasePostRebootCheck:
 		outcome.SkipControlPlane = true
 		if now.Sub(recovery.ParseTime(recoveryState.LastAutoRebootAt)) < cfg.Rescue.PostRebootSettle {
+			outcome.SettleWindow = true
 			break
 		}
 		if inventory.RUReachability != nil && inventory.RUReachability.Status == recovery.StatusReachable {
@@ -430,6 +436,7 @@ func advanceControlPlaneRecovery(
 	case recovery.PhasePasswallRetryWait:
 		outcome.SkipControlPlane = true
 		if now.Sub(recovery.ParseTime(recoveryState.LastPasswallRetryAt)) < cfg.Rescue.PasswallWarmup {
+			outcome.SettleWindow = true
 			break
 		}
 		if inventory.ForeignReachability != nil &&
