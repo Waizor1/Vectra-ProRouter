@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -94,10 +95,22 @@ const (
 // decodePortForwards reads {"rules": [...]}: the whole list, always — a list
 // left out is refused rather than read as «remove every forward», as for
 // set_rules. Unknown fields are refused too: a misspelt «direct» must not
-// silently become false.
+// silently become false. So is a rule without destIp, port, proto, direct or
+// enabled (or with null there): read as false, a left-out «enabled» would
+// switch the forward off in silence. Vectra Connect's parser holds a rule to
+// the same keys (connectactions.portForwardList).
 func decodePortForwards(params []byte) ([]portfwd.Rule, string, string) {
+	type wireRule struct {
+		ID      string  `json:"id"`
+		Preset  *string `json:"preset"`
+		DestIP  *string `json:"destIp"`
+		Port    *string `json:"port"`
+		Proto   *string `json:"proto"`
+		Direct  *bool   `json:"direct"`
+		Enabled *bool   `json:"enabled"`
+	}
 	var p struct {
-		Rules *[]portfwd.Rule `json:"rules"`
+		Rules *[]wireRule `json:"rules"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(params))
 	dec.DisallowUnknownFields()
@@ -107,5 +120,13 @@ func decodePortForwards(params []byte) ([]portfwd.Rule, string, string) {
 	if p.Rules == nil {
 		return nil, "invalid_params", "rules is required; [] removes every forward"
 	}
-	return *p.Rules, "", ""
+	rules := make([]portfwd.Rule, 0, len(*p.Rules))
+	for i, w := range *p.Rules {
+		if w.DestIP == nil || w.Port == nil || w.Proto == nil || w.Direct == nil || w.Enabled == nil {
+			return nil, "invalid_params", fmt.Sprintf("rules[%d]: destIp, port, proto, direct and enabled are required", i)
+		}
+		rules = append(rules, portfwd.Rule{ID: w.ID, Preset: w.Preset, DestIP: *w.DestIP, Port: *w.Port,
+			Proto: *w.Proto, Direct: *w.Direct, Enabled: *w.Enabled})
+	}
+	return rules, "", ""
 }

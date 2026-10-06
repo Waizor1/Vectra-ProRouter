@@ -169,6 +169,14 @@ func TestSetPortForwardsAppliesAndAsksTheDaemonForTheSet(t *testing.T) {
 		{`{"rules":[{"destIp":"192.168.1.1","port":"80","proto":"tcp","direct":false,"enabled":true}]}`, "dest_is_router"},
 		{`{"rules":[{"destIp":"192.168.1.50","port":"5000","proto":"both","direct":false,"enabled":true}]}`, "port_conflict"},
 		{`{"rules":[]} {}`, "invalid_params"},
+		// Every field but id and preset is required, as in Vectra Connect:
+		// a left-out «enabled» or «direct» must not be read as false.
+		{`{"rules":[{"destIp":"192.168.1.50","port":"80","proto":"tcp","direct":false}]}`, "invalid_params"},
+		{`{"rules":[{"destIp":"192.168.1.50","port":"80","proto":"tcp","enabled":true}]}`, "invalid_params"},
+		{`{"rules":[{"destIp":"192.168.1.50","port":"80","proto":"tcp","direct":null,"enabled":true}]}`, "invalid_params"},
+		{`{"rules":[{"port":"80","proto":"tcp","direct":false,"enabled":true}]}`, "invalid_params"},
+		{`{"rules":[{"destIp":"192.168.1.50","proto":"tcp","direct":false,"enabled":true}]}`, "invalid_params"},
+		{`{"rules":[{"destIp":"192.168.1.50","port":"80","direct":false,"enabled":true}]}`, "invalid_params"},
 		{`{"rules":[{"preset":"Mine Craft","destIp":"192.168.1.50","port":"80","proto":"tcp","direct":false,"enabled":true}]}`, "invalid_params"},
 		{`{"rules":[{"preset":"` + strings.Repeat("a", 25) + `","destIp":"192.168.1.50","port":"80","proto":"tcp","direct":false,"enabled":true}]}`, "invalid_params"},
 	} {
