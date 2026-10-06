@@ -23,11 +23,13 @@ var URLTestLockDir = "/var/run/vectra-url-test.lock"
 
 const (
 	URLTestLockStale = 2 * time.Minute
-	// Longer than one watchdog probe (30 s timeout) so the agent waits out a
-	// watchdog probe instead of giving up on it.
-	urlTestLockWait = 45 * time.Second
-	urlTestLockPoll = 500 * time.Millisecond
+	urlTestLockPoll  = 500 * time.Millisecond
 )
+
+// URLTestLockWait is longer than one watchdog probe (30 s timeout) so the
+// agent waits out a watchdog probe instead of giving up on it. A variable
+// only so tests need not wait 45 s.
+var URLTestLockWait = 45 * time.Second
 
 // ErrURLTestBusy: another url_test_node held the lock for the whole wait.
 // Callers must treat the node as unjudged, never as dead.
@@ -49,7 +51,7 @@ func RunURLTestNode(ctx context.Context, backend UCIBackend, nodeID string) (Com
 }
 
 func acquireURLTestLock(ctx context.Context, now func() time.Time) (func(), error) {
-	deadline := now().Add(urlTestLockWait)
+	deadline := now().Add(URLTestLockWait)
 	ownerPath := filepath.Join(URLTestLockDir, "owner")
 	for {
 		token := fmt.Sprintf("%d %d", now().Unix(), os.Getpid())

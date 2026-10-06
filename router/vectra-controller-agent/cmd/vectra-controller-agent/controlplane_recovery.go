@@ -95,21 +95,23 @@ const parkedProxyProofRetryInterval = 15 * time.Minute
 // reused for one rescue Cooldown. Keyed by the selected node so a rebind is
 // measured afresh.
 var proxyNodeVerdictCache = struct {
-	mu     sync.Mutex
-	nodeID string
-	alive  bool
-	at     time.Time
+	mu      sync.Mutex
+	nodeID  string
+	verdict proxyNodeVerdict
+	at      time.Time
 }{}
 
-func cachedProxyNodeReachable(
+// cachedProxyNodeVerdict: an unjudged verdict is never cached -- it says
+// nothing about the node, so the next poll measures again.
+func cachedProxyNodeVerdict(
 	ctx context.Context,
 	backend passwall.UCIBackend,
 	policy rescue.Policy,
 	inventory *controlplane.RouterInventory,
 	now time.Time,
-) bool {
+) proxyNodeVerdict {
 	if inventory == nil {
-		return false
+		return proxyNodeNotAlive
 	}
 	policy.Normalize()
 
@@ -118,27 +120,30 @@ func cachedProxyNodeReachable(
 		!proxyNodeVerdictCache.at.IsZero() &&
 		!now.Before(proxyNodeVerdictCache.at) &&
 		now.Sub(proxyNodeVerdictCache.at) < policy.Cooldown {
-		alive := proxyNodeVerdictCache.alive
+		verdict := proxyNodeVerdictCache.verdict
 		proxyNodeVerdictCache.mu.Unlock()
-		return alive
+		return verdict
 	}
 	proxyNodeVerdictCache.mu.Unlock()
 
-	alive := proxyNodeReachableForRecovery(ctx, backend, inventory)
+	verdict := proxyNodeVerdictForRecovery(ctx, backend, inventory)
+	if verdict == proxyNodeUnjudged {
+		return verdict
+	}
 
 	proxyNodeVerdictCache.mu.Lock()
 	proxyNodeVerdictCache.nodeID = inventory.SelectedNodeID
-	proxyNodeVerdictCache.alive = alive
+	proxyNodeVerdictCache.verdict = verdict
 	proxyNodeVerdictCache.at = now
 	proxyNodeVerdictCache.mu.Unlock()
-	return alive
+	return verdict
 }
 
 func resetProxyNodeVerdictCache() {
 	proxyNodeVerdictCache.mu.Lock()
 	defer proxyNodeVerdictCache.mu.Unlock()
 	proxyNodeVerdictCache.nodeID = ""
-	proxyNodeVerdictCache.alive = false
+	proxyNodeVerdictCache.verdict = proxyNodeNotAlive
 	proxyNodeVerdictCache.at = time.Time{}
 }
 
@@ -321,7 +326,7 @@ func advanceControlPlaneRecovery(
 				outcome.SkipControlPlane = panelProbe == nil || !panelProbe.Reachable
 				break
 			}
-			if cachedProxyNodeReachable(ctx, backend, cfg.Rescue, inventory, now) {
+			if cachedProxyNodeVerdict(ctx, backend, cfg.Rescue, inventory, now) == proxyNodeAlive {
 				if err := resumeProxyMode(ctx, backend, rescueState, persisted, runtimeStatus, now); err != nil {
 					return outcome, err
 				}
@@ -399,7 +404,8 @@ func advanceControlPlaneRecovery(
 				outcome.SkipControlPlane = false
 				break
 			}
-			if proxyNodeReachableForRecovery(ctx, backend, inventory) {
+			switch proxyNodeVerdictForRecovery(ctx, backend, inventory) {
+			case proxyNodeAlive:
 				setControlPlaneRecoveryPhase(
 					recoveryState,
 					runtimeStatus,
@@ -408,7 +414,10 @@ func advanceControlPlaneRecovery(
 					false,
 				)
 				outcome.SkipControlPlane = false
-				break
+				return finishControlPlaneRecovery(outcome, recoveryState, runtimeStatus), nil
+			case proxyNodeUnjudged:
+				// The watchdog is probing the node: judge again next poll.
+				return finishControlPlaneRecovery(outcome, recoveryState, runtimeStatus), nil
 			}
 		}
 		if inventory.PasswallEnabled {
@@ -451,7 +460,8 @@ func advanceControlPlaneRecovery(
 			outcome.SkipControlPlane = false
 			break
 		}
-		if proxyNodeReachableForRecovery(ctx, backend, inventory) {
+		verdict := proxyNodeVerdictForRecovery(ctx, backend, inventory)
+		if verdict == proxyNodeAlive {
 			setControlPlaneRecoveryPhase(
 				recoveryState,
 				runtimeStatus,
@@ -460,6 +470,10 @@ func advanceControlPlaneRecovery(
 				false,
 			)
 			outcome.SkipControlPlane = false
+			break
+		}
+		if verdict == proxyNodeUnjudged {
+			// The watchdog is probing the node: judge again next poll.
 			break
 		}
 		if inventory.PasswallEnabled {
@@ -499,7 +513,7 @@ func advanceControlPlaneRecovery(
 		// 2026-08-26, 33 hours with every bound node answering 204).
 		//
 		// A retry on positive proof that the node answers — measurable with the
-		// proxy stopped, see proxyNodeReachableForRecovery — is allowed every
+		// proxy stopped, see proxyNodeVerdictForRecovery — is allowed every
 		// parkedProxyProofRetryInterval whatever the panel's state: the proof
 		// is local, so the way back to proxy must not wait for the panel. With
 		// a dead panel the old blind retry also stands behind the
@@ -518,7 +532,7 @@ func advanceControlPlaneRecovery(
 		}
 		blindRetryDue := (panelProbe == nil || !panelProbe.Reachable) &&
 			operatorAttentionRetryReady(now, cfg.Rescue, recoveryState)
-		if blindRetryDue || cachedProxyNodeReachable(ctx, backend, cfg.Rescue, inventory, now) {
+		if blindRetryDue || cachedProxyNodeVerdict(ctx, backend, cfg.Rescue, inventory, now) == proxyNodeAlive {
 			if err := resumeProxyMode(ctx, backend, rescueState, persisted, runtimeStatus, now); err != nil {
 				return outcome, err
 			}
@@ -535,10 +549,18 @@ func advanceControlPlaneRecovery(
 		}
 	}
 
+	return finishControlPlaneRecovery(outcome, recoveryState, runtimeStatus), nil
+}
+
+func finishControlPlaneRecovery(
+	outcome controlPlaneRecoveryOutcome,
+	recoveryState *recovery.State,
+	runtimeStatus *state.RuntimeStatus,
+) controlPlaneRecoveryOutcome {
 	runtimeStatus.RecoveryPhase = string(recoveryState.Phase)
 	runtimeStatus.LastRecoveryAction = recoveryState.LastActionReason
 	runtimeStatus.AwaitingOperator = recoveryState.AwaitingOperator
-	return outcome, nil
+	return outcome
 }
 
 func startControlPlaneRecovery(
@@ -554,11 +576,17 @@ func startControlPlaneRecovery(
 ) (controlPlaneRecoveryOutcome, error) {
 	outcome := controlPlaneRecoveryOutcome{SkipControlPlane: true}
 
-	switch {
-	case inventory.RUReachability != nil &&
+	internetHealthy := inventory.RUReachability != nil &&
 		inventory.RUReachability.Status == recovery.StatusReachable &&
 		(inventory.ForeignReachability == nil ||
-			inventory.ForeignReachability.Status == recovery.StatusHealthy):
+			inventory.ForeignReachability.Status == recovery.StatusHealthy)
+	nodeVerdict := proxyNodeNotAlive
+	if !internetHealthy && shouldTriggerDirectFallback(inventory) && inventory.PasswallEnabled {
+		nodeVerdict = cachedProxyNodeVerdict(ctx, backend, cfg.Rescue, inventory, now)
+	}
+
+	switch {
+	case internetHealthy:
 		restartedThisOutage := restartedDuringCurrentOutage(recoveryState)
 		setControlPlaneRecoveryPhase(
 			recoveryState,
@@ -577,13 +605,14 @@ func startControlPlaneRecovery(
 		return outcome, nil
 	case shouldTriggerDirectFallback(inventory) &&
 		inventory.PasswallEnabled &&
-		cachedProxyNodeReachable(ctx, backend, cfg.Rescue, inventory, now):
+		nodeVerdict != proxyNodeNotAlive:
 		// The panel is unreachable and some foreign probes failed, but the node
-		// itself answers url_test_node: the proxy is not dead. A panel outage
-		// alone must never switch the VPN off — that would take the whole fleet
-		// offline at once whenever the VPS, its IP or its certificate has a bad
-		// day. Local rescue keeps guarding the proxy path on its own evidence.
-		log.Printf("control plane unreachable, foreign probes %s, but the proxy node answers; keeping proxy mode", probeStatus(inventory.ForeignReachability))
+		// itself answers url_test_node (or could not be judged this poll): the
+		// proxy is not proven dead. A panel outage alone must never switch the
+		// VPN off — that would take the whole fleet offline at once whenever
+		// the VPS, its IP or its certificate has a bad day. Local rescue keeps
+		// guarding the proxy path on its own evidence.
+		log.Printf("control plane unreachable, foreign probes %s, but the proxy node is %s; keeping proxy mode", probeStatus(inventory.ForeignReachability), nodeVerdict)
 		recoveryState.Phase = recovery.PhaseMonitoring
 		runtimeStatus.RecoveryPhase = string(recoveryState.Phase)
 		return outcome, nil

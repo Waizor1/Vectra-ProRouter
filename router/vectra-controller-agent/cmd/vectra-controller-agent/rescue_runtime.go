@@ -409,21 +409,62 @@ var shuntProxyProbeOptions = []string{
 // waited for a human. It also silently blinded PhasePostRebootCheck: that path
 // calls resumeProxyMode and then probes in the same pass, while
 // inventory.PasswallEnabled still holds the pre-resume snapshot value of false.
-func proxyNodeReachableForRecovery(
+//
+// Three answers, not two: a probe that could not run because another
+// url_test_node held the shared lock (the cron watchdog) is no evidence
+// either way, and recovery must take no action on it -- mapping it to "not
+// alive" would send a live proxy to direct.
+type proxyNodeVerdict int
+
+const (
+	// proxyNodeNotAlive: probed and no candidate answered, or nothing
+	// concrete to probe (the pre-r46 "false").
+	proxyNodeNotAlive proxyNodeVerdict = iota
+	proxyNodeAlive
+	// proxyNodeUnjudged: no candidate answered and at least one could not be
+	// probed because the url_test lock was busy.
+	proxyNodeUnjudged
+)
+
+func (v proxyNodeVerdict) String() string {
+	switch v {
+	case proxyNodeAlive:
+		return "alive"
+	case proxyNodeUnjudged:
+		return "unjudged"
+	default:
+		return "not alive"
+	}
+}
+
+func proxyNodeVerdictForRecovery(
 	ctx context.Context,
 	backend passwall.UCIBackend,
 	inventory *controlplane.RouterInventory,
-) bool {
+) proxyNodeVerdict {
 	if inventory == nil {
-		return false
+		return proxyNodeNotAlive
 	}
 
-	if reachable, _, _ := probeProxyPath(ctx, backend, inventory.SelectedNodeID); reachable {
-		return true
+	reachable, _, result := probeProxyPath(ctx, backend, inventory.SelectedNodeID)
+	if reachable {
+		return proxyNodeAlive
 	}
+	busy := urlTestBusy(result)
 
-	reachable, _ := probeSelectedShuntProxyOptions(ctx, backend, inventory.SelectedNodeID)
-	return reachable
+	shuntReachable, _, shuntBusy := probeSelectedShuntProxyOptions(ctx, backend, inventory.SelectedNodeID)
+	if shuntReachable {
+		return proxyNodeAlive
+	}
+	if busy || shuntBusy {
+		return proxyNodeUnjudged
+	}
+	return proxyNodeNotAlive
+}
+
+// urlTestBusy: the probe never ran because the shared url_test lock was held.
+func urlTestBusy(result passwall.CommandResult) bool {
+	return strings.Contains(result.Stderr, passwall.ErrURLTestBusy.Error())
 }
 
 func probeProxyPath(
@@ -464,23 +505,26 @@ func probeProxyPath(
 		output == "204", true, result
 }
 
+// Returns reachable, conclusive, and whether any slot could not be probed
+// because the shared url_test lock was busy.
 func probeSelectedShuntProxyOptions(
 	ctx context.Context,
 	backend passwall.UCIBackend,
 	selectedNodeID string,
-) (bool, bool) {
+) (bool, bool, bool) {
 	selectedNodeID = strings.TrimSpace(selectedNodeID)
 	if selectedNodeID == "" {
-		return false, false
+		return false, false, false
 	}
 
 	protocol, ok := selectedNodeProtocol(ctx, backend, selectedNodeID)
 	if !ok || protocol != "_shunt" {
-		return false, false
+		return false, false, false
 	}
 
 	tested := map[string]struct{}{}
 	conclusive := false
+	busy := false
 	for _, option := range shuntProxyProbeOptions {
 		nodeID, ok := getUCIValue(
 			ctx,
@@ -504,13 +548,18 @@ func probeSelectedShuntProxyOptions(
 			continue
 		}
 
-		conclusive = true
-		if reachable, _, _ := probeProxyPath(ctx, backend, nodeID); reachable {
-			return true, true
+		reachable, slotConclusive, result := probeProxyPath(ctx, backend, nodeID)
+		if reachable {
+			return true, true, busy
 		}
+		if !slotConclusive && urlTestBusy(result) {
+			busy = true
+			continue
+		}
+		conclusive = true
 	}
 
-	return false, conclusive
+	return false, conclusive, busy
 }
 
 func resolveProxyProbeNode(

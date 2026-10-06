@@ -271,21 +271,21 @@ func TestCachedProxyNodeVerdictProbesOncePerCooldown(t *testing.T) {
 	inventory := controlplane.RouterInventory{SelectedNodeID: "myshunt"}
 	now := time.Now()
 
-	if !cachedProxyNodeReachable(context.Background(), backend, policy, &inventory, now) {
-		t.Fatal("expected the node to answer")
+	if got := cachedProxyNodeVerdict(context.Background(), backend, policy, &inventory, now); got != proxyNodeAlive {
+		t.Fatalf("verdict = %s, want alive", got)
 	}
-	if !cachedProxyNodeReachable(context.Background(), backend, policy, &inventory, now.Add(time.Minute)) {
-		t.Fatal("expected the cached verdict")
+	if got := cachedProxyNodeVerdict(context.Background(), backend, policy, &inventory, now.Add(time.Minute)); got != proxyNodeAlive {
+		t.Fatalf("cached verdict = %s, want alive", got)
 	}
 	if got := countCommand(backend.runCommands, worldNodeProbe); got != 1 {
 		t.Fatalf("url_test_node ran %d times inside one cooldown, want 1", got)
 	}
-	cachedProxyNodeReachable(context.Background(), backend, policy, &inventory, now.Add(6*time.Minute))
+	cachedProxyNodeVerdict(context.Background(), backend, policy, &inventory, now.Add(6*time.Minute))
 	if got := countCommand(backend.runCommands, worldNodeProbe); got != 2 {
 		t.Fatalf("url_test_node ran %d times after the cooldown, want 2", got)
 	}
 	rebound := controlplane.RouterInventory{SelectedNodeID: "other"}
-	cachedProxyNodeReachable(context.Background(), backend, policy, &rebound, now.Add(7*time.Minute))
+	cachedProxyNodeVerdict(context.Background(), backend, policy, &rebound, now.Add(7*time.Minute))
 	if cached := proxyNodeVerdictCache.nodeID; cached != "other" {
 		t.Fatalf("a rebind must be measured afresh, cache still keyed by %q", cached)
 	}
@@ -373,5 +373,97 @@ func TestRecoverySettleWindowsAreFlagged(t *testing.T) {
 				t.Fatal("a settle window must also skip control-plane work")
 			}
 		})
+	}
+}
+
+// holdURLTestLock simulates the cron watchdog probing: the shared url_test
+// lock is held for the whole test, and the agent gives up waiting quickly.
+func holdURLTestLock(t *testing.T) func() {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "vectra-url-test.lock")
+	originalDir, originalWait := passwall.URLTestLockDir, passwall.URLTestLockWait
+	passwall.URLTestLockDir = dir
+	passwall.URLTestLockWait = 200 * time.Millisecond
+	t.Cleanup(func() {
+		passwall.URLTestLockDir = originalDir
+		passwall.URLTestLockWait = originalWait
+	})
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "owner"), []byte(fmt.Sprintf("%d 4242", time.Now().Unix())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return func() { _ = os.RemoveAll(dir) }
+}
+
+// A busy lock is no evidence: the verdict is unjudged and is not cached, so
+// the next poll measures again as soon as the watchdog is done.
+func TestBusyURLTestLockIsUnjudgedAndNeverCached(t *testing.T) {
+	resetProxyNodeVerdictCache()
+	t.Cleanup(resetProxyNodeVerdictCache)
+	release := holdURLTestLock(t)
+	backend := shuntBackend("204:0.30")
+	policy := rescue.Policy{Cooldown: 5 * time.Minute}
+	inventory := controlplane.RouterInventory{SelectedNodeID: "myshunt"}
+	now := time.Now()
+
+	if got := cachedProxyNodeVerdict(context.Background(), backend, policy, &inventory, now); got != proxyNodeUnjudged {
+		t.Fatalf("verdict under a busy lock = %s, want unjudged", got)
+	}
+	release()
+	if got := cachedProxyNodeVerdict(context.Background(), backend, policy, &inventory, now.Add(time.Second)); got != proxyNodeAlive {
+		t.Fatalf("verdict after the lock is free = %s, want alive (unjudged must not be cached)", got)
+	}
+}
+
+// Panel outage + foreign blocked + the watchdog probing the node: the agent
+// must not take the unjudged node for a dead one and cut a live proxy.
+func TestPanelOutageWithUnjudgedNodeKeepsProxyMode(t *testing.T) {
+	panelURL := deadPanelForeignBlocked(t)
+	holdURLTestLock(t)
+	backend := shuntBackend("204:0.31")
+	now := time.Now()
+	persisted := state.PersistedState{ControlPlaneRecovery: recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(now.Add(-2 * time.Hour)),
+		OutageStartedAt:              recovery.FormatTime(now.Add(-70 * time.Minute)),
+		Phase:                        recovery.PhaseMonitoring,
+	}}
+	rescueState := rescue.State{Mode: rescue.ModeProxy}
+	inventory := controlplane.RouterInventory{PasswallEnabled: true, SelectedNodeID: "myshunt"}
+
+	advanceOnce(t, baseControlPlaneRecoveryConfig(panelURL), backend, &persisted, &rescueState, &inventory)
+
+	if containsBatchLine(backend.batchCommands, "set passwall2.@global[0].enabled='0'") {
+		t.Fatalf("an unjudged node must not send a live proxy to direct, got %#v", backend.batchCommands)
+	}
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhaseMonitoring; got != want {
+		t.Fatalf("recovery phase = %q, want %q", got, want)
+	}
+}
+
+// The agent's own retry judgment waits for a judgeable node rather than
+// re-disabling PassWall on a busy lock.
+func TestPasswallRetryWaitWaitsOutAnUnjudgedNode(t *testing.T) {
+	panelURL := deadPanelForeignBlocked(t)
+	holdURLTestLock(t)
+	backend := shuntBackend("204:0.31")
+	now := time.Now()
+	persisted := state.PersistedState{ControlPlaneRecovery: recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(now.Add(-2 * time.Hour)),
+		OutageStartedAt:              recovery.FormatTime(now.Add(-time.Hour)),
+		Phase:                        recovery.PhasePasswallRetryWait,
+		LastPasswallRetryAt:          recovery.FormatTime(now.Add(-2 * time.Minute)),
+	}}
+	rescueState := rescue.State{Mode: rescue.ModeProxy}
+	inventory := controlplane.RouterInventory{PasswallEnabled: true, SelectedNodeID: "myshunt"}
+
+	advanceOnce(t, baseControlPlaneRecoveryConfig(panelURL), backend, &persisted, &rescueState, &inventory)
+
+	if len(backend.batchCommands) != 0 {
+		t.Fatalf("expected no PassWall write on an unjudged node, got %#v", backend.batchCommands)
+	}
+	if got, want := persisted.ControlPlaneRecovery.Phase, recovery.PhasePasswallRetryWait; got != want {
+		t.Fatalf("recovery phase = %q, want %q", got, want)
 	}
 }
