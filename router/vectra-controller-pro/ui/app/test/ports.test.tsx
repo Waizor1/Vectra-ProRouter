@@ -423,7 +423,9 @@ function withList(rules: PortForward[], more: MockOptions = {}) {
   cleanup.push(() => mock.dispose());
   let list = rules;
   let made = 0;
+  let down = false;
   const call: CallFn = async (m, p) => {
+    if (m === 'port_forwards' && down) throw new Error('vectra/port_forwards: request timed out');
     if (m === 'port_forwards') return { ...((await mock.call(m, p)) as PortForwards), rules: list };
     const out = await mock.call(m, p);
     if (m === 'set_port_forwards' && (out as { ok?: boolean }).ok) {
@@ -431,7 +433,7 @@ function withList(rules: PortForward[], more: MockOptions = {}) {
     }
     return out;
   };
-  return { ...start({ ...more, call }), setList: (next: PortForward[]) => void (list = next) };
+  return { ...start({ ...more, call }), setList: (next: PortForward[]) => void (list = next), setDown: (v: boolean) => void (down = v) };
 }
 
 const RUST = [
@@ -939,6 +941,60 @@ describe('the port forwarding tab', () => {
         expect(app.button('Remove')!.hasAttribute('disabled')).toBe(true);
         // The list on screen is the router's again.
         expect(app.all('.pf-r .pf-main .pf-t').map((x) => x.textContent)).toEqual(next.map((r) => 'Port ' + r.port));
+      });
+    }
+
+    it('changed elsewhere and seen by the next read: said at once, Save and Remove off, no false «port taken»', async () => {
+      const app = withList([A, B, C]);
+      await openB(app);
+      app.$<HTMLButtonElement>('.pf-line-s')!.click();
+      await settle();
+      // Connect turns «past the VPN» on for this very rule; the page reads the list again.
+      app.setList([A, { ...B, direct: true }, C]);
+      app.$<HTMLButtonElement>('.upd')!.click();
+      await settle(20);
+      expect(app.all('.pf-sheet .note').map((n) => n.textContent)).toEqual(['The list has changed — open it again.']);
+      expect(app.all('.pf-sheet .fld-err')).toEqual([]);
+      expect(app.$<HTMLButtonElement>('.pf-sheet-a .bp')!.disabled).toBe(true);
+      expect(app.button('Remove')!.hasAttribute('disabled')).toBe(true);
+      app.$<HTMLButtonElement>('.pf-sheet-a .bp')!.click();
+      await settle(20);
+      expect(app.sent('set_port_forwards')).toEqual([]);
+    });
+
+    for (const which of ['Save', 'Remove', 'a new line'] as const) {
+      it(`the list cannot be read again (${which}): nothing is sent from an old copy, and it says so`, async () => {
+        const app = withList([A, B]);
+        await settle();
+        if (which === 'a new line') {
+          open(app);
+          await settle();
+          tile(app, 'Plex');
+          await settle();
+          device(app, 'gaming-pc');
+          await settle();
+        } else {
+          app.all('.pf-main')[1].click();
+          await settle();
+        }
+        // A rule Connect added meanwhile, and the router does not answer the re-read.
+        app.setList([A, B, D]);
+        app.setDown(true);
+        app.button(which === 'Remove' ? 'Remove' : 'Save')!.click();
+        await settle();
+        if (which === 'Remove') app.confirm();
+        await settle(20);
+        expect(app.sent('set_port_forwards')).toEqual([]);
+        expect(app.all('.pf-sheet .note').map((n) => n.textContent)).toEqual(['Could not apply. Try again.']);
+        // Once the router answers again, the same button works — and keeps what Connect added.
+        app.setDown(false);
+        app.button(which === 'Remove' ? 'Remove' : 'Save')!.click();
+        await settle();
+        if (which === 'Remove') app.confirm();
+        await settle(20);
+        expect(sentRules(app)!.map((r) => r.id ?? r.preset)).toEqual(
+          which === 'Remove' ? ['aaaaaaaa', 'eeeeeeee'] : which === 'Save' ? ['aaaaaaaa', 'bbbbbbbb', 'eeeeeeee'] : ['aaaaaaaa', 'bbbbbbbb', 'eeeeeeee', 'plex'],
+        );
       });
     }
 

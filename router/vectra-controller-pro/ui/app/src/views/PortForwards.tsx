@@ -114,8 +114,6 @@ function Sheet(p: { data: Data; were: PortForward[]; save: (rules: PortForwardIn
   // change it: the line is found again in it by id and content, never by place.
   const { data, were } = p;
   const editing = were.length > 0;
-  const latest = useRef(data);
-  latest.current = data;
   const [d, setD] = useState<Draft>(() => (editing ? draftOf(were, were.map((_, i) => i)) : emptyDraft()));
   const [stale, setStale] = useState(false);
   // The way here: Back steps along it; going to a step on it again cuts it there.
@@ -182,8 +180,11 @@ function Sheet(p: { data: Data; were: PortForward[]; save: (rules: PortForwardIn
     else shut();
   };
 
+  // The line gone or changed elsewhere since the sheet opened: said first; its
+  // own old rules are not taken for someone else's port.
   const at = locate(data.rules, were);
-  const errors = checkDraft(d, data.rules, at ?? []);
+  const gone = stale || !at;
+  const errors = checkDraft(d, at ? data.rules : [], at ?? []);
   const known = refusal ? failKey(refusal.code) : null;
   const refusalText = refusal ? (known ? t(known) : actionText(t, refusal.code, false, false)) : '';
   const refusalAt = refusal ? FIELD_OF[refusal.code] : undefined;
@@ -217,14 +218,21 @@ function Sheet(p: { data: Data; were: PortForward[]; save: (rules: PortForwardIn
   };
   /**
    * The line in the list as the router has it right now (read again first);
-   * null — and nothing is sent — when it changed since the sheet opened.
+   * null — and nothing is sent — when it changed since the sheet opened, or
+   * when the list could not be read again (an old copy could drop a rule added
+   * in Connect meanwhile).
    */
   const now = async () => {
+    const since = Date.now();
     await store.fetch('port_forwards', 0);
-    const all = (store.get('port_forwards').data ?? latest.current).rules;
-    const where = locate(all, were);
+    const got = store.get('port_forwards');
+    if (got.error || !got.data || got.at === null || got.at < since) {
+      setRefusal({ code: 'failed' });
+      return null;
+    }
+    const where = locate(got.data.rules, were);
     if (!where) setStale(true);
-    return where && { all, where };
+    return where && { all: got.data.rules, where };
   };
   const submit = async () => {
     setTried(true);
@@ -239,6 +247,7 @@ function Sheet(p: { data: Data; were: PortForward[]; save: (rules: PortForwardIn
   const remove = async () => {
     const name = titleOf(t, were[0].preset, were[0].port);
     if (!(await confirm({ title: t('pf.delQ'), body: t('pf.delD', { name }), ok: t('pf.del') }))) return;
+    setRefusal(null);
     // The list may have changed while the question was open: what goes back is the list after it.
     const x = await now();
     if (x && (await p.save(without(x.all, x.where), { key: 'pf-sheet-del', quiet: true, onFail }))) p.onClose();
@@ -428,14 +437,14 @@ function Sheet(p: { data: Data; were: PortForward[]; save: (rules: PortForwardIn
             </button>
           ))}
         </div>
-        {stale ? <Note tone="warn">{t('pf.stale')}</Note> : refusal && !refusalAt ? <Note tone="fail">{refusalText}</Note> : null}
+        {gone ? <Note tone="warn">{t('pf.stale')}</Note> : refusal && !refusalAt ? <Note tone="fail">{refusalText}</Note> : null}
         <div class="pf-sheet-a">
           {editing ? (
-            <Button kind="g" class="pf-rm" busy={pending === 'pf-sheet-del'} disabled={!!pending || stale} onClick={() => void remove()}>
+            <Button kind="g" class="pf-rm" busy={pending === 'pf-sheet-del'} disabled={!!pending || gone} onClick={() => void remove()}>
               {t('pf.del')}
             </Button>
           ) : null}
-          <Button kind="p" busy={pending === 'pf-sheet'} disabled={!!pending || errors.proto || stale} onClick={() => void submit()}>
+          <Button kind="p" busy={pending === 'pf-sheet'} disabled={!!pending || errors.proto || gone} onClick={() => void submit()}>
             {t('pf.save')}
           </Button>
         </div>
