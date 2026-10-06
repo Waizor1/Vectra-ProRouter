@@ -1,6 +1,7 @@
 package portfwd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -235,7 +236,18 @@ func Apply(ctx context.Context, env Env, rules []Rule) ([]Rule, *Error) {
 	leases, hosts := readDHCP(env)
 	names := State{names: deviceNames(leases, hosts)}
 	if err := commitBatch(ctx, env, "firewall", FirewallBatch(fw, kept, names.DeviceName)); err != nil {
-		// uci commit replaces the file whole, or not at all.
+		if errors.Is(err, errPendingUCI) {
+			return nil, refuse(CodeBusy, "uncommitted firewall changes wait in uci (uci changes firewall): commit or revert them first")
+		}
+		// uci commit replaces the file whole, or not at all — but one that
+		// failed after it did (killed past its time) must not leave the new
+		// redirects in, to go live at the next reload: fw4 has not reloaded,
+		// so the file as it was is the router's state.
+		if now, rerr := os.ReadFile(env.FirewallConfig); rerr != nil || !bytes.Equal(now, before) {
+			if werr := writeAtomic(env.FirewallConfig, before); werr != nil {
+				return nil, refuse(CodeInternal, "%v; the previous config could not be put back: %v", err, werr)
+			}
+		}
 		return nil, refuse(CodeApplyFailed, "%v", err)
 	}
 	c, cancel := share(ctx, 2, reloadMax)
@@ -317,13 +329,33 @@ func pendingUCI(env Env, config string) bool {
 	return err == nil && fi.Size() > 0
 }
 
+// errPendingUCI: someone's uncommitted edits to the config appeared in uci's
+// default save directory while the batch ran.
+var errPendingUCI = errors.New("uncommitted changes wait in uci")
+
+// saveDirPrefix names a change's private uci save directory in RunDir.
+const saveDirPrefix = "uci-portfwd-"
+
 // commitBatch runs script through `uci batch` into a private save directory
-// and commits config from it; the directory goes either way.
+// and commits config from it; the directory goes either way. One left behind
+// by a change that was killed mid-way is swept first (under the lock, no
+// other change has one).
+//
+// uci's default save directory is looked at again just before the commit,
+// which takes along whatever waits there: edits made in LuCI while the batch
+// ran refuse the change (errPendingUCI) instead of being committed with it.
+// What is left is the instant between that look and uci's own; uci has no
+// lock to close it.
 func commitBatch(ctx context.Context, env Env, config, script string) error {
 	if err := os.MkdirAll(env.RunDir, 0o755); err != nil {
 		return err
 	}
-	dir, err := os.MkdirTemp(env.RunDir, "uci-portfwd-")
+	if stale, _ := filepath.Glob(filepath.Join(env.RunDir, saveDirPrefix+"*")); len(stale) > 0 {
+		for _, p := range stale {
+			_ = os.RemoveAll(p)
+		}
+	}
+	dir, err := os.MkdirTemp(env.RunDir, saveDirPrefix)
 	if err != nil {
 		return err
 	}
@@ -332,6 +364,9 @@ func commitBatch(ctx context.Context, env Env, config, script string) error {
 	defer cancel()
 	if err := env.Run(c, strings.NewReader(script), "uci", "-t", dir, "batch"); err != nil {
 		return fmt.Errorf("uci batch %s: %w", config, err)
+	}
+	if pendingUCI(env, config) {
+		return errPendingUCI
 	}
 	if err := env.Run(c, nil, "uci", "-t", dir, "commit", config); err != nil {
 		return fmt.Errorf("uci commit %s: %w", config, err)

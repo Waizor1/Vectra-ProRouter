@@ -842,3 +842,86 @@ func TestDirectActive(t *testing.T) {
 		t.Errorf("garbage: %s", got)
 	}
 }
+
+// A change killed mid-way (power, OOM, rpcd's budget) leaves its private save
+// directory behind and its lock file on disk. The lock is a flock, gone with
+// its process, so the next change runs; and it sweeps the directory left
+// behind — only its own kind: nothing else in RunDir is touched.
+func TestApplyRecoversFromAKilledChange(t *testing.T) {
+	fr := newFakeRouter(t)
+	stale := filepath.Join(fr.env.RunDir, saveDirPrefix+"1234")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(stale, "firewall"), []byte("firewall.vectra_pf_aaaa0001=redirect\n"), 0o600)
+	other := filepath.Join(fr.env.RunDir, "portfwd-direct.json")
+	_ = os.WriteFile(other, []byte("{}\n"), 0o644)
+	_ = os.MkdirAll(filepath.Dir(fr.env.Lock), 0o755)
+	_ = os.WriteFile(fr.env.Lock, nil, 0o600) // its holder is gone
+	if _, err := Apply(context.Background(), fr.env, nil); err != nil {
+		t.Fatalf("Apply after a killed change = %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("the killed change's save directory is still there: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("the sweep removed what is not a save directory: %v", err)
+	}
+}
+
+// Edits made in LuCI while the batch ran land in uci's default save
+// directory, which `uci commit` takes along: the change is refused (busy)
+// before the commit, and the firewall file is untouched.
+func TestApplyRefusesEditsMadeDuringTheBatch(t *testing.T) {
+	fr := newFakeRouter(t)
+	before, _ := os.ReadFile(fr.env.FirewallConfig)
+	run := fr.env.Run
+	fr.env.Run = func(ctx context.Context, stdin io.Reader, name string, args ...string) error {
+		if len(args) > 0 && args[len(args)-1] == "batch" {
+			_ = os.MkdirAll(fr.env.UCISaveDir, 0o755)
+			_ = os.WriteFile(filepath.Join(fr.env.UCISaveDir, "firewall"), []byte("firewall.x.y='z'\n"), 0o600)
+		}
+		return run(ctx, stdin, name, args...)
+	}
+	_, err := Apply(context.Background(), fr.env, []Rule{rule("", "udp", "9000", "192.168.1.60")})
+	if err == nil || err.Code != CodeBusy {
+		t.Fatalf("Apply = %v, want busy", err)
+	}
+	for _, c := range fr.calls {
+		if strings.Contains(c, "commit") || strings.Contains(c, "reload") {
+			t.Fatalf("committed or reloaded over the owner's edits: %q", fr.calls)
+		}
+	}
+	if after, _ := os.ReadFile(fr.env.FirewallConfig); string(after) != string(before) {
+		t.Fatal("the firewall config changed")
+	}
+}
+
+// A commit that reports failure after it replaced the file (killed past its
+// time) must not leave the new redirects committed to go live at the next
+// reload: the file goes back as it was, fw4 is not reloaded, apply_failed.
+func TestApplyPutsTheConfigBackWhenACommitFailsLate(t *testing.T) {
+	fr := newFakeRouter(t)
+	before, _ := os.ReadFile(fr.env.FirewallConfig)
+	run := fr.env.Run
+	fr.env.Run = func(ctx context.Context, stdin io.Reader, name string, args ...string) error {
+		if len(args) > 1 && args[len(args)-2] == "commit" {
+			_ = os.WriteFile(fr.env.FirewallConfig, []byte("config redirect 'vectra_pf_aaaa0001'\n"), 0o644)
+			_ = run(ctx, stdin, name, args...)
+			return fmt.Errorf("signal: killed")
+		}
+		return run(ctx, stdin, name, args...)
+	}
+	_, err := Apply(context.Background(), fr.env, []Rule{rule("", "udp", "9000", "192.168.1.60")})
+	if err == nil || err.Code != CodeApplyFailed {
+		t.Fatalf("Apply = %v, want apply_failed", err)
+	}
+	if after, _ := os.ReadFile(fr.env.FirewallConfig); string(after) != string(before) {
+		t.Fatalf("the half-done commit was left in:\n%s", after)
+	}
+	for _, c := range fr.calls {
+		if strings.Contains(c, "reload") {
+			t.Fatalf("fw4 reloaded after a failed commit: %q", fr.calls)
+		}
+	}
+}
