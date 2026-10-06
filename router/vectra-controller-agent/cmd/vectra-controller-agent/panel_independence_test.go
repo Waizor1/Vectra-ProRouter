@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -285,5 +288,32 @@ func TestCachedProxyNodeVerdictProbesOncePerCooldown(t *testing.T) {
 	cachedProxyNodeReachable(context.Background(), backend, policy, &rebound, now.Add(7*time.Minute))
 	if cached := proxyNodeVerdictCache.nodeID; cached != "other" {
 		t.Fatalf("a rebind must be measured afresh, cache still keyed by %q", cached)
+	}
+}
+
+// While the cron watchdog probes a node (shared url_test lock held), the
+// agent's probe is unjudged — never a conclusive failure that local rescue
+// would count toward direct mode.
+func TestProbeProxyPathIsInconclusiveWhileTheWatchdogHoldsTheURLTestLock(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "vectra-url-test.lock")
+	original := passwall.URLTestLockDir
+	passwall.URLTestLockDir = dir
+	t.Cleanup(func() { passwall.URLTestLockDir = original })
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "owner"), []byte(fmt.Sprintf("%d 4242", time.Now().Unix())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backend := shuntBackend("000:0.00")
+	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+	defer cancel()
+
+	reachable, conclusive, _ := probeProxyPath(ctx, backend, "world-node")
+	if reachable || conclusive {
+		t.Fatalf("probeProxyPath = reachable %v conclusive %v, want unjudged", reachable, conclusive)
+	}
+	if containsCommand(backend.runCommands, worldNodeProbe) {
+		t.Fatalf("test.sh ran under the watchdog's lock: %#v", backend.runCommands)
 	}
 }

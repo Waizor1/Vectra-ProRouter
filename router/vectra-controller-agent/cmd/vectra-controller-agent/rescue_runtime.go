@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -406,7 +407,11 @@ func probeProxyPath(
 		return false, false, result
 	}
 
-	result, err := backend.Run(ctx, "/usr/share/passwall2/test.sh", "url_test_node", probeNodeID)
+	result, err := passwall.RunURLTestNode(ctx, backend, probeNodeID)
+	if errors.Is(err, passwall.ErrURLTestBusy) {
+		// Another probe (the cron watchdog) held the node: unjudged, not dead.
+		return false, false, result
+	}
 	if err != nil {
 		return false, true, result
 	}

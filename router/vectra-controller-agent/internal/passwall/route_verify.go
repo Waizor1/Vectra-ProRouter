@@ -149,7 +149,7 @@ func verifyFleetRouteSlot(
 	out.ActualRuleExtras = pickExtras(rule.Extras, slot.RequiredRuleExtras)
 	out.ActualNodeExtras = pickExtras(boundNode.Extras, slot.RequiredNodeExtras)
 
-	commandResult, err := backend.Run(ctx, "/usr/share/passwall2/test.sh", "url_test_node", boundNodeID)
+	commandResult, err := RunURLTestNode(ctx, backend, boundNodeID)
 	out.Command = commandResult.Command
 	out.StatusCode = parseURLTestStatusCode(commandResult.Stdout, commandResult.Stderr)
 	out.SmokeOK = err == nil && out.StatusCode == 204
