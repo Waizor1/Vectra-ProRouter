@@ -22,6 +22,15 @@ import (
 )
 
 const pfFirewall = `
+config zone
+	option name 'lan'
+	list network 'lan'
+
+config zone
+	option name 'wan'
+	list network 'wan'
+	list network 'wan6'
+
 config redirect 'vectra_pf_3fa1c09e'
 	option name 'Vectra: gaming-pc'
 	option src 'wan'

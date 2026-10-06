@@ -294,15 +294,17 @@ past it», on or off.
   and is not counted — which ports it serves is not known),
   `busy` (another change is being applied, or uncommitted firewall edits wait
   in uci), `apply_failed` (nothing changed: when fw4 failed to reload the
-  new rules, the previous config was put back and reloaded), `internal` (fw4
+  new rules, the previous config was put back and reloaded; or the firewall
+  zones of the wan and lan networks cannot be told — none, or two, carry
+  one), `internal` (fw4
   failed to reload even the previous config — it is back on disk), `locked`
   (see Operator lock). Vectra Connect's `set_port_forwards` answers the same
   codes, `applied` on success; more than 32 rules is `too_many` there too.
 - How the router applies it: each rule is an fw4 `config redirect` named
   `vectra_pf_<id>` (`name 'Vectra: <device name or address>'`, or
   `'Vectra: <preset> → <device name or address>'`, the tag kept in
-  `option vectra_preset`; DNAT from
-  wan, `src_dport` = `dest_port`, hairpin on), so it works with vctl stopped
+  `option vectra_preset`; DNAT from the zone carrying the wan network to
+  the one carrying lan, whatever LuCI named them, `src_dport` = `dest_port`, hairpin on), so it works with vctl stopped
   and shows in LuCI; vctl changes only those sections. `direct` puts the
   device into vctl's data plane set `vctl_pf_direct4`.
 

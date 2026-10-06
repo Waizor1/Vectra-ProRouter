@@ -245,6 +245,11 @@ func Apply(ctx context.Context, env Env, rules []Rule) ([]Rule, *Error) {
 	if verr != nil {
 		return nil, verr
 	}
+	if len(kept) > 0 && (fw.srcZone == "" || fw.destZone == "") {
+		// A redirect from or to a zone fw4 does not have is skipped by fw4
+		// in silence: the rule would read as on and forward nothing.
+		return nil, refuse(CodeApplyFailed, "the firewall zones of the wan and lan networks cannot be told (wan %q, lan %q): exactly one zone must carry each", fw.srcZone, fw.destZone)
+	}
 	if pendingUCI(env, "firewall") {
 		return nil, refuse(CodeBusy, "uncommitted firewall changes wait in uci (uci changes firewall): commit or revert them first")
 	}

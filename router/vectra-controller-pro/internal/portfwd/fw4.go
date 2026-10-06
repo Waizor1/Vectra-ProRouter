@@ -30,6 +30,33 @@ type Firewall struct {
 	// sections are the names of vctl's sections — every one, also one whose
 	// name carries no valid id, so an apply removes it too.
 	sections []string
+	// srcZone / destZone are the zones a redirect is written from and to:
+	// the one zone whose networks include the wan interface, and the one
+	// with lan ("" when there is none, or more than one — then a rule is
+	// refused rather than written to a zone fw4 would not know).
+	srcZone, destZone string
+}
+
+// zoneOf is the name of the one zone whose networks include network; "" when
+// no zone does, or several do.
+func zoneOf(f *uci.File, network string) string {
+	found := ""
+	for _, z := range f.OfType("zone") {
+		name := z.Get("name")
+		if name == "" {
+			continue
+		}
+		for _, n := range words(z, "network") {
+			if n != network {
+				continue
+			}
+			if found != "" && found != name {
+				return ""
+			}
+			found = name
+		}
+	}
+	return found
 }
 
 // sectionName is what uci accepts as a section's name; only such names are
@@ -66,7 +93,7 @@ func wanZones(f *uci.File) map[string]bool {
 // take its port from the router there (DNAT is decided before input); the
 // owner opened the whole router to the internet by hand.
 func ParseFirewall(f *uci.File) Firewall {
-	var fw Firewall
+	fw := Firewall{srcZone: zoneOf(f, "wan"), destZone: zoneOf(f, "lan")}
 	wan := wanZones(f)
 	for _, s := range f.Sections {
 		if strings.HasPrefix(s.Name, SectionPrefix) {
@@ -240,7 +267,9 @@ func fw4Proto(p string) string {
 
 // FirewallBatch is the uci batch that makes vctl's redirects exactly rules:
 // every vctl section the config has is deleted, and each rule is written
-// anew — src_dport and dest_port the same port. No other section is named,
+// anew — src_dport and dest_port the same port, from the zone of the wan
+// interface to the zone of lan (fw.srcZone, fw.destZone: Apply refuses a
+// rule when either is unknown). No other section is named,
 // so nothing else of the firewall changes. rules must have passed Validate;
 // names gives a destination's device name for the section's name (the
 // address when it has none).
@@ -263,8 +292,8 @@ func FirewallBatch(fw Firewall, rules []Rule, names func(ip string) *string) str
 			who = *r.Preset + " → " + who
 		}
 		set("name", NamePrefix+who)
-		set("src", "wan")
-		set("dest", "lan")
+		set("src", fw.srcZone)
+		set("dest", fw.destZone)
 		set("target", "DNAT")
 		set("proto", fw4Proto(r.Proto))
 		set("src_dport", r.Port)

@@ -187,6 +187,15 @@ const fw4Config = `
 config defaults
 	option input 'REJECT'
 
+config zone
+	option name 'lan'
+	list network 'lan'
+
+config zone
+	option name 'wan'
+	list network 'wan'
+	list network 'wan6'
+
 config rule
 	option name 'Allow-DHCP-Renew'
 	option src 'wan'
@@ -993,5 +1002,44 @@ func TestARunOutOfTimeKillsTheWholeGroup(t *testing.T) {
 			t.Fatalf("the reload's child %d outlived it", pid)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A redirect goes from the zone that carries the wan network to the one that
+// carries lan, whatever they are named in LuCI. Where that cannot be told —
+// no such zone, or two — a rule is refused (apply_failed) and nothing runs:
+// fw4 skips a redirect to a zone it lacks, and the rule would read as on
+// while forwarding nothing. Removing every rule needs no zone.
+func TestRedirectsUseTheZonesOfWanAndLan(t *testing.T) {
+	renamed := strings.NewReplacer("option name 'lan'", "option name 'home'", "option name 'wan'", "option name 'internet'")
+	f, err := uci.Parse(renamed.Replace(fw4Config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := FirewallBatch(ParseFirewall(f), []Rule{rule("3fa1c09e", "tcp", "25565", "192.168.1.50")}, nil)
+	for _, want := range []string{"set firewall.vectra_pf_3fa1c09e.src='internet'\n", "set firewall.vectra_pf_3fa1c09e.dest='home'\n"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("batch lacks %q:\n%s", want, b)
+		}
+	}
+	for name, cfg := range map[string]string{
+		"no zone carries wan": strings.Replace(fw4Config, "\tlist network 'wan'\n", "", 1),
+		"two zones carry lan": fw4Config + "\nconfig zone\n\toption name 'guest'\n\tlist network 'lan'\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			fr := newFakeRouter(t)
+			if err := os.WriteFile(fr.env.FirewallConfig, []byte(cfg), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Apply(context.Background(), fr.env, []Rule{rule("", "tcp", "8080", "192.168.1.50")}); err == nil || err.Code != CodeApplyFailed {
+				t.Fatalf("Apply = %v, want apply_failed", err)
+			}
+			if len(fr.calls) != 0 {
+				t.Fatalf("ran %q", fr.calls)
+			}
+			if _, err := Apply(context.Background(), fr.env, nil); err != nil {
+				t.Fatalf("removing every rule refused: %v", err)
+			}
+		})
 	}
 }
