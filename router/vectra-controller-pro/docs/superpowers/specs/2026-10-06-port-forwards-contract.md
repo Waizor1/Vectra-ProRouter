@@ -118,6 +118,28 @@ names a port but not its protocol (Minecraft Java/Bedrock, Valheim,
 Enshrouded) the catalogue does NOT pre-fill `both`: the user picks the
 protocol.
 
+## Additions 2026-10-06 (after the panel and Go re-review; wire shape unchanged)
+
+- **Preset ids are final** (35, the router UI's catalogue, `ui/app/src/lib/presets.txt`):
+  minecraft-java, minecraft-bedrock, cs2-srcds, rust, valheim, terraria, ark-survival-evolved, palworld, factorio, satisfactory, project-zomboid, enshrouded, dont-starve-together, playstation, xbox, steam-remote-play, sunshine, rdp, vnc, ssh, anydesk, plex, jellyfin, emby, transmission, synology-dsm, web-server, nextcloud, home-assistant, hikvision, dahua, teamspeak3, mumble, wireguard, openvpn.
+  `minecraft` and `torrent` are NOT ids (they never shipped). Protocol is
+  left to the user for `minecraft-java`, `minecraft-bedrock`, `valheim`,
+  `enshrouded`.
+- **Kill switch wins over «past the VPN».** With the kill switch armed the
+  direct rule is not rendered, so a `direct: true` rule's device goes
+  through the VPN and `directActive` is `false` — show the same muted
+  line.
+- **Panel behaviour the BE/FE can rely on:** the projected router snapshot
+  ALWAYS has the key `portForwards` (`null` when the router has no fw4
+  config, predates the feature, or the snapshot is another owner's). Bad
+  params are refused by the panel with HTTP 400 `invalid_params` (more than
+  32 rules and duplicate ids included), so `too_many` only comes from a
+  router. On success the `router.action` webhook carries `state: applied`
+  and no `detail`; a code is sent only on failure. Telemetry unknown keys are
+  dropped, not refused. Telemetry `destIp`/`port` are what the router read
+  back in canonical form (a hand-edited LuCI rule that isn't canonical is not
+  reported at all); still treat them as display text.
+
 ## Rollout order
 
 vctl (release after r21) → panel → BE → FE. Each older layer just does not

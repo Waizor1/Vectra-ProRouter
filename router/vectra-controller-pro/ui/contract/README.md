@@ -40,7 +40,7 @@ Change a shape here first, then both sides.
 | `set_power` | `{"on": true}` (`false` turns Vectra off; `"force": true` also where it would carry nothing — see Power) | `action.json` |
 | `set_remote_shell` | `{"on": false}` (`true` lets support in — see Support shell) | `action.json` |
 | `port_forwards` | — | `port_forwards.json` |
-| `set_port_forwards` | `{"rules": [{"preset": "minecraft", "destIp": "192.168.1.50", "port": "25565", "proto": "tcp", "direct": false, "enabled": true}]}` (the whole list; `id` for a rule kept — see Port forwards) | `action.json` |
+| `set_port_forwards` | `{"rules": [{"preset": "minecraft-java", "destIp": "192.168.1.50", "port": "25565", "proto": "tcp", "direct": false, "enabled": true}]}` (the whole list; `id` for a rule kept — see Port forwards) | `action.json` |
 
 `select_entry`, `reset_entry`, `set_probe_interval`, `set_rules` and
 `restart_xray` restart xray: client connections drop for a few seconds. The UI
@@ -253,7 +253,7 @@ past it», on or off.
   none — no MAC address is ever sent), `cgnat`, `directActive` and `max`
   (32). A rule:
   `id` (8 hex), `preset` (the UI's tag for what the forward is for —
-  `minecraft`, `playstation` — or `null`; 1-24 of `a-z`, `0-9`, `-`, else
+  `minecraft-java`, `playstation` — or `null`; 1-24 of `a-z`, `0-9`, `-`, else
   `invalid_params`; the router keeps the tag and never checks it against a
   list: the UI owns the catalogue), `destIp`, `deviceName` (read-only: the device's name now, or
   `null`), `port` (`"25565"` or `"3478-3480"`), `proto` (`tcp`, `udp`,
