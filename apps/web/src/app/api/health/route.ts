@@ -6,6 +6,7 @@ import {
   loopTickTimes,
 } from "~/server/vectra/background-lock";
 import { startBackgroundLoops } from "~/server/vectra/background-loops";
+import { loadHealthCheckinCounts } from "~/server/vectra/health-checkins";
 import {
   checkDatabaseRead,
   checkDatabaseWrite,
@@ -86,6 +87,9 @@ export async function GET() {
     // in between reports the last successful probe.
     await checkDatabaseWrite(db);
     checks.dbWriteProbe = true;
+    // Optional, informational: lets an external monitor see fleet check-in
+    // freshness without database access. null when the count is unreadable.
+    const routers = await loadHealthCheckinCounts(db);
 
     return Response.json(
       {
@@ -95,6 +99,7 @@ export async function GET() {
         backgroundMode: env.VECTRA_BACKGROUND_MODE,
         checks,
         loopTicks,
+        routers,
       },
       { status: 200 },
     );
