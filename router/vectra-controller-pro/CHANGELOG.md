@@ -1,5 +1,51 @@
 # Changelog
 
+## vctl 0.7.0-r22 — port forwarding, with presets, from the router and from Vectra Connect
+
+The owner's wish (06.10): open a port to a device at home — a game server,
+a console, a NAS, remote desktop — simply, even in the Pro view, and choose
+whether that device's own traffic goes through the VPN or past it.
+
+### Added
+- **Port forwards.** A rule is a device (its LAN address), a port or a range
+  that is the same outside and on the device, TCP / UDP / both, «through the
+  VPN» or «past the VPN», on or off. Stored as native fw4 `redirect`
+  sections named `vectra_pf_<id>` (they work with vctl stopped and show in
+  LuCI); vctl touches only its own sections, checks every other WAN redirect
+  and the router's own WAN services for conflicts, refuses an address outside
+  the LAN or the router itself, and keeps at most 32 rules.
+- **Safe apply.** One uci batch in a private save directory under a lock,
+  refused while LuCI has uncommitted firewall edits; if the commit or the
+  firewall reload fails or times out, the previous config is put back and
+  reloaded (the whole reload process group is stopped on a timeout), and the
+  answer says so — a «failed» change never goes live later.
+- **«Past the VPN» for a device.** Its own new connections leave directly
+  (open NAT for consoles and games); blocked sites still go through the VPN
+  (their FakeDNS addresses are never sent past) and so does its DNS (53/853,
+  whatever the DNS hijack setting). The kill switch wins: while it is armed
+  the device stays on the VPN, and `directActive` says so honestly — so does
+  a stopped Vectra or a data plane set that could not be written.
+- **Presets.** 35 from official sources — games (Minecraft Java/Bedrock,
+  CS2, Rust, Valheim, Terraria, ARK, Palworld, Factorio, Satisfactory,
+  Project Zomboid, Enshrouded, Don't Starve Together), consoles (PlayStation,
+  Xbox), remote access (RDP, VNC, SSH, AnyDesk, Steam Remote Play, Sunshine),
+  media and files (Plex, Jellyfin, Emby, Transmission, Synology DSM, web
+  server, Nextcloud), home and cameras (Home Assistant, Hikvision, Dahua),
+  voice (TeamSpeak 3, Mumble), your own VPN server (WireGuard, OpenVPN). A
+  short wizard with six popular tiles, «All presets» with search and
+  categories, «Custom port». Where a game's docs don't name the protocol the
+  owner picks it — never a silent TCP+UDP. ru / en / zh.
+- **Vectra Connect.** Action `set_port_forwards` (capability
+  `set_port_forwards`) and telemetry `portForwards` (rules, LAN devices
+  without MAC, `cgnat`, `directActive`) — contract
+  `docs/superpowers/specs/2026-10-06-port-forwards-contract.md`.
+- **CGNAT.** One line when the WAN address is the provider's shared one or a
+  private one: nothing from the internet reaches a forward then.
+
+### Not in this version
+- IPv6 «open a port»; inbound THROUGH the VPN (the provider's exits forward
+  nothing to us).
+
 ## vctl 0.7.0-r21 — the VPN no longer needs the panel to stay up
 
 The owner's rule: the internet and the VPN keep working while the panel is
