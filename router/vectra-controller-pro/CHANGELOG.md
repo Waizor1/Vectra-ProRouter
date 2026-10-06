@@ -23,21 +23,37 @@ for hours or days. An architecture review found the one place they did not
   wakes. The panel still confirms too — its probe while it is not known to
   be down, every successful check-in — but nothing waits for it. A ruleset
   after which the router can prove nothing is still reverted.
+- **…and only with the LAN clients' path whole.** Those proofs (and the
+  check-in) leave on the marked sockets, which the output chain returns on
+  at its first rule: they never crossed the LAN's path, so a ruleset that
+  broke it was confirmed in seconds (the panel's confirmation had the same
+  blind spot). With xray running, a proof now confirms only if the loaded
+  prerouting has the TPROXY rule to xray's port, the fwmark rule and its
+  local route are in the kernel, xray listens on the port, and over 2 s
+  neither `vctl_tproxy_escaped` nor (kill switch on) `vctl_killswitch_drops`
+  climbs. Structure and counters, not the nodes: dead nodes stay the
+  rescue's business and do not bring the flapping back.
+- **A confirmation never lands after the revert**: the deadline runs from
+  the deadman's arming (taken before the apply), the last try starts 27 s
+  before it wakes, and a proof back after timeout − 5 s writes nothing.
 - **The rescue's mode survives a reboot without the panel.** A transition
   decided in the poll was written to `state.json` only with a successful
   check-in's state; without the panel a reboot started from the mode before.
 
 ### Added
-- **Check-ins back off from a panel that does not answer**: the poll after
-  one failure, then doubling, at most 5 min, drawn between half and the
-  whole — no loop spent on a panel that is gone, no fleet stampeding back.
-  Only the exchange waits; the rescue, the data plane and the DNS watch run
-  every loop.
+- **Check-ins back off from a panel that does not answer**: none after one
+  failure, then doubling from two polls, at most 5 min, drawn between half
+  and the whole; meanwhile each poll asks the panel's `/healthz` (3 s), and
+  the check-in goes as soon as it answers — back within a poll of the
+  panel's return, not 5 min later. Only the exchange waits; the rescue, the
+  data plane and the DNS watch run every loop.
 - **The panel's known address.** When neither the direct resolvers nor the
   system's give the panel's name an address that answers, the control plane
   dials the last address that answered, then the owner's (UCI
   `list control_ip`), then the built-in one (api/router.vectra-pro.net ->
-  72.56.14.52). TLS still checks the certificate against the name.
+  72.56.14.52). Each address counts only after a completed TLS handshake
+  verified for the name (an ISP stub accepting :443 does not stop the
+  next), and only such an address is remembered.
 
 ### Audited, unchanged (keeps working without the panel)
 - A failed check-in only logs; the router is released only on the panel's
