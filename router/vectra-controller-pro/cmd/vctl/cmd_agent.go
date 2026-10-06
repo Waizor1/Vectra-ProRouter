@@ -302,6 +302,12 @@ type daemon struct {
 	// panel. nil until one has been attempted. It is the ground truth behind
 	// serverReachable — see controlPlaneReachable.
 	lastControlPlaneOK *bool
+	// fwConfirmBy is when the tries to confirm the last firewall
+	// programming end (shortly before its deadman wakes), zero with none
+	// pending; fwConfirmNext is the next try (fw_confirm.go). clock stands
+	// in for time.Now there in tests.
+	fwConfirmBy, fwConfirmNext time.Time
+	clock                      func() time.Time
 
 	// The router UI (localui.go). All written on the loop goroutine only;
 	// the socket goroutine reads the published snapshot.
@@ -676,6 +682,7 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 			logging.L().Error("loop iteration failed", "err", err.Error())
 		}
 		d.ensureDataPlane(ctx)
+		d.retryFirewallConfirm(ctx, d.now())
 		d.maybeRefreshNative(ctx, time.Now())
 		d.maybeUpdateNativeGeo(ctx, time.Now())
 		d.maybeSyncPassWall(ctx)
@@ -793,14 +800,16 @@ func (d *daemon) runOnce(ctx context.Context) error {
 		logging.L().Warn("connect maintenance unavailable")
 	}
 
-	// A successful check-in proves the panel link is healthy, so (re)write the
-	// firewall commit-confirm sentinel. This disarms a pending auto-revert even
-	// one armed by a PREVIOUS process before a restart (the durable signal is
-	// the sentinel, not an in-memory flag). If a firewall change had severed the
-	// panel link, CheckIn above would have errored and we would never reach
-	// here — so the detached deadman correctly reverts.
+	// A successful check-in proves the router's marked path out is healthy,
+	// so (re)write the firewall commit-confirm sentinel. This disarms a
+	// pending auto-revert even one armed by a PREVIOUS process before a
+	// restart (the durable signal is the sentinel, not an in-memory flag). It
+	// is one proof among others (fw_confirm.go): without the panel the
+	// router's own confirms.
 	if err := d.confirmer.Confirm(); err != nil {
 		logging.L().Debug("firewall commit-confirm sentinel write failed", "err", err.Error())
+	} else {
+		d.firewallConfirmed()
 	}
 
 	if len(resp.DesiredRevision) > 0 {

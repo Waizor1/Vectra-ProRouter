@@ -79,7 +79,9 @@ func TestConfirmProbesThroughTheControlPlaneClient(t *testing.T) {
 	confirmPath := filepath.Join(t.TempDir(), "fw-confirm")
 	d := confirmDaemon(t, panel.URL, confirmPath, hc)
 
-	if !d.confirmIfPanelReachable(context.Background()) {
+	// No local proof here: only the panel can confirm.
+	d.rescuePolicy.HealthURLs = nil
+	if !d.confirmFirewall(context.Background()) {
 		t.Fatal("the panel was reachable and the deadman was not confirmed")
 	}
 	if atomic.LoadInt64(&throughClient) == 0 {
@@ -91,14 +93,16 @@ func TestConfirmProbesThroughTheControlPlaneClient(t *testing.T) {
 	}
 }
 
-// The other direction: an unreachable panel must NOT confirm, or the deadman
-// stops being a deadman and a ruleset that severed the control plane stays.
+// The other direction: with the panel AND the router's own way out
+// unreachable nothing confirms, or the deadman stops being a deadman and a
+// ruleset that severed the router stays.
 func TestConfirmDoesNotFireWhenThePanelIsUnreachable(t *testing.T) {
 	hc := &http.Client{Timeout: time.Second}
 	confirmPath := filepath.Join(t.TempDir(), "fw-confirm")
 	d := confirmDaemon(t, "http://127.0.0.1:1", confirmPath, hc)
+	d.rescuePolicy.HealthURLs = []string{"http://127.0.0.1:1/generate_204"}
 
-	if d.confirmIfPanelReachable(context.Background()) {
+	if d.confirmFirewall(context.Background()) {
 		t.Fatal("confirmed with the panel unreachable")
 	}
 	if fileExists(confirmPath) {
