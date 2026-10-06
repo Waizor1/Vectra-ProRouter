@@ -757,10 +757,9 @@ const connectEntryRefSchema = z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/);
 
 // The owner's port forwards as vctl reports them (contract:
 // router/vectra-controller-pro/docs/superpowers/specs/2026-10-06-port-forwards-contract.md).
-// id, preset and proto are canonical on the router; destIp and port are read
-// back from the firewall config as they stand, so they are bounded here, not
-// syntax-checked: a forward edited by hand in LuCI must not cost the router
-// its check-in. Unknown keys are dropped like everywhere in this telemetry,
+// vctl reports a rule only in canonical form (ParseFirewall skips a hand-
+// edited one); destIp and port are still only bounded here, not
+// syntax-checked: a malformed rule must never cost the router its check-in. Unknown keys are dropped like everywhere in this telemetry,
 // and the partner projection whitelists the fields again.
 const connectPortForwardsTelemetrySchema = z.object({
   rules: z
