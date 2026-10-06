@@ -124,8 +124,10 @@ Exactly one controller owns a router at a time; `engineMode` is the source of tr
    `xray-direct`, not a duplicate.
 3. Flip the router's `engineMode` to `xray-direct` in the panel and push an
    `XrayDesiredConfig`. The first `apply_xray_config` programs the firewall behind
-   **commit-confirm** (a detached deadman auto-reverts within 90s unless a
-   successful check-in proves the panel link survived).
+   **commit-confirm** (a detached deadman auto-reverts within 90s unless the
+   router proves it still reaches the internet — its own probe on the marked
+   path, the tunnel's, or a successful check-in; since 0.7.0-r21 the panel is
+   not needed for it).
 4. Rollback = re-enable `vectra-controller`, set `engineMode` back to `passwall`.
 
 ## Security posture (ratified for canary) + fast-follows before fleet rollout

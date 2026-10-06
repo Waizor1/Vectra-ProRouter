@@ -115,9 +115,9 @@ on plain internet instead.
 
 ## 5. Check (5–10 minutes)
 
-First, after ~2 minutes — the commit-confirm must have passed (a check-in to the
-panel confirms the firewall; without one it reverts at 90 s and the router is
-left unproxied):
+First, after ~2 minutes — the commit-confirm must have passed (the router's
+own proof that it still reaches the internet confirms the firewall, a check-in
+too; without any it reverts at 90 s and the router is left unproxied):
 
 ```sh
 ubus call vectra status | jsonfilter -e '@.dataplane.loaded' -e '@.controlPlane.reachable'
