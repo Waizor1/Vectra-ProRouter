@@ -70,6 +70,16 @@ else
 	log "installed cron entry"
 fi
 
+# A watchdog-owned direct marker (r46+) is only meaningful while PassWall is
+# off. If PassWall is on, whoever turned it on owns it now; drop a stale
+# marker so the new watchdog never "restores" a direct it no longer owns.
+# Older packages do not know the file and ignore it.
+WATCHDOG_DIRECT_MARKER="/etc/vectra-controller/watchdog-direct"
+if [ -f "$WATCHDOG_DIRECT_MARKER" ] && [ "$(uci -q get 'passwall2.@global[0].enabled' 2>/dev/null)" = "1" ]; then
+	rm -f "$WATCHDOG_DIRECT_MARKER"
+	log "removed stale watchdog-direct marker (passwall2 is enabled)"
+fi
+
 # Nudge crond to re-read the crontab so the new entry takes effect now,
 # not on next 5-min boundary tick. crond watches mtime so a simple touch
 # is enough; explicit restart is the belt-and-suspenders path.

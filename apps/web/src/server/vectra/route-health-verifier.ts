@@ -194,6 +194,12 @@ type SlotResult = {
   slotId?: string | null;
   boundNodeId?: string | null;
   smokeOk?: boolean | null;
+  /**
+   * Controller 0.1.13-r46+: url_test_node did not run because another probe
+   * (the router's cron watchdog) held the shared lock. smokeOk is then false
+   * without being a measurement. Older controllers never send it.
+   */
+  unjudged?: boolean | null;
 };
 
 type RouteVerification = {
@@ -242,6 +248,10 @@ export function routeVerificationToHealthSample(
     if (!host) {
       // The node was rotated away by a subscription refresh; the verdict is
       // about a binding that no longer exists and says nothing about today.
+      continue;
+    }
+    if (slot.unjudged === true) {
+      // Not measured: no evidence either way, so it must not count as a fail.
       continue;
     }
     observations.push({ host, outcome: slot.smokeOk ? "ok" : "fail" });

@@ -20,13 +20,18 @@
 #      DEAD proxy node (active shunt default_node is a proxy + mainSwitch=1).
 #      The agent can then never reach api.vectra-pro.net, never check in, and
 #      the panel can never push a fix — a NAT'd box with no inbound path. Two
-#      real routers were lost this way. This branch reads ONLY on-disk signals
-#      (no network call — the network is the broken thing) and, if the agent
-#      has had no SUCCESSFUL control-plane contact for longer than a
-#      threshold while PassWall2 is enabled, fails SAFE to direct
-#      (passwall2 disabled + restart). That restores the controller's direct
-#      path so it can check in again; the agent's own auto-resume re-enables
-#      proxy once contact is restored, so we never re-enable it here.
+#      real routers were lost this way. The switch is ARMED when the agent has
+#      had no SUCCESSFUL control-plane contact for longer than a threshold,
+#      but it only FIRES (passwall2 disabled + restart) on proof that the
+#      proxy itself is dead: every candidate node fails
+#      `test.sh url_test_node`, the same verdict the agent's rescue uses.
+#      A stale panel contact alone never switches the VPN off — otherwise a
+#      panel outage (VPS down, IP blocked, certificate expired) would take the
+#      whole fleet to direct at once. The direct it creates is OWNED by the
+#      watchdog (persistent marker) and undone by the watchdog as soon as a
+#      node answers again, whatever the panel's state. Ownership passes to the
+#      agent only when the agent itself writes the main switch (it deletes the
+#      marker) or its recovery takes over the park.
 #   4. If init.d isn't installed: out of scope (router predates this
 #      package), exit silently.
 #
@@ -83,6 +88,62 @@ DEADMAN_BOOT_GRACE_SECONDS=900
 # Path to the agent's persisted state. Default matches 90_vectra_controller_defaults
 # / render-config.sh; overridable via the same uci option the agent reads.
 STATE_JSON_DEFAULT="/etc/vectra-controller/state.json"
+
+# Persistent proof that the watchdog itself switched PassWall off. Lives next
+# to state.json (preserved across reboot and sysupgrade) so a reboot during a
+# panel outage does not orphan the direct: the next boot still knows whose it
+# is and restores proxy once a node answers. Holds the epoch of the switch.
+DEADMAN_OWNER_MARKER="/etc/vectra-controller/watchdog-direct"
+
+# Epoch of the watchdog's last PassWall flip (either direction). Flap damping:
+# the watchdog never flips PassWall more than once per cooldown.
+DEADMAN_LAST_ACTION_FILE="/var/run/vectra-controller-watchdog.last-action"
+DEADMAN_ACTION_COOLDOWN_SECONDS=900
+
+# The agent switches PassWall on for a ~75 s warmup when it retries the proxy
+# (phase passwall_retry_wait) and re-disables it itself if the retry fails.
+# The watchdog keeps out of that window so it can never kill a retry the agent
+# is still judging; a retry older than this is treated as abandoned.
+DEADMAN_AGENT_RETRY_GRACE_SECONDS=900
+
+# Proxy verdict: the agent's own evidence (proxyNodeReachableForRecovery).
+DEADMAN_URL_TEST="/usr/share/passwall2/test.sh"
+DEADMAN_URL_TEST_TIMEOUT_SECONDS=30
+# test.sh starts `app.sh run_socks flag=url_test_<node>` (a temporary xray)
+# plus a curl, and only cleans them up itself when it finishes. Killing
+# test.sh on timeout leaves both behind; they are reaped by name and their
+# config is removed from here.
+DEADMAN_PASSWALL_TMP_DIR="/tmp/etc/passwall2"
+# Set by the timeout watcher when it had to kill test.sh.
+DEADMAN_PROBE_TIMEOUT_FLAG="/var/run/vectra-controller-watchdog.probe-timeout"
+# Shared with the agent (url_test_lock.go): test.sh kills every process named
+# url_test_<node> when it finishes, so two concurrent probes of one node kill
+# each other's xray and both read "dead". One url_test_node at a time.
+# Content "<epoch> <owner>"; older than DEADMAN_URL_TEST_LOCK_STALE_SECONDS
+# is stale.
+DEADMAN_URL_TEST_LOCK_DIR="/var/run/vectra-url-test.lock"
+DEADMAN_URL_TEST_LOCK_STALE_SECONDS=120
+DEADMAN_URL_TEST_LOCK_WAIT_SECONDS=60
+# Total time one verdict may spend waiting for the lock and probing. Each
+# candidate can cost a lock wait plus a 30 s probe; without a cap a shunt with
+# many slots could outlast the 600 s run lock and let the next cron run start
+# alongside. Candidates not reached in time leave the verdict inconclusive.
+DEADMAN_RUN_PROBE_BUDGET_SECONDS=240
+# At most one proxy verdict (and so one batch of temporary xrays) per this
+# many seconds, whichever direction is being judged.
+DEADMAN_PROBE_INTERVAL_SECONDS=900
+DEADMAN_LAST_PROBE_FILE="/var/run/vectra-controller-watchdog.last-probe"
+DEADMAN_SHUNT_OPTIONS="WorldProxy YouTube GooglePlay Proxy ProxyGame Tiktok Special default_node"
+# url_test_node starts a temporary xray. Below this much MemAvailable the
+# verdict is "inconclusive" (=> no action) rather than risking an OOM on the
+# 234 MB boxes; matches the agent's heavy-job memory floor.
+DEADMAN_PROBE_MEM_FLOOR_MB=40
+MEMINFO_FILE="/proc/meminfo"
+
+# Serialises overlapping cron runs (a slow url_test_node must not let the next
+# tick act on half-finished state). A lock older than this is stale.
+DEADMAN_LOCK_DIR="/var/run/vectra-controller-watchdog.lock"
+DEADMAN_LOCK_STALE_SECONDS=600
 
 log() {
 	# Use logger so the action surfaces in `logread` alongside other procd
@@ -319,8 +380,7 @@ deadman_past_boot_grace() {
 # Impure action: fail safe to direct using the EXACT uci path the agent's own
 # rescue uses (setPasswallMainSwitch in rescue_runtime.go):
 #   set passwall2.@global[0].enabled='0'; commit passwall2; passwall2 restart.
-# Idempotent: only the caller decides whether to invoke this. We do NOT
-# re-enable proxy — the agent's auto-resume owns that once contact returns.
+# Idempotent: only the caller decides whether to invoke this.
 deadman_fail_safe_to_direct() {
 	uci -q set passwall2.@global[0].enabled='0' 2>/dev/null || true
 	uci -q commit passwall2 2>/dev/null || true
@@ -329,14 +389,323 @@ deadman_fail_safe_to_direct() {
 	fi
 }
 
-# Orchestrates the dead-man's switch: gather on-disk signals, ask the pure
-# decision function, and act + log. Logs each decision for operator triage.
-# Safe to call unconditionally; it self-guards on every precondition.
-run_deadman_check() {
-	now="$(now_epoch)"
+# Impure action: undo the watchdog's own direct (same uci path, enabled=1).
+deadman_restore_proxy() {
+	uci -q set passwall2.@global[0].enabled='1' 2>/dev/null || true
+	uci -q commit passwall2 2>/dev/null || true
+	if [ -x /etc/init.d/passwall2 ]; then
+		/etc/init.d/passwall2 restart >/dev/null 2>&1 || true
+	fi
+}
 
-	passwall_enabled="$(uci -q get passwall2.@global[0].enabled 2>/dev/null || printf 0)"
-	[ -n "$passwall_enabled" ] || passwall_enabled=0
+deadman_lower() {
+	printf '%s' "$1" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz'
+}
+
+# A node id that names a real outbound (not a PassWall pseudo-target).
+deadman_is_concrete_node() {
+	case "$(deadman_lower "$1")" in
+	'' | _default | _direct | _blackhole) return 1 ;;
+	esac
+	return 0
+}
+
+deadman_is_virtual_protocol() {
+	case "$1" in
+	_shunt | _balancing | _urltest) return 0 ;;
+	esac
+	return 1
+}
+
+deadman_node_protocol() {
+	deadman_lower "$(uci -q get "passwall2.$1.protocol" 2>/dev/null || true)"
+}
+
+# Print the node ids whose answer decides "is the proxy alive", one per line,
+# deduplicated. Mirrors the agent's proxyNodeReachableForRecovery: the
+# selected node when it is concrete; for a shunt, every concrete slot node
+# among the agent's probe options. Other virtual selections print nothing.
+deadman_proxy_candidates() {
+	selected="$(uci -q get 'passwall2.@global[0].node' 2>/dev/null || true)"
+	deadman_is_concrete_node "$selected" || return 0
+	protocol="$(deadman_node_protocol "$selected")"
+	if [ -z "$protocol" ] || ! deadman_is_virtual_protocol "$protocol"; then
+		printf '%s\n' "$selected"
+		return 0
+	fi
+	[ "$protocol" = "_shunt" ] || return 0
+	seen=" "
+	for option in $DEADMAN_SHUNT_OPTIONS; do
+		node="$(uci -q get "passwall2.$selected.$option" 2>/dev/null || true)"
+		deadman_is_concrete_node "$node" || continue
+		case "$seen" in *" $node "*) continue ;; esac
+		node_protocol="$(deadman_node_protocol "$node")"
+		[ -n "$node_protocol" ] || continue
+		deadman_is_virtual_protocol "$node_protocol" && continue
+		seen="$seen$node "
+		printf '%s\n' "$node"
+	done
+}
+
+deadman_probe_memory_ok() {
+	avail_kb="$(awk '/^MemAvailable:/ { print $2; exit }' "$MEMINFO_FILE" 2>/dev/null || true)"
+	case "$avail_kb" in
+	'' | *[!0-9]*) return 0 ;;
+	esac
+	[ $((avail_kb / 1024)) -ge "$DEADMAN_PROBE_MEM_FLOOR_MB" ]
+}
+
+# Kill what a killed test.sh leaves behind for this node: the run_socks/xray
+# pair named url_test_<node> (test.sh itself is excluded, as upstream does)
+# and its temporary config. `ps w` + a bracketed pattern so the grep never
+# matches itself; the trailing class keeps node "a" from matching "ab".
+deadman_reap_url_test() {
+	reap_pids="$(ps w 2>/dev/null | grep -E "[u]rl_test_$1([^A-Za-z0-9_]|\$)" | grep -v 'test\.sh' | awk '{ print $1 }')"
+	if [ -n "$reap_pids" ]; then
+		# shellcheck disable=SC2086
+		kill -9 $reap_pids 2>/dev/null || true
+	fi
+	rm -f "$DEADMAN_PASSWALL_TMP_DIR"/*url_test_"$1".json \
+		"$DEADMAN_PASSWALL_TMP_DIR"/*url_test_"$1"[!A-Za-z0-9_]*.json 2>/dev/null || true
+}
+
+# Lock token: our epoch and pid, so a release never removes a lock someone
+# else took over after declaring ours stale.
+deadman_lock_token() {
+	printf '%s %s' "$1" "$$"
+}
+
+# $1 lock dir, $2 now, $3 stale seconds. 0 = acquired.
+deadman_try_lock() {
+	if mkdir "$1" 2>/dev/null; then
+		deadman_lock_token "$2" > "$1/owner" 2>/dev/null || true
+		return 0
+	fi
+	held_epoch="$(cut -d ' ' -f 1 "$1/owner" 2>/dev/null || true)"
+	case "$held_epoch" in
+	'' | *[!0-9]*) held_epoch="" ;;
+	esac
+	if [ -z "$held_epoch" ] || [ $(($2 - held_epoch)) -ge "$3" ] || [ $(($2 - held_epoch)) -lt 0 ]; then
+		rm -rf "$1" 2>/dev/null || true
+		if mkdir "$1" 2>/dev/null; then
+			deadman_lock_token "$2" > "$1/owner" 2>/dev/null || true
+			return 0
+		fi
+	fi
+	return 1
+}
+
+# $1 lock dir, $2 the epoch it was taken at. Removes it only if still ours.
+deadman_unlock() {
+	if [ "$(cat "$1/owner" 2>/dev/null || true)" = "$(deadman_lock_token "$2")" ]; then
+		rm -rf "$1" 2>/dev/null || true
+	fi
+}
+
+# Run test.sh url_test_node <node> with a timeout that needs nothing but sh:
+# the `timeout` applet is not guaranteed in OpenWrt's BusyBox (PassWall
+# 26.7.16+ had to add a coreutils-timeout dependency), so nothing relies on it. Prints test.sh's answer;
+# returns 124 when it had to be killed (after reaping its leftovers).
+deadman_url_test_node() {
+	rm -f "$DEADMAN_PROBE_TIMEOUT_FLAG" 2>/dev/null || true
+	"$DEADMAN_URL_TEST" url_test_node "$1" 2>/dev/null &
+	probe_pid=$!
+	(
+		sleep "$DEADMAN_URL_TEST_TIMEOUT_SECONDS"
+		: > "$DEADMAN_PROBE_TIMEOUT_FLAG"
+		kill -9 "$probe_pid" 2>/dev/null
+	) </dev/null >/dev/null 2>&1 &
+	watcher_pid=$!
+	wait "$probe_pid" 2>/dev/null
+	kill "$watcher_pid" 2>/dev/null || true
+	if [ -f "$DEADMAN_PROBE_TIMEOUT_FLAG" ]; then
+		rm -f "$DEADMAN_PROBE_TIMEOUT_FLAG" 2>/dev/null || true
+		deadman_reap_url_test "$1"
+		return 124
+	fi
+	return 0
+}
+
+# One node under the shared url_test lock, waiting at most $2 seconds for it.
+# Prints the answer; returns 3 when the lock could not be had (the agent is
+# probing): that node is unjudged.
+deadman_url_test_node_locked() {
+	waited=0
+	while :; do
+		lock_now="$(now_epoch)"
+		deadman_try_lock "$DEADMAN_URL_TEST_LOCK_DIR" "$lock_now" "$DEADMAN_URL_TEST_LOCK_STALE_SECONDS" && break
+		[ "$waited" -lt "$2" ] || return 3
+		sleep 1
+		waited=$((waited + 1))
+	done
+	deadman_url_test_node "$1"
+	probe_rc=$?
+	deadman_unlock "$DEADMAN_URL_TEST_LOCK_DIR" "$lock_now"
+	return "$probe_rc"
+}
+
+# Proxy verdict from url_test_node. Sets DEADMAN_VERDICT_DETAIL for logging.
+#   rc 0 = alive (a candidate answered 200/204)
+#   rc 1 = dead  (at least one candidate probed, none answered)
+#   rc 2 = inconclusive (no test.sh, no candidate, or too little RAM to probe)
+deadman_proxy_verdict() {
+	DEADMAN_VERDICT_DETAIL=""
+	if [ ! -x "$DEADMAN_URL_TEST" ]; then
+		DEADMAN_VERDICT_DETAIL="no $DEADMAN_URL_TEST"
+		return 2
+	fi
+	if ! deadman_probe_memory_ok; then
+		DEADMAN_VERDICT_DETAIL="MemAvailable below ${DEADMAN_PROBE_MEM_FLOOR_MB} MB"
+		return 2
+	fi
+	candidates="$(deadman_proxy_candidates)"
+	if [ -z "$candidates" ]; then
+		DEADMAN_VERDICT_DETAIL="no concrete proxy node to test"
+		return 2
+	fi
+	unjudged=0
+	verdict_started="$(now_epoch)"
+	for node in $candidates; do
+		budget_used=$(($(now_epoch) - verdict_started))
+		if [ "$budget_used" -lt 0 ] || [ "$budget_used" -ge "$DEADMAN_RUN_PROBE_BUDGET_SECONDS" ]; then
+			# Out of time: the nodes not reached are unjudged.
+			unjudged=1
+			DEADMAN_VERDICT_DETAIL="${DEADMAN_VERDICT_DETAIL}${DEADMAN_VERDICT_DETAIL:+, }probe budget ${DEADMAN_RUN_PROBE_BUDGET_SECONDS}s spent"
+			break
+		fi
+		lock_wait=$((DEADMAN_RUN_PROBE_BUDGET_SECONDS - budget_used))
+		[ "$lock_wait" -le "$DEADMAN_URL_TEST_LOCK_WAIT_SECONDS" ] || lock_wait="$DEADMAN_URL_TEST_LOCK_WAIT_SECONDS"
+		raw_answer="$(deadman_url_test_node_locked "$node" "$lock_wait")"
+		probe_rc=$?
+		answer="$(printf '%s' "$raw_answer" | tr -d ' \t\r\n')"
+		if [ "$probe_rc" -eq 3 ]; then
+			unjudged=1
+			DEADMAN_VERDICT_DETAIL="${DEADMAN_VERDICT_DETAIL}${DEADMAN_VERDICT_DETAIL:+, }$node=busy"
+			continue
+		fi
+		[ "$probe_rc" -eq 124 ] && answer="timeout"
+		case "$answer" in
+		200 | 204 | 200:* | 204:*)
+			DEADMAN_VERDICT_DETAIL="node $node answered $answer"
+			return 0
+			;;
+		esac
+		DEADMAN_VERDICT_DETAIL="${DEADMAN_VERDICT_DETAIL}${DEADMAN_VERDICT_DETAIL:+, }$node=${answer:-none}"
+	done
+	# A node the agent was probing at the time is not evidence of death.
+	[ "$unjudged" -eq 1 ] && return 2
+	return 1
+}
+
+# Probe budget: at most one verdict per DEADMAN_PROBE_INTERVAL_SECONDS. A
+# clock that went backwards never blocks a probe.
+deadman_probe_due() {
+	last_probe="$(deadman_read_epoch_file "$DEADMAN_LAST_PROBE_FILE")"
+	[ -n "$last_probe" ] || return 0
+	probe_age=$(($1 - last_probe))
+	[ "$probe_age" -lt 0 ] && return 0
+	[ "$probe_age" -ge "$DEADMAN_PROBE_INTERVAL_SECONDS" ]
+}
+
+deadman_mark_probe() {
+	mkdir -p "$(dirname "$DEADMAN_LAST_PROBE_FILE")" 2>/dev/null || true
+	printf '%s' "$1" > "$DEADMAN_LAST_PROBE_FILE" 2>/dev/null || true
+}
+
+deadman_read_epoch_file() {
+	value="$(cat "$1" 2>/dev/null || true)"
+	case "$value" in
+	'' | *[!0-9]*) printf '' ;;
+	*) printf '%s' "$value" ;;
+	esac
+}
+
+# Has the flap-damping cooldown passed since the watchdog's last flip?
+# $1 now, $2 "restore" lets a backwards clock count as elapsed: giving back a
+# proven-alive proxy is the safe direction, cutting one is not.
+deadman_action_cooldown_elapsed() {
+	last="$(deadman_read_epoch_file "$DEADMAN_LAST_ACTION_FILE")"
+	[ -n "$last" ] || return 0
+	age=$(($1 - last))
+	if [ "$age" -lt 0 ]; then
+		[ "${2:-}" = "restore" ]
+		return
+	fi
+	[ "$age" -ge "$DEADMAN_ACTION_COOLDOWN_SECONDS" ]
+}
+
+deadman_mark_action() {
+	mkdir -p "$(dirname "$DEADMAN_LAST_ACTION_FILE")" 2>/dev/null || true
+	printf '%s' "$1" > "$DEADMAN_LAST_ACTION_FILE" 2>/dev/null || true
+}
+
+# Is the agent in the middle of a proxy retry it will judge itself?
+deadman_agent_retry_in_progress() {
+	now="$1"
+	phase="$(deadman_state_field '@.control_plane_recovery.phase')"
+	[ "$phase" = "passwall_retry_wait" ] || return 1
+	retry_epoch="$(deadman_rfc3339_to_epoch "$(deadman_state_field '@.control_plane_recovery.last_passwall_retry_at')")"
+	[ -n "$retry_epoch" ] || return 1
+	age=$((now - retry_epoch))
+	# A retry stamped in the future (clock skew) counts as in progress.
+	[ "$age" -lt "$DEADMAN_AGENT_RETRY_GRACE_SECONDS" ]
+}
+
+# Does the agent's recovery own the PassWall main switch right now?
+deadman_agent_owns_passwall() {
+	case "$(deadman_state_field '@.control_plane_recovery.phase')" in
+	direct_settle | reboot_wait | post_reboot_check | passwall_retry_wait | operator_attention) return 0 ;;
+	esac
+	return 1
+}
+
+# Log only when the dead-man's informational state changes, so a long panel
+# outage does not scroll the 64 KiB syslog ring away.
+deadman_note_state() {
+	if [ "$(cat "$STATE_FILE" 2>/dev/null || true)" != "$1" ]; then
+		log "$2"
+		mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
+		echo "$1" > "$STATE_FILE"
+	fi
+}
+
+deadman_release_ownership() {
+	[ -f "$DEADMAN_OWNER_MARKER" ] || return 0
+	rm -f "$DEADMAN_OWNER_MARKER" 2>/dev/null || true
+	log "DEAD-MAN: $1; releasing the watchdog's direct-mode ownership"
+	if [ "$(cat "$STATE_FILE" 2>/dev/null || true)" = "deadman-direct" ]; then
+		rm -f "$STATE_FILE" 2>/dev/null || true
+	fi
+}
+
+# Forget the informational hold/defer state once contact is back, so the
+# next outage logs its first decision again.
+deadman_clear_note() {
+	case "$(cat "$STATE_FILE" 2>/dev/null || true)" in
+	deadman-hold-* | deadman-defer) rm -f "$STATE_FILE" 2>/dev/null || true ;;
+	esac
+}
+
+
+# Orchestrates the dead-man's switch: gather on-disk signals, ask the pure
+# decision function, prove the proxy's state, act + log. Safe to call
+# unconditionally; it self-guards on every precondition.
+run_deadman_check() {
+	run_lock_epoch="$(now_epoch)"
+	if ! deadman_try_lock "$DEADMAN_LOCK_DIR" "$run_lock_epoch" "$DEADMAN_LOCK_STALE_SECONDS"; then
+		return 0
+	fi
+	deadman_check_locked "$run_lock_epoch"
+	deadman_unlock "$DEADMAN_LOCK_DIR" "$run_lock_epoch"
+}
+
+deadman_check_locked() {
+	now="$1"
+
+	# Not "passwall_enabled": POSIX sh has no locals and
+	# should_fail_safe_to_direct below assigns that name.
+	pw_enabled="$(uci -q get passwall2.@global[0].enabled 2>/dev/null || printf 0)"
+	[ -n "$pw_enabled" ] || pw_enabled=0
 
 	router_id="$(deadman_state_field '@.router_id')"
 	agent_token="$(deadman_state_field '@.agent_token')"
@@ -355,16 +724,82 @@ run_deadman_check() {
 		boot_grace_ok=0
 	fi
 
-	if should_fail_safe_to_direct "$last_contact_epoch" "$now" "$passwall_enabled" "$is_onboarded" "$boot_grace_ok"; then
-		if [ -n "$last_contact_epoch" ]; then
-			age=$((now - last_contact_epoch))
-			log "DEAD-MAN: no successful control-plane contact for ${age}s (> $(deadman_threshold_seconds)s) while passwall2 enabled; failing safe to direct (uci disable passwall2 + restart) so the controller can reach the panel"
-		else
-			log "DEAD-MAN: onboarded router has no recorded control-plane contact and is past boot grace while passwall2 enabled; failing safe to direct (uci disable passwall2 + restart)"
-		fi
-		deadman_fail_safe_to_direct
-		echo deadman-direct > "$STATE_FILE"
+	# Is the dead-man armed (onboarded, no recent contact)? Evaluated as if
+	# PassWall were on, so the same answer drives both directions.
+	if should_fail_safe_to_direct "$last_contact_epoch" "$now" 1 "$is_onboarded" "$boot_grace_ok"; then
+		contact_stale=1
+	else
+		contact_stale=0
 	fi
+	if [ -n "$last_contact_epoch" ]; then
+		contact_age="$((now - last_contact_epoch))s"
+	else
+		contact_age="never"
+	fi
+
+	if [ "$pw_enabled" = "1" ]; then
+		# Someone turned PassWall back on (agent rescue, operator, owner): our
+		# direct, if any, is over.
+		deadman_release_ownership "passwall2 is enabled again"
+		if [ "$contact_stale" != "1" ]; then
+			deadman_clear_note
+			return 0
+		fi
+		if deadman_agent_retry_in_progress "$now"; then
+			deadman_note_state deadman-defer "DEAD-MAN: no control-plane contact (last ${contact_age}) but the agent is judging its own proxy retry; not interfering"
+			return 0
+		fi
+		if ! deadman_action_cooldown_elapsed "$now"; then
+			return 0
+		fi
+		deadman_probe_due "$now" || return 0
+		deadman_mark_probe "$now"
+		deadman_proxy_verdict
+		verdict=$?
+		case "$verdict" in
+		0)
+			deadman_note_state deadman-hold-alive "DEAD-MAN: no control-plane contact (last ${contact_age}) but the proxy is alive (${DEADMAN_VERDICT_DETAIL}); keeping proxy mode — a panel outage alone never disables the VPN"
+			;;
+		2)
+			deadman_note_state deadman-hold-inconclusive "DEAD-MAN: no control-plane contact (last ${contact_age}); proxy verdict inconclusive (${DEADMAN_VERDICT_DETAIL}); keeping proxy mode"
+			;;
+		*)
+			log "DEAD-MAN: no control-plane contact (last ${contact_age}, threshold $(deadman_threshold_seconds)s) and the proxy is dead (url_test_node: ${DEADMAN_VERDICT_DETAIL}); failing safe to direct (uci disable passwall2 + restart)"
+			deadman_fail_safe_to_direct
+			mkdir -p "$(dirname "$DEADMAN_OWNER_MARKER")" 2>/dev/null || true
+			printf '%s' "$now" > "$DEADMAN_OWNER_MARKER" 2>/dev/null || true
+			deadman_mark_action "$now"
+			echo deadman-direct > "$STATE_FILE"
+			;;
+		esac
+		return 0
+	fi
+
+	# PassWall is off. Only a direct the watchdog created is its business, and
+	# it stays the watchdog's until a node answers: panel contact says nothing
+	# about the proxy (the agent's own resume from an external direct waits a
+	# RebootCooldown), and a clock without RTC, a missing timestamp during boot
+	# grace or a disabled threshold must not orphan the direct either. The
+	# agent takes ownership by writing the main switch, which deletes the
+	# marker, or by parking the router in one of its recovery phases.
+	[ -f "$DEADMAN_OWNER_MARKER" ] || return 0
+	if deadman_agent_owns_passwall; then
+		deadman_release_ownership "the agent's recovery has taken over PassWall"
+		return 0
+	fi
+	if ! deadman_action_cooldown_elapsed "$now" restore; then
+		return 0
+	fi
+	deadman_probe_due "$now" || return 0
+	deadman_mark_probe "$now"
+	if deadman_proxy_verdict; then
+		log "DEAD-MAN: proxy is alive again (${DEADMAN_VERDICT_DETAIL}; last control-plane contact ${contact_age}); restoring the watchdog's direct to proxy mode (uci enable passwall2 + restart)"
+		deadman_restore_proxy
+		rm -f "$DEADMAN_OWNER_MARKER" 2>/dev/null || true
+		deadman_mark_action "$now"
+		rm -f "$STATE_FILE" 2>/dev/null || true
+	fi
+	return 0
 }
 
 # When sourced for testing, stop here: expose the helpers/decision function
@@ -426,20 +861,20 @@ if ! pgrep -f "$AGENT_BIN" >/dev/null 2>&1; then
 	exit 0
 fi
 
-# Branch 3: process is alive. The binary exists and a controller process is
-# running — but "process alive" does NOT mean "reaching the panel". This is
-# exactly where the proxy strand hides, so run the panel-independent
-# dead-man's switch (GAP-2) before declaring all-clear. It only acts when the
-# router is onboarded, passwall2 is enabled, and there has been no successful
-# control-plane contact for longer than the threshold; otherwise it is a
-# no-op.
-run_deadman_check
-
-# Clear any prior recovery marker so the next transition logs again — but do
-# not erase a dead-man marker we may have just written this tick (that marker
-# is informational and self-heals once the agent resumes proxy).
-if [ -f "$STATE_FILE" ] && [ "$(cat "$STATE_FILE" 2>/dev/null)" != "deadman-direct" ]; then
+# Clear a prior process-recovery marker so the next transition logs again.
+# Dead-man markers (deadman-*) belong to run_deadman_check below.
+case "$(cat "$STATE_FILE" 2>/dev/null || true)" in
+missing | not-executable)
 	log "controller recovered; clearing watchdog state"
 	rm -f "$STATE_FILE"
-fi
+	;;
+esac
+
+# Branch 3: process is alive. The binary exists and a controller process is
+# running — but "process alive" does NOT mean "reaching the panel". This is
+# exactly where the proxy strand hides, so run the dead-man's switch (GAP-2).
+# It acts only on an onboarded router with no recent control-plane contact,
+# and then only on url_test_node proof: a dead proxy goes direct, a proxy
+# that answers again comes back. A panel outage alone is a no-op.
+run_deadman_check
 exit 0

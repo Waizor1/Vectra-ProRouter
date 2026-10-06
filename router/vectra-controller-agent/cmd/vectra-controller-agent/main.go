@@ -278,7 +278,16 @@ func runOnce(
 	health.RecoveryPhase = string(persisted.ControlPlaneRecovery.Phase)
 	health.LastRecoveryAction = persisted.ControlPlaneRecovery.LastActionReason
 	health.AwaitingOperator = persisted.ControlPlaneRecovery.AwaitingOperator
-	if recoveryOutcome.SkipControlPlane {
+	// The skip is advisory: a paced check-in still goes out so recovery can
+	// never hide the router from the panel (see checkin_pacing.go).
+	// Not inside a settle/warmup window, nor in the tick that just switched
+	// PassWall (a warmup starts now): a job delivered by that check-in could
+	// restart PassWall under the measurement the phase is waiting for.
+	pacedRecoveryCheckIn := recoveryOutcome.SkipControlPlane
+	if recoveryOutcome.SkipControlPlane &&
+		(recoveryOutcome.SettleWindow ||
+			recoveryOutcome.InventoryChanged ||
+			!controlPlaneCheckInPacer.dueDuringRecovery(time.Now().UTC(), persisted.ControlPlaneRecovery.Phase)) {
 		runtimeStatus.LastError = ""
 		if err := state.SaveRuntimeStatus(cfg.StatusPath, runtimeStatus); err != nil {
 			return fmt.Errorf("persist runtime status: %w", err)
@@ -287,6 +296,18 @@ func runOnce(
 			return err
 		}
 		return nil
+	}
+	if pacedRecoveryCheckIn {
+		// Commit what recovery just decided before the network call: a check-in
+		// that hangs until the watchdog restarts us must not lose the phase.
+		runtimeStatus.LastError = ""
+		if err := state.SaveRuntimeStatus(cfg.StatusPath, runtimeStatus); err != nil {
+			return fmt.Errorf("persist runtime status: %w", err)
+		}
+		if err := persistStateIfChanged(cfg.StatePath, persistedBefore, persisted); err != nil {
+			return err
+		}
+		persistedBefore = *persisted
 	}
 
 	importSource := "check_in"
@@ -297,7 +318,10 @@ func runOnce(
 	// the behaviour the router owner turns off with manual mode, so it is
 	// gated here rather than inside the passwall package: the package still
 	// does exactly what it is told, it is just not told anymore.
-	if !cfg.ManualMode && importSource == "check_in" && !persisted.RequestImport && persisted.LastDesiredRevision != nil {
+	// The binding self-heals restart PassWall when they change something; a
+	// paced check-in happens while recovery is mid-settle or mid-warmup and
+	// must not disturb the measurement that phase is waiting for.
+	if !pacedRecoveryCheckIn && !cfg.ManualMode && importSource == "check_in" && !persisted.RequestImport && persisted.LastDesiredRevision != nil {
 		reconcileResult, reconcileErr := passwall.ReconcileShuntBindingsYieldingTo(
 			ctx,
 			passwall.ExecBackend{},
@@ -310,7 +334,7 @@ func runOnce(
 			log.Printf("passwall shunt self-heal restored %d binding(s)", len(reconcileResult.Changes))
 		}
 	}
-	if !cfg.ManualMode && importSource == "check_in" && !persisted.RequestImport {
+	if !pacedRecoveryCheckIn && !cfg.ManualMode && importSource == "check_in" && !persisted.RequestImport {
 		policyResult, policyErr := passwall.ReconcileFleetRoutePolicyWithDirective(
 			ctx,
 			passwall.ExecBackend{},
@@ -339,6 +363,7 @@ func runOnce(
 		}
 	}
 
+	controlPlaneCheckInPacer.noteAttempt(time.Now().UTC())
 	if cfg.RouterID != "" && cfg.AgentToken != "" {
 		if err := recoverJobJournal(
 			ctx,
@@ -389,6 +414,7 @@ func runOnce(
 		runtimeStatus.LastRegisterAt = time.Now().UTC().Format(time.RFC3339)
 		runtimeStatus.LastError = ""
 		noteSuccessfulControlPlaneContact(persisted, &runtimeStatus, time.Now().UTC())
+		controlPlaneCheckInPacer.noteSuccess()
 		if sendPasswallImport {
 			persisted.LastImportedConfigDigest = collectedInventory.ConfigDigest
 			persisted.RequestImport = false
@@ -438,6 +464,7 @@ func runOnce(
 	runtimeStatus.ImportState = checkInResponse.ConfigSyncState.ImportState
 	runtimeStatus.LastError = ""
 	noteSuccessfulControlPlaneContact(persisted, &runtimeStatus, time.Now().UTC())
+	controlPlaneCheckInPacer.noteSuccess()
 	if sendPasswallImport {
 		persisted.LastImportedConfigDigest = collectedInventory.ConfigDigest
 	}
@@ -459,6 +486,17 @@ func runOnce(
 	}
 	if desiredRevision != nil {
 		persisted.LastDesiredRevision = desiredRevision
+	}
+
+	// Jobs can run for minutes (package updates). Commit the fresh contact
+	// first: the cron watchdog reads it from state.json, and a stale value
+	// would have it start its own url_test probes alongside the jobs.
+	if len(checkInResponse.Jobs) > 0 {
+		saved, err := persistContactBeforeJobs(cfg.StatePath, persistedBefore, persisted)
+		if err != nil {
+			return err
+		}
+		persistedBefore = saved
 	}
 
 	if err := executeJobs(
@@ -1426,6 +1464,9 @@ func executeJobs(
 				}
 				continue
 			}
+			// The operator's direct is the operator's: the watchdog must not
+			// restore over it.
+			releaseWatchdogDirectOwnership()
 			result, err := backend.Run(ctx, "/etc/init.d/passwall2", "restart")
 			if err != nil {
 				if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, result.Stdout, result.Stderr, err.Error(), map[string]interface{}{"error": err.Error(), "enteredDirectMode": true}); submitErr != nil {
@@ -2180,6 +2221,19 @@ func submitFailure(
 		return fmt.Errorf("submit failure result: %w", err)
 	}
 	return nil
+}
+
+// persistContactBeforeJobs saves the state (with the contact just recorded)
+// and returns the new baseline for persistStateIfChanged.
+func persistContactBeforeJobs(
+	path string,
+	before state.PersistedState,
+	current *state.PersistedState,
+) (state.PersistedState, error) {
+	if err := persistStateIfChanged(path, before, current); err != nil {
+		return before, err
+	}
+	return *current, nil
 }
 
 func persistStateIfChanged(

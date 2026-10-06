@@ -73,6 +73,7 @@ func setRecoveryProbeTargets(
 }
 
 func resetControlPlaneProbeCache() {
+	resetProxyNodeVerdictCache()
 	clearControlPlaneReachabilityCache()
 }
 

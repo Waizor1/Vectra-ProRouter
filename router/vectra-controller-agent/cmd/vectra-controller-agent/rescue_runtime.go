@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
+	"os"
 	"path"
 	"strings"
 	"time"
@@ -304,9 +306,40 @@ func setPasswallMainSwitch(
 	if err := backend.Batch(ctx, commands); err != nil {
 		return err
 	}
+	if !options.TransientProbe {
+		releaseWatchdogDirectOwnership()
+	}
 
 	_, err := backend.Run(ctx, "/etc/init.d/passwall2", "restart")
 	return err
+}
+
+// watchdogDirectMarkerPath is where the cron watchdog records that it switched
+// PassWall off (vectra-controller-watchdog, DEADMAN_OWNER_MARKER). While it
+// exists the watchdog owns that direct and gives it back once a node answers.
+var watchdogDirectMarkerPath = "/etc/vectra-controller/watchdog-direct"
+
+// A watchdog switch younger than this is treated as in flight by the
+// transient direct-path probe; an older marker with PassWall on is stale and
+// is cleaned up by the watchdog itself.
+const watchdogDirectFreshness = 2 * time.Minute
+
+// releaseWatchdogDirectOwnership: whoever writes the main switch on purpose
+// owns it from then on, so the watchdog must not later "restore" over an
+// operator's direct or re-flip the agent's own decision.
+func releaseWatchdogDirectOwnership() {
+	if err := os.Remove(watchdogDirectMarkerPath); err == nil {
+		log.Printf("PassWall main switch written by the agent; the watchdog's direct-mode ownership is released")
+	}
+}
+
+func watchdogJustSwitchedToDirect(now time.Time) bool {
+	info, err := os.Stat(watchdogDirectMarkerPath)
+	if err != nil {
+		return false
+	}
+	age := now.Sub(info.ModTime())
+	return age >= 0 && age < watchdogDirectFreshness
 }
 
 // validateDirectFallback briefly turns PassWall off to prove the direct path
@@ -320,7 +353,13 @@ func validateDirectFallback(
 	backend passwall.UCIBackend,
 	collected *controlplane.RouterInventory,
 ) (bool, error) {
-	if err := setPasswallMainSwitch(ctx, backend, false, mainSwitchOptions{}); err != nil {
+	// The watchdog switched to direct after this cycle's inventory was taken.
+	// Toggling now would end with PassWall back on and the watchdog cutting it
+	// again on its next tick.
+	if watchdogJustSwitchedToDirect(time.Now()) {
+		return false, nil
+	}
+	if err := setPasswallMainSwitch(ctx, backend, false, mainSwitchOptions{TransientProbe: true}); err != nil {
 		return false, fmt.Errorf("disable passwall for direct fallback probe: %w", err)
 	}
 
@@ -331,7 +370,7 @@ func validateDirectFallback(
 		return result.Reachable, nil
 	}
 
-	if err := setPasswallMainSwitch(ctx, backend, true, mainSwitchOptions{}); err != nil {
+	if err := setPasswallMainSwitch(ctx, backend, true, mainSwitchOptions{TransientProbe: true}); err != nil {
 		return false, fmt.Errorf("restore passwall after direct fallback probe: %w", err)
 	}
 
@@ -341,6 +380,9 @@ func validateDirectFallback(
 type mainSwitchOptions struct {
 	Reason            string
 	ClearRescueReason bool
+	// TransientProbe marks validateDirectFallback's off/on toggle, which is a
+	// measurement, not a decision, and so leaves the watchdog's ownership alone.
+	TransientProbe bool
 }
 
 var shuntProxyProbeOptions = []string{
@@ -367,21 +409,62 @@ var shuntProxyProbeOptions = []string{
 // waited for a human. It also silently blinded PhasePostRebootCheck: that path
 // calls resumeProxyMode and then probes in the same pass, while
 // inventory.PasswallEnabled still holds the pre-resume snapshot value of false.
-func proxyNodeReachableForRecovery(
+//
+// Three answers, not two: a probe that could not run because another
+// url_test_node held the shared lock (the cron watchdog) is no evidence
+// either way, and recovery must take no action on it -- mapping it to "not
+// alive" would send a live proxy to direct.
+type proxyNodeVerdict int
+
+const (
+	// proxyNodeNotAlive: probed and no candidate answered, or nothing
+	// concrete to probe (the pre-r46 "false").
+	proxyNodeNotAlive proxyNodeVerdict = iota
+	proxyNodeAlive
+	// proxyNodeUnjudged: no candidate answered and at least one could not be
+	// probed because the url_test lock was busy.
+	proxyNodeUnjudged
+)
+
+func (v proxyNodeVerdict) String() string {
+	switch v {
+	case proxyNodeAlive:
+		return "alive"
+	case proxyNodeUnjudged:
+		return "unjudged"
+	default:
+		return "not alive"
+	}
+}
+
+func proxyNodeVerdictForRecovery(
 	ctx context.Context,
 	backend passwall.UCIBackend,
 	inventory *controlplane.RouterInventory,
-) bool {
+) proxyNodeVerdict {
 	if inventory == nil {
-		return false
+		return proxyNodeNotAlive
 	}
 
-	if reachable, _, _ := probeProxyPath(ctx, backend, inventory.SelectedNodeID); reachable {
-		return true
+	reachable, _, result := probeProxyPath(ctx, backend, inventory.SelectedNodeID)
+	if reachable {
+		return proxyNodeAlive
 	}
+	busy := urlTestBusy(result)
 
-	reachable, _ := probeSelectedShuntProxyOptions(ctx, backend, inventory.SelectedNodeID)
-	return reachable
+	shuntReachable, _, shuntBusy := probeSelectedShuntProxyOptions(ctx, backend, inventory.SelectedNodeID)
+	if shuntReachable {
+		return proxyNodeAlive
+	}
+	if busy || shuntBusy {
+		return proxyNodeUnjudged
+	}
+	return proxyNodeNotAlive
+}
+
+// urlTestBusy: the probe never ran because the shared url_test lock was held.
+func urlTestBusy(result passwall.CommandResult) bool {
+	return strings.Contains(result.Stderr, passwall.ErrURLTestBusy.Error())
 }
 
 func probeProxyPath(
@@ -406,7 +489,11 @@ func probeProxyPath(
 		return false, false, result
 	}
 
-	result, err := backend.Run(ctx, "/usr/share/passwall2/test.sh", "url_test_node", probeNodeID)
+	result, err := passwall.RunURLTestNode(ctx, backend, probeNodeID)
+	if errors.Is(err, passwall.ErrURLTestBusy) {
+		// Another probe (the cron watchdog) held the node: unjudged, not dead.
+		return false, false, result
+	}
 	if err != nil {
 		return false, true, result
 	}
@@ -418,23 +505,26 @@ func probeProxyPath(
 		output == "204", true, result
 }
 
+// Returns reachable, conclusive, and whether any slot could not be probed
+// because the shared url_test lock was busy.
 func probeSelectedShuntProxyOptions(
 	ctx context.Context,
 	backend passwall.UCIBackend,
 	selectedNodeID string,
-) (bool, bool) {
+) (bool, bool, bool) {
 	selectedNodeID = strings.TrimSpace(selectedNodeID)
 	if selectedNodeID == "" {
-		return false, false
+		return false, false, false
 	}
 
 	protocol, ok := selectedNodeProtocol(ctx, backend, selectedNodeID)
 	if !ok || protocol != "_shunt" {
-		return false, false
+		return false, false, false
 	}
 
 	tested := map[string]struct{}{}
 	conclusive := false
+	busy := false
 	for _, option := range shuntProxyProbeOptions {
 		nodeID, ok := getUCIValue(
 			ctx,
@@ -458,13 +548,18 @@ func probeSelectedShuntProxyOptions(
 			continue
 		}
 
-		conclusive = true
-		if reachable, _, _ := probeProxyPath(ctx, backend, nodeID); reachable {
-			return true, true
+		reachable, slotConclusive, result := probeProxyPath(ctx, backend, nodeID)
+		if reachable {
+			return true, true, busy
 		}
+		if !slotConclusive && urlTestBusy(result) {
+			busy = true
+			continue
+		}
+		conclusive = true
 	}
 
-	return false, conclusive
+	return false, conclusive, busy
 }
 
 func resolveProxyProbeNode(
