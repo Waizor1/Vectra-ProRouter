@@ -1,7 +1,6 @@
 package main
 
 import (
- "vectra-controller-pro/internal/vault"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/api"
 	"vectra-controller-pro/internal/apply"
@@ -16,8 +16,8 @@ import (
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/localctl"
-	"vectra-controller-pro/internal/rescue"
 	"vectra-controller-pro/internal/logging"
+	"vectra-controller-pro/internal/rescue"
 	"vectra-controller-pro/internal/subscription"
 	"vectra-controller-pro/internal/supervisor"
 	"vectra-controller-pro/internal/uiapi"
@@ -566,10 +566,13 @@ func (d *daemon) runningEntry() *localctl.Entry {
 }
 
 // onXrayStart is the supervisor's start hook: it runs after every xray start,
-// in its own goroutine, never on the loop.
+// in its own goroutine, never on the loop. It returns when both of its parts
+// have, so the supervisor's WaitHooks covers them.
 func (d *daemon) onXrayStart(pid int) {
-	go d.takeLeakBaseline(pid)
+	baseline := make(chan struct{})
+	go func() { defer close(baseline); d.takeLeakBaseline(pid) }()
 	d.reapplyPins(pid)
+	<-baseline
 }
 
 // startBudget bounds how long the start hook waits for a new xray's API.
