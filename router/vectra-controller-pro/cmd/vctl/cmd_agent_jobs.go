@@ -965,6 +965,8 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 	if d.applyRuleset != nil {
 		applyRuleset = d.applyRuleset
 	}
+	// The deadman is armed inside the apply: its clock starts no later.
+	armedAt := d.now()
 	if err := applyRuleset(script, spec); err != nil {
 		logging.L().Error("firewall apply failed (deadman armed; it reverts the ruleset)", "err", err.Error())
 		return
@@ -1013,7 +1015,9 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 		d.dnsPathGen++
 		d.flushResolverCache("the resolver's servers changed")
 	}
-	d.confirmFirewall(ctx)
+	programmed := spec
+	d.fwSpec = &programmed
+	d.confirmFirewall(ctx, armedAt)
 	d.maybeLoadDirect(ctx)
 }
 
@@ -1058,6 +1062,7 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 	}
 	_ = d.confirmer.Confirm()
 	d.firewallConfirmed()
+	d.fwSpec = nil
 	return true
 }
 

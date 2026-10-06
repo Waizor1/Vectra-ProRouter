@@ -81,7 +81,7 @@ func TestConfirmProbesThroughTheControlPlaneClient(t *testing.T) {
 
 	// No local proof here: only the panel can confirm.
 	d.rescuePolicy.HealthURLs = nil
-	if !d.confirmFirewall(context.Background()) {
+	if !d.confirmFirewall(context.Background(), d.now()) {
 		t.Fatal("the panel was reachable and the deadman was not confirmed")
 	}
 	if atomic.LoadInt64(&throughClient) == 0 {
@@ -102,7 +102,7 @@ func TestConfirmDoesNotFireWhenThePanelIsUnreachable(t *testing.T) {
 	d := confirmDaemon(t, "http://127.0.0.1:1", confirmPath, hc)
 	d.rescuePolicy.HealthURLs = []string{"http://127.0.0.1:1/generate_204"}
 
-	if d.confirmFirewall(context.Background()) {
+	if d.confirmFirewall(context.Background(), d.now()) {
 		t.Fatal("confirmed with the panel unreachable")
 	}
 	if fileExists(confirmPath) {

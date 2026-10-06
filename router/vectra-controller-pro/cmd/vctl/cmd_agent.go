@@ -314,6 +314,15 @@ type daemon struct {
 	// in for time.Now there in tests.
 	fwConfirmBy, fwConfirmNext time.Time
 	clock                      func() time.Time
+	// fwConfirmDeadline is the latest the sentinel may be written (the
+	// deadman's wake less fwConfirmMargin); fwConfirmFault why the last try
+	// did not confirm. fwSpec is the ruleset last programmed (nil: none),
+	// whose LAN path clientChainFault checks; nftOutput stands in for nft's
+	// output in tests.
+	fwConfirmDeadline time.Time
+	fwConfirmFault    string
+	fwSpec            *firewall.Spec
+	nftOutput         func(ctx context.Context, args ...string) ([]byte, error)
 
 	// The router UI (localui.go). All written on the loop goroutine only;
 	// the socket goroutine reads the published snapshot.
@@ -825,10 +834,16 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	// restart (the durable signal is the sentinel, not an in-memory flag). It
 	// is one proof among others (fw_confirm.go): without the panel the
 	// router's own confirms.
-	if err := d.confirmer.Confirm(); err != nil {
+	// A ruleset still waiting is confirmed only with the LAN's path whole:
+	// the check-in went out on the marked sockets, which never cross it.
+	if d.confirmPending() {
+		if fault := d.clientChainFault(ctx); fault != "" {
+			logging.L().Warn("firewall commit-confirm: the panel answers but the LAN's path is not whole; not confirmed", "fault", fault)
+		} else if err := d.confirmer.Confirm(); err == nil {
+			d.firewallConfirmed()
+		}
+	} else if err := d.confirmer.Confirm(); err != nil {
 		logging.L().Debug("firewall commit-confirm sentinel write failed", "err", err.Error())
-	} else {
-		d.firewallConfirmed()
 	}
 
 	if len(resp.DesiredRevision) > 0 {
