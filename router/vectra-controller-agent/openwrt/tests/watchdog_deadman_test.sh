@@ -736,6 +736,51 @@ run_deadman_check
 assert_eq "1" "$UCI_DISABLE_CALLED" "hung probe -> node judged dead within the timeout"
 DEADMAN_URL_TEST_TIMEOUT_SECONDS=30
 
+# --- 12b. The verdict fits its time budget ---------------------------------
+# Every probe costs 100 s of (simulated) time and all eight slots are dead:
+# the run stops after the budget instead of outlasting the 600 s run lock, and
+# with slots left unprobed the verdict is inconclusive, not dead.
+reset_e2e
+CLOCK_FILE="$SANDBOX/clock"
+printf '%s' "$E2E_NOW" > "$CLOCK_FILE"
+now_epoch() { cat "$CLOCK_FILE"; }
+cat > "$DEADMAN_URL_TEST" <<STUB
+#!/bin/sh
+printf '%s\n' "\$2" >> "$PROBE_LOG"
+printf '%s' \$((\$(cat "$CLOCK_FILE") + 100)) > "$CLOCK_FILE"
+printf '000:0.000000\n'
+STUB
+chmod +x "$DEADMAN_URL_TEST"
+STUB_PASSWALL_UCI="myshunt.protocol=_shunt
+myshunt.default_node=n8
+myshunt.WorldProxy=n1
+myshunt.YouTube=n2
+myshunt.GooglePlay=n3
+myshunt.Proxy=n4
+myshunt.ProxyGame=n5
+myshunt.Tiktok=n6
+myshunt.Special=n7
+n1.protocol=vless
+n2.protocol=vless
+n3.protocol=vless
+n4.protocol=vless
+n5.protocol=vless
+n6.protocol=vless
+n7.protocol=vless
+n8.protocol=vless"
+run_started="$(cat "$CLOCK_FILE")"
+run_deadman_check
+run_spent=$(($(cat "$CLOCK_FILE") - run_started))
+assert_eq "3" "$(probes_run)" "probe budget: three 100 s probes fit in 240 s, the rest are skipped"
+if [ "$run_spent" -lt "$DEADMAN_LOCK_STALE_SECONDS" ]; then
+	ok "probe budget: the run ends (${run_spent}s) well before the ${DEADMAN_LOCK_STALE_SECONDS}s run lock goes stale"
+else
+	not_ok "probe budget: the run took ${run_spent}s"
+fi
+assert_eq "0" "$UCI_DISABLE_CALLED" "probe budget: unprobed slots make the verdict inconclusive, not dead"
+assert_eq "deadman-hold-inconclusive" "$(cat "$STATE_FILE" 2>/dev/null)" "probe budget: recorded as inconclusive"
+now_epoch() { printf '%s' "$E2E_NOW"; }
+
 # --- 13. Cron entry install is idempotent ---------------------------------
 CRON_SANDBOX="$SANDBOX/cron"
 mkdir -p "$CRON_SANDBOX"

@@ -124,6 +124,11 @@ DEADMAN_PROBE_TIMEOUT_FLAG="/var/run/vectra-controller-watchdog.probe-timeout"
 DEADMAN_URL_TEST_LOCK_DIR="/var/run/vectra-url-test.lock"
 DEADMAN_URL_TEST_LOCK_STALE_SECONDS=120
 DEADMAN_URL_TEST_LOCK_WAIT_SECONDS=60
+# Total time one verdict may spend waiting for the lock and probing. Each
+# candidate can cost a lock wait plus a 30 s probe; without a cap a shunt with
+# many slots could outlast the 600 s run lock and let the next cron run start
+# alongside. Candidates not reached in time leave the verdict inconclusive.
+DEADMAN_RUN_PROBE_BUDGET_SECONDS=240
 # At most one proxy verdict (and so one batch of temporary xrays) per this
 # many seconds, whichever direction is being judged.
 DEADMAN_PROBE_INTERVAL_SECONDS=900
@@ -521,14 +526,15 @@ deadman_url_test_node() {
 	return 0
 }
 
-# One node under the shared url_test lock. Prints the answer; returns 3 when
-# the lock could not be had (the agent is probing): that node is unjudged.
+# One node under the shared url_test lock, waiting at most $2 seconds for it.
+# Prints the answer; returns 3 when the lock could not be had (the agent is
+# probing): that node is unjudged.
 deadman_url_test_node_locked() {
 	waited=0
 	while :; do
 		lock_now="$(now_epoch)"
 		deadman_try_lock "$DEADMAN_URL_TEST_LOCK_DIR" "$lock_now" "$DEADMAN_URL_TEST_LOCK_STALE_SECONDS" && break
-		[ "$waited" -lt "$DEADMAN_URL_TEST_LOCK_WAIT_SECONDS" ] || return 3
+		[ "$waited" -lt "$2" ] || return 3
 		sleep 1
 		waited=$((waited + 1))
 	done
@@ -558,8 +564,18 @@ deadman_proxy_verdict() {
 		return 2
 	fi
 	unjudged=0
+	verdict_started="$(now_epoch)"
 	for node in $candidates; do
-		raw_answer="$(deadman_url_test_node_locked "$node")"
+		budget_used=$(($(now_epoch) - verdict_started))
+		if [ "$budget_used" -lt 0 ] || [ "$budget_used" -ge "$DEADMAN_RUN_PROBE_BUDGET_SECONDS" ]; then
+			# Out of time: the nodes not reached are unjudged.
+			unjudged=1
+			DEADMAN_VERDICT_DETAIL="${DEADMAN_VERDICT_DETAIL}${DEADMAN_VERDICT_DETAIL:+, }probe budget ${DEADMAN_RUN_PROBE_BUDGET_SECONDS}s spent"
+			break
+		fi
+		lock_wait=$((DEADMAN_RUN_PROBE_BUDGET_SECONDS - budget_used))
+		[ "$lock_wait" -le "$DEADMAN_URL_TEST_LOCK_WAIT_SECONDS" ] || lock_wait="$DEADMAN_URL_TEST_LOCK_WAIT_SECONDS"
+		raw_answer="$(deadman_url_test_node_locked "$node" "$lock_wait")"
 		probe_rc=$?
 		answer="$(printf '%s' "$raw_answer" | tr -d ' \t\r\n')"
 		if [ "$probe_rc" -eq 3 ]; then
