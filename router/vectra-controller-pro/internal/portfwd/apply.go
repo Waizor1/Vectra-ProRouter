@@ -55,18 +55,33 @@ func RouterEnv() Env {
 		UCISaveDir:     "/tmp/.uci",
 		Lock:           "/var/lock/vectra-portfwd.lock",
 		DirectStatus:   "/var/run/vectra-controller-pro/portfwd-direct.json",
-		Run: func(ctx context.Context, stdin io.Reader, name string, args ...string) error {
-			cmd := exec.CommandContext(ctx, name, args...)
-			cmd.Stdin = stdin
-			cmd.WaitDelay = time.Second
-			return cmd.Run()
-		},
+		Run:            runGroup,
 		Output: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			cmd := exec.CommandContext(ctx, name, args...)
 			cmd.WaitDelay = time.Second
 			return cmd.Output()
 		},
 	}
+}
+
+// runGroup runs a command in a process group of its own and, when ctx ends,
+// kills the whole group. /etc/init.d/firewall reload is a shell that runs fw4,
+// which runs nft: killing only the shell on a timeout would leave fw4 to load
+// the new redirects after the restore had put the old ones back.
+func runGroup(ctx context.Context, stdin io.Reader, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = stdin
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		// The group's id is the leader's pid (Setpgid); a group already gone
+		// is not an error worth more than the kill of the leader.
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+	cmd.WaitDelay = time.Second
+	return cmd.Run()
 }
 
 // State is what the router has: vctl's rules and the LAN's devices.

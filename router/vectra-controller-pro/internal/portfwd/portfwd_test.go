@@ -2,13 +2,16 @@ package portfwd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -949,5 +952,46 @@ func TestOwnRulesAreReadCanonicalOrNotAtAll(t *testing.T) {
 	}
 	if len(fw.sections) != 5 {
 		t.Fatalf("every vctl section must still be removed at the next apply: %v", fw.sections)
+	}
+}
+
+// A reload that hangs is killed with everything it started: the init
+// script's fw4 must not go on to load the new redirects after the restore
+// (it would run the restore's reload and then its own). The fake reload is a
+// shell that starts a child — fw4 — and waits on it.
+func TestARunOutOfTimeKillsTheWholeGroup(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	script := filepath.Join(dir, "reload")
+	body := "#!/bin/sh\nsleep 30 &\necho $! > " + pidFile + "\nwait\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if err := RouterEnv().Run(ctx, nil, script, "reload"); err == nil {
+		t.Fatal("a reload killed on its deadline returned no error")
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("returned after %s: the group was not killed", d)
+	}
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if pid <= 0 {
+		t.Fatalf("pid %q", raw)
+	}
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("the reload's child %d outlived it", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
