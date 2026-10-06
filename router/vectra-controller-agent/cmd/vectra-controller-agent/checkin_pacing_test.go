@@ -1,10 +1,14 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"vectra-controller-agent/internal/recovery"
+	"vectra-controller-agent/internal/state"
 )
 
 func TestRecoveryCheckInPacing(t *testing.T) {
@@ -59,5 +63,29 @@ func TestRecoveryCheckInPacing(t *testing.T) {
 	// A clock that jumped backwards never silences the router.
 	if !pacer.dueDuringRecovery(now, recovery.PhaseMonitoring) {
 		t.Fatal("expected a check-in after a backwards clock jump")
+	}
+}
+
+// The fresh contact is on disk before jobs run, so the cron watchdog does not
+// read a stale contact and probe alongside a long job.
+func TestPersistContactBeforeJobsWritesTheFreshContact(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	before := state.PersistedState{ControlPlaneRecovery: recovery.State{LastSuccessfulControlPlaneAt: "2026-10-06T10:00:00Z"}}
+	current := before
+	current.ControlPlaneRecovery.LastSuccessfulControlPlaneAt = "2026-10-06T10:20:00Z"
+
+	baseline, err := persistContactBeforeJobs(path, before, &current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "2026-10-06T10:20:00Z") {
+		t.Fatalf("state on disk lacks the fresh contact: %s", raw)
+	}
+	if baseline != current {
+		t.Fatal("the returned baseline must be the saved state")
 	}
 }

@@ -488,6 +488,17 @@ func runOnce(
 		persisted.LastDesiredRevision = desiredRevision
 	}
 
+	// Jobs can run for minutes (package updates). Commit the fresh contact
+	// first: the cron watchdog reads it from state.json, and a stale value
+	// would have it start its own url_test probes alongside the jobs.
+	if len(checkInResponse.Jobs) > 0 {
+		saved, err := persistContactBeforeJobs(cfg.StatePath, persistedBefore, persisted)
+		if err != nil {
+			return err
+		}
+		persistedBefore = saved
+	}
+
 	if err := executeJobs(
 		ctx,
 		cfg,
@@ -2210,6 +2221,19 @@ func submitFailure(
 		return fmt.Errorf("submit failure result: %w", err)
 	}
 	return nil
+}
+
+// persistContactBeforeJobs saves the state (with the contact just recorded)
+// and returns the new baseline for persistStateIfChanged.
+func persistContactBeforeJobs(
+	path string,
+	before state.PersistedState,
+	current *state.PersistedState,
+) (state.PersistedState, error) {
+	if err := persistStateIfChanged(path, before, current); err != nil {
+		return before, err
+	}
+	return *current, nil
 }
 
 func persistStateIfChanged(
