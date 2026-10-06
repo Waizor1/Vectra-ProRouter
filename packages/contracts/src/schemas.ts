@@ -866,7 +866,9 @@ export const routerConnectTelemetrySchema = z.object({
   supportAccess: z.boolean().optional(),
   autoUpdate: z.boolean().optional(),
   // null: the router has no fw4 config; absent: it predates the feature.
-  portForwards: connectPortForwardsTelemetrySchema.nullable().optional(),
+  // A report that breaks the contract drops to null instead of failing the
+  // whole check-in: port forwards must never cost a router its check-in.
+  portForwards: connectPortForwardsTelemetrySchema.nullable().optional().catch(null),
 });
 
 export const routerInventorySchema = z.object({

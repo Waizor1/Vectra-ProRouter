@@ -1477,6 +1477,25 @@ describe("port forwards", () => {
     });
   }
 
+  it("drops a malformed portForwards to null and keeps the rest of the report", () => {
+    const parsed = routerConnectTelemetrySchema.parse({
+      ownerRef: "acct-42",
+      portForwards: {
+        ...telemetry,
+        rules: [{ ...telemetry.rules[0], id: "NOT-HEX" }],
+      },
+    });
+    expect(parsed.portForwards).toBeNull();
+    expect(parsed.ownerRef).toBe("acct-42");
+    const tooMany = routerConnectTelemetrySchema.parse({
+      portForwards: {
+        ...telemetry,
+        rules: Array.from({ length: 33 }, () => telemetry.rules[0]),
+      },
+    });
+    expect(tooMany.portForwards).toBeNull();
+  });
+
   it("accepts the contract's telemetry, null and absent", () => {
     expect(
       routerConnectTelemetrySchema.parse({ portForwards: telemetry })
@@ -1503,7 +1522,7 @@ describe("port forwards", () => {
     const parsed = routerCheckInRequestSchema.parse(checkIn);
     expect(parsed.inventory.connect?.portForwards).toEqual(telemetry);
   });
-  it("bounds the telemetry and refuses wrong types", () => {
+  it("bounds the telemetry: out-of-contract reports drop to null, never pass through", () => {
     const tooManyRules = {
       ...telemetry,
       rules: Array.from({ length: 33 }, (_, i) => ({
@@ -1533,8 +1552,8 @@ describe("port forwards", () => {
       [],
     ])
       expect(
-        routerConnectTelemetrySchema.safeParse({ portForwards }).success,
-      ).toBe(false);
+        routerConnectTelemetrySchema.parse({ portForwards }).portForwards,
+      ).toBeNull();
     expect(
       routerConnectTelemetrySchema.safeParse({
         portForwards: {
