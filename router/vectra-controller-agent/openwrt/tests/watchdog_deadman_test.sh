@@ -346,14 +346,30 @@ DEADMAN_LAST_ACTION_FILE="$SANDBOX/run/last-action"
 DEADMAN_LOCK_DIR="$SANDBOX/run/lock"
 MEMINFO_FILE="$SANDBOX/meminfo"
 DEADMAN_URL_TEST="$SANDBOX/test.sh"
+DEADMAN_URL_TEST_LOCK_DIR="$SANDBOX/run/url-test.lock"
+DEADMAN_URL_TEST_LOCK_WAIT_SECONDS=1
+DEADMAN_PROBE_TIMEOUT_FLAG="$SANDBOX/run/probe-timeout"
+DEADMAN_LAST_PROBE_FILE="$SANDBOX/run/last-probe"
+DEADMAN_PASSWALL_TMP_DIR="$SANDBOX/tmp-passwall2"
+mkdir -p "$DEADMAN_PASSWALL_TMP_DIR"
 PROBE_LOG="$SANDBOX/probes.log"
+
+# BusyBox `ps w` lists every process; procps/BSD ps without a tty does not.
+ps() { command ps -A -ww -o pid= -o args= 2>/dev/null; }
 
 # test.sh stub: answers url_test_node <node> from answers/<node> (default 000)
 # and logs every probe. A real executable, so the `timeout` wrapper works.
+# answers/<node>.slow makes it behave like a hung test.sh: it leaves a fake
+# "xray" named url_test_<node> and a temp config, then never returns.
 cat > "$DEADMAN_URL_TEST" <<STUB
 #!/bin/sh
 [ "\$1" = "url_test_node" ] || exit 1
 printf '%s\n' "\$2" >> "$PROBE_LOG"
+if [ -f "$SANDBOX/answers/\$2.slow" ]; then
+	sh -c 'while :; do sleep 1; done' "url_test_\$2" </dev/null >/dev/null 2>&1 &
+	: > "$DEADMAN_PASSWALL_TMP_DIR/url_test_\$2.json"
+	while :; do sleep 1; done
+fi
 if [ -f "$SANDBOX/answers/\$2" ]; then cat "$SANDBOX/answers/\$2"; else printf '000:0.000000\n'; fi
 STUB
 chmod +x "$DEADMAN_URL_TEST"
@@ -397,9 +413,11 @@ myshunt.YouTube=yt
 myshunt.Proxy=world
 world.protocol=vless
 yt.protocol=vless"
-	rm -rf "$SANDBOX/answers" "$DEADMAN_LOCK_DIR"
+	rm -rf "$SANDBOX/answers" "$DEADMAN_LOCK_DIR" "$DEADMAN_URL_TEST_LOCK_DIR"
 	mkdir -p "$SANDBOX/answers"
-	rm -f "$STATE_FILE" "$DEADMAN_OWNER_MARKER" "$DEADMAN_LAST_ACTION_FILE" "$PROBE_LOG"
+	rm -f "$STATE_FILE" "$DEADMAN_OWNER_MARKER" "$DEADMAN_LAST_ACTION_FILE" "$PROBE_LOG" "$DEADMAN_LAST_PROBE_FILE"
+	unset VECTRA_DEADMAN_THRESHOLD_SECONDS 2>/dev/null || true
+	DEADMAN_URL_TEST_TIMEOUT_SECONDS=30
 	printf '0' > "$DEADMAN_BOOT_MARKER"
 	printf 'MemTotal:         240000 kB\nMemAvailable:     120000 kB\n' > "$MEMINFO_FILE"
 	E2E_NOW=1000000000
@@ -537,16 +555,36 @@ answer world "204:0.250000"
 run_deadman_check
 assert_eq "0" "$UCI_ENABLE_CALLED" "operator/agent direct (no marker) is never restored by the watchdog"
 
-# Contact back -> the agent owns PassWall again.
+# ISP drop: WAN gone 20 min -> watchdog direct; WAN back -> panel contact is
+# fresh again, the agent's last retry is irrelevant, and the watchdog still
+# gives its direct back within one probe interval (~15 min).
+reset_e2e
+E2E_NOW=1000001200                         # 20 min after the stale contact
+STUB_LAST_CONTACT="2001-09-09T01:46:40Z"   # epoch 1000000000: 20 min ago
+STUB_RETRY_AT="2001-09-09T01:40:00Z"       # an agent retry long before
+run_deadman_check
+assert_eq "1" "$UCI_DISABLE_CALLED" "ISP drop: 20 min silent + dead node -> watchdog direct"
+E2E_NOW=$((E2E_NOW + 300))                 # WAN back; the agent checks in
+STUB_LAST_CONTACT="2001-09-09T02:10:40Z"   # 60 s before the new now
+answer world "204:0.250000"
+run_deadman_check
+assert_eq "0" "$UCI_ENABLE_CALLED" "ISP drop: no flip inside the action cooldown"
+assert_eq "1000001200" "$(cat "$DEADMAN_OWNER_MARKER" 2>/dev/null)" "ISP drop: fresh contact does not drop the marker"
+E2E_NOW=$((E2E_NOW + 600))                 # 15 min after the switch
+STUB_LAST_CONTACT="2001-09-09T02:15:40Z"
+run_deadman_check
+assert_eq "1" "$UCI_ENABLE_CALLED" "ISP drop: proxy restored 15 min after the switch, contact fresh"
+assert_eq "" "$(cat "$DEADMAN_OWNER_MARKER" 2>/dev/null)" "ISP drop: marker removed after restore"
+
+# The agent wrote the main switch (operator direct, its own rescue): it
+# deleted the marker, so the watchdog never overrides it.
 reset_e2e
 run_deadman_check
-STUB_LAST_CONTACT="$FRESH_CONTACT"
+rm -f "$DEADMAN_OWNER_MARKER"
 answer world "204:0.250000"
 E2E_NOW=$((E2E_NOW + DEADMAN_ACTION_COOLDOWN_SECONDS))
-STUB_LAST_CONTACT="2001-09-09T01:59:40Z"   # 60 s before the new now
 run_deadman_check
-assert_eq "0" "$UCI_ENABLE_CALLED" "contact back -> watchdog leaves the restore to the agent"
-assert_eq "" "$(cat "$DEADMAN_OWNER_MARKER" 2>/dev/null)" "contact back -> ownership released"
+assert_eq "0" "$UCI_ENABLE_CALLED" "marker deleted by the agent -> watchdog does not restore"
 
 # Agent's recovery took over the park -> the watchdog stands down.
 reset_e2e
@@ -563,8 +601,8 @@ reset_e2e
 run_deadman_check                           # dead -> direct (owned)
 # Reboot: /var/run is wiped, /etc (marker, state.json) survives. The clock
 # comes up behind the switch epoch before NTP catches up.
-rm -f "$STATE_FILE" "$DEADMAN_LAST_ACTION_FILE" "$DEADMAN_BOOT_MARKER"
-rm -rf "$DEADMAN_LOCK_DIR"
+rm -f "$STATE_FILE" "$DEADMAN_LAST_ACTION_FILE" "$DEADMAN_BOOT_MARKER" "$DEADMAN_LAST_PROBE_FILE"
+rm -rf "$DEADMAN_LOCK_DIR" "$DEADMAN_URL_TEST_LOCK_DIR"
 E2E_NOW=$((E2E_NOW + 600))
 answer world "204:0.250000"
 run_deadman_check
@@ -576,10 +614,41 @@ E2E_NOW=$((E2E_NOW + 300))
 run_deadman_check
 assert_eq "00" "$UCI_ENABLE_CALLED$UCI_DISABLE_CALLED" "post-restore tick is a no-op"
 
+# Reboot without RTC: the clock comes up behind the last contact (age < 0),
+# so contact does not count as stale. The marker must survive that, and the
+# watchdog still restores once a node answers.
+reset_e2e
+run_deadman_check                           # dead -> direct (owned), epoch E2E_NOW
+rm -f "$STATE_FILE" "$DEADMAN_LAST_ACTION_FILE" "$DEADMAN_BOOT_MARKER" "$DEADMAN_LAST_PROBE_FILE"
+E2E_NOW=$((E2E_NOW - 7200))                 # 2 h behind: behind both contact and marker
+run_deadman_check
+assert_eq "1000000000" "$(cat "$DEADMAN_OWNER_MARKER" 2>/dev/null)" "reboot + clock behind + dead node -> marker kept (not orphaned)"
+assert_eq "0" "$UCI_ENABLE_CALLED" "reboot + clock behind + dead node -> stays direct"
+rm -f "$DEADMAN_LAST_PROBE_FILE"
+answer world "204:0.250000"
+run_deadman_check
+assert_eq "1" "$UCI_ENABLE_CALLED" "reboot + clock behind + node answers -> restored"
+
+# Missing timestamp during boot grace, or the dead-man disabled (threshold 0),
+# must not orphan an owned direct either.
+reset_e2e
+run_deadman_check
+STUB_LAST_CONTACT=""
+rm -f "$DEADMAN_BOOT_MARKER" "$DEADMAN_LAST_ACTION_FILE" "$DEADMAN_LAST_PROBE_FILE"
+VECTRA_DEADMAN_THRESHOLD_SECONDS=0
+export VECTRA_DEADMAN_THRESHOLD_SECONDS
+run_deadman_check
+assert_eq "1000000000" "$(cat "$DEADMAN_OWNER_MARKER" 2>/dev/null)" "boot grace + threshold 0 + dead node -> marker kept"
+rm -f "$DEADMAN_LAST_PROBE_FILE"
+answer world "204:0.250000"
+run_deadman_check
+assert_eq "1" "$UCI_ENABLE_CALLED" "boot grace + threshold 0 + node answers -> restored"
+unset VECTRA_DEADMAN_THRESHOLD_SECONDS
+
 # --- 9. Overlapping cron runs ---------------------------------------------
 reset_e2e
 mkdir -p "$DEADMAN_LOCK_DIR"
-printf '%s' "$E2E_NOW" > "$DEADMAN_LOCK_DIR/epoch"
+printf '%s 99999' "$E2E_NOW" > "$DEADMAN_LOCK_DIR/owner"
 run_deadman_check
 assert_eq "0" "$UCI_DISABLE_CALLED" "a live lock from another run -> this run does nothing"
 E2E_NOW=$((E2E_NOW + DEADMAN_LOCK_STALE_SECONDS))
@@ -591,7 +660,83 @@ else
 	ok "lock released after the run"
 fi
 
-# --- 10. Cron entry install is idempotent ---------------------------------
+# A run whose lock was declared stale and taken over must not release the
+# new owner's lock.
+rm -rf "$DEADMAN_LOCK_DIR"
+deadman_try_lock "$DEADMAN_LOCK_DIR" 1000 600
+printf '%s 424242' 1700 > "$DEADMAN_LOCK_DIR/owner"   # someone else's now
+deadman_unlock "$DEADMAN_LOCK_DIR" 1000
+assert_eq "1700 424242" "$(cat "$DEADMAN_LOCK_DIR/owner" 2>/dev/null)" "release never removes a lock someone else took over"
+deadman_unlock "$DEADMAN_LOCK_DIR" 1700
+rm -rf "$DEADMAN_LOCK_DIR"
+
+# --- 10. One verdict per probe interval ------------------------------------
+reset_e2e
+answer yt "204:0.300000"
+run_deadman_check                            # hold-alive, probes once
+probes_before="$(probes_run)"
+rm -f "$SANDBOX/answers/yt"                  # proxy dies 5 min later
+E2E_NOW=$((E2E_NOW + 300))
+run_deadman_check
+assert_eq "$probes_before" "$(probes_run)" "hold state: no second verdict inside the probe interval"
+assert_eq "0" "$UCI_DISABLE_CALLED" "hold state: nothing switched inside the probe interval"
+E2E_NOW=$((E2E_NOW + DEADMAN_PROBE_INTERVAL_SECONDS))
+run_deadman_check
+assert_eq "1" "$UCI_DISABLE_CALLED" "next probe interval: the now-dead proxy is cut"
+
+# --- 11. Shared url_test lock with the agent --------------------------------
+# The agent is probing (fresh lock): test.sh would kill its xray and both
+# would read "dead". The watchdog waits, then calls the node unjudged.
+reset_e2e
+mkdir -p "$DEADMAN_URL_TEST_LOCK_DIR"
+printf '%s agent' "$E2E_NOW" > "$DEADMAN_URL_TEST_LOCK_DIR/owner"
+run_deadman_check
+assert_eq "0" "$UCI_DISABLE_CALLED" "agent holds the url_test lock -> no false dead verdict, no direct"
+assert_eq "0" "$(probes_run)" "agent holds the url_test lock -> watchdog does not run test.sh"
+assert_eq "deadman-hold-inconclusive" "$(cat "$STATE_FILE" 2>/dev/null)" "busy lock recorded as inconclusive"
+assert_eq "$E2E_NOW agent" "$(cat "$DEADMAN_URL_TEST_LOCK_DIR/owner" 2>/dev/null)" "the agent's lock is left alone"
+# A stale lock (agent died mid-probe) is broken and the probe runs.
+rm -f "$DEADMAN_LAST_PROBE_FILE" "$STATE_FILE"
+E2E_NOW=$((E2E_NOW + DEADMAN_URL_TEST_LOCK_STALE_SECONDS))
+run_deadman_check
+assert_eq "1" "$UCI_DISABLE_CALLED" "stale url_test lock is broken and the verdict is reached"
+if [ -d "$DEADMAN_URL_TEST_LOCK_DIR" ]; then
+	not_ok "url_test lock released after the probe"
+else
+	ok "url_test lock released after the probe"
+fi
+
+# --- 12. A hung test.sh is killed and its leftovers reaped ------------------
+reset_e2e
+DEADMAN_URL_TEST_TIMEOUT_SECONDS=2
+: > "$SANDBOX/answers/slow.slow"
+# A neighbour whose id merely starts with "slow" must survive the reaping.
+sh -c 'while :; do sleep 1; done' url_test_slowpoke </dev/null >/dev/null 2>&1 &
+neighbour_pid=$!
+: > "$DEADMAN_PASSWALL_TMP_DIR/url_test_slowpoke.json"
+answer_out="$(deadman_url_test_node slow)"
+probe_rc=$?
+assert_eq "124" "$probe_rc" "hung test.sh is killed after the timeout (rc 124)"
+sleep 1
+assert_eq "0" "$(ps | grep -cE '[u]rl_test_slow$')" "leftover url_test_<node> xray reaped"
+assert_eq "" "$(ls "$DEADMAN_PASSWALL_TMP_DIR"/*url_test_slow.json 2>/dev/null)" "leftover url_test_<node> config removed"
+if kill -0 "$neighbour_pid" 2>/dev/null; then
+	ok "a different node's url_test process is not touched"
+else
+	not_ok "a different node's url_test process is not touched"
+fi
+assert_eq "1" "$(ls "$DEADMAN_PASSWALL_TMP_DIR"/url_test_slowpoke.json 2>/dev/null | wc -l | tr -d ' ')" "a different node's config is not touched"
+kill -9 "$neighbour_pid" 2>/dev/null || true
+wait "$neighbour_pid" 2>/dev/null || true
+assert_eq "" "$answer_out" "a killed probe yields no answer"
+# In a verdict, a hung probe counts as a dead node, not a hang of the run.
+STUB_SELECTED_NODE="slow"
+STUB_PASSWALL_UCI="slow.protocol=vless"
+run_deadman_check
+assert_eq "1" "$UCI_DISABLE_CALLED" "hung probe -> node judged dead within the timeout"
+DEADMAN_URL_TEST_TIMEOUT_SECONDS=30
+
+# --- 13. Cron entry install is idempotent ---------------------------------
 CRON_SANDBOX="$SANDBOX/cron"
 mkdir -p "$CRON_SANDBOX"
 printf '0 4 * * * reboot\n' > "$CRON_SANDBOX/root"
@@ -608,6 +753,17 @@ assert_eq "1" "$(grep -c "^\*/5 \* \* \* \* $DEADMAN_URL_TEST " "$CRON_SANDBOX/r
 	"cron install run three times -> exactly one watchdog line"
 assert_eq "1" "$(grep -c '^0 4 \* \* \* reboot$' "$CRON_SANDBOX/root")" \
 	"cron install keeps unrelated entries"
+
+# The install hook drops a stale watchdog-direct marker when PassWall is on
+# (and keeps a live one while PassWall is off).
+sed -i.bak "s#^WATCHDOG_DIRECT_MARKER=.*#WATCHDOG_DIRECT_MARKER=\"$CRON_SANDBOX/watchdog-direct\"#" "$CRON_SANDBOX/install.sh"
+printf '123' > "$CRON_SANDBOX/watchdog-direct"
+STUB_PASSWALL_ENABLED=0
+( . "$CRON_SANDBOX/install.sh" ) >/dev/null 2>&1
+assert_eq "123" "$(cat "$CRON_SANDBOX/watchdog-direct" 2>/dev/null)" "install keeps a live marker while passwall2 is off"
+STUB_PASSWALL_ENABLED=1
+( . "$CRON_SANDBOX/install.sh" ) >/dev/null 2>&1
+assert_eq "" "$(cat "$CRON_SANDBOX/watchdog-direct" 2>/dev/null)" "install removes a stale marker when passwall2 is on"
 
 # --- Cleanup ---------------------------------------------------------------
 rm -f "$SCRATCH_STATE" 2>/dev/null || true
