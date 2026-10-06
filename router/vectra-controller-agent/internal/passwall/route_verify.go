@@ -2,6 +2,7 @@ package passwall
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -43,6 +44,12 @@ type RouteSlotVerificationResult struct {
 	RequiredNodeExtras map[string]string `json:"requiredNodeExtras,omitempty"`
 	ActualNodeExtras   map[string]string `json:"actualNodeExtras,omitempty"`
 	Error              string            `json:"error,omitempty"`
+	// Unjudged: url_test_node could not run because another probe held the
+	// shared lock, so SmokeOK=false is no evidence about the node. The panel
+	// skips such a slot; an older panel reads it as a failed smoke test,
+	// which is what a pre-r46 agent reported in that race anyway (the two
+	// probes killed each other's xray).
+	Unjudged bool `json:"unjudged,omitempty"`
 }
 
 func VerifyFleetRoutes(ctx context.Context, backend UCIBackend, identity FleetRoutePolicyIdentity) (RouteVerificationResult, error) {
@@ -151,6 +158,11 @@ func verifyFleetRouteSlot(
 
 	commandResult, err := RunURLTestNode(ctx, backend, boundNodeID)
 	out.Command = commandResult.Command
+	if errors.Is(err, ErrURLTestBusy) {
+		out.Unjudged = true
+		out.Error = "url_test_node not run: another probe held the shared lock"
+		return out
+	}
 	out.StatusCode = parseURLTestStatusCode(commandResult.Stdout, commandResult.Stderr)
 	out.SmokeOK = err == nil && out.StatusCode == 204
 	if err != nil {

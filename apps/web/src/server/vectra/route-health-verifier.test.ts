@@ -259,6 +259,27 @@ describe("routeVerificationToHealthSample", () => {
     expect(sample).toBeNull();
   });
 
+  // r46: a slot the router could not probe (shared url_test lock busy) is no
+  // evidence; counting its smokeOk=false as a fail could condemn a live host.
+  it("skips a slot the router reports as unjudged", () => {
+    const sample = routeVerificationToHealthSample("r1", nodes, {
+      slots: [
+        {
+          slotId: "Special",
+          boundNodeId: "node-nl",
+          smokeOk: false,
+          unjudged: true,
+        },
+        { slotId: "WorldProxy", boundNodeId: "node-pl", smokeOk: true },
+      ],
+    });
+
+    expect(sample).toEqual({
+      routerId: "r1",
+      observations: [{ host: "pl2.nfnpx.online:443", outcome: "ok" }],
+    });
+  });
+
   it("has nothing to say about an exempt router", () => {
     const sample = routeVerificationToHealthSample("r1", nodes, {
       exempt: true,

@@ -2,9 +2,13 @@ package passwall
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type routeVerifyBackend struct {
@@ -191,5 +195,43 @@ func standardFleetRouteUCILines() []string {
 		"passwall2.node_discord.mux='1'",
 		"passwall2.node_discord.mux_concurrency='-1'",
 		"passwall2.node_discord.xudp_concurrency='16'",
+	}
+}
+
+// The cron watchdog held the shared url_test lock for the whole wait: the
+// slot is reported unjudged, not as a 000 smoke failure the panel would count
+// against the node.
+func TestVerifyFleetRoutesReportsABusyURLTestLockAsUnjudged(t *testing.T) {
+	dir := useURLTestLockDir(t)
+	originalWait := URLTestLockWait
+	URLTestLockWait = 100 * time.Millisecond
+	t.Cleanup(func() { URLTestLockWait = originalWait })
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "owner"), []byte(fmt.Sprintf("%d 4242", time.Now().Unix())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backend := routeVerifyBackend{lines: standardFleetRouteUCILines(), codes: map[string]string{}}
+
+	result, err := VerifyFleetRoutes(context.Background(), backend, FleetRoutePolicyIdentity{Name: "new-router"})
+	if err != nil {
+		t.Fatalf("VerifyFleetRoutes() error = %v", err)
+	}
+	if len(result.Slots) == 0 {
+		t.Fatal("expected slot results")
+	}
+	for _, slot := range result.Slots {
+		if !slot.Unjudged || slot.SmokeOK || slot.StatusCode != 0 {
+			t.Fatalf("slot %s = %+v, want unjudged with no status", slot.SlotID, slot)
+		}
+	}
+	encoded, _ := json.Marshal(result.Slots[0])
+	if !strings.Contains(string(encoded), `"unjudged":true`) {
+		t.Fatalf("payload lacks the unjudged flag: %s", encoded)
+	}
+	judged, _ := json.Marshal(RouteSlotVerificationResult{SlotID: "x", SmokeOK: true})
+	if strings.Contains(string(judged), "unjudged") {
+		t.Fatalf("a judged slot must not carry the flag (older panels): %s", judged)
 	}
 }
