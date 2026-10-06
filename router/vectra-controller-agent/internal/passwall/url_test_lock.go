@@ -7,8 +7,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -37,7 +39,13 @@ var ErrURLTestBusy = errors.New("another url_test_node probe is running")
 
 const urlTestScript = "/usr/share/passwall2/test.sh"
 
-// RunURLTestNode runs `test.sh url_test_node <nodeID>` under the shared lock.
+// URLTestTimeout bounds one url_test_node, the same budget the watchdog
+// gives it. test.sh's curl has no --max-time, so without it a hung probe would
+// hold the shared lock until it is broken as stale. A variable for tests.
+var URLTestTimeout = 30 * time.Second
+
+// RunURLTestNode runs `test.sh url_test_node <nodeID>` under the shared lock,
+// for at most URLTestTimeout.
 func RunURLTestNode(ctx context.Context, backend UCIBackend, nodeID string) (CommandResult, error) {
 	release, err := acquireURLTestLock(ctx, time.Now)
 	if err != nil {
@@ -47,7 +55,70 @@ func RunURLTestNode(ctx context.Context, backend UCIBackend, nodeID string) (Com
 		}, err
 	}
 	defer release()
-	return backend.Run(ctx, urlTestScript, "url_test_node", nodeID)
+
+	probeCtx, cancel := context.WithTimeout(ctx, URLTestTimeout)
+	defer cancel()
+	finished := make(chan struct{})
+	reaped := make(chan struct{})
+	go func() {
+		defer close(reaped)
+		select {
+		case <-probeCtx.Done():
+			// The deadline kills test.sh only. Its run_socks/xray and curl keep
+			// the output pipe open (so the Run below would not return) and the
+			// xray keeps ~30 MB; reap them by name, as test.sh would have.
+			if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+				reapURLTestLeftovers(nodeID)
+			}
+		case <-finished:
+		}
+	}()
+	result, runErr := backend.Run(probeCtx, urlTestScript, "url_test_node", nodeID)
+	close(finished)
+	<-reaped
+	return result, runErr
+}
+
+// Where reapURLTestLeftovers looks; variables for tests.
+var (
+	urlTestProcRoot     = "/proc"
+	urlTestTmpDir       = "/tmp/etc/passwall2"
+	killURLTestLeftover = func(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }
+)
+
+// reapURLTestLeftovers kills processes whose command line names
+// url_test_<nodeID> exactly (not url_test_<nodeID>x, and never test.sh
+// itself) and removes their temporary config: what test.sh's own cleanup
+// does when it is allowed to finish. Only called while holding the shared
+// lock, so no other probe of the node is running.
+func reapURLTestLeftovers(nodeID string) {
+	pattern, err := regexp.Compile(`url_test_` + regexp.QuoteMeta(nodeID) + `([^A-Za-z0-9_]|$)`)
+	if err != nil {
+		return
+	}
+	entries, _ := os.ReadDir(urlTestProcRoot)
+	self := os.Getpid()
+	for _, entry := range entries {
+		pid, convErr := strconv.Atoi(entry.Name())
+		if convErr != nil || pid == self {
+			continue
+		}
+		raw, readErr := os.ReadFile(filepath.Join(urlTestProcRoot, entry.Name(), "cmdline"))
+		if readErr != nil {
+			continue
+		}
+		cmdline := strings.TrimSpace(strings.ReplaceAll(string(raw), "\x00", " "))
+		if strings.Contains(cmdline, "test.sh") || !pattern.MatchString(cmdline) {
+			continue
+		}
+		_ = killURLTestLeftover(pid)
+	}
+	leftovers, _ := filepath.Glob(filepath.Join(urlTestTmpDir, "*url_test_"+nodeID+"*.json"))
+	for _, path := range leftovers {
+		if pattern.MatchString(filepath.Base(path)) {
+			_ = os.Remove(path)
+		}
+	}
 }
 
 func acquireURLTestLock(ctx context.Context, now func() time.Time) (func(), error) {
