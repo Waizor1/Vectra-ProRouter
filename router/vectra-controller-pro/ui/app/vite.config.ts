@@ -78,8 +78,8 @@ function analyze(): Plugin {
 }
 
 /**
- * The bundle's big text payloads — the CSS, the ru/en/zh string table and the
- * port-preset catalogue — ship raw-deflated (as pack91 text, denser than
+ * The bundle's big text payloads — the CSS, the ru/en/zh string table, the
+ * icons' paths and the port-preset catalogue — ship raw-deflated (as pack91 text, denser than
  * base64) and are inflated once at startup by src/lib/inflate.ts. uhttpd
  * serves LuCI's files uncompressed, so this is ~30 KB less on flash and on
  * the wire. Dev mode and the tests keep using the plain sources.
@@ -89,7 +89,7 @@ function packText(): Plugin {
   const inflate = resolve(here, 'src/lib/inflate.ts');
   const unpack = `import { unpack } from ${JSON.stringify(inflate)};`;
   // Files whose `export default "…"` is packed as it is.
-  const TEXT = ['/src/styles/app.css?inline', '/src/lib/presets.txt?raw'];
+  const TEXT = ['/src/styles/app.css?inline', '/src/lib/presets.txt?raw', '/src/ui/icons.txt?raw'];
   const pack = async (text: string) => {
     const { pack91 } = (await import(pathToFileURL(inflate).href)) as typeof import('./src/lib/inflate');
     return JSON.stringify(pack91(deflateRawSync(Buffer.from(text), { level: 9 })));
