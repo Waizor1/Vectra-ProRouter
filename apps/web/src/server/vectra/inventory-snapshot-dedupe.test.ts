@@ -291,6 +291,53 @@ describe("materialInventoryFingerprint", () => {
       materialInventoryFingerprint(baseInventory),
     );
   });
+
+  // After set_port_forwards applied, the partner reads the new rule's id from
+  // the newest snapshot: the change must write one, not wait for the heartbeat.
+  it("reacts when the port forwards change", () => {
+    const portForwards = {
+      rules: [],
+      devices: [{ name: null, ip: "192.168.1.60" }],
+      cgnat: false,
+      directActive: null,
+    };
+    const without = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok" },
+    });
+    const none = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: { ownerRef: "acct-42", verdict: "ok", portForwards },
+    });
+    const one = routerInventorySchema.parse({
+      ...baseInventory,
+      connect: {
+        ownerRef: "acct-42",
+        verdict: "ok",
+        portForwards: {
+          ...portForwards,
+          rules: [
+            {
+              id: "3fa1c09e",
+              preset: null,
+              destIp: "192.168.1.60",
+              deviceName: null,
+              port: "25565",
+              proto: "tcp",
+              direct: false,
+              enabled: true,
+            },
+          ],
+        },
+      },
+    });
+    expect(materialInventoryFingerprint(none)).not.toBe(
+      materialInventoryFingerprint(without),
+    );
+    expect(materialInventoryFingerprint(one)).not.toBe(
+      materialInventoryFingerprint(none),
+    );
+  });
 });
 
 describe("shouldWriteInventorySnapshot", () => {

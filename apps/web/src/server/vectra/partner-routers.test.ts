@@ -555,6 +555,7 @@ describe("signed actions", () => {
       "reboot",
       "update_now",
       "set_auto_update",
+      "set_port_forwards",
     ]) {
       const fake = queueDb();
       expect(
@@ -1407,6 +1408,274 @@ describe("router.action carries the partner's Idempotency-Key", () => {
       expect(fake.inserts(partnerWebhooks)[0]?.payload).toMatchObject({
         detail: { actionId: JOB, idempotencyKey: "rb7-key", state: "applied" },
       });
+    }
+  });
+});
+
+// Port forwards (contract 2026-10-06, router/vectra-controller-pro/docs/
+// superpowers/specs/2026-10-06-port-forwards-contract.md): the action is
+// offered only to a router that advertises it, the telemetry reaches the
+// partner field by field and nothing else does.
+describe("port forwards", () => {
+  const telemetry = {
+    rules: [
+      {
+        id: "3fa1c09e",
+        preset: "minecraft-java",
+        destIp: "192.168.1.50",
+        deviceName: "gaming-pc",
+        port: "25565",
+        proto: "tcp",
+        direct: false,
+        enabled: true,
+      },
+    ],
+    devices: [
+      { name: "gaming-pc", ip: "192.168.1.50" },
+      { name: null, ip: "192.168.1.60" },
+    ],
+    cgnat: false,
+    directActive: true,
+  };
+  const params = {
+    rules: [
+      {
+        id: "3fa1c09e",
+        preset: "minecraft-java",
+        destIp: "192.168.1.50",
+        port: "25565",
+        proto: "tcp",
+        direct: false,
+        enabled: true,
+      },
+      {
+        destIp: "192.168.1.60",
+        port: "3478-3479",
+        proto: "both",
+        direct: true,
+        enabled: true,
+      },
+    ],
+  };
+  function portForwardsInventory(connect: Record<string, unknown>) {
+    return inventory({
+      connect: routerConnectTelemetrySchema.parse({
+        ownerRef: "acct-42",
+        ...connect,
+      }),
+    });
+  }
+  function portForwardsDb(capabilities: string[]) {
+    return createFakeDb({
+      selects: [
+        [
+          routerInventorySnapshots,
+          [[portForwardsInventory({ capabilities, portForwards: telemetry })]],
+        ],
+      ],
+      updateReturns: [[routers, [[router()]]]],
+    });
+  }
+
+  it("drops a malformed portForwards to null and keeps the rest of the report", () => {
+    const parsed = routerConnectTelemetrySchema.parse({
+      ownerRef: "acct-42",
+      portForwards: {
+        ...telemetry,
+        rules: [{ ...telemetry.rules[0], id: "NOT-HEX" }],
+      },
+    });
+    expect(parsed.portForwards).toBeNull();
+    expect(parsed.ownerRef).toBe("acct-42");
+    const tooMany = routerConnectTelemetrySchema.parse({
+      portForwards: {
+        ...telemetry,
+        rules: Array.from({ length: 33 }, () => telemetry.rules[0]),
+      },
+    });
+    expect(tooMany.portForwards).toBeNull();
+  });
+
+  it("accepts the contract's telemetry, null and absent", () => {
+    expect(
+      routerConnectTelemetrySchema.parse({ portForwards: telemetry })
+        .portForwards,
+    ).toEqual(telemetry);
+    expect(
+      routerConnectTelemetrySchema.parse({ portForwards: null }).portForwards,
+    ).toBeNull();
+    expect("portForwards" in routerConnectTelemetrySchema.parse({})).toBe(
+      false,
+    );
+    // directActive null: no rule asks for «past the VPN».
+    expect(
+      routerConnectTelemetrySchema.safeParse({
+        portForwards: { ...telemetry, directActive: null },
+      }).success,
+    ).toBe(true);
+  });
+  it("is kept by the real check-in schema next to vctl's fixture", () => {
+    const checkIn = structuredClone(checkInFixture) as {
+      inventory: { connect: Record<string, unknown> };
+    };
+    checkIn.inventory.connect.portForwards = telemetry;
+    const parsed = routerCheckInRequestSchema.parse(checkIn);
+    expect(parsed.inventory.connect?.portForwards).toEqual(telemetry);
+  });
+  it("bounds the telemetry: out-of-contract reports drop to null, never pass through", () => {
+    const tooManyRules = {
+      ...telemetry,
+      rules: Array.from({ length: 33 }, (_, i) => ({
+        ...telemetry.rules[0],
+        id: i.toString(16).padStart(8, "0"),
+      })),
+    };
+    const tooManyDevices = {
+      ...telemetry,
+      devices: Array.from({ length: 65 }, (_, i) => ({
+        name: null,
+        ip: `192.168.1.${i + 1}`,
+      })),
+    };
+    for (const portForwards of [
+      tooManyRules,
+      tooManyDevices,
+      { ...telemetry, cgnat: "false" },
+      { ...telemetry, rules: [{ ...telemetry.rules[0], proto: "icmp" }] },
+      { ...telemetry, rules: [{ ...telemetry.rules[0], id: "../bad" }] },
+      { ...telemetry, rules: [{ ...telemetry.rules[0], port: "1".repeat(65) }] },
+      {
+        ...telemetry,
+        devices: [{ name: "x".repeat(257), ip: "192.168.1.50" }],
+      },
+      { rules: [], devices: [], cgnat: false },
+      [],
+    ])
+      expect(
+        routerConnectTelemetrySchema.parse({ portForwards }).portForwards,
+      ).toBeNull();
+    expect(
+      routerConnectTelemetrySchema.safeParse({
+        portForwards: {
+          ...telemetry,
+          rules: tooManyRules.rules.slice(0, 32),
+          devices: tooManyDevices.devices.slice(0, 64),
+        },
+      }).success,
+    ).toBe(true);
+  });
+  it("projects exactly the contract's fields, never a MAC or anything else", () => {
+    const injected = structuredClone(telemetry) as Record<string, unknown> & {
+      rules: Record<string, unknown>[];
+      devices: Record<string, unknown>[];
+    };
+    injected.secret = "fake-secret";
+    injected.rules[0]!.mac = "aa:bb:cc:dd:ee:ff";
+    injected.devices[0]!.mac = "aa:bb:cc:dd:ee:ff";
+    injected.devices[1]!.hostname = "android-1234";
+    // Straight from a stored payload, not through the check-in schema.
+    const snapshot = projectPartnerRouter(
+      router(),
+      inventory({ connect: { ownerRef: "acct-42", portForwards: injected } }),
+      NOW,
+    );
+    expect(snapshot.portForwards).toEqual(telemetry);
+    expect(JSON.stringify(snapshot)).not.toContain("aa:bb:cc");
+    expect(JSON.stringify(snapshot)).not.toContain("fake-secret");
+    expect(JSON.stringify(snapshot)).not.toContain("android-1234");
+    // And the check-in drops them before anything is stored.
+    const checkIn = structuredClone(checkInFixture) as {
+      inventory: { connect: Record<string, unknown> };
+    };
+    checkIn.inventory.connect.portForwards = injected;
+    expect(
+      routerCheckInRequestSchema.parse(checkIn).inventory.connect
+        ?.portForwards,
+    ).toEqual(telemetry);
+  });
+  it("projects null for an older router, a router without fw4, another owner", () => {
+    expect(
+      projectPartnerRouter(router(), reportingInventory(), NOW).portForwards,
+    ).toBeNull();
+    expect(
+      projectPartnerRouter(
+        router(),
+        portForwardsInventory({ portForwards: null }),
+        NOW,
+      ).portForwards,
+    ).toBeNull();
+    expect(projectPartnerRouter(router(), null, NOW).portForwards).toBeNull();
+    expect(
+      projectPartnerRouter(
+        router({ ownerRef: "acct-43" }),
+        portForwardsInventory({ portForwards: telemetry }),
+        NOW,
+      ).portForwards,
+    ).toBeNull();
+  });
+  it("advertises and queues set_port_forwards for a router that offers it", async () => {
+    expect(
+      projectPartnerRouter(
+        router(),
+        portForwardsInventory({
+          capabilities: ["set_port_forwards"],
+          portForwards: telemetry,
+        }),
+        NOW,
+      ).capabilities,
+    ).toEqual(["set_port_forwards"]);
+    const fake = portForwardsDb(["set_port_forwards"]);
+    expect(
+      await queuePartnerActionWithDb(
+        fake.db as never,
+        action({ action: "set_port_forwards", params }),
+        "key",
+        NOW,
+      ),
+    ).toMatchObject({ status: 202, body: { state: "queued" } });
+    expect(fake.inserts(jobs)[0]).toMatchObject({
+      type: "connect_router_action",
+      payload: { action: "set_port_forwards", params },
+    });
+    // The whole list may be emptied.
+    const cleared = portForwardsDb(["set_port_forwards"]);
+    expect(
+      (
+        await queuePartnerActionWithDb(
+          cleared.db as never,
+          action({ action: "set_port_forwards", params: { rules: [] } }),
+          "key",
+          NOW,
+        )
+      ).status,
+    ).toBe(202);
+  });
+  it("refuses it to a router that does not advertise it, and bad params", async () => {
+    const older = portForwardsDb(["set_rules"]);
+    expect(
+      await queuePartnerActionWithDb(
+        older.db as never,
+        action({ action: "set_port_forwards", params }),
+        "key",
+        NOW,
+      ),
+    ).toMatchObject({ status: 409, body: { error: "not_supported" } });
+    expect(older.inserts(jobs)).toEqual([]);
+    for (const bad of [
+      { rules: [{ ...params.rules[1], deviceName: "gaming-pc" }] },
+      { rules: [{ ...params.rules[1], port: "0" }] },
+      { rules: params.rules[1] },
+    ]) {
+      const fake = portForwardsDb(["set_port_forwards"]);
+      expect(
+        await queuePartnerActionWithDb(
+          fake.db as never,
+          action({ action: "set_port_forwards", params: bad }),
+          "key",
+          NOW,
+        ),
+      ).toMatchObject({ status: 400, body: { error: "invalid_params" } });
+      expect(fake.inserts(jobs)).toEqual([]);
     }
   });
 });

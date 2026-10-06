@@ -723,6 +723,7 @@ export const connectRouterActionNameSchema = z.enum([
   "update_now",
   "set_auto_update",
   "refresh_subscription",
+  "set_port_forwards",
 ]);
 
 // What a router may advertise for its owner: the actions it executes, plus
@@ -753,6 +754,42 @@ const connectRouterCapabilitiesSchema = z
   );
 
 const connectEntryRefSchema = z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/);
+
+// The owner's port forwards as vctl reports them (contract:
+// router/vectra-controller-pro/docs/superpowers/specs/2026-10-06-port-forwards-contract.md).
+// vctl reports a rule only in canonical form (ParseFirewall skips a hand-
+// edited one); destIp and port are still only bounded here, not
+// syntax-checked: a malformed rule must never cost the router its check-in. Unknown keys are dropped like everywhere in this telemetry,
+// and the partner projection whitelists the fields again.
+const connectPortForwardsTelemetrySchema = z.object({
+  rules: z
+    .array(
+      z.object({
+        id: z.string().regex(/^[0-9a-f]{8}$/),
+        preset: z
+          .string()
+          .regex(/^[a-z0-9-]{1,24}$/)
+          .nullable(),
+        destIp: z.string().max(64),
+        deviceName: z.string().max(256).nullable(),
+        port: z.string().max(64),
+        proto: z.enum(["tcp", "udp", "both"]),
+        direct: z.boolean(),
+        enabled: z.boolean(),
+      }),
+    )
+    .max(32),
+  devices: z
+    .array(
+      z.object({
+        name: z.string().max(256).nullable(),
+        ip: z.string().max(64),
+      }),
+    )
+    .max(64),
+  cgnat: z.boolean(),
+  directActive: z.boolean().nullable(),
+});
 
 export const routerConnectTelemetrySchema = z.object({
   ownerRef: z
@@ -828,6 +865,10 @@ export const routerConnectTelemetrySchema = z.object({
   routerPasswordSet: z.boolean().optional(),
   supportAccess: z.boolean().optional(),
   autoUpdate: z.boolean().optional(),
+  // null: the router has no fw4 config; absent: it predates the feature.
+  // A report that breaks the contract drops to null instead of failing the
+  // whole check-in: port forwards must never cost a router its check-in.
+  portForwards: connectPortForwardsTelemetrySchema.nullable().optional().catch(null),
 });
 
 export const routerInventorySchema = z.object({
