@@ -1436,6 +1436,9 @@ func executeJobs(
 				}
 				continue
 			}
+			// The operator's direct is the operator's: the watchdog must not
+			// restore over it.
+			releaseWatchdogDirectOwnership()
 			result, err := backend.Run(ctx, "/etc/init.d/passwall2", "restart")
 			if err != nil {
 				if submitErr := submitFailure(ctx, client, cfg, persisted, job.ID, result.Stdout, result.Stderr, err.Error(), map[string]interface{}{"error": err.Error(), "enteredDirectMode": true}); submitErr != nil {

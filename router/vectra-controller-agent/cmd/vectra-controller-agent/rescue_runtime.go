@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"os"
 	"path"
 	"strings"
 	"time"
@@ -305,9 +306,40 @@ func setPasswallMainSwitch(
 	if err := backend.Batch(ctx, commands); err != nil {
 		return err
 	}
+	if !options.TransientProbe {
+		releaseWatchdogDirectOwnership()
+	}
 
 	_, err := backend.Run(ctx, "/etc/init.d/passwall2", "restart")
 	return err
+}
+
+// watchdogDirectMarkerPath is where the cron watchdog records that it switched
+// PassWall off (vectra-controller-watchdog, DEADMAN_OWNER_MARKER). While it
+// exists the watchdog owns that direct and gives it back once a node answers.
+var watchdogDirectMarkerPath = "/etc/vectra-controller/watchdog-direct"
+
+// A watchdog switch younger than this is treated as in flight by the
+// transient direct-path probe; an older marker with PassWall on is stale and
+// is cleaned up by the watchdog itself.
+const watchdogDirectFreshness = 2 * time.Minute
+
+// releaseWatchdogDirectOwnership: whoever writes the main switch on purpose
+// owns it from then on, so the watchdog must not later "restore" over an
+// operator's direct or re-flip the agent's own decision.
+func releaseWatchdogDirectOwnership() {
+	if err := os.Remove(watchdogDirectMarkerPath); err == nil {
+		log.Printf("PassWall main switch written by the agent; the watchdog's direct-mode ownership is released")
+	}
+}
+
+func watchdogJustSwitchedToDirect(now time.Time) bool {
+	info, err := os.Stat(watchdogDirectMarkerPath)
+	if err != nil {
+		return false
+	}
+	age := now.Sub(info.ModTime())
+	return age >= 0 && age < watchdogDirectFreshness
 }
 
 // validateDirectFallback briefly turns PassWall off to prove the direct path
@@ -321,7 +353,13 @@ func validateDirectFallback(
 	backend passwall.UCIBackend,
 	collected *controlplane.RouterInventory,
 ) (bool, error) {
-	if err := setPasswallMainSwitch(ctx, backend, false, mainSwitchOptions{}); err != nil {
+	// The watchdog switched to direct after this cycle's inventory was taken.
+	// Toggling now would end with PassWall back on and the watchdog cutting it
+	// again on its next tick.
+	if watchdogJustSwitchedToDirect(time.Now()) {
+		return false, nil
+	}
+	if err := setPasswallMainSwitch(ctx, backend, false, mainSwitchOptions{TransientProbe: true}); err != nil {
 		return false, fmt.Errorf("disable passwall for direct fallback probe: %w", err)
 	}
 
@@ -332,7 +370,7 @@ func validateDirectFallback(
 		return result.Reachable, nil
 	}
 
-	if err := setPasswallMainSwitch(ctx, backend, true, mainSwitchOptions{}); err != nil {
+	if err := setPasswallMainSwitch(ctx, backend, true, mainSwitchOptions{TransientProbe: true}); err != nil {
 		return false, fmt.Errorf("restore passwall after direct fallback probe: %w", err)
 	}
 
@@ -342,6 +380,9 @@ func validateDirectFallback(
 type mainSwitchOptions struct {
 	Reason            string
 	ClearRescueReason bool
+	// TransientProbe marks validateDirectFallback's off/on toggle, which is a
+	// measurement, not a decision, and so leaves the watchdog's ownership alone.
+	TransientProbe bool
 }
 
 var shuntProxyProbeOptions = []string{
