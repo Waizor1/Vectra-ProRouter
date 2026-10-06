@@ -165,14 +165,37 @@ func TestThePanelStillConfirmsButIsNotWaitedFor(t *testing.T) {
 	}
 }
 
+// The check-in's backoff: the poll after one failure, doubling, at most
+// five minutes, drawn between half and the whole.
+func TestCheckInBackoff(t *testing.T) {
+	poll := 45 * time.Second
+	for _, c := range []struct {
+		n      int
+		lo, hi time.Duration
+	}{
+		{0, 0, 0},
+		{1, poll / 2, poll},
+		{2, poll, 2 * poll},
+		{3, 2 * poll, 4 * poll},
+		{4, 150 * time.Second, checkInMaxBackoff},
+		{40, 150 * time.Second, checkInMaxBackoff},
+	} {
+		lo := checkInBackoff(poll, c.n, func() float64 { return 0 })
+		hi := checkInBackoff(poll, c.n, func() float64 { return 0.999999 })
+		if lo != c.lo || hi < c.hi-time.Second || hi > c.hi {
+			t.Errorf("failures %d: [%s, %s], want [%s, %s]", c.n, lo, hi, c.lo, c.hi)
+		}
+	}
+}
+
 // The daemon with the panel gone for hours (a fake clock): the ruleset it
 // loaded at the start is confirmed by the router itself, the deadman never
 // reverts it, nothing loads it again or takes it down, the rescue keeps the
-// proxy.
+// proxy, and the check-ins back off instead of hammering the panel.
 func TestHoursWithoutThePanel(t *testing.T) {
 	s := steerDaemon(t, renderWithDNS)
 	d := s.d
-	withoutPanel(t, d, internetUp(t, nil))
+	hits := withoutPanel(t, d, internetUp(t, nil))
 	d.supStarted = true // xray runs (xrayStatusFn)
 
 	t0 := time.Date(2026, 10, 6, 4, 31, 0, 0, time.UTC) // just after the nightly reboot
@@ -213,6 +236,7 @@ func TestHoursWithoutThePanel(t *testing.T) {
 	const hours = 6
 	poll := d.cfg.PollInterval()
 	nextPoll := t0
+	polls := 0
 	for ; now.Before(t0.Add(hours * time.Hour)); now = now.Add(dnsWatchEvery) {
 		deadman()
 		if !now.Before(nextPoll) {
@@ -222,6 +246,7 @@ func TestHoursWithoutThePanel(t *testing.T) {
 			d.ensureDataPlane(ctx)
 			d.retryFirewallConfirm(ctx, now)
 			nextPoll = now.Add(poll)
+			polls++
 		}
 		// The DNS watch's tick (waitForTick).
 		d.retryFirewallConfirm(ctx, now)
@@ -241,6 +266,12 @@ func TestHoursWithoutThePanel(t *testing.T) {
 	}
 	if m := d.rescueState().Mode; m != rescue.ModeProxy {
 		t.Errorf("rescue mode %q, want proxy: the tunnel and the internet worked throughout", m)
+	}
+	// Without backoff every poll would ask: polls of them. With it, after
+	// the first few, one in about five minutes at most.
+	maxAsks := int64(8 + hours*int(time.Hour/(checkInMaxBackoff/2)))
+	if h := atomic.LoadInt64(hits); h == 0 || h > maxAsks || h >= int64(polls) {
+		t.Errorf("the panel was asked %d times in %d polls; want backoff (at most %d)", h, polls, maxAsks)
 	}
 }
 

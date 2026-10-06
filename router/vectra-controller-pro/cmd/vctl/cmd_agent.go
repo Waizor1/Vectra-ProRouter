@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -302,6 +303,11 @@ type daemon struct {
 	// panel. nil until one has been attempted. It is the ground truth behind
 	// serverReachable — see controlPlaneReachable.
 	lastControlPlaneOK *bool
+	// cpFailures counts the register/check-in exchanges that failed in a
+	// row; cpRetryAt is when the next may go (checkInBackoff).
+	cpFailures int
+	cpRetryAt  time.Time
+
 	// fwConfirmBy is when the tries to confirm the last firewall
 	// programming end (shortly before its deadman wakes), zero with none
 	// pending; fwConfirmNext is the next try (fw_confirm.go). clock stands
@@ -760,6 +766,16 @@ func (d *daemon) runOnce(ctx context.Context) error {
 	health, rescueDecision := d.evaluateHealth(ctx, &inv)
 	if rescueDecision.ShouldTransition {
 		d.applyRescueTransition(ctx, rescueDecision)
+		// Kept now, not with the check-in's state: without the panel there
+		// is none, and a reboot would start from the mode before.
+		_ = d.persist()
+	}
+
+	// The panel failed the last exchanges: the next waits its turn
+	// (checkInBackoff). Everything above — the rescue, the data plane —
+	// does not.
+	if d.now().Before(d.cpRetryAt) {
+		return nil
 	}
 
 	// Register if we have no identity yet; next loop will check in.
@@ -1367,8 +1383,40 @@ func (d *daemon) controlPlaneReachable(ctx context.Context) bool {
 }
 
 // noteControlPlane records the outcome of a register/check-in for the next
-// loop's serverReachable.
-func (d *daemon) noteControlPlane(ok bool) { d.lastControlPlaneOK = &ok }
+// loop's serverReachable, and the backoff of the next exchange.
+func (d *daemon) noteControlPlane(ok bool) {
+	d.lastControlPlaneOK = &ok
+	if ok {
+		d.cpFailures, d.cpRetryAt = 0, time.Time{}
+		return
+	}
+	d.cpFailures++
+	d.cpRetryAt = d.now().Add(checkInBackoff(d.cfg.PollInterval(), d.cpFailures, rand.Float64))
+}
+
+// checkInMaxBackoff caps the wait between exchanges with a panel that does
+// not answer.
+const checkInMaxBackoff = 5 * time.Minute
+
+// checkInBackoff is the wait after failures exchanges in a row failed: the
+// poll interval doubled for each one after the first, at most
+// checkInMaxBackoff, drawn between its half and the whole (rnd in [0,1)) —
+// so a fleet the panel lost does not come back all at once, and a router
+// does not spend its loop on a panel that is gone. The data plane never
+// waits for it.
+func checkInBackoff(poll time.Duration, failures int, rnd func() float64) time.Duration {
+	if failures <= 0 {
+		return 0
+	}
+	wait := poll
+	for i := 1; i < failures && wait < checkInMaxBackoff; i++ {
+		wait *= 2
+	}
+	if wait > checkInMaxBackoff {
+		wait = checkInMaxBackoff
+	}
+	return wait/2 + time.Duration(rnd()*float64(wait/2))
+}
 
 func (d *daemon) rescueState() rescue.State {
 	st := rescue.State{
