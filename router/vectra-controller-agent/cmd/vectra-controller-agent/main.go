@@ -278,7 +278,11 @@ func runOnce(
 	health.RecoveryPhase = string(persisted.ControlPlaneRecovery.Phase)
 	health.LastRecoveryAction = persisted.ControlPlaneRecovery.LastActionReason
 	health.AwaitingOperator = persisted.ControlPlaneRecovery.AwaitingOperator
-	if recoveryOutcome.SkipControlPlane {
+	// The skip is advisory: a paced check-in still goes out so recovery can
+	// never hide the router from the panel (see checkin_pacing.go).
+	pacedRecoveryCheckIn := recoveryOutcome.SkipControlPlane
+	if recoveryOutcome.SkipControlPlane &&
+		!controlPlaneCheckInPacer.dueDuringRecovery(time.Now().UTC(), persisted.ControlPlaneRecovery.Phase) {
 		runtimeStatus.LastError = ""
 		if err := state.SaveRuntimeStatus(cfg.StatusPath, runtimeStatus); err != nil {
 			return fmt.Errorf("persist runtime status: %w", err)
@@ -297,7 +301,10 @@ func runOnce(
 	// the behaviour the router owner turns off with manual mode, so it is
 	// gated here rather than inside the passwall package: the package still
 	// does exactly what it is told, it is just not told anymore.
-	if !cfg.ManualMode && importSource == "check_in" && !persisted.RequestImport && persisted.LastDesiredRevision != nil {
+	// The binding self-heals restart PassWall when they change something; a
+	// paced check-in happens while recovery is mid-settle or mid-warmup and
+	// must not disturb the measurement that phase is waiting for.
+	if !pacedRecoveryCheckIn && !cfg.ManualMode && importSource == "check_in" && !persisted.RequestImport && persisted.LastDesiredRevision != nil {
 		reconcileResult, reconcileErr := passwall.ReconcileShuntBindingsYieldingTo(
 			ctx,
 			passwall.ExecBackend{},
@@ -310,7 +317,7 @@ func runOnce(
 			log.Printf("passwall shunt self-heal restored %d binding(s)", len(reconcileResult.Changes))
 		}
 	}
-	if !cfg.ManualMode && importSource == "check_in" && !persisted.RequestImport {
+	if !pacedRecoveryCheckIn && !cfg.ManualMode && importSource == "check_in" && !persisted.RequestImport {
 		policyResult, policyErr := passwall.ReconcileFleetRoutePolicyWithDirective(
 			ctx,
 			passwall.ExecBackend{},
@@ -339,6 +346,7 @@ func runOnce(
 		}
 	}
 
+	controlPlaneCheckInPacer.noteAttempt(time.Now().UTC())
 	if cfg.RouterID != "" && cfg.AgentToken != "" {
 		if err := recoverJobJournal(
 			ctx,
@@ -389,6 +397,7 @@ func runOnce(
 		runtimeStatus.LastRegisterAt = time.Now().UTC().Format(time.RFC3339)
 		runtimeStatus.LastError = ""
 		noteSuccessfulControlPlaneContact(persisted, &runtimeStatus, time.Now().UTC())
+		controlPlaneCheckInPacer.noteSuccess()
 		if sendPasswallImport {
 			persisted.LastImportedConfigDigest = collectedInventory.ConfigDigest
 			persisted.RequestImport = false
@@ -438,6 +447,7 @@ func runOnce(
 	runtimeStatus.ImportState = checkInResponse.ConfigSyncState.ImportState
 	runtimeStatus.LastError = ""
 	noteSuccessfulControlPlaneContact(persisted, &runtimeStatus, time.Now().UTC())
+	controlPlaneCheckInPacer.noteSuccess()
 	if sendPasswallImport {
 		persisted.LastImportedConfigDigest = collectedInventory.ConfigDigest
 	}
