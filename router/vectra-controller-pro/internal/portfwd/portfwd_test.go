@@ -925,3 +925,29 @@ func TestApplyPutsTheConfigBackWhenACommitFailsLate(t *testing.T) {
 		}
 	}
 }
+
+// A vctl redirect hand-edited in LuCI is read only in the canonical form a
+// rule has: "a:b" becomes "a-b"; two ports, no address or a protocol that is
+// neither tcp nor udp is not read as a rule (and goes at the next apply), so
+// the UI and Vectra Connect never get raw uci text.
+func TestOwnRulesAreReadCanonicalOrNotAtAll(t *testing.T) {
+	sec := func(id, port, dest, proto string) string {
+		return "config redirect 'vectra_pf_" + id + "'\n\toption src 'wan'\n\toption src_dport '" + port +
+			"'\n\toption dest_ip '" + dest + "'\n\toption proto '" + proto + "'\n\n"
+	}
+	f, err := uci.Parse(sec("00000001", "8080:8081", "192.168.1.50", "tcp") +
+		sec("00000002", "80 443", "192.168.1.50", "tcp") +
+		sec("00000003", "80", "", "tcp") +
+		sec("00000004", "80", "192.168.1.50", "icmp") +
+		sec("00000005", "0", "192.168.1.50", "udp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := ParseFirewall(f)
+	if len(fw.Own) != 1 || fw.Own[0].ID != "00000001" || fw.Own[0].Port != "8080-8081" || fw.Own[0].DestIP != "192.168.1.50" || fw.Own[0].Proto != ProtoTCP {
+		t.Fatalf("own = %+v", fw.Own)
+	}
+	if len(fw.sections) != 5 {
+		t.Fatalf("every vctl section must still be removed at the next apply: %v", fw.sections)
+	}
+}

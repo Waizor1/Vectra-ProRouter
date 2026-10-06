@@ -2,6 +2,7 @@ package portfwd
 
 import (
 	"fmt"
+	"net/netip"
 	"regexp"
 	"strings"
 
@@ -84,6 +85,16 @@ func ParseFirewall(f *uci.File) Firewall {
 			if !ValidID(id) {
 				continue // not one vctl wrote; removed at the next apply
 			}
+			// Hand-edited in LuCI into what a rule cannot say (two ports, no
+			// address, icmp): not read as one — the UI and Vectra Connect
+			// get only the canonical form — and removed at the next apply.
+			// "a:b" is fw4's spelling of a range and reads as "a-b".
+			ports := fw4Ports(strings.Join(words(s, "src_dport"), " "))
+			dest, derr := netip.ParseAddr(s.Get("dest_ip"))
+			mask := fw4ProtoMask(strings.Join(words(s, "proto"), " "))
+			if len(ports) != 1 || len(words(s, "src_dport")) != 1 || derr != nil || !dest.Is4() || mask == 0 {
+				continue
+			}
 			var preset *string
 			if p := s.Get("vectra_preset"); ValidPreset(p) {
 				preset = &p
@@ -91,9 +102,9 @@ func ParseFirewall(f *uci.File) Firewall {
 			fw.Own = append(fw.Own, Rule{
 				ID:      id,
 				Preset:  preset,
-				DestIP:  s.Get("dest_ip"),
-				Port:    s.Get("src_dport"),
-				Proto:   ruleProto(fw4ProtoMask(strings.Join(words(s, "proto"), " "))),
+				DestIP:  dest.String(),
+				Port:    ports[0].String(),
+				Proto:   ruleProto(mask),
 				Direct:  s.Get("vectra_direct") == "1",
 				Enabled: enabled(s),
 			})
