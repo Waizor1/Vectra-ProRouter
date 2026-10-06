@@ -2,9 +2,14 @@
 # watchdog_deadman_test.sh: off-router unit tests for the GAP-2 dead-man's
 # switch in vectra-controller-watchdog. Sources the watchdog as a library
 # (VECTRA_WATCHDOG_LIB_ONLY=1 makes it return before the recovery flow) and
-# asserts the truth table for should_fail_safe_to_direct plus the RFC3339
-# epoch parser. No real system state is touched: uci, jsonfilter, logger and
-# /etc/init.d/passwall2 are replaced by shell-function stubs.
+# asserts the truth table for should_fail_safe_to_direct (the "armed"
+# precondition), the RFC3339 epoch parser, and run_deadman_check end to end:
+# a stale panel contact alone never disables the VPN, only a url_test_node
+# verdict of "dead" does, the watchdog restores its own direct once a node
+# answers, it never interferes with an agent retry, and it is idempotent
+# across reboots and overlapping cron runs. No real system state is touched:
+# uci, jsonfilter and logger are shell-function stubs, test.sh is a stub
+# executable in a temp dir, and every marker path points into that temp dir.
 #
 # POSIX sh / BusyBox ash compatible. Run with:
 #   sh router/vectra-controller-agent/openwrt/tests/watchdog_deadman_test.sh
@@ -30,9 +35,16 @@ STUB_AGENT_TOKEN=""
 STUB_LAST_CONTACT=""
 STUB_STATE_PATH="/etc/vectra-controller/state.json"
 STUB_UCI_DEADMAN_THRESHOLD=""
+STUB_PHASE=""
+STUB_RETRY_AT=""
+# Selected node and the passwall2 UCI sections the candidate resolver reads,
+# as "key=value" lines (key relative to passwall2.).
+STUB_SELECTED_NODE=""
+STUB_PASSWALL_UCI=""
 
 # Records side effects so action tests can assert them.
 UCI_DISABLE_CALLED=0
+UCI_ENABLE_CALLED=0
 PASSWALL_RESTART_CALLED=0
 
 # uci stub: only the read/write shapes the watchdog uses.
@@ -53,6 +65,15 @@ uci() {
 		"passwall2.@global[0].enabled")
 			printf '%s' "$STUB_PASSWALL_ENABLED"
 			;;
+		"passwall2.@global[0].node")
+			[ -n "$STUB_SELECTED_NODE" ] && printf '%s' "$STUB_SELECTED_NODE"
+			;;
+		passwall2.*)
+			stub_key="${2#passwall2.}"
+			stub_value="$(printf '%s\n' "$STUB_PASSWALL_UCI" | sed -n "s/^$stub_key=//p" | head -n 1)"
+			[ -n "$stub_value" ] || return 1
+			printf '%s' "$stub_value"
+			;;
 		*)
 			return 1
 			;;
@@ -62,6 +83,9 @@ uci() {
 		case "${2:-}" in
 		"passwall2.@global[0].enabled=0" | "passwall2.@global[0].enabled='0'")
 			UCI_DISABLE_CALLED=1
+			;;
+		"passwall2.@global[0].enabled=1" | "passwall2.@global[0].enabled='1'")
+			UCI_ENABLE_CALLED=1
 			;;
 		esac
 		;;
@@ -96,6 +120,12 @@ jsonfilter() {
 		;;
 	'@.control_plane_recovery.last_successful_control_plane_at')
 		[ -n "$STUB_LAST_CONTACT" ] && printf '%s' "$STUB_LAST_CONTACT"
+		;;
+	'@.control_plane_recovery.phase')
+		[ -n "$STUB_PHASE" ] && printf '%s' "$STUB_PHASE"
+		;;
+	'@.control_plane_recovery.last_passwall_retry_at')
+		[ -n "$STUB_RETRY_AT" ] && printf '%s' "$STUB_RETRY_AT"
 		;;
 	esac
 }
@@ -305,53 +335,283 @@ else
 	not_ok "should be past boot grace once elapsed >= grace window"
 fi
 
-# --- End-to-end action wiring (run_deadman_check) --------------------------
-# Stranded onboarded box: stale timestamp, passwall enabled, past boot grace.
-# Expect: uci disable + passwall restart invoked, STATE_FILE marked.
-UCI_DISABLE_CALLED=0
-PASSWALL_RESTART_CALLED=0
-STATE_FILE="$(mktemp 2>/dev/null || printf '/tmp/vectra-deadman-statefile.%s' "$$")"
-rm -f "$STATE_FILE" 2>/dev/null || true
-STUB_PASSWALL_ENABLED=1
-STUB_ROUTER_ID="router-xyz"
-STUB_AGENT_TOKEN="token-abc"
-STUB_LAST_CONTACT="2001-09-09T01:46:40Z"   # very old relative to real now
+# --- End-to-end: run_deadman_check ---------------------------------------
+# Everything the watchdog writes is redirected into a sandbox.
+SANDBOX="$(mktemp -d 2>/dev/null || printf '/tmp/vectra-deadman-sandbox.%s' "$$")"
+mkdir -p "$SANDBOX/answers" "$SANDBOX/etc" "$SANDBOX/run"
+STATE_FILE="$SANDBOX/run/watchdog.state"
+DEADMAN_BOOT_MARKER="$SANDBOX/run/boot-epoch"
+DEADMAN_OWNER_MARKER="$SANDBOX/etc/watchdog-direct"
+DEADMAN_LAST_ACTION_FILE="$SANDBOX/run/last-action"
+DEADMAN_LOCK_DIR="$SANDBOX/run/lock"
+MEMINFO_FILE="$SANDBOX/meminfo"
+DEADMAN_URL_TEST="$SANDBOX/test.sh"
+PROBE_LOG="$SANDBOX/probes.log"
 
-# Provide a passwall init stub on PATH so the restart side effect is observable
-# without touching a real init script.
-INIT_STUB_DIR="$(mktemp -d 2>/dev/null || printf '/tmp/vectra-deadman-init.%s' "$$")"
-mkdir -p "$INIT_STUB_DIR/etc/init.d" 2>/dev/null || true
-# Redefine the action to point at our observable stub instead of /etc/init.d.
+# test.sh stub: answers url_test_node <node> from answers/<node> (default 000)
+# and logs every probe. A real executable, so the `timeout` wrapper works.
+cat > "$DEADMAN_URL_TEST" <<STUB
+#!/bin/sh
+[ "\$1" = "url_test_node" ] || exit 1
+printf '%s\n' "\$2" >> "$PROBE_LOG"
+if [ -f "$SANDBOX/answers/\$2" ]; then cat "$SANDBOX/answers/\$2"; else printf '000:0.000000\n'; fi
+STUB
+chmod +x "$DEADMAN_URL_TEST"
+
 deadman_fail_safe_to_direct() {
 	uci -q set passwall2.@global[0].enabled='0' 2>/dev/null || true
-	uci -q commit passwall2 2>/dev/null || true
 	PASSWALL_RESTART_CALLED=1
+	STUB_PASSWALL_ENABLED=0
 }
-# Pre-age the boot marker so run_deadman_check sees us past grace.
-printf '%s' "0" > "$DEADMAN_BOOT_MARKER" 2>/dev/null || true
+deadman_restore_proxy() {
+	uci -q set passwall2.@global[0].enabled='1' 2>/dev/null || true
+	PASSWALL_RESTART_CALLED=1
+	STUB_PASSWALL_ENABLED=1
+}
 
+E2E_NOW=1000000000                       # 2001-09-09T01:46:40Z
+now_epoch() { printf '%s' "$E2E_NOW"; }
+STALE_CONTACT="2001-09-09T00:46:40Z"     # 1 h before E2E_NOW -> armed
+FRESH_CONTACT="2001-09-09T01:45:40Z"     # 60 s before E2E_NOW -> not armed
+
+answer() { printf '%s\n' "$2" > "$SANDBOX/answers/$1"; }
+probes_run() { [ -f "$PROBE_LOG" ] && wc -l < "$PROBE_LOG" | tr -d ' ' || printf 0; }
+
+# Reset to: onboarded shunt router, PassWall on, panel silent for 1 h, past
+# boot grace, plenty of RAM, every node dead, no watchdog history.
+reset_e2e() {
+	UCI_DISABLE_CALLED=0
+	UCI_ENABLE_CALLED=0
+	PASSWALL_RESTART_CALLED=0
+	STUB_PASSWALL_ENABLED=1
+	STUB_ROUTER_ID="router-xyz"
+	STUB_AGENT_TOKEN="token-abc"
+	STUB_LAST_CONTACT="$STALE_CONTACT"
+	STUB_PHASE="monitoring"
+	STUB_RETRY_AT=""
+	STUB_SELECTED_NODE="myshunt"
+	STUB_PASSWALL_UCI="myshunt.protocol=_shunt
+myshunt.default_node=_direct
+myshunt.WorldProxy=world
+myshunt.YouTube=yt
+myshunt.Proxy=world
+world.protocol=vless
+yt.protocol=vless"
+	rm -rf "$SANDBOX/answers" "$DEADMAN_LOCK_DIR"
+	mkdir -p "$SANDBOX/answers"
+	rm -f "$STATE_FILE" "$DEADMAN_OWNER_MARKER" "$DEADMAN_LAST_ACTION_FILE" "$PROBE_LOG"
+	printf '0' > "$DEADMAN_BOOT_MARKER"
+	printf 'MemTotal:         240000 kB\nMemAvailable:     120000 kB\n' > "$MEMINFO_FILE"
+	E2E_NOW=1000000000
+}
+
+# --- Candidate resolution mirrors proxyNodeReachableForRecovery ------------
+reset_e2e
+assert_eq "world yt" "$(deadman_proxy_candidates | tr '\n' ' ' | sed 's/ $//')" \
+	"shunt: concrete slot nodes, deduplicated, _direct skipped"
+STUB_PASSWALL_UCI="myshunt.protocol=_shunt
+myshunt.default_node=bal
+myshunt.WorldProxy=world
+bal.protocol=_balancing
+world.protocol=vless"
+assert_eq "world" "$(deadman_proxy_candidates | tr '\n' ' ' | sed 's/ $//')" \
+	"shunt: a virtual slot (balancer) is not a candidate"
+STUB_SELECTED_NODE="plain"
+STUB_PASSWALL_UCI="plain.protocol=vless"
+assert_eq "plain" "$(deadman_proxy_candidates)" "concrete selected node is its own candidate"
+STUB_SELECTED_NODE="bal"
+STUB_PASSWALL_UCI="bal.protocol=_balancing"
+assert_eq "" "$(deadman_proxy_candidates)" "balancer selected -> no candidate (inconclusive)"
+STUB_SELECTED_NODE="_direct"
+assert_eq "" "$(deadman_proxy_candidates)" "_direct selected -> no candidate"
+
+# --- 1. Panel outage + live proxy: the VPN stays on ------------------------
+reset_e2e
+answer yt "204:0.310000"
 run_deadman_check
+assert_eq "0" "$UCI_DISABLE_CALLED" "panel silent 1 h but a slot node answers -> PassWall stays enabled"
+assert_eq "deadman-hold-alive" "$(cat "$STATE_FILE" 2>/dev/null)" "hold-alive decision recorded"
+assert_eq "" "$(cat "$DEADMAN_OWNER_MARKER" 2>/dev/null)" "no ownership marker when nothing was switched"
+# The hold is logged once, not every tick.
+LAST_LOG=""
+E2E_NOW=$((E2E_NOW + 300))
+run_deadman_check
+assert_eq "" "$LAST_LOG" "repeated hold-alive tick does not log again"
 
-assert_eq "1" "$UCI_DISABLE_CALLED" "run_deadman_check disabled passwall2 for a stranded onboarded box"
-assert_eq "1" "$PASSWALL_RESTART_CALLED" "run_deadman_check restarted passwall2 for a stranded onboarded box"
-assert_eq "deadman-direct" "$(cat "$STATE_FILE" 2>/dev/null)" "run_deadman_check wrote deadman-direct state marker"
+# --- 2. Panel outage + dead proxy: fail safe to direct ---------------------
+reset_e2e
+run_deadman_check
+assert_eq "1" "$UCI_DISABLE_CALLED" "panel silent + every node fails url_test_node -> PassWall disabled"
+assert_eq "1" "$PASSWALL_RESTART_CALLED" "passwall2 restarted on the switch to direct"
+assert_eq "deadman-direct" "$(cat "$STATE_FILE" 2>/dev/null)" "deadman-direct state recorded"
+assert_eq "$E2E_NOW" "$(cat "$DEADMAN_OWNER_MARKER" 2>/dev/null)" "ownership marker holds the switch epoch"
+assert_eq "2" "$(probes_run)" "both slot nodes were probed before declaring the proxy dead"
 
-# Fresh, onboarded, enabled box: run_deadman_check must be a NO-OP.
-# Pin now_epoch to a value just 30s after a known-epoch contact timestamp so
-# the parsed age (30s) is well inside the 900s threshold — no dependence on
-# wall-clock or a date(1) inverse.
+# --- 3. Fresh contact: nothing to judge, nothing probed --------------------
+reset_e2e
+STUB_LAST_CONTACT="$FRESH_CONTACT"
+run_deadman_check
+assert_eq "0" "$UCI_DISABLE_CALLED" "fresh contact -> no-op"
+assert_eq "0" "$(probes_run)" "fresh contact -> no url_test_node spawned"
+
+# --- 4. Inconclusive verdicts never cut the VPN ----------------------------
+reset_e2e
+rm -f "$DEADMAN_URL_TEST.disabled"
+mv "$DEADMAN_URL_TEST" "$DEADMAN_URL_TEST.disabled"
+run_deadman_check
+assert_eq "0" "$UCI_DISABLE_CALLED" "no test.sh -> inconclusive -> PassWall stays enabled"
+assert_eq "deadman-hold-inconclusive" "$(cat "$STATE_FILE" 2>/dev/null)" "inconclusive decision recorded"
+mv "$DEADMAN_URL_TEST.disabled" "$DEADMAN_URL_TEST"
+
+reset_e2e
+printf 'MemTotal:         240000 kB\nMemAvailable:      30000 kB\n' > "$MEMINFO_FILE"
+run_deadman_check
+assert_eq "0" "$UCI_DISABLE_CALLED" "MemAvailable below floor -> inconclusive -> PassWall stays enabled"
+assert_eq "0" "$(probes_run)" "MemAvailable below floor -> no xray spawned by url_test_node"
+
+reset_e2e
+STUB_SELECTED_NODE="bal"
+STUB_PASSWALL_UCI="bal.protocol=_balancing"
+run_deadman_check
+assert_eq "0" "$UCI_DISABLE_CALLED" "balancer selection -> inconclusive -> PassWall stays enabled"
+
+# --- 5. Never kill a retry the agent is judging ----------------------------
+reset_e2e
+STUB_PHASE="passwall_retry_wait"
+STUB_RETRY_AT="2001-09-09T01:45:40Z"       # 60 s ago: inside the warmup
+run_deadman_check
+assert_eq "0" "$UCI_DISABLE_CALLED" "agent mid-retry -> watchdog does not disable"
+assert_eq "0" "$(probes_run)" "agent mid-retry -> watchdog does not even probe"
+assert_eq "deadman-defer" "$(cat "$STATE_FILE" 2>/dev/null)" "deferral recorded"
+
+reset_e2e
+STUB_PHASE="passwall_retry_wait"
+STUB_RETRY_AT="2001-09-09T00:46:40Z"       # 1 h ago: abandoned retry
+run_deadman_check
+assert_eq "1" "$UCI_DISABLE_CALLED" "abandoned agent retry + dead proxy -> watchdog acts"
+
+# --- 6. Agent re-enables proxy after the watchdog's direct: no loop -------
+reset_e2e
+run_deadman_check                           # dead -> direct (owned)
+assert_eq "1" "$UCI_DISABLE_CALLED" "loop scenario: initial dead proxy -> direct"
+# The agent's local rescue sees the node answer and re-enables PassWall.
+answer world "204:0.200000"
+STUB_PASSWALL_ENABLED=1
 UCI_DISABLE_CALLED=0
-PASSWALL_RESTART_CALLED=0
-rm -f "$STATE_FILE" 2>/dev/null || true
-STUB_LAST_CONTACT="2001-09-09T01:46:40Z"          # epoch 1000000000
-now_epoch() { printf '%s' "1000000030"; }         # 30s later -> fresh
+E2E_NOW=$((E2E_NOW + 300))
 run_deadman_check
-assert_eq "0" "$UCI_DISABLE_CALLED" "run_deadman_check is a no-op for a fresh contact"
-assert_eq "0" "$PASSWALL_RESTART_CALLED" "run_deadman_check does not restart passwall2 for a fresh contact"
+assert_eq "0" "$UCI_DISABLE_CALLED" "loop scenario: agent's retry with a live node is not killed"
+assert_eq "" "$(cat "$DEADMAN_OWNER_MARKER" 2>/dev/null)" "loop scenario: ownership released once PassWall is on again"
+# Even if the node flaps dead right away, the flap cooldown holds the next flip.
+rm -f "$SANDBOX/answers/world"
+E2E_NOW=$((E2E_NOW + 300))
+run_deadman_check
+assert_eq "0" "$UCI_DISABLE_CALLED" "loop scenario: no second flip inside the action cooldown"
+E2E_NOW=$((E2E_NOW + DEADMAN_ACTION_COOLDOWN_SECONDS))
+run_deadman_check
+assert_eq "1" "$UCI_DISABLE_CALLED" "loop scenario: a still-dead proxy is cut again after the cooldown"
+
+# --- 7. The watchdog gives back its own direct -----------------------------
+reset_e2e
+run_deadman_check                           # dead -> direct (owned)
+answer world "204:0.250000"
+E2E_NOW=$((E2E_NOW + 120))
+run_deadman_check
+assert_eq "0" "$UCI_ENABLE_CALLED" "restore waits for the action cooldown"
+E2E_NOW=$((E2E_NOW + DEADMAN_ACTION_COOLDOWN_SECONDS))
+run_deadman_check
+assert_eq "1" "$UCI_ENABLE_CALLED" "node answers while panel still silent -> watchdog restores proxy"
+assert_eq "" "$(cat "$DEADMAN_OWNER_MARKER" 2>/dev/null)" "ownership marker removed after restore"
+
+reset_e2e
+run_deadman_check                           # dead -> direct (owned)
+E2E_NOW=$((E2E_NOW + DEADMAN_ACTION_COOLDOWN_SECONDS + 1))
+run_deadman_check
+assert_eq "0" "$UCI_ENABLE_CALLED" "node still dead -> watchdog keeps direct"
+assert_eq "$((E2E_NOW - DEADMAN_ACTION_COOLDOWN_SECONDS - 1))" "$(cat "$DEADMAN_OWNER_MARKER" 2>/dev/null)" "ownership kept while the node is dead"
+
+# Not ours: a direct created by the agent or an operator is never restored.
+reset_e2e
+STUB_PASSWALL_ENABLED=0
+answer world "204:0.250000"
+run_deadman_check
+assert_eq "0" "$UCI_ENABLE_CALLED" "operator/agent direct (no marker) is never restored by the watchdog"
+
+# Contact back -> the agent owns PassWall again.
+reset_e2e
+run_deadman_check
+STUB_LAST_CONTACT="$FRESH_CONTACT"
+answer world "204:0.250000"
+E2E_NOW=$((E2E_NOW + DEADMAN_ACTION_COOLDOWN_SECONDS))
+STUB_LAST_CONTACT="2001-09-09T01:59:40Z"   # 60 s before the new now
+run_deadman_check
+assert_eq "0" "$UCI_ENABLE_CALLED" "contact back -> watchdog leaves the restore to the agent"
+assert_eq "" "$(cat "$DEADMAN_OWNER_MARKER" 2>/dev/null)" "contact back -> ownership released"
+
+# Agent's recovery took over the park -> the watchdog stands down.
+reset_e2e
+run_deadman_check
+STUB_PHASE="operator_attention"
+answer world "204:0.250000"
+E2E_NOW=$((E2E_NOW + DEADMAN_ACTION_COOLDOWN_SECONDS))
+run_deadman_check
+assert_eq "0" "$UCI_ENABLE_CALLED" "agent recovery owns PassWall -> watchdog does not restore"
+assert_eq "" "$(cat "$DEADMAN_OWNER_MARKER" 2>/dev/null)" "agent recovery owns PassWall -> ownership released"
+
+# --- 8. Idempotent across reboot -------------------------------------------
+reset_e2e
+run_deadman_check                           # dead -> direct (owned)
+# Reboot: /var/run is wiped, /etc (marker, state.json) survives. The clock
+# comes up behind the switch epoch before NTP catches up.
+rm -f "$STATE_FILE" "$DEADMAN_LAST_ACTION_FILE" "$DEADMAN_BOOT_MARKER"
+rm -rf "$DEADMAN_LOCK_DIR"
+E2E_NOW=$((E2E_NOW + 600))
+answer world "204:0.250000"
+run_deadman_check
+assert_eq "1" "$UCI_ENABLE_CALLED" "after reboot the persisted marker still lets the watchdog restore a live proxy"
+# A second tick after the restore changes nothing.
+UCI_ENABLE_CALLED=0
+UCI_DISABLE_CALLED=0
+E2E_NOW=$((E2E_NOW + 300))
+run_deadman_check
+assert_eq "00" "$UCI_ENABLE_CALLED$UCI_DISABLE_CALLED" "post-restore tick is a no-op"
+
+# --- 9. Overlapping cron runs ---------------------------------------------
+reset_e2e
+mkdir -p "$DEADMAN_LOCK_DIR"
+printf '%s' "$E2E_NOW" > "$DEADMAN_LOCK_DIR/epoch"
+run_deadman_check
+assert_eq "0" "$UCI_DISABLE_CALLED" "a live lock from another run -> this run does nothing"
+E2E_NOW=$((E2E_NOW + DEADMAN_LOCK_STALE_SECONDS))
+run_deadman_check
+assert_eq "1" "$UCI_DISABLE_CALLED" "a stale lock is broken and the check runs"
+if [ -d "$DEADMAN_LOCK_DIR" ]; then
+	not_ok "lock released after the run"
+else
+	ok "lock released after the run"
+fi
+
+# --- 10. Cron entry install is idempotent ---------------------------------
+CRON_SANDBOX="$SANDBOX/cron"
+mkdir -p "$CRON_SANDBOX"
+printf '0 4 * * * reboot\n' > "$CRON_SANDBOX/root"
+sed -e "s#^CRONTAB=.*#CRONTAB=\"$CRON_SANDBOX/root\"#" \
+	-e "s#^WATCHDOG_BIN=.*#WATCHDOG_BIN=\"$DEADMAN_URL_TEST\"#" \
+	-e "s#/etc/init.d/cron#$CRON_SANDBOX/no-cron#g" \
+	"$test_dir/../files/etc/uci-defaults/92_vectra_controller_watchdog" > "$CRON_SANDBOX/install.sh"
+sh "$CRON_SANDBOX/install.sh"
+sh "$CRON_SANDBOX/install.sh"
+sh "$CRON_SANDBOX/install.sh"
+assert_eq "1" "$(grep -c 'vectra-controller-watchdog (managed) >>>' "$CRON_SANDBOX/root")" \
+	"cron install run three times -> exactly one managed block"
+assert_eq "1" "$(grep -c "^\*/5 \* \* \* \* $DEADMAN_URL_TEST " "$CRON_SANDBOX/root")" \
+	"cron install run three times -> exactly one watchdog line"
+assert_eq "1" "$(grep -c '^0 4 \* \* \* reboot$' "$CRON_SANDBOX/root")" \
+	"cron install keeps unrelated entries"
 
 # --- Cleanup ---------------------------------------------------------------
-rm -f "$SCRATCH_STATE" "$DEADMAN_BOOT_MARKER" "$STATE_FILE" 2>/dev/null || true
-rm -rf "$INIT_STUB_DIR" 2>/dev/null || true
+rm -f "$SCRATCH_STATE" 2>/dev/null || true
+rm -rf "$SANDBOX" 2>/dev/null || true
 
 # --- Summary ---------------------------------------------------------------
 printf '\n# %d passed, %d failed\n' "$PASS" "$FAIL"
