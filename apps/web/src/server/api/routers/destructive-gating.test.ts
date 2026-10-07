@@ -389,9 +389,12 @@ function createCertifiedLikeRouter(options?: {
   importState?: string;
   lastConfigDigest?: string | null;
   status?: string;
+  lastCheckInAt?: Date | null;
 }) {
   return {
     id: CERTIFIED_LIKE_ROUTER_ID,
+    lastCheckInAt:
+      options?.lastCheckInAt === undefined ? new Date() : options.lastCheckInAt,
     boardName: "xiaomi,mi-router-ax3000t",
     target: "mediatek/filogic",
     architecture: "aarch64_cortex-a53",
@@ -634,10 +637,11 @@ describe("destructive route gating", () => {
       "controller self-update to 0.1.13-r1 installed",
     );
     expect(inserted.payload?.command).not.toContain("LuCI reinstall failed");
-    // Bumped from 4000 → 8000 in 2026-05-28 r28 release to make room for
-    // the new verify_ipk_has_agent / verify_agent_on_disk safety helpers
-    // (added after the r27 binary-less-IPK incident on totchto-filiciy).
-    expect(inserted.payload?.command?.length).toBeLessThanOrEqual(8000);
+    // 4000 → 8000 (r28, verify_ipk_has_agent / verify_agent_on_disk) →
+    // 32000 (r47: the embedded rollback guard, ~19 KB).
+    expect(inserted.payload?.command?.length).toBeLessThanOrEqual(32000);
+    expect(inserted.payload?.command).toContain('sh "$guard" prepare');
+    expect(inserted.payload?.command).toContain('sh "$guard" launch');
   });
 
   it("uses a compat terminal purpose for pre-r20 controllers when the controller update is resource-safe", async () => {
@@ -721,12 +725,15 @@ describe("destructive route gating", () => {
       queueControllerUpdate: (input: {
         routerId: string;
         channel: "stable" | "beta";
+        force?: boolean;
       }) => Promise<unknown>;
     };
 
     await caller.queueControllerUpdate({
       routerId: CERTIFIED_LIKE_ROUTER_ID,
       channel: "stable",
+      // A router in direct mode is refused by the rollout guard unless forced.
+      force: true,
     });
 
     const [inserted] = mock.insertedValues() as Array<{
@@ -1337,5 +1344,134 @@ describe("destructive route gating", () => {
     });
 
     expect(mock.counts().insertCalls).toBe(0);
+  });
+
+  describe("controller update rollout guard", () => {
+    type ControllerCaller = {
+      queueControllerUpdate: (input: {
+        routerId: string;
+        channel: "stable" | "beta";
+        force?: boolean;
+      }) => Promise<unknown>;
+      queueBulkControllerUpdate: (input: {
+        routerIds: string[];
+        channel: "stable" | "beta";
+        force?: boolean;
+      }) => Promise<{
+        results: Array<{ routerId: string; status: string; reason: string | null }>;
+      }>;
+    };
+
+    // router, snapshot, artifacts, existing job, server_unreachable incidents
+    function controllerUpdateMock(options: {
+      router?: Parameters<typeof createCertifiedLikeRouter>[0];
+      incidents?: unknown[];
+    }) {
+      return createMockDb([
+        [createCertifiedLikeRouter(options.router)],
+        [
+          createPilotLayoutSnapshot("ubootmod", {
+            "vectra-controller-agent": "0.1.13-r46",
+            "luci-app-vectra-controller": "0.1.13-r46",
+          }),
+        ],
+        [
+          createControllerArtifact("vectra-controller-agent", "0.1.13-r47"),
+          createControllerArtifact("luci-app-vectra-controller", "0.1.13-r47"),
+        ],
+        [],
+        options.incidents ?? [],
+      ]);
+    }
+
+    it("refuses a router with an open server_unreachable incident", async () => {
+      const mock = controllerUpdateMock({
+        incidents: [
+          {
+            type: "server_unreachable",
+            state: "open",
+            openedAt: new Date(Date.now() - 2 * 24 * 3600 * 1000),
+          },
+        ],
+      });
+      const caller = createProtectedCaller(updateRouter, mock.db) as ControllerCaller;
+
+      await expect(
+        caller.queueControllerUpdate({
+          routerId: CERTIFIED_LIKE_ROUTER_ID,
+          channel: "stable",
+        }),
+      ).rejects.toThrow(/server_unreachable.*force: true/);
+      expect(mock.counts().insertCalls).toBe(0);
+    });
+
+    it("refuses a router whose last check-in is older than 10 minutes", async () => {
+      const mock = controllerUpdateMock({
+        router: { lastCheckInAt: new Date(Date.now() - 11 * 60 * 1000) },
+      });
+      const caller = createProtectedCaller(updateRouter, mock.db) as ControllerCaller;
+
+      await expect(
+        caller.queueControllerUpdate({
+          routerId: CERTIFIED_LIKE_ROUTER_ID,
+          channel: "stable",
+        }),
+      ).rejects.toThrow(/check-in 11 мин назад/);
+      expect(mock.counts().insertCalls).toBe(0);
+    });
+
+    it("queues it anyway when the operator forces the update", async () => {
+      const mock = controllerUpdateMock({
+        router: { status: "rescue", lastCheckInAt: null },
+        incidents: [
+          { type: "server_unreachable", state: "open", openedAt: new Date() },
+        ],
+      });
+      const caller = createProtectedCaller(updateRouter, mock.db) as ControllerCaller;
+
+      await caller.queueControllerUpdate({
+        routerId: CERTIFIED_LIKE_ROUTER_ID,
+        channel: "stable",
+        force: true,
+      });
+      expect(mock.counts().insertCalls).toBe(1);
+    });
+
+    it("queues a healthy router", async () => {
+      const mock = controllerUpdateMock({});
+      const caller = createProtectedCaller(updateRouter, mock.db) as ControllerCaller;
+
+      await caller.queueControllerUpdate({
+        routerId: CERTIFIED_LIKE_ROUTER_ID,
+        channel: "stable",
+      });
+      expect(mock.counts().insertCalls).toBe(1);
+    });
+
+    it("bulk update skips and reports a shaky router instead of failing it", async () => {
+      const mock = controllerUpdateMock({
+        incidents: [
+          {
+            type: "server_unreachable",
+            state: "resolved",
+            openedAt: new Date(Date.now() - 3600 * 1000),
+          },
+        ],
+      });
+      const caller = createProtectedCaller(updateRouter, mock.db) as ControllerCaller;
+
+      const result = await caller.queueBulkControllerUpdate({
+        routerIds: [CERTIFIED_LIKE_ROUTER_ID],
+        channel: "stable",
+      });
+      expect(result.results).toEqual([
+        expect.objectContaining({
+          routerId: CERTIFIED_LIKE_ROUTER_ID,
+          status: "skipped",
+          reason: expect.stringContaining("последние 24 ч") as unknown,
+        }),
+      ]);
+      expect(mock.counts().insertCalls).toBe(0);
+    });
   });
 });
