@@ -29,6 +29,15 @@
 #               router reached the panel before; v2 may have cut its own path)
 #   restorefail the first restore hits a full filesystem: copy and session
 #               kept (restore-failed), the retry after space is freed brings v1
+#   retiredmarker
+#               vctl's .passwall-retired/.passwall-disabled-by-vctl left from
+#               an earlier `vectra off`, no vctl: the rolled-back agent starts
+#   restorecap  a restore that can never complete (a stanza missing from the
+#               copy): retries back off and stop at the cap (phase manual)
+#               without ever stopping the running v1 agent; `guard.sh clear`
+#               ends it
+#   outageends  panel unreachable past the contact deadline, back before the
+#               network deadline: v2 reaches it and is kept
 #   reboot      silent v2, container restarted inside the window: the guard
 #               resumes from cron, re-arms its clock, rolls back
 #   noroom      no room for a copy on /etc or /tmp: exit 73, nothing changed
@@ -47,8 +56,8 @@ RUN_ID="vupd-$$"
 NET="$RUN_ID-net"
 V1=0.1.13-r46
 V2=0.1.13-r47
-TIMINGS='{"stable":15,"crash":45,"contact":60,"probeFrom":30,"probeEvery":5,"hold":15,"network":150,"tick":3,"restartDelay":3,"preparedTimeout":60,"armedTimeout":30}'
-ALL=(healthy crash selfdelete nobin midfail silent offline reboot noroom tmpcopy restorefail)
+TIMINGS='{"stable":15,"crash":45,"contact":60,"probeFrom":30,"probeEvery":5,"hold":15,"network":150,"tick":3,"restartDelay":3,"preparedTimeout":60,"armedTimeout":30,"restoreRetry":2,"restoreRetryMax":8,"restoreMaxAttempts":4}'
+ALL=(healthy crash selfdelete nobin midfail silent offline reboot noroom tmpcopy restorefail retiredmarker restorecap outageends)
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 fatal() { printf '\nFATAL: %s\n' "$*" >&2; exit 2; }
@@ -85,7 +94,6 @@ agent_script() { # <variant>
 VARIANT=$1
 EOF
 	cat <<'EOF'
-url="$(uci -q get vectra-controller.main.control_url)"
 state=/etc/vectra-controller/state.json
 mkdir -p /etc/vectra-controller
 echo "$VARIANT $$ $(date +%s)" >> /tmp/stand-agent.starts
@@ -94,6 +102,7 @@ crash) exit 1 ;;
 selfdelete) sleep 3; rm -f /usr/sbin/vectra-controller-agent; exit 1 ;;
 esac
 while :; do
+	url="$(uci -q get vectra-controller.main.control_url)"
 	if [ "$VARIANT" != silent ] && uclient-fetch -q -T 3 -O /dev/null "$url/api/health" >/dev/null 2>&1; then
 		printf '{"router_id":"stand","agent_token":"t","control_plane_recovery":{"last_successful_control_plane_at":"%s"}}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$state.tmp" && mv "$state.tmp" "$state"
 	fi
@@ -340,14 +349,69 @@ scenario() { # <name>
 		# The filesystem the package's data file lives on fills up.
 		docker exec "$RUN_ID-$n" sh -c 'dd if=/dev/zero of=/usr/share/vectra-stand/filler bs=4096 2>/dev/null; true'
 		s="$(wait_state "$n" 120 phase restore-failed)" && record "$n" PASS "first restore incomplete -> restore-failed" || record "$n" FAIL "never restore-failed: $s"
+		# Space comes back (the stand retries every 2-8 s, at most 4 times).
+		docker exec "$RUN_ID-$n" rm -f /usr/share/vectra-stand/filler
 		check "$n" "restore-failed: copy kept" "$s" persistcopy yes
 		check "$n" "restore-failed: session kept" "$s" session present
 		check "$n" "restore-failed: cron line kept" "$s" cron 1
 		check "$n" "restore-failed: no success marker yet" "$s" marker none
-		docker exec "$RUN_ID-$n" rm -f /usr/share/vectra-stand/filler
 		s="$(wait_state "$n" 150 session gone)" || true
 		rolled_back "$n" "$s" '*crash_loop*'
-		check "$n" "restored on the retry" "$s" attempts 2
+		check "$n" "restored on a retry" "$s" attempts '[234]'
+		;;
+	retiredmarker)
+		start_router "$n" 64m
+		for _ in $(seq 20); do docker exec "$RUN_ID-$n" test -f /tmp/stand-booted 2>/dev/null && break; sleep 1; done
+		docker exec "$RUN_ID-$n" sh -c 'mkdir -p /etc/vectra-controller-pro && : > /etc/vectra-controller-pro/.passwall-retired-by-vctl && : > /etc/vectra-controller-pro/.passwall-disabled-by-vctl'
+		setup "$n"
+		update "$n" crash
+		[[ "$UPDATE_RC" == 0 ]] && record "$n" PASS "update exit 0" || record "$n" FAIL "update exit $UPDATE_RC"
+		s="$(wait_state "$n" 200 session gone)" || true
+		rolled_back "$n" "$s" '*crash_loop*'
+		;;
+	restorecap)
+		start_router "$n" 64m
+		setup "$n"
+		update "$n" crash
+		[[ "$UPDATE_RC" == 0 ]] && record "$n" PASS "update exit 0" || record "$n" FAIL "update exit $UPDATE_RC"
+		s="$(wait_state "$n" 30 phase watching)" && record "$n" PASS "guard watching v2" || record "$n" FAIL "guard never watched: $s"
+		# The copy's LuCI stanza is gone: no restore can ever verify.
+		docker exec "$RUN_ID-$n" sh -c 'f=/etc/vectra-controller/update-rollback/status.stanzas; awk "/^Package: luci-app-vectra-controller/ { skip = 1 } skip && \$0 == \"\" { skip = 0; next } !skip" "$f" > "$f.x" && mv "$f.x" "$f"'
+		s="$(wait_state "$n" 90 phase restore-failed)" && record "$n" PASS "restore incomplete -> restore-failed" || record "$n" FAIL "never restore-failed: $s"
+		sleep 3
+		s="$(state_of "$n")"
+		check "$n" "v1 agent started from the restored binary" "$s" variant v1
+		check "$n" "v1 agent running" "$s" pid '[0-9]*'
+		pid="$(field "$s" pid)"
+		s="$(wait_state "$n" 120 phase manual)" && record "$n" PASS "attempt cap -> phase manual" || record "$n" FAIL "never manual: $s"
+		check "$n" "the running v1 agent was never stopped by the retries" "$s" pid "$pid"
+		check "$n" "copy kept for the operator" "$s" persistcopy yes
+		local at
+		at="$(docker exec "$RUN_ID-$n" cat /etc/vectra-controller/update-rollback/attempts 2>/dev/null)"
+		[[ "$at" == 4 ]] && record "$n" PASS "4 attempts (the stand's cap)" || record "$n" FAIL "attempts=$at"
+		sleep 15
+		at="$(docker exec "$RUN_ID-$n" cat /etc/vectra-controller/update-rollback/attempts 2>/dev/null)"
+		[[ "$at" == 4 ]] && record "$n" PASS "manual: no further attempts" || record "$n" FAIL "attempts went on: $at"
+		docker exec "$RUN_ID-$n" sh /etc/vectra-controller/update-rollback/guard.sh clear >/dev/null 2>&1 && record "$n" PASS "guard.sh clear accepted" || record "$n" FAIL "clear refused"
+		s="$(state_of "$n")"
+		check "$n" "clear: session gone" "$s" session gone
+		check "$n" "clear: cron line removed" "$s" cron 0
+		check "$n" "clear: the agent still runs, untouched" "$s" pid "$pid"
+		;;
+	outageends)
+		start_router "$n" 64m
+		PANEL_URL=http://nopanel.invalid:8080 EXPECT_CONTACT=0 setup "$n"
+		update "$n" healthy
+		[[ "$UPDATE_RC" == 0 ]] && record "$n" PASS "update exit 0" || record "$n" FAIL "update exit $UPDATE_RC"
+		sleep 105
+		s="$(state_of "$n")"
+		check "$n" "outage past the contact deadline: still watching" "$s" session present
+		check "$n" "outage past the contact deadline: v2 not rolled back" "$s" agent "$V2"
+		docker exec "$RUN_ID-$n" sh -c 'uci set vectra-controller.main.control_url=http://panel:8080 && uci commit vectra-controller'
+		s="$(wait_state "$n" 60 session gone)" || true
+		check "$n" "outage ended before the network deadline: v2 kept" "$s" agent "$V2"
+		check "$n" "v2 agent running" "$s" variant healthy
+		check "$n" "no rollback marker" "$s" marker none
 		;;
 	*) echo "STAND-FATAL unknown scenario $n" ;;
 	esac

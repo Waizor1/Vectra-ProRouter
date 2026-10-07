@@ -28,8 +28,8 @@ export const controllerUpdateRollbackMarkerPath =
 
 // Overrides of the guard's judgement windows (seconds). Production leaves
 // them unset (guard defaults: stable 120, crash 300, contact 900, probeFrom
-// 600, probeEvery 60, hold 180, network 3600, tick 10); the docker stand
-// shrinks them.
+// 600, probeEvery 60, hold 180, network 3600, tick 10, restore retry 60
+// doubling to 1800, 10 attempts); the docker stand shrinks them.
 export type ControllerUpdateGuardTimings = Partial<
   Record<
     | "stable"
@@ -42,7 +42,10 @@ export type ControllerUpdateGuardTimings = Partial<
     | "tick"
     | "restartDelay"
     | "preparedTimeout"
-    | "armedTimeout",
+    | "armedTimeout"
+    | "restoreRetry"
+    | "restoreRetryMax"
+    | "restoreMaxAttempts",
     number
   >
 >;
@@ -59,6 +62,9 @@ const guardTimingEnv: Record<keyof ControllerUpdateGuardTimings, string> = {
   restartDelay: "VECTRA_GUARD_RESTART_DELAY_SECONDS",
   preparedTimeout: "VECTRA_GUARD_PREPARED_TIMEOUT_SECONDS",
   armedTimeout: "VECTRA_GUARD_ARMED_TIMEOUT_SECONDS",
+  restoreRetry: "VECTRA_GUARD_RESTORE_RETRY_SECONDS",
+  restoreRetryMax: "VECTRA_GUARD_RESTORE_RETRY_MAX_SECONDS",
+  restoreMaxAttempts: "VECTRA_GUARD_RESTORE_MAX_ATTEMPTS",
 };
 
 function guardTimingPrefix(timings: ControllerUpdateGuardTimings | undefined) {

@@ -529,6 +529,9 @@ g_prepare() {
 		printf "G_RESTART_DELAY='%s'\n" "$(g_strip0 "${VECTRA_GUARD_RESTART_DELAY_SECONDS:-5}")"
 		printf "G_PREPARED_TIMEOUT='%s'\n" "$(g_strip0 "${VECTRA_GUARD_PREPARED_TIMEOUT_SECONDS:-300}")"
 		printf "G_ARMED_TIMEOUT='%s'\n" "$(g_strip0 "${VECTRA_GUARD_ARMED_TIMEOUT_SECONDS:-60}")"
+		printf "G_RESTORE_RETRY_SECONDS='%s'\n" "$(g_strip0 "${VECTRA_GUARD_RESTORE_RETRY_SECONDS:-$G_RESTORE_RETRY_SECONDS}")"
+		printf "G_RESTORE_RETRY_MAX_SECONDS='%s'\n" "$(g_strip0 "${VECTRA_GUARD_RESTORE_RETRY_MAX_SECONDS:-$G_RESTORE_RETRY_MAX_SECONDS}")"
+		printf "G_RESTORE_MAX_ATTEMPTS='%s'\n" "$(g_strip0 "${VECTRA_GUARD_RESTORE_MAX_ATTEMPTS:-$G_RESTORE_MAX_ATTEMPTS}")"
 	} > "$G_META.new" && mv "$G_META.new" "$G_META"
 	g_set prepared_at "$(g_mono)"
 	g_set phase prepared

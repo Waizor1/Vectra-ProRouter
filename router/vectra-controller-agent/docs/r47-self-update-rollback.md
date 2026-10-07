@@ -32,31 +32,47 @@ a missing binary, only logged "manual recovery required".
      `last_successful_control_plane_at` after the restart, and a stamp that
      changed since the restart, so a clock stepped back cannot fake one) by
      15 min while the panel's `/api/health` has answered from the router for
-     3 min; or no contact by **60 min** with the panel not answering either —
+     3 min; or no contact by **60 min** with the panel silent from the router
+     for at least the last 3 min —
      the update job itself proved the router reached the panel before, and a
      new version can cut its own path (carve-out, nft, TPROXY), so the guard
-     goes back to the known-good version. Success (stable + contact) removes
+     goes back to the known-good version (a panel that answers again is left
+     to the 15-min rule). Windows run on `/proc/uptime`, so a wall-clock jump
+     moves nothing; a reboot re-arms them. Success (stable + contact) removes
      the copy.
    - every restore is checked: tar's exit code, the agent binary byte for byte
      against the copy, both stanzas' versions. An incomplete restore (full
      filesystem, truncated write) keeps the copy and the session (phase
-     `restore-failed`) and is retried every minute by the guard and every
-     5 min by the watchdog; the copy is never deleted before a verified
-     restore.
+     `restore-failed`) and is retried with a backoff (1, 2, 4 … 30 min, the
+     watchdog nudging the same throttled retry). Each retry first checks
+     whether the restore is in fact complete and never stops an agent that
+     already runs the copy's binary. After 10 attempts: phase `manual`, the
+     agent is left alone and the copy kept; the operator ends it with
+     `sh /etc/vectra-controller/update-rollback/guard.sh clear` (via
+     `VectraPanelCli.sh terminal`) or a forced update — both only while the
+     agent runs from an executable binary. The copy is never deleted before a
+     verified restore except by that operator decision.
    - rollback marker: `/etc/vectra-controller/update-rollback.marker`.
 2. **Watchdog**: a missing/empty binary is restored through the guard when a
-   rollback copy exists, and an incomplete rollback is retried; the legacy
-   agent is never enabled/started while vctl owns the router (any
-   `/etc/vectra-controller-pro/.*-by-vctl` marker, `vectra-controller-pro
-   running`, or `table inet vctl`). A merely disabled init script without vctl
-   is enabled and started as before.
+   rollback copy exists; an incomplete rollback nudges the guard's throttled
+   retry and every other branch (dead-man included) keeps running. The legacy
+   agent is never enabled/started while vctl owns the router: vctl's
+   `.legacy-agent-disabled-by-vctl` marker (in `/etc/vectra-controller-pro` or
+   `/tmp/vectra-trial.d`), `vectra-controller-pro running`, or `table inet
+   vctl`. vctl's other markers (`.passwall-retired-by-vctl`,
+   `.passwall-disabled-by-vctl`) outlive a `vectra off` and hold nothing. A
+   merely disabled init script without vctl is enabled and started as before.
 3. **Panel rollout guard**: `queueControllerUpdate` / `queueBulkControllerUpdate`
    refuse a router with an open `server_unreachable` incident, one opened in
    the last 24 h, a check-in older than 10 min, or status direct/rescue, unless
    forced: the router's Updates tab asks once ("Всё равно обновить", with the
    reasons), `VectraPanelCli.sh update controller <router> --force` from the
    CLI (tRPC `force: true`). Bulk reports such routers as `skipped`. A forced
-   update also passes the guard's exit 75.
+   update also passes the guard's exit 75; when the newest controller job hit
+   75, the Updates tab says so and offers the same confirmation. A forced
+   request upgrades a still-queued unforced job in place.
+4. The terminal payload cap for the panel's own command is 48000 (the guard
+   is ~27 KB compacted); operator-typed commands stay at 8000.
 
 ## Known limits of a rollback
 
@@ -79,6 +95,6 @@ a missing binary, only logged "manual recovery required".
 
 Tests: `openwrt/tests/update_guard_test.sh`,
 `openwrt/tests/watchdog_update_rollback_test.sh` (sh, dash, BusyBox ash), the
-docker stand `openwrt/tests/update-stand/run.sh` (11 scenarios), vitest
+docker stand `openwrt/tests/update-stand/run.sh` (14 scenarios), vitest
 `controller-update-jobs.test.ts`, `controller-update-rollout-guard.test.ts`,
 `destructive-gating.test.ts`.
