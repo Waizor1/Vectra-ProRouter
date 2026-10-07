@@ -2,8 +2,9 @@
 # watchdog_update_rollback_test.sh: the watchdog's process branches (r47):
 #   - a missing/empty agent binary is handed to the self-update rollback guard
 #     when a rollback copy exists (and only then);
+#   - an incomplete rollback (guard phase restore-failed) is retried;
 #   - the legacy agent is never enabled/started (or restored) while vctl owns
-#     the router or its init script is disabled.
+#     the router; a merely disabled init script is still enabled + started.
 # Runs a copy of the watchdog whose paths point into a sandbox; pgrep, nft,
 # logger and sleep are PATH stubs, the init scripts and the guard are stub
 # executables that record their calls.
@@ -78,13 +79,15 @@ sed -e "s#^INIT_SCRIPT=.*#INIT_SCRIPT=\"$S/init\"#" \
 	-e "s#^LAST_RESTART_FILE=.*#LAST_RESTART_FILE=\"$S/run/last-restart\"#" \
 	-e "s#^UPDATE_GUARD=.*#UPDATE_GUARD=\"$S/guard/guard.sh\"#" \
 	-e "s#^UPDATE_GUARD_META=.*#UPDATE_GUARD_META=\"$S/guard/meta\"#" \
+	-e "s#^UPDATE_GUARD_PHASE=.*#UPDATE_GUARD_PHASE=\"$S/guard/phase\"#" \
 	-e "s#^VCTL_INIT=.*#VCTL_INIT=\"$S/vctl-init\"#" \
-	-e "s#^VCTL_HANDOVER_MARKERS=.*#VCTL_HANDOVER_MARKERS=\"$S/handover-marker\"#" \
+	-e "s#^VCTL_MARKER_DIRS=.*#VCTL_MARKER_DIRS=\"$S/vctl-dir\"#" \
 	"$WATCHDOG" > "$S/watchdog"
 
 reset() {
 	rm -f "$S/log" "$S/init.calls" "$S/guard.calls" "$S/agent.running" "$S/vctl.table" "$S/vctl.running" \
-		"$S/init.disabled" "$S/handover-marker" "$S/guard/meta" "$S/run/state" "$S/run/last-restart" "$S/agent"
+		"$S/init.disabled" "$S/guard/meta" "$S/guard/phase" "$S/run/state" "$S/run/last-restart" "$S/agent"
+	rm -rf "$S/vctl-dir"; mkdir -p "$S/vctl-dir"
 }
 run_wd() { PATH="$S/bin:$PATH" sh "$S/watchdog"; }
 starts() { cat "$S/init.calls" 2>/dev/null | grep -Ec "^(enable|start|restart)$" || true; }
@@ -100,7 +103,7 @@ assert_eq 1 "$(grep -c 'restoring the previous version' "$S/log")" "missing bina
 # 2. Same, but vctl owns the router: no restore, logged once.
 reset
 : > "$S/guard/meta"
-: > "$S/handover-marker"
+: > "$S/vctl-dir/.legacy-agent-disabled-by-vctl"
 run_wd
 run_wd
 assert_eq "" "$(guard_calls)" "missing binary + vctl handover marker -> no restore"
@@ -129,12 +132,25 @@ reset; mkbin
 run_wd
 assert_eq 0 "$(starts)" "vctl running -> legacy agent not started"
 
-# 6. Init script disabled on purpose.
+# 6. Init script disabled, no vctl anywhere: the old behaviour, enable + start.
 reset; mkbin
 : > "$S/init.disabled"
 run_wd
-assert_eq 0 "$(starts)" "init disabled -> legacy agent not started"
-assert_eq 1 "$(grep -c 'is disabled; not starting' "$S/log")" "init disabled -> logged"
+assert_eq 2 "$(starts)" "init disabled without vctl -> enable + start as before"
+
+# 6b. Any vctl marker (.*-by-vctl), not only the handover one, holds the agent.
+reset; mkbin
+: > "$S/vctl-dir/.passwall-retired-by-vctl"
+run_wd
+assert_eq 0 "$(starts)" "vctl marker .passwall-retired-by-vctl -> not started"
+
+# 6c. An incomplete rollback is retried, even with a binary on disk.
+reset; mkbin
+: > "$S/guard/meta"
+echo restore-failed > "$S/guard/phase"
+run_wd
+assert_eq "rollback|watchdog: retrying an incomplete rollback" "$(guard_calls)" "restore-failed -> watchdog retries the rollback"
+assert_eq 0 "$(starts)" "restore-failed -> the watchdog does not start the agent itself"
 
 # 7. vctl owns it and the throttle file is in the future (the 1111 case): held
 #    by the vctl check, not by the accident of a negative delta.

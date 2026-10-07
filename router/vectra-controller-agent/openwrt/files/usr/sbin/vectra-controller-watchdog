@@ -17,9 +17,9 @@
 #      situation. Don't try to download a replacement — we can't trust the
 #      router has network at this point, and a botched download would only
 #      make things worse.
-#   Never enable/start (or restore) the legacy agent while vctl
-#   (vectra-controller-pro) owns the router, or while its init script is
-#   disabled on purpose.
+#   A rollback the guard could not complete (phase restore-failed) is retried
+#   from here too. Never enable/start (or restore) the legacy agent while vctl
+#   (vectra-controller-pro) owns the router.
 #   3. Dead-man's switch (GAP-2): even when the agent process is alive and
 #      healthy, the router can be PERMANENTLY unreachable if PassWall2's
 #      transparent proxy routes the controller's own panel traffic through a
@@ -151,10 +151,11 @@ MEMINFO_FILE="/proc/meminfo"
 # package: they exist only while an update is being verified.
 UPDATE_GUARD="/etc/vectra-controller/update-rollback/guard.sh"
 UPDATE_GUARD_META="/etc/vectra-controller/update-rollback/meta"
+UPDATE_GUARD_PHASE="/etc/vectra-controller/update-rollback/phase"
 
 # vctl (vectra-controller-pro) owning the router: the legacy agent stays off.
 VCTL_INIT="/etc/init.d/vectra-controller-pro"
-VCTL_HANDOVER_MARKERS="/etc/vectra-controller-pro/.legacy-agent-disabled-by-vctl /tmp/vectra-trial.d/.legacy-agent-disabled-by-vctl"
+VCTL_MARKER_DIRS="/etc/vectra-controller-pro /tmp/vectra-trial.d"
 
 # Serialises overlapping cron runs (a slow url_test_node must not let the next
 # tick act on half-finished state). A lock older than this is stale.
@@ -818,12 +819,15 @@ deadman_check_locked() {
 	return 0
 }
 
-# Does vctl own this router? Its handover marker, its running service, or its
-# nftables table. `nft list tables` only lists names (never the sets, which
-# cost tens of MB on a 234 MB box).
+# Does vctl own this router? One of its markers (.*-by-vctl), its running
+# service, or its nftables table. `nft list tables` only lists names (never
+# the sets, which cost tens of MB on a 234 MB box). A merely disabled init
+# script is not vctl: the watchdog still enables and starts the agent then.
 vctl_owns_router() {
-	for marker in $VCTL_HANDOVER_MARKERS; do
-		[ -f "$marker" ] && return 0
+	for marker_dir in $VCTL_MARKER_DIRS; do
+		for marker in "$marker_dir"/.*-by-vctl; do
+			[ -e "$marker" ] && return 0
+		done
 	done
 	if [ -x "$VCTL_INIT" ] && "$VCTL_INIT" running >/dev/null 2>&1; then
 		return 0
@@ -838,10 +842,6 @@ vctl_owns_router() {
 legacy_start_hold_reason() {
 	if vctl_owns_router; then
 		printf 'vctl owns this router'
-		return 0
-	fi
-	if ! "$INIT_SCRIPT" enabled >/dev/null 2>&1; then
-		printf '%s is disabled' "$INIT_SCRIPT"
 		return 0
 	fi
 	return 0
@@ -866,6 +866,22 @@ fi
 if [ ! -x "$INIT_SCRIPT" ]; then
 	exit 0
 fi
+
+# Branch 0: a self-update rollback the guard could not complete (full
+# filesystem, truncated copy write): retry it, whatever the binary looks like.
+case "$(cat "$UPDATE_GUARD_PHASE" 2>/dev/null || true)" in
+restoring | restore-failed)
+	if [ -f "$UPDATE_GUARD" ] && [ -f "$UPDATE_GUARD_META" ] && ! vctl_owns_router; then
+		log "CRITICAL: an earlier self-update rollback is incomplete; retrying it ($UPDATE_GUARD)"
+		if sh "$UPDATE_GUARD" rollback "watchdog: retrying an incomplete rollback" >/dev/null 2>&1; then
+			log "previous controller version restored from the rollback copy"
+		else
+			log "WARN: the rollback is still incomplete; will retry next tick"
+		fi
+		exit 0
+	fi
+	;;
+esac
 
 # Branch 1: binary missing or empty. This is the r27-incident scenario.
 # A self-update still under verification left a rollback copy: its guard puts
@@ -918,8 +934,8 @@ if ! pgrep -f "$AGENT_BIN" >/dev/null 2>&1; then
 	fi
 	log "controller process missing; attempting init.d restart (last attempt ${delta}s ago)"
 	mark_restart_attempt
-	# `enable` is idempotent (a disabled init script never gets here: that is
-	# an intentional hold, see legacy_start_hold_reason). `start` is preferred over `restart` for the "not running"
+	# `enable` is idempotent; we run it in case the service was somehow
+	# disabled (vctl's ownership is held above). `start` is preferred over `restart` for the "not running"
 	# case since restart would error on a service that's already stopped on
 	# some procd builds.
 	"$INIT_SCRIPT" enable >/dev/null 2>&1 || true
