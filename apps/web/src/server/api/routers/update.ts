@@ -1,6 +1,7 @@
 import {
   artifacts,
   firmwareManifests,
+  healthIncidents,
   jobResults,
   jobs,
   routerInventorySnapshots,
@@ -14,19 +15,26 @@ import {
   validateFirmwareJobPayloadSchema,
 } from "@vectra/contracts";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, or } from "drizzle-orm";
 import { z } from "zod";
 
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
 import {
   compareControllerVersions,
+  normalizeControllerVersion,
   resolveInstalledControllerVersion,
 } from "~/lib/controller-version";
 import {
   buildTerminalControllerSelfUpdatePayload,
+  isForcedControllerSelfUpdateCommand,
   controllerSelfUpdateCompatTerminalPurpose,
   shouldUseTerminalControllerSelfUpdate,
 } from "~/lib/controller-update-jobs";
+import {
+  ControllerUpdateRolloutRefusal,
+  controllerUpdateRolloutIncidentLookbackMs,
+  evaluateControllerUpdateRolloutHealth,
+} from "~/lib/controller-update-rollout-guard";
 import { buildTerminalPasswallClearIpsetsPayload } from "~/lib/passwall-clear-ipsets-jobs";
 import { buildTerminalRouterRebootPayload } from "~/lib/router-reboot-jobs";
 import {
@@ -349,10 +357,68 @@ async function enqueuePasswallPackageUpdate(args: {
   return job;
 }
 
+// Refuses a controller update for a router whose control plane is already
+// shaky (see controller-update-rollout-guard.ts) unless the operator forces it.
+async function assertControllerUpdateRolloutHealthy(args: {
+  ctx: RouterMutationContext;
+  router: Pick<typeof routers.$inferSelect, "id" | "status" | "lastCheckInAt">;
+}) {
+  const now = new Date();
+  const incidents = await args.ctx.db
+    .select({
+      type: healthIncidents.type,
+      state: healthIncidents.state,
+      openedAt: healthIncidents.openedAt,
+    })
+    .from(healthIncidents)
+    .where(
+      and(
+        eq(healthIncidents.routerId, args.router.id),
+        eq(healthIncidents.type, "server_unreachable"),
+        or(
+          eq(healthIncidents.state, "open"),
+          gte(
+            healthIncidents.openedAt,
+            new Date(now.getTime() - controllerUpdateRolloutIncidentLookbackMs),
+          ),
+        ),
+      ),
+    )
+    .orderBy(desc(healthIncidents.openedAt))
+    .limit(20);
+
+  const health = evaluateControllerUpdateRolloutHealth({
+    router: args.router,
+    incidents,
+    now,
+  });
+  if (!health.ok) {
+    const refusal = new ControllerUpdateRolloutRefusal(health.reasons);
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: refusal.message,
+      cause: refusal,
+    });
+  }
+}
+
+function readCommand(payload: unknown) {
+  const command = asRecord(payload).command;
+  return typeof command === "string" ? command : null;
+}
+
+function isControllerUpdateRolloutRefusal(error: unknown) {
+  return (
+    error instanceof TRPCError &&
+    error.cause instanceof ControllerUpdateRolloutRefusal
+  );
+}
+
 async function enqueueControllerUpdateJob(args: {
   ctx: RouterMutationContext;
   routerId: string;
   channel: "stable" | "beta";
+  force?: boolean;
 }) {
   const { router, snapshot } = await assertUpdateCapableRouter(
     args.ctx,
@@ -427,6 +493,7 @@ async function enqueueControllerUpdateJob(args: {
     ? buildTerminalControllerSelfUpdatePayload({
         artifactVersion: payload.artifactVersion,
         packageArtifacts,
+        force: args.force,
         purpose: shouldUseControllerSelfUpdateCompatBridge({
           installedControllerVersion,
           routerStatus: router.status,
@@ -452,7 +519,29 @@ async function enqueueControllerUpdateJob(args: {
     .limit(1);
 
   if (existingJob) {
+    // An operator forcing the update gets a force-carrying job: a still
+    // queued unforced one is upgraded in place (one controller job per
+    // router), so it cannot run and fail on the guard's 75 refusal.
+    const existingCommand = readCommand(existingJob.payload);
+    if (
+      args.force &&
+      terminalPayload &&
+      existingJob.state === "queued" &&
+      existingJob.type === "run_terminal_command" &&
+      !isForcedControllerSelfUpdateCommand(existingCommand)
+    ) {
+      const [upgraded] = await args.ctx.db
+        .update(jobs)
+        .set({ payload: terminalPayload })
+        .where(and(eq(jobs.id, existingJob.id), eq(jobs.state, "queued")))
+        .returning();
+      return upgraded ?? existingJob;
+    }
     return existingJob;
+  }
+
+  if (!args.force) {
+    await assertControllerUpdateRolloutHealthy({ ctx: args.ctx, router });
   }
 
   const [job] = await args.ctx.db
@@ -1147,12 +1236,13 @@ export const updateRouter = createTRPCRouter({
       z.object({
         routerIds: z.array(z.string().uuid()).min(1),
         channel: z.enum(["stable", "beta"]).default("stable"),
+        force: z.boolean().default(false),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       const results = [] as Array<{
         routerId: string;
-        status: "queued" | "failed";
+        status: "queued" | "skipped" | "failed";
         reason: string | null;
         jobId: string | null;
       }>;
@@ -1163,6 +1253,7 @@ export const updateRouter = createTRPCRouter({
             ctx,
             routerId,
             channel: input.channel,
+            force: input.force,
           });
 
           results.push({
@@ -1174,7 +1265,11 @@ export const updateRouter = createTRPCRouter({
         } catch (error) {
           results.push({
             routerId,
-            status: "failed",
+            // A router with a shaky control plane is skipped, not failed:
+            // nothing was attempted on it.
+            status: isControllerUpdateRolloutRefusal(error)
+              ? "skipped"
+              : "failed",
             reason:
               error instanceof Error
                 ? error.message
@@ -1262,11 +1357,36 @@ export const updateRouter = createTRPCRouter({
       });
     }),
 
+  // The version a controller update on this channel would install now (the
+  // newest agent artifact, as enqueueControllerUpdateJob picks it).
+  controllerTargetVersion: protectedProcedure
+    .input(
+      z.object({
+        channel: z.enum(["stable", "beta"]).default("stable"),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const [artifact] = await ctx.db
+        .select()
+        .from(artifacts)
+        .where(
+          and(
+            eq(artifacts.type, "controller"),
+            eq(artifacts.channel, input.channel),
+            eq(artifacts.name, "vectra-controller-agent"),
+          ),
+        )
+        .orderBy(desc(artifacts.publishedAt), desc(artifacts.version))
+        .limit(1);
+      return { version: normalizeControllerVersion(artifact?.version) ?? null };
+    }),
+
   queueControllerUpdate: protectedProcedure
     .input(
       z.object({
         routerId: z.string().uuid(),
         channel: z.enum(["stable", "beta"]).default("stable"),
+        force: z.boolean().default(false),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1274,6 +1394,7 @@ export const updateRouter = createTRPCRouter({
         ctx,
         routerId: input.routerId,
         channel: input.channel,
+        force: input.force,
       });
     }),
 

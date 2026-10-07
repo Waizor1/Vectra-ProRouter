@@ -8,6 +8,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { controllerUpdateMutationInput } from "./vectra-panel-cli-update.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "../../..");
@@ -419,7 +420,7 @@ class VectraPanelClient {
       "  notifications status|subscribe --input '{...}'|unsubscribe --endpoint URL",
       "  terminal history <selector>",
       "  terminal run <selector> --command 'ubus call system board' [--timeout N]",
-      "  update controller <selector> [--channel stable|beta]",
+      "  update controller <selector> [--channel stable|beta] [--force]",
       "  update passwall <selector> [--channel stable|beta] [--package xray-core ...]",
       "  update rules <selector>",
       "  update subscriptions <selector>",
@@ -1210,14 +1211,13 @@ async function runUpdate(client, args) {
   const router = await client.resolveRouter(selector);
   switch (subcommand) {
     case "controller": {
-      const parsed = parseSubcommandArgs(args.slice(2), {
-        channel: { type: "string" },
-      });
-      const channel = parsed.values.channel ?? "stable";
-      const job = await client.mutate("update.queueControllerUpdate", {
-        routerId: router.id,
-        channel,
-      });
+      let input;
+      try {
+        input = controllerUpdateMutationInput(router.id, args.slice(2));
+      } catch (error) {
+        throw new CliError(error instanceof Error ? error.message : String(error));
+      }
+      const job = await client.mutate("update.queueControllerUpdate", input);
       return {
         router: summarizeFleetRouter(router.summary),
         job,
