@@ -44,9 +44,14 @@ a missing binary, only logged "manual recovery required".
      START=19, written with the session and removed with it) counts boots of
      an unconfirmed update; at the 3rd it rolls back before the new agent
      starts again. A healthy version confirms within 15 min, so the daily
-     04:30 reboot or one reboot during the window changes nothing.
+     04:30 reboot or one reboot during the window changes nothing. At boot
+     the hook also ends a session older than 2 h without a rollback (an
+     abandoned one), and otherwise restores a lost cron line and relaunches
+     the judging loop. A discarded stale session leaves nothing behind (boot
+     count, attempts, flags), only the guard script.
    - every restore is checked: the whole copy extracted without error, every
-     file of it matching the sha256 manifest made at prepare, both stanzas'
+     file of it matching the sha256 manifest made at prepare (the packages'
+     conffiles, which the agent itself writes, excepted), both stanzas'
      versions. A running agent counts as restored only if the guard started
      it from the verified binary or its `/proc/<pid>/exe` is the copy's;
      otherwise it is restarted. An incomplete restore (full

@@ -417,6 +417,20 @@ g_finish() {
 	g_cron_remove
 }
 
+# Everything of a session but the guard script itself (the update command has
+# just written it): no boot count, attempt, flag or list may leak into the next.
+g_discard_session() {
+	for g_f in "$G_DIR"/* "$G_DIR"/.[!.]*; do
+		[ -e "$g_f" ] || [ -L "$g_f" ] || continue
+		[ "$g_f" = "$G_SELF" ] && continue
+		rm -rf "$g_f" 2>/dev/null || true
+	done
+	rm -rf "$G_TMP_DIR" 2>/dev/null || true
+	g_clear_run
+	rm -f "$G_RUN/boot_counted" 2>/dev/null || true
+	g_boot_hook remove
+}
+
 # The early boot hook, START=19 (before the agent's S95). Not part of either
 # package: it exists only while a session does.
 g_boot_hook() {
@@ -481,9 +495,7 @@ g_prepare() {
 			return 74
 		fi
 		g_log "discarding a stale update-guard session (prepared at ${g_created:-unknown})"
-		rm -f "$G_META" "$G_STANZAS" "$G_DIR/backup.tgz" "$G_DIR/phase" "$G_DIR/window" "$G_DIR/prepared_at" "$G_DIR/armed_at" 2>/dev/null || true
-		rm -rf "$G_TMP_DIR" 2>/dev/null || true
-		g_clear_run
+		g_discard_session
 	fi
 	if [ -z "${VECTRA_GUARD_FORCE:-}" ] && [ -f "$G_MARKER" ]; then
 		g_mf="$(sed -n 's/^failed_version=//p' "$G_MARKER" 2>/dev/null | head -n 1)"
@@ -626,11 +638,18 @@ g_sha() {
 	fi
 }
 
-# $1 file of relative paths -> "F <sha256> <path>" / "L <target> <path>" lines.
+# $1 file of relative paths -> "F <sha256> <path>" / "L <target> <path>" lines;
+# "C - <path>" for the packages' conffiles (the agent and LuCI write
+# /etc/config/vectra-controller), which the completeness check skips.
 g_write_manifest() {
+	mkdir -p "$G_RUN" 2>/dev/null || true
+	cat "$G_INFO"/vectra-controller-agent.conffiles "$G_INFO"/luci-app-vectra-controller.conffiles 2>/dev/null |
+		sed -n 's#^/##p' > "$G_RUN/conffiles" 2>/dev/null || : > "$G_RUN/conffiles"
 	while IFS= read -r g_rel || [ -n "$g_rel" ]; do
 		g_abs="$G_ROOT/$g_rel"
-		if [ -L "$g_abs" ]; then
+		if grep -Fxq -- "$g_rel" "$G_RUN/conffiles" 2>/dev/null; then
+			printf 'C - %s\n' "$g_rel"
+		elif [ -L "$g_abs" ]; then
 			printf 'L %s %s\n' "$(readlink "$g_abs")" "$g_rel"
 		else
 			printf 'F %s %s\n' "$(g_sha "$g_abs")" "$g_rel"
@@ -646,6 +665,7 @@ g_disk_matches_copy() {
 		case "$g_kind" in
 		L) [ -L "$g_abs" ] && [ "$(readlink "$g_abs")" = "$g_val" ] || return 1 ;;
 		F) [ -f "$g_abs" ] && [ ! -L "$g_abs" ] && [ "$(g_sha "$g_abs")" = "$g_val" ] || return 1 ;;
+		C) ;;
 		*) return 1 ;;
 		esac
 	done < "$G_MANIFEST"
@@ -1073,14 +1093,33 @@ g_main() {
 		;;
 	boot)
 		g_load_meta || return 0
-		case "$(g_phase)" in
-		watching | armed) ;;
-		*) return 0 ;;
-		esac
 		g_lock 30 || return 0
-		g_count_boot
-		g_boot_limit || true
+		case "$(g_phase)" in
+		prepared | armed | watching)
+			# A session this old was abandoned (its cron line lost): end it
+			# rather than let some later reboot roll back a version that has
+			# long been working.
+			g_bt="$(g_now)"
+			case "${G_CREATED:-}" in '' | *[!0-9]*) G_CREATED="$g_bt" ;; esac
+			if [ $((g_bt - G_CREATED)) -ge "$G_SESSION_STALE_SECONDS" ]; then
+				g_log "boot: the update-guard session for ${G_TO:-?} is $((g_bt - G_CREATED))s old; ending it without a rollback"
+				g_finish
+				g_unlock
+				return 0
+			fi
+			if [ "$(g_phase)" != prepared ]; then
+				g_count_boot
+				if g_boot_limit; then
+					g_unlock
+					return 0
+				fi
+			fi
+			;;
+		esac
+		# Judging resumes: the cron line (restored if it was lost) and the loop.
+		grep -Fxq "$G_CRON_BEGIN" "$G_CRONTAB" 2>/dev/null || g_cron_write install
 		g_unlock
+		g_launch
 		;;
 	retry)
 		[ -f "$G_META" ] || return 0

@@ -130,6 +130,7 @@ EOF
 		rm -f "$INFO/vectra-controller-agent.postinst"
 	fi
 	printf 'Package: vectra-controller-agent\nVersion: 0.1.13-%s\n' "$v" > "$INFO/vectra-controller-agent.control"
+	echo /etc/config/vectra-controller > "$INFO/vectra-controller-agent.conffiles"
 	printf 'Package: luci-app-vectra-controller\nVersion: 0.1.13-%s\n' "$v" > "$INFO/luci-app-vectra-controller.control"
 	{
 		stanza busybox 1.36.1-r3
@@ -788,6 +789,62 @@ assert_eq 11 "$(cat "$G_DIR/attempts")" "manual, no agent: retried after 30 min"
 echo 4242 > "$SANDBOX/agent.pid"
 NOW=$((t0 + 9000)); tick
 assert_eq 11 "$(cat "$G_DIR/attempts")" "manual, agent running again: left alone"
+
+# === 7. final review ===========================================================
+# 7a. a stale session leaves nothing behind: the next one starts at boots=0.
+fresh_router
+g_prepare 0.1.13-v2 >/dev/null 2>&1
+for f in boots:2 attempts:3 tar_ok:1 rollback_reason:x rollback_mode:full new.vectra-controller-agent.list:/x; do
+	printf '%s\n' "${f#*:}" > "$G_DIR/${f%%:*}"
+done
+NOW=$((NOW + 8000))
+g_prepare 0.1.13-v3 >/dev/null 2>&1
+assert_eq 0 "$?" "stale: a new session is prepared"
+for f in boots attempts tar_ok rollback_reason rollback_mode new.vectra-controller-agent.list; do
+	assert_false "stale: $f not inherited" test -e "$G_DIR/$f"
+done
+assert_true "stale: the guard script stays" test -f "$G_SELF"
+install_version v2
+g_main arm
+g_start_window
+rm -rf "$G_RUN"; g_main boot
+assert_eq 1 "$(cat "$G_DIR/boots")" "stale: the new session counts its first reboot as 1"
+assert_true "stale: one reboot is no rollback" agent_is v2
+assert_false "stale: no marker" test -e "$G_MARKER"
+
+# 7b. an abandoned session (older than the stale limit) ends at boot, no rollback.
+updated_and_watching
+rm -rf "$G_RUN"; g_main boot
+rm -rf "$G_RUN"; g_main boot
+NOW=$((NOW + 8000))
+rm -rf "$G_RUN"; g_main boot
+assert_true "old session + reboot: no rollback" agent_is v2
+assert_false "old session + reboot: no marker" test -e "$G_MARKER"
+assert_true "old session + reboot: session ended" session_gone
+assert_false "old session + reboot: boot hook removed" test -e "$G_BOOT_HOOK"
+
+# 7c. a fresh session whose cron line was lost: the boot hook restores it and
+#     relaunches judging.
+updated_and_watching
+awk -v b="$G_CRON_BEGIN" -v e="$G_CRON_END" '$0 == b { skip = 1; next } $0 == e { skip = 0; next } !skip' "$R/etc/crontabs/root" > "$SANDBOX/ct" && cp "$SANDBOX/ct" "$R/etc/crontabs/root"
+assert_eq 0 "$(cron_lines)" "cron lost: setup"
+rm -f "$SANDBOX/launches"
+rm -rf "$G_RUN"; g_main boot
+assert_eq 1 "$(cron_lines)" "cron lost: the boot hook restores the cron line"
+assert_eq 1 "$(grep -c launch "$SANDBOX/launches" 2>/dev/null)" "cron lost: the boot hook relaunches the loop"
+assert_true "cron lost: unrelated entries kept" grep -qx '30 4 \* \* \* reboot' "$R/etc/crontabs/root"
+
+# 7d. the agent's own commit to its conffile does not make a restore
+#     "incomplete" (and is not reverted by a needless re-extraction).
+updated_and_watching
+TAR_TRUNCATE_AGENT=1
+g_main rollback "first try" >/dev/null 2>&1
+command tar -xzOf "$G_DIR/backup.tgz" usr/sbin/vectra-controller-agent > "$R/usr/sbin/vectra-controller-agent"
+echo "option manual_mode '1'" >> "$R/etc/config/vectra-controller"
+echo 4242 > "$SANDBOX/agent.pid"
+g_main retry >/dev/null 2>&1
+assert_true "conffile: restore complete despite the agent's edit" session_gone
+assert_true "conffile: the agent's edit is kept" grep -qx "option manual_mode '1'" "$R/etc/config/vectra-controller"
 
 # === 4. helpers ==================================================================
 assert_eq 1782995696 "$(g_rfc3339_to_epoch 2026-07-02T12:34:56Z)" "rfc3339: date -d or fallback"
