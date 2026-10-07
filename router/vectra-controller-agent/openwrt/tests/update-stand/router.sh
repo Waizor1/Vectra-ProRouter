@@ -82,12 +82,13 @@ state)
 	[ -e /etc/vectra-controller/update-rollback ] && session=present
 	cron="$(grep -c 'vectra-update-guard (managed) >>>' /etc/crontabs/root 2>/dev/null)"
 	marker="$(sed -n 's/^reason=//p' /etc/vectra-controller/update-rollback.marker 2>/dev/null | tr ' ' '_')"
+	attempts="$(sed -n 's/^attempts=//p' /etc/vectra-controller/update-rollback.marker 2>/dev/null)"
 	tmpcopy=no
 	[ -f /tmp/vectra-update-rollback/backup.tgz ] && tmpcopy=yes
 	persistcopy=no
 	[ -f /etc/vectra-controller/update-rollback/backup.tgz ] && persistcopy=yes
 	phase="$(cat /etc/vectra-controller/update-rollback/phase 2>/dev/null)"
-	echo "STATE agent=$(pkg_version vectra-controller-agent) luci=$(pkg_version luci-app-vectra-controller) variant=$variant pid=${pid:-none} session=$session phase=${phase:-none} cron=${cron:-0} persistcopy=$persistcopy tmpcopy=$tmpcopy status_md5=$(md5sum /usr/lib/opkg/status | cut -d' ' -f1) marker=${marker:-none}"
+	echo "STATE agent=$(pkg_version vectra-controller-agent) luci=$(pkg_version luci-app-vectra-controller) variant=$variant pid=${pid:-none} session=$session phase=${phase:-none} cron=${cron:-0} persistcopy=$persistcopy tmpcopy=$tmpcopy status_md5=$(md5sum /usr/lib/opkg/status | cut -d' ' -f1) attempts=${attempts:-none} marker=${marker:-none}"
 	;;
 log)
 	logread 2>/dev/null | grep -E 'vectra-update-guard|vectra-controller' | tail -n "${2:-20}"

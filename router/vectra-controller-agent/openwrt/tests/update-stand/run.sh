@@ -24,7 +24,11 @@
 #               v1 files back at once, the running v1 never restarted
 #   midfail     LuCI v2 preinst fails, opkg stops mid-pair: same
 #   silent      v2 runs but never contacts while the panel answers: back to v1
-#   offline     panel unreachable from the router: v2 kept after the window
+#   offline     panel unreachable from the router, v2 never gets through:
+#               back to v1 at the network deadline (the update job proved the
+#               router reached the panel before; v2 may have cut its own path)
+#   restorefail the first restore hits a full filesystem: copy and session
+#               kept (restore-failed), the retry after space is freed brings v1
 #   reboot      silent v2, container restarted inside the window: the guard
 #               resumes from cron, re-arms its clock, rolls back
 #   noroom      no room for a copy on /etc or /tmp: exit 73, nothing changed
@@ -44,7 +48,7 @@ NET="$RUN_ID-net"
 V1=0.1.13-r46
 V2=0.1.13-r47
 TIMINGS='{"stable":15,"crash":45,"contact":60,"probeFrom":30,"probeEvery":5,"hold":15,"network":150,"tick":3,"restartDelay":3,"preparedTimeout":60,"armedTimeout":30}'
-ALL=(healthy crash selfdelete nobin midfail silent offline reboot noroom tmpcopy)
+ALL=(healthy crash selfdelete nobin midfail silent offline reboot noroom tmpcopy restorefail)
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 fatal() { printf '\nFATAL: %s\n' "$*" >&2; exit 2; }
@@ -70,6 +74,10 @@ echo ok > "$BUILD/panel/api/health"
 # Incompressible padding: the command refuses an agent binary under 1 MB, and
 # noroom needs a copy of a few MB.
 head -c 4000000 /dev/urandom | base64 | sed 's/^/#/' > "$BUILD/padding"
+# A data file the package owns, on its own small tmpfs in restorefail: 1.5 MB
+# in v1, 0.2 MB in v2, so a full filesystem stops the v1 restore.
+head -c 1500000 /dev/urandom > "$BUILD/blob.v1"
+head -c 200000 /dev/urandom > "$BUILD/blob.v2"
 
 agent_script() { # <variant>
 	cat <<EOF
@@ -99,7 +107,8 @@ EOF
 agent_ipk() { # <variant> <version> <out> [postinst body]
 	local d
 	d="$(mktemp -d)"
-	mkdir -p "$d/data/usr/sbin" "$d/data/etc/init.d" "$d/data/etc/config" "$d/data/usr/libexec/vectra-controller" "$d/ctrl"
+	mkdir -p "$d/data/usr/sbin" "$d/data/etc/init.d" "$d/data/etc/config" "$d/data/usr/libexec/vectra-controller" "$d/data/usr/share/vectra-stand" "$d/ctrl"
+	if [[ "$1" == v1 ]]; then cp "$BUILD/blob.v1" "$d/data/usr/share/vectra-stand/blob"; else cp "$BUILD/blob.v2" "$d/data/usr/share/vectra-stand/blob"; fi
 	agent_script "$1" > "$d/data/usr/sbin/vectra-controller-agent"
 	cp "$OPENWRT/files/etc/init.d/vectra-controller" "$d/data/etc/init.d/vectra-controller"
 	cp "$OPENWRT/files/usr/libexec/vectra-controller/render-config.sh" "$d/data/usr/libexec/vectra-controller/render-config.sh"
@@ -265,13 +274,10 @@ scenario() { # <name>
 		[[ "$UPDATE_RC" == 0 ]] && record "$n" PASS "update exit 0" || record "$n" FAIL "update exit $UPDATE_RC"
 		sleep 110
 		s="$(state_of "$n")"
-		check "$n" "past the contact deadline, panel down: still watching" "$s" session present
-		check "$n" "past the contact deadline, panel down: v2 not rolled back" "$s" agent "$V2"
+		check "$n" "past the contact deadline, panel down: still waiting for the network" "$s" session present
+		check "$n" "past the contact deadline, panel down: v2 not yet rolled back" "$s" agent "$V2"
 		s="$(wait_state "$n" 200 session gone)" || true
-		check "$n" "v2 kept after the network window" "$s" agent "$V2"
-		check "$n" "v2 agent running" "$s" variant healthy
-		check "$n" "no rollback marker" "$s" marker none
-		check "$n" "cron line removed" "$s" cron 0
+		rolled_back "$n" "$s" '*does_not_answer_from_this_router*'
 		;;
 	reboot)
 		start_router "$n" 64m
@@ -324,6 +330,24 @@ scenario() { # <name>
 		check "$n" "no copy on /etc" "$s" persistcopy no
 		s="$(wait_state "$n" 200 session gone)" || true
 		rolled_back "$n" "$s" '*crash_loop*'
+		;;
+	restorefail)
+		start_router "$n" 64m --tmpfs /usr/share/vectra-stand:rw,size=4m
+		setup "$n"
+		update "$n" crash
+		[[ "$UPDATE_RC" == 0 ]] && record "$n" PASS "update exit 0" || record "$n" FAIL "update exit $UPDATE_RC"
+		s="$(wait_state "$n" 30 phase watching)" && record "$n" PASS "guard watching v2" || record "$n" FAIL "guard never watched: $s"
+		# The filesystem the package's data file lives on fills up.
+		docker exec "$RUN_ID-$n" sh -c 'dd if=/dev/zero of=/usr/share/vectra-stand/filler bs=4096 2>/dev/null; true'
+		s="$(wait_state "$n" 120 phase restore-failed)" && record "$n" PASS "first restore incomplete -> restore-failed" || record "$n" FAIL "never restore-failed: $s"
+		check "$n" "restore-failed: copy kept" "$s" persistcopy yes
+		check "$n" "restore-failed: session kept" "$s" session present
+		check "$n" "restore-failed: cron line kept" "$s" cron 1
+		check "$n" "restore-failed: no success marker yet" "$s" marker none
+		docker exec "$RUN_ID-$n" rm -f /usr/share/vectra-stand/filler
+		s="$(wait_state "$n" 150 session gone)" || true
+		rolled_back "$n" "$s" '*crash_loop*'
+		check "$n" "restored on the retry" "$s" attempts 2
 		;;
 	*) echo "STAND-FATAL unknown scenario $n" ;;
 	esac
