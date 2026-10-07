@@ -159,6 +159,9 @@ export VECTRA_GUARD_ROOT
 . "$GUARD"
 NOW=1000000
 g_now() { printf '%s' "$NOW"; }
+# Seconds since boot; follows NOW unless a test moves the wall clock alone.
+MONO=""
+g_mono() { printf '%s' "${MONO:-$NOW}"; }
 sleep() { :; }
 # The detached loop would run on the real clock: record instead.
 g_launch() { echo launch >> "$SANDBOX/launches"; }
@@ -493,7 +496,7 @@ fresh_router
 printf 'time=x\nepoch=%s\nreason=crash loop\nfailed_version=0.1.13-v2\nrestored_version=0.1.13-v1\n' "$NOW" > "$G_MARKER"
 g_prepare 0.1.13-v2 >/dev/null 2>"$SANDBOX/err"
 assert_eq 75 "$?" "marker: same version within 24 h -> 75"
-assert_true "marker: message tells to force from the panel" grep -q 'force the update from the panel' "$SANDBOX/err"
+assert_true "marker: message tells to force from the panel" grep -q 'force it: router Updates tab' "$SANDBOX/err"
 assert_false "marker: 75 leaves no session" test -e "$G_META"
 g_prepare 0.1.13-v9 >/dev/null 2>&1
 assert_eq 0 "$?" "marker: another version is accepted"
@@ -545,13 +548,114 @@ g_main rollback "test" >/dev/null 2>&1
 assert_true "tmp copy: copy owned by someone else not extracted" agent_is v2
 G_OWNER_UID="$(id -u)"
 
-# 5f. vctl's markers are any .*-by-vctl file.
+# 5f. Only vctl's legacy-agent marker means vctl owns the router; its other
+#     markers outlive a hand-back (`vectra off`).
 fresh_router
 mkdir -p "$R/etc/vectra-controller-pro"
 : > "$R/etc/vectra-controller-pro/.passwall-retired-by-vctl"
-assert_true "vctl: any .*-by-vctl marker means vctl owns the router" g_vctl_owns
-rm -f "$R/etc/vectra-controller-pro/.passwall-retired-by-vctl"
-assert_false "vctl: no marker, no table, no service -> not owned" g_vctl_owns
+: > "$R/etc/vectra-controller-pro/.passwall-disabled-by-vctl"
+assert_false "vctl: .passwall-retired/.passwall-disabled-by-vctl alone -> not owned" g_vctl_owns
+: > "$R/etc/vectra-controller-pro/.legacy-agent-disabled-by-vctl"
+assert_true "vctl: .legacy-agent-disabled-by-vctl -> owned" g_vctl_owns
+rm -f "$R/etc/vectra-controller-pro/.legacy-agent-disabled-by-vctl"
+# After `vectra off` the retired marker stays: a rollback still starts the agent.
+updated_and_watching
+mkdir -p "$R/etc/vectra-controller-pro"
+: > "$R/etc/vectra-controller-pro/.passwall-retired-by-vctl"
+: > "$SANDBOX/agent.pid"
+NOW=$((NOW + 300)); tick
+assert_true "retired marker: rolled back" v1_restored
+assert_true "retired marker: the legacy agent is started" grep -Eqx 'start|restart' "$SANDBOX/init.calls"
+
+# 5g. a retry first checks: the restore turned out complete -> finish, no stop.
+updated_and_watching
+TAR_TRUNCATE_AGENT=1
+g_main rollback "first try" >/dev/null 2>&1
+assert_eq restore-failed "$(g_phase)" "complete-check: setup restore-failed"
+command tar -xzOf "$G_DIR/backup.tgz" usr/sbin/vectra-controller-agent > "$R/usr/sbin/vectra-controller-agent"
+echo 4242 > "$SANDBOX/agent.pid"
+: > "$SANDBOX/init.calls"
+g_main retry >/dev/null 2>&1
+assert_true "complete-check: session ended" session_gone
+assert_true "complete-check: marker written" grep -q 'first try' "$G_MARKER"
+assert_eq "" "$(grep -x stop "$SANDBOX/init.calls")" "complete-check: the running agent was not stopped"
+
+# 5h. a restore that can never complete: backoff, cap, the healthy running
+#     agent on the copy's binary never stopped, then manual; operator ways out.
+updated_and_watching
+awk '/^Package: luci-app-vectra-controller/ { skip = 1 } skip && $0 == "" { skip = 0; next } !skip' "$G_STANZAS" > "$G_STANZAS.x" && mv "$G_STANZAS.x" "$G_STANZAS"
+: > "$SANDBOX/agent.pid"
+W=$NOW
+NOW=$((W + 300)); tick
+assert_eq restore-failed "$(g_phase)" "cap: first attempt incomplete"
+assert_true "cap: v1 binary is in place and started" sh -c "grep -q 'agent v1' '$R/usr/sbin/vectra-controller-agent' && [ -s '$SANDBOX/agent.pid' ]"
+pid_before="$(cat "$SANDBOX/agent.pid")"
+: > "$SANDBOX/init.calls"
+NOW=$((W + 359)); tick
+assert_eq 1 "$(cat "$G_DIR/attempts")" "cap: no retry before 60 s"
+NOW=$((W + 360)); tick
+assert_eq 2 "$(cat "$G_DIR/attempts")" "cap: retry after 60 s"
+NOW=$((W + 479)); tick
+assert_eq 2 "$(cat "$G_DIR/attempts")" "cap: backoff doubles (no retry before 120 s)"
+NOW=$((W + 480)); tick
+assert_eq 3 "$(cat "$G_DIR/attempts")" "cap: retry after 120 s"
+t=$NOW
+while [ "$(g_phase)" = restore-failed ] && [ "$NOW" -lt $((t + 20000)) ]; do NOW=$((NOW + 60)); tick; done
+assert_eq manual "$(g_phase)" "cap: phase manual after the attempt cap"
+assert_eq 10 "$(cat "$G_DIR/attempts")" "cap: 10 attempts"
+assert_eq "" "$(grep -x stop "$SANDBOX/init.calls")" "cap: the running agent on the copy's binary was never stopped"
+assert_eq "$pid_before" "$(cat "$SANDBOX/agent.pid")" "cap: same agent process throughout"
+assert_true "cap: rollback copy kept for the operator" test -f "$G_DIR/backup.tgz"
+: > "$SANDBOX/init.calls"
+NOW=$((NOW + 5000)); tick
+assert_eq 10 "$(cat "$G_DIR/attempts")" "manual: no more attempts"
+assert_eq "" "$(cat "$SANDBOX/init.calls")" "manual: the agent is left alone"
+g_prepare 0.1.13-v3 >/dev/null 2>&1
+assert_eq 74 "$?" "manual: an unforced update is refused"
+: > "$SANDBOX/agent.pid"
+VECTRA_GUARD_FORCE=1 g_prepare 0.1.13-v3 >/dev/null 2>&1
+assert_eq 74 "$?" "manual: a forced update is refused while the agent is not running"
+echo 4242 > "$SANDBOX/agent.pid"
+VECTRA_GUARD_FORCE=1 g_prepare 0.1.13-v3 >/dev/null 2>&1
+assert_eq 0 "$?" "manual: a forced update clears it while the agent runs"
+assert_eq prepared "$(g_phase)" "manual: the forced update has its own session"
+assert_true "manual: the guard script stays for the forced update" test -f "$G_SELF"
+unset VECTRA_GUARD_FORCE
+# clear: the operator's subcommand.
+updated_and_watching
+TAR_TRUNCATE_AGENT=1
+g_main rollback "x" >/dev/null 2>&1
+: > "$SANDBOX/agent.pid"
+g_main clear >/dev/null 2>&1
+assert_eq 1 "$?" "clear: refused while the agent does not run"
+assert_eq restore-failed "$(g_phase)" "clear: refusal keeps the session"
+echo 4242 > "$SANDBOX/agent.pid"
+g_main clear >/dev/null 2>&1
+assert_eq 0 "$?" "clear: done while the agent runs"
+assert_true "clear: session ended" session_gone
+
+# 5i. windows run on uptime: a wall-clock jump forward moves nothing.
+updated_and_watching
+W=$NOW
+MONO=$W
+NOW=$((W + 7200)); MONO=$((W + 30)); tick
+assert_true "clock jump: no rollback on a 2 h wall-clock jump" agent_is v2
+assert_true "clock jump: still watching" test -f "$G_META"
+MONO=""
+NOW=$W
+
+# 5j. an outage that ends at minute 58: no rollback at the network deadline;
+#     the agent's contact a little later keeps v2.
+updated_and_watching
+W=$NOW
+ticks_until $((W + 3480)) 30
+: > "$SANDBOX/panel.up"
+ticks_until $((W + 3651)) 30
+assert_true "outage ends at 58 min: not rolled back at the deadline" agent_is v2
+contact_at $((W + 3655))
+NOW=$((W + 3660)); tick
+assert_true "outage ends at 58 min: contact -> v2 kept" session_gone
+assert_false "outage ends at 58 min: no marker" test -e "$G_MARKER"
 
 # === 4. helpers ==================================================================
 assert_eq 1782995696 "$(g_rfc3339_to_epoch 2026-07-02T12:34:56Z)" "rfc3339: date -d or fallback"

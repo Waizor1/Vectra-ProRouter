@@ -30,6 +30,9 @@
 #   rollback <reason>
 #                    stop the agent, restore, start it (the watchdog uses this
 #                    when the binary is missing).
+#   retry            one throttled retry of an incomplete restore (watchdog)
+#   clear            operator: end a restore-failed/manual session, only while
+#                    the agent runs from an executable binary
 #
 # Judgement (`tick`), measured from the restart (re-armed after a reboot):
 #   - binary missing/not executable                      -> rollback
@@ -39,18 +42,27 @@
 #   - no contact by G_CONTACT s and the panel's /api/health has answered from
 #     this router for G_HOLD s                           -> rollback (the new
 #     version cannot talk although the network can)
-#   - no contact by G_NETWORK s and the panel does not answer from this
-#     router either                                      -> rollback: the job
+#   - no contact by G_NETWORK s and the panel has not answered from this
+#     router for the last G_HOLD s either                -> rollback: the job
 #     itself proved the router could reach the panel before the update, and a
-#     new version can cut its own path (carve-out, nft, TPROXY)
+#     new version can cut its own path (carve-out, nft, TPROXY). A panel that
+#     answers again is left to the rule above.
+# Windows are measured on /proc/uptime (a wall-clock jump moves nothing) and
+# re-armed after a reboot; only the contact stamp, a wall-clock value, is
+# compared with the wall-clock time of the restart.
 # A rollback restores files, info files and the two status stanzas (no other
 # package is touched, nor PassWall/xray/network configuration), checks the
 # result (tar's exit code, the agent binary byte-for-byte against the copy,
 # the stanzas' versions), restarts the agent unless vctl owns the router, and
 # writes /etc/vectra-controller/update-rollback.marker. An incomplete restore
 # keeps the copy and the session (phase restore-failed) and is retried from
-# every tick and by the watchdog. `prepare` refuses (exit 75) a version this
-# router rolled back from less than 24 h ago, unless VECTRA_GUARD_FORCE=1.
+# every tick and by the watchdog, with a backoff (1, 2, 4 … 30 min) and at most
+# G_RESTORE_MAX_ATTEMPTS attempts; then phase manual: the agent is left alone
+# and an operator ends it (`clear`, or a forced update while the agent runs).
+# A retry first checks whether the restore is in fact complete, and never
+# stops an agent that runs the copy's binary. `prepare` refuses (exit 75) a
+# version this router rolled back from less than 24 h ago, unless
+# VECTRA_GUARD_FORCE=1.
 #
 # POSIX sh (BusyBox ash, dash). Tests: tests/update_guard_test.sh.
 
@@ -81,6 +93,8 @@ G_SESSION_STALE_SECONDS=7200
 G_LOCK_STALE_SECONDS=600
 G_MARKER_FRESH_SECONDS=86400
 G_RESTORE_RETRY_SECONDS=60
+G_RESTORE_RETRY_MAX_SECONDS=1800
+G_RESTORE_MAX_ATTEMPTS=10
 # Owner a rollback copy (and its directory) must have before it is extracted
 # over /. Tests override it.
 G_OWNER_UID=0
@@ -98,6 +112,17 @@ g_log() {
 
 g_now() {
 	date +%s
+}
+
+# Seconds since boot: the windows' clock, immune to wall-clock steps.
+g_mono() {
+	g_up=""
+	read -r g_up _ < /proc/uptime 2>/dev/null || true
+	g_up="${g_up%%.*}"
+	case "$g_up" in
+	'' | *[!0-9]*) g_now ;;
+	*) printf '%s' "$g_up" ;;
+	esac
 }
 
 g_epoch_file() {
@@ -260,9 +285,11 @@ g_kill_agent() {
 
 # vctl (vectra-controller-pro) owns the router: the legacy agent must stay off.
 g_vctl_owns() {
-	for g_m in "$G_ROOT"/etc/vectra-controller-pro/.*-by-vctl "$G_ROOT"/tmp/vectra-trial.d/.*-by-vctl; do
-		[ -e "$g_m" ] && return 0
-	done
+	# Only the marker of the legacy agent vctl disabled: vctl's other markers
+	# (.passwall-retired-by-vctl, .passwall-disabled-by-vctl) outlive a
+	# hand-back and say nothing about who runs the router now.
+	[ -f "$G_ROOT/etc/vectra-controller-pro/.legacy-agent-disabled-by-vctl" ] && return 0
+	[ -f "$G_ROOT/tmp/vectra-trial.d/.legacy-agent-disabled-by-vctl" ] && return 0
 	if [ -x "$G_ROOT/etc/init.d/vectra-controller-pro" ] && "$G_ROOT/etc/init.d/vectra-controller-pro" running >/dev/null 2>&1; then
 		return 0
 	fi
@@ -336,7 +363,7 @@ g_lock() {
 		g_opid="${g_owner%% *}"
 		g_oep="$(g_strip0 "${g_owner#* }")"
 		case "$g_oep" in *[!0-9]*) g_oep=0 ;; esac
-		g_lage=$(($(g_now) - g_oep))
+		g_lage=$(($(g_mono) - g_oep))
 		if [ -z "$g_owner" ] || ! kill -0 "$g_opid" 2>/dev/null || [ "$g_lage" -ge "$G_LOCK_STALE_SECONDS" ] || [ "$g_lage" -lt 0 ]; then
 			rm -rf "$G_RUN/lock"
 			continue
@@ -345,7 +372,7 @@ g_lock() {
 		sleep 1
 		g_waited=$((g_waited + 1))
 	done
-	printf '%s %s\n' "$$" "$(g_now)" > "$G_RUN/lock/owner"
+	printf '%s %s\n' "$$" "$(g_mono)" > "$G_RUN/lock/owner"
 }
 
 g_unlock() {
@@ -367,7 +394,7 @@ g_set() {
 }
 
 g_clear_run() {
-	rm -f "$G_RUN/boot" "$G_RUN/pid" "$G_RUN/since" "$G_RUN/ever_stable" "$G_RUN/last_probe" "$G_RUN/reach_since" "$G_RUN/noted" "$G_RUN/old.list" "$G_RUN/stamp0" "$G_RUN/restoring" "$G_RUN/last_restore_try" 2>/dev/null || true
+	rm -f "$G_RUN/boot" "$G_RUN/pid" "$G_RUN/since" "$G_RUN/ever_stable" "$G_RUN/last_probe" "$G_RUN/reach_since" "$G_RUN/noted" "$G_RUN/old.list" "$G_RUN/stamp0" "$G_RUN/unreach_since" "$G_RUN/restoring" "$G_RUN/last_restore_try" 2>/dev/null || true
 }
 
 # End of a session, whatever the outcome: no copy, no metadata, no cron line.
@@ -389,12 +416,21 @@ g_prepare() {
 	g_t="$(g_now)"
 	if [ -f "$G_META" ]; then
 		case "$(g_phase)" in
-		restoring | restore-failed)
-			echo "controller self-update refused: an earlier rollback on this router is incomplete and still being retried by $G_SELF" >&2
-			return 74
+		restoring | restore-failed | manual)
+			if [ -n "${VECTRA_GUARD_FORCE:-}" ] && g_agent_runs_executable && g_lock 60; then
+				g_log "operator-forced update: ending the $(g_phase) rollback session (the agent runs from an executable binary); the rollback copy is dropped"
+				g_end_hopeless keep
+				g_unlock
+			else
+				echo "controller self-update refused: an earlier rollback on this router is incomplete ($(g_phase)); a forced update clears it once the agent runs, or run: sh $G_SELF clear" >&2
+				return 74
+			fi
 			;;
 		esac
-		g_created="$(g_epoch_file "$G_DIR/prepared_at")"
+	fi
+	if [ -f "$G_META" ]; then
+		g_created="$( (. "$G_META" 2>/dev/null; printf '%s' "${G_CREATED:-}") )"
+		case "$g_created" in '' | *[!0-9]*) g_created="" ;; esac
 		if [ -n "$g_created" ] && [ $((g_t - g_created)) -ge 0 ] && [ $((g_t - g_created)) -lt "$G_SESSION_STALE_SECONDS" ] && [ -n "$(g_phase)" ]; then
 			echo "controller self-update refused: the previous update (since epoch $g_created) is still being verified by $G_SELF" >&2
 			return 74
@@ -409,7 +445,7 @@ g_prepare() {
 		g_me="$(sed -n 's/^epoch=//p' "$G_MARKER" 2>/dev/null | head -n 1)"
 		case "$g_me" in '' | *[!0-9]*) g_me="" ;; esac
 		if [ -n "$g_to" ] && [ "$g_mf" = "$g_to" ] && [ -n "$g_me" ] && [ $((g_t - g_me)) -lt "$G_MARKER_FRESH_SECONDS" ]; then
-			echo "controller self-update refused: $g_to was rolled back on this router $((g_t - g_me))s ago ($(sed -n 's/^reason=//p' "$G_MARKER" | head -n 1)); force the update from the panel to try it again" >&2
+			echo "controller self-update refused (75): $g_to was rolled back on this router $((g_t - g_me))s ago ($(sed -n 's/^reason=//p' "$G_MARKER" | head -n 1)); to try it again force it: router Updates tab, or VectraPanelCli.sh update controller <router> --force" >&2
 			return 75
 		fi
 	fi
@@ -476,6 +512,7 @@ g_prepare() {
 		return 73
 	fi
 	{
+		printf "G_CREATED='%s'\n" "$g_t"
 		printf "G_TO='%s'\n" "$g_to"
 		printf "G_FROM_AGENT='%s'\n" "$(g_clean_value "$(g_pkg_version vectra-controller-agent)")"
 		printf "G_FROM_LUCI='%s'\n" "$(g_clean_value "$(g_pkg_version luci-app-vectra-controller)")"
@@ -493,7 +530,7 @@ g_prepare() {
 		printf "G_PREPARED_TIMEOUT='%s'\n" "$(g_strip0 "${VECTRA_GUARD_PREPARED_TIMEOUT_SECONDS:-300}")"
 		printf "G_ARMED_TIMEOUT='%s'\n" "$(g_strip0 "${VECTRA_GUARD_ARMED_TIMEOUT_SECONDS:-60}")"
 	} > "$G_META.new" && mv "$G_META.new" "$G_META"
-	g_set prepared_at "$g_t"
+	g_set prepared_at "$(g_mono)"
 	g_set phase prepared
 	g_cron_write install
 	g_log "rollback copy of $(g_pkg_version vectra-controller-agent) kept in $g_backup (${g_size_kb} KiB, $g_where) before updating to $g_to"
@@ -514,6 +551,42 @@ g_restore_status() {
 }
 
 # $1 full|files, $2 reason. Caller holds the lock.
+# $1 reason, $2 attempts
+g_mark_rolled_back() {
+	{
+		printf 'time=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+		printf 'epoch=%s\n' "$(g_now)"
+		printf 'reason=%s\n' "$1"
+		printf 'failed_version=%s\n' "${G_TO:-}"
+		printf 'restored_version=%s\n' "${G_FROM_AGENT:-}"
+		printf 'attempts=%s\n' "${2:-1}"
+	} > "$G_MARKER.new" 2>/dev/null && mv "$G_MARKER.new" "$G_MARKER"
+}
+
+g_agent_runs_executable() {
+	[ -s "$G_AGENT_BIN" ] && [ -x "$G_AGENT_BIN" ] && [ -n "$(g_agent_pid)" ]
+}
+
+# Is the agent on disk the copy's, byte for byte?
+g_binary_is_copy() {
+	g_member="${G_AGENT_BIN#"$G_ROOT"/}"
+	[ -s "$G_AGENT_BIN" ] && [ -x "$G_AGENT_BIN" ] &&
+		tar -xzOf "$G_BACKUP" "$g_member" 2>/dev/null | cmp -s - "$G_AGENT_BIN"
+}
+
+# End a session the guard cannot finish itself (operator decision). $1 keep:
+# the guard script itself stays (a forced update is about to use it).
+g_end_hopeless() {
+	if [ "${1:-}" = keep ] && [ -f "$G_SELF" ]; then
+		mkdir -p "$G_RUN" 2>/dev/null || true
+		cp "$G_SELF" "$G_RUN/guard.sh.keep" 2>/dev/null || true
+		g_finish
+		mkdir -p "$G_DIR" 2>/dev/null && mv "$G_RUN/guard.sh.keep" "$G_SELF" 2>/dev/null || true
+	else
+		g_finish
+	fi
+}
+
 # The restore is complete: tar succeeded (checked by the caller), the agent
 # binary is the copy's byte for byte, both stanzas carry the old versions.
 g_restore_ok() {
@@ -527,10 +600,34 @@ g_restore_ok() {
 	[ -z "${G_FROM_LUCI:-}" ] || [ "$(g_pkg_version luci-app-vectra-controller)" = "$G_FROM_LUCI" ]
 }
 
-# Retry an incomplete restore, at most every G_RESTORE_RETRY_SECONDS.
+# Retry an incomplete restore: first see whether it is in fact complete; then
+# back off (G_RESTORE_RETRY_SECONDS doubling up to G_RESTORE_RETRY_MAX_SECONDS)
+# and give up after G_RESTORE_MAX_ATTEMPTS: phase manual, agent left alone.
 g_retry_restore() {
+	g_load_meta || return 0
+	if [ -f "$G_BACKUP" ] && g_restore_ok; then
+		g_log "the incomplete rollback turns out complete (binary = copy, versions in place); ending the session"
+		g_mark_rolled_back "$(cat "$G_DIR/rollback_reason" 2>/dev/null || echo 'rollback')" "$(g_epoch_file "$G_DIR/attempts")"
+		[ -n "$(g_agent_pid)" ] || g_restart_agent
+		g_finish
+		return 0
+	fi
+	g_attempts="$(g_epoch_file "$G_DIR/attempts")"
+	g_attempts="${g_attempts:-0}"
+	if [ "$g_attempts" -ge "$G_RESTORE_MAX_ATTEMPTS" ]; then
+		g_set phase manual
+		g_log "CRITICAL: rollback still incomplete after $g_attempts attempts; leaving the agent alone (phase manual) — the operator ends it: sh $G_SELF clear, or a forced update"
+		return 0
+	fi
+	g_delay="$G_RESTORE_RETRY_SECONDS"
+	g_k=1
+	while [ "$g_k" -lt "$g_attempts" ] && [ "$g_delay" -lt "$G_RESTORE_RETRY_MAX_SECONDS" ]; do
+		g_delay=$((g_delay * 2))
+		g_k=$((g_k + 1))
+	done
+	[ "$g_delay" -le "$G_RESTORE_RETRY_MAX_SECONDS" ] || g_delay="$G_RESTORE_RETRY_MAX_SECONDS"
 	g_last="$(g_epoch_file "$G_RUN/last_restore_try")"
-	if [ -n "$g_last" ] && [ $(($1 - g_last)) -ge 0 ] && [ $(($1 - g_last)) -lt "$G_RESTORE_RETRY_SECONDS" ]; then
+	if [ -n "$g_last" ] && [ $(($1 - g_last)) -ge 0 ] && [ $(($1 - g_last)) -lt "$g_delay" ]; then
 		return 0
 	fi
 	g_rollback "$(cat "$G_DIR/rollback_mode" 2>/dev/null || echo full)" "retrying an incomplete rollback"
@@ -562,14 +659,18 @@ g_rollback() {
 	fi
 	g_set phase restoring
 	: > "$G_RUN/restoring"
-	g_now > "$G_RUN/last_restore_try"
+	g_mono > "$G_RUN/last_restore_try"
 	g_attempt="$(g_epoch_file "$G_DIR/attempts")"
 	g_attempt=$((${g_attempt:-0} + 1))
 	g_set attempts "$g_attempt"
 	g_log "ROLLBACK (attempt $g_attempt): $g_reason; restoring vectra-controller-agent ${G_FROM_AGENT:-?} (the update was to ${G_TO:-?})"
-	if [ "$g_mode" = full ]; then
+	# An agent that already runs the copy's binary is not stopped again: that
+	# part of the restore is done.
+	g_stopped=0
+	if [ "$g_mode" = full ] && ! { [ -n "$(g_agent_pid)" ] && g_binary_is_copy; }; then
 		"$G_INIT" stop >/dev/null 2>&1 || true
 		g_kill_agent
+		g_stopped=1
 	fi
 	# The new version's file lists, kept from the first attempt: a failed
 	# attempt has already replaced the ones in $G_INFO.
@@ -621,19 +722,12 @@ g_rollback() {
 		fi
 		return 1
 	fi
-	if [ "$g_mode" = full ] || [ -z "$(g_agent_pid)" ]; then
+	if [ "$g_stopped" = 1 ] || [ -z "$(g_agent_pid)" ]; then
 		g_restart_agent
 		g_wait_agent_up || { g_restart_agent; g_wait_agent_up; } ||
 			g_log "WARN: the restored agent is not running yet; procd and the watchdog keep trying"
 	fi
-	{
-		printf 'time=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-		printf 'epoch=%s\n' "$(g_now)"
-		printf 'reason=%s\n' "$g_reason"
-		printf 'failed_version=%s\n' "${G_TO:-}"
-		printf 'restored_version=%s\n' "${G_FROM_AGENT:-}"
-		printf 'attempts=%s\n' "$g_attempt"
-	} > "$G_MARKER.new" 2>/dev/null && mv "$G_MARKER.new" "$G_MARKER"
+	g_mark_rolled_back "$g_reason" "$g_attempt"
 	g_log "ROLLBACK done (attempt $g_attempt): vectra-controller-agent $(g_pkg_version vectra-controller-agent) restored; marker $G_MARKER"
 	g_finish
 	return 0
@@ -647,7 +741,8 @@ g_start_window() {
 	g_clear_run
 	: > "$G_RUN/boot"
 	g_note_window_stamp
-	g_set window "$(g_now)"
+	g_set window "$(g_mono)"
+	g_set window_wall "$(g_now)"
 	g_set phase watching
 	g_log "agent restarted on ${G_TO:-the new version}; watching it (rollback to ${G_FROM_AGENT:-?} if it fails)"
 }
@@ -655,7 +750,7 @@ g_start_window() {
 # One judgement. Caller holds the lock.
 g_tick() {
 	g_load_meta || { g_cron_remove; return 0; }
-	g_t="$(g_now)"
+	g_t="$(g_mono)"
 	mkdir -p "$G_RUN" 2>/dev/null || true
 	case "$(g_phase)" in
 	prepared)
@@ -681,6 +776,10 @@ g_tick() {
 		g_retry_restore "$g_t"
 		return 0
 		;;
+	manual)
+		g_note_once manual "rollback incomplete after $(g_epoch_file "$G_DIR/attempts") attempts; waiting for the operator (sh $G_SELF clear, or a forced update)"
+		return 0
+		;;
 	watching)
 		# A restore whose phase could not be written (full disk) is still one.
 		if [ -f "$G_RUN/restoring" ]; then
@@ -700,6 +799,7 @@ g_tick() {
 		: > "$G_RUN/boot"
 		g_note_window_stamp
 		g_set window "$g_t"
+		g_set window_wall "$(g_now)"
 		g_window="$g_t"
 		g_log "watching the agent on ${G_TO:-the new version} again from now (reboot or clock change)"
 		# After a reboot only cron is left: bring back the detached loop, or
@@ -734,8 +834,10 @@ g_tick() {
 	fi
 	if [ "$g_stable" = 1 ]; then
 		g_contact="$(g_contact_epoch)"
-		if [ -n "$g_contact" ] && [ "$g_contact" -gt "$g_window" ] && [ "$(g_contact_raw)" != "$(cat "$G_RUN/stamp0" 2>/dev/null || true)" ]; then
-			g_log "update to ${G_TO:-?} verified: agent stable and in contact with the control plane $((g_contact - g_window))s after the restart; rollback copy removed"
+		g_wwall="$(g_epoch_file "$G_DIR/window_wall")"
+		[ -n "$g_wwall" ] || g_wwall=0
+		if [ -n "$g_contact" ] && [ "$g_contact" -gt "$g_wwall" ] && [ "$(g_contact_raw)" != "$(cat "$G_RUN/stamp0" 2>/dev/null || true)" ]; then
+			g_log "update to ${G_TO:-?} verified: agent stable and in contact with the control plane ${g_age}s after the restart; rollback copy removed"
 			g_finish
 			return 0
 		fi
@@ -750,8 +852,10 @@ g_tick() {
 			printf '%s\n' "$g_t" > "$G_RUN/last_probe"
 			if g_panel_reachable; then
 				[ -f "$G_RUN/reach_since" ] || printf '%s\n' "$g_t" > "$G_RUN/reach_since"
+				rm -f "$G_RUN/unreach_since"
 			else
 				rm -f "$G_RUN/reach_since"
+				[ -f "$G_RUN/unreach_since" ] || printf '%s\n' "$g_t" > "$G_RUN/unreach_since"
 			fi
 		fi
 	fi
@@ -761,7 +865,8 @@ g_tick() {
 			g_rollback full "no control-plane contact ${g_age}s after the restart although $(g_control_url) has answered from this router for $((g_t - g_rs))s"
 			return 0
 		fi
-		if [ "$g_age" -ge "$G_NETWORK" ]; then
+		g_us="$(g_epoch_file "$G_RUN/unreach_since")"
+		if [ "$g_age" -ge "$G_NETWORK" ] && [ -n "$g_us" ] && [ $((g_t - g_us)) -ge "$G_HOLD" ]; then
 			g_rollback full "no control-plane contact ${g_age}s after the restart and $(g_control_url) does not answer from this router either; the update job reached it before, so the new version may have cut its own path to the panel"
 			return 0
 		fi
@@ -783,14 +888,14 @@ g_run() {
 		[ "$(g_phase)" = armed ] && g_start_window
 		g_unlock
 	fi
-	g_started="$(g_now)"
+	g_started="$(g_mono)"
 	while [ -f "$G_META" ]; do
 		if g_lock 30; then
 			g_tick
 			g_unlock
 		fi
 		[ -f "$G_META" ] || break
-		[ $(($(g_now) - g_started)) -lt $((G_NETWORK + 900)) ] || break
+		[ $(($(g_mono) - g_started)) -lt $((G_NETWORK + 900)) ] || break
 		sleep "$G_TICK"
 	done
 	rm -f "$G_RUN/loop.pid"
@@ -825,9 +930,34 @@ g_main() {
 		g_unlock
 		return "$g_rc"
 		;;
+	retry)
+		[ -f "$G_META" ] || return 0
+		case "$(g_phase)" in restoring | restore-failed) ;; *) return 0 ;; esac
+		g_lock 60 || return 1
+		g_retry_restore "$(g_mono)"
+		g_unlock
+		case "$(g_phase)" in restoring | restore-failed | manual) return 1 ;; esac
+		return 0
+		;;
+	clear)
+		[ -f "$G_META" ] || { echo "no update-guard session"; return 0; }
+		case "$(g_phase)" in
+		restoring | restore-failed | manual) ;;
+		*) echo "the session is $(g_phase), not a stuck rollback; nothing cleared" >&2; return 1 ;;
+		esac
+		if ! g_agent_runs_executable; then
+			echo "refusing: the agent is not running from an executable $G_AGENT_BIN; the rollback copy is kept" >&2
+			return 1
+		fi
+		g_lock 60 || return 1
+		g_log "operator cleared the $(g_phase) rollback session; the agent keeps running as it is"
+		g_end_hopeless
+		g_unlock
+		echo "cleared"
+		;;
 	arm)
 		[ -f "$G_META" ] || return 1
-		g_set armed_at "$(g_now)"
+		g_set armed_at "$(g_mono)"
 		g_set phase armed
 		;;
 	launch)
@@ -842,7 +972,7 @@ g_main() {
 		g_unlock
 		;;
 	*)
-		echo "usage: $0 prepare <version>|restore-files <reason>|rollback <reason>|arm|launch|run|tick" >&2
+		echo "usage: $0 prepare <version>|restore-files <reason>|rollback <reason>|retry|clear|arm|launch|run|tick" >&2
 		return 2
 		;;
 	esac
