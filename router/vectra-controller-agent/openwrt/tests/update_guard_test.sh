@@ -162,6 +162,29 @@ g_now() { printf '%s' "$NOW"; }
 sleep() { :; }
 # The detached loop would run on the real clock: record instead.
 g_launch() { echo launch >> "$SANDBOX/launches"; }
+# Copies are made by the test user here, by root on a router.
+G_OWNER_UID="$(id -u)"
+# tar with injectable failures: TAR_FAIL_EXTRACT=n fails the next n extractions
+# over the root; TAR_TRUNCATE_AGENT=n truncates the agent binary after them.
+TAR_FAIL_EXTRACT=0
+TAR_TRUNCATE_AGENT=0
+tar() {
+	case "$1 ${2:-} ${3:-}" in
+	"-xzf "*" -C")
+		if [ "$TAR_FAIL_EXTRACT" -gt 0 ]; then
+			TAR_FAIL_EXTRACT=$((TAR_FAIL_EXTRACT - 1))
+			return 1
+		fi
+		command tar "$@" || return $?
+		if [ "$TAR_TRUNCATE_AGENT" -gt 0 ]; then
+			TAR_TRUNCATE_AGENT=$((TAR_TRUNCATE_AGENT - 1))
+			printf 'agent v1 /usr/sbin/vec' > "$R/usr/sbin/vectra-controller-agent"
+		fi
+		return 0
+		;;
+	esac
+	command tar "$@"
+}
 PERSIST_FREE=100
 TMP_FREE=100
 g_df_free_mb() {
@@ -316,16 +339,18 @@ NOW=$((W + 900)); tick
 assert_true "silent+panel up: rolled back at the contact deadline" v1_restored
 assert_true "silent+panel up: marker names the panel" grep -q 'panel.test' "$G_MARKER"
 
-# 3e. alive, never contacts, panel unreachable -> keep v2 at the network deadline.
+# 3e. alive, never contacts, panel unreachable: wait for the network up to the
+#     network deadline, then back to the known-good version (the job itself
+#     proved the panel was reachable before the update).
 updated_and_watching
 W=$NOW
 ticks_until $((W + 3600)) 30
-assert_true "silent+panel down: v2 kept through the hour" agent_is v2
+assert_true "silent+panel down: v2 kept while waiting for the network" agent_is v2
 assert_true "silent+panel down: still watching" test -f "$G_META"
 NOW=$((W + 3600)); tick
-assert_true "silent+panel down: v2 kept at the network deadline" agent_is v2
+assert_true "silent+panel down: rolled back at the network deadline" v1_restored
+assert_true "silent+panel down: marker says the panel does not answer" grep -q 'does not answer from this router' "$G_MARKER"
 assert_true "silent+panel down: session cleaned" session_gone
-assert_false "silent+panel down: no rollback marker" test -e "$G_MARKER"
 
 # 3f. panel comes back at 30 min, agent still silent -> rollback after the hold.
 updated_and_watching
@@ -426,6 +451,107 @@ kill "$holder" 2>/dev/null
 wait "$holder" 2>/dev/null
 g_main tick
 assert_true "lock owner dead: next tick acts" v1_restored
+
+# === 5. review fixes ===========================================================
+# 5a. the first extraction fails (full filesystem): copy and session kept,
+#     retried from the tick, the second attempt restores v1.
+updated_and_watching
+: > "$SANDBOX/agent.pid"
+W=$NOW
+TAR_FAIL_EXTRACT=1
+NOW=$((W + 300)); tick
+assert_eq restore-failed "$(g_phase)" "failed extraction: phase restore-failed"
+assert_true "failed extraction: rollback copy kept" test -f "$G_DIR/backup.tgz"
+assert_eq 1 "$(cron_lines)" "failed extraction: cron line kept"
+assert_false "failed extraction: no success marker" test -e "$G_MARKER"
+NOW=$((W + 330)); tick
+assert_eq restore-failed "$(g_phase)" "failed extraction: not retried before the retry interval"
+NOW=$((W + 361)); tick
+assert_true "failed extraction: second attempt restores v1" v1_restored
+assert_true "failed extraction: no v2-only file left (lists kept from attempt 1)" test ! -e "$R/usr/share/vectra-v2/only-in-v2"
+assert_true "failed extraction: marker keeps the first reason" grep -q 'crash loop' "$G_MARKER"
+assert_true "failed extraction: marker counts 2 attempts" grep -qx 'attempts=2' "$G_MARKER"
+assert_true "failed extraction: session cleaned after success" session_gone
+
+# 5b. the extraction "succeeds" but leaves a truncated binary: not trusted.
+updated_and_watching
+TAR_TRUNCATE_AGENT=1
+g_main rollback "watchdog: binary missing" >/dev/null 2>&1
+assert_eq restore-failed "$(g_phase)" "truncated binary: phase restore-failed"
+assert_true "truncated binary: copy kept" test -f "$G_DIR/backup.tgz"
+g_prepare 0.1.13-v3 >/dev/null 2>&1
+assert_eq 74 "$?" "truncated binary: a new update is refused while the restore is incomplete"
+NOW=$((NOW + 9000))
+g_prepare 0.1.13-v3 >/dev/null 2>&1
+assert_eq 74 "$?" "truncated binary: even hours later the incomplete restore is not discarded"
+g_main rollback "watchdog: retry" >/dev/null 2>&1
+assert_true "truncated binary: the watchdog's retry restores v1" v1_restored
+assert_true "truncated binary: marker keeps the first reason" grep -q 'watchdog: binary missing' "$G_MARKER"
+
+# 5c. a version rolled back here less than 24 h ago is refused (75).
+fresh_router
+printf 'time=x\nepoch=%s\nreason=crash loop\nfailed_version=0.1.13-v2\nrestored_version=0.1.13-v1\n' "$NOW" > "$G_MARKER"
+g_prepare 0.1.13-v2 >/dev/null 2>"$SANDBOX/err"
+assert_eq 75 "$?" "marker: same version within 24 h -> 75"
+assert_true "marker: message tells to force from the panel" grep -q 'force the update from the panel' "$SANDBOX/err"
+assert_false "marker: 75 leaves no session" test -e "$G_META"
+g_prepare 0.1.13-v9 >/dev/null 2>&1
+assert_eq 0 "$?" "marker: another version is accepted"
+fresh_router
+printf 'epoch=%s\nfailed_version=0.1.13-v2\n' "$NOW" > "$G_MARKER"
+VECTRA_GUARD_FORCE=1 g_prepare 0.1.13-v2 >/dev/null 2>&1
+assert_eq 0 "$?" "marker: forced from the panel -> accepted"
+unset VECTRA_GUARD_FORCE
+fresh_router
+printf 'epoch=%s\nfailed_version=0.1.13-v2\n' "$((NOW - 90000))" > "$G_MARKER"
+g_prepare 0.1.13-v2 >/dev/null 2>&1
+assert_eq 0 "$?" "marker: older than 24 h -> accepted"
+
+# 5d. clock stepped back: an old contact stamp must change to count.
+fresh_router
+g_prepare 0.1.13-v2 >/dev/null 2>&1
+install_version v2
+W=$NOW
+contact_at $((W + 500))
+g_main arm
+g_start_window
+echo 2222 > "$SANDBOX/agent.pid"
+NOW=$((W + 60)); tick
+NOW=$((W + 200)); tick
+assert_true "clock back: unchanged stamp (numerically after the window) is not success" test -f "$G_META"
+contact_at $((W + 205))
+NOW=$((W + 210)); tick
+assert_true "clock back: a new stamp is success" session_gone
+
+# 5e. /tmp copy: private directory; a symlinked or foreign copy is never extracted.
+fresh_router
+PERSIST_FREE=8
+g_prepare 0.1.13-v2 >/dev/null 2>&1
+PERSIST_FREE=100
+assert_eq drwx------ "$(ls -ld "$G_TMP_DIR" | cut -c1-10)" "tmp copy: directory is 0700"
+install_version v2
+mv "$G_TMP_DIR/backup.tgz" "$SANDBOX/elsewhere.tgz"
+ln -s "$SANDBOX/elsewhere.tgz" "$G_TMP_DIR/backup.tgz"
+g_main rollback "test" >/dev/null 2>&1
+assert_true "tmp copy: symlinked copy not extracted (v2 stays)" agent_is v2
+assert_true "tmp copy: refusal logged" grep -q 'not owned by root' "$SANDBOX/log"
+fresh_router
+PERSIST_FREE=8
+g_prepare 0.1.13-v2 >/dev/null 2>&1
+PERSIST_FREE=100
+install_version v2
+G_OWNER_UID=4242424
+g_main rollback "test" >/dev/null 2>&1
+assert_true "tmp copy: copy owned by someone else not extracted" agent_is v2
+G_OWNER_UID="$(id -u)"
+
+# 5f. vctl's markers are any .*-by-vctl file.
+fresh_router
+mkdir -p "$R/etc/vectra-controller-pro"
+: > "$R/etc/vectra-controller-pro/.passwall-retired-by-vctl"
+assert_true "vctl: any .*-by-vctl marker means vctl owns the router" g_vctl_owns
+rm -f "$R/etc/vectra-controller-pro/.passwall-retired-by-vctl"
+assert_false "vctl: no marker, no table, no service -> not owned" g_vctl_owns
 
 # === 4. helpers ==================================================================
 assert_eq 1782995696 "$(g_rfc3339_to_epoch 2026-07-02T12:34:56Z)" "rfc3339: date -d or fallback"
