@@ -50,6 +50,11 @@
 
 set -u
 
+# cron's PATH may lack /sbin (uci) and /usr/sbin; the caller's PATH keeps
+# priority.
+PATH="${PATH:-/usr/bin:/bin}:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
 G_ROOT="${VECTRA_GUARD_ROOT:-}"
 G_DIR="$G_ROOT/etc/vectra-controller/update-rollback"
 G_SELF="$G_DIR/guard.sh"
@@ -243,6 +248,18 @@ g_restart_agent() {
 	else
 		"$G_INIT" start >"$G_ROOT/tmp/vectra-controller-self-update.log" 2>&1 || true
 	fi
+}
+
+# procd may still be finishing the stopped instance: give the start a moment.
+g_wait_agent_up() {
+	g_vctl_owns && return 0
+	g_w=0
+	while [ "$g_w" -lt 15 ]; do
+		[ -n "$(g_agent_pid)" ] && return 0
+		sleep 1
+		g_w=$((g_w + 1))
+	done
+	return 1
 }
 
 g_cron_reload() {
@@ -487,6 +504,8 @@ g_rollback() {
 	[ -x "$G_ROOT/etc/init.d/rpcd" ] && "$G_ROOT/etc/init.d/rpcd" reload >/dev/null 2>&1
 	if [ "$g_mode" = full ] || [ -z "$(g_agent_pid)" ]; then
 		g_restart_agent
+		g_wait_agent_up || { g_restart_agent; g_wait_agent_up; } ||
+			g_log "WARN: the restored agent is not running yet; procd and the watchdog keep trying"
 	fi
 	{
 		printf 'time=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -549,8 +568,11 @@ g_tick() {
 		g_clear_run
 		: > "$G_RUN/boot"
 		g_set window "$g_t"
+		g_window="$g_t"
 		g_log "watching the agent on ${G_TO:-the new version} again from now (reboot or clock change)"
-		return 0
+		# After a reboot only cron is left: bring back the detached loop, or
+		# the judgement would run once a minute.
+		g_launch
 	fi
 	g_age=$((g_t - g_window))
 	if [ ! -f "$G_BACKUP" ]; then

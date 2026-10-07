@@ -160,6 +160,8 @@ export VECTRA_GUARD_ROOT
 NOW=1000000
 g_now() { printf '%s' "$NOW"; }
 sleep() { :; }
+# The detached loop would run on the real clock: record instead.
+g_launch() { echo launch >> "$SANDBOX/launches"; }
 PERSIST_FREE=100
 TMP_FREE=100
 g_df_free_mb() {
@@ -344,12 +346,14 @@ assert_true "binary missing: marker" grep -q 'missing or not executable' "$G_MAR
 
 # 3h. reboot inside the window: the clock re-arms from boot.
 updated_and_watching
+rm -f "$SANDBOX/launches"
 W=$NOW
 : > "$SANDBOX/agent.pid"
 NOW=$((W + 200)); tick
 rm -rf "$G_RUN"
 NOW=$((W + 260)); tick
 assert_eq $((W + 260)) "$(cat "$G_DIR/window")" "reboot: window re-armed at the first tick after boot"
+assert_eq 1 "$(grep -c launch "$SANDBOX/launches" 2>/dev/null)" "reboot: the detached loop is launched again"
 NOW=$((W + 500)); tick
 assert_true "reboot: not judged on pre-reboot time" agent_is v2
 NOW=$((W + 560)); tick
