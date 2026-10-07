@@ -78,8 +78,13 @@ export function UpdatesTab({ routerId, initialSurface }: UpdatesTabProps) {
   const [controllerForceReasons, setControllerForceReasons] = useState<
     string | null
   >(null);
+  const controllerTarget = api.update.controllerTargetVersion.useQuery(
+    { channel: controllerChannel },
+    { refetchOnWindowFocus: false },
+  );
   const recentRollback = findRecentControllerRollbackRefusal(
     surface.managementTaskLog,
+    { targetVersion: controllerTarget.data?.version ?? null },
   );
 
   const controllerMutation = api.update.queueControllerUpdate.useMutation();

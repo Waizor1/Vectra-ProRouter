@@ -3,6 +3,12 @@
 // (leonid-avito, 2026-10-06). Such a router is refused unless the operator
 // passes `force: true`.
 
+import { normalizeControllerVersion } from "~/lib/controller-version";
+
+function normalizeVersion(value: string) {
+  return normalizeControllerVersion(value) ?? value.trim();
+}
+
 export const controllerUpdateRolloutCheckInMaxAgeMs = 10 * 60 * 1000;
 export const controllerUpdateRolloutIncidentLookbackMs = 24 * 60 * 60 * 1000;
 
@@ -109,21 +115,37 @@ export const controllerSelfUpdateRecentRollbackMarker =
 
 // The newest controller update in the router's task log, when it was refused
 // because the router rolled back from that version less than 24 h ago: the
-// one case where a healthy router needs an operator force.
+// one case where a healthy router needs an operator force. Only while that
+// refusal is itself under 24 h old and about the version an update would
+// install now (targetVersion); otherwise there is nothing to force.
 export function findRecentControllerRollbackRefusal(
   taskLog: ReadonlyArray<{
     kind: string;
     stderr: string | null;
     error?: string | null;
     artifactVersion: string | null;
+    createdAt?: Date | string | null;
   }>,
+  options: { targetVersion: string | null | undefined; now?: Date },
 ) {
+  const now = options.now ?? new Date();
   const latest = taskLog.find(
     (item) =>
       item.kind === "controller-self-update" ||
       item.kind === "controller-update",
   );
   if (!latest) {
+    return null;
+  }
+  const createdAt = toDate(latest.createdAt);
+  if (
+    !createdAt ||
+    now.getTime() - createdAt.getTime() >= controllerUpdateRolloutIncidentLookbackMs ||
+    !options.targetVersion ||
+    !latest.artifactVersion ||
+    normalizeVersion(latest.artifactVersion) !==
+      normalizeVersion(options.targetVersion)
+  ) {
     return null;
   }
   const text = [latest.stderr, latest.error].filter(Boolean).join("\n");

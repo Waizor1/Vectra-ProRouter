@@ -21,6 +21,7 @@ import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
 import {
   compareControllerVersions,
+  normalizeControllerVersion,
   resolveInstalledControllerVersion,
 } from "~/lib/controller-version";
 import {
@@ -1354,6 +1355,30 @@ export const updateRouter = createTRPCRouter({
         ctx,
         routerId: input.routerId,
       });
+    }),
+
+  // The version a controller update on this channel would install now (the
+  // newest agent artifact, as enqueueControllerUpdateJob picks it).
+  controllerTargetVersion: protectedProcedure
+    .input(
+      z.object({
+        channel: z.enum(["stable", "beta"]).default("stable"),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const [artifact] = await ctx.db
+        .select()
+        .from(artifacts)
+        .where(
+          and(
+            eq(artifacts.type, "controller"),
+            eq(artifacts.channel, input.channel),
+            eq(artifacts.name, "vectra-controller-agent"),
+          ),
+        )
+        .orderBy(desc(artifacts.publishedAt), desc(artifacts.version))
+        .limit(1);
+      return { version: normalizeControllerVersion(artifact?.version) ?? null };
     }),
 
   queueControllerUpdate: protectedProcedure

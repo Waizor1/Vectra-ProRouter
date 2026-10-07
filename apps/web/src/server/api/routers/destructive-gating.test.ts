@@ -1433,6 +1433,18 @@ describe("destructive route gating", () => {
       }
     });
 
+    it("reports the version a controller update would install now", async () => {
+      const mock = createMockDb([
+        [createControllerArtifact("vectra-controller-agent", "0.1.13-r47")],
+      ]);
+      const caller = createProtectedCaller(updateRouter, mock.db) as {
+        controllerTargetVersion: (input: { channel: "stable" | "beta" }) => Promise<{ version: string | null }>;
+      };
+      await expect(caller.controllerTargetVersion({ channel: "stable" })).resolves.toEqual({
+        version: "0.1.13-r47",
+      });
+    });
+
     it("refuses a router with an open server_unreachable incident", async () => {
       const mock = controllerUpdateMock({
         incidents: [
