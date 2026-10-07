@@ -158,24 +158,46 @@ export VECTRA_GUARD_ROOT
 # shellcheck disable=SC1090
 . "$GUARD"
 NOW=1000000
-g_now() { printf '%s' "$NOW"; }
-# Seconds since boot; follows NOW unless a test moves the wall clock alone.
 MONO=""
-g_mono() { printf '%s' "${MONO:-$NOW}"; }
+# The guard's functions the tests replace; re-applied after re-sourcing it.
+apply_stubs() {
+	g_now() { printf '%s' "$NOW"; }
+	# Seconds since boot; follows NOW unless a test moves the wall clock alone.
+	g_mono() { printf '%s' "${MONO:-$NOW}"; }
+	# The detached loop would run on the real clock: record instead.
+	g_launch() { echo launch >> "$SANDBOX/launches"; }
+	# /proc/<pid>/exe of the stub agent processes.
+	g_proc_exe() { printf '%s/exe/%s' "$SANDBOX" "$1"; }
+	g_df_free_mb() {
+		case "$1" in
+		"$R/tmp" | "$R/tmp/"*) printf '%s' "$TMP_FREE" ;;
+		*) printf '%s' "$PERSIST_FREE" ;;
+		esac
+	}
+	# Copies are made by the test user here, by root on a router.
+	G_OWNER_UID="$(id -u)"
+}
+apply_stubs
+mkdir -p "$SANDBOX/exe"
 sleep() { :; }
-# The detached loop would run on the real clock: record instead.
-g_launch() { echo launch >> "$SANDBOX/launches"; }
-# Copies are made by the test user here, by root on a router.
-G_OWNER_UID="$(id -u)"
 # tar with injectable failures: TAR_FAIL_EXTRACT=n fails the next n extractions
 # over the root; TAR_TRUNCATE_AGENT=n truncates the agent binary after them.
 TAR_FAIL_EXTRACT=0
 TAR_TRUNCATE_AGENT=0
+# TAR_BREAK_LUCI=n: the next n extractions run out of space in the LuCI part
+# (the agent's files are already back, a LuCI file is cut short).
+TAR_BREAK_LUCI=0
 tar() {
 	case "$1 ${2:-} ${3:-}" in
 	"-xzf "*" -C")
 		if [ "$TAR_FAIL_EXTRACT" -gt 0 ]; then
 			TAR_FAIL_EXTRACT=$((TAR_FAIL_EXTRACT - 1))
+			return 1
+		fi
+		if [ "$TAR_BREAK_LUCI" -gt 0 ]; then
+			TAR_BREAK_LUCI=$((TAR_BREAK_LUCI - 1))
+			command tar "$@"
+			printf 'luci v1 /www/luci-static/res' > "$R/www/luci-static/resources/view/vectra-controller/status.js"
 			return 1
 		fi
 		command tar "$@" || return $?
@@ -190,12 +212,6 @@ tar() {
 }
 PERSIST_FREE=100
 TMP_FREE=100
-g_df_free_mb() {
-	case "$1" in
-	"$R/tmp" | "$R/tmp/"*) printf '%s' "$TMP_FREE" ;;
-	*) printf '%s' "$PERSIST_FREE" ;;
-	esac
-}
 
 contact_at() { # <epoch>: state.json's last successful contact
 	date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null > "$SANDBOX/contact" ||
@@ -656,6 +672,122 @@ contact_at $((W + 3655))
 NOW=$((W + 3660)); tick
 assert_true "outage ends at 58 min: contact -> v2 kept" session_gone
 assert_false "outage ends at 58 min: no marker" test -e "$G_MARKER"
+
+# === 6. third review ===========================================================
+# 6a. out of space in the LuCI part: the status stanzas get rewritten, the
+#     agent's files are back — but the restore is not complete until the whole
+#     copy was extracted and every file matches it.
+updated_and_watching
+: > "$SANDBOX/agent.pid"
+W=$NOW
+TAR_BREAK_LUCI=1
+NOW=$((W + 300)); tick
+assert_eq restore-failed "$(g_phase)" "luci partial: restore-failed"
+assert_true "luci partial: agent and stanzas look restored" sh -c "grep -q 'agent v1' '$R/usr/sbin/vectra-controller-agent'"
+assert_false "luci partial: not declared complete" g_restore_ok
+NOW=$((W + 361)); tick
+assert_false "luci partial: the retry did not take the 'complete' shortcut" grep -q 'turns out complete' "$SANDBOX/log"
+assert_true "luci partial: LuCI file back in full" grep -qx 'luci v1 /www/luci-static/resources/view/vectra-controller/status.js' "$R/www/luci-static/resources/view/vectra-controller/status.js"
+assert_true "luci partial: restored, session ended" session_gone
+assert_true "luci partial: 2 attempts" grep -qx 'attempts=2' "$G_MARKER"
+
+# 6b. disk = copy, but the running process is the new version (started by the
+#     watchdog mid-restore): it is restarted, not trusted.
+updated_and_watching
+TAR_TRUNCATE_AGENT=1
+g_main rollback "first try" >/dev/null 2>&1
+command tar -xzOf "$G_DIR/backup.tgz" usr/sbin/vectra-controller-agent > "$R/usr/sbin/vectra-controller-agent"
+echo 4343 > "$SANDBOX/agent.pid"
+printf 'agent v2 /usr/sbin/vectra-controller-agent\n' > "$SANDBOX/exe/4343"
+: > "$SANDBOX/init.calls"
+g_main retry >/dev/null 2>&1
+assert_true "new process on the copy's disk: restarted" grep -Eqx 'start|restart' "$SANDBOX/init.calls"
+assert_true "new process on the copy's disk: session ended" session_gone
+# ...and a process really from the copy is left alone.
+updated_and_watching
+TAR_TRUNCATE_AGENT=1
+g_main rollback "first try" >/dev/null 2>&1
+command tar -xzOf "$G_DIR/backup.tgz" usr/sbin/vectra-controller-agent > "$R/usr/sbin/vectra-controller-agent"
+echo 4444 > "$SANDBOX/agent.pid"
+cp "$R/usr/sbin/vectra-controller-agent" "$SANDBOX/exe/4444"
+: > "$SANDBOX/init.calls"
+g_main retry >/dev/null 2>&1
+assert_eq "" "$(grep -Ex 'stop|start|restart' "$SANDBOX/init.calls")" "process from the copy: not stopped or restarted"
+# ...and an incomplete restore with the new version running stops it first.
+updated_and_watching
+awk '/^Package: luci-app-vectra-controller/ { skip = 1 } skip && $0 == "" { skip = 0; next } !skip' "$G_STANZAS" > "$G_STANZAS.x" && mv "$G_STANZAS.x" "$G_STANZAS"
+echo 4545 > "$SANDBOX/agent.pid"
+printf 'agent v2 /usr/sbin/vectra-controller-agent\n' > "$SANDBOX/exe/4545"
+: > "$SANDBOX/init.calls"
+g_main rollback "x" >/dev/null 2>&1
+assert_true "rollback with the new version running: it is stopped" grep -qx stop "$SANDBOX/init.calls"
+
+# 6c. boot loop: 3 boots without confirmation -> rollback from the boot hook;
+#     one reboot of a healthy version is no rollback.
+updated_and_watching
+assert_true "boot hook installed with the session" grep -qx 'START=19' "$G_BOOT_HOOK"
+rm -rf "$G_RUN"; g_main boot
+assert_eq 1 "$(cat "$G_DIR/boots")" "boot 1 counted by the hook"
+NOW=$((NOW + 30)); tick
+assert_eq 1 "$(cat "$G_DIR/boots")" "boot 1: the tick does not count it again"
+rm -rf "$G_RUN"; g_main boot
+assert_eq 2 "$(cat "$G_DIR/boots")" "boot 2 counted"
+assert_true "boot 2: still v2" agent_is v2
+rm -rf "$G_RUN"; g_main boot
+assert_true "boot 3: rolled back from the boot hook" v1_restored
+assert_true "boot 3: marker says boot loop" grep -q 'boot loop' "$G_MARKER"
+assert_false "boot 3: hook removed with the session" test -e "$G_BOOT_HOOK"
+# without the hook, the first tick after boot counts
+updated_and_watching
+rm -rf "$G_RUN"; NOW=$((NOW + 30)); tick
+assert_eq 1 "$(cat "$G_DIR/boots")" "no hook: the first tick after boot counts it"
+# a healthy version rebooted once (the daily 04:30) confirms and ends the session
+updated_and_watching
+W=$NOW
+rm -rf "$G_RUN"; g_main boot
+echo 2222 > "$SANDBOX/agent.pid"
+NOW=$((W + 30)); tick
+NOW=$((W + 200)); tick
+contact_at $((W + 205))
+NOW=$((W + 210)); tick
+assert_true "healthy after one reboot: kept, session ended" session_gone
+assert_false "healthy after one reboot: no marker" test -e "$G_MARKER"
+assert_false "healthy after one reboot: hook removed" test -e "$G_BOOT_HOOK"
+
+# 6d. clear / forced prepare re-check the agent under the lock.
+updated_and_watching
+TAR_TRUNCATE_AGENT=1
+g_main rollback "x" >/dev/null 2>&1
+echo 4242 > "$SANDBOX/agent.pid"
+# The guard's own retry stops the agent while we wait for the lock.
+g_lock() { : > "$SANDBOX/agent.pid"; mkdir -p "$G_RUN/lock"; }
+g_main clear >/dev/null 2>&1
+assert_eq 1 "$?" "clear: agent gone while waiting for the lock -> refused"
+assert_eq restore-failed "$(g_phase)" "clear: session kept"
+echo 4242 > "$SANDBOX/agent.pid"
+VECTRA_GUARD_FORCE=1 g_prepare 0.1.13-v3 >/dev/null 2>&1
+assert_eq 74 "$?" "forced prepare: agent gone while waiting for the lock -> refused"
+unset VECTRA_GUARD_FORCE
+. "$GUARD"
+apply_stubs
+
+# 6e. manual with no agent running: keep retrying every 30 min.
+updated_and_watching
+awk '/^Package: luci-app-vectra-controller/ { skip = 1 } skip && $0 == "" { skip = 0; next } !skip' "$G_STANZAS" > "$G_STANZAS.x" && mv "$G_STANZAS.x" "$G_STANZAS"
+: > "$SANDBOX/agent.pid"
+g_main rollback "x" >/dev/null 2>&1
+t0=$NOW
+g_set attempts 10
+: > "$SANDBOX/agent.pid"
+NOW=$((t0 + 10)); tick
+assert_eq manual "$(g_phase)" "manual: reached at the cap"
+NOW=$((t0 + 1700)); tick
+assert_eq 10 "$(cat "$G_DIR/attempts")" "manual, no agent: no retry before 30 min"
+NOW=$((t0 + 1820)); tick
+assert_eq 11 "$(cat "$G_DIR/attempts")" "manual, no agent: retried after 30 min"
+echo 4242 > "$SANDBOX/agent.pid"
+NOW=$((t0 + 9000)); tick
+assert_eq 11 "$(cat "$G_DIR/attempts")" "manual, agent running again: left alone"
 
 # === 4. helpers ==================================================================
 assert_eq 1782995696 "$(g_rfc3339_to_epoch 2026-07-02T12:34:56Z)" "rfc3339: date -d or fallback"

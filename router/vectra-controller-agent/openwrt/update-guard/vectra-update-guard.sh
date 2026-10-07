@@ -31,6 +31,10 @@
 #                    stop the agent, restore, start it (the watchdog uses this
 #                    when the binary is missing).
 #   retry            one throttled retry of an incomplete restore (watchdog)
+#   boot             early boot hook (/etc/init.d/vectra-update-guard, START=19,
+#                    before the agent's S95): counts boots of an unconfirmed
+#                    update; at G_MAX_BOOTS it rolls back before the new agent
+#                    starts again (a version that hangs the router)
 #   clear            operator: end a restore-failed/manual session, only while
 #                    the agent runs from an executable binary
 #
@@ -59,8 +63,12 @@
 # every tick and by the watchdog, with a backoff (1, 2, 4 … 30 min) and at most
 # G_RESTORE_MAX_ATTEMPTS attempts; then phase manual: the agent is left alone
 # and an operator ends it (`clear`, or a forced update while the agent runs).
-# A retry first checks whether the restore is in fact complete, and never
-# stops an agent that runs the copy's binary. `prepare` refuses (exit 75) a
+# "Complete" means: the whole copy was extracted without error (tar_ok) and
+# every file of the copy is on disk as it was (sha256 manifest made at
+# prepare), plus the stanzas' versions. A retry first checks that, and never
+# stops an agent process started from the copy (its /proc/<pid>/exe, or the
+# pid the guard itself started from the verified binary). With no agent
+# running at all, manual keeps retrying every G_RESTORE_RETRY_MAX_SECONDS. `prepare` refuses (exit 75) a
 # version this router rolled back from less than 24 h ago, unless
 # VECTRA_GUARD_FORCE=1.
 #
@@ -83,6 +91,9 @@ G_RUN="$G_ROOT/tmp/vectra-update-guard"
 G_MARKER="$G_ROOT/etc/vectra-controller/update-rollback.marker"
 G_CRONTAB="$G_ROOT/etc/crontabs/root"
 G_INIT="$G_ROOT/etc/init.d/vectra-controller"
+G_BOOT_HOOK="$G_ROOT/etc/init.d/vectra-update-guard"
+G_MANIFEST="$G_DIR/manifest"
+G_MAX_BOOTS=3
 G_AGENT_BIN="$G_ROOT/usr/sbin/vectra-controller-agent"
 G_INFO="$G_ROOT/usr/lib/opkg/info"
 G_STATUS="$G_ROOT/usr/lib/opkg/status"
@@ -394,7 +405,7 @@ g_set() {
 }
 
 g_clear_run() {
-	rm -f "$G_RUN/boot" "$G_RUN/pid" "$G_RUN/since" "$G_RUN/ever_stable" "$G_RUN/last_probe" "$G_RUN/reach_since" "$G_RUN/noted" "$G_RUN/old.list" "$G_RUN/stamp0" "$G_RUN/unreach_since" "$G_RUN/restoring" "$G_RUN/last_restore_try" 2>/dev/null || true
+	rm -f "$G_RUN/boot" "$G_RUN/pid" "$G_RUN/since" "$G_RUN/ever_stable" "$G_RUN/last_probe" "$G_RUN/reach_since" "$G_RUN/noted" "$G_RUN/old.list" "$G_RUN/stamp0" "$G_RUN/unreach_since" "$G_RUN/restoring" "$G_RUN/last_restore_try" "$G_RUN/copy_pid" "$G_RUN/tar_ok" 2>/dev/null || true
 }
 
 # End of a session, whatever the outcome: no copy, no metadata, no cron line.
@@ -402,7 +413,41 @@ g_finish() {
 	rm -rf "$G_TMP_DIR" 2>/dev/null || true
 	rm -rf "$G_DIR" 2>/dev/null || true
 	g_clear_run
+	g_boot_hook remove
 	g_cron_remove
+}
+
+# The early boot hook, START=19 (before the agent's S95). Not part of either
+# package: it exists only while a session does.
+g_boot_hook() {
+	if [ "$1" = install ]; then
+		mkdir -p "${G_BOOT_HOOK%/*}" 2>/dev/null || true
+		printf '%s\n' '#!/bin/sh /etc/rc.common' 'START=19' \
+			'boot() { [ -f /etc/vectra-controller/update-rollback/meta ] && sh /etc/vectra-controller/update-rollback/guard.sh boot; return 0; }' \
+			'start() { return 0; }' > "$G_BOOT_HOOK.new" && chmod 0755 "$G_BOOT_HOOK.new" && mv "$G_BOOT_HOOK.new" "$G_BOOT_HOOK"
+		"$G_BOOT_HOOK" enable >/dev/null 2>&1 || true
+	else
+		[ -e "$G_BOOT_HOOK" ] || return 0
+		"$G_BOOT_HOOK" disable >/dev/null 2>&1 || true
+		rm -f "$G_BOOT_HOOK" "$G_ROOT"/etc/rc.d/S19vectra-update-guard 2>/dev/null || true
+	fi
+}
+
+# Count this boot once (the boot hook or, without it, the first tick).
+g_count_boot() {
+	mkdir -p "$G_RUN" 2>/dev/null || true
+	[ -f "$G_RUN/boot_counted" ] && return 0
+	: > "$G_RUN/boot_counted"
+	g_boots="$(g_epoch_file "$G_DIR/boots")"
+	g_set boots $((${g_boots:-0} + 1))
+}
+
+# Booted G_MAX_BOOTS times without the update confirming: roll back. 0 = did.
+g_boot_limit() {
+	g_boots="$(g_epoch_file "$G_DIR/boots")"
+	[ "${g_boots:-0}" -ge "$G_MAX_BOOTS" ] || return 1
+	g_rollback full "the router booted ${g_boots} times without ${G_TO:-the new version} confirming (boot loop)"
+	return 0
 }
 
 g_note_once() {
@@ -417,7 +462,7 @@ g_prepare() {
 	if [ -f "$G_META" ]; then
 		case "$(g_phase)" in
 		restoring | restore-failed | manual)
-			if [ -n "${VECTRA_GUARD_FORCE:-}" ] && g_agent_runs_executable && g_lock 60; then
+			if [ -n "${VECTRA_GUARD_FORCE:-}" ] && g_lock 60 && { g_agent_runs_executable || { g_unlock; false; }; }; then
 				g_log "operator-forced update: ending the $(g_phase) rollback session (the agent runs from an executable binary); the rollback copy is dropped"
 				g_end_hopeless keep
 				g_unlock
@@ -482,6 +527,7 @@ g_prepare() {
 		echo "controller self-update refused (no room for a rollback copy): writing it to /tmp failed" >&2
 		return 73
 	fi
+	g_write_manifest "$g_list" > "$G_MANIFEST.new" && mv "$G_MANIFEST.new" "$G_MANIFEST"
 	awk -v a=vectra-controller-agent -v b=luci-app-vectra-controller '
 		/^Package: / { if (keep) print ""; keep = ($2 == a || $2 == b) }
 		keep && $0 == "" { print ""; keep = 0; next }
@@ -507,7 +553,7 @@ g_prepare() {
 	rm -f "$g_list"
 	if [ -z "$g_backup" ]; then
 		rm -rf "$G_TMP_DIR"
-		rm -f "$G_STANZAS"
+		rm -f "$G_STANZAS" "$G_MANIFEST"
 		echo "controller self-update refused (no room for a rollback copy of ${g_size_kb} KiB): /overlay would keep $((g_persist_free - g_size_mb)) MB (< ${G_OVERLAY_FLOOR_MB}), /tmp $(g_df_free_mb "$G_ROOT/tmp") MB (< ${G_TMP_FLOOR_MB})" >&2
 		return 73
 	fi
@@ -531,11 +577,13 @@ g_prepare() {
 		printf "G_ARMED_TIMEOUT='%s'\n" "$(g_strip0 "${VECTRA_GUARD_ARMED_TIMEOUT_SECONDS:-60}")"
 		printf "G_RESTORE_RETRY_SECONDS='%s'\n" "$(g_strip0 "${VECTRA_GUARD_RESTORE_RETRY_SECONDS:-$G_RESTORE_RETRY_SECONDS}")"
 		printf "G_RESTORE_RETRY_MAX_SECONDS='%s'\n" "$(g_strip0 "${VECTRA_GUARD_RESTORE_RETRY_MAX_SECONDS:-$G_RESTORE_RETRY_MAX_SECONDS}")"
+		printf "G_MAX_BOOTS='%s'\n" "$(g_strip0 "${VECTRA_GUARD_MAX_BOOTS:-$G_MAX_BOOTS}")"
 		printf "G_RESTORE_MAX_ATTEMPTS='%s'\n" "$(g_strip0 "${VECTRA_GUARD_RESTORE_MAX_ATTEMPTS:-$G_RESTORE_MAX_ATTEMPTS}")"
 	} > "$G_META.new" && mv "$G_META.new" "$G_META"
 	g_set prepared_at "$(g_mono)"
 	g_set phase prepared
 	g_cron_write install
+	g_boot_hook install
 	g_log "rollback copy of $(g_pkg_version vectra-controller-agent) kept in $g_backup (${g_size_kb} KiB, $g_where) before updating to $g_to"
 	echo "rollback copy: $g_backup (${g_size_kb} KiB, $g_where)"
 	return 0
@@ -570,6 +618,66 @@ g_agent_runs_executable() {
 	[ -s "$G_AGENT_BIN" ] && [ -x "$G_AGENT_BIN" ] && [ -n "$(g_agent_pid)" ]
 }
 
+g_sha() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" 2>/dev/null | awk '{ print $1 }'
+	else
+		shasum -a 256 "$1" 2>/dev/null | awk '{ print $1 }'
+	fi
+}
+
+# $1 file of relative paths -> "F <sha256> <path>" / "L <target> <path>" lines.
+g_write_manifest() {
+	while IFS= read -r g_rel || [ -n "$g_rel" ]; do
+		g_abs="$G_ROOT/$g_rel"
+		if [ -L "$g_abs" ]; then
+			printf 'L %s %s\n' "$(readlink "$g_abs")" "$g_rel"
+		else
+			printf 'F %s %s\n' "$(g_sha "$g_abs")" "$g_rel"
+		fi
+	done < "$1"
+}
+
+# Every file of the copy is on disk exactly as it was copied.
+g_disk_matches_copy() {
+	[ -s "$G_MANIFEST" ] || return 1
+	while read -r g_kind g_val g_rel; do
+		g_abs="$G_ROOT/$g_rel"
+		case "$g_kind" in
+		L) [ -L "$g_abs" ] && [ "$(readlink "$g_abs")" = "$g_val" ] || return 1 ;;
+		F) [ -f "$g_abs" ] && [ ! -L "$g_abs" ] && [ "$(g_sha "$g_abs")" = "$g_val" ] || return 1 ;;
+		*) return 1 ;;
+		esac
+	done < "$G_MANIFEST"
+	return 0
+}
+
+g_proc_exe() {
+	printf '/proc/%s/exe' "$1"
+}
+
+# Was the running agent process started from the copy? The pid the guard
+# started from the verified binary, or a process whose executable (even
+# replaced on disk since) is the copy's binary.
+g_agent_runs_copy() {
+	g_rp="$(g_agent_pid)"
+	[ -n "$g_rp" ] || return 1
+	[ "$g_rp" = "$(cat "$G_RUN/copy_pid" 2>/dev/null || true)" ] && return 0
+	g_want="$(awk -v m="${G_AGENT_BIN#"$G_ROOT"/}" '$1 == "F" && $3 == m { print $2; exit }' "$G_MANIFEST" 2>/dev/null)"
+	[ -n "$g_want" ] && [ "$(g_sha "$(g_proc_exe "$g_rp")")" = "$g_want" ]
+}
+
+# Start the agent and, when the binary on disk is the copy's, remember its pid
+# as started from the copy.
+g_start_restored_agent() {
+	g_restart_agent
+	g_wait_agent_up || { g_restart_agent; g_wait_agent_up; } ||
+		g_log "WARN: the restored agent is not running yet; procd and the watchdog keep trying"
+	if g_binary_is_copy; then
+		g_agent_pid > "$G_RUN/copy_pid" 2>/dev/null || true
+	fi
+}
+
 # Is the agent on disk the copy's, byte for byte?
 g_binary_is_copy() {
 	g_member="${G_AGENT_BIN#"$G_ROOT"/}"
@@ -593,10 +701,15 @@ g_end_hopeless() {
 # The restore is complete: tar succeeded (checked by the caller), the agent
 # binary is the copy's byte for byte, both stanzas carry the old versions.
 g_restore_ok() {
-	g_member="${G_AGENT_BIN#"$G_ROOT"/}"
-	if tar -tzf "$G_BACKUP" 2>/dev/null | grep -qx "$g_member"; then
-		[ -s "$G_AGENT_BIN" ] && [ -x "$G_AGENT_BIN" ] || return 1
-		tar -xzOf "$G_BACKUP" "$g_member" 2>/dev/null | cmp -s - "$G_AGENT_BIN" || return 1
+	[ -f "$G_DIR/tar_ok" ] || [ -f "$G_RUN/tar_ok" ] || return 1
+	if [ -s "$G_MANIFEST" ]; then
+		g_disk_matches_copy || return 1
+	else
+		g_member="${G_AGENT_BIN#"$G_ROOT"/}"
+		if tar -tzf "$G_BACKUP" 2>/dev/null | grep -qx "$g_member"; then
+			[ -s "$G_AGENT_BIN" ] && [ -x "$G_AGENT_BIN" ] || return 1
+			tar -xzOf "$G_BACKUP" "$g_member" 2>/dev/null | cmp -s - "$G_AGENT_BIN" || return 1
+		fi
 	fi
 	[ -f "$G_INFO/vectra-controller-agent.list" ] || return 1
 	[ -z "${G_FROM_AGENT:-}" ] || [ "$(g_pkg_version vectra-controller-agent)" = "$G_FROM_AGENT" ] || return 1
@@ -611,20 +724,32 @@ g_retry_restore() {
 	if [ -f "$G_BACKUP" ] && g_restore_ok; then
 		g_log "the incomplete rollback turns out complete (binary = copy, versions in place); ending the session"
 		g_mark_rolled_back "$(cat "$G_DIR/rollback_reason" 2>/dev/null || echo 'rollback')" "$(g_epoch_file "$G_DIR/attempts")"
-		[ -n "$(g_agent_pid)" ] || g_restart_agent
+		if [ "$(cat "$G_DIR/rollback_mode" 2>/dev/null || echo full)" = full ]; then
+			g_agent_runs_copy || g_start_restored_agent
+		else
+			[ -n "$(g_agent_pid)" ] || g_start_restored_agent
+		fi
 		g_finish
 		return 0
 	fi
 	g_attempts="$(g_epoch_file "$G_DIR/attempts")"
 	g_attempts="${g_attempts:-0}"
 	if [ "$g_attempts" -ge "$G_RESTORE_MAX_ATTEMPTS" ]; then
+		if [ -n "$(g_agent_pid)" ]; then
+			if [ "$(g_phase)" != manual ]; then
+				g_set phase manual
+				g_log "CRITICAL: rollback still incomplete after $g_attempts attempts; leaving the running agent alone (phase manual) — the operator ends it: sh $G_SELF clear, or a forced update"
+			fi
+			return 0
+		fi
+		# No agent at all: nothing to protect, keep trying, slowly.
 		g_set phase manual
-		g_log "CRITICAL: rollback still incomplete after $g_attempts attempts; leaving the agent alone (phase manual) — the operator ends it: sh $G_SELF clear, or a forced update"
-		return 0
+		g_delay="$G_RESTORE_RETRY_MAX_SECONDS"
+	else
+		g_delay="$G_RESTORE_RETRY_SECONDS"
 	fi
-	g_delay="$G_RESTORE_RETRY_SECONDS"
 	g_k=1
-	while [ "$g_k" -lt "$g_attempts" ] && [ "$g_delay" -lt "$G_RESTORE_RETRY_MAX_SECONDS" ]; do
+	while [ "$g_attempts" -lt "$G_RESTORE_MAX_ATTEMPTS" ] && [ "$g_k" -lt "$g_attempts" ] && [ "$g_delay" -lt "$G_RESTORE_RETRY_MAX_SECONDS" ]; do
 		g_delay=$((g_delay * 2))
 		g_k=$((g_k + 1))
 	done
@@ -669,8 +794,9 @@ g_rollback() {
 	g_log "ROLLBACK (attempt $g_attempt): $g_reason; restoring vectra-controller-agent ${G_FROM_AGENT:-?} (the update was to ${G_TO:-?})"
 	# An agent that already runs the copy's binary is not stopped again: that
 	# part of the restore is done.
+	rm -f "$G_DIR/tar_ok" "$G_RUN/tar_ok" 2>/dev/null || true
 	g_stopped=0
-	if [ "$g_mode" = full ] && ! { [ -n "$(g_agent_pid)" ] && g_binary_is_copy; }; then
+	if [ "$g_mode" = full ] && ! g_agent_runs_copy; then
 		"$G_INIT" stop >/dev/null 2>&1 || true
 		g_kill_agent
 		g_stopped=1
@@ -702,7 +828,10 @@ g_rollback() {
 		rm -f "$G_INFO/$g_pkg".* 2>/dev/null || true
 	done
 	g_ok=1
-	if ! tar -xzf "$G_BACKUP" -C "${G_ROOT:-/}" 2>/dev/null; then
+	if tar -xzf "$G_BACKUP" -C "${G_ROOT:-/}" 2>/dev/null; then
+		: > "$G_RUN/tar_ok"
+		: > "$G_DIR/tar_ok" 2>/dev/null || true
+	else
 		g_ok=0
 		g_log "CRITICAL: extracting $G_BACKUP failed (full filesystem?)"
 	fi
@@ -718,17 +847,13 @@ g_rollback() {
 		g_set phase restore-failed
 		g_log "CRITICAL: ROLLBACK attempt $g_attempt incomplete; the rollback copy $G_BACKUP and the session are kept, retrying every ${G_RESTORE_RETRY_SECONDS}s (cron, watchdog)"
 		# Bring up whatever agent is there, if it is the old one intact.
-		g_member="${G_AGENT_BIN#"$G_ROOT"/}"
-		if [ -z "$(g_agent_pid)" ] && [ -x "$G_AGENT_BIN" ] &&
-			tar -xzOf "$G_BACKUP" "$g_member" 2>/dev/null | cmp -s - "$G_AGENT_BIN"; then
-			g_restart_agent
+		if { [ "$g_stopped" = 1 ] || [ -z "$(g_agent_pid)" ]; } && g_binary_is_copy; then
+			g_start_restored_agent
 		fi
 		return 1
 	fi
-	if [ "$g_stopped" = 1 ] || [ -z "$(g_agent_pid)" ]; then
-		g_restart_agent
-		g_wait_agent_up || { g_restart_agent; g_wait_agent_up; } ||
-			g_log "WARN: the restored agent is not running yet; procd and the watchdog keep trying"
+	if [ "$g_stopped" = 1 ] || [ -z "$(g_agent_pid)" ] || { [ "$g_mode" = full ] && ! g_agent_runs_copy; }; then
+		g_start_restored_agent
 	fi
 	g_mark_rolled_back "$g_reason" "$g_attempt"
 	g_log "ROLLBACK done (attempt $g_attempt): vectra-controller-agent $(g_pkg_version vectra-controller-agent) restored; marker $G_MARKER"
@@ -743,6 +868,8 @@ g_start_window() {
 	mkdir -p "$G_RUN" 2>/dev/null || true
 	g_clear_run
 	: > "$G_RUN/boot"
+	# This boot is the update's own, not one to count.
+	: > "$G_RUN/boot_counted"
 	g_note_window_stamp
 	g_set window "$(g_mono)"
 	g_set window_wall "$(g_now)"
@@ -780,6 +907,10 @@ g_tick() {
 		return 0
 		;;
 	manual)
+		if [ -z "$(g_agent_pid)" ]; then
+			g_retry_restore "$g_t"
+			return 0
+		fi
 		g_note_once manual "rollback incomplete after $(g_epoch_file "$G_DIR/attempts") attempts; waiting for the operator (sh $G_SELF clear, or a forced update)"
 		return 0
 		;;
@@ -805,6 +936,13 @@ g_tick() {
 		g_set window_wall "$(g_now)"
 		g_window="$g_t"
 		g_log "watching the agent on ${G_TO:-the new version} again from now (reboot or clock change)"
+		if [ ! -f "$G_RUN/boot_counted" ] && [ -n "$g_window" ]; then
+			g_count_boot
+		fi
+		: > "$G_RUN/boot_counted"
+		if g_boot_limit; then
+			return 0
+		fi
 		# After a reboot only cron is left: bring back the detached loop, or
 		# the judgement would run once a minute.
 		g_launch
@@ -933,6 +1071,17 @@ g_main() {
 		g_unlock
 		return "$g_rc"
 		;;
+	boot)
+		g_load_meta || return 0
+		case "$(g_phase)" in
+		watching | armed) ;;
+		*) return 0 ;;
+		esac
+		g_lock 30 || return 0
+		g_count_boot
+		g_boot_limit || true
+		g_unlock
+		;;
 	retry)
 		[ -f "$G_META" ] || return 0
 		case "$(g_phase)" in restoring | restore-failed) ;; *) return 0 ;; esac
@@ -948,11 +1097,13 @@ g_main() {
 		restoring | restore-failed | manual) ;;
 		*) echo "the session is $(g_phase), not a stuck rollback; nothing cleared" >&2; return 1 ;;
 		esac
+		g_lock 60 || return 1
+		# Checked under the lock: the guard's own retry may have just stopped it.
 		if ! g_agent_runs_executable; then
+			g_unlock
 			echo "refusing: the agent is not running from an executable $G_AGENT_BIN; the rollback copy is kept" >&2
 			return 1
 		fi
-		g_lock 60 || return 1
 		g_log "operator cleared the $(g_phase) rollback session; the agent keeps running as it is"
 		g_end_hopeless
 		g_unlock
@@ -975,7 +1126,7 @@ g_main() {
 		g_unlock
 		;;
 	*)
-		echo "usage: $0 prepare <version>|restore-files <reason>|rollback <reason>|retry|clear|arm|launch|run|tick" >&2
+		echo "usage: $0 prepare <version>|restore-files <reason>|rollback <reason>|retry|clear|boot|arm|launch|run|tick" >&2
 		return 2
 		;;
 	esac
