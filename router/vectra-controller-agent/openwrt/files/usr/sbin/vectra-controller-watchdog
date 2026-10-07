@@ -9,11 +9,17 @@
 #   1. If the binary exists and is executable but no process: nudge init.d
 #      to restart. Cheap, idempotent, fixes "procd gave up after 20 retries"
 #      cases.
-#   2. If the binary is missing or zero-sized: log a CRITICAL marker to
+#   2. If the binary is missing or zero-sized: when a self-update left a
+#      rollback copy (/etc/vectra-controller/update-rollback, written by the
+#      panel's update command), hand it to that update guard, which restores
+#      the previous version offline. Otherwise log a CRITICAL marker to
 #      syslog so the next operator who SSHes in immediately sees the
 #      situation. Don't try to download a replacement — we can't trust the
 #      router has network at this point, and a botched download would only
 #      make things worse.
+#   Never enable/start (or restore) the legacy agent while vctl
+#   (vectra-controller-pro) owns the router, or while its init script is
+#   disabled on purpose.
 #   3. Dead-man's switch (GAP-2): even when the agent process is alive and
 #      healthy, the router can be PERMANENTLY unreachable if PassWall2's
 #      transparent proxy routes the controller's own panel traffic through a
@@ -139,6 +145,16 @@ DEADMAN_SHUNT_OPTIONS="WorldProxy YouTube GooglePlay Proxy ProxyGame Tiktok Spec
 # 234 MB boxes; matches the agent's heavy-job memory floor.
 DEADMAN_PROBE_MEM_FLOOR_MB=40
 MEMINFO_FILE="/proc/meminfo"
+
+# Rollback copy and guard left by the panel's controller self-update command
+# (router/vectra-controller-agent/openwrt/update-guard). Not part of this
+# package: they exist only while an update is being verified.
+UPDATE_GUARD="/etc/vectra-controller/update-rollback/guard.sh"
+UPDATE_GUARD_META="/etc/vectra-controller/update-rollback/meta"
+
+# vctl (vectra-controller-pro) owning the router: the legacy agent stays off.
+VCTL_INIT="/etc/init.d/vectra-controller-pro"
+VCTL_HANDOVER_MARKERS="/etc/vectra-controller-pro/.legacy-agent-disabled-by-vctl /tmp/vectra-trial.d/.legacy-agent-disabled-by-vctl"
 
 # Serialises overlapping cron runs (a slow url_test_node must not let the next
 # tick act on half-finished state). A lock older than this is stale.
@@ -802,6 +818,44 @@ deadman_check_locked() {
 	return 0
 }
 
+# Does vctl own this router? Its handover marker, its running service, or its
+# nftables table. `nft list tables` only lists names (never the sets, which
+# cost tens of MB on a 234 MB box).
+vctl_owns_router() {
+	for marker in $VCTL_HANDOVER_MARKERS; do
+		[ -f "$marker" ] && return 0
+	done
+	if [ -x "$VCTL_INIT" ] && "$VCTL_INIT" running >/dev/null 2>&1; then
+		return 0
+	fi
+	if command -v nft >/dev/null 2>&1 && nft list tables 2>/dev/null | grep -qx 'table inet vctl'; then
+		return 0
+	fi
+	return 1
+}
+
+# Why the legacy agent must not be started now, or nothing (start allowed).
+legacy_start_hold_reason() {
+	if vctl_owns_router; then
+		printf 'vctl owns this router'
+		return 0
+	fi
+	if ! "$INIT_SCRIPT" enabled >/dev/null 2>&1; then
+		printf '%s is disabled' "$INIT_SCRIPT"
+		return 0
+	fi
+	return 0
+}
+
+# Log a hold once per state change (the 64 KiB syslog ring).
+note_hold() {
+	if [ "$(cat "$STATE_FILE" 2>/dev/null || true)" != "$1" ]; then
+		log "$2"
+		mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
+		echo "$1" > "$STATE_FILE"
+	fi
+}
+
 # When sourced for testing, stop here: expose the helpers/decision function
 # without running the watchdog's recovery flow or touching system state.
 if [ -n "${VECTRA_WATCHDOG_LIB_ONLY:-}" ]; then
@@ -814,9 +868,25 @@ if [ ! -x "$INIT_SCRIPT" ]; then
 fi
 
 # Branch 1: binary missing or empty. This is the r27-incident scenario.
-# We can't auto-recover (no source to copy from on-router) so we log
-# loud-and-clear and exit. Operator needs to SSH in.
+# A self-update still under verification left a rollback copy: its guard puts
+# the previous version back, offline. Without one we can't auto-recover, so we
+# log loud-and-clear and exit. Operator needs to SSH in.
 if [ ! -f "$AGENT_BIN" ] || [ ! -s "$AGENT_BIN" ]; then
+	if [ -f "$UPDATE_GUARD" ] && [ -f "$UPDATE_GUARD_META" ]; then
+		hold_reason="$(legacy_start_hold_reason)"
+		if [ -n "$hold_reason" ]; then
+			note_hold missing-held "CRITICAL: $AGENT_BIN is missing or empty and a rollback copy exists, but $hold_reason; not restoring the legacy agent"
+			exit 0
+		fi
+		log "CRITICAL: $AGENT_BIN is missing or empty; restoring the previous version from the self-update rollback copy ($UPDATE_GUARD)"
+		if sh "$UPDATE_GUARD" rollback "watchdog: $AGENT_BIN missing or empty" >/dev/null 2>&1; then
+			log "previous controller version restored from the rollback copy"
+			rm -f "$STATE_FILE"
+		else
+			log "WARN: restoring from the rollback copy failed; will retry next tick"
+		fi
+		exit 0
+	fi
 	# Only log once per state-change to avoid spamming the syslog ring buffer.
 	if [ ! -f "$STATE_FILE" ] || [ "$(cat "$STATE_FILE" 2>/dev/null)" != "missing" ]; then
 		log "CRITICAL: $AGENT_BIN is missing or empty — controller cannot run; manual recovery required (scp the correct .ipk + opkg install /tmp/<ipk>)"
@@ -833,6 +903,11 @@ fi
 
 # Branch 2: binary OK, but process not running. Probably procd gave up.
 if ! pgrep -f "$AGENT_BIN" >/dev/null 2>&1; then
+	hold_reason="$(legacy_start_hold_reason)"
+	if [ -n "$hold_reason" ]; then
+		note_hold held "controller process missing but $hold_reason; not starting the legacy agent"
+		exit 0
+	fi
 	last_restart="$(read_last_restart_epoch)"
 	now="$(now_epoch)"
 	delta=$((now - last_restart))
@@ -843,8 +918,8 @@ if ! pgrep -f "$AGENT_BIN" >/dev/null 2>&1; then
 	fi
 	log "controller process missing; attempting init.d restart (last attempt ${delta}s ago)"
 	mark_restart_attempt
-	# `enable` is idempotent; we run it in case the service was somehow
-	# disabled. `start` is preferred over `restart` for the "not running"
+	# `enable` is idempotent (a disabled init script never gets here: that is
+	# an intentional hold, see legacy_start_hold_reason). `start` is preferred over `restart` for the "not running"
 	# case since restart would error on a service that's already stopped on
 	# some procd builds.
 	"$INIT_SCRIPT" enable >/dev/null 2>&1 || true
@@ -864,7 +939,7 @@ fi
 # Clear a prior process-recovery marker so the next transition logs again.
 # Dead-man markers (deadman-*) belong to run_deadman_check below.
 case "$(cat "$STATE_FILE" 2>/dev/null || true)" in
-missing | not-executable)
+missing | not-executable | held | missing-held)
 	log "controller recovered; clearing watchdog state"
 	rm -f "$STATE_FILE"
 	;;
