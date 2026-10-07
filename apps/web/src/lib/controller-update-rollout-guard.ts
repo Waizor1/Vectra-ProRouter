@@ -101,3 +101,38 @@ export function readControllerUpdateRolloutRefusal(error: unknown) {
   }
   return message.slice(refusalPrefix.length, message.length - refusalSuffix.length);
 }
+
+// The router guard's refusal (exit 75) of a version this router rolled back
+// from in the last 24 h, as the job's stderr carries it.
+export const controllerSelfUpdateRecentRollbackMarker =
+  "controller self-update refused (75):";
+
+// The newest controller update in the router's task log, when it was refused
+// because the router rolled back from that version less than 24 h ago: the
+// one case where a healthy router needs an operator force.
+export function findRecentControllerRollbackRefusal(
+  taskLog: ReadonlyArray<{
+    kind: string;
+    stderr: string | null;
+    error?: string | null;
+    artifactVersion: string | null;
+  }>,
+) {
+  const latest = taskLog.find(
+    (item) =>
+      item.kind === "controller-self-update" ||
+      item.kind === "controller-update",
+  );
+  if (!latest) {
+    return null;
+  }
+  const text = [latest.stderr, latest.error].filter(Boolean).join("\n");
+  const index = text.indexOf(controllerSelfUpdateRecentRollbackMarker);
+  if (index < 0) {
+    return null;
+  }
+  return {
+    artifactVersion: latest.artifactVersion,
+    detail: text.slice(index).split("\n")[0] ?? "",
+  };
+}

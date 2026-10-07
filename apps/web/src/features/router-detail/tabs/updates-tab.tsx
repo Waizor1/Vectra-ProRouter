@@ -39,7 +39,10 @@ import {
 } from "~/components/ui/select";
 import { Separator } from "~/components/ui/separator";
 import type { RouterDetailEditorSurface } from "~/features/router-detail";
-import { readControllerUpdateRolloutRefusal } from "~/lib/controller-update-rollout-guard";
+import {
+  findRecentControllerRollbackRefusal,
+  readControllerUpdateRolloutRefusal,
+} from "~/lib/controller-update-rollout-guard";
 import { api } from "~/trpc/react";
 
 export interface UpdatesTabProps {
@@ -69,11 +72,15 @@ export function UpdatesTab({ routerId, initialSurface }: UpdatesTabProps) {
   const [controllerChannel, setControllerChannel] = useState<Channel>("stable");
   const [passwallChannel, setPasswallChannel] = useState<Channel>("stable");
   const [rebootOpen, setRebootOpen] = useState(false);
-  // Reasons the panel refused the controller update (shaky control plane);
-  // set = the "update anyway" confirmation is open.
+  // Why the controller update did not go ahead (the panel's rollout guard,
+  // or the router's own 75 refusal); set = the "update anyway" confirmation
+  // is open.
   const [controllerForceReasons, setControllerForceReasons] = useState<
     string | null
   >(null);
+  const recentRollback = findRecentControllerRollbackRefusal(
+    surface.managementTaskLog,
+  );
 
   const controllerMutation = api.update.queueControllerUpdate.useMutation();
   const passwallMutation = api.update.queuePasswallPackageUpdate.useMutation();
@@ -123,7 +130,9 @@ export function UpdatesTab({ routerId, initialSurface }: UpdatesTabProps) {
     } catch (error) {
       const reasons = force ? null : readControllerUpdateRolloutRefusal(error);
       if (reasons) {
-        setControllerForceReasons(reasons);
+        setControllerForceReasons(
+          `связь роутера с панелью ненадёжна (${reasons})`,
+        );
         return;
       }
       toast.error("Не удалось обновить контроллер", {
@@ -163,6 +172,29 @@ export function UpdatesTab({ routerId, initialSurface }: UpdatesTabProps) {
             <RefreshCw className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.75} />
             Обновить контроллер
           </Button>
+          {recentRollback ? (
+            <div className="flex w-full flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <span>
+                Роутер откатился с{" "}
+                {recentRollback.artifactVersion ?? "этой версии"} за последние
+                24 ч и не ставит её снова.
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || !updatesAllowed}
+                onClick={() =>
+                  setControllerForceReasons(
+                    `версия ${
+                      recentRollback.artifactVersion ?? "контроллера"
+                    } откатилась на этом роутере за последние 24 ч`,
+                  )
+                }
+              >
+                Всё равно обновить…
+              </Button>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -305,9 +337,9 @@ export function UpdatesTab({ routerId, initialSurface }: UpdatesTabProps) {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Связь роутера с панелью ненадёжна</AlertDialogTitle>
+            <AlertDialogTitle>Обновить контроллер всё равно?</AlertDialogTitle>
             <AlertDialogDescription>
-              Панель не ставит обновление контроллера: {controllerForceReasons}.
+              Обновление не ставится: {controllerForceReasons}.
               Если обновить всё равно, роутер сохранит копию текущей версии и
               вернётся к ней сам, если новая не выйдет на связь.
             </AlertDialogDescription>

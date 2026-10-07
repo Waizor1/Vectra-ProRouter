@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ControllerUpdateRolloutRefusal,
   evaluateControllerUpdateRolloutHealth,
+  findRecentControllerRollbackRefusal,
   readControllerUpdateRolloutRefusal,
 } from "~/lib/controller-update-rollout-guard";
 
@@ -79,5 +80,37 @@ describe("evaluateControllerUpdateRolloutHealth", () => {
     );
     expect(readControllerUpdateRolloutRefusal(new Error("boom"))).toBeNull();
     expect(readControllerUpdateRolloutRefusal(undefined)).toBeNull();
+  });
+});
+
+describe("findRecentControllerRollbackRefusal", () => {
+  const refused = {
+    kind: "controller-self-update",
+    artifactVersion: "0.1.13-r47",
+    error: "terminal command failed with exit code 75",
+    stderr:
+      "controller self-update refused (75): 0.1.13-r47 was rolled back on this router 600s ago (crash loop); to try it again force it: router Updates tab, or VectraPanelCli.sh update controller <router> --force",
+  };
+
+  it("offers a force when the newest controller update hit the 75 refusal", () => {
+    expect(
+      findRecentControllerRollbackRefusal([
+        { kind: "router-reboot", artifactVersion: null, stderr: null },
+        refused,
+      ]),
+    ).toEqual({
+      artifactVersion: "0.1.13-r47",
+      detail: expect.stringContaining("was rolled back on this router") as unknown,
+    });
+  });
+
+  it("not when a newer controller update came after it, or nothing was refused", () => {
+    expect(
+      findRecentControllerRollbackRefusal([
+        { kind: "controller-self-update", artifactVersion: "0.1.13-r48", stderr: null },
+        refused,
+      ]),
+    ).toBeNull();
+    expect(findRecentControllerRollbackRefusal([])).toBeNull();
   });
 });
