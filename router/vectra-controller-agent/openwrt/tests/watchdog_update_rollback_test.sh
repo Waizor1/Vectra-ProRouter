@@ -81,7 +81,7 @@ sed -e "s#^INIT_SCRIPT=.*#INIT_SCRIPT=\"$S/init\"#" \
 	-e "s#^UPDATE_GUARD_META=.*#UPDATE_GUARD_META=\"$S/guard/meta\"#" \
 	-e "s#^UPDATE_GUARD_PHASE=.*#UPDATE_GUARD_PHASE=\"$S/guard/phase\"#" \
 	-e "s#^VCTL_INIT=.*#VCTL_INIT=\"$S/vctl-init\"#" \
-	-e "s#^VCTL_MARKER_DIRS=.*#VCTL_MARKER_DIRS=\"$S/vctl-dir\"#" \
+	-e "s#^VCTL_HANDOVER_MARKERS=.*#VCTL_HANDOVER_MARKERS=\"$S/vctl-dir/.legacy-agent-disabled-by-vctl\"#" \
 	"$WATCHDOG" > "$S/watchdog"
 
 reset() {
@@ -138,19 +138,28 @@ reset; mkbin
 run_wd
 assert_eq 2 "$(starts)" "init disabled without vctl -> enable + start as before"
 
-# 6b. Any vctl marker (.*-by-vctl), not only the handover one, holds the agent.
+# 6b. vctl's other markers outlive a hand-back (`vectra off`): they hold nothing.
 reset; mkbin
 : > "$S/vctl-dir/.passwall-retired-by-vctl"
+: > "$S/vctl-dir/.passwall-disabled-by-vctl"
 run_wd
-assert_eq 0 "$(starts)" "vctl marker .passwall-retired-by-vctl -> not started"
+assert_eq 2 "$(starts)" "only .passwall-retired/.passwall-disabled-by-vctl -> agent enabled + started"
 
-# 6c. An incomplete rollback is retried, even with a binary on disk.
+# 6c. An incomplete rollback: the guard's throttled retry is nudged, and the
+#     watchdog carries on with its other branches (here: start the agent).
 reset; mkbin
 : > "$S/guard/meta"
 echo restore-failed > "$S/guard/phase"
 run_wd
-assert_eq "rollback|watchdog: retrying an incomplete rollback" "$(guard_calls)" "restore-failed -> watchdog retries the rollback"
-assert_eq 0 "$(starts)" "restore-failed -> the watchdog does not start the agent itself"
+assert_eq "retry|" "$(guard_calls)" "restore-failed -> watchdog nudges the guard's retry"
+assert_eq 2 "$(starts)" "restore-failed -> the watchdog does not exit early"
+
+# 6d. Same with a missing binary: no second, unthrottled rollback.
+reset
+: > "$S/guard/meta"
+echo manual > "$S/guard/phase"
+run_wd
+assert_eq "retry|" "$(guard_calls)" "manual + missing binary -> only the throttled retry"
 
 # 7. vctl owns it and the throttle file is in the future (the 1111 case): held
 #    by the vctl check, not by the accident of a negative delta.

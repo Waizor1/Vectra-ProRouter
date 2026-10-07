@@ -155,7 +155,9 @@ UPDATE_GUARD_PHASE="/etc/vectra-controller/update-rollback/phase"
 
 # vctl (vectra-controller-pro) owning the router: the legacy agent stays off.
 VCTL_INIT="/etc/init.d/vectra-controller-pro"
-VCTL_MARKER_DIRS="/etc/vectra-controller-pro /tmp/vectra-trial.d"
+# Only vctl's marker for the legacy agent it disabled: its other markers
+# (.passwall-retired-by-vctl, .passwall-disabled-by-vctl) outlive a hand-back.
+VCTL_HANDOVER_MARKERS="/etc/vectra-controller-pro/.legacy-agent-disabled-by-vctl /tmp/vectra-trial.d/.legacy-agent-disabled-by-vctl"
 
 # Serialises overlapping cron runs (a slow url_test_node must not let the next
 # tick act on half-finished state). A lock older than this is stale.
@@ -819,15 +821,13 @@ deadman_check_locked() {
 	return 0
 }
 
-# Does vctl own this router? One of its markers (.*-by-vctl), its running
+# Does vctl own this router? Its legacy-agent handover marker, its running
 # service, or its nftables table. `nft list tables` only lists names (never
 # the sets, which cost tens of MB on a 234 MB box). A merely disabled init
 # script is not vctl: the watchdog still enables and starts the agent then.
 vctl_owns_router() {
-	for marker_dir in $VCTL_MARKER_DIRS; do
-		for marker in "$marker_dir"/.*-by-vctl; do
-			[ -e "$marker" ] && return 0
-		done
+	for marker in $VCTL_HANDOVER_MARKERS; do
+		[ -f "$marker" ] && return 0
 	done
 	if [ -x "$VCTL_INIT" ] && "$VCTL_INIT" running >/dev/null 2>&1; then
 		return 0
@@ -868,17 +868,17 @@ if [ ! -x "$INIT_SCRIPT" ]; then
 fi
 
 # Branch 0: a self-update rollback the guard could not complete (full
-# filesystem, truncated copy write): retry it, whatever the binary looks like.
+# filesystem, truncated copy write): nudge the guard's own throttled retry
+# (backoff, attempt cap), then carry on with every other branch — the
+# dead-man and the process checks keep running in this state.
+guard_restore_pending=0
 case "$(cat "$UPDATE_GUARD_PHASE" 2>/dev/null || true)" in
-restoring | restore-failed)
-	if [ -f "$UPDATE_GUARD" ] && [ -f "$UPDATE_GUARD_META" ] && ! vctl_owns_router; then
-		log "CRITICAL: an earlier self-update rollback is incomplete; retrying it ($UPDATE_GUARD)"
-		if sh "$UPDATE_GUARD" rollback "watchdog: retrying an incomplete rollback" >/dev/null 2>&1; then
-			log "previous controller version restored from the rollback copy"
-		else
-			log "WARN: the rollback is still incomplete; will retry next tick"
+restoring | restore-failed | manual)
+	if [ -f "$UPDATE_GUARD" ] && [ -f "$UPDATE_GUARD_META" ]; then
+		guard_restore_pending=1
+		if ! vctl_owns_router; then
+			sh "$UPDATE_GUARD" retry >/dev/null 2>&1 || true
 		fi
-		exit 0
 	fi
 	;;
 esac
@@ -888,7 +888,7 @@ esac
 # the previous version back, offline. Without one we can't auto-recover, so we
 # log loud-and-clear and exit. Operator needs to SSH in.
 if [ ! -f "$AGENT_BIN" ] || [ ! -s "$AGENT_BIN" ]; then
-	if [ -f "$UPDATE_GUARD" ] && [ -f "$UPDATE_GUARD_META" ]; then
+	if [ "$guard_restore_pending" = 0 ] && [ -f "$UPDATE_GUARD" ] && [ -f "$UPDATE_GUARD_META" ]; then
 		hold_reason="$(legacy_start_hold_reason)"
 		if [ -n "$hold_reason" ]; then
 			note_hold missing-held "CRITICAL: $AGENT_BIN is missing or empty and a rollback copy exists, but $hold_reason; not restoring the legacy agent"
