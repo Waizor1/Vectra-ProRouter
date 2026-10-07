@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 
 import { buildTerminalControllerSelfUpdatePayload } from "~/lib/controller-update-jobs";
 import { controllerUpdateGuardScript } from "~/lib/controller-update-guard-script";
+import { isForcedControllerSelfUpdateCommand } from "~/lib/controller-update-jobs";
+import { controllerSelfUpdateRecentRollbackMarker } from "~/lib/controller-update-rollout-guard";
 
 import { renderGuardModule } from "../../scripts/sync-controller-update-guard.mjs";
 
@@ -84,7 +86,7 @@ describe("controller self-update command with the rollback guard", () => {
     expect(command).toContain("(previous version restored)");
     // The old fire-and-forget restart without a way back is gone.
     expect(command).not.toContain("schedule_restart");
-    expect(command.length).toBeLessThanOrEqual(32000);
+    expect(command.length).toBeLessThanOrEqual(48000);
   });
 
   it("passes an operator force to prepare (past the 75 refusal) only when forced", () => {
@@ -98,6 +100,26 @@ describe("controller self-update command with the rollback guard", () => {
     });
     expect(forced?.command).toContain('\nVECTRA_GUARD_FORCE=1 sh "$guard" prepare');
     expect(build()).not.toContain("VECTRA_GUARD_FORCE=1 sh");
+  });
+
+  it("tells forced from unforced commands, and the guard emits the 75 text the UI looks for", () => {
+    expect(isForcedControllerSelfUpdateCommand(build())).toBe(false);
+    expect(
+      isForcedControllerSelfUpdateCommand(
+        buildTerminalControllerSelfUpdatePayload({
+          artifactVersion: "0.1.13-r47",
+          packageArtifacts: [
+            { name: "vectra-controller-agent", artifactUrl: "https://x/a.ipk", sha256: "a" },
+            { name: "luci-app-vectra-controller", artifactUrl: "https://x/l.ipk", sha256: "b" },
+          ],
+          force: true,
+          guardTimings: { stable: 15 },
+        })?.command,
+      ),
+    ).toBe(true);
+    expect(controllerUpdateGuardScript).toContain(
+      `echo "${controllerSelfUpdateRecentRollbackMarker}`,
+    );
   });
 
   it("passes stand timings to prepare only when asked", () => {

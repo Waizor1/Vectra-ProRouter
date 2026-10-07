@@ -14,6 +14,7 @@ function createMockDb(selectResponses: unknown[][]) {
   let insertCalls = 0;
   let updateCalls = 0;
   const insertedValues: unknown[] = [];
+  const updatedValues: unknown[] = [];
 
   const nextSelectResult = () => selectResponses[selectIndex++] ?? [];
 
@@ -53,7 +54,8 @@ function createMockDb(selectResponses: unknown[][]) {
       update() {
         updateCalls += 1;
         return {
-          set() {
+          set(value: unknown) {
+            updatedValues.push(value);
             return {
               where() {
                 return Object.assign(Promise.resolve([]), {
@@ -72,6 +74,9 @@ function createMockDb(selectResponses: unknown[][]) {
     },
     insertedValues() {
       return insertedValues;
+    },
+    updatedValues() {
+      return updatedValues;
     },
   };
 }
@@ -638,8 +643,8 @@ describe("destructive route gating", () => {
     );
     expect(inserted.payload?.command).not.toContain("LuCI reinstall failed");
     // 4000 → 8000 (r28, verify_ipk_has_agent / verify_agent_on_disk) →
-    // 32000 (r47: the embedded rollback guard, ~19 KB).
-    expect(inserted.payload?.command?.length).toBeLessThanOrEqual(32000);
+    // 48000 (r47: the embedded rollback guard, ~27 KB).
+    expect(inserted.payload?.command?.length).toBeLessThanOrEqual(48000);
     expect(inserted.payload?.command).toContain('sh "$guard" prepare');
     expect(inserted.payload?.command).toContain('sh "$guard" launch');
   });
@@ -1366,6 +1371,7 @@ describe("destructive route gating", () => {
     function controllerUpdateMock(options: {
       router?: Parameters<typeof createCertifiedLikeRouter>[0];
       incidents?: unknown[];
+      existingJob?: unknown;
     }) {
       return createMockDb([
         [createCertifiedLikeRouter(options.router)],
@@ -1379,10 +1385,53 @@ describe("destructive route gating", () => {
           createControllerArtifact("vectra-controller-agent", "0.1.13-r47"),
           createControllerArtifact("luci-app-vectra-controller", "0.1.13-r47"),
         ],
-        [],
+        options.existingJob ? [options.existingJob] : [],
         options.incidents ?? [],
       ]);
     }
+
+    function queuedSelfUpdateJob(state: string, command: string) {
+      return {
+        id: "job-1",
+        routerId: CERTIFIED_LIKE_ROUTER_ID,
+        type: "run_terminal_command",
+        state,
+        dedupeKey: `update_controller:${CERTIFIED_LIKE_ROUTER_ID}:stable:0.1.13-r47`,
+        payload: { purpose: "controller-self-update", command },
+      };
+    }
+
+    it("a forced request upgrades a queued unforced job instead of returning it", async () => {
+      const mock = controllerUpdateMock({
+        existingJob: queuedSelfUpdateJob("queued", 'set -eu\nsh "$guard" prepare "$target_version"'),
+      });
+      const caller = createProtectedCaller(updateRouter, mock.db) as ControllerCaller;
+
+      await caller.queueControllerUpdate({
+        routerId: CERTIFIED_LIKE_ROUTER_ID,
+        channel: "stable",
+        force: true,
+      });
+      expect(mock.counts()).toEqual({ insertCalls: 0, updateCalls: 1 });
+      const [set] = mock.updatedValues() as Array<{ payload?: { command?: string } }>;
+      expect(set?.payload?.command).toContain('VECTRA_GUARD_FORCE=1 sh "$guard" prepare');
+    });
+
+    it("leaves a job already delivered, or already forced, as it is", async () => {
+      for (const job of [
+        queuedSelfUpdateJob("delivered", 'sh "$guard" prepare'),
+        queuedSelfUpdateJob("queued", '\nVECTRA_GUARD_FORCE=1 sh "$guard" prepare "$target_version"'),
+      ]) {
+        const mock = controllerUpdateMock({ existingJob: job });
+        const caller = createProtectedCaller(updateRouter, mock.db) as ControllerCaller;
+        await caller.queueControllerUpdate({
+          routerId: CERTIFIED_LIKE_ROUTER_ID,
+          channel: "stable",
+          force: true,
+        });
+        expect(mock.counts()).toEqual({ insertCalls: 0, updateCalls: 0 });
+      }
+    });
 
     it("refuses a router with an open server_unreachable incident", async () => {
       const mock = controllerUpdateMock({

@@ -25,6 +25,7 @@ import {
 } from "~/lib/controller-version";
 import {
   buildTerminalControllerSelfUpdatePayload,
+  isForcedControllerSelfUpdateCommand,
   controllerSelfUpdateCompatTerminalPurpose,
   shouldUseTerminalControllerSelfUpdate,
 } from "~/lib/controller-update-jobs";
@@ -400,6 +401,11 @@ async function assertControllerUpdateRolloutHealthy(args: {
   }
 }
 
+function readCommand(payload: unknown) {
+  const command = asRecord(payload).command;
+  return typeof command === "string" ? command : null;
+}
+
 function isControllerUpdateRolloutRefusal(error: unknown) {
   return (
     error instanceof TRPCError &&
@@ -512,6 +518,24 @@ async function enqueueControllerUpdateJob(args: {
     .limit(1);
 
   if (existingJob) {
+    // An operator forcing the update gets a force-carrying job: a still
+    // queued unforced one is upgraded in place (one controller job per
+    // router), so it cannot run and fail on the guard's 75 refusal.
+    const existingCommand = readCommand(existingJob.payload);
+    if (
+      args.force &&
+      terminalPayload &&
+      existingJob.state === "queued" &&
+      existingJob.type === "run_terminal_command" &&
+      !isForcedControllerSelfUpdateCommand(existingCommand)
+    ) {
+      const [upgraded] = await args.ctx.db
+        .update(jobs)
+        .set({ payload: terminalPayload })
+        .where(and(eq(jobs.id, existingJob.id), eq(jobs.state, "queued")))
+        .returning();
+      return upgraded ?? existingJob;
+    }
     return existingJob;
   }
 

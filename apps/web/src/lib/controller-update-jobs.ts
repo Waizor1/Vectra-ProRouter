@@ -77,6 +77,18 @@ function guardTimingPrefix(timings: ControllerUpdateGuardTimings | undefined) {
 }
 
 const guardHeredocDelimiter = "VECTRA_UPDATE_GUARD_EOF";
+const guardForcedPrepare = 'VECTRA_GUARD_FORCE=1 ';
+
+// Was this self-update command generated with an operator force?
+export function isForcedControllerSelfUpdateCommand(
+  command: string | null | undefined,
+) {
+  return (
+    typeof command === "string" &&
+    command.includes(`\n${guardForcedPrepare}`) &&
+    /\nVECTRA_GUARD_FORCE=1 (?:VECTRA_GUARD_[A-Z_]+=\d+ )*sh "\$guard" prepare /.test(command)
+  );
+}
 
 type ControllerPackageArtifact = {
   name: string;
@@ -236,7 +248,7 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     guardHeredocDelimiter,
     'chmod 0755 "$guard.new" && mv "$guard.new" "$guard"',
     "guard_rc=0",
-    `${args.force ? "VECTRA_GUARD_FORCE=1 " : ""}${guardTimingPrefix(args.guardTimings)}sh "$guard" prepare "$target_version" || guard_rc=$?`,
+    `${args.force ? guardForcedPrepare : ""}${guardTimingPrefix(args.guardTimings)}sh "$guard" prepare "$target_version" || guard_rc=$?`,
     'if [ "$guard_rc" -ne 0 ]; then [ -f "$guard_dir/meta" ] || rm -rf "$guard_dir"; exit "$guard_rc"; fi',
     ': > "$skip"',
     "installing=1",
