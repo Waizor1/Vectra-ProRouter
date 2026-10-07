@@ -38,6 +38,13 @@
 #               ends it
 #   outageends  panel unreachable past the contact deadline, back before the
 #               network deadline: v2 reaches it and is kept
+#   restorefailluci
+#               the first restore runs out of space in the LuCI part (the
+#               agent's files and the stanzas are already back): not taken
+#               for complete; the retry restores LuCI in full
+#   bootloop    a v2 that "hangs" the router: the container restarts every
+#               ~20 s; at the 3rd boot the guard's early hook rolls back before
+#               v2 starts again
 #   reboot      silent v2, container restarted inside the window: the guard
 #               resumes from cron, re-arms its clock, rolls back
 #   noroom      no room for a copy on /etc or /tmp: exit 73, nothing changed
@@ -57,7 +64,7 @@ NET="$RUN_ID-net"
 V1=0.1.13-r46
 V2=0.1.13-r47
 TIMINGS='{"stable":15,"crash":45,"contact":60,"probeFrom":30,"probeEvery":5,"hold":15,"network":150,"tick":3,"restartDelay":3,"preparedTimeout":60,"armedTimeout":30,"restoreRetry":2,"restoreRetryMax":8,"restoreMaxAttempts":4}'
-ALL=(healthy crash selfdelete nobin midfail silent offline reboot noroom tmpcopy restorefail retiredmarker restorecap outageends)
+ALL=(healthy crash selfdelete nobin midfail silent offline reboot noroom tmpcopy restorefail retiredmarker restorecap outageends restorefailluci bootloop)
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 fatal() { printf '\nFATAL: %s\n' "$*" >&2; exit 2; }
@@ -87,6 +94,8 @@ head -c 4000000 /dev/urandom | base64 | sed 's/^/#/' > "$BUILD/padding"
 # in v1, 0.2 MB in v2, so a full filesystem stops the v1 restore.
 head -c 1500000 /dev/urandom > "$BUILD/blob.v1"
 head -c 200000 /dev/urandom > "$BUILD/blob.v2"
+head -c 1500000 /dev/urandom > "$BUILD/lucblob.v1"
+head -c 200000 /dev/urandom > "$BUILD/lucblob.v2"
 
 agent_script() { # <variant>
 	cat <<EOF
@@ -137,7 +146,8 @@ agent_ipk() { # <variant> <version> <out> [postinst body]
 luci_ipk() { # <version> <out> [preinst body]
 	local d
 	d="$(mktemp -d)"
-	mkdir -p "$d/data/usr/share/luci/menu.d" "$d/data/usr/share/rpcd/acl.d" "$d/data/usr/libexec/vectra-controller" "$d/data/www/luci-static/resources/view/vectra-controller" "$d/ctrl"
+	mkdir -p "$d/data/usr/share/luci/menu.d" "$d/data/usr/share/rpcd/acl.d" "$d/data/usr/libexec/vectra-controller" "$d/data/www/luci-static/resources/view/vectra-controller" "$d/data/usr/share/vectra-stand-luci" "$d/ctrl"
+	if [[ "$1" == "$V1" ]]; then cp "$BUILD/lucblob.v1" "$d/data/usr/share/vectra-stand-luci/blob"; else cp "$BUILD/lucblob.v2" "$d/data/usr/share/vectra-stand-luci/blob"; fi
 	echo "{\"v\":\"$1\"}" > "$d/data/usr/share/luci/menu.d/luci-app-vectra-controller.json"
 	echo "{\"v\":\"$1\"}" > "$d/data/usr/share/rpcd/acl.d/luci-app-vectra-controller.json"
 	printf '#!/bin/sh\necho %s\n' "$1" > "$d/data/usr/libexec/vectra-controller/luci-bridge.sh"
@@ -412,6 +422,46 @@ scenario() { # <name>
 		check "$n" "outage ended before the network deadline: v2 kept" "$s" agent "$V2"
 		check "$n" "v2 agent running" "$s" variant healthy
 		check "$n" "no rollback marker" "$s" marker none
+		;;
+	restorefailluci)
+		start_router "$n" 64m --tmpfs /usr/share/vectra-stand-luci:rw,size=4m
+		setup "$n"
+		update "$n" crash
+		[[ "$UPDATE_RC" == 0 ]] && record "$n" PASS "update exit 0" || record "$n" FAIL "update exit $UPDATE_RC"
+		s="$(wait_state "$n" 30 phase watching)" && record "$n" PASS "guard watching v2" || record "$n" FAIL "guard never watched: $s"
+		docker exec "$RUN_ID-$n" sh -c 'dd if=/dev/zero of=/usr/share/vectra-stand-luci/filler bs=4096 2>/dev/null; true'
+		s="$(wait_state "$n" 120 phase restore-failed)" && record "$n" PASS "out of space in LuCI -> restore-failed" || record "$n" FAIL "never restore-failed: $s"
+		check "$n" "agent part already back (the old check would call this complete)" "$s" variant v1
+		check "$n" "stanzas already back" "$s" agent "$V1"
+		check "$n" "LuCI data cut short" "$s" luciblob '[0-9]*'
+		[[ "$(field "$s" luciblob)" != 1500000 ]] && record "$n" PASS "LuCI file incomplete at restore-failed" || record "$n" FAIL "LuCI file was complete"
+		check "$n" "copy kept" "$s" persistcopy yes
+		docker exec "$RUN_ID-$n" rm -f /usr/share/vectra-stand-luci/filler
+		s="$(wait_state "$n" 150 session gone)" || true
+		rolled_back "$n" "$s" '*crash_loop*'
+		check "$n" "LuCI data restored in full" "$s" luciblob 1500000
+		;;
+	bootloop)
+		start_router "$n" 64m
+		setup "$n"
+		update "$n" silent
+		[[ "$UPDATE_RC" == 0 ]] && record "$n" PASS "update exit 0" || record "$n" FAIL "update exit $UPDATE_RC"
+		s="$(wait_state "$n" 30 phase watching)" && record "$n" PASS "guard watching v2" || record "$n" FAIL "guard never watched: $s"
+		local b
+		for b in 1 2 3; do
+			sleep 15
+			docker restart -t 1 "$RUN_ID-$n" >/dev/null
+			for _ in $(seq 30); do docker exec "$RUN_ID-$n" test -f /tmp/stand-booted 2>/dev/null && break; sleep 1; done
+			s="$(state_of "$n")"
+			if [[ $b -lt 3 ]]; then
+				check "$n" "boot $b: still v2, session kept" "$s" agent "$V2"
+				local boots
+				boots="$(docker exec "$RUN_ID-$n" cat /etc/vectra-controller/update-rollback/boots 2>/dev/null)"
+				[[ "$boots" == "$b" ]] && record "$n" PASS "boot $b counted" || record "$n" FAIL "boots=$boots after boot $b"
+			fi
+		done
+		rolled_back "$n" "$s" '*boot_loop*'
+		check "$n" "boot 3: the new agent never started (rolled back before S95)" "$s" v2starts 0
 		;;
 	*) echo "STAND-FATAL unknown scenario $n" ;;
 	esac

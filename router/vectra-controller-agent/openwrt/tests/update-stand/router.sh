@@ -44,9 +44,11 @@ boot)
 		done
 		: > /etc/stand-first-boot-done
 	fi
-	for s in cron vectra-controller; do
+	# rc.d order for what matters here: the update guard's hook (S19), cron,
+	# the agent (S95).
+	for s in vectra-update-guard cron vectra-controller; do
 		if [ -x "/etc/init.d/$s" ] && "/etc/init.d/$s" enabled; then
-			"/etc/init.d/$s" start >/dev/null 2>&1
+			"/etc/init.d/$s" boot >/dev/null 2>&1
 		fi
 	done
 	date +%s > /tmp/stand-booted
@@ -88,7 +90,9 @@ state)
 	persistcopy=no
 	[ -f /etc/vectra-controller/update-rollback/backup.tgz ] && persistcopy=yes
 	phase="$(cat /etc/vectra-controller/update-rollback/phase 2>/dev/null)"
-	echo "STATE agent=$(pkg_version vectra-controller-agent) luci=$(pkg_version luci-app-vectra-controller) variant=$variant pid=${pid:-none} session=$session phase=${phase:-none} cron=${cron:-0} persistcopy=$persistcopy tmpcopy=$tmpcopy status_md5=$(md5sum /usr/lib/opkg/status | cut -d' ' -f1) attempts=${attempts:-none} marker=${marker:-none}"
+	luciblob="$(wc -c < /usr/share/vectra-stand-luci/blob 2>/dev/null | tr -dc 0-9)"
+	v2starts="$(grep -vc '^v1 ' /tmp/stand-agent.starts 2>/dev/null)"
+	echo "STATE agent=$(pkg_version vectra-controller-agent) luci=$(pkg_version luci-app-vectra-controller) variant=$variant pid=${pid:-none} session=$session phase=${phase:-none} cron=${cron:-0} persistcopy=$persistcopy tmpcopy=$tmpcopy status_md5=$(md5sum /usr/lib/opkg/status | cut -d' ' -f1) attempts=${attempts:-none} luciblob=${luciblob:-none} v2starts=${v2starts:-0} marker=${marker:-none}"
 	;;
 log)
 	logread 2>/dev/null | grep -E 'vectra-update-guard|vectra-controller' | tail -n "${2:-20}"

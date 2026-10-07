@@ -40,14 +40,23 @@ a missing binary, only logged "manual recovery required".
      to the 15-min rule). Windows run on `/proc/uptime`, so a wall-clock jump
      moves nothing; a reboot re-arms them. Success (stable + contact) removes
      the copy.
-   - every restore is checked: tar's exit code, the agent binary byte for byte
-     against the copy, both stanzas' versions. An incomplete restore (full
+   - a reboot loop: an early boot hook (`/etc/init.d/vectra-update-guard`,
+     START=19, written with the session and removed with it) counts boots of
+     an unconfirmed update; at the 3rd it rolls back before the new agent
+     starts again. A healthy version confirms within 15 min, so the daily
+     04:30 reboot or one reboot during the window changes nothing.
+   - every restore is checked: the whole copy extracted without error, every
+     file of it matching the sha256 manifest made at prepare, both stanzas'
+     versions. A running agent counts as restored only if the guard started
+     it from the verified binary or its `/proc/<pid>/exe` is the copy's;
+     otherwise it is restarted. An incomplete restore (full
      filesystem, truncated write) keeps the copy and the session (phase
      `restore-failed`) and is retried with a backoff (1, 2, 4 … 30 min, the
      watchdog nudging the same throttled retry). Each retry first checks
      whether the restore is in fact complete and never stops an agent that
      already runs the copy's binary. After 10 attempts: phase `manual`, the
-     agent is left alone and the copy kept; the operator ends it with
+     running agent is left alone and the copy kept (with no agent running at
+   all it keeps retrying every 30 min); the operator ends it with
      `sh /etc/vectra-controller/update-rollback/guard.sh clear` (via
      `VectraPanelCli.sh terminal`) or a forced update — both only while the
      agent runs from an executable binary. The copy is never deleted before a
@@ -92,9 +101,13 @@ a missing binary, only logged "manual recovery required".
   failed attempt left.
 - Agents older than 0.1.12-r1 still take the old `update_controller` job,
   which has no guard.
+- A forced request can race the router fetching the queued unforced job
+  (between the panel's read and its update of the row): that one run fails
+  with 75 and the next forced request queues a forced job. It heals itself
+  and is left as is.
 
 Tests: `openwrt/tests/update_guard_test.sh`,
 `openwrt/tests/watchdog_update_rollback_test.sh` (sh, dash, BusyBox ash), the
-docker stand `openwrt/tests/update-stand/run.sh` (14 scenarios), vitest
+docker stand `openwrt/tests/update-stand/run.sh` (16 scenarios), vitest
 `controller-update-jobs.test.ts`, `controller-update-rollout-guard.test.ts`,
 `destructive-gating.test.ts`.
