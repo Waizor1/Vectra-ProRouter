@@ -70,8 +70,10 @@ a missing binary, only logged "manual recovery required".
 - state.json is never rolled back.
 - If the phase file cannot be written (filesystem full) and the router
   reboots before the retry, the "restore incomplete" flag (also kept in /tmp)
-  is lost; the guard then judges the half-restored version like a fresh one
-  (crash loop, no contact) and restores again.
+  is lost; the guard then judges the half-restored version like a fresh one:
+  a crash loop or silence restores again, but an agent that runs and reaches
+  the panel ends the session (copy deleted) with whatever opkg state the
+  failed attempt left.
 - Agents older than 0.1.12-r1 still take the old `update_controller` job,
   which has no guard.
 
