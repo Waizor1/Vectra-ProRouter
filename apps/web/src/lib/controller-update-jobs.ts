@@ -1,5 +1,6 @@
 import { runTerminalCommandJobPayloadSchema } from "@vectra/contracts";
 
+import { controllerUpdateGuardScript } from "~/lib/controller-update-guard-script";
 import {
   compareControllerVersions,
   normalizeControllerVersion,
@@ -11,6 +12,68 @@ export const controllerSelfUpdateCompatTerminalPurpose =
 export const controllerTerminalSupportMinVersion = "0.1.12-r1";
 
 const controllerSelfUpdateTimeoutSeconds = 120;
+
+// Exit codes of the generated command besides 0/1: 72 = resource guard (RAM,
+// /overlay, /tmp), 73 = no room for a rollback copy (nothing was changed),
+// 74 = a previous update is still being verified by the guard.
+export const controllerSelfUpdateNoRollbackRoomExitCode = 73;
+export const controllerSelfUpdateGuardBusyExitCode = 74;
+export const controllerUpdateGuardPath =
+  "/etc/vectra-controller/update-rollback/guard.sh";
+export const controllerUpdateRollbackMarkerPath =
+  "/etc/vectra-controller/update-rollback.marker";
+
+// Overrides of the guard's judgement windows (seconds). Production leaves
+// them unset (guard defaults: stable 120, crash 300, contact 900, probeFrom
+// 600, probeEvery 60, hold 180, network 3600, tick 10); the docker stand
+// shrinks them.
+export type ControllerUpdateGuardTimings = Partial<
+  Record<
+    | "stable"
+    | "crash"
+    | "contact"
+    | "probeFrom"
+    | "probeEvery"
+    | "hold"
+    | "network"
+    | "tick"
+    | "restartDelay"
+    | "preparedTimeout"
+    | "armedTimeout",
+    number
+  >
+>;
+
+const guardTimingEnv: Record<keyof ControllerUpdateGuardTimings, string> = {
+  stable: "VECTRA_GUARD_STABLE_SECONDS",
+  crash: "VECTRA_GUARD_CRASH_SECONDS",
+  contact: "VECTRA_GUARD_CONTACT_SECONDS",
+  probeFrom: "VECTRA_GUARD_PROBE_FROM_SECONDS",
+  probeEvery: "VECTRA_GUARD_PROBE_EVERY_SECONDS",
+  hold: "VECTRA_GUARD_HOLD_SECONDS",
+  network: "VECTRA_GUARD_NETWORK_SECONDS",
+  tick: "VECTRA_GUARD_TICK_SECONDS",
+  restartDelay: "VECTRA_GUARD_RESTART_DELAY_SECONDS",
+  preparedTimeout: "VECTRA_GUARD_PREPARED_TIMEOUT_SECONDS",
+  armedTimeout: "VECTRA_GUARD_ARMED_TIMEOUT_SECONDS",
+};
+
+function guardTimingPrefix(timings: ControllerUpdateGuardTimings | undefined) {
+  if (!timings) {
+    return "";
+  }
+  return Object.entries(timings)
+    .filter(
+      (entry): entry is [keyof ControllerUpdateGuardTimings, number] =>
+        typeof entry[1] === "number" &&
+        Number.isInteger(entry[1]) &&
+        entry[1] >= 0,
+    )
+    .map(([key, value]) => `${guardTimingEnv[key]}=${value} `)
+    .join("");
+}
+
+const guardHeredocDelimiter = "VECTRA_UPDATE_GUARD_EOF";
 
 type ControllerPackageArtifact = {
   name: string;
@@ -79,6 +142,7 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
   purpose?:
     | typeof controllerSelfUpdateTerminalPurpose
     | typeof controllerSelfUpdateCompatTerminalPurpose;
+  guardTimings?: ControllerUpdateGuardTimings;
 }) {
   const agentArtifact = findControllerPackageArtifact(
     args.packageArtifacts,
@@ -116,7 +180,13 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     'cleanup() { rm -rf "$workdir"; rm -f "$skip"; }',
     "trap cleanup EXIT INT TERM",
     `target_version=${shellSingleQuote(artifactVersion ?? "")}`,
-    'fail() { echo "controller self-update failed: $*" >&2; exit 1; }',
+    // After `installing=1` every failure first puts the previous version's
+    // files and opkg stanzas back (the old agent is still the running
+    // process: the pair is installed with VECTRA_SKIP_POSTINST_RESTART).
+    'guard_dir=/etc/vectra-controller/update-rollback',
+    'guard="$guard_dir/guard.sh"',
+    'installing=0',
+    'fail() { if [ "$installing" = 1 ]; then installing=0; sh "$guard" restore-files "$*" >&2 || true; echo "controller self-update failed: $* (previous version restored)" >&2; exit 1; fi; echo "controller self-update failed: $*" >&2; exit 1; }',
     'fetch() { if command -v wget >/dev/null 2>&1; then wget -q -O "$1" "$2" || fail "download $2"; elif command -v uclient-fetch >/dev/null 2>&1; then uclient-fetch -q -O "$1" "$2" || fail "download $2"; else fail "missing downloader"; fi; }',
     'check_sha() { actual_sha="$(sha256sum "$1" | awk \'{print $1}\')"; [ "$actual_sha" = "$2" ] || fail "sha256 mismatch for $1"; }',
     'pkg_status() { awk -F\': \' -v pkg="$1" \'/^Package:/ { current = ($2 == pkg); next } current { print }\' /usr/lib/opkg/status 2>/dev/null; }',
@@ -124,7 +194,6 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     'need_file() { [ -s "$1" ] || fail "missing LuCI file $1"; }',
     'install_pair() { VECTRA_SKIP_POSTINST_RESTART=1 opkg install --force-reinstall "$agent_ipk" "$luci_ipk"; }',
     'cleanup_luci() { rm -f /tmp/luci-indexcache.*; rm -rf /tmp/luci-modulecache/; /etc/init.d/rpcd reload >/dev/null 2>&1 || true; }',
-    'schedule_restart() { rm -f "$skip"; (sleep 5; /etc/init.d/vectra-controller enable >/dev/null 2>&1 || true; if /etc/init.d/vectra-controller running >/dev/null 2>&1; then /etc/init.d/vectra-controller restart >/tmp/vectra-controller-self-update.log 2>&1; else /etc/init.d/vectra-controller start >/tmp/vectra-controller-self-update.log 2>&1; fi) & }',
     // Belt-and-suspenders verification added after the r27 incident
     // (2026-05-28, totchto-filiciy): a binary-less .ipk made it to the feed
     // and opkg cheerfully replaced the controller with an empty package,
@@ -151,7 +220,20 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     `fetch "$luci_ipk" ${shellSingleQuote(luciArtifact.artifactUrl)}`,
     `check_sha "$luci_ipk" ${shellSingleQuote(luciArtifact.sha256)}`,
     'verify_ipk_has_agent "$agent_ipk"',
+    // The rollback guard (router/vectra-controller-agent/openwrt/update-guard)
+    // is written here, outside both packages, so it protects an update from
+    // any installed version. `prepare` copies the installed pair aside first:
+    // no copy, no update (exit 73).
+    'mkdir -p "$guard_dir" || { echo "controller self-update refused (no room for a rollback copy): cannot create $guard_dir" >&2; exit 73; }',
+    `cat > "$guard.new" <<'${guardHeredocDelimiter}' || { rm -f "$guard.new"; echo "controller self-update refused (no room for a rollback copy): cannot write $guard" >&2; exit 73; }`,
+    controllerUpdateGuardScript,
+    guardHeredocDelimiter,
+    'chmod 0755 "$guard.new" && mv "$guard.new" "$guard"',
+    "guard_rc=0",
+    `${guardTimingPrefix(args.guardTimings)}sh "$guard" prepare "$target_version" || guard_rc=$?`,
+    'if [ "$guard_rc" -ne 0 ]; then [ -f "$guard_dir/meta" ] || rm -rf "$guard_dir"; exit "$guard_rc"; fi',
     ': > "$skip"',
+    "installing=1",
     'install_pair || fail "opkg install controller/LuCI pair"',
     'verify_agent_on_disk',
     'pkg_ok vectra-controller-agent',
@@ -161,7 +243,12 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     'need_file /usr/libexec/vectra-controller/luci-bridge.sh',
     'need_file /www/luci-static/resources/view/vectra-controller/status.js',
     'cleanup_luci',
-    'schedule_restart',
+    "installing=0",
+    // The guard restarts the agent itself (after the job result is sent),
+    // then judges it: crash loop, missing binary or no panel contact while
+    // the panel answers => the previous version comes back on its own.
+    'sh "$guard" arm',
+    'sh "$guard" launch',
     `printf '%s\\n' ${shellSingleQuote(installedSummary)}`,
   ].join("\n");
 

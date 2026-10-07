@@ -481,7 +481,7 @@ g_rollback() {
 	if ! tar -xzf "$G_BACKUP" -C "${G_ROOT:-/}" 2>/dev/null; then
 		g_log "CRITICAL: extracting $G_BACKUP failed during the rollback"
 	fi
-	g_restore_status || g_log "WARN: restoring the opkg status stanzas failed"
+	g_restore_status || g_log "WARN: restoring the package status stanzas failed"
 	rm -f "$G_ROOT"/tmp/luci-indexcache* 2>/dev/null || true
 	rm -rf "$G_ROOT/tmp/luci-modulecache" 2>/dev/null || true
 	[ -x "$G_ROOT/etc/init.d/rpcd" ] && "$G_ROOT/etc/init.d/rpcd" reload >/dev/null 2>&1

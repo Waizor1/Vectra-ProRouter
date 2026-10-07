@@ -1134,7 +1134,9 @@ export const runRescueRepairJobPayloadSchema = z
   .strict();
 
 export const runTerminalCommandJobPayloadSchema = z.object({
-  command: z.string().trim().min(1).max(8000),
+  // Operator-typed commands stay capped at 8000 by the terminal router; the
+  // panel's own controller self-update embeds its rollback guard (~19 KB).
+  command: z.string().trim().min(1).max(32000),
   timeoutSeconds: z.number().int().min(5).max(120).default(30),
   purpose: z
     .enum([
