@@ -1401,7 +1401,7 @@ describe("destructive route gating", () => {
           routerId: CERTIFIED_LIKE_ROUTER_ID,
           channel: "stable",
         }),
-      ).rejects.toThrow(/server_unreachable.*force: true/);
+      ).rejects.toThrow(/server_unreachable.*--force/);
       expect(mock.counts().insertCalls).toBe(0);
     });
 
@@ -1435,6 +1435,13 @@ describe("destructive route gating", () => {
         force: true,
       });
       expect(mock.counts().insertCalls).toBe(1);
+      const [inserted] = mock.insertedValues() as Array<{
+        payload?: { command?: string };
+      }>;
+      // ...and past the guard's "rolled back from this version" refusal (75).
+      expect(inserted?.payload?.command).toContain(
+        'VECTRA_GUARD_FORCE=1 sh "$guard" prepare',
+      );
     });
 
     it("queues a healthy router", async () => {
@@ -1446,6 +1453,10 @@ describe("destructive route gating", () => {
         channel: "stable",
       });
       expect(mock.counts().insertCalls).toBe(1);
+      const [inserted] = mock.insertedValues() as Array<{
+        payload?: { command?: string };
+      }>;
+      expect(inserted?.payload?.command).not.toContain("VECTRA_GUARD_FORCE=1 sh");
     });
 
     it("bulk update skips and reports a shaky router instead of failing it", async () => {

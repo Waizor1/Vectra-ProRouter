@@ -72,16 +72,32 @@ export function evaluateControllerUpdateRolloutHealth(args: {
   return reasons.length === 0 ? { ok: true } : { ok: false, reasons };
 }
 
+const refusalPrefix =
+  "Обновление контроллера отклонено: связь роутера с панелью ненадёжна (";
+const refusalSuffix =
+  "). Если уверены, подтвердите «Всё равно обновить» на вкладке «Обновления» роутера или запустите VectraPanelCli.sh update controller <роутер> --force.";
+
 export class ControllerUpdateRolloutRefusal extends Error {
   readonly reasons: string[];
 
   constructor(reasons: string[]) {
-    super(
-      `Обновление контроллера отклонено: связь роутера с панелью ненадёжна (${reasons.join(
-        "; ",
-      )}). Повторите с force: true, если уверены.`,
-    );
+    super(`${refusalPrefix}${reasons.join("; ")}${refusalSuffix}`);
     this.name = "ControllerUpdateRolloutRefusal";
     this.reasons = reasons;
   }
+}
+
+// The reasons of a rollout refusal from an error that crossed tRPC (only its
+// message survives), or null when the error is something else.
+export function readControllerUpdateRolloutRefusal(error: unknown) {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : null;
+  if (!message?.startsWith(refusalPrefix) || !message.endsWith(refusalSuffix)) {
+    return null;
+  }
+  return message.slice(refusalPrefix.length, message.length - refusalSuffix.length);
 }

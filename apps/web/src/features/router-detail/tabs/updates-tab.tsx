@@ -39,6 +39,7 @@ import {
 } from "~/components/ui/select";
 import { Separator } from "~/components/ui/separator";
 import type { RouterDetailEditorSurface } from "~/features/router-detail";
+import { readControllerUpdateRolloutRefusal } from "~/lib/controller-update-rollout-guard";
 import { api } from "~/trpc/react";
 
 export interface UpdatesTabProps {
@@ -68,6 +69,11 @@ export function UpdatesTab({ routerId, initialSurface }: UpdatesTabProps) {
   const [controllerChannel, setControllerChannel] = useState<Channel>("stable");
   const [passwallChannel, setPasswallChannel] = useState<Channel>("stable");
   const [rebootOpen, setRebootOpen] = useState(false);
+  // Reasons the panel refused the controller update (shaky control plane);
+  // set = the "update anyway" confirmation is open.
+  const [controllerForceReasons, setControllerForceReasons] = useState<
+    string | null
+  >(null);
 
   const controllerMutation = api.update.queueControllerUpdate.useMutation();
   const passwallMutation = api.update.queuePasswallPackageUpdate.useMutation();
@@ -105,6 +111,27 @@ export function UpdatesTab({ routerId, initialSurface }: UpdatesTabProps) {
     }
   };
 
+  const queueControllerUpdate = async (force: boolean) => {
+    try {
+      await controllerMutation.mutateAsync({
+        routerId,
+        channel: controllerChannel,
+        force,
+      });
+      await refresh();
+      toast.success("Обновление контроллера поставлено в очередь");
+    } catch (error) {
+      const reasons = force ? null : readControllerUpdateRolloutRefusal(error);
+      if (reasons) {
+        setControllerForceReasons(reasons);
+        return;
+      }
+      toast.error("Не удалось обновить контроллер", {
+        description: errorMessage(error),
+      });
+    }
+  };
+
   const binaryEntries = Object.entries(inventory.binaryVersions ?? {}).filter(
     ([, value]) => Boolean(value),
   );
@@ -130,17 +157,7 @@ export function UpdatesTab({ routerId, initialSurface }: UpdatesTabProps) {
           />
           <Button
             size="sm"
-            onClick={() =>
-              run(
-                () =>
-                  controllerMutation.mutateAsync({
-                    routerId,
-                    channel: controllerChannel,
-                  }),
-                "Обновление контроллера поставлено в очередь",
-                "Не удалось обновить контроллер",
-              )
-            }
+            onClick={() => void queueControllerUpdate(false)}
             disabled={busy || !updatesAllowed}
           >
             <RefreshCw className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.75} />
@@ -279,6 +296,35 @@ export function UpdatesTab({ routerId, initialSurface }: UpdatesTabProps) {
           </Button>
         </CardContent>
       </Card>
+
+      <AlertDialog
+        open={controllerForceReasons !== null}
+        onOpenChange={(open) => {
+          if (!open) setControllerForceReasons(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Связь роутера с панелью ненадёжна</AlertDialogTitle>
+            <AlertDialogDescription>
+              Панель не ставит обновление контроллера: {controllerForceReasons}.
+              Если обновить всё равно, роутер сохранит копию текущей версии и
+              вернётся к ней сам, если новая не выйдет на связь.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setControllerForceReasons(null);
+                void queueControllerUpdate(true);
+              }}
+            >
+              Всё равно обновить
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={rebootOpen} onOpenChange={setRebootOpen}>
         <AlertDialogContent>

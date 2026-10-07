@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ControllerUpdateRolloutRefusal,
   evaluateControllerUpdateRolloutHealth,
+  readControllerUpdateRolloutRefusal,
 } from "~/lib/controller-update-rollout-guard";
 
 const now = new Date("2026-10-07T12:00:00.000Z");
@@ -60,9 +61,23 @@ describe("evaluateControllerUpdateRolloutHealth", () => {
     }
   });
 
-  it("explains every reason and the force escape hatch", () => {
+  it("explains every reason and names the real ways to force", () => {
     const refusal = new ControllerUpdateRolloutRefusal(["a", "b"]);
     expect(refusal.message).toContain("a; b");
-    expect(refusal.message).toContain("force: true");
+    expect(refusal.message).toContain("«Всё равно обновить»");
+    expect(refusal.message).toContain("update controller <роутер> --force");
+    expect(refusal.message).not.toContain("force: true");
+  });
+
+  it("reads the reasons back from an error that crossed tRPC", () => {
+    const refusal = new ControllerUpdateRolloutRefusal([
+      "роутер в режиме direct",
+      "открыт инцидент server_unreachable",
+    ]);
+    expect(readControllerUpdateRolloutRefusal(new Error(refusal.message))).toBe(
+      "роутер в режиме direct; открыт инцидент server_unreachable",
+    );
+    expect(readControllerUpdateRolloutRefusal(new Error("boom"))).toBeNull();
+    expect(readControllerUpdateRolloutRefusal(undefined)).toBeNull();
   });
 });
