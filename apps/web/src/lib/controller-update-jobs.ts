@@ -15,9 +15,12 @@ const controllerSelfUpdateTimeoutSeconds = 120;
 
 // Exit codes of the generated command besides 0/1: 72 = resource guard (RAM,
 // /overlay, /tmp), 73 = no room for a rollback copy (nothing was changed),
-// 74 = a previous update is still being verified by the guard.
+// 74 = a previous update is still being verified (or its rollback is being
+// retried) by the guard, 75 = this router rolled back from this very version
+// in the last 24 h (an operator-forced update passes).
 export const controllerSelfUpdateNoRollbackRoomExitCode = 73;
 export const controllerSelfUpdateGuardBusyExitCode = 74;
+export const controllerSelfUpdateRecentlyRolledBackExitCode = 75;
 export const controllerUpdateGuardPath =
   "/etc/vectra-controller/update-rollback/guard.sh";
 export const controllerUpdateRollbackMarkerPath =
@@ -143,6 +146,9 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     | typeof controllerSelfUpdateTerminalPurpose
     | typeof controllerSelfUpdateCompatTerminalPurpose;
   guardTimings?: ControllerUpdateGuardTimings;
+  // Operator forced the update: also past the guard's "rolled back from this
+  // version in the last 24 h" refusal.
+  force?: boolean;
 }) {
   const agentArtifact = findControllerPackageArtifact(
     args.packageArtifacts,
@@ -230,7 +236,7 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     guardHeredocDelimiter,
     'chmod 0755 "$guard.new" && mv "$guard.new" "$guard"',
     "guard_rc=0",
-    `${guardTimingPrefix(args.guardTimings)}sh "$guard" prepare "$target_version" || guard_rc=$?`,
+    `${args.force ? "VECTRA_GUARD_FORCE=1 " : ""}${guardTimingPrefix(args.guardTimings)}sh "$guard" prepare "$target_version" || guard_rc=$?`,
     'if [ "$guard_rc" -ne 0 ]; then [ -f "$guard_dir/meta" ] || rm -rf "$guard_dir"; exit "$guard_rc"; fi',
     ': > "$skip"',
     "installing=1",

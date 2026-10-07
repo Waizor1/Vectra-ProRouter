@@ -486,6 +486,7 @@ async function enqueueControllerUpdateJob(args: {
     ? buildTerminalControllerSelfUpdatePayload({
         artifactVersion: payload.artifactVersion,
         packageArtifacts,
+        force: args.force,
         purpose: shouldUseControllerSelfUpdateCompatBridge({
           installedControllerVersion,
           routerStatus: router.status,

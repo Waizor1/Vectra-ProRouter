@@ -87,6 +87,19 @@ describe("controller self-update command with the rollback guard", () => {
     expect(command.length).toBeLessThanOrEqual(32000);
   });
 
+  it("passes an operator force to prepare (past the 75 refusal) only when forced", () => {
+    const forced = buildTerminalControllerSelfUpdatePayload({
+      artifactVersion: "0.1.13-r47",
+      packageArtifacts: [
+        { name: "vectra-controller-agent", artifactUrl: "https://x/a.ipk", sha256: "a" },
+        { name: "luci-app-vectra-controller", artifactUrl: "https://x/l.ipk", sha256: "b" },
+      ],
+      force: true,
+    });
+    expect(forced?.command).toContain('\nVECTRA_GUARD_FORCE=1 sh "$guard" prepare');
+    expect(build()).not.toContain("VECTRA_GUARD_FORCE=1 sh");
+  });
+
   it("passes stand timings to prepare only when asked", () => {
     expect(build()).toContain('\nsh "$guard" prepare "$target_version"');
     expect(build({ stable: 20, contact: 90 })).toContain(
