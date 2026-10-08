@@ -28,7 +28,7 @@ import (
 //     nodes and their credentials), the rendered xray config, the choices
 //     made on the router (location, pins, probe interval, My sites), the
 //     applied revision and digest (so the next owner's config applies from
-//     scratch), the rescue state, and the owner.
+//     scratch), the rescue state, the brand, and the owner.
 //   - Last, a new claim code: the one the previous owner scanned is not the
 //     router's any more.
 //
@@ -39,6 +39,8 @@ import (
 func (d *daemon) release(ctx context.Context) {
 	// The tunnel's word was the previous owner's.
 	d.connectHeld = connectJudged{}
+	// The brand was the previous owner's.
+	forgetBrand(&d.st)
 	if err := connectForgetWifiOwner(d.cfg); err != nil {
 		logging.L().Warn("connect Wi-Fi eligibility unavailable")
 	}

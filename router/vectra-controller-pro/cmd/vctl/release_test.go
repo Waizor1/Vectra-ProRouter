@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"vectra-controller-pro/internal/brand"
 	"vectra-controller-pro/internal/claim"
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/controlplane"
@@ -236,6 +237,7 @@ func alive(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == nil }
 func TestAReleasedRouterIsAsItCameOutOfTheBox(t *testing.T) {
 	r := newReleaseRouter(t, true)
 	logs := captureLog(t)
+	r.d.learnBrand(brand.BloopCat, brand.SourceSubscription, "BloopCat_supbot")
 	st0 := r.d.st
 	xrayPID := r.d.sup.Status().PID
 
@@ -273,7 +275,8 @@ func TestAReleasedRouterIsAsItCameOutOfTheBox(t *testing.T) {
 	}
 	for name, s := range map[string]state.PersistedState{"memory": r.d.st, "state.json": onDisk} {
 		if s.AppliedRevisionID != "" || s.ConfigDigest != "" || s.SpliceKey != "" || s.LastDesiredRevision != nil ||
-			s.ClaimOwner != nil || s.Rescue != (state.RescueSnapshot{}) {
+			s.ClaimOwner != nil || s.Rescue != (state.RescueSnapshot{}) ||
+			s.Brand != "" || s.BrandSource != "" || s.BrandSupport != "" {
 			t.Errorf("%s still has the owner's state: %+v", name, s)
 		}
 		// ...and the router's own things stay.
