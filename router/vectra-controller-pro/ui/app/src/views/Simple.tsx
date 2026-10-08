@@ -21,7 +21,7 @@ import { PowerActs } from './PowerActs';
 import { Services } from './Services';
 import { SupportAccess } from './SupportAccess';
 import { autoLine, face, groupServers, nodePlace, routeVia } from '../lib/servers';
-import { CONFIG_SLOW_MS, needsSetup, owned, Setup, supportKey, useLate, WayIn, type Screen } from './Setup';
+import { CONFIG_SLOW_MS, needsSetup, owned, Setup, useLate, WayIn, type Screen } from './Setup';
 import { Tour, tourSeen } from './Tour';
 
 const ICON: Record<SimpleVerdict['tone'], IconName> = { ok: 'ok', info: 'info', warn: 'warn', fail: 'fail', mute: 'power' };
@@ -409,7 +409,7 @@ function HelpCard({ s, acts, manual, bot, restartShown }: { s: Status; acts: Act
           </Button>,
           bot ? (
             <a class="lnk" href={'https://t.me/' + encodeURIComponent(bot)} target="_blank" rel="noopener noreferrer">
-              {t(supportKey(s.brand.id))}
+              {t('s.help.support.open')}
               <Icon name="arrow" size={14} />
             </a>
           ) : null,
@@ -584,7 +584,7 @@ export function Simple() {
             <p class="sv-sup">
               <a class="btn bg" href={'https://t.me/' + encodeURIComponent(bot)} target="_blank" rel="noopener noreferrer">
                 <Icon name="arrow" size={16} />
-                {t(supportKey(s.brand.id))}
+                {t('s.help.support.open')}
               </a>
             </p>
           ) : null}

@@ -12,7 +12,11 @@
 // {name} placeholders must be identical across the three languages — the i18n
 // test enforces that, and that en/zh carry no Cyrillic. No sentence names the
 // service itself: {brand} is the router's brand (status.brand.name, or
-// `brand.none`), which the app puts into every sentence.
+// `brand.none`), which the app puts into every sentence (i18n `brandT`).
+// {fem}, Russian only: the ending that agrees with the brand — "а" for a
+// feminine name (Vectra), "" otherwise: «{brand} выключен{fem}». A router with
+// no brand reads `<key>.any` wherever the table has one: «VPN» never twice in
+// a sentence, and never a program, support or an app called «VPN».
 
 export const S = {
   // ── shell ──────────────────────────────────────────────────────────────
@@ -53,7 +57,7 @@ export const S = {
   'hero.warn': ['Работает, есть замечания', 'Works, with warnings', '运行中，有提示'],
   'hero.fail': ['Не работает', 'Not working', '无法工作'],
   'hero.setup': ['Подписки ещё нет', 'No subscription yet', '尚无订阅'],
-  'hero.off': ['{brand} выключена', '{brand} is off', '{brand} 已关闭'],
+  'hero.off': ['{brand} выключен{fem}', '{brand} is off', '{brand} 已关闭'],
   'hero.okSub': ['VPN работает {uptime}, трафик идёт через него.', 'The VPN has been up for {uptime}; traffic goes through it.', 'VPN 已运行 {uptime}，流量经由 VPN。'],
   'n.warnSub': [
     '{n} замечание — подробности ниже|{n} замечания — подробности ниже|{n} замечаний — подробности ниже',
@@ -151,6 +155,7 @@ export const S = {
   'dp.off': ['Не загружен', 'Not loaded', '未加载'],
   'dp.ks': ['Kill switch', 'Kill switch', '断网保护'],
   'pl.title': ['Связь с {brand}', 'Link to {brand}', '与 {brand} 的连接'],
+  'pl.title.any': ['Связь с сервисом', 'Link to the service', '与服务的连接'],
   'pl.never': ['ещё не было', 'never', '从未'],
   'r.ramFree': ['свободно {a} из {b}', '{a} free of {b}', '可用 {a} / {b}'],
   'r.free': ['свободно {a}', '{a} free', '可用 {a}'],
@@ -169,7 +174,7 @@ export const S = {
   'ov.tr.cut': ['Заблокирован, пока VPN не работает', 'Blocked while the VPN is down', 'VPN 中断期间被拦截'],
   'ov.tr.backup': ['Идёт через запасные узлы', 'Goes through backup nodes', '经由备用节点'],
   'ov.tr.none': ['Не проходит: нет рабочих узлов', 'Does not get through: no working node', '无法通过：没有可用节点'],
-  'ov.checksOff': ['Проверки идут, пока {brand} включена.', 'The checks run while {brand} is on.', '{brand} 开启时才会进行检查。'],
+  'ov.checksOff': ['Проверки идут, пока {brand} включен{fem}.', 'The checks run while {brand} is on.', '{brand} 开启时才会进行检查。'],
 
   // ── diagnostics (Pro; id → .t title, .ok / .bad sentences) ─────────────
   'd.title': ['Проверки', 'Checks', '检查'],
@@ -228,8 +233,11 @@ export const S = {
     '有其他代理冲突：PassWall {passwall}，旧代理 {agent}',
   ],
   'd.panel_link.ok': ['{brand} на связи, отчёт {ago}', '{brand} reachable, check-in {ago}', '{brand} 可达，签到于 {ago}'],
+  'd.panel_link.ok.any': ['Сервис на связи, отчёт {ago}', 'Service reachable, check-in {ago}', '服务可达，签到于 {ago}'],
   'd.panel_link.bad': ['Нет связи с {brand}, отчёт {ago}', '{brand} unreachable, check-in {ago}', '无法连接 {brand}，签到于 {ago}'],
+  'd.panel_link.bad.any': ['Нет связи с сервисом, отчёт {ago}', 'Service unreachable, check-in {ago}', '无法连接服务，签到于 {ago}'],
   'd.panel_link.never': ['Роутер ещё не связывался с {brand}', 'Never checked in with {brand}', '从未向 {brand} 签到'],
+  'd.panel_link.never.any': ['Роутер ещё не связывался с сервисом', 'Never checked in with the service', '从未向服务签到'],
   'd.subscription_ua.t': ['User-Agent подписки', 'Subscription User-Agent', '订阅 User-Agent'],
   'd.subscription_ua.ok': ['User-Agent подписки безопасен', 'The subscription User-Agent is safe', '订阅 User-Agent 安全'],
   'd.subscription_ua.bad': ['User-Agent подписки небезопасен: {reason}', 'The subscription User-Agent is unsafe: {reason}', '订阅 User-Agent 不安全：{reason}'],
@@ -446,8 +454,8 @@ export const S = {
     'The router is still applying the change. If nothing changes within a minute, try again.',
     '路由器仍在应用更改。如果一分钟内没有变化，请重试。',
   ],
-  'a.power_on': ['{brand} включена', '{brand} turned on', '{brand} 已开启'],
-  'a.power_off': ['{brand} выключена', '{brand} turned off', '{brand} 已关闭'],
+  'a.power_on': ['{brand} включен{fem}', '{brand} turned on', '{brand} 已开启'],
+  'a.power_off': ['{brand} выключен{fem}', '{brand} turned off', '{brand} 已关闭'],
   'a.would_idle': [
     '{brand} пока не повезёт трафик: роутер ещё не привязан. Подтвердите включение ещё раз.',
     '{brand} would carry no traffic yet: the router is not linked. Confirm turning it on again.',
@@ -516,13 +524,14 @@ export const S = {
     'The internet is off until the VPN is back, so nothing bypasses the VPN.',
     '在 VPN 恢复之前网络已断开，以免任何流量绕过 VPN。',
   ],
-  's.down.auto': ['{brand} сама пробует перезапустить VPN.', '{brand} is trying to restart the VPN by itself.', '{brand} 正在尝试自动重启 VPN。'],
+  's.down.auto': ['{brand} сам{fem} пробует перезапустить VPN.', '{brand} is trying to restart the VPN by itself.', '{brand} 正在尝试自动重启 VPN。'],
+  's.down.auto.any': ['Роутер сам пробует перезапустить VPN.', 'The router is trying to restart the VPN by itself.', '路由器正在尝试自动重启 VPN。'],
   's.reboot': [
     'Перезагрузите роутер. Если не поможет — напишите в поддержку.',
     'Restart the router. If that does not help, contact support.',
     '请重启路由器。如果仍不行，请联系客服。',
   ],
-  's.off.t': ['{brand} не запущена', '{brand} is not running', '{brand} 未运行'],
+  's.off.t': ['{brand} не запущен{fem}', '{brand} is not running', '{brand} 未运行'],
   's.conflict.t': ['Мешает другая программа', 'Another program interferes', '其他程序造成冲突'],
   's.conflict.d': [
     'Вместе с {brand} на роутере работает PassWall. Напишите в поддержку.',
@@ -534,6 +543,11 @@ export const S = {
     'Подключите его к своему аккаунту в приложении {brand} — это займёт минуту.',
     'Connect it to your account in the {brand} app; it takes a minute.',
     '请在 {brand} 应用中将其连接到您的账户，只需一分钟。',
+  ],
+  's.link.d.any': [
+    'Подключите его к своему аккаунту в боте своего VPN‑сервиса — это займёт минуту.',
+    'Connect it to your account in your VPN service’s bot; it takes a minute.',
+    '请在您的 VPN 服务机器人中将其连接到您的账户，只需一分钟。',
   ],
   's.act.link': ['Подключить к {brand}', 'Connect to {brand}', '连接 {brand}'],
   's.claimed.t': ['Получаем настройки VPN', 'Getting the VPN settings', '正在获取 VPN 设置'],
@@ -554,11 +568,21 @@ export const S = {
     '{brand} is waiting for its VPN settings. If the router has been on for a while and this message stays, contact support.',
     '{brand} 正在等待 VPN 设置。如果路由器已开机很久而此提示仍未消失，请联系客服。',
   ],
+  's.setup.d.any': [
+    'Роутер ждёт настройки VPN. Если он включён давно, а это сообщение не пропадает, напишите в поддержку.',
+    'The router is waiting for its VPN settings. If it has been on for a while and this message stays, contact support.',
+    '路由器正在等待 VPN 设置。如果它已开机很久而此提示仍未消失，请联系客服。',
+  ],
   's.nl.not_found.t': ['{brand} не отвечает', '{brand} does not respond', '{brand} 无响应'],
   's.nl.not_found.d': [
     'Программа {brand} на роутере не установлена или не запущена.',
     'The {brand} program on the router is not installed or not running.',
     '路由器上的 {brand} 程序未安装或未运行。',
+  ],
+  's.nl.not_found.d.any': [
+    'Программа, которая ведёт VPN на роутере, не установлена или не запущена.',
+    'The program that runs the VPN on the router is not installed or not running.',
+    '路由器上运行 VPN 的程序未安装或未运行。',
   ],
   's.nl.access.t': ['Нужно войти заново', 'Sign in again', '需要重新登录'],
   's.nl.access.d': [
@@ -567,6 +591,7 @@ export const S = {
     '路由器设置的会话已结束。请刷新页面并重新登录。',
   ],
   's.nl.method.t': ['Нужно обновить {brand}', '{brand} needs an update', '需要更新 {brand}'],
+  's.nl.method.t.any': ['Нужно обновить программу на роутере', 'The router’s program needs an update', '需要更新路由器上的程序'],
   's.nl.method.d': [
     'Эта страница новее программы на роутере. Напишите в поддержку.',
     'This page is newer than the program on the router. Contact support.',
@@ -587,9 +612,10 @@ export const S = {
   's.act.location': ['Выбрать другой сервер', 'Choose another server', '选择其他服务器'],
 
   // ── simple view: the service on and off ────────────────────────────────
-  's.pw.off.t': ['{brand} выключена', '{brand} is off', '{brand} 已关闭'],
+  's.pw.off.t': ['{brand} выключен{fem}', '{brand} is off', '{brand} 已关闭'],
   's.pw.via.passwall2': ['Интернет идёт через PassWall2.', 'The internet goes through PassWall2.', '网络经由 PassWall2。'],
   's.pw.via.agent': ['Роутером управляет прежняя версия {brand}.', 'The previous version of {brand} runs the router.', '路由器由旧版 {brand} 管理。'],
+  's.pw.via.agent.any': ['Роутером управляет прежняя версия программы.', 'The previous version of the program runs the router.', '路由器由旧版程序管理。'],
   's.pw.via.direct': [
     'Интернет идёт напрямую, без VPN: заблокированные сайты не откроются.',
     'The internet goes directly, without a VPN, so blocked sites will not open.',
@@ -603,6 +629,11 @@ export const S = {
     'Роутер ещё не привязан к аккаунту {brand}: до привязки интернет пойдёт напрямую, без VPN, — заблокированные сайты не откроются.',
     'The router is not linked to a {brand} account yet: until it is, the internet goes out directly, without a VPN — blocked sites will not open.',
     '路由器尚未绑定 {brand} 账户：绑定之前，网络将直连、不经 VPN，被封锁的网站无法打开。',
+  ],
+  's.pw.onBody.idle.any': [
+    'Роутер ещё не привязан к аккаунту: до привязки интернет пойдёт напрямую, без VPN, — заблокированные сайты не откроются.',
+    'The router is not linked to an account yet: until it is, the internet goes out directly, without a VPN — blocked sites will not open.',
+    '路由器尚未绑定账户：绑定之前，网络将直连、不经 VPN，被封锁的网站无法打开。',
   ],
   's.pw.idle': [
     '{brand} пока не повезёт трафик: роутер ещё не привязан. Нажмите «Включить» ещё раз, чтобы включить всё равно.',
@@ -619,6 +650,11 @@ export const S = {
     'The previous version of {brand} stops and the router moves to the new one. The internet drops for a few seconds.',
     '旧版 {brand} 将停止，路由器改用新版。网络会中断几秒钟。',
   ],
+  's.pw.onBody.agent.any': [
+    'Прежняя версия программы остановится, и роутер перейдёт на новую. Интернет пропадёт на несколько секунд.',
+    'The previous version of the program stops and the router moves to the new one. The internet drops for a few seconds.',
+    '旧版程序将停止，路由器改用新版。网络会中断几秒钟。',
+  ],
   's.pw.offBtn': ['Выключить {brand}', 'Turn off {brand}', '关闭 {brand}'],
   's.pw.offQ': ['Выключить {brand}?', 'Turn off {brand}?', '关闭 {brand}？'],
   's.pw.off': ['Выключить', 'Turn off', '关闭'],
@@ -627,15 +663,30 @@ export const S = {
     'The internet will go directly, without a VPN, and blocked sites will stop opening. You can turn {brand} back on right here.',
     '网络将直接连接，不经过 VPN，被封锁的网站将无法打开。可以随时在这里重新开启 {brand}。',
   ],
+  's.pw.offBody.any': [
+    'Интернет пойдёт напрямую, без VPN: заблокированные сайты перестанут открываться. Включить обратно можно здесь же.',
+    'The internet will go directly, without a VPN, and blocked sites will stop opening. You can turn it back on right here.',
+    '网络将直接连接，不经过 VPN，被封锁的网站将无法打开。可以随时在这里重新开启。',
+  ],
   's.pw.offBody.passwall2': [
     'Интернет снова пойдёт через PassWall2, как до {brand}. На несколько секунд он пропадёт.',
     'The internet goes through PassWall2 again, as before {brand}. It drops for a few seconds.',
     '网络将重新经由 PassWall2，与使用 {brand} 之前一样，会中断几秒钟。',
   ],
+  's.pw.offBody.passwall2.any': [
+    'Интернет снова пойдёт через PassWall2, как раньше. На несколько секунд он пропадёт.',
+    'The internet goes through PassWall2 again, as it did before. It drops for a few seconds.',
+    '网络将重新经由 PassWall2，与之前一样，会中断几秒钟。',
+  ],
   's.pw.offBody.agent': [
     'Роутер вернётся к прежней версии {brand}. Интернет пропадёт на несколько секунд.',
     'The router goes back to the previous version of {brand}. The internet drops for a few seconds.',
     '路由器将回到旧版 {brand}，网络会中断几秒钟。',
+  ],
+  's.pw.offBody.agent.any': [
+    'Роутер вернётся к прежней версии программы. Интернет пропадёт на несколько секунд.',
+    'The router goes back to the previous version of the program. The internet drops for a few seconds.',
+    '路由器将回到旧版程序，网络会中断几秒钟。',
   ],
   's.pw.starting.t': ['Включаем {brand}…', 'Turning on {brand}…', '正在开启 {brand}…'],
   's.pw.stopping.t': ['Выключаем {brand}…', 'Turning off {brand}…', '正在关闭 {brand}…'],
@@ -662,7 +713,7 @@ export const S = {
   's.unpinAll': ['Вернуть автовыбор', 'Restore auto choice', '恢复自动选择'],
   's.unpinQ': ['Вернуть автоматический выбор серверов?', 'Restore the automatic choice of servers?', '恢复自动选择服务器？'],
   's.unpinBody': [
-    '{brand} снова будет сама выбирать лучший сервер. Связь не прервётся.',
+    '{brand} снова будет сам{fem} выбирать лучший сервер. Связь не прервётся.',
     '{brand} will pick the best server by itself again. The connection stays up.',
     '{brand} 将重新自动选择最佳服务器，连接不会中断。',
   ],
@@ -711,13 +762,13 @@ export const S = {
   's.a.entry_reset': ['Включён сервер по умолчанию', 'The default server is on', '已启用默认服务器'],
   's.a.balancer_unpinned': ['Автоматический выбор серверов включён', 'Automatic choice of servers is on', '已恢复自动选择服务器'],
   's.a.pending': ['Применяем…', 'Applying…', '正在应用…'],
-  's.a.controller_down': ['{brand} на роутере не запущена', '{brand} is not running on the router', '路由器上的 {brand} 未运行'],
+  's.a.controller_down': ['{brand} на роутере не запущен{fem}', '{brand} is not running on the router', '路由器上的 {brand} 未运行'],
   's.a.busy': ['Роутер занят — попробуйте через минуту', 'The router is busy; try again in a minute', '路由器正忙，请一分钟后再试'],
   's.a.unknown_entry': ['Этого сервера больше нет — откройте список заново', 'This server is gone; open the list again', '此服务器已不存在，请重新打开列表'],
   's.a.no_entries_cache': ['Список серверов ещё не получен', 'The list of servers has not arrived yet', '尚未获取服务器列表'],
   's.a.fail': ['Не получилось. Попробуйте ещё раз или напишите в поддержку.', 'That did not work. Try again or contact support.', '操作未成功。请重试或联系客服。'],
-  's.a.power_on': ['{brand} включена', '{brand} is on', '{brand} 已开启'],
-  's.a.power_off': ['{brand} выключена', '{brand} is off', '{brand} 已关闭'],
+  's.a.power_on': ['{brand} включен{fem}', '{brand} is on', '{brand} 已开启'],
+  's.a.power_off': ['{brand} выключен{fem}', '{brand} is off', '{brand} 已关闭'],
 
   // ── setup wizard ───────────────────────────────────────────────────────
   'w.welcome.t': ['Настроим роутер', 'Let’s set up your router', '开始设置路由器'],
@@ -797,6 +848,11 @@ export const S = {
     'Интернет есть, но сервер {brand} пока недоступен. Можно продолжить — роутер подключится, когда связь появится.',
     'The internet works but the {brand} server is unreachable for now. You can go on; the router connects once it is reachable.',
     '网络正常，但暂时无法访问 {brand} 服务器。可以继续，连接恢复后路由器会自动连接。',
+  ],
+  'w.net.noPanel.any': [
+    'Интернет есть, но сервер управления пока недоступен. Можно продолжить — роутер подключится, когда связь появится.',
+    'The internet works but the management server is unreachable for now. You can go on; the router connects once it is reachable.',
+    '网络正常，但暂时无法访问管理服务器。可以继续，连接恢复后路由器会自动连接。',
   ],
   'w.wifi.t': ['Сеть Wi-Fi', 'Wi-Fi network', 'Wi-Fi 网络'],
   'w.wifi.boost.t': ['Прокачаем Wi-Fi', 'Let’s boost the Wi-Fi', '优化 Wi-Fi'],
@@ -991,7 +1047,6 @@ export const S = {
   'w.v.t.any': ['Подключите свой VPN‑сервис', 'Connect your VPN service', '连接您的 VPN 服务'],
   'w.v.ok.any': ['Роутер подключён к VPN‑сервису', 'The router is connected to its VPN service', '路由器已连接 VPN 服务'],
   'w.v.s1.any': ['Откройте бота своего VPN‑сервиса в Telegram.', 'Open your VPN service\'s bot in Telegram.', '在 Telegram 中打开您的 VPN 服务机器人。'],
-  'w.v.s3.any': ['Введите этот код.', 'Enter this code.', '输入此代码。'],
   'w.v.owner': ['Аккаунт: {owner}', 'Account: {owner}', '账户：{owner}'],
   'w.v.s1': ['Откройте приложение {brand} в Telegram.', 'Open the {brand} app in Telegram.', '在 Telegram 中打开 {brand} 应用。'],
   'w.v.s2': ['Выберите «Подключить роутер».', 'Choose “Connect a router”.', '选择“连接路由器”。'],
@@ -999,6 +1054,7 @@ export const S = {
   'w.v.code': ['Или введите код:', 'Or enter the code:', '或输入代码：'],
   'w.v.codeOnly': ['Код для приложения:', 'Your code for the app:', '在应用中输入此代码：'],
   'w.v.qr': ['QR-код для приложения {brand}', 'QR code for the {brand} app', '{brand} 应用二维码'],
+  'w.v.qr.any': ['QR-код для подключения роутера', 'QR code to connect the router', '连接路由器的二维码'],
   'w.v.other': ['С другого устройства', 'From another device', '使用其他设备'],
   'w.v.copy': ['Скопировать код', 'Copy code', '复制代码'],
   'w.v.copied': ['Код скопирован', 'Code copied', '代码已复制'],
@@ -1015,6 +1071,7 @@ export const S = {
     'A code to scan is not available yet; enter the code in the app.',
     '暂无可扫描的二维码，请在应用中输入代码。',
   ],
+  'w.v.noQr.any': ['Введите этот код.', 'Enter this code.', '输入此代码。'],
   'w.v.offline': [
     'Роутер пока без интернета — подключение к {brand} заработает, как только интернет появится.',
     'The router has no internet yet; connecting to {brand} works as soon as it is online.',
@@ -1024,6 +1081,11 @@ export const S = {
     'Сервер {brand} пока недоступен — код сработает, как только связь появится.',
     'The {brand} server is unreachable for now; the code works as soon as it is reachable.',
     '暂时无法访问 {brand} 服务器，连接恢复后代码即可使用。',
+  ],
+  'w.v.noPanel.any': [
+    'Сервер управления пока недоступен — код сработает, как только связь появится.',
+    'The management server is unreachable for now; the code works as soon as it is reachable.',
+    '暂时无法访问管理服务器，连接恢复后代码即可使用。',
   ],
   'w.v.claimed': ['Аккаунт подтверждён', 'Account confirmed', '账户已确认'],
   'w.v.config': [
@@ -1139,11 +1201,21 @@ export const S = {
     '{brand} support can run commands on the router to sort out a problem. Turn it on when support asks you to.',
     '{brand} 支持人员可以在路由器上执行命令来排查故障。请在支持人员要求时开启。',
   ],
+  'sa.d.any': [
+    'Поддержка сможет выполнять команды на роутере, чтобы разобраться с неполадкой. Включайте, когда об этом попросит поддержка.',
+    'Support can run commands on the router to sort out a problem. Turn it on when support asks you to.',
+    '支持人员可以在路由器上执行命令来排查故障。请在支持人员要求时开启。',
+  ],
   'sa.onQ': ['Открыть доступ поддержке?', 'Give support access?', '向支持人员开放访问？'],
   'sa.onQ.d': [
     'Поддержка {brand} сможет выполнять на роутере любые команды. Закрыть доступ можно здесь же в любой момент.',
     '{brand} support will be able to run any command on the router. You can close the access here at any time.',
     '{brand} 支持人员将能在路由器上执行任何命令。您可以随时在这里关闭访问。',
+  ],
+  'sa.onQ.d.any': [
+    'Поддержка сможет выполнять на роутере любые команды. Закрыть доступ можно здесь же в любой момент.',
+    'Support will be able to run any command on the router. You can close the access here at any time.',
+    '支持人员将能在路由器上执行任何命令。您可以随时在这里关闭访问。',
   ],
   'sa.onBtn': ['Открыть доступ', 'Give access', '开放访问'],
   'sa.on.done': ['Доступ поддержки открыт', 'Support access is on', '已向支持人员开放访问'],
@@ -1312,8 +1384,7 @@ export const S = {
   'a.wifi_optimized': ['Wi-Fi настроен на полную мощность', 'Wi-Fi set to full power', 'Wi-Fi 已设为全功率'],
   'a.setup_finished': ['Настройка завершена', 'Setup finished', '设置已完成'],
   's.help.support.open': ['Написать в {brand}', 'Message {brand}', '联系 {brand}'],
-  // A router without a brand: its support bot, named by no service.
-  's.help.support.any': ['Открыть чат поддержки', 'Open the support chat', '打开客服聊天'],
+  's.help.support.open.any': ['Открыть чат поддержки', 'Open the support chat', '打开客服聊天'],
 
   // ── port forwarding (Pro) ──────────────────────────────────────────────
   'pf.region': ['Проброс портов', 'Port forwarding', '端口转发'],
@@ -1323,6 +1394,7 @@ export const S = {
   'pf.directOff': ['Режим «мимо VPN» сейчас не действует — устройства идут через VPN.', '“Around VPN” is not in effect now: devices go through the VPN.', '“绕过 VPN”当前未生效，设备经由 VPN。'],
   'pf.full': ['Больше правил добавить нельзя.', 'No more rules can be added.', '无法再添加更多规则。'],
   'pf.old': ['Для этого нужно обновить {brand} на роутере.', '{brand} on the router needs an update for this.', '需要更新路由器上的 {brand} 才能使用此功能。'],
+  'pf.old.any': ['Для этого нужно обновить программу на роутере.', 'The router’s program needs an update for this.', '需要更新路由器上的程序才能使用此功能。'],
   'pf.port.n': ['Порт {port}', 'Port {port}', '端口 {port}'],
   'pf.direct': ['мимо VPN', 'around VPN', '绕过 VPN'],
   'pf.rule': ['Правило {name}', 'Rule {name}', '规则 {name}'],

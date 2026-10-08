@@ -3,7 +3,7 @@ import { describeError, type ErrInfo } from '../api/errors';
 import { normAction } from '../api/normalize';
 import { createStore } from '../api/store';
 import type { ActionMethod, CallFn, ReadMethod, SetPasswordFn } from '../api/types';
-import { LANG_LABEL, LANGS, makeT, pickLang, withParams, type Key, type Lang } from '../i18n';
+import { brandT, LANG_LABEL, LANGS, makeT, pickLang, type Key, type Lang } from '../i18n';
 import { makeFmt } from '../lib/format';
 import { hasSubscription, health, type Level } from '../lib/health';
 import { actionText } from '../lib/labels';
@@ -237,12 +237,11 @@ export function App({ call, setPassword = null, lang: hostLang, root }: { call: 
   // mount() renders once: the transport, and so the store, never change.
   const [store] = useState(() => createStore(call));
   const [lang, setLangState] = useState<Lang>(() => pickLang(load('lang'), hostLang, navigator.language));
-  // Whose router this is (status.brand): every sentence says its name, or "VPN" with none.
+  // Whose router this is (status.brand): every sentence says its name and agrees
+  // with it; a router with none says "VPN" and the sentences written for that.
+  const [brandId, setBrandId] = useState<string | null>(null);
   const [brandName, setBrandName] = useState<string | null>(null);
-  const t = useMemo(() => {
-    const base = makeT(lang);
-    return withParams(base, { brand: brandName ?? base('brand.none') });
-  }, [lang, brandName]);
+  const t = useMemo(() => brandT(makeT(lang), { id: brandId, name: brandName }), [lang, brandId, brandName]);
   const f = useMemo(() => makeFmt(t), [t]);
   const [tab, setTab] = useState<TabId>(() => loadOneOf('tab', TABS, 'overview'));
   const [modePref, setModePref] = useState<Mode>(() => loadOneOf('mode', MODES, 'simple'));
@@ -272,6 +271,7 @@ export function App({ call, setPassword = null, lang: hostLang, root }: { call: 
       store.on('status', () => {
         const s = store.get('status').data;
         setLocked(s?.ui.locked === true);
+        setBrandId(s?.brand.id ?? null);
         setBrandName(s?.brand.name ?? null);
       }),
     [store],

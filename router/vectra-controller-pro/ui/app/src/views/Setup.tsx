@@ -238,26 +238,20 @@ export function WayIn({ ip, links }: { ip: string | null | undefined; links?: bo
 }
 
 /**
- * The words on a link to support: "Message <brand>"; on a router with no
- * brand, words that name no service.
- */
-export const supportKey = (brandId: string | null | undefined): Key => (brandId ? 's.help.support.open' : 's.help.support.any');
-
-/**
  * The way to support: the brand's support bot (status.brand.support — the
  * subscription's, else the brand's own). Never the bot a claim code goes to,
  * and nothing where the router names none.
  */
 function Support() {
   const { t } = useApp();
-  const b = useRes('status').data?.brand;
-  const bot = b?.support;
+  const bot = useRes('status').data?.brand.support;
   if (!bot) return null;
   return (
     <p>
       <a class="btn bg" href={'https://t.me/' + encodeURIComponent(bot)} target="_blank" rel="noopener noreferrer">
         <Icon name="arrow" size={16} />
-        {t(supportKey(b.id))}
+        {/* "Message <brand>"; with no brand, words that name no service (`.any`). */}
+        {t('s.help.support.open')}
       </a>
     </p>
   );
@@ -1011,12 +1005,10 @@ function Vectra({ s, st, wan, next }: { s: SetupData; st: Status | null; wan: Wa
   // Confirmed in the app, or linked with the subscription still on its way.
   const waiting = !done && (s.vectra.linked === true || c?.state === 'claimed');
   const late = useLate(waiting, CONFIG_SLOW_MS);
-  // A router with no brand: the owner's own VPN service takes the code; no name is ours to say.
-  const neutral = !st?.brand.id;
 
   if (done) {
     return (
-      <Frame icon="ok" tone="ok" title={t(neutral ? 'w.v.ok.any' : 'w.v.ok')} foot={<Button kind="p" icon="arrow" onClick={next}>{t('w.next')}</Button>} onward>
+      <Frame icon="ok" tone="ok" title={t('w.v.ok')} foot={<Button kind="p" icon="arrow" onClick={next}>{t('w.next')}</Button>} onward>
         {owner ? <p>{t('w.v.owner', { owner })}</p> : null}
       </Frame>
     );
@@ -1039,7 +1031,7 @@ function Vectra({ s, st, wan, next }: { s: SetupData; st: Status | null; wan: Wa
   }
   if (!c || !c.code) {
     return (
-      <Frame icon="warn" tone="warn" title={t(neutral ? 'w.v.t.any' : 'w.v.t')} foot={<Button kind="p" icon="arrow" onClick={next}>{t('w.next')}</Button>} onward>
+      <Frame icon="warn" tone="warn" title={t('w.v.t')} foot={<Button kind="p" icon="arrow" onClick={next}>{t('w.next')}</Button>} onward>
         <p>{wan && !online(wan) ? t('w.v.offline') : t('w.v.unavailable')}</p>
         <Support />
       </Frame>
@@ -1054,8 +1046,9 @@ function Vectra({ s, st, wan, next }: { s: SetupData; st: Status | null; wan: Wa
     const ok = await copyText(c.code!, root);
     toast(ok ? 'ok' : 'fail', t(ok ? 'w.v.copied' : 'j.copyFail'));
   };
+  // A router with no brand says the `.any` sentences (i18n brandT): the owner's own VPN service takes the code.
   return (
-    <Frame icon="shield" title={t(neutral ? 'w.v.t.any' : 'w.v.t')} foot={null}>
+    <Frame icon="shield" title={t('w.v.t')} foot={null}>
       {/* A computer: the QR to scan with the phone, beside how. A phone: this page
           is on the phone already — Telegram first, the code, the QR last. */}
       <div class={'wz-link' + (c.qr ? '' : ' no-qr')}>
@@ -1066,10 +1059,10 @@ function Vectra({ s, st, wan, next }: { s: SetupData; st: Status | null; wan: Wa
         ) : null}
         {c.qr ? <p class="k wz-link-other">{t('w.v.other')}</p> : null}
         <ol class="wz-howto wz-link-how">
-          <li>{t(neutral ? 'w.v.s1.any' : 'w.v.s1')}</li>
+          <li>{t('w.v.s1')}</li>
           <li>{t('w.v.s2')}</li>
-          {/* A neutral router never has a code to scan: no "not yet" about it. */}
-          <li>{t(c.qr ? 'w.v.s3' : neutral ? 'w.v.s3.any' : 'w.v.noQr')}</li>
+          {/* No QR: "not yet" on a branded router; never one on a router with no brand (`w.v.noQr.any`). */}
+          <li>{c.qr ? t('w.v.s3') : t('w.v.noQr')}</li>
         </ol>
         <div class="wz-link-code">
           <p class="hint">{t(c.qr ? 'w.v.code' : 'w.v.codeOnly')}</p>

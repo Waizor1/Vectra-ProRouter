@@ -115,3 +115,31 @@ export function withParams(t: T, defaults: Params): T {
   wrapped.lang = t.lang;
   return wrapped;
 }
+
+/** t that says `<key><suffix>` wherever the table has that sentence, and `<key>` elsewhere. */
+export function withVariant(t: T, suffix: string): T {
+  const pick = (key: Key): Key => (t.has(key + suffix) ? ((key + suffix) as Key) : key);
+  const wrapped = ((key: Key, p?: Params) => t(pick(key), p)) as T;
+  wrapped.n = (key, count, p) => t.n(pick(key), count, p);
+  wrapped.has = t.has;
+  wrapped.lang = t.lang;
+  return wrapped;
+}
+
+/** Brands whose name is feminine in Russian: «Vectra выключена». */
+const FEMININE: readonly string[] = ['vectra'];
+
+/**
+ * t for whose router this is (status.brand): its name in every sentence
+ * ({brand}; `brand.none` without one), the Russian ending that agrees with it
+ * ({fem}: «Vectra выключена», «BloopCat выключен», «VPN выключен»), and on a
+ * router with no brand the sentences written for that (`<key>.any`) wherever
+ * the table has them. The app's one t: no caller can forget either parameter.
+ */
+export function brandT(t: T, brand: { id: string | null; name: string | null } | null | undefined): T {
+  const id = brand?.id ?? null;
+  return withParams(id ? t : withVariant(t, '.any'), {
+    brand: brand?.name ?? t('brand.none'),
+    fem: id !== null && FEMININE.indexOf(id) >= 0 ? '\u0430' : '', // Cyrillic «а»
+  });
+}

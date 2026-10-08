@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { glue, interpolate, LANGS, makeT, normLang, pickLang, pluralIndex, withParams } from '../src/i18n';
+import { brandT, glue, interpolate, LANGS, makeT, normLang, pickLang, pluralIndex, withParams, type Key } from '../src/i18n';
 import { S } from '../src/i18n/strings';
 
 const CYRILLIC = /[Ѐ-ӿ]/;
 const placeholders = (s: string) => (s.match(/\{\w+\}/g) || []).sort().join(',');
+/**
+ * `{fem}` is a Russian-only grammar parameter: the ending that agrees with the
+ * brand («Vectra выключена», «BloopCat выключен»). en and zh need none, so it
+ * is left out of the cross-language comparison — and must never appear there.
+ */
+const GRAMMAR_RU = '{fem}';
+const shared = (s: string) => placeholders(s.split(GRAMMAR_RU).join(''));
 const PLURAL_FORMS = [3, 2, 1]; // ru one|few|many, en one|other, zh other
 
 describe('string table', () => {
@@ -16,11 +23,16 @@ describe('string table', () => {
     }
   });
 
-  it('uses identical placeholders in every language and plural form', () => {
+  it('uses identical placeholders in every language and plural form, but for Russian grammar ({fem})', () => {
     for (const [key, row] of entries) {
-      const want = placeholders(row[0].split('|')[0]);
-      for (const s of row) for (const form of s.split('|')) expect(placeholders(form), key).toBe(want);
+      const want = shared(row[0].split('|')[0]);
+      for (const s of row) for (const form of s.split('|')) expect(shared(form), key).toBe(want);
+      expect(row[1] + row[2], key).not.toContain(GRAMMAR_RU);
     }
+  });
+
+  it('writes a no-brand variant (`<key>.any`) only beside the sentence it replaces', () => {
+    for (const [key] of entries) if (key.endsWith('.any')) expect(Object.keys(S), key).toContain(key.slice(0, -'.any'.length));
   });
 
   it('writes plural entries with the right number of forms, and only plural entries with "|"', () => {
@@ -43,7 +55,73 @@ describe('string table', () => {
   });
 });
 
+const VECTRA = { id: 'vectra', name: 'Vectra' };
+const BLOOPCAT = { id: 'bloopcat', name: 'BloopCat' };
+const NONE = { id: null, name: null };
+
 describe('the brand in every sentence', () => {
+  // Every Russian sentence where the brand is the subject: the ending agrees
+  // with it — Vectra is feminine, BloopCat and the neutral «VPN» masculine.
+  const AGREEMENT: [Key, string, string, string][] = [
+    ['hero.off', 'Vectra выключена', 'BloopCat выключен', 'VPN выключен'],
+    ['ov.checksOff', 'Проверки идут, пока Vectra включена.', 'Проверки идут, пока BloopCat включен.', 'Проверки идут, пока VPN включен.'],
+    ['a.power_on', 'Vectra включена', 'BloopCat включен', 'VPN включен'],
+    ['a.power_off', 'Vectra выключена', 'BloopCat выключен', 'VPN выключен'],
+    ['s.down.auto', 'Vectra сама пробует перезапустить VPN.', 'BloopCat сам пробует перезапустить VPN.', 'Роутер сам пробует перезапустить VPN.'],
+    ['s.off.t', 'Vectra не запущена', 'BloopCat не запущен', 'VPN не запущен'],
+    ['s.pw.off.t', 'Vectra выключена', 'BloopCat выключен', 'VPN выключен'],
+    [
+      's.unpinBody',
+      'Vectra снова будет сама выбирать лучший сервер. Связь не прервётся.',
+      'BloopCat снова будет сам выбирать лучший сервер. Связь не прервётся.',
+      'VPN снова будет сам выбирать лучший сервер. Связь не прервётся.',
+    ],
+    ['s.a.controller_down', 'Vectra на роутере не запущена', 'BloopCat на роутере не запущен', 'VPN на роутере не запущен'],
+    ['s.a.power_on', 'Vectra включена', 'BloopCat включен', 'VPN включен'],
+    ['s.a.power_off', 'Vectra выключена', 'BloopCat выключен', 'VPN выключен'],
+  ];
+  it.each(AGREEMENT)('agrees in Russian with the brand: %s', (key, vectra, bloopcat, none) => {
+    expect(brandT(makeT('ru'), VECTRA)(key)).toBe(vectra);
+    expect(brandT(makeT('ru'), BLOOPCAT)(key)).toBe(bloopcat);
+    expect(brandT(makeT('ru'), NONE)(key)).toBe(none);
+  });
+
+  it('leaves no Russian sentence with the brand as its subject in the feminine', () => {
+    for (const [key, row] of Object.entries(S)) {
+      const ru = row[0];
+      // The brand as a subject (first in its sentence, or after «пока»), then within four words a feminine ending.
+      if (ru.includes('{brand}')) {
+        expect(brandT(makeT('ru'), BLOOPCAT)(key as Key), key).not.toMatch(/(^|[.:—] |пока )BloopCat (\S+ ){0,3}(\S+(на|ла)|сама|одна|готова)(?!\p{L})/u);
+      }
+    }
+  });
+
+  // A router with no brand is «VPN» in a sentence: never twice in one, and never
+  // a name of a thing that is not ours to name — its program, its support, its app.
+  const NEUTRAL_BAD: Record<'ru' | 'en', RegExp[]> = {
+    ru: [/VPN[^]*VPN/, /(Программа|Поддержка|верси[яи]|приложени[еия]|аккаунт[ау]?|[Сс]ервер|обновить) VPN/, /(Связь|связи|связывался) с VPN/, /VPN на связи/],
+    en: [/VPN[^]*VPN/, /VPN (program|support|app|account|server)\b/, /version of VPN/, /(Link to|checked in with) VPN|VPN (un)?reachable/, /VPN (on the router )?needs an update/],
+  };
+  for (const lang of ['ru', 'en'] as const) {
+    it(`never says VPN twice, nor names a program, support or an app «VPN», on a router with no brand (${lang})`, () => {
+      const t = brandT(makeT(lang), NONE);
+      for (const [key, row] of Object.entries(S)) {
+        if (!row.some((x) => x.includes('{brand}'))) continue;
+        const text = t(key as Key, { ago: '5', v: '0.7.0', a: 'x', b: 'y', d: '1', n: 1 });
+        for (const bad of NEUTRAL_BAD[lang]) expect(text, key).not.toMatch(bad);
+      }
+    });
+  }
+
+  it('says the brand on a branded router, and the no-brand sentence only without one', () => {
+    expect(brandT(makeT('ru'), BLOOPCAT)('s.setup.d')).toMatch(/^BloopCat ждёт настройки VPN\./);
+    expect(brandT(makeT('ru'), NONE)('s.setup.d')).toMatch(/^Роутер ждёт настройки VPN\./);
+    expect(brandT(makeT('en'), NONE)('s.help.support.open')).toBe('Open the support chat');
+    expect(brandT(makeT('en'), VECTRA)('s.help.support.open')).toBe('Message Vectra');
+    // A caller's own brand still wins, as with withParams.
+    expect(brandT(makeT('ru'), BLOOPCAT)('w.v.t', { brand: 'Vectra' })).toBe('Подключение к Vectra');
+  });
+
   it('puts the default {brand} into every sentence, plural ones too; a caller’s own value wins', () => {
     const t = withParams(makeT('ru'), { brand: 'BloopCat' });
     expect(t('w.v.t')).toBe('Подключение к BloopCat');

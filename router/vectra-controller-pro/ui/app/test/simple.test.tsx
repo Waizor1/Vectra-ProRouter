@@ -104,7 +104,7 @@ describe('opens as the simple view', () => {
       ['degraded', 'Не работает', 'Интернет идёт напрямую, без VPN: заблокированные сайты не откроются.', 'Перезапустить VPN'],
       ['empty', 'Роутер ещё не настроен', 'Vectra ждёт настройки VPN.', 'Скопировать отчёт'],
       // No answer at all: whose router it is is not known either — no name that may be wrong.
-      ['down', 'VPN не отвечает', 'Программа VPN на роутере не установлена или не запущена.', 'Повторить'],
+      ['down', 'VPN не отвечает', 'Программа, которая ведёт VPN на роутере, не установлена или не запущена.', 'Повторить'],
     ];
     for (const [scenario, title, line, act] of cases) {
       const app = start({ scenario });
