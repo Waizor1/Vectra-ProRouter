@@ -118,7 +118,9 @@ export async function POST(request: Request) {
         });
         break;
       case "collect_logs":
-        await queueRescueCaseLogCollection(tokenPayload.caseId);
+        await queueRescueCaseLogCollection(tokenPayload.caseId, undefined, {
+          requestedBy: "telegram",
+        });
         await answerTelegramCallback({
           callbackQueryId: callback.id,
           text: "Log collection queued.",

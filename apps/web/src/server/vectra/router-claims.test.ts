@@ -12,6 +12,11 @@ const envMock = vi.hoisted(() => ({
 vi.mock("~/env", () => envMock);
 // The claim service must only use the client it is handed.
 vi.mock("~/server/db", () => ({ db: {} }));
+// A claim is the partner's own act, not a visit by Vectra's engineer.
+const vendorAccess = vi.hoisted(() => ({
+  notifyVendorAccessWithDb: vi.fn(async (..._args: unknown[]) => null),
+}));
+vi.mock("~/server/vectra/vendor-access", () => vendorAccess);
 
 const { MASKED_SECRET_PLACEHOLDER, partnerRouterClaimRequestSchema } =
   await import("@vectra/contracts");
@@ -83,6 +88,7 @@ function routerRow(overrides: Record<string, unknown> = {}): RouterFixture {
     lastRescueReason: null,
     ownerRef: null,
     ownerLabel: null,
+    partnerId: null,
     claimCodeHash: CODE_SEALED,
     claimExpiresAt: IN_FIVE_MINUTES,
     previousClaimCodeHash: null,
@@ -285,6 +291,23 @@ describe("selectClaimTargetByCode", () => {
       selectClaimTargetByCode([lapsed], CODE_SEALED, "acct-42", NOW),
     ).toMatchObject({ kind: "reject", failure: { status: 410 } });
   });
+
+  it("does not call another partner's router with the same ownerRef 'already claimed'", () => {
+    const vectras = routerRow({ ownerRef: "acct-42", partnerId: null }) as never;
+    expect(
+      selectClaimTargetByCode([vectras], CODE_SEALED, "acct-42", NOW, "bloopcat"),
+    ).toMatchObject({
+      kind: "reject",
+      failure: { status: 409, body: { error: "claimed_by_other" } },
+    });
+  });
+
+  it("is idempotent for the same partner and owner", () => {
+    const mine = routerRow({ ownerRef: "acct-42", partnerId: "bloopcat" }) as never;
+    expect(
+      selectClaimTargetByCode([mine], CODE_SEALED, "acct-42", NOW, "bloopcat"),
+    ).toEqual({ kind: "already_claimed", router: mine });
+  });
 });
 
 describe("selectClaimTargetByDevice", () => {
@@ -388,6 +411,22 @@ describe("selectClaimTargetByDevice", () => {
     });
   });
 
+  it("does not call another partner's router with the same ownerRef 'already claimed'", () => {
+    expect(
+      selectClaimTargetByDevice(
+        asking({ ownerRef: "acct-42", partnerId: null }),
+        DEVICE_KEY,
+        presented(NONCE_CODE),
+        "acct-42",
+        NOW,
+        "bloopcat",
+      ),
+    ).toMatchObject({
+      kind: "reject",
+      failure: { status: 409, body: { error: "claimed_by_other" } },
+    });
+  });
+
   it("judges a record the panel has never seen by ownership alone", () => {
     // Made by an earlier device claim; the router proves its key on first
     // registration, so there is no code to check here.
@@ -429,6 +468,7 @@ describe("claimRouterWithDb", () => {
     expect(fake.updates(routers)[0]).toEqual({
       ownerRef: "acct-42",
       ownerLabel: "iv***@m***",
+      partnerId: "vectra",
       claimedAt: NOW,
       releasedAt: null,
       engineMode: "xray-direct",
@@ -436,6 +476,22 @@ describe("claimRouterWithDb", () => {
       importState: "approved",
       pendingImportRevisionId: null,
       status: "active",
+    });
+  });
+
+  it("binds the router to the partner that claims it", async () => {
+    const fake = createFakeDb(claimableScript());
+
+    const outcome = await claimRouterWithDb(
+      fake.db as never,
+      claimRequest(),
+      { now: NOW, partnerId: "bloopcat" },
+    );
+
+    expect(outcome).toMatchObject({ ok: true, body: { alreadyClaimed: false } });
+    expect(fake.updates(routers)[0]).toMatchObject({
+      ownerRef: "acct-42",
+      partnerId: "bloopcat",
     });
   });
 
@@ -489,6 +545,21 @@ describe("claimRouterWithDb", () => {
     expect(fake.updates(passwallDesiredRevisions)).toEqual([
       { status: "queued" },
     ]);
+  });
+
+  it("queues the apply of the partner's own claim without announcing a Vectra visit", async () => {
+    vendorAccess.notifyVendorAccessWithDb.mockClear();
+    const fake = createFakeDb(claimableScript());
+
+    await claimRouterWithDb(fake.db as never, claimRequest(), {
+      now: NOW,
+      partnerId: "bloopcat",
+    });
+
+    expect(fake.inserts(jobs)).toEqual([
+      expect.objectContaining({ type: "apply_xray_config", routerId: ROUTER_ID }),
+    ]);
+    expect(vendorAccess.notifyVendorAccessWithDb).not.toHaveBeenCalled();
   });
 
   it("carries a backend-stated literal User-Agent straight through", async () => {
@@ -837,6 +908,7 @@ describe("claimRouterWithDb", () => {
         approvedAt: NOW,
         ownerRef: "acct-42",
         ownerLabel: "iv***@m***",
+        partnerId: "vectra",
         claimedAt: NOW,
       },
     ]);
@@ -852,6 +924,27 @@ describe("claimRouterWithDb", () => {
     expect(fake.inserts(eventLog)[0]).toMatchObject({
       metadata: { via: "device", preRegistered: true },
     });
+  });
+
+  it("creates the pre-claimed record under the partner that claimed it", async () => {
+    const fake = createFakeDb({
+      selects: [[routers, [[], [{ ...routerRow(), lastSeenAt: null }]]]],
+    });
+
+    await claimRouterWithDb(
+      fake.db as never,
+      claimRequest({
+        code: null,
+        device: {
+          deviceIdentifier: "vectra-cccccccccccc",
+          devicePublicKey: DEVICE_KEY,
+          nonce: NONCE,
+        },
+      }),
+      { now: NOW, partnerId: "bloopcat" },
+    );
+
+    expect(fake.inserts(routers)).toMatchObject([{ partnerId: "bloopcat" }]);
   });
 
   it("claims a registered router by device when it shows the QR's code", async () => {
@@ -1035,6 +1128,47 @@ describe("unbindRouterClaimWithDb", () => {
     expect(fake.updates(routers)).toEqual([]);
   });
 
+  it("refuses to unbind another partner's router even with its ownerRef", async () => {
+    const fake = createFakeDb({
+      selects: [[routers, [[routerRow({ ownerRef: "acct-42", partnerId: null })]]]],
+    });
+
+    expect(
+      await unbindRouterClaimWithDb(fake.db as never, {
+        routerId: ROUTER_ID,
+        ownerRef: "acct-42",
+        partnerId: "bloopcat",
+      }),
+    ).toMatchObject({ status: 409, body: { error: "claimed_by_other" } });
+    expect(fake.updates(routers)).toEqual([]);
+  });
+
+  it("unbinds a partner's own router and leaves it with no partner", async () => {
+    const owned = routerRow({
+      ownerRef: "acct-42",
+      partnerId: "bloopcat",
+      status: "active",
+    });
+    const fake = createFakeDb({
+      selects: [[routers, [[owned]]]],
+      updateReturns: [
+        [routers, [[{ ...owned, ownerRef: null, partnerId: null, releasedAt: NOW }]]],
+      ],
+    });
+
+    expect(
+      await unbindRouterClaimWithDb(
+        fake.db as never,
+        { routerId: ROUTER_ID, ownerRef: "acct-42", partnerId: "bloopcat" },
+        { now: NOW },
+      ),
+    ).toMatchObject({ ok: true, status: 200, body: { state: "unclaimed" } });
+    expect(fake.updates(routers)[0]).toMatchObject({
+      ownerRef: null,
+      partnerId: null,
+    });
+  });
+
   it("returns the router to 'not linked' and withdraws the owner's config", async () => {
     const owned = routerRow({
       ownerRef: "acct-42",
@@ -1084,6 +1218,8 @@ describe("unbindRouterClaimWithDb", () => {
       claimExpiresAt: null,
       previousClaimCodeHash: null,
       previousClaimExpiresAt: null,
+      // An unlinked router belongs to no partner.
+      partnerId: null,
       approvedAt: null,
       importState: "awaiting_import",
       activeRevisionId: null,
@@ -1116,4 +1252,79 @@ describe("unbindRouterClaimWithDb", () => {
       },
     });
   });
+});
+
+// The journal and the revision note name the partner the router is linked to
+// (its label, or its id when the registry does not know it), not "Vectra" for
+// everyone.
+describe("the claim and unbind journal names the partner", () => {
+  const BLOOP_PARTNERS = JSON.stringify([
+    {
+      id: "bloopcat",
+      brand: "bloopcat",
+      label: "BloopCat",
+      secrets: ["router-claims-bloopcat-partner-secret-0123"],
+    },
+  ]);
+
+  function withPartners<T>(run: () => Promise<T>) {
+    envMock.env.VECTRA_PARTNERS = BLOOP_PARTNERS;
+    return run().finally(() => {
+      delete envMock.env.VECTRA_PARTNERS;
+    });
+  }
+
+  it.each([
+    [undefined, "Vectra", "vectra"],
+    ["bloopcat", "BloopCat", "bloopcat"],
+    ["ghost", "ghost", "ghost"],
+  ])("a claim by %s says %s and records %s", (partnerId, name, recorded) =>
+    withPartners(async () => {
+      const fake = createFakeDb(claimableScript());
+
+      await claimRouterWithDb(fake.db as never, claimRequest(), {
+        now: NOW,
+        ...(partnerId ? { partnerId } : {}),
+      });
+
+      const [entry] = fake.inserts(eventLog);
+      expect(entry).toMatchObject({
+        type: "router.claimed",
+        message: `Router linked to a ${name} account by code; approved and configured for xray-direct.`,
+        metadata: { ownerRef: "acct-42", partnerId: recorded },
+      });
+      expect(fake.inserts(passwallDesiredRevisions)[0]).toMatchObject({
+        note: `Partner claim: linked to a ${name} account.`,
+      });
+    }),
+  );
+
+  it.each([
+    [undefined, null, "Vectra", "vectra"],
+    ["bloopcat", "bloopcat", "BloopCat", "bloopcat"],
+  ])("an unbind by %s (of a router owned by %s) says %s and records %s", (partnerId, owner, name, recorded) =>
+    withPartners(async () => {
+      const owned = routerRow({ ownerRef: "acct-42", partnerId: owner, status: "active" });
+      const fake = createFakeDb({
+        selects: [[routers, [[owned]]]],
+        updateReturns: [
+          [routers, [[{ ...owned, ownerRef: null, partnerId: null, releasedAt: NOW }]]],
+        ],
+      });
+
+      expect(
+        await unbindRouterClaimWithDb(
+          fake.db as never,
+          { routerId: ROUTER_ID, ownerRef: "acct-42", ...(partnerId ? { partnerId } : {}) },
+          { now: NOW },
+        ),
+      ).toMatchObject({ ok: true });
+
+      expect(fake.inserts(eventLog)[0]).toMatchObject({
+        type: "router.claim.unbound",
+        message: `Router unlinked from its ${name} account; approval and config withdrawn.`,
+        metadata: { previousOwnerRef: "acct-42", partnerId: recorded },
+      });
+    }),
+  );
 });

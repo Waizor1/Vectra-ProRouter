@@ -3032,6 +3032,13 @@ export async function queueXrayApplyJobWithDb(
     routerId: string;
     desiredRevision: Pick<RevisionRow, "id" | "origin" | "status" | "configDigest">;
     origin?: typeof PARTNER_CLAIM_APPLY_ORIGIN;
+    /**
+     * Called once, only when this call inserted the job (not when an active
+     * one was returned). Lets an operator procedure announce its own visit
+     * without this shared helper — which the partner's claim also runs —
+     * knowing about it.
+     */
+    onInserted?: () => void;
   },
 ) {
   const dedupeKey = `apply:${input.routerId}:${input.desiredRevision.id}`;
@@ -3066,6 +3073,8 @@ export async function queueXrayApplyJobWithDb(
       },
     })
     .returning();
+
+  input.onInserted?.();
 
   if (isEditableDraftRevision(input.desiredRevision)) {
     await client

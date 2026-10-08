@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createCallerFactory } from "~/server/api/trpc";
+
+const { notifyVendorAccessWithDb } = vi.hoisted(() => ({
+  notifyVendorAccessWithDb: vi.fn(async (..._args: unknown[]) => null),
+}));
+vi.mock("~/server/vectra/vendor-access", () => ({ notifyVendorAccessWithDb }));
 
 import { fleetRouter } from "./fleet";
 
@@ -300,5 +305,50 @@ describe("fleet.renameRouter", () => {
       insertCalls: 0,
       updateCalls: 0,
     });
+  });
+});
+
+describe("fleet.renameRouter and the partner's vendor-access notice", () => {
+  beforeEach(() => {
+    notifyVendorAccessWithDb.mockClear();
+  });
+
+  const partnerRouter = () => ({
+    ...createRouterRow(),
+    ownerRef: "bc_1",
+    partnerId: "bloopcat",
+  });
+  type RenameCaller = {
+    renameRouter: (input: { routerId: string; hostname: string }) => Promise<unknown>;
+  };
+
+  it("tells the router's partner when a new hostname job is queued", async () => {
+    const mock = createMockDb({
+      selectResponses: [[partnerRouter()], [createSnapshotRow()], []],
+      insertResponses: [[{ id: "job-hostname-1" }], []],
+    });
+    const caller = createProtectedCaller(fleetRouter, mock.db) as RenameCaller;
+
+    await caller.renameRouter({ routerId: ROUTER_ID, hostname: "andrey-livingroom" });
+
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(
+      mock.db,
+      expect.objectContaining({ id: ROUTER_ID, ownerRef: "bc_1", partnerId: "bloopcat" }),
+      { kind: "rename", by: "operator" },
+    );
+  });
+
+  it("says nothing when the same rename is already queued", async () => {
+    const waiting = { id: "job-hostname-0", type: "run_terminal_command", state: "queued" };
+    const mock = createMockDb({
+      selectResponses: [[partnerRouter()], [createSnapshotRow()], [waiting]],
+    });
+    const caller = createProtectedCaller(fleetRouter, mock.db) as RenameCaller;
+
+    await caller.renameRouter({ routerId: ROUTER_ID, hostname: "andrey-livingroom" });
+
+    expect(mock.counts().insertCalls).toBe(0);
+    expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
   });
 });

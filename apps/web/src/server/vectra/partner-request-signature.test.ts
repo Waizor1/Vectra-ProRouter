@@ -30,20 +30,23 @@ function req(method = "GET", url = target, body = "", key = "") {
     ...(method === "GET" ? {} : { body }),
   });
 }
-const check = (
+// null = authenticated; otherwise the refusal.
+const check = async (
   r: Request,
   d = deps(),
   body = "",
   method = r.method,
   path = new URL(r.url).pathname,
-) =>
-  authenticatePartnerRequest(
+) => {
+  const result = await authenticatePartnerRequest(
     r,
     new TextEncoder().encode(body),
     d,
     method,
     path,
   );
+  return result instanceof Response ? result : null;
+};
 describe("mandatory partner request v2", () => {
   it("matches all agreed Python golden vectors including integer timestamp and UTF-8 body", () => {
     for (const vector of vectors) {
@@ -123,6 +126,18 @@ describe("mandatory partner request v2", () => {
       throw new Error("fake database unavailable");
     };
     expect((await check(req(), unavailable))?.status).toBe(503);
+  });
+  it("names the default partner for a request that carries no partner header", async () => {
+    const result = await authenticatePartnerRequest(
+      req(),
+      new Uint8Array(),
+      deps(),
+      "GET",
+      "/api/partner/routers",
+    );
+    expect(result).toEqual({
+      partner: { id: "vectra", brand: "vectra", label: "Vectra" },
+    });
   });
   it("retains future timestamps through their signed window plus margin", async () => {
     const d = deps();

@@ -691,6 +691,38 @@ describe("checkInRouter claim", () => {
     errors.mockRestore();
   });
 
+  it("queues a claim result for the partner that owns the router, read from its row", async () => {
+    envMock.env.VECTRA_PARTNERS = JSON.stringify([
+      {
+        id: "bloopcat",
+        brand: "bloopcat",
+        label: "BloopCat",
+        secrets: ["bloopcat-partner-secret-0123456789abcdef"],
+        webhookUrl: "https://bloopcat.example/hooks",
+        webhookSecret: "bloopcat-webhook-secret-0123456789abcdef",
+      },
+    ]);
+    const owner = routerRow({ownerRef: "bc_1", partnerId: "bloopcat", approvedAt: new Date(), importState: "approved", status: "active"});
+    const apply = {id: JOB_ID, routerId: ROUTER_ID, type: "apply_xray_config", state: "queued", desiredRevisionId: REVISION_ID, dedupeKey: `apply:${ROUTER_ID}:${REVISION_ID}`, deliveredAt: null, payload: {desiredRevisionId: REVISION_ID, origin: "partner_claim"}, createdAt: new Date(Number.NaN)};
+    fake.reset({
+      selects: [
+        // The router is read on check-in, again for the job, and once more to find its partner.
+        [routers, [[owner], [owner], [owner]]],
+        [healthIncidents, [[]]],
+        [jobs, [[apply], [{...apply, state: "running"}]]],
+        [passwallDesiredRevisions, [[], [{id: REVISION_ID, engineMode: "xray-direct", configDigest: "d", config: {}}]]],
+      ],
+      updateReturns: [[routers, [[owner], [owner], [owner]]], [jobs, [[{...apply, state: "running"}]]]],
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await checkInRouter(ROUTER_ID, checkInPayload());
+    errors.mockRestore();
+
+    const failed = fake.inserts(partnerWebhooks).filter(row => row.event === "router.failed");
+    expect(failed).toEqual([expect.objectContaining({partnerId: "bloopcat"})]);
+  });
+
   it("logs only the class and the issue paths of a schema failure, never its message or data", () => {
     const parsed = z.object({password: z.number(), nested: z.object({ssid: z.number()})}).safeParse({password: "fake-guest-pass-123", nested: {ssid: "Fake guest"}});
     expect(parsed.success).toBe(false);

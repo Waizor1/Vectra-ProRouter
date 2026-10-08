@@ -16,6 +16,7 @@ import {
   canRunDestructiveAction,
   describeEffectiveRouterSupport,
 } from "~/server/vectra/support";
+import { notifyVendorAccessWithDb } from "~/server/vectra/vendor-access";
 
 const activeTerminalJobStates: Array<"queued" | "delivered" | "running"> = [
   "queued",
@@ -147,7 +148,7 @@ export const terminalRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertTerminalCapableRouter(ctx, input.routerId);
+      const { router } = await assertTerminalCapableRouter(ctx, input.routerId);
 
       const [existingJob] = await ctx.db
         .select()
@@ -181,6 +182,11 @@ export const terminalRouter = createTRPCRouter({
           payload,
         })
         .returning();
+
+      await notifyVendorAccessWithDb(ctx.db, router, {
+        kind: "terminal",
+        by: "operator",
+      });
 
       return job;
     }),

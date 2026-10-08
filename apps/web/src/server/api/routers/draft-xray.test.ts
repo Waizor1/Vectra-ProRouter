@@ -6,7 +6,7 @@ import {
   routers,
 } from "@vectra/db";
 import { MASKED_SECRET_PLACEHOLDER } from "@vectra/contracts";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createCallerFactory } from "~/server/api/trpc";
 import { createXraySecretPayload } from "~/server/vectra/secrets";
@@ -21,6 +21,10 @@ vi.mock("~/env", () => ({
     VECTRA_SECRETS_KEY: "draft-xray-test-secrets-key-0123456789",
   },
 }));
+const { notifyVendorAccessWithDb } = vi.hoisted(() => ({
+  notifyVendorAccessWithDb: vi.fn(async (..._args: unknown[]) => null),
+}));
+vi.mock("~/server/vectra/vendor-access", () => ({ notifyVendorAccessWithDb }));
 
 const ROUTER_ID = "6f0c2d8e-4b1a-4c3e-9d57-2a8b1c0e9f31";
 const REVISION_ID = "0c9a8b7d-6e5f-4a3b-8c2d-1e0f9a8b7c6d";
@@ -281,6 +285,100 @@ describe("draft.queueApplyXray on the shared helper", () => {
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     expect(fake.updates(routers)).toEqual([]);
     expect(fake.inserts(jobs)).toEqual([]);
+  });
+});
+
+describe("draft.queueApplyXray and the partner's vendor-access notice", () => {
+  beforeEach(() => {
+    notifyVendorAccessWithDb.mockReset();
+    notifyVendorAccessWithDb.mockResolvedValue(null);
+  });
+
+  const partnerRouter = (overrides: Record<string, unknown> = {}) =>
+    routerRow({ ownerRef: "bc_1", partnerId: "bloopcat", ...overrides });
+  const draft = () => ({ ...storedXrayRevision().revision, status: "draft" });
+
+  it("tells the router's partner once the apply is queued", async () => {
+    const fake = createFakeDb({
+      selects: [
+        [routers, [[partnerRouter()]]],
+        [passwallDesiredRevisions, [[draft()]]],
+      ],
+    });
+
+    await caller(fake.db).queueApplyXray!({
+      routerId: ROUTER_ID,
+      desiredRevisionId: REVISION_ID,
+    });
+
+    expect(fake.inserts(jobs)).toHaveLength(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(
+      fake.db,
+      expect.objectContaining({ id: ROUTER_ID, ownerRef: "bc_1", partnerId: "bloopcat" }),
+      { kind: "config_apply", by: "operator" },
+    );
+  });
+
+  it("says nothing when the same apply is already queued", async () => {
+    const fake = createFakeDb({
+      selects: [
+        [routers, [[partnerRouter()]]],
+        [passwallDesiredRevisions, [[draft()]]],
+        [jobs, [[{ id: "job-0", type: "apply_xray_config", state: "queued" }]]],
+      ],
+    });
+
+    await caller(fake.db).queueApplyXray!({
+      routerId: ROUTER_ID,
+      desiredRevisionId: REVISION_ID,
+    });
+
+    expect(fake.inserts(jobs)).toHaveLength(0);
+    expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
+  });
+
+  it("tells the partner of a takeover only after the transaction committed", async () => {
+    const fake = createFakeDb({
+      selects: [
+        [routers, [[partnerRouter({ releasedAt: RELEASED_AT })]]],
+        [passwallDesiredRevisions, [[draft()]]],
+      ],
+    });
+    let committed = false;
+    const run = fake.db.transaction;
+    fake.db.transaction = async (work) => {
+      const result = await run(work);
+      committed = true;
+      return result;
+    };
+    const committedWhenTold: boolean[] = [];
+    notifyVendorAccessWithDb.mockImplementation(async () => {
+      committedWhenTold.push(committed);
+      return null;
+    });
+
+    await caller(fake.db).queueApplyXray!({
+      routerId: ROUTER_ID,
+      desiredRevisionId: REVISION_ID,
+    });
+
+    expect(fake.updates(routers)).toEqual([{ releasedAt: null }]);
+    expect(committedWhenTold).toEqual([true]);
+  });
+
+  it("says nothing when the apply is refused", async () => {
+    const fake = createFakeDb({
+      selects: [[routers, [[partnerRouter({ importState: "awaiting_import" })]]]],
+    });
+
+    await expect(
+      caller(fake.db).queueApplyXray!({
+        routerId: ROUTER_ID,
+        desiredRevisionId: REVISION_ID,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
   });
 });
 

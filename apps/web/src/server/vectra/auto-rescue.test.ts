@@ -4,7 +4,12 @@ import {
   routerInventorySnapshots,
   routers,
 } from "@vectra/db";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { notifyVendorAccessWithDb } = vi.hoisted(() => ({
+  notifyVendorAccessWithDb: vi.fn(async (..._args: unknown[]) => null),
+}));
+vi.mock("~/server/vectra/vendor-access", () => ({ notifyVendorAccessWithDb }));
 
 import {
   planAutoRepairRetry,
@@ -15,6 +20,8 @@ import {
   noAutoRepairEscalationReason,
   planRepairActionsForRouterSafety,
   queueRescueCaseLogCollection,
+  queueRescueCaseReconnectProxy,
+  queueRescueCaseSafeRepair,
   RescueActionRefusedError,
   repairActionsForTrigger,
   resourceGuardReasonsForLogCollection,
@@ -594,5 +601,176 @@ describe("queueRescueCaseLogCollection on a vctl router", () => {
     await expect(
       queueRescueCaseLogCollection(CASE_ID, fake.db as never),
     ).rejects.toThrow(/resource guard/);
+  });
+});
+
+// Vectra's engineer pressing a rescue button on a partner's router is a visit
+// the partner is told about; the unattended monitor's own work is not.
+describe("rescue actions and the partner's vendor-access notice", () => {
+  const CASE_ID = "5b4a3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d";
+  const partnerRouter = {
+    id: "router-1",
+    ownerRef: "bc_1",
+    partnerId: "bloopcat",
+    engineMode: "passwall",
+    lastSeenAt: new Date(),
+    boardName: "xiaomi,mi-router-ax3000t",
+    target: "mediatek/filogic",
+    architecture: "aarch64_cortex-a53",
+    openwrtRelease: "24.10.6",
+  };
+  const snapshot = {
+    id: "snapshot-1",
+    createdAt: new Date(),
+    payload: {
+      boardName: "xiaomi,mi-router-ax3000t",
+      layoutFamily: "ubootmod",
+      target: "mediatek/filogic",
+      architecture: "aarch64_cortex-a53",
+      openwrtRelease: "24.10.6",
+      packageVersions: {},
+      resources: { memoryAvailableMb: 200, overlayFreeMb: 64, tmpFreeMb: 64 },
+    },
+  };
+  const rescueCase = {
+    id: CASE_ID,
+    routerId: "router-1",
+    trigger: "direct_mode",
+    triggerDetails: { reason: "router parked in direct mode" },
+    diagnosis: {},
+  };
+
+  beforeEach(() => {
+    notifyVendorAccessWithDb.mockClear();
+  });
+
+  function repairDb(activeJobs: Array<Record<string, unknown>> = []) {
+    return createFakeDb({
+      selects: [
+        [rescueCases, [[rescueCase]]],
+        [routers, [[partnerRouter]]],
+        [routerInventorySnapshots, [[snapshot], [snapshot]]],
+        [jobs, activeJobs.length > 0 ? [activeJobs, activeJobs] : []],
+      ],
+    });
+  }
+
+  it.each([
+    ["operator", "operator"],
+    ["telegram", "telegram"],
+  ] as const)("a safe repair requested by %s tells the partner it was %s", async (requestedBy, by) => {
+    const fake = repairDb();
+
+    await queueRescueCaseSafeRepair({ caseId: CASE_ID, requestedBy }, fake.db as never);
+
+    expect(fake.inserts(jobs)).toHaveLength(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(
+      fake.db,
+      expect.objectContaining({ id: "router-1", ownerRef: "bc_1", partnerId: "bloopcat" }),
+      { kind: "safe_repair", by },
+    );
+  });
+
+  it("the unattended monitor's repair tells nobody", async () => {
+    const fake = repairDb();
+
+    await queueRescueCaseSafeRepair({ caseId: CASE_ID, requestedBy: "auto_rescue" }, fake.db as never);
+
+    expect(fake.inserts(jobs)).toHaveLength(1);
+    expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
+  });
+
+  it("a repair already in flight is not a new visit", async () => {
+    const fake = repairDb([{ id: "job-0", type: "run_rescue_repair", state: "running" }]);
+
+    await queueRescueCaseSafeRepair({ caseId: CASE_ID, requestedBy: "operator" }, fake.db as never);
+
+    expect(fake.inserts(jobs)).toHaveLength(0);
+    expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
+  });
+
+  it("a reconnect from the case card reads like the router-level reconnect", async () => {
+    const fake = repairDb();
+
+    await queueRescueCaseReconnectProxy(CASE_ID, "telegram", fake.db as never);
+
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(
+      fake.db,
+      expect.objectContaining({ id: "router-1" }),
+      { kind: "reconnect", by: "telegram" },
+    );
+  });
+
+  it("only a repair that is nothing but a reconnect is called a reconnect", async () => {
+    const fake = repairDb();
+
+    await queueRescueCaseSafeRepair(
+      {
+        caseId: CASE_ID,
+        requestedBy: "operator",
+        actions: ["reconnect_proxy", "restart_dnsmasq"],
+      },
+      fake.db as never,
+    );
+
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(
+      fake.db,
+      expect.anything(),
+      { kind: "safe_repair", by: "operator" },
+    );
+  });
+
+  function logsDb() {
+    return createFakeDb({
+      selects: [
+        [rescueCases, [[rescueCase]]],
+        [jobs, [[]]],
+        [routers, [[partnerRouter]]],
+        [routerInventorySnapshots, [[snapshot]]],
+      ],
+    });
+  }
+
+  it.each([
+    ["operator", {}],
+    ["telegram", { requestedBy: "telegram" as const }],
+  ])("log collection requested by %s tells the partner so", async (by, options) => {
+    const fake = logsDb();
+
+    await queueRescueCaseLogCollection(CASE_ID, fake.db as never, options);
+
+    expect(fake.inserts(jobs)).toHaveLength(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(
+      fake.db,
+      expect.objectContaining({ id: "router-1", ownerRef: "bc_1", partnerId: "bloopcat" }),
+      { kind: "collect_logs", by },
+    );
+  });
+
+  it("the monitor's own log collection tells nobody", async () => {
+    const fake = logsDb();
+
+    await queueRescueCaseLogCollection(CASE_ID, fake.db as never, { unattended: true });
+
+    expect(fake.inserts(jobs)).toHaveLength(1);
+    expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
+  });
+
+  it("a refused log collection tells nobody", async () => {
+    const fake = createFakeDb({
+      selects: [
+        [rescueCases, [[rescueCase]]],
+        [jobs, [[]]],
+        [routers, [[{ ...partnerRouter, engineMode: "xray-direct" }]]],
+      ],
+    });
+
+    await expect(queueRescueCaseLogCollection(CASE_ID, fake.db as never)).rejects.toBeInstanceOf(
+      RescueActionRefusedError,
+    );
+    expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
   });
 });

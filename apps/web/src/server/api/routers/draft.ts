@@ -37,6 +37,7 @@ import {
   canRunDestructiveAction,
   describeEffectiveRouterSupport,
 } from "~/server/vectra/support";
+import { notifyVendorAccessWithDb } from "~/server/vectra/vendor-access";
 
 export const draftRouter = createTRPCRouter({
   list: protectedProcedure.query(async ({ ctx }) => {
@@ -523,6 +524,11 @@ export const draftRouter = createTRPCRouter({
         })
         .returning();
 
+      await notifyVendorAccessWithDb(ctx.db, router, {
+        kind: "config_apply",
+        by: "operator",
+      });
+
       if (isEditableDraftRevision(desiredRevision)) {
         await ctx.db
           .update(passwallDesiredRevisions)
@@ -631,9 +637,26 @@ export const draftRouter = createTRPCRouter({
       // `released: true`, or it would keep dropping the config this job
       // installs. One transaction, so the router never receives the job while
       // it is still marked released.
+      //
+      // The partner hears of the visit once, and only after the apply is
+      // really queued (and, for a takeover, committed): the shared helper says
+      // whether it inserted, because the partner's own claim runs it too and
+      // must stay silent.
+      let queuedNewJob = false;
+      const onInserted = () => {
+        queuedNewJob = true;
+      };
+      const announceVisit = async () => {
+        if (queuedNewJob) {
+          await notifyVendorAccessWithDb(ctx.db, router, {
+            kind: "config_apply",
+            by: "operator",
+          });
+        }
+      };
       const releasedAt = router.releasedAt;
       if (releasedAt) {
-        return ctx.db.transaction(async (tx) => {
+        const takenOver = await ctx.db.transaction(async (tx) => {
           await tx
             .update(routers)
             .set({ releasedAt: null })
@@ -653,14 +676,20 @@ export const draftRouter = createTRPCRouter({
           return queueXrayApplyJobWithDb(tx, {
             routerId: input.routerId,
             desiredRevision,
+            onInserted,
           });
         });
+        await announceVisit();
+        return takenOver;
       }
 
-      return queueXrayApplyJobWithDb(ctx.db, {
+      const job = await queueXrayApplyJobWithDb(ctx.db, {
         routerId: input.routerId,
         desiredRevision,
+        onInserted,
       });
+      await announceVisit();
+      return job;
     }),
 
   discard: protectedProcedure

@@ -70,7 +70,17 @@ let draining = false;
  * later timer tick away before it gets here — which is exactly what the
  * worker's stall watchdog looks for.
  */
-export type LoopTickTimes = { completedAt: number | null; busyAt: number | null };
+export type LoopTickTimes = {
+  completedAt: number | null;
+  busyAt: number | null;
+  /**
+   * Work the loop started outside its tick that this process found hung and
+   * replaced (a partner's webhook delivery that made no progress for 5 min).
+   * Its ticks complete either way, so the stall watchdog never sees it; this
+   * count is what does. Absent while there was none.
+   */
+  staleFlights?: number;
+};
 const loopTicks = new Map<BackgroundLoopName, LoopTickTimes>();
 
 export function recordLoopTick(
@@ -81,6 +91,13 @@ export function recordLoopTick(
   const times = loopTicks.get(loop) ?? { completedAt: null, busyAt: null };
   if (outcome === "completed") times.completedAt = at;
   else times.busyAt = at;
+  loopTicks.set(loop, times);
+}
+
+/** One more piece of the loop's work found hung and replaced (see staleFlights). */
+export function recordLoopStaleFlight(loop: BackgroundLoopName) {
+  const times = loopTicks.get(loop) ?? { completedAt: null, busyAt: null };
+  times.staleFlights = (times.staleFlights ?? 0) + 1;
   loopTicks.set(loop, times);
 }
 
@@ -227,20 +244,9 @@ export async function holdLoopPresence(
   }
   return {
     async ping(ticks: Partial<Record<BackgroundLoopName, LoopTickTimes>> = {}) {
-      // Numbers and fixed loop names only: nothing in it can close the comment.
-      const payload = JSON.stringify(
-        Object.fromEntries(
-          BACKGROUND_LOOP_NAMES.filter((loop) => ticks[loop]).map((loop) => [
-            loop,
-            [ticks[loop]!.completedAt, ticks[loop]!.busyAt],
-          ]),
-        ),
-      );
-      const [row] = (await client.unsafe(
-        `select pg_backend_pid() as pid /* ${PRESENCE_TICKS_TAG}${payload} */`,
-        [],
-        { prepare: false },
-      )) as unknown as Array<{ pid: number }>;
+      const [row] = (await client.unsafe(presencePingQuery(ticks), [], {
+        prepare: false,
+      })) as unknown as Array<{ pid: number }>;
       if (row?.pid !== backendPid) {
         throw new Error("presence session was replaced; its locks are gone");
       }
@@ -252,6 +258,31 @@ export async function holdLoopPresence(
 }
 
 const PRESENCE_TICKS_TAG = "vectra-loop-ticks:";
+
+/**
+ * The presence ping's SQL, carrying the tick times in its comment: per loop
+ * [completedAt, busyAt], plus the stale-flight count as a third element when
+ * there is one (a web from before it reads the first two and ignores it).
+ */
+export function presencePingQuery(
+  ticks: Partial<Record<BackgroundLoopName, LoopTickTimes>>,
+) {
+  // Numbers and fixed loop names only: nothing in it can close the comment.
+  const payload = JSON.stringify(
+    Object.fromEntries(
+      BACKGROUND_LOOP_NAMES.filter((loop) => ticks[loop]).map((loop) => {
+        const { completedAt, busyAt, staleFlights } = ticks[loop]!;
+        return [
+          loop,
+          staleFlights
+            ? [completedAt, busyAt, staleFlights]
+            : [completedAt, busyAt],
+        ];
+      }),
+    ),
+  );
+  return `select pg_backend_pid() as pid /* ${PRESENCE_TICKS_TAG}${payload} */`;
+}
 
 export type LoopPresence = {
   running: Set<BackgroundLoopName>;
@@ -270,10 +301,13 @@ function parsePresenceTicks(query: string | null | undefined) {
     for (const loop of BACKGROUND_LOOP_NAMES) {
       const value = parsed[loop];
       if (Array.isArray(value)) {
-        const [completedAt, busyAt] = value as unknown[];
+        const [completedAt, busyAt, staleFlights] = value as unknown[];
         ticks[loop] = {
           completedAt: typeof completedAt === "number" ? completedAt : null,
           busyAt: typeof busyAt === "number" ? busyAt : null,
+          ...(typeof staleFlights === "number" && staleFlights > 0
+            ? { staleFlights }
+            : {}),
         };
       }
     }

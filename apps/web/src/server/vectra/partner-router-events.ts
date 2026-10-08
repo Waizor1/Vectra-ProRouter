@@ -3,6 +3,8 @@ import { type jobs, routers, routerInventorySnapshots } from "@vectra/db";
 import { and, desc, eq, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import type { db } from "~/server/db";
 import { PARTNER_ACTION_DEDUPE_PREFIX } from "./partner-action-key";
+import { DEFAULT_PARTNER_ID } from "./partner-registry";
+import { routerOwnedByPartner, routerPartnerId } from "./partner-scope";
 import { enqueuePartnerWebhookWithDb } from "./partner-webhooks";
 
 type Client = Pick<typeof db, "select" | "insert" | "update" | "transaction">;
@@ -57,6 +59,9 @@ export async function notifyPartnerCheckInWithDb(
 ): Promise<PartnerCheckInReadback> {
   const readback: PartnerCheckInReadback = {};
   if (!previousRouter.ownerRef || previousRouter.releasedAt) return readback;
+  // The partner read with the router; the lock is for it alone, so a router
+  // that changed hands in between tells the other partner nothing.
+  const partnerId = routerPartnerId(previousRouter);
   await client.transaction(async (tx) => {
     const [current] = await tx
       .update(routers)
@@ -65,11 +70,16 @@ export async function notifyPartnerCheckInWithDb(
         and(
           eq(routers.id, previousRouter.id),
           eq(routers.ownerRef, previousRouter.ownerRef!),
+          routerOwnedByPartner(partnerId),
           isNull(routers.releasedAt),
         ),
       )
       .returning();
-    if (current?.ownerRef !== previousRouter.ownerRef || current.releasedAt)
+    if (
+      current?.ownerRef !== previousRouter.ownerRef ||
+      current.releasedAt ||
+      routerPartnerId(current) !== partnerId
+    )
       return;
     const [prior] = await tx
       .select()
@@ -111,6 +121,7 @@ export async function notifyPartnerCheckInWithDb(
         routerId: previousRouter.id,
         ownerRef: previousRouter.ownerRef!,
         at: now,
+        partnerId,
       });
   });
   return readback;
@@ -143,6 +154,8 @@ export async function sweepPartnerOfflineWithDb(
       router.status === "disabled"
     )
       continue;
+    // As read above: only that partner's router is marked and told.
+    const partnerId = routerPartnerId(router);
     await client.transaction(async (tx) => {
       const [updated] = await tx
         .update(routers)
@@ -151,6 +164,7 @@ export async function sweepPartnerOfflineWithDb(
           and(
             eq(routers.id, router.id),
             eq(routers.ownerRef, router.ownerRef!),
+            routerOwnedByPartner(partnerId),
             eq(routers.lastSeenAt, router.lastSeenAt!),
             ne(routers.status, "offline"),
             ne(routers.status, "disabled"),
@@ -158,12 +172,13 @@ export async function sweepPartnerOfflineWithDb(
           ),
         )
         .returning();
-      if (updated)
+      if (updated && routerPartnerId(updated) === partnerId)
         await enqueuePartnerWebhookWithDb(tx, {
           event: "router.offline",
           routerId: router.id,
           ownerRef: router.ownerRef!,
           at: now,
+          partnerId,
         });
     });
   }
@@ -201,6 +216,11 @@ export async function notifyPartnerActionResultWithDb(
       : args.job.dedupeKey?.startsWith(PARTNER_ACTION_DEDUPE_PREFIX)
         ? args.job.dedupeKey.slice(PARTNER_ACTION_DEDUPE_PREFIX.length)
         : undefined;
+  // The partner that queued the action; a job from before there were
+  // partners is Vectra Connect's. A router that changed hands since is not
+  // told about the previous partner's action.
+  const partnerId =
+    typeof payload.partnerId === "string" ? payload.partnerId : DEFAULT_PARTNER_ID;
   await client.transaction(async (tx) => {
     const [current] = await tx
       .update(routers)
@@ -209,15 +229,22 @@ export async function notifyPartnerActionResultWithDb(
         and(
           eq(routers.id, args.job.routerId),
           eq(routers.ownerRef, args.ownerRef!),
+          routerOwnedByPartner(partnerId),
           isNull(routers.releasedAt),
         ),
       )
       .returning();
-    if (current?.ownerRef !== args.ownerRef || current.releasedAt) return;
+    if (
+      current?.ownerRef !== args.ownerRef ||
+      current.releasedAt ||
+      routerPartnerId(current) !== partnerId
+    )
+      return;
     await enqueuePartnerWebhookWithDb(tx, {
       event: "router.action",
       routerId: args.job.routerId,
       ownerRef: args.ownerRef!,
+      partnerId,
       detail: {
         actionId: payload.actionId,
         ...(idempotencyKey ? { idempotencyKey } : {}),

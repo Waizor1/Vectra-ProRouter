@@ -8,6 +8,17 @@ vi.mock("~/env", () => ({
     VECTRA_SECRETS_KEY: "fake-local-test-secrets-key-only-123456",
     VECTRA_CONNECT_WEBHOOK_URL: "https://fake.example/hooks",
     VECTRA_CONNECT_WEBHOOK_SECRET: "fake-webhook-secret",
+    // A second partner with its own webhook: its routers' events are queued.
+    VECTRA_PARTNERS: JSON.stringify([
+      {
+        id: "bloopcat",
+        brand: "bloopcat",
+        label: "BloopCat",
+        secrets: ["fake-bloopcat-partner-secret-0123456789ab"],
+        webhookUrl: "https://bloopcat.example/hooks",
+        webhookSecret: "fake-bloopcat-webhook-secret-0123456789",
+      },
+    ]),
   },
 }));
 vi.mock("~/server/db", () => ({ db: {} }));
@@ -40,6 +51,7 @@ import {
 } from "./partner-routers";
 import {
   notifyPartnerActionResultWithDb,
+  notifyPartnerCheckInWithDb,
   reportedPartnerTransitions,
   sweepPartnerOfflineWithDb,
 } from "./partner-router-events";
@@ -906,6 +918,221 @@ describe("partner action failure reason", () => {
   });
 });
 
+// The router.action result follows the partner that queued the action: a job
+// without a partner is Vectra Connect's, and a router that changed hands since
+// is not told about the other partner's action.
+describe("a partner action's result stays with its partner", () => {
+  const ACTION = "00000000-0000-4000-8000-000000000098";
+  function jobOf(partnerId?: string) {
+    return {
+      id: ACTION,
+      routerId: ID,
+      payload: {
+        origin: "partner_action",
+        ownerRef: "acct-42",
+        actionId: ACTION,
+        ...(partnerId ? { partnerId } : {}),
+      },
+    } as unknown as typeof jobs.$inferSelect;
+  }
+  async function notify(job: typeof jobs.$inferSelect, row: ReturnType<typeof router>) {
+    const outbox = createFakeDb({ updateReturns: [[routers, [[row]]]] });
+    await notifyPartnerActionResultWithDb(outbox.db as never, {
+      job,
+      ownerRef: "acct-42",
+      status: "success",
+    });
+    return outbox.inserts(partnerWebhooks);
+  }
+
+  it("is told to the partner that owns both the job and the router", async () => {
+    expect(await notify(jobOf("bloopcat"), router({ partnerId: "bloopcat" }))).toHaveLength(1);
+    expect(await notify(jobOf("vectra"), router({ partnerId: "vectra" }))).toHaveLength(1);
+    // before there were partners: no partner on either side is Vectra Connect's.
+    expect(await notify(jobOf(), router({ partnerId: null }))).toHaveLength(1);
+  });
+
+  it("is not told when the router now belongs to another partner", async () => {
+    expect(await notify(jobOf("bloopcat"), router({ partnerId: "vectra" }))).toEqual([]);
+    expect(await notify(jobOf("bloopcat"), router({ partnerId: null }))).toEqual([]);
+    expect(await notify(jobOf(), router({ partnerId: "bloopcat" }))).toEqual([]);
+  });
+
+  it("locks the router of the job's partner only", async () => {
+    for (const [job, params, isNull] of [
+      [jobOf("bloopcat"), ["bloopcat"], false],
+      [jobOf(), ["vectra"], true],
+    ] as const) {
+      const base = createFakeDb({ updateReturns: [[routers, [[router()]]]] });
+      const queries: Array<{ sql: string; params: unknown[] }> = [];
+      const db = {
+        ...base.db,
+        update: (table: unknown) => ({
+          set: (set: Record<string, unknown>) => {
+            const inner = base.db.update(table).set(set);
+            return {
+              where: (condition: SQL) => {
+                queries.push(dialect.sqlToQuery(condition));
+                return inner.where();
+              },
+            };
+          },
+        }),
+        transaction: async <T>(run: (tx: unknown) => Promise<T>) => run(db),
+      };
+      await notifyPartnerActionResultWithDb(db as never, {
+        job,
+        ownerRef: "acct-42",
+        status: "success",
+      });
+      expect(queries).toHaveLength(1);
+      expect(queries[0]!.sql).toMatch(/"partner_id" = \$\d+/);
+      expect(queries[0]!.params).toEqual(expect.arrayContaining([...params]));
+      if (isNull) expect(queries[0]!.sql).toMatch(/"partner_id" is null/);
+      else expect(queries[0]!.sql).not.toMatch(/"partner_id" is null/);
+    }
+  });
+});
+
+// Each event is queued for the partner that owns the router, so the dispatcher
+// can send it to that partner's address.
+describe("a router's webhooks carry its partner", () => {
+  const LONG_AGO = new Date(NOW.getTime() - 600_000);
+
+  it.each([
+    ["bloopcat", "bloopcat"],
+    [null, "vectra"],
+  ])("a check-in event of a router owned by %s goes to %s", async (owner, want) => {
+    const previous = router({ partnerId: owner, lastSeenAt: LONG_AGO });
+    const fake = createFakeDb({ updateReturns: [[routers, [[previous]]]] });
+    await notifyPartnerCheckInWithDb(fake.db as never, previous, {} as never, NOW);
+    expect(fake.inserts(partnerWebhooks)).toEqual([
+      expect.objectContaining({ event: "router.online", partnerId: want }),
+    ]);
+  });
+
+  it.each([
+    ["bloopcat", "bloopcat"],
+    [null, "vectra"],
+  ])("the offline sweep of a router owned by %s tells %s", async (owner, want) => {
+    const stale = router({ partnerId: owner, lastSeenAt: LONG_AGO });
+    const fake = createFakeDb({
+      selects: [[routers, [[stale]]]],
+      updateReturns: [[routers, [[stale]]]],
+    });
+    await sweepPartnerOfflineWithDb(fake.db as never, NOW);
+    expect(fake.inserts(partnerWebhooks)).toEqual([
+      expect.objectContaining({ event: "router.offline", partnerId: want }),
+    ]);
+  });
+
+  it("an action result goes to the partner that queued the action", async () => {
+    const job = {
+      id: JOB,
+      routerId: ID,
+      payload: {
+        origin: "partner_action",
+        ownerRef: "acct-42",
+        actionId: JOB,
+        partnerId: "bloopcat",
+      },
+    } as unknown as typeof jobs.$inferSelect;
+    const fake = createFakeDb({
+      updateReturns: [[routers, [[router({ partnerId: "bloopcat" })]]]],
+    });
+    await notifyPartnerActionResultWithDb(fake.db as never, {
+      job,
+      ownerRef: "acct-42",
+      status: "success",
+    });
+    expect(fake.inserts(partnerWebhooks)).toEqual([
+      expect.objectContaining({ event: "router.action", partnerId: "bloopcat" }),
+    ]);
+    // The partner is passed on: nothing is read to find it again.
+    expect(fake.calls.filter((call) => call.kind === "select")).toEqual([]);
+  });
+});
+
+// The check-in and the offline sweep read the router, then lock it with a
+// conditional UPDATE before they tell its partner. That lock is for the
+// partner they read, as for an action result: a router that changed hands in
+// between is told nothing about the other partner.
+describe("check-in and offline events lock the router of the partner they tell", () => {
+  const LONG_AGO = new Date(NOW.getTime() - 600_000);
+
+  function capturing(script: Parameters<typeof createFakeDb>[0]) {
+    const base = createFakeDb(script);
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      ...base.db,
+      update: (table: unknown) => ({
+        set: (set: Record<string, unknown>) => ({
+          where: (condition: SQL) => {
+            if (table === routers) queries.push(dialect.sqlToQuery(condition));
+            return base.db.update(table).set(set).where();
+          },
+        }),
+      }),
+      transaction: async <T>(run: (tx: unknown) => Promise<T>) => run(db),
+    };
+    return { base, db, queries };
+  }
+
+  function expectPartnerLock(
+    query: { sql: string; params: unknown[] } | undefined,
+    partnerId: string,
+    orNull: boolean,
+  ) {
+    expect(query!.sql).toMatch(/"partner_id" = \$\d+/);
+    expect(query!.params).toEqual(expect.arrayContaining([partnerId]));
+    if (orNull) expect(query!.sql).toMatch(/"partner_id" is null/);
+    else expect(query!.sql).not.toMatch(/"partner_id" is null/);
+  }
+
+  it.each([
+    ["bloopcat", "bloopcat", false],
+    [null, "vectra", true],
+  ] as const)("check-in of a router owned by %s locks it for %s", async (owner, partnerId, orNull) => {
+    const previous = router({ partnerId: owner, lastSeenAt: LONG_AGO });
+    const { base, db, queries } = capturing({ updateReturns: [[routers, [[previous]]]] });
+    await notifyPartnerCheckInWithDb(db as never, previous, {} as never, NOW);
+    expect(queries).toHaveLength(1);
+    expectPartnerLock(queries[0], partnerId, orNull);
+    expect(base.inserts(partnerWebhooks)).toHaveLength(1);
+  });
+
+  it.each([
+    ["bloopcat", "bloopcat", false],
+    [null, "vectra", true],
+  ] as const)("the offline sweep of a router owned by %s locks it for %s", async (owner, partnerId, orNull) => {
+    const stale = router({ partnerId: owner, lastSeenAt: LONG_AGO });
+    const { base, db, queries } = capturing({
+      selects: [[routers, [[stale]]]],
+      updateReturns: [[routers, [[stale]]]],
+    });
+    await sweepPartnerOfflineWithDb(db as never, NOW);
+    expect(queries).toHaveLength(1);
+    expectPartnerLock(queries[0], partnerId, orNull);
+    expect(base.inserts(partnerWebhooks)).toHaveLength(1);
+  });
+
+  it("tells nobody when the locked router now belongs to another partner", async () => {
+    const previous = router({ partnerId: null, lastSeenAt: LONG_AGO });
+    const checkIn = createFakeDb({
+      updateReturns: [[routers, [[router({ partnerId: "bloopcat", lastSeenAt: LONG_AGO })]]]],
+    });
+    await notifyPartnerCheckInWithDb(checkIn.db as never, previous, {} as never, NOW);
+    expect(checkIn.inserts(partnerWebhooks)).toEqual([]);
+
+    const sweep = createFakeDb({
+      selects: [[routers, [[router({ partnerId: "bloopcat", lastSeenAt: LONG_AGO })]]]],
+      updateReturns: [[routers, [[router({ partnerId: "vectra", lastSeenAt: LONG_AGO })]]]],
+    });
+    await sweepPartnerOfflineWithDb(sweep.db as never, NOW);
+    expect(sweep.inserts(partnerWebhooks)).toEqual([]);
+  });
+});
+
 describe("HTTP to native job to signed fake-provider webhook", () => {
   it("preserves the action and ownership across the complete local boundary", async () => {
     const fake = queueDb();
@@ -1172,6 +1399,193 @@ describe("negotiated full typed management", () => {
   });
 });
 
+// Partners share the jobs table: the dedupe key carries the partner's scope,
+// the payload keeps the key as the partner sent it (the router.action webhook
+// echoes it back).
+describe("an action's idempotency key per partner", () => {
+  it.each([
+    ["bloopcat", "K", "partner-action:bloopcat:K"],
+    ["vectra", "K", "partner-action:K"],
+    ["vectra", "act:7", "partner-action:vectra:act:7"],
+  ])("partner %s, key %s: dedupe key %s, payload keeps the raw key", async (partnerId, key, dedupeKey) => {
+    const fake = queueDb(router({ partnerId }));
+    const result = await queuePartnerActionWithDb(
+      fake.db as never,
+      action(),
+      key,
+      NOW,
+      partnerId,
+    );
+    expect(result.status).toBe(202);
+    const [job] = fake.inserts(jobs);
+    expect(job).toMatchObject({ dedupeKey, payload: { idempotencyKey: key } });
+  });
+});
+
+// Partners share the routers table: a router is visible and actionable only to
+// the partner that claimed it. fake-db does not evaluate predicates, so the
+// explicit JS check is pinned by scripting the other partner's row into the
+// answer and the SQL predicate by reading it off the query.
+describe("partners do not see each other's routers", () => {
+  type Where = { table: unknown; sql: string; params: unknown[] };
+  function recording(base: ReturnType<typeof createFakeDb>) {
+    const wheres: Where[] = [];
+    const db = {
+      ...base.db,
+      select: () => ({
+        from: (table: unknown) => {
+          const inner = base.db.select().from(table);
+          const chain = {
+            ...inner,
+            where: (condition: SQL) => {
+              wheres.push({ table, ...dialect.sqlToQuery(condition) });
+              return chain;
+            },
+          };
+          return chain;
+        },
+      }),
+      update: (table: unknown) => ({
+        set: (set: Record<string, unknown>) => {
+          const inner = base.db.update(table).set(set);
+          return {
+            where: (condition: SQL) => {
+              wheres.push({ table, ...dialect.sqlToQuery(condition) });
+              return inner.where();
+            },
+          };
+        },
+      }),
+      transaction: async <T>(run: (tx: unknown) => Promise<T>) => run(db),
+    };
+    return { db, wheres: (table: unknown) => wheres.filter((w) => w.table === table) };
+  }
+  // The ownership predicate of a partner, as it shows in the SQL of a query.
+  const IS_NULL = /"partner_id" is null/;
+  const EQUALS = /"partner_id" = \$\d+/;
+
+  it("hides another partner's router with the same ownerRef", async () => {
+    const fake = createFakeDb({
+      selects: [[routers, [[router({ partnerId: "bloopcat" })]]]],
+    });
+    expect(
+      await readPartnerRoutersWithDb(fake.db as never, "acct-42", undefined, NOW, "vectra"),
+    ).toEqual([]);
+    const reverse = createFakeDb({
+      selects: [[routers, [[router({ partnerId: null })]]]],
+    });
+    expect(
+      await readPartnerRoutersWithDb(reverse.db as never, "acct-42", undefined, NOW, "bloopcat"),
+    ).toEqual([]);
+  });
+
+  it("hides a router that changed hands between the list and its share-locked re-read", async () => {
+    const fake = createFakeDb({
+      selects: [
+        [routers, [[router()], [router({ partnerId: "bloopcat" })]]],
+        [routerInventorySnapshots, [[reportingInventory()]]],
+      ],
+    });
+    expect(
+      await readPartnerRoutersWithDb(fake.db as never, "acct-42", ID, NOW, "vectra"),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ["vectra", null],
+    ["vectra", "vectra"],
+    ["bloopcat", "bloopcat"],
+  ])("shows partner %s its own router (stored as %s)", async (partnerId, stored) => {
+    const own = router({ partnerId: stored });
+    const fake = createFakeDb({
+      selects: [
+        [routers, [[own], [own]]],
+        [routerInventorySnapshots, [[reportingInventory()]]],
+      ],
+    });
+    const snapshots = await readPartnerRoutersWithDb(
+      fake.db as never,
+      "acct-42",
+      ID,
+      NOW,
+      partnerId,
+    );
+    expect(snapshots.map((s) => s.routerId)).toEqual([ID]);
+  });
+
+  it("asks the database for the caller's routers only, in the list and in the locked re-read", async () => {
+    for (const [partnerId, params] of [
+      ["vectra", ["vectra"]],
+      ["bloopcat", ["bloopcat"]],
+    ] as const) {
+      const own = router({ partnerId: partnerId === "vectra" ? null : partnerId });
+      const spy = recording(
+        createFakeDb({
+          selects: [
+            [routers, [[own], [own]]],
+            [routerInventorySnapshots, [[reportingInventory()]]],
+          ],
+        }),
+      );
+      await readPartnerRoutersWithDb(spy.db as never, "acct-42", ID, NOW, partnerId);
+      const asked = spy.wheres(routers);
+      expect(asked).toHaveLength(2);
+      for (const query of asked) {
+        expect(query.sql).toMatch(EQUALS);
+        expect(query.params).toEqual(expect.arrayContaining([...params]));
+        if (partnerId === "vectra") expect(query.sql).toMatch(IS_NULL);
+        else expect(query.sql).not.toMatch(IS_NULL);
+      }
+    }
+  });
+
+  it("refuses an action on another partner's router", async () => {
+    const fake = queueDb(router({ partnerId: "bloopcat" }));
+    expect(
+      (await queuePartnerActionWithDb(fake.db as never, action(), "key", NOW, "vectra"))
+        .status,
+    ).toBe(404);
+    expect(fake.inserts(jobs)).toEqual([]);
+    // and the other way round: a router from before there were partners is Vectra Connect's.
+    const legacy = queueDb(router({ partnerId: null }));
+    expect(
+      (await queuePartnerActionWithDb(legacy.db as never, action(), "key", NOW, "bloopcat"))
+        .status,
+    ).toBe(404);
+    expect(legacy.inserts(jobs)).toEqual([]);
+  });
+
+  it("stores the partner on the queued job", async () => {
+    const fake = queueDb(router({ partnerId: "bloopcat" }));
+    const result = await queuePartnerActionWithDb(
+      fake.db as never,
+      action(),
+      "key",
+      NOW,
+      "bloopcat",
+    );
+    expect(result.status).toBe(202);
+    expect(fake.inserts(jobs)[0]).toMatchObject({
+      payload: { partnerId: "bloopcat", ownerRef: "acct-42", idempotencyKey: "key" },
+    });
+    const own = queueDb();
+    await queuePartnerActionWithDb(own.db as never, action(), "key", NOW);
+    expect(own.inserts(jobs)[0]).toMatchObject({ payload: { partnerId: "vectra" } });
+  });
+
+  it("locks and rechecks only the caller's router when it queues an action", async () => {
+    for (const partnerId of ["vectra", "bloopcat"]) {
+      const spy = recording(queueDb(router({ partnerId })));
+      await queuePartnerActionWithDb(spy.db as never, action(), "key", NOW, partnerId);
+      const [lock] = spy.wheres(routers);
+      expect(lock!.sql).toMatch(EQUALS);
+      expect(lock!.params).toContain(partnerId);
+      if (partnerId === "vectra") expect(lock!.sql).toMatch(IS_NULL);
+      else expect(lock!.sql).not.toMatch(IS_NULL);
+    }
+  });
+});
+
 // Review 2026-10-02: a command the backend gave up on was never cancelled, so
 // "try again" could run it twice. The partner cancels it by its own key — but
 // only while the router has never been handed it. A check-in leaves the job
@@ -1312,10 +1726,127 @@ describe("cancelling an owner's action by the partner's key", () => {
     }
   });
 
+  it("never touches another partner's router, and no job of its own", async () => {
+    for (const [row, partnerId] of [
+      [router({ partnerId: "bloopcat" }), "vectra"],
+      [router({ partnerId: null }), "bloopcat"],
+    ] as const) {
+      const fake = cancelDb(ownJob(), { row });
+      expect(
+        (await cancelPartnerActionWithDb(fake.db as never, cancelInput(), NOW, partnerId)).status,
+      ).toBe(404);
+      expect(fake.updates(jobs)).toEqual([]);
+    }
+  });
+
+  it("answers not_found for a job queued by another partner, a job without a partner being Vectra Connect's", async () => {
+    const theirs = cancelDb(
+      ownJob({ payload: { ...ownJob().payload, partnerId: "bloopcat" } }),
+      { row: router({ partnerId: "vectra" }) },
+    );
+    expect(await cancelPartnerActionWithDb(theirs.db as never, cancelInput(), NOW)).toEqual({
+      ok: true,
+      status: 200,
+      body: { state: "not_found" },
+    });
+    expect(theirs.updates(jobs)).toEqual([]);
+    // queued before there were partners: Vectra Connect's, nobody else's.
+    const legacy = cancelDb(ownJob(), { row: router({ partnerId: "bloopcat" }) });
+    expect(
+      await cancelPartnerActionWithDb(legacy.db as never, cancelInput(), NOW, "bloopcat"),
+    ).toEqual({ ok: true, status: 200, body: { state: "not_found" } });
+    expect(legacy.updates(jobs)).toEqual([]);
+    // its own partner's job is cancelled.
+    const own = cancelDb(
+      ownJob({ payload: { ...ownJob().payload, partnerId: "bloopcat" } }),
+      { row: router({ partnerId: "bloopcat" }) },
+    );
+    expect(
+      await cancelPartnerActionWithDb(own.db as never, cancelInput(), NOW, "bloopcat"),
+    ).toMatchObject({ status: 200, body: { state: "cancelled" } });
+  });
+
+  it("locks only the caller's router when it cancels", async () => {
+    for (const partnerId of ["vectra", "bloopcat"]) {
+      const base = cancelDb(ownJob({ payload: { ...ownJob().payload, partnerId } }), {
+        row: router({ partnerId }),
+      });
+      const queries: Array<{ sql: string; params: unknown[] }> = [];
+      const db = {
+        ...base.db,
+        update: (table: unknown) => ({
+          set: (set: Record<string, unknown>) => {
+            const inner = base.db.update(table).set(set);
+            return {
+              where: (condition: SQL) => {
+                if (table === routers) queries.push(dialect.sqlToQuery(condition));
+                return inner.where();
+              },
+            };
+          },
+        }),
+        transaction: async <T>(run: (tx: unknown) => Promise<T>) => run(db),
+      };
+      await cancelPartnerActionWithDb(
+        db as never,
+        cancelInput({ idempotencyKey: KEY }),
+        NOW,
+        partnerId,
+      );
+      expect(queries).toHaveLength(1);
+      expect(queries[0]!.sql).toMatch(/"partner_id" = \$\d+/);
+      expect(queries[0]!.params).toContain(partnerId);
+      if (partnerId === "vectra") expect(queries[0]!.sql).toMatch(/"partner_id" is null/);
+      else expect(queries[0]!.sql).not.toMatch(/"partner_id" is null/);
+    }
+  });
+
+  // fake-db does not evaluate predicates, so the lookup is read off the query.
+  function lookedUpDedupeKeys(job: Row | undefined, row?: Row) {
+    const base = cancelDb(job, { row });
+    const asked: unknown[] = [];
+    const db = {
+      ...base.db,
+      select: () => ({
+        from: (table: unknown) => {
+          const inner = base.db.select().from(table);
+          return {
+            where: (condition: SQL) => {
+              asked.push(...dialect.sqlToQuery(condition).params);
+              return inner.where();
+            },
+          };
+        },
+      }),
+      transaction: async <T>(run: (tx: unknown) => Promise<T>) => run(db),
+    };
+    return { db, asked };
+  }
+
+  it.each([
+    ["bloopcat", "K", "partner-action:bloopcat:K"],
+    ["vectra", "K", "partner-action:K"],
+    ["vectra", "act:7", "partner-action:vectra:act:7"],
+  ])("partner %s cancelling key %s finds the job under %s", async (partnerId, key, dedupeKey) => {
+    const job = ownJob({
+      dedupeKey,
+      payload: { ...ownJob().payload, idempotencyKey: key, partnerId },
+    });
+    const { db, asked } = lookedUpDedupeKeys(job, router({ partnerId }) as unknown as Row);
+    const result = await cancelPartnerActionWithDb(
+      db as never,
+      cancelInput({ idempotencyKey: key }),
+      NOW,
+      partnerId,
+    );
+    expect(asked).toContain(dedupeKey);
+    expect(result).toEqual({ ok: true, status: 200, body: { actionId: JOB, state: "cancelled" } });
+  });
+
   it("is signed v2, needs an Idempotency-Key and binds the path router into the body", async () => {
     const d = deps();
     expect((await handlePartnerRouterActionCancel(cancelRequest(), ID, d)).status).toBe(200);
-    expect(d.cancel).toHaveBeenCalledWith(cancelInput());
+    expect(d.cancel).toHaveBeenCalledWith(cancelInput(), "vectra");
     const other = deps();
     expect((await handlePartnerRouterActionCancel(cancelRequest(cancelInput({ routerId: OTHER }), ID, "k-2"), ID, other)).status).toBe(400);
     expect((await handlePartnerRouterActionCancel(cancelRequest(cancelInput({ idempotencyKey: "bad key" }), ID, "k-3"), ID, other)).status).toBe(400);
@@ -1465,7 +1996,7 @@ describe("port forwards", () => {
       }),
     });
   }
-  function portForwardsDb(capabilities: string[]) {
+  function portForwardsDb(capabilities: string[], routerOverrides = {}) {
     return createFakeDb({
       selects: [
         [
@@ -1473,7 +2004,7 @@ describe("port forwards", () => {
           [[portForwardsInventory({ capabilities, portForwards: telemetry })]],
         ],
       ],
-      updateReturns: [[routers, [[router()]]]],
+      updateReturns: [[routers, [[router(routerOverrides)]]]],
     });
   }
 
@@ -1677,5 +2208,114 @@ describe("port forwards", () => {
       ).toMatchObject({ status: 400, body: { error: "invalid_params" } });
       expect(fake.inserts(jobs)).toEqual([]);
     }
+  });
+  // set_port_forwards arrived from main after the partner scoping: it must take
+  // the same path as every other action, not a branch of its own.
+  it("is queued only on the calling partner's own router, under its scoped key", async () => {
+    const forward = action({ action: "set_port_forwards", params });
+    // Across partners, either way round: not found, nothing queued.
+    for (const [caller, stored] of [
+      ["bloopcat", null],
+      ["vectra", "bloopcat"],
+    ] as const) {
+      const foreign = portForwardsDb(["set_port_forwards"], { partnerId: stored });
+      expect(
+        await queuePartnerActionWithDb(foreign.db as never, forward, "pf-key", NOW, caller),
+      ).toMatchObject({ status: 404, body: { error: "not_found" } });
+      expect(foreign.inserts(jobs)).toEqual([]);
+    }
+    const own = portForwardsDb(["set_port_forwards"], { partnerId: "bloopcat" });
+    expect(
+      (await queuePartnerActionWithDb(own.db as never, forward, "pf-key", NOW, "bloopcat"))
+        .status,
+    ).toBe(202);
+    expect(own.inserts(jobs)[0]).toMatchObject({
+      type: "connect_router_action",
+      dedupeKey: "partner-action:bloopcat:pf-key",
+      payload: {
+        action: "set_port_forwards",
+        partnerId: "bloopcat",
+        idempotencyKey: "pf-key",
+        params,
+      },
+    });
+  });
+});
+
+describe("the calling partner reaches the data layer", () => {
+  const BLOOP_SECRET = "bloopcat-partner-test-secret-0123456789ab";
+  const bloopcat = {
+    id: "bloopcat",
+    brand: "bloopcat",
+    label: "BloopCat",
+    secrets: [BLOOP_SECRET],
+    webhook: null,
+    claimKey: null,
+    botUsername: null,
+  };
+  const KEY = "k-bloop";
+  const signed = (method: "GET" | "POST", url: string, raw: string, key: string) =>
+    new Request(url, {
+      method,
+      headers: buildPartnerRequestHeaders(
+        BLOOP_SECRET,
+        method,
+        url,
+        raw,
+        key,
+        NOW.getTime(),
+        undefined,
+        "bloopcat",
+      ),
+      ...(method === "GET" ? {} : { body: raw }),
+    });
+  const asBloopcat = () => {
+    const d = deps();
+    d.api.partners = (id) => (id === "bloopcat" ? bloopcat : null);
+    return d;
+  };
+
+  it("hands read, action and cancel the partner's id", async () => {
+    const d = asBloopcat();
+    const base = `https://fake.example/api/partner/routers/${ID}`;
+
+    expect(
+      (await handlePartnerRoutersRead(signed("GET", `${base}?ownerRef=acct-42`, "", ""), ID, d)).status,
+    ).toBe(404);
+    expect(d.read).toHaveBeenCalledWith("acct-42", ID, "bloopcat");
+
+    const queued = JSON.stringify(action());
+    expect(
+      (await handlePartnerRouterAction(signed("POST", `${base}/actions`, queued, KEY), ID, d)).status,
+    ).toBe(202);
+    expect(d.action).toHaveBeenCalledWith(action(), KEY, "bloopcat");
+
+    const cancel = JSON.stringify({ routerId: ID, ownerRef: "acct-42", idempotencyKey: KEY });
+    expect(
+      (await handlePartnerRouterActionCancel(signed("POST", `${base}/actions/cancel`, cancel, "c-bloop"), ID, d)).status,
+    ).toBe(200);
+    expect(d.cancel).toHaveBeenCalledWith(
+      { routerId: ID, ownerRef: "acct-42", idempotencyKey: KEY },
+      "bloopcat",
+    );
+  });
+
+  it("hands the default partner's id when the request names none", async () => {
+    const d = deps();
+    expect((await handlePartnerRouterAction(request(), ID, d)).status).toBe(202);
+    expect(d.action).toHaveBeenCalledWith(action(), "test-key", "vectra");
+  });
+
+  it("does not accept the default partner's secret under another partner's id", async () => {
+    const d = asBloopcat();
+    const url = `https://fake.example/api/partner/routers/${ID}/actions`;
+    const raw = JSON.stringify(action());
+    const borrowed = new Request(url, {
+      method: "POST",
+      body: raw,
+      headers: buildPartnerRequestHeaders(SECRET, "POST", url, raw, KEY, NOW.getTime(), undefined, "bloopcat"),
+    });
+    expect((await handlePartnerRouterAction(borrowed, ID, d)).status).toBe(401);
+    expect(d.action).not.toHaveBeenCalled();
   });
 });

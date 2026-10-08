@@ -15,7 +15,12 @@ import {
 import { createFakeDb } from "./testing/fake-db";
 import { createMemoryIdempotency } from "./testing/memory-idempotency";
 
-import { buildPartnerRequestHeaders } from "./partner-request-signature";
+import type { PartnerConfig } from "./partner-registry";
+import {
+  PARTNER_ID_HEADER,
+  PARTNER_REQUEST_ID_HEADER,
+  buildPartnerRequestHeaders,
+} from "./partner-request-signature";
 // Every dependency is injected; the real database is never reached.
 vi.mock("~/server/db", () => ({ db: {} }));
 
@@ -42,6 +47,7 @@ function signedRequest(
     secret?: string;
     timestamp?: string;
     raw?: string;
+    partnerId?: string;
   } = {},
 ) {
   const raw = options.raw ?? JSON.stringify(body);
@@ -56,6 +62,7 @@ function signedRequest(
       options.key ?? "default-test-key",
       Number(timestamp) * 1000,
     ),
+    ...(options.partnerId ? { [PARTNER_ID_HEADER]: options.partnerId } : {}),
   };
   return new Request(`https://router.vectra-pro.net${path}`, {
     method,
@@ -121,12 +128,15 @@ describe("POST /api/partner/router-claims — authentication", () => {
       devicePublicKey: null,
       model: null,
     });
-    expect(deps.claim).toHaveBeenCalledWith({
-      code: "7KQ4M9XD",
-      device: null,
-      owner: { ref: "acct-42", label: "iv***" },
-      subscription: CLAIM_BODY.subscription,
-    });
+    expect(deps.claim).toHaveBeenCalledWith(
+      {
+        code: "7KQ4M9XD",
+        device: null,
+        owner: { ref: "acct-42", label: "iv***" },
+        subscription: CLAIM_BODY.subscription,
+      },
+      "vectra",
+    );
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
@@ -274,12 +284,15 @@ describe("POST /api/partner/router-claims — body", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(deps.claim).toHaveBeenCalledWith({
-      code: "7KQ4M9XD",
-      device: null,
-      owner: { ref: "acct-42", label: "iv***" },
-      subscription: { url: CLAIM_BODY.subscription.url },
-    });
+    expect(deps.claim).toHaveBeenCalledWith(
+      {
+        code: "7KQ4M9XD",
+        device: null,
+        owner: { ref: "acct-42", label: "iv***" },
+        subscription: { url: CLAIM_BODY.subscription.url },
+      },
+      "vectra",
+    );
   });
 
   it("claims with the router's own signed agent when subscription.userAgent is null", async () => {
@@ -294,12 +307,15 @@ describe("POST /api/partner/router-claims — body", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(deps.claim).toHaveBeenCalledWith({
-      code: "7KQ4M9XD",
-      device: null,
-      owner: { ref: "acct-42", label: "iv***" },
-      subscription: { url: CLAIM_BODY.subscription.url, userAgent: null },
-    });
+    expect(deps.claim).toHaveBeenCalledWith(
+      {
+        code: "7KQ4M9XD",
+        device: null,
+        owner: { ref: "acct-42", label: "iv***" },
+        subscription: { url: CLAIM_BODY.subscription.url, userAgent: null },
+      },
+      "vectra",
+    );
   });
 
   it.each([
@@ -638,6 +654,7 @@ describe("DELETE /api/partner/router-claims/:routerId", () => {
     expect(deps.unbind).toHaveBeenCalledWith({
       routerId: ROUTER_ID,
       ownerRef: "acct-42",
+      partnerId: "vectra",
     });
   });
 
@@ -815,6 +832,190 @@ describe("reserveIdempotencyKeyWithDb", () => {
         statusCode: 202,
         response: { actionId: "a" },
       },
+    });
+  });
+});
+
+const BLOOP_SECRET = "bloopcat-partner-test-secret-0123456789ab";
+const BLOOP_OLD_SECRET = "bloopcat-partner-old-secret-0123456789abc";
+const BLOOPCAT: PartnerConfig = {
+  id: "bloopcat",
+  brand: "bloopcat",
+  label: "BloopCat",
+  secrets: [BLOOP_SECRET],
+  webhook: null,
+  claimKey: null,
+  botUsername: "BloopCat_bot",
+};
+
+describe("partners", () => {
+  const withPartners = (bloopcat: PartnerConfig | null = BLOOPCAT) =>
+    createDeps({ partners: (id) => (id === "bloopcat" ? bloopcat : null) });
+
+  it("treats a request without a partner header as the default partner", async () => {
+    const { deps } = withPartners();
+    const response = await handleRouterClaimRequest(
+      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY),
+      deps,
+    );
+    expect(response.status).toBe(200);
+    expect(deps.claim).toHaveBeenCalledWith(expect.anything(), "vectra");
+  });
+
+  it("treats an explicit 'vectra' header exactly like no header", async () => {
+    const { deps } = withPartners();
+    const response = await handleRouterClaimRequest(
+      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, { partnerId: "vectra" }),
+      deps,
+    );
+    expect(response.status).toBe(200);
+    expect(deps.claim).toHaveBeenCalledWith(expect.anything(), "vectra");
+  });
+
+  it("checks a named partner's request against that partner's secret", async () => {
+    const { deps } = withPartners();
+    const ok = await handleRouterClaimRequest(
+      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+        partnerId: "bloopcat",
+        secret: BLOOP_SECRET,
+        key: "bloop-claim-1",
+      }),
+      deps,
+    );
+    expect(ok.status).toBe(200);
+    expect(deps.claim).toHaveBeenCalledWith(expect.anything(), "bloopcat");
+
+    const borrowed = await handleRouterClaimRequest(
+      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+        partnerId: "bloopcat",
+        secret: SECRET,
+        key: "bloop-claim-2",
+      }),
+      deps,
+    );
+    expect(borrowed.status).toBe(401);
+    expect(await borrowed.json()).toEqual({ error: "bad_signature" });
+  });
+
+  it.each(["unknown", "Bloop Cat", ""])("refuses an unknown partner %j", async (id) => {
+    const { deps } = withPartners();
+    const response = await handleRouterClaimRequest(
+      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, { partnerId: id || " ", secret: BLOOP_SECRET }),
+      deps,
+    );
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "unknown_partner" });
+    expect(deps.claim).not.toHaveBeenCalled();
+  });
+
+  it("accepts both secrets during a rotation", async () => {
+    const { deps } = withPartners({ ...BLOOPCAT, secrets: [BLOOP_SECRET, BLOOP_OLD_SECRET] });
+    const response = await handleRouterClaimRequest(
+      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+        partnerId: "bloopcat",
+        secret: BLOOP_OLD_SECRET,
+        key: "bloop-rotation",
+      }),
+      deps,
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it("keeps two partners' idempotency keys apart", async () => {
+    const { deps } = withPartners();
+    await handleRouterClaimRequest(
+      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, { key: "same-key" }),
+      deps,
+    );
+    await handleRouterClaimRequest(
+      signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+        partnerId: "bloopcat",
+        secret: BLOOP_SECRET,
+        key: "same-key",
+      }),
+      deps,
+    );
+    const keys = vi.mocked(deps.reserveIdempotent).mock.calls.map(([key]) => key);
+    expect(keys).toEqual(["same-key", "bloopcat:same-key"]);
+    const finished = vi
+      .mocked(deps.finishIdempotent)
+      .mock.calls.map(([key]) => key);
+    expect(finished).toEqual(["same-key", "bloopcat:same-key"]);
+    expect(deps.claim).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the request ids of two partners apart in the replay table", async () => {
+    const reserveNonce = vi.fn<PartnerApiDeps["reserveNonce"]>(async () => true);
+    const { deps } = createDeps({
+      partners: (id) => (id === "bloopcat" ? BLOOPCAT : null),
+      reserveNonce,
+    });
+    const own = signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+      key: "nonce-own",
+    });
+    const bloop = signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+      partnerId: "bloopcat",
+      secret: BLOOP_SECRET,
+      key: "nonce-bloop",
+    });
+    const ownId = own.headers.get(PARTNER_REQUEST_ID_HEADER);
+    const bloopId = bloop.headers.get(PARTNER_REQUEST_ID_HEADER);
+    await handleRouterClaimRequest(own, deps);
+    await handleRouterClaimRequest(bloop, deps);
+    const ids = reserveNonce.mock.calls.map(([id]) => id);
+    // The default partner's request ids stay as they always were.
+    expect(ids).toEqual([ownId, `bloopcat:${bloopId}`]);
+  });
+
+  describe("the default partner from the registry", () => {
+    const REGISTRY_A = "vectra-registry-secret-a-0123456789abcdef";
+    const REGISTRY_B = "vectra-registry-secret-b-0123456789abcdef";
+    const vectra: PartnerConfig = {
+      id: "vectra",
+      brand: "vectra",
+      label: "Vectra",
+      secrets: [REGISTRY_A, REGISTRY_B],
+      webhook: null,
+      claimKey: null,
+      botUsername: null,
+    };
+    const fromRegistry = () =>
+      createDeps({ partners: (id) => (id === "vectra" ? vectra : null) });
+
+    it("accepts either of its secrets during a rotation", async () => {
+      const { deps } = fromRegistry();
+      for (const [secret, key] of [
+        [REGISTRY_A, "vectra-rotation-a"],
+        [REGISTRY_B, "vectra-rotation-b"],
+      ] as const) {
+        const response = await handleRouterClaimRequest(
+          signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+            secret,
+            key,
+          }),
+          deps,
+        );
+        expect(response.status).toBe(200);
+      }
+      expect(deps.claim).toHaveBeenCalledTimes(2);
+      expect(deps.claim).toHaveBeenLastCalledWith(expect.anything(), "vectra");
+    });
+
+    it("stores a key that looks like another partner's scoped key under its own scope", async () => {
+      const { deps } = createDeps();
+      const response = await handleRouterClaimRequest(
+        signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+          key: "ab-c:1",
+        }),
+        deps,
+      );
+      expect(response.status).toBe(200);
+      expect(vi.mocked(deps.reserveIdempotent).mock.calls.map(([key]) => key)).toEqual([
+        "vectra:ab-c:1",
+      ]);
+      expect(vi.mocked(deps.finishIdempotent).mock.calls.map(([key]) => key)).toEqual([
+        "vectra:ab-c:1",
+      ]);
     });
   });
 });
