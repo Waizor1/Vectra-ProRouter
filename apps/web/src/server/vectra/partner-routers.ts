@@ -349,7 +349,9 @@ export async function queuePartnerActionWithDb(
       .returning();
     if (router?.ownerRef !== input.ownerRef || router.releasedAt)
       return { ok: false, status: 404, body: { error: "not_found" } };
-    const dedupeKey = `${PARTNER_ACTION_DEDUPE_PREFIX}${key}`;
+    // Partners share the jobs table: the dedupe key carries the partner's scope
+    // (payload.idempotencyKey below stays the key as the partner sent it).
+    const dedupeKey = `${PARTNER_ACTION_DEDUPE_PREFIX}${scopeIdempotencyKey(partnerId, key)}`;
     // Keyed: the input of set_wifi carries the Wi-Fi password, and this hash
     // is stored in the job row for as long as the job is kept.
     const hashes = {
@@ -536,7 +538,10 @@ export async function cancelPartnerActionWithDb(
       .select()
       .from(jobs)
       .where(
-        eq(jobs.dedupeKey, `${PARTNER_ACTION_DEDUPE_PREFIX}${input.idempotencyKey}`),
+        eq(
+          jobs.dedupeKey,
+          `${PARTNER_ACTION_DEDUPE_PREFIX}${scopeIdempotencyKey(partnerId, input.idempotencyKey)}`,
+        ),
       )
       .limit(1);
     // Only this owner's own action on this router counts; anything else under
@@ -615,13 +620,7 @@ function defaults(): PartnerRoutersDeps {
     read: (owner, id, partnerId) =>
       readPartnerRoutersWithDb(db, owner, id, new Date(), partnerId),
     action: (input, key, partnerId) =>
-      queuePartnerActionWithDb(
-        db,
-        input,
-        scopeIdempotencyKey(partnerId, key),
-        new Date(),
-        partnerId,
-      ),
+      queuePartnerActionWithDb(db, input, key, new Date(), partnerId),
     cancel: (input, partnerId) =>
       cancelPartnerActionWithDb(db, input, new Date(), partnerId),
   };

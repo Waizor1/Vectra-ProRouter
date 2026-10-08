@@ -18,6 +18,7 @@ import { createMemoryIdempotency } from "./testing/memory-idempotency";
 import type { PartnerConfig } from "./partner-registry";
 import {
   PARTNER_ID_HEADER,
+  PARTNER_REQUEST_ID_HEADER,
   buildPartnerRequestHeaders,
 } from "./partner-request-signature";
 // Every dependency is injected; the real database is never reached.
@@ -936,6 +937,85 @@ describe("partners", () => {
     );
     const keys = vi.mocked(deps.reserveIdempotent).mock.calls.map(([key]) => key);
     expect(keys).toEqual(["same-key", "bloopcat:same-key"]);
+    const finished = vi
+      .mocked(deps.finishIdempotent)
+      .mock.calls.map(([key]) => key);
+    expect(finished).toEqual(["same-key", "bloopcat:same-key"]);
     expect(deps.claim).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the request ids of two partners apart in the replay table", async () => {
+    const reserveNonce = vi.fn<PartnerApiDeps["reserveNonce"]>(async () => true);
+    const { deps } = createDeps({
+      partners: (id) => (id === "bloopcat" ? BLOOPCAT : null),
+      reserveNonce,
+    });
+    const own = signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+      key: "nonce-own",
+    });
+    const bloop = signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+      partnerId: "bloopcat",
+      secret: BLOOP_SECRET,
+      key: "nonce-bloop",
+    });
+    const ownId = own.headers.get(PARTNER_REQUEST_ID_HEADER);
+    const bloopId = bloop.headers.get(PARTNER_REQUEST_ID_HEADER);
+    await handleRouterClaimRequest(own, deps);
+    await handleRouterClaimRequest(bloop, deps);
+    const ids = reserveNonce.mock.calls.map(([id]) => id);
+    // The default partner's request ids stay as they always were.
+    expect(ids).toEqual([ownId, `bloopcat:${bloopId}`]);
+  });
+
+  describe("the default partner from the registry", () => {
+    const REGISTRY_A = "vectra-registry-secret-a-0123456789abcdef";
+    const REGISTRY_B = "vectra-registry-secret-b-0123456789abcdef";
+    const vectra: PartnerConfig = {
+      id: "vectra",
+      brand: "vectra",
+      label: "Vectra",
+      secrets: [REGISTRY_A, REGISTRY_B],
+      webhook: null,
+      claimKey: null,
+      botUsername: null,
+    };
+    const fromRegistry = () =>
+      createDeps({ partners: (id) => (id === "vectra" ? vectra : null) });
+
+    it("accepts either of its secrets during a rotation", async () => {
+      const { deps } = fromRegistry();
+      for (const [secret, key] of [
+        [REGISTRY_A, "vectra-rotation-a"],
+        [REGISTRY_B, "vectra-rotation-b"],
+      ] as const) {
+        const response = await handleRouterClaimRequest(
+          signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+            secret,
+            key,
+          }),
+          deps,
+        );
+        expect(response.status).toBe(200);
+      }
+      expect(deps.claim).toHaveBeenCalledTimes(2);
+      expect(deps.claim).toHaveBeenLastCalledWith(expect.anything(), "vectra");
+    });
+
+    it("stores a key that looks like another partner's scoped key under its own scope", async () => {
+      const { deps } = createDeps();
+      const response = await handleRouterClaimRequest(
+        signedRequest("POST", "/api/partner/router-claims", CLAIM_BODY, {
+          key: "ab-c:1",
+        }),
+        deps,
+      );
+      expect(response.status).toBe(200);
+      expect(vi.mocked(deps.reserveIdempotent).mock.calls.map(([key]) => key)).toEqual([
+        "vectra:ab-c:1",
+      ]);
+      expect(vi.mocked(deps.finishIdempotent).mock.calls.map(([key]) => key)).toEqual([
+        "vectra:ab-c:1",
+      ]);
+    });
   });
 });

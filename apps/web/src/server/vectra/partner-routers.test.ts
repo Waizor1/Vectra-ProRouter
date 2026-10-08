@@ -1172,6 +1172,29 @@ describe("negotiated full typed management", () => {
   });
 });
 
+// Partners share the jobs table: the dedupe key carries the partner's scope,
+// the payload keeps the key as the partner sent it (the router.action webhook
+// echoes it back).
+describe("an action's idempotency key per partner", () => {
+  it.each([
+    ["bloopcat", "K", "partner-action:bloopcat:K"],
+    ["vectra", "K", "partner-action:K"],
+    ["vectra", "act:7", "partner-action:vectra:act:7"],
+  ])("partner %s, key %s: dedupe key %s, payload keeps the raw key", async (partnerId, key, dedupeKey) => {
+    const fake = queueDb();
+    const result = await queuePartnerActionWithDb(
+      fake.db as never,
+      action(),
+      key,
+      NOW,
+      partnerId,
+    );
+    expect(result.status).toBe(202);
+    const [job] = fake.inserts(jobs);
+    expect(job).toMatchObject({ dedupeKey, payload: { idempotencyKey: key } });
+  });
+});
+
 // Review 2026-10-02: a command the backend gave up on was never cancelled, so
 // "try again" could run it twice. The partner cancels it by its own key — but
 // only while the router has never been handed it. A check-in leaves the job
@@ -1310,6 +1333,48 @@ describe("cancelling an owner's action by the partner's key", () => {
       expect((await cancelPartnerActionWithDb(fake.db as never, cancelInput(), NOW)).status).toBe(404);
       expect(fake.updates(jobs)).toEqual([]);
     }
+  });
+
+  // fake-db does not evaluate predicates, so the lookup is read off the query.
+  function lookedUpDedupeKeys(job: Row | undefined) {
+    const base = cancelDb(job);
+    const asked: unknown[] = [];
+    const db = {
+      ...base.db,
+      select: () => ({
+        from: (table: unknown) => {
+          const inner = base.db.select().from(table);
+          return {
+            where: (condition: SQL) => {
+              asked.push(...dialect.sqlToQuery(condition).params);
+              return inner.where();
+            },
+          };
+        },
+      }),
+      transaction: async <T>(run: (tx: unknown) => Promise<T>) => run(db),
+    };
+    return { db, asked };
+  }
+
+  it.each([
+    ["bloopcat", "K", "partner-action:bloopcat:K"],
+    ["vectra", "K", "partner-action:K"],
+    ["vectra", "act:7", "partner-action:vectra:act:7"],
+  ])("partner %s cancelling key %s finds the job under %s", async (partnerId, key, dedupeKey) => {
+    const job = ownJob({
+      dedupeKey,
+      payload: { ...ownJob().payload, idempotencyKey: key },
+    });
+    const { db, asked } = lookedUpDedupeKeys(job);
+    const result = await cancelPartnerActionWithDb(
+      db as never,
+      cancelInput({ idempotencyKey: key }),
+      NOW,
+      partnerId,
+    );
+    expect(asked).toContain(dedupeKey);
+    expect(result).toEqual({ ok: true, status: 200, body: { actionId: JOB, state: "cancelled" } });
   });
 
   it("is signed v2, needs an Idempotency-Key and binds the path router into the body", async () => {
