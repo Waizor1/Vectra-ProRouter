@@ -2226,7 +2226,10 @@ func TestUCIDefaultsKeepTheSupportShellOfARouterTheOldAgentRan(t *testing.T) {
 // Every vctl installed before brands existed was a Vectra install, and its
 // subscription cannot say so (Vectra Connect's proxy strips the headers), so
 // the uci-defaults script labels such a router 'vectra' — once: a router that
-// already has a vctl identity (its state file) and no brand label. The marker
+// already has a vctl identity (its state file) and no brand label. So is a
+// fleet router of the old Vectra agent getting vctl by opkg (or a --standby
+// vctl that never started): no vctl state yet, but the old agent's
+// (legacy_state_path) — only Vectra's fleet ever ran that agent. The marker
 // brand_seeded is set on every router the first time, so a neutral install on
 // a fresh box is never relabelled by a later upgrade, a brand the owner
 // cleared stays cleared, and a label that is there (the installer's) is
@@ -2241,21 +2244,27 @@ func TestUCIDefaultsLabelARouterThatPredatesBrandsOnce(t *testing.T) {
 	seeded := mainSeededByDefaults(t)
 	for _, c := range []struct {
 		name      string
-		state     bool   // the state file exists
+		state     bool   // vctl's state file exists
+		legacy    bool   // the old agent's state file exists
 		brand     string // the label, or unset
 		seeded    string // the marker, or unset
 		wantBrand string
 	}{
-		{"a vctl that predates brands, its brand option empty", true, "", unset, "vectra"},
-		{"a vctl that predates brands, no brand option at all", true, unset, unset, "vectra"},
-		{"the installer labelled it bloopcat", true, "bloopcat", unset, "bloopcat"},
-		{"the installer labelled it vectra", true, "vectra", unset, "vectra"},
-		{"a new router: no state file, no label", false, "", unset, ""},
-		{"a new router, no brand option at all", false, unset, unset, ""},
-		{"a new router the installer labelled bloopcat", false, "bloopcat", unset, "bloopcat"},
-		{"already seeded, brand cleared by the owner", true, "", "1", ""},
-		{"already seeded, no brand option", true, unset, "1", ""},
-		{"already seeded, label kept", true, "bloopcat", "1", "bloopcat"},
+		{"a vctl that predates brands, its brand option empty", true, false, "", unset, "vectra"},
+		{"a vctl that predates brands, no brand option at all", true, false, unset, unset, "vectra"},
+		{"the installer labelled it bloopcat", true, false, "bloopcat", unset, "bloopcat"},
+		{"the installer labelled it vectra", true, false, "vectra", unset, "vectra"},
+		{"a new router: no state file, no label", false, false, "", unset, ""},
+		{"a new router, no brand option at all", false, false, unset, unset, ""},
+		{"a new router the installer labelled bloopcat", false, false, "bloopcat", unset, "bloopcat"},
+		{"an old agent's router getting vctl: only the old agent's state, brand option empty", false, true, "", unset, "vectra"},
+		{"an old agent's router getting vctl: only the old agent's state, no brand option at all", false, true, unset, unset, "vectra"},
+		{"an old agent's router the installer labelled bloopcat", false, true, "bloopcat", unset, "bloopcat"},
+		{"both state files, no label", true, true, "", unset, "vectra"},
+		{"already seeded, brand cleared by the owner", true, false, "", "1", ""},
+		{"already seeded, no brand option", true, false, unset, "1", ""},
+		{"already seeded, label kept", true, false, "bloopcat", "1", "bloopcat"},
+		{"already seeded, the old agent's state, brand cleared by the owner", false, true, "", "1", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -2269,12 +2278,21 @@ func TestUCIDefaultsLabelARouterThatPredatesBrandsOnce(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			legacyPath := filepath.Join(r.dir, "etc", "vectra-controller", "state.json")
+			if c.legacy {
+				if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(legacyPath, []byte(`{"router_id":"r-1","agent_token":"x"}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			opts := map[string]string{}
 			for k, v := range seeded {
 				opts[k] = v
 			}
 			opts["state_path"] = statePath
-			opts["legacy_state_path"] = filepath.Join(r.dir, "no-legacy.json")
+			opts["legacy_state_path"] = legacyPath
 			if c.brand != unset {
 				opts["brand"] = c.brand
 			}
@@ -2355,6 +2373,30 @@ func TestUCIDefaultsLabelByTheStateFileUCINames(t *testing.T) {
 	r.run(defaultsScript)
 	if got := r.option("vectra-controller-pro", "main", "brand"); got != "vectra" {
 		t.Fatalf("brand = %q, want vectra: the file state_path names exists", got)
+	}
+}
+
+// The seed asks the old agent's state file UCI names (legacy_state_path),
+// not a path of its own: a router whose old agent kept it elsewhere is judged
+// by that file.
+func TestUCIDefaultsLabelByTheLegacyStateFileUCINames(t *testing.T) {
+	t.Parallel()
+	r := newLanRouter(t, stockDHCP(), true)
+	moved := filepath.Join(r.dir, "elsewhere", "legacy-state.json")
+	if err := os.MkdirAll(filepath.Dir(moved), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(moved, []byte(`{"router_id":"r-1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.seed("vectra-controller-pro", uciSection{Name: "main", Type: "controller", Opts: map[string]string{
+		"state_path": filepath.Join(r.dir, "no-state.json"), "legacy_state_path": moved, "enabled": "1", "brand": ""}})
+	r.run(defaultsScript)
+	if got := r.option("vectra-controller-pro", "main", "brand"); got != "vectra" {
+		t.Fatalf("brand = %q, want vectra: the file legacy_state_path names exists", got)
+	}
+	if got := r.option("vectra-controller-pro", "main", "brand_seeded"); got != "1" {
+		t.Fatalf("brand_seeded = %q, want 1", got)
 	}
 }
 

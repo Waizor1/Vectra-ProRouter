@@ -69,7 +69,10 @@ fi
 # Vectra Connect's subscription proxy strips the headers that name the brand,
 # so such a router would render neutral after this upgrade. So a router that
 # already has a vctl identity (its state file) and no brand label is labelled
-# 'vectra', once. This is the lowest-ranking label: the subscription and the
+# 'vectra', once. So is a fleet router of the old Vectra agent that gets vctl
+# by opkg (or a --standby vctl that never started): it has no vctl state yet,
+# but the old agent's (legacy_state_path) — and only Vectra's fleet ever ran
+# that agent. This is the lowest-ranking label: the subscription and the
 # panel's claim answer still override it. brand_seeded is set on every router
 # the first time this runs, a new one too, so that a neutral install on a
 # fresh box is never relabelled by a later upgrade and a brand the owner
@@ -77,7 +80,9 @@ fi
 # on a new router the marker must be absent for this to tell the two apart.
 if [ -z "$(uci -q get vectra-controller-pro.main.brand_seeded || true)" ]; then
 	state_file="$(uci -q get vectra-controller-pro.main.state_path || true)"
-	if [ -n "$state_file" ] && [ -f "$state_file" ] &&
+	legacy_state_file="$(uci -q get vectra-controller-pro.main.legacy_state_path || true)"
+	if { { [ -n "$state_file" ] && [ -f "$state_file" ]; } ||
+		{ [ -n "$legacy_state_file" ] && [ -f "$legacy_state_file" ]; }; } &&
 		[ -z "$(uci -q get vectra-controller-pro.main.brand || true)" ]; then
 		uci -q set vectra-controller-pro.main.brand=vectra
 	fi

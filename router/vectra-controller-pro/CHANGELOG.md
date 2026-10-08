@@ -12,7 +12,9 @@ service's name. Colours and layout are the same for everyone.
   opens VectraConnect_support_bot (Vectra's support bot), not the bot the
   claim code goes to. A router upgraded from an earlier vctl keeps being a
   Vectra router: its uci-defaults labels it `vectra` once, when it has a vctl
-  identity and no label (UCI `main.brand_seeded` marks that it was done, on
+  identity — or the old Vectra agent's state (`legacy_state_path`: a fleet
+  router of the old agent getting vctl by opkg, or a `--standby` vctl that
+  never started) — and no label (UCI `main.brand_seeded` marks that it was done, on
   every router, so a fresh box is never relabelled by a later upgrade and a
   label the owner cleared stays cleared). Vectra Connect's own subscription
   proxy does not forward the headers that name the brand, so for Vectra it
