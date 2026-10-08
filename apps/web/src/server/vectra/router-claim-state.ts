@@ -1,15 +1,19 @@
 import { createHash, createHmac, createPublicKey, verify } from "node:crypto";
 
-import type {
-  RouterClaim,
-  RouterClaimKey,
-  RouterRegisterProof,
+import {
+  partnerIdSchema,
+  type RouterClaim,
+  type RouterClaimKey,
+  type RouterRegisterProof,
 } from "@vectra/contracts";
 import { routerCredentials, type routers } from "@vectra/db";
 import { eq } from "drizzle-orm";
 
 import { env } from "~/env";
 import type { db } from "~/server/db";
+
+import { DEFAULT_PARTNER_ID, findPartner } from "./partner-registry";
+import { routerPartnerId } from "./partner-scope";
 
 /**
  * ADR-0006 claim state the router control plane (register / check-in) needs.
@@ -264,6 +268,18 @@ export function isReleasedAwaitingOwner(
   return router.releasedAt !== null && !router.ownerRef;
 }
 
+/** A partner's claim key, held to the same production rule as Vectra's own. */
+function usableClaimKey(key: RouterClaimKey | null | undefined) {
+  if (!key) return undefined;
+  if (
+    env.NODE_ENV === "production" &&
+    key.publicKey === ROUTER_CLAIM_PUBLIC_TEST_KEY
+  ) {
+    return undefined;
+  }
+  return key;
+}
+
 /**
  * The ADR-0006 fields every register and check-in response carries.
  *
@@ -274,19 +290,38 @@ export function isReleasedAwaitingOwner(
  * `released: true` is sent only for a released router; otherwise the field is
  * absent, because `owner: null` alone is what every fleet router receives and
  * must never be read as "wipe yourself".
+ *
+ * A claimed router hears its owner's partner: that partner's claim key and bot
+ * (Vectra's own where the partner has none) and its brand. The answer is
+ * parsed by the contract, so a brand the contract would refuse is left out —
+ * a check-in must never throw for one router's sake.
  */
 export function buildRouterClaimResponseFields(
-  router: Pick<RouterRow, "ownerRef" | "ownerLabel" | "releasedAt">,
+  router: Pick<RouterRow, "ownerRef" | "ownerLabel" | "releasedAt" | "partnerId">,
 ) {
-  const claimKey = resolveRouterClaimKey();
-  const botUsername = resolveBotUsername();
+  // An unclaimed router still hears Vectra's key and bot: it shows a code any
+  // partner's bot can claim, and the panel cannot know whose customer it is.
+  const partnerId = router.ownerRef
+    ? routerPartnerId(router)
+    : DEFAULT_PARTNER_ID;
+  const partner = findPartner(partnerId);
+  const claimKey = usableClaimKey(partner?.claimKey) ?? resolveRouterClaimKey();
+  const botUsername = partner?.botUsername ?? resolveBotUsername();
+  const brand = router.ownerRef
+    ? partnerIdSchema.safeParse(partner?.brand ?? partnerId)
+    : null;
   const ownerLabel = router.ownerLabel?.trim() ?? "";
 
   return {
     ...(claimKey ? { claimKey } : {}),
     ...(botUsername ? { botUsername } : {}),
+    ...(brand?.success ? { brand: brand.data } : {}),
     owner: router.ownerRef
-      ? { ownerRef: router.ownerRef, label: ownerLabel.length > 0 ? ownerLabel : "Vectra" }
+      ? {
+          ownerRef: router.ownerRef,
+          label:
+            ownerLabel.length > 0 ? ownerLabel : (partner?.label ?? "Vectra"),
+        }
       : null,
     ...(isReleasedAwaitingOwner(router) ? { released: true as const } : {}),
   };

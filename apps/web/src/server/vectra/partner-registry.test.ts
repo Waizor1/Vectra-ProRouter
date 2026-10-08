@@ -1,6 +1,8 @@
+import { partnerIdSchema } from "@vectra/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_PARTNER_ID,
+  PARTNER_ID_PATTERN,
   parsePartners,
   partnersFrom,
   scopeIdempotencyKey,
@@ -307,5 +309,40 @@ describe("listPartners / findPartner", () => {
     expect(text).not.toContain(LEGACY_SECRET);
     expect(text).not.toContain(LEGACY_WEBHOOK.secret);
     expect(text).not.toContain(BLOOP.secrets[0]);
+  });
+});
+
+// The registry validates ids and brands with PARTNER_ID_PATTERN; the check-in
+// and register answers validate `brand` with the contract's partnerIdSchema.
+// If they drifted, a brand the registry accepted would make
+// routerCheckInResponseSchema.parse throw for that partner's routers.
+describe("partner id pattern parity with the contract", () => {
+  it("is the very pattern partnerIdSchema uses", () => {
+    const checks = (partnerIdSchema as unknown as {
+      _def: { checks: Array<{ kind: string; regex?: RegExp }> };
+    })._def.checks;
+    const regex = checks.find((check) => check.kind === "regex")?.regex;
+    expect(regex?.source).toBe(PARTNER_ID_PATTERN.source);
+    expect(regex?.flags).toBe(PARTNER_ID_PATTERN.flags);
+  });
+
+  it.each([
+    "vectra",
+    "bloopcat",
+    "b2",
+    "a",
+    "ab",
+    "Bloop",
+    "b_c",
+    "-ab",
+    "1ab",
+    "a-b",
+    "a".repeat(32),
+    "a".repeat(33),
+    "bloop cat",
+    "bloop:cat",
+    "",
+  ])("accepts %j in the registry exactly when the contract does", (id) => {
+    expect(PARTNER_ID_PATTERN.test(id)).toBe(partnerIdSchema.safeParse(id).success);
   });
 });
