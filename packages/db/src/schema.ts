@@ -134,6 +134,9 @@ export const routers = createTable(
     // show on the router's own page.
     ownerRef: text("owner_ref"),
     ownerLabel: text("owner_label"),
+    // Which partner of the partner API owns the router; NULL = Vectra Connect
+    // ("vectra"), the only partner before there were several.
+    partnerId: text("partner_id"),
     // The router's latest reported one-time claim code, stored as a keyed
     // digest of the sha256 the router sends (see router-claim-codes.ts): an
     // 8-character code is only 40 bits, so the plain sha256 would be reversible
@@ -165,6 +168,10 @@ export const routers = createTable(
     index("vectra_router_claim_code_hash_idx").on(table.claimCodeHash),
     index("vectra_router_previous_claim_code_hash_idx").on(
       table.previousClaimCodeHash,
+    ),
+    index("vectra_router_partner_owner_idx").on(
+      table.partnerId,
+      table.ownerRef,
     ),
   ],
 );
@@ -835,7 +842,8 @@ export type PartnerWebhookEventName =
   | "router.claimed"
   | "router.ready"
   | "router.failed"
-  | "router.online" | "router.offline" | "router.vpn_down" | "router.vpn_up" | "router.updated" | "router.action";
+  | "router.online" | "router.offline" | "router.vpn_down" | "router.vpn_up" | "router.updated" | "router.action"
+  | "router.vendor_access";
 
 // Outbox of webhooks to the Vectra backend. A row is written in the request
 // path (one insert) and delivered out of it, with backoff, by
@@ -851,6 +859,8 @@ export const partnerWebhooks = createTable(
     routerId: text("router_id").references(() => routers.id, {
       onDelete: "set null",
     }),
+    // The partner this webhook goes to; NULL = Vectra Connect ("vectra").
+    partnerId: text("partner_id"),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
     attempts: integer("attempts").notNull().default(0),
     nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),

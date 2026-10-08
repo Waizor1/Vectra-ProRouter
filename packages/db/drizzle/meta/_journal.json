@@ -169,6 +169,13 @@
       "when": 1791100800000,
       "tag": "0023_history_retention_created_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1791504000000,
+      "tag": "0024_partner_scoping",
+      "breakpoints": true
     }
   ]
 }

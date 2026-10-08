@@ -1528,6 +1528,9 @@ export const routerClaimSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 });
 
+/** A partner of the partner API, which is also the router's brand id (vctl). */
+export const partnerIdSchema = z.string().regex(/^[a-z][a-z0-9-]{1,31}$/);
+
 export const routerClaimKeySchema = z.object({
   kid: z.number().int().nonnegative(),
   // Raw 32-byte X25519 public key, base64.
@@ -1555,6 +1558,7 @@ export const routerRegisterResponseSchema = z.object({
   operatorMessage: z.string().nullable(),
   claimKey: routerClaimKeySchema.optional(),
   botUsername: z.string().min(1).optional(),
+  brand: partnerIdSchema.optional(),
   // null = not linked (vctl reads an absent owner as "no news").
   owner: routerOwnerSchema.nullable().optional(),
   // Sent only while the Vectra account has unlinked the router and nobody has
@@ -1619,6 +1623,7 @@ export const routerCheckInResponseSchema = z.object({
   routePolicy: fleetRoutePolicyDirectiveSchema.nullish(),
   claimKey: routerClaimKeySchema.optional(),
   botUsername: z.string().min(1).optional(),
+  brand: partnerIdSchema.optional(),
   // null = not linked (vctl reads an absent owner as "no news").
   owner: routerOwnerSchema.nullable().optional(),
   // Sent only while the Vectra account has unlinked the router and nobody has
@@ -1788,6 +1793,7 @@ export const partnerWebhookEventSchema = z.enum([
   "router.vpn_up",
   "router.updated",
   "router.action",
+  "router.vendor_access",
 ]);
 
 export const partnerWebhookPayloadSchema = z.object({
