@@ -1,4 +1,8 @@
-import { recordLoopTick, withLoopLock } from "./background-lock";
+import {
+  recordLoopStaleFlight,
+  recordLoopTick,
+  withLoopLock,
+} from "./background-lock";
 import { sweepPartnerOfflineWithDb } from "./partner-router-events";
 import {
   type PartnerWebhookEvent,
@@ -32,7 +36,9 @@ import { routerPartnerId } from "~/server/vectra/partner-scope";
  * Partners never wait for each other: each pass takes every partner's own
  * oldest due rows, and each partner is delivered to by its own loop, at most
  * one at a time per partner in this process. A partner whose endpoint hangs
- * (up to 10 s an attempt) keeps only its own loop busy.
+ * (up to 10 s an attempt) keeps only its own loop busy. A loop that finishes
+ * no row for STALE_FLIGHT_MS (an await that never settles) is taken for dead
+ * and replaced by the next pass, so it cannot park its partner for good.
  *
  * Signed with partner signature v2 (partner-request-signature.ts), the scheme
  * the backend→panel direction uses: version, timestamp, request id, method,
@@ -71,6 +77,10 @@ export const PARTNER_WEBHOOK_SWEEP_INTERVAL_MS = 30_000;
 const SWEEP_INTERVAL_MS = PARTNER_WEBHOOK_SWEEP_INTERVAL_MS;
 // Due rows a pass takes of EACH partner.
 const DUE_PER_PARTNER = 20;
+// A partner's delivery loop that has finished no row for this long is dead: an
+// attempt is bounded by DELIVERY_TIMEOUT_MS and its writes take milliseconds,
+// so only an await that never settles gets here.
+const STALE_FLIGHT_MS = 5 * 60 * 1000;
 
 // Delay before attempt N+1, by attempts already made (~16 h in total).
 export const PARTNER_WEBHOOK_BACKOFF_SECONDS = [
@@ -287,8 +297,12 @@ type DispatchOptions = { now?: Date; fetchImpl?: FetchLike; limit?: number };
 
 // This process's delivery loop per partner: at most one at a time each. A pass
 // that finds a partner's loop still running leaves that partner's rows to it
-// (`rerun` makes it look again once it is done) and waits for nothing of it.
-type PartnerFlight = { rerun: boolean };
+// (`rerun` makes it look again once it is done) and waits for nothing of it —
+// unless the loop has finished no row since `progressAt` for STALE_FLIGHT_MS:
+// then the pass replaces it. The replaced loop, should its await ever settle,
+// stands down before its next row; the lease compare-and-swap keeps it from
+// sending a row the new loop has already taken.
+type PartnerFlight = { rerun: boolean; startedAt: number; progressAt: number };
 
 const globalForWebhooks = globalThis as typeof globalThis & {
   __vectraPartnerWebhookTimer?: ReturnType<typeof setInterval>;
@@ -337,12 +351,21 @@ export async function dispatchDuePartnerWebhooksWithDb(
   const started: Array<Promise<void>> = [];
   for (const [partnerId, rows] of groups) {
     const running = flights.get(partnerId);
-    if (running) {
+    if (running && Date.now() - running.progressAt <= STALE_FLIGHT_MS) {
       running.rerun = true;
       continue;
     }
+    if (running) {
+      // Logged once: the replaced loop is gone from the map. Partner id only.
+      console.error(
+        "[partner-webhooks] partner %s: delivery made no progress for 5 min; replaced",
+        partnerId,
+      );
+      recordLoopStaleFlight("partnerWebhookDispatcher");
+    }
     // Claimed before anything is awaited: a concurrent pass sees it.
-    const flight: PartnerFlight = { rerun: false };
+    const startedAt = Date.now();
+    const flight: PartnerFlight = { rerun: false, startedAt, progressAt: startedAt };
     flights.set(partnerId, flight);
     started.push(
       flyPartner(client, partnerId, rows, flight, { ...options, limit }, summary),
@@ -381,10 +404,15 @@ async function flyPartner(
   try {
     let batch = rows;
     for (;;) {
-      await deliverPartnerRows(client, partnerId, batch, options, summary);
+      await deliverPartnerRows(client, partnerId, batch, flight, options, summary);
       // Done unless a pass found this loop busy meanwhile. A Connect-only
-      // config blip must not touch rows: stop then too, as a pass would.
-      if (!flight.rerun || !anyPartnerWebhook()) {
+      // config blip must not touch rows: stop then too, as a pass would. A
+      // loop that was replaced while it hung leaves the rest to its successor.
+      if (
+        !flight.rerun ||
+        !anyPartnerWebhook() ||
+        partnerFlights().get(partnerId) !== flight
+      ) {
         return;
       }
       flight.rerun = false;
@@ -406,97 +434,114 @@ async function deliverPartnerRows(
   client: DatabaseClient,
   partnerId: string,
   rows: WebhookRow[],
+  flight: PartnerFlight,
   options: DispatchOptions,
   summary: DispatchSummary,
 ) {
   const target = partnerWebhookTarget(partnerId);
   for (const due of rows) {
-    // The clock of this row, not of the pass: a partner's loop may run for
-    // minutes, and a lease or a signature timestamp from its start would be
-    // stale by then.
-    const now = options.now ?? new Date();
-    if (!target) {
-      await waitForPartnerAddress(client, due, partnerId, now, summary);
-      continue;
+    // Replaced while it hung: the loop that took over has these rows.
+    if (partnerFlights().get(partnerId) !== flight) {
+      return;
     }
+    await deliverPartnerRow(client, partnerId, target, due, options, summary);
+    flight.progressAt = Date.now();
+  }
+}
 
-    const attempts = due.attempts + 1;
-    // Lease by compare-and-swap on the attempt counter: only one dispatcher
-    // wins the row, and the lease expires on its own if this process dies.
-    const [leased] = await client
-      .update(partnerWebhooks)
-      .set({
-        attempts,
-        nextAttemptAt: new Date(now.getTime() + DELIVERY_LEASE_MS),
-      })
-      .where(
-        and(
-          eq(partnerWebhooks.id, due.id),
-          eq(partnerWebhooks.attempts, due.attempts),
-          isNull(partnerWebhooks.deliveredAt),
-        ),
-      )
-      .returning();
-    if (!leased) {
-      continue;
-    }
+async function deliverPartnerRow(
+  client: DatabaseClient,
+  partnerId: string,
+  target: ReturnType<typeof partnerWebhookTarget>,
+  due: WebhookRow,
+  options: DispatchOptions,
+  summary: DispatchSummary,
+) {
+  // The clock of this row, not of the pass: a partner's loop may run for
+  // minutes, and a lease or a signature timestamp from its start would be
+  // stale by then.
+  const now = options.now ?? new Date();
+  if (!target) {
+    await waitForPartnerAddress(client, due, partnerId, now, summary);
+    return;
+  }
 
-    summary.attempted += 1;
-    const result = await deliverPartnerWebhook(leased, target, {
-      fetchImpl: options.fetchImpl,
-      nowMs: now.getTime(),
-    });
+  const attempts = due.attempts + 1;
+  // Lease by compare-and-swap on the attempt counter: only one dispatcher
+  // wins the row, and the lease expires on its own if this process dies.
+  const [leased] = await client
+    .update(partnerWebhooks)
+    .set({
+      attempts,
+      nextAttemptAt: new Date(now.getTime() + DELIVERY_LEASE_MS),
+    })
+    .where(
+      and(
+        eq(partnerWebhooks.id, due.id),
+        eq(partnerWebhooks.attempts, due.attempts),
+        isNull(partnerWebhooks.deliveredAt),
+      ),
+    )
+    .returning();
+  if (!leased) {
+    return;
+  }
 
-    if (result.ok) {
-      summary.delivered += 1;
-      await client
-        .update(partnerWebhooks)
-        .set({
-          deliveredAt: new Date(),
-          nextAttemptAt: null,
-          lastStatus: result.status,
-          lastError: null,
-        })
-        .where(eq(partnerWebhooks.id, leased.id));
-      continue;
-    }
+  summary.attempted += 1;
+  const result = await deliverPartnerWebhook(leased, target, {
+    fetchImpl: options.fetchImpl,
+    nowMs: now.getTime(),
+  });
 
-    const lastError = result.error.slice(0, DETAIL_MAX_LENGTH);
-    if (attempts >= PARTNER_WEBHOOK_MAX_ATTEMPTS) {
-      summary.gaveUp += 1;
-      await client
-        .update(partnerWebhooks)
-        .set({ nextAttemptAt: null, lastStatus: result.status, lastError })
-        .where(eq(partnerWebhooks.id, leased.id));
-      await client.insert(eventLog).values({
-        routerId: leased.routerId,
-        type: "partner.webhook.gave_up",
-        severity: "warning",
-        message: `Webhook ${leased.event} was not accepted by partner ${partnerId} after ${attempts} attempts.`,
-        metadata: {
-          webhookId: leased.id,
-          event: leased.event,
-          partnerId,
-          attempts,
-          lastStatus: result.status,
-          lastError,
-        },
-      });
-      continue;
-    }
-
-    summary.rescheduled += 1;
+  if (result.ok) {
+    summary.delivered += 1;
     await client
       .update(partnerWebhooks)
       .set({
-        nextAttemptAt: new Date(
-          now.getTime() + partnerWebhookBackoffSeconds(attempts) * 1000,
-        ),
+        deliveredAt: new Date(),
+        nextAttemptAt: null,
         lastStatus: result.status,
-        lastError,
+        lastError: null,
       })
       .where(eq(partnerWebhooks.id, leased.id));
+    return;
   }
+
+  const lastError = result.error.slice(0, DETAIL_MAX_LENGTH);
+  if (attempts >= PARTNER_WEBHOOK_MAX_ATTEMPTS) {
+    summary.gaveUp += 1;
+    await client
+      .update(partnerWebhooks)
+      .set({ nextAttemptAt: null, lastStatus: result.status, lastError })
+      .where(eq(partnerWebhooks.id, leased.id));
+    await client.insert(eventLog).values({
+      routerId: leased.routerId,
+      type: "partner.webhook.gave_up",
+      severity: "warning",
+      message: `Webhook ${leased.event} was not accepted by partner ${partnerId} after ${attempts} attempts.`,
+      metadata: {
+        webhookId: leased.id,
+        event: leased.event,
+        partnerId,
+        attempts,
+        lastStatus: result.status,
+        lastError,
+      },
+    });
+    return;
+  }
+
+  summary.rescheduled += 1;
+  await client
+    .update(partnerWebhooks)
+    .set({
+      nextAttemptAt: new Date(
+        now.getTime() + partnerWebhookBackoffSeconds(attempts) * 1000,
+      ),
+      lastStatus: result.status,
+      lastError,
+    })
+    .where(eq(partnerWebhooks.id, leased.id));
 }
 
 /**

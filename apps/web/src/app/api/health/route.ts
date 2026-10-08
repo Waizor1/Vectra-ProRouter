@@ -14,7 +14,11 @@ import {
 
 export const dynamic = "force-dynamic";
 
-/** Seconds since each loop last completed a tick / found it running elsewhere. */
+/**
+ * Seconds since each loop last completed a tick / found it running elsewhere,
+ * and — only once there were any — how many of its partner deliveries were
+ * found hung and replaced (a tick completes either way).
+ */
 function tickAges(
   ticks: Partial<Record<string, LoopTickTimes>>,
   now: number,
@@ -27,6 +31,9 @@ function tickAges(
       {
         completedSecondsAgo: age(times?.completedAt ?? null),
         busyElsewhereSecondsAgo: age(times?.busyAt ?? null),
+        ...(times?.staleFlights
+          ? { staleFlightsReplaced: times.staleFlights }
+          : {}),
       },
     ]),
   );

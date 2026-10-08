@@ -3,6 +3,7 @@ import { type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { loopTickTimes, setBackgroundLockClientForTest } from "./background-lock";
 import {
   PARTNER_REQUEST_ID_HEADER,
   PARTNER_VERSION_HEADER,
@@ -970,6 +971,225 @@ describe("a dead partner endpoint never delays another partner's webhooks", () =
       ]);
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+// A delivery await that never settles (a socket the 10 s timeout did not
+// reach, a database write that hangs) parked that partner in this process for
+// good: every later pass found its loop "still running" and only set rerun.
+describe("a partner delivery that stops making progress", () => {
+  const STALE_MS = 5 * 60 * 1000;
+  const BLOOP_WEBHOOK_SECRET = "bloopcat-webhook-secret-0123456789abcdef";
+  const at = (ms: number) => new Date(NOW.getTime() + ms);
+
+  beforeEach(() => {
+    envMock.env = {
+      VECTRA_CONNECT_WEBHOOK_URL: VECTRA_HOOK,
+      VECTRA_CONNECT_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      VECTRA_PARTNERS: JSON.stringify([
+        {
+          id: "bloopcat",
+          brand: "bloopcat",
+          label: "BloopCat",
+          secrets: ["bloopcat-partner-secret-0123456789abcdef"],
+          webhookUrl: BLOOP_HOOK,
+          webhookSecret: BLOOP_WEBHOOK_SECRET,
+        },
+      ]),
+    };
+    // Loop health counters are per process; start each test from none.
+    setBackgroundLockClientForTest(null);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // BloopCat's endpoint as one that answers, except for the attempts listed in
+  // `hang` (by their order, 1-based): those never settle until released.
+  function endpoint(options: { hang?: number[]; spend?: Record<string, number> } = {}) {
+    const sent: string[] = [];
+    const releases: Array<() => void> = [];
+    const fetchImpl = async (_url: string, init: RequestInit) => {
+      const id = (init.headers as Record<string, string>)[PARTNER_WEBHOOK_ID_HEADER]!;
+      sent.push(id);
+      if (options.hang?.includes(sent.length)) {
+        await new Promise<void>((resolve) => releases.push(resolve));
+      }
+      // This attempt took that long.
+      const spent = options.spend?.[id];
+      if (spent) vi.setSystemTime(new Date(Date.now() + spent));
+      return { ok: true, status: 200, body: null };
+    };
+    return { fetchImpl, sent, release: () => releases.forEach((release) => release()) };
+  }
+
+  function flightOf(partnerId: string) {
+    return (
+      globalThis as { __vectraPartnerWebhookFlights?: Map<string, { rerun: boolean }> }
+    ).__vectraPartnerWebhookFlights?.get(partnerId);
+  }
+
+  it("replaces a delivery that made no progress for 5 minutes; the next row is delivered", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const rows = [
+        dueRow({ id: "w-1", partnerId: "bloopcat" }),
+        dueRow({ id: "w-2", partnerId: "bloopcat" }),
+      ];
+      const fake = leasingDb(
+        {
+          selects: [
+            [
+              partnerWebhooks,
+              [
+                rows,
+                // Later: w-1's lease ran out, w-2 was never reached.
+                [{ ...rows[0]!, attempts: 1 }, rows[1]!],
+              ],
+            ],
+          ],
+        },
+        rows,
+      );
+      const { fetchImpl, sent } = endpoint({ hang: [1] });
+
+      void dispatchDuePartnerWebhooksWithDb(fake.db as never, { fetchImpl });
+      await vi.waitFor(() => expect(sent).toEqual(["w-1"]));
+      const hung = flightOf("bloopcat");
+      expect(hung).toBeDefined();
+
+      vi.setSystemTime(at(STALE_MS + 1_000));
+      await dispatchDuePartnerWebhooksWithDb(fake.db as never, { fetchImpl });
+
+      expect(sent).toEqual(["w-1", "w-1", "w-2"]);
+      expect(fake.delivered()).toEqual(["w-1", "w-2"]);
+      // The new delivery finished and let go; the hung one holds nothing.
+      expect(flightOf("bloopcat")).toBeUndefined();
+      // Said once, naming the partner and nothing else of it.
+      expect(error).toHaveBeenCalledTimes(1);
+      const logged = error.mock.calls[0]!.map(String).join(" ");
+      expect(logged).toContain("bloopcat");
+      expect(logged).not.toContain(BLOOP_HOOK);
+      expect(logged).not.toContain(BLOOP_WEBHOOK_SECRET);
+      expect(logged).not.toContain("w-1");
+      // The loop health surface counts it.
+      expect(loopTickTimes().partnerWebhookDispatcher?.staleFlights).toBe(1);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("leaves a delivery younger than 5 minutes alone: the pass only asks it to look again", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const rows = [
+        dueRow({ id: "w-1", partnerId: "bloopcat" }),
+        dueRow({ id: "w-2", partnerId: "bloopcat" }),
+      ];
+      const fake = leasingDb(
+        { selects: [[partnerWebhooks, [rows, [rows[1]!]]]] },
+        rows,
+      );
+      const { fetchImpl, sent, release } = endpoint({ hang: [1] });
+
+      const first = dispatchDuePartnerWebhooksWithDb(fake.db as never, { fetchImpl });
+      await vi.waitFor(() => expect(sent).toEqual(["w-1"]));
+      const flight = flightOf("bloopcat");
+
+      vi.setSystemTime(at(STALE_MS - 1_000));
+      await dispatchDuePartnerWebhooksWithDb(fake.db as never, { fetchImpl });
+
+      expect(sent).toEqual(["w-1"]);
+      expect(flightOf("bloopcat")).toBe(flight);
+      expect(flight).toMatchObject({ rerun: true });
+      expect(error).not.toHaveBeenCalled();
+      expect(loopTickTimes().partnerWebhookDispatcher?.staleFlights ?? 0).toBe(0);
+
+      // Once its attempt settles it carries on by itself.
+      release();
+      await first;
+      expect(fake.delivered()).toEqual(["w-1", "w-2"]);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("counts from the last row a delivery finished, not from its start", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const rows = ["w-1", "w-2", "w-3"].map((id) =>
+        dueRow({ id, partnerId: "bloopcat" }),
+      );
+      const fake = leasingDb(
+        { selects: [[partnerWebhooks, [rows, [rows[2]!]]]] },
+        rows,
+      );
+      // A slow endpoint, not a dead one: w-1 and w-2 take 3 minutes each.
+      const { fetchImpl, sent, release } = endpoint({
+        hang: [3],
+        spend: { "w-1": 3 * 60_000, "w-2": 3 * 60_000 },
+      });
+
+      const first = dispatchDuePartnerWebhooksWithDb(fake.db as never, { fetchImpl });
+      await vi.waitFor(() => expect(sent).toEqual(["w-1", "w-2", "w-3"]));
+      const flight = flightOf("bloopcat");
+
+      // Started 6.5 minutes ago, but its last row finished 30 s ago.
+      vi.setSystemTime(at(6 * 60_000 + 30_000));
+      await dispatchDuePartnerWebhooksWithDb(fake.db as never, { fetchImpl });
+
+      expect(flightOf("bloopcat")).toBe(flight);
+      expect(sent).toEqual(["w-1", "w-2", "w-3"]);
+      expect(error).not.toHaveBeenCalled();
+
+      release();
+      await first;
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("a replaced delivery that settles late takes no further row", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const rows = [
+        dueRow({ id: "w-1", partnerId: "bloopcat" }),
+        dueRow({ id: "w-2", partnerId: "bloopcat" }),
+      ];
+      // This fake answers every lease (no compare-and-swap), so only the old
+      // delivery standing down keeps it off w-2.
+      const fake = leasingDb(
+        {
+          selects: [
+            [partnerWebhooks, [rows, [{ ...rows[0]!, attempts: 1 }, rows[1]!]]],
+          ],
+        },
+        rows,
+      );
+      const { fetchImpl, sent, release } = endpoint({ hang: [1] });
+
+      const first = dispatchDuePartnerWebhooksWithDb(fake.db as never, { fetchImpl });
+      await vi.waitFor(() => expect(sent).toEqual(["w-1"]));
+      vi.setSystemTime(at(STALE_MS + 1_000));
+      await dispatchDuePartnerWebhooksWithDb(fake.db as never, { fetchImpl });
+      expect(sent).toEqual(["w-1", "w-1", "w-2"]);
+
+      // The hung attempt finally comes back.
+      release();
+      await first;
+
+      expect(sent).toEqual(["w-1", "w-1", "w-2"]);
+      const leasesOfW2 = fake.writes.filter(
+        (write) => write.id === "w-2" && "attempts" in write.set,
+      );
+      expect(leasesOfW2).toHaveLength(1);
+      expect(flightOf("bloopcat")).toBeUndefined();
+    } finally {
+      error.mockRestore();
     }
   });
 });

@@ -87,6 +87,22 @@ describe("/api/health with the loops in a separate worker", () => {
     });
   });
 
+  it("reports how many hung partner deliveries the worker replaced", async () => {
+    state.presence = new Set(["partnerWebhookDispatcher"]);
+    state.ticks = {
+      partnerWebhookDispatcher: { completedAt: Date.now() - 5_000, busyAt: null, staleFlights: 2 },
+    } as typeof state.ticks;
+    const { body } = await call();
+
+    expect(body.loopTicks).toEqual({
+      partnerWebhookDispatcher: {
+        completedSecondsAgo: 5,
+        busyElsewhereSecondsAgo: null,
+        staleFlightsReplaced: 2,
+      },
+    });
+  });
+
   it("reports every loop down when no worker is alive, and stays healthy itself", async () => {
     const { status, body } = await call();
     expect(status).toBe(200);
