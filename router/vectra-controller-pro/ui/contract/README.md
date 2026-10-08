@@ -695,16 +695,19 @@ the simple view: the operator's lock never refuses it.
   neutral router suggested); else `null`. The wizard offers it — renaming drops every device
   off the network, so the router never does it by itself.
 - `vectra.linked`: the router has an operator config (every fleet router is
-  linked); then `claim` is `null`. `vectra.botUsername`: where support links
-  go, linked or not. On a Vectra router: the Vectra bot the panel named;
-  until it has (a box that has never been online), the support bot the box
-  was prepared with (UCI `vectra-controller-pro.main.support_bot`, a Telegram
+  linked); then `claim` is `null`.
+- `vectra.botUsername` (linked or not; the wire format is unchanged) means
+  a different bot per brand. On a Vectra router it is the panel's bot — the
+  one the panel named, the bot claim codes go to; until it has (a box that
+  has never been online), the support bot the box was prepared with (UCI `vectra-controller-pro.main.support_bot`, a Telegram
   username without `@`: 5-32 of `A-Z a-z 0-9 _`; an invalid value is
-  ignored); else `null`. On another brand's router: `status.brand.support`.
-  On a neutral one: the box's support bot, else `null`.
-  `claim.botUrl` never falls back to a support bot: a code means something
-  only to the bot that claims it.
-  `vectra.owner`: `{"label"}`, the account the panel says the router belongs
+  ignored); else `null`. On another brand's router (BloopCat) it is that
+  brand's support bot, `status.brand.support`. On a neutral one, the box's
+  support bot, else `null`. Since r23 this UI does not read it: support
+  links go to `status.brand.support` (`null`, so no link, on a neutral
+  router), and the claim to `claim.botUrl`, which never falls back to a
+  support bot — a code means something only to the bot that claims it.
+- `vectra.owner`: `{"label"}`, the account the panel says the router belongs
   to, or `null` — linked or not, so a linked router can say whose it is.
 - `vectra.claim` (`null` when linked, and while the controller is not running):
   `state` `unclaimed` or `claimed` (the panel reported an owner; the

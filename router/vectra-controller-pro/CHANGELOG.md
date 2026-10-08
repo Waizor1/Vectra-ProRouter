@@ -8,17 +8,22 @@ network and address on the LAN follow the service its owner pays for
 service's name. Colours and layout are the same for everyone.
 
 ### What changes, by router
-- **Vectra routers**: nothing visible, but one thing — «Поддержка» now
-  opens VectraConnect_support_bot (Vectra's support bot), not the bot the
-  claim code goes to. A router upgraded from an earlier vctl keeps being a
-  Vectra router: its uci-defaults labels it `vectra` once, when it has a vctl
-  identity — or the old Vectra agent's state (`legacy_state_path`: a fleet
-  router of the old agent getting vctl by opkg, or a `--standby` vctl that
-  never started) — and no label (UCI `main.brand_seeded` marks that it was done, on
-  every router, so a fresh box is never relabelled by a later upgrade and a
-  label the owner cleared stays cleared). Vectra Connect's own subscription
-  proxy does not forward the headers that name the brand, so for Vectra it
-  is the panel's answer and this label that count, not the subscription.
+- **Vectra routers**: two visible things — «Поддержка» now opens
+  VectraConnect_support_bot (Vectra's support bot), not the bot the claim
+  code goes to; and the LuCI menu entry says «VPN», not «Vectra» (see
+  Changed, which also rewords three technical errors of the Pro view).
+  Everything else looks as before. A new router installed with the plain
+  command (what Vectra Connect's guide runs) is labelled `vectra` by the
+  installer (see `install.sh --brand` under Added). A router upgraded from
+  an earlier vctl keeps being a Vectra router: its uci-defaults labels it
+  `vectra` once, when it has a vctl identity — or the old Vectra agent's
+  state (`legacy_state_path`: a fleet router of the old agent getting vctl
+  by opkg, or a `--standby` vctl that never started) — and no label (UCI
+  `main.brand_seeded` marks that it was done, on every router, so a fresh
+  box is never relabelled by a later upgrade and a label the owner cleared
+  stays cleared). Vectra Connect's own subscription proxy does not forward
+  the headers that name the brand, so for Vectra it is the panel's answer
+  and these labels that count, not the subscription.
 - **BloopCat routers** (a subscription from their bot, or `--brand
   bloopcat`): «BloopCat» in every sentence, in the header and in the report
   for support; the claim goes to BloopCat_bot and support to BloopCat_supbot;
