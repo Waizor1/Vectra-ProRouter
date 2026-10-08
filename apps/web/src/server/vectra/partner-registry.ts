@@ -71,7 +71,7 @@ export function parsePartners(raw: string | undefined): PartnerConfig[] {
     }
     seen.add(entry.id);
   }
-  return parsed.data.map((e) => ({
+  const partners = parsed.data.map((e) => ({
     id: e.id,
     brand: e.brand,
     label: e.label,
@@ -86,15 +86,48 @@ export function parsePartners(raw: string | undefined): PartnerConfig[] {
         : null,
     botUsername: e.botUsername ?? null,
   }));
+  assertDistinctSecrets(partners);
+  return partners;
+}
+
+/**
+ * A secret that two partners (or one partner twice) would both accept leaves
+ * a request's owner open to doubt, so it is refused. Names the partners and
+ * never the secret. `legacy` is the partner that comes from the old variables.
+ */
+function assertDistinctSecrets(
+  partners: readonly PartnerConfig[],
+  legacy: PartnerConfig | null = null,
+) {
+  const nameOf = (p: PartnerConfig) =>
+    p === legacy ? `${p.id} (VECTRA_PARTNER_SECRET)` : p.id;
+  const owners = new Map<string, PartnerConfig>();
+  for (const partner of partners) {
+    for (const secret of partner.secrets) {
+      const owner = owners.get(secret);
+      if (owner === partner) {
+        throw new Error(
+          `VECTRA_PARTNERS partner ${nameOf(partner)} lists the same secret twice`,
+        );
+      }
+      if (owner) {
+        throw new Error(
+          `VECTRA_PARTNERS partners ${nameOf(owner)} and ${nameOf(partner)} share a secret`,
+        );
+      }
+      owners.set(secret, partner);
+    }
+  }
 }
 
 /**
  * Vectra Connect as configured before the registry. Its claim key and bot stay
  * where they always were (VECTRA_ROUTER_CLAIM_*, VECTRA_CONNECT_BOT_USERNAME;
- * router-claim-state reads them), so they are null here.
+ * router-claim-state reads them), so they are null here. The secret is passed
+ * on exactly as the partner API always read it (no trim); empty means none.
  */
 function legacyPartner(e: PartnerEnv): PartnerConfig {
-  const secret = e.VECTRA_PARTNER_SECRET?.trim() ?? "";
+  const secret = e.VECTRA_PARTNER_SECRET ?? "";
   const url = e.VECTRA_CONNECT_WEBHOOK_URL?.trim() ?? "";
   const webhookSecret = e.VECTRA_CONNECT_WEBHOOK_SECRET ?? "";
   return {
@@ -108,26 +141,69 @@ function legacyPartner(e: PartnerEnv): PartnerConfig {
   };
 }
 
+/** Throws (naming VECTRA_PARTNERS, never a value) when the listed partners are invalid. */
 export function partnersFrom(e: PartnerEnv): PartnerConfig[] {
   const listed = parsePartners(e.VECTRA_PARTNERS);
-  return listed.some((p) => p.id === DEFAULT_PARTNER_ID)
-    ? listed
-    : [legacyPartner(e), ...listed];
+  if (listed.some((p) => p.id === DEFAULT_PARTNER_ID)) return listed;
+  const legacy = legacyPartner(e);
+  const partners = [legacy, ...listed];
+  assertDistinctSecrets(partners, legacy);
+  return partners;
 }
 
+let lastReported: string | null = null;
+
+/**
+ * Every partner of the running process. A VECTRA_PARTNERS that does not
+ * validate must never take Vectra Connect down with it: the error is logged
+ * once (it names the variable, never a value) and the default partner, as the
+ * old variables configure it, is served alone.
+ */
 export function listPartners(): PartnerConfig[] {
-  return partnersFrom(env as PartnerEnv);
+  const e = env as PartnerEnv;
+  try {
+    return partnersFrom(e);
+  } catch (error) {
+    // Only this module's own messages are logged: they hold no values.
+    const message =
+      error instanceof Error && error.message.startsWith("VECTRA_PARTNERS")
+        ? error.message
+        : "VECTRA_PARTNERS could not be read";
+    if (message !== lastReported) {
+      lastReported = message;
+      console.error(
+        `[partner-registry] ${message}; serving only the ${DEFAULT_PARTNER_ID} partner`,
+      );
+    }
+    return [legacyPartner(e)];
+  }
 }
 
 export function findPartner(id: string): PartnerConfig | null {
   return listPartners().find((p) => p.id === id) ?? null;
 }
 
+/** A key that starts the way a scoped key does: a partner id, then ":". */
+const SCOPE_PREFIX = new RegExp(`${PARTNER_ID_PATTERN.source.slice(0, -1)}:`);
+
 /**
- * Idempotency keys and request ids live in shared tables: a partner's are
- * prefixed so two partners can never collide. The default partner's keep
- * their old form, so the keys Vectra Connect already stored still replay.
+ * Idempotency keys and request ids live in shared tables: every partner's are
+ * scoped, so two partners never collide, and the default partner's keep their
+ * old form so the keys Vectra Connect already stored still replay.
+ *
+ * Why no two (partner, key) pairs share a result:
+ *  - another partner P gets `P:key`. P is a partner id (no ":"), so the text
+ *    before the first ":" is P, and it matches PARTNER_ID_PATTERN.
+ *  - the default partner's key is returned as it is only when it does NOT
+ *    start with `<partner id>:`, so it can never equal any `P:key`.
+ *  - one that does (a Vectra key "bloopcat:k-1" would otherwise equal
+ *    BloopCat's scoped "k-1") becomes `vectra:key`. The text before its first
+ *    ":" is "vectra", the default partner, whom no other partner shares, and
+ *    stripping that prefix gives the key back.
+ *  - within the default partner, a raw key never starts with a partner id and
+ *    a wrapped one always does, so the two forms stay apart too.
  */
 export function scopeIdempotencyKey(partnerId: string, key: string) {
-  return partnerId === DEFAULT_PARTNER_ID ? key : `${partnerId}:${key}`;
+  if (partnerId !== DEFAULT_PARTNER_ID) return `${partnerId}:${key}`;
+  return SCOPE_PREFIX.test(key) ? `${DEFAULT_PARTNER_ID}:${key}` : key;
 }
