@@ -6,7 +6,12 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CallFn } from '../src/api/types';
+import { TABS } from '../src/app/ctx';
+import { makeT, withParams } from '../src/i18n';
+import { makeFmt } from '../src/lib/format';
+import { buildReport } from '../src/lib/report';
 import { normalizeSite } from '../src/lib/sites';
+import { FIXTURES } from '../src/mock/fixtures';
 import { createMock, type Mock, type MockOptions } from '../src/mock/transport';
 import type { Scenario } from '../src/mock/scenarios';
 import { mount } from '../src/mount';
@@ -89,15 +94,13 @@ async function eventually(ok: () => boolean, maxMs = 3000) {
   return ok();
 }
 
-/** A router that stays offline: wan_check answers the same every time; `bot` overrides the one it knows. */
+/** A router that stays offline: wan_check answers the same every time; `bot` overrides the support bot its brand names. */
 const offline =
   (link: boolean, bot?: string | null): Twist =>
   (m, r) => {
     if (m === 'wan_check') Object.assign(r, { link, internet: false, panel: false });
-    if (m === 'setup') {
-      Object.assign(r.wan as Answer, { link, ipv4: null });
-      if (bot !== undefined) (r.vectra as Answer).botUsername = bot;
-    }
+    if (m === 'setup') Object.assign(r.wan as Answer, { link, ipv4: null });
+    if (m === 'status' && bot !== undefined) (r.brand as Answer).support = bot;
   };
 
 describe('the setup wizard', () => {
@@ -663,7 +666,7 @@ describe('the setup wizard', () => {
 
   it('says what to check after a minute without internet, and where to ask for help', async () => {
     fake();
-    // The box was prepared with Vectra's bot, so support is reachable before the router ever was online.
+    // The router knows its brand's support bot without the internet: support is reachable before it ever was online.
     const app = start({ twist: offline(true, 'VectraSupportBot') });
     await tick(200);
     app.button('Начать')!.click();
@@ -841,7 +844,7 @@ describe('the setup wizard', () => {
     app.button('Начать')!.click(); // the first step that is not fine: Vectra
     await tick(200);
     expect(app.text()).toContain('Код для подключения ещё не готов — роутер запускает Vectra.');
-    expect(app.button('Написать в Vectra')?.getAttribute('href')).toBe('https://t.me/VectraConnectBot');
+    expect(app.button('Написать в Vectra')?.getAttribute('href')).toBe('https://t.me/VectraConnect_support_bot');
   });
 
   it('looks once in a hidden tab, and watches the router only while the page is on screen', async () => {
@@ -895,7 +898,7 @@ describe('the setup wizard', () => {
     await tick(5 * 60_000 + 1000);
     expect(app.verdict()).toBe('Настройки VPN всё ещё не пришли');
     expect(app.button('Скопировать отчёт')).toBeDefined();
-    expect(app.button('Написать в Vectra')?.getAttribute('href')).toBe('https://t.me/VectraConnectBot');
+    expect(app.button('Написать в Vectra')?.getAttribute('href')).toBe('https://t.me/VectraConnect_support_bot');
   });
 
   it('goes straight to "not connected" when the owner releases the router, without "getting the settings"', async () => {
@@ -926,10 +929,118 @@ describe('the setup wizard', () => {
     expect(seen.filter((v) => v !== 'Проверяем…').length).toBe(2);
   });
 
-  it('opens support in the Vectra bot next to the report', async () => {
+  it('opens support in the brand’s support bot next to the report, not in the bot the claim goes to', async () => {
     const app = start({ scenario: 'healthy' });
     expect(await eventually(() => !!app.button('Написать в Vectra'))).toBe(true);
-    expect(app.button('Написать в Vectra')?.getAttribute('href')).toBe('https://t.me/VectraConnectBot');
+    expect(app.button('Написать в Vectra')?.getAttribute('href')).toBe('https://t.me/VectraConnect_support_bot');
+  });
+
+  it('a BloopCat router sends its owner to BloopCat\'s bot and says BloopCat', async () => {
+    fake();
+    const app = start({ scenario: 'boxed', mock: { brand: 'bloopcat' } });
+    await tick(5000); // the boxed router comes online by itself
+    app.button('Начать')!.click();
+    expect(await until(() => app.verdict() === 'Подключение к BloopCat', 10000)).toBe(true);
+    // The bot comes with the router's first answer online: its link is BloopCat's.
+    expect(await until(() => !!app.button('Открыть в Telegram'), 5000)).toBe(true);
+    expect(app.button('Открыть в Telegram')?.getAttribute('href')).toBe('https://t.me/BloopCat_bot?start=rt_7KQ4M9XD');
+    // The page settles (its effects run on the fake clock too) before it is read whole.
+    await tick(200);
+    expect(app.text()).not.toContain('Vectra');
+  });
+
+  it('a neutral router shows the code alone and names no service', async () => {
+    fake();
+    const app = start({ scenario: 'boxed', mock: { brand: 'none' } });
+    await tick(5000);
+    app.button('Начать')!.click();
+    expect(await until(() => app.verdict() === 'Подключите свой VPN‑сервис', 10000)).toBe(true);
+    await tick(3000); // the router's answers since it came online: still no bot, no QR
+    expect(read(app.$('.wz-code b'))).toBe('7KQ4-M9XD');
+    expect(app.button('Открыть в Telegram')).toBeUndefined();
+    expect(app.$('svg.qr')).toBeNull();
+    expect(app.all('.wz-howto li').map(read)).toEqual([
+      'Откройте бота своего VPN‑сервиса в Telegram.',
+      'Выберите «Подключить роутер».',
+      'Введите этот код.',
+    ]);
+    expect(app.text()).not.toContain('Vectra');
+    // Linked: it says so, still naming no service.
+    expect(await until(() => app.verdict() === 'Роутер подключён к VPN‑сервису', 20000)).toBe(true);
+    await tick(200);
+    expect(app.text()).toContain('Аккаунт: @vpn_user');
+    expect(app.text()).not.toContain('Vectra');
+  });
+});
+
+describe("the router's brand", () => {
+  it('a Vectra router keeps Vectra’s own wordmark and its two addresses', async () => {
+    const app = start({ scenario: 'healthy' });
+    expect(await eventually(() => app.verdict() === 'Всё работает')).toBe(true);
+    expect(app.$('.brand .wm')).not.toBeNull();
+    expect(read(app.$('.brand .word'))).toBe('VECTRA');
+    expect(app.$('.brand .word-text')).toBeNull();
+    expect(read(app.$('.sv-lan'))).toBe('Этот экран открывается по адресу my.vectra-pro.net или http://vectra.lan, а если не выходит — по адресу 192.168.1.1.');
+    expect(app.text()).toContain('Vectra 0.4.0-r1');
+  });
+
+  it('a BloopCat router names BloopCat and never Vectra: the header, support, its address, the version', async () => {
+    const app = start({ scenario: 'healthy', mock: { brand: 'bloopcat' } });
+    expect(await eventually(() => app.verdict() === 'Всё работает')).toBe(true);
+    // Its name as a text wordmark in the place of Vectra's mark.
+    expect(app.$('.brand .wm')).toBeNull();
+    expect(read(app.$('.brand .word-text'))).toBe('BLOOPCAT');
+    // Support is the brand's support bot, never the bot the claim goes to.
+    expect(app.button('Написать в BloopCat')?.getAttribute('href')).toBe('https://t.me/BloopCat_supbot');
+    // Its own name on the LAN, and no public site.
+    expect(read(app.$('.sv-lan'))).toBe('Этот экран открывается по адресу http://bloopcat.lan, а если не выходит — по адресу 192.168.1.1.');
+    expect(app.all('.sv-lan a').map((a) => a.getAttribute('href'))).toEqual(['http://bloopcat.lan/', 'http://192.168.1.1/']);
+    expect(app.text()).toContain('BloopCat 0.4.0-r1');
+    expect(app.text()).not.toContain('Vectra');
+    expect(app.$('.vx')?.getAttribute('aria-label')).toBe('BloopCat на роутере');
+  });
+
+  it('a BloopCat router names no Vectra in any Pro tab either', async () => {
+    localStorage.setItem('vectra.ui.mode', 'pro');
+    const app = start({ scenario: 'healthy', mock: { brand: 'bloopcat' } });
+    expect(await eventually(() => !!app.$('#vx-tab-overview'))).toBe(true);
+    for (const tab of TABS) {
+      app.$<HTMLElement>('#vx-tab-' + tab)!.click();
+      expect(await eventually(() => !app.$('.skel')), tab).toBe(true);
+      expect(app.text(), tab).not.toContain('Vectra');
+      // Settings names the program and its version: the brand's name.
+      if (tab === 'settings') expect(read(app.$('.about'))).toContain('BloopCat 0.4.0-r1');
+    }
+  });
+
+  it('a BloopCat router’s report for support says BloopCat', () => {
+    const t = withParams(makeT('ru'), { brand: 'BloopCat' });
+    const report = buildReport(t, makeFmt(t), FIXTURES.status, FIXTURES.diagnostics, 'Всё работает');
+    expect(report.split('\n')[0]).toBe('BloopCat — отчёт о роутере');
+    expect(report).toContain('BloopCat 0.4.0-r1');
+    expect(report).not.toContain('Vectra');
+  });
+
+  it('a neutral router names no service: a plain wordmark, router.lan, and support only if the router names a bot', async () => {
+    // The box was prepared with a support bot for the claim step's own use: support links never take it.
+    const app = start({ scenario: 'healthy', mock: { brand: 'none' }, twist: (m, r) => void (m === 'setup' && ((r.vectra as Answer).botUsername = 'BoxSupportBot')) });
+    expect(await eventually(() => app.verdict() === 'Всё работает')).toBe(true);
+    expect(app.$('.brand .wm')).toBeNull();
+    expect(read(app.$('.brand .word-text'))).toBe('VPN');
+    expect(read(app.$('.sv-lan'))).toBe('Этот экран открывается по адресу http://router.lan, а если не выходит — по адресу 192.168.1.1.');
+    expect(app.text()).toContain('VPN 0.4.0-r1');
+    expect(app.text()).not.toContain('Vectra');
+    expect(app.text()).not.toContain('BloopCat');
+    // No support bot in status.brand: no link to support at all.
+    expect(app.all('a').filter((a) => (a.getAttribute('href') ?? '').startsWith('https://t.me/'))).toEqual([]);
+  });
+
+  it('a neutral router whose status names a support bot links to that bot and names no service', async () => {
+    const app = start({ scenario: 'healthy', mock: { brand: 'none' }, twist: (m, r) => void (m === 'status' && ((r.brand as Answer).support = 'MyVpnHelpBot')) });
+    expect(await eventually(() => app.verdict() === 'Всё работает')).toBe(true);
+    const link = app.button('Открыть чат поддержки');
+    expect(link?.getAttribute('href')).toBe('https://t.me/MyVpnHelpBot');
+    expect(app.text()).not.toMatch(/Vectra|BloopCat|Написать в VPN/);
   });
 });
 

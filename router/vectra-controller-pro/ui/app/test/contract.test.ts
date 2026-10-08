@@ -114,6 +114,20 @@ describe('normalization', () => {
     expect(normalize('balancers', { balancers: [{ role: 'main' }, { tag: 'BL' }] }).balancers.map((b) => b.tag)).toEqual(['BL']);
   });
 
+  it('reads a router that names no brand as neutral, and the offered network name as nothing', () => {
+    expect(normalize('status', {}).brand).toEqual({ id: null, name: null, bot: null, support: null, lanName: null, site: null });
+    expect(normalize('status', { brand: { id: 'bloopcat', name: 'BloopCat', support: 42, lanName: 'bloopcat.lan' } }).brand).toEqual({
+      id: 'bloopcat',
+      name: 'BloopCat',
+      bot: null,
+      support: null,
+      lanName: 'bloopcat.lan',
+      site: null,
+    });
+    expect(normalize('setup', {}).wifi.rename).toBeNull();
+    expect(normalize('setup', { wifi: { rename: 'BloopCat-6D39' } }).wifi.rename).toBe('BloopCat-6D39');
+  });
+
   it('keeps a balancer whose fallback is malformed, with fallback null', () => {
     const out = normalize('balancers', { balancers: [{ tag: 'X', fallback: { balancer: 'Y' } }] });
     expect(out.balancers[0].fallback).toBeNull();

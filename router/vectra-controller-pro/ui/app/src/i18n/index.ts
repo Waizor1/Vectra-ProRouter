@@ -106,3 +106,12 @@ export function makeT(lang: Lang): T {
   t.lang = lang;
   return t;
 }
+
+/** t with default parameters ({brand} on every sentence); a caller's own win. */
+export function withParams(t: T, defaults: Params): T {
+  const wrapped = ((key: Key, p?: Params) => t(key, { ...defaults, ...p })) as T;
+  wrapped.n = (key, count, p) => t.n(key, count, { ...defaults, ...p });
+  wrapped.has = t.has;
+  wrapped.lang = t.lang;
+  return wrapped;
+}

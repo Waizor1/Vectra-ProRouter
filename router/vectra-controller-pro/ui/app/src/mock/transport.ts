@@ -6,7 +6,7 @@ import type { Action, CallFn, Holder, PortForward, ReadData, ReadMethod, SetPass
 import { FIXTURE_NOW, FIXTURES } from './fixtures';
 import { ipv4, overlaps, parsePorts, PF_MAX, portText } from '../lib/portForwards';
 import { normalizeSite } from '../lib/sites';
-import { buildWorld, clone, off, wifiAs, type Scenario, type WifiAs } from './scenarios';
+import { BRANDS, brandAs, buildWorld, claimLinks, clone, off, wifiAs, type BrandAs, type Scenario, type WifiAs } from './scenarios';
 
 export interface MockOptions {
   scenario?: Scenario;
@@ -34,6 +34,8 @@ export interface MockOptions {
   pfPending?: boolean;
   /** `set_port_forwards` refuses with this code whatever it is sent (dev: `&pffail=`). */
   pfFail?: string;
+  /** Whose router this is (status.brand): Vectra's, as the fixtures (the default), BloopCat's, or none (dev: `&brand=`). */
+  brand?: BrandAs;
 }
 
 export interface Mock {
@@ -146,8 +148,10 @@ export function createMock(opts: MockOptions = {}): Mock {
   const live = opts.live ?? true;
   const applyMs = opts.applyMs ?? 1500;
   const born = Date.now();
+  const brand = opts.brand ?? 'vectra';
   const built = buildWorld(scenario, opts.holder);
   if (built) built.status.ui = { locked: !!opts.locked };
+  if (built) brandAs(built, brand);
   if (built && opts.wifi) wifiAs(built, opts.wifi);
   // Live mode moves the fixture router's clock to the moment the page opened;
   // from then on its data ages naturally.
@@ -200,13 +204,10 @@ export function createMock(opts: MockOptions = {}): Mock {
       w.wan_check = { link: true, ipv4: '100.64.12.7', dns: true, internet: true, panel: true, checkedAt: iso(now()) };
       log('wan up: 100.64.12.7 from the provider');
       // The panel's first answer names the bot and brings Vectra's key: the QR and the link appear.
+      // Another brand's router links its own bot; one with no brand shows the code alone.
       const c = w.setup.vectra.claim;
-      w.setup.vectra.botUsername = 'VectraConnectBot';
-      if (c && c.code) {
-        // A stand-in with the real one's length; only the Vectra backend can open a real one.
-        c.qr = 'VECTRA:R1:' + 'AQ'.padEnd(320, 'x7Kq4M9dZ2wLp0');
-        c.botUrl = 'https://t.me/VectraConnectBot?start=rt_' + c.code;
-      }
+      w.setup.vectra.botUsername = BRANDS[brand].bot;
+      if (c && c.code) Object.assign(c, claimLinks(brand, c.code));
     });
   }
 
@@ -221,9 +222,9 @@ export function createMock(opts: MockOptions = {}): Mock {
     if (!w.setup.wifi.radios.some((r) => r.enabled === true && r.secured === true)) return;
     linking = true;
     later(Math.max(applyMs * 4, 6000), () => {
-      const owner = { label: '@vectra_user' };
+      const owner = { label: BRANDS[brand].owner };
       w.setup.vectra = { ...w.setup.vectra, owner, claim: { ...w.setup.vectra.claim!, state: 'claimed', owner } };
-      log('claimed by a Vectra account');
+      log('claimed by an account');
       // Like vctl: the operator config is written first ("linked"), the
       // provider's subscription is fetched after it.
       later(Math.max(applyMs * 2, 3000), () => {

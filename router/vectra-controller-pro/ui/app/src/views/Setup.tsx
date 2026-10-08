@@ -207,15 +207,18 @@ function Frame(p: {
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
 /**
- * Where this page opens. dnsmasq answers the router's names on the LAN, Vectra
- * on or off: my.vectra-pro.net first — a browser opens a real top-level
- * domain as an address — then vectra.lan as it must be typed (a bare
- * `vectra.lan` is a search to a browser). A device with a VPN app or a
- * private DNS asks neither of the router: the router's own address, which
- * always works, when the router says it. `links`: each is a link.
+ * Where this page opens, by the router's brand (status.brand). dnsmasq
+ * answers the router's names on the LAN, the service on or off: the brand's
+ * public site first where it has one (my.vectra-pro.net) — a browser opens a
+ * real top-level domain as an address — then its LAN name as it must be typed
+ * (a bare `vectra.lan` is a search to a browser); router.lan on a router with
+ * no brand. A device with a VPN app or a private DNS asks neither of the
+ * router: the router's own address, which always works, when the router says
+ * it. `links`: each is a link.
  */
 export function WayIn({ ip, links }: { ip: string | null | undefined; links?: boolean }) {
   const { t } = useApp();
+  const b = useRes('status').data?.brand;
   const addr = ip && IPV4.test(ip) ? ip : null;
   const at = (text: string, host: string) =>
     links ? (
@@ -225,19 +228,36 @@ export function WayIn({ ip, links }: { ip: string | null | undefined; links?: bo
     ) : (
       <b class="nw">{text}</b>
     );
-  const names = [at('my.vectra-pro.net', 'my.vectra-pro.net'), at('http://vectra.lan', 'vectra.lan')];
-  return addr ? around(t('s.lanIp', { a: SLOT, b: SLOT, ip: SLOT }), ...names, at(addr, addr)) : around(t('s.lan', { a: SLOT, b: SLOT }), ...names);
+  const lan = b?.lanName || 'router.lan';
+  const names = [at('http://' + lan, lan)];
+  if (b?.site) names.unshift(at(b.site, b.site));
+  // 's.lan' / 's.lanIp' name two; 's.lan1' / 's.lanIp1' one.
+  const one = names.length > 1 ? '' : '1';
+  const p = { a: SLOT, b: SLOT, ip: SLOT };
+  return addr ? around(t(('s.lanIp' + one) as Key, p), ...names, at(addr, addr)) : around(t(('s.lan' + one) as Key, p), ...names);
 }
 
-/** The way to Vectra's support: the bot the router knows (from the panel, or set when the box was prepared). */
-function Support({ bot }: { bot: string | null }) {
+/**
+ * The words on a link to support: "Message <brand>"; on a router with no
+ * brand, words that name no service.
+ */
+export const supportKey = (brandId: string | null | undefined): Key => (brandId ? 's.help.support.open' : 's.help.support.any');
+
+/**
+ * The way to support: the brand's support bot (status.brand.support — the
+ * subscription's, else the brand's own). Never the bot a claim code goes to,
+ * and nothing where the router names none.
+ */
+function Support() {
   const { t } = useApp();
+  const b = useRes('status').data?.brand;
+  const bot = b?.support;
   if (!bot) return null;
   return (
     <p>
       <a class="btn bg" href={'https://t.me/' + encodeURIComponent(bot)} target="_blank" rel="noopener noreferrer">
         <Icon name="arrow" size={16} />
-        {t('s.help.support.open')}
+        {t(supportKey(b.id))}
       </a>
     </p>
   );
@@ -281,7 +301,7 @@ function Password({ s, saved, onSaved, next }: { s: SetupData; saved: boolean; o
 // The internet is the router's own business: it connects to the provider by
 // itself, so this step has nothing to fill in. It watches, says when the cable
 // is missing, and after a minute without internet says what a person can check.
-function Internet({ s, wan, failed, next }: { s: SetupData; wan: WanCheck | null; failed: boolean; next: () => void }) {
+function Internet({ wan, failed, next }: { wan: WanCheck | null; failed: boolean; next: () => void }) {
   const { t } = useApp();
   const ok = online(wan);
   const noLink = wan?.link === false;
@@ -324,7 +344,7 @@ function Internet({ s, wan, failed, next }: { s: SetupData; wan: WanCheck | null
       {slow ? (
         <>
           <Note tone="warn">{t(noLink ? 'w.net.nolink.slow' : 'w.net.wait.slow')}</Note>
-          <Support bot={s.vectra.botUsername} />
+          <Support />
         </>
       ) : null}
     </Frame>
@@ -648,6 +668,7 @@ function WifiDone({ s, result, next, again }: { s: SetupData; result: WifiResult
 function Wifi({ s, next, result, onResult }: { s: SetupData; next: () => void; result: WifiResult | null; onResult: (r: WifiResult | null) => void }) {
   const { t, f, run, pending, store } = useApp();
   const scanRes = useRes('wifi_scan');
+  const brandName = useRes('status').data?.brand.name;
   const radios = s.wifi.radios.filter(hasAp).sort(byBand);
   // An open network must get a name and a password when it is on the air — or,
   // on a box with every band off, to have Wi-Fi at all. One that is off beside
@@ -664,7 +685,8 @@ function Wifi({ s, next, result, onResult }: { s: SetupData; next: () => void; r
   const scan = scanRes.data;
   const byDev = new Map((scan?.radios ?? []).map((x) => [x.device, x] as const));
   const ago = scan?.scannedAt ? f.ago(scan.scannedAt) : null;
-  const base = radios.find((r) => !unnamed(r))?.ssid || s.wifi.suggested || 'Vectra';
+  // A router that suggests no name (an older one): the brand's, as the router names it, else its own.
+  const base = radios.find((r) => !unnamed(r))?.ssid || s.wifi.suggested || brandName || 'Router';
   const [edit, setEdit] = useState(open.length > 0);
   const [same, setSame] = useState(radios.every((r) => r.ssid === radios[0]?.ssid) || radios.every(unnamed));
   const [shared, setShared] = useState<Net>(() => ({ ssid: base, key: open.length ? genKey() : '' }));
@@ -989,11 +1011,12 @@ function Vectra({ s, st, wan, next }: { s: SetupData; st: Status | null; wan: Wa
   // Confirmed in the app, or linked with the subscription still on its way.
   const waiting = !done && (s.vectra.linked === true || c?.state === 'claimed');
   const late = useLate(waiting, CONFIG_SLOW_MS);
-  const bot = s.vectra.botUsername;
+  // A router with no brand: the owner's own VPN service takes the code; no name is ours to say.
+  const neutral = !st?.brand.id;
 
   if (done) {
     return (
-      <Frame icon="ok" tone="ok" title={t('w.v.ok')} foot={<Button kind="p" icon="arrow" onClick={next}>{t('w.next')}</Button>} onward>
+      <Frame icon="ok" tone="ok" title={t(neutral ? 'w.v.ok.any' : 'w.v.ok')} foot={<Button kind="p" icon="arrow" onClick={next}>{t('w.next')}</Button>} onward>
         {owner ? <p>{t('w.v.owner', { owner })}</p> : null}
       </Frame>
     );
@@ -1008,7 +1031,7 @@ function Vectra({ s, st, wan, next }: { s: SetupData; st: Status | null; wan: Wa
         {late ? (
           <>
             <Note tone="warn">{t('w.v.slow')}</Note>
-            <Support bot={bot} />
+            <Support />
           </>
         ) : null}
       </Frame>
@@ -1016,9 +1039,9 @@ function Vectra({ s, st, wan, next }: { s: SetupData; st: Status | null; wan: Wa
   }
   if (!c || !c.code) {
     return (
-      <Frame icon="warn" tone="warn" title={t('w.v.t')} foot={<Button kind="p" icon="arrow" onClick={next}>{t('w.next')}</Button>} onward>
+      <Frame icon="warn" tone="warn" title={t(neutral ? 'w.v.t.any' : 'w.v.t')} foot={<Button kind="p" icon="arrow" onClick={next}>{t('w.next')}</Button>} onward>
         <p>{wan && !online(wan) ? t('w.v.offline') : t('w.v.unavailable')}</p>
-        <Support bot={bot} />
+        <Support />
       </Frame>
     );
   }
@@ -1032,7 +1055,7 @@ function Vectra({ s, st, wan, next }: { s: SetupData; st: Status | null; wan: Wa
     toast(ok ? 'ok' : 'fail', t(ok ? 'w.v.copied' : 'j.copyFail'));
   };
   return (
-    <Frame icon="shield" title={t('w.v.t')} foot={null}>
+    <Frame icon="shield" title={t(neutral ? 'w.v.t.any' : 'w.v.t')} foot={null}>
       {/* A computer: the QR to scan with the phone, beside how. A phone: this page
           is on the phone already — Telegram first, the code, the QR last. */}
       <div class={'wz-link' + (c.qr ? '' : ' no-qr')}>
@@ -1043,9 +1066,10 @@ function Vectra({ s, st, wan, next }: { s: SetupData; st: Status | null; wan: Wa
         ) : null}
         {c.qr ? <p class="k wz-link-other">{t('w.v.other')}</p> : null}
         <ol class="wz-howto wz-link-how">
-          <li>{t('w.v.s1')}</li>
+          <li>{t(neutral ? 'w.v.s1.any' : 'w.v.s1')}</li>
           <li>{t('w.v.s2')}</li>
-          <li>{c.qr ? t('w.v.s3') : t('w.v.noQr')}</li>
+          {/* A neutral router never has a code to scan: no "not yet" about it. */}
+          <li>{t(c.qr ? 'w.v.s3' : neutral ? 'w.v.s3.any' : 'w.v.noQr')}</li>
         </ol>
         <div class="wz-link-code">
           <p class="hint">{t(c.qr ? 'w.v.code' : 'w.v.codeOnly')}</p>
@@ -1234,7 +1258,7 @@ export function Setup({ onClose, start = 'welcome' }: { onClose: (tour: boolean)
           {screen === 'password' ? (
             <Password s={s} saved={pwSaved} onSaved={() => setPwSaved(true)} next={after('password')} />
           ) : screen === 'internet' ? (
-            <Internet s={s} wan={wan} failed={!!wanRes.error} next={after('internet')} />
+            <Internet wan={wan} failed={!!wanRes.error} next={after('internet')} />
           ) : screen === 'wifi' ? (
             <Wifi s={s} next={after('wifi')} result={wifiResult} onResult={setWifiResult} />
           ) : screen === 'vectra' ? (

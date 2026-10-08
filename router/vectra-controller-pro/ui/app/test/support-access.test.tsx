@@ -5,7 +5,7 @@
 // such switch (an older vctl) shows none.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CallFn, ReadData, Status } from '../src/api/types';
-import { LANGS, makeT, type Lang } from '../src/i18n';
+import { LANGS, makeT, withParams, type Lang } from '../src/i18n';
 import { FIXTURES } from '../src/mock/fixtures';
 import { clone } from '../src/mock/scenarios';
 import { createMock, type Mock } from '../src/mock/transport';
@@ -151,7 +151,8 @@ describe('support access', () => {
 
   for (const lang of LANGS) {
     it(`speaks ${lang}`, async () => {
-      const t = makeT(lang);
+      // The fixture router is Vectra's: its name in every sentence.
+      const t = withParams(makeT(lang), { brand: 'Vectra' });
       const app = start({ lang });
       await settle();
       const sw = app.sw()!;

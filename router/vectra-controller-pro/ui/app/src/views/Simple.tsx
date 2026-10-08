@@ -21,7 +21,7 @@ import { PowerActs } from './PowerActs';
 import { Services } from './Services';
 import { SupportAccess } from './SupportAccess';
 import { autoLine, face, groupServers, nodePlace, routeVia } from '../lib/servers';
-import { CONFIG_SLOW_MS, needsSetup, owned, Setup, useLate, WayIn, type Screen } from './Setup';
+import { CONFIG_SLOW_MS, needsSetup, owned, Setup, supportKey, useLate, WayIn, type Screen } from './Setup';
 import { Tour, tourSeen } from './Tour';
 
 const ICON: Record<SimpleVerdict['tone'], IconName> = { ok: 'ok', info: 'info', warn: 'warn', fail: 'fail', mute: 'power' };
@@ -409,7 +409,7 @@ function HelpCard({ s, acts, manual, bot, restartShown }: { s: Status; acts: Act
           </Button>,
           bot ? (
             <a class="lnk" href={'https://t.me/' + encodeURIComponent(bot)} target="_blank" rel="noopener noreferrer">
-              {t('s.help.support.open')}
+              {t(supportKey(s.brand.id))}
               <Icon name="arrow" size={14} />
             </a>
           ) : null,
@@ -495,7 +495,8 @@ export function Simple() {
   const s = st.data;
   // Not configured and the setup not read yet: say nothing rather than "not set up".
   if (!hasSubscription(s) && !setup.data && !setup.error) return <Skeleton rows={3} />;
-  const bot = vx?.botUsername ?? null;
+  // Support is the brand's support bot — never the bot a claim code goes to (setup.vectra.botUsername).
+  const bot = s.brand.support;
   // `setup` older than the status that shows the settings gone: re-read before saying which it is.
   const recheck = !sub && vx?.linked === true && (setup.at ?? 0) + 3000 < (st.at ?? 0);
   const link: LinkState = recheck ? 'recheck' : waiting ? (late ? 'late' : 'claimed') : vx && vx.linked === false ? 'unlinked' : null;
@@ -583,7 +584,7 @@ export function Simple() {
             <p class="sv-sup">
               <a class="btn bg" href={'https://t.me/' + encodeURIComponent(bot)} target="_blank" rel="noopener noreferrer">
                 <Icon name="arrow" size={16} />
-                {t('s.help.support.open')}
+                {t(supportKey(s.brand.id))}
               </a>
             </p>
           ) : null}
@@ -619,7 +620,7 @@ export function Simple() {
           </span>
         ) : null}
         <span class="sv-dev">
-          {[s.router.model, s.router.release, s.version ? 'Vectra ' + s.version : null]
+          {[s.router.model, s.router.release, s.version ? t('app.version', { v: s.version }) : null]
             .filter(Boolean)
             .map((x, i) => (
               <span key={i}>

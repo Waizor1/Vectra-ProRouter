@@ -321,7 +321,7 @@ describe('"connected" and "all set" wait for the subscription', () => {
     expect(app.text()).not.toContain('Настройки всё ещё не пришли');
     await tick(5 * 60_000 + 1500);
     expect(app.text()).toContain('Настройки всё ещё не пришли');
-    expect(app.button('Написать в Vectra')?.getAttribute('href')).toBe('https://t.me/VectraConnectBot');
+    expect(app.button('Написать в Vectra')?.getAttribute('href')).toBe('https://t.me/VectraConnect_support_bot');
     expect(app.button('Пропустить шаг')).toBeDefined();
   });
 

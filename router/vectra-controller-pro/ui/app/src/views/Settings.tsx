@@ -78,8 +78,8 @@ export function Settings() {
     );
   }
   const radios = sd ? sd.wifi.radios.filter(hasAp).sort(byBand) : [];
-  // Each part whole on its line ("Vectra 0.4.0-r1" never split after "Vectra").
-  const about = [s.router.model, s.router.release, s.version && 'Vectra ' + s.version, s.engine.xrayVersion && 'Xray ' + s.engine.xrayVersion].filter(Boolean);
+  // Each part whole on its line ("Vectra 0.4.0-r1" never split after the name).
+  const about = [s.router.model, s.router.release, s.version && t('app.version', { v: s.version }), s.engine.xrayVersion && 'Xray ' + s.engine.xrayVersion].filter(Boolean);
   return (
     <div class="stack">
       <div class="setg">

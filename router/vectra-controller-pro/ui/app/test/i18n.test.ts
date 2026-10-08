@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { glue, interpolate, LANGS, makeT, normLang, pickLang, pluralIndex } from '../src/i18n';
+import { glue, interpolate, LANGS, makeT, normLang, pickLang, pluralIndex, withParams } from '../src/i18n';
 import { S } from '../src/i18n/strings';
 
 const CYRILLIC = /[Ѐ-ӿ]/;
@@ -34,6 +34,27 @@ describe('string table', () => {
       expect(row[1], key).not.toMatch(CYRILLIC);
       expect(row[2], key).not.toMatch(CYRILLIC);
     }
+  });
+
+  it('names no brand by itself: every service name is {brand}', () => {
+    for (const [key, forms] of Object.entries(S)) {
+      for (const s of forms) expect(s, key).not.toMatch(/Vectra/);
+    }
+  });
+});
+
+describe('the brand in every sentence', () => {
+  it('puts the default {brand} into every sentence, plural ones too; a caller’s own value wins', () => {
+    const t = withParams(makeT('ru'), { brand: 'BloopCat' });
+    expect(t('w.v.t')).toBe('Подключение к BloopCat');
+    expect(t('s.help.support.open')).toBe('Написать в BloopCat');
+    expect(t('w.v.t', { brand: 'Vectra' })).toBe('Подключение к Vectra');
+    // Its other parameters still arrive.
+    expect(t('d.panel_link.ok', { ago: '5 мин назад' })).toBe('BloopCat на связи, отчёт 5 мин назад');
+    expect(t.n('n.node', 2)).toBe('2 узла');
+    expect(t.lang).toBe('ru');
+    expect(t.has('brand.none')).toBe(true);
+    expect(t.has('no.such.key')).toBe(false);
   });
 });
 

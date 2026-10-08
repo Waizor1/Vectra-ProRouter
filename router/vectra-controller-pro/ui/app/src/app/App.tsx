@@ -3,7 +3,7 @@ import { describeError, type ErrInfo } from '../api/errors';
 import { normAction } from '../api/normalize';
 import { createStore } from '../api/store';
 import type { ActionMethod, CallFn, ReadMethod, SetPasswordFn } from '../api/types';
-import { LANG_LABEL, LANGS, makeT, pickLang, type Key, type Lang } from '../i18n';
+import { LANG_LABEL, LANGS, makeT, pickLang, withParams, type Key, type Lang } from '../i18n';
 import { makeFmt } from '../lib/format';
 import { hasSubscription, health, type Level } from '../lib/health';
 import { actionText } from '../lib/labels';
@@ -103,14 +103,17 @@ function Header(p: {
   const s = st.data;
   const pro = mode === 'pro';
   const level: Level | null = st.error ? 'unknown' : s ? health(s, dg.data).level : null;
+  const vectra = s?.brand.id === 'vectra';
   const clock = st.at === null ? null : f.clock(st.at);
   const updated = clock ? t('hdr.updated', { time: clock }) : st.error ? '—' : t('hdr.loading');
   return (
     <header class="hdr">
       <div class="brand">
-        {/* The official wordmark (a mask filled with the brand gradient); the word is its text. */}
-        <span class="wm" aria-hidden="true" />
-        <span class="word">VECTRA</span>
+        {/* Vectra's official wordmark (a mask filled with the brand gradient); the word is its text.
+            Another brand, or none, shows its name in its place, the same weight and fill. Until
+            the router has said whose it is, nothing: not a name that may be wrong. */}
+        {vectra ? <span class="wm" aria-hidden="true" /> : null}
+        {s || st.error ? <span class={vectra ? 'word' : 'word word-text'}>{(s?.brand.name ?? t('brand.none')).toUpperCase()}</span> : null}
         {pro && s?.router.hostname ? (
           <span class="host clip" title={s.router.hostname}>
             {s.router.hostname}
@@ -234,7 +237,12 @@ export function App({ call, setPassword = null, lang: hostLang, root }: { call: 
   // mount() renders once: the transport, and so the store, never change.
   const [store] = useState(() => createStore(call));
   const [lang, setLangState] = useState<Lang>(() => pickLang(load('lang'), hostLang, navigator.language));
-  const t = useMemo(() => makeT(lang), [lang]);
+  // Whose router this is (status.brand): every sentence says its name, or "VPN" with none.
+  const [brandName, setBrandName] = useState<string | null>(null);
+  const t = useMemo(() => {
+    const base = makeT(lang);
+    return withParams(base, { brand: brandName ?? base('brand.none') });
+  }, [lang, brandName]);
   const f = useMemo(() => makeFmt(t), [t]);
   const [tab, setTab] = useState<TabId>(() => loadOneOf('tab', TABS, 'overview'));
   const [modePref, setModePref] = useState<Mode>(() => loadOneOf('mode', MODES, 'simple'));
@@ -259,7 +267,15 @@ export function App({ call, setPassword = null, lang: hostLang, root }: { call: 
   L.auto = logsAuto;
   L.t = t;
 
-  useEffect(() => store.on('status', () => setLocked(store.get('status').data?.ui.locked === true)), [store]);
+  useEffect(
+    () =>
+      store.on('status', () => {
+        const s = store.get('status').data;
+        setLocked(s?.ui.locked === true);
+        setBrandName(s?.brand.name ?? null);
+      }),
+    [store],
+  );
 
   const later = (ms: number, fn: () => void) => {
     const id = setTimeout(() => {

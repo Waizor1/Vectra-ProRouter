@@ -19,10 +19,11 @@ const VIEW = resolve(WWW, 'luci-static/resources/view/vectra/app.js');
 // every router state the owner can meet; since 0.5.0 also the setup wizard,
 // "My sites" and a QR encoder; since then the Wi-Fi step for both bands, the
 // server step, the tour, password/support controls and tune verdicts in plain
-// words (~195 KB, ~94 KB gzip). Still
+// words (~195 KB, ~94 KB gzip); since r23 the router's brand in every
+// sentence, the neutral claim step and the brand's network name (~201 KB). Still
 // under 0.7 % of the xray binary it sits next to on flash; the budget is here
 // to catch creep — a dependency pulled in by accident — not to cut copy.
-const BUDGET = 200 * 1024;
+const BUDGET = 202 * 1024;
 
 /**
  * After the bundle is written: report its size, fail over budget, and stamp the

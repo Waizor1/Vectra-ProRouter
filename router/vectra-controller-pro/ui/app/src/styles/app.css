@@ -346,13 +346,34 @@ h3,
   .wm {
     display: block;
   }
-  .word {
+  .word:not(.word-text) {
     position: absolute;
     width: 1px;
     height: 1px;
     overflow: hidden;
     clip: rect(0 0 0 0);
     white-space: nowrap;
+  }
+}
+/* Another brand (or none) has no mark of ours: its name is the wordmark, in
+   the same weight and the same gradient. A long name ends in "…" rather than
+   pushing the header's switches off a phone's screen. */
+.brand .word-text {
+  overflow: hidden;
+  min-width: 0;
+  /* Letters as tall as the mark's, a name about as wide as "VECTRA". */
+  font-size: 17px;
+  letter-spacing: 0.2em;
+  line-height: 1;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+@supports (-webkit-background-clip: text) or (background-clip: text) {
+  .brand .word-text {
+    background: var(--wm-fill);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
   }
 }
 .host {
@@ -2182,6 +2203,11 @@ h3,
 .lnk:hover {
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+/* The router's addresses in a sentence: plain inline text, so the comma after
+   one stays on its line ("router.lan," never wraps to ", а если…"). */
+.sv-lan .lnk {
+  display: inline;
 }
 .sv-steps {
   counter-reset: step;
