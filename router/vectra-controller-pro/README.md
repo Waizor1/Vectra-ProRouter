@@ -171,7 +171,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md). High-level:
 
 ## Router UI
 
-LuCI → **Services → Vectra**: a single-page app (Preact, ~40 KB gzipped, ru /
+LuCI → **VPN**: a single-page app (Preact, ~40 KB gzipped, ru /
 en / zh, dark and light) served from `/www/luci-static/vectra/` and rendered
 inside a shadow root, so LuCI's theme and the app never style each other.
 

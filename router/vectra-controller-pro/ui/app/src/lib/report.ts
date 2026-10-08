@@ -36,7 +36,7 @@ export function buildReport(t: T, f: Fmt, s: Status, d: Diagnostics | null, stat
     line('rp.location', sub.entryRemark ? sub.entryRemark + (src ? ' (' + src + ')' : '') : t('hero.noLocation')),
     line('rp.router', join([r.model, r.release, r.hostname])),
     line('rp.id', s.controlPlane.routerId || t('na')),
-    line('rp.version', join([s.version && 'Vectra ' + s.version, s.engine.xrayVersion && 'xray ' + s.engine.xrayVersion])),
+    line('rp.version', join([s.version && t('app.version', { v: s.version }), s.engine.xrayVersion && 'xray ' + s.engine.xrayVersion])),
     line('rp.panel', f.ago(s.controlPlane.lastCheckIn, now, t('pl.never'))),
     line('rp.memory', r.memAvailableMiB !== null && r.memTotalMiB !== null ? t('r.ramFree', { a: f.mib(r.memAvailableMiB), b: f.mib(r.memTotalMiB) }) : t('na')),
     line(

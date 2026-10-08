@@ -4,8 +4,9 @@
 //   ?wifiDown=radio1 (a radio that does not come back after a Wi-Fi change)   ?wifiEnd=unverified|failed
 //   ?scenario=off&holder=passwall2|agent|direct (Vectra switched off: who carries the traffic)
 //   ?pwfail=refused|denied|offline (LuCI's password change fails so)
-//   ?wifi=manual|overlap|down (the Wi-Fi as an owner may have it: the wizard's verdicts)
+//   ?wifi=manual|overlap|down|model (the Wi-Fi as an owner may have it: the wizard's verdicts; model: named after the model)
 //   ?scenario=cgnat (port forwarding behind the provider's CGNAT)   ?pfPending=1   ?pffail=port_conflict|dest_not_lan|…
+//   ?brand=vectra|bloopcat|none (whose router it is: the name, the bots, the networks' names)
 import { createMock } from './mock/transport';
 import { SCENARIOS, type Scenario } from './mock/scenarios';
 import { mount } from './mount';
@@ -33,6 +34,7 @@ const wifiEnd = q.get('wifiEnd');
 const holder = q.get('holder');
 const pw = q.get('pwfail');
 const wifi = q.get('wifi');
+const brand = q.get('brand');
 const mock = createMock({
   scenario,
   latencyMs: Number(q.get('latency') ?? 300),
@@ -41,9 +43,10 @@ const mock = createMock({
   wifiEnd: wifiEnd === 'unverified' || wifiEnd === 'failed' ? wifiEnd : undefined,
   holder: holder === 'agent' || holder === 'direct' ? holder : undefined,
   passwordFails: pw === 'refused' || pw === 'denied' || pw === 'offline' ? pw : undefined,
-  wifi: wifi === 'manual' || wifi === 'overlap' || wifi === 'down' ? wifi : undefined,
+  wifi: wifi === 'manual' || wifi === 'overlap' || wifi === 'down' || wifi === 'model' ? wifi : undefined,
   pfPending: q.get('pfPending') === '1',
   pfFail: q.get('pffail') || undefined,
+  brand: brand === 'bloopcat' || brand === 'none' ? brand : undefined,
 });
 const host = document.getElementById('vectra-host') as HTMLElement;
 const unmount = mount(host, { call: mock.call, setPassword: mock.setPassword, lang: document.documentElement.lang });

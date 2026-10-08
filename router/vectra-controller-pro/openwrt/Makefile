@@ -4,7 +4,7 @@ PKG_NAME:=vectra-controller-pro
 # Versioned independently from vectra-controller-agent: this is a separate,
 # additive controller package (xray-direct engine), not a replacement.
 VECTRA_VERSION?=0.7.0
-VECTRA_RELEASE?=22
+VECTRA_RELEASE?=23
 PKG_VERSION:=$(VECTRA_VERSION)
 PKG_RELEASE:=$(VECTRA_RELEASE)
 
@@ -129,11 +129,11 @@ define Package/$(PKG_NAME)/postrm
 # LuCI forget the menu entry. SIGHUP makes rpcd re-exec itself with its
 # sessions kept, so nobody is logged out of LuCI.
 #
-# vectra.lan and my.vectra-pro.net go with the package (the uci-defaults
-# script added them) — on a removal only. opkg runs the OLD package's postrm
-# on every upgrade too, as `postrm upgrade <version>` with PKG_UPGRADE=1
-# (libopkg/opkg_install.c), and an upgrade keeps the names. So does the
-# dead-man's block in root's crontab.
+# vectra.lan, my.vectra-pro.net, bloopcat.lan and router.lan go with the
+# package (the uci-defaults script added them) — on a removal only. opkg runs
+# the OLD package's postrm on every upgrade too, as `postrm upgrade <version>`
+# with PKG_UPGRADE=1 (libopkg/opkg_install.c), and an upgrade keeps the names.
+# So does the dead-man's block in root's crontab.
 # And the tune's own sysctl file and backup: the prerm's `vctl tune undo`
 # took them already; whatever it could not goes here.
 [ -n "$${IPKG_INSTROOT}" ] || { \
@@ -150,7 +150,7 @@ define Package/$(PKG_NAME)/postrm
 		fi; \
 		named=""; \
 		for s in $$(uci -q -X show dhcp 2>/dev/null | sed -n "s/^dhcp\.\([^.=]*\)\.interface_name=.*/\1/p"); do \
-			for n in vectra.lan my.vectra-pro.net; do \
+			for n in vectra.lan my.vectra-pro.net bloopcat.lan router.lan; do \
 				case " $$(uci -q get "dhcp.$$s.interface_name") " in \
 				*" $$n "*) uci -q del_list "dhcp.$$s.interface_name=$$n" && named=1 ;; \
 				esac; \

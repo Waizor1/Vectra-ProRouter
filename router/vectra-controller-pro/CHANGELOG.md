@@ -1,5 +1,94 @@
 # Changelog
 
+## vctl 0.7.0-r23 — the router wears its owner's brand
+
+One package, several VPN services: the router's name, bot, support, Wi-Fi
+network and address on the LAN follow the service its owner pays for
+(Vectra, BloopCat), and a router that knows of none calls itself by no
+service's name. Colours and layout are the same for everyone.
+
+### What changes, by router
+- **Vectra routers**: two visible things — «Поддержка» now opens
+  VectraConnect_support_bot (Vectra's support bot), not the bot the claim
+  code goes to; and the LuCI menu entry says «VPN», not «Vectra» (see
+  Changed, which also rewords three technical errors of the Pro view).
+  Everything else looks as before. A new router installed with the plain
+  command (what Vectra Connect's guide runs) is labelled `vectra` by the
+  installer (see `install.sh --brand` under Added). A router upgraded from
+  an earlier vctl keeps being a Vectra router: its uci-defaults labels it
+  `vectra` once, when it has a vctl identity — or the old Vectra agent's
+  state (`legacy_state_path`: a fleet router of the old agent getting vctl
+  by opkg, or a `--standby` vctl that never started) — and no label (UCI
+  `main.brand_seeded` marks that it was done, on every router, so a fresh
+  box is never relabelled by a later upgrade and a label the owner cleared
+  stays cleared). Vectra Connect's own subscription proxy does not forward
+  the headers that name the brand, so for Vectra it is the panel's answer
+  and these labels that count, not the subscription.
+- **BloopCat routers** (a subscription from their bot, or `--brand
+  bloopcat`): «BloopCat» in every sentence, in the header and in the report
+  for support; the claim goes to BloopCat_bot and support to BloopCat_supbot;
+  the done screen offers to rename the Wi-Fi network to `BloopCat-XXXX`
+  (a button — the router never renames it by itself); the page is at
+  bloopcat.lan. No Vectra anywhere in what the owner sees.
+- **Neutral routers** (no brand known — installed with `--brand none` and
+  not linked to a service): the Wi-Fi network is named after the
+  model, `AX3000T-XXXX`; the page is at router.lan; the claim step shows the
+  code alone (no bot to send it to); the program is not named — «VPN» in a
+  sentence, «Роутер 0.7.0» for the version, «сервер управления» for what the
+  diagnostics reach — and no support link is shown: there is no service to
+  write to until the router is linked.
+
+### Added
+- **`internal/brand`**: whose router this is, from, in this order of rank,
+  (1) the subscription: its bot in `profile-web-page-url` (t.me/VectraConnect_bot,
+  t.me/BloopCat_bot), else its WHOLE `profile-title` (`Vectra Connect`,
+  `BloopCat`) — never a prefix, so the panel's global title «BloopCat |
+  TriadConnect» names no brand; its `support-url` names the support bot;
+  (2) the panel's register / check-in answer, which may carry `brand`
+  (`ClaimInfo.brand`: `vectra`, `bloopcat`; an unknown id is ignored);
+  (3) the installer's label (UCI `main.brand`). A failed, stub or
+  unrecognised subscription never changes the brand. Persisted in
+  `state.json` (`brand`, `brand_source`, `brand_support`); only the daemon
+  learns it — a one-shot `vctl apply-local` never writes it.
+- **`status.brand`** (`id`, `name`, `bot`, `support`, `lanName`, `site`) and
+  **`setup.wifi.rename`** in the router's UI API
+  (`ui/contract/README.md`, «Brand»). The UI puts `{brand}` into every
+  sentence, the Russian endings agree with it, and a page that has not yet
+  heard from the router remembers the last brand it saw — and names nothing
+  until it knows.
+- **`install.sh --brand vectra|bloopcat|none`** labels the router (UCI
+  `main.brand`) until its subscription names a brand. The plain command is
+  Vectra's installer (the one router.vectra-pro.net serves and Vectra
+  Connect's guide runs without a flag): it labels a router that has no label
+  yet `vectra`, and leaves a label put on earlier as it is — a BloopCat
+  router the installer is run on again stays BloopCat. `--brand bloopcat` or
+  `--brand vectra` replaces the label; `--brand none` clears it (neutral). An
+  unknown brand or a missing value is refused before any change (exit 3); a
+  label that could not be written or cleared is the warning
+  `BRAND_NOT_WRITTEN` (exit 2).
+- **LAN names**: vectra.lan, bloopcat.lan and router.lan answer on every
+  router — the brand is learned after the package is installed — and the
+  page shows its own brand's.
+
+### Changed
+- **The LuCI menu entry says «VPN»** (it said «Vectra»): it names no service.
+- **Technical errors name no service.** The Pro view's «the program on the
+  router does not respond» / «no access to it» / «update the package» say
+  so on every router (they said «Модуль vectra»), with the package id a
+  technician types (`vectra-controller-pro`) named as a package; the
+  `would_idle` detail of `set_power` says «vctl would carry no traffic
+  yet» (it said «Vectra …»).
+- **Unbinding forgets the brand** the router learned (from the claim or the
+  subscription) with the rest of the previous owner's state; it falls back to
+  the installer's label, else neutral.
+
+### Not changed
+- Protocol strings: `VECTRA:R1`, the `VectraRouter/` user agent, `x-vectra-*`
+  headers, the ubus object `vectra`, the UCI package `vectra-controller-pro`,
+  file names.
+- The Vectra router's wording, wordmark, colours and addresses
+  (my.vectra-pro.net, vectra.lan) — pinned by the UI tests.
+
 ## vctl 0.7.0-r22 — port forwarding, with presets, from the router and from Vectra Connect
 
 The owner's wish (06.10): open a port to a device at home — a game server,

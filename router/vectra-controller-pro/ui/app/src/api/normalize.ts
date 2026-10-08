@@ -103,6 +103,7 @@ const SPECS: Record<ReadMethod, Spec> = {
     legacy: { agentEnabled: 'b', passwallRunning: 'b', passwall: 's', passwallRetiredAt: 's' },
     ui: { locked: 'b' },
     remoteShell: 'b',
+    brand: { id: 's', name: 's', bot: 's', support: 's', lanName: 's', site: 's' },
     router: {
       hostname: 's',
       model: 's',
@@ -206,6 +207,7 @@ const SPECS: Record<ReadMethod, Spec> = {
       tunable: 'b',
       verdict: 's',
       suggested: 's',
+      rename: 's',
       apply: ['?', { state: 's', at: 's', detail: 's', radios: 'B' }],
     },
     vectra: {

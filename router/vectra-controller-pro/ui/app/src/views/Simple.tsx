@@ -495,7 +495,8 @@ export function Simple() {
   const s = st.data;
   // Not configured and the setup not read yet: say nothing rather than "not set up".
   if (!hasSubscription(s) && !setup.data && !setup.error) return <Skeleton rows={3} />;
-  const bot = vx?.botUsername ?? null;
+  // Support is the brand's support bot — never the bot a claim code goes to (setup.vectra.botUsername).
+  const bot = s.brand.support;
   // `setup` older than the status that shows the settings gone: re-read before saying which it is.
   const recheck = !sub && vx?.linked === true && (setup.at ?? 0) + 3000 < (st.at ?? 0);
   const link: LinkState = recheck ? 'recheck' : waiting ? (late ? 'late' : 'claimed') : vx && vx.linked === false ? 'unlinked' : null;
@@ -619,7 +620,7 @@ export function Simple() {
           </span>
         ) : null}
         <span class="sv-dev">
-          {[s.router.model, s.router.release, s.version ? 'Vectra ' + s.version : null]
+          {[s.router.model, s.router.release, s.version ? t('app.version', { v: s.version }) : null]
             .filter(Boolean)
             .map((x, i) => (
               <span key={i}>

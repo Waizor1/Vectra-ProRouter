@@ -188,9 +188,11 @@ func jsonEqual(t *testing.T, a, b []byte) bool {
 // every request's headers.
 type feedStub struct {
 	*httptest.Server
-	mu   sync.Mutex
-	body []byte
-	reqs []http.Header
+	mu     sync.Mutex
+	body   []byte
+	reqs   []http.Header
+	extra  map[string]string // response headers beyond the content type (answerWith)
+	status int               // the answer's status; 0 is 200 (answerWith)
 }
 
 func newFeedStub(t *testing.T, body []byte) *feedStub {
@@ -199,9 +201,15 @@ func newFeedStub(t *testing.T, body []byte) *feedStub {
 	f.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.reqs = append(f.reqs, r.Header.Clone())
-		b := f.body
+		b, extra, status := f.body, f.extra, f.status
 		f.mu.Unlock()
+		for k, v := range extra {
+			w.Header().Set(k, v)
+		}
 		w.Header().Set("Content-Type", "text/plain")
+		if status != 0 {
+			w.WriteHeader(status)
+		}
 		_, _ = w.Write(b)
 	}))
 	t.Cleanup(f.Close)
@@ -209,6 +217,14 @@ func newFeedStub(t *testing.T, body []byte) *feedStub {
 }
 
 func (f *feedStub) set(b []byte) { f.mu.Lock(); f.body = b; f.mu.Unlock() }
+
+// answerWith sets the status (0 is 200) and the headers, the subscription's
+// profile-* ones among them, that every later answer carries.
+func (f *feedStub) answerWith(status int, headers map[string]string) {
+	f.mu.Lock()
+	f.status, f.extra = status, headers
+	f.mu.Unlock()
+}
 func (f *feedStub) requests() []http.Header {
 	f.mu.Lock()
 	defer f.mu.Unlock()

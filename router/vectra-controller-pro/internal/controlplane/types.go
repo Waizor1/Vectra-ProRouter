@@ -261,6 +261,8 @@ type ClaimInfo struct {
 	BotUsername string          `json:"botUsername,omitempty"`
 	Owner       json.RawMessage `json:"owner,omitempty"`
 	Released    bool            `json:"released,omitempty"`
+	// Brand is the owner's partner (its brand id), sent while the router has one.
+	Brand string `json:"brand,omitempty"`
 }
 
 type RegisterRequest struct {

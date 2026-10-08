@@ -83,6 +83,13 @@ type PersistedState struct {
 	ClaimKey    *controlplane.ClaimKey   `json:"claim_key,omitempty"`
 	BotUsername string                   `json:"bot_username,omitempty"`
 	ClaimOwner  *controlplane.ClaimOwner `json:"claim_owner,omitempty"`
+	// Whose router this is (internal/brand): the brand, where the router
+	// learned it (install < claim < subscription), and the support bot the
+	// subscription named. Empty: no brand yet — the installer's label (UCI
+	// main.brand), if any, or neutral.
+	Brand        string `json:"brand,omitempty"`
+	BrandSource  string `json:"brand_source,omitempty"`
+	BrandSupport string `json:"brand_support,omitempty"`
 }
 
 // ExitEgress is one exit's located country (ISO) and when it was seen.

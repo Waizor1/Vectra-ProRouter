@@ -89,6 +89,14 @@
     "locked": false
   },
   "remoteShell": false,
+  "brand": {
+    "id": "vectra",
+    "name": "Vectra",
+    "bot": "VectraConnect_bot",
+    "support": "VectraConnect_support_bot",
+    "lanName": "vectra.lan",
+    "site": "my.vectra-pro.net"
+  },
   "route": {
     "nodes": [
       {

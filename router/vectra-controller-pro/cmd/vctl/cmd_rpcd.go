@@ -220,6 +220,7 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 		in.RemoteShell = setup.RemoteShell(rpcdSetupEnv())
 		in.Power = rpcdPower(ctx, in.Runtime != nil, in.TableLoaded)
 		in.PassWall, in.PassWallRetiredAt = retireEnv().State()
+		in.Brand = uiapi.BuildBrand(rpcdWho(cfg))
 		return uiapi.BuildStatus(in)
 	case "balancers":
 		return uiapi.BuildBalancers(rpcdGather(ctx, env, uiapi.NeedBalancers))

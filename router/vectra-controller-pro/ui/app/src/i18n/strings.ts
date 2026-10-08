@@ -10,11 +10,27 @@
 // Plural entries (keys starting with "n.") hold '|'-separated forms in each
 // language's CLDR order: ru one|few|many, en one|other, zh other.
 // {name} placeholders must be identical across the three languages — the i18n
-// test enforces that, and that en/zh carry no Cyrillic.
+// test enforces that, and that en/zh carry no Cyrillic. No sentence names the
+// service itself: {brand} is the router's brand (status.brand.name, or
+// `brand.none`), which the app puts into every sentence (i18n `brandT`).
+// {fem}, Russian only: the ending that agrees with the brand — "а" for a
+// feminine name (Vectra), "" otherwise: «{brand} выключен{fem}». A router with
+// no brand reads `<key>.any` wherever the table has one: «VPN» never twice in
+// a sentence, and never a program, support or an app called «VPN». While it
+// is not known whose router this is (the router never answered this page,
+// and the page remembers none), `<key>.unknown`, else `<key>.any`: no name
+// at all.
 
 export const S = {
   // ── shell ──────────────────────────────────────────────────────────────
-  'app.region': ['Vectra на роутере', 'Vectra on this router', '本路由器上的 Vectra'],
+  'app.region': ['{brand} на роутере', '{brand} on this router', '本路由器上的 {brand}'],
+  'app.region.unknown': ['Роутер', 'Router', '路由器'],
+  // What {brand} is on a router that has no brand: the name of no service.
+  'brand.none': ['VPN', 'VPN', 'VPN'],
+  // The program and its version, as the footer and the report name them. A router
+  // with no brand (or not known to have one) names no program, only the router.
+  'app.version': ['{brand} {v}', '{brand} {v}', '{brand} {v}'],
+  'app.version.any': ['Роутер {v}', 'Router {v}', '路由器 {v}'],
   'app.tabs': ['Разделы', 'Sections', '分区'],
   'tab.overview': ['Обзор', 'Overview', '概览'],
   'tab.balancing': ['Маршруты', 'Routes', '路由'],
@@ -47,7 +63,7 @@ export const S = {
   'hero.warn': ['Работает, есть замечания', 'Works, with warnings', '运行中，有提示'],
   'hero.fail': ['Не работает', 'Not working', '无法工作'],
   'hero.setup': ['Подписки ещё нет', 'No subscription yet', '尚无订阅'],
-  'hero.off': ['Vectra выключена', 'Vectra is off', 'Vectra 已关闭'],
+  'hero.off': ['{brand} выключен{fem}', '{brand} is off', '{brand} 已关闭'],
   'hero.okSub': ['VPN работает {uptime}, трафик идёт через него.', 'The VPN has been up for {uptime}; traffic goes through it.', 'VPN 已运行 {uptime}，流量经由 VPN。'],
   'n.warnSub': [
     '{n} замечание — подробности ниже|{n} замечания — подробности ниже|{n} замечаний — подробности ниже',
@@ -71,12 +87,15 @@ export const S = {
   ],
 
   // ── transport errors (Pro) ─────────────────────────────────────────────
-  'err.not_found': ['Модуль vectra не найден', 'The vectra module is missing', '找不到 vectra 模块'],
-  'err.not_found.hint': ['Установите пакет vectra-controller-pro или перезапустите rpcd.', 'Install vectra-controller-pro or restart rpcd.', '请安装 vectra-controller-pro 或重启 rpcd。'],
-  'err.access': ['Нет доступа к модулю vectra', 'Access to vectra denied', '无权访问 vectra'],
+  // One wording on every router (technical errors): the program on the
+  // router, and the package by the id a technician types — never "vectra" as
+  // the service or a module.
+  'err.not_found': ['Программа на роутере не отвечает', 'The router’s program does not respond', '路由器上的程序无响应'],
+  'err.not_found.hint': ['Установите пакет vectra-controller-pro или перезапустите rpcd.', 'Install the vectra-controller-pro package or restart rpcd.', '请安装 vectra-controller-pro 软件包或重启 rpcd。'],
+  'err.access': ['Нет доступа к программе на роутере', 'Access to the router’s program denied', '无权访问路由器上的程序'],
   'err.access.hint': ['Обновите страницу и войдите в LuCI заново.', 'Reload the page and sign in to LuCI again.', '请刷新页面并重新登录 LuCI。'],
   'err.method': ['Контроллер не знает этот запрос', 'The controller does not know this request', '控制器不支持此请求'],
-  'err.method.hint': ['Обновите пакет vectra-controller-pro.', 'Update vectra-controller-pro.', '请更新 vectra-controller-pro。'],
+  'err.method.hint': ['Обновите пакет vectra-controller-pro.', 'Update the vectra-controller-pro package.', '请更新 vectra-controller-pro 软件包。'],
   'err.timeout': ['Контроллер не ответил вовремя', 'The controller timed out', '控制器响应超时'],
   'err.timeout.hint': ['Повторим автоматически.', 'Retrying automatically.', '将自动重试。'],
   'err.network': ['Нет связи с роутером', 'The router is unreachable', '无法连接路由器'],
@@ -144,7 +163,8 @@ export const S = {
   'dp.on': ['Загружен', 'Loaded', '已加载'],
   'dp.off': ['Не загружен', 'Not loaded', '未加载'],
   'dp.ks': ['Kill switch', 'Kill switch', '断网保护'],
-  'pl.title': ['Связь с Vectra', 'Link to Vectra', '与 Vectra 的连接'],
+  'pl.title': ['Связь с {brand}', 'Link to {brand}', '与 {brand} 的连接'],
+  'pl.title.any': ['Связь с сервером управления', 'Link to the management server', '与管理服务器的连接'],
   'pl.never': ['ещё не было', 'never', '从未'],
   'r.ramFree': ['свободно {a} из {b}', '{a} free of {b}', '可用 {a} / {b}'],
   'r.free': ['свободно {a}', '{a} free', '可用 {a}'],
@@ -163,7 +183,7 @@ export const S = {
   'ov.tr.cut': ['Заблокирован, пока VPN не работает', 'Blocked while the VPN is down', 'VPN 中断期间被拦截'],
   'ov.tr.backup': ['Идёт через запасные узлы', 'Goes through backup nodes', '经由备用节点'],
   'ov.tr.none': ['Не проходит: нет рабочих узлов', 'Does not get through: no working node', '无法通过：没有可用节点'],
-  'ov.checksOff': ['Проверки идут, пока Vectra включена.', 'The checks run while Vectra is on.', 'Vectra 开启时才会进行检查。'],
+  'ov.checksOff': ['Проверки идут, пока {brand} включен{fem}.', 'The checks run while {brand} is on.', '{brand} 开启时才会进行检查。'],
 
   // ── diagnostics (Pro; id → .t title, .ok / .bad sentences) ─────────────
   'd.title': ['Проверки', 'Checks', '检查'],
@@ -221,9 +241,12 @@ export const S = {
     'Another proxy interferes: PassWall {passwall}, old agent {agent}',
     '有其他代理冲突：PassWall {passwall}，旧代理 {agent}',
   ],
-  'd.panel_link.ok': ['Vectra на связи, отчёт {ago}', 'Vectra reachable, check-in {ago}', 'Vectra 可达，签到于 {ago}'],
-  'd.panel_link.bad': ['Нет связи с Vectra, отчёт {ago}', 'Vectra unreachable, check-in {ago}', '无法连接 Vectra，签到于 {ago}'],
-  'd.panel_link.never': ['Роутер ещё не связывался с Vectra', 'Never checked in with Vectra', '从未向 Vectra 签到'],
+  'd.panel_link.ok': ['{brand} на связи, отчёт {ago}', '{brand} reachable, check-in {ago}', '{brand} 可达，签到于 {ago}'],
+  'd.panel_link.ok.any': ['Сервер управления на связи, отчёт {ago}', 'Management server reachable, check-in {ago}', '管理服务器可达，签到于 {ago}'],
+  'd.panel_link.bad': ['Нет связи с {brand}, отчёт {ago}', '{brand} unreachable, check-in {ago}', '无法连接 {brand}，签到于 {ago}'],
+  'd.panel_link.bad.any': ['Нет связи с сервером управления, отчёт {ago}', 'Management server unreachable, check-in {ago}', '无法连接管理服务器，签到于 {ago}'],
+  'd.panel_link.never': ['Роутер ещё не связывался с {brand}', 'Never checked in with {brand}', '从未向 {brand} 签到'],
+  'd.panel_link.never.any': ['Роутер ещё не связывался с сервером управления', 'Never checked in with the management server', '从未向管理服务器签到'],
   'd.subscription_ua.t': ['User-Agent подписки', 'Subscription User-Agent', '订阅 User-Agent'],
   'd.subscription_ua.ok': ['User-Agent подписки безопасен', 'The subscription User-Agent is safe', '订阅 User-Agent 安全'],
   'd.subscription_ua.bad': ['User-Agent подписки небезопасен: {reason}', 'The subscription User-Agent is unsafe: {reason}', '订阅 User-Agent 不安全：{reason}'],
@@ -440,12 +463,12 @@ export const S = {
     'The router is still applying the change. If nothing changes within a minute, try again.',
     '路由器仍在应用更改。如果一分钟内没有变化，请重试。',
   ],
-  'a.power_on': ['Vectra включена', 'Vectra turned on', 'Vectra 已开启'],
-  'a.power_off': ['Vectra выключена', 'Vectra turned off', 'Vectra 已关闭'],
+  'a.power_on': ['{brand} включен{fem}', '{brand} turned on', '{brand} 已开启'],
+  'a.power_off': ['{brand} выключен{fem}', '{brand} turned off', '{brand} 已关闭'],
   'a.would_idle': [
-    'Vectra пока не повезёт трафик: роутер ещё не привязан. Подтвердите включение ещё раз.',
-    'Vectra would carry no traffic yet: the router is not linked. Confirm turning it on again.',
-    'Vectra 暂时不会承载流量：路由器尚未绑定。请再次确认开启。',
+    '{brand} пока не повезёт трафик: роутер ещё не привязан. Подтвердите включение ещё раз.',
+    '{brand} would carry no traffic yet: the router is not linked. Confirm turning it on again.',
+    '{brand} 暂时不会承载流量：路由器尚未绑定。请再次确认开启。',
   ],
   'a.remote_shell_set': ['Доступ поддержки изменён', 'Support access changed', '支持人员访问已更改'],
   'a.port_forwards_set': ['Проброс портов сохранён', 'Port forwarding saved', '端口转发已保存'],
@@ -510,26 +533,32 @@ export const S = {
     'The internet is off until the VPN is back, so nothing bypasses the VPN.',
     '在 VPN 恢复之前网络已断开，以免任何流量绕过 VPN。',
   ],
-  's.down.auto': ['Vectra сама пробует перезапустить VPN.', 'Vectra is trying to restart the VPN by itself.', 'Vectra 正在尝试自动重启 VPN。'],
+  's.down.auto': ['{brand} сам{fem} пробует перезапустить VPN.', '{brand} is trying to restart the VPN by itself.', '{brand} 正在尝试自动重启 VPN。'],
+  's.down.auto.any': ['Роутер сам пробует перезапустить VPN.', 'The router is trying to restart the VPN by itself.', '路由器正在尝试自动重启 VPN。'],
   's.reboot': [
     'Перезагрузите роутер. Если не поможет — напишите в поддержку.',
     'Restart the router. If that does not help, contact support.',
     '请重启路由器。如果仍不行，请联系客服。',
   ],
-  's.off.t': ['Vectra не запущена', 'Vectra is not running', 'Vectra 未运行'],
+  's.off.t': ['{brand} не запущен{fem}', '{brand} is not running', '{brand} 未运行'],
   's.conflict.t': ['Мешает другая программа', 'Another program interferes', '其他程序造成冲突'],
   's.conflict.d': [
-    'Вместе с Vectra на роутере работает PassWall. Напишите в поддержку.',
-    'PassWall is running on the router alongside Vectra. Contact support.',
-    '路由器上 PassWall 与 Vectra 同时运行。请联系客服。',
+    'Вместе с {brand} на роутере работает PassWall. Напишите в поддержку.',
+    'PassWall is running on the router alongside {brand}. Contact support.',
+    '路由器上 PassWall 与 {brand} 同时运行。请联系客服。',
   ],
-  's.link.t': ['Роутер не подключён к Vectra', 'The router is not connected to Vectra', '路由器尚未连接 Vectra'],
+  's.link.t': ['Роутер не подключён к {brand}', 'The router is not connected to {brand}', '路由器尚未连接 {brand}'],
   's.link.d': [
-    'Подключите его к своему аккаунту в приложении Vectra — это займёт минуту.',
-    'Connect it to your account in the Vectra app; it takes a minute.',
-    '请在 Vectra 应用中将其连接到您的账户，只需一分钟。',
+    'Подключите его к своему аккаунту в приложении {brand} — это займёт минуту.',
+    'Connect it to your account in the {brand} app; it takes a minute.',
+    '请在 {brand} 应用中将其连接到您的账户，只需一分钟。',
   ],
-  's.act.link': ['Подключить к Vectra', 'Connect to Vectra', '连接 Vectra'],
+  's.link.d.any': [
+    'Подключите его к аккаунту в боте своего VPN‑сервиса — это займёт минуту.',
+    'Connect it to your account in your VPN service’s bot; it takes a minute.',
+    '请在您的 VPN 服务机器人中将其连接到您的账户，只需一分钟。',
+  ],
+  's.act.link': ['Подключить к {brand}', 'Connect to {brand}', '连接 {brand}'],
   's.claimed.t': ['Получаем настройки VPN', 'Getting the VPN settings', '正在获取 VPN 设置'],
   's.claimed.d': [
     'Роутер подключён к вашему аккаунту и получает настройки — обычно это меньше минуты.',
@@ -544,15 +573,31 @@ export const S = {
   ],
   's.setup.t': ['Роутер ещё не настроен', 'The router is not set up yet', '路由器尚未配置'],
   's.setup.d': [
-    'Vectra ждёт настройки VPN. Если роутер включён давно, а это сообщение не пропадает, напишите в поддержку.',
-    'Vectra is waiting for its VPN settings. If the router has been on for a while and this message stays, contact support.',
-    'Vectra 正在等待 VPN 设置。如果路由器已开机很久而此提示仍未消失，请联系客服。',
+    '{brand} ждёт настройки VPN. Если роутер включён давно, а это сообщение не пропадает, напишите в поддержку.',
+    '{brand} is waiting for its VPN settings. If the router has been on for a while and this message stays, contact support.',
+    '{brand} 正在等待 VPN 设置。如果路由器已开机很久而此提示仍未消失，请联系客服。',
   ],
-  's.nl.not_found.t': ['Vectra не отвечает', 'Vectra does not respond', 'Vectra 无响应'],
+  's.setup.d.any': [
+    'Роутер ждёт настройки VPN. Если он включён давно, а это сообщение не пропадает, напишите в поддержку.',
+    'The router is waiting for its VPN settings. If it has been on for a while and this message stays, contact support.',
+    '路由器正在等待 VPN 设置。如果它已开机很久而此提示仍未消失，请联系客服。',
+  ],
+  's.nl.not_found.t': ['{brand} не отвечает', '{brand} does not respond', '{brand} 无响应'],
+  's.nl.not_found.t.unknown': ['Программа на роутере не отвечает', 'The router’s program does not respond', '路由器上的程序无响应'],
   's.nl.not_found.d': [
-    'Программа Vectra на роутере не установлена или не запущена.',
-    'The Vectra program on the router is not installed or not running.',
-    '路由器上的 Vectra 程序未安装或未运行。',
+    'Программа {brand} на роутере не установлена или не запущена.',
+    'The {brand} program on the router is not installed or not running.',
+    '路由器上的 {brand} 程序未安装或未运行。',
+  ],
+  's.nl.not_found.d.any': [
+    'Программа, которая ведёт VPN на роутере, не установлена или не запущена.',
+    'The program that runs the VPN on the router is not installed or not running.',
+    '路由器上运行 VPN 的程序未安装或未运行。',
+  ],
+  's.nl.not_found.d.unknown': [
+    'Программа на роутере не установлена или не запущена.',
+    'The program on the router is not installed or not running.',
+    '路由器上的程序未安装或未运行。',
   ],
   's.nl.access.t': ['Нужно войти заново', 'Sign in again', '需要重新登录'],
   's.nl.access.d': [
@@ -560,7 +605,8 @@ export const S = {
     'Your router session has ended. Reload the page and sign in again.',
     '路由器设置的会话已结束。请刷新页面并重新登录。',
   ],
-  's.nl.method.t': ['Нужно обновить Vectra', 'Vectra needs an update', '需要更新 Vectra'],
+  's.nl.method.t': ['Нужно обновить {brand}', '{brand} needs an update', '需要更新 {brand}'],
+  's.nl.method.t.any': ['Нужно обновить программу на роутере', 'The router’s program needs an update', '需要更新路由器上的程序'],
   's.nl.method.d': [
     'Эта страница новее программы на роутере. Напишите в поддержку.',
     'This page is newer than the program on the router. Contact support.',
@@ -580,61 +626,88 @@ export const S = {
   's.act.restart': ['Перезапустить VPN', 'Restart the VPN', '重启 VPN'],
   's.act.location': ['Выбрать другой сервер', 'Choose another server', '选择其他服务器'],
 
-  // ── simple view: Vectra on and off ─────────────────────────────────────
-  's.pw.off.t': ['Vectra выключена', 'Vectra is off', 'Vectra 已关闭'],
+  // ── simple view: the service on and off ────────────────────────────────
+  's.pw.off.t': ['{brand} выключен{fem}', '{brand} is off', '{brand} 已关闭'],
   's.pw.via.passwall2': ['Интернет идёт через PassWall2.', 'The internet goes through PassWall2.', '网络经由 PassWall2。'],
-  's.pw.via.agent': ['Роутером управляет прежняя версия Vectra.', 'The previous version of Vectra runs the router.', '路由器由旧版 Vectra 管理。'],
+  's.pw.via.agent': ['Роутером управляет прежняя версия {brand}.', 'The previous version of {brand} runs the router.', '路由器由旧版 {brand} 管理。'],
+  's.pw.via.agent.any': ['Роутером управляет прежняя версия программы.', 'The previous version of the program runs the router.', '路由器由旧版程序管理。'],
   's.pw.via.direct': [
     'Интернет идёт напрямую, без VPN: заблокированные сайты не откроются.',
     'The internet goes directly, without a VPN, so blocked sites will not open.',
     '网络直接连接，不经过 VPN，被封锁的网站无法打开。',
   ],
-  's.pw.via.other': ['Интернет идёт без Vectra.', 'The internet goes without Vectra.', '网络不经过 Vectra。'],
-  's.pw.on': ['Включить Vectra', 'Turn on Vectra', '开启 Vectra'],
-  's.pw.onQ': ['Включить Vectra?', 'Turn on Vectra?', '开启 Vectra？'],
-  's.pw.onBody': ['Интернет пойдёт через VPN Vectra. На несколько секунд он пропадёт.', 'The internet will go through the Vectra VPN. It drops for a few seconds.', '网络将经由 Vectra VPN，会中断几秒钟。'],
+  's.pw.via.other': ['Интернет идёт без {brand}.', 'The internet goes without {brand}.', '网络不经过 {brand}。'],
+  's.pw.on': ['Включить {brand}', 'Turn on {brand}', '开启 {brand}'],
+  's.pw.onQ': ['Включить {brand}?', 'Turn on {brand}?', '开启 {brand}？'],
+  's.pw.onBody': ['Интернет пойдёт через VPN {brand}. На несколько секунд он пропадёт.', 'The internet will go through the {brand} VPN. It drops for a few seconds.', '网络将经由 {brand} VPN，会中断几秒钟。'],
+  's.pw.onBody.any': ['Интернет пойдёт через VPN. На несколько секунд он пропадёт.', 'The internet will go through the VPN. It drops for a few seconds.', '网络将经由 VPN，会中断几秒钟。'],
   's.pw.onBody.idle': [
-    'Роутер ещё не привязан к аккаунту Vectra: до привязки интернет пойдёт напрямую, без VPN, — заблокированные сайты не откроются.',
-    'The router is not linked to a Vectra account yet: until it is, the internet goes out directly, without a VPN — blocked sites will not open.',
-    '路由器尚未绑定 Vectra 账户：绑定之前，网络将直连、不经 VPN，被封锁的网站无法打开。',
+    'Роутер ещё не привязан к аккаунту {brand}: до привязки интернет пойдёт напрямую, без VPN, — заблокированные сайты не откроются.',
+    'The router is not linked to a {brand} account yet: until it is, the internet goes out directly, without a VPN — blocked sites will not open.',
+    '路由器尚未绑定 {brand} 账户：绑定之前，网络将直连、不经 VPN，被封锁的网站无法打开。',
+  ],
+  's.pw.onBody.idle.any': [
+    'Роутер ещё не привязан к аккаунту: до привязки интернет пойдёт напрямую, без VPN, — заблокированные сайты не откроются.',
+    'The router is not linked to an account yet: until it is, the internet goes out directly, without a VPN — blocked sites will not open.',
+    '路由器尚未绑定账户：绑定之前，网络将直连、不经 VPN，被封锁的网站无法打开。',
   ],
   's.pw.idle': [
-    'Vectra пока не повезёт трафик: роутер ещё не привязан. Нажмите «Включить» ещё раз, чтобы включить всё равно.',
-    'Vectra would carry no traffic yet: the router is not linked. Press Turn on again to turn it on anyway.',
-    'Vectra 暂时不会承载流量：路由器尚未绑定。再次点击“开启”以仍然开启。',
+    '{brand} пока не повезёт трафик: роутер ещё не привязан. Нажмите «Включить» ещё раз, чтобы включить всё равно.',
+    '{brand} would carry no traffic yet: the router is not linked. Press Turn on again to turn it on anyway.',
+    '{brand} 暂时不会承载流量：路由器尚未绑定。再次点击“开启”以仍然开启。',
   ],
   's.pw.onBody.passwall2': [
-    'PassWall2 остановится, и интернет пойдёт через Vectra. На несколько секунд он пропадёт.',
-    'PassWall2 stops and the internet goes through Vectra. It drops for a few seconds.',
-    'PassWall2 将停止，网络改由 Vectra 承载，会中断几秒钟。',
+    'PassWall2 остановится, и интернет пойдёт через {brand}. На несколько секунд он пропадёт.',
+    'PassWall2 stops and the internet goes through {brand}. It drops for a few seconds.',
+    'PassWall2 将停止，网络改由 {brand} 承载，会中断几秒钟。',
   ],
   's.pw.onBody.agent': [
-    'Прежняя версия Vectra остановится, и роутер перейдёт на новую. Интернет пропадёт на несколько секунд.',
-    'The previous version of Vectra stops and the router moves to the new one. The internet drops for a few seconds.',
-    '旧版 Vectra 将停止，路由器改用新版。网络会中断几秒钟。',
+    'Прежняя версия {brand} остановится, и роутер перейдёт на новую. Интернет пропадёт на несколько секунд.',
+    'The previous version of {brand} stops and the router moves to the new one. The internet drops for a few seconds.',
+    '旧版 {brand} 将停止，路由器改用新版。网络会中断几秒钟。',
   ],
-  's.pw.offBtn': ['Выключить Vectra', 'Turn off Vectra', '关闭 Vectra'],
-  's.pw.offQ': ['Выключить Vectra?', 'Turn off Vectra?', '关闭 Vectra？'],
+  's.pw.onBody.agent.any': [
+    'Прежняя версия программы остановится, и роутер перейдёт на новую. Интернет пропадёт на несколько секунд.',
+    'The previous version of the program stops and the router moves to the new one. The internet drops for a few seconds.',
+    '旧版程序将停止，路由器改用新版。网络会中断几秒钟。',
+  ],
+  's.pw.offBtn': ['Выключить {brand}', 'Turn off {brand}', '关闭 {brand}'],
+  's.pw.offQ': ['Выключить {brand}?', 'Turn off {brand}?', '关闭 {brand}？'],
   's.pw.off': ['Выключить', 'Turn off', '关闭'],
   's.pw.offBody': [
-    'Интернет пойдёт напрямую, без VPN: заблокированные сайты перестанут открываться. Включить Vectra можно здесь же.',
-    'The internet will go directly, without a VPN, and blocked sites will stop opening. You can turn Vectra back on right here.',
-    '网络将直接连接，不经过 VPN，被封锁的网站将无法打开。可以随时在这里重新开启 Vectra。',
+    'Интернет пойдёт напрямую, без VPN: заблокированные сайты перестанут открываться. Включить {brand} можно здесь же.',
+    'The internet will go directly, without a VPN, and blocked sites will stop opening. You can turn {brand} back on right here.',
+    '网络将直接连接，不经过 VPN，被封锁的网站将无法打开。可以随时在这里重新开启 {brand}。',
+  ],
+  's.pw.offBody.any': [
+    'Интернет пойдёт напрямую, без VPN: заблокированные сайты перестанут открываться. Включить обратно можно здесь же.',
+    'The internet will go directly, without a VPN, and blocked sites will stop opening. You can turn it back on right here.',
+    '网络将直接连接，不经过 VPN，被封锁的网站将无法打开。可以随时在这里重新开启。',
   ],
   's.pw.offBody.passwall2': [
-    'Интернет снова пойдёт через PassWall2, как до Vectra. На несколько секунд он пропадёт.',
-    'The internet goes through PassWall2 again, as before Vectra. It drops for a few seconds.',
-    '网络将重新经由 PassWall2，与使用 Vectra 之前一样，会中断几秒钟。',
+    'Интернет снова пойдёт через PassWall2, как до {brand}. На несколько секунд он пропадёт.',
+    'The internet goes through PassWall2 again, as before {brand}. It drops for a few seconds.',
+    '网络将重新经由 PassWall2，与使用 {brand} 之前一样，会中断几秒钟。',
+  ],
+  's.pw.offBody.passwall2.any': [
+    'Интернет снова пойдёт через PassWall2, как раньше. На несколько секунд он пропадёт.',
+    'The internet goes through PassWall2 again, as it did before. It drops for a few seconds.',
+    '网络将重新经由 PassWall2，与之前一样，会中断几秒钟。',
   ],
   's.pw.offBody.agent': [
-    'Роутер вернётся к прежней версии Vectra. Интернет пропадёт на несколько секунд.',
-    'The router goes back to the previous version of Vectra. The internet drops for a few seconds.',
-    '路由器将回到旧版 Vectra，网络会中断几秒钟。',
+    'Роутер вернётся к прежней версии {brand}. Интернет пропадёт на несколько секунд.',
+    'The router goes back to the previous version of {brand}. The internet drops for a few seconds.',
+    '路由器将回到旧版 {brand}，网络会中断几秒钟。',
   ],
-  's.pw.starting.t': ['Включаем Vectra…', 'Turning on Vectra…', '正在开启 Vectra…'],
-  's.pw.stopping.t': ['Выключаем Vectra…', 'Turning off Vectra…', '正在关闭 Vectra…'],
+  's.pw.offBody.agent.any': [
+    'Роутер вернётся к прежней версии программы. Интернет пропадёт на несколько секунд.',
+    'The router goes back to the previous version of the program. The internet drops for a few seconds.',
+    '路由器将回到旧版程序，网络会中断几秒钟。',
+  ],
+  's.pw.starting.t': ['Включаем {brand}…', 'Turning on {brand}…', '正在开启 {brand}…'],
+  's.pw.stopping.t': ['Выключаем {brand}…', 'Turning off {brand}…', '正在关闭 {brand}…'],
   's.pw.wait': ['Это займёт до минуты. Интернет может ненадолго пропасть.', 'This takes up to a minute. The internet may drop for a moment.', '最多需要一分钟，网络可能会短暂中断。'],
-  's.pw.busy': ['Vectra уже включается или выключается. Подождите минуту.', 'Vectra is already being turned on or off. Wait a minute.', 'Vectra 正在开启或关闭，请稍候一分钟。'],
+  's.pw.busy': ['{brand} уже включается или выключается. Подождите минуту.', '{brand} is already being turned on or off. Wait a minute.', '{brand} 正在开启或关闭，请稍候一分钟。'],
 
   // ── simple view: the server ──────────────────────────────────────────
   's.loc': ['Сервер', 'Server', '服务器'],
@@ -656,9 +729,9 @@ export const S = {
   's.unpinAll': ['Вернуть автовыбор', 'Restore auto choice', '恢复自动选择'],
   's.unpinQ': ['Вернуть автоматический выбор серверов?', 'Restore the automatic choice of servers?', '恢复自动选择服务器？'],
   's.unpinBody': [
-    'Vectra снова будет сама выбирать лучший сервер. Связь не прервётся.',
-    'Vectra will pick the best server by itself again. The connection stays up.',
-    'Vectra 将重新自动选择最佳服务器，连接不会中断。',
+    '{brand} снова будет сам{fem} выбирать лучший сервер. Связь не прервётся.',
+    '{brand} will pick the best server by itself again. The connection stays up.',
+    '{brand} 将重新自动选择最佳服务器，连接不会中断。',
   ],
 
   // ── simple view: help ──────────────────────────────────────────────────
@@ -691,6 +764,13 @@ export const S = {
     'This page opens at {a} or {b}; if neither works, at {ip}.',
     '本页面可通过 {a} 或 {b} 打开；如都打不开，请访问 {ip}。',
   ],
+  // The same, for a brand with one name of its own (no public site).
+  's.lan1': ['Этот экран открывается по адресу {a}.', 'This page opens at {a}.', '本页面可通过 {a} 打开。'],
+  's.lanIp1': [
+    'Этот экран открывается по адресу {a}, а если не выходит — по адресу {ip}.',
+    'This page opens at {a}; if that does not work, at {ip}.',
+    '本页面可通过 {a} 打开；如打不开，请访问 {ip}。',
+  ],
 
   // ── simple view: action results ────────────────────────────────────────
   's.a.xray_restarted': ['VPN перезапущен', 'VPN restarted', 'VPN 已重启'],
@@ -698,25 +778,25 @@ export const S = {
   's.a.entry_reset': ['Включён сервер по умолчанию', 'The default server is on', '已启用默认服务器'],
   's.a.balancer_unpinned': ['Автоматический выбор серверов включён', 'Automatic choice of servers is on', '已恢复自动选择服务器'],
   's.a.pending': ['Применяем…', 'Applying…', '正在应用…'],
-  's.a.controller_down': ['Vectra на роутере не запущена', 'Vectra is not running on the router', '路由器上的 Vectra 未运行'],
+  's.a.controller_down': ['{brand} на роутере не запущен{fem}', '{brand} is not running on the router', '路由器上的 {brand} 未运行'],
   's.a.busy': ['Роутер занят — попробуйте через минуту', 'The router is busy; try again in a minute', '路由器正忙，请一分钟后再试'],
   's.a.unknown_entry': ['Этого сервера больше нет — откройте список заново', 'This server is gone; open the list again', '此服务器已不存在，请重新打开列表'],
   's.a.no_entries_cache': ['Список серверов ещё не получен', 'The list of servers has not arrived yet', '尚未获取服务器列表'],
   's.a.fail': ['Не получилось. Попробуйте ещё раз или напишите в поддержку.', 'That did not work. Try again or contact support.', '操作未成功。请重试或联系客服。'],
-  's.a.power_on': ['Vectra включена', 'Vectra is on', 'Vectra 已开启'],
-  's.a.power_off': ['Vectra выключена', 'Vectra is off', 'Vectra 已关闭'],
+  's.a.power_on': ['{brand} включен{fem}', '{brand} is on', '{brand} 已开启'],
+  's.a.power_off': ['{brand} выключен{fem}', '{brand} is off', '{brand} 已关闭'],
 
   // ── setup wizard ───────────────────────────────────────────────────────
   'w.welcome.t': ['Настроим роутер', 'Let’s set up your router', '开始设置路由器'],
   'w.welcome.d': [
-    'Проверим интернет, прокачаем Wi-Fi, подключим Vectra и выберем сервер — займёт пару минут.',
-    'We check the internet, boost the Wi-Fi, connect Vectra and pick a server: it takes a couple of minutes.',
-    '检查网络、优化 Wi-Fi、连接 Vectra 并选择服务器，只需几分钟。',
+    'Проверим интернет, прокачаем Wi-Fi, подключим {brand} и выберем сервер — займёт пару минут.',
+    'We check the internet, boost the Wi-Fi, connect {brand} and pick a server: it takes a couple of minutes.',
+    '检查网络、优化 Wi-Fi、连接 {brand} 并选择服务器，只需几分钟。',
   ],
   'w.welcome.dPw': [
-    'Зададим пароль роутера, проверим интернет, прокачаем Wi-Fi, подключим Vectra и выберем сервер — займёт пару минут.',
-    'We set a router password, check the internet, boost the Wi-Fi, connect Vectra and pick a server: it takes a couple of minutes.',
-    '设置路由器密码、检查网络、优化 Wi-Fi、连接 Vectra 并选择服务器，只需几分钟。',
+    'Зададим пароль роутера, проверим интернет, прокачаем Wi-Fi, подключим {brand} и выберем сервер — займёт пару минут.',
+    'We set a router password, check the internet, boost the Wi-Fi, connect {brand} and pick a server: it takes a couple of minutes.',
+    '设置路由器密码、检查网络、优化 Wi-Fi、连接 {brand} 并选择服务器，只需几分钟。',
   ],
   'w.start': ['Начать', 'Start', '开始'],
   'w.next': ['Далее', 'Next', '下一步'],
@@ -727,7 +807,7 @@ export const S = {
   'w.step.password': ['Пароль', 'Password', '密码'],
   'w.step.internet': ['Интернет', 'Internet', '网络'],
   'w.step.wifi': ['Wi-Fi', 'Wi-Fi', 'Wi-Fi'],
-  'w.step.vectra': ['Vectra', 'Vectra', 'Vectra'],
+  'w.step.vectra': ['{brand}', '{brand}', '{brand}'],
   'w.step.server': ['Сервер', 'Server', '服务器'],
   'w.ok.wifi': ['на максимуме', 'at full power', '全功率'],
   'w.ok.wifiSet': ['настроен', 'set up', '已设置'],
@@ -781,9 +861,14 @@ export const S = {
     '无法检查连接。可以继续设置。',
   ],
   'w.net.noPanel': [
-    'Интернет есть, но сервер Vectra пока недоступен. Можно продолжить — роутер подключится, когда связь появится.',
-    'The internet works but the Vectra server is unreachable for now. You can go on; the router connects once it is reachable.',
-    '网络正常，但暂时无法访问 Vectra 服务器。可以继续，连接恢复后路由器会自动连接。',
+    'Интернет есть, но сервер {brand} пока недоступен. Можно продолжить — роутер подключится, когда связь появится.',
+    'The internet works but the {brand} server is unreachable for now. You can go on; the router connects once it is reachable.',
+    '网络正常，但暂时无法访问 {brand} 服务器。可以继续，连接恢复后路由器会自动连接。',
+  ],
+  'w.net.noPanel.any': [
+    'Интернет есть, но сервер управления пока недоступен. Можно продолжить — роутер подключится, когда связь появится.',
+    'The internet works but the management server is unreachable for now. You can go on; the router connects once it is reachable.',
+    '网络正常，但暂时无法访问管理服务器。可以继续，连接恢复后路由器会自动连接。',
   ],
   'w.wifi.t': ['Сеть Wi-Fi', 'Wi-Fi network', 'Wi-Fi 网络'],
   'w.wifi.boost.t': ['Прокачаем Wi-Fi', 'Let’s boost the Wi-Fi', '优化 Wi-Fi'],
@@ -972,15 +1057,20 @@ export const S = {
     '密码需为 8 到 63 个拉丁字母、数字或符号。',
   ],
   'w.wifi.none': ['На этом роутере нет Wi-Fi — подключайте устройства кабелем.', 'This router has no Wi-Fi; connect devices by cable.', '此路由器没有 Wi-Fi，请使用网线连接设备。'],
-  'w.v.t': ['Подключение к Vectra', 'Connect to Vectra', '连接 Vectra'],
-  'w.v.ok': ['Роутер подключён к Vectra', 'The router is connected to Vectra', '路由器已连接 Vectra'],
+  'w.v.t': ['Подключение к {brand}', 'Connect to {brand}', '连接 {brand}'],
+  'w.v.ok': ['Роутер подключён к {brand}', 'The router is connected to {brand}', '路由器已连接 {brand}'],
+  // A router without a brand: the owner's own VPN service takes the code.
+  'w.v.t.any': ['Подключите свой VPN‑сервис', 'Connect your VPN service', '连接您的 VPN 服务'],
+  'w.v.ok.any': ['Роутер подключён к VPN‑сервису', 'The router is connected to its VPN service', '路由器已连接 VPN 服务'],
+  'w.v.s1.any': ['Откройте бота своего VPN‑сервиса в Telegram.', 'Open your VPN service\'s bot in Telegram.', '在 Telegram 中打开您的 VPN 服务机器人。'],
   'w.v.owner': ['Аккаунт: {owner}', 'Account: {owner}', '账户：{owner}'],
-  'w.v.s1': ['Откройте приложение Vectra в Telegram.', 'Open the Vectra app in Telegram.', '在 Telegram 中打开 Vectra 应用。'],
+  'w.v.s1': ['Откройте приложение {brand} в Telegram.', 'Open the {brand} app in Telegram.', '在 Telegram 中打开 {brand} 应用。'],
   'w.v.s2': ['Выберите «Подключить роутер».', 'Choose “Connect a router”.', '选择“连接路由器”。'],
   'w.v.s3': ['Наведите камеру на этот код.', 'Point the camera at this code.', '将相机对准此二维码。'],
   'w.v.code': ['Или введите код:', 'Or enter the code:', '或输入代码：'],
   'w.v.codeOnly': ['Код для приложения:', 'Your code for the app:', '在应用中输入此代码：'],
-  'w.v.qr': ['QR-код для приложения Vectra', 'QR code for the Vectra app', 'Vectra 应用二维码'],
+  'w.v.qr': ['QR-код для приложения {brand}', 'QR code for the {brand} app', '{brand} 应用二维码'],
+  'w.v.qr.any': ['QR-код для подключения роутера', 'QR code to connect the router', '连接路由器的二维码'],
   'w.v.other': ['С другого устройства', 'From another device', '使用其他设备'],
   'w.v.copy': ['Скопировать код', 'Copy code', '复制代码'],
   'w.v.copied': ['Код скопирован', 'Code copied', '代码已复制'],
@@ -997,15 +1087,21 @@ export const S = {
     'A code to scan is not available yet; enter the code in the app.',
     '暂无可扫描的二维码，请在应用中输入代码。',
   ],
+  'w.v.noQr.any': ['Введите этот код.', 'Enter this code.', '输入此代码。'],
   'w.v.offline': [
-    'Роутер пока без интернета — подключение к Vectra заработает, как только интернет появится.',
-    'The router has no internet yet; connecting to Vectra works as soon as it is online.',
-    '路由器暂未联网，联网后即可连接 Vectra。',
+    'Роутер пока без интернета — подключение к {brand} заработает, как только интернет появится.',
+    'The router has no internet yet; connecting to {brand} works as soon as it is online.',
+    '路由器暂未联网，联网后即可连接 {brand}。',
   ],
   'w.v.noPanel': [
-    'Сервер Vectra пока недоступен — код сработает, как только связь появится.',
-    'The Vectra server is unreachable for now; the code works as soon as it is reachable.',
-    '暂时无法访问 Vectra 服务器，连接恢复后代码即可使用。',
+    'Сервер {brand} пока недоступен — код сработает, как только связь появится.',
+    'The {brand} server is unreachable for now; the code works as soon as it is reachable.',
+    '暂时无法访问 {brand} 服务器，连接恢复后代码即可使用。',
+  ],
+  'w.v.noPanel.any': [
+    'Сервер управления пока недоступен — код сработает, как только связь появится.',
+    'The management server is unreachable for now; the code works as soon as it is reachable.',
+    '暂时无法访问管理服务器，连接恢复后代码即可使用。',
   ],
   'w.v.claimed': ['Аккаунт подтверждён', 'Account confirmed', '账户已确认'],
   'w.v.config': [
@@ -1040,9 +1136,9 @@ export const S = {
     '可随时在主界面更换服务器。',
   ],
   'w.v.unavailable': [
-    'Код для подключения ещё не готов — роутер запускает Vectra. Подождите минуту; если код не появится, напишите в поддержку.',
-    'The connection code is not ready yet: the router is still starting Vectra. Wait a minute; if no code appears, contact support.',
-    '连接代码尚未就绪：路由器仍在启动 Vectra。请稍候一分钟；如果仍未出现代码，请联系客服。',
+    'Код для подключения ещё не готов — роутер запускает {brand}. Подождите минуту; если код не появится, напишите в поддержку.',
+    'The connection code is not ready yet: the router is still starting {brand}. Wait a minute; if no code appears, contact support.',
+    '连接代码尚未就绪：路由器仍在启动 {brand}。请稍候一分钟；如果仍未出现代码，请联系客服。',
   ],
   'w.done.t': ['Всё готово', 'All set', '设置完成'],
   'w.tune.t': ['Роутер настроен на максимум', 'The router is tuned for the most it can do', '路由器已调至最佳性能'],
@@ -1054,6 +1150,15 @@ export const S = {
     '跳过的步骤可以稍后完成：点击主界面底部的“打开设置向导”。',
   ],
   'w.done.go': ['На главный экран', 'Go to the main screen', '前往主界面'],
+  // The brand's network name, offered while every network still has the model's ({ssid}: that name).
+  'w.done.rename': ['Переименовать сеть в {ssid}', 'Rename the network to {ssid}', '将网络重命名为 {ssid}'],
+  'w.done.renameQ': ['Переименовать сеть?', 'Rename the network?', '重命名网络？'],
+  'w.done.renameOk': ['Переименовать', 'Rename', '重命名'],
+  'w.done.renameHint': [
+    'Устройства отключатся от Wi-Fi на несколько секунд и подключатся к новой сети с тем же паролем — некоторые попросят подключиться заново.',
+    'Devices drop off Wi-Fi for a few seconds and join the new network with the same password — some will ask to join again.',
+    '设备会断开 Wi-Fi 几秒钟，并以相同密码加入新网络——部分设备需要重新连接。',
+  ],
   'w.reopen': ['Открыть мастер настройки', 'Open the setup wizard', '打开设置向导'],
 
   // ── the router's password (LuCI's own change; vctl never sees it) ──────
@@ -1110,15 +1215,25 @@ export const S = {
   // Support access: the panel's support may run commands on the router (contract: "Support shell").
   'sa.t': ['Доступ поддержки к роутеру', 'Support access to the router', '支持人员访问路由器'],
   'sa.d': [
-    'Поддержка Vectra сможет выполнять команды на роутере, чтобы разобраться с неполадкой. Включайте, когда об этом попросит поддержка.',
-    'Vectra support can run commands on the router to sort out a problem. Turn it on when support asks you to.',
-    'Vectra 支持人员可以在路由器上执行命令来排查故障。请在支持人员要求时开启。',
+    'Поддержка {brand} сможет выполнять команды на роутере, чтобы разобраться с неполадкой. Включайте, когда об этом попросит поддержка.',
+    '{brand} support can run commands on the router to sort out a problem. Turn it on when support asks you to.',
+    '{brand} 支持人员可以在路由器上执行命令来排查故障。请在支持人员要求时开启。',
+  ],
+  'sa.d.any': [
+    'Поддержка сможет выполнять команды на роутере, чтобы разобраться с неполадкой. Включайте, когда об этом попросит поддержка.',
+    'Support can run commands on the router to sort out a problem. Turn it on when support asks you to.',
+    '支持人员可以在路由器上执行命令来排查故障。请在支持人员要求时开启。',
   ],
   'sa.onQ': ['Открыть доступ поддержке?', 'Give support access?', '向支持人员开放访问？'],
   'sa.onQ.d': [
-    'Поддержка Vectra сможет выполнять на роутере любые команды. Закрыть доступ можно здесь же в любой момент.',
-    'Vectra support will be able to run any command on the router. You can close the access here at any time.',
-    'Vectra 支持人员将能在路由器上执行任何命令。您可以随时在这里关闭访问。',
+    'Поддержка {brand} сможет выполнять на роутере любые команды. Закрыть доступ можно здесь же в любой момент.',
+    '{brand} support will be able to run any command on the router. You can close the access here at any time.',
+    '{brand} 支持人员将能在路由器上执行任何命令。您可以随时在这里关闭访问。',
+  ],
+  'sa.onQ.d.any': [
+    'Поддержка сможет выполнять на роутере любые команды. Закрыть доступ можно здесь же в любой момент.',
+    'Support will be able to run any command on the router. You can close the access here at any time.',
+    '支持人员将能在路由器上执行任何命令。您可以随时在这里关闭访问。',
   ],
   'sa.onBtn': ['Открыть доступ', 'Give access', '开放访问'],
   'sa.on.done': ['Доступ поддержки открыт', 'Support access is on', '已向支持人员开放访问'],
@@ -1155,9 +1270,9 @@ export const S = {
   // ── my sites ───────────────────────────────────────────────────────────
   'ms.t': ['Мои сайты', 'My sites', '我的网站'],
   'ms.d': [
-    'Ваши исключения. Они главнее настроек Vectra и действуют на всех устройствах в сети.',
-    'Your own exceptions. They override Vectra’s settings and apply to every device on the network.',
-    '您自己的例外规则，优先于 Vectra 的设置，对网络中的所有设备生效。',
+    'Ваши исключения. Они главнее настроек {brand} и действуют на всех устройствах в сети.',
+    'Your own exceptions. They override {brand}’s settings and apply to every device on the network.',
+    '您自己的例外规则，优先于 {brand} 的设置，对网络中的所有设备生效。',
   ],
   'ms.summary': ['Без VPN: {direct} · Через VPN: {proxy}', 'Without VPN: {direct} · Through VPN: {proxy}', '不走 VPN：{direct} · 走 VPN：{proxy}'],
   'ms.open': ['Настроить', 'Edit', '编辑'],
@@ -1170,9 +1285,9 @@ export const S = {
     '例如，银行或政务网站无法通过 VPN 打开。',
   ],
   'ms.proxy.d': [
-    'Например, сайт заблокирован, а с Vectra всё равно не открывается.',
-    'For example, a site is blocked and still does not open with Vectra.',
-    '例如，某网站被封锁，使用 Vectra 仍无法打开。',
+    'Например, сайт заблокирован, а с {brand} всё равно не открывается.',
+    'For example, a site is blocked and still does not open with {brand}.',
+    '例如，某网站被封锁，使用 {brand} 仍无法打开。',
   ],
   'ms.input': ['Сайт или IP-адрес', 'Site or IP address', '网站或 IP 地址'],
   'ms.ph': ['sberbank.ru', 'example.com', 'example.com'],
@@ -1286,7 +1401,8 @@ export const S = {
   'a.wifi_set': ['Wi-Fi сохранён', 'Wi-Fi saved', 'Wi-Fi 已保存'],
   'a.wifi_optimized': ['Wi-Fi настроен на полную мощность', 'Wi-Fi set to full power', 'Wi-Fi 已设为全功率'],
   'a.setup_finished': ['Настройка завершена', 'Setup finished', '设置已完成'],
-  's.help.support.open': ['Написать в Vectra', 'Message Vectra', '联系 Vectra'],
+  's.help.support.open': ['Написать в {brand}', 'Message {brand}', '联系 {brand}'],
+  's.help.support.open.any': ['Открыть чат поддержки', 'Open the support chat', '打开客服聊天'],
 
   // ── port forwarding (Pro) ──────────────────────────────────────────────
   'pf.region': ['Проброс портов', 'Port forwarding', '端口转发'],
@@ -1295,7 +1411,8 @@ export const S = {
   'pf.cgnat': ['Провайдер не дал белый IP — снаружи порты не откроются.', 'The provider gave no public IP: ports will not open from outside.', '运营商未提供公网 IP，外部无法访问端口。'],
   'pf.directOff': ['Режим «мимо VPN» сейчас не действует — устройства идут через VPN.', '“Around VPN” is not in effect now: devices go through the VPN.', '“绕过 VPN”当前未生效，设备经由 VPN。'],
   'pf.full': ['Больше правил добавить нельзя.', 'No more rules can be added.', '无法再添加更多规则。'],
-  'pf.old': ['Для этого нужно обновить Vectra на роутере.', 'Vectra on the router needs an update for this.', '需要更新路由器上的 Vectra 才能使用此功能。'],
+  'pf.old': ['Для этого нужно обновить {brand} на роутере.', '{brand} on the router needs an update for this.', '需要更新路由器上的 {brand} 才能使用此功能。'],
+  'pf.old.any': ['Для этого нужно обновить программу на роутере.', 'The router’s program needs an update for this.', '需要更新路由器上的程序才能使用此功能。'],
   'pf.port.n': ['Порт {port}', 'Port {port}', '端口 {port}'],
   'pf.direct': ['мимо VPN', 'around VPN', '绕过 VPN'],
   'pf.rule': ['Правило {name}', 'Rule {name}', '规则 {name}'],
@@ -1351,7 +1468,7 @@ export const S = {
   'pf.e.port': ['Порт от 1 до 65535 или диапазон.', 'A port from 1 to 65535, or a range.', '端口应为 1–65535 或一个范围。'],
   'pf.e.invalid_params': ['Роутер не принял правило.', 'The router did not accept the rule.', '路由器未接受该规则。'],
   // ── support report (both views) ────────────────────────────────────────
-  'rp.title': ['Vectra — отчёт о роутере', 'Vectra — router report', 'Vectra — 路由器报告'],
+  'rp.title': ['{brand} — отчёт о роутере', '{brand} — router report', '{brand} — 路由器报告'],
   'rp.time': ['Время', 'Time', '时间'],
   'rp.state': ['Состояние', 'State', '状态'],
   'rp.location': ['Сервер', 'Server', '服务器'],

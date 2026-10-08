@@ -47,7 +47,7 @@ func rpcdSetPower(ctx context.Context, params []byte) uiapi.Action {
 	dec := json.NewDecoder(bytes.NewReader(params))
 	dec.DisallowUnknownFields()
 	if len(params) == 0 || dec.Decode(&p) != nil || p.On == nil {
-		return action(false, "invalid_params", `params must be {"on": true} or {"on": false}, with "force": true to switch on a Vectra that would carry nothing yet`)
+		return action(false, "invalid_params", `params must be {"on": true} or {"on": false}, with "force": true to switch on a vctl that would carry nothing yet`)
 	}
 	env := rpcdPowerEnv()
 	lock, err := power.Lock(env)
@@ -68,7 +68,9 @@ func rpcdSetPower(ctx context.Context, params []byte) uiapi.Action {
 	// What `vectra on` refuses without --force (errWouldIdle): the page says
 	// so first (status.power.wouldIdle), and asks again with force.
 	if *p.On && f.WouldIdle && !p.Force {
-		return action(false, "would_idle", "Vectra would carry no traffic yet: no operator config, and no PassWall2 to route by — the LAN would go out without a VPN until the router is linked")
+		// The Pro view shows this as it is, on every brand's router: it names
+		// the program (vctl), not a service.
+		return action(false, "would_idle", "vctl would carry no traffic yet: no operator config, and no PassWall2 to route by — the LAN would go out without a VPN until the router is linked")
 	}
 	args := []string{"power", "off", "--foreground"}
 	if *p.On {

@@ -8,6 +8,7 @@ import (
 	"vectra-controller-pro/internal/memguard"
 
 	"vectra-controller-pro/internal/api"
+	"vectra-controller-pro/internal/brand"
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/power"
@@ -77,6 +78,10 @@ type Inputs struct {
 
 	// Tune is the router's tune as it is now (tune.Inspect); nil when not read.
 	Tune *tune.Plan
+
+	// Brand is whose router this is (BuildBrand); rpcd resolves it at every
+	// status call. The zero value is neutral.
+	Brand BrandView
 }
 
 // RouterFacts are /proc and friends.
@@ -177,8 +182,12 @@ func BuildStatus(in Inputs) Status {
 		Probe:        ProbeState{Source: "provider"},
 		UI:           UIPolicy{Locked: in.UILocked},
 		RemoteShell:  in.RemoteShell,
+		Brand:        in.Brand,
 		Power: Power{Enabled: in.Power.On(), Running: in.Power.Running, Holder: in.Power.Holder(),
 			HandBack: strPtr(in.Power.HandBack()), WouldIdle: in.Power.WouldIdle},
+	}
+	if in.Brand.LANName == "" {
+		st.Brand = BrandView{LANName: brand.NeutralLANName}
 	}
 	for b, n := range in.Overrides.Pins {
 		st.Pins[b] = n

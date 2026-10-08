@@ -1,7 +1,7 @@
 // Router states the UI must render gracefully. `healthy` is the contract
 // fixtures as-is; the others are derived from them.
 
-import type { Check, Holder, ReadData } from '../api/types';
+import type { Brand, Check, Holder, ReadData } from '../api/types';
 import { FIXTURES, FIXTURE_NOW, radio } from './fixtures';
 
 export type Scenario = 'healthy' | 'reserve' | 'degraded' | 'down' | 'empty' | 'unboxed' | 'boxed' | 'off' | 'unfit' | 'cgnat';
@@ -163,6 +163,7 @@ function unboxed(w: ReadData): void {
       // Nothing on the air judges as fine: the open networks are what the wizard asks about.
       verdict: 'fine',
       suggested: 'Vectra-4E2A',
+      rename: null,
       apply: null,
     },
     // Never online yet: the code is the router's own, but the bot, the key for
@@ -197,7 +198,7 @@ function boxed(w: ReadData): void {
 }
 
 /** The Wi-Fi as an owner may have it (`wifiAs`). */
-export type WifiAs = 'manual' | 'overlap' | 'down';
+export type WifiAs = 'manual' | 'overlap' | 'down' | 'model';
 
 /**
  * The Wi-Fi as an owner may have it, on any scenario (dev: `&wifi=`), for the
@@ -205,7 +206,8 @@ export type WifiAs = 'manual' | 'overlap' | 'down';
  * every read): `manual` — a country of their own, 5 GHz on a radar channel at
  * a power they set, left alone; `overlap` — 2.4 GHz on channel 3, between the
  * channels that do not overlap; `down` — 5 GHz on, and not up. The last two
- * get the boost suggested.
+ * get the boost suggested. `model` — the networks carry the model's name, as a
+ * box set up before it knew its brand: the router offers the brand's name.
  */
 export function wifiAs(w: ReadData, as: WifiAs): void {
   const wifi = w.setup.wifi;
@@ -217,6 +219,7 @@ export function wifiAs(w: ReadData, as: WifiAs): void {
   }
   if (as === 'overlap' && r2) Object.assign(r2, { channel: 3, auto: false });
   if (as === 'down' && r5) r5.up = false;
+  if (as === 'model') for (const r of wifi.radios) if (r.ap === true) r.ssid = BRANDS.none.prefix + '-4E2A';
   // The tuning's recipe, as the router counts it: every 2.4/5 GHz radio that is on.
   const on = wifi.radios.filter((r) => r.enabled === true && (r.band === '2g' || r.band === '5g'));
   wifi.tuned = on.every((r) => r.country === 'PA' && r.maxPower === true && r.auto === false && r.channel !== null);
@@ -273,6 +276,60 @@ function cgnat(w: ReadData): void {
     { name: 'synology-nas', ip: '192.168.1.10' },
     { name: null, ip: '192.168.1.77' },
   ];
+}
+
+/** Whose router the mock is (dev: `&brand=`): Vectra's, as the fixtures are; BloopCat's; or no brand. */
+export type BrandAs = 'vectra' | 'bloopcat' | 'none';
+
+interface BrandCase {
+  /** status.brand, as vctl answers it (contract: "Brand"). */
+  brand: Brand;
+  /** The network names' first part: the brand's, or the model's on a neutral router. */
+  prefix: string;
+  /** setup.vectra.botUsername once the router has been online. */
+  bot: string | null;
+  /** The account that claims the router, as the panel names it. */
+  owner: string;
+}
+
+export const BRANDS: Record<BrandAs, BrandCase> = {
+  vectra: { brand: FIXTURES.status.brand, prefix: 'Vectra', bot: FIXTURES.setup.vectra.botUsername, owner: '@vectra_user' },
+  bloopcat: {
+    brand: { id: 'bloopcat', name: 'BloopCat', bot: 'BloopCat_bot', support: 'BloopCat_supbot', lanName: 'bloopcat.lan', site: null },
+    prefix: 'BloopCat',
+    bot: 'BloopCat_supbot',
+    owner: '@bloopcat_user',
+  },
+  none: {
+    brand: { id: null, name: null, bot: null, support: null, lanName: 'router.lan', site: null },
+    prefix: 'AX3000T',
+    bot: null,
+    owner: '@vpn_user',
+  },
+};
+
+/** The claim code's QR and Telegram link as the router gives them for a brand, once it has been online. */
+export function claimLinks(as: BrandAs, code: string): { qr: string | null; botUrl: string | null } {
+  if (as === 'none') return { qr: null, botUrl: null };
+  if (as === 'bloopcat') {
+    const link = 'https://t.me/BloopCat_bot?start=rt_' + code;
+    return { qr: link, botUrl: link };
+  }
+  // A stand-in with the real one's length; only the Vectra backend can open a real one.
+  return { qr: 'VECTRA:R1:' + 'AQ'.padEnd(320, 'x7Kq4M9dZ2wLp0'), botUrl: 'https://t.me/VectraConnectBot?start=rt_' + code };
+}
+
+/** The router as another brand's (or no brand's): its name, its bots, its networks named after it. */
+export function brandAs(w: ReadData, as: BrandAs): void {
+  if (as === 'vectra') return;
+  const b = BRANDS[as];
+  w.status.brand = clone(b.brand);
+  const named = (ssid: string | null) => (ssid && ssid.startsWith('Vectra-') ? b.prefix + ssid.slice('Vectra'.length) : ssid);
+  for (const r of w.setup.wifi.radios) r.ssid = named(r.ssid);
+  w.setup.wifi.suggested = named(w.setup.wifi.suggested);
+  const v = w.setup.vectra;
+  if (v.botUsername !== null) v.botUsername = b.bot;
+  if (v.owner) v.owner = { label: b.owner };
 }
 
 /** A fresh copy of the router's data for a scenario; `down` has none. */

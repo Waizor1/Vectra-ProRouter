@@ -98,14 +98,21 @@ describe('opens as the simple view', () => {
   });
 
   it('says what each state means for the internet, and offers the one thing to do', async () => {
-    const cases: [Scenario, string, string, string | null][] = [
-      ['healthy', 'Всё работает', 'VPN работает, серверы отвечают.', null],
-      ['reserve', 'Работает через запасные серверы', 'Основные серверы не отвечают.', 'Выбрать другой сервер'],
-      ['degraded', 'Не работает', 'Интернет идёт напрямую, без VPN: заблокированные сайты не откроются.', 'Перезапустить VPN'],
-      ['empty', 'Роутер ещё не настроен', 'Vectra ждёт настройки VPN.', 'Скопировать отчёт'],
-      ['down', 'Vectra не отвечает', 'Программа Vectra на роутере не установлена или не запущена.', 'Повторить'],
+    // The brand this page remembers from the router's last answer (none: never answered here).
+    const VECTRA = JSON.stringify({ id: 'vectra', name: 'Vectra' });
+    const cases: [Scenario, string, string, string | null, string | null][] = [
+      ['healthy', 'Всё работает', 'VPN работает, серверы отвечают.', null, null],
+      ['reserve', 'Работает через запасные серверы', 'Основные серверы не отвечают.', 'Выбрать другой сервер', null],
+      ['degraded', 'Не работает', 'Интернет идёт напрямую, без VPN: заблокированные сайты не откроются.', 'Перезапустить VPN', null],
+      ['empty', 'Роутер ещё не настроен', 'Vectra ждёт настройки VPN.', 'Скопировать отчёт', null],
+      // No answer: the brand it had the last time.
+      ['down', 'Vectra не отвечает', 'Программа Vectra на роутере не установлена или не запущена.', 'Повторить', VECTRA],
+      // No answer, ever, on this page: no name that may be wrong.
+      ['down', 'Программа на роутере не отвечает', 'Программа на роутере не установлена или не запущена.', 'Повторить', null],
     ];
-    for (const [scenario, title, line, act] of cases) {
+    for (const [scenario, title, line, act, remembered] of cases) {
+      localStorage.removeItem('vectra.ui.brand');
+      if (remembered) localStorage.setItem('vectra.ui.brand', remembered);
       const app = start({ scenario });
       await settle();
       expect(app.$('.verdict')?.textContent, scenario).toBe(title);
@@ -115,6 +122,63 @@ describe('opens as the simple view', () => {
       cleanup.forEach((fn) => fn());
       cleanup = [];
     }
+  });
+
+  it('remembers whose router it is, and says it when the router does not answer: Vectra’s name and mark', async () => {
+    start({ scenario: 'healthy', mode: 'pro' });
+    await settle();
+    expect(JSON.parse(localStorage.getItem('vectra.ui.brand') ?? 'null')).toEqual({ id: 'vectra', name: 'Vectra' });
+    cleanup.forEach((fn) => fn());
+    cleanup = [];
+    const down = start({ scenario: 'down', mode: 'simple' });
+    // From the first frame, before any answer: the mark, not a blank header.
+    expect(down.$('.brand .wm')).not.toBeNull();
+    await settle();
+    expect(down.$('.verdict')?.textContent).toBe('Vectra не отвечает');
+    expect(down.$('.brand .wm')).not.toBeNull();
+    expect(down.$('.brand .word-text')).toBeNull();
+  });
+
+  it('a router that never answered this page: no wordmark, and words that name no brand', async () => {
+    const app = start({ scenario: 'down' });
+    await settle();
+    expect(app.$('.verdict')?.textContent).toBe('Программа на роутере не отвечает');
+    expect(app.$('.brand .wm')).toBeNull();
+    expect(app.$('.brand .word')).toBeNull();
+    expect(app.text()).not.toMatch(/Vectra|BloopCat|VPN/);
+    expect(app.$('.vx')?.getAttribute('aria-label')).not.toMatch(/Vectra|VPN/);
+  });
+
+  it('a page whose storage throws remembers nothing: the same as never answered', async () => {
+    localStorage.setItem('vectra.ui.brand', JSON.stringify({ id: 'vectra', name: 'Vectra' }));
+    // As a private window or blocked site data: the accessor itself throws.
+    const blocked = vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => {
+      throw new Error('SecurityError: The operation is insecure.');
+    });
+    try {
+      const app = start({ scenario: 'down' });
+      await settle();
+      expect(app.$('.verdict')?.textContent).toBe('Программа на роутере не отвечает');
+      expect(app.$('.brand .word')).toBeNull();
+    } finally {
+      blocked.mockRestore();
+    }
+  });
+
+  it('a remembered brand that is not this router’s gives way to the router’s answer, and is replaced', async () => {
+    // First a memory that is not even JSON; then one that is a well-formed other brand.
+    localStorage.setItem('vectra.ui.brand', '{not json');
+    const garbled = start({ scenario: 'down' });
+    await settle();
+    expect(garbled.$('.verdict')?.textContent).toBe('Программа на роутере не отвечает');
+    cleanup.forEach((fn) => fn());
+    cleanup = [];
+    localStorage.setItem('vectra.ui.brand', JSON.stringify({ id: 'bloopcat', name: 'BloopCat' }));
+    const app = start({ scenario: 'healthy' });
+    await settle();
+    expect(app.$('.brand .wm')).not.toBeNull();
+    expect(app.text()).not.toContain('BloopCat');
+    expect(JSON.parse(localStorage.getItem('vectra.ui.brand') ?? 'null')).toEqual({ id: 'vectra', name: 'Vectra' });
   });
 
   it('keeps the raw transport error for support, folded away', async () => {
@@ -586,7 +650,7 @@ describe('Vectra on and off', () => {
     const call: CallFn = (m, p) => {
       if (m !== 'set_power') return w(m, p);
       calls.push(JSON.stringify(p));
-      return Promise.resolve(p?.force === true ? { ok: true, code: 'pending', detail: null } : { ok: false, code: 'would_idle', detail: 'Vectra would carry no traffic yet' });
+      return Promise.resolve(p?.force === true ? { ok: true, code: 'pending', detail: null } : { ok: false, code: 'would_idle', detail: 'vctl would carry no traffic yet' });
     };
     const app = start({ call });
     await settle();

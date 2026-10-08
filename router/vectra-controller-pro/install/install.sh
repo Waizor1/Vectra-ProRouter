@@ -17,6 +17,13 @@
 #                             router may run out of memory)
 #   --json                    say it as JSON lines, ASCII codes only (with
 #                             --check: what an operator reads through the panel)
+#   --brand ID                the router's brand until its subscription names
+#                             one: vectra | bloopcat | none. Without it a
+#                             router with no brand yet is labelled vectra
+#                             (this is Vectra's installer) and a label put on
+#                             earlier stays; a BloopCat router passes
+#                             --brand bloopcat; none = no brand (the router
+#                             names no service)
 #
 # Exit code: 0 done, nothing to warn of (--check: also with advice, named);
 # 2 done, with warnings (said in the summary, by code); 1 not done — refused
@@ -139,6 +146,8 @@ YES=0
 FORCE=0
 PURGE=0
 JSON=0
+# --brand: vectra, bloopcat or none; empty when not given (set_brand).
+BRAND=
 # The warnings of this run, by code: an install that ends with any exits 2
 # (--check: 0, they are advice). FAILURES: what the end's checks found
 # broken where Vectra was to carry the traffic — the install exits 1.
@@ -565,7 +574,7 @@ check_dnsmasq() {
 
 add_feed() {
 	step "Фиды"
-	[ -n "$FEED_URL" ] && [ -n "$FEED_KEY" ] && [ -n "$FEED_KEY_ID" ] || refuse NO_FEED_KEY "этот файл — шаблон без ключа фида. Скачайте установщик: wget -O /tmp/vectra https://router.vectra-pro.net/install && sh /tmp/vectra"
+	[ -n "$FEED_URL" ] && [ -n "$FEED_KEY" ] && [ -n "$FEED_KEY_ID" ] || refuse NO_FEED_KEY "этот файл — шаблон без ключа фида. Скачайте установщик: wget -O /tmp/vectra https://router.vectra-pro.net/install && sh /tmp/vectra (роутер BloopCat: добавьте --brand bloopcat; роутер без бренда: --brand none)"
 	mkdir -p "$KEYS" "$WORK"
 	if [ -f "$KEYS/$FEED_KEY_ID" ]; then
 		[ "$(sed -n 2p "$KEYS/$FEED_KEY_ID")" = "$FEED_KEY" ] || refuse FEED_KEY_CLASH "в $KEYS уже лежит другой ключ с номером $FEED_KEY_ID."
@@ -1090,6 +1099,60 @@ setup_geo() {
 	note "гео-данные в $d не подходят маршрутам Vectra (их поставил другой пакет); Vectra берёт свои из $GEO_OWN"
 }
 
+# brand_known: a brand vctl knows (internal/brand), as the installer is told it.
+brand_known() {
+	case "$1" in
+	vectra | bloopcat) return 0 ;;
+	esac
+	return 1
+}
+
+# brand_choice: what --brand takes — a brand vctl knows, or none (no brand).
+brand_choice() {
+	[ "$1" = none ] || brand_known "$1"
+}
+
+# set_brand: the installer's label for the router's brand (UCI main.brand),
+# shown until the router's subscription (or the panel's claim answer) names
+# one. This is Vectra's installer — the one router.vectra-pro.net serves, and
+# Vectra Connect's guide runs it without --brand — so a run without --brand
+# labels a router that has no label yet 'vectra', and leaves a label put on
+# earlier as it is: a BloopCat router the installer is run on again stays
+# BloopCat. --brand is the owner's word and replaces any label; --brand none
+# leaves the router with none (neutral: it names no service).
+set_brand() {
+	if [ -n "$BRAND" ] && ! brand_choice "$BRAND"; then
+		echo "неизвестный бренд: $BRAND (vectra | bloopcat | none)"
+		return 3
+	fi
+	label="$(uci -q get "$PKG.main.brand" 2> /dev/null || true)"
+	case "$BRAND" in
+	"")
+		if [ -n "$label" ]; then
+			ok "бренд роутера: $label (задан раньше; сменить — --brand)"
+			return 0
+		fi
+		want=vectra
+		;;
+	none)
+		if [ -z "$label" ]; then
+			ok "без бренда: роутер не называет сервис"
+		elif run uci delete "$PKG.main.brand" && run uci commit "$PKG"; then
+			ok "без бренда: метка $label снята, роутер не называет сервис"
+		else
+			warn BRAND_NOT_WRITTEN "не удалось снять метку бренда $label (см. лог): роутер назовёт себя $label, пока подписка не назовёт бренд"
+		fi
+		return 0
+		;;
+	*) want="$BRAND" ;;
+	esac
+	if run uci set "$PKG.main.brand=$want" && run uci commit "$PKG"; then
+		ok "бренд роутера: $want"
+	else
+		warn BRAND_NOT_WRITTEN "не удалось записать бренд $want в настройки (см. лог): роутер покажет нейтральное имя, пока подписка не назовёт бренд"
+	fi
+}
+
 # ----------------------------------------------------------------- check ----
 
 # verify checks the end; what is wrong is a warning (the run exits 2).
@@ -1244,8 +1307,19 @@ main() {
 		--yes | -y) YES=1 ;;
 		--force) FORCE=1 ;;
 		--json) JSON=1 ;;
+		--brand)
+			# A value, and not the next option: `--brand --yes` is a mistake.
+			case "${2:-}" in
+			"" | -*)
+				echo "--brand требует значение: vectra | bloopcat | none"
+				exit 3
+				;;
+			esac
+			BRAND="$2"
+			shift
+			;;
 		-h | --help)
-			sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+			sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
 			exit 0
 			;;
 		*)
@@ -1255,6 +1329,11 @@ main() {
 		esac
 		shift
 	done
+	# Before any step: a bad brand is not found after the install.
+	if [ -n "$BRAND" ] && ! brand_choice "$BRAND"; then
+		echo "неизвестный бренд: $BRAND (vectra | bloopcat | none)"
+		exit 3
+	fi
 	: > "$LOG"
 	mkdir -p "$WORK"
 	say "Vectra для OpenWrt${VERSION:+ $VERSION} — $(date)"
@@ -1290,6 +1369,7 @@ main() {
 	install_xray_pin
 	swap_dnsmasq
 	install_packages
+	set_brand
 	setup_geo
 	cleanup
 	verify

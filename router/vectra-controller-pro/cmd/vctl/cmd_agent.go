@@ -163,6 +163,11 @@ type daemon struct {
 	// so check-in inventory does not re-parse a ~485 KB file every loop.
 	nodeCount int
 
+	// oneShot marks a daemon built by a one-shot command (vctl apply-local),
+	// not the long-running one: it works from the state.json it read at its
+	// start and never saves it, so nothing here may learn into st and persist.
+	oneShot bool
+
 	st           state.PersistedState
 	rescuePolicy rescue.Policy
 	confirmer    *firewall.CommitConfirmer

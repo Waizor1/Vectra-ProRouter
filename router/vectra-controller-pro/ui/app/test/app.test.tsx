@@ -249,7 +249,9 @@ describe('what each scenario says', () => {
   it('down: the LuCI rejection explained, with the raw message', async () => {
     const app = start({ scenario: 'down', lang: 'ru' });
     await settle();
-    expect(app.text()).toContain('Модуль vectra не найден');
+    expect(app.text()).toContain('Программа на роутере не отвечает');
+    expect(app.text()).toContain('Установите пакет vectra-controller-pro или перезапустите rpcd.');
+    expect(app.text()).not.toMatch(/модул/i);
     expect(app.text()).toContain('Object not found');
     expect(app.$('.pill')?.textContent).toBe('Нет связи');
   });

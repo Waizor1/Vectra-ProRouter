@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"vectra-controller-pro/internal/api"
+	"vectra-controller-pro/internal/brand"
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/firewall"
@@ -112,6 +113,7 @@ func contractInputs(t *testing.T) uiapi.Inputs {
 	m.Stats.Outbound = map[string]api.Traffic{"bridge-de5": {Uplink: 10, Downlink: 20}}
 	mem, avail, total := 61.4, 88, 234
 	limit := 80
+	vectra, _ := brand.Lookup(brand.Vectra)
 	return uiapi.Inputs{
 		Now: now, Version: "0.4.0-r1",
 		Runtime: &localctl.Runtime{
@@ -138,6 +140,7 @@ func contractInputs(t *testing.T) uiapi.Inputs {
 		HasOperatorConfig: true,
 		// A fleet router Vectra took from PassWall2: on, running, PassWall owed.
 		Power:       power.Facts{UCI: true, Boot: true, Running: true, Carrying: true, Owed: power.PassWall},
+		Brand:       uiapi.BuildBrand(uiapi.Who{Brand: vectra, Known: true}),
 		PassWall:    "installed",
 		TableLoaded: true, Counters: map[string]int64{"vctl_tproxy_hits": 5, "vctl_would_leak": 0, "vctl_tproxy_escaped": 0, "vctl_unproxied_other": 12},
 		Router: uiapi.RouterFacts{Hostname: "r", Model: "Xiaomi Mi Router AX3000T", Release: "OpenWrt 24.10.6",

@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"vectra-controller-pro/internal/brand"
 	"vectra-controller-pro/internal/claim"
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/localctl"
@@ -165,6 +166,12 @@ func (d *daemon) adoptClaimInfo(ctx context.Context, info controlplane.ClaimInfo
 	if info.Released && hadOwner {
 		d.release(ctx)
 		return true
+	}
+	if id, ok := brand.Parse(info.Brand); ok {
+		// Learned last, whichever way this returns: an answer that changes the
+		// owner releases the previous one first (which forgets their brand),
+		// and the brand it names is the new owner's.
+		defer d.learnBrand(id, brand.SourceClaim, "")
 	}
 	if len(info.Owner) > 0 {
 		var owner *controlplane.ClaimOwner

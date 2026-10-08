@@ -48,6 +48,7 @@ const setup: Setup = {
     tunable: true,
     verdict: 'fine',
     suggested: 'Vectra-4E2A',
+    rename: null,
     apply: { state: 'ok', at: diagnostics.checkedAt, detail: null, radios: { radio0: true, radio1: true } },
   },
   vectra: { linked: true, botUsername: 'VectraConnectBot', owner: { label: '@vectra_user' }, claim: null },

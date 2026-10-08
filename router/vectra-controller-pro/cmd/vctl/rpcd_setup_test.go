@@ -163,8 +163,10 @@ func newWizardRouter(t *testing.T) *wizardRouter {
 	cfg.StatePath, cfg.XrayConfigPath = filepath.Join(dir, "state.json"), filepath.Join(dir, "xray-desired.json")
 	w.cfg = cfg
 
-	prevEnv, prevSpawn := rpcdSetupEnv, rpcdSpawn
+	prevEnv, prevSpawn, prevModel := rpcdSetupEnv, rpcdSpawn, rpcdModelPath
 	rpcdSetupEnv = func() setup.Env { return w.env }
+	// The model the neutral network is named after: none until a test writes it.
+	rpcdModelPath = filepath.Join(dir, "model")
 	rpcdSpawn = func(lock *os.File, args ...string) (func(bool) error, error) {
 		w.mu.Lock()
 		defer w.mu.Unlock()
@@ -191,7 +193,7 @@ func newWizardRouter(t *testing.T) *wizardRouter {
 		}, nil
 	}
 	t.Cleanup(func() {
-		rpcdSetupEnv, rpcdSpawn = prevEnv, prevSpawn
+		rpcdSetupEnv, rpcdSpawn, rpcdModelPath = prevEnv, prevSpawn, prevModel
 		w.releaseLock()
 	})
 	fakeUILock(t, "0", nil)
@@ -274,6 +276,8 @@ func TestSetupAnswersWhatTheRouterHas(t *testing.T) {
 	w.write(t, filepath.Join(w.env.SysClassNet, "wan", "carrier"), "1\n")
 	w.write(t, filepath.Join(w.env.SysClassNet, "wan", "address"), "a4:39:b3:12:3f:2a\n")
 	w.write(t, w.cfg.StatePath, `{"device_identifier":"vectra-1","bot_username":"VectraBot","agent_token":"tok-secret"}`)
+	// A Vectra box (install.sh --brand vectra): Vectra's network name, bot and QR.
+	w.write(t, w.env.VectraConfig, "config controller 'main'\n\toption brand 'vectra'\n")
 	// Out of the box: no root password, the LAN at OpenWrt's address.
 	w.write(t, w.env.Shadow, "root::0:0:99999:7:::\n")
 	w.ubus = map[string]string{"call network.interface.lan status": `{"up":true,"device":"br-lan","ipv4-address":[{"address":"192.168.1.1","mask":24}]}`}
@@ -339,9 +343,10 @@ func TestSetupAnswersWhatTheRouterHas(t *testing.T) {
 	}
 }
 
-// Support: the bot the panel named, else the one the box was prepared with
-// (UCI support_bot), else none. The claim's link goes only to Vectra's: the
-// panel's bot, else Vectra Connect's mini app — never the support bot.
+// Support on a Vectra router: the bot the panel named, else the one the box
+// was prepared with (UCI support_bot), else none. The claim's link goes only
+// to Vectra's: the panel's bot, else Vectra Connect's mini app — never the
+// support bot.
 func TestSupportGoesToThePanelsBotElseTheBoxs(t *testing.T) {
 	w := newWizardRouter(t)
 	exp := time.Date(2026, 9, 28, 7, 12, 0, 0, time.UTC)
@@ -349,12 +354,6 @@ func TestSupportGoesToThePanelsBotElseTheBoxs(t *testing.T) {
 	answer := func() (bot, botURL *string) {
 		st := w.call("setup", "").(uiapi.Setup)
 		return st.Vectra.BotUsername, st.Vectra.Claim.BotURL
-	}
-	str := func(p *string) string {
-		if p == nil {
-			return "<null>"
-		}
-		return *p
 	}
 	// Before its first check-in the router knows no bot of the panel's: the
 	// code still opens Vectra Connect's mini app, filled in.
@@ -373,10 +372,109 @@ func TestSupportGoesToThePanelsBotElseTheBoxs(t *testing.T) {
 			state = `{"device_identifier":"vectra-1","bot_username":"` + tc.panel + `"}`
 		}
 		w.write(t, w.cfg.StatePath, state)
-		w.write(t, w.env.VectraConfig, "config controller 'main'\n\toption support_bot '"+tc.uci+"'\n")
+		w.write(t, w.env.VectraConfig, "config controller 'main'\n\toption brand 'vectra'\n\toption support_bot '"+tc.uci+"'\n")
 		if bot, url := answer(); str(bot) != tc.bot || str(url) != tc.url {
 			t.Errorf("%s: botUsername %s, botUrl %s; want %s, %s", tc.name, str(bot), str(url), tc.bot, tc.url)
 		}
+	}
+}
+
+// str shows an optional answer field: its value, or <null>.
+func str(p *string) string {
+	if p == nil {
+		return "<null>"
+	}
+	return *p
+}
+
+// The claim step and support follow whose router it is: Vectra's sealed QR
+// and the panel's bot for a Vectra box, the brand's own bot (as the link and
+// as the QR) for another brand, the code alone for a neutral one.
+func TestTheClaimStepFollowsTheRoutersBrand(t *testing.T) {
+	w := newWizardRouter(t)
+	exp := time.Date(2026, 9, 28, 7, 12, 0, 0, time.UTC)
+	withRuntime(t, &localctl.Runtime{Claim: &localctl.Claim{State: "unclaimed", Code: "7ZKNPGS6", QR: "VECTRA:R1:abc", ExpiresAt: exp}})
+	for _, tc := range []struct {
+		name, label, state, url, qr, support string
+	}{
+		// The panel names Vectra's bot to every unclaimed router; a BloopCat
+		// box must still send its owner to BloopCat's.
+		{"a BloopCat box", "bloopcat", `{"device_identifier":"vectra-1","bot_username":"VectraConnect_bot"}`,
+			"https://t.me/BloopCat_bot?start=rt_7ZKNPGS6", "https://t.me/BloopCat_bot?start=rt_7ZKNPGS6", "BloopCat_supbot"},
+		{"a Vectra box", "vectra", `{"device_identifier":"vectra-1","bot_username":"VectraConnect_bot"}`,
+			"https://t.me/VectraConnect_bot?start=rt_7ZKNPGS6", "VECTRA:R1:abc", "VectraConnect_bot"},
+		{"a neutral box", "", `{"device_identifier":"vectra-1","bot_username":"VectraConnect_bot"}`,
+			"<null>", "<null>", "<null>"},
+		{"the subscription said BloopCat", "", `{"device_identifier":"vectra-1","brand":"bloopcat","brand_source":"subscription","brand_support":"BloopCat_help_bot"}`,
+			"https://t.me/BloopCat_bot?start=rt_7ZKNPGS6", "https://t.me/BloopCat_bot?start=rt_7ZKNPGS6", "BloopCat_help_bot"},
+	} {
+		w.write(t, w.cfg.StatePath, tc.state)
+		w.write(t, w.env.VectraConfig, "config controller 'main'\n\toption brand '"+tc.label+"'\n")
+		st := w.call("setup", "").(uiapi.Setup)
+		if got := str(st.Vectra.Claim.BotURL); got != tc.url {
+			t.Errorf("%s: botUrl %s, want %s", tc.name, got, tc.url)
+		}
+		if got := str(st.Vectra.Claim.QR); got != tc.qr {
+			t.Errorf("%s: qr %s, want %s", tc.name, got, tc.qr)
+		}
+		if got := str(st.Vectra.BotUsername); got != tc.support {
+			t.Errorf("%s: support %s, want %s", tc.name, got, tc.support)
+		}
+	}
+}
+
+// The network names follow the brand too: a neutral router suggests the
+// model's name (AX3000T-XXXX), a branded one its brand's — and offers it as
+// a rename only while every access point still has the model's name.
+func TestTheNetworkNameFollowsTheBrandAndIsOnlyOffered(t *testing.T) {
+	w := newWizardRouter(t)
+	withRuntime(t, nil)
+	w.write(t, rpcdModelPath, "Xiaomi Mi Router AX3000T\n")
+	w.write(t, filepath.Join(w.env.SysClassNet, "wan", "address"), "a4:39:b3:12:3f:2a\n")
+	wireless := func(ssid2, ssid5 string) string {
+		return "config wifi-device 'radio0'\n\toption band '2g'\nconfig wifi-device 'radio1'\n\toption band '5g'\n" +
+			"config wifi-iface\n\toption device 'radio0'\n\toption mode 'ap'\n\toption ssid '" + ssid2 + "'\n\toption encryption 'psk2'\n" +
+			"config wifi-iface\n\toption device 'radio1'\n\toption mode 'ap'\n\toption ssid '" + ssid5 + "'\n\toption encryption 'psk2'\n"
+	}
+	for _, tc := range []struct {
+		name, label, state, ssid2, ssid5, suggested, rename string
+	}{
+		{"a neutral box", "", `{}`, "AX3000T-3F2A", "AX3000T-3F2A", "AX3000T-3F2A", "<null>"},
+		{"the installer labelled it BloopCat", "bloopcat", `{}`, "AX3000T-3F2A", "AX3000T-3F2A", "BloopCat-3F2A", "BloopCat-3F2A"},
+		{"the subscription said Vectra", "", `{"brand":"vectra","brand_source":"subscription"}`, "AX3000T-3F2A", "AX3000T-3F2A",
+			"Vectra-3F2A", "Vectra-3F2A"},
+		{"the owner named one network", "bloopcat", `{}`, "AX3000T-3F2A", "Home-5G", "BloopCat-3F2A", "<null>"},
+		{"already the brand's name", "bloopcat", `{}`, "BloopCat-3F2A", "BloopCat-3F2A", "BloopCat-3F2A", "<null>"},
+	} {
+		w.write(t, w.cfg.StatePath, tc.state)
+		w.write(t, w.env.VectraConfig, "config controller 'main'\n\toption brand '"+tc.label+"'\n")
+		w.write(t, w.env.WirelessConfig, wireless(tc.ssid2, tc.ssid5))
+		st := w.call("setup", "").(uiapi.Setup)
+		if got := str(st.Wifi.Suggested); got != tc.suggested {
+			t.Errorf("%s: suggested %s, want %s", tc.name, got, tc.suggested)
+		}
+		if got := str(st.Wifi.Rename); got != tc.rename {
+			t.Errorf("%s: rename %s, want %s", tc.name, got, tc.rename)
+		}
+	}
+}
+
+func TestStatusNamesTheBrand(t *testing.T) {
+	w := newWizardRouter(t)
+	withRuntime(t, nil)
+	prevPower := rpcdPower
+	rpcdPower = func(context.Context, bool, bool) power.Facts { return power.Facts{UCI: true, Boot: true} }
+	t.Cleanup(func() { rpcdPower = prevPower })
+	w.write(t, w.cfg.StatePath, `{"device_identifier":"vectra-1","brand":"bloopcat","brand_source":"subscription"}`)
+	st := w.call("status", "").(uiapi.Status)
+	if str(st.Brand.ID) != "bloopcat" || str(st.Brand.Name) != "BloopCat" || st.Brand.LANName != "bloopcat.lan" || st.Brand.Site != nil {
+		t.Fatalf("%+v", st.Brand)
+	}
+	w.write(t, w.cfg.StatePath, `{"device_identifier":"vectra-1"}`)
+	w.write(t, w.env.VectraConfig, "config controller 'main'\n")
+	st = w.call("status", "").(uiapi.Status)
+	if st.Brand.ID != nil || st.Brand.LANName != "router.lan" {
+		t.Fatalf("neutral: %+v", st.Brand)
 	}
 }
 

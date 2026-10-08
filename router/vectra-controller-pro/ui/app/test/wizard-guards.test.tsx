@@ -283,7 +283,12 @@ describe('nothing is said before the router was asked', () => {
   });
 });
 
-describe('"connected" and "all set" wait for the subscription', () => {
+// These run minutes of the fake clock (up to five): every timer the page sets
+// in that time fires, and each one is a turn of the real event loop — about
+// 0.1 s for the longest alone, but 4-5 s with four suites running at once,
+// against the default 5 s timeout. That timeout is for a hang; these get room
+// for a busy machine instead.
+describe('"connected" and "all set" wait for the subscription', { timeout: 30_000 }, () => {
   it('in the wizard: not before a status with a subscription', async () => {
     fake();
     let subAt: number | null = null;
@@ -321,7 +326,7 @@ describe('"connected" and "all set" wait for the subscription', () => {
     expect(app.text()).not.toContain('Настройки всё ещё не пришли');
     await tick(5 * 60_000 + 1500);
     expect(app.text()).toContain('Настройки всё ещё не пришли');
-    expect(app.button('Написать в Vectra')?.getAttribute('href')).toBe('https://t.me/VectraConnectBot');
+    expect(app.button('Написать в Vectra')?.getAttribute('href')).toBe('https://t.me/VectraConnect_support_bot');
     expect(app.button('Пропустить шаг')).toBeDefined();
   });
 

@@ -534,8 +534,18 @@ func TestSetPowerAsksForForceWhenVectraWouldCarryNothing(t *testing.T) {
 	if f := power.Read(context.Background(), r.env, false); !f.WouldIdle {
 		t.Fatal("facts do not say it would carry nothing")
 	}
-	if a := setPower(t, `{"on":true}`); a.OK || a.Code != "would_idle" || len(r.spawned) != 0 {
+	a := setPower(t, `{"on":true}`)
+	if a.OK || a.Code != "would_idle" || len(r.spawned) != 0 {
 		t.Fatalf("on without force = %+v, spawned %d", a, len(r.spawned))
+	}
+	// The Pro view shows the detail as it is, on a BloopCat or a neutral
+	// router too: it names the program (vctl), not a service.
+	detail := ""
+	if a.Detail != nil {
+		detail = *a.Detail
+	}
+	if !strings.HasPrefix(detail, "vctl would carry no traffic yet") || strings.Contains(detail, "Vectra") {
+		t.Fatalf("would_idle detail = %q, want it to name vctl and no service", detail)
 	}
 	if a := setPower(t, `{"on":true,"force":true}`); !a.OK || a.Code != "pending" || len(r.spawned) != 1 ||
 		!reflect.DeepEqual(r.spawned[0].Args[1:], []string{"power", "on", "--foreground", "--force"}) {

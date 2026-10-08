@@ -31,6 +31,8 @@ type Status struct {
 	// RemoteShell: the router's owner lets the panel's support shell run here
 	// (UCI remote_shell; ui/contract/README.md, "Support shell").
 	RemoteShell bool `json:"remoteShell"`
+	// Brand is whose router this is (internal/brand; ui/contract/README.md, "Brand").
+	Brand BrandView `json:"brand"`
 	// Route is where the main traffic goes now and what the failover
 	// watchdog moved it off (spec decision 6); null before its first look.
 	Route *RouteView `json:"route"`

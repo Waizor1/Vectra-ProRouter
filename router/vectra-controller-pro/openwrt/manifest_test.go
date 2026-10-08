@@ -83,7 +83,8 @@ func TestRouterUIRegistrationFilesAreValid(t *testing.T) {
 	}
 
 	var menu map[string]struct {
-		Order  int `json:"order"`
+		Title  string `json:"title"`
+		Order  int    `json:"order"`
 		Action struct {
 			Type string `json:"type"`
 			Path string `json:"path"`
@@ -98,6 +99,11 @@ func TestRouterUIRegistrationFilesAreValid(t *testing.T) {
 	entry, ok := menu["admin/vectra"]
 	if !ok || entry.Action.Type != "view" {
 		t.Fatalf("menu = %+v", menu)
+	}
+	// The menu is static and one for every brand: it names the service, not a
+	// brand (the page inside wears the brand).
+	if entry.Title != "VPN" {
+		t.Errorf("menu title %q, want VPN: one entry for every brand", entry.Title)
 	}
 	if entry.Order <= 0 || entry.Order >= 10 {
 		t.Errorf("menu order %d: the page must come before Status (10) to be the landing page", entry.Order)
