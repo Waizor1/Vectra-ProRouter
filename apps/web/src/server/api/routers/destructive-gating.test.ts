@@ -1839,6 +1839,109 @@ describe("vendor-access notice at the operator's entry points", () => {
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
       expect(visits()).toEqual([]);
     });
+
+    // The rollout guard (#73-#75): a shaky control plane refuses unless the
+    // operator forces it; a forced request upgrades a still-queued job.
+    describe("at the controller rollout guard", () => {
+      type ControllerCaller = {
+        queueControllerUpdate: (input: {
+          routerId: string;
+          channel: "stable" | "beta";
+          force?: boolean;
+        }) => Promise<unknown>;
+        queueBulkControllerUpdate: (input: {
+          routerIds: string[];
+          channel: "stable" | "beta";
+          force?: boolean;
+        }) => Promise<{ results: Array<{ status: string }> }>;
+      };
+      // router, snapshot, artifacts, existing job, server_unreachable incidents
+      function guardedUpdateMock(options: { shaky?: boolean; existingJob?: unknown }) {
+        return createMockDb([
+          [partnerRouter()],
+          [
+            createPilotLayoutSnapshot("ubootmod", {
+              "vectra-controller-agent": "0.1.13-r46",
+              "luci-app-vectra-controller": "0.1.13-r46",
+            }),
+          ],
+          [
+            createControllerArtifact("vectra-controller-agent", "0.1.13-r47"),
+            createControllerArtifact("luci-app-vectra-controller", "0.1.13-r47"),
+          ],
+          options.existingJob ? [options.existingJob] : [],
+          options.shaky
+            ? [{ type: "server_unreachable", state: "open", openedAt: new Date() }]
+            : [],
+        ]);
+      }
+
+      it("an update the guard refuses tells nobody", async () => {
+        const mock = guardedUpdateMock({ shaky: true });
+        const caller = createProtectedCaller(updateRouter, mock.db) as ControllerCaller;
+
+        await expect(
+          caller.queueControllerUpdate({
+            routerId: CERTIFIED_LIKE_ROUTER_ID,
+            channel: "stable",
+          }),
+        ).rejects.toThrow(/server_unreachable/);
+        expect(mock.counts().insertCalls).toBe(0);
+        expect(visits()).toEqual([]);
+      });
+
+      it("a bulk update that skips the router tells nobody", async () => {
+        const mock = guardedUpdateMock({ shaky: true });
+        const caller = createProtectedCaller(updateRouter, mock.db) as ControllerCaller;
+
+        const { results } = await caller.queueBulkControllerUpdate({
+          routerIds: [CERTIFIED_LIKE_ROUTER_ID],
+          channel: "stable",
+        });
+        expect(results.map((result) => result.status)).toEqual(["skipped"]);
+        expect(visits()).toEqual([]);
+      });
+
+      it("an update the operator forces past the guard tells the router's partner", async () => {
+        const mock = guardedUpdateMock({ shaky: true });
+        const caller = createProtectedCaller(updateRouter, mock.db) as ControllerCaller;
+
+        await caller.queueControllerUpdate({
+          routerId: CERTIFIED_LIKE_ROUTER_ID,
+          channel: "stable",
+          force: true,
+        });
+        expect(mock.counts().insertCalls).toBe(1);
+        expect(visits()).toEqual([visit("software_update")]);
+      });
+
+      it("forcing an update that is already waiting is not a new visit", async () => {
+        // Announced when it was queued; forcing it changes how it runs, not
+        // whether Vectra reaches the router.
+        const mock = guardedUpdateMock({
+          existingJob: {
+            id: "job-1",
+            routerId: CERTIFIED_LIKE_ROUTER_ID,
+            type: "run_terminal_command",
+            state: "queued",
+            dedupeKey: `update_controller:${CERTIFIED_LIKE_ROUTER_ID}:stable:0.1.13-r47`,
+            payload: {
+              purpose: "controller-self-update",
+              command: 'set -eu\nsh "$guard" prepare "$target_version"',
+            },
+          },
+        });
+        const caller = createProtectedCaller(updateRouter, mock.db) as ControllerCaller;
+
+        await caller.queueControllerUpdate({
+          routerId: CERTIFIED_LIKE_ROUTER_ID,
+          channel: "stable",
+          force: true,
+        });
+        expect(mock.counts()).toEqual({ insertCalls: 0, updateCalls: 1 });
+        expect(visits()).toEqual([]);
+      });
+    });
   });
 
   describe("maintenance", () => {

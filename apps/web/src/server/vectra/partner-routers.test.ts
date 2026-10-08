@@ -1996,7 +1996,7 @@ describe("port forwards", () => {
       }),
     });
   }
-  function portForwardsDb(capabilities: string[]) {
+  function portForwardsDb(capabilities: string[], routerOverrides = {}) {
     return createFakeDb({
       selects: [
         [
@@ -2004,7 +2004,7 @@ describe("port forwards", () => {
           [[portForwardsInventory({ capabilities, portForwards: telemetry })]],
         ],
       ],
-      updateReturns: [[routers, [[router()]]]],
+      updateReturns: [[routers, [[router(routerOverrides)]]]],
     });
   }
 
@@ -2208,6 +2208,37 @@ describe("port forwards", () => {
       ).toMatchObject({ status: 400, body: { error: "invalid_params" } });
       expect(fake.inserts(jobs)).toEqual([]);
     }
+  });
+  // set_port_forwards arrived from main after the partner scoping: it must take
+  // the same path as every other action, not a branch of its own.
+  it("is queued only on the calling partner's own router, under its scoped key", async () => {
+    const forward = action({ action: "set_port_forwards", params });
+    // Across partners, either way round: not found, nothing queued.
+    for (const [caller, stored] of [
+      ["bloopcat", null],
+      ["vectra", "bloopcat"],
+    ] as const) {
+      const foreign = portForwardsDb(["set_port_forwards"], { partnerId: stored });
+      expect(
+        await queuePartnerActionWithDb(foreign.db as never, forward, "pf-key", NOW, caller),
+      ).toMatchObject({ status: 404, body: { error: "not_found" } });
+      expect(foreign.inserts(jobs)).toEqual([]);
+    }
+    const own = portForwardsDb(["set_port_forwards"], { partnerId: "bloopcat" });
+    expect(
+      (await queuePartnerActionWithDb(own.db as never, forward, "pf-key", NOW, "bloopcat"))
+        .status,
+    ).toBe(202);
+    expect(own.inserts(jobs)[0]).toMatchObject({
+      type: "connect_router_action",
+      dedupeKey: "partner-action:bloopcat:pf-key",
+      payload: {
+        action: "set_port_forwards",
+        partnerId: "bloopcat",
+        idempotencyKey: "pf-key",
+        params,
+      },
+    });
   });
 });
 
