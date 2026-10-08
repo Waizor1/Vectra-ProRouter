@@ -264,6 +264,10 @@ export function createMock(opts: MockOptions = {}): Mock {
     if (m === 'setup') {
       const wifi = (data as ReadData['setup']).wifi;
       wifi.verdict = wifiVerdict(wifi);
+      // As the router offers it: a brand's name while every network still has the model's.
+      const aps = wifi.radios.filter((r) => r.ap === true);
+      const model = aps.length > 0 && aps.every((r) => (r.ssid ?? '').startsWith(BRANDS.none.prefix + '-'));
+      wifi.rename = brand !== 'none' && model ? wifi.suggested : null;
     }
     if (m === 'status' && live) {
       const s = data as ReadData['status'];

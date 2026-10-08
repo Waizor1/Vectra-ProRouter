@@ -1072,6 +1072,13 @@ export const S = {
     '跳过的步骤可以稍后完成：点击主界面底部的“打开设置向导”。',
   ],
   'w.done.go': ['На главный экран', 'Go to the main screen', '前往主界面'],
+  // The brand's network name, offered while every network still has the model's ({ssid}: that name).
+  'w.done.rename': ['Переименовать сеть в {ssid}', 'Rename the network to {ssid}', '将网络重命名为 {ssid}'],
+  'w.done.renameHint': [
+    'Устройства отключатся от Wi-Fi на несколько секунд и подключатся к новой сети с тем же паролем — некоторые попросят подключиться заново.',
+    'Devices drop off Wi-Fi for a few seconds and join the new network with the same password — some will ask to join again.',
+    '设备会断开 Wi-Fi 几秒钟，并以相同密码加入新网络——部分设备需要重新连接。',
+  ],
   'w.reopen': ['Открыть мастер настройки', 'Open the setup wizard', '打开设置向导'],
 
   // ── the router's password (LuCI's own change; vctl never sees it) ──────

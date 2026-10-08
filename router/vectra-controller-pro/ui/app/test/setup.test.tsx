@@ -203,6 +203,8 @@ describe('the setup wizard', () => {
     // Done, then a short tour of the main screen, once. Where to find this page again:
     // named, not linked — a click would leave the wizard before it has noted it is done.
     expect(app.badges()).toEqual(['задан', 'работает', 'на максимуме', 'подписка есть', 'выбран']);
+    // Its networks have Vectra's name since the Wi-Fi step: no other name to offer.
+    expect(app.$('.wz-rename')).toBeNull();
     expect(read(app.$('.wz-card p.hint'))).toBe('Этот экран открывается по адресу my.vectra-pro.net или http://vectra.lan, а если не выходит — по адресу 192.168.1.1.');
     expect(app.all('.wz-card p.hint a')).toEqual([]);
     app.button('На главный экран')!.click();
@@ -970,6 +972,68 @@ describe('the setup wizard', () => {
     await tick(200);
     expect(app.text()).toContain('Аккаунт: @vpn_user');
     expect(app.text()).not.toContain('Vectra');
+  });
+});
+
+describe('the brand\'s network name on the done screen', () => {
+  it('offers the brand\'s network name on the done screen and renames only when asked', async () => {
+    fake();
+    const app = start({
+      scenario: 'boxed',
+      mock: { brand: 'bloopcat' },
+      twist: (m, r) => {
+        if (m === 'setup') (r.wifi as Answer).rename = 'BloopCat-6D39';
+      },
+    });
+    await tick(5000); // the boxed router comes online by itself
+    app.button('Начать')!.click();
+    expect(await until(() => app.verdict() === 'Роутер подключён к BloopCat', 20000)).toBe(true);
+    app.button('Далее')!.click();
+    await tick(300);
+    app.button('Далее')!.click(); // the server: Auto stays
+    expect(await until(() => app.verdict() === 'Всё готово', 5000)).toBe(true);
+    expect(app.calls.filter(([m]) => m === 'set_wifi')).toEqual([]);
+    expect(read(app.$('.wz-rename .hint'))).toBe(
+      'Устройства отключатся от Wi-Fi на несколько секунд и подключатся к новой сети с тем же паролем — некоторые попросят подключиться заново.',
+    );
+    app.button('Переименовать сеть в BloopCat-6D39')!.click();
+    await tick(100);
+    app.confirm(); // the same "devices drop for a few seconds" dialog as «Прокачать Wi-Fi»
+    await tick(200);
+    expect(app.calls.find(([m]) => m === 'set_wifi')?.[1]).toEqual({
+      radios: { radio0: { ssid: 'BloopCat-6D39' }, radio1: { ssid: 'BloopCat-6D39' } },
+    });
+    await tick(200);
+  });
+
+  it('a box named after its model before it knew its brand: renamed once asked, then the offer is gone', async () => {
+    fake();
+    const app = start({ scenario: 'boxed', mock: { brand: 'bloopcat', wifi: 'model' } });
+    await tick(5000);
+    app.button('Начать')!.click();
+    expect(await until(() => app.verdict() === 'Роутер подключён к BloopCat', 20000)).toBe(true);
+    app.button('Далее')!.click();
+    await tick(300);
+    app.button('Далее')!.click();
+    expect(await until(() => app.verdict() === 'Всё готово', 5000)).toBe(true);
+    // Cancelled: nothing changes, the offer stays.
+    app.button('Переименовать сеть в BloopCat-4E2A')!.click();
+    await tick(100);
+    app.$('[role="alertdialog"]')!.querySelectorAll('button')[0].click();
+    await tick(200);
+    expect(app.calls.filter(([m]) => m === 'set_wifi')).toEqual([]);
+    app.button('Переименовать сеть в BloopCat-4E2A')!.click();
+    await tick(100);
+    expect(read(app.$('[role="alertdialog"]'))).toContain('подключатся к новой сети с тем же паролем');
+    app.confirm();
+    await tick(100);
+    expect(app.calls.filter(([m]) => m === 'set_wifi').map(([, p]) => p)).toEqual([{ radios: { radio0: { ssid: 'BloopCat-4E2A' }, radio1: { ssid: 'BloopCat-4E2A' } } }]);
+    // Until the router has seen the Wi-Fi come back, it says so; then that it is done, and no offer.
+    expect(read(app.$('.wz-rename [role="status"]'))).toContain('Проверяем Wi-Fi…');
+    expect(await until(() => read(app.$('.wz-rename [role="status"]')) === 'Wi-Fi сохранён', 5000)).toBe(true);
+    expect(app.button('Переименовать сеть в BloopCat-4E2A')).toBeUndefined();
+    expect(app.verdict()).toBe('Всё готово');
+    await tick(200);
   });
 });
 

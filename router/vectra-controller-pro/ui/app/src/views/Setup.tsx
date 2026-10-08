@@ -1134,6 +1134,60 @@ function TuneDone({ tune }: { tune: Tune }) {
   );
 }
 
+/**
+ * The brand's network name, offered at the end (setup.wifi.rename) while every
+ * network still has the model's. Only when asked — renaming drops every device
+ * off the Wi-Fi for a moment — after the Wi-Fi step's own dialog; then what the
+ * router says once the Wi-Fi is back (setup.wifi.apply), as that step does.
+ */
+function Rename({ s }: { s: SetupData }) {
+  const { t, run, pending, store } = useApp();
+  // `apply.at` when the change was sent (undefined: not sent): an `apply` still carrying it is the previous change's.
+  const [prevAt, setPrevAt] = useState<string | null | undefined>(undefined);
+  const ssid = s.wifi.rename;
+  const a = s.wifi.apply;
+  const state = prevAt === undefined ? null : a && a.at !== prevAt ? a.state ?? 'applying' : 'applying';
+  // Offered until it is under way or done; again after a change that did not go through.
+  const offer = !!ssid && state !== 'applying' && state !== 'ok';
+  const rename = async () => {
+    const at = a?.at ?? null;
+    // Only the name: a secured network keeps its password (contract: set_wifi).
+    const radios = Object.fromEntries(s.wifi.radios.filter((r) => r.ap === true).map((r) => [r.device, { ssid }]));
+    const sent = await run('set_wifi', { radios }, {
+      key: 'rename',
+      quiet: true,
+      fail: { busy: 'w.wifi.busy' },
+      confirm: { title: t('w.wifi.saveQ'), body: t('w.done.renameHint'), ok: t('w.wifi.save') },
+    });
+    if (!sent) return;
+    setPrevAt(at);
+    void store.fetch('setup', 0);
+  };
+  if (!offer && !state) return null;
+  return (
+    <div class="wz-rename">
+      {state ? (
+        <p class="row" role="status">
+          {state === 'applying' ? <Spinner /> : <Icon name={state === 'ok' ? 'ok' : 'warn'} size={16} />}
+          {t(state === 'ok' ? 'a.wifi_set' : APPLY_TITLE[state] ?? 'w.wifi.unver.t')}
+        </p>
+      ) : null}
+      {state === 'applying' ? <p class="hint">{t('w.wifi.after2')}</p> : null}
+      {offer ? (
+        <>
+          <p>
+            <Button icon="wifi" busy={pending === 'rename'} disabled={!!pending} onClick={rename}>
+              {/* The name whole on its line: "BloopCat-4E2A" never breaks at its hyphen. */}
+              <span>{around(t('w.done.rename', { ssid: SLOT }), <span class="nw">{ssid}</span>)}</span>
+            </Button>
+          </p>
+          <p class="hint">{t('w.done.renameHint')}</p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 // ── the wizard ──────────────────────────────────────────────────────────────
 
 /** `onClose(tour)`: tour — the person went through to the end, show them around the main screen. */
@@ -1287,6 +1341,7 @@ export function Setup({ onClose, start = 'welcome' }: { onClose: (tour: boolean)
             </p>
           ) : null}
           {list('warn')}
+          <Rename s={s} />
           {st?.tune ? <TuneDone tune={st.tune} /> : null}
           <div class="row wz-foot">
             <Button kind="p" icon="arrow" busy={pending === 'finish'} disabled={!!pending} onClick={() => finish(true)}>

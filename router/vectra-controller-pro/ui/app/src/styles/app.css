@@ -2588,6 +2588,19 @@ a.btn {
   color: var(--tx);
   font-weight: 700;
 }
+/* The brand's network name, offered at the end: the button, what it does to
+   the devices under it, and how the change went once sent. */
+.wz-rename {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+/* The network's name is in the label: on a phone it wraps rather than clips. */
+.wz-rename .btn {
+  max-width: 100%;
+  padding-block: 8px;
+  white-space: normal;
+}
 /* What the router's tune set up, at the end: one panel under the steps, its
    heading by a gauge and a short checklist — two columns where it is wide. */
 .wz-tune {

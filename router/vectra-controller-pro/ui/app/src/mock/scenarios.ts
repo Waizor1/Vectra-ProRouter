@@ -198,7 +198,7 @@ function boxed(w: ReadData): void {
 }
 
 /** The Wi-Fi as an owner may have it (`wifiAs`). */
-export type WifiAs = 'manual' | 'overlap' | 'down';
+export type WifiAs = 'manual' | 'overlap' | 'down' | 'model';
 
 /**
  * The Wi-Fi as an owner may have it, on any scenario (dev: `&wifi=`), for the
@@ -206,7 +206,8 @@ export type WifiAs = 'manual' | 'overlap' | 'down';
  * every read): `manual` — a country of their own, 5 GHz on a radar channel at
  * a power they set, left alone; `overlap` — 2.4 GHz on channel 3, between the
  * channels that do not overlap; `down` — 5 GHz on, and not up. The last two
- * get the boost suggested.
+ * get the boost suggested. `model` — the networks carry the model's name, as a
+ * box set up before it knew its brand: the router offers the brand's name.
  */
 export function wifiAs(w: ReadData, as: WifiAs): void {
   const wifi = w.setup.wifi;
@@ -218,6 +219,7 @@ export function wifiAs(w: ReadData, as: WifiAs): void {
   }
   if (as === 'overlap' && r2) Object.assign(r2, { channel: 3, auto: false });
   if (as === 'down' && r5) r5.up = false;
+  if (as === 'model') for (const r of wifi.radios) if (r.ap === true) r.ssid = BRANDS.none.prefix + '-4E2A';
   // The tuning's recipe, as the router counts it: every 2.4/5 GHz radio that is on.
   const on = wifi.radios.filter((r) => r.enabled === true && (r.band === '2g' || r.band === '5g'));
   wifi.tuned = on.every((r) => r.country === 'PA' && r.maxPower === true && r.auto === false && r.channel !== null);
