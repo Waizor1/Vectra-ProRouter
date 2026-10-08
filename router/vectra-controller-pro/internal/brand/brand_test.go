@@ -73,6 +73,10 @@ func TestTheSubscriptionOutranksTheClaimWhichOutranksTheInstaller(t *testing.T) 
 		{"a later subscription changes it", BloopCat, SourceSubscription, Vectra, SourceSubscription, true},
 		{"the same brand from a weaker source", BloopCat, SourceSubscription, BloopCat, SourceClaim, false},
 		{"an unknown brand", Vectra, SourceInstall, "triad", SourceSubscription, false},
+		{"a cleared brand takes any word, whatever source it was held from", "", SourceSubscription, Vectra, SourceClaim, true},
+		{"a cleared brand still refuses an unknown brand", "", SourceSubscription, "triad", SourceClaim, false},
+		{"the same brand confirmed by a stronger source", BloopCat, SourceInstall, BloopCat, SourceSubscription, true},
+		{"the same brand from the same source changes nothing", BloopCat, SourceSubscription, BloopCat, SourceSubscription, false},
 	} {
 		if got := Adopt(tc.held, tc.heldFrom, tc.seen, tc.from); got != tc.want {
 			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
@@ -84,6 +88,10 @@ func TestTheNeutralNetworkIsNamedAfterTheModel(t *testing.T) {
 	for model, want := range map[string]string{
 		"Xiaomi Mi Router AX3000T":                         "AX3000T",
 		"Xiaomi Mi Router AX3000T (OpenWrt U-Boot layout)": "AX3000T",
+		"Xiaomi Mi Router AX3000T\n":                       "AX3000T",
+		"Cudy TR3000 256MB v1":                             "TR3000",
+		"Foo Bar AX1800 Rev2":                              "AX1800",
+		"Some Router 512M":                                 "Router",
 		"Cudy WR3000E v1":                                  "WR3000E",
 		"GL.iNet GL-MT6000":                                "GL-MT6000",
 		"Linksys E8450 (UBI)":                              "E8450",

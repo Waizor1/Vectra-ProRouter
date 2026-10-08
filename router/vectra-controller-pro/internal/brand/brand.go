@@ -132,10 +132,14 @@ func rank(s Source) int {
 // Adopt: whether a brand seen from one source replaces the one held. The
 // subscription is what the owner actually pays for, so it outranks the
 // panel's word at the claim, which outranks the installer's label; a later
-// word from the same rank wins.
+// word from the same rank wins. With nothing held (never learned, or forgotten
+// on unbinding) any known brand is taken, whatever source the old one had.
 func Adopt(held ID, heldFrom Source, seen ID, from Source) bool {
 	if _, ok := Lookup(seen); !ok {
 		return false
+	}
+	if held == "" {
+		return true
 	}
 	if seen == held {
 		return rank(from) > rank(heldFrom)
@@ -148,16 +152,19 @@ var (
 	modelToken    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{3,15}$`)
 	hasDigit      = regexp.MustCompile(`[0-9]`)
 	hasLetter     = regexp.MustCompile(`[A-Za-z]`)
+	// A memory size or a hardware revision is not the model's name.
+	sizeOrRevision = regexp.MustCompile(`(?i)^(\d+(MB|GB|M|G)|(rev|ver)\d+)$`)
 )
 
 // ModelPrefix is the neutral network name's first part: the model's own name
 // ("AX3000T" of "Xiaomi Mi Router AX3000T"), the last word of 4-16 letters
-// and digits that has both, ignoring notes in parentheses; else "Router".
+// and digits that has both, ignoring notes in parentheses and words that are
+// a memory size ("256MB") or a revision ("Rev2"); else "Router".
 func ModelPrefix(model string) string {
 	fields := strings.Fields(parenthesized.ReplaceAllString(model, " "))
 	for i := len(fields) - 1; i >= 0; i-- {
 		f := fields[i]
-		if modelToken.MatchString(f) && hasDigit.MatchString(f) && hasLetter.MatchString(f) {
+		if modelToken.MatchString(f) && hasDigit.MatchString(f) && hasLetter.MatchString(f) && !sizeOrRevision.MatchString(f) {
 			return f
 		}
 	}
