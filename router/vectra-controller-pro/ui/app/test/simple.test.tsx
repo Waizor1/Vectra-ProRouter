@@ -166,7 +166,7 @@ describe('opens as the simple view', () => {
   });
 
   it('a remembered brand that is not this router’s gives way to the router’s answer, and is replaced', async () => {
-    localStorage.setItem('vectra.ui.brand', JSON.stringify({ id: 'bloopcat', name: 'BloopCat' }));
+    // First a memory that is not even JSON; then one that is a well-formed other brand.
     localStorage.setItem('vectra.ui.brand', '{not json');
     const garbled = start({ scenario: 'down' });
     await settle();

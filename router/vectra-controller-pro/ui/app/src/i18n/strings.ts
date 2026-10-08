@@ -27,8 +27,10 @@ export const S = {
   'app.region.unknown': ['Роутер', 'Router', '路由器'],
   // What {brand} is on a router that has no brand: the name of no service.
   'brand.none': ['VPN', 'VPN', 'VPN'],
-  // The program and its version, as the footer and the report name them.
+  // The program and its version, as the footer and the report name them. A router
+  // with no brand (or not known to have one) names no program, only the router.
   'app.version': ['{brand} {v}', '{brand} {v}', '{brand} {v}'],
+  'app.version.any': ['Роутер {v}', 'Router {v}', '路由器 {v}'],
   'app.tabs': ['Разделы', 'Sections', '分区'],
   'tab.overview': ['Обзор', 'Overview', '概览'],
   'tab.balancing': ['Маршруты', 'Routes', '路由'],
@@ -159,7 +161,7 @@ export const S = {
   'dp.off': ['Не загружен', 'Not loaded', '未加载'],
   'dp.ks': ['Kill switch', 'Kill switch', '断网保护'],
   'pl.title': ['Связь с {brand}', 'Link to {brand}', '与 {brand} 的连接'],
-  'pl.title.any': ['Связь с сервисом', 'Link to the service', '与服务的连接'],
+  'pl.title.any': ['Связь с сервером управления', 'Link to the management server', '与管理服务器的连接'],
   'pl.never': ['ещё не было', 'never', '从未'],
   'r.ramFree': ['свободно {a} из {b}', '{a} free of {b}', '可用 {a} / {b}'],
   'r.free': ['свободно {a}', '{a} free', '可用 {a}'],
@@ -237,11 +239,11 @@ export const S = {
     '有其他代理冲突：PassWall {passwall}，旧代理 {agent}',
   ],
   'd.panel_link.ok': ['{brand} на связи, отчёт {ago}', '{brand} reachable, check-in {ago}', '{brand} 可达，签到于 {ago}'],
-  'd.panel_link.ok.any': ['Сервис на связи, отчёт {ago}', 'Service reachable, check-in {ago}', '服务可达，签到于 {ago}'],
+  'd.panel_link.ok.any': ['Сервер управления на связи, отчёт {ago}', 'Management server reachable, check-in {ago}', '管理服务器可达，签到于 {ago}'],
   'd.panel_link.bad': ['Нет связи с {brand}, отчёт {ago}', '{brand} unreachable, check-in {ago}', '无法连接 {brand}，签到于 {ago}'],
-  'd.panel_link.bad.any': ['Нет связи с сервисом, отчёт {ago}', 'Service unreachable, check-in {ago}', '无法连接服务，签到于 {ago}'],
+  'd.panel_link.bad.any': ['Нет связи с сервером управления, отчёт {ago}', 'Management server unreachable, check-in {ago}', '无法连接管理服务器，签到于 {ago}'],
   'd.panel_link.never': ['Роутер ещё не связывался с {brand}', 'Never checked in with {brand}', '从未向 {brand} 签到'],
-  'd.panel_link.never.any': ['Роутер ещё не связывался с сервисом', 'Never checked in with the service', '从未向服务签到'],
+  'd.panel_link.never.any': ['Роутер ещё не связывался с сервером управления', 'Never checked in with the management server', '从未向管理服务器签到'],
   'd.subscription_ua.t': ['User-Agent подписки', 'Subscription User-Agent', '订阅 User-Agent'],
   'd.subscription_ua.ok': ['User-Agent подписки безопасен', 'The subscription User-Agent is safe', '订阅 User-Agent 安全'],
   'd.subscription_ua.bad': ['User-Agent подписки небезопасен: {reason}', 'The subscription User-Agent is unsafe: {reason}', '订阅 User-Agent 不安全：{reason}'],
@@ -549,7 +551,7 @@ export const S = {
     '请在 {brand} 应用中将其连接到您的账户，只需一分钟。',
   ],
   's.link.d.any': [
-    'Подключите его к своему аккаунту в боте своего VPN‑сервиса — это займёт минуту.',
+    'Подключите его к аккаунту в боте своего VPN‑сервиса — это займёт минуту.',
     'Connect it to your account in your VPN service’s bot; it takes a minute.',
     '请在您的 VPN 服务机器人中将其连接到您的账户，只需一分钟。',
   ],

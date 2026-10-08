@@ -7,7 +7,7 @@ import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CallFn } from '../src/api/types';
 import { TABS } from '../src/app/ctx';
-import { makeT, withParams } from '../src/i18n';
+import { brandT, makeT, withParams } from '../src/i18n';
 import { makeFmt } from '../src/lib/format';
 import { buildReport } from '../src/lib/report';
 import { normalizeSite } from '../src/lib/sites';
@@ -18,6 +18,12 @@ import { mount } from '../src/mount';
 
 /** Text as a person reads it: the word joiner that holds "Wi-Fi" together (i18n `glue`) is invisible. */
 const read = (n: Node | null | undefined) => n?.textContent?.replace(/\u2060/g, '');
+/** An icon's path by its name (src/ui/icons.txt): the markup carries the path, not the name. */
+const iconPath = (name: string) =>
+  readFileSync(resolve(__dirname, '../src/ui/icons.txt'), 'utf8')
+    .split('\n')
+    .find((l) => l.startsWith(name + ' '))!
+    .slice(name.length + 1);
 
 let cleanup: (() => void)[] = [];
 beforeEach(() => localStorage.clear());
@@ -1088,7 +1094,8 @@ describe('the brand\'s network name on the done screen, when it does not go thro
       if (st && said[said.length - 1] !== st) said.push(st);
     }
     expect(said).toEqual(['Проверяем Wi-Fi…', 'Wi-Fi вернули как было']);
-    expect(app.$('.wz-rename [role="status"] .ic')).not.toBeNull();
+    // A warning, not the tick of a rename that went through.
+    expect(app.all('.wz-rename [role="status"] .ic path').map((p) => p.getAttribute('d'))).toEqual([iconPath('warn')]);
     expect(app.button('Переименовать сеть в BloopCat-4E2A')).toBeDefined();
     await tick(200);
   });
@@ -1162,11 +1169,29 @@ describe("the router's brand", () => {
     expect(app.$('.brand .wm')).toBeNull();
     expect(read(app.$('.brand .word-text'))).toBe('VPN');
     expect(read(app.$('.sv-lan'))).toBe('Этот экран открывается по адресу http://router.lan, а если не выходит — по адресу 192.168.1.1.');
-    expect(app.text()).toContain('VPN 0.4.0-r1');
+    // The version is the router's, under no program’s name.
+    expect(app.text()).toContain('Роутер 0.4.0-r1');
+    expect(app.text()).not.toContain('VPN 0.4.0-r1');
     expect(app.text()).not.toContain('Vectra');
     expect(app.text()).not.toContain('BloopCat');
     // No support bot in status.brand: no link to support at all.
     expect(app.all('a').filter((a) => (a.getAttribute('href') ?? '').startsWith('https://t.me/'))).toEqual([]);
+  });
+
+  it('a neutral router’s Pro settings and its report give the version as the router’s, not a program called VPN', async () => {
+    localStorage.setItem('vectra.ui.mode', 'pro');
+    const app = start({ scenario: 'healthy', mock: { brand: 'none' } });
+    expect(await eventually(() => !!app.$('#vx-tab-settings'))).toBe(true);
+    app.$<HTMLElement>('#vx-tab-settings')!.click();
+    expect(await eventually(() => !app.$('.skel'))).toBe(true);
+    expect(read(app.$('.about'))).toContain('Роутер 0.4.0-r1');
+    expect(read(app.$('.about'))).not.toContain('VPN');
+    const t = brandT(makeT('ru'), { id: null, name: null });
+    const report = buildReport(t, makeFmt(t), FIXTURES.status, FIXTURES.diagnostics, 'Всё работает');
+    expect(report).toContain('Роутер 0.4.0-r1');
+    expect(report).not.toMatch(/VPN 0\.4\.0/);
+    // What its diagnostics reach is the management server — the same words as the wizard.
+    expect(report).not.toContain('сервис');
   });
 
   it('a neutral router whose status names a support bot links to that bot and names no service', async () => {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { brandT, glue, interpolate, LANGS, makeT, normLang, pickLang, pluralIndex, withParams, type Key, type Params, type T } from '../src/i18n';
 import { S } from '../src/i18n/strings';
+import { makeFmt } from '../src/lib/format';
+import { checkText } from '../src/lib/labels';
 
 const CYRILLIC = /[Ѐ-ӿ]/;
 const placeholders = (s: string) => (s.match(/\{\w+\}/g) || []).sort().join(',');
@@ -152,13 +154,54 @@ describe('the brand in every sentence', () => {
     expect(brandT(makeT('ru'), NONE)('s.pw.onBody')).toBe('Интернет пойдёт через VPN. На несколько секунд он пропадёт.');
   });
 
+  it('names the program and its version only where there is a brand; any other router is just «the router»', () => {
+    const v = { v: '0.7.0' };
+    expect(brandT(makeT('ru'), VECTRA)('app.version', v)).toBe('Vectra 0.7.0');
+    expect(brandT(makeT('en'), BLOOPCAT)('app.version', v)).toBe('BloopCat 0.7.0');
+    expect(brandT(makeT('zh'), VECTRA)('app.version', v)).toBe('Vectra 0.7.0');
+    // No brand, and not yet known whether there is one: no program is named in either.
+    for (const brand of [NONE, null]) {
+      expect(brandT(makeT('ru'), brand)('app.version', v)).toBe('Роутер 0.7.0');
+      expect(brandT(makeT('en'), brand)('app.version', v)).toBe('Router 0.7.0');
+      expect(brandT(makeT('zh'), brand)('app.version', v)).toBe('路由器 0.7.0');
+    }
+  });
+
+  it('calls what a router with no brand reaches «the management server» in its diagnostics, as the wizard does; the brand’s own words stay', () => {
+    const ago = (t: T) => makeFmt(t).agoSec(300);
+    // As a person reads it: the word joiner that keeps "check-in" whole (i18n `glue`) is invisible.
+    const link = (t: T, status: 'ok' | 'fail' | 'unknown', params: Record<string, unknown> = { lastCheckInAgoSec: 300 }) =>
+      checkText(t, makeFmt(t), { id: 'panel_link', status, params }).replace(/\u2060/g, '');
+    const NEUTRAL: Record<'ru' | 'en' | 'zh', [string, string, string, string]> = {
+      ru: ['Сервер управления на связи, отчёт ', 'Нет связи с сервером управления, отчёт ', 'Роутер ещё не связывался с сервером управления', 'Связь с сервером управления: не проверено'],
+      en: ['Management server reachable, check-in ', 'Management server unreachable, check-in ', 'Never checked in with the management server', 'Link to the management server: not checked'],
+      zh: ['管理服务器可达，签到于 ', '无法连接管理服务器，签到于 ', '从未向管理服务器签到', '与管理服务器的连接：未检查'],
+    };
+    const SERVER = { ru: /сервер\S* управления/i, en: /management server/i, zh: /管理服务器/ };
+    for (const lang of LANGS) {
+      const t = brandT(makeT(lang), NONE);
+      const [ok, bad, never, unknown] = NEUTRAL[lang];
+      expect(link(t, 'ok'), lang).toBe(ok + ago(t));
+      expect(link(t, 'fail'), lang).toBe(bad + ago(t));
+      expect(link(t, 'ok', {}), lang).toBe(never);
+      expect(link(t, 'unknown'), lang).toBe(unknown);
+      // The wizard names the same thing the same way (the server the router cannot reach yet).
+      for (const text of [ok, bad, never, unknown, t('w.v.noPanel')]) expect(text, lang).toMatch(SERVER[lang]);
+    }
+    const ru = brandT(makeT('ru'), VECTRA);
+    expect(link(ru, 'ok')).toBe('Vectra на связи, отчёт ' + ago(ru));
+    expect(link(ru, 'fail')).toBe('Нет связи с Vectra, отчёт ' + ago(ru));
+    expect(link(ru, 'ok', {})).toBe('Роутер ещё не связывался с Vectra');
+    expect(link(ru, 'unknown')).toBe('Связь с Vectra: не проверено');
+  });
+
   it('names nothing while it is not known whose router this is: the router that never answered', () => {
     const ru = brandT(makeT('ru'), null);
     expect(ru('s.nl.not_found.t')).toBe('Программа на роутере не отвечает');
     expect(ru('s.nl.not_found.d')).toBe('Программа на роутере не установлена или не запущена.');
     expect(ru('s.nl.method.t')).toBe('Нужно обновить программу на роутере');
     // Every sentence such a screen can show (contract: the error kinds), in every language: no brand, no «VPN» as one.
-    const NO_DATA: Key[] = ['app.region', 's.nl.not_found.t', 's.nl.not_found.d', 's.nl.method.t', 's.nl.method.d', 's.nl.access.t', 's.nl.access.d', 's.nl.network.t', 's.nl.network.d', 's.nl.timeout.t', 's.nl.other.t', 's.nl.retrying', 's.reboot'];
+    const NO_DATA: Key[] = ['app.region', 'app.version', 's.nl.not_found.t', 's.nl.not_found.d', 's.nl.method.t', 's.nl.method.d', 's.nl.access.t', 's.nl.access.d', 's.nl.network.t', 's.nl.network.d', 's.nl.timeout.t', 's.nl.other.t', 's.nl.retrying', 's.reboot'];
     for (const lang of LANGS) {
       const t = brandT(makeT(lang), null);
       for (const key of NO_DATA) expect(t(key), `${lang} ${key}`).not.toMatch(/Vectra|BloopCat|VPN/);
