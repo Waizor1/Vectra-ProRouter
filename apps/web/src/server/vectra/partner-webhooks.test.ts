@@ -1,4 +1,6 @@
 import { eventLog, partnerWebhooks, routers } from "@vectra/db";
+import { type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -399,26 +401,257 @@ describe("webhooks per partner", () => {
     ]);
   });
 
-  it.each(["nohook", "ghost"])(
-    "stops retrying a row whose partner (%s) has no webhook address",
-    async (partnerId) => {
-      const fake = createFakeDb({
-        selects: [[partnerWebhooks, [[dueRow({ id: "w-orphan", partnerId })]]]],
-      });
-      const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, body: null }));
+  describe("a row whose partner has no webhook address", () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const dialect = new PgDialect();
 
+    async function dispatchOnce(
+      row: ReturnType<typeof dueRow>,
+      fetchImpl: ReturnType<typeof vi.fn>,
+    ) {
+      const fake = createFakeDb({ selects: [[partnerWebhooks, [[row]]]] });
       const summary = await dispatchDuePartnerWebhooksWithDb(fake.db as never, {
         now: NOW,
+        fetchImpl: fetchImpl as never,
+      });
+      return { fake, summary };
+    }
+
+    it.each(["nohook", "ghost"])(
+      "waits an hour instead of vanishing, attempts untouched, and says so once (%s)",
+      async (partnerId) => {
+        const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, body: null }));
+        const { fake, summary } = await dispatchOnce(
+          dueRow({
+            id: "w-orphan",
+            partnerId,
+            attempts: 2,
+            createdAt: new Date(NOW.getTime() - DAY_MS),
+          }),
+          fetchImpl,
+        );
+
+        expect(fetchImpl).not.toHaveBeenCalled();
+        expect(summary).toEqual({ attempted: 0, delivered: 0, rescheduled: 0, gaveUp: 0 });
+        expect(fake.updates(partnerWebhooks)).toEqual([
+          {
+            nextAttemptAt: new Date(NOW.getTime() + 60 * 60 * 1000),
+            lastError: "no_webhook_target",
+          },
+        ]);
+        expect(fake.inserts(eventLog)).toEqual([
+          expect.objectContaining({
+            routerId: ROUTER_ID,
+            type: "partner.webhook.no_target",
+            severity: "warning",
+            message: expect.stringContaining(`partner ${partnerId}`),
+            metadata: { webhookId: "w-orphan", event: "router.ready", partnerId },
+          }),
+        ]);
+      },
+    );
+
+    it("keeps waiting without a second journal entry once it is marked", async () => {
+      const { fake } = await dispatchOnce(
+        dueRow({
+          partnerId: "nohook",
+          lastError: "no_webhook_target",
+          createdAt: new Date(NOW.getTime() - 2 * DAY_MS),
+        }),
+        vi.fn(),
+      );
+
+      expect(fake.updates(partnerWebhooks)).toEqual([
+        {
+          nextAttemptAt: new Date(NOW.getTime() + 60 * 60 * 1000),
+          lastError: "no_webhook_target",
+        },
+      ]);
+      expect(fake.inserts(eventLog)).toEqual([]);
+    });
+
+    it("says so again when an earlier failure had replaced the mark", async () => {
+      const { fake } = await dispatchOnce(
+        dueRow({
+          partnerId: "nohook",
+          lastError: "HTTP 503",
+          createdAt: new Date(NOW.getTime() - DAY_MS),
+        }),
+        vi.fn(),
+      );
+      expect(fake.inserts(eventLog)).toHaveLength(1);
+    });
+
+    it("waits up to exactly seven days, then gives up and journals it", async () => {
+      const edge = await dispatchOnce(
+        dueRow({ partnerId: "nohook", createdAt: new Date(NOW.getTime() - 7 * DAY_MS) }),
+        vi.fn(),
+      );
+      expect(edge.fake.updates(partnerWebhooks)[0]).toMatchObject({
+        nextAttemptAt: new Date(NOW.getTime() + 60 * 60 * 1000),
+      });
+      expect(edge.summary.gaveUp).toBe(0);
+
+      const old = await dispatchOnce(
+        dueRow({
+          id: "w-old",
+          partnerId: "nohook",
+          createdAt: new Date(NOW.getTime() - 7 * DAY_MS - 1),
+        }),
+        vi.fn(),
+      );
+      expect(old.summary.gaveUp).toBe(1);
+      expect(old.fake.updates(partnerWebhooks)).toEqual([
+        { nextAttemptAt: null, lastError: "no_webhook_target" },
+      ]);
+      expect(old.fake.inserts(eventLog)).toEqual([
+        expect.objectContaining({
+          routerId: ROUTER_ID,
+          type: "partner.webhook.gave_up",
+          severity: "warning",
+          message: expect.stringContaining("partner nohook"),
+          metadata: {
+            webhookId: "w-old",
+            event: "router.ready",
+            partnerId: "nohook",
+            reason: "no_webhook_target",
+          },
+        }),
+      ]);
+    });
+
+    it("is delivered on the next pass once the partner regains its address", async () => {
+      const row = dueRow({
+        id: "w-wait",
+        partnerId: "nohook",
+        createdAt: new Date(NOW.getTime() - DAY_MS),
+      });
+      const fake = createFakeDb({
+        // The same row comes back due, as the database would return it an hour on.
+        selects: [[partnerWebhooks, [[row], [{ ...row, lastError: "no_webhook_target" }]]]],
+        updateReturns: [[partnerWebhooks, [[{ ...row, attempts: 1 }]]]],
+      });
+      const fetchImpl = vi.fn(async (_url: string) => ({ ok: true, status: 200, body: null }));
+
+      await dispatchDuePartnerWebhooksWithDb(fake.db as never, { now: NOW, fetchImpl });
+      expect(fetchImpl).not.toHaveBeenCalled();
+
+      // The typo is fixed: nohook now has an address.
+      envMock.env.VECTRA_PARTNERS = JSON.stringify([
+        {
+          id: "nohook",
+          brand: "nohook",
+          label: "NoHook",
+          secrets: ["nohook-partner-secret-0123456789abcdefgh"],
+          webhookUrl: "https://nohook.example/hooks",
+          webhookSecret: "nohook-webhook-secret-0123456789abcdefgh",
+        },
+      ]);
+      const summary = await dispatchDuePartnerWebhooksWithDb(fake.db as never, {
+        now: new Date(NOW.getTime() + 60 * 60 * 1000),
         fetchImpl,
       });
 
-      expect(fetchImpl).not.toHaveBeenCalled();
-      expect(summary).toEqual({ attempted: 0, delivered: 0, rescheduled: 0, gaveUp: 0 });
-      expect(fake.updates(partnerWebhooks)).toEqual([
-        { nextAttemptAt: null, lastError: "no_webhook_target" },
-      ]);
-    },
-  );
+      expect(summary).toEqual({ attempted: 1, delivered: 1, rescheduled: 0, gaveUp: 0 });
+      expect(fetchImpl.mock.calls[0]![0]).toBe("https://nohook.example/hooks");
+      expect(fake.updates(partnerWebhooks).at(-1)).toMatchObject({
+        lastStatus: 200,
+        lastError: null,
+      });
+    });
+
+    it("never touches a row that has been delivered meanwhile", async () => {
+      for (const createdAt of [
+        new Date(NOW.getTime() - DAY_MS),
+        new Date(NOW.getTime() - 8 * DAY_MS),
+      ]) {
+        const base = createFakeDb({
+          selects: [[partnerWebhooks, [[dueRow({ partnerId: "nohook", createdAt })]]]],
+        });
+        const wheres: Array<{ sql: string; params: unknown[] }> = [];
+        const db = {
+          ...base.db,
+          update: (table: unknown) => ({
+            set: (set: Record<string, unknown>) => {
+              const inner = base.db.update(table).set(set);
+              return {
+                where: (condition: SQL) => {
+                  wheres.push(dialect.sqlToQuery(condition));
+                  return inner.where();
+                },
+              };
+            },
+          }),
+        };
+
+        await dispatchDuePartnerWebhooksWithDb(db as never, { now: NOW });
+
+        expect(wheres).toHaveLength(1);
+        expect(wheres[0]!.sql).toMatch(/"delivered_at" is null/);
+        expect(wheres[0]!.sql).toMatch(/"id" = \$\d+/);
+      }
+    });
+  });
+
+  it("lets the other partners finish when one group's database write fails, then rejects", async () => {
+    const vectraRow = dueRow({ id: "w-vectra", partnerId: null });
+    const bloopRow = dueRow({ id: "w-bloop", partnerId: "bloopcat" });
+    const base = createFakeDb({
+      selects: [[partnerWebhooks, [[vectraRow, bloopRow]]]],
+      updateReturns: [
+        [
+          partnerWebhooks,
+          [[{ ...vectraRow, attempts: 1 }], [{ ...bloopRow, attempts: 1 }]],
+        ],
+      ],
+    });
+    // The first "delivered" write (Vectra's: BloopCat is still held below) fails.
+    let failed = false;
+    const db = {
+      ...base.db,
+      update: (table: unknown) => ({
+        set: (set: Record<string, unknown>) => {
+          if (set.deliveredAt && !failed) {
+            failed = true;
+            throw new Error("database went away");
+          }
+          return base.db.update(table).set(set);
+        },
+      }),
+    };
+    let releaseBloop: () => void = () => undefined;
+    const bloopHeld = new Promise<void>((resolve) => {
+      releaseBloop = resolve;
+    });
+    const fetchImpl = async (url: string) => {
+      if (url === BLOOP_HOOK) {
+        await bloopHeld;
+      }
+      return { ok: true, status: 200, body: null };
+    };
+
+    let outcome: unknown = "pending";
+    const dispatching = dispatchDuePartnerWebhooksWithDb(db as never, {
+      now: NOW,
+      fetchImpl,
+    }).then(
+      () => (outcome = "resolved"),
+      (error: unknown) => (outcome = error),
+    );
+
+    await vi.waitFor(() => expect(failed).toBe(true));
+    // Vectra's group has failed, but the dispatcher waits for BloopCat's.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(outcome).toBe("pending");
+
+    releaseBloop();
+    await dispatching;
+
+    expect(outcome).toEqual(new Error("database went away"));
+    expect(
+      base.updates(partnerWebhooks).filter((set) => set.deliveredAt),
+    ).toHaveLength(1);
+  });
 
   it("names the partner in the give-up journal entry", async () => {
     const lastTry = PARTNER_WEBHOOK_MAX_ATTEMPTS - 1;

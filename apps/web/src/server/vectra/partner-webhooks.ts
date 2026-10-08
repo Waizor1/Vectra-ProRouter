@@ -46,6 +46,14 @@ const DELIVERY_TIMEOUT_MS = 10_000;
 // sweep cannot send it at the same time.
 const DELIVERY_LEASE_MS = 60_000;
 const DETAIL_MAX_LENGTH = 500;
+// A row whose partner has no webhook address is not dropped: the address may
+// only be missing because of a typo in VECTRA_PARTNERS (the registry then falls
+// back to the default partner alone) that gets fixed on the next deploy. The
+// row waits, re-checked hourly, and is given up only after a week, longer than
+// any outage worth waiting out (the attempts backoff itself spans ~16 h).
+const NO_TARGET_PATIENCE_MS = 7 * 24 * 60 * 60 * 1000;
+const NO_TARGET_RECHECK_MS = 60 * 60 * 1000;
+const NO_TARGET_ERROR = "no_webhook_target";
 export const PARTNER_WEBHOOK_SWEEP_INTERVAL_MS = 30_000;
 const SWEEP_INTERVAL_MS = PARTNER_WEBHOOK_SWEEP_INTERVAL_MS;
 
@@ -233,22 +241,15 @@ export async function dispatchDuePartnerWebhooksWithDb(
     groups.set(id, [...(groups.get(id) ?? []), due]);
   }
 
-  await Promise.all(
+  // allSettled, not all: when one group's database write fails, the other
+  // groups are still left to finish (and the caller's "running" flag stays
+  // true until they have), then the first failure is rethrown.
+  const settled = await Promise.allSettled(
     [...groups].map(async ([partnerId, rows]) => {
       const target = partnerWebhookTarget(partnerId);
       for (const due of rows) {
         if (!target) {
-          // The partner lost its webhook address (or is gone): stop retrying
-          // this row, and say why.
-          await client
-            .update(partnerWebhooks)
-            .set({ nextAttemptAt: null, lastError: "no_webhook_target" })
-            .where(
-              and(
-                eq(partnerWebhooks.id, due.id),
-                isNull(partnerWebhooks.deliveredAt),
-              ),
-            );
+          await waitForPartnerAddress(client, due, partnerId, now, summary);
           continue;
         }
 
@@ -331,8 +332,68 @@ export async function dispatchDuePartnerWebhooksWithDb(
       }
     }),
   );
+  for (const outcome of settled) {
+    if (outcome.status === "rejected") {
+      throw outcome.reason;
+    }
+  }
 
   return summary;
+}
+
+/**
+ * A due row whose partner has no webhook address (it lost it, was never given
+ * one, or the registry could not be read). The row waits for the address and
+ * is re-checked every NO_TARGET_RECHECK_MS; attempts stay as they were, since
+ * nothing was sent. The journal hears about it once per wait, not hourly, and
+ * again when the row is finally given up after NO_TARGET_PATIENCE_MS.
+ */
+async function waitForPartnerAddress(
+  client: DatabaseClient,
+  due: WebhookRow,
+  partnerId: string,
+  now: Date,
+  summary: { gaveUp: number },
+) {
+  // Never touch a row another dispatcher has just delivered.
+  const pending = and(
+    eq(partnerWebhooks.id, due.id),
+    isNull(partnerWebhooks.deliveredAt),
+  );
+  const metadata = { webhookId: due.id, event: due.event, partnerId };
+
+  if (now.getTime() - due.createdAt.getTime() > NO_TARGET_PATIENCE_MS) {
+    summary.gaveUp += 1;
+    await client
+      .update(partnerWebhooks)
+      .set({ nextAttemptAt: null, lastError: NO_TARGET_ERROR })
+      .where(pending);
+    await client.insert(eventLog).values({
+      routerId: due.routerId,
+      type: "partner.webhook.gave_up",
+      severity: "warning",
+      message: `Webhook ${due.event} was given up: partner ${partnerId} has had no webhook address for a week.`,
+      metadata: { ...metadata, reason: NO_TARGET_ERROR },
+    });
+    return;
+  }
+
+  await client
+    .update(partnerWebhooks)
+    .set({
+      nextAttemptAt: new Date(now.getTime() + NO_TARGET_RECHECK_MS),
+      lastError: NO_TARGET_ERROR,
+    })
+    .where(pending);
+  if (due.lastError !== NO_TARGET_ERROR) {
+    await client.insert(eventLog).values({
+      routerId: due.routerId,
+      type: "partner.webhook.no_target",
+      severity: "warning",
+      message: `Webhook ${due.event} is waiting: partner ${partnerId} has no webhook address.`,
+      metadata,
+    });
+  }
 }
 
 const globalForWebhooks = globalThis as typeof globalThis & {
