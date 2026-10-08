@@ -2231,9 +2231,14 @@ func TestUCIDefaultsKeepTheSupportShellOfARouterTheOldAgentRan(t *testing.T) {
 // a fresh box is never relabelled by a later upgrade, a brand the owner
 // cleared stays cleared, and a label that is there (the installer's) is
 // never changed.
+//
+// Every other option the script seeds is already in place in these rows, so
+// the seed's own change is the only reason for a commit: a row that is not
+// seeded yet must commit, one that is must not.
 func TestUCIDefaultsLabelARouterThatPredatesBrandsOnce(t *testing.T) {
 	t.Parallel()
 	const unset = "-"
+	seeded := mainSeededByDefaults(t)
 	for _, c := range []struct {
 		name      string
 		state     bool   // the state file exists
@@ -2264,7 +2269,12 @@ func TestUCIDefaultsLabelARouterThatPredatesBrandsOnce(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			opts := map[string]string{"state_path": statePath, "legacy_state_path": filepath.Join(r.dir, "no-legacy.json"), "enabled": "1"}
+			opts := map[string]string{}
+			for k, v := range seeded {
+				opts[k] = v
+			}
+			opts["state_path"] = statePath
+			opts["legacy_state_path"] = filepath.Join(r.dir, "no-legacy.json")
 			if c.brand != unset {
 				opts["brand"] = c.brand
 			}
@@ -2273,14 +2283,18 @@ func TestUCIDefaultsLabelARouterThatPredatesBrandsOnce(t *testing.T) {
 			}
 			r.seed("vectra-controller-pro", uciSection{Name: "main", Type: "controller", Opts: opts})
 			calls := strings.Join(r.run(defaultsScript), "\n")
+			committed := strings.Contains(calls, "uci commit vectra-controller-pro")
 			if got := r.option("vectra-controller-pro", "main", "brand"); got != c.wantBrand {
 				t.Errorf("brand = %q, want %q\n%s", got, c.wantBrand, calls)
 			}
 			if got := r.option("vectra-controller-pro", "main", "brand_seeded"); got != "1" {
 				t.Errorf("brand_seeded = %q, want 1\n%s", got, calls)
 			}
-			if c.seeded == unset && !strings.Contains(calls, "uci commit vectra-controller-pro") {
+			if c.seeded == unset && !committed {
 				t.Errorf("the marker was set and not committed:\n%s", calls)
+			}
+			if c.seeded != unset && committed {
+				t.Errorf("an already seeded router, every option in place, was committed:\n%s", calls)
 			}
 			// Again (every upgrade's postinst, the first boot): nothing more,
 			// even with a state file there by now — a neutral install the
@@ -2293,12 +2307,35 @@ func TestUCIDefaultsLabelARouterThatPredatesBrandsOnce(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			r.run(defaultsScript)
+			again := strings.Join(r.run(defaultsScript), "\n")
 			if got := r.option("vectra-controller-pro", "main", "brand"); got != c.wantBrand {
 				t.Errorf("run again: brand = %q, want %q", got, c.wantBrand)
 			}
+			if strings.Contains(again, "uci commit vectra-controller-pro") {
+				t.Errorf("run again: committed with nothing to change:\n%s", again)
+			}
 		})
 	}
+}
+
+// mainSeededByDefaults is every option the uci-defaults script fills in on
+// vectra-controller-pro.main when it is empty — read from the script itself,
+// so an option added there is in place here too — with the support shell's
+// remote_shell, which it decides once.
+func mainSeededByDefaults(t *testing.T) map[string]string {
+	t.Helper()
+	raw, err := os.ReadFile(defaultsScript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := map[string]string{"remote_shell": "1"}
+	for _, m := range regexp.MustCompile(`(?m)^set_if_empty (\S+) "([^"]*)"$`).FindAllStringSubmatch(string(raw), -1) {
+		opts[m[1]] = m[2]
+	}
+	if len(opts) < 10 {
+		t.Fatalf("read %d seeded options from %s, want the script's set_if_empty lines", len(opts), defaultsScript)
+	}
+	return opts
 }
 
 // The seed asks the state file UCI names (state_path), not a path of its own:
