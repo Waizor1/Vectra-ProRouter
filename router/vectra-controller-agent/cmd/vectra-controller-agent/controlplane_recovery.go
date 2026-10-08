@@ -79,6 +79,7 @@ const (
 	wanRecoveredReason           = "Control plane and foreign connectivity recovered."
 	operatorAttentionRetryReason = "Still awaiting operator; auto-retrying PassWall proxy path before falling back to direct again."
 	parkedProxyProofRetryReason  = "Proxy node answers url_test_node again while parked in direct; retrying PassWall proxy path."
+	parkLiftedElsewhereReason    = "PassWall is back on and foreign resources answer; leaving operator attention."
 )
 
 // parkedProxyProofRetryInterval bounds how often a router parked in direct by
@@ -524,7 +525,31 @@ func advanceControlPlaneRecovery(
 		// hole. Checked before the node probe, which spawns test.sh and an xray
 		// (the verdict is cached for a rescue Cooldown). LastPasswallRetryAt is
 		// left alone, so the retry is due the moment the block lapses.
-		if inventory.PasswallEnabled || !parkedProxyProofRetryReady(now, recoveryState) {
+		//
+		// PassWall can come back on without this phase doing it: an apply with
+		// the main switch on, the owner in LuCI or over ssh, or DirectSettle
+		// handing over with PassWall already on. The branch below only acts on
+		// a disabled PassWall, so such a router used to stay in operator
+		// attention for good, still reporting awaitingOperator, which keeps the
+		// panel's proxy_outage open and makes the panel refuse controller
+		// updates (avfilicity, 2026-10-07/08: 15 h with the VPN working). The
+		// grouped probes run every poll while AwaitingOperator is set, so a
+		// healthy foreign verdict here was measured through the running proxy.
+		if inventory.PasswallEnabled {
+			if inventory.ForeignReachability != nil &&
+				inventory.ForeignReachability.Status == recovery.StatusHealthy {
+				setControlPlaneRecoveryPhase(
+					recoveryState,
+					runtimeStatus,
+					recovery.PhaseIdle,
+					parkLiftedElsewhereReason,
+					false,
+				)
+				outcome.SkipControlPlane = false
+			}
+			break
+		}
+		if !parkedProxyProofRetryReady(now, recoveryState) {
 			break
 		}
 		if holdRecoveryDirectForUnusableRuntime(recoveryState, runtimeStatus, inventory, cfg.Rescue, now) {

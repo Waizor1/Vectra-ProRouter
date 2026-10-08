@@ -1960,3 +1960,119 @@ func TestAdvanceControlPlaneRecoveryOperatorAttentionStaysParkedWithLivePanelWhe
 		t.Fatalf("must not resume the proxy with no evidence the node answers, got %#v", backend.batchCommands)
 	}
 }
+
+// operatorAttentionWithPasswallOn runs one recovery pass on a router parked in
+// operator attention whose PassWall something else already switched back on
+// (an apply with the main switch on, the owner in LuCI or over ssh).
+func operatorAttentionWithPasswallOn(t *testing.T, foreignStatus int) (
+	recovery.State,
+	state.RuntimeStatus,
+	controlPlaneRecoveryOutcome,
+	*fakeRescueBackend,
+) {
+	t.Helper()
+	panel := newStatusServer(map[string]int{"/api/health": http.StatusNoContent})
+	t.Cleanup(panel.Close)
+	ru := newStatusServer(map[string]int{"/": http.StatusNoContent})
+	t.Cleanup(ru.Close)
+	foreign := newStatusServer(map[string]int{"/": foreignStatus})
+	t.Cleanup(foreign.Close)
+
+	setRecoveryProbeTargets(t,
+		[]probeTarget{
+			{ID: "ya", Label: "ya.ru", URL: ru.URL},
+			{ID: "vk", Label: "vk.com", URL: ru.URL},
+		},
+		[]probeTarget{
+			{ID: "youtube", Label: "youtube", URL: foreign.URL},
+			{ID: "instagram", Label: "instagram", URL: foreign.URL},
+			{ID: "telegram", Label: "telegram", URL: foreign.URL},
+		},
+	)
+
+	backend := &fakeRescueBackend{
+		runResults: map[string]passwall.CommandResult{
+			"/usr/share/passwall2/test.sh url_test_node world-node": {Stdout: "204:0.29"},
+			"/etc/init.d/passwall2 restart":                         {Stdout: "restarted"},
+		},
+		protocols: map[string]string{
+			"passwall2.myshunt.protocol":     "_shunt",
+			"passwall2.myshunt.default_node": "_direct",
+			"passwall2.myshunt.WorldProxy":   "world-node",
+			"passwall2.world-node.protocol":  "vless",
+		},
+	}
+	now := time.Now()
+	persisted := state.PersistedState{ControlPlaneRecovery: recovery.State{
+		LastSuccessfulControlPlaneAt: recovery.FormatTime(now.Add(-time.Minute)),
+		Phase:                        recovery.PhaseOperatorAttention,
+		AwaitingOperator:             true,
+		LastActionReason:             operatorAttentionReason,
+		LastPasswallRetryAt:          recovery.FormatTime(now.Add(-16 * time.Hour)),
+	}}
+	rescueState := rescue.State{Mode: rescue.ModeProxy}
+	inventory := controlplane.RouterInventory{
+		PasswallEnabled: true,
+		SelectedNodeID:  "myshunt",
+	}
+	runtimeStatus := state.RuntimeStatus{}
+
+	outcome, err := advanceControlPlaneRecovery(
+		context.Background(),
+		baseControlPlaneRecoveryConfig(panel.URL),
+		backend,
+		&persisted.ControlPlaneRecovery,
+		&rescueState,
+		&persisted,
+		&inventory,
+		&runtimeStatus,
+	)
+	if err != nil {
+		t.Fatalf("advanceControlPlaneRecovery returned error: %v", err)
+	}
+	return persisted.ControlPlaneRecovery, runtimeStatus, outcome, backend
+}
+
+// avfilicity 2026-10-07/08: parked at 15:43, PassWall back on at 18:25, foreign
+// healthy all night -- and still awaiting the operator 15 h later, because this
+// phase only ever acted on a disabled PassWall.
+func TestAdvanceControlPlaneRecoveryOperatorAttentionEndsWhenPasswallIsBackOnAndForeignIsHealthy(t *testing.T) {
+	got, runtimeStatus, outcome, backend := operatorAttentionWithPasswallOn(t, http.StatusNoContent)
+
+	if outcome.SkipControlPlane || outcome.InventoryChanged {
+		t.Fatalf("outcome = %+v, want a check-in and no inventory change", outcome)
+	}
+
+	if got.Phase != recovery.PhaseIdle {
+		t.Fatalf("recovery phase = %q, want %q", got.Phase, recovery.PhaseIdle)
+	}
+	if got.AwaitingOperator || runtimeStatus.AwaitingOperator {
+		t.Fatal("expected awaitingOperator to clear so the panel resolves the incident")
+	}
+	if got.LastActionReason != parkLiftedElsewhereReason {
+		t.Fatalf("last action reason = %q, want %q", got.LastActionReason, parkLiftedElsewhereReason)
+	}
+	if len(backend.batchCommands) != 0 || containsCommand(backend.runCommands, "/etc/init.d/passwall2 restart") {
+		t.Fatalf("must not touch a running PassWall, got batch %#v run %#v", backend.batchCommands, backend.runCommands)
+	}
+}
+
+// PassWall on but foreign still failing: the outage is real, so the park and
+// its incident stay; nothing is switched either way.
+func TestAdvanceControlPlaneRecoveryOperatorAttentionKeepsParkWhenPasswallIsOnButForeignFails(t *testing.T) {
+	got, runtimeStatus, outcome, backend := operatorAttentionWithPasswallOn(t, http.StatusServiceUnavailable)
+
+	if outcome.InventoryChanged {
+		t.Fatalf("outcome = %+v, want no inventory change", outcome)
+	}
+
+	if got.Phase != recovery.PhaseOperatorAttention {
+		t.Fatalf("recovery phase = %q, want %q", got.Phase, recovery.PhaseOperatorAttention)
+	}
+	if !got.AwaitingOperator || !runtimeStatus.AwaitingOperator {
+		t.Fatal("expected the router to keep awaiting the operator while foreign resources fail")
+	}
+	if len(backend.batchCommands) != 0 {
+		t.Fatalf("must not switch PassWall, got %#v", backend.batchCommands)
+	}
+}
