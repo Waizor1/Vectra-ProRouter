@@ -695,9 +695,23 @@ describe("the owner's partner speaks to the router", () => {
     });
   });
 
-  it("holds a partner's claim key to the production rule on the public test key", () => {
+  // vctl overwrites its stored claim key and bot with whatever an answer carries
+  // and keeps them when it carries none: Vectra's must never reach another
+  // partner's router, so each case below has Vectra's key and bot SET.
+  function setVectraKeyAndBot() {
     envMock.env.VECTRA_ROUTER_CLAIM_PUBKEY = VECTRA_PUBKEY;
     envMock.env.VECTRA_ROUTER_CLAIM_KID = 1;
+    envMock.env.VECTRA_CONNECT_BOT_USERNAME = "VectraConnectBot";
+  }
+  const bloopOwned = {
+    ownerRef: "bc_1",
+    ownerLabel: "",
+    releasedAt: null,
+    partnerId: "bloopcat",
+  };
+
+  it("holds a partner's claim key to the production rule, and says nothing instead of Vectra's", () => {
+    setVectraKeyAndBot();
     envMock.env.VECTRA_PARTNERS = JSON.stringify([
       {
         id: "bloopcat",
@@ -709,38 +723,83 @@ describe("the owner's partner speaks to the router", () => {
         botUsername: "BloopCat_bot",
       },
     ]);
-    const owned = {
-      ownerRef: "bc_1",
-      ownerLabel: "",
-      releasedAt: null,
-      partnerId: "bloopcat",
-    };
 
     envMock.env.NODE_ENV = "production";
-    const production = buildRouterClaimResponseFields(owned);
+    const production = buildRouterClaimResponseFields(bloopOwned);
+    expect(production).not.toHaveProperty("claimKey");
     expect(JSON.stringify(production)).not.toContain(ROUTER_CLAIM_PUBLIC_TEST_KEY);
-    expect(production.claimKey).toEqual({ kid: 1, publicKey: VECTRA_PUBKEY });
+    expect(JSON.stringify(production)).not.toContain(VECTRA_PUBKEY);
+    expect(production).toMatchObject({
+      botUsername: "BloopCat_bot",
+      brand: "bloopcat",
+    });
 
     envMock.env.NODE_ENV = "development";
-    expect(buildRouterClaimResponseFields(owned).claimKey).toEqual({
+    expect(buildRouterClaimResponseFields(bloopOwned).claimKey).toEqual({
       kid: 2,
       publicKey: ROUTER_CLAIM_PUBLIC_TEST_KEY,
     });
   });
 
-  it("serves a partner this panel no longer lists under its own id as the brand", () => {
+  it("tells a router of an unlisted partner its brand and nothing of Vectra's", () => {
     // A router keeps its partner_id after the partner leaves VECTRA_PARTNERS.
+    setVectraKeyAndBot();
     envMock.env.VECTRA_PARTNERS = "";
-    const fields = buildRouterClaimResponseFields({
-      ownerRef: "bc_1",
-      ownerLabel: "",
-      releasedAt: null,
-      partnerId: "bloopcat",
-    });
+    const fields = buildRouterClaimResponseFields(bloopOwned);
+    expect(fields).not.toHaveProperty("claimKey");
+    expect(fields).not.toHaveProperty("botUsername");
     expect(fields).toMatchObject({
       brand: "bloopcat",
-      owner: { ownerRef: "bc_1" },
+      // never "Vectra": the router would show a stranger's name
+      owner: { ownerRef: "bc_1", label: "bloopcat" },
     });
+  });
+
+  it("does the same while VECTRA_PARTNERS does not validate", () => {
+    setVectraKeyAndBot();
+    envMock.env.VECTRA_PARTNERS = "{ not json";
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const fields = buildRouterClaimResponseFields(bloopOwned);
+      expect(fields).not.toHaveProperty("claimKey");
+      expect(fields).not.toHaveProperty("botUsername");
+      expect(fields).toMatchObject({ brand: "bloopcat" });
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("sends neither key nor bot for a listed partner configured with neither", () => {
+    setVectraKeyAndBot();
+    envMock.env.VECTRA_PARTNERS = JSON.stringify([
+      {
+        id: "bloopcat",
+        brand: "bloopcat",
+        label: "BloopCat",
+        secrets: ["bloopcat-partner-secret-0123456789abcdef"],
+      },
+    ]);
+    const fields = buildRouterClaimResponseFields(bloopOwned);
+    expect(fields).not.toHaveProperty("claimKey");
+    expect(fields).not.toHaveProperty("botUsername");
+    expect(fields).toMatchObject({
+      brand: "bloopcat",
+      owner: { ownerRef: "bc_1", label: "BloopCat" },
+    });
+  });
+
+  it("leaves a router of Vectra's own, claimed or not, on Vectra's key and bot", () => {
+    setVectraKeyAndBot();
+    for (const router of [
+      { ownerRef: null, ownerLabel: null, releasedAt: null, partnerId: null },
+      { ownerRef: "vc_1", ownerLabel: "", releasedAt: null, partnerId: null },
+      { ownerRef: "vc_1", ownerLabel: "", releasedAt: null, partnerId: "vectra" },
+    ]) {
+      expect(buildRouterClaimResponseFields(router)).toMatchObject({
+        claimKey: { kid: 1, publicKey: VECTRA_PUBKEY },
+        botUsername: "VectraConnectBot",
+      });
+    }
   });
 
   it("never emits a brand the contract would refuse (a check-in must not throw)", () => {
