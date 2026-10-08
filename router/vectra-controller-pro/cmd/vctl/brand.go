@@ -4,6 +4,7 @@ import (
 	"vectra-controller-pro/internal/brand"
 	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/state"
+	"vectra-controller-pro/internal/subscription"
 )
 
 // noteBrand records a brand the router learned, when it outranks the one
@@ -19,11 +20,25 @@ func noteBrand(st *state.PersistedState, id brand.ID, from brand.Source, support
 		st.Brand, st.BrandSource = string(id), string(from)
 		changed = true
 	}
-	if from == brand.SourceSubscription && support != "" && st.Brand == string(id) && st.BrandSupport != support {
+	// The support bot belongs to the brand held: with none held (an
+	// unrecognised subscription) there is nothing for it to belong to.
+	if from == brand.SourceSubscription && support != "" && st.Brand != "" && st.Brand == string(id) && st.BrandSupport != support {
 		st.BrandSupport = support
 		changed = true
 	}
 	return changed
+}
+
+// brandFromFetch: the brand and support bot a fetched subscription names.
+func brandFromFetch(fr *subscription.FetchResult) (brand.ID, string, bool) {
+	if fr == nil {
+		return "", "", false
+	}
+	id, ok := brand.FromSubscription(fr.ProfileWebPageURL, fr.ProfileTitle)
+	if !ok {
+		return "", "", false
+	}
+	return id, brand.SupportFromURL(fr.SupportURL), true
 }
 
 // forgetBrand: the owner unbound the router — its next owner's word decides.

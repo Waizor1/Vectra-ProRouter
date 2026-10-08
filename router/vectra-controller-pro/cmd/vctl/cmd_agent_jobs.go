@@ -21,6 +21,7 @@ import (
 	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/apply"
+	"vectra-controller-pro/internal/brand"
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/firewall"
@@ -478,6 +479,11 @@ func (d *daemon) fetchProviderDocument(ctx context.Context, cfg *config.Config) 
 	}
 	if fr.StatusCode < 200 || fr.StatusCode > 299 {
 		return nil, nil, fmt.Errorf("subscription %s: http %d", sub.ID, fr.StatusCode)
+	}
+	// Whose subscription this is decides whose router it looks like. An
+	// answer that names no brand (a stub, a user in no squad) changes nothing.
+	if id, support, ok := brandFromFetch(fr); ok {
+		d.learnBrand(id, brand.SourceSubscription, support)
 	}
 
 	meta := map[string]interface{}{

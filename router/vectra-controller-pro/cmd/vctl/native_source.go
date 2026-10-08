@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"vectra-controller-pro/internal/brand"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/logging"
@@ -523,6 +524,11 @@ func (d *daemon) fetchNativeFeed(ctx context.Context, url string) ([]byte, error
 	}
 	if fr.StatusCode < 200 || fr.StatusCode > 299 {
 		return nil, fmt.Errorf("the subscription answered http %d", fr.StatusCode)
+	}
+	// The same subscription fetchProviderDocument asks, so it names the
+	// router's brand the same way.
+	if id, support, ok := brandFromFetch(fr); ok {
+		d.learnBrand(id, brand.SourceSubscription, support)
 	}
 	return fr.Body, nil
 }

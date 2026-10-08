@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 
 	"vectra-controller-pro/internal/brand"
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/state"
+	"vectra-controller-pro/internal/subscription"
 )
 
 func TestTheRouterKeepsTheStrongestWordOnItsBrand(t *testing.T) {
@@ -138,5 +140,136 @@ func TestTheNewOwnersBrandSurvivesTheReleaseOfTheOldOne(t *testing.T) {
 	}
 	if d.st.Brand != "vectra" || d.st.BrandSource != "claim" || d.st.BrandSupport != "" {
 		t.Fatalf("after the owner change: %+v", d.st)
+	}
+}
+
+// A support bot belongs to a brand: with none held, a word that names none
+// (a stub, a user in no squad) has nothing to attach it to.
+func TestASupportBotNeverStandsWithoutABrand(t *testing.T) {
+	var st state.PersistedState
+	if noteBrand(&st, "", brand.SourceSubscription, "x") || st.BrandSupport != "" || st.Brand != "" {
+		t.Fatalf("a support bot was kept without a brand: %+v", st)
+	}
+}
+
+// The wire name of the claim answer's brand, locked on both answers that
+// carry it: the panel sends `brand`, and a rename on either side would
+// silently turn every router neutral.
+func TestTheClaimAnswerCarriesTheBrandUnderItsWireName(t *testing.T) {
+	var checkIn controlplane.CheckInResponse
+	if err := json.Unmarshal([]byte(`{"brand":"bloopcat"}`), &checkIn); err != nil {
+		t.Fatal(err)
+	}
+	if checkIn.ClaimInfo.Brand != "bloopcat" {
+		t.Fatalf("check-in answer: brand %q", checkIn.ClaimInfo.Brand)
+	}
+	var registered controlplane.RegisterResponse
+	if err := json.Unmarshal([]byte(`{"brand":"bloopcat"}`), &registered); err != nil {
+		t.Fatal(err)
+	}
+	if registered.ClaimInfo.Brand != "bloopcat" {
+		t.Fatalf("register answer: brand %q", registered.ClaimInfo.Brand)
+	}
+}
+
+func TestASubscriptionNamesItsBrandAndSupport(t *testing.T) {
+	id, support, ok := brandFromFetch(&subscription.FetchResult{
+		ProfileWebPageURL: "https://t.me/BloopCat_bot",
+		ProfileTitle:      "BloopCat ",
+		SupportURL:        "https://t.me/BloopCat_supbot",
+	})
+	if !ok || id != brand.BloopCat || support != "BloopCat_supbot" {
+		t.Fatalf("%q %q %v", id, support, ok)
+	}
+	if _, _, ok := brandFromFetch(&subscription.FetchResult{ProfileTitle: "BloopCat | TriadConnect"}); ok {
+		t.Fatal("the panel's global title named a brand")
+	}
+	if _, _, ok := brandFromFetch(nil); ok {
+		t.Fatal("no fetch, no brand")
+	}
+}
+
+// What the provider's answer says about itself, the way Remnawave sends it
+// (the title as base64), is the router's brand once it is fetched — kept
+// across a restart, with the support bot the subscription names.
+func TestFetchingTheSubscriptionTeachesTheRouterItsBrand(t *testing.T) {
+	d, provider, _, _ := newLocalUIDaemon(t)
+	provider.answer(0, map[string]string{
+		"profile-web-page-url": "https://t.me/BloopCat_bot",
+		"profile-title":        "base64:" + base64.StdEncoding.EncodeToString([]byte("BloopCat")),
+		"support-url":          "https://t.me/BloopCat_supbot",
+	})
+	if _, _, err := d.fetchProviderDocument(context.Background(), d.desired); err != nil {
+		t.Fatal(err)
+	}
+	if d.st.Brand != "bloopcat" || d.st.BrandSource != "subscription" || d.st.BrandSupport != "BloopCat_supbot" {
+		t.Fatalf("the fetched subscription did not name its brand: %+v", d.st)
+	}
+	onDisk, err := state.Load(d.cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDisk.Brand != "bloopcat" || onDisk.BrandSource != "subscription" || onDisk.BrandSupport != "BloopCat_supbot" {
+		t.Fatalf("the brand was not persisted: %+v", onDisk)
+	}
+
+	// An answer that names no brand — the panel's global title for a user in
+	// no squad — leaves the brand and its support bot as they were.
+	provider.answer(0, map[string]string{"profile-title": "BloopCat | TriadConnect"})
+	if _, _, err := d.fetchProviderDocument(context.Background(), d.desired); err != nil {
+		t.Fatal(err)
+	}
+	if d.st.Brand != "bloopcat" || d.st.BrandSupport != "BloopCat_supbot" {
+		t.Fatalf("an answer without a brand changed it: %+v", d.st)
+	}
+}
+
+func TestTheWholeTitleAloneNamesTheBrandWhenTheSubscriptionHasNoBot(t *testing.T) {
+	d, provider, _, _ := newLocalUIDaemon(t)
+	provider.answer(0, map[string]string{"profile-title": "Vectra Connect"})
+	if _, _, err := d.fetchProviderDocument(context.Background(), d.desired); err != nil {
+		t.Fatal(err)
+	}
+	if d.st.Brand != "vectra" || d.st.BrandSource != "subscription" {
+		t.Fatalf("the title did not name the brand: %+v", d.st)
+	}
+}
+
+// A refusal says nothing about whose subscription it is: the status is
+// checked before anything is learned.
+func TestARefusedSubscriptionFetchTeachesNoBrand(t *testing.T) {
+	d, provider, _, _ := newLocalUIDaemon(t)
+	provider.answer(403, map[string]string{"profile-web-page-url": "https://t.me/BloopCat_bot"})
+	if _, _, err := d.fetchProviderDocument(context.Background(), d.desired); err == nil {
+		t.Fatal("a refused fetch succeeded")
+	}
+	if d.st.Brand != "" || d.st.BrandSource != "" || d.st.BrandSupport != "" {
+		t.Fatalf("a refused fetch named a brand: %+v", d.st)
+	}
+}
+
+// A router that routes by its own copy of the route policy asks the
+// subscription there (fetchNativeFeed), not through fetchProviderDocument:
+// the same answer, so it names the brand too.
+func TestTheRouteSubscriptionTeachesTheRouterItsBrandToo(t *testing.T) {
+	feed := newFeedStub(t, readTestdata(t, "refresh-feed-a.txt"))
+	feed.answerWith(map[string]string{
+		"profile-web-page-url": "https://t.me/BloopCat_bot",
+		"support-url":          "https://t.me/BloopCat_supbot",
+	})
+	storeWithSubscription(t, feed.URL+"/api/sub/SECRETSHORT")
+	d := nativeDaemon(t, feed)
+	if _, err := d.refreshNative(context.Background(), "sub1", false); err != nil {
+		t.Fatal(err)
+	}
+	if d.st.Brand != "bloopcat" || d.st.BrandSource != "subscription" || d.st.BrandSupport != "BloopCat_supbot" {
+		t.Fatalf("the route subscription did not name its brand: %+v", d.st)
+	}
+	onDisk, err := state.Load(d.cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDisk.Brand != "bloopcat" || onDisk.BrandSupport != "BloopCat_supbot" {
+		t.Fatalf("the brand was not persisted: %+v", onDisk)
 	}
 }

@@ -58,6 +58,8 @@ type providerStub struct {
 	Reqs    []http.Header
 	Targets []string // each request's target: path and query
 	entries []byte
+	extra   map[string]string // response headers beyond the content type (answer)
+	status  int               // the answer's status; 0 is 200 (answer)
 }
 
 func newProviderStub(t *testing.T, entry []byte) *providerStub {
@@ -67,18 +69,35 @@ func newProviderStub(t *testing.T, entry []byte) *providerStub {
 		p.mu.Lock()
 		p.Reqs = append(p.Reqs, r.Header.Clone())
 		p.Targets = append(p.Targets, r.URL.RequestURI())
+		extra, status := p.extra, p.status
 		p.mu.Unlock()
+		reply := func(contentType string, body []byte) {
+			for k, v := range extra {
+				w.Header().Set(k, v)
+			}
+			w.Header().Set("Content-Type", contentType)
+			if status != 0 {
+				w.WriteHeader(status)
+			}
+			_, _ = w.Write(body)
+		}
 		ua := r.Header.Get("User-Agent")
 		if strings.HasPrefix(ua, "Happ/") || strings.HasPrefix(ua, "v2rayNG/") || strings.HasSuffix(r.URL.Path, "/json") {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(p.entries)
+			reply("application/json", p.entries)
 			return
 		}
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write([]byte("dmxlc3M6Ly91QGg6NDQzP3R5cGU9dGNwI2E=")) // base64 vless:// link
+		reply("text/plain", []byte("dmxlc3M6Ly91QGg6NDQzP3R5cGU9dGNwI2E=")) // base64 vless:// link
 	}))
 	t.Cleanup(p.Close)
 	return p
+}
+
+// answer sets the status (0 is 200) and the headers, the subscription's
+// profile-* ones among them, that every later answer carries.
+func (p *providerStub) answer(status int, headers map[string]string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.status, p.extra = status, headers
 }
 
 func (p *providerStub) headers() []http.Header {
