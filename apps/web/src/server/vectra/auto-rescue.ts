@@ -30,6 +30,7 @@ import {
   canRunDestructiveAction,
   describeEffectiveRouterSupport,
 } from "~/server/vectra/support";
+import { notifyVendorAccessWithDb } from "~/server/vectra/vendor-access";
 
 import { withLoopLock } from "./background-lock";
 import { sendTelegramRescueMessage } from "./telegram-rescue";
@@ -1150,7 +1151,12 @@ export class RescueActionRefusedError extends Error {
 export async function queueRescueCaseLogCollection(
   caseId: string,
   database: DatabaseClient = db,
-  options: { unattended?: boolean; onInserted?: () => void } = {},
+  options: {
+    unattended?: boolean;
+    // Who pressed the button, for the partner's vendor-access notice.
+    requestedBy?: "operator" | "telegram";
+    onInserted?: () => void;
+  } = {},
 ) {
   const rescueCase = await getRescueCaseOrThrow(caseId, database);
   const [existingJob] = await database
@@ -1174,7 +1180,12 @@ export async function queueRescueCaseLogCollection(
   // queued for a vctl router only waits to be failed at check-in. Unattended
   // collection skips such a router quietly; an operator is told why.
   const [router] = await database
-    .select({ engineMode: routers.engineMode })
+    .select({
+      id: routers.id,
+      engineMode: routers.engineMode,
+      ownerRef: routers.ownerRef,
+      partnerId: routers.partnerId,
+    })
     .from(routers)
     .where(eq(routers.id, rescueCase.routerId))
     .limit(1);
@@ -1242,6 +1253,12 @@ export async function queueRescueCaseLogCollection(
     .returning();
 
   options.onInserted?.();
+  if (!options.unattended && router) {
+    await notifyVendorAccessWithDb(database, router, {
+      kind: "collect_logs",
+      by: options.requestedBy ?? "operator",
+    });
+  }
   return job;
 }
 
@@ -1332,6 +1349,12 @@ export async function queueRescueCaseSafeRepair(
     .returning();
 
   args.onInserted?.();
+  if (args.requestedBy !== "auto_rescue") {
+    await notifyVendorAccessWithDb(database, router, {
+      kind: "safe_repair",
+      by: args.requestedBy === "telegram" ? "telegram" : "operator",
+    });
+  }
 
   await database
     .update(rescueCases)

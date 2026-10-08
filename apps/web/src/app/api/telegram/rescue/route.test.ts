@@ -68,6 +68,40 @@ describe("POST /api/telegram/rescue", () => {
     warn.mockRestore();
   });
 
+  // The button is Vectra's side reaching the router: the partner is told it
+  // was Telegram, not an operator at the panel.
+  it("queues log collection as a Telegram request", async () => {
+    telegram.verifyTelegramRescueActionToken.mockReturnValueOnce({
+      caseId: "case-1",
+      action: "collect_logs",
+    });
+    autoRescue.queueRescueCaseLogCollection.mockClear();
+    autoRescue.queueRescueCaseLogCollection.mockResolvedValueOnce({ id: "job-1" });
+
+    const response = await POST(
+      new Request("https://example.test/api/telegram/rescue", {
+        method: "POST",
+        headers: {
+          "x-telegram-bot-api-secret-token": "webhook-secret-0123456789",
+        },
+        body: JSON.stringify({
+          callback_query: {
+            id: "cb-3",
+            data: "rescue:token",
+            message: { chat: { id: 1 } },
+          },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(autoRescue.queueRescueCaseLogCollection).toHaveBeenCalledWith(
+      "case-1",
+      undefined,
+      { requestedBy: "telegram" },
+    );
+  });
+
   // vctl never runs collect_router_logs: the button answers with why, as a
   // typed 400, not the generic "action failed".
   it("answers a refused log collection with its reason", async () => {

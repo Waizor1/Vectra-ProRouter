@@ -51,6 +51,7 @@ import {
   sanitizeRevisionForClient,
 } from "~/server/vectra/router-control";
 import { canRunDestructiveAction, describeRouterSupport } from "~/server/vectra/support";
+import { notifyVendorAccessWithDb } from "~/server/vectra/vendor-access";
 import { isUiLocked } from "~/server/vectra/xray-operator-config";
 
 const activeJobStates: Array<"queued" | "delivered" | "running"> = [
@@ -944,6 +945,11 @@ export const fleetRouter = createTRPCRouter({
           payload,
         })
         .returning();
+
+      await notifyVendorAccessWithDb(ctx.db, router, {
+        kind: "rename",
+        by: "operator",
+      });
 
       await ctx.db.insert(eventLog).values({
         routerId: router.id,

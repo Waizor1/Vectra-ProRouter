@@ -27,6 +27,7 @@ import {
   canRunDestructiveAction,
   describeEffectiveRouterSupport,
 } from "~/server/vectra/support";
+import { notifyVendorAccessWithDb } from "~/server/vectra/vendor-access";
 
 async function assertCertifiedRouterForRescue(
   ctx: { db: typeof webDb },
@@ -69,6 +70,8 @@ async function assertCertifiedRouterForRescue(
         "Операторские rescue-действия разрешены только для поддерживаемых pilot/certified board/layout пар.",
     });
   }
+
+  return router;
 }
 
 /** A case id that names no case (e.g. one retention deleted) is a 404. */
@@ -212,7 +215,7 @@ export const rescueRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertCertifiedRouterForRescue(ctx, input.routerId);
+      const router = await assertCertifiedRouterForRescue(ctx, input.routerId);
 
       const [job] = await ctx.db
         .insert(jobs)
@@ -226,6 +229,11 @@ export const rescueRouter = createTRPCRouter({
         })
         .returning();
 
+      await notifyVendorAccessWithDb(ctx.db, router, {
+        kind: "direct_mode",
+        by: "operator",
+      });
+
       return job;
     }),
 
@@ -237,7 +245,7 @@ export const rescueRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertCertifiedRouterForRescue(ctx, input.routerId);
+      const router = await assertCertifiedRouterForRescue(ctx, input.routerId);
 
       const [job] = await ctx.db
         .insert(jobs)
@@ -251,6 +259,11 @@ export const rescueRouter = createTRPCRouter({
           },
         })
         .returning();
+
+      await notifyVendorAccessWithDb(ctx.db, router, {
+        kind: "reconnect",
+        by: "operator",
+      });
 
       return job;
     }),

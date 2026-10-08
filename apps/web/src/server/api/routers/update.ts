@@ -78,6 +78,7 @@ import {
   canRunUpdateAction,
   describeEffectiveRouterSupport,
 } from "~/server/vectra/support";
+import { notifyVendorAccessWithDb } from "~/server/vectra/vendor-access";
 
 const DEFAULT_PASSWALL_PACKAGE_LIST = [
   ...PASSWALL_MANAGED_STACK_REQUIRED_PACKAGES,
@@ -562,7 +563,7 @@ async function enqueueRouterRebootJob(args: {
   ctx: RouterMutationContext;
   routerId: string;
 }) {
-  await assertCertifiedRouter(args.ctx, args.routerId);
+  const { router } = await assertCertifiedRouter(args.ctx, args.routerId);
 
   const dedupeKey = `router_reboot:${args.routerId}`;
   const [existingJob] = await args.ctx.db
@@ -591,6 +592,11 @@ async function enqueueRouterRebootJob(args: {
       payload: buildTerminalRouterRebootPayload(),
     })
     .returning();
+
+  await notifyVendorAccessWithDb(args.ctx.db, router, {
+    kind: "reboot",
+    by: "operator",
+  });
 
   return job;
 }

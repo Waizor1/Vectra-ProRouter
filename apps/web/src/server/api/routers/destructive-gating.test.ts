@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createCallerFactory } from "~/server/api/trpc";
+
+const { notifyVendorAccessWithDb } = vi.hoisted(() => ({
+  notifyVendorAccessWithDb: vi.fn(async (..._args: unknown[]) => null),
+}));
+vi.mock("~/server/vectra/vendor-access", () => ({ notifyVendorAccessWithDb }));
 
 import { draftRouter } from "./draft";
 import { rescueRouter } from "./rescue";
@@ -1545,5 +1550,114 @@ describe("destructive route gating", () => {
       ]);
       expect(mock.counts().insertCalls).toBe(0);
     });
+  });
+});
+
+describe("vendor-access notice at the operator's entry points", () => {
+  beforeEach(() => {
+    notifyVendorAccessWithDb.mockClear();
+  });
+
+  const partnerRouter = () => ({
+    ...createCertifiedLikeRouter(),
+    ownerRef: "bc_1",
+    partnerId: "bloopcat",
+  });
+  const reached = (kind: string) => [
+    expect.anything(),
+    expect.objectContaining({
+      id: CERTIFIED_LIKE_ROUTER_ID,
+      ownerRef: "bc_1",
+      partnerId: "bloopcat",
+    }),
+    { kind, by: "operator" },
+  ];
+
+  it("direct mode tells the router's partner", async () => {
+    const mock = createMockDb([[partnerRouter()], [createPilotLayoutSnapshot()]]);
+    const caller = createProtectedCaller(rescueRouter, mock.db) as {
+      triggerDirectMode: (input: { routerId: string }) => Promise<unknown>;
+    };
+
+    await caller.triggerDirectMode({ routerId: CERTIFIED_LIKE_ROUTER_ID });
+
+    expect(mock.counts().insertCalls).toBe(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(...reached("direct_mode"));
+  });
+
+  it("reconnect tells the router's partner", async () => {
+    const mock = createMockDb([[partnerRouter()], [createPilotLayoutSnapshot()]]);
+    const caller = createProtectedCaller(rescueRouter, mock.db) as {
+      triggerReconnect: (input: { routerId: string }) => Promise<unknown>;
+    };
+
+    await caller.triggerReconnect({ routerId: CERTIFIED_LIKE_ROUTER_ID });
+
+    expect(mock.counts().insertCalls).toBe(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(...reached("reconnect"));
+  });
+
+  it("a refused rescue action tells nobody", async () => {
+    const mock = createMockDb([[partnerRouter()], [createBlockedSnapshot()]]);
+    const caller = createProtectedCaller(rescueRouter, mock.db) as {
+      triggerDirectMode: (input: { routerId: string }) => Promise<unknown>;
+    };
+
+    await expect(
+      caller.triggerDirectMode({ routerId: CERTIFIED_LIKE_ROUTER_ID }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
+  });
+
+  it("a single reboot tells the router's partner", async () => {
+    const mock = createMockDb([
+      [partnerRouter()],
+      [createPilotLayoutSnapshot("ubootmod")],
+      [],
+    ]);
+    const caller = createProtectedCaller(updateRouter, mock.db) as {
+      queueRouterReboot: (input: { routerId: string }) => Promise<unknown>;
+    };
+
+    await caller.queueRouterReboot({ routerId: CERTIFIED_LIKE_ROUTER_ID });
+
+    expect(mock.counts().insertCalls).toBe(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(...reached("reboot"));
+  });
+
+  it("a bulk reboot tells the partner of each router it queues", async () => {
+    const mock = createMockDb([
+      [partnerRouter()],
+      [createPilotLayoutSnapshot("ubootmod")],
+      [],
+    ]);
+    const caller = createProtectedCaller(updateRouter, mock.db) as {
+      queueBulkRouterReboot: (input: { routerIds: string[] }) => Promise<unknown>;
+    };
+
+    await caller.queueBulkRouterReboot({ routerIds: [CERTIFIED_LIKE_ROUTER_ID] });
+
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(...reached("reboot"));
+  });
+
+  it("a reboot already waiting is not a new visit", async () => {
+    const waiting = { id: "job-0", type: "run_terminal_command", state: "queued" };
+    const mock = createMockDb([
+      [partnerRouter()],
+      [createPilotLayoutSnapshot("ubootmod")],
+      [waiting],
+    ]);
+    const caller = createProtectedCaller(updateRouter, mock.db) as {
+      queueRouterReboot: (input: { routerId: string }) => Promise<unknown>;
+    };
+
+    await caller.queueRouterReboot({ routerId: CERTIFIED_LIKE_ROUTER_ID });
+
+    expect(mock.counts().insertCalls).toBe(0);
+    expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
   });
 });
