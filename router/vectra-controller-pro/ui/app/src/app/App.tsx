@@ -88,7 +88,29 @@ function useSystemDark(): boolean {
   return dark;
 }
 
+/** Whose router this is, as status.brand names it. */
+type BrandSeen = { id: string | null; name: string | null };
+
+/**
+ * The brand this page saw last, kept in this browser: the header and the
+ * words say it until the router answers — a Vectra router that fails its
+ * first answer still says Vectra. Garbled, or storage refused: none.
+ */
+function rememberedBrand(): BrandSeen | null {
+  try {
+    const v = JSON.parse(load('brand') ?? 'null') as unknown;
+    if (!v || typeof v !== 'object') return null;
+    const { id, name } = v as Record<string, unknown>;
+    const ok = (x: unknown): x is string | null => x === null || typeof x === 'string';
+    return ok(id) && ok(name) ? { id, name } : null;
+  } catch {
+    return null;
+  }
+}
+
 function Header(p: {
+  /** null: not known whose router this is — no wordmark rather than one that may be wrong. */
+  brand: BrandSeen | null;
   themePref: ThemePref;
   onTheme: () => void;
   full: boolean;
@@ -103,17 +125,17 @@ function Header(p: {
   const s = st.data;
   const pro = mode === 'pro';
   const level: Level | null = st.error ? 'unknown' : s ? health(s, dg.data).level : null;
-  const vectra = s?.brand.id === 'vectra';
+  const vectra = p.brand?.id === 'vectra';
   const clock = st.at === null ? null : f.clock(st.at);
   const updated = clock ? t('hdr.updated', { time: clock }) : st.error ? '—' : t('hdr.loading');
   return (
     <header class="hdr">
       <div class="brand">
         {/* Vectra's official wordmark (a mask filled with the brand gradient); the word is its text.
-            Another brand, or none, shows its name in its place, the same weight and fill. Until
-            the router has said whose it is, nothing: not a name that may be wrong. */}
+            Another brand, or none, shows its name in its place, the same weight and fill. Not known
+            whose router it is (never answered, nothing remembered): nothing that may be wrong. */}
         {vectra ? <span class="wm" aria-hidden="true" /> : null}
-        {s || st.error ? <span class={vectra ? 'word' : 'word word-text'}>{(s?.brand.name ?? t('brand.none')).toUpperCase()}</span> : null}
+        {p.brand ? <span class={vectra ? 'word' : 'word word-text'}>{(p.brand.name ?? t('brand.none')).toUpperCase()}</span> : null}
         {pro && s?.router.hostname ? (
           <span class="host clip" title={s.router.hostname}>
             {s.router.hostname}
@@ -237,11 +259,12 @@ export function App({ call, setPassword = null, lang: hostLang, root }: { call: 
   // mount() renders once: the transport, and so the store, never change.
   const [store] = useState(() => createStore(call));
   const [lang, setLangState] = useState<Lang>(() => pickLang(load('lang'), hostLang, navigator.language));
-  // Whose router this is (status.brand): every sentence says its name and agrees
-  // with it; a router with none says "VPN" and the sentences written for that.
-  const [brandId, setBrandId] = useState<string | null>(null);
-  const [brandName, setBrandName] = useState<string | null>(null);
-  const t = useMemo(() => brandT(makeT(lang), { id: brandId, name: brandName }), [lang, brandId, brandName]);
+  // Whose router this is (status.brand, else the one this page remembers): every
+  // sentence says its name and agrees with it; a router with none says "VPN"
+  // and the sentences written for that; not known, sentences that name nothing.
+  const [brand, setBrand] = useState<BrandSeen | null>(rememberedBrand);
+  const savedBrand = useRef<string | null>(null);
+  const t = useMemo(() => brandT(makeT(lang), brand), [lang, brand]);
   const f = useMemo(() => makeFmt(t), [t]);
   const [tab, setTab] = useState<TabId>(() => loadOneOf('tab', TABS, 'overview'));
   const [modePref, setModePref] = useState<Mode>(() => loadOneOf('mode', MODES, 'simple'));
@@ -271,8 +294,14 @@ export function App({ call, setPassword = null, lang: hostLang, root }: { call: 
       store.on('status', () => {
         const s = store.get('status').data;
         setLocked(s?.ui.locked === true);
-        setBrandId(s?.brand.id ?? null);
-        setBrandName(s?.brand.name ?? null);
+        if (!s) return;
+        const b: BrandSeen = { id: s.brand.id, name: s.brand.name };
+        setBrand((prev) => (prev && prev.id === b.id && prev.name === b.name ? prev : b));
+        const raw = JSON.stringify(b);
+        if (savedBrand.current !== raw) {
+          savedBrand.current = raw;
+          save('brand', raw);
+        }
       }),
     [store],
   );
@@ -492,7 +521,7 @@ export function App({ call, setPassword = null, lang: hostLang, root }: { call: 
         lang={lang}
       >
         <div class="vx-in" inert={dialog ? true : undefined}>
-          <Header themePref={themePref} onTheme={cycleTheme} full={isFull} onFull={toggleFull} setLang={setLang} setMode={setMode} />
+          <Header brand={brand} themePref={themePref} onTheme={cycleTheme} full={isFull} onFull={toggleFull} setLang={setLang} setMode={setMode} />
           {mode === 'simple' ? <Simple /> : <Main tab={tab} logsAuto={logsAuto} setLogsAuto={setAuto} />}
         </div>
         {dialog ? (

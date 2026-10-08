@@ -1150,7 +1150,7 @@ function Rename({ s }: { s: SetupData }) {
       key: 'rename',
       quiet: true,
       fail: { busy: 'w.wifi.busy' },
-      confirm: { title: t('w.wifi.saveQ'), body: t('w.done.renameHint'), ok: t('w.wifi.save') },
+      confirm: { title: t('w.done.renameQ'), body: t('w.done.renameHint'), ok: t('w.done.renameOk') },
     });
     if (!sent) return;
     setPrevAt(at);

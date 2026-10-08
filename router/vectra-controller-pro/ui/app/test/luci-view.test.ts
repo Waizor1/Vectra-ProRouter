@@ -88,7 +88,7 @@ describe('LuCI view', () => {
     expect(String(loaded.error)).toContain('vectra-app.js');
     const box = cls.render(loaded);
     expect(box.className).toContain('alert-message');
-    expect(box.children[0].textContent).toBe('The Vectra interface did not load');
+    expect(box.children[0].textContent).toBe('The router interface did not load');
   });
 
   it('shows the same alert when mount() throws', async () => {
@@ -102,7 +102,7 @@ describe('LuCI view', () => {
     head.children[0].onload!();
     const box = cls.render(await loading);
     expect(box.className).toContain('alert-message');
-    expect(box.children[0].textContent).toBe('Vectra 界面加载失败');
+    expect(box.children[0].textContent).toBe('路由器界面加载失败');
     expect(box.children[1].textContent).toBe('attachShadow is not a function');
   });
 

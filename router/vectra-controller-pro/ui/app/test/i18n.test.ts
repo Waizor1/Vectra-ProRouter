@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { brandT, glue, interpolate, LANGS, makeT, normLang, pickLang, pluralIndex, withParams, type Key } from '../src/i18n';
+import { brandT, glue, interpolate, LANGS, makeT, normLang, pickLang, pluralIndex, withParams, type Key, type Params, type T } from '../src/i18n';
 import { S } from '../src/i18n/strings';
 
 const CYRILLIC = /[Ѐ-ӿ]/;
@@ -122,17 +122,47 @@ describe('the brand in every sentence', () => {
     expect(brandT(makeT('ru'), BLOOPCAT)('w.v.t', { brand: 'Vectra' })).toBe('Подключение к Vectra');
   });
 
-  it('puts the default {brand} into every sentence, plural ones too; a caller’s own value wins', () => {
+  it('puts the default {brand} into every sentence; a caller’s own value wins', () => {
     const t = withParams(makeT('ru'), { brand: 'BloopCat' });
     expect(t('w.v.t')).toBe('Подключение к BloopCat');
     expect(t('s.help.support.open')).toBe('Написать в BloopCat');
     expect(t('w.v.t', { brand: 'Vectra' })).toBe('Подключение к Vectra');
     // Its other parameters still arrive.
     expect(t('d.panel_link.ok', { ago: '5 мин назад' })).toBe('BloopCat на связи, отчёт 5 мин назад');
-    expect(t.n('n.node', 2)).toBe('2 узла');
     expect(t.lang).toBe('ru');
     expect(t.has('brand.none')).toBe(true);
     expect(t.has('no.such.key')).toBe(false);
+  });
+
+  it('hands the defaults to plural sentences too (t.n), beside the count and the caller’s own', () => {
+    const seen: [string, number, Params | undefined][] = [];
+    const stub = ((key: Key) => key) as T;
+    stub.n = (key, count, p) => (seen.push([key, count, p]), key);
+    stub.has = (_k: string): _k is Key => false;
+    stub.lang = 'ru';
+    withParams(stub, { brand: 'BloopCat', fem: '' }).n('n.node', 2, { x: 1, brand: 'Vectra' });
+    expect(seen).toEqual([['n.node', 2, { brand: 'Vectra', fem: '', x: 1 }]]);
+  });
+
+  it('keeps Vectra’s own words for turning it on; a router with no brand says no «VPN VPN»', () => {
+    expect(brandT(makeT('ru'), VECTRA)('s.pw.onBody')).toBe('Интернет пойдёт через VPN Vectra. На несколько секунд он пропадёт.');
+    expect(brandT(makeT('en'), VECTRA)('s.pw.onBody')).toBe('The internet will go through the Vectra VPN. It drops for a few seconds.');
+    expect(brandT(makeT('zh'), VECTRA)('s.pw.onBody')).toBe('网络将经由 Vectra VPN，会中断几秒钟。');
+    expect(brandT(makeT('ru'), BLOOPCAT)('s.pw.onBody')).toBe('Интернет пойдёт через VPN BloopCat. На несколько секунд он пропадёт.');
+    expect(brandT(makeT('ru'), NONE)('s.pw.onBody')).toBe('Интернет пойдёт через VPN. На несколько секунд он пропадёт.');
+  });
+
+  it('names nothing while it is not known whose router this is: the router that never answered', () => {
+    const ru = brandT(makeT('ru'), null);
+    expect(ru('s.nl.not_found.t')).toBe('Программа на роутере не отвечает');
+    expect(ru('s.nl.not_found.d')).toBe('Программа на роутере не установлена или не запущена.');
+    expect(ru('s.nl.method.t')).toBe('Нужно обновить программу на роутере');
+    // Every sentence such a screen can show (contract: the error kinds), in every language: no brand, no «VPN» as one.
+    const NO_DATA: Key[] = ['app.region', 's.nl.not_found.t', 's.nl.not_found.d', 's.nl.method.t', 's.nl.method.d', 's.nl.access.t', 's.nl.access.d', 's.nl.network.t', 's.nl.network.d', 's.nl.timeout.t', 's.nl.other.t', 's.nl.retrying', 's.reboot'];
+    for (const lang of LANGS) {
+      const t = brandT(makeT(lang), null);
+      for (const key of NO_DATA) expect(t(key), `${lang} ${key}`).not.toMatch(/Vectra|BloopCat|VPN/);
+    }
   });
 });
 

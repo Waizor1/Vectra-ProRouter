@@ -13,7 +13,7 @@
  */
 
 var APP_SRC = '/luci-static/vectra/vectra-app.js';
-var APP_VERSION = '0.1.0-131e1591c6'; // stamped by `npm run build` in ui/app — do not edit by hand
+var APP_VERSION = '0.1.0-0687241cf1'; // stamped by `npm run build` in ui/app — do not edit by hand
 
 var declared = {};
 
@@ -105,9 +105,10 @@ function loadApp() {
 
 function loadFailure(err) {
 	var lang = String(document.documentElement.lang || '').toLowerCase();
-	var title = lang.indexOf('ru') === 0 ? 'Интерфейс Vectra не загрузился'
-		: lang.indexOf('zh') === 0 ? 'Vectra 界面加载失败'
-		: 'The Vectra interface did not load';
+	// Names no brand: the page does not know whose router this is yet.
+	var title = lang.indexOf('ru') === 0 ? 'Интерфейс роутера не загрузился'
+		: lang.indexOf('zh') === 0 ? '路由器界面加载失败'
+		: 'The router interface did not load';
 	var box = document.createElement('div');
 	var head = document.createElement('strong');
 	var detail = document.createElement('code');

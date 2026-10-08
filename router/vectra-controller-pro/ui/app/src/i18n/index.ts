@@ -134,11 +134,14 @@ const FEMININE: readonly string[] = ['vectra'];
  * ({brand}; `brand.none` without one), the Russian ending that agrees with it
  * ({fem}: «Vectra выключена», «BloopCat выключен», «VPN выключен»), and on a
  * router with no brand the sentences written for that (`<key>.any`) wherever
- * the table has them. The app's one t: no caller can forget either parameter.
+ * the table has them. `null`: not known whose router it is (it never answered
+ * this page, and the page remembers none) — `<key>.unknown`, else `<key>.any`:
+ * sentences that name nothing. The app's one t: no caller can forget a parameter.
  */
-export function brandT(t: T, brand: { id: string | null; name: string | null } | null | undefined): T {
+export function brandT(t: T, brand: { id: string | null; name: string | null } | null): T {
   const id = brand?.id ?? null;
-  return withParams(id ? t : withVariant(t, '.any'), {
+  const any = id ? t : withVariant(t, '.any');
+  return withParams(brand ? any : withVariant(any, '.unknown'), {
     brand: brand?.name ?? t('brand.none'),
     fem: id !== null && FEMININE.indexOf(id) >= 0 ? '\u0430' : '', // Cyrillic «а»
   });

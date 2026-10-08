@@ -16,11 +16,15 @@
 // {fem}, Russian only: the ending that agrees with the brand — "а" for a
 // feminine name (Vectra), "" otherwise: «{brand} выключен{fem}». A router with
 // no brand reads `<key>.any` wherever the table has one: «VPN» never twice in
-// a sentence, and never a program, support or an app called «VPN».
+// a sentence, and never a program, support or an app called «VPN». While it
+// is not known whose router this is (the router never answered this page,
+// and the page remembers none), `<key>.unknown`, else `<key>.any`: no name
+// at all.
 
 export const S = {
   // ── shell ──────────────────────────────────────────────────────────────
   'app.region': ['{brand} на роутере', '{brand} on this router', '本路由器上的 {brand}'],
+  'app.region.unknown': ['Роутер', 'Router', '路由器'],
   // What {brand} is on a router that has no brand: the name of no service.
   'brand.none': ['VPN', 'VPN', 'VPN'],
   // The program and its version, as the footer and the report name them.
@@ -574,6 +578,7 @@ export const S = {
     '路由器正在等待 VPN 设置。如果它已开机很久而此提示仍未消失，请联系客服。',
   ],
   's.nl.not_found.t': ['{brand} не отвечает', '{brand} does not respond', '{brand} 无响应'],
+  's.nl.not_found.t.unknown': ['Программа на роутере не отвечает', 'The router’s program does not respond', '路由器上的程序无响应'],
   's.nl.not_found.d': [
     'Программа {brand} на роутере не установлена или не запущена.',
     'The {brand} program on the router is not installed or not running.',
@@ -583,6 +588,11 @@ export const S = {
     'Программа, которая ведёт VPN на роутере, не установлена или не запущена.',
     'The program that runs the VPN on the router is not installed or not running.',
     '路由器上运行 VPN 的程序未安装或未运行。',
+  ],
+  's.nl.not_found.d.unknown': [
+    'Программа на роутере не установлена или не запущена.',
+    'The program on the router is not installed or not running.',
+    '路由器上的程序未安装或未运行。',
   ],
   's.nl.access.t': ['Нужно войти заново', 'Sign in again', '需要重新登录'],
   's.nl.access.d': [
@@ -624,7 +634,8 @@ export const S = {
   's.pw.via.other': ['Интернет идёт без {brand}.', 'The internet goes without {brand}.', '网络不经过 {brand}。'],
   's.pw.on': ['Включить {brand}', 'Turn on {brand}', '开启 {brand}'],
   's.pw.onQ': ['Включить {brand}?', 'Turn on {brand}?', '开启 {brand}？'],
-  's.pw.onBody': ['Интернет пойдёт через {brand}. На несколько секунд он пропадёт.', 'The internet will go through {brand}. It drops for a few seconds.', '网络将经由 {brand}，会中断几秒钟。'],
+  's.pw.onBody': ['Интернет пойдёт через VPN {brand}. На несколько секунд он пропадёт.', 'The internet will go through the {brand} VPN. It drops for a few seconds.', '网络将经由 {brand} VPN，会中断几秒钟。'],
+  's.pw.onBody.any': ['Интернет пойдёт через VPN. На несколько секунд он пропадёт.', 'The internet will go through the VPN. It drops for a few seconds.', '网络将经由 VPN，会中断几秒钟。'],
   's.pw.onBody.idle': [
     'Роутер ещё не привязан к аккаунту {brand}: до привязки интернет пойдёт напрямую, без VPN, — заблокированные сайты не откроются.',
     'The router is not linked to a {brand} account yet: until it is, the internet goes out directly, without a VPN — blocked sites will not open.',
@@ -1136,6 +1147,8 @@ export const S = {
   'w.done.go': ['На главный экран', 'Go to the main screen', '前往主界面'],
   // The brand's network name, offered while every network still has the model's ({ssid}: that name).
   'w.done.rename': ['Переименовать сеть в {ssid}', 'Rename the network to {ssid}', '将网络重命名为 {ssid}'],
+  'w.done.renameQ': ['Переименовать сеть?', 'Rename the network?', '重命名网络？'],
+  'w.done.renameOk': ['Переименовать', 'Rename', '重命名'],
   'w.done.renameHint': [
     'Устройства отключатся от Wi-Fi на несколько секунд и подключатся к новой сети с тем же паролем — некоторые попросят подключиться заново.',
     'Devices drop off Wi-Fi for a few seconds and join the new network with the same password — some will ask to join again.',

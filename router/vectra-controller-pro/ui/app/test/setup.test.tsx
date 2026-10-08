@@ -34,16 +34,22 @@ type Twist = (method: string, answer: Answer, params?: Record<string, unknown>) 
 
 /**
  * `delay`: how long a method's answer takes to arrive (a router that listens to the air, a slow switch).
+ * `refuse`: the router's refusal of a method, answered before the mock router changes anything.
  * `pw`: the page hands over LuCI's password change, as the LuCI view does — the wizard then asks an
  * unboxed router for a password first (test/password.test.tsx); without it, the steps below are the others.
  */
-function start(opts: { scenario?: Scenario; twist?: Twist; mock?: Partial<MockOptions>; delay?: (m: string) => number; pw?: boolean } = {}) {
+function start(
+  opts: { scenario?: Scenario; twist?: Twist; mock?: Partial<MockOptions>; delay?: (m: string) => number; pw?: boolean; refuse?: (method: string) => Answer | undefined } = {},
+) {
   localStorage.setItem('vectra.ui.lang', 'ru');
   const mock: Mock = createMock({ scenario: opts.scenario ?? 'unboxed', latencyMs: 0, live: false, applyMs: 10, ...opts.mock });
   const calls: [string, Record<string, unknown> | undefined][] = [];
   const passwords: string[] = [];
   const call: CallFn = async (m, p) => {
     calls.push([m, p]);
+    // A refusal the router gives before it changes anything: the mock never sees the call.
+    const refused = opts.refuse?.(m);
+    if (refused) return refused;
     const r = (await mock.call(m, p)) as Answer;
     const d = opts.delay?.(m) ?? 0;
     if (d > 0) await new Promise((res) => setTimeout(res, d));
@@ -1024,7 +1030,10 @@ describe('the brand\'s network name on the done screen', () => {
     expect(app.calls.filter(([m]) => m === 'set_wifi')).toEqual([]);
     app.button('Переименовать сеть в BloopCat-4E2A')!.click();
     await tick(100);
+    // Its own question, not the Wi-Fi step's «Сохранить Wi-Fi?».
+    expect(read(app.$('[role="alertdialog"] h2'))).toBe('Переименовать сеть?');
     expect(read(app.$('[role="alertdialog"]'))).toContain('подключатся к новой сети с тем же паролем');
+    expect(app.all('[role="alertdialog"] button').map(read)).toEqual(['Отмена', 'Переименовать']);
     app.confirm();
     await tick(100);
     expect(app.calls.filter(([m]) => m === 'set_wifi').map(([, p]) => p)).toEqual([{ radios: { radio0: { ssid: 'BloopCat-4E2A' }, radio1: { ssid: 'BloopCat-4E2A' } } }]);
@@ -1033,6 +1042,67 @@ describe('the brand\'s network name on the done screen', () => {
     expect(await until(() => read(app.$('.wz-rename [role="status"]')) === 'Wi-Fi сохранён', 5000)).toBe(true);
     expect(app.button('Переименовать сеть в BloopCat-4E2A')).toBeUndefined();
     expect(app.verdict()).toBe('Всё готово');
+    await tick(200);
+  });
+});
+
+/** A boxed BloopCat router whose networks carry the model's name, walked to «Всё готово». */
+async function toDone(opts: Parameters<typeof start>[0]) {
+  const app = start({ scenario: 'boxed', ...opts, mock: { brand: 'bloopcat', wifi: 'model', ...opts?.mock } });
+  await tick(5000);
+  app.button('Начать')!.click();
+  expect(await until(() => app.verdict() === 'Роутер подключён к BloopCat', 20000)).toBe(true);
+  app.button('Далее')!.click();
+  await tick(300);
+  app.button('Далее')!.click();
+  expect(await until(() => app.verdict() === 'Всё готово', 5000)).toBe(true);
+  return app;
+}
+
+describe('the brand\'s network name on the done screen, when it does not go through', () => {
+  it('a refused rename (another Wi-Fi change under way) says why and keeps the offer', async () => {
+    fake();
+    const app = await toDone({ refuse: (m) => (m === 'set_wifi' ? { ok: false, code: 'busy', detail: 'wifi: a change is still being applied' } : undefined) });
+    app.button('Переименовать сеть в BloopCat-4E2A')!.click();
+    await tick(100);
+    app.confirm();
+    await tick(200);
+    expect(app.calls.filter(([m]) => m === 'set_wifi')).toHaveLength(1);
+    expect(app.all('.toast').map(read).join(' | ')).toContain('Wi-Fi сейчас меняется');
+    expect(app.button('Переименовать сеть в BloopCat-4E2A')).toBeDefined();
+    expect(app.$('.wz-rename [role="status"]')).toBeNull();
+    await tick(200);
+  });
+
+  it('a rename the router rolled back says so, offers the name again, and never says it is saved', async () => {
+    fake();
+    // The 2.4 GHz radio does not come back with the new name: the old settings go back.
+    const app = await toDone({ mock: { wifiDown: ['radio0'] } });
+    app.button('Переименовать сеть в BloopCat-4E2A')!.click();
+    await tick(100);
+    app.confirm();
+    const said: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      await tick(100);
+      const st = read(app.$('.wz-rename [role="status"]'));
+      if (st && said[said.length - 1] !== st) said.push(st);
+    }
+    expect(said).toEqual(['Проверяем Wi-Fi…', 'Wi-Fi вернули как было']);
+    expect(app.$('.wz-rename [role="status"] .ic')).not.toBeNull();
+    expect(app.button('Переименовать сеть в BloopCat-4E2A')).toBeDefined();
+    await tick(200);
+  });
+
+  it('a rename the router could not finish says so and offers the name again', async () => {
+    fake();
+    // The router still has the model's names to offer over (a twist: the mock renamed them already).
+    const app = await toDone({ mock: { wifiEnd: 'failed' }, twist: (m, r) => void (m === 'setup' && ((r.wifi as Answer).rename = 'BloopCat-4E2A')) });
+    app.button('Переименовать сеть в BloopCat-4E2A')!.click();
+    await tick(100);
+    app.confirm();
+    expect(await until(() => read(app.$('.wz-rename [role="status"]')) === 'Wi-Fi не поднялся', 5000)).toBe(true);
+    expect(app.text()).not.toContain('Wi-Fi сохранён');
+    expect(app.button('Переименовать сеть в BloopCat-4E2A')).toBeDefined();
     await tick(200);
   });
 });
