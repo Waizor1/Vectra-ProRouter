@@ -250,6 +250,11 @@ export const env = createEnv({
     // Shared secret of the partner API (POST/DELETE /api/partner/router-claims).
     // Unset = the partner API answers 503 and accepts nothing.
     VECTRA_PARTNER_SECRET: z.string().min(32).optional(),
+    // Further partners of the partner API (JSON array; see
+    // server/vectra/partner-registry.ts). Unset = Vectra Connect alone, from
+    // the variables above. Validated by the registry, which names the variable
+    // and never a value.
+    VECTRA_PARTNERS: z.string().optional(),
     // The Vectra backend's X25519 key the router seals its QR to (raw 32 bytes,
     // base64) and its key id. Both unset = no claimKey in router responses.
     VECTRA_ROUTER_CLAIM_PUBKEY: routerClaimPubkeySchema.optional(),
@@ -356,6 +361,7 @@ export const env = createEnv({
       process.env.VECTRA_TELEGRAM_CALLBACK_SECRET,
     VECTRA_TELEGRAM_DRY_RUN: process.env.VECTRA_TELEGRAM_DRY_RUN,
     VECTRA_PARTNER_SECRET: process.env.VECTRA_PARTNER_SECRET,
+    VECTRA_PARTNERS: process.env.VECTRA_PARTNERS,
     VECTRA_ROUTER_CLAIM_PUBKEY: process.env.VECTRA_ROUTER_CLAIM_PUBKEY,
     VECTRA_ROUTER_CLAIM_KID: process.env.VECTRA_ROUTER_CLAIM_KID,
     VECTRA_CONNECT_BOT_USERNAME: process.env.VECTRA_CONNECT_BOT_USERNAME,

@@ -63,6 +63,7 @@ x-vectra-app-environment: &vectra-app-environment
   # API answers 503 and routers get no claim key, bot or webhooks — they
   # must be listed here, or the values in .env never reach the container.
   VECTRA_PARTNER_SECRET: ${VECTRA_PARTNER_SECRET:-}
+  VECTRA_PARTNERS: ${VECTRA_PARTNERS:-}
   VECTRA_ROUTER_CLAIM_PUBKEY: ${VECTRA_ROUTER_CLAIM_PUBKEY:-}
   VECTRA_ROUTER_CLAIM_KID: ${VECTRA_ROUTER_CLAIM_KID:-}
   VECTRA_CONNECT_BOT_USERNAME: ${VECTRA_CONNECT_BOT_USERNAME:-}
