@@ -493,8 +493,24 @@ async function deliverPartnerRow(
     nowMs: now.getTime(),
   });
 
+  // What this send learned is written only under the lease it was sent under:
+  // the row still at this lease's attempts and not delivered. A flight that
+  // was replaced while its send hung can settle after another flight has
+  // re-leased the row and written its own outcome; a failure it reports then
+  // belongs to a lease that is gone, and must neither reschedule the row nor
+  // give it up (nor journal that it did).
+  const underThisLease = and(
+    eq(partnerWebhooks.id, leased.id),
+    eq(partnerWebhooks.attempts, attempts),
+    isNull(partnerWebhooks.deliveredAt),
+  );
+
   if (result.ok) {
     summary.delivered += 1;
+    // Not tied to this lease's attempts: a 2xx/409 means the partner has the
+    // event (the row id is its dedupe key), whichever lease sent it. Leaving
+    // it undelivered would send it again, or give up on an event the partner
+    // holds. Only a row nobody has marked delivered yet is stamped.
     await client
       .update(partnerWebhooks)
       .set({
@@ -503,17 +519,23 @@ async function deliverPartnerRow(
         lastStatus: result.status,
         lastError: null,
       })
-      .where(eq(partnerWebhooks.id, leased.id));
+      .where(
+        and(eq(partnerWebhooks.id, leased.id), isNull(partnerWebhooks.deliveredAt)),
+      );
     return;
   }
 
   const lastError = result.error.slice(0, DETAIL_MAX_LENGTH);
   if (attempts >= PARTNER_WEBHOOK_MAX_ATTEMPTS) {
-    summary.gaveUp += 1;
-    await client
+    const [givenUp] = await client
       .update(partnerWebhooks)
       .set({ nextAttemptAt: null, lastStatus: result.status, lastError })
-      .where(eq(partnerWebhooks.id, leased.id));
+      .where(underThisLease)
+      .returning({ id: partnerWebhooks.id });
+    if (!givenUp) {
+      return;
+    }
+    summary.gaveUp += 1;
     await client.insert(eventLog).values({
       routerId: leased.routerId,
       type: "partner.webhook.gave_up",
@@ -531,8 +553,7 @@ async function deliverPartnerRow(
     return;
   }
 
-  summary.rescheduled += 1;
-  await client
+  const [rescheduled] = await client
     .update(partnerWebhooks)
     .set({
       nextAttemptAt: new Date(
@@ -541,7 +562,11 @@ async function deliverPartnerRow(
       lastStatus: result.status,
       lastError,
     })
-    .where(eq(partnerWebhooks.id, leased.id));
+    .where(underThisLease)
+    .returning({ id: partnerWebhooks.id });
+  if (rescheduled) {
+    summary.rescheduled += 1;
+  }
 }
 
 /**

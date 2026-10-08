@@ -783,6 +783,66 @@ function leasingDb(script: FakeDbScript, rows: Array<ReturnType<typeof dueRow>>)
   };
 }
 
+// A webhook table with state: every UPDATE applies its WHERE as PostgreSQL
+// would for the predicates the dispatcher writes (id, attempts, delivered_at
+// is null) and returns the rows it touched. Each due-row SELECT is answered by
+// the next of `selects`, read from the table at that moment.
+function webhookTable(
+  rows: Array<ReturnType<typeof dueRow>>,
+  selects: Array<(table: Map<string, Record<string, unknown>>) => unknown[]>,
+) {
+  const base = createFakeDb();
+  const table = new Map<string, Record<string, unknown>>(
+    rows.map((row) => [row.id, { ...row }]),
+  );
+  const dialect = new PgDialect();
+  const touched = (condition: SQL) => {
+    const { sql, params } = dialect.sqlToQuery(condition);
+    const row = table.get(String(params[0]));
+    if (!row) return null;
+    const attempts = /"attempts" = \$(\d+)/.exec(sql);
+    if (attempts && row.attempts !== params[Number(attempts[1]) - 1]) return null;
+    if (/"delivered_at" is null/.test(sql) && row.deliveredAt !== null) return null;
+    return row;
+  };
+  let read = 0;
+  const db = {
+    ...base.db,
+    select: () => ({
+      from: (from: unknown) => {
+        const answer = () =>
+          from === partnerWebhooks ? (selects[read++]?.(table) ?? []) : [];
+        const chain = {
+          where: () => chain,
+          orderBy: () => chain,
+          limit: () => Promise.resolve().then(answer),
+          then: (resolve: (value: unknown[]) => unknown, reject?: (error: unknown) => unknown) =>
+            Promise.resolve().then(answer).then(resolve, reject),
+        };
+        return chain;
+      },
+    }),
+    update: () => ({
+      set: (set: Record<string, unknown>) => ({
+        where: (condition: SQL) => {
+          const apply = () => {
+            const row = touched(condition);
+            if (!row) return [];
+            Object.assign(row, set);
+            return [{ ...row }];
+          };
+          return {
+            returning: () => Promise.resolve().then(apply),
+            then: (resolve: (value: unknown) => unknown, reject?: (error: unknown) => unknown) =>
+              Promise.resolve().then(apply).then(() => [], undefined).then(resolve, reject),
+          };
+        },
+      }),
+    }),
+  };
+  return { ...base, db, row: (id: string) => ({ ...table.get(id)! }) };
+}
+
 // BloopCat's endpoint hangs (every attempt can take the full 10 s timeout) and
 // a backlog of its rows is due — more than one pass takes of a partner.
 describe("a dead partner endpoint never delays another partner's webhooks", () => {
@@ -1191,6 +1251,141 @@ describe("a partner delivery that stops making progress", () => {
     } finally {
       error.mockRestore();
     }
+  });
+
+  // The replaced flight's hung send settles only after the new flight has
+  // re-leased the row (attempts moved on) and written its own outcome. What
+  // the old send learned is about a lease that is no longer the row's.
+  describe("its late outcome never overwrites the row's new lease", () => {
+    // BloopCat answers each attempt with the next status; the first one only
+    // once released.
+    function lateEndpoint(statuses: number[]) {
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let calls = 0;
+      const fetchImpl = async () => {
+        const status = statuses[calls] ?? 200;
+        calls += 1;
+        if (calls === 1) await gate;
+        return { ok: status >= 200 && status < 300, status, body: null };
+      };
+      return { fetchImpl, release: () => release(), calls: () => calls };
+    }
+
+    // Pass 1 at NOW sends attempt 1, which hangs; pass 2 after 5 min replaces
+    // the flight, which re-leases the row (its lease ran out) and sends attempt
+    // 2; then attempt 1 comes back.
+    async function hangThenReplace(
+      row: ReturnType<typeof dueRow>,
+      statuses: number[],
+    ) {
+      const fake = webhookTable([row], [
+        (table) => [{ ...table.get(row.id)! }],
+        (table) => [{ ...table.get(row.id)! }],
+      ]);
+      const endpoint = lateEndpoint(statuses);
+      const first = dispatchDuePartnerWebhooksWithDb(fake.db as never, {
+        fetchImpl: endpoint.fetchImpl,
+      });
+      await vi.waitFor(() => expect(endpoint.calls()).toBe(1));
+      vi.setSystemTime(at(STALE_MS + 1_000));
+      await dispatchDuePartnerWebhooksWithDb(fake.db as never, {
+        fetchImpl: endpoint.fetchImpl,
+      });
+      expect(endpoint.calls()).toBe(2);
+      const afterNewFlight = fake.row(row.id);
+      endpoint.release();
+      await first;
+      return { fake, afterNewFlight };
+    }
+
+    it("a late error leaves lastError, nextAttemptAt and attempts as the new flight wrote them", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        // Attempt 1 (old flight) fails late with 500; attempt 2 (new flight)
+        // fails at once with 503 and is rescheduled.
+        const { fake, afterNewFlight } = await hangThenReplace(
+          dueRow({ id: "w-1", partnerId: "bloopcat" }),
+          [500, 503],
+        );
+
+        expect(afterNewFlight).toMatchObject({
+          attempts: 2,
+          lastStatus: 503,
+          lastError: "HTTP 503",
+          nextAttemptAt: at(STALE_MS + 1_000 + 120_000),
+          deliveredAt: null,
+        });
+        expect(fake.row("w-1")).toEqual(afterNewFlight);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it("a late failure at the last attempt gives nothing up and journals nothing once the row was re-leased", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        // Attempt 1 of this flight is the row's last (attempts reaches the
+        // maximum); the new flight's re-lease delivers it.
+        const { fake, afterNewFlight } = await hangThenReplace(
+          dueRow({
+            id: "w-1",
+            partnerId: "bloopcat",
+            attempts: PARTNER_WEBHOOK_MAX_ATTEMPTS - 1,
+          }),
+          [500, 200],
+        );
+
+        expect(afterNewFlight).toMatchObject({
+          attempts: PARTNER_WEBHOOK_MAX_ATTEMPTS + 1,
+          lastStatus: 200,
+          lastError: null,
+          nextAttemptAt: null,
+        });
+        expect(afterNewFlight.deliveredAt).toBeInstanceOf(Date);
+        expect(fake.row("w-1")).toEqual(afterNewFlight);
+        expect(fake.inserts(eventLog)).toEqual([]);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it("a late success still counts: the event reached the partner", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        // The new flight's attempt fails and is rescheduled; then the old
+        // attempt turns out to have been accepted.
+        const { fake } = await hangThenReplace(
+          dueRow({ id: "w-1", partnerId: "bloopcat" }),
+          [200, 503],
+        );
+
+        expect(fake.row("w-1")).toMatchObject({
+          attempts: 2,
+          lastStatus: 200,
+          lastError: null,
+          nextAttemptAt: null,
+        });
+        expect(fake.row("w-1").deliveredAt).toBeInstanceOf(Date);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it("a late success does not restamp a row the new flight already delivered", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        const { fake, afterNewFlight } = await hangThenReplace(
+          dueRow({ id: "w-1", partnerId: "bloopcat" }),
+          [409, 200],
+        );
+
+        expect(afterNewFlight).toMatchObject({ attempts: 2, lastStatus: 200 });
+        expect(fake.row("w-1")).toEqual(afterNewFlight);
+      } finally {
+        error.mockRestore();
+      }
+    });
   });
 });
 
