@@ -707,3 +707,144 @@ func TestDependsOf(t *testing.T) {
 		t.Fatalf("%q", out)
 	}
 }
+
+// logsUCI replaces the fake uci with one that notes what it is asked in log,
+// as opkg does, and accepts a set and a commit (the default one fails every
+// call: an empty config).
+func (r *router) logsUCI() {
+	r.t.Helper()
+	body := "#!/bin/sh\necho \"uci $*\" >> \"$FAKE/log\"\ncase \"$1\" in set | commit) exit 0 ;; esac\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(r.dir, "bin", "uci"), []byte(body), 0o755); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// --brand is the router's brand until its subscription names one: UCI
+// main.brand, written once and committed. Without --brand a label already
+// there is left alone; the brands are the two vctl knows.
+func TestTheInstallerLabelsTheRoutersBrand(t *testing.T) {
+	r := newRouter(t)
+	r.logsUCI()
+	out, code := r.run("BRAND=bloopcat; set_brand")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if log := r.read("log"); !strings.Contains(log, "uci set vectra-controller-pro.main.brand=bloopcat\n") ||
+		!strings.Contains(log, "uci commit vectra-controller-pro\n") {
+		t.Fatalf("no label written:\n%s", log)
+	}
+
+	// No brand asked: an existing label stays.
+	r.write("log", "")
+	if out, code := r.run("BRAND=; set_brand"); code != 0 || strings.Contains(r.read("log"), "main.brand") {
+		t.Fatalf("no brand asked, yet: exit %d, log %q:\n%s", code, r.read("log"), out)
+	}
+
+	// Another brand on a second install: the label is updated.
+	r.write("log", "")
+	if out, code := r.run("BRAND=vectra; set_brand"); code != 0 || !strings.Contains(r.read("log"), "uci set vectra-controller-pro.main.brand=vectra\n") {
+		t.Fatalf("a new label: exit %d, log %q:\n%s", code, r.read("log"), out)
+	}
+
+	r.write("log", "")
+	out, code = r.run("BRAND=triad; set_brand")
+	if code == 0 || strings.Contains(r.read("log"), "main.brand") || !strings.Contains(out, "triad") {
+		t.Fatalf("an unknown brand: exit %d, log %q:\n%s", code, r.read("log"), out)
+	}
+}
+
+// A label that did not land is said (exit 2), not dropped: the owner asked
+// for it, and the router would show the neutral name.
+func TestALabelThatCouldNotBeWrittenIsAWarning(t *testing.T) {
+	r := newRouter(t) // the default fake uci fails every call
+	out, code := r.run(`BRAND=bloopcat; set_brand; echo "WARNINGS=[$WARNINGS]"`)
+	if code != 0 || !strings.Contains(out, "WARNINGS=[ BRAND_NOT_WRITTEN]") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+}
+
+// --brand needs a value, and a flag after it is not one: `--brand --yes`
+// would label the router "--yes" or, worse, swallow --yes. Nothing is
+// changed before a bad brand is refused: exit 3, as for any option the
+// installer does not know.
+func TestABrandOptionWithoutAKnownBrandIsRefusedBeforeAnyStep(t *testing.T) {
+	r := newRouter(t)
+	r.logsUCI()
+	const needsValue, unknown = "--brand требует значение", "неизвестный бренд: "
+	for _, tc := range []struct{ args, says string }{
+		{"--brand", needsValue},
+		{"--brand --yes", needsValue},
+		{"--yes --brand", needsValue},
+		{"--brand ''", needsValue},
+		{"--brand triad", unknown + "triad"},
+		{"--brand Vectra", unknown + "Vectra"},
+		{"--check --brand triad", unknown + "triad"},
+		{"--brand bloopcat --brand triad", unknown + "triad"},
+	} {
+		out, code := r.run("main " + tc.args)
+		if code != 3 || !strings.Contains(out, tc.says) {
+			t.Errorf("%s: exit %d, want 3 saying %q:\n%s", tc.args, code, tc.says, out)
+		}
+		if log := r.read("log"); log != "" {
+			t.Errorf("%s: something ran before the refusal:\n%s", tc.args, log)
+		}
+		if _, err := os.Stat(filepath.Join(r.dir, "install.log")); err == nil {
+			t.Errorf("%s: the install log was opened: the run had begun", tc.args)
+		}
+	}
+}
+
+// The label goes in after the package is installed (its config file exists
+// then) and before the geo data; --standby labels as well (it is only a
+// label); --check changes nothing; no --brand, no label.
+func TestTheBrandIsLabelledAfterThePackageAndNeverByACheck(t *testing.T) {
+	r := newRouter(t)
+	r.logsUCI()
+	// Each step of main notes itself in log; set_brand is the real one.
+	stubs := ""
+	for _, step := range strings.Fields("check_router check_clock check_conflicts check_dnsmasq add_feed plan_xray check_storage install_xray_pin swap_dnsmasq install_packages setup_geo cleanup verify finish") {
+		stubs += step + "() { echo " + step + " >> \"$FAKE/log\"; }\n"
+	}
+	stubs += "conclude() { echo conclude >> \"$FAKE/log\"; exit 0; }\n"
+	steps := func(log string) string {
+		var kept []string
+		for _, l := range strings.Split(strings.TrimSpace(log), "\n") {
+			if l == "install_packages" || l == "setup_geo" || l == "verify" || strings.HasPrefix(l, "uci set") || strings.HasPrefix(l, "uci commit") {
+				kept = append(kept, l)
+			}
+		}
+		return strings.Join(kept, " | ")
+	}
+
+	for _, tc := range []struct{ args, want string }{
+		{"--brand bloopcat", "install_packages | uci set vectra-controller-pro.main.brand=bloopcat | uci commit vectra-controller-pro | setup_geo | verify"},
+		{"--standby --brand vectra", "install_packages | uci set vectra-controller-pro.main.brand=vectra | uci commit vectra-controller-pro | setup_geo | verify"},
+		{"--yes", "install_packages | setup_geo | verify"},
+		{"--check --brand bloopcat", ""},
+	} {
+		r.write("log", "")
+		if out, code := r.run(stubs + "main " + tc.args); code != 0 {
+			t.Fatalf("%s: exit %d:\n%s", tc.args, code, out)
+		}
+		if got := steps(r.read("log")); got != tc.want {
+			t.Errorf("%s:\n got  %s\n want %s\n(log:\n%s)", tc.args, got, tc.want, r.read("log"))
+		}
+	}
+}
+
+// --help prints the header: all of it, with --brand among the options.
+func TestTheHelpNamesTheBrandOption(t *testing.T) {
+	shell := "sh"
+	if p, err := exec.LookPath("dash"); err == nil {
+		shell = p
+	}
+	out, err := exec.Command(shell, "install.sh", "--help").CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v:\n%s", err, out)
+	}
+	for _, want := range []string{"--brand ID", "vectra | bloopcat", "3 an option it does not know"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("--help does not say %q:\n%s", want, out)
+		}
+	}
+}

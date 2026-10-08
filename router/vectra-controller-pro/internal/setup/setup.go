@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"vectra-controller-pro/internal/brand"
 	"vectra-controller-pro/internal/uci"
 )
 
@@ -170,6 +171,22 @@ func SupportBot(env Env) string {
 		return b
 	}
 	return ""
+}
+
+// InstallBrand is vectra-controller-pro.main.brand: the installer's label for
+// the router's brand (install.sh --brand), shown until the router's
+// subscription names one. "" when unset or not a brand vctl knows.
+func InstallBrand(env Env) brand.ID {
+	f, err := uci.Load(env.VectraConfig)
+	if err != nil {
+		return ""
+	}
+	main := f.Named("main")
+	if main == nil {
+		return ""
+	}
+	id, _ := brand.Parse(main.Get("brand"))
+	return id
 }
 
 // TelegramUsername: 5-32 characters of A-Z, a-z, 0-9 and _.

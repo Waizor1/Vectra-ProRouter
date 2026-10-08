@@ -46,6 +46,8 @@ set_if_empty tune "1"
 # support_bot is deliberately not seeded: it is empty until boxes are prepared
 # (uci set vectra-controller-pro.main.support_bot=<bot>; uci commit), and an
 # absent option reads the same as an empty one.
+# brand is not seeded either: the installer's label (install.sh --brand) lives
+# in it, and an upgrade must leave it as it is.
 
 # The support shell: the panel's run_terminal_command runs any command as
 # root, so vctl runs it only where the router's owner allows it

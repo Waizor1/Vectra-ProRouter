@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"vectra-controller-pro/internal/brand"
 )
 
 // router is a fake router: config files in a temp dir, and every command it
@@ -251,6 +253,32 @@ func TestTheSuggestedNetworkNameComesFromTheMAC(t *testing.T) {
 	mac("br-lan", "not-a-mac")
 	if got := SuggestedSSID(r.env, "eth1"); got != "" {
 		t.Errorf("no usable MAC: %q", got)
+	}
+}
+
+// The brand the installer labelled the router with (install.sh --brand): one
+// vctl knows, or nothing.
+func TestTheInstallersBrandIsAKnownOneOrNothing(t *testing.T) {
+	r := newRouter(t)
+	if got := InstallBrand(r.env); got != "" {
+		t.Fatalf("no config: %q", got)
+	}
+	for value, want := range map[string]brand.ID{
+		"bloopcat":   brand.BloopCat,
+		"vectra":     brand.Vectra,
+		" BloopCat ": brand.BloopCat,
+		"triad":      "",
+		"":           "",
+	} {
+		r.write(t, r.env.VectraConfig, "config controller 'main'\n\toption brand '"+value+"'\n")
+		if got := InstallBrand(r.env); got != want {
+			t.Errorf("brand %q = %q, want %q", value, got, want)
+		}
+	}
+	// A config without the option (a router installed before r23).
+	r.write(t, r.env.VectraConfig, "config controller 'main'\n\toption enabled '1'\n")
+	if got := InstallBrand(r.env); got != "" {
+		t.Errorf("no brand option: %q", got)
 	}
 }
 

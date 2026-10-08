@@ -42,6 +42,10 @@ config controller 'main'
 	# when boxes are prepared. The panel's bot wins once it names one; an
 	# invalid value is ignored.
 	option support_bot ''
+	# The router's brand until its subscription names one (internal/brand):
+	# 'vectra' or 'bloopcat', set by the installer (--brand). Empty = neutral:
+	# the wizard names the network after the model and links no bot.
+	option brand ''
 	# Support shell (remote_shell): '1' lets the panel run commands on this
 	# router as root (its run_terminal_command, support's console); anything
 	# else refuses them. Not set here on purpose: the package decides it once
