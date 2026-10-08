@@ -1,7 +1,7 @@
 import { eventLog, partnerWebhooks, routers } from "@vectra/db";
 import { type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   PARTNER_REQUEST_ID_HEADER,
@@ -66,6 +66,17 @@ beforeEach(() => {
     VECTRA_CONNECT_WEBHOOK_URL: "https://backend.example.test/hooks/prorouter",
     VECTRA_CONNECT_WEBHOOK_SECRET: WEBHOOK_SECRET,
   };
+});
+
+// The per-partner delivery loops live on globalThis for the whole process (a
+// loop's rerun flag lives on its entry). A test that leaves one behind — a
+// hanging endpoint it never released, an assertion that failed first — would
+// otherwise turn every later test's pass for that partner into a mere rerun
+// flag on a loop that belongs to a finished test.
+afterEach(() => {
+  (
+    globalThis as { __vectraPartnerWebhookFlights?: Map<string, unknown> }
+  ).__vectraPartnerWebhookFlights?.clear();
 });
 
 describe("enqueuePartnerWebhookWithDb", () => {
