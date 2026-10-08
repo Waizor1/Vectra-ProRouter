@@ -85,6 +85,9 @@ func cmdApplyLocal(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Not the daemon: it never saves state.json (see below), so nothing it
+	// fetches may be learned into it either (learnBrand).
+	d.oneShot = true
 	// d.autoRoute: no operator config either — the daemon would route by
 	// PassWall2's configuration on its base one until the panel's arrives
 	// (auto_route.go). apply-local installs the PROVIDER's document from the

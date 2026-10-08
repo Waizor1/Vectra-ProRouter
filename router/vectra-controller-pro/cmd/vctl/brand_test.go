@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"os"
 	"testing"
 
 	"vectra-controller-pro/internal/brand"
@@ -253,7 +254,7 @@ func TestARefusedSubscriptionFetchTeachesNoBrand(t *testing.T) {
 // the same answer, so it names the brand too.
 func TestTheRouteSubscriptionTeachesTheRouterItsBrandToo(t *testing.T) {
 	feed := newFeedStub(t, readTestdata(t, "refresh-feed-a.txt"))
-	feed.answerWith(map[string]string{
+	feed.answerWith(0, map[string]string{
 		"profile-web-page-url": "https://t.me/BloopCat_bot",
 		"support-url":          "https://t.me/BloopCat_supbot",
 	})
@@ -271,5 +272,90 @@ func TestTheRouteSubscriptionTeachesTheRouterItsBrandToo(t *testing.T) {
 	}
 	if onDisk.Brand != "bloopcat" || onDisk.BrandSupport != "BloopCat_supbot" {
 		t.Fatalf("the brand was not persisted: %+v", onDisk)
+	}
+}
+
+// A refusal on the route subscription's side says nothing either: the status
+// is checked before anything is learned.
+func TestARefusedRouteSubscriptionFetchTeachesNoBrand(t *testing.T) {
+	feed := newFeedStub(t, readTestdata(t, "refresh-feed-a.txt"))
+	feed.answerWith(403, map[string]string{
+		"profile-web-page-url": "https://t.me/BloopCat_bot",
+		"support-url":          "https://t.me/BloopCat_supbot",
+	})
+	storeWithSubscription(t, feed.URL+"/api/sub/SECRETSHORT")
+	d := nativeDaemon(t, feed)
+	if _, err := d.refreshNative(context.Background(), "sub1", false); err == nil {
+		t.Fatal("a refused fetch succeeded")
+	}
+	if d.st.Brand != "" || d.st.BrandSource != "" || d.st.BrandSupport != "" {
+		t.Fatalf("a refused fetch named a brand: %+v", d.st)
+	}
+}
+
+// What the running daemon wrote into state.json while a one-shot command
+// (vctl apply-local) was fetching, as the daemon's own save would leave it.
+func writeDaemonsStateBehindTheBack(t *testing.T, d *daemon) []byte {
+	t.Helper()
+	st, err := state.Load(d.cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.ConfigDigest = "written-by-the-running-daemon"
+	if err := state.Save(d.cfg.StatePath, st); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(d.cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// vctl apply-local is a one-shot command next to a running daemon. It saves
+// nothing of state.json by design (the daemon owns it), and a brand learned
+// there would be saved from the command's stale snapshot, over what the
+// daemon wrote since — so a one-shot command learns no brand at all; the
+// daemon's own next fetch does.
+func TestAOneShotCommandLearnsNoBrandAndLeavesTheStateFileAlone(t *testing.T) {
+	d, provider, _, _ := newLocalUIDaemon(t)
+	provider.answer(0, map[string]string{"profile-web-page-url": "https://t.me/BloopCat_bot"})
+	d.oneShot = true
+	daemonsFile := writeDaemonsStateBehindTheBack(t, d)
+
+	if _, _, err := d.fetchProviderDocument(context.Background(), d.desired); err != nil {
+		t.Fatal(err)
+	}
+	if d.st.Brand != "" || d.st.BrandSource != "" || d.st.BrandSupport != "" {
+		t.Fatalf("a one-shot command took a brand: %+v", d.st)
+	}
+	after, err := os.ReadFile(d.cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(daemonsFile) {
+		t.Fatal("a one-shot command rewrote state.json")
+	}
+}
+
+// The control of the above: the same fetch on the daemon itself learns and
+// saves.
+func TestTheDaemonLearnsTheBrandFromTheSameFetchAOneShotCommandIgnores(t *testing.T) {
+	d, provider, _, _ := newLocalUIDaemon(t)
+	provider.answer(0, map[string]string{"profile-web-page-url": "https://t.me/BloopCat_bot"})
+	before := writeDaemonsStateBehindTheBack(t, d)
+
+	if _, _, err := d.fetchProviderDocument(context.Background(), d.desired); err != nil {
+		t.Fatal(err)
+	}
+	if d.st.Brand != "bloopcat" || d.st.BrandSource != "subscription" {
+		t.Fatalf("the daemon did not learn the brand: %+v", d.st)
+	}
+	after, err := os.ReadFile(d.cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) == string(before) {
+		t.Fatal("the daemon's brand was not saved")
 	}
 }

@@ -47,7 +47,14 @@ func forgetBrand(st *state.PersistedState) {
 }
 
 // learnBrand is noteBrand on the daemon's state, persisted when it changed.
+// Only the long-running daemon learns: a one-shot command (vctl apply-local)
+// holds a snapshot of state.json that the running daemon has moved on from,
+// and saving it would write that stale snapshot over the daemon's file. The
+// daemon's own next fetch of the subscription learns the brand.
 func (d *daemon) learnBrand(id brand.ID, from brand.Source, support string) {
+	if d.oneShot {
+		return
+	}
 	if !noteBrand(&d.st, id, from, support) {
 		return
 	}
