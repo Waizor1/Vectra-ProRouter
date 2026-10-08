@@ -23,7 +23,8 @@ service's name. Colours and layout are the same for everyone.
   the done screen offers to rename the Wi-Fi network to `BloopCat-XXXX`
   (a button — the router never renames it by itself); the page is at
   bloopcat.lan. No Vectra anywhere in what the owner sees.
-- **Neutral routers** (no brand known): the Wi-Fi network is named after the
+- **Neutral routers** (no brand known — installed with `--brand none` and
+  not linked to a service): the Wi-Fi network is named after the
   model, `AX3000T-XXXX`; the page is at router.lan; the claim step shows the
   code alone (no bot to send it to); the program is not named — «VPN» in a
   sentence, «Роутер 0.7.0» for the version, «сервер управления» for what the
@@ -48,10 +49,16 @@ service's name. Colours and layout are the same for everyone.
   sentence, the Russian endings agree with it, and a page that has not yet
   heard from the router remembers the last brand it saw — and names nothing
   until it knows.
-- **`install.sh --brand vectra|bloopcat`** labels the router (UCI
-  `main.brand`) until its subscription names a brand; an unknown brand or a
-  missing value is refused before any change (exit 3); without the flag a
-  label put on earlier stays.
+- **`install.sh --brand vectra|bloopcat|none`** labels the router (UCI
+  `main.brand`) until its subscription names a brand. The plain command is
+  Vectra's installer (the one router.vectra-pro.net serves and Vectra
+  Connect's guide runs without a flag): it labels a router that has no label
+  yet `vectra`, and leaves a label put on earlier as it is — a BloopCat
+  router the installer is run on again stays BloopCat. `--brand bloopcat` or
+  `--brand vectra` replaces the label; `--brand none` clears it (neutral). An
+  unknown brand or a missing value is refused before any change (exit 3); a
+  label that could not be written or cleared is the warning
+  `BRAND_NOT_WRITTEN` (exit 2).
 - **LAN names**: vectra.lan, bloopcat.lan and router.lan answer on every
   router — the brand is learned after the package is installed — and the
   page shows its own brand's.

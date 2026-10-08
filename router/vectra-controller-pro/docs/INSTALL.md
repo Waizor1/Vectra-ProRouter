@@ -5,13 +5,19 @@ every CPU Go builds for. OpenWrt 25 (apk) is refused by name until it is
 supported.
 
 ```sh
-wget -O /tmp/vectra https://router.vectra-pro.net/install && sh /tmp/vectra --brand vectra
+wget -O /tmp/vectra https://router.vectra-pro.net/install && sh /tmp/vectra
 ```
 
-`--brand` says whose router this is until its subscription names the service:
-`vectra` or `bloopcat`. A BloopCat install passes `--brand bloopcat`. Without
-`--brand` the router stays neutral — it names no service, and its Wi-Fi
-network takes the model's name — until its owner links it.
+The plain command installs a **Vectra** router: this is Vectra's installer
+(Vectra Connect's guide runs it as it is), so a router with no brand yet is
+labelled `vectra`. `--brand` says whose router this is until its subscription
+names the service: a BloopCat install passes `--brand bloopcat`; `--brand none`
+leaves the router neutral — it names no service, and its Wi-Fi network takes
+the model's name — until its owner links it. A label put on earlier stays when
+the flag is not given — a BloopCat router the installer is run on again stays
+BloopCat — and an explicit `--brand` replaces it. A neutral router has no
+label to keep: run the installer on it again with `--brand none`, or it
+becomes a Vectra router.
 
 Keep the download-to-file form: the installer copies itself for `--uninstall`
 and reads answers from the terminal, so `| sh` and `sh -c "$(…)"` do not work.
@@ -26,7 +32,7 @@ an operator can fetch another channel's from
 | `--check` | every check, nothing changed |
 | `--yes` | on a router with PassWall2: Vectra takes the traffic (PassWall2 stops; `vectra off` gives it back — until Vectra removes PassWall2, a day after it carries the traffic: see [PassWall2 after the install](#passwall2-after-the-install)) |
 | `--uninstall [--purge]` | remove Vectra (dnsmasq-full stays); `--purge` also forgets the router's Vectra identity |
-| `--brand vectra\|bloopcat` | label the router with its owner's brand (UCI `main.brand`) until its subscription names one; the value follows the flag after a space (`--brand=vectra` is not understood); an unknown brand is refused before any change (exit `3`); without the flag a label put on earlier stays |
+| `--brand vectra\|bloopcat\|none` | label the router with its owner's brand (UCI `main.brand`) until its subscription names one — `none` clears the label (neutral); the value follows the flag after a space (`--brand=vectra` is not understood); an unknown brand is refused before any change (exit `3`); without the flag a router with no label is labelled `vectra` and a label put on earlier stays |
 | `--force` | go on below the memory floor (tests only) |
 | `--json` | the same run said as JSON lines, ASCII codes only, each line short (the words go to the log): with `--check`, what an operator reads through the panel's ASCII-only output filter |
 

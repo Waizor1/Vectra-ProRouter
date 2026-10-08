@@ -396,8 +396,10 @@ never vctl's.
 `status.brand` is whose router this is: the VPN service its owner pays for.
 vctl learns it from the subscription (its bot in `profile-web-page-url`, else
 its whole `profile-title`), from the panel's answer at the claim (`brand`),
-or from the installer's label (`install.sh --brand`, UCI `main.brand`) — the
-subscription outranks the claim, which outranks the label. Unbinding forgets it.
+or from the installer's label (`install.sh --brand`, UCI `main.brand`; the
+plain installer labels a router with no label `vectra`, `--brand none` leaves
+it none) — the subscription outranks the claim, which outranks the label.
+Unbinding forgets it.
 
 | field | what |
 |---|---|
