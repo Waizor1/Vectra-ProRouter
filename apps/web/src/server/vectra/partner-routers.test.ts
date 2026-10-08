@@ -8,6 +8,17 @@ vi.mock("~/env", () => ({
     VECTRA_SECRETS_KEY: "fake-local-test-secrets-key-only-123456",
     VECTRA_CONNECT_WEBHOOK_URL: "https://fake.example/hooks",
     VECTRA_CONNECT_WEBHOOK_SECRET: "fake-webhook-secret",
+    // A second partner with its own webhook: its routers' events are queued.
+    VECTRA_PARTNERS: JSON.stringify([
+      {
+        id: "bloopcat",
+        brand: "bloopcat",
+        label: "BloopCat",
+        secrets: ["fake-bloopcat-partner-secret-0123456789ab"],
+        webhookUrl: "https://bloopcat.example/hooks",
+        webhookSecret: "fake-bloopcat-webhook-secret-0123456789",
+      },
+    ]),
   },
 }));
 vi.mock("~/server/db", () => ({ db: {} }));
@@ -40,6 +51,7 @@ import {
 } from "./partner-routers";
 import {
   notifyPartnerActionResultWithDb,
+  notifyPartnerCheckInWithDb,
   reportedPartnerTransitions,
   sweepPartnerOfflineWithDb,
 } from "./partner-router-events";
@@ -979,6 +991,65 @@ describe("a partner action's result stays with its partner", () => {
       if (isNull) expect(queries[0]!.sql).toMatch(/"partner_id" is null/);
       else expect(queries[0]!.sql).not.toMatch(/"partner_id" is null/);
     }
+  });
+});
+
+// Each event is queued for the partner that owns the router, so the dispatcher
+// can send it to that partner's address.
+describe("a router's webhooks carry its partner", () => {
+  const LONG_AGO = new Date(NOW.getTime() - 600_000);
+
+  it.each([
+    ["bloopcat", "bloopcat"],
+    [null, "vectra"],
+  ])("a check-in event of a router owned by %s goes to %s", async (owner, want) => {
+    const previous = router({ partnerId: owner, lastSeenAt: LONG_AGO });
+    const fake = createFakeDb({ updateReturns: [[routers, [[previous]]]] });
+    await notifyPartnerCheckInWithDb(fake.db as never, previous, {} as never, NOW);
+    expect(fake.inserts(partnerWebhooks)).toEqual([
+      expect.objectContaining({ event: "router.online", partnerId: want }),
+    ]);
+  });
+
+  it.each([
+    ["bloopcat", "bloopcat"],
+    [null, "vectra"],
+  ])("the offline sweep of a router owned by %s tells %s", async (owner, want) => {
+    const stale = router({ partnerId: owner, lastSeenAt: LONG_AGO });
+    const fake = createFakeDb({
+      selects: [[routers, [[stale]]]],
+      updateReturns: [[routers, [[stale]]]],
+    });
+    await sweepPartnerOfflineWithDb(fake.db as never, NOW);
+    expect(fake.inserts(partnerWebhooks)).toEqual([
+      expect.objectContaining({ event: "router.offline", partnerId: want }),
+    ]);
+  });
+
+  it("an action result goes to the partner that queued the action", async () => {
+    const job = {
+      id: JOB,
+      routerId: ID,
+      payload: {
+        origin: "partner_action",
+        ownerRef: "acct-42",
+        actionId: JOB,
+        partnerId: "bloopcat",
+      },
+    } as unknown as typeof jobs.$inferSelect;
+    const fake = createFakeDb({
+      updateReturns: [[routers, [[router({ partnerId: "bloopcat" })]]]],
+    });
+    await notifyPartnerActionResultWithDb(fake.db as never, {
+      job,
+      ownerRef: "acct-42",
+      status: "success",
+    });
+    expect(fake.inserts(partnerWebhooks)).toEqual([
+      expect.objectContaining({ event: "router.action", partnerId: "bloopcat" }),
+    ]);
+    // The partner is passed on: nothing is read to find it again.
+    expect(fake.calls.filter((call) => call.kind === "select")).toEqual([]);
   });
 });
 

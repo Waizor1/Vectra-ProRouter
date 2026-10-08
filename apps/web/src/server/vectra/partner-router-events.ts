@@ -113,6 +113,7 @@ export async function notifyPartnerCheckInWithDb(
         routerId: previousRouter.id,
         ownerRef: previousRouter.ownerRef!,
         at: now,
+        partnerId: routerPartnerId(previousRouter),
       });
   });
   return readback;
@@ -166,6 +167,7 @@ export async function sweepPartnerOfflineWithDb(
           routerId: router.id,
           ownerRef: router.ownerRef!,
           at: now,
+          partnerId: routerPartnerId(router),
         });
     });
   }
@@ -231,6 +233,7 @@ export async function notifyPartnerActionResultWithDb(
       event: "router.action",
       routerId: args.job.routerId,
       ownerRef: args.ownerRef!,
+      partnerId,
       detail: {
         actionId: payload.actionId,
         ...(idempotencyKey ? { idempotencyKey } : {}),

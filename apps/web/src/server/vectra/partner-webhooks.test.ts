@@ -1,4 +1,4 @@
-import { eventLog, partnerWebhooks } from "@vectra/db";
+import { eventLog, partnerWebhooks, routers } from "@vectra/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -18,6 +18,8 @@ import {
   PARTNER_WEBHOOK_ID_HEADER,
   PARTNER_WEBHOOK_MAX_ATTEMPTS,
   partnerWebhookBackoffSeconds,
+  partnerWebhookTarget,
+  resolvePartnerWebhookTarget,
   schedulePartnerWebhookDelivery,
 } from "./partner-webhooks";
 import { createFakeDb } from "./testing/fake-db";
@@ -43,6 +45,7 @@ function dueRow(overrides: Record<string, unknown> = {}) {
       ownerRef: "acct-42",
       at: NOW.toISOString(),
     },
+    partnerId: null,
     attempts: 0,
     nextAttemptAt: NOW,
     deliveredAt: null,
@@ -72,6 +75,7 @@ describe("enqueuePartnerWebhookWithDb", () => {
       ownerRef: "acct-42",
       detail: `  ${"x".repeat(600)}  `,
       at: NOW,
+      partnerId: "vectra",
     });
 
     expect(id).toEqual(expect.any(String));
@@ -81,6 +85,7 @@ describe("enqueuePartnerWebhookWithDb", () => {
       event: "router.failed",
       routerId: ROUTER_ID,
       nextAttemptAt: NOW,
+      partnerId: "vectra",
     });
     expect(row!.payload).toEqual({
       event: "router.failed",
@@ -104,6 +109,367 @@ describe("enqueuePartnerWebhookWithDb", () => {
       }),
     ).toBeNull();
     expect(fake.calls).toEqual([]);
+  });
+});
+
+const VECTRA_HOOK = "https://api-app.example/partner/prorouter/webhook";
+const BLOOP_HOOK = "https://bloopcat.example/partner/prorouter/webhook";
+
+describe("webhooks per partner", () => {
+  beforeEach(() => {
+    envMock.env = {
+      VECTRA_CONNECT_WEBHOOK_URL: VECTRA_HOOK,
+      VECTRA_CONNECT_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      VECTRA_PARTNERS: JSON.stringify([
+        {
+          id: "bloopcat",
+          brand: "bloopcat",
+          label: "BloopCat",
+          secrets: ["bloopcat-partner-secret-0123456789abcdef"],
+          webhookUrl: BLOOP_HOOK,
+          webhookSecret: "bloopcat-webhook-secret-0123456789abcdef",
+        },
+        {
+          id: "nohook",
+          brand: "nohook",
+          label: "NoHook",
+          secrets: ["nohook-partner-secret-0123456789abcdefgh"],
+        },
+      ]),
+    };
+  });
+
+  it("queues a BloopCat webhook with its partner", async () => {
+    const fake = createFakeDb({});
+    const id = await enqueuePartnerWebhookWithDb(fake.db as never, {
+      event: "router.ready",
+      routerId: ROUTER_ID,
+      ownerRef: "bc_1",
+      partnerId: "bloopcat",
+      at: NOW,
+    });
+    expect(id).toEqual(expect.any(String));
+    expect(fake.inserts(partnerWebhooks)[0]).toMatchObject({
+      event: "router.ready",
+      partnerId: "bloopcat",
+    });
+  });
+
+  it("queues nothing for a partner without a webhook address", async () => {
+    const fake = createFakeDb({});
+    expect(
+      await enqueuePartnerWebhookWithDb(fake.db as never, {
+        event: "router.ready",
+        routerId: ROUTER_ID,
+        ownerRef: "x_1",
+        partnerId: "nohook",
+      }),
+    ).toBeNull();
+    expect(fake.inserts(partnerWebhooks)).toEqual([]);
+  });
+
+  it("queues nothing for a partner that is not known at all", async () => {
+    const fake = createFakeDb({});
+    expect(
+      await enqueuePartnerWebhookWithDb(fake.db as never, {
+        event: "router.ready",
+        routerId: ROUTER_ID,
+        ownerRef: "x_1",
+        partnerId: "ghost",
+      }),
+    ).toBeNull();
+    expect(fake.inserts(partnerWebhooks)).toEqual([]);
+  });
+
+  it("reads the router's partner when the caller did not say", async () => {
+    const fake = createFakeDb({
+      selects: [[routers, [[{ partnerId: "bloopcat" }]]]],
+    });
+    await enqueuePartnerWebhookWithDb(fake.db as never, {
+      event: "router.offline",
+      routerId: ROUTER_ID,
+      ownerRef: "bc_1",
+      at: NOW,
+    });
+    expect(fake.inserts(partnerWebhooks)[0]).toMatchObject({
+      partnerId: "bloopcat",
+    });
+  });
+
+  it("treats a router without a partner (from before there were several) as Vectra Connect's", async () => {
+    const fake = createFakeDb({
+      selects: [[routers, [[{ partnerId: null }]]]],
+    });
+    await enqueuePartnerWebhookWithDb(fake.db as never, {
+      event: "router.offline",
+      routerId: ROUTER_ID,
+      ownerRef: "acct-42",
+      at: NOW,
+    });
+    expect(fake.inserts(partnerWebhooks)[0]).toMatchObject({
+      partnerId: "vectra",
+    });
+  });
+
+  it("does not read the router when the caller names the partner", async () => {
+    const fake = createFakeDb({});
+    await enqueuePartnerWebhookWithDb(fake.db as never, {
+      event: "router.ready",
+      routerId: ROUTER_ID,
+      ownerRef: "bc_1",
+      partnerId: "bloopcat",
+    });
+    expect(fake.calls.filter((call) => call.kind === "select")).toEqual([]);
+  });
+
+  it("is a no-op without reading anything when no partner has a webhook", async () => {
+    envMock.env = {
+      VECTRA_PARTNERS: JSON.stringify([
+        {
+          id: "nohook",
+          brand: "nohook",
+          label: "NoHook",
+          secrets: ["nohook-partner-secret-0123456789abcdefgh"],
+        },
+      ]),
+    };
+    const fake = createFakeDb({});
+    expect(
+      await enqueuePartnerWebhookWithDb(fake.db as never, {
+        event: "router.ready",
+        routerId: ROUTER_ID,
+        ownerRef: "x_1",
+      }),
+    ).toBeNull();
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("targets: the default partner's is Vectra Connect's, others come from the registry", () => {
+    expect(partnerWebhookTarget("vectra")).toEqual({
+      url: VECTRA_HOOK,
+      secret: WEBHOOK_SECRET,
+    });
+    expect(resolvePartnerWebhookTarget()).toEqual(partnerWebhookTarget("vectra"));
+    expect(partnerWebhookTarget("bloopcat")).toEqual({
+      url: BLOOP_HOOK,
+      secret: "bloopcat-webhook-secret-0123456789abcdef",
+    });
+    expect(partnerWebhookTarget("nohook")).toBeNull();
+    expect(partnerWebhookTarget("ghost")).toBeNull();
+  });
+
+  it("delivers each row to its own partner's address, signed with its own secret", async () => {
+    const vectraRow = dueRow({ id: "w-vectra", partnerId: null });
+    const bloopRow = dueRow({ id: "w-bloop", partnerId: "bloopcat" });
+    const fake = createFakeDb({
+      selects: [[partnerWebhooks, [[vectraRow, bloopRow]]]],
+      updateReturns: [
+        [
+          partnerWebhooks,
+          [[{ ...vectraRow, attempts: 1 }], [{ ...bloopRow, attempts: 1 }]],
+        ],
+      ],
+    });
+    const seen: Array<{ url: string; id: string }> = [];
+
+    const summary = await dispatchDuePartnerWebhooksWithDb(fake.db as never, {
+      now: NOW,
+      fetchImpl: async (url: string, init: RequestInit) => {
+        seen.push({
+          url,
+          id: (init.headers as Record<string, string>)[PARTNER_WEBHOOK_ID_HEADER]!,
+        });
+        return { ok: true, status: 200, body: null };
+      },
+    });
+
+    expect(summary).toEqual({ attempted: 2, delivered: 2, rescheduled: 0, gaveUp: 0 });
+    expect(seen).toEqual(
+      expect.arrayContaining([
+        { url: VECTRA_HOOK, id: "w-vectra" },
+        { url: BLOOP_HOOK, id: "w-bloop" },
+      ]),
+    );
+    expect(seen).toHaveLength(2);
+  });
+
+  it("does not let one partner's hanging endpoint hold the others", async () => {
+    const vectraRow = dueRow({ id: "w-vectra", partnerId: null });
+    const bloopRow = dueRow({ id: "w-bloop", partnerId: "bloopcat" });
+    const fake = createFakeDb({
+      selects: [[partnerWebhooks, [[vectraRow, bloopRow]]]],
+      updateReturns: [
+        [
+          partnerWebhooks,
+          [[{ ...vectraRow, attempts: 1 }], [{ ...bloopRow, attempts: 1 }]],
+        ],
+      ],
+    });
+    let releaseVectra: () => void = () => undefined;
+    const vectraStuck = new Promise<void>((resolve) => {
+      releaseVectra = resolve;
+    });
+    const fetchImpl = async (url: string) => {
+      if (url === VECTRA_HOOK) {
+        await vectraStuck;
+      }
+      return { ok: true, status: 200, body: null };
+    };
+
+    const dispatching = dispatchDuePartnerWebhooksWithDb(fake.db as never, {
+      now: NOW,
+      fetchImpl,
+    });
+
+    // BloopCat's webhook is marked delivered while Vectra's is still waiting.
+    await vi.waitFor(() =>
+      expect(
+        fake.updates(partnerWebhooks).filter((set) => set.deliveredAt),
+      ).toHaveLength(1),
+    );
+    releaseVectra();
+    const summary = await dispatching;
+
+    expect(summary.delivered).toBe(2);
+    expect(
+      fake.updates(partnerWebhooks).filter((set) => set.deliveredAt),
+    ).toHaveLength(2);
+  });
+
+  it("keeps one partner's rows in order", async () => {
+    const first = dueRow({ id: "w-1", partnerId: "bloopcat" });
+    const second = dueRow({ id: "w-2", partnerId: "bloopcat" });
+    const fake = createFakeDb({
+      selects: [[partnerWebhooks, [[first, second]]]],
+      updateReturns: [
+        [
+          partnerWebhooks,
+          [[{ ...first, attempts: 1 }], [{ ...second, attempts: 1 }]],
+        ],
+      ],
+    });
+    const order: string[] = [];
+
+    await dispatchDuePartnerWebhooksWithDb(fake.db as never, {
+      now: NOW,
+      fetchImpl: async (_url: string, init: RequestInit) => {
+        const id = (init.headers as Record<string, string>)[PARTNER_WEBHOOK_ID_HEADER]!;
+        order.push(`start ${id}`);
+        // The first webhook is slower: the second still waits for it.
+        await new Promise((resolve) => setTimeout(resolve, id === "w-1" ? 20 : 0));
+        order.push(`end ${id}`);
+        return { ok: true, status: 200, body: null };
+      },
+    });
+
+    expect(order).toEqual(["start w-1", "end w-1", "start w-2", "end w-2"]);
+  });
+
+  it("one partner's failure does not touch another partner's row", async () => {
+    const vectraRow = dueRow({ id: "w-vectra", partnerId: null });
+    const bloopRow = dueRow({ id: "w-bloop", partnerId: "bloopcat" });
+    const fake = createFakeDb({
+      selects: [[partnerWebhooks, [[vectraRow, bloopRow]]]],
+      updateReturns: [
+        [
+          partnerWebhooks,
+          [[{ ...vectraRow, attempts: 1 }], [{ ...bloopRow, attempts: 1 }]],
+        ],
+      ],
+    });
+
+    const summary = await dispatchDuePartnerWebhooksWithDb(fake.db as never, {
+      now: NOW,
+      fetchImpl: async (url: string) =>
+        url === BLOOP_HOOK
+          ? { ok: false, status: 503, body: null }
+          : { ok: true, status: 200, body: null },
+    });
+
+    expect(summary).toEqual({ attempted: 2, delivered: 1, rescheduled: 1, gaveUp: 0 });
+    const done = fake.updates(partnerWebhooks).filter((set) => set.deliveredAt);
+    const retried = fake.updates(partnerWebhooks).filter((set) => set.lastStatus === 503);
+    expect(done).toHaveLength(1);
+    expect(retried).toEqual([
+      {
+        nextAttemptAt: new Date(NOW.getTime() + 30_000),
+        lastStatus: 503,
+        lastError: "HTTP 503",
+      },
+    ]);
+  });
+
+  it.each(["nohook", "ghost"])(
+    "stops retrying a row whose partner (%s) has no webhook address",
+    async (partnerId) => {
+      const fake = createFakeDb({
+        selects: [[partnerWebhooks, [[dueRow({ id: "w-orphan", partnerId })]]]],
+      });
+      const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, body: null }));
+
+      const summary = await dispatchDuePartnerWebhooksWithDb(fake.db as never, {
+        now: NOW,
+        fetchImpl,
+      });
+
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(summary).toEqual({ attempted: 0, delivered: 0, rescheduled: 0, gaveUp: 0 });
+      expect(fake.updates(partnerWebhooks)).toEqual([
+        { nextAttemptAt: null, lastError: "no_webhook_target" },
+      ]);
+    },
+  );
+
+  it("names the partner in the give-up journal entry", async () => {
+    const lastTry = PARTNER_WEBHOOK_MAX_ATTEMPTS - 1;
+    const row = dueRow({ attempts: lastTry, partnerId: "bloopcat" });
+    const fake = createFakeDb({
+      selects: [[partnerWebhooks, [[row]]]],
+      updateReturns: [
+        [partnerWebhooks, [[{ ...row, attempts: PARTNER_WEBHOOK_MAX_ATTEMPTS }]]],
+      ],
+    });
+
+    await dispatchDuePartnerWebhooksWithDb(fake.db as never, {
+      now: NOW,
+      fetchImpl: async () => ({ ok: false, status: 500, body: null }),
+    });
+
+    const [entry] = fake.inserts(eventLog);
+    expect(entry).toMatchObject({
+      type: "partner.webhook.gave_up",
+      message: expect.stringContaining("by partner bloopcat"),
+      metadata: expect.objectContaining({ partnerId: "bloopcat" }),
+    });
+    expect(String(entry?.message)).not.toContain("Vectra backend");
+  });
+
+  it("schedules a delivery when only a non-default partner has a webhook, none when nobody has", () => {
+    vi.useFakeTimers();
+    try {
+      envMock.env = {
+        VECTRA_PARTNERS: JSON.stringify([
+          {
+            id: "bloopcat",
+            brand: "bloopcat",
+            label: "BloopCat",
+            secrets: ["bloopcat-partner-secret-0123456789abcdef"],
+            webhookUrl: BLOOP_HOOK,
+            webhookSecret: "bloopcat-webhook-secret-0123456789abcdef",
+          },
+        ]),
+      };
+      schedulePartnerWebhookDelivery({ force: true });
+      expect(vi.getTimerCount()).toBe(1);
+
+      vi.clearAllTimers();
+      envMock.env = {};
+      schedulePartnerWebhookDelivery({ force: true });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 });
 
