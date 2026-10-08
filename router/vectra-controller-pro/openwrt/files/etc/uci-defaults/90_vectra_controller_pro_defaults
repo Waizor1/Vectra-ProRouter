@@ -46,8 +46,9 @@ set_if_empty tune "1"
 # support_bot is deliberately not seeded: it is empty until boxes are prepared
 # (uci set vectra-controller-pro.main.support_bot=<bot>; uci commit), and an
 # absent option reads the same as an empty one.
-# brand is not seeded either: the installer's label (install.sh --brand) lives
-# in it, and an upgrade must leave it as it is.
+# brand is not seeded with a value here either: the installer's label
+# (install.sh --brand) lives in it, and an upgrade must leave it as it is.
+# Only a router that predates brands is labelled, once (below).
 
 # The support shell: the panel's run_terminal_command runs any command as
 # root, so vctl runs it only where the router's owner allows it
@@ -60,6 +61,27 @@ set_if_empty tune "1"
 # it cannot decide first.
 if [ -z "$(uci -q get vectra-controller-pro.main.remote_shell || true)" ]; then
 	uci -q set vectra-controller-pro.main.remote_shell=1
+	changed=1
+fi
+
+# The brand of a router that predates brands. Every vctl installed before
+# brands existed was a Vectra install, and it would not learn that now:
+# Vectra Connect's subscription proxy strips the headers that name the brand,
+# so such a router would render neutral after this upgrade. So a router that
+# already has a vctl identity (its state file) and no brand label is labelled
+# 'vectra', once. This is the lowest-ranking label: the subscription and the
+# panel's claim answer still override it. brand_seeded is set on every router
+# the first time this runs, a new one too, so that a neutral install on a
+# fresh box is never relabelled by a later upgrade and a brand the owner
+# cleared stays cleared. The package's config file does not name brand_seeded:
+# on a new router the marker must be absent for this to tell the two apart.
+if [ -z "$(uci -q get vectra-controller-pro.main.brand_seeded || true)" ]; then
+	state_file="$(uci -q get vectra-controller-pro.main.state_path || true)"
+	if [ -n "$state_file" ] && [ -f "$state_file" ] &&
+		[ -z "$(uci -q get vectra-controller-pro.main.brand || true)" ]; then
+		uci -q set vectra-controller-pro.main.brand=vectra
+	fi
+	uci -q set vectra-controller-pro.main.brand_seeded=1
 	changed=1
 fi
 
@@ -98,15 +120,18 @@ fi
 # http://my.vectra-pro.net and http://vectra.lan — with Vectra on or off,
 # since dnsmasq answers them, not vctl. my.vectra-pro.net is under a real
 # top-level domain: a browser opens it as an address, where it takes a typed
-# `vectra.lan` (a .lan it does not know) for a search. dnsmasq answers both
-# only to the devices that ask it: one with a VPN app or a private DNS gets
-# neither, and has the LAN's address instead (the UI shows it). dnsmasq's
-# init turns the `interface_name` list of the LAN's `config dhcp` section
-# into --interface-name=<name>,<the LAN's device>, so the names follow the
-# LAN's address wherever it is moved. The section is the one serving the LAN
+# `vectra.lan` (a .lan it does not know) for a search. Every brand's name
+# (vectra.lan, bloopcat.lan) and the neutral one (router.lan) answer on every
+# router — the brand is learned from the subscription, after this runs — and
+# the UI shows the one of its brand. dnsmasq answers them only to the devices
+# that ask it: one with a VPN app or a private DNS gets none of them, and has
+# the LAN's address instead (the UI shows it). dnsmasq's init turns the
+# `interface_name` list of the LAN's `config dhcp` section into
+# --interface-name=<name>,<the LAN's device>, so the names follow the LAN's
+# address wherever it is moved. The section is the one serving the LAN
 # (option interface 'lan'), whatever it is called. A name already there is
 # not added again (an upgraded router has vectra.lan); removing the package
-# takes both away again (postrm). DNSMASQ_INIT is a variable only so the
+# takes them all away again (postrm). DNSMASQ_INIT is a variable only so the
 # packaging tests can stand dnsmasq in.
 DNSMASQ_INIT="${DNSMASQ_INIT:-/etc/init.d/dnsmasq}"
 lan_dhcp=""
@@ -119,7 +144,7 @@ done
 if [ -n "$lan_dhcp" ]; then
 	names=" $(uci -q get "dhcp.$lan_dhcp.interface_name" || true) "
 	added=""
-	for name in vectra.lan my.vectra-pro.net; do
+	for name in vectra.lan my.vectra-pro.net bloopcat.lan router.lan; do
 		case "$names" in
 		*" $name "*) ;;
 		*) uci -q add_list "dhcp.$lan_dhcp.interface_name=$name" && added=1 ;;

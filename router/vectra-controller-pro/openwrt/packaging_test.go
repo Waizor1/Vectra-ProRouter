@@ -1812,12 +1812,14 @@ func stockDHCP() []uciSection {
 
 const defaultsScript = "files/etc/uci-defaults/90_vectra_controller_pro_defaults"
 
-// The router's own names on the LAN, as the uci-defaults script adds them.
-var routerNames = []string{"vectra.lan", "my.vectra-pro.net"}
+// The router's own names on the LAN, as the uci-defaults script adds them:
+// the Vectra brand's two, BloopCat's and the neutral one — every router
+// answers all of them, and the UI shows the one of its brand.
+var routerNames = []string{"vectra.lan", "my.vectra-pro.net", "bloopcat.lan", "router.lan"}
 
-// The uci-defaults script names the router vectra.lan and my.vectra-pro.net
-// on the LAN's dhcp section — once, however often it runs — and has dnsmasq
-// take them up with one commit and one reload.
+// The uci-defaults script names the router vectra.lan, my.vectra-pro.net,
+// bloopcat.lan and router.lan on the LAN's dhcp section — once, however often
+// it runs — and has dnsmasq take them up with one commit and one reload.
 func TestUCIDefaultsNameTheRouter(t *testing.T) {
 	t.Parallel()
 	r := newLanRouter(t, stockDHCP(), true)
@@ -1825,14 +1827,18 @@ func TestUCIDefaultsNameTheRouter(t *testing.T) {
 	if got := r.names("home"); !reflect.DeepEqual(got, routerNames) {
 		t.Fatalf("home.interface_name = %v\n%s", got, calls)
 	}
-	for _, want := range []string{"uci -q add_list dhcp.home.interface_name=vectra.lan", "uci -q add_list dhcp.home.interface_name=my.vectra-pro.net",
-		"uci -q commit dhcp", "dnsmasq reload"} {
+	for _, name := range routerNames {
+		if want := "uci -q add_list dhcp.home.interface_name=" + name; !strings.Contains(calls, want) {
+			t.Errorf("did not run %q:\n%s", want, calls)
+		}
+	}
+	for _, want := range []string{"uci -q commit dhcp", "dnsmasq reload"} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("did not run %q:\n%s", want, calls)
 		}
 	}
 	if n := strings.Count(calls, "commit dhcp"); n != 1 || strings.Count(calls, "dnsmasq reload") != 1 {
-		t.Errorf("%d commits for the two names, and reloads:\n%s", n, calls)
+		t.Errorf("%d commits for the four names, and reloads:\n%s", n, calls)
 	}
 	if strings.Contains(calls, "dhcp.wan.interface_name") {
 		t.Errorf("named the WAN:\n%s", calls)
@@ -1845,8 +1851,8 @@ func TestUCIDefaultsNameTheRouter(t *testing.T) {
 	}
 }
 
-// A router upgraded from a version that named it vectra.lan only gets
-// my.vectra-pro.net beside it — and vectra.lan is not added twice.
+// A router upgraded from a version that named it vectra.lan only gets the
+// other three beside it — and vectra.lan is not added twice.
 func TestUCIDefaultsAddTheNewNameOnAnUpgrade(t *testing.T) {
 	t.Parallel()
 	dhcp := stockDHCP()
@@ -1912,19 +1918,19 @@ func makefileScript(t *testing.T, name string) string {
 	return p
 }
 
-// Removing the package takes vectra.lan and my.vectra-pro.net away; an
-// upgrade — whose old postrm opkg runs as `postrm upgrade <version>` with
-// PKG_UPGRADE=1 — keeps them.
+// Removing the package takes vectra.lan, my.vectra-pro.net, bloopcat.lan and
+// router.lan away; an upgrade — whose old postrm opkg runs as `postrm upgrade
+// <version>` with PKG_UPGRADE=1 — keeps them.
 func TestPostrmTakesTheNamesAwayOnRemovalOnly(t *testing.T) {
 	t.Parallel()
 	postrm := makefileScript(t, "postrm")
 	named := stockDHCP()
-	named[1].Lists = map[string][]string{"interface_name": {"nas.lan", "vectra.lan", "my.vectra-pro.net"}}
+	named[1].Lists = map[string][]string{"interface_name": append([]string{"nas.lan"}, routerNames...)}
 
 	up := newLanRouter(t, named, true)
 	up.env = append(up.env, "PKG_UPGRADE=1")
 	calls := strings.Join(up.run(postrm, "upgrade", "0.6.0-r1"), "\n")
-	if got := up.names("home"); !reflect.DeepEqual(got, []string{"nas.lan", "vectra.lan", "my.vectra-pro.net"}) || strings.Contains(calls, "del_list") {
+	if got := up.names("home"); !reflect.DeepEqual(got, append([]string{"nas.lan"}, routerNames...)) || strings.Contains(calls, "del_list") {
 		t.Fatalf("an upgrade took a name away: %v\n%s", got, calls)
 	}
 	if !strings.Contains(calls, "killall -HUP rpcd") {
@@ -1943,7 +1949,7 @@ func TestPostrmTakesTheNamesAwayOnRemovalOnly(t *testing.T) {
 		}
 	}
 	if strings.Count(calls, "commit dhcp") != 1 || strings.Count(calls, "dnsmasq reload") != 1 {
-		t.Errorf("one commit and one reload for both names:\n%s", calls)
+		t.Errorf("one commit and one reload for all four names:\n%s", calls)
 	}
 	// Nothing named: nothing committed, nothing reloaded.
 	calls = strings.Join(gone.run(postrm, "remove"), "\n")
@@ -2214,6 +2220,128 @@ func TestUCIDefaultsKeepTheSupportShellOfARouterTheOldAgentRan(t *testing.T) {
 		if got := r.option("vectra-controller-pro", "main", "remote_shell"); got != c.want {
 			t.Errorf("%s: remote_shell = %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// Every vctl installed before brands existed was a Vectra install, and its
+// subscription cannot say so (Vectra Connect's proxy strips the headers), so
+// the uci-defaults script labels such a router 'vectra' — once: a router that
+// already has a vctl identity (its state file) and no brand label. The marker
+// brand_seeded is set on every router the first time, so a neutral install on
+// a fresh box is never relabelled by a later upgrade, a brand the owner
+// cleared stays cleared, and a label that is there (the installer's) is
+// never changed.
+func TestUCIDefaultsLabelARouterThatPredatesBrandsOnce(t *testing.T) {
+	t.Parallel()
+	const unset = "-"
+	for _, c := range []struct {
+		name      string
+		state     bool   // the state file exists
+		brand     string // the label, or unset
+		seeded    string // the marker, or unset
+		wantBrand string
+	}{
+		{"a vctl that predates brands, its brand option empty", true, "", unset, "vectra"},
+		{"a vctl that predates brands, no brand option at all", true, unset, unset, "vectra"},
+		{"the installer labelled it bloopcat", true, "bloopcat", unset, "bloopcat"},
+		{"the installer labelled it vectra", true, "vectra", unset, "vectra"},
+		{"a new router: no state file, no label", false, "", unset, ""},
+		{"a new router, no brand option at all", false, unset, unset, ""},
+		{"a new router the installer labelled bloopcat", false, "bloopcat", unset, "bloopcat"},
+		{"already seeded, brand cleared by the owner", true, "", "1", ""},
+		{"already seeded, no brand option", true, unset, "1", ""},
+		{"already seeded, label kept", true, "bloopcat", "1", "bloopcat"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			r := newLanRouter(t, stockDHCP(), true)
+			statePath := filepath.Join(r.dir, "etc", "vectra-controller-pro", "state.json")
+			if c.state {
+				if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(statePath, []byte(`{"router_id":"r-1","agent_token":"x"}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			opts := map[string]string{"state_path": statePath, "legacy_state_path": filepath.Join(r.dir, "no-legacy.json"), "enabled": "1"}
+			if c.brand != unset {
+				opts["brand"] = c.brand
+			}
+			if c.seeded != unset {
+				opts["brand_seeded"] = c.seeded
+			}
+			r.seed("vectra-controller-pro", uciSection{Name: "main", Type: "controller", Opts: opts})
+			calls := strings.Join(r.run(defaultsScript), "\n")
+			if got := r.option("vectra-controller-pro", "main", "brand"); got != c.wantBrand {
+				t.Errorf("brand = %q, want %q\n%s", got, c.wantBrand, calls)
+			}
+			if got := r.option("vectra-controller-pro", "main", "brand_seeded"); got != "1" {
+				t.Errorf("brand_seeded = %q, want 1\n%s", got, calls)
+			}
+			if c.seeded == unset && !strings.Contains(calls, "uci commit vectra-controller-pro") {
+				t.Errorf("the marker was set and not committed:\n%s", calls)
+			}
+			// Again (every upgrade's postinst, the first boot): nothing more,
+			// even with a state file there by now — a neutral install the
+			// router has since registered (or cleared) stays as it is.
+			if !c.state {
+				if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(statePath, []byte(`{"router_id":"r-1"}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r.run(defaultsScript)
+			if got := r.option("vectra-controller-pro", "main", "brand"); got != c.wantBrand {
+				t.Errorf("run again: brand = %q, want %q", got, c.wantBrand)
+			}
+		})
+	}
+}
+
+// The seed asks the state file UCI names (state_path), not a path of its own:
+// a router whose owner moved it is judged by that file.
+func TestUCIDefaultsLabelByTheStateFileUCINames(t *testing.T) {
+	t.Parallel()
+	r := newLanRouter(t, stockDHCP(), true)
+	moved := filepath.Join(r.dir, "elsewhere", "state.json")
+	if err := os.MkdirAll(filepath.Dir(moved), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(moved, []byte(`{"router_id":"r-1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.seed("vectra-controller-pro", uciSection{Name: "main", Type: "controller", Opts: map[string]string{
+		"state_path": moved, "legacy_state_path": filepath.Join(r.dir, "no-legacy.json"), "enabled": "1", "brand": ""}})
+	r.run(defaultsScript)
+	if got := r.option("vectra-controller-pro", "main", "brand"); got != "vectra" {
+		t.Fatalf("brand = %q, want vectra: the file state_path names exists", got)
+	}
+}
+
+// The package's config file leaves brand_seeded out: on a new router the
+// marker must be absent, or the seed could not tell it from an old one.
+// (brand itself is there, empty: the installer's label lives in it.)
+func TestTheConffileLeavesTheBrandSeedToTheUCIDefaults(t *testing.T) {
+	raw, err := os.ReadFile("files/etc/config/vectra-controller-pro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := uci.Parse(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := f.Named("main")
+	if main == nil {
+		t.Fatal("no main section")
+	}
+	if v, ok := main.Options["brand_seeded"]; ok {
+		t.Fatalf("the conffile sets brand_seeded %q", v)
+	}
+	if v, ok := main.Options["brand"]; !ok || v != "" {
+		t.Fatalf("the conffile's brand = %q (present %v), want an empty option", v, ok)
 	}
 }
 
