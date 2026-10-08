@@ -690,15 +690,35 @@ describe("rescue actions and the partner's vendor-access notice", () => {
     expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
   });
 
-  it("an operator's reconnect goes through the same repair and is reported by it", async () => {
+  it("a reconnect from the case card reads like the router-level reconnect", async () => {
     const fake = repairDb();
 
     await queueRescueCaseReconnectProxy(CASE_ID, "telegram", fake.db as never);
 
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
     expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(
       fake.db,
       expect.objectContaining({ id: "router-1" }),
-      { kind: "safe_repair", by: "telegram" },
+      { kind: "reconnect", by: "telegram" },
+    );
+  });
+
+  it("only a repair that is nothing but a reconnect is called a reconnect", async () => {
+    const fake = repairDb();
+
+    await queueRescueCaseSafeRepair(
+      {
+        caseId: CASE_ID,
+        requestedBy: "operator",
+        actions: ["reconnect_proxy", "restart_dnsmasq"],
+      },
+      fake.db as never,
+    );
+
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(
+      fake.db,
+      expect.anything(),
+      { kind: "safe_repair", by: "operator" },
     );
   });
 

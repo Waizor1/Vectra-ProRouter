@@ -10,7 +10,8 @@ vi.mock("./partner-webhooks", () => ({
 }));
 vi.mock("~/server/db", () => ({ db: {} }));
 
-const { notifyVendorAccessWithDb } = await import("./vendor-access");
+const { notifyVendorAccessForRoutersWithDb, notifyVendorAccessWithDb } =
+  await import("./vendor-access");
 
 beforeEach(() => {
   enqueue.mockReset();
@@ -94,6 +95,91 @@ describe("vendor access", () => {
         { kind: "direct_mode", by: "operator" },
       ),
     ).resolves.toBeNull();
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
+  });
+
+  it("logs which router and which kind were lost, never the owner or the query", async () => {
+    // A driver error carries the failed statement WITH its parameters, and the
+    // webhook payload (which holds the partner's ownerRef) is one of them.
+    enqueue.mockRejectedValue(
+      Object.assign(
+        new Error(
+          'Failed query: insert into "partner_webhooks" ... params: {"ownerRef":"bc_1"}',
+        ),
+        { cause: new Error("connection terminated") },
+      ),
+    );
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await notifyVendorAccessWithDb(
+      {} as never,
+      { id: "r1", ownerRef: "bc_1", partnerId: "bloopcat" },
+      { kind: "maintenance", by: "operator" },
+    );
+
+    const logged = JSON.stringify(log.mock.calls);
+    expect(logged).toContain("r1");
+    expect(logged).toContain("maintenance");
+    expect(logged).toContain("connection terminated");
+    expect(logged).not.toContain("bc_1");
+    expect(logged).not.toContain("partner_webhooks");
+    log.mockRestore();
+  });
+});
+
+describe("vendor access for a batch of routers", () => {
+  const rows = [
+    { id: "r-vectra", ownerRef: "vc_1", partnerId: null },
+    { id: "r-bloop", ownerRef: "bc_1", partnerId: "bloopcat" },
+    { id: "r-free", ownerRef: null, partnerId: "bloopcat" },
+  ];
+  const clientReturning = (found: unknown[]) => {
+    const chain = { from: () => chain, where: () => Promise.resolve(found) };
+    return { select: () => chain } as never;
+  };
+
+  it("announces each partner router once and nobody else", async () => {
+    const announced = await notifyVendorAccessForRoutersWithDb(
+      clientReturning(rows),
+      ["r-vectra", "r-bloop", "r-free"],
+      { kind: "config_apply", by: "operator" },
+    );
+
+    expect(announced).toBe(1);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        routerId: "r-bloop",
+        partnerId: "bloopcat",
+        detail: { kind: "config_apply", by: "operator" },
+      }),
+    );
+  });
+
+  it("reads nothing for an empty batch", async () => {
+    const client = { select: vi.fn() } as never;
+
+    expect(
+      await notifyVendorAccessForRoutersWithDb(client, [], {
+        kind: "config_apply",
+        by: "operator",
+      }),
+    ).toBe(0);
+    expect((client as { select: unknown }).select).not.toHaveBeenCalled();
+  });
+
+  it("never fails the operator's action when the routers cannot be read", async () => {
+    const chain = { from: () => chain, where: () => Promise.reject(new Error("db down")) };
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(
+      notifyVendorAccessForRoutersWithDb({ select: () => chain } as never, ["r-bloop"], {
+        kind: "config_apply",
+        by: "operator",
+      }),
+    ).resolves.toBe(0);
     expect(log).toHaveBeenCalled();
     log.mockRestore();
   });

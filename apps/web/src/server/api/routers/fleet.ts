@@ -391,6 +391,15 @@ export const fleetRouter = createTRPCRouter({
               })
             : null;
 
+        // The apply is new (its draft was created just above), so a queued
+        // job is a visit the router's partner is told about.
+        if (queuedJob) {
+          await notifyVendorAccessWithDb(ctx.db, router, {
+            kind: "config_apply",
+            by: "operator",
+          });
+        }
+
         await ctx.db.insert(eventLog).values({
           routerId: router.id,
           type:

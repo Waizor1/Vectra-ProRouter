@@ -12,6 +12,11 @@ const envMock = vi.hoisted(() => ({
 vi.mock("~/env", () => envMock);
 // The claim service must only use the client it is handed.
 vi.mock("~/server/db", () => ({ db: {} }));
+// A claim is the partner's own act, not a visit by Vectra's engineer.
+const vendorAccess = vi.hoisted(() => ({
+  notifyVendorAccessWithDb: vi.fn(async (..._args: unknown[]) => null),
+}));
+vi.mock("~/server/vectra/vendor-access", () => vendorAccess);
 
 const { MASKED_SECRET_PLACEHOLDER, partnerRouterClaimRequestSchema } =
   await import("@vectra/contracts");
@@ -540,6 +545,21 @@ describe("claimRouterWithDb", () => {
     expect(fake.updates(passwallDesiredRevisions)).toEqual([
       { status: "queued" },
     ]);
+  });
+
+  it("queues the apply of the partner's own claim without announcing a Vectra visit", async () => {
+    vendorAccess.notifyVendorAccessWithDb.mockClear();
+    const fake = createFakeDb(claimableScript());
+
+    await claimRouterWithDb(fake.db as never, claimRequest(), {
+      now: NOW,
+      partnerId: "bloopcat",
+    });
+
+    expect(fake.inserts(jobs)).toEqual([
+      expect.objectContaining({ type: "apply_xray_config", routerId: ROUTER_ID }),
+    ]);
+    expect(vendorAccess.notifyVendorAccessWithDb).not.toHaveBeenCalled();
   });
 
   it("carries a backend-stated literal User-Agent straight through", async () => {

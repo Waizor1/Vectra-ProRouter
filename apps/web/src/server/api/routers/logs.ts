@@ -10,6 +10,7 @@ import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
 import type { db as DatabaseClientValue } from "~/server/db";
 import { buildRouterLogHistory } from "~/server/vectra/router-logs";
+import { notifyVendorAccessWithDb } from "~/server/vectra/vendor-access";
 
 const activeLogJobStates: Array<"queued" | "delivered" | "running"> = [
   "queued",
@@ -23,7 +24,11 @@ async function assertRouterExists(
   routerId: string,
 ) {
   const [router] = await ctx.db
-    .select({ id: routers.id })
+    .select({
+      id: routers.id,
+      ownerRef: routers.ownerRef,
+      partnerId: routers.partnerId,
+    })
     .from(routers)
     .where(eq(routers.id, routerId))
     .limit(1);
@@ -34,6 +39,8 @@ async function assertRouterExists(
       message: `Router ${routerId} was not found.`,
     });
   }
+
+  return router;
 }
 
 export const logsRouter = createTRPCRouter({
@@ -83,7 +90,7 @@ export const logsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertRouterExists(ctx, input.routerId);
+      const router = await assertRouterExists(ctx, input.routerId);
 
       const [existingJob] = await ctx.db
         .select()
@@ -117,6 +124,11 @@ export const logsRouter = createTRPCRouter({
           payload,
         })
         .returning();
+
+      await notifyVendorAccessWithDb(ctx.db, router, {
+        kind: "diagnostics",
+        by: "operator",
+      });
 
       return job;
     }),

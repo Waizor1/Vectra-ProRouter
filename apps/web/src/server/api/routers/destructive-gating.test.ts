@@ -2,10 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createCallerFactory } from "~/server/api/trpc";
 
-const { notifyVendorAccessWithDb } = vi.hoisted(() => ({
-  notifyVendorAccessWithDb: vi.fn(async (..._args: unknown[]) => null),
+// The notice itself is real here, so its silence rules (Vectra's own and
+// unclaimed routers) are exercised too; only the outbox write is replaced.
+const { enqueueWebhook } = vi.hoisted(() => ({
+  enqueueWebhook: vi.fn(async (..._args: unknown[]): Promise<string | null> => "w1"),
 }));
-vi.mock("~/server/vectra/vendor-access", () => ({ notifyVendorAccessWithDb }));
+vi.mock("~/server/vectra/partner-webhooks", () => ({
+  enqueuePartnerWebhookWithDb: enqueueWebhook,
+  schedulePartnerWebhookDelivery: vi.fn(),
+}));
 
 import { draftRouter } from "./draft";
 import { rescueRouter } from "./rescue";
@@ -1555,23 +1560,32 @@ describe("destructive route gating", () => {
 
 describe("vendor-access notice at the operator's entry points", () => {
   beforeEach(() => {
-    notifyVendorAccessWithDb.mockClear();
+    enqueueWebhook.mockClear();
   });
 
-  const partnerRouter = () => ({
+  const OTHER_ROUTER_ID = "c2a8d6e4-7b1f-4f3a-9d2e-5a6b7c8d9e0f";
+  const partnerRouter = (overrides: Record<string, unknown> = {}) => ({
     ...createCertifiedLikeRouter(),
     ownerRef: "bc_1",
     partnerId: "bloopcat",
+    ...overrides,
   });
-  const reached = (kind: string) => [
-    expect.anything(),
-    expect.objectContaining({
-      id: CERTIFIED_LIKE_ROUTER_ID,
-      ownerRef: "bc_1",
-      partnerId: "bloopcat",
-    }),
-    { kind, by: "operator" },
-  ];
+  // What the partner would be told, one entry per notice queued.
+  const visits = () =>
+    enqueueWebhook.mock.calls.map(([, input]) => {
+      const { routerId, partnerId, detail } = input as {
+        routerId: string;
+        partnerId: string;
+        detail: Record<string, unknown>;
+      };
+      return { routerId, partnerId, ...detail };
+    });
+  const visit = (kind: string, routerId = CERTIFIED_LIKE_ROUTER_ID) => ({
+    routerId,
+    partnerId: "bloopcat",
+    kind,
+    by: "operator",
+  });
 
   it("direct mode tells the router's partner", async () => {
     const mock = createMockDb([[partnerRouter()], [createPilotLayoutSnapshot()]]);
@@ -1582,8 +1596,7 @@ describe("vendor-access notice at the operator's entry points", () => {
     await caller.triggerDirectMode({ routerId: CERTIFIED_LIKE_ROUTER_ID });
 
     expect(mock.counts().insertCalls).toBe(1);
-    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
-    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(...reached("direct_mode"));
+    expect(visits()).toEqual([visit("direct_mode")]);
   });
 
   it("reconnect tells the router's partner", async () => {
@@ -1595,8 +1608,7 @@ describe("vendor-access notice at the operator's entry points", () => {
     await caller.triggerReconnect({ routerId: CERTIFIED_LIKE_ROUTER_ID });
 
     expect(mock.counts().insertCalls).toBe(1);
-    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
-    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(...reached("reconnect"));
+    expect(visits()).toEqual([visit("reconnect")]);
   });
 
   it("a refused rescue action tells nobody", async () => {
@@ -1608,7 +1620,7 @@ describe("vendor-access notice at the operator's entry points", () => {
     await expect(
       caller.triggerDirectMode({ routerId: CERTIFIED_LIKE_ROUTER_ID }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
+    expect(visits()).toEqual([]);
   });
 
   it("a single reboot tells the router's partner", async () => {
@@ -1624,24 +1636,33 @@ describe("vendor-access notice at the operator's entry points", () => {
     await caller.queueRouterReboot({ routerId: CERTIFIED_LIKE_ROUTER_ID });
 
     expect(mock.counts().insertCalls).toBe(1);
-    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
-    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(...reached("reboot"));
+    expect(visits()).toEqual([visit("reboot")]);
   });
 
-  it("a bulk reboot tells the partner of each router it queues", async () => {
+  it("a bulk reboot of a mixed batch tells only the BloopCat router's partner", async () => {
     const mock = createMockDb([
-      [partnerRouter()],
+      // Vectra's own router: queued, but nobody to tell.
+      [createCertifiedLikeRouter()],
+      [createPilotLayoutSnapshot("ubootmod")],
+      [],
+      // A BloopCat customer's router.
+      [partnerRouter({ id: OTHER_ROUTER_ID })],
       [createPilotLayoutSnapshot("ubootmod")],
       [],
     ]);
     const caller = createProtectedCaller(updateRouter, mock.db) as {
-      queueBulkRouterReboot: (input: { routerIds: string[] }) => Promise<unknown>;
+      queueBulkRouterReboot: (input: {
+        routerIds: string[];
+      }) => Promise<{ results: Array<{ status: string }> }>;
     };
 
-    await caller.queueBulkRouterReboot({ routerIds: [CERTIFIED_LIKE_ROUTER_ID] });
+    const { results } = await caller.queueBulkRouterReboot({
+      routerIds: [CERTIFIED_LIKE_ROUTER_ID, OTHER_ROUTER_ID],
+    });
 
-    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
-    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(...reached("reboot"));
+    expect(results.map((result) => result.status)).toEqual(["queued", "queued"]);
+    expect(mock.counts().insertCalls).toBe(2);
+    expect(visits()).toEqual([visit("reboot", OTHER_ROUTER_ID)]);
   });
 
   it("a reboot already waiting is not a new visit", async () => {
@@ -1658,6 +1679,265 @@ describe("vendor-access notice at the operator's entry points", () => {
     await caller.queueRouterReboot({ routerId: CERTIFIED_LIKE_ROUTER_ID });
 
     expect(mock.counts().insertCalls).toBe(0);
-    expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
+    expect(visits()).toEqual([]);
+  });
+
+  describe("config_apply", () => {
+    it("a PassWall apply queued from the draft screen", async () => {
+      const mock = createMockDb([
+        [partnerRouter()],
+        [createPilotLayoutSnapshot()],
+        [createDesiredRevision()],
+        [],
+      ]);
+      const caller = createProtectedCaller(draftRouter, mock.db) as {
+        queueApply: (input: {
+          routerId: string;
+          desiredRevisionId: string;
+        }) => Promise<unknown>;
+      };
+
+      await caller.queueApply({
+        routerId: CERTIFIED_LIKE_ROUTER_ID,
+        desiredRevisionId: CERTIFIED_LIKE_REVISION_ID,
+      });
+
+      expect(visits()).toEqual([visit("config_apply")]);
+    });
+
+    it("an apply that is already queued is not a new visit", async () => {
+      const mock = createMockDb([
+        [partnerRouter()],
+        [createPilotLayoutSnapshot()],
+        [createDesiredRevision()],
+        [{ id: "job-0", type: "apply_passwall_config", state: "queued" }],
+      ]);
+      const caller = createProtectedCaller(draftRouter, mock.db) as {
+        queueApply: (input: {
+          routerId: string;
+          desiredRevisionId: string;
+        }) => Promise<unknown>;
+      };
+
+      await caller.queueApply({
+        routerId: CERTIFIED_LIKE_ROUTER_ID,
+        desiredRevisionId: CERTIFIED_LIKE_REVISION_ID,
+      });
+
+      expect(mock.counts().insertCalls).toBe(0);
+      expect(visits()).toEqual([]);
+    });
+  });
+
+  describe("software_update", () => {
+    it("a controller update", async () => {
+      const mock = createMockDb([
+        [partnerRouter()],
+        [createPilotLayoutSnapshot()],
+        [],
+        [],
+      ]);
+      const caller = createProtectedCaller(updateRouter, mock.db) as {
+        queueControllerUpdate: (input: {
+          routerId: string;
+          channel: "stable" | "beta";
+        }) => Promise<unknown>;
+      };
+
+      await caller.queueControllerUpdate({
+        routerId: CERTIFIED_LIKE_ROUTER_ID,
+        channel: "stable",
+      });
+
+      expect(mock.counts().insertCalls).toBe(1);
+      expect(visits()).toEqual([visit("software_update")]);
+    });
+
+    it("a PassWall package update", async () => {
+      const mock = createMockDb([
+        [partnerRouter()],
+        [createPilotLayoutSnapshot()],
+        [
+          createPasswallBundleArtifact(),
+          createPasswallPackageArtifact("xray-core", "26.3.27-r1"),
+        ],
+        [],
+      ]);
+      const caller = createProtectedCaller(updateRouter, mock.db) as {
+        queuePasswallPackageUpdate: (input: {
+          routerId: string;
+          artifactChannel: "stable" | "beta";
+          packages: ["xray-core"];
+        }) => Promise<unknown>;
+      };
+
+      await caller.queuePasswallPackageUpdate({
+        routerId: CERTIFIED_LIKE_ROUTER_ID,
+        artifactChannel: "stable",
+        packages: ["xray-core"],
+      });
+
+      expect(visits()).toEqual([visit("software_update")]);
+    });
+
+    it("a bulk xray update", async () => {
+      const mock = createMockDb([
+        [partnerRouter()],
+        [createPilotLayoutSnapshot()],
+        [
+          createPasswallBundleArtifact(),
+          createPasswallPackageArtifact("xray-core", "26.3.27-r1"),
+        ],
+        [],
+      ]);
+      const caller = createProtectedCaller(updateRouter, mock.db) as {
+        queueBulkXrayUpdate: (input: { routerIds: string[] }) => Promise<unknown>;
+      };
+
+      await caller.queueBulkXrayUpdate({ routerIds: [CERTIFIED_LIKE_ROUTER_ID] });
+
+      expect(visits()).toEqual([visit("software_update")]);
+    });
+
+    it("Vectra's own router is updated silently", async () => {
+      const mock = createMockDb([
+        [createCertifiedLikeRouter()],
+        [createPilotLayoutSnapshot()],
+        [],
+        [],
+      ]);
+      const caller = createProtectedCaller(updateRouter, mock.db) as {
+        queueControllerUpdate: (input: {
+          routerId: string;
+          channel: "stable" | "beta";
+        }) => Promise<unknown>;
+      };
+
+      await caller.queueControllerUpdate({
+        routerId: CERTIFIED_LIKE_ROUTER_ID,
+        channel: "stable",
+      });
+
+      expect(mock.counts().insertCalls).toBe(1);
+      expect(visits()).toEqual([]);
+    });
+
+    it("a refused update tells nobody", async () => {
+      const mock = createMockDb([[partnerRouter()], [createBlockedSnapshot()]]);
+      const caller = createProtectedCaller(updateRouter, mock.db) as {
+        queueControllerUpdate: (input: {
+          routerId: string;
+          channel: "stable" | "beta";
+        }) => Promise<unknown>;
+      };
+
+      await expect(
+        caller.queueControllerUpdate({
+          routerId: CERTIFIED_LIKE_ROUTER_ID,
+          channel: "stable",
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(visits()).toEqual([]);
+    });
+  });
+
+  describe("maintenance", () => {
+    it.each([
+      ["clearing the ipsets", "queuePasswallClearIpsets"],
+      ["a subscriptions refresh", "queueSubscriptionsRefresh"],
+      ["a rules refresh", "queueRulesRefresh"],
+    ])("%s", async (_label, procedure) => {
+      const mock = createMockDb([
+        [partnerRouter()],
+        [createPilotLayoutSnapshot("ubootmod")],
+        [],
+      ]);
+      const caller = createProtectedCaller(updateRouter, mock.db) as Record<
+        string,
+        (input: { routerId: string }) => Promise<unknown>
+      >;
+
+      await caller[procedure]!({ routerId: CERTIFIED_LIKE_ROUTER_ID });
+
+      expect(mock.counts().insertCalls).toBe(1);
+      expect(visits()).toEqual([visit("maintenance")]);
+    });
+
+    it("an xray runtime repair", async () => {
+      const mock = createMockDb([
+        [partnerRouter()],
+        [
+          createPilotLayoutSnapshot("ubootmod", {
+            "vectra-controller-agent": "0.1.13-r45",
+          }),
+        ],
+        [],
+      ]);
+      const caller = createProtectedCaller(updateRouter, mock.db) as {
+        queueXrayRuntimeRepair: (input: { routerId: string }) => Promise<unknown>;
+      };
+
+      await caller.queueXrayRuntimeRepair({ routerId: CERTIFIED_LIKE_ROUTER_ID });
+
+      expect(mock.counts().insertCalls).toBe(1);
+      expect(visits()).toEqual([visit("maintenance")]);
+    });
+
+    it("a firmware validation", async () => {
+      const mock = createMockDb([
+        [partnerRouter()],
+        [createPilotLayoutSnapshot("ubootmod")],
+        [
+          {
+            id: "5d2f4e6a-8b1c-4d3e-9f5a-7b9c1d3e5f70",
+            artifactId: "artifact-fw",
+            channel: "stable",
+            version: "24.10.6",
+            validationCommand: "sysupgrade -T /tmp/firmware.bin",
+          },
+        ],
+        [
+          {
+            id: "artifact-fw",
+            downloadUrl: "https://example.test/firmware.bin",
+            checksumSha256: "sha-fw",
+            signatureUrl: null,
+            version: "24.10.6",
+          },
+        ],
+      ]);
+      const caller = createProtectedCaller(updateRouter, mock.db) as {
+        queueFirmwareValidation: (input: {
+          routerId: string;
+          manifestId: string;
+        }) => Promise<unknown>;
+      };
+
+      await caller.queueFirmwareValidation({
+        routerId: CERTIFIED_LIKE_ROUTER_ID,
+        manifestId: "5d2f4e6a-8b1c-4d3e-9f5a-7b9c1d3e5f70",
+      });
+
+      expect(mock.counts().insertCalls).toBe(1);
+      expect(visits()).toEqual([visit("maintenance")]);
+    });
+  });
+
+  describe("diagnostics", () => {
+    it("a subscriptions inspection", async () => {
+      const mock = createMockDb([
+        [partnerRouter()],
+        [createPilotLayoutSnapshot("ubootmod")],
+        [],
+      ]);
+      const caller = createProtectedCaller(updateRouter, mock.db) as {
+        queueSubscriptionsInspect: (input: { routerId: string }) => Promise<unknown>;
+      };
+
+      await caller.queueSubscriptionsInspect({ routerId: CERTIFIED_LIKE_ROUTER_ID });
+
+      expect(mock.counts().insertCalls).toBe(1);
+      expect(visits()).toEqual([visit("diagnostics")]);
+    });
   });
 });

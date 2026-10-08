@@ -78,7 +78,10 @@ import {
   canRunUpdateAction,
   describeEffectiveRouterSupport,
 } from "~/server/vectra/support";
-import { notifyVendorAccessWithDb } from "~/server/vectra/vendor-access";
+import {
+  notifyVendorAccessForRoutersWithDb,
+  notifyVendorAccessWithDb,
+} from "~/server/vectra/vendor-access";
 
 const DEFAULT_PASSWALL_PACKAGE_LIST = [
   ...PASSWALL_MANAGED_STACK_REQUIRED_PACKAGES,
@@ -355,6 +358,11 @@ async function enqueuePasswallPackageUpdate(args: {
     })
     .returning();
 
+  await notifyVendorAccessWithDb(args.ctx.db, router, {
+    kind: "software_update",
+    by: "operator",
+  });
+
   return job;
 }
 
@@ -556,7 +564,31 @@ async function enqueueControllerUpdateJob(args: {
     })
     .returning();
 
+  await notifyVendorAccessWithDb(args.ctx.db, router, {
+    kind: "software_update",
+    by: "operator",
+  });
+
   return job;
+}
+
+/**
+ * A rollout is one operator action over many routers; each partner router it
+ * actually queued an apply for hears of it once. (The rollout executors are
+ * operator-only, and every apply they queue is new: its revision was just
+ * created.)
+ */
+async function announceQueuedRollout(
+  db: DatabaseClient,
+  results: ReadonlyArray<{ routerId: string; status: string }>,
+) {
+  await notifyVendorAccessForRoutersWithDb(
+    db,
+    results
+      .filter((result) => result.status === "queued")
+      .map((result) => result.routerId),
+    { kind: "config_apply", by: "operator" },
+  );
 }
 
 async function enqueueRouterRebootJob(args: {
@@ -605,7 +637,7 @@ async function enqueuePasswallClearIpsetsJob(args: {
   ctx: RouterMutationContext;
   routerId: string;
 }) {
-  await assertCertifiedRouter(args.ctx, args.routerId);
+  const { router } = await assertCertifiedRouter(args.ctx, args.routerId);
 
   const dedupeKey = `passwall_clear_ipsets:${args.routerId}`;
   const [existingJob] = await args.ctx.db
@@ -634,6 +666,11 @@ async function enqueuePasswallClearIpsetsJob(args: {
       payload: buildTerminalPasswallClearIpsetsPayload(),
     })
     .returning();
+
+  await notifyVendorAccessWithDb(args.ctx.db, router, {
+    kind: "maintenance",
+    by: "operator",
+  });
 
   return job;
 }
@@ -1126,7 +1163,9 @@ export const updateRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      return executeGlobalTemplateRollout(input, ctx.db);
+      const rollout = await executeGlobalTemplateRollout(input, ctx.db);
+      await announceQueuedRollout(ctx.db, rollout.results);
+      return rollout;
     }),
 
   queueGroupProfileRollout: protectedProcedure
@@ -1138,10 +1177,12 @@ export const updateRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      return queueGroupProfileRollout({
+      const rollout = await queueGroupProfileRollout({
         ...input,
         client: ctx.db,
       });
+      await announceQueuedRollout(ctx.db, rollout.results);
+      return rollout;
     }),
 
   queueBulkPasswallPackageUpdate: protectedProcedure
@@ -1411,7 +1452,7 @@ export const updateRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertCertifiedRouter(ctx, input.routerId);
+      const { router } = await assertCertifiedRouter(ctx, input.routerId);
 
       const dedupeKey = `refresh_subscriptions:${input.routerId}`;
       const [existingJob] = await ctx.db
@@ -1441,6 +1482,11 @@ export const updateRouter = createTRPCRouter({
         })
         .returning();
 
+      await notifyVendorAccessWithDb(ctx.db, router, {
+        kind: "maintenance",
+        by: "operator",
+      });
+
       return job;
     }),
 
@@ -1451,7 +1497,7 @@ export const updateRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await getRouterForMutation(ctx, input.routerId);
+      const { router } = await getRouterForMutation(ctx, input.routerId);
 
       const dedupeKey = `inspect_subscriptions:${input.routerId}`;
       const [existingJob] = await ctx.db
@@ -1481,6 +1527,11 @@ export const updateRouter = createTRPCRouter({
         })
         .returning();
 
+      await notifyVendorAccessWithDb(ctx.db, router, {
+        kind: "diagnostics",
+        by: "operator",
+      });
+
       return job;
     }),
 
@@ -1491,7 +1542,7 @@ export const updateRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertCertifiedRouter(ctx, input.routerId);
+      const { router } = await assertCertifiedRouter(ctx, input.routerId);
 
       const dedupeKey = `refresh_rules:${input.routerId}`;
       const [existingJob] = await ctx.db
@@ -1521,6 +1572,11 @@ export const updateRouter = createTRPCRouter({
         })
         .returning();
 
+      await notifyVendorAccessWithDb(ctx.db, router, {
+        kind: "maintenance",
+        by: "operator",
+      });
+
       return job;
     }),
 
@@ -1542,7 +1598,10 @@ export const updateRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { snapshot } = await assertCertifiedRouter(ctx, input.routerId);
+      const { router, snapshot } = await assertCertifiedRouter(
+        ctx,
+        input.routerId,
+      );
       const controllerVersion = resolveInstalledControllerVersion({
         controllerVersion: snapshot?.controllerVersion ?? null,
         payload: snapshot?.payload ?? null,
@@ -1592,6 +1651,11 @@ export const updateRouter = createTRPCRouter({
         })
         .returning();
 
+      await notifyVendorAccessWithDb(ctx.db, router, {
+        kind: "maintenance",
+        by: "operator",
+      });
+
       return job;
     }),
 
@@ -1620,7 +1684,7 @@ export const updateRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertCertifiedRouter(ctx, input.routerId);
+      const { router } = await assertCertifiedRouter(ctx, input.routerId);
 
       const [manifest] = await ctx.db
         .select()
@@ -1665,6 +1729,11 @@ export const updateRouter = createTRPCRouter({
           payload,
         })
         .returning();
+
+      await notifyVendorAccessWithDb(ctx.db, router, {
+        kind: "maintenance",
+        by: "operator",
+      });
 
       return job;
     }),

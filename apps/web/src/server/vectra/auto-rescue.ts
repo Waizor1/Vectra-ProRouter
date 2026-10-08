@@ -1350,8 +1350,12 @@ export async function queueRescueCaseSafeRepair(
 
   args.onInserted?.();
   if (args.requestedBy !== "auto_rescue") {
+    // A repair that is only a reconnect reads as one, however it was started
+    // (the router-level button, a case card or the Telegram button).
+    const onlyReconnect =
+      actions.length === 1 && actions[0] === "reconnect_proxy";
     await notifyVendorAccessWithDb(database, router, {
-      kind: "safe_repair",
+      kind: onlyReconnect ? "reconnect" : "safe_repair",
       by: args.requestedBy === "telegram" ? "telegram" : "operator",
     });
   }

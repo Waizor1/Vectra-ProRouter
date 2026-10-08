@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createCallerFactory } from "~/server/api/trpc";
+
+const { notifyVendorAccessWithDb } = vi.hoisted(() => ({
+  notifyVendorAccessWithDb: vi.fn(async (..._args: unknown[]) => null),
+}));
+vi.mock("~/server/vectra/vendor-access", () => ({ notifyVendorAccessWithDb }));
 
 import { optimizationRouter } from "./optimization";
 
@@ -151,5 +156,50 @@ describe("optimizationRouter.queueBaseline", () => {
     await expect(caller.queueBaseline({ routerId: ROUTER_ID })).rejects.toThrow(
       "Optimization baseline request could not be queued.",
     );
+  });
+});
+
+describe("optimizationRouter.queueBaseline and the partner's vendor-access notice", () => {
+  beforeEach(() => {
+    notifyVendorAccessWithDb.mockClear();
+  });
+
+  const partnerRouter = { id: ROUTER_ID, ownerRef: "bc_1", partnerId: "bloopcat" };
+
+  it("tells the router's partner when a baseline is queued", async () => {
+    const mock = createMockDb({
+      selectResponses: [[partnerRouter], []],
+      insertResponses: [[{ id: "job-1" }]],
+    });
+
+    await createProtectedCaller(mock.db).queueBaseline({ routerId: ROUTER_ID });
+
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledTimes(1);
+    expect(notifyVendorAccessWithDb).toHaveBeenCalledWith(mock.db, partnerRouter, {
+      kind: "diagnostics",
+      by: "operator",
+    });
+  });
+
+  it("says nothing when an active baseline is returned instead", async () => {
+    const mock = createMockDb({
+      selectResponses: [[partnerRouter], [{ id: "job-0" }]],
+    });
+
+    await createProtectedCaller(mock.db).queueBaseline({ routerId: ROUTER_ID });
+
+    expect(mock.insertedValues()).toHaveLength(0);
+    expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
+  });
+
+  it("says nothing when the insert lost a race and reused the other job", async () => {
+    const mock = createMockDb({
+      selectResponses: [[partnerRouter], [], [{ id: "job-race" }]],
+      insertResponses: [[]],
+    });
+
+    await createProtectedCaller(mock.db).queueBaseline({ routerId: ROUTER_ID });
+
+    expect(notifyVendorAccessWithDb).not.toHaveBeenCalled();
   });
 });
