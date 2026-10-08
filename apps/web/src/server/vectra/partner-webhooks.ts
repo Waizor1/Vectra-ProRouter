@@ -82,6 +82,8 @@ export async function enqueuePartnerWebhookWithDb(
     ownerRef: string;
     detail?: string | Record<string, unknown> | null;
     at?: Date;
+    // The partner the event belongs to; not used yet (the webhook still goes to Vectra Connect's).
+    partnerId?: string;
   },
 ) {
   if (!resolvePartnerWebhookTarget()) {

@@ -17,6 +17,11 @@ import {
 import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 
 import type { db } from "~/server/db";
+import { DEFAULT_PARTNER_ID } from "~/server/vectra/partner-registry";
+import {
+  routerOwnedByPartner,
+  routerPartnerId,
+} from "~/server/vectra/partner-scope";
 import {
   enqueuePartnerWebhookWithDb,
   schedulePartnerWebhookDelivery,
@@ -135,12 +140,15 @@ export function selectClaimTargetByCode(
   sealedCodeHash: string,
   ownerRef: string,
   now: Date,
+  partnerId: string = DEFAULT_PARTNER_ID,
 ): ClaimTarget {
   if (rows.length === 0) {
     return { kind: "reject", failure: fail(404, "unknown_code") };
   }
 
-  const owned = rows.find((row) => row.ownerRef === ownerRef);
+  const owned = rows.find(
+    (row) => row.ownerRef === ownerRef && routerPartnerId(row) === partnerId,
+  );
   if (owned) {
     return { kind: "already_claimed", router: owned };
   }
@@ -181,6 +189,7 @@ export function selectClaimTargetByDevice(
   presented: { devicePublicKey: string; sealedNonceCodeHash: string },
   ownerRef: string,
   now: Date,
+  partnerId: string = DEFAULT_PARTNER_ID,
 ): ClaimTarget {
   if (!router) {
     return { kind: "create" };
@@ -197,7 +206,7 @@ export function selectClaimTargetByDevice(
       failure: fail(400, "invalid", "device_key_mismatch"),
     };
   }
-  if (router.ownerRef === ownerRef) {
+  if (router.ownerRef === ownerRef && routerPartnerId(router) === partnerId) {
     return { kind: "already_claimed", router };
   }
 
@@ -247,6 +256,7 @@ async function resolveClaimTarget(
   client: ClaimsDatabase,
   request: PartnerRouterClaimRequest,
   now: Date,
+  partnerId: string,
 ): Promise<ClaimTarget> {
   if (request.device) {
     const nonce = decodeClaimNonce(request.device.nonce);
@@ -275,6 +285,7 @@ async function resolveClaimTarget(
       },
       request.owner.ref,
       now,
+      partnerId,
     );
   }
 
@@ -302,7 +313,13 @@ async function resolveClaimTarget(
     )
     .orderBy(desc(routers.claimExpiresAt))
     .limit(2);
-  return selectClaimTargetByCode(rows, sealedCodeHash, request.owner.ref, now);
+  return selectClaimTargetByCode(
+    rows,
+    sealedCodeHash,
+    request.owner.ref,
+    now,
+    partnerId,
+  );
 }
 
 /**
@@ -350,6 +367,8 @@ type ClaimWork = {
   userAgent: string | null;
   via: "code" | "device";
   now: Date;
+  // The partner that makes this claim; the router belongs to it from now on.
+  partnerId: string;
 };
 
 type ClaimTransaction = Parameters<
@@ -396,6 +415,7 @@ async function configureClaimedRouter(
     routerId: router.id,
     ownerRef: work.request.owner.ref,
     at: work.now,
+    partnerId: work.partnerId,
   });
 }
 
@@ -410,6 +430,7 @@ async function claimExistingRouter(
       .set({
         ownerRef: work.request.owner.ref,
         ownerLabel: work.request.owner.label,
+        partnerId: work.partnerId,
         claimedAt: work.now,
         // A new owner ends a previous release.
         releasedAt: null,
@@ -457,6 +478,7 @@ async function claimUnregisteredRouter(
         approvedAt: work.now,
         ownerRef: work.request.owner.ref,
         ownerLabel: work.request.owner.label,
+        partnerId: work.partnerId,
         claimedAt: work.now,
       })
       // The router registered in between: claim it as an existing one.
@@ -487,6 +509,7 @@ export async function claimRouterWithDb(
   options: { now?: Date; partnerId?: string } = {},
 ): Promise<RouterClaimOutcome> {
   const now = options.now ?? new Date();
+  const partnerId = options.partnerId ?? DEFAULT_PARTNER_ID;
 
   // The same boundary checks draft.configureXray relies on, before any write.
   // Absent/null is the router's own signed agent — passed through as null,
@@ -515,12 +538,13 @@ export async function claimRouterWithDb(
     userAgent,
     via: request.device ? "device" : "code",
     now,
+    partnerId,
   };
 
   // A lost race (a concurrent claim or first registration got there first)
   // is resolved by looking again: the second look sees the winner.
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const target = await resolveClaimTarget(client, request, now);
+    const target = await resolveClaimTarget(client, request, now, partnerId);
 
     if (target.kind === "reject") {
       return target.failure;
@@ -585,7 +609,7 @@ const CLAIM_JOB_TYPES: Array<(typeof jobs.$inferSelect)["type"]> = [
  */
 export async function unbindRouterClaimWithDb(
   client: ClaimsDatabase,
-  input: { routerId: string; ownerRef: string },
+  input: { routerId: string; ownerRef: string; partnerId?: string },
   options: { now?: Date } = {},
 ): Promise<RouterUnbindOutcome> {
   // The schema requires it; refused here too, so no caller can unbind a
@@ -603,7 +627,11 @@ export async function unbindRouterClaimWithDb(
   if (!router?.ownerRef) {
     return fail(404, "not_claimed");
   }
-  if (input.ownerRef !== router.ownerRef) {
+  const partnerId = input.partnerId ?? DEFAULT_PARTNER_ID;
+  if (
+    input.ownerRef !== router.ownerRef ||
+    routerPartnerId(router) !== partnerId
+  ) {
     return fail(409, "claimed_by_other");
   }
   const previousOwnerRef = router.ownerRef;
@@ -619,6 +647,8 @@ export async function unbindRouterClaimWithDb(
         claimExpiresAt: null,
         previousClaimCodeHash: null,
         previousClaimExpiresAt: null,
+        // An unlinked router belongs to no partner.
+        partnerId: null,
         approvedAt: null,
         importState: "awaiting_import",
         activeRevisionId: null,
@@ -627,7 +657,11 @@ export async function unbindRouterClaimWithDb(
         releasedAt: now,
       })
       .where(
-        and(eq(routers.id, router.id), eq(routers.ownerRef, previousOwnerRef)),
+        and(
+          eq(routers.id, router.id),
+          eq(routers.ownerRef, previousOwnerRef),
+          routerOwnedByPartner(partnerId),
+        ),
       )
       .returning();
     if (!updated) {

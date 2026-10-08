@@ -5,6 +5,7 @@ import {
   routerCheckInResponseSchema,
   routerRegisterResponseSchema,
 } from "@vectra/contracts";
+import { routerPartnerId } from "./partner-scope";
 
 describe("partner scoping schema", () => {
   it("stores the partner of a router and of a webhook", () => {
@@ -26,5 +27,13 @@ describe("partner scoping schema", () => {
   it("lets a register answer name the owner's brand", () => {
     const shape = routerRegisterResponseSchema.shape as Record<string, unknown>;
     expect(shape.brand).toBeDefined();
+  });
+});
+
+describe("routerPartnerId", () => {
+  it("reads a router without a partner as Vectra Connect's", () => {
+    expect(routerPartnerId({ partnerId: null })).toBe("vectra");
+    expect(routerPartnerId({})).toBe("vectra");
+    expect(routerPartnerId({ partnerId: "bloopcat" })).toBe("bloopcat");
   });
 });
