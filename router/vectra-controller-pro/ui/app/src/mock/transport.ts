@@ -453,7 +453,7 @@ export function createMock(opts: MockOptions = {}): Mock {
           return fail('invalid_params', 'params must be {"on": true} or {"on": false}');
         if (powerBusy) return fail('busy', 'another power change is still in flight');
         const pw = s.power;
-        if (on && pw.wouldIdle === true && p.force !== true) return fail('would_idle', 'Vectra would carry no traffic yet');
+        if (on && pw.wouldIdle === true && p.force !== true) return fail('would_idle', 'vctl would carry no traffic yet');
         if (on && pw.enabled === true && pw.running === true) return ok('power_on');
         if (!on && pw.enabled === false && pw.running === false) return ok('power_off');
         powerBusy = true;

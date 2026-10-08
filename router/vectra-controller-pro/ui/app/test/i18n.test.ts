@@ -55,6 +55,26 @@ describe('string table', () => {
       for (const s of forms) expect(s, key).not.toMatch(/Vectra/);
     }
   });
+
+  it('shows "vectra" in any case only as the package id a technician types, named as a package — never as the service or a module', () => {
+    const PACKAGE = [/пакет vectra-controller-pro/g, /the vectra-controller-pro package/g, /vectra-controller-pro 软件包/g];
+    for (const [key, row] of entries) {
+      row.forEach((s, i) => expect(s.replace(PACKAGE[i], ''), `${key}[${LANGS[i]}]`).not.toMatch(/vectra/i));
+    }
+  });
+
+  it('says the same technical errors on every router: the program on the router, the package by its id', () => {
+    const T = makeT('ru');
+    expect(T('err.not_found')).toBe('Программа на роутере не отвечает');
+    expect(T('err.not_found.hint')).toBe('Установите пакет vectra-controller-pro или перезапустите rpcd.');
+    expect(T('err.access')).toBe('Нет доступа к программе на роутере');
+    expect(T('err.method.hint')).toBe('Обновите пакет vectra-controller-pro.');
+    expect(makeT('en')('err.not_found')).toBe('The router’s program does not respond');
+    expect(makeT('en')('err.method.hint')).toBe('Update the vectra-controller-pro package.');
+    for (const b of [VECTRA, BLOOPCAT, NONE, null]) {
+      for (const k of ['err.not_found', 'err.not_found.hint', 'err.access', 'err.method.hint'] as Key[]) expect(brandT(T, b)(k), k).toBe(T(k));
+    }
+  });
 });
 
 const VECTRA = { id: 'vectra', name: 'Vectra' };

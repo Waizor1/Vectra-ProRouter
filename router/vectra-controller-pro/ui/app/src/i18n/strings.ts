@@ -87,12 +87,15 @@ export const S = {
   ],
 
   // ── transport errors (Pro) ─────────────────────────────────────────────
-  'err.not_found': ['Модуль vectra не найден', 'The vectra module is missing', '找不到 vectra 模块'],
-  'err.not_found.hint': ['Установите пакет vectra-controller-pro или перезапустите rpcd.', 'Install vectra-controller-pro or restart rpcd.', '请安装 vectra-controller-pro 或重启 rpcd。'],
-  'err.access': ['Нет доступа к модулю vectra', 'Access to vectra denied', '无权访问 vectra'],
+  // One wording on every router (technical errors): the program on the
+  // router, and the package by the id a technician types — never "vectra" as
+  // the service or a module.
+  'err.not_found': ['Программа на роутере не отвечает', 'The router’s program does not respond', '路由器上的程序无响应'],
+  'err.not_found.hint': ['Установите пакет vectra-controller-pro или перезапустите rpcd.', 'Install the vectra-controller-pro package or restart rpcd.', '请安装 vectra-controller-pro 软件包或重启 rpcd。'],
+  'err.access': ['Нет доступа к программе на роутере', 'Access to the router’s program denied', '无权访问路由器上的程序'],
   'err.access.hint': ['Обновите страницу и войдите в LuCI заново.', 'Reload the page and sign in to LuCI again.', '请刷新页面并重新登录 LuCI。'],
   'err.method': ['Контроллер не знает этот запрос', 'The controller does not know this request', '控制器不支持此请求'],
-  'err.method.hint': ['Обновите пакет vectra-controller-pro.', 'Update vectra-controller-pro.', '请更新 vectra-controller-pro。'],
+  'err.method.hint': ['Обновите пакет vectra-controller-pro.', 'Update the vectra-controller-pro package.', '请更新 vectra-controller-pro 软件包。'],
   'err.timeout': ['Контроллер не ответил вовремя', 'The controller timed out', '控制器响应超时'],
   'err.timeout.hint': ['Повторим автоматически.', 'Retrying automatically.', '将自动重试。'],
   'err.network': ['Нет связи с роутером', 'The router is unreachable', '无法连接路由器'],

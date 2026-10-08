@@ -650,7 +650,7 @@ describe('Vectra on and off', () => {
     const call: CallFn = (m, p) => {
       if (m !== 'set_power') return w(m, p);
       calls.push(JSON.stringify(p));
-      return Promise.resolve(p?.force === true ? { ok: true, code: 'pending', detail: null } : { ok: false, code: 'would_idle', detail: 'Vectra would carry no traffic yet' });
+      return Promise.resolve(p?.force === true ? { ok: true, code: 'pending', detail: null } : { ok: false, code: 'would_idle', detail: 'vctl would carry no traffic yet' });
     };
     const app = start({ call });
     await settle();

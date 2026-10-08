@@ -67,6 +67,12 @@ service's name. Colours and layout are the same for everyone.
 
 ### Changed
 - **The LuCI menu entry says «VPN»** (it said «Vectra»): it names no service.
+- **Technical errors name no service.** The Pro view's «the program on the
+  router does not respond» / «no access to it» / «update the package» say
+  so on every router (they said «Модуль vectra»), with the package id a
+  technician types (`vectra-controller-pro`) named as a package; the
+  `would_idle` detail of `set_power` says «vctl would carry no traffic
+  yet» (it said «Vectra …»).
 - **Unbinding forgets the brand** the router learned (from the claim or the
   subscription) with the rest of the previous owner's state; it falls back to
   the installer's label, else neutral.

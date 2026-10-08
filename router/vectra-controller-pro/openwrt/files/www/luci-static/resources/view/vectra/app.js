@@ -13,7 +13,7 @@
  */
 
 var APP_SRC = '/luci-static/vectra/vectra-app.js';
-var APP_VERSION = '0.1.0-3ad93e38e5'; // stamped by `npm run build` in ui/app — do not edit by hand
+var APP_VERSION = '0.1.0-c6c98e2096'; // stamped by `npm run build` in ui/app — do not edit by hand
 
 var declared = {};
 
