@@ -506,12 +506,12 @@ async function deliverPartnerRow(
   );
 
   if (result.ok) {
-    summary.delivered += 1;
     // Not tied to this lease's attempts: a 2xx/409 means the partner has the
     // event (the row id is its dedupe key), whichever lease sent it. Leaving
     // it undelivered would send it again, or give up on an event the partner
-    // holds. Only a row nobody has marked delivered yet is stamped.
-    await client
+    // holds. Only a row nobody has marked delivered yet is stamped, and only
+    // a row this send stamped is counted.
+    const [marked] = await client
       .update(partnerWebhooks)
       .set({
         deliveredAt: new Date(),
@@ -521,7 +521,11 @@ async function deliverPartnerRow(
       })
       .where(
         and(eq(partnerWebhooks.id, leased.id), isNull(partnerWebhooks.deliveredAt)),
-      );
+      )
+      .returning({ id: partnerWebhooks.id });
+    if (marked) {
+      summary.delivered += 1;
+    }
     return;
   }
 

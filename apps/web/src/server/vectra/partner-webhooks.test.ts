@@ -387,10 +387,17 @@ describe("webhooks per partner", () => {
     const second = dueRow({ id: "w-2", partnerId: "bloopcat" });
     const fake = createFakeDb({
       selects: [[partnerWebhooks, [[first, second]]]],
+      // Per row: its lease, then the delivered mark (which reports the row
+      // it touched).
       updateReturns: [
         [
           partnerWebhooks,
-          [[{ ...first, attempts: 1 }], [{ ...second, attempts: 1 }]],
+          [
+            [{ ...first, attempts: 1 }],
+            [{ id: first.id }],
+            [{ ...second, attempts: 1 }],
+            [{ id: second.id }],
+          ],
         ],
       ],
     });
@@ -840,7 +847,13 @@ function webhookTable(
       }),
     }),
   };
-  return { ...base, db, row: (id: string) => ({ ...table.get(id)! }) };
+  return {
+    ...base,
+    db,
+    row: (id: string) => ({ ...table.get(id)! }),
+    // How many due-row SELECTs were made.
+    reads: () => read,
+  };
 }
 
 // BloopCat's endpoint hangs (every attempt can take the full 10 s timeout) and
@@ -1253,6 +1266,65 @@ describe("a partner delivery that stops making progress", () => {
     }
   });
 
+  // In production the sweep's 30 s passes keep finding the hung flight during
+  // its first 5 minutes and set its rerun. When its send finally settles
+  // after it was replaced, that rerun must not send it back for more rows.
+  it("a replaced delivery that wakes with a rerun stands down: no select, no lease, no third flight", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const current = (table: Map<string, Record<string, unknown>>) => [
+        { ...table.get("w-1")! },
+      ];
+      // Three passes read the row; a fourth read would be the old flight's.
+      const fake = webhookTable(
+        [dueRow({ id: "w-1", partnerId: "bloopcat" })],
+        [current, current, current, current],
+      );
+      // The first two sends hang until released (the old one then fails);
+      // any later send would be answered at once.
+      const gates: Array<() => void> = [];
+      let sends = 0;
+      const fetchImpl = async () => {
+        sends += 1;
+        const status = sends === 1 ? 500 : 200;
+        if (sends <= 2) await new Promise<void>((resolve) => gates.push(resolve));
+        return { ok: status === 200, status, body: null };
+      };
+
+      const first = dispatchDuePartnerWebhooksWithDb(fake.db as never, { fetchImpl });
+      await vi.waitFor(() => expect(sends).toBe(1));
+      const hung = flightOf("bloopcat")!;
+
+      vi.setSystemTime(at(4 * 60_000));
+      await dispatchDuePartnerWebhooksWithDb(fake.db as never, { fetchImpl });
+      expect(flightOf("bloopcat")).toBe(hung);
+      expect(hung.rerun).toBe(true);
+
+      vi.setSystemTime(at(STALE_MS + 1_000));
+      const third = dispatchDuePartnerWebhooksWithDb(fake.db as never, { fetchImpl });
+      await vi.waitFor(() => expect(sends).toBe(2));
+      const successor = flightOf("bloopcat")!;
+      expect(successor).not.toBe(hung);
+
+      // The old send comes back, its rerun still set, while the new one hangs.
+      gates[0]!();
+      await first;
+
+      expect(fake.reads()).toBe(3);
+      expect(sends).toBe(2);
+      // Two leases: the old flight's and its successor's.
+      expect(fake.row("w-1")).toMatchObject({ attempts: 2, deliveredAt: null });
+      expect(flightOf("bloopcat")).toBe(successor);
+
+      gates[1]!();
+      await third;
+      expect(fake.row("w-1").deliveredAt).toBeInstanceOf(Date);
+      expect(flightOf("bloopcat")).toBeUndefined();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   // The replaced flight's hung send settles only after the new flight has
   // re-leased the row (attempts moved on) and written its own outcome. What
   // the old send learned is about a lease that is no longer the row's.
@@ -1279,6 +1351,7 @@ describe("a partner delivery that stops making progress", () => {
       row: ReturnType<typeof dueRow>,
       statuses: number[],
     ) {
+      vi.setSystemTime(NOW);
       const fake = webhookTable([row], [
         (table) => [{ ...table.get(row.id)! }],
         (table) => [{ ...table.get(row.id)! }],
@@ -1289,14 +1362,15 @@ describe("a partner delivery that stops making progress", () => {
       });
       await vi.waitFor(() => expect(endpoint.calls()).toBe(1));
       vi.setSystemTime(at(STALE_MS + 1_000));
-      await dispatchDuePartnerWebhooksWithDb(fake.db as never, {
+      const newSummary = await dispatchDuePartnerWebhooksWithDb(fake.db as never, {
         fetchImpl: endpoint.fetchImpl,
       });
       expect(endpoint.calls()).toBe(2);
       const afterNewFlight = fake.row(row.id);
       endpoint.release();
-      await first;
-      return { fake, afterNewFlight };
+      // The pass that started the old flight resolves once it is done.
+      const oldSummary = await first;
+      return { fake, afterNewFlight, oldSummary, newSummary };
     }
 
     it("a late error leaves lastError, nextAttemptAt and attempts as the new flight wrote them", async () => {
@@ -1367,6 +1441,29 @@ describe("a partner delivery that stops making progress", () => {
           nextAttemptAt: null,
         });
         expect(fake.row("w-1").deliveredAt).toBeInstanceOf(Date);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it("counts a late success as delivered only when it marked the row", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        // The new flight delivered first: the old 409 marks nothing.
+        const already = await hangThenReplace(
+          dueRow({ id: "w-1", partnerId: "bloopcat" }),
+          [409, 200],
+        );
+        expect(already.newSummary).toMatchObject({ attempted: 1, delivered: 1 });
+        expect(already.oldSummary).toMatchObject({ attempted: 1, delivered: 0 });
+
+        // The new flight's attempt failed: the old 200 is what marks it.
+        const late = await hangThenReplace(
+          dueRow({ id: "w-2", partnerId: "bloopcat" }),
+          [200, 503],
+        );
+        expect(late.newSummary).toMatchObject({ delivered: 0, rescheduled: 1 });
+        expect(late.oldSummary).toMatchObject({ delivered: 1 });
       } finally {
         error.mockRestore();
       }
