@@ -59,6 +59,9 @@ export async function notifyPartnerCheckInWithDb(
 ): Promise<PartnerCheckInReadback> {
   const readback: PartnerCheckInReadback = {};
   if (!previousRouter.ownerRef || previousRouter.releasedAt) return readback;
+  // The partner read with the router; the lock is for it alone, so a router
+  // that changed hands in between tells the other partner nothing.
+  const partnerId = routerPartnerId(previousRouter);
   await client.transaction(async (tx) => {
     const [current] = await tx
       .update(routers)
@@ -67,11 +70,16 @@ export async function notifyPartnerCheckInWithDb(
         and(
           eq(routers.id, previousRouter.id),
           eq(routers.ownerRef, previousRouter.ownerRef!),
+          routerOwnedByPartner(partnerId),
           isNull(routers.releasedAt),
         ),
       )
       .returning();
-    if (current?.ownerRef !== previousRouter.ownerRef || current.releasedAt)
+    if (
+      current?.ownerRef !== previousRouter.ownerRef ||
+      current.releasedAt ||
+      routerPartnerId(current) !== partnerId
+    )
       return;
     const [prior] = await tx
       .select()
@@ -113,7 +121,7 @@ export async function notifyPartnerCheckInWithDb(
         routerId: previousRouter.id,
         ownerRef: previousRouter.ownerRef!,
         at: now,
-        partnerId: routerPartnerId(previousRouter),
+        partnerId,
       });
   });
   return readback;
@@ -146,6 +154,8 @@ export async function sweepPartnerOfflineWithDb(
       router.status === "disabled"
     )
       continue;
+    // As read above: only that partner's router is marked and told.
+    const partnerId = routerPartnerId(router);
     await client.transaction(async (tx) => {
       const [updated] = await tx
         .update(routers)
@@ -154,6 +164,7 @@ export async function sweepPartnerOfflineWithDb(
           and(
             eq(routers.id, router.id),
             eq(routers.ownerRef, router.ownerRef!),
+            routerOwnedByPartner(partnerId),
             eq(routers.lastSeenAt, router.lastSeenAt!),
             ne(routers.status, "offline"),
             ne(routers.status, "disabled"),
@@ -161,13 +172,13 @@ export async function sweepPartnerOfflineWithDb(
           ),
         )
         .returning();
-      if (updated)
+      if (updated && routerPartnerId(updated) === partnerId)
         await enqueuePartnerWebhookWithDb(tx, {
           event: "router.offline",
           routerId: router.id,
           ownerRef: router.ownerRef!,
           at: now,
-          partnerId: routerPartnerId(router),
+          partnerId,
         });
     });
   }

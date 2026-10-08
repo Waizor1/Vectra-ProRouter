@@ -272,6 +272,69 @@ describe("listPartners / findPartner", () => {
     expect(findPartner("nobody")).toBeNull();
   });
 
+  // Every check-in asks the registry several times: it is read once per
+  // configuration, and read again as soon as any of its variables changes.
+  it("reads the configuration once, until one of its four variables changes", async () => {
+    setEnv({ ...LEGACY_ENV, VECTRA_PARTNERS: JSON.stringify([BLOOP]) });
+    const { listPartners, findPartner } = await freshRegistry();
+    const first = listPartners();
+    const parse = vi.spyOn(JSON, "parse");
+
+    expect(listPartners()).toBe(first);
+    expect(findPartner("bloopcat")).toBe(first[1]);
+    expect(findPartner("vectra")).toBe(first[0]);
+    expect(parse).not.toHaveBeenCalled();
+
+    const changes: Array<[string, string, () => unknown, unknown]> = [
+      [
+        "VECTRA_PARTNERS",
+        JSON.stringify([{ ...BLOOP, label: "Bloop" }]),
+        () => findPartner("bloopcat")?.label,
+        "Bloop",
+      ],
+      [
+        "VECTRA_PARTNER_SECRET",
+        "rotated-legacy-secret-0123456789abcdef",
+        () => findPartner("vectra")?.secrets,
+        ["rotated-legacy-secret-0123456789abcdef"],
+      ],
+      [
+        "VECTRA_CONNECT_WEBHOOK_URL",
+        "https://moved.example/partner/prorouter/webhook",
+        () => findPartner("vectra")?.webhook?.url,
+        "https://moved.example/partner/prorouter/webhook",
+      ],
+      [
+        "VECTRA_CONNECT_WEBHOOK_SECRET",
+        "rotated-webhook-secret-0123456789abcdef",
+        () => findPartner("vectra")?.webhook?.secret,
+        "rotated-webhook-secret-0123456789abcdef",
+      ],
+    ];
+    let previous = first;
+    for (const [name, value, read, expected] of changes) {
+      envMock.env[name] = value;
+      expect(read()).toEqual(expected);
+      expect(listPartners()).not.toBe(previous);
+      previous = listPartners();
+      expect(listPartners()).toBe(previous);
+    }
+  });
+
+  it("hands every caller the same list, which none of them can change", async () => {
+    setEnv({ ...LEGACY_ENV, VECTRA_PARTNERS: JSON.stringify([BLOOP]) });
+    const { listPartners, findPartner } = await freshRegistry();
+    expect(() => listPartners().push(LEGACY_PARTNER)).toThrow(TypeError);
+    expect(() => {
+      findPartner("bloopcat")!.secrets.push("x".repeat(40));
+    }).toThrow(TypeError);
+    expect(() => {
+      (findPartner("vectra") as { label: string }).label = "Other";
+    }).toThrow(TypeError);
+    expect(listPartners().map((p) => p.id)).toEqual(["vectra", "bloopcat"]);
+    expect(findPartner("vectra")?.label).toBe("Vectra");
+  });
+
   it("is the unconfigured default partner alone when nothing is set", async () => {
     setEnv({});
     const { listPartners, findPartner } = await freshRegistry();

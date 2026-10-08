@@ -1253,3 +1253,78 @@ describe("unbindRouterClaimWithDb", () => {
     });
   });
 });
+
+// The journal and the revision note name the partner the router is linked to
+// (its label, or its id when the registry does not know it), not "Vectra" for
+// everyone.
+describe("the claim and unbind journal names the partner", () => {
+  const BLOOP_PARTNERS = JSON.stringify([
+    {
+      id: "bloopcat",
+      brand: "bloopcat",
+      label: "BloopCat",
+      secrets: ["router-claims-bloopcat-partner-secret-0123"],
+    },
+  ]);
+
+  function withPartners<T>(run: () => Promise<T>) {
+    envMock.env.VECTRA_PARTNERS = BLOOP_PARTNERS;
+    return run().finally(() => {
+      delete envMock.env.VECTRA_PARTNERS;
+    });
+  }
+
+  it.each([
+    [undefined, "Vectra", "vectra"],
+    ["bloopcat", "BloopCat", "bloopcat"],
+    ["ghost", "ghost", "ghost"],
+  ])("a claim by %s says %s and records %s", (partnerId, name, recorded) =>
+    withPartners(async () => {
+      const fake = createFakeDb(claimableScript());
+
+      await claimRouterWithDb(fake.db as never, claimRequest(), {
+        now: NOW,
+        ...(partnerId ? { partnerId } : {}),
+      });
+
+      const [entry] = fake.inserts(eventLog);
+      expect(entry).toMatchObject({
+        type: "router.claimed",
+        message: `Router linked to a ${name} account by code; approved and configured for xray-direct.`,
+        metadata: { ownerRef: "acct-42", partnerId: recorded },
+      });
+      expect(fake.inserts(passwallDesiredRevisions)[0]).toMatchObject({
+        note: `Partner claim: linked to a ${name} account.`,
+      });
+    }),
+  );
+
+  it.each([
+    [undefined, null, "Vectra", "vectra"],
+    ["bloopcat", "bloopcat", "BloopCat", "bloopcat"],
+  ])("an unbind by %s (of a router owned by %s) says %s and records %s", (partnerId, owner, name, recorded) =>
+    withPartners(async () => {
+      const owned = routerRow({ ownerRef: "acct-42", partnerId: owner, status: "active" });
+      const fake = createFakeDb({
+        selects: [[routers, [[owned]]]],
+        updateReturns: [
+          [routers, [[{ ...owned, ownerRef: null, partnerId: null, releasedAt: NOW }]]],
+        ],
+      });
+
+      expect(
+        await unbindRouterClaimWithDb(
+          fake.db as never,
+          { routerId: ROUTER_ID, ownerRef: "acct-42", ...(partnerId ? { partnerId } : {}) },
+          { now: NOW },
+        ),
+      ).toMatchObject({ ok: true });
+
+      expect(fake.inserts(eventLog)[0]).toMatchObject({
+        type: "router.claim.unbound",
+        message: `Router unlinked from its ${name} account; approval and config withdrawn.`,
+        metadata: { previousOwnerRef: "acct-42", partnerId: recorded },
+      });
+    }),
+  );
+});

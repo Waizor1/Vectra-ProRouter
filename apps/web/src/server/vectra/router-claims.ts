@@ -17,7 +17,7 @@ import {
 import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 
 import type { db } from "~/server/db";
-import { DEFAULT_PARTNER_ID } from "~/server/vectra/partner-registry";
+import { DEFAULT_PARTNER_ID, findPartner } from "~/server/vectra/partner-registry";
 import {
   routerOwnedByPartner,
   routerPartnerId,
@@ -375,6 +375,11 @@ type ClaimTransaction = Parameters<
   Parameters<ClaimsDatabase["transaction"]>[0]
 >[0];
 
+/** How the journal names a partner: its label, or its id when it is not listed. */
+function partnerName(partnerId: string) {
+  return findPartner(partnerId)?.label ?? partnerId;
+}
+
 // Author the owner's config, queue its apply and record the claim — inside
 // the caller's transaction.
 async function configureClaimedRouter(
@@ -383,9 +388,10 @@ async function configureClaimedRouter(
   work: ClaimWork,
   preRegistered: boolean,
 ) {
+  const partner = partnerName(work.partnerId);
   const revision = await configureXrayRevisionWithDb(tx, {
     router,
-    note: "Partner claim: linked to a Vectra account.",
+    note: `Partner claim: linked to a ${partner} account.`,
     subscriptionUrl: work.subscriptionUrl,
     userAgent: work.userAgent,
     entryRemark: null,
@@ -401,9 +407,10 @@ async function configureClaimedRouter(
     routerId: router.id,
     type: "router.claimed",
     severity: "info",
-    message: `Router linked to a Vectra account by ${work.via}; approved and configured for xray-direct.`,
+    message: `Router linked to a ${partner} account by ${work.via}; approved and configured for xray-direct.`,
     metadata: {
       ownerRef: work.request.owner.ref,
+      partnerId: work.partnerId,
       via: work.via,
       preRegistered,
       revisionId: revision.id,
@@ -732,10 +739,10 @@ export async function unbindRouterClaimWithDb(
       routerId: router.id,
       type: "router.claim.unbound",
       severity: "warning",
-      message:
-        "Router unlinked from its Vectra account; approval and config withdrawn.",
+      message: `Router unlinked from its ${partnerName(partnerId)} account; approval and config withdrawn.`,
       metadata: {
         previousOwnerRef,
+        partnerId,
         cancelledJobIds: cancelledJobs.map((job) => job.id),
         purgedRevisionIds: revisionIds,
         closedRescueCaseIds: closedCases.map((rescueCase) => rescueCase.id),

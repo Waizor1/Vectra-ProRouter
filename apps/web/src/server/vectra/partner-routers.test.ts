@@ -1053,6 +1053,86 @@ describe("a router's webhooks carry its partner", () => {
   });
 });
 
+// The check-in and the offline sweep read the router, then lock it with a
+// conditional UPDATE before they tell its partner. That lock is for the
+// partner they read, as for an action result: a router that changed hands in
+// between is told nothing about the other partner.
+describe("check-in and offline events lock the router of the partner they tell", () => {
+  const LONG_AGO = new Date(NOW.getTime() - 600_000);
+
+  function capturing(script: Parameters<typeof createFakeDb>[0]) {
+    const base = createFakeDb(script);
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      ...base.db,
+      update: (table: unknown) => ({
+        set: (set: Record<string, unknown>) => ({
+          where: (condition: SQL) => {
+            if (table === routers) queries.push(dialect.sqlToQuery(condition));
+            return base.db.update(table).set(set).where();
+          },
+        }),
+      }),
+      transaction: async <T>(run: (tx: unknown) => Promise<T>) => run(db),
+    };
+    return { base, db, queries };
+  }
+
+  function expectPartnerLock(
+    query: { sql: string; params: unknown[] } | undefined,
+    partnerId: string,
+    orNull: boolean,
+  ) {
+    expect(query!.sql).toMatch(/"partner_id" = \$\d+/);
+    expect(query!.params).toEqual(expect.arrayContaining([partnerId]));
+    if (orNull) expect(query!.sql).toMatch(/"partner_id" is null/);
+    else expect(query!.sql).not.toMatch(/"partner_id" is null/);
+  }
+
+  it.each([
+    ["bloopcat", "bloopcat", false],
+    [null, "vectra", true],
+  ] as const)("check-in of a router owned by %s locks it for %s", async (owner, partnerId, orNull) => {
+    const previous = router({ partnerId: owner, lastSeenAt: LONG_AGO });
+    const { base, db, queries } = capturing({ updateReturns: [[routers, [[previous]]]] });
+    await notifyPartnerCheckInWithDb(db as never, previous, {} as never, NOW);
+    expect(queries).toHaveLength(1);
+    expectPartnerLock(queries[0], partnerId, orNull);
+    expect(base.inserts(partnerWebhooks)).toHaveLength(1);
+  });
+
+  it.each([
+    ["bloopcat", "bloopcat", false],
+    [null, "vectra", true],
+  ] as const)("the offline sweep of a router owned by %s locks it for %s", async (owner, partnerId, orNull) => {
+    const stale = router({ partnerId: owner, lastSeenAt: LONG_AGO });
+    const { base, db, queries } = capturing({
+      selects: [[routers, [[stale]]]],
+      updateReturns: [[routers, [[stale]]]],
+    });
+    await sweepPartnerOfflineWithDb(db as never, NOW);
+    expect(queries).toHaveLength(1);
+    expectPartnerLock(queries[0], partnerId, orNull);
+    expect(base.inserts(partnerWebhooks)).toHaveLength(1);
+  });
+
+  it("tells nobody when the locked router now belongs to another partner", async () => {
+    const previous = router({ partnerId: null, lastSeenAt: LONG_AGO });
+    const checkIn = createFakeDb({
+      updateReturns: [[routers, [[router({ partnerId: "bloopcat", lastSeenAt: LONG_AGO })]]]],
+    });
+    await notifyPartnerCheckInWithDb(checkIn.db as never, previous, {} as never, NOW);
+    expect(checkIn.inserts(partnerWebhooks)).toEqual([]);
+
+    const sweep = createFakeDb({
+      selects: [[routers, [[router({ partnerId: "bloopcat", lastSeenAt: LONG_AGO })]]]],
+      updateReturns: [[routers, [[router({ partnerId: "vectra", lastSeenAt: LONG_AGO })]]]],
+    });
+    await sweepPartnerOfflineWithDb(sweep.db as never, NOW);
+    expect(sweep.inserts(partnerWebhooks)).toEqual([]);
+  });
+});
+
 describe("HTTP to native job to signed fake-provider webhook", () => {
   it("preserves the action and ownership across the complete local boundary", async () => {
     const fake = queueDb();

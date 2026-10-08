@@ -154,13 +154,11 @@ export function partnersFrom(e: PartnerEnv): PartnerConfig[] {
 let lastReported: string | null = null;
 
 /**
- * Every partner of the running process. A VECTRA_PARTNERS that does not
- * validate must never take Vectra Connect down with it: the error is logged
- * once (it names the variable, never a value) and the default partner, as the
- * old variables configure it, is served alone.
+ * A VECTRA_PARTNERS that does not validate must never take Vectra Connect down
+ * with it: the error is logged once (it names the variable, never a value) and
+ * the default partner, as the old variables configure it, is served alone.
  */
-export function listPartners(): PartnerConfig[] {
-  const e = env as PartnerEnv;
+function readPartners(e: PartnerEnv): PartnerConfig[] {
   try {
     return partnersFrom(e);
   } catch (error) {
@@ -177,6 +175,46 @@ export function listPartners(): PartnerConfig[] {
     }
     return [legacyPartner(e)];
   }
+}
+
+// The variables the registry is read from: it is read again only when one of
+// them changes (a check-in asks it several times; parsing is JSON + zod +
+// secret checks every time).
+const REGISTRY_VARIABLES = [
+  "VECTRA_PARTNERS",
+  "VECTRA_PARTNER_SECRET",
+  "VECTRA_CONNECT_WEBHOOK_URL",
+  "VECTRA_CONNECT_WEBHOOK_SECRET",
+] as const satisfies ReadonlyArray<keyof PartnerEnv>;
+
+let remembered: { from: Array<string | undefined>; partners: PartnerConfig[] } | null =
+  null;
+
+/**
+ * The list every caller shares, frozen: a caller that changed it would change
+ * it for every later request.
+ */
+function freeze(partners: PartnerConfig[]): PartnerConfig[] {
+  for (const partner of partners) {
+    Object.freeze(partner.secrets);
+    if (partner.webhook) Object.freeze(partner.webhook);
+    if (partner.claimKey) Object.freeze(partner.claimKey);
+    Object.freeze(partner);
+  }
+  return Object.freeze(partners) as PartnerConfig[];
+}
+
+/** Every partner of the running process (see readPartners for a bad config). */
+export function listPartners(): PartnerConfig[] {
+  const e = env as PartnerEnv;
+  const from = REGISTRY_VARIABLES.map((name) => e[name]);
+  if (
+    !remembered ||
+    from.some((value, index) => value !== remembered!.from[index])
+  ) {
+    remembered = { from, partners: freeze(readPartners(e)) };
+  }
+  return remembered.partners;
 }
 
 export function findPartner(id: string): PartnerConfig | null {

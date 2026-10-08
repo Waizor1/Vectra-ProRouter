@@ -12,6 +12,7 @@ import {
   readPartnerRoutersWithDb,
 } from "./partner-routers";
 import { routerOwnedByPartner } from "./partner-scope";
+import { selectDuePartnerWebhooksWithDb } from "./partner-webhooks";
 import { unbindRouterClaimWithDb } from "./router-claims";
 
 /**
@@ -28,6 +29,10 @@ const url = process.env.PANEL_PARTNER_PG_URL;
 const MARK = "pg-scoping-";
 const SHARED_OWNER = "acct-shared";
 const NOW = () => new Date();
+// A refused call is made "in the future": had it touched the router (a lock
+// that lost its partner predicate stamps updated_at = now), the row would
+// visibly change.
+const LATER = new Date("2099-01-01T00:00:00.000Z");
 
 const MIGRATION_0024 = fileURLToPath(
   new URL(
@@ -216,12 +221,13 @@ describe.skipIf(!url)("real PostgreSQL partner scoping", () => {
       const bloop = await insertReadyRouter("bloopcat");
       created.push(bloop.id);
       const key = `key-${crypto.randomUUID()}`;
+      const before = await routerRow(bloop.id);
 
       const asVectra = await queuePartnerActionWithDb(
         db,
         reboot(bloop.id),
         key,
-        NOW(),
+        LATER,
         "vectra",
       );
       expect(asVectra).toEqual({
@@ -230,6 +236,8 @@ describe.skipIf(!url)("real PostgreSQL partner scoping", () => {
         body: { error: "not_found" },
       });
       expect(await jobsOf(bloop.id)).toHaveLength(0);
+      // Not even locked: the foreign router's row is exactly as it was.
+      expect(await routerRow(bloop.id)).toEqual(before);
 
       const asBloop = await queuePartnerActionWithDb(
         db,
@@ -319,10 +327,11 @@ describe.skipIf(!url)("real PostgreSQL partner scoping", () => {
         ownerRef: SHARED_OWNER,
         idempotencyKey: key,
       };
+      const before = await routerRow(bloop.id);
       const asVectra = await cancelPartnerActionWithDb(
         db,
         cancelInput,
-        NOW(),
+        LATER,
         "vectra",
       );
       expect(asVectra).toEqual({
@@ -331,6 +340,8 @@ describe.skipIf(!url)("real PostgreSQL partner scoping", () => {
         body: { error: "not_found" },
       });
       expect((await jobsOf(bloop.id))[0]!.state).toBe("queued");
+      // Not even locked: the foreign router's row is exactly as it was.
+      expect(await routerRow(bloop.id)).toEqual(before);
 
       const asBloop = await cancelPartnerActionWithDb(
         db,
@@ -428,6 +439,75 @@ describe.skipIf(!url)("real PostgreSQL partner scoping", () => {
         .returning({ id: schema.routers.id });
       expect(touched).toEqual([]);
       expect((await routerRow(bloop.id))!.ownerLabel).toBeNull();
+    } finally {
+      await removeRouters(created);
+    }
+  });
+
+  it("each partner's webhooks get their own share of a dispatch pass", async () => {
+    const created: string[] = [];
+    try {
+      const router = await insertRouter(null);
+      created.push(router.id);
+      const now = new Date();
+      const queued = (partnerId: string | null, ageMs: number) => ({
+        event: "router.online" as const,
+        routerId: router.id,
+        partnerId,
+        payload: { event: "router.online" },
+        nextAttemptAt: new Date(now.getTime() - ageMs),
+      });
+      // BloopCat's backlog is older than anything Vectra Connect has queued:
+      // ordered across partners, it alone would fill the pass.
+      const bloop = await db
+        .insert(schema.partnerWebhooks)
+        .values(
+          Array.from({ length: 25 }, (_, index) =>
+            queued("bloopcat", 600_000 - index),
+          ),
+        )
+        .returning({ id: schema.partnerWebhooks.id });
+      const [legacy, literal, notYet, delivered] = await db
+        .insert(schema.partnerWebhooks)
+        .values([
+          queued(null, 60_000),
+          queued("vectra", 30_000),
+          queued(null, -60_000),
+          { ...queued("vectra", 90_000), deliveredAt: now },
+        ])
+        .returning({ id: schema.partnerWebhooks.id });
+
+      const ours = (rows: Array<{ id: string; partnerId: string | null }>) =>
+        rows.filter((row) =>
+          [...bloop, legacy, literal, notYet, delivered].some(
+            (mine) => mine!.id === row.id,
+          ),
+        );
+
+      const pass = ours(await selectDuePartnerWebhooksWithDb(db, now, 20));
+      // The 20 oldest of BloopCat's, and Vectra Connect's both (NULL and the
+      // literal 'vectra' are one partner) — never the delivered or not-yet-due.
+      expect(
+        pass.filter((row) => row.partnerId === "bloopcat").map((row) => row.id),
+      ).toEqual(bloop.slice(0, 20).map((row) => row.id));
+      expect(
+        pass
+          .filter((row) => row.partnerId !== "bloopcat")
+          .map((row) => row.id)
+          .sort(),
+      ).toEqual([legacy!.id, literal!.id].sort());
+
+      // One partner's own rows, when its delivery looks again.
+      expect(
+        ours(await selectDuePartnerWebhooksWithDb(db, now, 20, "vectra"))
+          .map((row) => row.id)
+          .sort(),
+      ).toEqual([legacy!.id, literal!.id].sort());
+      expect(
+        ours(await selectDuePartnerWebhooksWithDb(db, now, 3, "bloopcat")).map(
+          (row) => row.id,
+        ),
+      ).toEqual(bloop.slice(0, 3).map((row) => row.id));
     } finally {
       await removeRouters(created);
     }

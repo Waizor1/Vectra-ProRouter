@@ -22,9 +22,11 @@ import {
   partnerWebhookBackoffSeconds,
   partnerWebhookTarget,
   resolvePartnerWebhookTarget,
+  runPartnerWebhookTick,
   schedulePartnerWebhookDelivery,
+  selectDuePartnerWebhooksWithDb,
 } from "./partner-webhooks";
-import { createFakeDb } from "./testing/fake-db";
+import { createFakeDb, type FakeDbScript } from "./testing/fake-db";
 
 const envMock = vi.hoisted(() => ({
   env: {} as Record<string, unknown>,
@@ -170,7 +172,10 @@ describe("webhooks per partner", () => {
     expect(fake.inserts(partnerWebhooks)).toEqual([]);
   });
 
-  it("queues nothing for a partner that is not known at all", async () => {
+  // The registry may only be hiding the partner (a VECTRA_PARTNERS typo makes it
+  // serve Vectra alone): the row is queued and waits for the address, as the
+  // dispatcher does for any row without one — at most a week, journaled.
+  it("queues the event of a partner the registry does not know", async () => {
     const fake = createFakeDb({});
     expect(
       await enqueuePartnerWebhookWithDb(fake.db as never, {
@@ -179,8 +184,35 @@ describe("webhooks per partner", () => {
         ownerRef: "x_1",
         partnerId: "ghost",
       }),
-    ).toBeNull();
-    expect(fake.inserts(partnerWebhooks)).toEqual([]);
+    ).toEqual(expect.any(String));
+    expect(fake.inserts(partnerWebhooks)).toEqual([
+      expect.objectContaining({ event: "router.ready", partnerId: "ghost" }),
+    ]);
+  });
+
+  it("keeps BloopCat's events while a VECTRA_PARTNERS typo hides BloopCat", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      envMock.env.VECTRA_PARTNERS = '[{"id":"bloopcat",';
+      // The registry serves Vectra Connect alone now.
+      expect(partnerWebhookTarget("bloopcat")).toBeNull();
+      expect(partnerWebhookTarget("vectra")).not.toBeNull();
+
+      const fake = createFakeDb({
+        selects: [[routers, [[{ partnerId: "bloopcat" }]]]],
+      });
+      await enqueuePartnerWebhookWithDb(fake.db as never, {
+        event: "router.offline",
+        routerId: ROUTER_ID,
+        ownerRef: "bc_1",
+        at: NOW,
+      });
+      expect(fake.inserts(partnerWebhooks)).toEqual([
+        expect.objectContaining({ event: "router.offline", partnerId: "bloopcat" }),
+      ]);
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it("reads the router's partner when the caller did not say", async () => {
@@ -701,6 +733,231 @@ describe("webhooks per partner", () => {
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+});
+
+// A fake whose lease (the UPDATE … RETURNING compare-and-swap) answers with the
+// row it names, as PostgreSQL would, so a long backlog needs no scripted lease
+// per row. Every write is recorded with the id it was aimed at.
+function leasingDb(script: FakeDbScript, rows: Array<ReturnType<typeof dueRow>>) {
+  const base = createFakeDb(script);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const writes: Array<{ id: string; set: Record<string, unknown> }> = [];
+  const db = {
+    ...base.db,
+    update: () => ({
+      set: (set: Record<string, unknown>) => ({
+        where: (condition: SQL) => {
+          const id = String(new PgDialect().sqlToQuery(condition).params[0]);
+          writes.push({ id, set });
+          const row = byId.get(id);
+          return {
+            returning: async () => (row ? [{ ...row, ...set }] : []),
+            then: (resolve: (value: unknown[]) => unknown) =>
+              Promise.resolve([]).then(resolve),
+          };
+        },
+      }),
+    }),
+  };
+  return {
+    ...base,
+    db,
+    writes,
+    delivered: () =>
+      writes.filter((write) => write.set.deliveredAt).map((write) => write.id),
+  };
+}
+
+// BloopCat's endpoint hangs (every attempt can take the full 10 s timeout) and
+// a backlog of its rows is due — more than one pass takes of a partner.
+describe("a dead partner endpoint never delays another partner's webhooks", () => {
+  const bloopRows = Array.from({ length: 25 }, (_, index) =>
+    dueRow({
+      id: `w-bloop-${index}`,
+      partnerId: "bloopcat",
+      nextAttemptAt: new Date(NOW.getTime() - 60_000 + index),
+    }),
+  );
+  // Queued later than all of BloopCat's.
+  const vectraRow = dueRow({ id: "w-vectra", partnerId: null });
+
+  beforeEach(() => {
+    envMock.env = {
+      VECTRA_CONNECT_WEBHOOK_URL: VECTRA_HOOK,
+      VECTRA_CONNECT_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      VECTRA_PARTNERS: JSON.stringify([
+        {
+          id: "bloopcat",
+          brand: "bloopcat",
+          label: "BloopCat",
+          secrets: ["bloopcat-partner-secret-0123456789abcdef"],
+          webhookUrl: BLOOP_HOOK,
+          webhookSecret: "bloopcat-webhook-secret-0123456789abcdef",
+        },
+      ]),
+    };
+  });
+
+  function hangingBloopCat() {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const sent: string[] = [];
+    const fetchImpl = async (url: string, init: RequestInit) => {
+      const id = (init.headers as Record<string, string>)[PARTNER_WEBHOOK_ID_HEADER]!;
+      sent.push(id);
+      if (url === BLOOP_HOOK) await gate;
+      return { ok: true, status: 200, body: null };
+    };
+    return { fetchImpl, release: () => release(), sent };
+  }
+
+  it("delivers Vectra's row on the next pass while BloopCat's backlog still hangs", async () => {
+    const lateBloop = dueRow({ id: "w-bloop-late", partnerId: "bloopcat" });
+    const fake = leasingDb(
+      {
+        selects: [
+          [
+            partnerWebhooks,
+            [
+              // pass 1: BloopCat's backlog
+              bloopRows,
+              // pass 2: Vectra's row is due now; BloopCat's untouched rows still are
+              [vectraRow, ...bloopRows.slice(1), lateBloop],
+              // BloopCat, once free, looks again for what came in meanwhile
+              [lateBloop],
+            ],
+          ],
+        ],
+      },
+      [...bloopRows, vectraRow, lateBloop],
+    );
+    const { fetchImpl, release, sent } = hangingBloopCat();
+    const deliver = () =>
+      schedulePartnerWebhookDelivery({ client: fake.db as never, fetchImpl, force: true });
+
+    try {
+      deliver();
+      await vi.waitFor(() => expect(sent).toEqual(["w-bloop-0"]));
+
+      deliver();
+      await vi.waitFor(() => expect(fake.delivered()).toEqual(["w-vectra"]));
+      // BloopCat is still stuck on its first row, and nobody else took its rows.
+      expect(sent).toEqual(["w-bloop-0", "w-vectra"]);
+    } finally {
+      release();
+    }
+
+    // Free again, BloopCat sends each of its rows exactly once, in order, then
+    // the one that was queued while it hung.
+    await vi.waitFor(() => expect(fake.delivered()).toHaveLength(27));
+    expect(sent.filter((id) => id !== "w-vectra")).toEqual([
+      ...bloopRows.map((row) => row.id),
+      "w-bloop-late",
+    ]);
+  });
+
+  it("a sweep tick does not wait for a hanging partner: the next tick still delivers the others", async () => {
+    const fake = leasingDb(
+      {
+        selects: [[partnerWebhooks, [bloopRows.slice(0, 3), [vectraRow]]]],
+      },
+      [...bloopRows, vectraRow],
+    );
+    // The loop lock as withLoopLock behaves within one process: a tick that
+    // finds the previous one still inside is turned away.
+    let inside = false;
+    const lock = async <T,>(_loop: string, run: () => Promise<T>) => {
+      if (inside) return { acquired: false as const };
+      inside = true;
+      try {
+        return { acquired: true as const, value: await run() };
+      } finally {
+        inside = false;
+      }
+    };
+    const { fetchImpl, release, sent } = hangingBloopCat();
+    const tick = () =>
+      void runPartnerWebhookTick({ client: fake.db as never, fetchImpl, lock: lock as never });
+
+    try {
+      tick();
+      await vi.waitFor(() => expect(sent).toEqual(["w-bloop-0"]));
+
+      tick();
+      await vi.waitFor(() => expect(fake.delivered()).toEqual(["w-vectra"]));
+    } finally {
+      release();
+    }
+    await vi.waitFor(() => expect(fake.delivered()).toHaveLength(4));
+  });
+
+  it("takes each partner's own oldest due rows, so one backlog cannot fill a pass", async () => {
+    const base = createFakeDb();
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const dialect = new PgDialect();
+    const db = {
+      ...base.db,
+      select: () => ({
+        from: (table: unknown) => ({
+          where: (condition: SQL) => {
+            queries.push(dialect.sqlToQuery(condition));
+            return base.db.select().from(table);
+          },
+        }),
+      }),
+    };
+
+    await selectDuePartnerWebhooksWithDb(db as never, NOW, 20);
+    await selectDuePartnerWebhooksWithDb(db as never, NOW, 20, "bloopcat");
+
+    const [all, one] = queries;
+    // Ranked within each partner (no partner = Vectra Connect), the first 20 of each.
+    expect(all!.sql).toMatch(
+      /row_number\(\) over \(\s*partition by coalesce\("(\w+)"\."partner_id", \$\d+\)\s+order by "\1"\."next_attempt_at"/,
+    );
+    expect(all!.sql).toMatch(/"delivered_at" is null/);
+    expect(all!.sql).toMatch(/"rank" <= \$\d+\)/);
+    expect(all!.params).toEqual(expect.arrayContaining(["vectra", 20]));
+    // One partner's own rows, when its delivery looks again.
+    expect(one!.sql).toMatch(/coalesce\("vectra_partner_webhook"\."partner_id", \$\d+\) = \$\d+/);
+    expect(one!.params).toEqual(expect.arrayContaining(["vectra", "bloopcat"]));
+  });
+
+  it("leases each row by the clock of that moment, not the start of a long pass", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(NOW);
+      const rows = [
+        dueRow({ id: "w-1", partnerId: "bloopcat" }),
+        dueRow({ id: "w-2", partnerId: "bloopcat" }),
+      ];
+      const fake = leasingDb({ selects: [[partnerWebhooks, [rows]]] }, rows);
+      const stamps: string[] = [];
+
+      await dispatchDuePartnerWebhooksWithDb(fake.db as never, {
+        fetchImpl: async (_url: string, init: RequestInit) => {
+          stamps.push((init.headers as Record<string, string>)[PARTNER_TIMESTAMP_HEADER]!);
+          // This attempt took the full timeout.
+          vi.setSystemTime(new Date(Date.now() + 10_000));
+          return { ok: true, status: 200, body: null };
+        },
+      });
+
+      const leases = fake.writes.filter((write) => "attempts" in write.set);
+      expect(leases.map((write) => write.set.nextAttemptAt)).toEqual([
+        new Date(NOW.getTime() + 60_000),
+        new Date(NOW.getTime() + 10_000 + 60_000),
+      ]);
+      expect(stamps).toEqual([
+        String(Math.floor(NOW.getTime() / 1000)),
+        String(Math.floor((NOW.getTime() + 10_000) / 1000)),
+      ]);
+    } finally {
       vi.useRealTimers();
     }
   });

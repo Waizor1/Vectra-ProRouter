@@ -5,7 +5,8 @@ import {
   partnerWebhookPayloadSchema,
 } from "@vectra/contracts";
 import { eventLog, partnerWebhooks, routers } from "@vectra/db";
-import { and, asc, eq, isNull, lte } from "drizzle-orm";
+import { and, asc, eq, isNull, lte, sql } from "drizzle-orm";
+import { type AnyPgColumn, alias } from "drizzle-orm/pg-core";
 
 import { env } from "~/env";
 import { db } from "~/server/db";
@@ -24,8 +25,14 @@ import { routerPartnerId } from "~/server/vectra/partner-scope";
  * at-least-once; X-Vectra-Webhook-Id is stable across retries for dedupe.
  *
  * Every row carries the partner it belongs to and is sent to THAT partner's
- * webhook address and secret (partner-registry.ts); a partner without an
- * address gets no rows.
+ * webhook address and secret (partner-registry.ts). A partner the registry
+ * knows without an address gets no rows; one it does not know (yet — a typo
+ * in VECTRA_PARTNERS hides every listed partner) gets them, and they wait.
+ *
+ * Partners never wait for each other: each pass takes every partner's own
+ * oldest due rows, and each partner is delivered to by its own loop, at most
+ * one at a time per partner in this process. A partner whose endpoint hangs
+ * (up to 10 s an attempt) keeps only its own loop busy.
  *
  * Signed with partner signature v2 (partner-request-signature.ts), the scheme
  * the backend→panel direction uses: version, timestamp, request id, method,
@@ -39,6 +46,12 @@ import { routerPartnerId } from "~/server/vectra/partner-scope";
 // as the change it reports.
 type DatabaseClient = Pick<typeof db, "select" | "insert" | "update">;
 type WebhookRow = typeof partnerWebhooks.$inferSelect;
+type DispatchSummary = {
+  attempted: number;
+  delivered: number;
+  rescheduled: number;
+  gaveUp: number;
+};
 
 export const PARTNER_WEBHOOK_ID_HEADER = "X-Vectra-Webhook-Id";
 const DELIVERY_TIMEOUT_MS = 10_000;
@@ -56,6 +69,8 @@ const NO_TARGET_RECHECK_MS = 60 * 60 * 1000;
 const NO_TARGET_ERROR = "no_webhook_target";
 export const PARTNER_WEBHOOK_SWEEP_INTERVAL_MS = 30_000;
 const SWEEP_INTERVAL_MS = PARTNER_WEBHOOK_SWEEP_INTERVAL_MS;
+// Due rows a pass takes of EACH partner.
+const DUE_PER_PARTNER = 20;
 
 // Delay before attempt N+1, by attempts already made (~16 h in total).
 export const PARTNER_WEBHOOK_BACKOFF_SECONDS = [
@@ -89,7 +104,12 @@ function anyPartnerWebhook() {
 /**
  * Queue a webhook for the partner that owns the router. One insert (plus one
  * read of the router's partner when the caller did not pass it), no network.
- * A no-op (null) while that partner has no webhook target.
+ * A no-op (null) when no partner has a webhook at all, or when the registry
+ * knows this partner and it has none. A partner the registry does NOT know is
+ * queued all the same: a typo in VECTRA_PARTNERS makes the registry serve
+ * Vectra Connect alone, and the partner's events must outlive the typo. Its
+ * rows wait for an address (waitForPartnerAddress) and are given up, journaled,
+ * after a week.
  */
 export async function enqueuePartnerWebhookWithDb(
   client: DatabaseClient,
@@ -119,7 +139,8 @@ export async function enqueuePartnerWebhookWithDb(
           .limit(1)
       )[0] ?? {},
     );
-  if (!partnerWebhookTarget(partnerId)) {
+  const partner = findPartner(partnerId);
+  if (partner && !partner.webhook) {
     return null;
   }
 
@@ -205,35 +226,106 @@ export async function deliverPartnerWebhook(
 }
 
 /**
- * Deliver every webhook that is due. Never throws for a delivery failure: a
- * failed attempt is rescheduled with backoff, and after the last attempt the
- * row is given up (next_attempt_at null) and journaled.
+ * The due rows of every partner, at most `limit` of EACH, oldest first; or,
+ * with `partnerId`, the due rows of that partner alone.
  *
- * Each row goes to its own partner's address. The due rows are grouped by
- * partner and the groups run side by side (each in order): one partner's slow
- * or dead endpoint, up to 10 s per attempt, must not hold the others' webhooks.
+ * Ranked per partner in SQL (a row without a partner is Vectra Connect's):
+ * across partners, oldest first, one partner's backlog would fill every pass —
+ * its failing rows come back due within 30 s, older than anything new — and
+ * the others' fresh rows would never be reached. Partners the registry does
+ * not know get their share too, so their rows still wait and are given up.
  */
-export async function dispatchDuePartnerWebhooksWithDb(
+export async function selectDuePartnerWebhooksWithDb(
   client: DatabaseClient,
-  options: { now?: Date; fetchImpl?: FetchLike; limit?: number } = {},
+  now: Date,
+  limit = DUE_PER_PARTNER,
+  partnerId?: string,
 ) {
-  const summary = { attempted: 0, delivered: 0, rescheduled: 0, gaveUp: 0 };
-  if (!anyPartnerWebhook()) {
-    return summary;
+  // Written for the table and for its alias in the ranking below.
+  type Columns = Record<"partnerId" | "deliveredAt" | "nextAttemptAt", AnyPgColumn>;
+  const partnerOf = (table: Columns) =>
+    sql`coalesce(${table.partnerId}, ${DEFAULT_PARTNER_ID})`;
+  const due = (table: Columns) =>
+    and(isNull(table.deliveredAt), lte(table.nextAttemptAt, now));
+  const oldestFirst = [
+    asc(partnerWebhooks.nextAttemptAt),
+    asc(partnerWebhooks.createdAt),
+  ];
+
+  if (partnerId !== undefined) {
+    return client
+      .select()
+      .from(partnerWebhooks)
+      .where(and(due(partnerWebhooks), sql`${partnerOf(partnerWebhooks)} = ${partnerId}`))
+      .orderBy(...oldestFirst)
+      .limit(limit);
   }
 
-  const now = options.now ?? new Date();
-  const dueRows = await client
+  const ranked = alias(partnerWebhooks, "ranked_webhook");
+  return client
     .select()
     .from(partnerWebhooks)
     .where(
       and(
-        isNull(partnerWebhooks.deliveredAt),
-        lte(partnerWebhooks.nextAttemptAt, now),
+        due(partnerWebhooks),
+        sql`${partnerWebhooks.id} in (
+          select "per_partner"."id" from (
+            select ${ranked.id} as "id", row_number() over (
+              partition by ${partnerOf(ranked)}
+              order by ${ranked.nextAttemptAt}, ${ranked.createdAt}
+            ) as "rank"
+            from ${partnerWebhooks} ${ranked}
+            where ${due(ranked)}
+          ) as "per_partner"
+          where "per_partner"."rank" <= ${limit})`,
       ),
     )
-    .orderBy(asc(partnerWebhooks.nextAttemptAt))
-    .limit(options.limit ?? 20);
+    .orderBy(...oldestFirst);
+}
+
+type DispatchOptions = { now?: Date; fetchImpl?: FetchLike; limit?: number };
+
+// This process's delivery loop per partner: at most one at a time each. A pass
+// that finds a partner's loop still running leaves that partner's rows to it
+// (`rerun` makes it look again once it is done) and waits for nothing of it.
+type PartnerFlight = { rerun: boolean };
+
+const globalForWebhooks = globalThis as typeof globalThis & {
+  __vectraPartnerWebhookTimer?: ReturnType<typeof setInterval>;
+  __vectraPartnerWebhookFlights?: Map<string, PartnerFlight>;
+};
+
+/**
+ * Deliver every webhook that is due. Never throws for a delivery failure: a
+ * failed attempt is rescheduled with backoff, and after the last attempt the
+ * row is given up (next_attempt_at null) and journaled.
+ *
+ * Each row goes to its own partner's address. Each partner's rows are
+ * delivered in order by that partner's own loop, the loops side by side: one
+ * partner's slow or dead endpoint, up to 10 s per attempt, holds neither the
+ * others' rows in this pass nor any partner's rows in the next. Resolves when
+ * the loops THIS pass started are done.
+ */
+export async function dispatchDuePartnerWebhooksWithDb(
+  client: DatabaseClient,
+  options: DispatchOptions = {},
+) {
+  const summary: DispatchSummary = {
+    attempted: 0,
+    delivered: 0,
+    rescheduled: 0,
+    gaveUp: 0,
+  };
+  if (!anyPartnerWebhook()) {
+    return summary;
+  }
+
+  const limit = options.limit ?? DUE_PER_PARTNER;
+  const dueRows = await selectDuePartnerWebhooksWithDb(
+    client,
+    options.now ?? new Date(),
+    limit,
+  );
 
   const groups = new Map<string, WebhookRow[]>();
   for (const due of dueRows) {
@@ -241,97 +333,26 @@ export async function dispatchDuePartnerWebhooksWithDb(
     groups.set(id, [...(groups.get(id) ?? []), due]);
   }
 
-  // allSettled, not all: when one group's database write fails, the other
-  // groups are still left to finish (and the caller's "running" flag stays
-  // true until they have), then the first failure is rethrown.
-  const settled = await Promise.allSettled(
-    [...groups].map(async ([partnerId, rows]) => {
-      const target = partnerWebhookTarget(partnerId);
-      for (const due of rows) {
-        if (!target) {
-          await waitForPartnerAddress(client, due, partnerId, now, summary);
-          continue;
-        }
+  const flights = partnerFlights();
+  const started: Array<Promise<void>> = [];
+  for (const [partnerId, rows] of groups) {
+    const running = flights.get(partnerId);
+    if (running) {
+      running.rerun = true;
+      continue;
+    }
+    // Claimed before anything is awaited: a concurrent pass sees it.
+    const flight: PartnerFlight = { rerun: false };
+    flights.set(partnerId, flight);
+    started.push(
+      flyPartner(client, partnerId, rows, flight, { ...options, limit }, summary),
+    );
+  }
 
-        const attempts = due.attempts + 1;
-        // Lease by compare-and-swap on the attempt counter: only one dispatcher
-        // wins the row, and the lease expires on its own if this process dies.
-        const [leased] = await client
-          .update(partnerWebhooks)
-          .set({
-            attempts,
-            nextAttemptAt: new Date(now.getTime() + DELIVERY_LEASE_MS),
-          })
-          .where(
-            and(
-              eq(partnerWebhooks.id, due.id),
-              eq(partnerWebhooks.attempts, due.attempts),
-              isNull(partnerWebhooks.deliveredAt),
-            ),
-          )
-          .returning();
-        if (!leased) {
-          continue;
-        }
-
-        summary.attempted += 1;
-        const result = await deliverPartnerWebhook(leased, target, {
-          fetchImpl: options.fetchImpl,
-          nowMs: now.getTime(),
-        });
-
-        if (result.ok) {
-          summary.delivered += 1;
-          await client
-            .update(partnerWebhooks)
-            .set({
-              deliveredAt: new Date(),
-              nextAttemptAt: null,
-              lastStatus: result.status,
-              lastError: null,
-            })
-            .where(eq(partnerWebhooks.id, leased.id));
-          continue;
-        }
-
-        const lastError = result.error.slice(0, DETAIL_MAX_LENGTH);
-        if (attempts >= PARTNER_WEBHOOK_MAX_ATTEMPTS) {
-          summary.gaveUp += 1;
-          await client
-            .update(partnerWebhooks)
-            .set({ nextAttemptAt: null, lastStatus: result.status, lastError })
-            .where(eq(partnerWebhooks.id, leased.id));
-          await client.insert(eventLog).values({
-            routerId: leased.routerId,
-            type: "partner.webhook.gave_up",
-            severity: "warning",
-            message: `Webhook ${leased.event} was not accepted by partner ${partnerId} after ${attempts} attempts.`,
-            metadata: {
-              webhookId: leased.id,
-              event: leased.event,
-              partnerId,
-              attempts,
-              lastStatus: result.status,
-              lastError,
-            },
-          });
-          continue;
-        }
-
-        summary.rescheduled += 1;
-        await client
-          .update(partnerWebhooks)
-          .set({
-            nextAttemptAt: new Date(
-              now.getTime() + partnerWebhookBackoffSeconds(attempts) * 1000,
-            ),
-            lastStatus: result.status,
-            lastError,
-          })
-          .where(eq(partnerWebhooks.id, leased.id));
-      }
-    }),
-  );
+  // allSettled, not all: when one partner's database write fails, the other
+  // partners' loops are still left to finish, then the first failure is
+  // rethrown.
+  const settled = await Promise.allSettled(started);
   for (const outcome of settled) {
     if (outcome.status === "rejected") {
       throw outcome.reason;
@@ -339,6 +360,143 @@ export async function dispatchDuePartnerWebhooksWithDb(
   }
 
   return summary;
+}
+
+function partnerFlights() {
+  return (globalForWebhooks.__vectraPartnerWebhookFlights ??= new Map<
+    string,
+    PartnerFlight
+  >());
+}
+
+/** One partner's delivery loop: its rows, then whatever came due meanwhile. */
+async function flyPartner(
+  client: DatabaseClient,
+  partnerId: string,
+  rows: WebhookRow[],
+  flight: PartnerFlight,
+  options: DispatchOptions & { limit: number },
+  summary: DispatchSummary,
+) {
+  try {
+    let batch = rows;
+    for (;;) {
+      await deliverPartnerRows(client, partnerId, batch, options, summary);
+      // Done unless a pass found this loop busy meanwhile. A Connect-only
+      // config blip must not touch rows: stop then too, as a pass would.
+      if (!flight.rerun || !anyPartnerWebhook()) {
+        return;
+      }
+      flight.rerun = false;
+      batch = await selectDuePartnerWebhooksWithDb(
+        client,
+        options.now ?? new Date(),
+        options.limit,
+        partnerId,
+      );
+    }
+  } finally {
+    if (partnerFlights().get(partnerId) === flight) {
+      partnerFlights().delete(partnerId);
+    }
+  }
+}
+
+async function deliverPartnerRows(
+  client: DatabaseClient,
+  partnerId: string,
+  rows: WebhookRow[],
+  options: DispatchOptions,
+  summary: DispatchSummary,
+) {
+  const target = partnerWebhookTarget(partnerId);
+  for (const due of rows) {
+    // The clock of this row, not of the pass: a partner's loop may run for
+    // minutes, and a lease or a signature timestamp from its start would be
+    // stale by then.
+    const now = options.now ?? new Date();
+    if (!target) {
+      await waitForPartnerAddress(client, due, partnerId, now, summary);
+      continue;
+    }
+
+    const attempts = due.attempts + 1;
+    // Lease by compare-and-swap on the attempt counter: only one dispatcher
+    // wins the row, and the lease expires on its own if this process dies.
+    const [leased] = await client
+      .update(partnerWebhooks)
+      .set({
+        attempts,
+        nextAttemptAt: new Date(now.getTime() + DELIVERY_LEASE_MS),
+      })
+      .where(
+        and(
+          eq(partnerWebhooks.id, due.id),
+          eq(partnerWebhooks.attempts, due.attempts),
+          isNull(partnerWebhooks.deliveredAt),
+        ),
+      )
+      .returning();
+    if (!leased) {
+      continue;
+    }
+
+    summary.attempted += 1;
+    const result = await deliverPartnerWebhook(leased, target, {
+      fetchImpl: options.fetchImpl,
+      nowMs: now.getTime(),
+    });
+
+    if (result.ok) {
+      summary.delivered += 1;
+      await client
+        .update(partnerWebhooks)
+        .set({
+          deliveredAt: new Date(),
+          nextAttemptAt: null,
+          lastStatus: result.status,
+          lastError: null,
+        })
+        .where(eq(partnerWebhooks.id, leased.id));
+      continue;
+    }
+
+    const lastError = result.error.slice(0, DETAIL_MAX_LENGTH);
+    if (attempts >= PARTNER_WEBHOOK_MAX_ATTEMPTS) {
+      summary.gaveUp += 1;
+      await client
+        .update(partnerWebhooks)
+        .set({ nextAttemptAt: null, lastStatus: result.status, lastError })
+        .where(eq(partnerWebhooks.id, leased.id));
+      await client.insert(eventLog).values({
+        routerId: leased.routerId,
+        type: "partner.webhook.gave_up",
+        severity: "warning",
+        message: `Webhook ${leased.event} was not accepted by partner ${partnerId} after ${attempts} attempts.`,
+        metadata: {
+          webhookId: leased.id,
+          event: leased.event,
+          partnerId,
+          attempts,
+          lastStatus: result.status,
+          lastError,
+        },
+      });
+      continue;
+    }
+
+    summary.rescheduled += 1;
+    await client
+      .update(partnerWebhooks)
+      .set({
+        nextAttemptAt: new Date(
+          now.getTime() + partnerWebhookBackoffSeconds(attempts) * 1000,
+        ),
+        lastStatus: result.status,
+        lastError,
+      })
+      .where(eq(partnerWebhooks.id, leased.id));
+  }
 }
 
 /**
@@ -396,28 +554,16 @@ async function waitForPartnerAddress(
   }
 }
 
-const globalForWebhooks = globalThis as typeof globalThis & {
-  __vectraPartnerWebhookTimer?: ReturnType<typeof setInterval>;
-  __vectraPartnerWebhookRunning?: boolean;
-  __vectraPartnerWebhookRerun?: boolean;
-};
-
+/**
+ * One pass. Never gated as a whole: a pass only skips the partners whose own
+ * loop is still running (they pick their new rows up themselves), so a hung
+ * partner never holds another partner's next pass.
+ */
 async function runDispatch(client: DatabaseClient, fetchImpl?: FetchLike) {
-  if (globalForWebhooks.__vectraPartnerWebhookRunning) {
-    globalForWebhooks.__vectraPartnerWebhookRerun = true;
-    return;
-  }
-
-  globalForWebhooks.__vectraPartnerWebhookRunning = true;
   try {
-    do {
-      globalForWebhooks.__vectraPartnerWebhookRerun = false;
-      await dispatchDuePartnerWebhooksWithDb(client, { fetchImpl });
-    } while (globalForWebhooks.__vectraPartnerWebhookRerun);
+    await dispatchDuePartnerWebhooksWithDb(client, { fetchImpl });
   } catch (error) {
     console.error("[partner-webhooks]", error);
-  } finally {
-    globalForWebhooks.__vectraPartnerWebhookRunning = false;
   }
 }
 
@@ -439,6 +585,38 @@ export function schedulePartnerWebhookDelivery(
   timer.unref?.();
 }
 
+type SweepClient = Pick<typeof db, "select" | "insert" | "update" | "transaction">;
+
+/**
+ * One tick of the periodic sweep. The offline sweep runs in one process at a
+ * time, under the loop lock. Delivery is started from the tick and NOT
+ * awaited in it: a partner whose endpoint hangs would otherwise hold the lock,
+ * and with it every other partner's next tick (their retries wait for the
+ * sweep). Delivery needs no lock: each row is leased by compare-and-swap, which
+ * is also why the web may deliver what it has just queued.
+ */
+export async function runPartnerWebhookTick(
+  options: {
+    client?: SweepClient;
+    fetchImpl?: FetchLike;
+    lock?: typeof withLoopLock;
+  } = {},
+) {
+  if (!anyPartnerWebhook()) {
+    // Nothing to deliver to: an idle tick is still a tick, so the worker's
+    // stall watchdog does not take "no partner configured" for a hang.
+    recordLoopTick("partnerWebhookDispatcher", "completed");
+    return;
+  }
+  const client = options.client ?? db;
+  await (options.lock ?? withLoopLock)("partnerWebhookDispatcher", async () => {
+    await sweepPartnerOfflineWithDb(client).catch((error) =>
+      console.error("[partner-webhooks] offline sweep failed", error),
+    );
+    void runDispatch(client, options.fetchImpl);
+  });
+}
+
 /** Periodic sweep for retries; started from /api/health like the janitor. */
 export function startPartnerWebhookDispatcher() {
   if (env.NODE_ENV === "test") {
@@ -449,20 +627,9 @@ export function startPartnerWebhookDispatcher() {
   }
 
   globalForWebhooks.__vectraPartnerWebhookTimer = setInterval(() => {
-    if (anyPartnerWebhook()) {
-      // The offline sweep runs in one process at a time. Delivery itself is
-      // already safe across processes (each row is leased by compare-and-swap),
-      // which is why the web may still deliver what it has just queued.
-      void withLoopLock("partnerWebhookDispatcher", () =>
-        sweepPartnerOfflineWithDb(db)
-          .catch(error => console.error("[partner-webhooks] offline sweep failed", error))
-          .then(() => runDispatch(db)),
-      ).catch(error => console.error("[partner-webhooks]", error));
-    } else {
-      // Nothing to deliver to: an idle tick is still a tick, so the worker's
-      // stall watchdog does not take "no partner configured" for a hang.
-      recordLoopTick("partnerWebhookDispatcher", "completed");
-    }
+    void runPartnerWebhookTick().catch((error) =>
+      console.error("[partner-webhooks]", error),
+    );
   }, SWEEP_INTERVAL_MS);
   globalForWebhooks.__vectraPartnerWebhookTimer.unref?.();
   return true;
