@@ -1,8 +1,10 @@
 package uiapi
 
 import (
+	"strings"
 	"time"
 
+	"vectra-controller-pro/internal/brand"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/setup"
 )
@@ -36,17 +38,20 @@ type SetupWan struct {
 }
 
 // SetupWifi is every radio, whether the tuning can apply and is in place,
-// the wizard's verdict on the Wi-Fi as it is, the router's own network name,
-// and the last change's restart.
+// the wizard's verdict on the Wi-Fi as it is, the router's own network name
+// (and the brand's, to offer over the model's), and the last change's restart.
 type SetupWifi struct {
 	Radios  []SetupRadio `json:"radios"`
 	Tuned   *bool        `json:"tuned"`
 	Tunable bool         `json:"tunable"`
 	// Verdict: fine, boost or manual (setup.Wifi.Verdict); nil when the
 	// router cannot be tuned.
-	Verdict   *string     `json:"verdict"`
-	Suggested *string     `json:"suggested"`
-	Apply     *SetupApply `json:"apply"`
+	Verdict   *string `json:"verdict"`
+	Suggested *string `json:"suggested"`
+	// Rename: the brand's network name, offered when the network still has
+	// the model's name.
+	Rename *string     `json:"rename"`
+	Apply  *SetupApply `json:"apply"`
 }
 
 // SetupRadio is one radio and its first access point — never a key.
@@ -194,30 +199,109 @@ func ClaimLink(bot, code string) string {
 	return "https://t.me/" + ClaimBot + "/start?startapp=rt_" + code
 }
 
+// BrandView answers status.brand: whose router this is (internal/brand).
+// Neutral: every field null but lanName, which is "router.lan".
+type BrandView struct {
+	ID      *string `json:"id"`
+	Name    *string `json:"name"`
+	Bot     *string `json:"bot"`
+	Support *string `json:"support"`
+	LANName string  `json:"lanName"`
+	Site    *string `json:"site"`
+}
+
+// Who is the router's brand as rpcd resolved it.
+type Who struct {
+	Brand         brand.Brand
+	Known         bool
+	Support       string // the subscription's support bot, "" = the brand's own
+	NeutralPrefix string // the model's name (brand.ModelPrefix): the neutral network's prefix
+}
+
+func (w Who) support() string {
+	if w.Support != "" {
+		return w.Support
+	}
+	return w.Brand.Support
+}
+
+// BuildBrand answers status.brand.
+func BuildBrand(w Who) BrandView {
+	if !w.Known {
+		return BrandView{LANName: brand.NeutralLANName}
+	}
+	id := string(w.Brand.ID)
+	return BrandView{ID: &id, Name: strPtr(w.Brand.Name), Bot: strPtr(w.Brand.Bot),
+		Support: strPtr(w.support()), LANName: w.Brand.LANName, Site: strPtr(w.Brand.Site)}
+}
+
 // BuildSetup answers `setup` from the router's facts, the daemon's claim (rt
-// nil: the daemon is down), whether the router is linked, and what the daemon
-// kept of the panel's word: the bot username and the owner (nil: none).
-// Support goes to the panel's bot, else to the box's own (f.SupportBot); the
-// claim's link only ever to Vectra's (ClaimLink) — a code means something
-// only there.
-func BuildSetup(f setup.Facts, rt *localctl.Runtime, linked bool, bot string, owner *ClaimOwner) Setup {
+// nil: the daemon is down), whether the router is linked, what the daemon
+// kept of the panel's word — the bot username and the owner (nil: none) —
+// and whose router it is (w). On a Vectra router support goes to the panel's
+// bot, else to the box's own (f.SupportBot), and the claim's link only ever
+// to Vectra's (ClaimLink) with Vectra's sealed QR. Another brand's router
+// sends both to its own bot; a neutral one shows the code alone.
+func BuildSetup(f setup.Facts, rt *localctl.Runtime, linked bool, bot string, owner *ClaimOwner, w Who) Setup {
 	s := Setup{Done: f.Done, PasswordSet: f.Password, Lan: SetupLan{IPv4: strPtr(f.Lan.IPv4)}}
-	w := f.Wan
-	s.Wan = SetupWan{Proto: w.Proto, Link: w.Link, IPv4: strPtr(w.IPv4), Gateway: strPtr(w.Gateway), DNS: nonNil(w.DNS)}
+	wan := f.Wan
+	s.Wan = SetupWan{Proto: wan.Proto, Link: wan.Link, IPv4: strPtr(wan.IPv4), Gateway: strPtr(wan.Gateway), DNS: nonNil(wan.DNS)}
 	s.Wifi = buildWifi(f.Wifi)
-	support := bot
-	if support == "" {
-		support = f.SupportBot
+	s.Wifi.Rename = renameTo(f.Wifi, w)
+	var support string
+	switch {
+	case !w.Known:
+		support = f.SupportBot // a neutral box: only what it was prepared with
+	case w.Brand.ID == brand.Vectra:
+		support = bot
+		if support == "" {
+			support = f.SupportBot
+		}
+	default:
+		support = w.support()
 	}
 	s.Vectra = SetupVectra{Linked: linked, BotUsername: strPtr(support), Owner: owner}
 	if !linked && rt != nil && rt.Claim != nil {
 		c := rt.Claim
-		sc := &SetupClaim{State: c.State, Code: c.Code, QR: strPtr(c.QR), ExpiresAt: c.ExpiresAt.UTC().Format(time.RFC3339),
-			BotURL: strPtr(ClaimLink(bot, c.Code))}
+		sc := &SetupClaim{State: c.State, Code: c.Code, ExpiresAt: c.ExpiresAt.UTC().Format(time.RFC3339)}
+		switch {
+		case !w.Known:
+			// Neutral: the code alone — the owner's own service takes it.
+		case w.Brand.ID == brand.Vectra:
+			sc.QR, sc.BotURL = strPtr(c.QR), strPtr(ClaimLink(bot, c.Code))
+		default:
+			// Another brand's app cannot read Vectra's sealed QR: the QR is
+			// the link to the brand's own bot, which a phone camera opens.
+			link := "https://t.me/" + w.Brand.Bot + "?start=rt_" + c.Code
+			sc.QR, sc.BotURL = &link, &link
+		}
 		if c.Owner != nil {
 			sc.Owner = &ClaimOwner{Label: c.Owner.Label}
 		}
 		s.Vectra.Claim = sc
 	}
 	return s
+}
+
+// renameTo: the brand's network name, when every access point still carries
+// the neutral one (the model's name) — the wizard offers the change, it never
+// makes it itself: renaming drops every device off the network.
+func renameTo(wf setup.Wifi, w Who) *string {
+	if !w.Known || wf.Suggested == "" || w.NeutralPrefix == "" {
+		return nil
+	}
+	seen := false
+	for _, r := range wf.Radios {
+		if !r.AP {
+			continue
+		}
+		if !strings.HasPrefix(r.SSID, w.NeutralPrefix+"-") {
+			return nil
+		}
+		seen = true
+	}
+	if !seen {
+		return nil
+	}
+	return &wf.Suggested
 }

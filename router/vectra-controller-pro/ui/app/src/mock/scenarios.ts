@@ -163,6 +163,7 @@ function unboxed(w: ReadData): void {
       // Nothing on the air judges as fine: the open networks are what the wizard asks about.
       verdict: 'fine',
       suggested: 'Vectra-4E2A',
+      rename: null,
       apply: null,
     },
     // Never online yet: the code is the router's own, but the bot, the key for

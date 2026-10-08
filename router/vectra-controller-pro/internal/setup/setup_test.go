@@ -187,6 +187,7 @@ func TestReadGathersWhatTheWizardShows(t *testing.T) {
 	r.write(t, filepath.Join(r.env.SysClassNet, "br-lan", "address"), "a4:39:b3:12:ab:cc\n")
 	r.ubus = wanUp
 	r.answers = map[string]string{"call network.interface.lan status": lanUp}
+	r.env.NamePrefix = "Vectra" // rpcd sets it from the router's brand
 
 	f := Read(context.Background(), r.env)
 	if f.Done {
@@ -235,7 +236,7 @@ func TestReadGathersWhatTheWizardShows(t *testing.T) {
 func TestTheSuggestedNetworkNameComesFromTheMAC(t *testing.T) {
 	r := newRouter(t)
 	mac := func(dev, v string) { r.write(t, filepath.Join(r.env.SysClassNet, dev, "address"), v+"\n") }
-	if got := SuggestedSSID(r.env, "wan"); got != "" {
+	if got := SuggestedSSID(r.env, "wan", "Vectra"); got != "" {
 		t.Fatalf("no MAC anywhere: %q", got)
 	}
 	mac("pppoe-wan", "")             // a PPPoE session has no MAC
@@ -246,13 +247,24 @@ func TestTheSuggestedNetworkNameComesFromTheMAC(t *testing.T) {
 		"wan": "Vectra-0F0E", "pppoe-wan": "Vectra-ABCC", "eth1": "Vectra-ABCC", "": "Vectra-ABCC",
 		"../../etc": "Vectra-ABCC", "missing": "Vectra-ABCC",
 	} {
-		if got := SuggestedSSID(r.env, dev); got != want {
+		if got := SuggestedSSID(r.env, dev, "Vectra"); got != want {
 			t.Errorf("WAN device %q: %q, want %q", dev, got, want)
 		}
 	}
 	mac("br-lan", "not-a-mac")
-	if got := SuggestedSSID(r.env, "eth1"); got != "" {
+	if got := SuggestedSSID(r.env, "eth1", "Vectra"); got != "" {
 		t.Errorf("no usable MAC: %q", got)
+	}
+}
+
+func TestTheSuggestedNetworkNameTakesTheGivenPrefix(t *testing.T) {
+	r := newRouter(t)
+	// The same MAC as in TestTheSuggestedNetworkNameComesFromTheMAC.
+	r.write(t, filepath.Join(r.env.SysClassNet, "wan", "address"), "02:00:00:00:0f:0e\n")
+	for prefix, want := range map[string]string{"BloopCat": "BloopCat-0F0E", "AX3000T": "AX3000T-0F0E", "": "Router-0F0E"} {
+		if got := SuggestedSSID(r.env, "wan", prefix); got != want {
+			t.Errorf("prefix %q: %q, want %q", prefix, got, want)
+		}
 	}
 }
 

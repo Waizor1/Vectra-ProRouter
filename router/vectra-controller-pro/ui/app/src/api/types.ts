@@ -120,6 +120,8 @@ export interface Status {
   ui: { locked: boolean | null };
   /** The panel's support may run commands on the router (the owner's switch); null: a router without the switch. */
   remoteShell: boolean | null;
+  /** Whose router this is: the VPN service its owner pays for (contract: Brand); `id` null when neutral. */
+  brand: Brand;
   router: {
     hostname: string | null;
     model: string | null;
@@ -135,6 +137,21 @@ export interface Status {
   route: RouteView | null;
   /** The router's tune («Разгон роутера»): what it set on this router; null on a vctl without it. */
   tune: Tune | null;
+}
+
+/**
+ * Whose router this is (contract: Brand): `id` vectra, bloopcat or null
+ * (neutral); `name` what the UI calls the service; `bot` and `support` its
+ * Telegram bots; `lanName` the router's name on the LAN (router.lan when
+ * neutral); `site` a public name that also leads here, or null.
+ */
+export interface Brand {
+  id: string | null;
+  name: string | null;
+  bot: string | null;
+  support: string | null;
+  lanName: string | null;
+  site: string | null;
 }
 
 export type TuneState = Open<'applied' | 'already' | 'pending' | 'user_set' | 'skipped'>;
@@ -344,6 +361,8 @@ export interface Setup {
      */
     verdict: WifiVerdict | null;
     suggested: string | null;
+    /** The brand's network name, offered while every access point still has the model's one; null otherwise. */
+    rename: string | null;
     apply: WifiApply | null;
   };
   /** `linked`: the router has an operator config. `owner`: the account it belongs to, when the panel named one. */

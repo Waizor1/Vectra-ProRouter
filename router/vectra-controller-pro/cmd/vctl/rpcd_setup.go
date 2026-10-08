@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/brand"
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/setup"
+	"vectra-controller-pro/internal/subscription"
 	"vectra-controller-pro/internal/uiapi"
 )
 
@@ -70,6 +72,8 @@ var (
 	rpcdChecker  = func(cfg agentcfg.Config) setup.Checker {
 		return setup.Checker{Mark: firewall.DefaultControlMark, PanelURL: cfg.ControlURL}
 	}
+	// rpcdModelPath is the router's model (the neutral network's name).
+	rpcdModelPath = subscription.ModelPath
 )
 
 // rpcdSetupCall answers the wizard's methods; ok is false for any other.
@@ -95,11 +99,17 @@ func rpcdSetupCall(ctx context.Context, cfg agentcfg.Config, method string, para
 }
 
 func rpcdSetup(ctx context.Context, cfg agentcfg.Config) uiapi.Setup {
-	facts := setup.Read(ctx, rpcdSetupEnv())
+	who := rpcdWho(cfg)
+	env := rpcdSetupEnv()
+	env.NamePrefix = who.Brand.SSIDPrefix
+	if !who.Known {
+		env.NamePrefix = who.NeutralPrefix
+	}
+	facts := setup.Read(ctx, env)
 	in := rpcdGather(ctx, uiapi.RouterEnv(cfg, controllerVersion()), uiapi.Need{Runtime: true})
 	_, present, err := operatorConfig(cfg)
 	bot, owner := persistedClaim(cfg)
-	return uiapi.BuildSetup(facts, in.Runtime, present && err == nil, bot, owner)
+	return uiapi.BuildSetup(facts, in.Runtime, present && err == nil, bot, owner, who)
 }
 
 // rpcdWanCheck looks at the router's own way out, within setup.CheckBudget.
@@ -253,6 +263,54 @@ func persistedClaim(cfg agentcfg.Config) (bot string, owner *uiapi.ClaimOwner) {
 		owner = &uiapi.ClaimOwner{Label: st.ClaimOwner.Label}
 	}
 	return bot, owner
+}
+
+// rpcdWho: the router's brand — what the daemon learned (state.json), else
+// the installer's label (UCI main.brand), else neutral — and the model's name
+// for a neutral network.
+func rpcdWho(cfg agentcfg.Config) uiapi.Who {
+	w := uiapi.Who{NeutralPrefix: brand.ModelPrefix(readModel())}
+	held, support := persistedBrand(cfg)
+	if b, ok := brand.Lookup(held); ok {
+		w.Brand, w.Known, w.Support = b, true, support
+		return w
+	}
+	if b, ok := brand.Lookup(setup.InstallBrand(rpcdSetupEnv())); ok {
+		w.Brand, w.Known = b, true
+	}
+	return w
+}
+
+// persistedBrand is the brand the daemon learned (the subscription or the
+// panel's claim answer) and the subscription's support bot; "" for either
+// when none, or not a Telegram username. Only these two fields are read.
+func persistedBrand(cfg agentcfg.Config) (brand.ID, string) {
+	raw, err := vault.ReadFile(cfg.StatePath)
+	if err != nil {
+		return "", ""
+	}
+	var st struct {
+		Brand        string `json:"brand"`
+		BrandSupport string `json:"brand_support"`
+	}
+	if json.Unmarshal(raw, &st) != nil {
+		return "", ""
+	}
+	id, _ := brand.Parse(st.Brand)
+	if !setup.TelegramUsername(st.BrandSupport) {
+		st.BrandSupport = ""
+	}
+	return id, st.BrandSupport
+}
+
+// readModel is the router's model as the subscription's identity reads it
+// (/tmp/sysinfo/model, trimmed); "" when unreadable.
+func readModel() string {
+	b, err := os.ReadFile(rpcdModelPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // spawnDetached starts `vctl <args>` in a session of its own, so it outlives

@@ -54,6 +54,7 @@
     "tunable": true,
     "verdict": "fine",
     "suggested": "Vectra-6D39",
+    "rename": null,
     "apply": {
       "state": "ok",
       "at": "2026-09-28T07:03:10Z",

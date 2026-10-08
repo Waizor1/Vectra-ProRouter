@@ -35,6 +35,7 @@ type Env struct {
 	VectraConfig   string // /etc/config/vectra-controller-pro
 	Shadow         string // /etc/shadow
 	SysClassNet    string // /sys/class/net
+	NamePrefix     string // the suggested network name's first part ("" = "Router")
 
 	// The Wi-Fi changes' own files.
 	WifiLock  string // held from reading the router to the end of the restart's check
@@ -119,7 +120,7 @@ type Wan struct {
 func Read(ctx context.Context, env Env) Facts {
 	wan, device := readWan(ctx, env)
 	wifi := ReadWifi(ctx, env)
-	wifi.Suggested = SuggestedSSID(env, device)
+	wifi.Suggested = SuggestedSSID(env, device, env.NamePrefix)
 	return Facts{
 		Done:       Done(env),
 		Password:   Password(env),
@@ -322,11 +323,16 @@ func carrier(env Env, device string) *bool {
 	return &up
 }
 
-// SuggestedSSID is a network name of the router's own, "Vectra-XXXX": XXXX are
-// the last 4 hex digits of the WAN's MAC address, or of br-lan's when the WAN
-// has none (a PPPoE session has no MAC; an unknown WAN device neither). ""
-// when neither has one. The wizard offers it in place of OpenWrt's default.
-func SuggestedSSID(env Env, wanDevice string) string {
+// SuggestedSSID is a network name of the router's own, "<prefix>-XXXX": the
+// prefix is the brand's (Vectra, BloopCat) or the model's name (AX3000T),
+// "Router" when none is given; XXXX are the last 4 hex digits of the WAN's
+// MAC address, or of br-lan's when the WAN has none (a PPPoE session has no
+// MAC; an unknown WAN device neither). "" when neither has one. The wizard
+// offers it in place of OpenWrt's default.
+func SuggestedSSID(env Env, wanDevice, prefix string) string {
+	if prefix == "" {
+		prefix = "Router"
+	}
 	for _, d := range []string{wanDevice, "br-lan"} {
 		v, ok := sysNet(env, d, "address")
 		if !ok {
@@ -336,7 +342,7 @@ func SuggestedSSID(env Env, wanDevice string) string {
 		if err != nil || len(mac) != 6 || (mac[0]|mac[1]|mac[2]|mac[3]|mac[4]|mac[5]) == 0 {
 			continue
 		}
-		return fmt.Sprintf("Vectra-%02X%02X", mac[4], mac[5])
+		return fmt.Sprintf("%s-%02X%02X", prefix, mac[4], mac[5])
 	}
 	return ""
 }

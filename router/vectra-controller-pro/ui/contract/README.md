@@ -391,6 +391,29 @@ files in /root and one level down, and directories there named `*staging*`
 (`path`, `mib`, `kind`: `package` or `staging`): the operator's to remove,
 never vctl's.
 
+## Brand
+
+`status.brand` is whose router this is: the VPN service its owner pays for.
+vctl learns it from the subscription (its bot in `profile-web-page-url`, else
+its whole `profile-title`), from the panel's answer at the claim (`brand`),
+or from the installer's label (`install.sh --brand`, UCI `main.brand`) — the
+subscription outranks the claim, which outranks the label. Unbinding forgets it.
+
+| field | what |
+|---|---|
+| `id` | `vectra`, `bloopcat`, or `null` (neutral) |
+| `name` | what the UI calls the service (`{brand}` in every sentence); `null` when neutral |
+| `bot` | the service's Telegram bot, without `@` |
+| `support` | its support bot: the subscription's `support-url`, else the brand's own |
+| `lanName` | the router's name on the LAN: `vectra.lan`, `bloopcat.lan`, `router.lan` when neutral |
+| `site` | a public name that also leads here (`my.vectra-pro.net`), `null` for others |
+
+The setup wizard follows it: a neutral router shows the claim code alone and
+names its network after the model (`AX3000T-XXXX`); a branded one links its
+own bot (another brand's QR is that link, not Vectra's sealed QR).
+`setup.wifi.rename` is the brand's network name while every access point
+still has the model's one — the wizard offers it; nothing renames by itself.
+
 ## Language
 
 The router answers in CODES, never in prose, so the UI can speak ru, en and zh.
@@ -659,18 +682,26 @@ the simple view: the operator's lock never refuses it.
   committed). `detail`: English, for secondary text, or `null`. `radios`:
   `{"<device>": up}` for every radio the check expected up; `{}` while
   `applying`.
-- `wifi.suggested`: a network name of the router's own, `Vectra-XXXX` — XXXX
-  the last 4 hex digits (uppercase) of the WAN's MAC address, or of br-lan's
-  when the WAN has none; `null` when neither is known. Offer it for a network
-  still named as OpenWrt names it.
+- `wifi.suggested`: a network name of the router's own, `<prefix>-XXXX` — the
+  prefix the brand's (`Vectra`, `BloopCat`), on a neutral router the model's
+  name (`AX3000T`; `Router` when unknown); XXXX the last 4 hex digits
+  (uppercase) of the WAN's MAC address, or of br-lan's when the WAN has none;
+  `null` when neither is known. Offer it for a network still named as OpenWrt
+  names it.
+- `wifi.rename`: on a branded router, `wifi.suggested` while every access
+  point (`ap`; at least one) still has the model's name (`AX3000T-…`, what a
+  neutral router suggested); else `null`. The wizard offers it — renaming drops every device
+  off the network, so the router never does it by itself.
 - `vectra.linked`: the router has an operator config (every fleet router is
   linked); then `claim` is `null`. `vectra.botUsername`: where support links
-  go, linked or not — the Vectra bot the panel named; until it has (a box
-  that has never been online), the support bot the box was prepared with
-  (UCI `vectra-controller-pro.main.support_bot`, a Telegram username without
-  `@`: 5-32 of `A-Z a-z 0-9 _`; an invalid value is ignored); else `null`.
-  `claim.botUrl` never falls back: a code means something only to the bot
-  the panel named.
+  go, linked or not. On a Vectra router: the Vectra bot the panel named;
+  until it has (a box that has never been online), the support bot the box
+  was prepared with (UCI `vectra-controller-pro.main.support_bot`, a Telegram
+  username without `@`: 5-32 of `A-Z a-z 0-9 _`; an invalid value is
+  ignored); else `null`. On another brand's router: `status.brand.support`.
+  On a neutral one: the box's support bot, else `null`.
+  `claim.botUrl` never falls back to a support bot: a code means something
+  only to the bot that claims it.
   `vectra.owner`: `{"label"}`, the account the panel says the router belongs
   to, or `null` — linked or not, so a linked router can say whose it is.
 - `vectra.claim` (`null` when linked, and while the controller is not running):
@@ -683,7 +714,10 @@ the simple view: the operator's lock never refuses it.
   minutes; `botUrl`, `https://t.me/<bot>?start=rt_<code>` for the bot the
   panel named, else Vectra Connect's mini app,
   `https://t.me/VectraConnect_bot/start?startapp=rt_<code>` (never `null`
-  while there is a code); `owner`, `{"label"}` or `null`.
+  while there is a code); `owner`, `{"label"}` or `null`. That is a Vectra
+  router's (see Brand). Another brand's router: `qr` and `botUrl` are both
+  `https://t.me/<the brand's bot>?start=rt_<code>` — its app cannot open
+  Vectra's sealed QR. A neutral router: both `null` — the code alone.
 
 `wan_check`: `{link, ipv4, dns, internet, panel, checkedAt}` — active checks,
 within 8 s, that hold with xray down and with the kill switch armed (every
@@ -838,8 +872,11 @@ replacement). Everything derives from it (`internal/claim`):
   `MZ3D9cCsAGO9sQef6Y/4rd5GDj31RWS+pHX2J+2BJE5FpaVuFZ1MNpYCoiHrP61R5Vsls9XWR38FeyxipBfYBw==`
   (`internal/claim`, `TestTheRegisterProofSignsExactlyTheseBytes`).
 - The panel's register and check-in answers may carry `"claimKey": {"kid",
-  "publicKey"}` (Vectra's X25519 key, standard base64), `"botUsername"` and
-  `"owner": {"label"}` (`null`: no owner); the router keeps them.
+  "publicKey"}` (Vectra's X25519 key, standard base64), `"botUsername"`,
+  `"owner": {"label"}` (`null`: no owner) and `"brand"` (the owning partner's
+  id: `vectra`, `bloopcat`; optional, an unknown id is ignored); the router
+  keeps them. The claim's brand outranks the installer's label and yields to
+  the subscription's (see Brand).
 - `"released": true` (with `"owner": null`, until the router is claimed
   again): the owner unbound the router in the Vectra app. A router that had an
   owner (`claim_owner` in its state) goes back to the state it came out of the
@@ -850,7 +887,9 @@ replacement). Everything derives from it (`internal/claim`):
     provider document, the locations cache, the rendered xray config, the
     choices made on the router (location, pins, probe interval, My sites),
     the applied revision and digest (the next owner's config applies from
-    scratch), the rescue state and the owner;
+    scratch), the rescue state, the owner and the brand it learned (from the
+    claim or the subscription: `status.brand` falls back to the installer's
+    label, else neutral);
   - a new claim code (the one the previous owner saw is not the router's any
     more): `setup` answers `linked: false` with it;
   - kept: the router's identity and panel token, Vectra's key and bot, and
