@@ -35,8 +35,8 @@ service's name. Colours and layout are the same for everyone.
   model, `AX3000T-XXXX`; the page is at router.lan; the claim step shows the
   code alone (no bot to send it to); the program is not named — «VPN» in a
   sentence, «Роутер 0.7.0» for the version, «сервер управления» for what the
-  diagnostics reach — and a support link appears only if the router names a
-  support bot.
+  diagnostics reach — and no support link is shown: there is no service to
+  write to until the router is linked.
 
 ### Added
 - **`internal/brand`**: whose router this is, from, in this order of rank,
