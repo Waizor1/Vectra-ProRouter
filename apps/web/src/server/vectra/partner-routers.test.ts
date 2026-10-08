@@ -1315,7 +1315,7 @@ describe("cancelling an owner's action by the partner's key", () => {
   it("is signed v2, needs an Idempotency-Key and binds the path router into the body", async () => {
     const d = deps();
     expect((await handlePartnerRouterActionCancel(cancelRequest(), ID, d)).status).toBe(200);
-    expect(d.cancel).toHaveBeenCalledWith(cancelInput());
+    expect(d.cancel).toHaveBeenCalledWith(cancelInput(), "vectra");
     const other = deps();
     expect((await handlePartnerRouterActionCancel(cancelRequest(cancelInput({ routerId: OTHER }), ID, "k-2"), ID, other)).status).toBe(400);
     expect((await handlePartnerRouterActionCancel(cancelRequest(cancelInput({ idempotencyKey: "bad key" }), ID, "k-3"), ID, other)).status).toBe(400);
@@ -1677,5 +1677,83 @@ describe("port forwards", () => {
       ).toMatchObject({ status: 400, body: { error: "invalid_params" } });
       expect(fake.inserts(jobs)).toEqual([]);
     }
+  });
+});
+
+describe("the calling partner reaches the data layer", () => {
+  const BLOOP_SECRET = "bloopcat-partner-test-secret-0123456789ab";
+  const bloopcat = {
+    id: "bloopcat",
+    brand: "bloopcat",
+    label: "BloopCat",
+    secrets: [BLOOP_SECRET],
+    webhook: null,
+    claimKey: null,
+    botUsername: null,
+  };
+  const KEY = "k-bloop";
+  const signed = (method: "GET" | "POST", url: string, raw: string, key: string) =>
+    new Request(url, {
+      method,
+      headers: buildPartnerRequestHeaders(
+        BLOOP_SECRET,
+        method,
+        url,
+        raw,
+        key,
+        NOW.getTime(),
+        undefined,
+        "bloopcat",
+      ),
+      ...(method === "GET" ? {} : { body: raw }),
+    });
+  const asBloopcat = () => {
+    const d = deps();
+    d.api.partners = (id) => (id === "bloopcat" ? bloopcat : null);
+    return d;
+  };
+
+  it("hands read, action and cancel the partner's id", async () => {
+    const d = asBloopcat();
+    const base = `https://fake.example/api/partner/routers/${ID}`;
+
+    expect(
+      (await handlePartnerRoutersRead(signed("GET", `${base}?ownerRef=acct-42`, "", ""), ID, d)).status,
+    ).toBe(404);
+    expect(d.read).toHaveBeenCalledWith("acct-42", ID, "bloopcat");
+
+    const queued = JSON.stringify(action());
+    expect(
+      (await handlePartnerRouterAction(signed("POST", `${base}/actions`, queued, KEY), ID, d)).status,
+    ).toBe(202);
+    expect(d.action).toHaveBeenCalledWith(action(), KEY, "bloopcat");
+
+    const cancel = JSON.stringify({ routerId: ID, ownerRef: "acct-42", idempotencyKey: KEY });
+    expect(
+      (await handlePartnerRouterActionCancel(signed("POST", `${base}/actions/cancel`, cancel, "c-bloop"), ID, d)).status,
+    ).toBe(200);
+    expect(d.cancel).toHaveBeenCalledWith(
+      { routerId: ID, ownerRef: "acct-42", idempotencyKey: KEY },
+      "bloopcat",
+    );
+  });
+
+  it("hands the default partner's id when the request names none", async () => {
+    const d = deps();
+    expect((await handlePartnerRouterAction(request(), ID, d)).status).toBe(202);
+    expect(d.action).toHaveBeenCalledWith(action(), "test-key", "vectra");
+  });
+
+  it("does not accept the default partner's secret under another partner's id", async () => {
+    const d = asBloopcat();
+    const url = `https://fake.example/api/partner/routers/${ID}/actions`;
+    const raw = JSON.stringify(action());
+    const borrowed = new Request(url, {
+      method: "POST",
+      body: raw,
+      headers: buildPartnerRequestHeaders(SECRET, "POST", url, raw, KEY, NOW.getTime(), undefined, "bloopcat"),
+    });
+    expect((await handlePartnerRouterAction(borrowed, ID, d)).status).toBe(401);
+    expect(d.action).not.toHaveBeenCalled();
   });
 });

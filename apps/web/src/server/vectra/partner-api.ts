@@ -11,7 +11,17 @@ import type { ZodError } from "zod";
 
 import { env } from "~/env";
 import { db } from "~/server/db";
-import { verifyPartnerRequest } from "./partner-request-signature";
+import {
+  DEFAULT_PARTNER_ID,
+  PARTNER_ID_PATTERN,
+  findPartner,
+  scopeIdempotencyKey,
+  type PartnerConfig,
+} from "./partner-registry";
+import {
+  PARTNER_ID_HEADER,
+  verifyPartnerRequest,
+} from "./partner-request-signature";
 import { keyedDigest } from "./secrets";
 import {
   claimRouterWithDb,
@@ -76,18 +86,26 @@ export type IdempotencyReservation =
   | { kind: "mismatch" }
   | { kind: "busy" };
 
+export type PartnerIdentity = { id: string; brand: string; label: string };
+
 export type PartnerApiDeps = {
   secret: string | null | undefined;
+  /** Registered partners by id (the registry in production). */
+  partners?: (id: string) => PartnerConfig | null;
   reserveNonce: (
     requestId: string,
     fingerprint: string,
     expiresAt: Date,
   ) => Promise<boolean>;
   now: () => Date;
-  claim: (request: PartnerRouterClaimRequest) => Promise<RouterClaimOutcome>;
+  claim: (
+    request: PartnerRouterClaimRequest,
+    partnerId: string,
+  ) => Promise<RouterClaimOutcome>;
   unbind: (input: {
     routerId: string;
     ownerRef: string;
+    partnerId: string;
   }) => Promise<RouterUnbindOutcome>;
   /**
    * Bind the key to this request BEFORE running it: the first attempt runs,
@@ -230,10 +248,12 @@ export async function reservePartnerNonceWithDb(
 export function defaultDeps(): PartnerApiDeps {
   return {
     secret: env.VECTRA_PARTNER_SECRET,
+    partners: findPartner,
     reserveNonce: (requestId, fingerprint, expiresAt) =>
       reservePartnerNonceWithDb(db, requestId, fingerprint, expiresAt),
     now: () => new Date(),
-    claim: (request) => claimRouterWithDb(db, request),
+    claim: (request, partnerId) =>
+      claimRouterWithDb(db, request, { partnerId }),
     unbind: (input) => unbindRouterClaimWithDb(db, input),
     reserveIdempotent: (key, hashes) =>
       reserveIdempotencyKeyWithDb(db, key, hashes),
@@ -339,26 +359,75 @@ function describeZodError(error: ZodError) {
     .slice(0, 500);
 }
 
+/** Who is calling and the secrets that may have signed the call. */
+function resolvePartnerCaller(
+  request: Request,
+  deps: PartnerApiDeps,
+): { identity: PartnerIdentity; secrets: string[] } | Response {
+  const named = request.headers.get(PARTNER_ID_HEADER);
+  if (named === null || named === DEFAULT_PARTNER_ID) {
+    const configured = deps.partners?.(DEFAULT_PARTNER_ID) ?? null;
+    const secrets =
+      configured?.secrets.length
+        ? configured.secrets
+        : deps.secret
+          ? [deps.secret]
+          : [];
+    if (secrets.length === 0) {
+      return partnerJson({ error: "partner_api_disabled" }, 503);
+    }
+    return {
+      identity: {
+        id: DEFAULT_PARTNER_ID,
+        brand: configured?.brand ?? "vectra",
+        label: configured?.label ?? "Vectra",
+      },
+      secrets,
+    };
+  }
+  const partner = PARTNER_ID_PATTERN.test(named)
+    ? (deps.partners?.(named) ?? null)
+    : null;
+  if (!partner || partner.secrets.length === 0) {
+    return partnerJson({ error: "unknown_partner" }, 401);
+  }
+  return {
+    identity: { id: partner.id, brand: partner.brand, label: partner.label },
+    secrets: partner.secrets,
+  };
+}
+
 export async function authenticatePartnerRequest(
   request: Request,
   rawBody: Uint8Array,
   deps: PartnerApiDeps,
   method: string,
   path: string,
-) {
-  const auth = verifyPartnerRequest({
-    request,
-    rawBody,
-    secret: deps.secret,
-    nowMs: deps.now().getTime(),
-    method,
-    path,
-  });
+): Promise<Response | { partner: PartnerIdentity }> {
+  const caller = resolvePartnerCaller(request, deps);
+  if (caller instanceof Response) return caller;
+  const check = (secret: string) =>
+    verifyPartnerRequest({
+      request,
+      rawBody,
+      secret,
+      nowMs: deps.now().getTime(),
+      method,
+      path,
+    });
+  // During a rotation the old secret is still accepted; any other failure
+  // (stale timestamp, missing headers) is the same for both.
+  let auth = check(caller.secrets[0]!);
+  for (const secret of caller.secrets.slice(1)) {
+    if (auth.ok) break;
+    const next = check(secret);
+    if (next.ok) auth = next;
+  }
   if (!auth.ok) return partnerJson({ error: auth.error }, auth.status);
   try {
     if (
       !(await deps.reserveNonce(
-        auth.requestId,
+        scopeIdempotencyKey(caller.identity.id, auth.requestId),
         auth.fingerprint,
         auth.expiresAt,
       ))
@@ -367,7 +436,7 @@ export async function authenticatePartnerRequest(
   } catch {
     return partnerJson({ error: "partner_replay_unavailable" }, 503);
   }
-  return null;
+  return { partner: caller.identity };
 }
 
 type PartnerExecution = {
@@ -378,6 +447,7 @@ type PartnerExecution = {
   /** Validate the body and run the operation (only after auth and replay). */
   run: (
     body: unknown,
+    partner: PartnerIdentity,
   ) => Promise<
     Response | { ok: boolean; status: number; body: Record<string, unknown> }
   >;
@@ -402,7 +472,8 @@ export async function executePartnerRequest(args: PartnerExecution) {
     args.method,
     args.path,
   );
-  if (authentication) return authentication;
+  if (authentication instanceof Response) return authentication;
+  const { partner } = authentication;
 
   const key = parseIdempotencyKey(
     args.request.headers.get(IDEMPOTENCY_KEY_HEADER),
@@ -419,10 +490,12 @@ export async function executePartnerRequest(args: PartnerExecution) {
   }
 
   const hashes = hashPartnerRequest(args.method, args.path, rawBody);
-  if (key) {
+  // Partners share the table: every partner's key is stored under its own scope.
+  const storedKey = key ? scopeIdempotencyKey(partner.id, key) : key;
+  if (storedKey) {
     let reservation: IdempotencyReservation;
     try {
-      reservation = await args.deps.reserveIdempotent(key, hashes);
+      reservation = await args.deps.reserveIdempotent(storedKey, hashes);
     } catch {
       return partnerJson({ error: "partner_idempotency_unavailable" }, 503);
     }
@@ -445,23 +518,23 @@ export async function executePartnerRequest(args: PartnerExecution) {
 
   let outcome: Awaited<ReturnType<PartnerExecution["run"]>>;
   try {
-    outcome = await args.run(body);
+    outcome = await args.run(body, partner);
   } catch (error) {
-    if (key) {
+    if (storedKey) {
       await args.deps
-        .finishIdempotent(key, hashes.requestHash, null)
+        .finishIdempotent(storedKey, hashes.requestHash, null)
         .catch(() => undefined);
     }
     throw error;
   }
 
-  if (key) {
+  if (storedKey) {
     // The operation already ran: a failed bookkeeping write must not turn its
     // answer into a 500. The key's lease then expires and a retry re-runs,
     // which every partner operation absorbs (claims and actions dedupe).
     await args.deps
       .finishIdempotent(
-        key,
+        storedKey,
         hashes.requestHash,
         !(outcome instanceof Response) && outcome.ok
           ? {
@@ -491,12 +564,12 @@ export async function handleRouterClaimRequest(
     deps,
     method: "POST",
     path: PARTNER_CLAIMS_PATH,
-    run: async (body) => {
+    run: async (body, partner) => {
       const parsed = partnerRouterClaimRequestSchema.safeParse(body);
       if (!parsed.success) {
         return invalid(describeZodError(parsed.error));
       }
-      return deps.claim(parsed.data);
+      return deps.claim(parsed.data, partner.id);
     },
   });
 }
@@ -518,7 +591,7 @@ export async function handleRouterUnbindRequest(
     deps,
     method: "DELETE",
     path: `${PARTNER_CLAIMS_PATH}/${routerId}`,
-    run: async (body) => {
+    run: async (body, partner) => {
       if (!UUID_PATTERN.test(routerId)) {
         return invalid("routerId must be a UUID");
       }
@@ -532,6 +605,7 @@ export async function handleRouterUnbindRequest(
       return deps.unbind({
         routerId: parsed.data.routerId,
         ownerRef: parsed.data.ownerRef,
+        partnerId: partner.id,
       });
     },
   });

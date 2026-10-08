@@ -484,7 +484,7 @@ async function claimUnregisteredRouter(
 export async function claimRouterWithDb(
   client: ClaimsDatabase,
   request: PartnerRouterClaimRequest,
-  options: { now?: Date } = {},
+  options: { now?: Date; partnerId?: string } = {},
 ): Promise<RouterClaimOutcome> {
   const now = options.now ?? new Date();
 

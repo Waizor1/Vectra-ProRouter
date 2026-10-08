@@ -10,6 +10,12 @@ import {
 } from "./partner-signature";
 export const PARTNER_VERSION_HEADER = "X-Vectra-Partner-Version";
 export const PARTNER_REQUEST_ID_HEADER = "X-Vectra-Partner-Request-Id";
+/**
+ * Which partner is calling (default: Vectra Connect). Not part of the signed
+ * message — the secret already is the partner's own, so a request carrying
+ * another partner's id is checked against that partner's secret and fails.
+ */
+export const PARTNER_ID_HEADER = "X-Vectra-Partner-Id";
 const uuid =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const encode = (value: string) =>
@@ -64,6 +70,7 @@ export function buildPartnerRequestHeaders(
   key = "",
   nowMs = Date.now(),
   requestId: string = randomUUID(),
+  partnerId?: string,
 ) {
   const target = new URL(url);
   const timestamp = Math.floor(nowMs / 1000);
@@ -81,6 +88,7 @@ export function buildPartnerRequestHeaders(
       idempotencyKey: key,
     }),
     ...(key ? { "Idempotency-Key": key } : {}),
+    ...(partnerId ? { [PARTNER_ID_HEADER]: partnerId } : {}),
   };
 }
 export function verifyPartnerRequest(args: {

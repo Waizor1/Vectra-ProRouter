@@ -30,6 +30,7 @@ import {
   type PartnerApiDeps,
 } from "./partner-api";
 import { PARTNER_ACTION_DEDUPE_PREFIX } from "./partner-action-key";
+import { DEFAULT_PARTNER_ID, scopeIdempotencyKey } from "./partner-registry";
 import { keyedDigest, stableStringify } from "./secrets";
 import {
   canRunDestructiveAction,
@@ -273,6 +274,7 @@ export async function readPartnerRoutersWithDb(
   ownerRef: string,
   routerId?: string,
   now = new Date(),
+  partnerId: string = DEFAULT_PARTNER_ID,
 ) {
   const owned = await client
     .select()
@@ -329,6 +331,7 @@ export async function queuePartnerActionWithDb(
   input: z.infer<typeof partnerActionRequestSchema>,
   key: string,
   now = new Date(),
+  partnerId: string = DEFAULT_PARTNER_ID,
 ) {
   return client.transaction(async (tx) => {
     // Take a row lock and recheck ownership in the same transaction as the job.
@@ -512,6 +515,7 @@ export async function cancelPartnerActionWithDb(
   client: Client,
   input: z.infer<typeof partnerActionCancelRequestSchema>,
   now = new Date(),
+  partnerId: string = DEFAULT_PARTNER_ID,
 ) {
   return client.transaction(async (tx) => {
     // The lock check-in takes before it stamps a delivery.
@@ -592,22 +596,34 @@ export type PartnerRoutersDeps = {
   api: PartnerApiDeps;
   read: (
     owner: string,
-    id?: string,
+    id: string | undefined,
+    partnerId: string,
   ) => Promise<ReturnType<typeof projectPartnerRouter>[]>;
   action: (
     input: z.infer<typeof partnerActionRequestSchema>,
     key: string,
+    partnerId: string,
   ) => ReturnType<typeof queuePartnerActionWithDb>;
   cancel: (
     input: z.infer<typeof partnerActionCancelRequestSchema>,
+    partnerId: string,
   ) => ReturnType<typeof cancelPartnerActionWithDb>;
 };
 function defaults(): PartnerRoutersDeps {
   return {
     api: defaultDeps(),
-    read: (owner, id) => readPartnerRoutersWithDb(db, owner, id),
-    action: (input, key) => queuePartnerActionWithDb(db, input, key),
-    cancel: (input) => cancelPartnerActionWithDb(db, input),
+    read: (owner, id, partnerId) =>
+      readPartnerRoutersWithDb(db, owner, id, new Date(), partnerId),
+    action: (input, key, partnerId) =>
+      queuePartnerActionWithDb(
+        db,
+        input,
+        scopeIdempotencyKey(partnerId, key),
+        new Date(),
+        partnerId,
+      ),
+    cancel: (input, partnerId) =>
+      cancelPartnerActionWithDb(db, input, new Date(), partnerId),
   };
 }
 
@@ -625,7 +641,7 @@ export async function handlePartnerRoutersRead(
     "GET",
     routerId ? `/api/partner/routers/${routerId}` : "/api/partner/routers",
   );
-  if (auth) return auth;
+  if (auth instanceof Response) return auth;
   const owner = ownerSchema.safeParse(
     new URL(request.url).searchParams.get("ownerRef"),
   );
@@ -634,7 +650,7 @@ export async function handlePartnerRoutersRead(
     (routerId && !z.string().uuid().safeParse(routerId).success)
   )
     return partnerJson({ error: "invalid" }, 400);
-  const snapshots = await deps.read(owner.data, routerId);
+  const snapshots = await deps.read(owner.data, routerId, auth.partner.id);
   return routerId
     ? snapshots[0]
       ? partnerJson(snapshots[0], 200)
@@ -658,11 +674,11 @@ export async function handlePartnerRouterAction(
     deps: deps.api,
     method: "POST",
     path: `/api/partner/routers/${routerId}/actions`,
-    run: async (body) => {
+    run: async (body, partner) => {
       const parsed = partnerActionRequestSchema.safeParse(body);
       if (!parsed.success || parsed.data.routerId !== routerId)
         return partnerJson({ error: "invalid" }, 400);
-      return deps.action(parsed.data, key);
+      return deps.action(parsed.data, key, partner.id);
     },
   });
 }
@@ -687,11 +703,11 @@ export async function handlePartnerRouterActionCancel(
     deps: deps.api,
     method: "POST",
     path: `/api/partner/routers/${routerId}/actions/cancel`,
-    run: async (body) => {
+    run: async (body, partner) => {
       const parsed = partnerActionCancelRequestSchema.safeParse(body);
       if (!parsed.success || parsed.data.routerId !== routerId)
         return partnerJson({ error: "invalid" }, 400);
-      return deps.cancel(parsed.data);
+      return deps.cancel(parsed.data, partner.id);
     },
   });
 }
