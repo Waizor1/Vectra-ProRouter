@@ -39,7 +39,7 @@ VECTRA_SKIP_POSTINST_RESTART=1 opkg install /tmp/vectra-controller-pro_*.ipk
 ```
 
 PassWall and the old agent keep running; nothing about traffic changes. LuCI now
-has **Services → Vectra** (it says the controller is not running — correct).
+has **VPN** in its menu (it says the controller is not running — correct).
 
 *Way back:* `opkg remove vectra-controller-pro`.
 
@@ -124,7 +124,7 @@ ubus call vectra status | jsonfilter -e '@.dataplane.loaded' -e '@.controlPlane.
 # true / true — otherwise roll back (step 4's way back)
 ```
 
-- LuCI → **Services → Vectra**: overview green; **Balancing** shows each
+- LuCI → **VPN**: overview green; **Balancing** shows each
   balancer's selected node; **Nodes** shows probe results; **Journal** has lines.
 - From a LAN client: Telegram, YouTube, Instagram, a `.ru` site, a speed test.
 - On the router: `ubus call vectra status`, `ubus call vectra diagnostics`,
