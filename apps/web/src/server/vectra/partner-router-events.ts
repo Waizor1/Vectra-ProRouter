@@ -3,6 +3,8 @@ import { type jobs, routers, routerInventorySnapshots } from "@vectra/db";
 import { and, desc, eq, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import type { db } from "~/server/db";
 import { PARTNER_ACTION_DEDUPE_PREFIX } from "./partner-action-key";
+import { DEFAULT_PARTNER_ID } from "./partner-registry";
+import { routerOwnedByPartner, routerPartnerId } from "./partner-scope";
 import { enqueuePartnerWebhookWithDb } from "./partner-webhooks";
 
 type Client = Pick<typeof db, "select" | "insert" | "update" | "transaction">;
@@ -201,6 +203,11 @@ export async function notifyPartnerActionResultWithDb(
       : args.job.dedupeKey?.startsWith(PARTNER_ACTION_DEDUPE_PREFIX)
         ? args.job.dedupeKey.slice(PARTNER_ACTION_DEDUPE_PREFIX.length)
         : undefined;
+  // The partner that queued the action; a job from before there were
+  // partners is Vectra Connect's. A router that changed hands since is not
+  // told about the previous partner's action.
+  const partnerId =
+    typeof payload.partnerId === "string" ? payload.partnerId : DEFAULT_PARTNER_ID;
   await client.transaction(async (tx) => {
     const [current] = await tx
       .update(routers)
@@ -209,11 +216,17 @@ export async function notifyPartnerActionResultWithDb(
         and(
           eq(routers.id, args.job.routerId),
           eq(routers.ownerRef, args.ownerRef!),
+          routerOwnedByPartner(partnerId),
           isNull(routers.releasedAt),
         ),
       )
       .returning();
-    if (current?.ownerRef !== args.ownerRef || current.releasedAt) return;
+    if (
+      current?.ownerRef !== args.ownerRef ||
+      current.releasedAt ||
+      routerPartnerId(current) !== partnerId
+    )
+      return;
     await enqueuePartnerWebhookWithDb(tx, {
       event: "router.action",
       routerId: args.job.routerId,

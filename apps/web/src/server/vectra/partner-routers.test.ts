@@ -906,6 +906,82 @@ describe("partner action failure reason", () => {
   });
 });
 
+// The router.action result follows the partner that queued the action: a job
+// without a partner is Vectra Connect's, and a router that changed hands since
+// is not told about the other partner's action.
+describe("a partner action's result stays with its partner", () => {
+  const ACTION = "00000000-0000-4000-8000-000000000098";
+  function jobOf(partnerId?: string) {
+    return {
+      id: ACTION,
+      routerId: ID,
+      payload: {
+        origin: "partner_action",
+        ownerRef: "acct-42",
+        actionId: ACTION,
+        ...(partnerId ? { partnerId } : {}),
+      },
+    } as unknown as typeof jobs.$inferSelect;
+  }
+  async function notify(job: typeof jobs.$inferSelect, row: ReturnType<typeof router>) {
+    const outbox = createFakeDb({ updateReturns: [[routers, [[row]]]] });
+    await notifyPartnerActionResultWithDb(outbox.db as never, {
+      job,
+      ownerRef: "acct-42",
+      status: "success",
+    });
+    return outbox.inserts(partnerWebhooks);
+  }
+
+  it("is told to the partner that owns both the job and the router", async () => {
+    expect(await notify(jobOf("bloopcat"), router({ partnerId: "bloopcat" }))).toHaveLength(1);
+    expect(await notify(jobOf("vectra"), router({ partnerId: "vectra" }))).toHaveLength(1);
+    // before there were partners: no partner on either side is Vectra Connect's.
+    expect(await notify(jobOf(), router({ partnerId: null }))).toHaveLength(1);
+  });
+
+  it("is not told when the router now belongs to another partner", async () => {
+    expect(await notify(jobOf("bloopcat"), router({ partnerId: "vectra" }))).toEqual([]);
+    expect(await notify(jobOf("bloopcat"), router({ partnerId: null }))).toEqual([]);
+    expect(await notify(jobOf(), router({ partnerId: "bloopcat" }))).toEqual([]);
+  });
+
+  it("locks the router of the job's partner only", async () => {
+    for (const [job, params, isNull] of [
+      [jobOf("bloopcat"), ["bloopcat"], false],
+      [jobOf(), ["vectra"], true],
+    ] as const) {
+      const base = createFakeDb({ updateReturns: [[routers, [[router()]]]] });
+      const queries: Array<{ sql: string; params: unknown[] }> = [];
+      const db = {
+        ...base.db,
+        update: (table: unknown) => ({
+          set: (set: Record<string, unknown>) => {
+            const inner = base.db.update(table).set(set);
+            return {
+              where: (condition: SQL) => {
+                queries.push(dialect.sqlToQuery(condition));
+                return inner.where();
+              },
+            };
+          },
+        }),
+        transaction: async <T>(run: (tx: unknown) => Promise<T>) => run(db),
+      };
+      await notifyPartnerActionResultWithDb(db as never, {
+        job,
+        ownerRef: "acct-42",
+        status: "success",
+      });
+      expect(queries).toHaveLength(1);
+      expect(queries[0]!.sql).toMatch(/"partner_id" = \$\d+/);
+      expect(queries[0]!.params).toEqual(expect.arrayContaining([...params]));
+      if (isNull) expect(queries[0]!.sql).toMatch(/"partner_id" is null/);
+      else expect(queries[0]!.sql).not.toMatch(/"partner_id" is null/);
+    }
+  });
+});
+
 describe("HTTP to native job to signed fake-provider webhook", () => {
   it("preserves the action and ownership across the complete local boundary", async () => {
     const fake = queueDb();
@@ -1181,7 +1257,7 @@ describe("an action's idempotency key per partner", () => {
     ["vectra", "K", "partner-action:K"],
     ["vectra", "act:7", "partner-action:vectra:act:7"],
   ])("partner %s, key %s: dedupe key %s, payload keeps the raw key", async (partnerId, key, dedupeKey) => {
-    const fake = queueDb();
+    const fake = queueDb(router({ partnerId }));
     const result = await queuePartnerActionWithDb(
       fake.db as never,
       action(),
@@ -1192,6 +1268,170 @@ describe("an action's idempotency key per partner", () => {
     expect(result.status).toBe(202);
     const [job] = fake.inserts(jobs);
     expect(job).toMatchObject({ dedupeKey, payload: { idempotencyKey: key } });
+  });
+});
+
+// Partners share the routers table: a router is visible and actionable only to
+// the partner that claimed it. fake-db does not evaluate predicates, so the
+// explicit JS check is pinned by scripting the other partner's row into the
+// answer and the SQL predicate by reading it off the query.
+describe("partners do not see each other's routers", () => {
+  type Where = { table: unknown; sql: string; params: unknown[] };
+  function recording(base: ReturnType<typeof createFakeDb>) {
+    const wheres: Where[] = [];
+    const db = {
+      ...base.db,
+      select: () => ({
+        from: (table: unknown) => {
+          const inner = base.db.select().from(table);
+          const chain = {
+            ...inner,
+            where: (condition: SQL) => {
+              wheres.push({ table, ...dialect.sqlToQuery(condition) });
+              return chain;
+            },
+          };
+          return chain;
+        },
+      }),
+      update: (table: unknown) => ({
+        set: (set: Record<string, unknown>) => {
+          const inner = base.db.update(table).set(set);
+          return {
+            where: (condition: SQL) => {
+              wheres.push({ table, ...dialect.sqlToQuery(condition) });
+              return inner.where();
+            },
+          };
+        },
+      }),
+      transaction: async <T>(run: (tx: unknown) => Promise<T>) => run(db),
+    };
+    return { db, wheres: (table: unknown) => wheres.filter((w) => w.table === table) };
+  }
+  // The ownership predicate of a partner, as it shows in the SQL of a query.
+  const IS_NULL = /"partner_id" is null/;
+  const EQUALS = /"partner_id" = \$\d+/;
+
+  it("hides another partner's router with the same ownerRef", async () => {
+    const fake = createFakeDb({
+      selects: [[routers, [[router({ partnerId: "bloopcat" })]]]],
+    });
+    expect(
+      await readPartnerRoutersWithDb(fake.db as never, "acct-42", undefined, NOW, "vectra"),
+    ).toEqual([]);
+    const reverse = createFakeDb({
+      selects: [[routers, [[router({ partnerId: null })]]]],
+    });
+    expect(
+      await readPartnerRoutersWithDb(reverse.db as never, "acct-42", undefined, NOW, "bloopcat"),
+    ).toEqual([]);
+  });
+
+  it("hides a router that changed hands between the list and its share-locked re-read", async () => {
+    const fake = createFakeDb({
+      selects: [
+        [routers, [[router()], [router({ partnerId: "bloopcat" })]]],
+        [routerInventorySnapshots, [[reportingInventory()]]],
+      ],
+    });
+    expect(
+      await readPartnerRoutersWithDb(fake.db as never, "acct-42", ID, NOW, "vectra"),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ["vectra", null],
+    ["vectra", "vectra"],
+    ["bloopcat", "bloopcat"],
+  ])("shows partner %s its own router (stored as %s)", async (partnerId, stored) => {
+    const own = router({ partnerId: stored });
+    const fake = createFakeDb({
+      selects: [
+        [routers, [[own], [own]]],
+        [routerInventorySnapshots, [[reportingInventory()]]],
+      ],
+    });
+    const snapshots = await readPartnerRoutersWithDb(
+      fake.db as never,
+      "acct-42",
+      ID,
+      NOW,
+      partnerId,
+    );
+    expect(snapshots.map((s) => s.routerId)).toEqual([ID]);
+  });
+
+  it("asks the database for the caller's routers only, in the list and in the locked re-read", async () => {
+    for (const [partnerId, params] of [
+      ["vectra", ["vectra"]],
+      ["bloopcat", ["bloopcat"]],
+    ] as const) {
+      const own = router({ partnerId: partnerId === "vectra" ? null : partnerId });
+      const spy = recording(
+        createFakeDb({
+          selects: [
+            [routers, [[own], [own]]],
+            [routerInventorySnapshots, [[reportingInventory()]]],
+          ],
+        }),
+      );
+      await readPartnerRoutersWithDb(spy.db as never, "acct-42", ID, NOW, partnerId);
+      const asked = spy.wheres(routers);
+      expect(asked).toHaveLength(2);
+      for (const query of asked) {
+        expect(query.sql).toMatch(EQUALS);
+        expect(query.params).toEqual(expect.arrayContaining([...params]));
+        if (partnerId === "vectra") expect(query.sql).toMatch(IS_NULL);
+        else expect(query.sql).not.toMatch(IS_NULL);
+      }
+    }
+  });
+
+  it("refuses an action on another partner's router", async () => {
+    const fake = queueDb(router({ partnerId: "bloopcat" }));
+    expect(
+      (await queuePartnerActionWithDb(fake.db as never, action(), "key", NOW, "vectra"))
+        .status,
+    ).toBe(404);
+    expect(fake.inserts(jobs)).toEqual([]);
+    // and the other way round: a router from before there were partners is Vectra Connect's.
+    const legacy = queueDb(router({ partnerId: null }));
+    expect(
+      (await queuePartnerActionWithDb(legacy.db as never, action(), "key", NOW, "bloopcat"))
+        .status,
+    ).toBe(404);
+    expect(legacy.inserts(jobs)).toEqual([]);
+  });
+
+  it("stores the partner on the queued job", async () => {
+    const fake = queueDb(router({ partnerId: "bloopcat" }));
+    const result = await queuePartnerActionWithDb(
+      fake.db as never,
+      action(),
+      "key",
+      NOW,
+      "bloopcat",
+    );
+    expect(result.status).toBe(202);
+    expect(fake.inserts(jobs)[0]).toMatchObject({
+      payload: { partnerId: "bloopcat", ownerRef: "acct-42", idempotencyKey: "key" },
+    });
+    const own = queueDb();
+    await queuePartnerActionWithDb(own.db as never, action(), "key", NOW);
+    expect(own.inserts(jobs)[0]).toMatchObject({ payload: { partnerId: "vectra" } });
+  });
+
+  it("locks and rechecks only the caller's router when it queues an action", async () => {
+    for (const partnerId of ["vectra", "bloopcat"]) {
+      const spy = recording(queueDb(router({ partnerId })));
+      await queuePartnerActionWithDb(spy.db as never, action(), "key", NOW, partnerId);
+      const [lock] = spy.wheres(routers);
+      expect(lock!.sql).toMatch(EQUALS);
+      expect(lock!.params).toContain(partnerId);
+      if (partnerId === "vectra") expect(lock!.sql).toMatch(IS_NULL);
+      else expect(lock!.sql).not.toMatch(IS_NULL);
+    }
   });
 });
 
@@ -1335,9 +1575,84 @@ describe("cancelling an owner's action by the partner's key", () => {
     }
   });
 
+  it("never touches another partner's router, and no job of its own", async () => {
+    for (const [row, partnerId] of [
+      [router({ partnerId: "bloopcat" }), "vectra"],
+      [router({ partnerId: null }), "bloopcat"],
+    ] as const) {
+      const fake = cancelDb(ownJob(), { row });
+      expect(
+        (await cancelPartnerActionWithDb(fake.db as never, cancelInput(), NOW, partnerId)).status,
+      ).toBe(404);
+      expect(fake.updates(jobs)).toEqual([]);
+    }
+  });
+
+  it("answers not_found for a job queued by another partner, a job without a partner being Vectra Connect's", async () => {
+    const theirs = cancelDb(
+      ownJob({ payload: { ...ownJob().payload, partnerId: "bloopcat" } }),
+      { row: router({ partnerId: "vectra" }) },
+    );
+    expect(await cancelPartnerActionWithDb(theirs.db as never, cancelInput(), NOW)).toEqual({
+      ok: true,
+      status: 200,
+      body: { state: "not_found" },
+    });
+    expect(theirs.updates(jobs)).toEqual([]);
+    // queued before there were partners: Vectra Connect's, nobody else's.
+    const legacy = cancelDb(ownJob(), { row: router({ partnerId: "bloopcat" }) });
+    expect(
+      await cancelPartnerActionWithDb(legacy.db as never, cancelInput(), NOW, "bloopcat"),
+    ).toEqual({ ok: true, status: 200, body: { state: "not_found" } });
+    expect(legacy.updates(jobs)).toEqual([]);
+    // its own partner's job is cancelled.
+    const own = cancelDb(
+      ownJob({ payload: { ...ownJob().payload, partnerId: "bloopcat" } }),
+      { row: router({ partnerId: "bloopcat" }) },
+    );
+    expect(
+      await cancelPartnerActionWithDb(own.db as never, cancelInput(), NOW, "bloopcat"),
+    ).toMatchObject({ status: 200, body: { state: "cancelled" } });
+  });
+
+  it("locks only the caller's router when it cancels", async () => {
+    for (const partnerId of ["vectra", "bloopcat"]) {
+      const base = cancelDb(ownJob({ payload: { ...ownJob().payload, partnerId } }), {
+        row: router({ partnerId }),
+      });
+      const queries: Array<{ sql: string; params: unknown[] }> = [];
+      const db = {
+        ...base.db,
+        update: (table: unknown) => ({
+          set: (set: Record<string, unknown>) => {
+            const inner = base.db.update(table).set(set);
+            return {
+              where: (condition: SQL) => {
+                if (table === routers) queries.push(dialect.sqlToQuery(condition));
+                return inner.where();
+              },
+            };
+          },
+        }),
+        transaction: async <T>(run: (tx: unknown) => Promise<T>) => run(db),
+      };
+      await cancelPartnerActionWithDb(
+        db as never,
+        cancelInput({ idempotencyKey: KEY }),
+        NOW,
+        partnerId,
+      );
+      expect(queries).toHaveLength(1);
+      expect(queries[0]!.sql).toMatch(/"partner_id" = \$\d+/);
+      expect(queries[0]!.params).toContain(partnerId);
+      if (partnerId === "vectra") expect(queries[0]!.sql).toMatch(/"partner_id" is null/);
+      else expect(queries[0]!.sql).not.toMatch(/"partner_id" is null/);
+    }
+  });
+
   // fake-db does not evaluate predicates, so the lookup is read off the query.
-  function lookedUpDedupeKeys(job: Row | undefined) {
-    const base = cancelDb(job);
+  function lookedUpDedupeKeys(job: Row | undefined, row?: Row) {
+    const base = cancelDb(job, { row });
     const asked: unknown[] = [];
     const db = {
       ...base.db,
@@ -1364,9 +1679,9 @@ describe("cancelling an owner's action by the partner's key", () => {
   ])("partner %s cancelling key %s finds the job under %s", async (partnerId, key, dedupeKey) => {
     const job = ownJob({
       dedupeKey,
-      payload: { ...ownJob().payload, idempotencyKey: key },
+      payload: { ...ownJob().payload, idempotencyKey: key, partnerId },
     });
-    const { db, asked } = lookedUpDedupeKeys(job);
+    const { db, asked } = lookedUpDedupeKeys(job, router({ partnerId }) as unknown as Row);
     const result = await cancelPartnerActionWithDb(
       db as never,
       cancelInput({ idempotencyKey: key }),

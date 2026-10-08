@@ -31,6 +31,7 @@ import {
 } from "./partner-api";
 import { PARTNER_ACTION_DEDUPE_PREFIX } from "./partner-action-key";
 import { DEFAULT_PARTNER_ID, scopeIdempotencyKey } from "./partner-registry";
+import { routerOwnedByPartner, routerPartnerId } from "./partner-scope";
 import { keyedDigest, stableStringify } from "./secrets";
 import {
   canRunDestructiveAction,
@@ -282,6 +283,7 @@ export async function readPartnerRoutersWithDb(
     .where(
       and(
         eq(routers.ownerRef, ownerRef),
+        routerOwnedByPartner(partnerId),
         isNull(routers.releasedAt),
         ...(routerId ? [eq(routers.id, routerId)] : []),
       ),
@@ -290,6 +292,7 @@ export async function readPartnerRoutersWithDb(
   const visible = owned.filter(
     (r) =>
       r.ownerRef === ownerRef &&
+      routerPartnerId(r) === partnerId &&
       !r.releasedAt &&
       (!routerId || r.id === routerId),
   );
@@ -305,12 +308,18 @@ export async function readPartnerRoutersWithDb(
             and(
               eq(routers.id, r.id),
               eq(routers.ownerRef, ownerRef),
+              routerOwnedByPartner(partnerId),
               isNull(routers.releasedAt),
             ),
           )
           .for("share")
           .limit(1);
-        if (current?.ownerRef !== ownerRef || current.releasedAt) return null;
+        if (
+          current?.ownerRef !== ownerRef ||
+          current.releasedAt ||
+          routerPartnerId(current) !== partnerId
+        )
+          return null;
         const inventory = await latestInventory(tx, current.id);
         return projectPartnerRouter(
           current,
@@ -343,11 +352,16 @@ export async function queuePartnerActionWithDb(
         and(
           eq(routers.id, input.routerId),
           eq(routers.ownerRef, input.ownerRef),
+          routerOwnedByPartner(partnerId),
           isNull(routers.releasedAt),
         ),
       )
       .returning();
-    if (router?.ownerRef !== input.ownerRef || router.releasedAt)
+    if (
+      router?.ownerRef !== input.ownerRef ||
+      router.releasedAt ||
+      routerPartnerId(router) !== partnerId
+    )
       return { ok: false, status: 404, body: { error: "not_found" } };
     // Partners share the jobs table: the dedupe key carries the partner's scope
     // (payload.idempotencyKey below stays the key as the partner sent it).
@@ -454,6 +468,9 @@ export async function queuePartnerActionWithDb(
           actionId,
           action: input.action,
           ownerRef: input.ownerRef,
+          // Whose action it is: a cancel and the router.action result are
+          // matched against it. Never sent to the router.
+          partnerId,
           // The partner's own key for this action: the router.action result
           // carries it back, so the partner matches the result even when the
           // 202 with this actionId never reached it. Never sent to the router.
@@ -528,11 +545,16 @@ export async function cancelPartnerActionWithDb(
         and(
           eq(routers.id, input.routerId),
           eq(routers.ownerRef, input.ownerRef),
+          routerOwnedByPartner(partnerId),
           isNull(routers.releasedAt),
         ),
       )
       .returning();
-    if (router?.ownerRef !== input.ownerRef || router.releasedAt)
+    if (
+      router?.ownerRef !== input.ownerRef ||
+      router.releasedAt ||
+      routerPartnerId(router) !== partnerId
+    )
       return { ok: false, status: 404, body: { error: "not_found" } };
     const [job] = await tx
       .select()
@@ -549,7 +571,9 @@ export async function cancelPartnerActionWithDb(
     if (
       job?.routerId !== router.id ||
       job.payload.origin !== PARTNER_ACTION_ORIGIN ||
-      job.payload.ownerRef !== input.ownerRef
+      job.payload.ownerRef !== input.ownerRef ||
+      // A job queued before there were partners is Vectra Connect's.
+      (job.payload.partnerId ?? DEFAULT_PARTNER_ID) !== partnerId
     )
       return { ok: true, status: 200, body: { state: "not_found" } };
     const cancelled = {
