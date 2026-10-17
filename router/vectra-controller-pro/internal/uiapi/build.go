@@ -78,6 +78,8 @@ type Inputs struct {
 
 	// Tune is the router's tune as it is now (tune.Inspect); nil when not read.
 	Tune *tune.Plan
+	// Catalog is the catalog and geo set in use; nil when not read.
+	Catalog *CatalogView
 
 	// Brand is whose router this is (BuildBrand); rpcd resolves it at every
 	// status call. The zero value is neutral.
@@ -249,6 +251,10 @@ func BuildStatus(in Inputs) Status {
 		for k, v := range in.Counters {
 			st.Dataplane.Counters[k] = v
 		}
+	}
+	if c := in.Catalog; c != nil {
+		cv := *c
+		st.Catalog = &cv
 	}
 	if p := in.Tune; p != nil {
 		st.Tune = &Tune{Enabled: p.On, Profile: p.Profile, Items: make([]TuneItem, 0, len(p.Items))}

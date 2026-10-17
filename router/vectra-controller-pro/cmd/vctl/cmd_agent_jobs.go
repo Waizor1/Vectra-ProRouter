@@ -360,20 +360,33 @@ func (d *daemon) jobRefreshSubscriptions(ctx context.Context, job controlplane.J
 // the refresh job's work, and the daemon's own (maybeRefreshSubscription). A
 // failure installs nothing: what runs keeps running.
 func (d *daemon) refreshSubscription(ctx context.Context) (apply.ApplyResult, map[string]interface{}, error) {
+	res, meta, _, err := d.refreshSubscriptionHold(ctx, time.Time{})
+	return res, meta, err
+}
+
+// refreshSubscriptionHold is refreshSubscription; with a non-zero now (the
+// daemon's own refresh) a document that changes no node may be held for a
+// quiet moment instead (held, subscription_quiet.go). A refresh asked for
+// passes the zero time: applied at once, and a held document is dropped.
+func (d *daemon) refreshSubscriptionHold(ctx context.Context, now time.Time) (apply.ApplyResult, map[string]interface{}, bool, error) {
 	cfg, err := d.loadDesiredConfig()
 	if err != nil {
-		return apply.ApplyResult{}, nil, fmt.Errorf("refresh: %w", err)
+		return apply.ApplyResult{}, nil, false, fmt.Errorf("refresh: %w", err)
 	}
 	d.desired = cfg
 	d.rebuildApplier()
 
 	providerRaw, meta, err := d.fetchProviderDocument(ctx, cfg)
 	if err != nil {
-		return apply.ApplyResult{}, meta, fmt.Errorf("refresh: %w", err)
+		return apply.ApplyResult{}, meta, false, fmt.Errorf("refresh: %w", err)
 	}
+	if !now.IsZero() && d.holdForQuiet(providerRaw, now) {
+		return apply.ApplyResult{Noop: true}, meta, true, nil
+	}
+	d.pendingDoc, d.pendingSince = nil, time.Time{}
 	res, err := d.applyProvider(ctx, providerRaw, false)
 	if err != nil {
-		return res, meta, fmt.Errorf("apply refreshed config: %w", err)
+		return res, meta, false, fmt.Errorf("apply refreshed config: %w", err)
 	}
 	if res.Changed {
 		d.nodeCount = countProviderOutbounds(providerRaw)
@@ -381,7 +394,7 @@ func (d *daemon) refreshSubscription(ctx context.Context) (apply.ApplyResult, ma
 			_ = d.sup.Reload(d.supCtx)
 		}
 	}
-	return res, meta, nil
+	return res, meta, false, nil
 }
 
 // The daemon refreshes its subscription by itself as well: the provider
@@ -419,7 +432,7 @@ func (d *daemon) maybeRefreshSubscription(ctx context.Context, now time.Time) {
 	if now.Before(d.nextSubscriptionRefresh) {
 		return
 	}
-	res, _, err := d.refreshSubscription(ctx)
+	res, _, held, err := d.refreshSubscriptionHold(ctx, now)
 	if err != nil {
 		d.nextSubscriptionRefresh = now.Add(subscriptionRetryAfter)
 		logging.L().Warn("the subscription's own refresh failed; what runs keeps running", "err", err.Error(),
@@ -427,7 +440,11 @@ func (d *daemon) maybeRefreshSubscription(ctx context.Context, now time.Time) {
 		return
 	}
 	d.nextSubscriptionRefresh = now.Add(subscriptionRefreshEvery)
-	logging.L().Info("refreshed the subscription", "changed", res.Changed, "digest", res.AppliedDigest)
+	if held {
+		logging.L().Info("the subscription changed no node; its document is held for a quiet moment", "since", d.pendingSince.Format(time.RFC3339))
+		return
+	}
+	logging.L().Info("refreshed the subscription", "changed", res.Changed, "unchanged", res.RenderUnchanged, "digest", res.AppliedDigest)
 	if err := d.persist(); err != nil {
 		logging.L().Warn("persist state after the subscription's own refresh", "err", err.Error())
 	}

@@ -49,6 +49,28 @@ the AI service. The same day showed the router's geo lists frozen at install
   package upgrade never rolls these files back. Native and PassWall routing
   keep their own files.
 - publish-pro-feed.sh keeps the channel's catalog and geo set on a full rebuild.
+- `status.catalog` (router UI contract): the catalog's serial and source and
+  the geo feed's set in use.
+
+### YouTube and Instagram «иногда тупят» (1111, 2026-10-17)
+- **QUIC into the tunnel is refused at once.** Every provider bridge is VLESS
+  with xtls-rprx-vision, which refuses UDP/443, and the provider blocks Meta's
+  UDP: QUIC went unanswered and apps waited out their QUIC timeout before TCP.
+  The LAN's UDP/443 that would go into xray is now refused with ICMP port
+  unreachable (counter `vctl_quic_refused`), after the kernel's own direct
+  decisions — QUIC to the Russian networks is untouched — and before the door.
+  agent.json `quicThrough` keeps QUIC for a provider whose nodes carry it.
+- **The device door at 30/s, burst 120** (was 15/60: 3517 new connections held
+  in 20 h, 37 of 100 from one device waited over 2 s); still under a node's
+  40/160 pace.
+- **Fewer xray restarts.** A render byte for byte the one xray runs (same geo
+  files) is not checked or written again and restarts nothing. The daemon's
+  own subscription refresh that changes no node (the same outbounds) is held
+  for the router's night window (03:00–06:00) or 12 h at most; changed nodes or
+  credentials, a router out of the tunnel, and refreshes someone asked for
+  apply at once.
+- The built-in catalog covers the AI hosts that went around «Нейросети»:
+  ChatGPT voice and telemetry, Claude's own domains, Gemini web.
 
 ## vctl 0.7.0-r23 — the router wears its owner's brand
 

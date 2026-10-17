@@ -373,8 +373,17 @@ type daemon struct {
 	// rerenderRetryAt: a render the catalog or a geo set asked for was
 	// refused; tried again then (catalog.go maybeRetryRerender).
 	rerenderRetryAt time.Time
-	busy            string
-	probe           *localctl.Probe
+	// renderedGeoSerial is the geo set the render on disk was written for
+	// (rebuildApplier): a render byte for byte the running one is still a
+	// restart when the geo set changed under it.
+	renderedGeoSerial int64
+	// pendingDoc is a provider document the daemon's own refresh took but
+	// holds until a quiet moment (subscription_quiet.go); pendingSince when
+	// it first held one.
+	pendingDoc   []byte
+	pendingSince time.Time
+	busy         string
+	probe        *localctl.Probe
 	// pinBudget bounds how long the start hook waits for xray's API to come
 	// up before giving up on restoring pins and on the leak baseline. 0 = 45 s.
 	pinBudget time.Duration
@@ -532,6 +541,9 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 	}
 	d.catalogSerial = useCatalog(cfg).Catalog.Serial
 	d.geoFeedSerial = loadGeoFeed()
+	// The render on disk was made for this set when its key says so; one
+	// that was not is made again at the start (reconcileRender, the key).
+	d.renderedGeoSerial = d.geoFeedSerial
 	d.exits.Restore(unfitSince(st.UnfitExits))
 	d.exits.RestoreEgress(egressFrom(st.ExitEgress))
 	// Every start — the first, a reload, a crash restart — must get the
@@ -622,6 +634,7 @@ func (d *daemon) rebuildApplier() {
 			d.keepLastGoodRender(b)
 			d.sup.SetAssetDir(assetDir)
 			d.st.RenderAssetDir = assetDir
+			d.renderedGeoSerial = d.geoFeedSerial
 			if d.collector != nil {
 				d.collector.SetAssetDir(assetDir)
 			}
@@ -629,6 +642,14 @@ func (d *daemon) rebuildApplier() {
 		},
 		Validate: xray.Validator{Binary: d.cfg.XrayBinary, AssetDir: assetDir,
 			OOMScoreAdj: memguard.TransientAdj, MemFloorKB: d.memFloorKB},
+		// A render xray already runs, from the same geo files, needs no
+		// restart; one from other files does (xray reads them at its start).
+		CurrentXray: func() ([]byte, error) {
+			if !d.supStarted || d.sup.AssetDir() != assetDir || d.renderedGeoSerial != d.geoFeedSerial {
+				return nil, nil
+			}
+			return vault.ReadFile(d.cfg.XrayRenderPath)
+		},
 		AllowInsecureTLS: allowInsecure,
 	}
 }
@@ -752,6 +773,7 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 		d.maybeLoadDirect(ctx)
 		d.maybeSyncPortForwards(ctx, false)
 		d.maybeRefreshSubscription(ctx, time.Now())
+		d.maybeApplyHeld(ctx, time.Now())
 		d.maybeRefreshCatalog(ctx, time.Now())
 		d.maybeUpdateGeoFeed(ctx, time.Now())
 		d.maybeRetirePassWall(ctx, time.Now())

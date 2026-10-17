@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"vectra-controller-pro/internal/catalog"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/api"
@@ -29,11 +30,11 @@ import (
 // Need says which inputs a method reads: each rpcd call is its own process
 // on a 234 MB router, so nothing is gathered that the answer does not use.
 type Need struct {
-	Runtime, View, Reach, Metrics, Balancers, Local, Operator, Counters, Legacy, Router, Tune bool
+	Runtime, View, Reach, Metrics, Balancers, Local, Operator, Counters, Legacy, Router, Tune, Catalog bool
 }
 
 var (
-	NeedStatus      = Need{Runtime: true, View: true, Reach: true, Local: true, Counters: true, Legacy: true, Router: true, Tune: true}
+	NeedStatus      = Need{Runtime: true, View: true, Reach: true, Local: true, Counters: true, Legacy: true, Router: true, Tune: true, Catalog: true}
 	NeedBalancers   = Need{Runtime: true, View: true, Balancers: true, Local: true}
 	NeedNodes       = Need{View: true, Metrics: true}
 	NeedEntries     = Need{Runtime: true, Local: true, Operator: true}
@@ -55,6 +56,8 @@ type Env struct {
 	CallTime time.Duration // per external call
 	// Tune is where the router's tune reads the router; it only reads here.
 	Tune tune.Env
+	// GeoFeedDir is where the geo feed keeps its set ("" : none read).
+	GeoFeedDir string
 }
 
 // RouterEnv is the production Env for cfg.
@@ -62,7 +65,8 @@ func RouterEnv(cfg agentcfg.Config, version string) Env {
 	t := tune.RouterEnv()
 	t.Run = nil // read, never run: the answers only look
 	return Env{Cfg: cfg, ProcDir: "/proc", RCDir: "/etc/rc.d", Nft: "nft", Overlay: "/overlay", Tmp: "/tmp",
-		ModelF: "/tmp/sysinfo/model", Release: "/etc/openwrt_release", Version: version, CallTime: 3 * time.Second, Tune: t}
+		ModelF: "/tmp/sysinfo/model", Release: "/etc/openwrt_release", Version: version, CallTime: 3 * time.Second, Tune: t,
+		GeoFeedDir: filepath.Join(filepath.Dir(cfg.StatePath), "geo")}
 }
 
 // Gather collects what need asks for. It never fails: what cannot be read is
@@ -154,6 +158,14 @@ func Gather(ctx context.Context, env Env, need Need) Inputs {
 	if need.Legacy {
 		in.AgentEnabled = legacyAgentEnabled(env.RCDir)
 		in.PasswallRunning = power.PassWallRunning(env.ProcDir)
+	}
+	if need.Catalog && env.Cfg.CatalogPath != "" {
+		l := catalog.Load(env.Cfg.CatalogPath)
+		cv := &CatalogView{Serial: l.Catalog.Serial, Source: string(l.Source)}
+		if s := geoSetSerial(env.GeoFeedDir); s > 0 {
+			cv.GeoSerial = &s
+		}
+		in.Catalog = cv
 	}
 	if need.Tune && env.Tune.ProcDir != "" {
 		p := tune.Inspect(env.Tune)
@@ -321,4 +333,23 @@ func parseMemLimit(s string) *int {
 		return &mib
 	}
 	return nil
+}
+
+// geoSetSerial is the serial of the geo feed's set in dir: its manifest's,
+// when both files are there (0: none).
+func geoSetSerial(dir string) int64 {
+	if dir == "" || !config.GeoFilesAt(dir) {
+		return 0
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "geo.json"))
+	if err != nil {
+		return 0
+	}
+	var m struct {
+		Serial int64 `json:"serial"`
+	}
+	if json.Unmarshal(raw, &m) != nil || m.Serial < 0 {
+		return 0
+	}
+	return m.Serial
 }

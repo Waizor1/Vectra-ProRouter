@@ -15,6 +15,7 @@
 package apply
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -38,12 +39,15 @@ type Operation struct {
 
 // ApplyResult is the outcome of an apply, reported back to the panel.
 type ApplyResult struct {
-	Noop          bool        `json:"noop"`
-	Changed       bool        `json:"changed"`
-	DesiredDigest string      `json:"desiredDigest"`
-	AppliedDigest string      `json:"appliedDigest"`
-	Operations    []Operation `json:"operations"`
-	XrayBytes     int         `json:"xrayBytes"`
+	Noop    bool `json:"noop"`
+	Changed bool `json:"changed"`
+	// RenderUnchanged: the document was taken, and the render it makes is the
+	// one xray runs (Applier.CurrentXray): nothing to restart.
+	RenderUnchanged bool        `json:"renderUnchanged,omitempty"`
+	DesiredDigest   string      `json:"desiredDigest"`
+	AppliedDigest   string      `json:"appliedDigest"`
+	Operations      []Operation `json:"operations"`
+	XrayBytes       int         `json:"xrayBytes"`
 	// DroppedInbounds records the provider inbounds the splice removed.
 	DroppedInbounds []string `json:"droppedInbounds,omitempty"`
 	// DroppedKeys and DroppedHosts are what of the provider's document the
@@ -86,6 +90,13 @@ type Applier struct {
 	// the owner's sites). The zero value splices the inbound and the egress
 	// mark only.
 	Splice xray.SpliceOptions
+	// CurrentXray, when set, is the render xray runs now — nil when xray
+	// would not run the new one as it runs this (another geo directory or
+	// set). A new render byte for byte that one is not checked or written
+	// again, and xray is not restarted for it: a provider document that
+	// changed only where the render does not (r24: every subscription refresh
+	// restarted xray and cut every open connection).
+	CurrentXray func() ([]byte, error)
 }
 
 // Digest returns the config digest of a provider document: sha256 of its bytes.
@@ -158,6 +169,26 @@ func (a *Applier) Apply(ctx context.Context, providerRaw []byte, currentDigest s
 	}
 	if ur := spliceRes.UserRules; ur.Rules > 0 || ur.Dropped > 0 || len(ur.Skipped) > 0 {
 		res.Operations = append(res.Operations, Operation{Kind: "splice_user_rules", Description: ur.Describe()})
+	}
+
+	if a.CurrentXray != nil {
+		if cur, err := a.CurrentXray(); err == nil && cur != nil && bytes.Equal(cur, spliced) {
+			if a.ProviderPath != "" {
+				save := config.SaveRaw
+				if a.SecretStorage {
+					save = config.SaveSecretRaw
+				}
+				if err := save(a.ProviderPath, providerRaw); err != nil {
+					return res, fmt.Errorf("apply: persist provider config: %w", err)
+				}
+			}
+			res.Operations = append(res.Operations, Operation{Kind: "render_unchanged",
+				Description: "the render is the one xray runs, byte for byte: nothing written, xray not restarted"})
+			res.RenderUnchanged = true
+			res.AppliedDigest = res.DesiredDigest
+			res.XrayBytes = len(spliced)
+			return res, nil
+		}
 	}
 
 	// Write gate: never install what Xray will not start.
