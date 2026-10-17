@@ -61,8 +61,8 @@ func TestADevicesStormWaitsAtTheDoorBeforeXray(t *testing.T) {
 	rules := rulesOf(chainNamed(t, out, "prerouting"))
 	tproxy := indexOf(rules, "meta l4proto { tcp, udp } counter name \"vctl_tproxy_hits\" tproxy")
 	for _, want := range []string{
-		`iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit4 { ip saddr limit rate over 15/second burst 60 packets } counter name "vctl_admit_held" drop`,
-		`iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit6 { ip6 saddr limit rate over 15/second burst 60 packets } counter name "vctl_admit_held" drop`,
+		`iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit4 { ip saddr limit rate over 30/second burst 120 packets } counter name "vctl_admit_held" drop`,
+		`iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit6 { ip6 saddr limit rate over 30/second burst 120 packets } counter name "vctl_admit_held" drop`,
 	} {
 		i := indexOf(rules, want)
 		if p2p := indexOf(rules, `iif != "lo" ct state new ct original packets 1 ip saddr @vctl_p2p4`); i < 0 || tproxy < 0 || p2p < 0 || i > tproxy || i < p2p {
@@ -83,17 +83,17 @@ func TestTheWholeDoorHoldsEveryDeviceTogether(t *testing.T) {
 		t.Fatal("the whole door is on by default")
 	}
 	s := DefaultSpec(12345, 1)
-	s.AdmitTotalRate, s.AdmitTotalBurst = 30, 120
+	s.AdmitTotalRate, s.AdmitTotalBurst = 50, 200
 	out := mustRender(t, s)
 	rules := rulesOf(chainNamed(t, out, "prerouting"))
-	want := `iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } limit rate over 30/second burst 120 packets counter name "vctl_admit_total_held" drop`
+	want := `iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } limit rate over 50/second burst 200 packets counter name "vctl_admit_total_held" drop`
 	i := indexOf(rules, want)
 	tproxy := indexOf(rules, "meta l4proto { tcp, udp } counter name \"vctl_tproxy_hits\" tproxy")
 	dev6 := indexOf(rules, `iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit6`)
 	if i < 0 || tproxy < 0 || dev6 < 0 || i < dev6 || i > tproxy {
 		t.Fatalf("whole door at %d (device door %d, tproxy %d):\n  %s\nrules:\n%s", i, dev6, tproxy, want, strings.Join(rules, "\n"))
 	}
-	if strings.Count(out, "limit rate over 30/second burst 120 packets") != 1 {
+	if strings.Count(out, "limit rate over 50/second burst 200 packets") != 1 {
 		t.Error("one rule, both families: the two would each get the whole rate")
 	}
 	if !strings.Contains(out, "counter vctl_admit_total_held { }") {
@@ -225,5 +225,29 @@ func TestAP2PHostsUTPAndDHTOnVoicePortsGoByTheKernel(t *testing.T) {
 		if strings.Contains(r, "@th,64") && !strings.Contains(r, "saddr @vctl_p2p") {
 			t.Errorf("payload match outside a known P2P host: %s", r)
 		}
+	}
+}
+
+// QUIC the tunnel would carry is refused at once (r24): after the kernel's
+// own direct decisions (QUIC to the Russian networks goes out as before),
+// before the door, so a refused QUIC attempt spends no device's rate.
+func TestQUICIntoTheTunnelIsRefusedAtOnce(t *testing.T) {
+	out := mustRender(t, DefaultSpec(12345, 1))
+	rules := rulesOf(chainNamed(t, out, "prerouting"))
+	want := `iif != "lo" meta l4proto udp udp dport 443 counter name "vctl_quic_refused" reject with icmpx port-unreachable`
+	i := indexOf(rules, want)
+	anchor := indexOf(rules, "ct mark and 0x10000000 == 0x10000000 return")
+	door := indexOf(rules, `iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit4`)
+	tproxy := indexOf(rules, "meta l4proto { tcp, udp } counter name \"vctl_tproxy_hits\" tproxy")
+	if i < 0 || anchor < 0 || door < 0 || tproxy < 0 || i < anchor || i > door || i > tproxy {
+		t.Fatalf("QUIC refusal at %d (direct %d, door %d, tproxy %d):\n%s", i, anchor, door, tproxy, strings.Join(rules, "\n"))
+	}
+	if !strings.Contains(out, "counter vctl_quic_refused { }") {
+		t.Error("the QUIC counter is not declared")
+	}
+	s := DefaultSpec(12345, 1)
+	s.RefuseQUIC = false
+	if out := mustRender(t, s); strings.Contains(out, "vctl_quic_refused") {
+		t.Error("QUIC refused with the switch off")
 	}
 }

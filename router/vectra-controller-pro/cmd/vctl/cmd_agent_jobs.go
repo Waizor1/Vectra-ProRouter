@@ -1180,6 +1180,9 @@ func withLoadGuards(spec firewall.Spec, ac agentcfg.Config) firewall.Spec {
 	if ac.NoP2PBypass {
 		spec.P2PBypass = false
 	}
+	if ac.QUICThrough {
+		spec.RefuseQUIC = false
+	}
 	if v := ac.AdmitRate; v != nil && *v >= 0 {
 		spec.AdmitRate, spec.AdmitBurst = *v, 4**v
 	}

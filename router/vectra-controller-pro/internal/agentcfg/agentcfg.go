@@ -89,7 +89,11 @@ type Config struct {
 	// second (UCI admit_rate, pace_rate; '0' switches one off); nil: the
 	// product's (firewall.DefaultSpec).
 	AdmitRate *int `json:"admitRate,omitempty"`
-	PaceRate  *int `json:"paceRate,omitempty"`
+	// QUICThrough keeps QUIC into the tunnel (UCI refuse_quic '0'): for a
+	// provider whose nodes carry UDP/443. Off by default: the fleet's bridges
+	// refuse it (firewall.Spec.RefuseQUIC).
+	QUICThrough bool `json:"quicThrough,omitempty"`
+	PaceRate    *int `json:"paceRate,omitempty"`
 	// AdmitTotalRate opens the router's whole door, new connections a second
 	// into xray from every device together (UCI admit_total_rate); nil or 0:
 	// off.

@@ -30,6 +30,7 @@ table inet vctl {
   counter vctl_inbound_guard { }
   counter vctl_lan_dial { }
   counter vctl_direct_new { }
+  counter vctl_quic_refused { }
   counter vctl_admit_held { }
   set vctl_admit4 { type ipv4_addr; flags dynamic, timeout; timeout 1m; size 1024; }
   set vctl_admit6 { type ipv6_addr; flags dynamic, timeout; timeout 1m; size 1024; }
@@ -77,9 +78,12 @@ table inet vctl {
     ct mark and 0x10000000 == 0x10000000 return
     ct state new ip  daddr @vctl_direct4 ct mark set ct mark or 0x10000000 counter name "vctl_direct_new" return
     ct state new ip6 daddr @vctl_direct6 ct mark set ct mark or 0x10000000 counter name "vctl_direct_new" return
+    # QUIC into the tunnel is refused at once (Spec.RefuseQUIC): the bridges
+    # refuse UDP/443, an answer lets the app fall back to TCP now.
+    iif != "lo" meta l4proto udp udp dport 443 counter name "vctl_quic_refused" reject with icmpx port-unreachable
     # A device's storm waits at the door (Spec.AdmitRate).
-    iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit4 { ip saddr limit rate over 15/second burst 60 packets } counter name "vctl_admit_held" drop
-    iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit6 { ip6 saddr limit rate over 15/second burst 60 packets } counter name "vctl_admit_held" drop
+    iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit4 { ip saddr limit rate over 30/second burst 120 packets } counter name "vctl_admit_held" drop
+    iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit6 { ip6 saddr limit rate over 30/second burst 120 packets } counter name "vctl_admit_held" drop
     meta l4proto { tcp, udp } counter name "vctl_tproxy_hits" tproxy to :12345 meta mark set 0x1 accept
     # Fail CLOSED, and COUNTED. Anything reaching here was not captured by
     # TPROXY: xray is down (the socket lookup NFT_BREAKs out of the rule above,
