@@ -143,8 +143,8 @@ export interface Status {
 
 /** The catalog in use (`built-in` or `downloaded`) and the geo feed's set; `geoSerial` null: the package's files. */
 export interface CatalogView {
-  serial: number;
-  source: string;
+  serial: number | null;
+  source: string | null;
   geoSerial: number | null;
 }
 

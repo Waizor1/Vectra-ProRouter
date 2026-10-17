@@ -391,9 +391,9 @@ func TestForwardCountsWhatTproxyCapturedAndStillForwarded(t *testing.T) {
 // two counters and the inbound_guard and lan_egress_guard chains, nothing
 // else touched (TestRender_InboundGuard*, TestRender_LANEgressGuard*). The
 // port forwards' «past the VPN» rule is never in the armed ruleset
-// (portfwd_test.go) — and for r24: the device door at 30/120, and QUIC the
-// tunnel would carry refused at once, one counter and one reject rule before
-// the door (TestQUICIntoTheTunnelIsRefusedAtOnce). With the switch, what is
+// (portfwd_test.go) — and for r24: the device door at 30/120 (QUIC to a
+// FakeDNS address is refused only with a FakeDNS pool, which this spec has
+// not: TestQUICIntoTheTunnelIsRefusedAtOnce). With the switch, what is
 // dropped is unchanged.
 func TestKillSwitchArmedRulesetIsUnchanged(t *testing.T) {
 	want, err := os.ReadFile(filepath.Join("testdata", "killswitch-on.nft"))

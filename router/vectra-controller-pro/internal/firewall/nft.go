@@ -268,14 +268,16 @@ type Spec struct {
 	// time instead of choking xray, the node and the connection table.
 	// 0 = off.
 	AdmitRate, AdmitBurst int
-	// RefuseQUIC: a LAN device's UDP to port 443 that would go into xray —
-	// QUIC, HTTP/3 — is refused at once with ICMP port unreachable. Every
-	// provider bridge carries VLESS with xtls-rprx-vision, which refuses
-	// UDP/443, and the provider blocks Meta's UDP outright: dropped in
-	// silence, an app waited out its QUIC timeout (seconds) before falling
-	// back to TCP (YouTube, Instagram «иногда тупят», 1111, 2026-10-17).
-	// Refused, it falls back at once. Only what the tunnel would carry: QUIC
-	// the kernel sends direct (the Russian networks) is untouched.
+	// RefuseQUIC: a LAN device's UDP to port 443 of a FakeDNS address
+	// (CarriedV4) — QUIC, HTTP/3 to a name a rule sends through the tunnel —
+	// is refused at once with ICMP port unreachable. Every provider bridge
+	// carries VLESS with xtls-rprx-vision, which refuses UDP/443, and the
+	// provider blocks Meta's UDP outright: dropped in silence, an app waited
+	// out its QUIC timeout (seconds) before falling back to TCP (YouTube,
+	// Instagram «иногда тупят», 1111, 2026-10-17). Only FakeDNS addresses:
+	// they stand for proxied names alone, while xray may send UDP/443 to a
+	// real address direct (the owner's direct sites, a direct shunt, a
+	// device's own WireGuard on 443). No FakeDNS pool, no rule.
 	RefuseQUIC bool
 	// AdmitTotalRate/AdmitTotalBurst: new connections per second into xray
 	// from every device together, and the burst — the router's whole door,
@@ -599,7 +601,7 @@ table inet {{ .TableName }} {
 {{- if .RefuseV6 }}
   counter {{ .CounterIPv6Refused }} { }
 {{- end }}
-{{- if .RefuseQUIC }}
+{{- if and .RefuseQUIC .CarriedPools }}
   counter {{ .CounterQUICRefused }} { }
 {{- end }}
 {{- if .AdmitRate }}
@@ -729,10 +731,10 @@ table inet {{ .TableName }} {
     iif != "lo" ct state new ct original packets 1 meta l4proto udp udp dport >= 1024 udp dport != { 3478-3497, 5222-5223, 8801-8810, 16384-16402, 19302-19309, 50000-65535 } update @vctl_p2p_rate6 { ip6 saddr limit rate over 4/second burst 24 packets } update @vctl_p2p6 { ip6 saddr timeout 5m } ct mark set ct mark or 0x{{ printf "%x" .DirectCtMark }} counter name "{{ .CounterP2PDirect }}" return
 {{- end }}
 {{- end }}
-{{- if .RefuseQUIC }}
-    # QUIC into the tunnel is refused at once (Spec.RefuseQUIC): the bridges
-    # refuse UDP/443, an answer lets the app fall back to TCP now.
-    iif != "lo" meta l4proto udp udp dport 443 counter name "{{ .CounterQUICRefused }}" reject with icmpx port-unreachable
+{{- if and .RefuseQUIC .CarriedPools }}
+    # QUIC to a proxied name is refused at once (Spec.RefuseQUIC): the
+    # bridges refuse UDP/443, an answer lets the app fall back to TCP now.
+    iif != "lo" ip daddr { {{ join .CarriedPools ", " }} } meta l4proto udp udp dport 443 counter name "{{ .CounterQUICRefused }}" reject with icmpx port-unreachable
 {{- end }}
 {{- if .AdmitRate }}
     # A device's storm waits at the door (Spec.AdmitRate).

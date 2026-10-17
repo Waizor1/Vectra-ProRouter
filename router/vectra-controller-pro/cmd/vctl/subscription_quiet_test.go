@@ -14,10 +14,13 @@ import (
 
 const quietDoc = `{"outbounds":[{"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u1"}]}]}}],"routing":{"rules":[{"network":"tcp,udp","outboundTag":"de-1"}]}}`
 
-func TestSameNodesComparesOutboundsOnly(t *testing.T) {
-	routing := `{"routing":{"rules":[]},"outbounds":[{"settings":{"vnext":[{"port":443,"address":"203.0.113.9","users":[{"id":"u1"}]}]},"protocol":"vless","tag":"de-1"}]}`
-	if !sameNodes([]byte(quietDoc), []byte(routing)) {
-		t.Fatal("the same outbounds, other routing and key order: same nodes")
+func TestSameNodesComparesOutboundsAndRules(t *testing.T) {
+	reordered := `{"routing":{"rules":[{"outboundTag":"de-1","network":"tcp,udp"}],"balancers":[{"tag":"B"}]},"outbounds":[{"settings":{"vnext":[{"port":443,"address":"203.0.113.9","users":[{"id":"u1"}]}]},"protocol":"vless","tag":"de-1"}]}`
+	if !sameNodes([]byte(quietDoc), []byte(reordered)) {
+		t.Fatal("the same outbounds and rules, other balancers and key order: same")
+	}
+	if sameNodes([]byte(quietDoc), []byte(`{"outbounds":[{"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u1"}]}]}}],"routing":{"rules":[]}}`)) {
+		t.Fatal("other rules are not the same")
 	}
 	rotated := `{"outbounds":[{"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u2"}]}]}}]}`
 	if sameNodes([]byte(quietDoc), []byte(rotated)) {
@@ -47,7 +50,8 @@ func quietDaemon(t *testing.T) *daemon {
 func TestTheDaemonsRefreshHoldsANodeNeutralDocumentForTheNight(t *testing.T) {
 	d := quietDaemon(t)
 	day := time.Date(2026, 10, 18, 14, 0, 0, 0, time.UTC)
-	routingOnly := []byte(`{"outbounds":[{"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u1"}]}]}}],"routing":{"rules":[{"domain":["geosite:youtube"],"outboundTag":"de-1"},{"network":"tcp,udp","outboundTag":"de-1"}]}}`)
+	routingOnly := []byte(`{"outbounds":[{"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u1"}]}]}}],"routing":{"rules":[{"network":"tcp,udp","outboundTag":"de-1"}],"balancers":[{"tag":"BL","selector":["de-"]}]},"burstObservatory":{"subjectSelector":["de-"]}}`)
+	newRule := []byte(`{"outbounds":[{"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u1"}]}]}}],"routing":{"rules":[{"domain":["geosite:youtube"],"outboundTag":"de-1"},{"network":"tcp,udp","outboundTag":"de-1"}]}}`)
 	if !d.holdForQuiet(routingOnly, day) || d.pendingDoc == nil || !d.pendingSince.Equal(day) {
 		t.Fatal("a routing-only change by day was not held")
 	}
@@ -59,6 +63,9 @@ func TestTheDaemonsRefreshHoldsANodeNeutralDocumentForTheNight(t *testing.T) {
 	rotated := []byte(`{"outbounds":[{"tag":"de-1","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.9","port":443,"users":[{"id":"u2"}]}]}}]}`)
 	if d.holdForQuiet(rotated, day) {
 		t.Fatal("a node change was held")
+	}
+	if d.holdForQuiet(newRule, day) {
+		t.Fatal("a rule change was held")
 	}
 	if d.holdForQuiet([]byte(quietDoc), day) {
 		t.Fatal("the running document itself was held")
@@ -82,6 +89,10 @@ func TestAHeldDocumentWaitsForTheWindowOrTheMaximum(t *testing.T) {
 	d.maybeApplyHeld(context.Background(), day.Add(time.Hour))
 	if d.pendingDoc == nil {
 		t.Fatal("applied an hour later by day")
+	}
+	d.maybeApplyHeld(context.Background(), day.Add(10*time.Hour)) // 00:00: not yet
+	if d.pendingDoc == nil {
+		t.Fatal("applied in the evening, before the window")
 	}
 	d.maybeApplyHeld(context.Background(), day.Add(quietHoldMax))
 	if d.pendingDoc != nil || applied != 1 {

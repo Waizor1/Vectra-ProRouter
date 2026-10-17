@@ -56,8 +56,10 @@ type Env struct {
 	CallTime time.Duration // per external call
 	// Tune is where the router's tune reads the router; it only reads here.
 	Tune tune.Env
-	// GeoFeedDir is where the geo feed keeps its set ("" : none read).
-	GeoFeedDir string
+	// GeoFeedDir is where the geo feed keeps its set ("" : none read), and
+	// RenderGeoDir where the running render reads its geo files: the set is
+	// reported only when it is the one in use.
+	GeoFeedDir, RenderGeoDir string
 }
 
 // RouterEnv is the production Env for cfg.
@@ -162,7 +164,7 @@ func Gather(ctx context.Context, env Env, need Need) Inputs {
 	if need.Catalog && env.Cfg.CatalogPath != "" {
 		l := catalog.Load(env.Cfg.CatalogPath)
 		cv := &CatalogView{Serial: l.Catalog.Serial, Source: string(l.Source)}
-		if s := geoSetSerial(env.GeoFeedDir); s > 0 {
+		if s := geoSetSerial(env.GeoFeedDir); s > 0 && env.RenderGeoDir == env.GeoFeedDir {
 			cv.GeoSerial = &s
 		}
 		in.Catalog = cv

@@ -228,13 +228,20 @@ func TestAP2PHostsUTPAndDHTOnVoicePortsGoByTheKernel(t *testing.T) {
 	}
 }
 
-// QUIC the tunnel would carry is refused at once (r24): after the kernel's
-// own direct decisions (QUIC to the Russian networks goes out as before),
-// before the door, so a refused QUIC attempt spends no device's rate.
+// QUIC to a proxied name is refused at once (r24): only FakeDNS addresses —
+// they stand for names a rule sends through the tunnel; UDP/443 to a real
+// address may go direct through xray and is left alone. After the kernel's
+// own direct decisions, before the door, so a refused attempt spends no
+// device's rate. No FakeDNS pool, no rule.
 func TestQUICIntoTheTunnelIsRefusedAtOnce(t *testing.T) {
-	out := mustRender(t, DefaultSpec(12345, 1))
+	if out := mustRender(t, DefaultSpec(12345, 1)); strings.Contains(out, "vctl_quic_refused") {
+		t.Fatal("QUIC refused with no FakeDNS pool")
+	}
+	s := DefaultSpec(12345, 1)
+	s.CarriedV4 = []string{"198.18.0.0/15"}
+	out := mustRender(t, s)
 	rules := rulesOf(chainNamed(t, out, "prerouting"))
-	want := `iif != "lo" meta l4proto udp udp dport 443 counter name "vctl_quic_refused" reject with icmpx port-unreachable`
+	want := `iif != "lo" ip daddr { 198.18.0.0/15 } meta l4proto udp udp dport 443 counter name "vctl_quic_refused" reject with icmpx port-unreachable`
 	i := indexOf(rules, want)
 	anchor := indexOf(rules, "ct mark and 0x10000000 == 0x10000000 return")
 	door := indexOf(rules, `iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit4`)
@@ -245,7 +252,6 @@ func TestQUICIntoTheTunnelIsRefusedAtOnce(t *testing.T) {
 	if !strings.Contains(out, "counter vctl_quic_refused { }") {
 		t.Error("the QUIC counter is not declared")
 	}
-	s := DefaultSpec(12345, 1)
 	s.RefuseQUIC = false
 	if out := mustRender(t, s); strings.Contains(out, "vctl_quic_refused") {
 		t.Error("QUIC refused with the switch off")

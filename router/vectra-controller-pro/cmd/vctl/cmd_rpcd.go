@@ -214,6 +214,7 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 		return out
 	}
 	env := uiapi.RouterEnv(cfg, controllerVersion())
+	env.RenderGeoDir = rpcdGeoDir(cfg)
 	switch method {
 	case "status":
 		in := rpcdGather(ctx, env, uiapi.NeedStatus)

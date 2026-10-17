@@ -373,10 +373,11 @@ type daemon struct {
 	// rerenderRetryAt: a render the catalog or a geo set asked for was
 	// refused; tried again then (catalog.go maybeRetryRerender).
 	rerenderRetryAt time.Time
-	// renderedGeoSerial is the geo set the render on disk was written for
-	// (rebuildApplier): a render byte for byte the running one is still a
-	// restart when the geo set changed under it.
-	renderedGeoSerial int64
+	// renderedGeoKey is the geo set the render on disk was written for, as
+	// the render key names it (geoFeedKey; "" when the feed's set is not in
+	// use): a render byte for byte the running one is still a restart when
+	// the set under it changed.
+	renderedGeoKey string
 	// pendingDoc is a provider document the daemon's own refresh took but
 	// holds until a quiet moment (subscription_quiet.go); pendingSince when
 	// it first held one.
@@ -546,7 +547,7 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 	d.geoFeedSerial = loadGeoFeed()
 	// The render on disk was made for this set when its key says so; one
 	// that was not is made again at the start (reconcileRender, the key).
-	d.renderedGeoSerial = d.geoFeedSerial
+	d.renderedGeoKey = d.geoFeedKey()
 	d.exits.Restore(unfitSince(st.UnfitExits))
 	d.exits.RestoreEgress(egressFrom(st.ExitEgress))
 	// Every start — the first, a reload, a crash restart — must get the
@@ -637,7 +638,7 @@ func (d *daemon) rebuildApplier() {
 			d.keepLastGoodRender(b)
 			d.sup.SetAssetDir(assetDir)
 			d.st.RenderAssetDir = assetDir
-			d.renderedGeoSerial = d.geoFeedSerial
+			d.renderedGeoKey = d.geoFeedKey()
 			if d.collector != nil {
 				d.collector.SetAssetDir(assetDir)
 			}
@@ -648,7 +649,8 @@ func (d *daemon) rebuildApplier() {
 		// A render xray already runs, from the same geo files, needs no
 		// restart; one from other files does (xray reads them at its start).
 		CurrentXray: func() ([]byte, error) {
-			if !d.supStarted || d.sup.AssetDir() != assetDir || d.renderedGeoSerial != d.geoFeedSerial {
+			if !d.retireXrayRunning() || d.sup.AssetDir() != assetDir || d.st.RenderAssetDir != assetDir ||
+				d.renderedGeoKey != d.geoFeedKey() {
 				return nil, nil
 			}
 			return vault.ReadFile(d.cfg.XrayRenderPath)
