@@ -392,7 +392,8 @@ func TestTheCatalogsSitesComeAfterTheOwnersAndNeverOverrideThem(t *testing.T) {
 }
 
 // The catalog is one for every router: a geosite name the router's geo file
-// lacks is left out of the render (xray would refuse it); unknown, kept.
+// lacks is left out of the render (xray would refuse it), and so is one
+// while the file's categories are not known.
 func TestACatalogGeositeTheRoutersFileLacksIsLeftOut(t *testing.T) {
 	t.Cleanup(func() { xray.UseGeosites(nil) })
 	doc := svcDocWith(t, `{"domain":["geosite:youtube"],"balancerTag":"BL-RU"},`,
@@ -401,8 +402,8 @@ func TestACatalogGeositeTheRoutersFileLacksIsLeftOut(t *testing.T) {
 		_, r, _ := spliceServicesDoc(t, doc, xray.SpliceOptions{Services: map[string]string{"ai": "DE"}})
 		return strings.Join(svcRulesTo(r, "VCTL-SVC-AI")[0], " ")
 	}
-	if !strings.Contains(overlay(), "geosite:google-ai") {
-		t.Fatal("not known: the catalog's geosite is kept")
+	if strings.Contains(overlay(), "geosite:google-ai") {
+		t.Fatal("not known: the catalog's geosite is left out")
 	}
 	xray.UseGeosites([]string{"YOUTUBE", "Google-AI"})
 	if !strings.Contains(overlay(), "geosite:google-ai") {

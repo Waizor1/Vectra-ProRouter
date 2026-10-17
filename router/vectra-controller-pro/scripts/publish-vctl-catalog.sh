@@ -50,12 +50,19 @@ die() { echo "FATAL: $*" >&2; exit 1; }
 URL="$PUBLIC_BASE/$CHANNEL"
 DEST="$REMOTE_ROOT/deploy/runtime/artifacts/openwrt/$CHANNEL"
 
+LOCAL_PREV="$(mktemp)"
+trap 'rm -f "$LOCAL_PREV"' EXIT
 echo "==> check $FILE with the router's parser"
 ( cd "$MODULE" && go run ./cmd/vctl catalog check "$FILE" )
 serial_of() { sed -n 's/^[[:space:]]*"serial":[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1; }
 local_serial="$(serial_of < "$FILE")"
 [[ -n "$local_serial" ]] || die "no serial in $FILE"
-published="$(curl -fsS "$URL/catalog.json" 2>/dev/null | serial_of || true)"
+code="$(curl -sS -o "$LOCAL_PREV" -w '%{http_code}' "$URL/catalog.json" || echo 000)"
+case "$code" in
+200) published="$(serial_of < "$LOCAL_PREV")"; [[ -n "$published" ]] || die "the published catalog has no serial" ;;
+404) published="" ;;
+*) die "could not read the published catalog (http $code): the serial cannot be checked" ;;
+esac
 echo "    serial $local_serial (published: ${published:-none})"
 if [[ -n "$published" && "$local_serial" -le "$published" ]]; then
 	die "serial $local_serial is not above the published $published: routers would not take it (bump it)"
@@ -73,7 +80,7 @@ if [[ "$DRY_RUN" == 1 ]]; then
 fi
 
 LOCAL="$(mktemp -d)"
-trap 'rm -rf "$LOCAL"' EXIT
+trap 'rm -rf "$LOCAL" "$LOCAL_PREV"' EXIT
 ( cd "$MODULE" && GOOS=linux GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -o "$LOCAL/feedtool" ./tools/feedtool )
 REMOTE="/tmp/vctl-catalog-$CHANNEL"
 

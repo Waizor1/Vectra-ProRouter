@@ -113,8 +113,23 @@ func TestTheDaemonTakesTheCatalogAndAsksOnSchedule(t *testing.T) {
 	d := &daemon{cfg: cfg}
 	d.catalogSerial = useCatalog(cfg).Catalog.Serial
 	now := time.Date(2026, 10, 17, 21, 0, 0, 0, time.UTC)
+	period := func(from time.Time, hours int) (time.Time, time.Time) {
+		p := time.Duration(hours) * time.Hour
+		return from.Add(p - p/10), from.Add(p + p/10)
+	}
 
-	d.maybeRefreshCatalog(context.Background(), now) // nothing published
+	// Nothing published (404): no fault — asked again at the usual time.
+	d.maybeRefreshCatalog(context.Background(), now)
+	if lo, hi := period(now, catalog.Builtin().Refresh()); d.nextCatalogRefresh.Before(lo) || d.nextCatalogRefresh.After(hi) || d.catalogSerial != catalog.Builtin().Serial {
+		t.Fatalf("nothing published: next %v serial %d", d.nextCatalogRefresh, d.catalogSerial)
+	}
+	// A real failure (a catalog signed by a key the router does not hold) is
+	// tried again soon.
+	stranger := newFeedKey(11)
+	bad := catalogDoc(catalog.Builtin().Serial+5, `[]`)
+	s.publishCatalog(bad, stranger.sign(bad))
+	d.nextCatalogRefresh = now
+	d.maybeRefreshCatalog(context.Background(), now)
 	if !d.nextCatalogRefresh.Equal(now.Add(catalogRetryAfter)) || d.catalogSerial != catalog.Builtin().Serial {
 		t.Fatalf("a failed ask: next %v serial %d", d.nextCatalogRefresh, d.catalogSerial)
 	}
@@ -129,7 +144,7 @@ func TestTheDaemonTakesTheCatalogAndAsksOnSchedule(t *testing.T) {
 	if d.catalogSerial != catalog.Builtin().Serial+5 || xray.ActiveCatalog().Serial != d.catalogSerial {
 		t.Fatalf("serial %d active %d", d.catalogSerial, xray.ActiveCatalog().Serial)
 	}
-	if lo, hi := later.Add(108*time.Minute), later.Add(132*time.Minute); d.nextCatalogRefresh.Before(lo) || d.nextCatalogRefresh.After(hi) {
+	if lo, hi := period(later, 2); d.nextCatalogRefresh.Before(lo) || d.nextCatalogRefresh.After(hi) {
 		t.Fatalf("next ask %v, want 2 h ±10%% after %v", d.nextCatalogRefresh, later)
 	}
 	if err := catalog.Remove(cfg.CatalogPath); err != nil {

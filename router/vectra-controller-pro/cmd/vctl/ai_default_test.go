@@ -192,7 +192,11 @@ func TestTheAIDefaultIsReportedOnlyWhenTheRenderCarriesIt(t *testing.T) {
 			t.Fatalf("key %s, %+v: %q %v", tc.key, tc.ov, id, ok)
 		}
 		res := uiapi.Services{Services: []uiapi.ServiceInfo{{ID: "youtube"}, {ID: "ai"}}}
-		markAIDefault(&res, ok)
+		country := ""
+		if ok {
+			country = "KZ"
+		}
+		markAIDefault(&res, country)
 		if (res.Services[1].DefaultCountry != nil) != tc.want || res.Services[0].DefaultCountry != nil {
 			t.Fatalf("UI: %+v", res.Services)
 		}

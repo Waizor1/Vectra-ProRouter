@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,8 +65,9 @@ var (
 const (
 	geoManifestName     = "geo.json"
 	geoManifestMaxBytes = 64 << 10
-	// geoFeedMaxFile caps a file: the merged files are ~0.1 and ~0.8 MB.
-	geoFeedMaxFile = 32 << 20
+	// geoFeedMaxFile caps a file: the merged files are ~0.1 and ~0.8 MB; a
+	// file is checked in memory before it touches the flash.
+	geoFeedMaxFile = 8 << 20
 )
 
 // geoManifest is geo.json.
@@ -186,10 +189,23 @@ func fetchGeoManifest(ctx context.Context, fetch func(context.Context, string, i
 // directory of geo files; nil when there is nothing to test with.
 type geoFeedTester func(ctx context.Context, assetDir string) error
 
+// geoRefusal is a set that failed a check of its own (a file not the
+// manifest's, a category gone, xray refusing it): the same serial is not
+// fetched again; a newer one is.
+type geoRefusal struct {
+	serial int64
+	err    error
+}
+
+func (r *geoRefusal) Error() string { return fmt.Sprintf("geo set %d refused: %v", r.serial, r.err) }
+func (r *geoRefusal) Unwrap() error { return r.err }
+
 // updateGeoFeed fetches the channel's set when it is newer than the one in
-// use and puts it in place, all checks passed. It returns the serial put in
-// place (0: nothing changed).
-func updateGeoFeed(ctx context.Context, fetch func(context.Context, string, int64) ([]byte, error), current string, test geoFeedTester) (int64, error) {
+// use (and not the one refused last, skip) and puts it in place, all checks
+// passed. It returns the serial put in place (0: nothing changed). Each file
+// is checked in memory before it is written; nothing is written for a set
+// that fails.
+func updateGeoFeed(ctx context.Context, fetch func(context.Context, string, int64) ([]byte, error), current string, test geoFeedTester, skip int64) (int64, error) {
 	m, raw, sig, root, err := fetchGeoManifest(ctx, fetch)
 	if err != nil {
 		return 0, err
@@ -197,8 +213,48 @@ func updateGeoFeed(ctx context.Context, fetch func(context.Context, string, int6
 	if have, ok := storedGeoManifest(); ok && m.Serial <= have.Serial {
 		return 0, nil // the set in use, or an older one: nothing to do
 	}
+	if m.Serial == skip {
+		return 0, nil // refused already: wait for a newer one
+	}
+	refuse := func(err error) (int64, error) { return 0, &geoRefusal{serial: m.Serial, err: err} }
+	type ready struct {
+		name string
+		b    []byte // fetched; nil: the set in use holds it already
+	}
+	var files []ready
+	for _, name := range geoFeedFiles {
+		f := m.Files[name]
+		need := append([]string(nil), f.Codes...)
+		if b, err := os.ReadFile(filepath.Join(current, name)); err == nil {
+			if codes, err := geodat.Codes(b); err == nil {
+				need = append(need, codes...)
+			}
+		}
+		if sum, err := fileSHA256(filepath.Join(geoFeedDir, name)); err == nil && sum == f.SHA256 {
+			if err := checkGeoCodes(filepath.Join(geoFeedDir, name), uniqueSorted(need)); err != nil {
+				return refuse(fmt.Errorf("%s: %w", name, err))
+			}
+			files = append(files, ready{name: name})
+			continue
+		}
+		b, err := fetch(ctx, root+"/"+f.Path, f.Size)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", name, err)
+		}
+		if err := checkGeoFeedBytes(b, f, uniqueSorted(need)); err != nil {
+			return refuse(fmt.Errorf("%s: %w", name, err))
+		}
+		files = append(files, ready{name: name, b: b})
+	}
+	var need int64
+	for _, r := range files {
+		need += int64(len(r.b))
+	}
 	if err := os.MkdirAll(geoFeedDir, 0o755); err != nil {
 		return 0, err
+	}
+	if free, ok := freeBytes(geoFeedDir); ok && free < need+nativeImportMargin {
+		return 0, fmt.Errorf("%s has %d KB free, the set needs %d KB and a margin", geoFeedDir, free>>10, need>>10)
 	}
 	stage := filepath.Join(geoFeedDir, ".new")
 	_ = os.RemoveAll(stage) // what a power cut left
@@ -206,46 +262,39 @@ func updateGeoFeed(ctx context.Context, fetch func(context.Context, string, int6
 		return 0, err
 	}
 	defer os.RemoveAll(stage)
-	var need int64
-	for _, name := range geoFeedFiles {
-		need += m.Files[name].Size
-	}
-	if free, ok := freeBytes(geoFeedDir); ok && free < need+nativeImportMargin {
-		return 0, fmt.Errorf("%s has %d KB free, the set needs %d KB and a margin", geoFeedDir, free>>10, need>>10)
-	}
-	for _, name := range geoFeedFiles {
-		f := m.Files[name]
-		dest := filepath.Join(stage, name)
-		// A file the set in use already holds is copied, not fetched.
-		if sum, err := fileSHA256(filepath.Join(geoFeedDir, name)); err == nil && sum == f.SHA256 {
-			if err := copyFile(filepath.Join(geoFeedDir, name), dest); err != nil {
-				return 0, err
+	for _, r := range files {
+		dest := filepath.Join(stage, r.name)
+		if r.b == nil {
+			// The file in use: linked, not copied — no flash written for it.
+			if err := os.Link(filepath.Join(geoFeedDir, r.name), dest); err != nil {
+				if err := copyFile(filepath.Join(geoFeedDir, r.name), dest); err != nil {
+					return 0, err
+				}
 			}
-		} else {
-			b, err := fetch(ctx, root+"/"+f.Path, f.Size)
-			if err != nil {
-				return 0, fmt.Errorf("%s: %w", name, err)
-			}
-			if err := os.WriteFile(dest, b, 0o644); err != nil {
-				return 0, err
-			}
+			continue
 		}
-		if err := checkGeoFeedFile(dest, f, filepath.Join(current, name)); err != nil {
-			return 0, fmt.Errorf("%s: %w", name, err)
+		if err := os.WriteFile(dest, r.b, 0o644); err != nil {
+			return 0, err
+		}
+		if err := syncFile(dest); err != nil {
+			return 0, err
 		}
 	}
 	if test != nil {
 		if err := test(ctx, stage); err != nil {
-			return 0, fmt.Errorf("the running configuration with the new geo files: %w", err)
+			if errors.Is(err, xray.ErrLowMemory) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				return 0, fmt.Errorf("checking the new geo files with xray: %w", err) // not now: tried again
+			}
+			return refuse(fmt.Errorf("the running configuration with the new geo files: %w", err))
 		}
 	}
 	// In place: the files, then the signature, the manifest last — the set
 	// counts as complete only once its manifest is there.
-	for _, name := range geoFeedFiles {
-		if err := syncFile(filepath.Join(stage, name)); err != nil {
-			return 0, err
+	for _, r := range files {
+		if r.b == nil {
+			continue
 		}
-		if err := os.Rename(filepath.Join(stage, name), filepath.Join(geoFeedDir, name)); err != nil {
+		if err := os.Rename(filepath.Join(stage, r.name), filepath.Join(geoFeedDir, r.name)); err != nil {
 			return 0, err
 		}
 	}
@@ -258,32 +307,41 @@ func updateGeoFeed(ctx context.Context, fetch func(context.Context, string, int6
 	return m.Serial, nil
 }
 
-// checkGeoFeedFile: the file is the one the manifest names, holds every
-// category it names, and every category of the file in use (current), whose
-// categories the running configuration may route by.
-func checkGeoFeedFile(p string, f geoManifestFile, current string) error {
-	st, err := os.Stat(p)
-	if err != nil {
-		return err
+// checkGeoFeedBytes: a fetched file is the one the manifest names (size,
+// sha256) and holds every category in need — read from memory, when the
+// router can spare it.
+func checkGeoFeedBytes(b []byte, f geoManifestFile, need []string) error {
+	if int64(len(b)) != f.Size {
+		return fmt.Errorf("%d bytes, the manifest says %d", len(b), f.Size)
 	}
-	if st.Size() != f.Size {
-		return fmt.Errorf("%d bytes, the manifest says %d", st.Size(), f.Size)
-	}
-	sum, err := fileSHA256(p)
-	if err != nil {
-		return err
-	}
-	if sum != f.SHA256 {
+	sum := sha256.Sum256(b)
+	if hex.EncodeToString(sum[:]) != f.SHA256 {
 		return errors.New("its sha256 is not the manifest's")
 	}
-	need := append([]string(nil), f.Codes...)
-	if b, err := os.ReadFile(current); err == nil {
-		if codes, err := geodat.Codes(b); err == nil {
-			need = append(need, codes...)
+	codes, err := geodat.Codes(b)
+	if err != nil {
+		return fmt.Errorf("not a geo file: %w", err)
+	}
+	have := map[string]bool{}
+	for _, c := range codes {
+		have[strings.ToUpper(c)] = true
+	}
+	var missing []string
+	for _, c := range need {
+		if !have[strings.ToUpper(c)] {
+			missing = append(missing, c)
 		}
 	}
-	sort.Strings(need)
-	return checkGeoCodes(p, slicesCompactStrings(need))
+	if len(missing) > 0 {
+		return fmt.Errorf("the new file lacks %s, which the router routes by", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func uniqueSorted(s []string) []string {
+	out := append([]string(nil), s...)
+	sort.Strings(out)
+	return slicesCompactStrings(out)
 }
 
 func slicesCompactStrings(s []string) []string {
@@ -338,8 +396,8 @@ func (d *daemon) geoFeedInUse(configured string) string {
 // geoFeedKey is the part of the render key the feed's set adds: a new set is
 // rendered again, and xray restarts reading it.
 func (d *daemon) geoFeedKey() string {
-	if d.geoFeedSerial == 0 || d.passwallMode() {
-		return ""
+	if d.geoFeedSerial == 0 || d.passwallMode() || d.geoAssetDir() != geoFeedDir {
+		return "" // a set the renders do not use restarts nothing
 	}
 	return ";geofeed=" + fmt.Sprint(d.geoFeedSerial)
 }
@@ -360,6 +418,7 @@ func (d *daemon) maybeUpdateGeoFeed(ctx context.Context, now time.Time) {
 		if d.desired != nil && d.applier != nil && d.applier.Tproxy != nil && fileExists(d.cfg.XrayRenderPath) {
 			if r := d.rerenderRunning(ctx); !r.OK {
 				logging.L().Warn("the render with the new geo files was refused; the running one stays", "detail", r.Detail)
+				d.rerenderRetryAt = time.Now().Add(rerenderRetryAfter)
 			}
 		}
 	}
@@ -387,8 +446,18 @@ func (d *daemon) maybeUpdateGeoFeed(ctx context.Context, now time.Time) {
 		}
 		c, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
-		serial, err := updateGeoFeed(c, fetch, current, test)
-		if err != nil {
+		serial, err := updateGeoFeed(c, fetch, current, test, d.geoFeedRefused.Load())
+		var refused *geoRefusal
+		switch {
+		case errors.Is(err, errHTTPNotFound):
+			logging.L().Debug("no geo set published on the channel")
+			return
+		case errors.As(err, &refused):
+			d.geoFeedRefused.Store(refused.serial)
+			d.incident("GEO_REFUSED", "the geo feed's set failed a check", refused.Error(), nil)
+			logging.L().Warn("the geo feed's set was refused; the files in use stay until a newer set", "err", refused.Error())
+			return
+		case err != nil:
 			d.nextGeoFeedRetry.Store(time.Now().Add(geoFeedRetry).UnixNano())
 			logging.L().Warn("the geo files were not updated; the ones in use stay", "err", err.Error(), "retryIn", geoFeedRetry.String())
 			return
@@ -414,8 +483,20 @@ func (d *daemon) startGeoFeedNow() { d.nextGeoFeed = time.Now() }
 
 // loadGeoFeed is the set in place at the daemon's start.
 func loadGeoFeed() int64 {
-	if m, ok := storedGeoManifest(); ok {
-		return m.Serial
+	m, ok := storedGeoManifest()
+	if !ok {
+		return 0
 	}
-	return 0
+	// Checked once at the start: a file the flash spoilt, or one renamed into
+	// place before a power cut kept the newer manifest from following it, is
+	// no set — the package's files serve until the feed's next set (which the
+	// stored serial does not hold back: it is not taken as in use).
+	for _, name := range geoFeedFiles {
+		if sum, err := fileSHA256(filepath.Join(geoFeedDir, name)); err != nil || sum != m.Files[name].SHA256 {
+			logging.L().Warn("the geo feed's files do not match their manifest; using the package's until the next set", "file", name)
+			_ = os.Remove(filepath.Join(geoFeedDir, geoManifestName))
+			return 0
+		}
+	}
+	return m.Serial
 }

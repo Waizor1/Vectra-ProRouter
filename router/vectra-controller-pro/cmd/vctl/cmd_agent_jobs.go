@@ -339,6 +339,9 @@ func (d *daemon) jobRefreshSubscriptions(ctx context.Context, job controlplane.J
 	if err != nil {
 		return d.submitFailure(ctx, job, err.Error())
 	}
+	// A refresh asked for (Connect «Обновить подписку», the panel) asks the
+	// catalog and the geo feed too, at the next poll.
+	d.nextCatalogRefresh, d.nextGeoFeed = time.Now(), time.Now()
 
 	result := map[string]interface{}{
 		"changed":         res.Changed,
@@ -582,8 +585,27 @@ func (d *daemon) jobUpdateAssets(ctx context.Context, job controlplane.Job) erro
 	// categories the provider's documents route by (category-ru, private,
 	// geoip ru and telegram), and a file without them makes xray refuse the
 	// configuration. The job asks the feed now.
+	c, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	client := catalogHTTPClient()
+	m, _, _, _, err := fetchGeoManifest(c, func(ctx context.Context, u string, max int64) ([]byte, error) {
+		return fetchHTTPSWith(ctx, client, u, max)
+	})
+	switch {
+	case errors.Is(err, errHTTPNotFound):
+		return d.submitFailure(ctx, job, "update_assets: the channel publishes no geo set (geo.json); nothing to update")
+	case err != nil:
+		return d.submitFailure(ctx, job, "update_assets: the geo feed: "+err.Error())
+	case m.Serial <= d.geoFeedSerial:
+		return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"geoFeed": "current", "serialInUse": d.geoFeedSerial})
+	}
+	// Asked: even a set refused before is fetched and checked again. The
+	// download, the checks and xray -test run beside the loop; the result is
+	// the router's next check-in (rulesAssets) and its log.
+	d.geoFeedRefused.Store(0)
 	d.startGeoFeedNow()
-	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"geoFeed": "asked now; the set is taken once fetched and checked", "serialInUse": d.geoFeedSerial})
+	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"geoFeed": "started", "async": true,
+		"serial": m.Serial, "serialInUse": d.geoFeedSerial})
 }
 
 // jobUpdateNativeGeo starts the native route policy's geo update now: its
@@ -1224,12 +1246,20 @@ func getHTTPSWith(ctx context.Context, client *http.Client, rawURL string) (*htt
 	if err != nil {
 		return nil, err
 	}
+	if resp.StatusCode == http.StatusNotFound {
+		resp.Body.Close()
+		return nil, errHTTPNotFound
+	}
 	if resp.StatusCode != 200 {
 		resp.Body.Close()
 		return nil, fmt.Errorf("http %d", resp.StatusCode)
 	}
 	return resp, nil
 }
+
+// errHTTPNotFound is a 404: for the catalog and the geo feed, nothing is
+// published there (yet) — not a fault to retry.
+var errHTTPNotFound = errors.New("http 404")
 
 // fetchHTTPS reads an https URL whole with getHTTPS; an answer longer than max
 // is refused, not cut.

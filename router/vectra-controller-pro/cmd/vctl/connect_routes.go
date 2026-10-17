@@ -409,17 +409,36 @@ func connectDigestIndex(entries []json.RawMessage, id string) (int, error) {
 }
 
 // markAIDefault tells the router UI where «Нейросети» go while the owner has
-// made no choice: Kazakhstan, when the router runs them there (aiDefaultApplied).
-func markAIDefault(res *uiapi.Services, applied bool) {
-	if !applied {
+// made no choice: the exit country of the default location the router runs
+// them through (aiDefaultApplied) — Kazakhstan with the built-in catalog,
+// whatever the catalog's aiDefault picks otherwise. "": none marked.
+func markAIDefault(res *uiapi.Services, country string) {
+	if country == "" {
 		return
 	}
 	for i := range res.Services {
 		if res.Services[i].ID == "ai" {
-			kz := "KZ"
-			res.Services[i].DefaultCountry = &kz
+			cc := country
+			res.Services[i].DefaultCountry = &cc
 		}
 	}
+}
+
+// aiDefaultCountry is the exit of the location id names: the last flag of its
+// remark in the entries index ("" when it cannot be told).
+func aiDefaultCountry(cfg agentcfg.Config, id string) string {
+	idx, err := localctl.LoadEntriesIndex(cfg.EntriesIndexPath)
+	if err != nil {
+		return ""
+	}
+	for _, e := range idx.Entries {
+		if e.Digest == id {
+			if flags := remarkFlags(e.Remark); len(flags) > 0 {
+				return flags[len(flags)-1]
+			}
+		}
+	}
+	return ""
 }
 
 // markAIDefaultFor marks the Kazakh default the router runs «Нейросети» on.
@@ -432,8 +451,9 @@ func markAIDefaultFor(cfg agentcfg.Config, res *uiapi.Services, ov localctl.Over
 			delete(ov.Services, "ai")
 		}
 	}
-	_, applied := aiDefaultApplied(cfg, ov, spliceKey)
-	markAIDefault(res, applied)
+	if id, applied := aiDefaultApplied(cfg, ov, spliceKey); applied {
+		markAIDefault(res, aiDefaultCountry(cfg, id))
+	}
 }
 
 // aiRefusedKey names a default location on the document it joined.

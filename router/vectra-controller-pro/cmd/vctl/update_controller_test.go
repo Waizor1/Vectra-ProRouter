@@ -11,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/config"
@@ -208,14 +207,15 @@ func TestTheGeoUpdateWritesOnlyIntoVctlsOwnDirectory(t *testing.T) {
 	// writes into vctl's own directory: whatever the config names, nothing
 	// is fetched from its URLs and nothing is written where it points.
 	_ = d.executeJob(context.Background(), controlplane.Job{ID: "g1", Type: "update_xray_assets"}, controlplane.CheckInResponse{})
-	if _, ok := lastResult(results, mu, "g1"); ok {
-		t.Fatalf("the geo job failed: %+v", results["g1"])
+	fail, ok := lastResult(results, mu, "g1")
+	if !ok {
+		t.Fatalf("a geo job with no geo feed to ask reported success: %+v", results["g1"])
+	}
+	if msg, _ := fail.Result["error"].(string); !strings.Contains(msg, "geo feed") && !strings.Contains(msg, "geo set") {
+		t.Errorf("the refusal does not say why: %v", fail.Result)
 	}
 	if _, err := os.Stat(crontabs); !os.IsNotExist(err) {
 		t.Fatalf("the config's directory was made: %v", err)
-	}
-	if d.nextGeoFeed.After(time.Now()) {
-		t.Fatal("the job did not ask the geo feed now")
 	}
 }
 

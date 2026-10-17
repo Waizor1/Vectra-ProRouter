@@ -112,7 +112,7 @@ func TestKnowsTakesSubdomainsButNotParentsNorPatterns(t *testing.T) {
 	for m, want := range map[string]bool{
 		"domain:gemini.google.com":   true,
 		"full:gemini.google.com":     true,
-		"gemini.google.com":          true,
+		"gemini.google.com":          false, // plain: a substring match in xray
 		"domain:a.gemini.google.com": true,
 		"domain:google.com":          false, // the parent: all of Google
 		"full:google.com":            false,
@@ -231,7 +231,7 @@ func TestLoadPrefersANewerStoredCatalogAndNeverFails(t *testing.T) {
 	if err := catalog.Store(path, older, []byte("sig")); err != nil {
 		t.Fatal(err)
 	}
-	if l := catalog.Load(path); l.Source != catalog.SourceBuiltin || l.Note == "" {
+	if l := catalog.Load(path); l.Source != catalog.SourceBuiltin || l.Note == "" || !l.Older {
 		t.Fatalf("a stored catalog older than the release's: %+v", l)
 	}
 	if err := os.WriteFile(path, []byte("{broken"), 0o644); err != nil {

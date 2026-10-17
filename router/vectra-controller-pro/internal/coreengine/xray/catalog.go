@@ -39,7 +39,9 @@ func ActiveCatalog() *catalog.Catalog {
 var knownGeosites atomic.Pointer[map[string]bool]
 
 // UseGeosites tells the splice which geosite categories the router's geo
-// file has; nil: not known, every name is kept and `xray -test` judges.
+// file has; nil: not known now — a catalog's geosite: names are left out
+// (they only add to a list; a name the file lacks would make xray refuse
+// the whole render, the owner's choices with it).
 func UseGeosites(codes []string) {
 	if codes == nil {
 		knownGeosites.Store(nil)
@@ -60,7 +62,7 @@ func catalogNameUsable(m string) bool {
 	}
 	known := knownGeosites.Load()
 	if known == nil {
-		return true
+		return false
 	}
 	name, _, _ = strings.Cut(name, "@")
 	return (*known)[name]

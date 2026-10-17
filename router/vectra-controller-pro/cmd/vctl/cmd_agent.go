@@ -367,8 +367,14 @@ type daemon struct {
 	geoFeedBusy      atomic.Bool
 	geoFeedReady     atomic.Int64
 	nextGeoFeedRetry atomic.Int64
-	busy             string
-	probe            *localctl.Probe
+	// geoFeedRefused is the serial of the set a check refused: not fetched
+	// again (a job asking clears it).
+	geoFeedRefused atomic.Int64
+	// rerenderRetryAt: a render the catalog or a geo set asked for was
+	// refused; tried again then (catalog.go maybeRetryRerender).
+	rerenderRetryAt time.Time
+	busy            string
+	probe           *localctl.Probe
 	// pinBudget bounds how long the start hook waits for xray's API to come
 	// up before giving up on restoring pins and on the leak baseline. 0 = 45 s.
 	pinBudget time.Duration

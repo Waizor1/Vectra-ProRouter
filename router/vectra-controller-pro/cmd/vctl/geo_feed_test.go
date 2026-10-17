@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path"
@@ -17,6 +18,7 @@ import (
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/config"
+	"vectra-controller-pro/internal/coreengine/xray"
 )
 
 // geoFeedStand is the signed feed stand publishing a geo set, geoFeedDir and
@@ -87,7 +89,7 @@ func TestTheGeoFeedPutsACheckedSetInPlace(t *testing.T) {
 		tested = append(tested, dir)
 		return nil
 	}
-	serial, err := updateGeoFeed(context.Background(), g.fetch, g.current, test)
+	serial, err := updateGeoFeed(context.Background(), g.fetch, g.current, test, 0)
 	if err != nil || serial != 100 {
 		t.Fatalf("serial %d err %v", serial, err)
 	}
@@ -106,7 +108,7 @@ func TestTheGeoFeedPutsACheckedSetInPlace(t *testing.T) {
 		t.Fatal("the staging directory stayed")
 	}
 	// The same set again: nothing fetched, nothing changed.
-	if serial, err := updateGeoFeed(context.Background(), g.fetch, g.current, test); err != nil || serial != 0 || len(tested) != 1 {
+	if serial, err := updateGeoFeed(context.Background(), g.fetch, g.current, test, 0); err != nil || serial != 0 || len(tested) != 1 {
 		t.Fatalf("again: serial %d err %v tests %d", serial, err, len(tested))
 	}
 }
@@ -156,7 +158,7 @@ func TestTheGeoFeedRefusesASetThatFailsACheck(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			g := newGeoFeedStand(t)
 			test, want := setup(g)
-			serial, err := updateGeoFeed(context.Background(), g.fetch, g.current, test)
+			serial, err := updateGeoFeed(context.Background(), g.fetch, g.current, test, 0)
 			if err == nil || serial != 0 || !strings.Contains(err.Error(), want) {
 				t.Fatalf("serial %d err %v, want an error with %q", serial, err, want)
 			}
@@ -176,11 +178,11 @@ func TestTheGeoFeedRefusesASetThatFailsACheck(t *testing.T) {
 func TestTheGeoFeedNeverGoesBack(t *testing.T) {
 	g := newGeoFeedStand(t)
 	g.publish(t, 200, geoFile("YOUTUBE", "CATEGORY-RU"), geoFile("RU", "PRIVATE"), nil, nil)
-	if s, err := updateGeoFeed(context.Background(), g.fetch, g.current, nil); err != nil || s != 200 {
+	if s, err := updateGeoFeed(context.Background(), g.fetch, g.current, nil, 0); err != nil || s != 200 {
 		t.Fatalf("%d %v", s, err)
 	}
 	g.publish(t, 150, geoFile("YOUTUBE", "CATEGORY-RU", "OLD"), geoFile("RU", "PRIVATE"), nil, nil)
-	if s, err := updateGeoFeed(context.Background(), g.fetch, g.current, nil); err != nil || s != 0 {
+	if s, err := updateGeoFeed(context.Background(), g.fetch, g.current, nil, 0); err != nil || s != 0 {
 		t.Fatalf("an older set: %d %v", s, err)
 	}
 	if m, _ := storedGeoManifest(); m.Serial != 200 {
@@ -234,5 +236,40 @@ func TestAManualGeoUpdateKeepsTheCategoriesInUse(t *testing.T) {
 	}
 	if err := keepsGeoCategories(next, filepath.Join(dir, "extra.dat")); err != nil {
 		t.Fatalf("another asset is not judged: %v", err)
+	}
+}
+
+// A set a check refused is not fetched again; a newer one is. xray short of
+// memory refuses nothing for good: tried again later.
+func TestARefusedGeoSetIsNotFetchedAgain(t *testing.T) {
+	g := newGeoFeedStand(t)
+	site := geoFile("YOUTUBE") // CATEGORY-RU, in use, is gone
+	ip := geoFile("RU", "PRIVATE")
+	g.publish(t, 100, site, ip, func(m *geoManifest) {
+		f := m.Files["geosite.dat"]
+		f.Codes = []string{"YOUTUBE"}
+		m.Files["geosite.dat"] = f
+	}, nil)
+	_, err := updateGeoFeed(context.Background(), g.fetch, g.current, nil, 0)
+	var refused *geoRefusal
+	if !errors.As(err, &refused) || refused.serial != 100 {
+		t.Fatalf("refusal %v", err)
+	}
+	filePath := path.Dir(feedPath) + "/geo/geosite-" + sha(site)[:12] + ".dat"
+	before := g.hit(filePath)
+	if s, err := updateGeoFeed(context.Background(), g.fetch, g.current, nil, refused.serial); s != 0 || err != nil || g.hit(filePath) != before {
+		t.Fatalf("the refused set again: %d %v, file fetched %d -> %d", s, err, before, g.hit(filePath))
+	}
+	g.publish(t, 101, geoFile("YOUTUBE", "CATEGORY-RU"), ip, nil, nil)
+	if s, err := updateGeoFeed(context.Background(), g.fetch, g.current, nil, refused.serial); s != 101 || err != nil {
+		t.Fatalf("a newer set: %d %v", s, err)
+	}
+
+	g2 := newGeoFeedStand(t)
+	g2.publish(t, 200, geoFile("YOUTUBE", "CATEGORY-RU"), ip, nil, nil)
+	lowMem := func(context.Context, string) error { return fmt.Errorf("xray validate: %w", xray.ErrLowMemory) }
+	_, err = updateGeoFeed(context.Background(), g2.fetch, g2.current, lowMem, 0)
+	if err == nil || errors.As(err, &refused) {
+		t.Fatalf("short of memory: %v (want a retryable error, not a refusal)", err)
 	}
 }

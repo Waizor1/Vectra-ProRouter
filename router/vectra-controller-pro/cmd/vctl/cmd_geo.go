@@ -55,6 +55,9 @@ func geoUpdate(args []string) error {
 		return fmt.Errorf("xray reads PassWall2's geo files in %s (vectra-geodata is not installed); vctl does not replace them — install vectra-geodata", dir)
 	}
 	fmt.Printf("into %s\n", dir)
+	if dir != geoFeedDir && config.GeoFilesAt(geoFeedDir) {
+		fmt.Printf("note: this router renders from the geo feed's set in %s (kept current by the daemon); files written to %s serve only if that set goes\n", geoFeedDir, dir)
+	}
 	// Fetched beside the files in use and checked before it replaces one: a
 	// geoip.dat or geosite.dat must keep every category of the file it
 	// replaces (the operator config's raw upstream lists lack category-ru,
@@ -73,6 +76,10 @@ func geoUpdate(args []string) error {
 		r := geo.UpdateOne(ctx, stage, a, hc)
 		if r.Error != nil {
 			fmt.Printf("fail %s: %v\n", a.Filename, r.Error)
+			continue
+		}
+		if same, _ := sameFile(filepath.Join(stage, a.Filename), filepath.Join(dir, a.Filename)); same {
+			fmt.Printf("%-15s skip(unchanged) sha256=%s\n", a.Filename, r.SHA256)
 			continue
 		}
 		if err := keepsGeoCategories(filepath.Join(stage, a.Filename), filepath.Join(dir, a.Filename)); err != nil {

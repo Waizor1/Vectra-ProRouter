@@ -36,6 +36,9 @@ type Validator struct {
 	ReadMem func() (memguard.Info, error)
 }
 
+// testSlot lets one `xray -test` run at a time (Test).
+var testSlot = make(chan struct{}, 1)
+
 // ErrLowMemory is wrapped by Test when there was too little memory to check.
 var ErrLowMemory = fmt.Errorf("too little free memory to check a configuration now")
 
@@ -43,6 +46,16 @@ var ErrLowMemory = fmt.Errorf("too little free memory to check a configuration n
 // Child output is discarded because parse errors may contain credentials.
 // Returns nil only when Xray reports the config is usable.
 func (v Validator) Test(ctx context.Context, candidate []byte) error {
+	// One check at a time in this process: each holds ~40 MB at its peak,
+	// and the geo feed checks a set beside the loop's own renders. Both
+	// passing the memory floor and then allocating together is what a
+	// 234 MB router cannot afford.
+	select {
+	case testSlot <- struct{}{}:
+		defer func() { <-testSlot }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	if v.Binary == "" {
 		return fmt.Errorf("xray validate: no xray binary configured (refusing to install an unchecked config)")
 	}

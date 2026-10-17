@@ -109,8 +109,9 @@ router's geo file lacks is left out of that router's render.
   build host with `feedtool sign`; the key never leaves it).
 - The router accepts a catalog only when: https; ≤ 256 KB, signature ≤ 4 KB;
   the signature verifies with a key in `/etc/opkg/keys` **and** that key also
-  signs the channel's `Packages` (an OpenWrt key in the same directory is no
-  authority for routing); `schema` is 1; `serial` is greater than the stored
+  signs the channel's `Packages` — the trust opkg gives the feed, no more (an
+  OpenWrt key that does not sign the Vectra feed is no authority for routing;
+  pinning the installer's key id would be stronger, a follow-up); `schema` is 1; `serial` is greater than the stored
   one (equal serial: identical bytes, else refused — an old signed file
   cannot be replayed); every list parses and is within its caps.
 - Stored as plain files (nothing secret) `/etc/vectra-controller-pro/catalog.json`
@@ -123,7 +124,9 @@ router's geo file lacks is left out of that router's render.
   xray through the usual path (`xray -test`, last good). A render the new
   catalog breaks is refused like any other; the router keeps running.
 - `vctl catalog show` prints the source (built-in / downloaded), serial and
-  what it holds; the router UI status carries `catalog: {serial, source}`.
+  what it holds. (The router UI status and the check-in do not carry the
+  serial yet — that changes the UI contract; a follow-up. The geo set shows
+  in the check-in's rulesAssets: its directory, sizes and dates.)
 - `vctl catalog reset` drops the downloaded catalog (back to built-in).
 
 ### 4. Our side

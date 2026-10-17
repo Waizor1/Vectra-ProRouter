@@ -255,10 +255,11 @@ func (c *Catalog) Refresh() int {
 }
 
 // Knows: matcher (one of a provider's rule) names one of the service's own
-// names — a domain:, full: or plain host equal to or under a Names host, or
-// a geosite the service lists. keyword:, regexp:, ext: and the rest prove
-// nothing about what they match and are not known. A parent is not known:
-// domain:google.com is not full:gemini.google.com.
+// names — a domain: or full: host equal to or under a Names host, or a
+// geosite the service lists. A plain string is a substring match in xray
+// (plain "x.ai" matches max.airline.com), and keyword:, regexp:, ext: and the
+// rest prove nothing about what they match: none of them is known. A parent
+// is not known: domain:google.com is not full:gemini.google.com.
 func (s Service) Knows(matcher string) bool {
 	m := strings.ToLower(strings.TrimSpace(matcher))
 	if g, ok := strings.CutPrefix(m, "geosite:"); ok {
@@ -281,8 +282,6 @@ func (s Service) Knows(matcher string) bool {
 		host = strings.TrimPrefix(m, "domain:")
 	case strings.HasPrefix(m, "full:"):
 		host = strings.TrimPrefix(m, "full:")
-	case !strings.Contains(m, ":"):
-		host = m
 	default:
 		return false
 	}
@@ -307,9 +306,10 @@ func (s Service) Knows(matcher string) bool {
 }
 
 // Verify checks a downloaded catalog's signature: by a key in keysDir, and
-// that key is feedKey — the key that signs the Vectra feed's Packages. Every
-// key in /etc/opkg/keys vouches for packages; only the Vectra feed's
-// vouches for routing.
+// that key is feedKey — the key whose signature over the Vectra feed's
+// Packages the router just verified. That is the trust opkg gives the feed,
+// no more: an OpenWrt key in /etc/opkg/keys that does not sign the feed is
+// no authority for routing.
 func Verify(raw, sig []byte, keysDir string, feedKey feedverify.KeyNumber) error {
 	if len(raw) > MaxBytes || len(sig) > MaxSignatureBytes {
 		return ErrTooLarge
@@ -353,8 +353,10 @@ type Loaded struct {
 	Raw     []byte
 	Source  Source
 	// Note says why a stored catalog is not in use (unreadable, invalid,
-	// older than the built-in one); empty otherwise.
-	Note string
+	// older than the built-in one); empty otherwise. Older: the stored one
+	// is only older than the release's — usual after an upgrade, no fault.
+	Note  string
+	Older bool
 }
 
 // Load is the catalog in use: the stored one at path when it reads and is
@@ -377,6 +379,7 @@ func Load(path string) Loaded {
 	}
 	if c.Serial <= builtin.Catalog.Serial {
 		builtin.Note = fmt.Sprintf("stored catalog %d is not newer than the built-in %d", c.Serial, builtin.Catalog.Serial)
+		builtin.Older = true
 		return builtin
 	}
 	return Loaded{Catalog: c, Raw: raw, Source: SourceDownloaded}

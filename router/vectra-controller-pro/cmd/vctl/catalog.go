@@ -52,7 +52,7 @@ var (
 func useCatalog(cfg agentcfg.Config) catalog.Loaded {
 	l := catalog.Load(cfg.CatalogPath)
 	xray.UseCatalog(l.Catalog)
-	if l.Note != "" {
+	if l.Note != "" && !l.Older {
 		logging.L().Warn("the stored catalog is not used; the built-in one is", "note", l.Note)
 	}
 	return l
@@ -132,10 +132,19 @@ func (d *daemon) maybeRefreshCatalog(ctx context.Context, now time.Time) {
 	if l := catalog.Load(d.cfg.CatalogPath); l.Catalog.Serial != d.catalogSerial {
 		d.applyCatalog(ctx, l)
 	}
+	d.maybeRetryRerender(ctx, now)
 	if !d.nextCatalogRefresh.IsZero() && now.Before(d.nextCatalogRefresh) {
 		return
 	}
 	next, stored, err := refreshCatalog(ctx, d.cfg, catalogHTTPClient())
+	if errors.Is(err, errHTTPNotFound) || errors.Is(err, catalog.ErrReplay) {
+		// Nothing published on the channel, or a catalog with the serial in
+		// use and other bytes (a release's own catalog republished): nothing
+		// newer — asked again at the usual time, not every half hour.
+		d.nextCatalogRefresh = now.Add(catalogRefreshPeriod(xray.ActiveCatalog().Refresh()))
+		logging.L().Debug("no newer catalog on the channel", "reason", err.Error(), "serial", d.catalogSerial)
+		return
+	}
 	if err != nil {
 		d.nextCatalogRefresh = now.Add(catalogRetryAfter)
 		logging.L().Warn("the catalog could not be refreshed; the one in use stays", "err", err.Error(),
@@ -163,7 +172,7 @@ func (d *daemon) applyCatalog(ctx context.Context, l catalog.Loaded) {
 	xray.UseCatalog(l.Catalog)
 	d.catalogSerial = l.Catalog.Serial
 	logging.L().Info("catalog in use", "serial", l.Catalog.Serial, "source", string(l.Source), "was", prev)
-	if l.Note != "" {
+	if l.Note != "" && !l.Older {
 		logging.L().Warn("the stored catalog is not used; the built-in one is", "note", l.Note)
 	}
 	if d.desired == nil || d.applier == nil || d.applier.Tproxy == nil || !fileExists(d.cfg.XrayRenderPath) {
@@ -171,7 +180,27 @@ func (d *daemon) applyCatalog(ctx context.Context, l catalog.Loaded) {
 	}
 	if r := d.rerenderRunning(ctx); !r.OK {
 		logging.L().Warn("the catalog's render was refused; what runs keeps running", "serial", l.Catalog.Serial, "detail", r.Detail)
+		d.rerenderRetryAt = time.Now().Add(rerenderRetryAfter)
 	}
+}
+
+// rerenderRetryAfter: a render a new catalog or geo set asked for and the
+// gate refused — most often «not now», too little memory for xray -test — is
+// tried again this soon, not left for the next reboot.
+var rerenderRetryAfter = 10 * time.Minute
+
+// maybeRetryRerender renders the running document again when a refused
+// render is due another try; nothing when none is.
+func (d *daemon) maybeRetryRerender(ctx context.Context, now time.Time) {
+	if d.rerenderRetryAt.IsZero() || now.Before(d.rerenderRetryAt) {
+		return
+	}
+	if r := d.rerenderRunning(ctx); !r.OK {
+		d.rerenderRetryAt = now.Add(rerenderRetryAfter)
+		logging.L().Warn("the render the catalog or the geo set asked for is still refused", "detail", r.Detail)
+		return
+	}
+	d.rerenderRetryAt = time.Time{}
 }
 
 // catalogStatus is what `vctl catalog show` prints.
