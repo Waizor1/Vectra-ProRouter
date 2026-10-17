@@ -467,6 +467,10 @@ const (
 	CounterAdmitHeld = "vctl_admit_held"
 	// CounterQUICRefused counts the LAN's QUIC refused (Spec.RefuseQUIC).
 	CounterQUICRefused = "vctl_quic_refused"
+	// CounterICMPOutHeld counts the router's ICMP «destination unreachable»
+	// to the internet held to the kernel's per-peer rate (SetICMPOut4).
+	CounterICMPOutHeld = "vctl_icmp_out_held"
+	SetICMPOut4        = "vctl_icmp_out4"
 	// CounterAdmitTotalHeld counts new connections held at the router's
 	// whole door (Spec.AdmitTotalRate).
 	CounterAdmitTotalHeld = "vctl_admit_total_held"
@@ -604,6 +608,8 @@ table inet {{ .TableName }} {
 {{- if and .RefuseQUIC .CarriedPools }}
   counter {{ .CounterQUICRefused }} { }
 {{- end }}
+  counter {{ .CounterICMPOutHeld }} { }
+  set {{ .SetICMPOut4 }} { type ipv4_addr; flags dynamic, timeout; timeout 1m; size 4096; }
 {{- if .AdmitRate }}
   counter {{ .CounterAdmitHeld }} { }
   set vctl_admit4 { type ipv4_addr; flags dynamic, timeout; timeout 1m; size 1024; }
@@ -861,6 +867,13 @@ table inet {{ .TableName }} {
     meta mark 0x{{ printf "%x" .SockMark }} counter name "{{ .CounterEgressExempt }}" return
 {{- end }}
     meta mark 0x{{ printf "%x" .FwMark }} return
+    # The router's ICMP «destination unreachable» to anything but a private
+    # network is held to the kernel's own per-peer rate (1/s, burst 6): the
+    # tune lets that type out of net.ipv4.icmp_ratemask so every QUIC attempt
+    # the LAN makes is refused at once (r25) — the internet keeps the limit.
+    # Before the reply and established/related returns: the kernel's error is
+    # related to the probe it answers, in its reply direction.
+    meta l4proto icmp icmp type destination-unreachable ip daddr != { 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } update @{{ .SetICMPOut4 }} { ip daddr limit rate over 1/second burst 6 packets } counter name "{{ .CounterICMPOutHeld }}" drop
     # REPLIES ARE NOT EGRESS. Anything the router sends on a connection that
     # already exists is an answer to something that came IN — a LAN client
     # talking to SSH, LuCI, dnsmasq — and must go back the way it arrived. Only
@@ -1055,6 +1068,8 @@ type tmplData struct {
 	CounterP2PDirect      string
 	CounterAdmitHeld      string
 	CounterQUICRefused    string
+	CounterICMPOutHeld    string
+	SetICMPOut4           string
 	CounterAdmitTotalHeld string
 	CounterPaced          string
 	CounterDNSHeld        string
@@ -1131,6 +1146,8 @@ func Render(s Spec) (string, error) {
 		CounterP2PDirect:         CounterP2PDirect,
 		CounterAdmitHeld:         CounterAdmitHeld,
 		CounterQUICRefused:       CounterQUICRefused,
+		CounterICMPOutHeld:       CounterICMPOutHeld,
+		SetICMPOut4:              SetICMPOut4,
 		CounterAdmitTotalHeld:    CounterAdmitTotalHeld,
 		CounterPaced:             CounterPaced,
 		CounterDNSHeld:           CounterDNSHeld,

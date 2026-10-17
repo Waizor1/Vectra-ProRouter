@@ -15,6 +15,12 @@ QUIC timeout, the very stall r24 set out to end.
   someone's and stays), backed up and put back by Undo. The global ICMP limit
   (icmp_msgs_per_sec, 1000/s) still bounds every ICMP error. The router UI
   does not name it (housekeeping, like the leftovers in RAM).
+- The internet keeps the kernel's per-peer limit: vctl's output chain holds the
+  router's own «destination unreachable» to anything but a private network to
+  1/s, burst 6 per address (counter `vctl_icmp_out_held`) — the relaxed mask
+  serves the LAN's refused QUIC only (found by the automated security review).
+- The built-in catalog's serial is 2026101802 (content unchanged): the first
+  catalog published to pro-canary, which r24 routers take as newer.
 
 ## vctl 0.7.0-r24 — «Нейросети» are AI only; a catalog and geo lists we change without a release
 

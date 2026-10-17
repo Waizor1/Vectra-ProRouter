@@ -165,7 +165,8 @@ func TestKillSwitchEveryDropIsCounted(t *testing.T) {
 			// The door (Spec.AdmitRate) drops too, into a counter of its own.
 			if strings.HasSuffix(r, " drop") && !strings.Contains(r, `counter name "`+CounterKillSwitchDrops+`"`) &&
 				!strings.Contains(r, `counter name "`+CounterUnproxiedOther+`"`) &&
-				!strings.Contains(r, `counter name "`+CounterAdmitHeld+`"`) {
+				!strings.Contains(r, `counter name "`+CounterAdmitHeld+`"`) &&
+				!strings.Contains(r, `counter name "`+CounterICMPOutHeld+`"`) {
 				t.Errorf("chain %s has an uncounted drop: %q", name, r)
 			}
 		}
@@ -223,8 +224,10 @@ func TestKillSwitchShadowIssuesNoVerdict(t *testing.T) {
 		chain := chainNamed(t, out, name)
 		for _, r := range rulesOf(chain) {
 			// The door (Spec.AdmitRate) is not the kill switch: a storm
-			// waits there whatever the switch.
-			if strings.HasSuffix(r, " drop") && !strings.Contains(r, `counter name "`+CounterAdmitHeld+`"`) {
+			// waits there whatever the switch. Nor is the router's own ICMP
+			// to the internet held to the kernel's rate (r25).
+			if strings.HasSuffix(r, " drop") && !strings.Contains(r, `counter name "`+CounterAdmitHeld+`"`) &&
+				!strings.Contains(r, `counter name "`+CounterICMPOutHeld+`"`) {
 				t.Errorf("chain %s has a drop verdict with the switch off: %q", name, r)
 			}
 		}
@@ -393,8 +396,10 @@ func TestForwardCountsWhatTproxyCapturedAndStillForwarded(t *testing.T) {
 // port forwards' «past the VPN» rule is never in the armed ruleset
 // (portfwd_test.go) — and for r24: the device door at 30/120 (QUIC to a
 // FakeDNS address is refused only with a FakeDNS pool, which this spec has
-// not: TestQUICIntoTheTunnelIsRefusedAtOnce). With the switch, what is
-// dropped is unchanged.
+// not: TestQUICIntoTheTunnelIsRefusedAtOnce) — and for r25: the router's own
+// ICMP «destination unreachable» to the internet held to the kernel's rate in
+// output, one counter, one set (TestTheInternetKeepsTheICMPLimit). With the
+// switch, what is dropped is unchanged.
 func TestKillSwitchArmedRulesetIsUnchanged(t *testing.T) {
 	want, err := os.ReadFile(filepath.Join("testdata", "killswitch-on.nft"))
 	if err != nil {

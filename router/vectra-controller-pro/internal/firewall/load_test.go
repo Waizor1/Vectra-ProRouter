@@ -257,3 +257,23 @@ func TestQUICIntoTheTunnelIsRefusedAtOnce(t *testing.T) {
 		t.Error("QUIC refused with the switch off")
 	}
 }
+
+// r25: the tune lets «destination unreachable» out of the kernel's per-peer
+// ICMP limit for the LAN's refused QUIC; the router's own ICMP of that type to
+// the internet is held to the kernel's old rate (1/s, burst 6) in output, the
+// private networks left alone.
+func TestTheInternetKeepsTheICMPLimit(t *testing.T) {
+	out := mustRender(t, DefaultSpec(12345, 1))
+	rules := rulesOf(chainNamed(t, out, "output"))
+	want := `meta l4proto icmp icmp type destination-unreachable ip daddr != { 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } update @vctl_icmp_out4 { ip daddr limit rate over 1/second burst 6 packets } counter name "vctl_icmp_out_held" drop`
+	i := indexOf(rules, want)
+	reply := indexOf(rules, "ct direction reply return")
+	if i < 0 || reply < 0 || i > reply || indexOf(rules, "ct state established,related return") < i {
+		t.Fatalf("ICMP limit at %d (reply return %d), want before the reply and related returns:\n%s", i, reply, strings.Join(rules, "\n"))
+	}
+	for _, decl := range []string{"counter vctl_icmp_out_held { }", "set vctl_icmp_out4 { type ipv4_addr; flags dynamic, timeout; timeout 1m; size 4096; }"} {
+		if !strings.Contains(out, decl) {
+			t.Errorf("missing %q", decl)
+		}
+	}
+}
