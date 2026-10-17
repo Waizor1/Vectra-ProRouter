@@ -106,6 +106,24 @@ func (e Entry) Items() (int, error) {
 	return n, nil
 }
 
+// StoredCode is the record's code byte for byte, and whether it is the
+// record's first field: xray finds a category only there, comparing the
+// bytes with the rule's name upper-cased — so a record stored "ru" or with
+// its code after the rules is invisible to it, while this package (and
+// Select's Code) reads it either way.
+func (e Entry) StoredCode() (string, bool) {
+	r := reader{b: e.Raw}
+	field, wire, err := r.key()
+	if err != nil || field != 1 || wire != 2 {
+		return "", false
+	}
+	v, err := r.bytes()
+	if err != nil {
+		return "", false
+	}
+	return string(v), true
+}
+
 func appendVarint(b []byte, v uint64) []byte {
 	for v >= 0x80 {
 		b = append(b, byte(v)|0x80)

@@ -88,8 +88,10 @@ type previous struct {
 // build downloads every source, merges them into the outputs (an earlier
 // source's category wins), checks them against the required categories and
 // the previous build, then writes the files and, last, the manifest. Nothing
-// is written unless every check passes.
-func (b *builder) build(ctx context.Context, out, prevPath string, accept map[string]bool) error {
+// is written unless every check passes. accept holds "<file>:<CODE>" names
+// (see parseAccept); force writes a new manifest even for the previous
+// build's files — to put back a geo.json the channel lost.
+func (b *builder) build(ctx context.Context, out, prevPath string, accept map[string]bool, force bool) error {
 	var prev *previous
 	if prevPath != "" {
 		var err error
@@ -148,8 +150,11 @@ func (b *builder) build(ctx context.Context, out, prevPath string, accept map[st
 	}
 
 	if prev != nil && sameFiles(prev.files, files) {
-		fmt.Fprintf(b.log, "unchanged since serial %d: nothing written\n", prev.serial)
-		return nil
+		if !force {
+			fmt.Fprintf(b.log, "unchanged since serial %d: nothing written\n", prev.serial)
+			return nil
+		}
+		fmt.Fprintf(b.log, "unchanged since serial %d: a new manifest for the same files (-force)\n", prev.serial)
 	}
 	now := b.now().UTC()
 	m := manifest{Schema: 1, Serial: now.Unix(), BuiltAt: now.Format(time.RFC3339), Files: files, Sources: refs}
@@ -202,6 +207,12 @@ func (b *builder) source(ctx context.Context, s source) ([]geodat.Entry, sourceR
 	}
 	have := map[string]bool{}
 	for _, e := range entries {
+		// Kept byte for byte, so it must already be stored the way xray
+		// finds it: the record's first field, upper case. The manifest
+		// would name it all the same, and the router's check would pass.
+		if stored, ok := e.StoredCode(); !ok || stored != e.Code {
+			return nil, sourceRef{}, fmt.Errorf("category %s is stored as %q, not upper case as the record's first field: xray would not find it", e.Code, stored)
+		}
 		have[e.Code] = true
 	}
 	var missing []string
@@ -272,7 +283,8 @@ func (b *builder) get(ctx context.Context, rawURL string, max int64) ([]byte, st
 
 // check refuses an output that lacks a required category, has one empty,
 // lost a category the previous build had or shrank one below half its rules
-// — unless accept names it; the required categories stay required.
+// — unless accept names it with this file ("geoip.dat:TELEGRAM" leaves
+// geosite.dat's TELEGRAM checked); the required categories stay required.
 func check(o output, entries []geodat.Entry, prev map[string]int, accept map[string]bool) error {
 	have := make(map[string]int, len(entries))
 	for _, e := range entries {
@@ -300,7 +312,7 @@ func check(o output, entries []geodat.Entry, prev map[string]int, accept map[str
 	for _, c := range codes {
 		n, ok := have[c]
 		switch {
-		case accept[c]:
+		case accept[o.Name+":"+c]:
 		case !ok && !required[c]:
 			problems = append(problems, c+" (in the previous build) is missing")
 		case ok && n*2 < prev[c]:

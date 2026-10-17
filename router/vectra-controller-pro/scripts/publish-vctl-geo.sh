@@ -3,7 +3,7 @@
 # the upstream releases tools/geobuild pins, to a pro* channel. Run only with
 # the owner's go-ahead: every vctl on the channel takes what this writes.
 #
-#   scripts/publish-vctl-geo.sh [--channel pro-canary] [--accept CODE,...] [--dry-run]
+#   scripts/publish-vctl-geo.sh [--channel pro-canary] [--accept FILE:CODE,...] [--dry-run]
 #   publish-vctl-geo.sh --cron [--channel pro-canary]          (on the build host)
 #
 # Where it lands: /opt/vectra-prorouter/deploy/runtime/artifacts/openwrt/<channel>/
@@ -18,17 +18,26 @@
 # installs them, with this script, in $TOOLS there; the rest runs ON the host:
 # geobuild into a staging directory against the published geo.json (every
 # category it had stays, none shrinks below half — --accept waives that for
-# the named ones, once), feedtool signs geo.json with the feed's key (which
-# never leaves the host) and verifies it, the serial must be above the
-# published one, then the new .dat files go into the channel, the signature
-# and the manifest last, each by rename. Files of the last 7 builds stay (a
-# router may be fetching what the previous manifest named); nothing is ever
-# synced with --delete. Last, the channel is read back over HTTPS and the
-# served geo.json verified with the channel's served key. Upstreams that have
-# not changed leave nothing to publish, which is not an error.
+# the named ones with their file, e.g. geosite.dat:NEWS, once), feedtool
+# signs geo.json with the feed's key (which never leaves the host) and
+# verifies it, the serial must be above the published one, then the new .dat
+# files go into the channel, the signature and the manifest last, each by
+# rename. Files of the last 7 builds stay in the channel (a router may be
+# fetching what the previous manifest named), and their manifests and files
+# stay in $TOOLS/<channel> too; nothing is ever synced with --delete. Last,
+# the channel is read back over HTTPS and the served geo.json verified with
+# the channel's served key. Upstreams that have not changed leave nothing to
+# publish, which is not an error.
+#
+# A channel without geo.json (scripts/publish-pro-feed.sh syncs it with
+# rsync --delete, which takes geo/ and geo.json* away) is checked against the
+# newest build kept in $TOOLS/<channel> instead, and gets a manifest again
+# even when the upstreams have not changed. Only with no build kept at all
+# does a build go out unchecked against a previous one, with a warning.
 #
 # --dry-run builds on this machine against the published build (read over
-# HTTPS), checks the key is on the host, and writes nothing there.
+# HTTPS: only a 404 means "nothing published yet", any other failure stops
+# it), checks the key is on the host, and writes nothing there.
 #
 # --cron is the host half alone, for the host's own crontab, with the tools a
 # workstation run installed; a lock keeps runs apart, --accept is refused (a
@@ -36,10 +45,11 @@
 # build host, e.g.:
 #   17 4 * * * /opt/vectra-prorouter/.codex-runtime/vctl-geo/publish-vctl-geo.sh --cron --channel pro-canary >> /opt/vectra-prorouter/.codex-runtime/vctl-geo/cron.log 2>&1
 #
-# NOTE: scripts/publish-pro-feed.sh syncs the channel with rsync --delete and
-# takes geo/ and geo.json* away with it; publish the geo lists again after it
-# until that sync leaves them be.
-set -euo pipefail
+# NOTE: until publish-pro-feed.sh's sync leaves geo/ and geo.json* be, run
+# this again after every feed publish: routers get no geo lists in between.
+set -Eeuo pipefail
+# A failing command under set -e says where, not just an exit status (cron logs).
+trap 'echo "FATAL: line $LINENO: a command exited $?" >&2' ERR
 export COPYFILE_DISABLE=1
 
 CHANNEL="pro-canary"
@@ -59,13 +69,13 @@ while [[ $# -gt 0 ]]; do
 	--dry-run) DRY_RUN=1; shift ;;
 	--cron) MODE=cron; shift ;;
 	--on-host) MODE=host; shift ;; # what a workstation run executes on the host
-	-h | --help) sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	-h | --help) sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
 die() { echo "FATAL: $*" >&2; exit 1; }
 [[ "$CHANNEL" =~ ^pro[a-z0-9-]*$ ]] || die "channel '$CHANNEL': only pro* channels are published by this script"
-[[ -z "$ACCEPT" || "$ACCEPT" =~ ^[A-Za-z0-9,_-]+$ ]] || die "--accept takes comma-separated category names"
+[[ -z "$ACCEPT" || "$ACCEPT" =~ ^[A-Za-z0-9.:,_-]+$ ]] || die "--accept takes comma-separated FILE:CODE names, e.g. geosite.dat:NEWS"
 URL="$PUBLIC_BASE/$CHANNEL"
 
 # The files a manifest names, one "path sha256" per line. geo.json is
@@ -76,6 +86,14 @@ manifest_files() {
 }
 manifest_serial() { sed -n 's/^  "serial": \([0-9][0-9]*\),$/\1/p' "$1"; }
 valid_path() { [[ "$1" =~ ^geo/(geosite|geoip)-[0-9a-f]{12}\.dat$ ]]; }
+# The serials of the builds kept in $STATE, as $STATE/<serial>.json.
+serials() {
+	local f
+	for f in "$STATE"/*.json; do
+		f="${f##*/}"
+		if [[ "$f" =~ ^[0-9]+\.json$ ]]; then echo "${f%.json}"; fi
+	done
+}
 
 # --------------------------------------------------------------- host half --
 
@@ -103,18 +121,45 @@ if [[ "$MODE" != workstation ]]; then
 	stage="$(mktemp -d "$TOOLS/stage.XXXXXX")"
 	trap 'rm -rf "$stage"' EXIT
 
+	# keep_build MANIFEST DIR: a build's files (DIR/geo/...) and then its
+	# manifest into $STATE, where they outlive the channel's copies.
+	keep_build() {
+		local path sum
+		mkdir -p "$STATE/geo"
+		while read -r path sum; do
+			valid_path "$path" || die "$1 names $path"
+			[[ -f "$STATE/$path" ]] || install -m 0644 "$2/$path" "$STATE/$path"
+		done < <(manifest_files "$1")
+		install -m 0644 "$1" "$STATE/$(manifest_serial "$1").json"
+	}
+
 	published=0
 	prev=()
+	force=()
 	if [[ -f "$CHANNEL_DIR/geo.json" ]]; then
 		published="$(manifest_serial "$CHANNEL_DIR/geo.json")"
 		[[ -n "$published" ]] || die "$CHANNEL_DIR/geo.json has no serial"
 		prev=(-prev "$CHANNEL_DIR/geo.json")
-		# The history the old files are kept by starts with what is served.
-		[[ -f "$STATE/$published.json" ]] || install -m 0644 "$CHANNEL_DIR/geo.json" "$STATE/$published.json"
+		# The kept builds start with what is served.
+		[[ -f "$STATE/$published.json" ]] || keep_build "$CHANNEL_DIR/geo.json" "$CHANNEL_DIR"
+	else
+		newest="$(serials | sort -rn | head -n 1)"
+		if [[ -n "$newest" ]]; then
+			echo "==> $CHANNEL_DIR has no geo.json (a feed publish's rsync --delete?):"
+			echo "    checking against build $newest kept in $STATE, and publishing a manifest even if nothing changed"
+			published="$newest"
+			prev=(-prev "$STATE/$newest.json")
+			force=(-force)
+		else
+			{
+				echo "WARNING: no geo.json in $CHANNEL_DIR and no build kept in $STATE:"
+				echo "WARNING: this build is checked for the required categories only, not against a previous build."
+			} >&2
+		fi
 	fi
 
 	echo "==> build (published serial $published)"
-	"$TOOLS/geobuild" -out "$stage" ${prev[@]+"${prev[@]}"} ${ACCEPT:+-accept "$ACCEPT"}
+	"$TOOLS/geobuild" -out "$stage" ${prev[@]+"${prev[@]}"} ${force[@]+"${force[@]}"} ${ACCEPT:+-accept "$ACCEPT"}
 	if [[ ! -f "$stage/geo.json" ]]; then
 		echo "==> nothing to publish: the upstreams have not changed"
 		exit 0
@@ -144,20 +189,19 @@ if [[ "$MODE" != workstation ]]; then
 	done <<< "$files"
 	put "$stage/geo.json.sig" "$CHANNEL_DIR/geo.json.sig"
 	put "$stage/geo.json" "$CHANNEL_DIR/geo.json"
-	install -m 0644 "$stage/geo.json" "$STATE/$serial.json"
+	keep_build "$stage/geo.json" "$stage"
 
 	echo "==> keep the files of the last $KEEP_BUILDS builds"
-	serials() { for f in "$STATE"/*.json; do f="${f##*/}"; [[ "$f" =~ ^[0-9]+\.json$ ]] && echo "${f%.json}"; done; }
 	keep="$(serials | sort -rn | head -n "$KEEP_BUILDS")"
 	for s in $(serials); do
 		grep -qx "$s" <<< "$keep" || rm -f "$STATE/$s.json"
 	done
 	wanted="$(for s in $keep; do manifest_files "$STATE/$s.json"; done | awk '{print $1}' | sort -u)"
-	for f in "$CHANNEL_DIR"/geo/geosite-*.dat "$CHANNEL_DIR"/geo/geoip-*.dat; do
+	for f in "$CHANNEL_DIR"/geo/geosite-*.dat "$CHANNEL_DIR"/geo/geoip-*.dat "$STATE"/geo/geosite-*.dat "$STATE"/geo/geoip-*.dat; do
 		[[ -f "$f" ]] || continue
 		p="geo/$(basename "$f")"
 		valid_path "$p" || continue
-		grep -qxF "$p" <<< "$wanted" || { rm -f "$f"; echo "  removed $p"; }
+		grep -qxF "$p" <<< "$wanted" || { rm -f "$f"; echo "  removed ${f#"$REMOTE_ROOT"/}"; }
 	done
 
 	echo "==> read back over HTTPS"
@@ -188,16 +232,25 @@ if [[ "$DRY_RUN" == 1 ]]; then
 	echo "==> dry run: build here against the published $URL/geo.json"
 	( cd "$MODULE" && go build -trimpath -o "$LOCAL/geobuild" ./tools/geobuild )
 	prev=()
-	if curl -fsS --max-time 60 -o "$LOCAL/prev/geo.json" --create-dirs "$URL/geo.json" 2> /dev/null; then
+	# Only a 404 is "nothing published": a timeout, a 5xx or a TLS failure
+	# would otherwise skip every check against the published build.
+	code="$(curl -sS --max-time 60 -o "$LOCAL/prev/geo.json" --create-dirs -w '%{http_code}' "$URL/geo.json")" \
+		|| die "$URL/geo.json: no answer (curl exit $?)"
+	case "$code" in
+	200)
 		while read -r path sum; do
 			valid_path "$path" || die "the published geo.json names $path"
 			curl -fsS --max-time 120 -o "$LOCAL/prev/$path" --create-dirs "$URL/$path" || die "$URL/$path is not served"
 		done < <(manifest_files "$LOCAL/prev/geo.json")
 		prev=(-prev "$LOCAL/prev/geo.json")
 		echo "  published serial $(manifest_serial "$LOCAL/prev/geo.json")"
-	else
-		echo "  nothing published yet"
-	fi
+		;;
+	404)
+		rm -f "$LOCAL/prev/geo.json"
+		echo "  nothing published yet (404)"
+		;;
+	*) die "$URL/geo.json: HTTP $code" ;;
+	esac
 	"$LOCAL/geobuild" -out "$LOCAL/stage" ${prev[@]+"${prev[@]}"} ${ACCEPT:+-accept "$ACCEPT"}
 	ssh "$SSH_ALIAS" "test -f '$KEY_DIR/vectra-pro.sec'" || die "no feed key in $SSH_ALIAS:$KEY_DIR"
 	echo "==> dry run: would install geobuild and feedtool in $SSH_ALIAS:$TOOLS, build and sign there with $KEY_DIR,"

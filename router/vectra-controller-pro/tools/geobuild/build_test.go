@@ -91,7 +91,7 @@ func newUpstream() *upstream {
 	for _, c := range itdogCodes() {
 		u.itdog = append(u.itdog, cat{c, 10})
 	}
-	u.loyalSite = []cat{{"CN", 50}, {"category-gov-ru", 10}, {"CATEGORY-RU", 10}, {"TELEGRAM", 3}, {"PRIVATE", 10}}
+	u.loyalSite = []cat{{"CN", 50}, {"CATEGORY-GOV-RU", 10}, {"CATEGORY-RU", 10}, {"TELEGRAM", 3}, {"PRIVATE", 10}}
 	u.roscom = []cat{{"DIRECT", 10}, {"PRIVATE", 3}, {"WHITELIST", 10}}
 	u.loyalIP = []cat{{"CN", 40}, {"PRIVATE", 5}, {"RU", 10}, {"TELEGRAM", 10}}
 	return u
@@ -178,7 +178,7 @@ func TestBuildMergesSourcesIntoManifest(t *testing.T) {
 	srv := u.serve(t)
 	b, log := testBuilder(t, srv, t0)
 	out := t.TempDir()
-	if err := b.build(context.Background(), out, "", nil); err != nil {
+	if err := b.build(context.Background(), out, "", nil, false); err != nil {
 		t.Fatalf("%v\n%s", err, log)
 	}
 	m, raw := readManifest(t, filepath.Join(out, "geo.json"))
@@ -281,13 +281,20 @@ func TestBuildRefusesMissingCategories(t *testing.T) {
 		{"itdog lost a list", func(u *upstream) { u.itdog = u.itdog[:len(u.itdog)-1] }, "YOUTUBE is missing"},
 		{"a required list is empty", func(u *upstream) { u.roscom[0].n = 0 }, "DIRECT is empty"},
 		{"a source lacks what is taken from it", func(u *upstream) { u.loyalIP = u.loyalIP[:3] }, "has no TELEGRAM"},
+		// xray looks a category up by its upper-case name, byte for byte:
+		// kept as "category-gov-ru" it would be named by the manifest and
+		// found by no rule.
+		{"a category stored in lower case", func(u *upstream) { u.loyalSite[1].code = "category-gov-ru" },
+			`Loyalsoldier/v2ray-rules-dat geosite.dat: category CATEGORY-GOV-RU is stored as "category-gov-ru"`},
+		{"a category stored in mixed case", func(u *upstream) { u.roscom[2].code = "Whitelist" },
+			`hydraponique/roscomvpn-geoip geoip.dat: category WHITELIST is stored as "Whitelist"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			u := newUpstream()
 			tc.change(u)
 			b, _ := testBuilder(t, u.serve(t), t0)
 			out := t.TempDir()
-			err := b.build(context.Background(), out, "", nil)
+			err := b.build(context.Background(), out, "", nil, false)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err %v, want %q", err, tc.want)
 			}
@@ -304,7 +311,7 @@ func TestBuildAgainstThePreviousBuild(t *testing.T) {
 	srv := u.serve(t)
 	channel := t.TempDir()
 	b, log := testBuilder(t, srv, t0)
-	if err := b.build(context.Background(), channel, "", nil); err != nil {
+	if err := b.build(context.Background(), channel, "", nil, false); err != nil {
 		t.Fatalf("%v\n%s", err, log)
 	}
 	prev := filepath.Join(channel, "geo.json")
@@ -312,7 +319,11 @@ func TestBuildAgainstThePreviousBuild(t *testing.T) {
 	build := func(now time.Time, accept ...string) (string, error) {
 		b, log := testBuilder(t, srv, now)
 		out := t.TempDir()
-		err := b.build(context.Background(), out, prev, splitCodes(strings.Join(accept, ",")))
+		accepted, err := parseAccept(strings.Join(accept, ","), outputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = b.build(context.Background(), out, prev, accepted, false)
 		return out, func() error {
 			if err != nil {
 				return fmt.Errorf("%w\n%s", err, log)
@@ -329,6 +340,17 @@ func TestBuildAgainstThePreviousBuild(t *testing.T) {
 	if got := entriesIn(t, out); len(got) != 0 {
 		t.Fatalf("an unchanged build wrote %v", got)
 	}
+	// Unless asked to: the channel lost its geo.json, the files are the same.
+	b, log = testBuilder(t, srv, t1)
+	out = t.TempDir()
+	if err := b.build(context.Background(), out, prev, nil, true); err != nil {
+		t.Fatalf("%v\n%s", err, log)
+	}
+	forced, _ := readManifest(t, filepath.Join(out, "geo.json"))
+	first, _ := readManifest(t, prev)
+	if forced.Serial != t1.Unix() || forced.Files["geosite.dat"].SHA256 != first.Files["geosite.dat"].SHA256 || forced.Files["geoip.dat"].SHA256 != first.Files["geoip.dat"].SHA256 {
+		t.Fatalf("-force: serial %d, files %+v, want the previous files under a new serial", forced.Serial, forced.Files)
+	}
 
 	// Down to half its rules is still a list; below half is a broken upstream.
 	inside := slices.IndexFunc(u.itdog, func(c cat) bool { return c.code == "RUSSIA-INSIDE" })
@@ -340,7 +362,7 @@ func TestBuildAgainstThePreviousBuild(t *testing.T) {
 	if _, err := build(t1); err == nil || !strings.Contains(err.Error(), "RUSSIA-INSIDE shrank from 10 to 4 rules") {
 		t.Fatalf("err %v", err)
 	}
-	out, err = build(t1, "russia-inside")
+	out, err = build(t1, "geosite.dat:russia-inside")
 	if err != nil {
 		t.Fatalf("an accepted shrink: %v", err)
 	}
@@ -349,17 +371,28 @@ func TestBuildAgainstThePreviousBuild(t *testing.T) {
 	}
 	u.itdog[inside].n = 10
 
+	// A waiver names its file: TELEGRAM is in both, and accepting
+	// geosite.dat's leaves geoip.dat's checked.
+	u.loyalIP[3].n = 4 // Loyalsoldier's geoip TELEGRAM
+	if _, err := build(t1, "geosite.dat:TELEGRAM"); err == nil || !strings.Contains(err.Error(), "geoip.dat: refusing to publish: TELEGRAM shrank from 10 to 4 rules") {
+		t.Fatalf("err %v", err)
+	}
+	if _, err := build(t1, "geoip.dat:telegram"); err != nil {
+		t.Fatalf("an accepted geoip shrink: %v", err)
+	}
+	u.loyalIP[3].n = 10
+
 	// A category of the previous build must stay, unless accepted; a
 	// required one stays whatever is accepted.
 	u.itdog = u.itdog[:len(u.itdog)-1] // NEWCAT
 	if _, err := build(t1); err == nil || !strings.Contains(err.Error(), "NEWCAT (in the previous build) is missing") {
 		t.Fatalf("err %v", err)
 	}
-	if _, err := build(t1, "NEWCAT"); err != nil {
+	if _, err := build(t1, "geosite.dat:NEWCAT"); err != nil {
 		t.Fatalf("an accepted removal: %v", err)
 	}
 	u.itdog = u.itdog[:len(u.itdog)-1] // YOUTUBE
-	if _, err := build(t1, "NEWCAT", "YOUTUBE"); err == nil || !strings.Contains(err.Error(), "YOUTUBE is missing") {
+	if _, err := build(t1, "geosite.dat:NEWCAT", "geosite.dat:YOUTUBE"); err == nil || !strings.Contains(err.Error(), "YOUTUBE is missing") {
 		t.Fatalf("err %v", err)
 	}
 	u.itdog = append(u.itdog, cat{"YOUTUBE", 10}, cat{"NEWCAT", 10})
@@ -376,14 +409,14 @@ func TestThePreviousBuildMustBeWhole(t *testing.T) {
 	srv := u.serve(t)
 	channel := t.TempDir()
 	b, _ := testBuilder(t, srv, t0)
-	if err := b.build(context.Background(), channel, "", nil); err != nil {
+	if err := b.build(context.Background(), channel, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	prev := filepath.Join(channel, "geo.json")
 	m, _ := readManifest(t, prev)
 	rebuild := func() error {
 		b, _ := testBuilder(t, srv, t0.Add(time.Hour))
-		return b.build(context.Background(), t.TempDir(), prev, nil)
+		return b.build(context.Background(), t.TempDir(), prev, nil, false)
 	}
 
 	site := filepath.Join(channel, m.Files["geosite.dat"].Path)
@@ -415,38 +448,38 @@ func TestDownloadsAreChecked(t *testing.T) {
 
 	b, _ := testBuilder(t, srv, t0)
 	b.sources[2].Max = 100
-	if err := b.build(ctx, t.TempDir(), "", nil); err == nil || !strings.Contains(err.Error(), "more than 100") {
+	if err := b.build(ctx, t.TempDir(), "", nil, false); err == nil || !strings.Contains(err.Error(), "more than 100") {
 		t.Fatalf("an oversized download: %v", err)
 	}
 
 	u.sums["/loyal/geoip.dat.sha256sum"] = strings.Repeat("ab", 32) + "  geoip.dat\n"
 	b, _ = testBuilder(t, srv, t0)
-	if err := b.build(ctx, t.TempDir(), "", nil); err == nil || !strings.Contains(err.Error(), "the release says "+strings.Repeat("ab", 32)) {
+	if err := b.build(ctx, t.TempDir(), "", nil, false); err == nil || !strings.Contains(err.Error(), "the release says "+strings.Repeat("ab", 32)) {
 		t.Fatalf("a checksum mismatch: %v", err)
 	}
 	u.sums["/loyal/geoip.dat.sha256sum"] = "Not Found"
 	b, _ = testBuilder(t, srv, t0)
-	if err := b.build(ctx, t.TempDir(), "", nil); err == nil || !strings.Contains(err.Error(), "names no sha256") {
+	if err := b.build(ctx, t.TempDir(), "", nil, false); err == nil || !strings.Contains(err.Error(), "names no sha256") {
 		t.Fatalf("a checksum file without a sum: %v", err)
 	}
 	delete(u.sums, "/loyal/geoip.dat.sha256sum")
 
 	b, _ = testBuilder(t, srv, t0)
 	b.sources[1].URL = srv.URL + "/nosuch/geosite.dat"
-	if err := b.build(ctx, t.TempDir(), "", nil); err == nil || !strings.Contains(err.Error(), "404") {
+	if err := b.build(ctx, t.TempDir(), "", nil, false); err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("a missing release: %v", err)
 	}
 
 	b, _ = testBuilder(t, srv, t0)
 	b.sources[0].URL = strings.Replace(srv.URL, "https://", "http://", 1) + "/itdog/releases/latest/download/geosite.dat"
-	if err := b.build(ctx, t.TempDir(), "", nil); err == nil || !strings.Contains(err.Error(), "https only") {
+	if err := b.build(ctx, t.TempDir(), "", nil, false); err == nil || !strings.Contains(err.Error(), "https only") {
 		t.Fatalf("an http source: %v", err)
 	}
 
 	b, _ = testBuilder(t, srv, t0)
 	b.outputs = slices.Clone(outputs)
 	b.outputs[1].Max = 200
-	if err := b.build(ctx, t.TempDir(), "", nil); err == nil || !strings.Contains(err.Error(), "more than the 200 a router takes") {
+	if err := b.build(ctx, t.TempDir(), "", nil, false); err == nil || !strings.Contains(err.Error(), "more than the 200 a router takes") {
 		t.Fatalf("an oversized output: %v", err)
 	}
 }
@@ -483,7 +516,21 @@ func TestRunNeedsOut(t *testing.T) {
 	if err := run(context.Background(), []string{"-prev", "x"}, &out); err == nil {
 		t.Fatal("geobuild without -out must refuse")
 	}
-	if got := splitCodes(" russia-inside, ,NewCat"); !got["RUSSIA-INSIDE"] || !got["NEWCAT"] || len(got) != 2 {
-		t.Fatalf("splitCodes %v", got)
+	got, err := parseAccept(" geosite.dat:russia-inside, ,GEOIP.DAT:Telegram", outputs)
+	if err != nil || !got["geosite.dat:RUSSIA-INSIDE"] || !got["geoip.dat:TELEGRAM"] || len(got) != 2 {
+		t.Fatalf("parseAccept %v %v", got, err)
+	}
+	for in, want := range map[string]string{
+		"TELEGRAM":          "name its file too, e.g. geosite.dat:TELEGRAM",
+		"geoip.dat:RU,NEWS": "name its file too",
+		"other.dat:RU":      "want FILE:CODE",
+		"geoip.dat:":        "want FILE:CODE",
+	} {
+		if _, err := parseAccept(in, outputs); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("parseAccept(%q): %v, want %q", in, err, want)
+		}
+	}
+	if err := run(context.Background(), []string{"-out", t.TempDir(), "-accept", "TELEGRAM"}, &out); err == nil || !strings.Contains(err.Error(), "name its file too") {
+		t.Fatalf("geobuild -accept with a bare name: %v", err)
 	}
 }

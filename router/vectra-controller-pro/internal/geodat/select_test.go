@@ -113,3 +113,34 @@ func TestSelectRefusesBrokenFiles(t *testing.T) {
 		t.Fatal("a truncated record must be refused")
 	}
 }
+
+// StoredCode is the code as xray finds it: the record's first field, byte
+// for byte; Code is upper-cased wherever the record keeps it.
+func TestStoredCode(t *testing.T) {
+	late := pbBytes(1, append(pbBytes(2, cidr("10.0.0.0/8")), pbBytes(1, []byte("RU"))...)) // code after the rules
+	var file []byte
+	file = append(file, entry("ru", false, "5.8.0.0/16")...)
+	file = append(file, entry("TELEGRAM", false, "91.108.4.0/22")...)
+	file = append(file, late...)
+	file = append(file, entry("DIRECT", false, "77.88.8.8/32")...)
+	got, err := Select(file, "RU", "TELEGRAM", "DIRECT")
+	if err != nil || len(got) != 3 {
+		t.Fatalf("%v %v", codesOf(got), err)
+	}
+	if c, ok := got[0].StoredCode(); !ok || c != "ru" || got[0].Code != "RU" {
+		t.Fatalf("lower-case record: stored %q %v, Code %q", c, ok, got[0].Code)
+	}
+	if c, ok := got[1].StoredCode(); !ok || c != "TELEGRAM" {
+		t.Fatalf("TELEGRAM: stored %q %v", c, ok)
+	}
+	if c, ok := got[2].StoredCode(); !ok || c != "DIRECT" {
+		t.Fatalf("DIRECT: stored %q %v", c, ok)
+	}
+	es, err := Select(late)
+	if err != nil || len(es) != 1 || es[0].Code != "RU" {
+		t.Fatalf("a code after the rules: %v %v", codesOf(es), err)
+	}
+	if _, ok := es[0].StoredCode(); ok {
+		t.Fatal("a code that is not the record's first field is not where xray looks")
+	}
+}
