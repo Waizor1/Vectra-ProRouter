@@ -382,8 +382,11 @@ type daemon struct {
 	// it first held one.
 	pendingDoc   []byte
 	pendingSince time.Time
-	busy         string
-	probe        *localctl.Probe
+	// pendingBase is the sha256 of the document that ran when pendingDoc was
+	// held: another running since makes the held one stale.
+	pendingBase [32]byte
+	busy        string
+	probe       *localctl.Probe
 	// pinBudget bounds how long the start hook waits for xray's API to come
 	// up before giving up on restoring pins and on the leak baseline. 0 = 45 s.
 	pinBudget time.Duration

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"time"
 
@@ -65,6 +66,7 @@ func (d *daemon) holdForQuiet(doc []byte, now time.Time) bool {
 		d.pendingSince = now
 	}
 	d.pendingDoc = doc
+	d.pendingBase = sha256.Sum256(running)
 	return true
 }
 
@@ -77,8 +79,15 @@ func (d *daemon) maybeApplyHeld(ctx context.Context, now time.Time) {
 	if !inQuietWindow(now) && now.Sub(d.pendingSince) < quietHoldMax && d.rescueState().Mode != rescue.ModeDirect {
 		return
 	}
-	doc := d.pendingDoc
+	doc, base := d.pendingDoc, d.pendingBase
 	d.pendingDoc, d.pendingSince = nil, time.Time{}
+	// Held over the document that ran then: if another runs now — the owner
+	// chose another location, a refresh someone asked for applied a newer
+	// one — the held one is stale and would undo it.
+	if running, err := vault.ReadFile(d.documentPath()); err != nil || sha256.Sum256(running) != base {
+		logging.L().Info("dropped the held subscription document: the running one changed since")
+		return
+	}
 	applyHeldDoc(d, ctx, doc)
 }
 

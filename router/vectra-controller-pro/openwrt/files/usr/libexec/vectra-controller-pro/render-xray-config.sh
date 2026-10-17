@@ -103,6 +103,7 @@ direct_bypass="$(uci_get_or_default direct_bypass 1)"
 # admit_total_rate: off unless set), xray's to one node, a device's DNS
 # queries a second to the router's resolver.
 p2p_bypass="$(uci_get_or_default p2p_bypass 1)"
+refuse_quic="$(uci_get_or_default refuse_quic 1)"
 admit_rate="$(uci_get_or_default admit_rate "")"
 admit_total_rate="$(uci_get_or_default admit_total_rate "")"
 pace_rate="$(uci_get_or_default pace_rate "")"
@@ -173,6 +174,11 @@ if [ "$direct_bypass" = "0" ] || [ "$direct_bypass" = "false" ]; then
 fi
 if [ "$p2p_bypass" = "0" ] || [ "$p2p_bypass" = "false" ]; then
 	json_add_boolean noP2PBypass 1
+fi
+# QUIC into the tunnel is refused at once (firewall.Spec.RefuseQUIC); '0'
+# keeps it, for a provider whose nodes carry UDP/443.
+if [ "$refuse_quic" = "0" ] || [ "$refuse_quic" = "false" ]; then
+	json_add_boolean quicThrough 1
 fi
 case "$admit_rate" in '' | *[!0-9]*) ;; *) json_add_int admitRate "$admit_rate" ;; esac
 case "$admit_total_rate" in '' | *[!0-9]*) ;; *) json_add_int admitTotalRate "$admit_total_rate" ;; esac

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"path/filepath"
 	"testing"
 	"time"
@@ -76,7 +77,8 @@ func TestAHeldDocumentWaitsForTheWindowOrTheMaximum(t *testing.T) {
 	applyHeldDoc = func(*daemon, context.Context, []byte) { applied++ }
 	t.Cleanup(func() { applyHeldDoc = prev })
 	day := time.Date(2026, 10, 18, 14, 0, 0, 0, time.UTC)
-	d.pendingDoc, d.pendingSince = []byte(quietDoc), day
+	base := sha256.Sum256([]byte(quietDoc))
+	d.pendingDoc, d.pendingSince, d.pendingBase = []byte(quietDoc), day, base
 	d.maybeApplyHeld(context.Background(), day.Add(time.Hour))
 	if d.pendingDoc == nil {
 		t.Fatal("applied an hour later by day")
@@ -85,10 +87,20 @@ func TestAHeldDocumentWaitsForTheWindowOrTheMaximum(t *testing.T) {
 	if d.pendingDoc != nil || applied != 1 {
 		t.Fatalf("still held after the maximum (applied %d)", applied)
 	}
-	d.pendingDoc, d.pendingSince = []byte(quietDoc), day
+	d.pendingDoc, d.pendingSince, d.pendingBase = []byte(quietDoc), day, base
 	d.maybeApplyHeld(context.Background(), time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC))
 	if d.pendingDoc != nil || applied != 2 {
 		t.Fatalf("still held in the night window (applied %d)", applied)
+	}
+	// Another document ran since it was held (the owner chose another
+	// location): the held one is dropped, never applied over it.
+	d.pendingDoc, d.pendingSince, d.pendingBase = []byte(quietDoc), day, base
+	if err := vault.WriteFile(d.cfg.ProviderConfigPath, []byte(`{"outbounds":[{"tag":"fi-1","protocol":"vless"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	d.maybeApplyHeld(context.Background(), time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC))
+	if d.pendingDoc != nil || applied != 2 {
+		t.Fatalf("a stale held document was applied (applied %d)", applied)
 	}
 }
 
