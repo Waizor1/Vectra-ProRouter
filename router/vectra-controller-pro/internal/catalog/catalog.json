@@ -1,17 +1,21 @@
 {
   "schema": 1,
-  "serial": 2026101701,
+  "serial": 2026101801,
   "services": {
     "ai": {
       "onlyKnown": true,
       "names": [
         "domain:openai.com", "domain:chatgpt.com", "domain:chat.com", "domain:oaistatic.com",
-        "domain:oaiusercontent.com", "domain:sora.com",
+        "domain:oaiusercontent.com", "domain:sora.com", "domain:oaistatsig.com",
+        "full:chatgpt.livekit.cloud", "full:o33249.ingest.sentry.io",
         "domain:anthropic.com", "domain:claude.ai", "domain:claude.com", "domain:claudeusercontent.com",
+        "domain:claude.site", "domain:claude.dev", "domain:clau.de", "domain:claudemcpclient.com",
+        "domain:claudemcpcontent.com", "full:servd-anthropic-website.b-cdn.net",
         "full:gemini.google.com", "domain:gemini.google", "full:aistudio.google.com", "full:bard.google.com",
         "full:notebooklm.google.com", "domain:notebooklm.google", "full:makersuite.google.com",
         "full:generativelanguage.googleapis.com", "full:alkalimakersuite-pa.clients6.google.com",
         "full:proactivebackend-pa.googleapis.com", "full:robinfrontend-pa.googleapis.com",
+        "full:geminiweb-pa.clients6.google.com", "full:gemini.gstatic.com",
         "domain:labs.google", "full:labs.google.com", "full:ai.google.dev", "domain:deepmind.com", "domain:deepmind.google",
         "full:copilot.microsoft.com", "domain:copilot.cloud.microsoft", "full:sydney.bing.com",
         "domain:githubcopilot.com", "full:copilot-proxy.githubusercontent.com",
