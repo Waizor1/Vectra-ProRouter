@@ -875,14 +875,15 @@ table inet {{ .TableName }} {
     # out unlimited (RelaxesICMP, icmpmask.go), so every attempt a LAN device
     # makes is answered at once. The router's own unreachables keep the
     # kernel's rates here instead: 1/s, burst 6, to each address beyond the
-    # LAN, and 1000/s, burst 50, for all of them (net.ipv4.icmp_msgs_per_sec)
+    # LAN and the router itself (the kernel never limits loopback), and
+    # 1000/s, burst 50, for all of them (net.ipv4.icmp_msgs_per_sec)
     # — the second also when the first's set is full. «Fragmentation needed»
     # was never limited (path MTU). Before the reply and established/related
     # returns: the kernel's error is related to the packet it answers.
 {{- if .LANDevs }}
-    meta l4proto icmp icmp type destination-unreachable icmp code != frag-needed oifname != { {{ .LANDevs }} } update @{{ .SetICMPOut4 }} { ip daddr limit rate over 1/second burst 6 packets } counter name "{{ .CounterICMPOutHeld }}" drop
+    meta l4proto icmp icmp type destination-unreachable icmp code != frag-needed oifname != { "lo", {{ .LANDevs }} } update @{{ .SetICMPOut4 }} { ip daddr limit rate over 1/second burst 6 packets } counter name "{{ .CounterICMPOutHeld }}" drop
 {{- else }}
-    meta l4proto icmp icmp type destination-unreachable icmp code != frag-needed ip daddr != @bypass4 update @{{ .SetICMPOut4 }} { ip daddr limit rate over 1/second burst 6 packets } counter name "{{ .CounterICMPOutHeld }}" drop
+    meta l4proto icmp icmp type destination-unreachable icmp code != frag-needed oifname != "lo" ip daddr != @bypass4 update @{{ .SetICMPOut4 }} { ip daddr limit rate over 1/second burst 6 packets } counter name "{{ .CounterICMPOutHeld }}" drop
 {{- end }}
     meta l4proto icmp icmp type destination-unreachable icmp code != frag-needed limit rate over 1000/second burst 50 packets counter name "{{ .CounterICMPOutHeld }}" drop
 {{- end }}

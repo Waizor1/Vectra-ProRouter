@@ -126,6 +126,27 @@ func TestRestoreICMPMaskShell(t *testing.T) {
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("marker left")
 	}
+	// A bit that cannot be put back keeps its marker.
+	if _, err := FollowICMPMask(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(mask, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("sh", "-c", RestoreICMPMaskShell()).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if os.Geteuid() != 0 {
+		if _, err := os.Stat(marker); err != nil {
+			t.Fatal("the marker went though the mask was not written")
+		}
+	}
+	if err := os.Chmod(mask, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 	// Without the marker it changes nothing.
 	if err := os.WriteFile(mask, []byte("6160\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -146,7 +167,7 @@ func TestTeardownPutsTheICMPMaskBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	sh := string(raw)
-	for _, want := range []string{"ICMP_MASK=" + ICMPRatemaskPath, "ICMP_MARKER=" + ICMPMaskMarker, "$((m | 8))"} {
+	for _, want := range []string{"ICMP_MASK=" + ICMPRatemaskPath, "ICMP_MARKER=" + ICMPMaskMarker, `echo $((m | 8)) > "$ICMP_MASK" 2>/dev/null &&`} {
 		if !strings.Contains(sh, want) {
 			t.Errorf("teardown lacks %q", want)
 		}

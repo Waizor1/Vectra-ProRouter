@@ -20,8 +20,9 @@ QUIC timeout, the very stall r24 set out to end.
   a mask they set without the bit, stay theirs.
 - The mask also lifts the kernel's global cap for that type, so the table
   holds the router's own unreachables to the kernel's rates instead: 1/s,
-  burst 6, to each address beyond the LAN's devices (`oifname`; the LAN's
-  addresses when no device is known), and 1000/s, burst 50, for all of them
+  burst 6, to each address beyond the LAN's devices and loopback (`oifname`;
+  the LAN's addresses when no device is known — the kernel never limits
+  loopback), and 1000/s, burst 50, for all of them
   — the second also when the per-address set is full. «Fragmentation needed»
   stays unlimited (path MTU), as in the kernel. Counter `vctl_icmp_out_held`.
   Without the QUIC refusal neither the mask nor these rules are touched.

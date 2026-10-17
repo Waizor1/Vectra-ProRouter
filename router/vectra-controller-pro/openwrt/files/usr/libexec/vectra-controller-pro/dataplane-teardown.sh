@@ -85,8 +85,8 @@ delete_rules() {
 ICMP_MASK=/proc/sys/net/ipv4/icmp_ratemask
 ICMP_MARKER=/var/run/vectra-controller-pro/icmp-ratemask
 if [ -f "$ICMP_MARKER" ]; then
-	m="$(cat "$ICMP_MASK" 2>/dev/null)" && [ -n "$m" ] && echo $((m | 8)) > "$ICMP_MASK" 2>/dev/null
-	rm -f "$ICMP_MARKER"
+	m="$(cat "$ICMP_MASK" 2>/dev/null)" && [ -n "$m" ] && echo $((m | 8)) > "$ICMP_MASK" 2>/dev/null &&
+		rm -f "$ICMP_MARKER"
 fi
 
 MARK="$(tproxy_fwmark)"

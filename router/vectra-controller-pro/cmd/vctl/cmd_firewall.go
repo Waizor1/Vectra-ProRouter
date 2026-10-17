@@ -117,6 +117,12 @@ func firewallApply(args []string) error {
 		return fmt.Errorf("nft -f -: %w (%s)", err, out)
 	}
 	fmt.Println("applied")
+	// The ICMP mask follows the table now in place (firewall.RelaxesICMP).
+	if did, err := firewall.FollowICMPMask(firewall.RelaxesICMP(s)); err != nil {
+		fmt.Fprintf(os.Stderr, "icmp ratemask: %v\n", err)
+	} else if did != "" {
+		fmt.Println(did)
+	}
 	return nil
 }
 

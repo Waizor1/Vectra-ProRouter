@@ -272,8 +272,8 @@ func TestTheInternetKeepsTheICMPLimit(t *testing.T) {
 		lan   []string
 		scope string
 	}{
-		{"by the LAN's devices", []string{"br-lan", "br-guest"}, `oifname != { "br-lan", "br-guest" }`},
-		{"by the LAN's addresses when no device is known", nil, `ip daddr != @bypass4`},
+		{"by the LAN's devices", []string{"br-lan", "br-guest"}, `oifname != { "lo", "br-lan", "br-guest" }`},
+		{"by the LAN's addresses when no device is known", nil, `oifname != "lo" ip daddr != @bypass4`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s.LANDevices = tc.lan

@@ -93,9 +93,10 @@ func RestoreICMPMask() (string, error) {
 }
 
 // RestoreICMPMaskShell is RestoreICMPMask for a shell — the deadman, which
-// must work with the daemon gone. One line, no failure.
+// must work with the daemon gone. One line, no failure; the marker stays
+// while the bit could not be put back.
 func RestoreICMPMaskShell() string {
-	return fmt.Sprintf(`[ -f %[1]q ] && { m=$(cat %[2]q 2>/dev/null) && [ -n "$m" ] && echo $((m | %[3]d)) > %[2]q; rm -f %[1]q; } || true`,
+	return fmt.Sprintf(`[ -f %[1]q ] && { m=$(cat %[2]q 2>/dev/null) && [ -n "$m" ] && echo $((m | %[3]d)) > %[2]q && rm -f %[1]q; } || true`,
 		ICMPMaskMarker, ICMPRatemaskPath, icmpUnreachBit)
 }
 
