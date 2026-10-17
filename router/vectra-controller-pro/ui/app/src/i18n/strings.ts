@@ -1314,15 +1314,17 @@ export const S = {
   'ms.svc.none': ['Такого сервиса нет в списке роутера', 'The router has no such service', '路由器没有该服务'],
   'ms.svc.tag': ['сервис', 'service', '服务'],
   'ms.svc.missing': ['нет у роутера', 'not on the router', '路由器上没有'],
+  // The geo file's lists by what they hold (itdoginfo/allow-domains), pinned in
+  // test/geo-lists.test.ts: "inside"/"outside" is where the reader is, not the site.
   'svc.cat.geoblock': ['Сайты, закрытые для России', 'Sites closed to Russia', '对俄罗斯关闭的网站'],
-  'svc.cat.russia-outside': ['Недоступные из России', 'Unreachable from Russia', '在俄罗斯无法访问的网站'],
-  'svc.cat.russia-inside': ['Работают только из России', 'Work only from inside Russia', '仅在俄罗斯境内可用'],
+  'svc.cat.russia-outside': ['Работают только из России', 'Work only from inside Russia', '仅在俄罗斯境内可用'],
+  'svc.cat.russia-inside': ['Заблокированные в России — весь список', 'Blocked in Russia — full list', '在俄罗斯被封锁的网站（完整列表）'],
   'svc.cat.news': ['Новости', 'News', '新闻'],
   'svc.cat.anime': ['Аниме', 'Anime', '动漫'],
   'svc.cat.porn': ['Сайты 18+', 'Adult sites', '成人网站'],
   'svc.cat.category-ru': ['Российские сайты', 'Russian sites', '俄罗斯网站'],
   'svc.cat.category-gov-ru': ['Госсайты России', 'Russian government sites', '俄罗斯政府网站'],
-  'svc.cat.ukraine-inside': ['Работают только из Украины', 'Work only from inside Ukraine', '仅在乌克兰境内可用'],
+  'svc.cat.ukraine-inside': ['Заблокированные в Украине', 'Blocked in Ukraine', '在乌克兰被封锁的网站'],
   'svc.cat.block': ['Заблокированные в России', 'Blocked in Russia', '在俄罗斯被封锁的网站'],
   'ms.count': ['{n} из {max}', '{n} of {max}', '{n} / {max}'],
   'n.unsaved': [
