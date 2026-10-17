@@ -217,3 +217,22 @@ func TestTheDaemonTakesTheGeoFeedsSet(t *testing.T) {
 func (g *geoFeedStand) cfgFor(t *testing.T) agentcfg.Config {
 	return agentcfg.Config{XrayRenderPath: filepath.Join(t.TempDir(), "xray.json")}
 }
+
+// `vctl geo update` replaces a geoip.dat or geosite.dat only with one that
+// keeps every category of the file in use.
+func TestAManualGeoUpdateKeepsTheCategoriesInUse(t *testing.T) {
+	dir := t.TempDir()
+	cur, next := filepath.Join(dir, "geosite.dat"), filepath.Join(dir, "new.dat")
+	writeFeedFile(t, cur, string(geoFile("YOUTUBE", "CATEGORY-RU")))
+	writeFeedFile(t, next, string(geoFile("YOUTUBE")))
+	if err := keepsGeoCategories(next, cur); err == nil || !strings.Contains(err.Error(), "CATEGORY-RU") {
+		t.Fatalf("a category gone: %v", err)
+	}
+	writeFeedFile(t, next, string(geoFile("YOUTUBE", "CATEGORY-RU", "GEOBLOCK")))
+	if err := keepsGeoCategories(next, cur); err != nil {
+		t.Fatalf("a category added: %v", err)
+	}
+	if err := keepsGeoCategories(next, filepath.Join(dir, "extra.dat")); err != nil {
+		t.Fatalf("another asset is not judged: %v", err)
+	}
+}

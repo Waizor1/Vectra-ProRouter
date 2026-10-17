@@ -57,7 +57,9 @@ func (s Service) overlay(provider []string) []string {
 		}
 	}
 	for _, m := range cs.Names {
-		add(m)
+		if catalogNameUsable(m) {
+			add(m)
+		}
 	}
 	return out
 }

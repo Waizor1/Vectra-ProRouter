@@ -224,8 +224,8 @@ func planUserRules(providerRaw []byte, r UserRules, fleet catalog.Sites, inbound
 	// owner lists either way: the owner's choice wins. They are the
 	// catalog's to change, not the owner's to see in «Мои сайты».
 	owner := append(append([]sites.Site(nil), direct...), proxy...)
-	fleetDirect, _ := parseSites(fleet.Direct, owner, catalog.MaxSites, false)
-	fleetProxy, _ := parseSites(fleet.Proxy, append(owner, fleetDirect...), catalog.MaxSites, false)
+	fleetDirect, _ := parseSites(usableCatalogNames(fleet.Direct), owner, catalog.MaxSites, false)
+	fleetProxy, _ := parseSites(usableCatalogNames(fleet.Proxy), append(owner, fleetDirect...), catalog.MaxSites, false)
 
 	var top map[string]json.RawMessage
 	var doc struct {
@@ -289,6 +289,18 @@ func planUserRules(providerRaw []byte, r UserRules, fleet catalog.Sites, inbound
 	plan.rules = append(renderRules(direct, proxy, inboundTag, plan.res), renderRules(fleetDirect, fleetProxy, inboundTag, plan.res)...)
 	plan.res.Rules = len(plan.rules)
 	return plan, nil
+}
+
+// usableCatalogNames are the catalog's sites the router's geo file can carry
+// (catalogNameUsable).
+func usableCatalogNames(list []string) []string {
+	var out []string
+	for _, e := range list {
+		if catalogNameUsable(e) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // parseSites parses a list as the splice renders it: every entry through

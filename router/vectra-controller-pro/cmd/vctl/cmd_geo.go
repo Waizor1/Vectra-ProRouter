@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
+	"vectra-controller-pro/internal/geodat"
 
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/geo"
@@ -52,10 +55,32 @@ func geoUpdate(args []string) error {
 		return fmt.Errorf("xray reads PassWall2's geo files in %s (vectra-geodata is not installed); vctl does not replace them — install vectra-geodata", dir)
 	}
 	fmt.Printf("into %s\n", dir)
+	// Fetched beside the files in use and checked before it replaces one: a
+	// geoip.dat or geosite.dat must keep every category of the file it
+	// replaces (the operator config's raw upstream lists lack category-ru,
+	// private, geoip ru and telegram, which the provider's documents route
+	// by: xray would refuse the configuration at its next start). Provider
+	// routers keep their files current from the signed geo feed by themselves.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	stage, err := os.MkdirTemp(dir, ".update")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stage)
 	for _, a := range assets {
-		r := geo.UpdateOne(ctx, dir, a, hc)
+		r := geo.UpdateOne(ctx, stage, a, hc)
 		if r.Error != nil {
 			fmt.Printf("fail %s: %v\n", a.Filename, r.Error)
+			continue
+		}
+		if err := keepsGeoCategories(filepath.Join(stage, a.Filename), filepath.Join(dir, a.Filename)); err != nil {
+			fmt.Printf("refused %s: %v (the file in use stays)\n", a.Filename, err)
+			continue
+		}
+		if err := os.Rename(filepath.Join(stage, a.Filename), filepath.Join(dir, a.Filename)); err != nil {
+			fmt.Printf("fail %s: %v\n", a.Filename, err)
 			continue
 		}
 		state := "skip(hash-match)"
@@ -106,4 +131,21 @@ func assetsFromConfig(c *config.Config) []geo.Asset {
 		out = append(out, geo.Asset{Filename: e.Filename, URL: e.URL, ExpectedSHA256: e.SHA256})
 	}
 	return out
+}
+
+// keepsGeoCategories: a new geoip.dat or geosite.dat holds every category of
+// the file it would replace. Other assets, and a first file, are not judged.
+func keepsGeoCategories(next, current string) error {
+	if base := filepath.Base(current); base != "geoip.dat" && base != "geosite.dat" {
+		return nil
+	}
+	b, err := os.ReadFile(current)
+	if err != nil {
+		return nil
+	}
+	codes, err := geodat.Codes(b)
+	if err != nil {
+		return nil
+	}
+	return checkGeoCodes(next, codes)
 }

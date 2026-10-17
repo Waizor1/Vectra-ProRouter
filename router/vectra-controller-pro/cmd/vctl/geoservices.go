@@ -103,11 +103,15 @@ func (d *daemon) withRuntime(opts xray.SpliceOptions, providerRaw []byte) xray.S
 // of failing and keeping the router on its old one. A file that cannot be
 // read now judges nothing: the gate (`xray -test`) still does.
 func (d *daemon) withKnownServices(opts xray.SpliceOptions) xray.SpliceOptions {
-	if len(servicesOf(opts.Rules.Direct, opts.Rules.Proxy)) == 0 {
-		return opts
-	}
 	known, ok := geoServices(d.geoAssetDir())
 	if !ok {
+		xray.UseGeosites(nil) // not known now: the gate judges
+		return opts
+	}
+	// The catalog's geosite names follow the same file (xray/catalog.go);
+	// private is hidden from the owner, not missing from the file.
+	xray.UseGeosites(append(known, "private"))
+	if len(servicesOf(opts.Rules.Direct, opts.Rules.Proxy)) == 0 {
 		return opts
 	}
 	have := map[string]bool{}
@@ -125,6 +129,8 @@ func (d *daemon) withKnownServices(opts xray.SpliceOptions) xray.SpliceOptions {
 		}
 		return out
 	}
-	opts.Rules = xray.UserRules{Direct: keep(opts.Rules.Direct), Proxy: keep(opts.Rules.Proxy)}
+	// Only the lists change: a Connect router's lists keep Connect's parser
+	// and limit (r23 rebuilt UserRules here and dropped Connect).
+	opts.Rules.Direct, opts.Rules.Proxy = keep(opts.Rules.Direct), keep(opts.Rules.Proxy)
 	return opts
 }

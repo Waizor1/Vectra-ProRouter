@@ -166,3 +166,18 @@ func TestTheCatalogPicksTheAIDefaultLocations(t *testing.T) {
 		}
 	}
 }
+
+// withKnownServices drops a service the geo file lacks from the owner's lists
+// and keeps everything else of them — a Connect router's lists keep their
+// Connect parser and limit (r23 dropped the flag).
+func TestKnownServicesKeepTheConnectLists(t *testing.T) {
+	t.Cleanup(func() { xray.UseGeosites(nil) })
+	dir := t.TempDir()
+	writeFeedFile(t, filepath.Join(dir, "geosite.dat"), string(geoFile("YOUTUBE", "PRIVATE")))
+	d := &daemon{cfg: agentcfg.Config{GeoAssetDir: dir}}
+	opts := d.withKnownServices(xray.SpliceOptions{Rules: xray.UserRules{Connect: true,
+		Proxy: []string{"geosite:youtube", "geosite:gone", "example.com"}}})
+	if !opts.Rules.Connect || strings.Join(opts.Rules.Proxy, ",") != "geosite:youtube,example.com" {
+		t.Fatalf("rules %+v", opts.Rules)
+	}
+}

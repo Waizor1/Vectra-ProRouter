@@ -1,6 +1,7 @@
 package xray
 
 import (
+	"strings"
 	"sync/atomic"
 
 	"vectra-controller-pro/internal/catalog"
@@ -28,4 +29,39 @@ func ActiveCatalog() *catalog.Catalog {
 	c := catalog.Builtin()
 	activeCatalog.CompareAndSwap(nil, c)
 	return activeCatalog.Load()
+}
+
+// knownGeosites are the geosite categories of the router's geo file, lower
+// case (nil: not known). The catalog is one for every router, and xray
+// refuses a render that names a category its file lacks: a catalog's
+// geosite: name the file does not have is left out of the render, as a
+// service gone from «Мои сайты» is (cmd/vctl withKnownServices).
+var knownGeosites atomic.Pointer[map[string]bool]
+
+// UseGeosites tells the splice which geosite categories the router's geo
+// file has; nil: not known, every name is kept and `xray -test` judges.
+func UseGeosites(codes []string) {
+	if codes == nil {
+		knownGeosites.Store(nil)
+		return
+	}
+	m := make(map[string]bool, len(codes))
+	for _, c := range codes {
+		m[strings.ToLower(c)] = true
+	}
+	knownGeosites.Store(&m)
+}
+
+// catalogNameUsable: a catalog matcher the router's geo file can carry.
+func catalogNameUsable(m string) bool {
+	name, ok := strings.CutPrefix(strings.ToLower(m), "geosite:")
+	if !ok {
+		return true
+	}
+	known := knownGeosites.Load()
+	if known == nil {
+		return true
+	}
+	name, _, _ = strings.Cut(name, "@")
+	return (*known)[name]
 }

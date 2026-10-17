@@ -390,3 +390,26 @@ func TestTheCatalogsSitesComeAfterTheOwnersAndNeverOverrideThem(t *testing.T) {
 		t.Fatalf("catalog only: %+v", res.UserRules)
 	}
 }
+
+// The catalog is one for every router: a geosite name the router's geo file
+// lacks is left out of the render (xray would refuse it); unknown, kept.
+func TestACatalogGeositeTheRoutersFileLacksIsLeftOut(t *testing.T) {
+	t.Cleanup(func() { xray.UseGeosites(nil) })
+	doc := svcDocWith(t, `{"domain":["geosite:youtube"],"balancerTag":"BL-RU"},`,
+		providerAIAndGamesRule+`,{"domain":["geosite:youtube"],"balancerTag":"BL-RU"},`)
+	overlay := func() string {
+		_, r, _ := spliceServicesDoc(t, doc, xray.SpliceOptions{Services: map[string]string{"ai": "DE"}})
+		return strings.Join(svcRulesTo(r, "VCTL-SVC-AI")[0], " ")
+	}
+	if !strings.Contains(overlay(), "geosite:google-ai") {
+		t.Fatal("not known: the catalog's geosite is kept")
+	}
+	xray.UseGeosites([]string{"YOUTUBE", "Google-AI"})
+	if !strings.Contains(overlay(), "geosite:google-ai") {
+		t.Fatal("the file has it: kept")
+	}
+	xray.UseGeosites([]string{"youtube"})
+	if strings.Contains(overlay(), "geosite:google-ai") {
+		t.Fatal("the file lacks it: left out")
+	}
+}

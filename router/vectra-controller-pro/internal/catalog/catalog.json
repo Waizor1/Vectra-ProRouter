@@ -21,9 +21,10 @@
         "domain:midjourney.com", "domain:runwayml.com", "domain:pika.art", "domain:ideogram.ai",
         "domain:leonardo.ai", "domain:suno.com", "domain:suno.ai", "domain:udio.com", "domain:elevenlabs.io",
         "domain:cursor.com", "domain:cursor.sh", "domain:cursorapi.com", "domain:codeium.com", "domain:windsurf.com",
-        "domain:deepl.com", "domain:openrouter.ai", "domain:groq.com", "domain:replicate.com"
+        "domain:deepl.com", "domain:openrouter.ai", "domain:groq.com", "domain:replicate.com",
+        "geosite:google-ai"
       ],
-      "geosites": ["openai", "anthropic", "perplexity", "xai", "category-ai-!cn", "category-ai-chat-!cn"]
+      "geosites": ["google-ai", "openai", "anthropic", "perplexity", "xai", "category-ai-!cn", "category-ai-chat-!cn"]
     },
     "youtube": {},
     "tiktok": {},
