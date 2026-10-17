@@ -15,6 +15,11 @@
 //     (/etc/sysctl.d/95-vectra-tune.conf) that the boot applies again.
 //     vm.min_free_kbytes is never touched: the init script keeps it
 //     (take_memory_reserve), and nothing proved a lower one safe under Wi-Fi.
+//   - icmp_ratemask (r24, any router): net.ipv4.icmp_ratemask leaves out
+//     destination unreachable (6168 → 6160, over the kernel's own value
+//     only), so every QUIC attempt vctl refuses is answered and the app falls
+//     back to TCP at once; the kernel's per-peer limit answered 5 of a burst
+//     of 20 on 1111. The global ICMP limit still bounds every error.
 //   - packet_steering: a router with two cores or more has both take the
 //     network's receive work (network.@globals[0].packet_steering '1',
 //     applied by OpenWrt's own /etc/init.d/packet_steering: it writes the
@@ -73,6 +78,7 @@ import (
 const (
 	ItemZram             = "zram"
 	ItemSwappiness       = "swappiness"
+	ItemICMPRatemask     = "icmp_ratemask"
 	ItemVFSCachePressure = "vfs_cache_pressure"
 	ItemPacketSteering   = "packet_steering"
 	ItemFlowOffloading   = "flow_offloading"
@@ -143,11 +149,24 @@ const (
 	ZramStarted  = "started"
 )
 
-type sysctlSpec struct{ id, key, target string }
+// sysctlSpec is one sysctl the tune sets: to target, on a low-memory router
+// only unless anyRAM; with from, only over that value (the kernel's own) —
+// anything else there is someone's and stays.
+type sysctlSpec struct {
+	id, key, target, from string
+	anyRAM                bool
+}
 
 var sysctlSpecs = []sysctlSpec{
-	{ItemSwappiness, "vm.swappiness", "80"},
-	{ItemVFSCachePressure, "vm.vfs_cache_pressure", "200"},
+	{id: ItemSwappiness, key: "vm.swappiness", target: "80"},
+	{id: ItemVFSCachePressure, key: "vm.vfs_cache_pressure", target: "200"},
+	// r24: vctl refuses QUIC to proxied names with ICMP port unreachable so
+	// apps fall back to TCP at once; the kernel's per-peer ICMP limit (about
+	// six, then one a second) left 15 of a burst of 20 unanswered on 1111 —
+	// the silent wait the refusal is there to end. Destination unreachable
+	// (type 3) leaves the per-peer mask: 6168 → 6160; the global limit
+	// (icmp_msgs_per_sec, 1000/s) still bounds every ICMP error.
+	{id: ItemICMPRatemask, key: "net.ipv4.icmp_ratemask", target: "6160", from: "6168", anyRAM: true},
 }
 
 // Env is where the router keeps what the tune reads and changes; tests point
@@ -481,7 +500,7 @@ func sysctlItem(f Facts, low bool, s sysctlSpec) Item {
 	}
 	user, owned := f.UserSysctl[s.key]
 	switch {
-	case !low:
+	case !low && !s.anyRAM:
 		it.State, it.Reason = Skipped, ReasonEnoughRAM
 	case !readable:
 		it.State, it.Reason = Skipped, ReasonUnreadable
@@ -489,6 +508,8 @@ func sysctlItem(f Facts, low bool, s sysctlSpec) Item {
 		it.State, it.Source = UserSet, user.File
 	case live == s.target:
 		it.State = appliedOr(f.ours(s.id))
+	case s.from != "" && live != s.from:
+		it.State = UserSet // not the kernel's own value: someone set it
 	default:
 		it.State = Pending
 	}

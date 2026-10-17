@@ -1,5 +1,21 @@
 # Changelog
 
+## vctl 0.7.0-r25 — every refused QUIC attempt is answered
+
+r24 refuses QUIC to proxied names with ICMP port unreachable, so apps fall
+back to TCP at once. Live on 1111 (r24, 2026-10-18): 3 of 3 single attempts
+refused at once, but of a burst of 20 only 5 were answered — the kernel's
+per-peer ICMP limit (about six, then one a second) left 15 waiting out their
+QUIC timeout, the very stall r24 set out to end.
+
+### Changed
+- The tune («Разгон роутера») has an eighth item, `icmp_ratemask`, on any
+  router: `net.ipv4.icmp_ratemask` without destination unreachable (the
+  kernel's 6168 → 6160), only over the kernel's own value (anything else is
+  someone's and stays), backed up and put back by Undo. The global ICMP limit
+  (icmp_msgs_per_sec, 1000/s) still bounds every ICMP error. The router UI
+  does not name it (housekeeping, like the leftovers in RAM).
+
 ## vctl 0.7.0-r24 — «Нейросети» are AI only; a catalog and geo lists we change without a release
 
 On 2026-10-17 a PC behind 1111 downloaded Star Citizen at 1.6 MB/s and Steam at
