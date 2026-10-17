@@ -268,6 +268,17 @@ type Spec struct {
 	// time instead of choking xray, the node and the connection table.
 	// 0 = off.
 	AdmitRate, AdmitBurst int
+	// RefuseQUIC: a LAN device's UDP to port 443 of a FakeDNS address
+	// (CarriedV4) — QUIC, HTTP/3 to a name a rule sends through the tunnel —
+	// is refused at once with ICMP port unreachable. Every provider bridge
+	// carries VLESS with xtls-rprx-vision, which refuses UDP/443, and the
+	// provider blocks Meta's UDP outright: dropped in silence, an app waited
+	// out its QUIC timeout (seconds) before falling back to TCP (YouTube,
+	// Instagram «иногда тупят», 1111, 2026-10-17). Only FakeDNS addresses:
+	// they stand for proxied names alone, while xray may send UDP/443 to a
+	// real address direct (the owner's direct sites, a direct shunt, a
+	// device's own WireGuard on 443). No FakeDNS pool, no rule.
+	RefuseQUIC bool
 	// AdmitTotalRate/AdmitTotalBurst: new connections per second into xray
 	// from every device together, and the burst — the router's whole door,
 	// sized to what its CPU carries (each is a Reality handshake to a node).
@@ -454,6 +465,8 @@ func PortForwardDirectInTable(s Spec) bool { return s.DirectCtMark != 0 && !s.Ki
 const (
 	CounterP2PDirect = "vctl_p2p_direct"
 	CounterAdmitHeld = "vctl_admit_held"
+	// CounterQUICRefused counts the LAN's QUIC refused (Spec.RefuseQUIC).
+	CounterQUICRefused = "vctl_quic_refused"
 	// CounterAdmitTotalHeld counts new connections held at the router's
 	// whole door (Spec.AdmitTotalRate).
 	CounterAdmitTotalHeld = "vctl_admit_total_held"
@@ -465,9 +478,11 @@ const (
 	CounterIPv6Refused = "vctl_ipv6_refused"
 	// A device is let less than a node takes, so one device can never fill a
 	// node's bucket: the watchdog's confirm and the rescue's probes dial the
-	// same node (review of r23).
-	defaultAdmitRate  = 15
-	defaultAdmitBurst = 60
+	// same node (review of r23). r24: 15/60 held an app opening a feed — 37 of
+	// 100 connections from one device waited over 2 s on 1111, 3517 held in
+	// 20 h; 30/120 stays under a node's 40/160.
+	defaultAdmitRate  = 30
+	defaultAdmitBurst = 120
 	defaultPaceRate   = 40
 	defaultPaceBurst  = 160
 	// A device asks A, AAAA and HTTPS for every name: a heavy page is a few
@@ -502,6 +517,7 @@ func DefaultSpec(tproxyPort, fwmark int) Spec {
 		ProxySetV6:   "vctl_proxy6",
 		DirectCtMark: DefaultDirectCtMark,
 		P2PBypass:    true,
+		RefuseQUIC:   true,
 		AdmitRate:    defaultAdmitRate,
 		AdmitBurst:   defaultAdmitBurst,
 		PaceRate:     defaultPaceRate,
@@ -584,6 +600,9 @@ table inet {{ .TableName }} {
 {{- end }}
 {{- if .RefuseV6 }}
   counter {{ .CounterIPv6Refused }} { }
+{{- end }}
+{{- if and .RefuseQUIC .CarriedPools }}
+  counter {{ .CounterQUICRefused }} { }
 {{- end }}
 {{- if .AdmitRate }}
   counter {{ .CounterAdmitHeld }} { }
@@ -711,6 +730,11 @@ table inet {{ .TableName }} {
     iif != "lo" ct state new ct original packets 1 meta l4proto tcp tcp dport >= 1024 tcp dport != { 4244, 5222-5223, 5228, 5242, 8080, 8443 } update @vctl_p2p_rate6 { ip6 saddr limit rate over 4/second burst 24 packets } update @vctl_p2p6 { ip6 saddr timeout 5m } ct mark set ct mark or 0x{{ printf "%x" .DirectCtMark }} counter name "{{ .CounterP2PDirect }}" return
     iif != "lo" ct state new ct original packets 1 meta l4proto udp udp dport >= 1024 udp dport != { 3478-3497, 5222-5223, 8801-8810, 16384-16402, 19302-19309, 50000-65535 } update @vctl_p2p_rate6 { ip6 saddr limit rate over 4/second burst 24 packets } update @vctl_p2p6 { ip6 saddr timeout 5m } ct mark set ct mark or 0x{{ printf "%x" .DirectCtMark }} counter name "{{ .CounterP2PDirect }}" return
 {{- end }}
+{{- end }}
+{{- if and .RefuseQUIC .CarriedPools }}
+    # QUIC to a proxied name is refused at once (Spec.RefuseQUIC): the
+    # bridges refuse UDP/443, an answer lets the app fall back to TCP now.
+    iif != "lo" ip daddr { {{ join .CarriedPools ", " }} } meta l4proto udp udp dport 443 counter name "{{ .CounterQUICRefused }}" reject with icmpx port-unreachable
 {{- end }}
 {{- if .AdmitRate }}
     # A device's storm waits at the door (Spec.AdmitRate).
@@ -1030,6 +1054,7 @@ type tmplData struct {
 	CounterDirectNew      string
 	CounterP2PDirect      string
 	CounterAdmitHeld      string
+	CounterQUICRefused    string
 	CounterAdmitTotalHeld string
 	CounterPaced          string
 	CounterDNSHeld        string
@@ -1105,6 +1130,7 @@ func Render(s Spec) (string, error) {
 		CounterDirectNew:         CounterDirectNew,
 		CounterP2PDirect:         CounterP2PDirect,
 		CounterAdmitHeld:         CounterAdmitHeld,
+		CounterQUICRefused:       CounterQUICRefused,
 		CounterAdmitTotalHeld:    CounterAdmitTotalHeld,
 		CounterPaced:             CounterPaced,
 		CounterDNSHeld:           CounterDNSHeld,

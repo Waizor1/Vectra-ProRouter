@@ -1,5 +1,77 @@
 # Changelog
 
+## vctl 0.7.0-r24 — «Нейросети» are AI only; a catalog and geo lists we change without a release
+
+On 2026-10-17 a PC behind 1111 downloaded Star Citizen at 1.6 MB/s and Steam at
+0.7 MB/s while the router idled: every game went through the Kazakh exit of
+«Нейросети» (~80 Mbit/s for everything), because the provider's every location
+has one rule of 41 names to BL-MAIN — AI services and games (Steam, Epic, Riot,
+Blizzard, Star Citizen) — and vctl took the rule that names chatgpt.com whole as
+the AI service. The same day showed the router's geo lists frozen at install
+(at least 73 days old on 1111): only native routing refreshed its own.
+
+### Fixed
+- **«Нейросети» take only AI names.** The provider's rule still decides the
+  service's path; of its list the service keeps only what the catalog knows
+  as AI (domain:/full:/plain hosts under a known AI host, known geosites).
+  Games and everything else in that rule stay on the provider's own path
+  (BL-MAIN). itdog's `geosite:google-ai` joins the AI names.
+- **Geo lists stay current in provider routing** (the geo feed, below).
+- `update_xray_assets` no longer writes the operator config's raw upstream
+  files into the running directory (they lack category-ru, private, geoip ru
+  and telegram: xray would refuse the configuration at its next start); it
+  asks the geo feed now. `vctl geo update` replaces geoip.dat/geosite.dat only
+  with a file that keeps every category of the one in use.
+- A Connect router with a geosite service in «Мои сайты» lost the Connect
+  parser and its 300-site limit at every render (withKnownServices rebuilt the
+  lists without `Connect`).
+
+### Added
+- **The catalog** (`internal/catalog`, spec
+  docs/superpowers/specs/2026-10-17-vctl-catalog.md): the AI names, where
+  «Нейросети» go by default (`aiDefault.exits`, the built-in one: 🇷🇺🇰🇿 then
+  🇰🇿), sites for every router (after the owner's own: the owner wins), and
+  how often to ask. Built in, and refreshed from `catalog.json` + `.sig` in
+  the feed's channel, signed with the key that signs the feed's Packages
+  (an OpenWrt key in /etc/opkg/keys is no authority for routing), taken only
+  with a higher serial. The daemon asks at its first poll and every
+  refreshHours ±10 % on the control plane's marked path; the serial is in the
+  render key. A catalog geosite the router's geo file lacks is left out.
+  `vctl catalog show | refresh | reset | check <file>`;
+  `scripts/publish-vctl-catalog.sh` signs on the build host and publishes.
+- **The geo feed**: `geo.json` (signed like the catalog) names merged
+  geosite.dat/geoip.dat built on the build host (tools/geobuild). Two minutes
+  after a start and every 6 h ±10 % the daemon fetches a newer set into a
+  staging directory, checks size, sha256, the manifest's categories and every
+  category of the files in use, runs the running render through `xray -test`
+  against it, then renames it into /etc/vectra-controller-pro/geo (manifest
+  last) and renders with it (the set's serial is in the render key). A
+  package upgrade never rolls these files back. Native and PassWall routing
+  keep their own files.
+- publish-pro-feed.sh keeps the channel's catalog and geo set on a full rebuild.
+- `status.catalog` (router UI contract): the catalog's serial and source and
+  the geo feed's set in use.
+
+### YouTube and Instagram «иногда тупят» (1111, 2026-10-17)
+- **QUIC into the tunnel is refused at once.** Every provider bridge is VLESS
+  with xtls-rprx-vision, which refuses UDP/443, and the provider blocks Meta's
+  UDP: QUIC went unanswered and apps waited out their QUIC timeout before TCP.
+  The LAN's UDP/443 that would go into xray is now refused with ICMP port
+  unreachable (counter `vctl_quic_refused`), after the kernel's own direct
+  decisions — QUIC to the Russian networks is untouched — and before the door.
+  agent.json `quicThrough` keeps QUIC for a provider whose nodes carry it.
+- **The device door at 30/s, burst 120** (was 15/60: 3517 new connections held
+  in 20 h, 37 of 100 from one device waited over 2 s); still under a node's
+  40/160 pace.
+- **Fewer xray restarts.** A render byte for byte the one xray runs (same geo
+  files) is not checked or written again and restarts nothing. The daemon's
+  own subscription refresh that changes no node (the same outbounds) is held
+  for the router's night window (03:00–06:00) or 12 h at most; changed nodes or
+  credentials, a router out of the tunnel, and refreshes someone asked for
+  apply at once.
+- The built-in catalog covers the AI hosts that went around «Нейросети»:
+  ChatGPT voice and telemetry, Claude's own domains, Gemini web.
+
 ## vctl 0.7.0-r23 — the router wears its owner's brand
 
 One package, several VPN services: the router's name, bot, support, Wi-Fi

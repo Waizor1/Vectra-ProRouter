@@ -74,6 +74,7 @@ func cmdRoute(args []string) error {
 	if err != nil {
 		return err
 	}
+	useCatalog(cfg)
 	return routeProvider(os.Stdout, cfg, *entry, *apply)
 }
 

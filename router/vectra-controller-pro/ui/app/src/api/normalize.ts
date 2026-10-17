@@ -127,6 +127,7 @@ const SPECS: Record<ReadMethod, Spec> = {
       },
     ],
     tune: ['?', { enabled: 'b', profile: 's', items: [{ id: 'T', state: 's', value: 's', target: 's', reason: 's' }] }],
+    catalog: ['?', { serial: 'n', source: 's', geoSerial: 'n' }],
   },
   balancers: {
     apiReachable: 'b',

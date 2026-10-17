@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -102,6 +103,11 @@ type signedFeedStand struct {
 	index []byte // Packages as served; Packages.gz is it, packed
 	sig   []byte // Packages.sig as served
 	hits  map[string]int
+	// catalog and catalogSig are the channel's catalog.json and its
+	// signature (catalog_test.go); nil: none published.
+	catalog, catalogSig []byte
+	// extra are other files of the channel (geo_feed_test.go), by path.
+	extra map[string][]byte
 
 	conf, keys, release string
 
@@ -193,8 +199,26 @@ func (s *signedFeedStand) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.hits[r.URL.Path]++
 	index, sig := s.index, s.sig
+	cat, catSig := s.catalog, s.catalogSig
+	extra, isExtra := s.extra[r.URL.Path]
 	s.mu.Unlock()
+	if isExtra {
+		_, _ = w.Write(extra)
+		return
+	}
 	switch r.URL.Path {
+	case path.Dir(feedPath) + "/catalog.json":
+		if cat == nil {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(cat)
+	case path.Dir(feedPath) + "/catalog.json.sig":
+		if catSig == nil {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(catSig)
 	case feedPath + "/Packages":
 		_, _ = w.Write(index)
 	case feedPath + "/Packages.gz":

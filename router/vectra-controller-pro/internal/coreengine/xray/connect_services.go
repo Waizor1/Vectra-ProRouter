@@ -156,7 +156,7 @@ func connectServicePathIn(rules []map[string]json.RawMessage, v *xrayview.View, 
 	if namesService(rules, s) {
 		return servicePathOf{}, false
 	}
-	p := servicePathOf{domains: s.withExtra(s.Domains), ips: s.IPs}
+	p := servicePathOf{domains: s.overlay(s.Domains), ips: s.IPs}
 	if target, balancer, found := catchAllRule(rules); found {
 		p.target, p.isBalancer = target, balancer
 	} else if v.Default != nil && v.Default.Tag != "" {

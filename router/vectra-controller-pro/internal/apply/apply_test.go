@@ -298,3 +298,34 @@ func TestApplyRecordsTheOwnersSites(t *testing.T) {
 		}
 	}
 }
+
+// A render byte for byte the one xray runs is neither checked nor written
+// again, and asks no restart (r24): the document is still taken.
+func TestApplyLeavesTheRunningRenderAloneWhenItIsTheSame(t *testing.T) {
+	h := newHarness(t)
+	first, err := h.a.Apply(context.Background(), providerFixture(t), "", false)
+	if err != nil || !first.Changed || len(h.written) != 1 {
+		t.Fatalf("first apply: %+v %v", first, err)
+	}
+	running := h.written[0]
+	h.a.CurrentXray = func() ([]byte, error) { return running, nil }
+	calls := h.validator.called
+	// The same render from a document with other bytes (spacing).
+	doc := append(append([]byte(nil), providerFixture(t)...), '\n', ' ')
+	res, err := h.a.Apply(context.Background(), doc, first.AppliedDigest, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed || !res.RenderUnchanged || len(h.written) != 1 || h.validator.called != calls {
+		t.Fatalf("same render: %+v written %d tests %d->%d", res, len(h.written), calls, h.validator.called)
+	}
+	if b, _ := os.ReadFile(h.a.ProviderPath); string(b) != string(doc) {
+		t.Fatal("the document was not taken")
+	}
+	// xray runs another render (or other geo files: nil): applied as before.
+	h.a.CurrentXray = func() ([]byte, error) { return nil, nil }
+	res, err = h.a.Apply(context.Background(), providerFixture(t), res.AppliedDigest, true)
+	if err != nil || !res.Changed || len(h.written) != 2 {
+		t.Fatalf("not the running one: %+v %v", res, err)
+	}
+}

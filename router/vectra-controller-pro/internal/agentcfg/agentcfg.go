@@ -51,8 +51,11 @@ type Config struct {
 	// The router UI's files (internal/localctl). Unset, they live next to
 	// statePath (persistent) and statusPath (tmpfs) — on a router exactly the
 	// localctl defaults, and in a test wherever the test put its state.
-	OverridesPath    string `json:"overridesPath,omitempty"`
-	EntriesPath      string `json:"entriesPath,omitempty"`
+	OverridesPath string `json:"overridesPath,omitempty"`
+	EntriesPath   string `json:"entriesPath,omitempty"`
+	// CatalogPath is the downloaded catalog (internal/catalog), its
+	// signature next to it; none: the built-in one.
+	CatalogPath      string `json:"catalogPath,omitempty"`
 	EntriesIndexPath string `json:"entriesIndexPath,omitempty"`
 	UISocketPath     string `json:"uiSocketPath,omitempty"`
 
@@ -86,7 +89,11 @@ type Config struct {
 	// second (UCI admit_rate, pace_rate; '0' switches one off); nil: the
 	// product's (firewall.DefaultSpec).
 	AdmitRate *int `json:"admitRate,omitempty"`
-	PaceRate  *int `json:"paceRate,omitempty"`
+	// QUICThrough keeps QUIC into the tunnel (UCI refuse_quic '0'): for a
+	// provider whose nodes carry UDP/443. Off by default: the fleet's bridges
+	// refuse it (firewall.Spec.RefuseQUIC).
+	QUICThrough bool `json:"quicThrough,omitempty"`
+	PaceRate    *int `json:"paceRate,omitempty"`
 	// AdmitTotalRate opens the router's whole door, new connections a second
 	// into xray from every device together (UCI admit_total_rate); nil or 0:
 	// off.
@@ -201,6 +208,9 @@ func (c *Config) Defaults() {
 	}
 	if c.EntriesPath == "" {
 		c.EntriesPath = filepath.Join(persistent, filepath.Base(localctl.DefaultEntriesPath))
+	}
+	if c.CatalogPath == "" {
+		c.CatalogPath = filepath.Join(persistent, "catalog.json")
 	}
 	if c.EntriesIndexPath == "" {
 		c.EntriesIndexPath = filepath.Join(persistent, filepath.Base(localctl.DefaultEntriesIndexPath))

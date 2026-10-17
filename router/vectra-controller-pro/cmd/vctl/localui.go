@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 	"vectra-controller-pro/internal/vault"
@@ -790,7 +791,8 @@ func (d *daemon) renderKey(opts xray.SpliceOptions) string {
 	// And the provider guard the render passed (xray/provider_guard.go): a
 	// render made before r12 kept the provider's own log block and api, so
 	// it is redone once, at start, before xray comes up.
-	return k + ";geo=" + d.geoAssetDir() + ";guard=1"
+	// And the catalog it applied (catalog.go): a newer catalog renders again.
+	return k + ";geo=" + d.geoAssetDir() + d.geoFeedKey() + ";guard=1;catalog=" + strconv.FormatInt(xray.ActiveCatalog().Serial, 10)
 }
 
 // resumeRender puts back, after a reboot, the render the router ran before it.

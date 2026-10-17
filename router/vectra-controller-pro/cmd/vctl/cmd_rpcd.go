@@ -97,10 +97,11 @@ const rpcdAgentConfig = "/var/run/vectra-controller-pro/agent.json"
 // rpcdConfig loads the daemon's own paths; before the daemon ever started,
 // the defaults are the right ones anyway.
 func rpcdConfig() agentcfg.Config {
-	if c, err := agentcfg.Load(rpcdAgentConfig); err == nil {
-		return c
+	c, err := agentcfg.Load(rpcdAgentConfig)
+	if err != nil {
+		c, _ = agentcfg.Parse([]byte(`{"controlUrl":"https://api.vectra-pro.net"}`))
 	}
-	c, _ := agentcfg.Parse([]byte(`{"controlUrl":"https://api.vectra-pro.net"}`))
+	useCatalog(c) // what the services the UI shows match
 	return c
 }
 
@@ -213,6 +214,7 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 		return out
 	}
 	env := uiapi.RouterEnv(cfg, controllerVersion())
+	env.RenderGeoDir = rpcdGeoDir(cfg)
 	switch method {
 	case "status":
 		in := rpcdGather(ctx, env, uiapi.NeedStatus)

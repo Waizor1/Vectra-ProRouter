@@ -165,5 +165,10 @@
         "reason": null
       }
     ]
+  },
+  "catalog": {
+    "serial": 2026101801,
+    "source": "built-in",
+    "geoSerial": 1792273588
   }
 }

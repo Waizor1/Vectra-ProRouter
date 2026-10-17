@@ -155,8 +155,11 @@ func contractInputs(t *testing.T) uiapi.Inputs {
 			{ID: tune.ItemPacketSteering, State: tune.Already, Value: strp("1"), Target: "1"},
 			{ID: tune.ItemFlowOffloading, State: tune.Applied, Value: strp("1"), Target: "1"},
 		}},
+		Catalog: &uiapi.CatalogView{Serial: 2026101801, Source: "built-in", GeoSerial: int64p(1792273588)},
 	}
 }
+
+func int64p(v int64) *int64 { return &v }
 
 func strp(s string) *string { return &s }
 

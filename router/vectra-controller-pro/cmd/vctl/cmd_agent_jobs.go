@@ -339,6 +339,9 @@ func (d *daemon) jobRefreshSubscriptions(ctx context.Context, job controlplane.J
 	if err != nil {
 		return d.submitFailure(ctx, job, err.Error())
 	}
+	// A refresh asked for (Connect «Обновить подписку», the panel) asks the
+	// catalog and the geo feed too, at the next poll.
+	d.nextCatalogRefresh, d.nextGeoFeed = time.Now(), time.Now()
 
 	result := map[string]interface{}{
 		"changed":         res.Changed,
@@ -357,20 +360,33 @@ func (d *daemon) jobRefreshSubscriptions(ctx context.Context, job controlplane.J
 // the refresh job's work, and the daemon's own (maybeRefreshSubscription). A
 // failure installs nothing: what runs keeps running.
 func (d *daemon) refreshSubscription(ctx context.Context) (apply.ApplyResult, map[string]interface{}, error) {
+	res, meta, _, err := d.refreshSubscriptionHold(ctx, time.Time{})
+	return res, meta, err
+}
+
+// refreshSubscriptionHold is refreshSubscription; with a non-zero now (the
+// daemon's own refresh) a document that changes no node may be held for a
+// quiet moment instead (held, subscription_quiet.go). A refresh asked for
+// passes the zero time: applied at once, and a held document is dropped.
+func (d *daemon) refreshSubscriptionHold(ctx context.Context, now time.Time) (apply.ApplyResult, map[string]interface{}, bool, error) {
 	cfg, err := d.loadDesiredConfig()
 	if err != nil {
-		return apply.ApplyResult{}, nil, fmt.Errorf("refresh: %w", err)
+		return apply.ApplyResult{}, nil, false, fmt.Errorf("refresh: %w", err)
 	}
 	d.desired = cfg
 	d.rebuildApplier()
 
 	providerRaw, meta, err := d.fetchProviderDocument(ctx, cfg)
 	if err != nil {
-		return apply.ApplyResult{}, meta, fmt.Errorf("refresh: %w", err)
+		return apply.ApplyResult{}, meta, false, fmt.Errorf("refresh: %w", err)
 	}
+	if !now.IsZero() && d.holdForQuiet(providerRaw, now) {
+		return apply.ApplyResult{Noop: true}, meta, true, nil
+	}
+	d.pendingDoc, d.pendingSince = nil, time.Time{}
 	res, err := d.applyProvider(ctx, providerRaw, false)
 	if err != nil {
-		return res, meta, fmt.Errorf("apply refreshed config: %w", err)
+		return res, meta, false, fmt.Errorf("apply refreshed config: %w", err)
 	}
 	if res.Changed {
 		d.nodeCount = countProviderOutbounds(providerRaw)
@@ -378,7 +394,7 @@ func (d *daemon) refreshSubscription(ctx context.Context) (apply.ApplyResult, ma
 			_ = d.sup.Reload(d.supCtx)
 		}
 	}
-	return res, meta, nil
+	return res, meta, false, nil
 }
 
 // The daemon refreshes its subscription by itself as well: the provider
@@ -416,7 +432,7 @@ func (d *daemon) maybeRefreshSubscription(ctx context.Context, now time.Time) {
 	if now.Before(d.nextSubscriptionRefresh) {
 		return
 	}
-	res, _, err := d.refreshSubscription(ctx)
+	res, _, held, err := d.refreshSubscriptionHold(ctx, now)
 	if err != nil {
 		d.nextSubscriptionRefresh = now.Add(subscriptionRetryAfter)
 		logging.L().Warn("the subscription's own refresh failed; what runs keeps running", "err", err.Error(),
@@ -424,7 +440,11 @@ func (d *daemon) maybeRefreshSubscription(ctx context.Context, now time.Time) {
 		return
 	}
 	d.nextSubscriptionRefresh = now.Add(subscriptionRefreshEvery)
-	logging.L().Info("refreshed the subscription", "changed", res.Changed, "digest", res.AppliedDigest)
+	if held {
+		logging.L().Info("the subscription changed no node; its document is held for a quiet moment", "since", d.pendingSince.Format(time.RFC3339))
+		return
+	}
+	logging.L().Info("refreshed the subscription", "changed", res.Changed, "unchanged", res.RenderUnchanged, "digest", res.AppliedDigest)
 	if err := d.persist(); err != nil {
 		logging.L().Warn("persist state after the subscription's own refresh", "err", err.Error())
 	}
@@ -577,39 +597,32 @@ func (d *daemon) jobUpdateAssets(ctx context.Context, job controlplane.Job) erro
 	case d.passwallMode():
 		return d.submitFailure(ctx, job, "update_assets: with route_source 'passwall' xray reads PassWall2's geo files; vctl does not replace them")
 	}
-	dir := d.runningAssetDir()
+	// Provider routing takes its geo files from the signed geo feed only
+	// (geo_feed.go): the operator config's raw upstream URLs lack the
+	// categories the provider's documents route by (category-ru, private,
+	// geoip ru and telegram), and a file without them makes xray refuse the
+	// configuration. The job asks the feed now.
+	c, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	client := catalogHTTPClient()
+	m, _, _, _, err := fetchGeoManifest(c, func(ctx context.Context, u string, max int64) ([]byte, error) {
+		return fetchHTTPSWith(ctx, client, u, max)
+	})
 	switch {
-	case dir == config.LegacyGeoAssetDir:
-		return d.submitFailure(ctx, job, "update_assets: xray reads PassWall2's geo files in "+dir+" (vectra-geodata is not installed); vctl does not replace them — install vectra-geodata")
-	case dir != config.DefaultGeoAssetDir:
-		// The directory is the operator config's to name, and the files are
-		// written as root: anywhere else — /etc/crontabs, with an asset
-		// called "root" — the panel's geo update would be a shell on the
-		// router.
-		return d.submitFailure(ctx, job, "update_assets: vctl writes geo data only into its own directory "+config.DefaultGeoAssetDir+"; the config names "+dir)
+	case errors.Is(err, errHTTPNotFound):
+		return d.submitFailure(ctx, job, "update_assets: the channel publishes no geo set (geo.json); nothing to update")
+	case err != nil:
+		return d.submitFailure(ctx, job, "update_assets: the geo feed: "+err.Error())
+	case m.Serial <= d.geoFeedSerial:
+		return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"geoFeed": "current", "serialInUse": d.geoFeedSerial})
 	}
-	cfg, err := d.loadDesiredConfig()
-	if err != nil {
-		return d.submitFailure(ctx, job, "update_assets: "+err.Error())
-	}
-	hc := &http.Client{Timeout: 60 * time.Second}
-	results := map[string]interface{}{}
-	updated := 0
-	for _, a := range geoAssets(cfg) {
-		r := geo.UpdateOne(ctx, dir, a, hc)
-		if r.Error != nil {
-			results[a.Filename] = map[string]interface{}{"error": r.Error.Error()}
-			continue
-		}
-		results[a.Filename] = map[string]interface{}{"updated": r.Updated, "sha256": r.SHA256, "bytes": r.Bytes}
-		if r.Updated {
-			updated++
-		}
-	}
-	if updated > 0 && d.supStarted {
-		_ = d.sup.Reload(d.supCtx)
-	}
-	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"assets": results, "updatedCount": updated, "assetDir": dir})
+	// Asked: even a set refused before is fetched and checked again. The
+	// download, the checks and xray -test run beside the loop; the result is
+	// the router's next check-in (rulesAssets) and its log.
+	d.geoFeedRefused.Store(0)
+	d.startGeoFeedNow()
+	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"geoFeed": "started", "async": true,
+		"serial": m.Serial, "serialInUse": d.geoFeedSerial})
 }
 
 // jobUpdateNativeGeo starts the native route policy's geo update now: its
@@ -1184,6 +1197,9 @@ func withLoadGuards(spec firewall.Spec, ac agentcfg.Config) firewall.Spec {
 	if ac.NoP2PBypass {
 		spec.P2PBypass = false
 	}
+	if ac.QUICThrough {
+		spec.RefuseQUIC = false
+	}
 	if v := ac.AdmitRate; v != nil && *v >= 0 {
 		spec.AdmitRate, spec.AdmitBurst = *v, 4**v
 	}
@@ -1233,6 +1249,12 @@ var updateHTTPClient = func() *http.Client { return &http.Client{Timeout: 120 * 
 // redirect to plain http is refused, not followed), and anything but a 200
 // refused.
 func getHTTPS(ctx context.Context, rawURL string) (*http.Response, error) {
+	return getHTTPSWith(ctx, updateHTTPClient(), rawURL)
+}
+
+// getHTTPSWith is getHTTPS over client (the catalog's: on the control plane's
+// marked path, so it never loops through xray).
+func getHTTPSWith(ctx context.Context, client *http.Client, rawURL string) (*http.Response, error) {
 	if err := requireHTTPS(rawURL); err != nil {
 		return nil, err
 	}
@@ -1240,9 +1262,13 @@ func getHTTPS(ctx context.Context, rawURL string) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := subscription.HTTPSOnlyRedirects(updateHTTPClient()).Do(req)
+	resp, err := subscription.HTTPSOnlyRedirects(client).Do(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		resp.Body.Close()
+		return nil, errHTTPNotFound
 	}
 	if resp.StatusCode != 200 {
 		resp.Body.Close()
@@ -1251,10 +1277,19 @@ func getHTTPS(ctx context.Context, rawURL string) (*http.Response, error) {
 	return resp, nil
 }
 
+// errHTTPNotFound is a 404: for the catalog and the geo feed, nothing is
+// published there (yet) — not a fault to retry.
+var errHTTPNotFound = errors.New("http 404")
+
 // fetchHTTPS reads an https URL whole with getHTTPS; an answer longer than max
 // is refused, not cut.
 func fetchHTTPS(ctx context.Context, rawURL string, max int64) ([]byte, error) {
-	resp, err := getHTTPS(ctx, rawURL)
+	return fetchHTTPSWith(ctx, updateHTTPClient(), rawURL, max)
+}
+
+// fetchHTTPSWith is fetchHTTPS over client.
+func fetchHTTPSWith(ctx context.Context, client *http.Client, rawURL string, max int64) ([]byte, error) {
+	resp, err := getHTTPSWith(ctx, client, rawURL)
 	if err != nil {
 		return nil, err
 	}

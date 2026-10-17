@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"vectra-controller-pro/internal/catalog"
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/sites"
 )
@@ -81,6 +82,9 @@ type UserRulesResult struct {
 	// are not sites, repeat another, or are past sites.Max — only an overrides
 	// file edited by hand has any.
 	Direct, Proxy, Dropped int
+	// FleetDirect and FleetProxy count the catalog's sites rendered after
+	// the owner's.
+	FleetDirect, FleetProxy int
 	// DirectVia is the freedom outbound direct sites leave through;
 	// DirectAdded when the splice appended it (DirectTag).
 	DirectVia   string
@@ -113,6 +117,9 @@ func (r UserRulesResult) Describe() string {
 			kind = "balancer"
 		}
 		s += fmt.Sprintf("; %d through the VPN via %s %s", r.Proxy, kind, r.ProxyVia)
+	}
+	if r.FleetDirect+r.FleetProxy > 0 {
+		s += fmt.Sprintf("; the catalog's sites after them: %d direct, %d through the VPN", r.FleetDirect, r.FleetProxy)
 	}
 	if r.SniffingChanged {
 		s += "; tproxy sniffing http,tls,quic with routeOnly, for them"
@@ -200,7 +207,7 @@ func (o providerOutbound) dials() bool {
 // renders the rules. It never refuses a document for them: a list with
 // nowhere safe to go is left out (res.Skipped), so a router's own choices
 // can never keep the provider's next config from being installed.
-func planUserRules(providerRaw []byte, r UserRules, inboundTag string) (rulesPlan, error) {
+func planUserRules(providerRaw []byte, r UserRules, fleet catalog.Sites, inboundTag string) (rulesPlan, error) {
 	var plan rulesPlan
 	limit := sites.Max
 	if r.Connect {
@@ -213,6 +220,12 @@ func planUserRules(providerRaw []byte, r UserRules, inboundTag string) (rulesPla
 	}
 	proxy, droppedProxy := parseSites(r.Proxy, direct, proxyLimit, r.Connect) // a site in both goes direct
 	plan.res.Dropped = dropped + droppedProxy
+	// The fleet's sites (the catalog's) come after the owner's, and none the
+	// owner lists either way: the owner's choice wins. They are the
+	// catalog's to change, not the owner's to see in «Мои сайты».
+	owner := append(append([]sites.Site(nil), direct...), proxy...)
+	fleetDirect, _ := parseSites(usableCatalogNames(fleet.Direct), owner, catalog.MaxSites, false)
+	fleetProxy, _ := parseSites(usableCatalogNames(fleet.Proxy), append(owner, fleetDirect...), catalog.MaxSites, false)
 
 	var top map[string]json.RawMessage
 	var doc struct {
@@ -246,7 +259,7 @@ func planUserRules(providerRaw []byte, r UserRules, inboundTag string) (rulesPla
 		}
 	}
 
-	if len(direct) > 0 {
+	if len(direct)+len(fleetDirect) > 0 {
 		for _, o := range obs {
 			if o.plainDirect() {
 				plan.res.DirectVia = o.Tag
@@ -255,26 +268,39 @@ func planUserRules(providerRaw []byte, r UserRules, inboundTag string) (rulesPla
 		}
 		if plan.res.DirectVia == "" {
 			if why := cannotAddDirect(top, obs, selectors); why != "" {
-				plan.res.Skipped = append(plan.res.Skipped, fmt.Sprintf("%d direct site(s): %s", len(direct), why))
-				direct = nil
+				plan.res.Skipped = append(plan.res.Skipped, fmt.Sprintf("%d direct site(s): %s", len(direct)+len(fleetDirect), why))
+				direct, fleetDirect = nil, nil
 			} else {
 				plan.addDirect, plan.res.DirectVia, plan.res.DirectAdded = true, DirectTag, true
 			}
 		}
 	}
-	if len(proxy) > 0 {
+	if len(proxy)+len(fleetProxy) > 0 {
 		tag, balancer, ok := proxyTarget(rules, balancers, obs)
 		if !ok {
-			plan.res.Skipped = append(plan.res.Skipped, fmt.Sprintf("%d proxy site(s): the document has no node to send them to", len(proxy)))
-			proxy = nil
+			plan.res.Skipped = append(plan.res.Skipped, fmt.Sprintf("%d proxy site(s): the document has no node to send them to", len(proxy)+len(fleetProxy)))
+			proxy, fleetProxy = nil, nil
 		} else {
 			plan.res.ProxyVia, plan.res.ProxyViaBalancer = tag, balancer
 		}
 	}
 	plan.res.Direct, plan.res.Proxy = len(direct), len(proxy)
-	plan.rules = renderRules(direct, proxy, inboundTag, plan.res)
+	plan.res.FleetDirect, plan.res.FleetProxy = len(fleetDirect), len(fleetProxy)
+	plan.rules = append(renderRules(direct, proxy, inboundTag, plan.res), renderRules(fleetDirect, fleetProxy, inboundTag, plan.res)...)
 	plan.res.Rules = len(plan.rules)
 	return plan, nil
+}
+
+// usableCatalogNames are the catalog's sites the router's geo file can carry
+// (catalogNameUsable).
+func usableCatalogNames(list []string) []string {
+	var out []string
+	for _, e := range list {
+		if catalogNameUsable(e) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // parseSites parses a list as the splice renders it: every entry through

@@ -391,6 +391,24 @@ files in /root and one level down, and directories there named `*staging*`
 (`path`, `mib`, `kind`: `package` or `staging`): the operator's to remove,
 never vctl's.
 
+## Catalog
+
+`status.catalog` (r24) is what the router renders with that changes without a
+release: the catalog (the AI names of «Нейросети», where they go by default,
+sites for every router — `internal/catalog`) and the geo feed's set of
+geoip/geosite files.
+
+```json
+"catalog": { "serial": 2026101801, "source": "built-in", "geoSerial": 1792273588 }
+```
+
+- `serial`: the catalog in use; `source`: `built-in` (the release's own) or
+  `downloaded` (a newer one, signed, from the feed's channel).
+- `geoSerial`: the geo feed's set in use (its build time, unix seconds); `null`
+  while the router routes by its package's files.
+- `catalog` itself is `null` when it could not be read. Read only: nothing in
+  the UI changes it.
+
 ## Brand
 
 `status.brand` is whose router this is: the VPN service its owner pays for.

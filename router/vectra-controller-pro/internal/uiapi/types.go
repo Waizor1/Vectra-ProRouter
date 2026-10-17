@@ -39,6 +39,20 @@ type Status struct {
 	// Tune is the router's tune (internal/tune): what it set, found set or
 	// left alone; null when it could not be read.
 	Tune *Tune `json:"tune"`
+	// Catalog is the catalog the router renders with and the geo feed's set
+	// it routes by (internal/catalog; cmd/vctl geo_feed.go): what changes
+	// without a release. Null when it could not be read.
+	Catalog *CatalogView `json:"catalog"`
+}
+
+// CatalogView is the catalog in use and the geo set in use.
+type CatalogView struct {
+	// Serial and Source: the catalog in use — "built-in" (the release's) or
+	// "downloaded" (a newer one from the feed's channel).
+	Serial int64  `json:"serial"`
+	Source string `json:"source"`
+	// GeoSerial is the geo feed's set in use; null: the package's files.
+	GeoSerial *int64 `json:"geoSerial"`
 }
 
 // Tune is the router's tune as the status carries it.

@@ -64,3 +64,15 @@ func TestTheLANsIPv6IsRefusedUnlessTheNodesCarryIt(t *testing.T) {
 		t.Fatal("IPv6 refused though the nodes carry it")
 	}
 }
+
+// QUIC into the tunnel is refused by default (r24); UCI refuse_quic '0'
+// (agent.json quicThrough) keeps it, for nodes that carry UDP/443.
+func TestQUICIsRefusedUnlessTheOwnerKeepsIt(t *testing.T) {
+	base := firewall.DefaultSpec(12345, 1)
+	if s := withLoadGuards(base, agentcfg.Config{}); !s.RefuseQUIC {
+		t.Fatal("QUIC kept by default")
+	}
+	if s := withLoadGuards(base, agentcfg.Config{QUICThrough: true}); s.RefuseQUIC {
+		t.Fatal("refuse_quic '0' still refuses QUIC")
+	}
+}

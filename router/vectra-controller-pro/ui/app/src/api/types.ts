@@ -137,6 +137,15 @@ export interface Status {
   route: RouteView | null;
   /** The router's tune («Разгон роутера»): what it set on this router; null on a vctl without it. */
   tune: Tune | null;
+  /** The catalog and geo set the router renders with (contract: Catalog); null on a vctl without them. */
+  catalog: CatalogView | null;
+}
+
+/** The catalog in use (`built-in` or `downloaded`) and the geo feed's set; `geoSerial` null: the package's files. */
+export interface CatalogView {
+  serial: number | null;
+  source: string | null;
+  geoSerial: number | null;
 }
 
 /**

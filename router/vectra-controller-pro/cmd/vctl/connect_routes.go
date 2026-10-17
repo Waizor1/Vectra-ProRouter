@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"vectra-controller-pro/internal/agentcfg"
@@ -274,12 +276,14 @@ func aiDefault(ov localctl.Overrides, routeSource string, cache *localctl.Entrie
 	return "", nil, false
 }
 
-// aiCandidates are the Kazakh locations, best first: the provider's cascade
-// entering in Russia and leaving in Kazakhstan (🇷🇺🇰🇿), then a Kazakh one;
-// within each, a plain one before one named for a single service
-// («🇰🇿 Gemini · Google»). The flags are read in order — the last is the
-// exit — so «🇰🇿🇷🇺», leaving in Russia, is none.
+// aiCandidates are the locations «Нейросети» default to, best first: the
+// catalog's aiDefault exits in their order (the built-in catalog: the
+// provider's cascade entering in Russia and leaving in Kazakhstan, 🇷🇺🇰🇿,
+// then a Kazakh one); within each, a plain one before one named for a single
+// service («🇰🇿 Gemini · Google»). The flags are read in order — the last is
+// the exit — so «🇰🇿🇷🇺», leaving in Russia, is not 🇷🇺🇰🇿.
 func aiCandidates(entries []localctl.EntrySummary) []string {
+	exits := xray.ActiveCatalog().AIExits()
 	type candidate struct {
 		id    string
 		score int
@@ -287,15 +291,11 @@ func aiCandidates(entries []localctl.EntrySummary) []string {
 	var cs []candidate
 	for _, e := range entries {
 		flags := remarkFlags(e.Remark)
-		score := 0
-		switch {
-		case len(flags) == 2 && flags[0] == "RU" && flags[1] == "KZ":
-			score = 4
-		case len(flags) == 1 && flags[0] == "KZ":
-			score = 2
-		default:
+		rank := slices.IndexFunc(exits, func(x []string) bool { return slices.Equal(x, flags) })
+		if rank < 0 {
 			continue
 		}
+		score := (len(exits) - rank) * 2
 		if !strings.Contains(e.Remark, "·") {
 			score++
 		}
@@ -374,7 +374,7 @@ var aiApplied struct {
 }
 
 func aiAppliedKey(cfg agentcfg.Config) string {
-	k := ""
+	k := fmt.Sprintf("catalog:%d|", xray.ActiveCatalog().Serial) // its exits pick the default
 	for _, p := range []string{cfg.EntriesPath, cfg.ProviderConfigPath} {
 		st, err := os.Stat(p)
 		if err != nil {
@@ -409,17 +409,36 @@ func connectDigestIndex(entries []json.RawMessage, id string) (int, error) {
 }
 
 // markAIDefault tells the router UI where «Нейросети» go while the owner has
-// made no choice: Kazakhstan, when the router runs them there (aiDefaultApplied).
-func markAIDefault(res *uiapi.Services, applied bool) {
-	if !applied {
+// made no choice: the exit country of the default location the router runs
+// them through (aiDefaultApplied) — Kazakhstan with the built-in catalog,
+// whatever the catalog's aiDefault picks otherwise. "": none marked.
+func markAIDefault(res *uiapi.Services, country string) {
+	if country == "" {
 		return
 	}
 	for i := range res.Services {
 		if res.Services[i].ID == "ai" {
-			kz := "KZ"
-			res.Services[i].DefaultCountry = &kz
+			cc := country
+			res.Services[i].DefaultCountry = &cc
 		}
 	}
+}
+
+// aiDefaultCountry is the exit of the location id names: the last flag of its
+// remark in the entries index ("" when it cannot be told).
+func aiDefaultCountry(cfg agentcfg.Config, id string) string {
+	idx, err := localctl.LoadEntriesIndex(cfg.EntriesIndexPath)
+	if err != nil {
+		return ""
+	}
+	for _, e := range idx.Entries {
+		if e.Digest == id {
+			if flags := remarkFlags(e.Remark); len(flags) > 0 {
+				return flags[len(flags)-1]
+			}
+		}
+	}
+	return ""
 }
 
 // markAIDefaultFor marks the Kazakh default the router runs «Нейросети» on.
@@ -432,12 +451,15 @@ func markAIDefaultFor(cfg agentcfg.Config, res *uiapi.Services, ov localctl.Over
 			delete(ov.Services, "ai")
 		}
 	}
-	_, applied := aiDefaultApplied(cfg, ov, spliceKey)
-	markAIDefault(res, applied)
+	if id, applied := aiDefaultApplied(cfg, ov, spliceKey); applied {
+		markAIDefault(res, aiDefaultCountry(cfg, id))
+	}
 }
 
 // aiRefusedKey names a default location on the document it joined.
 func aiRefusedKey(entry, document []byte) string {
 	a, b := sha256.Sum256(entry), sha256.Sum256(document)
-	return hex.EncodeToString(a[:]) + ":" + hex.EncodeToString(b[:])
+	// The catalog is what the overlay adds: xray may take under another
+	// catalog what it refused under this one.
+	return hex.EncodeToString(a[:]) + ":" + hex.EncodeToString(b[:]) + ":" + strconv.FormatInt(xray.ActiveCatalog().Serial, 10)
 }

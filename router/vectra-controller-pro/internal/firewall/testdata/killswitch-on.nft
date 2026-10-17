@@ -78,8 +78,8 @@ table inet vctl {
     ct state new ip  daddr @vctl_direct4 ct mark set ct mark or 0x10000000 counter name "vctl_direct_new" return
     ct state new ip6 daddr @vctl_direct6 ct mark set ct mark or 0x10000000 counter name "vctl_direct_new" return
     # A device's storm waits at the door (Spec.AdmitRate).
-    iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit4 { ip saddr limit rate over 15/second burst 60 packets } counter name "vctl_admit_held" drop
-    iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit6 { ip6 saddr limit rate over 15/second burst 60 packets } counter name "vctl_admit_held" drop
+    iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit4 { ip saddr limit rate over 30/second burst 120 packets } counter name "vctl_admit_held" drop
+    iif != "lo" ct state new ct original packets 1 meta l4proto { tcp, udp } update @vctl_admit6 { ip6 saddr limit rate over 30/second burst 120 packets } counter name "vctl_admit_held" drop
     meta l4proto { tcp, udp } counter name "vctl_tproxy_hits" tproxy to :12345 meta mark set 0x1 accept
     # Fail CLOSED, and COUNTED. Anything reaching here was not captured by
     # TPROXY: xray is down (the socket lookup NFT_BREAKs out of the rule above,

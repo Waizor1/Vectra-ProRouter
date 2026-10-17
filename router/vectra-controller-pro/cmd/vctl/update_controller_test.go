@@ -203,16 +203,19 @@ func TestTheGeoUpdateWritesOnlyIntoVctlsOwnDirectory(t *testing.T) {
 	// ...and xray runs a render that passed its -test there.
 	d.sup.SetAssetDir(crontabs)
 
+	// Since r24 the job only asks the signed geo feed (geo_feed.go), which
+	// writes into vctl's own directory: whatever the config names, nothing
+	// is fetched from its URLs and nothing is written where it points.
 	_ = d.executeJob(context.Background(), controlplane.Job{ID: "g1", Type: "update_xray_assets"}, controlplane.CheckInResponse{})
 	fail, ok := lastResult(results, mu, "g1")
 	if !ok {
-		t.Fatalf("the geo update into another directory was not refused: %+v", results["g1"])
+		t.Fatalf("a geo job with no geo feed to ask reported success: %+v", results["g1"])
 	}
-	if msg, _ := fail.Result["error"].(string); !strings.Contains(msg, crontabs) || !strings.Contains(msg, config.DefaultGeoAssetDir) {
-		t.Errorf("the refusal does not say where and why: %v", fail.Result)
+	if msg, _ := fail.Result["error"].(string); !strings.Contains(msg, "geo feed") && !strings.Contains(msg, "geo set") {
+		t.Errorf("the refusal does not say why: %v", fail.Result)
 	}
 	if _, err := os.Stat(crontabs); !os.IsNotExist(err) {
-		t.Fatalf("the refused directory was made: %v", err)
+		t.Fatalf("the config's directory was made: %v", err)
 	}
 }
 
