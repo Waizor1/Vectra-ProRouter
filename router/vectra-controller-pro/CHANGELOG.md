@@ -9,16 +9,24 @@ per-peer ICMP limit (about six, then one a second) left 15 waiting out their
 QUIC timeout, the very stall r24 set out to end.
 
 ### Changed
-- The tune («Разгон роутера») has an eighth item, `icmp_ratemask`, on any
-  router: `net.ipv4.icmp_ratemask` without destination unreachable (the
-  kernel's 6168 → 6160), only over the kernel's own value (anything else is
-  someone's and stays), backed up and put back by Undo. The global ICMP limit
-  (icmp_msgs_per_sec, 1000/s) still bounds every ICMP error. The router UI
-  does not name it (housekeeping, like the leftovers in RAM).
-- The internet keeps the kernel's per-peer limit: vctl's output chain holds the
-  router's own «destination unreachable» to anything but a private network to
-  1/s, burst 6 per address (counter `vctl_icmp_out_held`) — the relaxed mask
-  serves the LAN's refused QUIC only (found by the automated security review).
+- While the table refuses QUIC (a FakeDNS pool, `refuse_quic` not '0'), vctl
+  takes destination unreachable out of the kernel's `net.ipv4.icmp_ratemask`
+  (bit 3; 6168 → 6160 on a stock router) right after the table loads, so every
+  refused attempt is answered at once. The mask is the table's: the daemon's
+  unload, the commit-confirm deadman and the package's teardown (stop,
+  standby, hand-back, removal) put the bit back before the table goes, a
+  reboot clears both. Only a bit vctl took is put back (marker
+  `/var/run/vectra-controller-pro/icmp-ratemask`); the owner's other bits, or
+  a mask they set without the bit, stay theirs.
+- The mask also lifts the kernel's global cap for that type, so the table
+  holds the router's own unreachables to the kernel's rates instead: 1/s,
+  burst 6, to each address beyond the LAN's devices (`oifname`; the LAN's
+  addresses when no device is known), and 1000/s, burst 50, for all of them
+  — the second also when the per-address set is full. «Fragmentation needed»
+  stays unlimited (path MTU), as in the kernel. Counter `vctl_icmp_out_held`.
+  Without the QUIC refusal neither the mask nor these rules are touched.
+  (Found by the automated security review; first drafted as a tune item,
+  which outlived the table.)
 - The built-in catalog's serial is 2026101802 (content unchanged): the first
   catalog published to pro-canary, which r24 routers take as newer.
 

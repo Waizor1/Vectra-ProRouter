@@ -338,7 +338,7 @@ func TestALowmemRouterGetsTheWholeTune(t *testing.T) {
 		t.Fatalf("plan: %+v", p)
 	}
 	want := map[string]string{ItemZram: Pending, ItemSwappiness: Pending, ItemVFSCachePressure: Pending, ItemPacketSteering: Pending, ItemFlowOffloading: Pending,
-		ItemCronLogLevel: Pending, ItemTmpLeftovers: Already, ItemICMPRatemask: Skipped + "/" + ReasonUnreadable}
+		ItemCronLogLevel: Pending, ItemTmpLeftovers: Already}
 	if got := states(p); !reflect.DeepEqual(got, want) {
 		t.Fatalf("before: %v", got)
 	}
@@ -366,7 +366,7 @@ func TestALowmemRouterGetsTheWholeTune(t *testing.T) {
 		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(r.calls, "\n"), strings.Join(wantCalls, "\n"))
 	}
 	all := map[string]string{ItemZram: Applied, ItemSwappiness: Applied, ItemVFSCachePressure: Applied, ItemPacketSteering: Applied, ItemFlowOffloading: Applied,
-		ItemCronLogLevel: Applied, ItemTmpLeftovers: Already, ItemICMPRatemask: Skipped + "/" + ReasonUnreadable}
+		ItemCronLogLevel: Applied, ItemTmpLeftovers: Already}
 	if got := states(res.Plan); !reflect.DeepEqual(got, all) {
 		t.Fatalf("after: %v", got)
 	}
@@ -444,7 +444,7 @@ func TestWhatWasAlreadySoIsLeftAndNotBackedUp(t *testing.T) {
 	r.write("etc/config/system", "config system\n\toption cronloglevel '9'\n")
 	res := r.apply()
 	want := map[string]string{ItemZram: Already, ItemSwappiness: Already, ItemVFSCachePressure: Already, ItemPacketSteering: Already, ItemFlowOffloading: Already,
-		ItemCronLogLevel: Already, ItemTmpLeftovers: Already, ItemICMPRatemask: Skipped + "/" + ReasonUnreadable}
+		ItemCronLogLevel: Already, ItemTmpLeftovers: Already}
 	if got := states(res.Plan); !reflect.DeepEqual(got, want) {
 		t.Fatalf("states: %v", got)
 	}
@@ -466,7 +466,7 @@ func TestTheOwnersExplicitChoicesStay(t *testing.T) {
 	r.write("etc/config/system", "config system\n\toption cronloglevel '10'\n")
 	p := Inspect(r.env)
 	want := map[string]string{ItemZram: Pending, ItemSwappiness: UserSet, ItemVFSCachePressure: UserSet, ItemPacketSteering: UserSet, ItemFlowOffloading: UserSet,
-		ItemCronLogLevel: UserSet, ItemTmpLeftovers: Already, ItemICMPRatemask: Skipped + "/" + ReasonUnreadable}
+		ItemCronLogLevel: UserSet, ItemTmpLeftovers: Already}
 	if got := states(p); !reflect.DeepEqual(got, want) {
 		t.Fatalf("states: %v", got)
 	}
@@ -536,7 +536,7 @@ func TestARouterWithRAMToSpareKeepsItsMemorySettings(t *testing.T) {
 	res := r.apply()
 	want := map[string]string{ItemZram: Skipped + "/" + ReasonEnoughRAM, ItemSwappiness: Skipped + "/" + ReasonEnoughRAM,
 		ItemVFSCachePressure: Skipped + "/" + ReasonEnoughRAM, ItemPacketSteering: Applied, ItemFlowOffloading: Applied,
-		ItemCronLogLevel: Applied, ItemTmpLeftovers: Already, ItemICMPRatemask: Skipped + "/" + ReasonUnreadable}
+		ItemCronLogLevel: Applied, ItemTmpLeftovers: Already}
 	if got := states(res.Plan); !reflect.DeepEqual(got, want) || res.Plan.Profile != Standard {
 		t.Fatalf("%s: %v", res.Plan.Profile, got)
 	}
@@ -579,7 +579,7 @@ func TestTheSwitchOffChangesNothing(t *testing.T) {
 	}
 	want := map[string]string{ItemZram: Skipped + "/" + ReasonOff, ItemSwappiness: Skipped + "/" + ReasonOff,
 		ItemVFSCachePressure: Skipped + "/" + ReasonOff, ItemPacketSteering: Already, ItemFlowOffloading: Skipped + "/" + ReasonOff,
-		ItemCronLogLevel: Skipped + "/" + ReasonOff, ItemTmpLeftovers: Already, ItemICMPRatemask: Skipped + "/" + ReasonUnreadable}
+		ItemCronLogLevel: Skipped + "/" + ReasonOff, ItemTmpLeftovers: Already}
 	if got := states(res.Plan); !reflect.DeepEqual(got, want) {
 		t.Fatalf("states: %v", got)
 	}
@@ -939,37 +939,5 @@ func TestUndoKeepsFailedCommitBackupBehindPendingChange(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("missing pending-change failure: %v", res.Failed)
-	}
-}
-
-// r24: destination unreachable leaves the kernel's per-peer ICMP limit, so a
-// burst of QUIC vctl refuses gets an answer each — on any router, over the
-// kernel's own value only, and put back by Undo.
-func TestTheICMPRatemaskLetsEveryQUICRefusalBeAnswered(t *testing.T) {
-	r := newRouter(t)
-	r.write("proc/meminfo", "MemTotal:         497000 kB\nMemAvailable:     300000 kB\n") // RAM to spare: set all the same
-	r.write("proc/sys/net/ipv4/icmp_ratemask", "6168\n")
-	if got := states(Inspect(r.env))[ItemICMPRatemask]; got != Pending {
-		t.Fatalf("before: %s", got)
-	}
-	res := r.apply()
-	if got := states(res.Plan)[ItemICMPRatemask]; got != Applied {
-		t.Fatalf("after: %s", got)
-	}
-	if got := r.read("etc/sysctl.d/95-vectra-tune.conf"); !strings.Contains(got, "net.ipv4.icmp_ratemask=6160\n") {
-		t.Fatalf("own sysctl file:\n%s", got)
-	}
-	if b := r.backup(); b.Items[ItemICMPRatemask].Was == nil || *b.Items[ItemICMPRatemask].Was != "6168" {
-		t.Fatalf("backup: %+v", b.Items[ItemICMPRatemask])
-	}
-	r.undo()
-	if got := r.read("proc/sys/net/ipv4/icmp_ratemask"); strings.TrimSpace(got) != "6168" {
-		t.Fatalf("undo left %q", got)
-	}
-
-	mine := newRouter(t)
-	mine.write("proc/sys/net/ipv4/icmp_ratemask", "4000\n") // someone's own
-	if got := states(Inspect(mine.env))[ItemICMPRatemask]; got != UserSet {
-		t.Fatalf("someone's value: %s", got)
 	}
 }

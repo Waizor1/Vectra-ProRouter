@@ -990,6 +990,12 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 		logging.L().Error("firewall apply failed (deadman armed; it reverts the ruleset)", "err", err.Error())
 		return
 	}
+	// The ICMP mask follows the table now in place (firewall.RelaxesICMP).
+	if did, err := icmpMaskFollow(firewall.RelaxesICMP(spec)); err != nil {
+		logging.L().Warn("icmp ratemask not changed: refused QUIC is answered at the kernel's rate", "err", err.Error())
+	} else if did != "" {
+		logging.L().Info("every refused QUIC attempt is answered", "change", did)
+	}
 	oldPort, redirected, upstreams := 0, false, ""
 	if d.fwProgrammed != nil {
 		oldPort, redirected = redirectPort(*d.fwProgrammed)
@@ -1072,6 +1078,13 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 	// Nothing is redirected any more: the DNS watch must not take this for a
 	// loaded data plane to correct.
 	d.fwProgrammed = nil
+	// The bit the table took out of the ICMP mask goes back before the
+	// table and its limits do.
+	if did, err := icmpMaskRestore(); err != nil {
+		logging.L().Warn("icmp ratemask not put back", "err", err.Error())
+	} else if did != "" {
+		logging.L().Info("icmp ratemask put back", "change", did)
+	}
 	for _, c := range firewall.RevertCommands(spec) {
 		fields := strings.Fields(c)
 		if len(fields) == 0 {
@@ -1378,3 +1391,10 @@ func controllerRestartCommand() *exec.Cmd {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd
 }
+
+// The ICMP mask the loaded table needs (firewall.FollowICMPMask) and putting
+// it back with the table (RestoreICMPMask); tests never touch the host's.
+var (
+	icmpMaskFollow  = firewall.FollowICMPMask
+	icmpMaskRestore = firewall.RestoreICMPMask
+)

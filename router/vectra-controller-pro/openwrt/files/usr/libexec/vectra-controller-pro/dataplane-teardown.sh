@@ -78,6 +78,17 @@ delete_rules() {
 	done
 }
 
+# The bit the table took out of the kernel's ICMP mask while it refused QUIC
+# (firewall.RelaxesICMP) goes back before the table and its limits do — and
+# also when the table is already gone: the deadman or a crash may have taken
+# it. Only a bit vctl took (its marker); the owner's other bits stay.
+ICMP_MASK=/proc/sys/net/ipv4/icmp_ratemask
+ICMP_MARKER=/var/run/vectra-controller-pro/icmp-ratemask
+if [ -f "$ICMP_MARKER" ]; then
+	m="$(cat "$ICMP_MASK" 2>/dev/null)" && [ -n "$m" ] && echo $((m | 8)) > "$ICMP_MASK" 2>/dev/null
+	rm -f "$ICMP_MARKER"
+fi
+
 MARK="$(tproxy_fwmark)"
 HEXMARK="$(printf '0x%x' "$MARK")"
 

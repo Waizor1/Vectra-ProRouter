@@ -396,10 +396,9 @@ func TestForwardCountsWhatTproxyCapturedAndStillForwarded(t *testing.T) {
 // port forwards' «past the VPN» rule is never in the armed ruleset
 // (portfwd_test.go) — and for r24: the device door at 30/120 (QUIC to a
 // FakeDNS address is refused only with a FakeDNS pool, which this spec has
-// not: TestQUICIntoTheTunnelIsRefusedAtOnce) — and for r25: the router's own
-// ICMP «destination unreachable» to the internet held to the kernel's rate in
-// output, one counter, one set (TestTheInternetKeepsTheICMPLimit). With the
-// switch, what is dropped is unchanged.
+// not: TestQUICIntoTheTunnelIsRefusedAtOnce; nor does it get r25's ICMP
+// limits, which come with the refusal: TestTheInternetKeepsTheICMPLimit).
+// With the switch, what is dropped is unchanged.
 func TestKillSwitchArmedRulesetIsUnchanged(t *testing.T) {
 	want, err := os.ReadFile(filepath.Join("testdata", "killswitch-on.nft"))
 	if err != nil {
