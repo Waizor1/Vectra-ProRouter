@@ -1,5 +1,36 @@
 # Changelog
 
+## vctl 0.7.0-r25 — every refused QUIC attempt is answered
+
+r24 refuses QUIC to proxied names with ICMP port unreachable, so apps fall
+back to TCP at once. Live on 1111 (r24, 2026-10-18): 3 of 3 single attempts
+refused at once, but of a burst of 20 only 5 were answered — the kernel's
+per-peer ICMP limit (about six, then one a second) left 15 waiting out their
+QUIC timeout, the very stall r24 set out to end.
+
+### Changed
+- While the table refuses QUIC (a FakeDNS pool, `refuse_quic` not '0'), vctl
+  takes destination unreachable out of the kernel's `net.ipv4.icmp_ratemask`
+  (bit 3; 6168 → 6160 on a stock router) right after the table loads, so every
+  refused attempt is answered at once. The mask is the table's: the daemon's
+  unload, the commit-confirm deadman and the package's teardown (stop,
+  standby, hand-back, removal) put the bit back before the table goes, a
+  reboot clears both. Only a bit vctl took is put back (marker
+  `/var/run/vectra-controller-pro/icmp-ratemask`); the owner's other bits, or
+  a mask they set without the bit, stay theirs.
+- The mask also lifts the kernel's global cap for that type, so the table
+  holds the router's own unreachables to the kernel's rates instead: 1/s,
+  burst 6, to each address beyond the LAN's devices and loopback (`oifname`;
+  the LAN's addresses when no device is known — the kernel never limits
+  loopback), and 1000/s, burst 50, for all of them
+  — the second also when the per-address set is full. «Fragmentation needed»
+  stays unlimited (path MTU), as in the kernel. Counter `vctl_icmp_out_held`.
+  Without the QUIC refusal neither the mask nor these rules are touched.
+  (Found by the automated security review; first drafted as a tune item,
+  which outlived the table.)
+- The built-in catalog's serial is 2026101802 (content unchanged): the first
+  catalog published to pro-canary, which r24 routers take as newer.
+
 ## vctl 0.7.0-r24 — «Нейросети» are AI only; a catalog and geo lists we change without a release
 
 On 2026-10-17 a PC behind 1111 downloaded Star Citizen at 1.6 MB/s and Steam at

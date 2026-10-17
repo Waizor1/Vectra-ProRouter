@@ -257,3 +257,69 @@ func TestQUICIntoTheTunnelIsRefusedAtOnce(t *testing.T) {
 		t.Error("QUIC refused with the switch off")
 	}
 }
+
+// r25: the tune lets «destination unreachable» out of the kernel's per-peer
+// ICMP limit for the LAN's refused QUIC; the router's own ICMP of that type to
+// the internet is held to the kernel's old rate (1/s, burst 6) in output, the
+// private networks left alone.
+func TestTheInternetKeepsTheICMPLimit(t *testing.T) {
+	s := DefaultSpec(12345, 1)
+	s.CarriedV4 = []string{"198.18.0.0/15"}
+	perAddr := `update @vctl_icmp_out4 { ip daddr limit rate over 1/second burst 6 packets } counter name "vctl_icmp_out_held" drop`
+	global := `meta l4proto icmp icmp type destination-unreachable icmp code != frag-needed limit rate over 1000/second burst 50 packets counter name "vctl_icmp_out_held" drop`
+	for _, tc := range []struct {
+		name  string
+		lan   []string
+		scope string
+	}{
+		{"by the LAN's devices", []string{"br-lan", "br-guest"}, `oifname != { "lo", "br-lan", "br-guest" }`},
+		{"by the LAN's addresses when no device is known", nil, `oifname != "lo" ip daddr != @bypass4`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s.LANDevices = tc.lan
+			out := mustRender(t, s)
+			rules := rulesOf(chainNamed(t, out, "output"))
+			want := `meta l4proto icmp icmp type destination-unreachable icmp code != frag-needed ` + tc.scope + ` ` + perAddr
+			i, g := indexOf(rules, want), indexOf(rules, global)
+			mark := indexOf(rules, "meta mark 0x1 return")
+			reply := indexOf(rules, "ct direction reply return")
+			if i < 0 || g != i+1 || mark < 0 || mark > i || reply < 0 || g > reply || indexOf(rules, "ct state established,related return") < g {
+				t.Fatalf("per address %d, all %d (mark return %d, reply return %d), want both after the mark return and before the reply and related returns:\n%s", i, g, mark, reply, strings.Join(rules, "\n"))
+			}
+			for _, decl := range []string{"counter vctl_icmp_out_held { }", "set vctl_icmp_out4 { type ipv4_addr; flags dynamic, timeout; timeout 1m; size 4096; }"} {
+				if !strings.Contains(out, decl) {
+					t.Errorf("missing %q", decl)
+				}
+			}
+		})
+	}
+}
+
+// Without QUIC refused the kernel's mask is left alone, and so is the
+// router's ICMP: no limit of vctl's, no set, no counter.
+func TestNoICMPLimitWithoutTheQUICRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		spec func() Spec
+	}{
+		{"no FakeDNS pool", func() Spec { return DefaultSpec(12345, 1) }},
+		{"QUIC kept (refuse_quic '0')", func() Spec {
+			s := DefaultSpec(12345, 1)
+			s.CarriedV4, s.RefuseQUIC = []string{"198.18.0.0/15"}, false
+			return s
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.spec()
+			if RelaxesICMP(s) {
+				t.Fatal("RelaxesICMP = true")
+			}
+			out := mustRender(t, s)
+			for _, gone := range []string{"vctl_icmp_out", "frag-needed"} {
+				if strings.Contains(out, gone) {
+					t.Errorf("%q in a table that refuses no QUIC", gone)
+				}
+			}
+		})
+	}
+}

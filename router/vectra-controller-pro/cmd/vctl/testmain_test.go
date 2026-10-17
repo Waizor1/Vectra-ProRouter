@@ -24,6 +24,9 @@ func TestMain(m *testing.M) {
 	// No test asks the host's netifd: the WAN is "wan" wherever a test
 	// writes no firewall zones of its own (wanInterfaces).
 	defaultRouteIfaces = func() []string { return []string{"wan"} }
+	// Nor the host's ICMP mask.
+	icmpMaskFollow = func(bool) (string, error) { return "", nil }
+	icmpMaskRestore = func() (string, error) { return "", nil }
 	// Nor the host's connection table.
 	dnsFlowsRead = func() ([]conntrack.Entry, error) { return nil, nil }
 	// Nor the host's firewall, uci or ubus: a router without fw4's config,

@@ -127,6 +127,11 @@ func BuildDeadmanScriptFor(revert []string, timeout time.Duration, confirmPath, 
 		fmt.Fprintf(&b, "[ \"$(cat %q 2>/dev/null)\" = %q ] || exit 0\n", armedPath, token)
 	}
 	fmt.Fprintf(&b, "if [ ! -f %q ]; then\n", confirmPath)
+	if len(revert) > 0 {
+		// The bit the table took out of the ICMP mask goes back before the
+		// table and its limits do (RelaxesICMP).
+		fmt.Fprintf(&b, "  %s\n", RestoreICMPMaskShell())
+	}
 	for _, cmd := range revert {
 		fmt.Fprintf(&b, "  %s 2>/dev/null || true\n", cmd)
 	}

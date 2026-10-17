@@ -467,6 +467,11 @@ const (
 	CounterAdmitHeld = "vctl_admit_held"
 	// CounterQUICRefused counts the LAN's QUIC refused (Spec.RefuseQUIC).
 	CounterQUICRefused = "vctl_quic_refused"
+	// CounterICMPOutHeld counts the router's ICMP «destination unreachable»
+	// held to the kernel's rates while the mask lets them out (RelaxesICMP):
+	// per address beyond the LAN (SetICMPOut4), and all together.
+	CounterICMPOutHeld = "vctl_icmp_out_held"
+	SetICMPOut4        = "vctl_icmp_out4"
 	// CounterAdmitTotalHeld counts new connections held at the router's
 	// whole door (Spec.AdmitTotalRate).
 	CounterAdmitTotalHeld = "vctl_admit_total_held"
@@ -603,6 +608,10 @@ table inet {{ .TableName }} {
 {{- end }}
 {{- if and .RefuseQUIC .CarriedPools }}
   counter {{ .CounterQUICRefused }} { }
+{{- end }}
+{{- if .RelaxesICMP }}
+  counter {{ .CounterICMPOutHeld }} { }
+  set {{ .SetICMPOut4 }} { type ipv4_addr; flags dynamic, timeout; timeout 1m; size 4096; }
 {{- end }}
 {{- if .AdmitRate }}
   counter {{ .CounterAdmitHeld }} { }
@@ -861,6 +870,23 @@ table inet {{ .TableName }} {
     meta mark 0x{{ printf "%x" .SockMark }} counter name "{{ .CounterEgressExempt }}" return
 {{- end }}
     meta mark 0x{{ printf "%x" .FwMark }} return
+{{- if .RelaxesICMP }}
+    # While QUIC is refused the kernel's mask lets «destination unreachable»
+    # out unlimited (RelaxesICMP, icmpmask.go), so every attempt a LAN device
+    # makes is answered at once. The router's own unreachables keep the
+    # kernel's rates here instead: 1/s, burst 6, to each address beyond the
+    # LAN and the router itself (the kernel never limits loopback), and
+    # 1000/s, burst 50, for all of them (net.ipv4.icmp_msgs_per_sec)
+    # — the second also when the first's set is full. «Fragmentation needed»
+    # was never limited (path MTU). Before the reply and established/related
+    # returns: the kernel's error is related to the packet it answers.
+{{- if .LANDevs }}
+    meta l4proto icmp icmp type destination-unreachable icmp code != frag-needed oifname != { "lo", {{ .LANDevs }} } update @{{ .SetICMPOut4 }} { ip daddr limit rate over 1/second burst 6 packets } counter name "{{ .CounterICMPOutHeld }}" drop
+{{- else }}
+    meta l4proto icmp icmp type destination-unreachable icmp code != frag-needed oifname != "lo" ip daddr != @bypass4 update @{{ .SetICMPOut4 }} { ip daddr limit rate over 1/second burst 6 packets } counter name "{{ .CounterICMPOutHeld }}" drop
+{{- end }}
+    meta l4proto icmp icmp type destination-unreachable icmp code != frag-needed limit rate over 1000/second burst 50 packets counter name "{{ .CounterICMPOutHeld }}" drop
+{{- end }}
     # REPLIES ARE NOT EGRESS. Anything the router sends on a connection that
     # already exists is an answer to something that came IN — a LAN client
     # talking to SSH, LuCI, dnsmasq — and must go back the way it arrived. Only
@@ -1055,6 +1081,8 @@ type tmplData struct {
 	CounterP2PDirect      string
 	CounterAdmitHeld      string
 	CounterQUICRefused    string
+	CounterICMPOutHeld    string
+	SetICMPOut4           string
 	CounterAdmitTotalHeld string
 	CounterPaced          string
 	CounterDNSHeld        string
@@ -1080,6 +1108,9 @@ type tmplData struct {
 	RefuseV6 bool
 	// LANDevs: Spec.LANDevices quoted for an nft set ("" when none).
 	LANDevs string
+	// RelaxesICMP: the table refuses QUIC and holds the router's own
+	// unreachables (RelaxesICMP).
+	RelaxesICMP bool
 	// SteersDNS: Spec.DNSRedirectPort is in force (Spec.steersDNS).
 	SteersDNS bool
 	// SteerUpstreamV4/V6: Spec.DNSUpstreamV4/V6, each a plain address of its
@@ -1131,6 +1162,8 @@ func Render(s Spec) (string, error) {
 		CounterP2PDirect:         CounterP2PDirect,
 		CounterAdmitHeld:         CounterAdmitHeld,
 		CounterQUICRefused:       CounterQUICRefused,
+		CounterICMPOutHeld:       CounterICMPOutHeld,
+		SetICMPOut4:              SetICMPOut4,
 		CounterAdmitTotalHeld:    CounterAdmitTotalHeld,
 		CounterPaced:             CounterPaced,
 		CounterDNSHeld:           CounterDNSHeld,
@@ -1145,6 +1178,7 @@ func Render(s Spec) (string, error) {
 		P2P:                      s.P2PBypass && s.DirectCtMark != 0 && !s.KillSwitch,
 		RefuseV6:                 s.RefuseIPv6 && s.IPv6Enabled,
 		LANDevs:                  quotedDevices(s.LANDevices),
+		RelaxesICMP:              RelaxesICMP(s),
 		SteersDNS:                s.steersDNS(),
 		SteerUpstreamV4:          steerAddrs(s.DNSUpstreamV4, false),
 		SteerUpstreamV6:          steerAddrs(s.DNSUpstreamV6, true),

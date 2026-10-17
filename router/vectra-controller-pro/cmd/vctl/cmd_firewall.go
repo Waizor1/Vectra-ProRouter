@@ -117,6 +117,12 @@ func firewallApply(args []string) error {
 		return fmt.Errorf("nft -f -: %w (%s)", err, out)
 	}
 	fmt.Println("applied")
+	// The ICMP mask follows the table now in place (firewall.RelaxesICMP).
+	if did, err := firewall.FollowICMPMask(firewall.RelaxesICMP(s)); err != nil {
+		fmt.Fprintf(os.Stderr, "icmp ratemask: %v\n", err)
+	} else if did != "" {
+		fmt.Println(did)
+	}
 	return nil
 }
 
@@ -145,6 +151,12 @@ func firewallRevert(args []string) error {
 	}
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("firewall revert only works on Linux")
+	}
+	// The bit the table took out of the ICMP mask goes back with it.
+	if did, err := firewall.RestoreICMPMask(); err != nil {
+		fmt.Fprintf(os.Stderr, "  icmp ratemask: %v\n", err)
+	} else if did != "" {
+		fmt.Fprintf(os.Stderr, "  %s: ok\n", did)
 	}
 	for _, c := range cmds {
 		parts := strings.Fields(c)
