@@ -792,7 +792,7 @@ func (d *daemon) renderKey(opts xray.SpliceOptions) string {
 	// render made before r12 kept the provider's own log block and api, so
 	// it is redone once, at start, before xray comes up.
 	// And the catalog it applied (catalog.go): a newer catalog renders again.
-	return k + ";geo=" + d.geoAssetDir() + ";guard=1;catalog=" + strconv.FormatInt(xray.ActiveCatalog().Serial, 10)
+	return k + ";geo=" + d.geoAssetDir() + d.geoFeedKey() + ";guard=1;catalog=" + strconv.FormatInt(xray.ActiveCatalog().Serial, 10)
 }
 
 // resumeRender puts back, after a reboot, the render the router ran before it.

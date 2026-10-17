@@ -577,39 +577,13 @@ func (d *daemon) jobUpdateAssets(ctx context.Context, job controlplane.Job) erro
 	case d.passwallMode():
 		return d.submitFailure(ctx, job, "update_assets: with route_source 'passwall' xray reads PassWall2's geo files; vctl does not replace them")
 	}
-	dir := d.runningAssetDir()
-	switch {
-	case dir == config.LegacyGeoAssetDir:
-		return d.submitFailure(ctx, job, "update_assets: xray reads PassWall2's geo files in "+dir+" (vectra-geodata is not installed); vctl does not replace them — install vectra-geodata")
-	case dir != config.DefaultGeoAssetDir:
-		// The directory is the operator config's to name, and the files are
-		// written as root: anywhere else — /etc/crontabs, with an asset
-		// called "root" — the panel's geo update would be a shell on the
-		// router.
-		return d.submitFailure(ctx, job, "update_assets: vctl writes geo data only into its own directory "+config.DefaultGeoAssetDir+"; the config names "+dir)
-	}
-	cfg, err := d.loadDesiredConfig()
-	if err != nil {
-		return d.submitFailure(ctx, job, "update_assets: "+err.Error())
-	}
-	hc := &http.Client{Timeout: 60 * time.Second}
-	results := map[string]interface{}{}
-	updated := 0
-	for _, a := range geoAssets(cfg) {
-		r := geo.UpdateOne(ctx, dir, a, hc)
-		if r.Error != nil {
-			results[a.Filename] = map[string]interface{}{"error": r.Error.Error()}
-			continue
-		}
-		results[a.Filename] = map[string]interface{}{"updated": r.Updated, "sha256": r.SHA256, "bytes": r.Bytes}
-		if r.Updated {
-			updated++
-		}
-	}
-	if updated > 0 && d.supStarted {
-		_ = d.sup.Reload(d.supCtx)
-	}
-	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"assets": results, "updatedCount": updated, "assetDir": dir})
+	// Provider routing takes its geo files from the signed geo feed only
+	// (geo_feed.go): the operator config's raw upstream URLs lack the
+	// categories the provider's documents route by (category-ru, private,
+	// geoip ru and telegram), and a file without them makes xray refuse the
+	// configuration. The job asks the feed now.
+	d.startGeoFeedNow()
+	return d.finishJob(ctx, job, "success", "", "", map[string]interface{}{"geoFeed": "asked now; the set is taken once fetched and checked", "serialInUse": d.geoFeedSerial})
 }
 
 // jobUpdateNativeGeo starts the native route policy's geo update now: its

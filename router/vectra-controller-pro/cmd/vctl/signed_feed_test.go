@@ -106,6 +106,8 @@ type signedFeedStand struct {
 	// catalog and catalogSig are the channel's catalog.json and its
 	// signature (catalog_test.go); nil: none published.
 	catalog, catalogSig []byte
+	// extra are other files of the channel (geo_feed_test.go), by path.
+	extra map[string][]byte
 
 	conf, keys, release string
 
@@ -198,7 +200,12 @@ func (s *signedFeedStand) serve(w http.ResponseWriter, r *http.Request) {
 	s.hits[r.URL.Path]++
 	index, sig := s.index, s.sig
 	cat, catSig := s.catalog, s.catalogSig
+	extra, isExtra := s.extra[r.URL.Path]
 	s.mu.Unlock()
+	if isExtra {
+		_, _ = w.Write(extra)
+		return
+	}
 	switch r.URL.Path {
 	case path.Dir(feedPath) + "/catalog.json":
 		if cat == nil {

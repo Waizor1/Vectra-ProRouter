@@ -358,8 +358,17 @@ type daemon struct {
 	// nextCatalogRefresh when the feed is asked for a newer one (catalog.go).
 	catalogSerial      int64
 	nextCatalogRefresh time.Time
-	busy               string
-	probe              *localctl.Probe
+	// The geo feed (geo_feed.go): geoFeedSerial is the set the renders use
+	// (0: the package's files), nextGeoFeed when the manifest is asked;
+	// the download's goroutine hands a finished set over in geoFeedReady and
+	// a failure's retry time in nextGeoFeedRetry.
+	geoFeedSerial    int64
+	nextGeoFeed      time.Time
+	geoFeedBusy      atomic.Bool
+	geoFeedReady     atomic.Int64
+	nextGeoFeedRetry atomic.Int64
+	busy             string
+	probe            *localctl.Probe
 	// pinBudget bounds how long the start hook waits for xray's API to come
 	// up before giving up on restoring pins and on the leak baseline. 0 = 45 s.
 	pinBudget time.Duration
@@ -516,6 +525,7 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 		memFloorKB:     memFloorKB,
 	}
 	d.catalogSerial = useCatalog(cfg).Catalog.Serial
+	d.geoFeedSerial = loadGeoFeed()
 	d.exits.Restore(unfitSince(st.UnfitExits))
 	d.exits.RestoreEgress(egressFrom(st.ExitEgress))
 	// Every start — the first, a reload, a crash restart — must get the
@@ -639,7 +649,11 @@ func (d *daemon) geoAssetDir() string {
 	if d.desired != nil && d.desired.Geo.AssetDir != "" {
 		dir = d.desired.Geo.AssetDir
 	}
-	return config.ResolveGeoAssetDir(dir)
+	dir = config.ResolveGeoAssetDir(dir)
+	if feed := d.geoFeedInUse(dir); feed != "" {
+		return feed // the feed's current set (geo_feed.go)
+	}
+	return dir
 }
 
 // refreshNodeCount recounts the provider document's outbounds from disk.
@@ -733,6 +747,7 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 		d.maybeSyncPortForwards(ctx, false)
 		d.maybeRefreshSubscription(ctx, time.Now())
 		d.maybeRefreshCatalog(ctx, time.Now())
+		d.maybeUpdateGeoFeed(ctx, time.Now())
 		d.maybeRetirePassWall(ctx, time.Now())
 		d.publishRuntime()
 		// Between polls the loop serves the router UI's changes, so they run
