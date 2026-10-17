@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "serial": 2026101701,
+  "services": {
+    "ai": {
+      "onlyKnown": true,
+      "names": [
+        "domain:openai.com", "domain:chatgpt.com", "domain:chat.com", "domain:oaistatic.com",
+        "domain:oaiusercontent.com", "domain:sora.com",
+        "domain:anthropic.com", "domain:claude.ai", "domain:claude.com", "domain:claudeusercontent.com",
+        "full:gemini.google.com", "domain:gemini.google", "full:aistudio.google.com", "full:bard.google.com",
+        "full:notebooklm.google.com", "domain:notebooklm.google", "full:makersuite.google.com",
+        "full:generativelanguage.googleapis.com", "full:alkalimakersuite-pa.clients6.google.com",
+        "full:proactivebackend-pa.googleapis.com", "full:robinfrontend-pa.googleapis.com",
+        "domain:labs.google", "full:labs.google.com", "full:ai.google.dev", "domain:deepmind.com", "domain:deepmind.google",
+        "full:copilot.microsoft.com", "domain:copilot.cloud.microsoft", "full:sydney.bing.com",
+        "domain:githubcopilot.com", "full:copilot-proxy.githubusercontent.com",
+        "domain:x.ai", "domain:grok.com",
+        "domain:perplexity.ai", "domain:pplx.ai", "domain:mistral.ai", "domain:meta.ai",
+        "domain:poe.com", "domain:poecdn.net", "domain:character.ai",
+        "domain:midjourney.com", "domain:runwayml.com", "domain:pika.art", "domain:ideogram.ai",
+        "domain:leonardo.ai", "domain:suno.com", "domain:suno.ai", "domain:udio.com", "domain:elevenlabs.io",
+        "domain:cursor.com", "domain:cursor.sh", "domain:cursorapi.com", "domain:codeium.com", "domain:windsurf.com",
+        "domain:deepl.com", "domain:openrouter.ai", "domain:groq.com", "domain:replicate.com"
+      ],
+      "geosites": ["openai", "anthropic", "perplexity", "xai", "category-ai-!cn", "category-ai-chat-!cn"]
+    },
+    "youtube": {},
+    "tiktok": {},
+    "telegram": {}
+  },
+  "aiDefault": {
+    "exits": [["RU", "KZ"], ["KZ"]]
+  },
+  "sites": {
+    "direct": [],
+    "proxy": []
+  },
+  "refreshHours": 6
+}

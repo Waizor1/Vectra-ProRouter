@@ -1233,6 +1233,12 @@ var updateHTTPClient = func() *http.Client { return &http.Client{Timeout: 120 * 
 // redirect to plain http is refused, not followed), and anything but a 200
 // refused.
 func getHTTPS(ctx context.Context, rawURL string) (*http.Response, error) {
+	return getHTTPSWith(ctx, updateHTTPClient(), rawURL)
+}
+
+// getHTTPSWith is getHTTPS over client (the catalog's: on the control plane's
+// marked path, so it never loops through xray).
+func getHTTPSWith(ctx context.Context, client *http.Client, rawURL string) (*http.Response, error) {
 	if err := requireHTTPS(rawURL); err != nil {
 		return nil, err
 	}
@@ -1240,7 +1246,7 @@ func getHTTPS(ctx context.Context, rawURL string) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := subscription.HTTPSOnlyRedirects(updateHTTPClient()).Do(req)
+	resp, err := subscription.HTTPSOnlyRedirects(client).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1254,7 +1260,12 @@ func getHTTPS(ctx context.Context, rawURL string) (*http.Response, error) {
 // fetchHTTPS reads an https URL whole with getHTTPS; an answer longer than max
 // is refused, not cut.
 func fetchHTTPS(ctx context.Context, rawURL string, max int64) ([]byte, error) {
-	resp, err := getHTTPS(ctx, rawURL)
+	return fetchHTTPSWith(ctx, updateHTTPClient(), rawURL, max)
+}
+
+// fetchHTTPSWith is fetchHTTPS over client.
+func fetchHTTPSWith(ctx context.Context, client *http.Client, rawURL string, max int64) ([]byte, error) {
+	resp, err := getHTTPSWith(ctx, client, rawURL)
 	if err != nil {
 		return nil, err
 	}

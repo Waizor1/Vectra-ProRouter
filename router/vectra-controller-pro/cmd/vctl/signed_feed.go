@@ -97,41 +97,51 @@ func routerArch(file string) (string, error) {
 
 // trustedFeedIndex verifies before any candidate is selected.
 func trustedFeedIndex(ctx context.Context) (string, feedverify.Feed, []feedverify.Package, error) {
+	arch, feed, pkgs, _, err := trustedFeedIndexWith(ctx, fetchHTTPS)
+	return arch, feed, pkgs, err
+}
+
+// trustedFeedIndexWith is trustedFeedIndex over fetch, with the number of
+// the key that signs the feed: the catalog (catalog.go) is taken only under
+// that key.
+func trustedFeedIndexWith(ctx context.Context, fetch func(context.Context, string, int64) ([]byte, error)) (string, feedverify.Feed, []feedverify.Package, feedverify.KeyNumber, error) {
+	var none feedverify.KeyNumber
 	arch, err := routerArch(openwrtReleasePath)
 	if err != nil {
-		return "", feedverify.Feed{}, nil, fmt.Errorf("cannot tell this router's architecture: %w", err)
+		return "", feedverify.Feed{}, nil, none, fmt.Errorf("cannot tell this router's architecture: %w", err)
 	}
 	conf, err := os.ReadFile(vectraFeedConf)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", feedverify.Feed{}, nil, err
+		return "", feedverify.Feed{}, nil, none, err
 	}
 	feed, ok := feedverify.FindFeed(conf, vectraFeedName)
 	if !ok {
-		return "", feedverify.Feed{}, nil, fmt.Errorf("no %s feed in %s (the Vectra installer adds it, with its key)", vectraFeedName, vectraFeedConf)
+		return "", feedverify.Feed{}, nil, none, fmt.Errorf("no %s feed in %s (the Vectra installer adds it, with its key)", vectraFeedName, vectraFeedConf)
 	}
 	if err := requireHTTPS(feed.URL); err != nil {
-		return "", feedverify.Feed{}, nil, fmt.Errorf("the %s feed %s: %w", vectraFeedName, feed.URL, err)
+		return "", feedverify.Feed{}, nil, none, fmt.Errorf("the %s feed %s: %w", vectraFeedName, feed.URL, err)
 	}
-	raw, err := fetchHTTPS(ctx, feed.IndexURL(), maxFeedIndexBytes)
+	raw, err := fetch(ctx, feed.IndexURL(), maxFeedIndexBytes)
 	if err != nil {
-		return "", feedverify.Feed{}, nil, fmt.Errorf("%s: %w", path.Base(feed.IndexURL()), err)
+		return "", feedverify.Feed{}, nil, none, fmt.Errorf("%s: %w", path.Base(feed.IndexURL()), err)
 	}
 	index, err := feed.Unpack(raw, maxFeedIndexBytes)
 	if err != nil {
-		return "", feedverify.Feed{}, nil, err
+		return "", feedverify.Feed{}, nil, none, err
 	}
-	sig, err := fetchHTTPS(ctx, feed.SignatureURL(), maxFeedSignatureBytes)
+	sig, err := fetch(ctx, feed.SignatureURL(), maxFeedSignatureBytes)
 	if err != nil {
-		return "", feedverify.Feed{}, nil, fmt.Errorf("Packages.sig: %w", err)
+		return "", feedverify.Feed{}, nil, none, fmt.Errorf("Packages.sig: %w", err)
 	}
-	if _, err := feedverify.VerifyWithKeys(opkgKeysDir, index, sig); err != nil {
-		return "", feedverify.Feed{}, nil, fmt.Errorf("Packages.sig of %s: %w", feed.URL, err)
+	key, err := feedverify.VerifyWithKeys(opkgKeysDir, index, sig)
+	if err != nil {
+		return "", feedverify.Feed{}, nil, none, fmt.Errorf("Packages.sig of %s: %w", feed.URL, err)
 	}
 	pkgs, err := feedverify.ParseIndex(index)
 	if err != nil {
-		return "", feedverify.Feed{}, nil, fmt.Errorf("Packages of %s: %w", feed.URL, err)
+		return "", feedverify.Feed{}, nil, none, fmt.Errorf("Packages of %s: %w", feed.URL, err)
 	}
-	return arch, feed, pkgs, nil
+	return arch, feed, pkgs, key, nil
 }
 
 // The raw panel update lane has the same installed-version floor as automatic

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"vectra-controller-pro/internal/catalog"
 	"vectra-controller-pro/internal/coreengine/xray"
 )
 
@@ -299,5 +300,93 @@ func TestAServiceTheEntryDoesNotRouteIsNotOffered(t *testing.T) {
 	_, _, res := spliceServicesDoc(t, doc, xray.SpliceOptions{Services: map[string]string{"tiktok": "DE"}})
 	if !reflect.DeepEqual(res.Services.Stale, []string{"tiktok"}) {
 		t.Fatalf("result %+v", res.Services)
+	}
+}
+
+// The provider's AI rule as every location carried it on 2026-10-17: AI
+// services and games in one list to BL-MAIN. A country for «Нейросети» takes
+// the AI names; the games keep the provider's rule — BL-MAIN — untouched.
+const providerAIAndGamesRule = `{"domain":["domain:chatgpt.com","domain:openai.com","domain:oaistatic.com","domain:oaiusercontent.com","domain:claude.ai","domain:anthropic.com","domain:claudeusercontent.com","domain:perplexity.ai","domain:x.ai","domain:grok.com","domain:gemini.google.com","domain:bard.google.com","domain:makersuite.google.com","domain:aistudio.google.com","domain:generativelanguage.googleapis.com","domain:labs.google.com","domain:ai.google.dev","domain:deepmind.com","domain:deepmind.google","domain:steampowered.com","domain:steamcommunity.com","domain:steamstatic.com","domain:steamcontent.com","domain:steamusercontent.com","domain:steamserver.net","domain:epicgames.com","domain:fortnite.com","domain:unrealengine.com","domain:easyanticheat.net","domain:easy.ac","domain:riotgames.com","domain:riotcdn.net","domain:leagueoflegends.com","domain:playvalorant.com","domain:battle.net","domain:blizzard.com","domain:blizzardcdn.com","domain:robertsspaceindustries.com","domain:cloudimperiumgames.com","domain:rsilauncher.com","domain:spectrum.chat"],"balancerTag":"BL-MAIN"}`
+
+func TestTheAIOverlayLeavesTheProvidersGamesOnTheirPath(t *testing.T) {
+	doc := svcDocWith(t, `{"domain":["geosite:youtube"],"balancerTag":"BL-RU"},`,
+		providerAIAndGamesRule+`,{"domain":["geosite:youtube"],"balancerTag":"BL-RU"},`)
+	_, r, res := spliceServicesDoc(t, doc, xray.SpliceOptions{Services: map[string]string{"ai": "DE"}})
+	if !reflect.DeepEqual(res.Services.Applied, []string{"ai=DE"}) {
+		t.Fatalf("result %+v", res.Services)
+	}
+	overlay := svcRulesTo(r, "VCTL-SVC-AI")
+	if len(overlay) != 1 {
+		t.Fatalf("AI overlay rules %v", overlay)
+	}
+	names := strings.Join(overlay[0], " ")
+	for _, game := range []string{"steam", "epicgames", "fortnite", "riot", "valorant", "battle.net", "blizzard", "robertsspace", "cloudimperium", "rsilauncher", "spectrum.chat", "easyanticheat", "easy.ac", "unrealengine", "leagueoflegends"} {
+		if strings.Contains(names, game) {
+			t.Fatalf("%s goes through the AI country: %s", game, names)
+		}
+	}
+	for _, ai := range []string{"domain:chatgpt.com", "domain:claude.ai", "domain:gemini.google.com", "domain:labs.google.com", "domain:deepmind.google", "domain:x.ai"} {
+		if !strings.Contains(" "+names+" ", " "+ai+" ") {
+			t.Fatalf("%s missing from the AI overlay: %s", ai, names)
+		}
+	}
+	// The provider's own rule stays whole, so the games still reach BL-MAIN.
+	main := svcRulesTo(r, "BL-MAIN")
+	found := false
+	for _, m := range main {
+		if strings.Contains(strings.Join(m, " "), "domain:robertsspaceindustries.com") && strings.Contains(strings.Join(m, " "), "domain:chatgpt.com") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the provider's rule changed: %v", main)
+	}
+}
+
+// What the overlay keeps is the catalog's: a catalog that trusts the
+// provider's AI rule takes it whole again, one that adds a name adds it.
+func TestTheCatalogDecidesWhatTheAIOverlayTakes(t *testing.T) {
+	t.Cleanup(func() { xray.UseCatalog(nil) })
+	doc := svcDocWith(t, `{"domain":["geosite:youtube"],"balancerTag":"BL-RU"},`,
+		providerAIAndGamesRule+`,{"domain":["geosite:youtube"],"balancerTag":"BL-RU"},`)
+	cat, err := catalog.Parse([]byte(`{"schema":1,"serial":9999999999,"services":{"ai":{"names":["domain:example-ai.test"]}}}`), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xray.UseCatalog(cat)
+	_, r, _ := spliceServicesDoc(t, doc, xray.SpliceOptions{Services: map[string]string{"ai": "DE"}})
+	names := strings.Join(svcRulesTo(r, "VCTL-SVC-AI")[0], " ")
+	if !strings.Contains(names, "domain:steampowered.com") || !strings.HasSuffix(names, "domain:example-ai.test") {
+		t.Fatalf("overlay %s", names)
+	}
+}
+
+// The catalog's sites come after the owner's: a site the owner lists either
+// way stays the owner's, the rest go where the catalog says.
+func TestTheCatalogsSitesComeAfterTheOwnersAndNeverOverrideThem(t *testing.T) {
+	t.Cleanup(func() { xray.UseCatalog(nil) })
+	cat, err := catalog.Parse([]byte(`{"schema":1,"serial":9999999999,"sites":{"direct":["example.ru","shop.example"],"proxy":["steampowered.com"]}}`), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xray.UseCatalog(cat)
+	_, r, res := spliceServicesDoc(t, svcDoc, xray.SpliceOptions{Rules: xray.UserRules{Proxy: []string{"example.ru"}}})
+	if res.UserRules.Proxy != 1 || res.UserRules.FleetDirect != 1 || res.UserRules.FleetProxy != 1 {
+		t.Fatalf("result %+v", res.UserRules)
+	}
+	var lan [][]string
+	for _, rule := range r.Routing.Rules {
+		if len(rule.InboundTag) == 1 && rule.InboundTag[0] == "tproxy-in" {
+			lan = append(lan, append(append([]string{rule.OutboundTag + rule.BalancerTag}, rule.Domain...), rule.IP...))
+		}
+	}
+	want := [][]string{{"BL-MAIN", "domain:example.ru"}, {"DIRECT", "domain:shop.example"}, {"BL-MAIN", "domain:steampowered.com"}}
+	if !reflect.DeepEqual(lan, want) {
+		t.Fatalf("LAN rules %v, want %v", lan, want)
+	}
+	// Without the owner's sites the catalog's still render.
+	_, _, res = spliceServicesDoc(t, svcDoc, xray.SpliceOptions{})
+	if res.UserRules.FleetDirect != 2 || res.UserRules.FleetProxy != 1 {
+		t.Fatalf("catalog only: %+v", res.UserRules)
 	}
 }

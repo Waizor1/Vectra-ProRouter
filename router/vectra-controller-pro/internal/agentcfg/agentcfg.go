@@ -51,8 +51,11 @@ type Config struct {
 	// The router UI's files (internal/localctl). Unset, they live next to
 	// statePath (persistent) and statusPath (tmpfs) — on a router exactly the
 	// localctl defaults, and in a test wherever the test put its state.
-	OverridesPath    string `json:"overridesPath,omitempty"`
-	EntriesPath      string `json:"entriesPath,omitempty"`
+	OverridesPath string `json:"overridesPath,omitempty"`
+	EntriesPath   string `json:"entriesPath,omitempty"`
+	// CatalogPath is the downloaded catalog (internal/catalog), its
+	// signature next to it; none: the built-in one.
+	CatalogPath      string `json:"catalogPath,omitempty"`
 	EntriesIndexPath string `json:"entriesIndexPath,omitempty"`
 	UISocketPath     string `json:"uiSocketPath,omitempty"`
 
@@ -201,6 +204,9 @@ func (c *Config) Defaults() {
 	}
 	if c.EntriesPath == "" {
 		c.EntriesPath = filepath.Join(persistent, filepath.Base(localctl.DefaultEntriesPath))
+	}
+	if c.CatalogPath == "" {
+		c.CatalogPath = filepath.Join(persistent, "catalog.json")
 	}
 	if c.EntriesIndexPath == "" {
 		c.EntriesIndexPath = filepath.Join(persistent, filepath.Base(localctl.DefaultEntriesIndexPath))

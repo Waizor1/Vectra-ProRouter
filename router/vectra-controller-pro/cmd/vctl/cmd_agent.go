@@ -354,8 +354,12 @@ type daemon struct {
 	// nextSubscriptionRefresh is when the daemon's own refresh is due
 	// (maybeRefreshSubscription); zero until the first poll sets it.
 	nextSubscriptionRefresh time.Time
-	busy                    string
-	probe                   *localctl.Probe
+	// catalogSerial is the serial of the catalog the renders apply, and
+	// nextCatalogRefresh when the feed is asked for a newer one (catalog.go).
+	catalogSerial      int64
+	nextCatalogRefresh time.Time
+	busy               string
+	probe              *localctl.Probe
 	// pinBudget bounds how long the start hook waits for xray's API to come
 	// up before giving up on restoring pins and on the leak baseline. 0 = 45 s.
 	pinBudget time.Duration
@@ -511,6 +515,7 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 		startedAt:      time.Now().UTC(),
 		memFloorKB:     memFloorKB,
 	}
+	d.catalogSerial = useCatalog(cfg).Catalog.Serial
 	d.exits.Restore(unfitSince(st.UnfitExits))
 	d.exits.RestoreEgress(egressFrom(st.ExitEgress))
 	// Every start — the first, a reload, a crash restart — must get the
@@ -727,6 +732,7 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 		d.maybeLoadDirect(ctx)
 		d.maybeSyncPortForwards(ctx, false)
 		d.maybeRefreshSubscription(ctx, time.Now())
+		d.maybeRefreshCatalog(ctx, time.Now())
 		d.maybeRetirePassWall(ctx, time.Now())
 		d.publishRuntime()
 		// Between polls the loop serves the router UI's changes, so they run

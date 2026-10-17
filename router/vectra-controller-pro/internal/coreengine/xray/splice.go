@@ -103,8 +103,8 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 	seenLog, seenRouting := false, false
 
 	var plan rulesPlan
-	if !opts.Rules.empty() {
-		p, err := planUserRules(providerRaw, opts.Rules, inboundTagOf(t))
+	if fleet := ActiveCatalog().Sites; !opts.Rules.empty() || len(fleet.Direct)+len(fleet.Proxy) > 0 {
+		p, err := planUserRules(providerRaw, opts.Rules, fleet, inboundTagOf(t))
 		if err != nil {
 			return nil, res, err
 		}

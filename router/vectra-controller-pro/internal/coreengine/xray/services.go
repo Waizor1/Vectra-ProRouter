@@ -25,28 +25,39 @@ type Service struct {
 	ID string
 	// Domains and IPs name the service in the entry: the entry's own rule
 	// that names one of them (and nothing else) is the service's path, and
-	// its whole list is what the overlay matches — the provider names a
-	// service by more than its geosite category. A rule's conditions are
-	// ANDed, so a service reached by name or by address has a rule for each.
+	// its list is what the overlay matches — the provider names a service by
+	// more than its geosite category. A rule's conditions are ANDed, so a
+	// service reached by name or by address has a rule for each. What the
+	// catalog says about the service (internal/catalog) is applied to that
+	// list: its own names are added, and a service the catalog marks
+	// onlyKnown keeps only the provider's names it knows (overlay).
 	Domains []string
 	IPs     []string
-	// Extra are domains the service always covers besides the entry's own
-	// list for it (the AI services the provider may not name).
-	Extra []string
 }
 
-// withExtra is matchers plus s.Extra, without repeats, in that order.
-func (s Service) withExtra(matchers []string) []string {
-	if len(s.Extra) == 0 {
-		return matchers
-	}
+// overlay is what the service's rule matches by name: the provider's
+// matchers — all of them, or under onlyKnown only those the catalog knows as
+// the service — then the catalog's own names, without repeats, in that
+// order. On 2026-10-17 the provider's AI rule (the one naming ChatGPT) held
+// Steam, Epic, Riot, Blizzard and Star Citizen too: taken whole, every game
+// went through the Kazakh exit of «Нейросети».
+func (s Service) overlay(provider []string) []string {
+	cs := ActiveCatalog().Service(s.ID)
 	seen := map[string]bool{}
 	var out []string
-	for _, m := range append(append([]string(nil), matchers...), s.Extra...) {
+	add := func(m string) {
 		if !seen[m] {
 			seen[m] = true
 			out = append(out, m)
 		}
+	}
+	for _, m := range provider {
+		if !cs.OnlyKnown || cs.Knows(m) {
+			add(m)
+		}
+	}
+	for _, m := range cs.Names {
+		add(m)
 	}
 	return out
 }
@@ -56,8 +67,9 @@ var Services = []Service{
 	{ID: "youtube", Domains: []string{"geosite:youtube"}},
 	{ID: "tiktok", Domains: []string{"geosite:tiktok"}},
 	{ID: "telegram", Domains: []string{"geosite:telegram"}, IPs: []string{"geoip:telegram"}},
-	// «Нейросети»: the provider's AI rule names ChatGPT; AIDomains go with it.
-	{ID: "ai", Domains: []string{"domain:chatgpt.com"}, Extra: AIDomains},
+	// «Нейросети»: the provider's AI rule names ChatGPT; the catalog's AI
+	// names go with what it knows of that rule.
+	{ID: "ai", Domains: []string{"domain:chatgpt.com"}},
 }
 
 // ServiceByID finds a service.
@@ -219,7 +231,7 @@ func servicePath(rules []map[string]json.RawMessage, v *xrayview.View, s Service
 	}
 	switch {
 	case hasDom:
-		p = servicePathOf{target: dom.target, isBalancer: dom.isBalancer, domains: s.withExtra(dom.matchers)}
+		p = servicePathOf{target: dom.target, isBalancer: dom.isBalancer, domains: s.overlay(dom.matchers)}
 		if hasIP && ip.target == dom.target && ip.isBalancer == dom.isBalancer {
 			p.ips = ip.matchers
 		}

@@ -342,11 +342,12 @@ func TestConnectServiceTakesTheProvidersWhitelistChain(t *testing.T) {
 }
 
 // «Нейросети»: the provider's locations name ChatGPT in an AI rule of their
-// own; the service takes that path, with every AI domain we know besides the
-// provider's (2026-10-02). A location without such a rule takes its main
-// path for the same domains.
+// own; the service takes that path with every AI name the catalog knows. Of
+// the provider's list it keeps only what the catalog knows as AI: on
+// 2026-10-17 that list held games too, and they all left through Kazakhstan.
+// A location without such a rule takes its main path for the same names.
 func TestConnectAIServiceCoversEveryKnownAIDomain(t *testing.T) {
-	withRule := strings.Replace(oneCountryEntry, `{"domain":["geosite:category-ru"],"outboundTag":"DIRECT"},`, `{"domain":["geosite:category-ru"],"outboundTag":"DIRECT"},{"domain":["domain:chatgpt.com","domain:provider-only-ai.example"],"outboundTag":"de-1"},`, 1)
+	withRule := strings.Replace(oneCountryEntry, `{"domain":["geosite:category-ru"],"outboundTag":"DIRECT"},`, `{"domain":["geosite:category-ru"],"outboundTag":"DIRECT"},{"domain":["domain:chatgpt.com","domain:gemini.google.com","domain:steampowered.com","domain:provider-only.example","keyword:gpt"],"outboundTag":"de-1"},`, 1)
 	for name, entry := range map[string]string{"own AI rule": withRule, "main path": oneCountryEntry} {
 		t.Run(name, func(t *testing.T) {
 			_, r, res := spliceServices(t, xray.SpliceOptions{ServiceEntries: map[string]json.RawMessage{"ai": json.RawMessage(entry)}})
@@ -366,11 +367,13 @@ func TestConnectAIServiceCoversEveryKnownAIDomain(t *testing.T) {
 					t.Fatalf("%s missing from %v", d, got)
 				}
 			}
-			if name == "own AI rule" && !got["domain:provider-only-ai.example"] {
-				t.Fatal("dropped the provider's own AI domains")
+			if name == "own AI rule" && !got["domain:gemini.google.com"] {
+				t.Fatal("dropped the provider's own name for an AI service")
 			}
-			if got["domain:google.com"] {
-				t.Fatal("sent all of Google through the AI exit")
+			for _, d := range []string{"domain:steampowered.com", "domain:provider-only.example", "keyword:gpt", "domain:google.com"} {
+				if got[d] {
+					t.Fatalf("%s went through the AI exit: %v", d, got)
+				}
 			}
 		})
 	}
