@@ -93,9 +93,12 @@ One JSON document, `catalog.json`, the knowledge that was compiled in:
 - `refreshHours`: how often a router asks for a new catalog, 1–48.
 
 The binary carries the same document as its built-in default
-(`catalog/default.json`, embedded): a router without a downloaded catalog, or
-whose catalog fails a check, renders exactly as with the default. The
-default is r24's knowledge, so the fix works before anything is published.
+(`internal/catalog/catalog.json`, embedded — also the file we edit and
+publish): a router without a downloaded catalog, or whose catalog fails a
+check, renders exactly as with the default; a downloaded catalog is used only
+while its serial is above the built-in one. The default is r24's knowledge,
+so the fix works before anything is published. A catalog `geosite:` name the
+router's geo file lacks is left out of that router's render.
 
 ### 3. Delivery and trust
 
@@ -125,9 +128,8 @@ default is r24's knowledge, so the fix works before anything is published.
 
 ### 4. Our side
 
-- The source of truth is `router/vectra-controller-pro/catalog/catalog.json`
-  in git (reviewed like code). `catalog/default.json` is what a release
-  embeds; they start equal.
+- The source of truth is `internal/catalog/catalog.json` in git (reviewed
+  like code); a release embeds it, a publish sends it without a release.
 - `scripts/publish-vctl-catalog.sh --channel pro-canary [--dry-run]`: checks
   the document with the same parser as the router (`vctl catalog check`, run
   on the Mac), refuses a serial not above the published one, ships it to the
@@ -135,6 +137,23 @@ default is r24's knowledge, so the fix works before anything is published.
   previous catalog, puts both files into the channel directory atomically and
   reads them back over HTTPS.
 - Rollback = publish the old content with a NEW serial.
+
+### 5. The geo feed (added 2026-10-17 at the owner's request)
+
+Provider-mode routers never refreshed their geo files (1111's were at least
+73 days old); only native routing did. `tools/geobuild` builds merged
+geosite.dat (itdog's categories + category-ru, category-gov-ru, private) and
+geoip.dat (direct, private, whitelist + ru, telegram) on the build host,
+refusing a build that loses a category or halves one; `geo.json` names each
+file by path (content-addressed under `geo/`), sha256, size and categories,
+signed like the catalog (`scripts/publish-vctl-geo.sh`). The daemon asks two
+minutes after its start and every 6 h ±10 %; a newer set is fetched into a
+staging directory, checked (size, sha256, the manifest's categories and every
+category of the files in use), the running render passes `xray -test` against
+it, and only then it is renamed into `/etc/vectra-controller-pro/geo`, the
+manifest last; the next poll renders with it (serial in the render key).
+`update_xray_assets` asks the feed; `vctl geo update` keeps every category in
+use.
 
 ## What does not change
 
