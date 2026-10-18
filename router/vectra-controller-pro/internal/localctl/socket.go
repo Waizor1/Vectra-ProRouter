@@ -71,6 +71,9 @@ type Change struct {
 type ServiceModeChoice struct {
 	ID   string `json:"id"`
 	Mode string `json:"mode"`
+	// Consent is what the service matched when «Напрямую» was chosen
+	// (catalog.Service.MatchersHash).
+	Consent string `json:"consent,omitempty"`
 }
 
 // ServiceChoice is one service's country (xray.Services).
@@ -127,6 +130,13 @@ func (c Change) ApplyTo(o *Overrides) {
 		delete(o.ServiceEntries, m.ID)
 		delete(o.Services, m.ID)
 		delete(o.ServiceModes, m.ID)
+		delete(o.DirectConsent, m.ID)
+		if m.Mode == "direct" {
+			if o.DirectConsent == nil {
+				o.DirectConsent = map[string]string{}
+			}
+			o.DirectConsent[m.ID] = m.Consent
+		}
 		switch {
 		case m.Mode == "":
 		case m.Mode == "main" && ServicesWithDefault[m.ID]:
@@ -148,6 +158,7 @@ func (c Change) ApplyTo(o *Overrides) {
 	}
 	if s := c.SetService; s != nil {
 		delete(o.ServiceModes, s.ID)
+		delete(o.DirectConsent, s.ID)
 		delete(o.ServiceEntries, s.ID)
 		if s.MainPath && s.EntryID == "" && s.Country == "" && ServicesWithDefault[s.ID] {
 			// «As the main VPN» for a service with a default location is a

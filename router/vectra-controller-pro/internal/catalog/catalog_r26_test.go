@@ -138,3 +138,27 @@ func TestAQuarantinedCatalogIsNotLoaded(t *testing.T) {
 		t.Fatalf("a newer one is not loaded: %+v", l)
 	}
 }
+
+// A service the owner may take out of the VPN names exactly itself.
+func TestADirectServiceNamesExactlyItself(t *testing.T) {
+	svc := func(body string) string {
+		return `{"schema":1,"serial":5,"services":{"x":{` + body + `}},"sites":{}}`
+	}
+	if _, err := Parse([]byte(svc(`"onlyKnown":true,"names":["domain:example.com","full:cdn.example.com"],"ips":["1.2.0.0/16","5.6.7.8"],"modes":["stable","direct"],"default":"stable"`)), true); err != nil {
+		t.Fatalf("refused a narrow direct service: %v", err)
+	}
+	for name, body := range map[string]string{
+		"not onlyKnown":   `"names":["domain:example.com"],"modes":["direct"]`,
+		"a zone":          `"onlyKnown":true,"names":["domain:com"],"modes":["direct"]`,
+		"a public suffix": `"onlyKnown":true,"names":["domain:co.uk"],"modes":["direct"]`,
+		"a geosite":       `"onlyKnown":true,"names":["geosite:geolocation-!cn"],"modes":["direct"]`,
+		"geosites":        `"onlyKnown":true,"geosites":["steam"],"modes":["direct"]`,
+		"too many v4":     `"onlyKnown":true,"ips":["1.0.0.0/16","2.0.0.0/16","3.0.0.0/16","4.0.0.0/16","5.0.0.0/16"],"modes":["direct"]`,
+		"ip marker only":  `"ipMarker":"geoip:telegram","modes":["stable"]`,
+		"v4 in v6":        `"ips":["::ffff:0.0.0.0/96"]`,
+	} {
+		if _, err := Parse([]byte(svc(body)), true); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

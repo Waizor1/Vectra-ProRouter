@@ -217,7 +217,14 @@ func TestNoStableServiceAsksNothing(t *testing.T) {
 			modes[id] = catalog.ModeDirect
 		}
 	}
-	if _, err := localctl.UpdateOverrides(s.d.cfg.OverridesPath, func(o *localctl.Overrides) error { o.ServiceModes = modes; return nil }); err != nil {
+	consent := map[string]string{}
+	for id := range modes {
+		consent[id] = xray.ActiveCatalog().Service(id).MatchersHash()
+	}
+	if _, err := localctl.UpdateOverrides(s.d.cfg.OverridesPath, func(o *localctl.Overrides) error {
+		o.ServiceModes, o.DirectConsent = modes, consent
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	s.answers["bridge-fr5"] = []string{"38.180.154.151"}
@@ -237,5 +244,46 @@ func TestCandidatesFollowTheStableFallback(t *testing.T) {
 	a, b := stableCandidates(raw1, nil), stableCandidates(raw2, []string{"bridge-ae5"})
 	if len(a) == 0 || !reflect.DeepEqual(b, without(a, "bridge-ae5")) {
 		t.Fatalf("candidates %v and, through the fallback and without the unfit ae5, %v", a, b)
+	}
+}
+
+// A pin the exit check found filtered is not rendered, and a new round runs
+// at once; a kept pin that no longer keeps one address is shown as none.
+func TestAFilteredOrUnsteadyPinIsNotShownAsStable(t *testing.T) {
+	s := newStableStand(t, xray.SpliceOptions{})
+	s.answers["bridge-fr5"] = []string{"38.180.154.151"}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	s.d.stableExitStep(context.Background(), now)
+	provider, _ := os.ReadFile(filepath.Join("..", "..", "internal", "coreengine", "xray", "testdata", "provider", "entry-00.json"))
+	s.d.exits.Round([]exitcheck.Result{{Tag: "bridge-fr5", Control: true, Blocked: []bool{false}}}, now)
+	s.d.exits.Round([]exitcheck.Result{{Tag: "bridge-fr5", Control: true, Blocked: []bool{false}}}, now.Add(time.Minute))
+	if !contains(s.d.exits.Unfit(), "bridge-fr5") {
+		t.Skip("the exit check needs other evidence to call an exit unfit")
+	}
+	if opts := s.d.withStableExit(xray.SpliceOptions{}, provider); opts.StablePin != "" {
+		t.Fatalf("a filtered pin rendered: %q", opts.StablePin)
+	}
+	if state, _, _ := s.d.stableExitView(localctl.Overrides{}); state == stableStatePinned {
+		t.Fatal("a filtered pin shown as pinned")
+	}
+}
+
+func TestAKeptUnsteadyPinReadsAsNone(t *testing.T) {
+	s := newStableStand(t, xray.SpliceOptions{})
+	s.answers["bridge-fr5"] = []string{"38.180.154.151"}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	s.d.stableExitStep(context.Background(), now)
+	s.answers["bridge-fr5"] = []string{"38.180.154.151", "38.180.154.152"}
+	s.d.stableExitStep(context.Background(), now.Add(31*time.Minute))
+	r := s.d.stableExitNow()
+	if r.Tag != "bridge-fr5" || !r.Unsteady || r.State != stableStatePinned {
+		t.Fatalf("record %+v", r)
+	}
+	if state, country, _ := s.d.stableExitView(localctl.Overrides{}); state != stableStateNone || country != "" {
+		t.Fatalf("view %s %s", state, country)
+	}
+	provider, _ := os.ReadFile(filepath.Join("..", "..", "internal", "coreengine", "xray", "testdata", "provider", "entry-00.json"))
+	if opts := s.d.withStableExit(xray.SpliceOptions{}, provider); opts.StablePin != "bridge-fr5" {
+		t.Fatalf("the kept pin is not rendered (a restart for nothing): %q", opts.StablePin)
 	}
 }

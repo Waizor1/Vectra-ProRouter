@@ -11,6 +11,11 @@ func (o Overrides) ServiceMode(id string, c *catalog.Catalog) (mode string, chos
 	cs := c.Service(id)
 	_, def := cs.EffectiveModes(id)
 	pick := func(m string) (string, bool, bool) {
+		if m == catalog.ModeDirect && o.DirectConsent[id] != cs.MatchersHash() {
+			// Chosen for what the service matched then: the catalog changed
+			// it since, so the owner is asked again — its default runs.
+			return def, true, true
+		}
 		if m == catalog.ModeMain || cs.Offers(id, m) {
 			return m, true, false
 		}

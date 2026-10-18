@@ -235,6 +235,8 @@ func withoutAIDefault(opts xray.SpliceOptions, ov localctl.Overrides) (xray.Spli
 
 // reloadAfterApply brings xray onto a freshly written render.
 func (d *daemon) reloadAfterApply(ctx context.Context, res apply.ApplyResult, providerRaw []byte) {
+	// A render went through: the catalog's refusals are no longer in a row.
+	d.catalogRefusals = 0
 	if !res.Changed {
 		return
 	}

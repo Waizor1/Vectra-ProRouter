@@ -63,6 +63,10 @@ type Overrides struct {
 	// or "direct" (catalog.Mode*). A service named here has no country and
 	// no location; one named nowhere runs on the catalog's default.
 	ServiceModes map[string]string `json:"serviceModes,omitempty"`
+	// DirectConsent binds each «Напрямую» to what the service matched when
+	// the owner chose it (catalog.Service.MatchersHash): a catalog that
+	// changes the service makes the choice stale, its default runs.
+	DirectConsent map[string]string `json:"directConsent,omitempty"`
 	// StableMain: the owner's choice to send the whole main path through
 	// the stable exit; nil = the catalog's default.
 	StableMain *bool     `json:"stableMain,omitempty"`
@@ -125,6 +129,9 @@ func UpdateOverrides(path string, fn func(*Overrides) error) (Overrides, error) 
 		}
 		if len(o.ServiceModes) == 0 {
 			o.ServiceModes = nil
+		}
+		if len(o.DirectConsent) == 0 {
+			o.DirectConsent = nil
 		}
 		if len(o.ServiceEntries) == 0 {
 			o.ServiceEntries = nil

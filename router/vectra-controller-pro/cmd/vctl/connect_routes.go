@@ -113,6 +113,9 @@ func connectRouteChange(action string, params json.RawMessage, cache *localctl.E
 				return nil, "invalid_params"
 			}
 			c.SetServiceMode = &localctl.ServiceModeChoice{ID: p.Service, Mode: p.Mode}
+			if p.Mode == catalog.ModeDirect {
+				c.SetServiceMode.Consent = cs.MatchersHash()
+			}
 			break
 		}
 		if p.EntryID != nil && *p.EntryID == connectServiceAuto {

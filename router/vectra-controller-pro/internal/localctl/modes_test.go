@@ -14,6 +14,7 @@ func TestServiceModeIsTheOwnersChoiceElseTheCatalogs(t *testing.T) {
 	c := catalog.Builtin()
 	ov := Overrides{
 		ServiceModes:   map[string]string{"steam": "direct", "epic": "country"},
+		DirectConsent:  map[string]string{"steam": c.Services["steam"].MatchersHash()},
 		Services:       map[string]string{"tiktok": "DE"},
 		ServiceEntries: map[string]string{"youtube": "abc", "ai": ServiceMainPath},
 	}
@@ -72,5 +73,31 @@ func TestSetServiceModeClearsTheOtherChoices(t *testing.T) {
 	off := Overrides{}
 	if off.StableMainOn(catalog.Builtin()) || !reflect.DeepEqual(off.RenderModes(&catalog.Catalog{Schema: 1, Serial: 1}), map[string]string(nil)) {
 		t.Fatal("defaults")
+	}
+}
+
+// «Напрямую» is bound to what the service matched when the owner chose it:
+// a catalog that widens the service makes the choice stale.
+func TestDirectConsentFollowsTheCatalog(t *testing.T) {
+	c := catalog.Builtin()
+	var o Overrides
+	Change{SetServiceMode: &ServiceModeChoice{ID: "steam", Mode: "direct", Consent: c.Services["steam"].MatchersHash()}}.ApplyTo(&o)
+	if m, _, stale := o.ServiceMode("steam", c); m != "direct" || stale {
+		t.Fatalf("consented direct: %s stale=%v", m, stale)
+	}
+	wider := *c
+	wider.Services = map[string]catalog.Service{}
+	for k, v := range c.Services {
+		wider.Services[k] = v
+	}
+	s := wider.Services["steam"]
+	s.Names = append(append([]string(nil), s.Names...), "domain:example.com")
+	wider.Services["steam"] = s
+	if m, chosen, stale := o.ServiceMode("steam", &wider); m != "stable" || !chosen || !stale {
+		t.Fatalf("a widened service kept the owner's direct: %s chosen=%v stale=%v", m, chosen, stale)
+	}
+	Change{SetServiceMode: &ServiceModeChoice{ID: "steam", Mode: "stable"}}.ApplyTo(&o)
+	if len(o.DirectConsent) != 0 {
+		t.Fatalf("consent kept after another mode: %v", o.DirectConsent)
 	}
 }

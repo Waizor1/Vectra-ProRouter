@@ -43,7 +43,11 @@ func rpcdSetServiceMode(ctx context.Context, cfg agentcfg.Config, params []byte)
 	default:
 		return action(false, "invalid_params", `mode is "", "main", "stable" or "direct"`)
 	}
-	change := localctl.Change{SetServiceMode: &localctl.ServiceModeChoice{ID: *p.ID, Mode: *p.Mode}}
+	choice := &localctl.ServiceModeChoice{ID: *p.ID, Mode: *p.Mode}
+	if choice.Mode == catalog.ModeDirect {
+		choice.Consent = xray.ActiveCatalog().Service(*p.ID).MatchersHash()
+	}
+	change := localctl.Change{SetServiceMode: choice}
 	return askDaemon(ctx, cfg, localctl.SocketRequest{Op: localctl.OpReapply, Change: &change}, "service_set")
 }
 

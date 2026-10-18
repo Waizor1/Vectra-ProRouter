@@ -208,7 +208,7 @@ func TestConnectServiceModes(t *testing.T) {
 		mode   *localctl.ServiceModeChoice
 		svc    bool
 	}{
-		{`{"service":"steam","mode":"direct"}`, &localctl.ServiceModeChoice{ID: "steam", Mode: "direct"}, false},
+		{`{"service":"steam","mode":"direct"}`, &localctl.ServiceModeChoice{ID: "steam", Mode: "direct", Consent: xray.ActiveCatalog().Service("steam").MatchersHash()}, false},
 		{`{"service":"steam","entryId":null}`, &localctl.ServiceModeChoice{ID: "steam", Mode: "main"}, false},
 		{`{"service":"steam","entryId":":auto"}`, &localctl.ServiceModeChoice{ID: "steam"}, false},
 		{`{"service":"tiktok","entryId":null}`, nil, true},

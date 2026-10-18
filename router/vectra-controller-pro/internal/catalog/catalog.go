@@ -13,7 +13,9 @@ package catalog
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -404,12 +406,96 @@ func (s Service) validateR26(id string, groups map[string]Group) error {
 		// takes a service out of the tunnel on every router at once.
 		return fmt.Errorf("catalog: service %s: «Напрямую» is the owner's choice, never a default", id)
 	}
-	if (seen[ModeDirect] || seen[ModeStable]) && s.Marker != "" && !s.OnlyKnown {
+	if (seen[ModeDirect] || seen[ModeStable]) && (s.Marker != "" || s.IPMarker != "") && !s.OnlyKnown {
 		// A provider's rule names more than the service (its AI rule held
 		// the games): its whole list never goes out directly or elsewhere.
 		return fmt.Errorf("catalog: service %s: modes direct and stable need onlyKnown with a marker", id)
 	}
+	if seen[ModeDirect] {
+		if err := s.validateDirectScope(); err != nil {
+			return fmt.Errorf("catalog: service %s: «Напрямую»: %w", id, err)
+		}
+	}
 	return nil
+}
+
+// directMaxV4 is how many IPv4 addresses a service on «Напрямую» may cover
+// in all (four /16s): what one tap of the owner's takes out of the VPN stays
+// what the title says.
+const directMaxV4 = 1 << 18
+
+// multiLabelSuffixes are public suffixes of two labels a name of a direct
+// service may not be (a «domain:co.uk» is a country's sites).
+var multiLabelSuffixes = map[string]bool{
+	"co.uk": true, "org.uk": true, "com.ru": true, "net.ru": true, "org.ru": true, "pp.ru": true,
+	"com.ua": true, "co.jp": true, "com.au": true, "com.br": true, "com.tr": true, "co.kr": true,
+	"com.cn": true, "com.kz": true, "co.in": true, "com.mx": true, "co.za": true, "com.ar": true,
+}
+
+// validateDirectScope: a service the owner may take out of the VPN names
+// exactly itself — its own domains (two labels at least, never a public
+// suffix), no geosite category, its own networks in a bounded sum — and
+// knows only that (onlyKnown), so neither the catalog nor the provider's
+// rule can widen it.
+func (s Service) validateDirectScope() error {
+	if !s.OnlyKnown {
+		return errors.New("needs onlyKnown")
+	}
+	if len(s.Geosites) > 0 {
+		return errors.New("no geosites")
+	}
+	for _, n := range s.Names {
+		host, ok := strings.CutPrefix(n, "domain:")
+		if !ok {
+			host, ok = strings.CutPrefix(n, "full:")
+		}
+		if !ok {
+			return fmt.Errorf("name %q: domain: or full: only", n)
+		}
+		if strings.Count(host, ".") < 1 || multiLabelSuffixes[host] {
+			return fmt.Errorf("name %q is a whole domain zone", n)
+		}
+	}
+	var v4 uint64
+	for _, ip := range s.IPs {
+		bits, is6 := 32, false
+		if p, err := netip.ParsePrefix(ip); err == nil {
+			bits, is6 = p.Bits(), p.Addr().Is6()
+		} else if a, err := netip.ParseAddr(ip); err == nil {
+			is6 = a.Is6()
+			if is6 {
+				bits = 128
+			}
+		}
+		if !is6 {
+			v4 += 1 << uint(32-bits)
+		}
+	}
+	if v4 > directMaxV4 {
+		return fmt.Errorf("its networks cover %d IPv4 addresses, at most %d", v4, directMaxV4)
+	}
+	return nil
+}
+
+// MatchersHash fingerprints what the service matches as the catalog says it
+// (its markers, names, addresses, geosites, onlyKnown): an owner's
+// «Напрямую» is bound to it, and a catalog that changes it asks again.
+func (s Service) MatchersHash() string {
+	h := sha256.New()
+	write := func(parts ...string) {
+		for _, p := range parts {
+			h.Write([]byte(p))
+			h.Write([]byte{0})
+		}
+	}
+	write(s.Marker, s.IPMarker, fmt.Sprint(s.OnlyKnown))
+	for _, list := range [][]string{s.Names, s.IPs, s.Geosites} {
+		sorted := append([]string(nil), list...)
+		sort.Strings(sorted)
+		write(sorted...)
+		write("|")
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 func validTitle(t Title) error {
@@ -454,10 +540,10 @@ func validNetwork(v string) bool {
 		if p.Addr().Is6() {
 			min = minPrefix6
 		}
-		return p == p.Masked() && p.Bits() >= min
+		return p == p.Masked() && p.Bits() >= min && !p.Addr().Is4In6()
 	}
-	_, err := netip.ParseAddr(v)
-	return err == nil
+	a, err := netip.ParseAddr(v)
+	return err == nil && !a.Is4In6()
 }
 
 func (t *Tunables) validate() error {

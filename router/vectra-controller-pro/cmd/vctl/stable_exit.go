@@ -54,6 +54,9 @@ type stableExitRecord struct {
 	Country   string    `json:"country,omitempty"`
 	CheckedAt time.Time `json:"checkedAt,omitempty"`
 	FullAt    time.Time `json:"fullAt,omitempty"`
+	// Unsteady: the pin no longer keeps one address and no node does; it is
+	// kept (no restart for nothing) and the UIs say there is no steady IP.
+	Unsteady bool `json:"unsteady,omitempty"`
 }
 
 type stableExitTracker struct {
@@ -63,9 +66,14 @@ type stableExitTracker struct {
 	misses   int
 	nextFull time.Time
 	// renderDue: the record changed and the loop has not rendered it yet
-	// (busy, or a render refused for now): asked again at the next tick.
-	renderDue bool
+	// (busy, or a render refused for now): asked again from renderAskAt on.
+	renderDue   bool
+	renderAskAt time.Time
 }
+
+// stableRenderRetry: a render the pin asked for and did not get is asked
+// again this long after — a refused render costs an xray -test each time.
+const stableRenderRetry = 10 * time.Minute
 
 // Seams: tests never ask a real exit.
 var (
@@ -114,7 +122,9 @@ func (d *daemon) withStableExit(opts xray.SpliceOptions, providerRaw []byte) xra
 		return opts
 	}
 	r := d.stableExitNow()
-	if r.State != stableStatePinned || r.Tag == "" {
+	if r.State != stableStatePinned || r.Tag == "" || contains(d.exits.Unfit(), r.Tag) {
+		// An exit the exit check found filtered carries nothing stable: the
+		// services ride the main path until a round moves the pin.
 		return opts
 	}
 	if v, err := xrayview.Parse(providerRaw); err == nil {
@@ -143,8 +153,11 @@ func (d *daemon) stableExitView(ov localctl.Overrides) (state, country string, c
 		t := r.CheckedAt
 		checkedAt = &t
 	}
-	if r.State == stableStatePinned {
+	if r.State == stableStatePinned && !r.Unsteady && !contains(d.exits.Unfit(), r.Tag) {
 		return r.State, r.Country, checkedAt
+	}
+	if r.State == stableStatePinned {
+		return stableStateNone, "", checkedAt
 	}
 	return r.State, "", checkedAt
 }
@@ -176,15 +189,16 @@ func (d *daemon) stableExitStep(ctx context.Context, now time.Time) {
 		return
 	}
 	d.stable.mu.Lock()
-	renderDue := d.stable.renderDue
+	renderDue := d.stable.renderDue && !now.Before(d.stable.renderAskAt)
 	d.stable.mu.Unlock()
 	if renderDue {
-		d.stableAskRender(ctx)
+		d.stableAskRender(ctx, now)
 	}
 	set := c.StableExitSettings()
 	r := d.stableExitNow()
 	recheck := time.Duration(set.RecheckMinutes) * time.Minute
-	full := r.FullAt.IsZero() || r.State == "" || (r.State != stableStatePinned && now.Sub(r.CheckedAt) >= recheck)
+	full := r.FullAt.IsZero() || r.State == "" || (r.State != stableStatePinned && now.Sub(r.CheckedAt) >= recheck) ||
+		(r.State == stableStatePinned && contains(d.exits.Unfit(), r.Tag)) // filtered: a new pin now
 	d.stable.mu.Lock()
 	if d.stable.nextFull.IsZero() && !r.FullAt.IsZero() {
 		d.stable.nextFull = r.FullAt.Add(time.Duration(float64(time.Duration(set.EveryHours)*time.Hour) * stableJitter()))
@@ -213,7 +227,7 @@ func (d *daemon) stableExitStep(ctx context.Context, now time.Time) {
 		ips, _, failed := stableSteady(rctx, p, r.Tag, set.URL, stableRecheckAsk)
 		cancel()
 		switch {
-		case len(ips) == 1 && ips[0] == r.IP:
+		case len(ips) == 1 && ips[0] == r.IP && !r.Unsteady:
 			d.stable.mu.Lock()
 			d.stable.misses = 0
 			d.stable.mu.Unlock()
@@ -236,10 +250,10 @@ func (d *daemon) stableExitStep(ctx context.Context, now time.Time) {
 
 // stableAskRender has the loop render the record; remembered while the loop
 // does not.
-func (d *daemon) stableAskRender(ctx context.Context) {
+func (d *daemon) stableAskRender(ctx context.Context, now time.Time) {
 	ok := d.askReapply(ctx, "stable exit")
 	d.stable.mu.Lock()
-	d.stable.renderDue = !ok
+	d.stable.renderDue, d.stable.renderAskAt = !ok, now.Add(stableRenderRetry)
 	d.stable.mu.Unlock()
 }
 
@@ -296,7 +310,7 @@ func (d *daemon) stableExitRound(ctx context.Context, now time.Time, cands []str
 		// and xray stay as they are (one node still beats the balancer's
 		// rotation) — a move only when a steady node appears.
 		next = prev
-		next.CheckedAt, next.FullAt = now, now
+		next.CheckedAt, next.FullAt, next.Unsteady = now, now, true
 		logging.L().Info("stable exit: no node keeps one address now; the pin is kept", "exit", prev.Tag)
 	}
 	d.stable.mu.Lock()
@@ -306,7 +320,7 @@ func (d *daemon) stableExitRound(ctx context.Context, now time.Time, cands []str
 	d.saveStableExit(next)
 	logging.L().Info("stable exit: round", "candidates", len(cands), "steady", len(stable), "pin", next.Tag, "country", next.Country)
 	if next.Tag != prev.Tag || next.State != prev.State {
-		d.stableAskRender(ctx)
+		d.stableAskRender(ctx, now)
 	}
 }
 
