@@ -367,6 +367,10 @@ describe("materialInventoryFingerprint", () => {
       { stableExit: undefined },
     ])
       expect(of(patch)).not.toBe(base);
+    // A recheck that finds the same pin is not a change.
+    expect(
+      of({ stableExit: { ...connect.stableExit, checkedAt: "2026-10-18T12:10:00Z" } }),
+    ).toBe(base);
   });
 });
 

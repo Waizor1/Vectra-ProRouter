@@ -520,9 +520,11 @@ export async function queuePartnerActionWithDb(
         return { ok: false, status: 400, body: { error: "invalid_params" } };
       // A mode the service does not offer, by the router's own list (the
       // router refuses it too); a service reported without one is the
-      // router's to judge.
+      // router's to judge. "main" is entryId null, which every service
+      // takes.
       if (
         serviceMode !== undefined &&
+        serviceMode !== "main" &&
         service.modes &&
         !service.modes.includes(serviceMode)
       )

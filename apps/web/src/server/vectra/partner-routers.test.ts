@@ -1152,6 +1152,12 @@ describe("services as data (vctl r26)", () => {
       });
       expect(fake.inserts(jobs)).toEqual([]);
     }
+    // "main" is entryId null, which every service takes, listed or not.
+    const mainless = r26Db({
+      ...r26,
+      services: [{ id: "steam", entryId: null, title, modes: ["stable", "direct"] }],
+    });
+    expect((await queue(mainless, { service: "steam", mode: "main" })).status).toBe(202);
     // Without a list of modes the router judges.
     const unlisted = r26Db({
       ...r26,
