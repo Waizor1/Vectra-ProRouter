@@ -38,6 +38,7 @@ Note: the root Git history tracks the KB and helper scripts. `passwall2/`, `open
 | Append completion status to daily note | `python3 ./scripts/Add-ProRouterStatusEntry.py --summary "<what changed>" --modules "<module note name>"` | Default completion-log path for agents |
 | Check live panel/API access | `bash ./scripts/VectraPanelCli.sh status` | Verifies operator panel reachability and cached local session state |
 | Enumerate panel API coverage | `bash ./scripts/VectraPanelCli.sh catalog` | Lists operator tRPC procedures plus router-facing endpoints and auth split |
+| Roll a vctl release out to the fleet | `python3 ./scripts/Rollout-VctlFleet.py --version 0.7.0-rNN [--hosts a,b] --yes` | One router at a time from the channel's signed index: intake, sha-pinned detached install, health (version, xray, data plane, YouTube/Instagram/ya); stops at the first unhealthy router. Without `--yes` it only plans. `VECTRA_PANEL_CLI` points at a checkout with apps/web's node_modules |
 | Query live panel/API | `bash ./scripts/VectraPanelCli.sh fleet overview` | Uses operator login, protected tRPC, and a gitignored local session cookie |
 | Read OpenWrt cheatsheet | `read ai_docs/develop/features/openwrt24-console-knowledge-base/06-cheatsheet.md` | Fastest generic OpenWrt 24.xx path |
 | Read OpenWrt KB index | `read ai_docs/develop/features/openwrt24-console-knowledge-base/README.md` | Entry point for platform-level OpenWrt work |

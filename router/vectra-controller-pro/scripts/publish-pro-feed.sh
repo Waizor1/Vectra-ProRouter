@@ -81,9 +81,9 @@ ssh "$SSH_ALIAS" "set -e; chmod 0755 '$REMOTE/feedtool' '$REMOTE/sign-pro-feed.s
 	bash '$REMOTE/sign-pro-feed.sh' --feed '$REMOTE/$(basename "$LOCAL")' --key-dir '$KEY_DIR' --feed-url '$URL' --feedtool '$REMOTE/feedtool' $new_key
 	rm -f '$REMOTE/$(basename "$LOCAL")/install.sh.in'"
 
-echo "==> keep the channel's catalog and geo set (published apart: publish-vctl-catalog.sh, publish-vctl-geo.sh)"
+echo "==> keep the channel's catalog, geo set and release notes (published apart: publish-vctl-catalog.sh, publish-vctl-geo.sh, release-notes.json)"
 ssh "$SSH_ALIAS" "set -e; live='$REMOTE_ROOT/deploy/runtime/artifacts/openwrt/$CHANNEL'; stage='$REMOTE/$(basename "$LOCAL")'
-	for f in catalog.json catalog.json.sig geo.json geo.json.sig; do if [ -f \"\$live/\$f\" ]; then cp -a \"\$live/\$f\" \"\$stage/\$f\"; fi; done
+	for f in catalog.json catalog.json.sig geo.json geo.json.sig release-notes.json; do if [ -f \"\$live/\$f\" ]; then cp -a \"\$live/\$f\" \"\$stage/\$f\"; fi; done
 	if [ -d \"\$live/geo\" ]; then rm -rf \"\$stage/geo\"; cp -a \"\$live/geo\" \"\$stage/geo\"; fi"
 
 echo "==> sync artifacts/openwrt/$CHANNEL"

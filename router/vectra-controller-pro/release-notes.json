@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "package": "vectra-controller-pro",
+  "versions": [
+    {
+      "version": "0.7.0-r26",
+      "date": "2026-10-18",
+      "notes": {
+        "ru": [
+          "Игры (Steam, Epic, Riot, Battle.net, Star Citizen) идут через постоянный IP — лаунчеры больше не выкидывают из аккаунта.",
+          "Для каждой игры можно выбрать: через VPN или напрямую — в приложении, раздел «Игры».",
+          "Новые сервисы и настройки теперь приходят без обновления роутера."
+        ],
+        "en": [
+          "Games (Steam, Epic, Riot, Battle.net, Star Citizen) use one steady IP, so launchers keep you signed in.",
+          "Choose for each game: through the VPN or direct, in the app under «Games».",
+          "New services and settings now arrive without a router update."
+        ],
+        "zh": [
+          "游戏（Steam、Epic、Riot、Battle.net、Star Citizen）使用固定 IP，启动器不再掉线。",
+          "可在应用的“游戏”中为每个游戏选择：走 VPN 或直连。",
+          "新服务和设置无需更新路由器即可生效。"
+        ]
+      }
+    },
+    {
+      "version": "0.7.0-r25",
+      "date": "2026-10-18",
+      "notes": {
+        "ru": ["YouTube и Instagram открываются быстрее, без долгих пауз."],
+        "en": ["YouTube and Instagram open faster, without long pauses."],
+        "zh": ["YouTube 和 Instagram 打开更快，不再长时间卡顿。"]
+      }
+    },
+    {
+      "version": "0.7.0-r24",
+      "date": "2026-10-18",
+      "notes": {
+        "ru": [
+          "Нейросети больше не забирают игры и загрузки — Steam и другие качают на полной скорости.",
+          "Списки заблокированных сайтов обновляются сами.",
+          "YouTube и Instagram меньше подтормаживают."
+        ],
+        "en": [
+          "AI services no longer take games and downloads with them — Steam and others download at full speed.",
+          "Blocked-site lists update by themselves.",
+          "YouTube and Instagram stall less."
+        ],
+        "zh": [
+          "AI 服务不再占用游戏和下载——Steam 等全速下载。",
+          "被封锁网站列表自动更新。",
+          "YouTube 和 Instagram 卡顿更少。"
+        ]
+      }
+    }
+  ]
+}
