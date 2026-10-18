@@ -107,8 +107,9 @@ ANALYZE=1 npm run build      # plus approximate bytes per module
 - One IIFE, `es2019`, no source map, no hashes or timestamps: the same sources
   give the same bytes. It defines `window.VectraApp` and nothing else.
 - The CSS lives in the bundle and is injected into the app's shadow root.
-- Budget: **208 KB minified** (KiB), enforced by the build (`vite.config.ts`). Today (r26): **206.1 KB** minified, ~101 KB gzip; target `es2019`.
-  min, 51.2 KB gzip** — two views and a ru/en/zh sentence for every state.
+- Budget: **208 KB minified** (KiB), enforced by the build (`vite.config.ts`).
+  Today (r26): **206.1 KB** minified, ~101 KB gzip, target `es2019` — two
+  views and a ru/en/zh sentence for every state.
 - Next to it the package installs the brand files the stylesheet points at:
   `vectra-wordmark.png` (the official wordmark, used as a mask) and
   `fonts/montserrat-{500,600,700}.woff2` + `OFL.txt` (~17 KB each). The dev
