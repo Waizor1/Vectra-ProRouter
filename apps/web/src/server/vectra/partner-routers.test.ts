@@ -655,7 +655,9 @@ describe("services telemetry v2", () => {
     });
     expect(parsed.services).toEqual([{ id: "youtube", entryId: null }]);
   });
-  it("bounds the carriers and their ids", () => {
+  it("bounds the carriers and their ids, dropping only the carriers", () => {
+    // Since r26 a value that breaks the bounds costs only itself (spec
+    // 2026-10-18 §7): the service stays, its carriers are not known.
     for (const entries of [
       Array.from({ length: 201 }, (_, i) => `e${i}`),
       ["../bad"],
@@ -663,10 +665,10 @@ describe("services telemetry v2", () => {
       [""],
     ])
       expect(
-        routerConnectTelemetrySchema.safeParse({
+        routerConnectTelemetrySchema.parse({
           services: [{ id: "youtube", entryId: null, entries }],
-        }).success,
-      ).toBe(false);
+        }).services,
+      ).toStrictEqual([{ id: "youtube", entryId: null }]);
     expect(
       routerConnectTelemetrySchema.safeParse({
         services: [
@@ -805,6 +807,383 @@ describe("services telemetry v2", () => {
       ).status,
     ).toBe(400);
     expect(fake.inserts(jobs)).toEqual([]);
+  });
+});
+
+// Services are data (vctl r26, spec 2026-10-18 §7): the router's catalog
+// defines what a service is; the panel passes every description on, checks
+// shape and bounds, never the set of ids, and a bad value costs only itself.
+describe("services as data (vctl r26)", () => {
+  const A = "a".repeat(64);
+  const title = { ru: "Steam", en: "Steam", zh: "Steam" };
+  const steam = {
+    id: "steam",
+    entryId: null,
+    auto: true,
+    title,
+    group: "games",
+    order: 10,
+    icon: "steam",
+    modes: ["stable", "direct", "main"],
+    mode: "stable",
+    default: "stable",
+  };
+  const ai = {
+    id: "ai",
+    entryId: A,
+    auto: false,
+    entries: [A],
+    title: { ru: "Нейросети", en: "AI", zh: "人工智能" },
+    order: 1,
+    icon: "ai",
+    modes: ["location", "main"],
+    mode: "location",
+    default: "location",
+  };
+  const games = {
+    id: "games",
+    title: { ru: "Игры", en: "Games", zh: "游戏" },
+    order: 10,
+    icon: "games",
+    hint: { ru: "Через VPN с постоянным IP", en: "Through the VPN, one address" },
+  };
+  const stableExit = {
+    state: "pinned",
+    country: "FR",
+    checkedAt: "2026-10-18T12:00:00Z",
+    main: false,
+  };
+  const r26 = {
+    ownerRef: "acct-42",
+    capabilities: [
+      "set_service",
+      "set_service_auto",
+      "set_service_mode",
+      "set_stable_main",
+    ],
+    entries: [{ id: A, name: "🇷🇺🇰🇿 Казахстан", country: null }],
+    services: [ai, steam],
+    serviceGroups: [games],
+    stableExit,
+  };
+  function reported(connect: Record<string, unknown> = r26) {
+    return inventory({ connect: routerConnectTelemetrySchema.parse(connect) });
+  }
+  function servicesOf(services: unknown[]) {
+    return routerConnectTelemetrySchema.parse({ services }).services;
+  }
+  function r26Db(connect: Record<string, unknown> = r26) {
+    return createFakeDb({
+      selects: [[routerInventorySnapshots, [[reported(connect)]]]],
+      updateReturns: [[routers, [[router()]]]],
+    });
+  }
+  async function queue(fake: ReturnType<typeof r26Db>, params: object, name = "set_service") {
+    return queuePartnerActionWithDb(
+      fake.db as never,
+      action({ action: name as never, params }),
+      "key",
+      NOW,
+    );
+  }
+
+  it("passes an r25 report through unchanged", () => {
+    // What r25 puts on the wire (the router's own contract fixture): no
+    // r26 field, and the snapshot is what it was before r26.
+    const connect = (checkInFixture as { inventory: { connect: { services: unknown[] } } })
+      .inventory.connect;
+    const parsed = routerCheckInRequestSchema.parse(checkInFixture);
+    expect(parsed.inventory.connect?.services).toStrictEqual(connect.services);
+    const r25 = [
+      { id: "ai", entryId: A, auto: true, entries: [A] },
+      { id: "tiktok", entryId: null, auto: false, entries: [], stale: true },
+      { id: "youtube", entryId: null },
+    ];
+    const snapshot = projectPartnerRouter(
+      router(),
+      reported({ ownerRef: "acct-42", capabilities: ["set_service"], services: r25 }),
+      NOW,
+    );
+    expect(snapshot.services).toStrictEqual(r25);
+    expect(snapshot.serviceGroups).toBeNull();
+    expect(snapshot.stableExit).toBeNull();
+    expect(snapshot.capabilities).toEqual(["set_service"]);
+  });
+
+  it("carries every r26 field, the groups, the stable exit and both capabilities", () => {
+    const snapshot = projectPartnerRouter(router(), reported(), NOW);
+    expect(snapshot.services).toStrictEqual([ai, steam]);
+    expect(snapshot.serviceGroups).toStrictEqual([games]);
+    expect(snapshot.stableExit).toStrictEqual(stableExit);
+    expect(snapshot.capabilities).toEqual([
+      "set_service",
+      "set_stable_main",
+      "set_service_auto",
+      "set_service_mode",
+    ]);
+  });
+
+  it("passes on a service no layer has heard of", () => {
+    const next = {
+      id: "new-game-2027",
+      entryId: null,
+      auto: true,
+      title: { ru: "Новая игра" },
+      group: "games",
+      icon: "some-future-icon",
+      modes: ["stable", "main"],
+      default: "stable",
+    };
+    expect(
+      projectPartnerRouter(
+        router(),
+        reported({ ...r26, services: [next] }),
+        NOW,
+      ).services,
+    ).toStrictEqual([next]);
+  });
+
+  it("drops a field that breaks its bounds, never the service", () => {
+    const base = { id: "steam", entryId: null };
+    for (const bad of [
+      { title: { ru: "x".repeat(65) } },
+      { title: { ru: "" } },
+      { title: { ru: "Steam\u0007" } },
+      { title: { de: "Steam" } },
+      { title: {} },
+      { title: "Steam" },
+      { group: "Games" },
+      { group: "g".repeat(33) },
+      { order: 1001 },
+      { order: -1001 },
+      { order: 1.5 },
+      { order: "10" },
+      { icon: "-steam" },
+      { icon: "steam_icon" },
+      { modes: Array(9).fill("main") },
+      { modes: "stable" },
+      { mode: "country" },
+      { mode: "fast" },
+      { default: "country" },
+      { auto: "yes" },
+      { stale: 1 },
+    ])
+      expect(servicesOf([{ ...base, ...bad }])).toStrictEqual([base]);
+  });
+
+  it("keeps a title's good languages, counted in characters", () => {
+    // 64 emoji are 128 UTF-16 units: still 64 characters, as the router counts.
+    const emoji = "🎮".repeat(64);
+    expect(
+      servicesOf([
+        {
+          id: "steam",
+          entryId: null,
+          title: { ru: "Стим", en: "x".repeat(65), zh: emoji, de: "Steam" },
+        },
+      ]),
+    ).toStrictEqual([{ id: "steam", entryId: null, title: { ru: "Стим", zh: emoji } }]);
+  });
+
+  it("keeps the modes it knows, in order and once each", () => {
+    expect(
+      servicesOf([
+        {
+          id: "steam",
+          entryId: null,
+          modes: ["direct", "country", "stable", "direct", "warp"],
+        },
+      ]),
+    ).toStrictEqual([{ id: "steam", entryId: null, modes: ["direct", "stable"] }]);
+  });
+
+  it("drops a service without a usable id or entryId and keeps the rest", () => {
+    expect(
+      servicesOf([
+        { id: "Steam", entryId: null },
+        { id: "", entryId: null },
+        { id: "s".repeat(33), entryId: null },
+        { id: "steam" },
+        { id: "epic", entryId: 5 },
+        "steam",
+        null,
+        { id: "riot", entryId: null },
+      ]),
+    ).toStrictEqual([{ id: "riot", entryId: null }]);
+  });
+
+  it("drops a block that breaks its bounds, never the check-in", () => {
+    const checkIn = structuredClone(checkInFixture) as {
+      inventory: { connect: Record<string, unknown> };
+    };
+    checkIn.inventory.connect.services = Array.from({ length: 101 }, (_, i) => ({
+      id: `s${i}`,
+      entryId: null,
+    }));
+    checkIn.inventory.connect.serviceGroups = Array.from({ length: 17 }, (_, i) => ({
+      id: `g${i}`,
+      title: { ru: `Группа ${i}` },
+    }));
+    checkIn.inventory.connect.stableExit = { state: "lost", main: false };
+    const parsed = routerCheckInRequestSchema.safeParse(checkIn);
+    expect(parsed.success).toBe(true);
+    const connect = parsed.success ? parsed.data.inventory.connect : undefined;
+    expect(connect?.services).toBeUndefined();
+    expect(connect?.serviceGroups).toBeUndefined();
+    expect(connect?.stableExit).toBeUndefined();
+    // At the bounds they are kept.
+    const at = routerConnectTelemetrySchema.parse({
+      services: Array.from({ length: 100 }, (_, i) => ({ id: `s${i}`, entryId: null })),
+      serviceGroups: Array.from({ length: 16 }, (_, i) => ({
+        id: `g${i}`,
+        title: { ru: `Группа ${i}` },
+      })),
+    });
+    expect(at.services).toHaveLength(100);
+    expect(at.serviceGroups).toHaveLength(16);
+  });
+
+  it("drops a group without a usable id or title, and a bad field of a group", () => {
+    expect(
+      routerConnectTelemetrySchema.parse({
+        serviceGroups: [
+          { id: "games", title: { ru: "Игры" }, order: 5000, icon: "Games", hint: { ru: "" } },
+          { id: "Bad", title: { ru: "Плохая" } },
+          { id: "notitle" },
+          { id: "emptytitle", title: { de: "Spiele" } },
+        ],
+      }).serviceGroups,
+    ).toStrictEqual([{ id: "games", title: { ru: "Игры" } }]);
+  });
+
+  it("reads the stable exit: a bad country or time is not known, a bad state or main drops it", () => {
+    const parse = (exit: unknown) =>
+      routerConnectTelemetrySchema.parse({ stableExit: exit }).stableExit;
+    expect(parse({ state: "none", country: null, checkedAt: null, main: false })).toStrictEqual({
+      state: "none",
+      country: null,
+      checkedAt: null,
+      main: false,
+    });
+    expect(
+      parse({ state: "pinned", country: "fr", checkedAt: "yesterday", main: true }),
+    ).toStrictEqual({ state: "pinned", country: null, checkedAt: null, main: true });
+    // Go marshals a local time with its offset.
+    expect(
+      parse({ state: "checking", country: "DE", checkedAt: "2026-10-18T15:00:00.123+03:00", main: false })
+        ?.checkedAt,
+    ).toBe("2026-10-18T15:00:00.123+03:00");
+    for (const bad of [
+      { state: "lost", main: false },
+      { state: "pinned" },
+      { state: "pinned", main: "no" },
+      "pinned",
+    ])
+      expect(parse(bad)).toBeUndefined();
+    // Absent: not known, in the snapshot too.
+    expect(
+      projectPartnerRouter(
+        router(),
+        reported({ ...r26, stableExit: { state: "off", main: false } }),
+        NOW,
+      ).stableExit,
+    ).toStrictEqual({ state: "off", country: null, checkedAt: null, main: false });
+  });
+
+  it("passes on only the contract's fields of a stored report", () => {
+    // A stored payload is never passed through as it is.
+    const stored = inventory({
+      connect: {
+        ownerRef: "acct-42",
+        capabilities: ["set_service"],
+        services: [{ ...steam, nodeTag: "bridge-fr5", title: { ...title, de: "Steam" } }],
+        serviceGroups: [{ ...games, internal: true, hint: { ...games.hint, de: "x" } }],
+        stableExit: { ...stableExit, ip: "203.0.113.7" },
+      },
+    });
+    const snapshot = projectPartnerRouter(router(), stored, NOW);
+    expect(snapshot.services).toStrictEqual([steam]);
+    expect(snapshot.serviceGroups).toStrictEqual([games]);
+    expect(snapshot.stableExit).toStrictEqual(stableExit);
+    expect(JSON.stringify(snapshot)).not.toContain("203.0.113.7");
+  });
+
+  it("queues set_service with a mode for a router that advertises set_service_mode", async () => {
+    for (const params of [
+      { service: "steam", mode: "direct" },
+      { service: "steam", mode: "main", entryId: null },
+    ]) {
+      const fake = r26Db();
+      expect((await queue(fake, params)).status).toBe(202);
+      expect(fake.inserts(jobs)[0]).toMatchObject({
+        type: "connect_router_action",
+        payload: { action: "set_service", params },
+      });
+    }
+  });
+
+  it("refuses a mode to a router without set_service_mode", async () => {
+    const fake = r26Db({ ...r26, capabilities: ["set_service", "set_service_auto"] });
+    expect(await queue(fake, { service: "steam", mode: "stable" })).toMatchObject({
+      status: 409,
+      body: { error: "not_supported" },
+    });
+    expect(fake.inserts(jobs)).toEqual([]);
+    // entryId alone still works there.
+    expect((await queue(r26Db({ ...r26, capabilities: ["set_service"] }), {
+      service: "steam",
+      entryId: null,
+    })).status).toBe(202);
+  });
+
+  it("refuses a mode the service does not offer, a mode with a location and an unknown service", async () => {
+    for (const params of [
+      { service: "ai", mode: "stable" },
+      { service: "steam", mode: "stable", entryId: A },
+      { service: "steam", mode: "stable", entryId: ":auto" },
+      { service: "unknown", mode: "stable" },
+      { service: "steam", mode: "location" },
+      { service: "steam" },
+    ]) {
+      const fake = r26Db();
+      expect(await queue(fake, params)).toMatchObject({
+        status: 400,
+        body: { error: "invalid_params" },
+      });
+      expect(fake.inserts(jobs)).toEqual([]);
+    }
+    // "main" is entryId null, which every service takes, listed or not.
+    const mainless = r26Db({
+      ...r26,
+      services: [{ id: "steam", entryId: null, title, modes: ["stable", "direct"] }],
+    });
+    expect((await queue(mainless, { service: "steam", mode: "main" })).status).toBe(202);
+    // Without a list of modes the router judges.
+    const unlisted = r26Db({
+      ...r26,
+      services: [{ id: "steam", entryId: null, title }],
+    });
+    expect((await queue(unlisted, { service: "steam", mode: "direct" })).status).toBe(202);
+  });
+
+  it("queues set_stable_main for a router that advertises it", async () => {
+    const fake = r26Db();
+    expect((await queue(fake, { on: true }, "set_stable_main")).status).toBe(202);
+    expect(fake.inserts(jobs)[0]).toMatchObject({
+      type: "connect_router_action",
+      payload: { action: "set_stable_main", params: { on: true } },
+    });
+    for (const params of [{}, { on: "yes" }, { on: true, extra: 1 }])
+      expect(await queue(r26Db(), params, "set_stable_main")).toMatchObject({
+        status: 400,
+        body: { error: "invalid_params" },
+      });
+    const older = r26Db({ ...r26, capabilities: ["set_service"] });
+    expect(await queue(older, { on: true }, "set_stable_main")).toMatchObject({
+      status: 409,
+      body: { error: "not_supported" },
+    });
+    expect(older.inserts(jobs)).toEqual([]);
   });
 });
 
