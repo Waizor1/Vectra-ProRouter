@@ -29,6 +29,47 @@ describe("Connect typed action params", () => {
         false,
       );
   });
+  // r26: a mode (capability set_service_mode) instead of a location.
+  it("takes set_service with a mode, entryId absent or null", () => {
+    for (const mode of ["main", "stable", "direct"])
+      expect(
+        parseConnectActionParams("set_service", { service: "steam", mode }),
+      ).toMatchObject({ success: true, data: { service: "steam", mode } });
+    expect(
+      parseConnectActionParams("set_service", {
+        service: "steam",
+        mode: "stable",
+        entryId: null,
+      }),
+    ).toMatchObject({
+      success: true,
+      data: { service: "steam", mode: "stable", entryId: null },
+    });
+    for (const params of [
+      { service: "steam", mode: "stable", entryId: "entry-1" },
+      { service: "steam", mode: "stable", entryId: ":auto" },
+      { service: "steam", mode: "location" },
+      { service: "steam", mode: "country" },
+      { service: "steam", mode: "" },
+      { service: "steam", mode: null },
+      // Without a mode, entryId is required as before.
+      { service: "steam" },
+      { service: "steam", mode: "stable", extra: true },
+    ])
+      expect(parseConnectActionParams("set_service", params).success).toBe(
+        false,
+      );
+  });
+  it("takes set_stable_main {on} and nothing else", () => {
+    for (const on of [true, false])
+      expect(parseConnectActionParams("set_stable_main", { on })).toMatchObject(
+        { success: true, data: { on } },
+      );
+    for (const params of [{}, { on: "true" }, { on: 1 }, { on: true, x: 1 }, null])
+      expect(parseConnectActionParams("set_stable_main", params).success).toBe(
+        false,
+      );
+  });
   it("preserves Unicode, wildcard, suffix and normalized deduplicated rules", () => {
     const parsed = parseConnectActionParams("set_rules", {
       direct: [

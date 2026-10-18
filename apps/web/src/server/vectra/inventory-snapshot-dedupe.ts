@@ -135,6 +135,11 @@ export function materialInventoryFingerprint(inventory: RouterInventory) {
           entries: inventory.connect.entries ?? null,
           sites: inventory.connect.sites ?? null,
           services: inventory.connect.services ?? null,
+          // r26: the owner's app shows the groups and the stable exit from
+          // the newest row. checkedAt moves at the stable exit's recheck
+          // (30 min by default), less often than the heartbeat.
+          serviceGroups: inventory.connect.serviceGroups ?? null,
+          stableExit: inventory.connect.stableExit ?? null,
           wifi:
             inventory.connect.wifi?.map(({ band, ssid }) => ({ band, ssid })) ??
             null,
