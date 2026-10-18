@@ -37,6 +37,8 @@ Change a shape here first, then both sides.
 | `restart_xray` | — | `action.json` |
 | `services` | — | `services.json` |
 | `set_service` | `{"id": "tiktok", "country": "DE"}` (`""` = the entry's own path) | `action.json` |
+| `set_service_mode` | `{"id": "steam", "mode": "direct"}` (`""` = «Авто», the catalog's default; `main`, `stable`, `direct` — see Services) | `action.json` |
+| `set_stable_main` | `{"on": true}` (the whole main path through the stable exit — see Services) | `action.json` |
 | `set_power` | `{"on": true}` (`false` turns Vectra off; `"force": true` also where it would carry nothing — see Power) | `action.json` |
 | `set_remote_shell` | `{"on": false}` (`true` lets support in — see Support shell) | `action.json` |
 | `port_forwards` | — | `port_forwards.json` |
@@ -69,8 +71,9 @@ call — nothing restarts.
   before reading the answer.
 - Still served: `status`, `entries`, `diagnostics`, `select_entry`,
   `reset_entry`, `restart_xray`, `rules` and `set_rules` (My sites is the
-  simple view's), `services` and `set_service` (a service's country is the
-  owner's choice too), `set_power` (turning Vectra on and off is the owner's),
+  simple view's), `services`, `set_service`, `set_service_mode` and
+  `set_stable_main` (a service's country and mode are the owner's choice
+  too), `set_power` (turning Vectra on and off is the owner's),
   `set_remote_shell` (whether support may run commands here is the owner's), and
   `unpin_balancer` (it only hands a balancer back to the provider's own
   choice; the simple view needs it to undo a pin made earlier in Pro).
@@ -310,9 +313,43 @@ past it», on or off.
 
 ## Services
 
-A few services — only those a person really picks a country for: `youtube`,
-`tiktok`, `telegram` — can leave the subscription entry's own path for a
-country the running entry has. Everything else goes where the entry sends it.
+The services are the catalog's (r26, `docs/superpowers/specs/2026-10-18-vctl-
+services-as-data.md`): what a service is, its title, group, icons and the
+modes it offers come from the signed catalog, so a service the catalog adds
+shows here without a release. Show every row that has a `title` (in the UI's
+language: `title.ru|en|zh`, Russian when the language is missing), grouped by
+`groups` (each with `title`, `order`, `icon` and an optional `hint`), in
+`order`; a row without a title is an r25 service the UI knows by heart.
+
+Each row's `modes` are the choices it offers, in the order to show:
+
+| mode | the choice |
+|---|---|
+| `main` | «Как основной VPN»: the provider's own routing |
+| `stable` | «VPN · постоянный IP»: through the stable exit — one node the router found to keep one address (a launcher that ties its login to the address stays signed in) |
+| `direct` | «Напрямую»: straight out, without the VPN |
+| `country` | a country of the running entry (`countries`, `set_service`) |
+| `location` | a provider location (Vectra Connect only) |
+
+`mode` is what runs now, `default` what «Авто» means (`set_service_mode`
+with `""`), `chosen` whether the owner made a choice. `stableExit` is the
+stable exit: `state` `pinned` (`country` is where it leaves), `none` (no exit
+keeps one address now: the stable services ride the main path meanwhile),
+`checking` (not looked yet) or `off` (no exit probe on this router);
+`checkedAt` (RFC 3339 or `null`); `main` — the whole main path rides it
+(`set_stable_main`). The address itself is never shown.
+
+- `set_service_mode` sets one service's mode: `""` (back to the default,
+  every choice of the owner's for it cleared), `main`, or a mode its `modes`
+  offer. Answers: `service_set`, `pending`; `invalid_params` (a mode the
+  service does not offer), `unknown_service`, `unavailable`.
+- `set_stable_main` `{"on": bool}`: the whole main path through the stable
+  exit, or not. Answers: `stable_main_set`, `pending`; `invalid_params`,
+  `unavailable`.
+
+The country choice: a few services — those a person really picks a country
+for: `youtube`, `tiktok`, `telegram` — can leave the subscription entry's own
+path for a country the running entry has.
 
 - `services` answers `available` (false where the router routes by the
   operator's policy — native, PassWall — and `services` is then `[]`) and one
@@ -483,7 +520,7 @@ The router answers in CODES, never in prose, so the UI can speak ru, en and zh.
 - `action.code` on success: `entry_selected`, `entry_reset`, `balancer_pinned`,
   `balancer_unpinned`, `probe_interval_set`, `rules_set`, `service_set`, `xray_restarted`,
   `wifi_set`, `wifi_optimized`, `setup_finished`, `power_on`, `power_off`,
-  `remote_shell_set`, `port_forwards_set`,
+  `remote_shell_set`, `port_forwards_set`, `stable_main_set`,
   `pending` (the controller accepted the request and is still applying it; it
   is remembered only if it succeeds — poll `status`, or `rules`, to see it
   land).

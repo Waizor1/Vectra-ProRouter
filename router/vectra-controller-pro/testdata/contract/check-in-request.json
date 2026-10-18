@@ -17,26 +17,195 @@
     },
     "boardName": "xiaomi,mi-router-ax3000t",
     "connect": {
+      "serviceGroups": [
+        {
+          "hint": {
+            "en": "One steady IP, so launchers keep you signed in",
+            "ru": "Постоянный IP — лаунчеры не выкидывают",
+            "zh": "固定 IP，启动器不会掉线"
+          },
+          "icon": "games",
+          "id": "games",
+          "order": 10,
+          "title": {
+            "en": "Games",
+            "ru": "Игры",
+            "zh": "游戏"
+          }
+        }
+      ],
       "services": [
         {
           "auto": true,
+          "default": "main",
           "entryId": null,
-          "id": "ai"
+          "icon": "youtube",
+          "id": "youtube",
+          "mode": "main",
+          "modes": [
+            "main",
+            "location"
+          ],
+          "order": 10,
+          "title": {
+            "en": "YouTube",
+            "ru": "YouTube",
+            "zh": "YouTube"
+          }
         },
         {
           "auto": true,
+          "default": "main",
           "entryId": null,
-          "id": "telegram"
+          "icon": "tiktok",
+          "id": "tiktok",
+          "mode": "main",
+          "modes": [
+            "main",
+            "location"
+          ],
+          "order": 20,
+          "title": {
+            "en": "TikTok",
+            "ru": "TikTok",
+            "zh": "TikTok"
+          }
         },
         {
           "auto": true,
+          "default": "main",
           "entryId": null,
-          "id": "tiktok"
+          "icon": "telegram",
+          "id": "telegram",
+          "mode": "main",
+          "modes": [
+            "main",
+            "location"
+          ],
+          "order": 30,
+          "title": {
+            "en": "Telegram",
+            "ru": "Telegram",
+            "zh": "Telegram"
+          }
         },
         {
           "auto": true,
+          "default": "location",
           "entryId": null,
-          "id": "youtube"
+          "icon": "ai",
+          "id": "ai",
+          "mode": "location",
+          "modes": [
+            "location",
+            "main"
+          ],
+          "order": 40,
+          "title": {
+            "en": "AI",
+            "ru": "Нейросети",
+            "zh": "人工智能"
+          }
+        },
+        {
+          "auto": true,
+          "default": "stable",
+          "entryId": null,
+          "group": "games",
+          "icon": "steam",
+          "id": "steam",
+          "mode": "stable",
+          "modes": [
+            "stable",
+            "direct",
+            "main"
+          ],
+          "order": 10,
+          "title": {
+            "en": "Steam",
+            "ru": "Steam",
+            "zh": "Steam"
+          }
+        },
+        {
+          "auto": true,
+          "default": "stable",
+          "entryId": null,
+          "group": "games",
+          "icon": "epic",
+          "id": "epic",
+          "mode": "stable",
+          "modes": [
+            "stable",
+            "direct",
+            "main"
+          ],
+          "order": 20,
+          "title": {
+            "en": "Epic Games",
+            "ru": "Epic Games",
+            "zh": "Epic Games"
+          }
+        },
+        {
+          "auto": true,
+          "default": "stable",
+          "entryId": null,
+          "group": "games",
+          "icon": "riot",
+          "id": "riot",
+          "mode": "stable",
+          "modes": [
+            "stable",
+            "direct",
+            "main"
+          ],
+          "order": 30,
+          "title": {
+            "en": "Riot Games",
+            "ru": "Riot Games",
+            "zh": "Riot Games"
+          }
+        },
+        {
+          "auto": true,
+          "default": "stable",
+          "entryId": null,
+          "group": "games",
+          "icon": "battlenet",
+          "id": "battlenet",
+          "mode": "stable",
+          "modes": [
+            "stable",
+            "direct",
+            "main"
+          ],
+          "order": 40,
+          "title": {
+            "en": "Battle.net",
+            "ru": "Battle.net",
+            "zh": "Battle.net"
+          }
+        },
+        {
+          "auto": true,
+          "default": "stable",
+          "entryId": null,
+          "group": "games",
+          "icon": "starcitizen",
+          "id": "starcitizen",
+          "mode": "stable",
+          "modes": [
+            "stable",
+            "direct",
+            "main"
+          ],
+          "order": 50,
+          "title": {
+            "en": "Star Citizen",
+            "ru": "Star Citizen",
+            "zh": "Star Citizen"
+          }
         }
       ],
       "sites": {

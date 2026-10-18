@@ -457,7 +457,7 @@ func TestConnectServicesCarriedAgreesWithValidate(t *testing.T) {
 		`not json`,
 	} {
 		got := xray.ConnectServicesCarried([]byte(doc))
-		for _, s := range xray.Services {
+		for _, s := range xray.Services() {
 			if want := xray.ValidateConnectServiceEntry([]byte(doc), s.ID) == nil; got[s.ID] != want {
 				t.Fatalf("%s in %s: carried %v, validate %v", s.ID, doc, got[s.ID], want)
 			}

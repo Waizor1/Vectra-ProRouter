@@ -92,13 +92,36 @@ func TestCheckInReportsServicesAutoAndCarriers(t *testing.T) {
 	d.st.SpliceKey = "v1;svcEntries=ai=" + ids[2] + ";exitprobe=x" // the render carries the default
 	got, raw := checkInServices(t, d)
 	all := fmt.Sprintf("[%q,%q,%q]", ids[0], ids[1], ids[2])
-	want := fmt.Sprintf(`[{"id":"ai","entryId":%q,"auto":true,"entries":%s},`+
-		`{"id":"telegram","entryId":null,"auto":false,"entries":%s},`+
-		`{"id":"tiktok","entryId":null,"auto":true,"entries":%s},`+
-		`{"id":"youtube","entryId":%q,"auto":false,"entries":[%q,%q]}]`,
-		ids[2], all, all, all, ids[0], ids[0], ids[2])
-	if raw != want {
-		t.Fatalf("services on the wire:\n got  %s\n want %s", raw, want)
+	// The r25 part of the wire, in the catalog's order (r26: the services
+	// are the catalog's; the games follow, checked below).
+	var wire []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &wire); err != nil {
+		t.Fatal(err)
+	}
+	var legacy []string
+	for _, w := range wire {
+		var id string
+		_ = json.Unmarshal(w["id"], &id)
+		if id != "youtube" && id != "tiktok" && id != "telegram" && id != "ai" {
+			continue
+		}
+		legacy = append(legacy, fmt.Sprintf(`{"id":%s,"entryId":%s,"auto":%s,"entries":%s}`, w["id"], w["entryId"], w["auto"], w["entries"]))
+	}
+	want := []string{
+		fmt.Sprintf(`{"id":"youtube","entryId":%q,"auto":false,"entries":[%q,%q]}`, ids[0], ids[0], ids[2]),
+		fmt.Sprintf(`{"id":"tiktok","entryId":null,"auto":true,"entries":%s}`, all),
+		fmt.Sprintf(`{"id":"telegram","entryId":null,"auto":false,"entries":%s}`, all),
+		fmt.Sprintf(`{"id":"ai","entryId":%q,"auto":true,"entries":%s}`, ids[2], all),
+	}
+	if strings.Join(legacy, ",") != strings.Join(want, ",") {
+		t.Fatalf("services on the wire:\n got  %s\n want %s", strings.Join(legacy, ","), strings.Join(want, ","))
+	}
+	if sc := got["starcitizen"]; sc.Mode != "stable" || sc.Default != "stable" || sc.Group != "games" || sc.Title["ru"] != "Star Citizen" ||
+		strings.Join(sc.Modes, ",") != "stable,direct,main" || sc.Auto == nil || !*sc.Auto {
+		t.Fatalf("a game on the wire: %+v", sc)
+	}
+	if yt := got["youtube"]; strings.Join(yt.Modes, ",") != "main,location" {
+		t.Fatalf("the router UI's country is no Connect mode: %v", yt.Modes)
 	}
 	if got["youtube"].Stale {
 		t.Fatal("a running choice reported stale")
@@ -288,7 +311,7 @@ func TestAStaleServiceChoiceIsSkippedNotRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	var svc xray.Service
-	for _, s := range xray.Services {
+	for _, s := range xray.Services() {
 		if s.ID != "ai" && xray.ValidateConnectServiceEntry(entries[1], s.ID) == nil {
 			svc = s
 			break
@@ -408,7 +431,7 @@ func TestAnUnreadableCacheWaitsAMissingOneSkips(t *testing.T) {
 		t.Fatal(err)
 	}
 	var svc xray.Service
-	for _, s := range xray.Services {
+	for _, s := range xray.Services() {
 		if s.ID != "ai" && xray.ValidateConnectServiceEntry(entries[1], s.ID) == nil {
 			svc = s
 			break

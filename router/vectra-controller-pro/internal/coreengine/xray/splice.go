@@ -58,6 +58,8 @@ type SpliceResult struct {
 	// ExitProbe are the exits the probe inbound reaches (exit_check.go), in
 	// its accounts' order; nil without the probe.
 	ExitProbe []string
+	// Modes is what the services' modes became (modes.go).
+	Modes ModesResult
 	// LeftOut are the unfit exits that left at least one balancer.
 	LeftOut []string
 }
@@ -118,6 +120,22 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 		return nil, res, err
 	}
 	res.Services = sp.res
+	mp, err := planModes(providerRaw, opts.ServiceModes, opts.StablePin, opts.StableMain, inboundTagOf(t))
+	if err != nil {
+		return nil, res, err
+	}
+	res.Modes = mp.res
+	// The modes join the services' plan: direct first, then the stable exit,
+	// then the countries and locations; their loopback back into the main
+	// path before every service rule.
+	sp.loopbacks = append(sp.loopbacks, mp.loopbacks...)
+	sp.balancers = append(sp.balancers, mp.balancers...)
+	sp.observe = append(sp.observe, mp.observe...)
+	sp.backRules = append(append([]json.RawMessage{}, mp.backRules...), sp.backRules...)
+	sp.rules = append(append(append([]json.RawMessage{}, mp.directRules...), mp.stableRules...), sp.rules...)
+	if mp.addDirect {
+		plan.addDirect = true
+	}
 	ep, err := planExitProbe(providerRaw, opts.ExitProbeListen)
 	if err != nil {
 		return nil, res, err
@@ -305,6 +323,13 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 					return nil, res, err
 				}
 				routing, res.RussiaDirectRules = rw, n
+			}
+			if mp.catchAll {
+				rw, err := rewriteCatchAll(routing)
+				if err != nil {
+					return nil, res, err
+				}
+				routing = rw
 			}
 			if len(rules) > 0 {
 				rewritten, err := insertRules(routing, rules)

@@ -64,24 +64,86 @@ func (s Service) overlay(provider []string) []string {
 	return out
 }
 
-// Services are the services with a choice.
-var Services = []Service{
-	{ID: "youtube", Domains: []string{"geosite:youtube"}},
-	{ID: "tiktok", Domains: []string{"geosite:tiktok"}},
-	{ID: "telegram", Domains: []string{"geosite:telegram"}, IPs: []string{"geoip:telegram"}},
+// legacyServices are the markers of the four r25 services, used when the
+// catalog names none (a catalog published before r26).
+var legacyServices = map[string]Service{
+	"youtube":  {ID: "youtube", Domains: []string{"geosite:youtube"}},
+	"tiktok":   {ID: "tiktok", Domains: []string{"geosite:tiktok"}},
+	"telegram": {ID: "telegram", Domains: []string{"geosite:telegram"}, IPs: []string{"geoip:telegram"}},
 	// «Нейросети»: the provider's AI rule names ChatGPT; the catalog's AI
 	// names go with what it knows of that rule.
-	{ID: "ai", Domains: []string{"domain:chatgpt.com"}},
+	"ai": {ID: "ai", Domains: []string{"domain:chatgpt.com"}},
+}
+
+// Services are the services with a choice: the catalog's (r26), in its
+// order — a service is data, added or changed without a release. Its
+// markers are the catalog's, else the r25 ones (legacyServices).
+func Services() []Service {
+	c := ActiveCatalog()
+	ids := c.ServiceIDs()
+	out := make([]Service, 0, len(ids))
+	for _, id := range ids {
+		cs := c.Services[id]
+		s := Service{ID: id}
+		legacy, isLegacy := legacyServices[id]
+		switch {
+		case cs.Marker != "":
+			s.Domains = []string{cs.Marker}
+		case isLegacy:
+			s.Domains = legacy.Domains
+		}
+		switch {
+		case cs.IPMarker != "":
+			s.IPs = []string{cs.IPMarker}
+		case isLegacy:
+			s.IPs = legacy.IPs
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // ServiceByID finds a service.
 func ServiceByID(id string) (Service, bool) {
-	for _, s := range Services {
+	for _, s := range Services() {
 		if s.ID == id {
 			return s, true
 		}
 	}
 	return Service{}, false
+}
+
+// overlayIPs is what the service's rule matches by address: the provider's
+// matchers, then the catalog's ips, without repeats.
+func (s Service) overlayIPs(provider []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, list := range [][]string{provider, ActiveCatalog().Service(s.ID).IPs} {
+		for _, m := range list {
+			if !seen[m] {
+				seen[m] = true
+				out = append(out, m)
+			}
+		}
+	}
+	return out
+}
+
+// ownMatchers are what a mode of the service matches: by name and by
+// address, as its own rule in the document names it (servicePath), else the
+// catalog's names and ips alone.
+func (s Service) ownMatchers(rules []map[string]json.RawMessage, v *xrayview.View) (domains, ips []string) {
+	if p, ok := servicePath(rules, v, s); ok {
+		domains, ips = p.domains, p.ips
+		if p.ips == nil {
+			ips = s.overlayIPs(nil)
+		}
+		if p.domains == nil {
+			domains = s.overlay(s.Domains)
+		}
+		return domains, ips
+	}
+	return s.overlay(s.Domains), s.overlayIPs(s.IPs)
 }
 
 func serviceBalancerTag(id string) string { return "VCTL-SVC-" + strings.ToUpper(id) }
@@ -114,7 +176,7 @@ func ServiceCountries(providerRaw []byte) ServiceCountriesResult {
 	}
 	res.Countries = entryCountries(v)
 	rules := providerRules(providerRaw)
-	for _, s := range Services {
+	for _, s := range Services() {
 		p, ok := servicePath(rules, v, s)
 		if !ok {
 			continue
@@ -235,10 +297,10 @@ func servicePath(rules []map[string]json.RawMessage, v *xrayview.View, s Service
 	case hasDom:
 		p = servicePathOf{target: dom.target, isBalancer: dom.isBalancer, domains: s.overlay(dom.matchers)}
 		if hasIP && ip.target == dom.target && ip.isBalancer == dom.isBalancer {
-			p.ips = ip.matchers
+			p.ips = s.overlayIPs(ip.matchers)
 		}
 	case hasIP:
-		p = servicePathOf{target: ip.target, isBalancer: ip.isBalancer, ips: ip.matchers}
+		p = servicePathOf{target: ip.target, isBalancer: ip.isBalancer, ips: s.overlayIPs(ip.matchers)}
 	default:
 		return p, false
 	}
@@ -268,7 +330,7 @@ func planServices(providerRaw []byte, choices map[string]string, inboundTag stri
 	}
 	rules := providerRules(providerRaw)
 	hasObservatory := v.HasObservatory
-	for _, s := range Services {
+	for _, s := range Services() {
 		cc := choices[s.ID]
 		if cc == "" {
 			continue

@@ -250,10 +250,11 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 		raw, _ := vault.ReadFile(cfg.XrayRenderPath)
 		ov, _ := localctl.LoadOverrides(cfg.OverridesPath)
 		var egress map[string]string
+		var stable *localctl.StableExit
 		if in := rpcdGather(ctx, env, uiapi.Need{Runtime: true}); in.Runtime != nil {
-			egress = in.Runtime.Egress
+			egress, stable = in.Runtime.Egress, in.Runtime.StableExit
 		}
-		res := uiapi.BuildServices(cfg.RouteSource == "", raw, ov, egress)
+		res := uiapi.BuildServices(cfg.RouteSource == "", raw, ov, egress, stable)
 		st, _ := state.LoadReadOnly(cfg.StatePath)
 		markAIDefaultFor(cfg, &res, ov, st.SpliceKey)
 		return res
@@ -263,6 +264,10 @@ func rpcdCall(ctx context.Context, cfg agentcfg.Config, method string, params []
 		return rpcdSetPower(ctx, params)
 	case "set_remote_shell":
 		return rpcdSetRemoteShell(ctx, params)
+	case "set_service_mode":
+		return rpcdSetServiceMode(ctx, cfg, params)
+	case "set_stable_main":
+		return rpcdSetStableMain(ctx, cfg, params)
 	}
 	return action(false, "invalid_params", "unknown method "+method)
 }

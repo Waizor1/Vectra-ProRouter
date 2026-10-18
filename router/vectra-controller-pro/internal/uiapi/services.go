@@ -1,6 +1,10 @@
 package uiapi
 
 import (
+	"sort"
+	"time"
+
+	"vectra-controller-pro/internal/catalog"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/xrayview"
@@ -13,6 +17,28 @@ type Services struct {
 	// (native, PassWall): there is no subscription entry to choose from.
 	Available bool          `json:"available"`
 	Services  []ServiceInfo `json:"services"`
+	// Groups are the catalog's headings («Игры»), in its order (r26).
+	Groups []GroupInfo `json:"groups"`
+	// StableExit is the stable exit (r26); null when the daemon did not say.
+	StableExit *StableExitInfo `json:"stableExit"`
+}
+
+// GroupInfo is a heading the UI puts services under.
+type GroupInfo struct {
+	ID    string            `json:"id"`
+	Title map[string]string `json:"title"`
+	Order int               `json:"order"`
+	Icon  string            `json:"icon"`
+	Hint  map[string]string `json:"hint"`
+}
+
+// StableExitInfo: pinned (Country is where it leaves), none, checking or
+// off; Main: the whole main path rides it. Never the address.
+type StableExitInfo struct {
+	State     string  `json:"state"`
+	Country   *string `json:"country"`
+	CheckedAt *string `json:"checkedAt"`
+	Main      bool    `json:"main"`
 }
 
 // ServiceInfo is one service.
@@ -35,21 +61,56 @@ type ServiceInfo struct {
 	// leave in one other country, that country (1111, 2026-09-30: TikTok
 	// «through Turkey» was Poland).
 	Egress map[string]string `json:"egress"`
+
+	// r26: what the catalog says the service is. Title in ru/en/zh (empty:
+	// an r25 service the UI knows by heart); Modes ⊂ main, stable, direct,
+	// country, location; Mode what runs now; Default what «Авто» means;
+	// Chosen: the owner made a choice.
+	Title   map[string]string `json:"title"`
+	Group   string            `json:"group"`
+	Order   int               `json:"order"`
+	Icon    string            `json:"icon"`
+	Modes   []string          `json:"modes"`
+	Mode    string            `json:"mode"`
+	Default string            `json:"default"`
+	Chosen  bool              `json:"chosen"`
 }
 
 // BuildServices reads the running render, the owner's choices and where the
 // router saw each exit leave.
-func BuildServices(available bool, render []byte, ov localctl.Overrides, egress map[string]string) Services {
-	out := Services{Available: available, Services: []ServiceInfo{}}
+func BuildServices(available bool, render []byte, ov localctl.Overrides, egress map[string]string, stable *localctl.StableExit) Services {
+	out := Services{Available: available, Services: []ServiceInfo{}, Groups: []GroupInfo{}}
 	if !available {
 		return out
+	}
+	cat := xray.ActiveCatalog()
+	for _, id := range groupIDs(cat) {
+		g := cat.Groups[id]
+		out.Groups = append(out.Groups, GroupInfo{ID: id, Title: nonNilMap(g.Title), Order: g.Order, Icon: g.Icon, Hint: nonNilMap(g.Hint)})
+	}
+	if stable != nil {
+		se := &StableExitInfo{State: stable.State, Main: ov.StableMainOn(cat)}
+		if stable.Country != "" {
+			cc := stable.Country
+			se.Country = &cc
+		}
+		if stable.CheckedAt != nil {
+			at := stable.CheckedAt.UTC().Format(time.RFC3339)
+			se.CheckedAt = &at
+		}
+		out.StableExit = se
 	}
 	sc := xray.ServiceCountries(render)
 	countries := nonNil(sc.Countries)
 	view, _ := xrayview.Parse(render)
 	elsewhere := leavesElsewhere(view, egress)
-	for _, s := range xray.Services {
-		info := ServiceInfo{ID: s.ID, Countries: []string{}, Egress: map[string]string{}}
+	for _, s := range xray.Services() {
+		info := ServiceInfo{ID: s.ID, Countries: []string{}, Egress: map[string]string{}, Title: map[string]string{}, Modes: []string{}}
+		cs := cat.Service(s.ID)
+		modes, def := cs.EffectiveModes(s.ID)
+		info.Title, info.Group, info.Order, info.Icon = nonNilMap(cs.Title), cs.Group, cs.Order, cs.Icon
+		info.Modes, info.Default = append([]string{}, modes...), def
+		info.Mode, info.Chosen, _ = ov.ServiceMode(s.ID, cat)
 		if sc.Offered[s.ID] {
 			info.Countries = countries
 			for _, cc := range countries {
@@ -115,4 +176,27 @@ func upper(s string) string {
 		}
 	}
 	return string(b)
+}
+
+// groupIDs are the catalog's groups in its order.
+func groupIDs(c *catalog.Catalog) []string {
+	ids := make([]string, 0, len(c.Groups))
+	for id := range c.Groups {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		gi, gj := c.Groups[ids[i]], c.Groups[ids[j]]
+		if gi.Order != gj.Order {
+			return gi.Order < gj.Order
+		}
+		return ids[i] < ids[j]
+	})
+	return ids
+}
+
+func nonNilMap(t catalog.Title) map[string]string {
+	if t == nil {
+		return map[string]string{}
+	}
+	return map[string]string(t)
 }

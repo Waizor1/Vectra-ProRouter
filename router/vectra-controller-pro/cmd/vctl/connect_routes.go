@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/catalog"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/logging"
@@ -32,8 +33,10 @@ func connectRouteChange(action string, params json.RawMessage, cache *localctl.E
 	var p struct {
 		EntryID *string  `json:"entryId"`
 		Service string   `json:"service"`
+		Mode    string   `json:"mode"`
 		Direct  []string `json:"direct"`
 		VPN     []string `json:"vpn"`
+		On      *bool    `json:"on"`
 	}
 	if json.Unmarshal(params, &p) != nil {
 		return nil, "invalid_params"
@@ -102,9 +105,25 @@ func connectRouteChange(action string, params json.RawMessage, cache *localctl.E
 		if _, ok := xray.ServiceByID(p.Service); !ok {
 			return nil, "unknown_service"
 		}
+		cs := xray.ActiveCatalog().Service(p.Service)
+		if p.Mode != "" {
+			// r26: a mode the catalog offers the service; «Как основной VPN»
+			// always is (the provider's own routing).
+			if p.Mode != catalog.ModeMain && !cs.Offers(p.Service, p.Mode) {
+				return nil, "invalid_params"
+			}
+			c.SetServiceMode = &localctl.ServiceModeChoice{ID: p.Service, Mode: p.Mode}
+			break
+		}
 		if p.EntryID != nil && *p.EntryID == connectServiceAuto {
 			// Back to the default: the owner's choice is deleted.
-			c.SetService = &localctl.ServiceChoice{ID: p.Service}
+			c.SetServiceMode = &localctl.ServiceModeChoice{ID: p.Service}
+			break
+		}
+		if _, def := cs.EffectiveModes(p.Service); p.EntryID == nil && def != catalog.ModeMain && def != catalog.ModeLocation {
+			// «As the main VPN» (entryId null) for a service whose default is
+			// another mode (a game: the stable exit) is a choice: kept.
+			c.SetServiceMode = &localctl.ServiceModeChoice{ID: p.Service, Mode: catalog.ModeMain}
 			break
 		}
 		c.SetService = &localctl.ServiceChoice{ID: p.Service, MainPath: p.EntryID == nil}
@@ -118,6 +137,12 @@ func connectRouteChange(action string, params json.RawMessage, cache *localctl.E
 			}
 			c.SetService.EntryID = *p.EntryID
 		}
+	case "set_stable_main":
+		if p.On == nil {
+			return nil, "invalid_params"
+		}
+		on := *p.On
+		c.SetStableMain = &on
 	default:
 		return nil, "unsupported_action"
 	}

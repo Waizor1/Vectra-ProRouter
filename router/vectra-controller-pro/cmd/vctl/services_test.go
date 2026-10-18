@@ -122,9 +122,16 @@ func TestTheServicesAnswerIsWhatTheRouterRuns(t *testing.T) {
 	got := rpcdCall(context.Background(), s.cfg, "services", nil).(uiapi.Services)
 	// youtube, tiktok, telegram and «Нейросети» (ai), whose AI rule this
 	// fixture's provider does not have: offered no country.
-	if !got.Available || len(got.Services) != 4 || got.Services[3].ID != "ai" || len(got.Services[3].Countries) != 0 {
+	if !got.Available || len(got.Services) < 4 || got.Services[3].ID != "ai" || len(got.Services[3].Countries) != 0 {
 		t.Fatalf("services = %+v", got)
 	}
+	// The catalog's games follow (r26): on their stable default, no
+	// country of their own.
+	games := got.Services[4:]
+	if len(games) != 5 || games[0].ID != "steam" || games[0].Mode != "stable" || games[0].Group != "games" || len(got.Groups) != 1 {
+		t.Fatalf("games = %+v groups = %+v", games, got.Groups)
+	}
+	got.Services = got.Services[:4]
 	str := func(p *string) string {
 		if p == nil {
 			return "∅"

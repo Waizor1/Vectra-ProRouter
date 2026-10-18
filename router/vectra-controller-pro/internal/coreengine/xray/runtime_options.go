@@ -109,6 +109,13 @@ type SpliceOptions struct {
 	// LeaveOut are exits found unfit: they leave every balancer that keeps
 	// another member (exit_check.go). Their outbounds stay.
 	LeaveOut []string
+	// ServiceModes are the services' modes in force (modes.go): "direct" or
+	// "stable" render a rule; anything else is left to the other options.
+	// StablePin is the stable exit (an outbound tag; "" = none found yet),
+	// StableMain sends the main path through it too.
+	ServiceModes map[string]string
+	StablePin    string
+	StableMain   bool
 }
 
 // Key is a stable fingerprint of the options, so the daemon can tell that a
@@ -134,6 +141,9 @@ func (o SpliceOptions) Key() string {
 	}
 	if o.ExitProbeListen != "" {
 		k += ";exitprobe=" + o.ExitProbeListen
+	}
+	if mk := modesKey(o.ServiceModes, o.StablePin, o.StableMain); mk != "" {
+		k += ";modes=" + mk
 	}
 	if len(o.LeaveOut) > 0 {
 		out := append([]string(nil), o.LeaveOut...)

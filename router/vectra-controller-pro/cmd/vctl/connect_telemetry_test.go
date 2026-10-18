@@ -80,7 +80,8 @@ func TestConnectSettingsUseCanonicalDigestsAndNoPasswords(t *testing.T) {
 	}
 	// «Нейросети» are a fourth service; with no Kazakh location in the index
 	// they run on the main path (null), like any service without a choice.
-	if len(byID) != 4 || byID["telegram"] != nil || byID["youtube"] == nil || byID["ai"] != nil {
+	// The catalog's games follow (r26), each without a location.
+	if len(byID) != len(xray.Services()) || byID["telegram"] != nil || byID["youtube"] == nil || byID["ai"] != nil || byID["steam"] != nil {
 		t.Fatal("service country converted into entry identity")
 	}
 }
@@ -98,7 +99,7 @@ func TestPublishConnectCapabilitiesAreOwnerBoundAndExplicit(t *testing.T) {
 }
 func TestConnectInitialServiceCatalogueMatchesExecutor(t *testing.T) {
 	out := connectSettings(uiapi.Inputs{}, setup.Facts{})
-	if out.Services == nil || len(*out.Services) != len(xray.Services) {
+	if out.Services == nil || len(*out.Services) != len(xray.Services()) {
 		t.Fatal("fresh router lacks authoritative executor catalogue")
 	}
 	for _, s := range *out.Services {

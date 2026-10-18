@@ -85,6 +85,8 @@ func (d *daemon) spliceOptionsOv(providerRaw []byte) (xray.SpliceOptions, localc
 func spliceOptionsFor(providerRaw []byte, ov localctl.Overrides, russiaDirect bool) (xray.SpliceOptions, localctl.Probe) {
 	opts := xray.SpliceOptions{APIListen: xray.DefaultAPIListen, MetricsListen: xray.DefaultMetricsListen, NoAccessLog: true,
 		Rules: xray.UserRules{Direct: ov.Direct, Proxy: ov.Proxy, Connect: ov.ConnectRules}, Services: ov.Services,
+		// The services' modes (r26): direct and stable render rules of vctl's.
+		ServiceModes: ov.RenderModes(xray.ActiveCatalog()), StableMain: ov.StableMainOn(xray.ActiveCatalog()),
 		// Only a document that has the provider's Russian bridge: the others
 		// keep their splice key, so an upgrade re-renders nothing there.
 		RussiaDirect: russiaDirect && xray.HasRussianBalancer(providerRaw)}
@@ -523,6 +525,9 @@ func (d *daemon) liveRuntime() *localctl.Runtime {
 	}
 	// Where each exit was seen leaving: the exit check's, live.
 	rt.Egress = d.exits.Egress()
+	ov, _ := localctl.LoadOverrides(d.cfg.OverridesPath)
+	state, country, checked := d.stableExitView(ov)
+	rt.StableExit = &localctl.StableExit{State: state, Country: country, CheckedAt: checked}
 	// A baseline belongs to the xray it was taken for; any other has none yet.
 	if b := d.leakBaseline.Load(); b != nil && s.State == supervisor.StateRunning && b.XrayPID == s.PID {
 		rt.LeakBaseline = b

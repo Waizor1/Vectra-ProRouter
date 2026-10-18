@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -207,7 +208,50 @@ func TestSetPortForwardsIsStrict(t *testing.T) {
 			t.Errorf("accepted %s", bad)
 		}
 	}
-	if !reflect.DeepEqual(Capabilities()[len(Capabilities())-1], "set_port_forwards") {
+	if !slices.Contains(Capabilities(), "set_port_forwards") {
 		t.Error("set_port_forwards is not a capability")
+	}
+}
+
+// r26: set_service takes a mode — with no entry, or a null one — and
+// set_stable_main a bool; anything else is refused.
+func TestSetServiceModeAndStableMain(t *testing.T) {
+	for raw, want := range map[string]Service{
+		`{"service":"steam","mode":"direct"}`:                {Service: "steam", Mode: "direct"},
+		`{"service":"steam","entryId":null,"mode":"stable"}`: {Service: "steam", Mode: "stable"},
+		`{"service":"steam","mode":"main"}`:                  {Service: "steam", Mode: "main"},
+		`{"service":"tiktok","entryId":null}`:                {Service: "tiktok"},
+	} {
+		e, err := Parse(payload("set_service", raw))
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		if got := e.Params.(Service); got.Service != want.Service || got.Mode != want.Mode || got.EntryID != nil {
+			t.Fatalf("%s parsed as %+v", raw, got)
+		}
+	}
+	for _, bad := range []string{
+		`{"service":"steam","mode":"country"}`,
+		`{"service":"steam","mode":"location"}`,
+		`{"service":"steam","mode":7}`,
+		`{"service":"steam","entryId":"abc","mode":"direct"}`,
+		`{"service":"steam","mode":"direct","extra":1}`,
+		`{"service":"steam"}`,
+	} {
+		if _, err := Parse(payload("set_service", bad)); err != ErrInvalidPayload {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+	e, err := Parse(payload("set_stable_main", `{"on":true}`))
+	if err != nil || !e.Params.(StableMain).On {
+		t.Fatalf("set_stable_main: %+v %v", e, err)
+	}
+	for _, bad := range []string{`{"on":"yes"}`, `{}`, `{"on":true,"x":1}`} {
+		if _, err := Parse(payload("set_stable_main", bad)); err != ErrInvalidPayload {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+	if !slices.Contains(Capabilities(), "set_stable_main") {
+		t.Error("set_stable_main is not a capability")
 	}
 }

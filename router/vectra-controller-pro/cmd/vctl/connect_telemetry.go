@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"vectra-controller-pro/internal/catalog"
 	"vectra-controller-pro/internal/connecttelemetry"
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/coreengine/xray"
@@ -159,24 +160,18 @@ func connectSettings(in uiapi.Inputs, f setup.Facts) controlplane.RouterConnectT
 		t.Sites = &controlplane.ConnectSites{Direct: direct, VPN: vpn}
 	}
 	services := []controlplane.ConnectService{}
-	ids := map[string]bool{}
-	// The exact same authoritative catalogue drives typed ServiceByID.
-	// An unconfigured service uses the main path, represented by null.
-	for _, service := range xray.Services {
-		ids[service.ID] = true
-	}
-	ordered := []string{}
-	for id := range ids {
-		ordered = append(ordered, id)
-	}
-	sort.Strings(ordered)
-	for _, id := range ordered {
+	cat := xray.ActiveCatalog()
+	// The catalog's services, in its order (r26): a service it adds reaches
+	// the app with no release. An unconfigured service runs on its default.
+	for _, service := range xray.Services() {
+		id := service.ID
 		s := controlplane.ConnectService{ID: id}
 		entry := in.Overrides.ServiceEntries[id]
-		// No location, no «as the main VPN», no country: the default. A
-		// country chosen in the router's own UI is a choice the Connect
-		// contract has no field for: auto false, entryId null.
-		auto := entry == "" && in.Overrides.Services[id] == ""
+		mode, chosen, _ := in.Overrides.ServiceMode(id, cat)
+		// No choice of the owner's: the default. A country chosen in the
+		// router's own UI is a choice the Connect contract has no field for:
+		// auto false, entryId null, mode main.
+		auto := !chosen
 		s.Auto = &auto
 		switch {
 		case valid[entry]:
@@ -185,7 +180,21 @@ func connectSettings(in uiapi.Inputs, f setup.Facts) controlplane.RouterConnectT
 		case entry != "" && entry != localctl.ServiceMainPath && t.Entries != nil:
 			s.Stale = true // the owner's location left the cache
 		}
+		connectServiceDescribe(&s, cat, id, mode)
 		services = append(services, s)
+	}
+	t.ServiceGroups = connectServiceGroups(cat)
+	if rt := in.Runtime; rt != nil && rt.StableExit != nil {
+		se := &controlplane.ConnectStableExit{State: rt.StableExit.State, Main: in.Overrides.StableMainOn(cat)}
+		if rt.StableExit.Country != "" {
+			cc := rt.StableExit.Country
+			se.Country = &cc
+		}
+		if rt.StableExit.CheckedAt != nil {
+			at := rt.StableExit.CheckedAt.UTC().Format(time.RFC3339)
+			se.CheckedAt = &at
+		}
+		t.StableExit = se
 	}
 	if len(services) <= 100 {
 		t.Services = &services
@@ -267,7 +276,7 @@ func serviceCarriersOf(cache *localctl.EntriesCache, idx *localctl.EntriesIndex)
 		}
 	}
 	carriers := map[string][]string{}
-	for _, svc := range xray.Services {
+	for _, svc := range xray.Services() {
 		carriers[svc.ID] = []string{}
 	}
 	seen := map[string]bool{}
@@ -527,4 +536,57 @@ func connectOwnerCapabilities(t *controlplane.RouterConnectTelemetry, owner *con
 	}
 	sort.Strings(caps)
 	t.Capabilities = &caps
+}
+
+// connectServiceDescribe adds what the catalog says the service is (r26):
+// only for a service with a title — one without is r25's, which the app
+// knows by heart. The router UI's country is no Connect mode: main.
+func connectServiceDescribe(s *controlplane.ConnectService, cat *catalog.Catalog, id, mode string) {
+	cs := cat.Service(id)
+	if len(cs.Title) == 0 {
+		return
+	}
+	s.Title = map[string]string(cs.Title)
+	s.Group, s.Icon = cs.Group, cs.Icon
+	order := cs.Order
+	s.Order = &order
+	modes, def := cs.EffectiveModes(id)
+	for _, m := range modes {
+		if m != catalog.ModeCountry {
+			s.Modes = append(s.Modes, m)
+		}
+	}
+	if mode == catalog.ModeCountry {
+		mode = catalog.ModeMain
+	}
+	if def == catalog.ModeCountry {
+		def = catalog.ModeMain
+	}
+	s.Mode, s.Default = mode, def
+}
+
+// connectServiceGroups are the catalog's groups, in its order; nil when it
+// has none.
+func connectServiceGroups(cat *catalog.Catalog) *[]controlplane.ConnectServiceGroup {
+	if len(cat.Groups) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(cat.Groups))
+	for id := range cat.Groups {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		gi, gj := cat.Groups[ids[i]], cat.Groups[ids[j]]
+		if gi.Order != gj.Order {
+			return gi.Order < gj.Order
+		}
+		return ids[i] < ids[j]
+	})
+	out := make([]controlplane.ConnectServiceGroup, 0, len(ids))
+	for _, id := range ids {
+		g := cat.Groups[id]
+		out = append(out, controlplane.ConnectServiceGroup{ID: id, Title: map[string]string(g.Title),
+			Order: g.Order, Icon: g.Icon, Hint: map[string]string(g.Hint)})
+	}
+	return &out
 }

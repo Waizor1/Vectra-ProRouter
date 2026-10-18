@@ -16,6 +16,7 @@ import (
 	"crypto/x509"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
@@ -467,4 +468,67 @@ func (s *State) Restore(snap map[string]time.Time) {
 	for t, since := range snap {
 		s.unfit[t] = &mark{since: since}
 	}
+}
+
+// Steady asks one exit n times for traceURL — a Cloudflare trace, which names the
+// address it saw ("ip=") — each time on a new connection (the client keeps
+// none alive), one after another. It returns the distinct addresses in the
+// order first seen, the median time of the answers, and how many questions
+// got no address. One address from n answers: the exit keeps it (the stable
+// exit, r26); most of the provider's nodes hand out another one per
+// connection.
+func (p Prober) Steady(ctx context.Context, tag, traceURL string, n int) (ips []string, median time.Duration, failed int) {
+	c := p.client(tag)
+	defer c.CloseIdleConnections()
+	var took []time.Duration
+	seen := map[string]bool{}
+	for i := 0; i < n; i++ {
+		if ctx.Err() != nil {
+			failed += n - i
+			break
+		}
+		start := time.Now()
+		ip := p.traceIP(ctx, c, traceURL)
+		if ip == "" {
+			failed++
+			continue
+		}
+		took = append(took, time.Since(start))
+		if !seen[ip] {
+			seen[ip] = true
+			ips = append(ips, ip)
+		}
+	}
+	if len(took) > 0 {
+		sort.Slice(took, func(i, j int) bool { return took[i] < took[j] })
+		median = took[len(took)/2]
+	}
+	return ips, median, failed
+}
+
+// traceIP is the address a Cloudflare trace names ("ip="), "" when the
+// exit did not answer or the line is not an address.
+func (p Prober) traceIP(ctx context.Context, c *http.Client, traceURL string) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, traceURL, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	for _, line := range strings.Split(string(body), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "ip="); ok {
+			if a, err := netip.ParseAddr(v); err == nil {
+				return a.String()
+			}
+			return ""
+		}
+	}
+	return ""
 }

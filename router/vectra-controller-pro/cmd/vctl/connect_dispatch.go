@@ -123,7 +123,7 @@ func (d *daemon) jobConnectAction(ctx context.Context, j controlplane.Job, respo
 	}
 	params, _ := json.Marshal(e.Params)
 	switch e.Action {
-	case "select_entry", "set_rules", "set_service":
+	case "select_entry", "set_rules", "set_service", "set_stable_main":
 		r := connectRouteExecute(d, ctx, e.Action, params)
 		code := r.Code
 		if code == "" {
@@ -187,6 +187,8 @@ func (d *daemon) connectCapabilities() map[string]bool {
 		if _, err := localctl.LoadEntries(d.cfg.EntriesPath); err == nil {
 			out["select_entry"], out["set_rules"], out["set_service"] = true, true, true
 			out["set_service_auto"] = true // set_service takes entryId ":auto"
+			out["set_service_mode"] = true // set_service takes mode (r26)
+			out["set_stable_main"] = true
 		}
 	}
 	for _, radio := range connectSetup(context.Background()).Wifi.Radios {

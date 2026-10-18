@@ -59,7 +59,14 @@ type Overrides struct {
 	// service not named runs on the entry's own path.
 	ServiceEntries map[string]string `json:"serviceEntries,omitempty"`
 	Services       map[string]string `json:"services,omitempty"`
-	UpdatedAt      time.Time         `json:"updatedAt,omitempty"`
+	// ServiceModes are the owner's modes per service (r26): "main", "stable"
+	// or "direct" (catalog.Mode*). A service named here has no country and
+	// no location; one named nowhere runs on the catalog's default.
+	ServiceModes map[string]string `json:"serviceModes,omitempty"`
+	// StableMain: the owner's choice to send the whole main path through
+	// the stable exit; nil = the catalog's default.
+	StableMain *bool     `json:"stableMain,omitempty"`
+	UpdatedAt  time.Time `json:"updatedAt,omitempty"`
 }
 
 // HasEntry reports whether a location was chosen on the router.
@@ -115,6 +122,12 @@ func UpdateOverrides(path string, fn func(*Overrides) error) (Overrides, error) 
 		}
 		if len(o.Services) == 0 {
 			o.Services = nil
+		}
+		if len(o.ServiceModes) == 0 {
+			o.ServiceModes = nil
+		}
+		if len(o.ServiceEntries) == 0 {
+			o.ServiceEntries = nil
 		}
 		raw, err := json.MarshalIndent(o, "", "  ")
 		if err != nil {

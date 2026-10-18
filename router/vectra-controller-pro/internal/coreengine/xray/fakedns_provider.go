@@ -73,7 +73,15 @@ func proxiedNames(providerRaw []byte, ruTag string, owner, services []json.RawMe
 			continue
 		}
 		bal := jsonString(ruleField(r, "balancerTag"))
-		if bal != "" || !direct[jsonString(ruleField(r, "outboundTag"))] {
+		if bal == "" && direct[jsonString(ruleField(r, "outboundTag"))] {
+			// The first rule that names it decides (xray's order): a name
+			// sent straight out — the owner's direct sites, a service on
+			// «Напрямую» — keeps its real answer even when a later rule
+			// proxies it, so its Russian addresses stay in the kernel.
+			for _, d := range jsonStrings(ruleField(r, "domain")) {
+				seen[d] = true
+			}
+		} else {
 			for _, d := range jsonStrings(ruleField(r, "domain")) {
 				if !seen[d] {
 					seen[d] = true

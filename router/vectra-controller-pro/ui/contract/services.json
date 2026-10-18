@@ -19,7 +19,23 @@
       ],
       "active": false,
       "stale": false,
-      "egress": {}
+      "egress": {},
+      "title": {
+        "ru": "YouTube",
+        "en": "YouTube",
+        "zh": "YouTube"
+      },
+      "group": "",
+      "order": 10,
+      "icon": "youtube",
+      "modes": [
+        "main",
+        "country",
+        "location"
+      ],
+      "mode": "main",
+      "default": "main",
+      "chosen": false
     },
     {
       "id": "tiktok",
@@ -39,7 +55,23 @@
       ],
       "active": true,
       "stale": false,
-      "egress": {}
+      "egress": {},
+      "title": {
+        "ru": "TikTok",
+        "en": "TikTok",
+        "zh": "TikTok"
+      },
+      "group": "",
+      "order": 20,
+      "icon": "tiktok",
+      "modes": [
+        "main",
+        "country",
+        "location"
+      ],
+      "mode": "country",
+      "default": "main",
+      "chosen": true
     },
     {
       "id": "telegram",
@@ -59,7 +91,71 @@
       ],
       "active": false,
       "stale": false,
-      "egress": {}
+      "egress": {},
+      "title": {
+        "ru": "Telegram",
+        "en": "Telegram",
+        "zh": "Telegram"
+      },
+      "group": "",
+      "order": 30,
+      "icon": "telegram",
+      "modes": [
+        "main",
+        "country",
+        "location"
+      ],
+      "mode": "main",
+      "default": "main",
+      "chosen": false
+    },
+    {
+      "id": "steam",
+      "choice": null,
+      "defaultCountry": null,
+      "countries": [],
+      "active": false,
+      "stale": false,
+      "egress": {},
+      "title": {
+        "ru": "Steam",
+        "en": "Steam",
+        "zh": "Steam"
+      },
+      "group": "games",
+      "order": 10,
+      "icon": "steam",
+      "modes": [
+        "stable",
+        "direct",
+        "main"
+      ],
+      "mode": "direct",
+      "default": "stable",
+      "chosen": true
     }
-  ]
+  ],
+  "groups": [
+    {
+      "id": "games",
+      "title": {
+        "ru": "Игры",
+        "en": "Games",
+        "zh": "游戏"
+      },
+      "order": 10,
+      "icon": "games",
+      "hint": {
+        "ru": "Постоянный IP — лаунчеры не выкидывают",
+        "en": "One steady IP, so launchers keep you signed in",
+        "zh": "固定 IP，启动器不会掉线"
+      }
+    }
+  ],
+  "stableExit": {
+    "state": "pinned",
+    "country": "FR",
+    "checkedAt": "2026-10-18T12:00:00Z",
+    "main": false
+  }
 }
