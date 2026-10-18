@@ -774,6 +774,10 @@ func Load(path string) Loaded {
 		builtin.Note = err.Error()
 		return builtin
 	}
+	if q := Quarantined(path); q != 0 && c.Serial <= q {
+		builtin.Note = fmt.Sprintf("stored catalog %d broke the render (xray -test); quarantined until a newer one", c.Serial)
+		return builtin
+	}
 	if c.Serial <= builtin.Catalog.Serial {
 		builtin.Note = fmt.Sprintf("stored catalog %d is not newer than the built-in %d", c.Serial, builtin.Catalog.Serial)
 		builtin.Older = true
@@ -789,6 +793,27 @@ func Store(path string, raw, sig []byte) error {
 		return err
 	}
 	return writeAtomic(path, raw)
+}
+
+// Quarantine sets serial aside (r26): a catalog whose render xray refused,
+// while the built-in catalog's render of the same document passed. Load
+// skips it, and a catalog of that serial or below is not taken again; a
+// higher one is.
+func Quarantine(path string, serial int64) error {
+	return writeAtomic(path+".refused", []byte(fmt.Sprintf("%d\n", serial)))
+}
+
+// Quarantined is the serial set aside at path, 0 when none.
+func Quarantined(path string) int64 {
+	raw, err := os.ReadFile(path + ".refused")
+	if err != nil {
+		return 0
+	}
+	var n int64
+	if _, err := fmt.Sscan(strings.TrimSpace(string(raw)), &n); err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // Remove drops the stored catalog: the built-in one is in use again.

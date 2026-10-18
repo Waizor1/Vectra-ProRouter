@@ -198,3 +198,34 @@ func TestConnectRoutingInterruptedBeforeApplyRetainsChoice(t *testing.T) {
 		t.Fatal("retry did not recover", resp)
 	}
 }
+
+// r26: a mode the catalog offers becomes the owner's mode; «as the main VPN»
+// (null) for a game is a choice kept (its default is the stable exit), for
+// TikTok what it was in r25; ":auto" clears every choice; set_stable_main.
+func TestConnectServiceModes(t *testing.T) {
+	for _, tc := range []struct {
+		params string
+		mode   *localctl.ServiceModeChoice
+		svc    bool
+	}{
+		{`{"service":"steam","mode":"direct"}`, &localctl.ServiceModeChoice{ID: "steam", Mode: "direct"}, false},
+		{`{"service":"steam","entryId":null}`, &localctl.ServiceModeChoice{ID: "steam", Mode: "main"}, false},
+		{`{"service":"steam","entryId":":auto"}`, &localctl.ServiceModeChoice{ID: "steam"}, false},
+		{`{"service":"tiktok","entryId":null}`, nil, true},
+	} {
+		c, code := connectRouteChange("set_service", []byte(tc.params), nil)
+		if code != "" {
+			t.Fatalf("%s: %s", tc.params, code)
+		}
+		if !reflect.DeepEqual(c.SetServiceMode, tc.mode) || (c.SetService != nil) != tc.svc {
+			t.Fatalf("%s: %+v / %+v", tc.params, c.SetServiceMode, c.SetService)
+		}
+	}
+	if _, code := connectRouteChange("set_service", []byte(`{"service":"youtube","mode":"stable"}`), nil); code != "invalid_params" {
+		t.Fatalf("a mode YouTube does not offer: %q", code)
+	}
+	c, code := connectRouteChange("set_stable_main", []byte(`{"on":true}`), nil)
+	if code != "" || c.SetStableMain == nil || !*c.SetStableMain {
+		t.Fatalf("set_stable_main: %+v %s", c, code)
+	}
+}

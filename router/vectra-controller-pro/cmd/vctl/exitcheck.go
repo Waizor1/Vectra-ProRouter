@@ -1,13 +1,14 @@
 package main
 
 import (
- "vectra-controller-pro/internal/vault"
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"sort"
 	"strings"
 	"time"
+	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/exitcheck"
@@ -270,22 +271,31 @@ const opRerender = "rerender"
 // the owner's choice, and a choice gone stale refuses the render, while a
 // newer cached entry would replace the running one.
 func (d *daemon) rerenderRunning(ctx context.Context) localctl.SocketResponse {
+	if err := d.rerenderRunningErr(ctx); err != nil {
+		return localctl.SocketResponse{Code: "apply_failed", Detail: err.Error()}
+	}
+	return localctl.SocketResponse{OK: true}
+}
+
+// rerenderRunningErr is rerenderRunning with the error as it came: the gate's
+// refusal (apply.ErrRefused) is told apart from «not now».
+func (d *daemon) rerenderRunningErr(ctx context.Context) error {
 	if d.desired == nil || d.applier == nil || d.applier.Tproxy == nil {
-		return localctl.SocketResponse{Code: "apply_failed", Detail: "this router has no operator config yet"}
+		return errors.New("this router has no operator config yet")
 	}
 	raw, err := vault.ReadFile(d.documentPath())
 	if err != nil || len(raw) == 0 {
-		return localctl.SocketResponse{Code: "apply_failed", Detail: "no running document to render again"}
+		return errors.New("no running document to render again")
 	}
 	res, err := d.applyProvider(ctx, raw, false)
 	if err != nil {
-		return localctl.SocketResponse{Code: "apply_failed", Detail: err.Error()}
+		return err
 	}
 	d.reloadAfterApply(ctx, res, raw)
 	if err := d.persist(); err != nil {
 		logging.L().Warn("persist state after the exit check's render", "err", err.Error())
 	}
-	return localctl.SocketResponse{OK: true}
+	return nil
 }
 
 // askReapply has the loop render the running document again under the
