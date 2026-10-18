@@ -184,10 +184,15 @@ var errConnectStaleEntry = errors.New("unknown_service_entry")
 // there really are no locations: the choices are skipped.
 func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte) (entries map[string]json.RawMessage, effective localctl.Overrides, err error) {
 	chosen := map[string]string{}
+	cat := xray.ActiveCatalog()
 	for svc, id := range ov.ServiceEntries {
-		if id != localctl.ServiceMainPath { // «as the main VPN» needs no location
-			chosen[svc] = id
+		if id == localctl.ServiceMainPath { // «as the main VPN» needs no location
+			continue
 		}
+		if m, _, _ := ov.ServiceMode(svc, cat); m != catalog.ModeLocation {
+			continue // the catalog no longer offers the service a location: its default runs
+		}
+		chosen[svc] = id
 	}
 	effective = ov
 	cache, lerr := localctl.LoadEntries(d.cfg.EntriesPath)
@@ -236,7 +241,7 @@ func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte)
 // cache for this render.
 func aiDefaultConsidered(ov localctl.Overrides, routeSource string, running []byte) bool {
 	_, chosen := ov.ServiceEntries["ai"]
-	return routeSource == "" && running != nil && !chosen && ov.Services["ai"] == ""
+	return routeSource == "" && running != nil && !chosen && ov.Services["ai"] == "" && ov.ServiceModes["ai"] == ""
 }
 
 // noteSkippedServiceChoices logs a choice the render skips once, not on
@@ -280,7 +285,7 @@ func aiDefault(ov localctl.Overrides, routeSource string, cache *localctl.Entrie
 	if routeSource != "" || cache == nil || running == nil {
 		return "", nil, false
 	}
-	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" {
+	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" || ov.ServiceModes["ai"] != "" {
 		return "", nil, false
 	}
 	for _, id := range aiCandidates(localctl.Summarize(cache)) {
@@ -357,7 +362,7 @@ func aiDefaultApplied(cfg agentcfg.Config, ov localctl.Overrides, spliceKey stri
 	if cfg.RouteSource != "" {
 		return "", false
 	}
-	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" {
+	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" || ov.ServiceModes["ai"] != "" {
 		return "", false
 	}
 	if id := spliceKeyEntry(spliceKey, "ai"); id != "" {

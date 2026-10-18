@@ -58,6 +58,7 @@ type StableMain struct {
 
 // ServiceModes are the modes set_service may name.
 var ServiceModes = map[string]bool{"main": true, "stable": true, "direct": true}
+
 type WiFi struct {
 	SSID     string `json:"ssid"`
 	Password string `json:"password"`

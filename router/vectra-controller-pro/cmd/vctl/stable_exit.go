@@ -62,6 +62,9 @@ type stableExitTracker struct {
 	loaded   bool
 	misses   int
 	nextFull time.Time
+	// renderDue: the record changed and the loop has not rendered it yet
+	// (busy, or a render refused for now): asked again at the next tick.
+	renderDue bool
 }
 
 // Seams: tests never ask a real exit.
@@ -164,27 +167,24 @@ func (d *daemon) watchStableExit(ctx context.Context) {
 }
 
 // stableExitStep does what is due: nothing while no service rides the stable
-// exit, a recheck of the pin, or a full round.
+// exit, a render the last change still waits for, a recheck of the pin, or a
+// full round. What is due is decided before the render is read.
 func (d *daemon) stableExitStep(ctx context.Context, now time.Time) {
 	ov, _ := localctl.LoadOverrides(d.cfg.OverridesPath)
 	c := xray.ActiveCatalog()
 	if !ov.NeedsStableExit(c) {
 		return
 	}
+	d.stable.mu.Lock()
+	renderDue := d.stable.renderDue
+	d.stable.mu.Unlock()
+	if renderDue {
+		d.stableAskRender(ctx)
+	}
 	set := c.StableExitSettings()
-	render, err := vault.ReadFile(d.cfg.XrayRenderPath)
-	if err != nil {
-		return
-	}
-	cands := stableCandidates(render, d.exits.Unfit())
-	if len(cands) == 0 {
-		return // no probe in the running render yet
-	}
 	r := d.stableExitNow()
 	recheck := time.Duration(set.RecheckMinutes) * time.Minute
-	full := r.FullAt.IsZero() || r.State == "" ||
-		(r.State == stableStatePinned && !contains(cands, r.Tag)) ||
-		(r.State != stableStatePinned && now.Sub(r.CheckedAt) >= recheck)
+	full := r.FullAt.IsZero() || r.State == "" || (r.State != stableStatePinned && now.Sub(r.CheckedAt) >= recheck)
 	d.stable.mu.Lock()
 	if d.stable.nextFull.IsZero() && !r.FullAt.IsZero() {
 		d.stable.nextFull = r.FullAt.Add(time.Duration(float64(time.Duration(set.EveryHours)*time.Hour) * stableJitter()))
@@ -193,11 +193,22 @@ func (d *daemon) stableExitStep(ctx context.Context, now time.Time) {
 		full = true
 	}
 	d.stable.mu.Unlock()
+	if !full && now.Sub(r.CheckedAt) < recheck {
+		return // nothing due: the render is not even read
+	}
+	render, err := vault.ReadFile(d.cfg.XrayRenderPath)
+	if err != nil {
+		return
+	}
+	cands := stableCandidates(render, d.exits.Unfit())
+	if len(cands) == 0 {
+		return // no probe in the running render yet
+	}
+	if r.State == stableStatePinned && !contains(cands, r.Tag) {
+		full = true
+	}
 	p := exitcheck.Prober{Listen: xray.DefaultExitProbeListen, Timeout: stableExitTimeout}
 	if !full {
-		if now.Sub(r.CheckedAt) < recheck {
-			return
-		}
 		rctx, cancel := context.WithTimeout(ctx, time.Minute)
 		ips, _, failed := stableSteady(rctx, p, r.Tag, set.URL, stableRecheckAsk)
 		cancel()
@@ -223,6 +234,15 @@ func (d *daemon) stableExitStep(ctx context.Context, now time.Time) {
 	d.stableExitRound(ctx, now, cands, set, r)
 }
 
+// stableAskRender has the loop render the record; remembered while the loop
+// does not.
+func (d *daemon) stableAskRender(ctx context.Context) {
+	ok := d.askReapply(ctx, "stable exit")
+	d.stable.mu.Lock()
+	d.stable.renderDue = !ok
+	d.stable.mu.Unlock()
+}
+
 // stableExitRound asks every candidate and keeps or moves the pin.
 func (d *daemon) stableExitRound(ctx context.Context, now time.Time, cands []string, set catalog.StableExit, prev stableExitRecord) {
 	p := exitcheck.Prober{Listen: xray.DefaultExitProbeListen, Timeout: stableExitTimeout}
@@ -234,8 +254,17 @@ func (d *daemon) stableExitRound(ctx context.Context, now time.Time, cands []str
 		median time.Duration
 	}
 	var stable []steady
-	for _, tag := range cands {
+	// The current pin first: a round the deadline cuts short still judges it.
+	order := append([]string(nil), cands...)
+	if prev.Tag != "" && contains(order, prev.Tag) {
+		order = append([]string{prev.Tag}, without(order, prev.Tag)...)
+	}
+	pinAnswered := false
+	for _, tag := range order {
 		ips, median, failed := stableSteady(rctx, p, tag, set.URL, set.Samples)
+		if tag == prev.Tag && len(ips) > 0 {
+			pinAnswered = true
+		}
 		if len(ips) == 1 && failed == 0 {
 			stable = append(stable, steady{tag, ips[0], median})
 		}
@@ -258,9 +287,17 @@ func (d *daemon) stableExitRound(ctx context.Context, now time.Time, cands []str
 			}
 		}
 	}
-	if pick != nil {
+	switch {
+	case pick != nil:
 		next.State, next.Tag, next.IP = stableStatePinned, pick.tag, pick.ip
 		next.Country = d.exitCountry(pick.tag)
+	case prev.State == stableStatePinned && pinAnswered && contains(cands, prev.Tag):
+		// Nothing steadier, and the pin still answers: kept, so the render
+		// and xray stay as they are (one node still beats the balancer's
+		// rotation) — a move only when a steady node appears.
+		next = prev
+		next.CheckedAt, next.FullAt = now, now
+		logging.L().Info("stable exit: no node keeps one address now; the pin is kept", "exit", prev.Tag)
 	}
 	d.stable.mu.Lock()
 	d.stable.misses = 0
@@ -269,7 +306,7 @@ func (d *daemon) stableExitRound(ctx context.Context, now time.Time, cands []str
 	d.saveStableExit(next)
 	logging.L().Info("stable exit: round", "candidates", len(cands), "steady", len(stable), "pin", next.Tag, "country", next.Country)
 	if next.Tag != prev.Tag || next.State != prev.State {
-		d.askReapply(ctx, "stable exit")
+		d.stableAskRender(ctx)
 	}
 }
 
@@ -354,7 +391,16 @@ func stableCandidates(render []byte, unfit []string) []string {
 	}
 	var out []string
 	for _, m := range members {
-		if contains(probed, m) && !contains(unfit, m) {
+		if !contains(probed, m) || contains(unfit, m) {
+			continue
+		}
+		prefix := false
+		for _, o := range doc.Outbounds {
+			if o.Tag != m && strings.HasPrefix(o.Tag, m) {
+				prefix = true // a selector of it would pick that one too (xray.stablePinUsable)
+			}
+		}
+		if !prefix {
 			out = append(out, m)
 		}
 	}
@@ -383,4 +429,14 @@ func mainCatchAll(r map[string]json.RawMessage) bool {
 		}
 	}
 	return strings.Contains(network, "tcp") && strings.Contains(network, "udp")
+}
+
+func without(xs []string, x string) []string {
+	var out []string
+	for _, v := range xs {
+		if v != x {
+			out = append(out, v)
+		}
+	}
+	return out
 }

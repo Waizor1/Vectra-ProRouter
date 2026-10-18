@@ -403,6 +403,9 @@ type daemon struct {
 	exits exitcheck.State
 	// stable is the stable exit (stable_exit.go).
 	stable stableExitTracker
+	// catalogRefusals counts the gate's refusals of the downloaded catalog's
+	// render in a row (maybeQuarantine).
+	catalogRefusals int
 	// connectHeld is the last verdict judged for Connect
 	// (holdConnectVerdict; the daemon loop only). A release forgets it.
 	connectHeld connectJudged

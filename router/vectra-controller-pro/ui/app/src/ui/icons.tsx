@@ -8,12 +8,15 @@ export type IconName =
   | 'ok' | 'warn' | 'fail' | 'unknown' | 'info' | 'refresh' | 'sun' | 'moon' | 'system' | 'expand'
   | 'shrink' | 'pin' | 'copy' | 'arrow' | 'globe' | 'close' | 'plus' | 'gauge' | 'split'
   | 'server' | 'list' | 'filter' | 'wifi' | 'lock' | 'shield' | 'power' | 'sliders' | 'ports'
-  | 'cube' | 'pad' | 'play' | 'down' | 'home' | 'cam' | 'mic' | 'search';
+  | 'cube' | 'pad' | 'play' | 'down' | 'home' | 'cam' | 'mic' | 'search' | 'games' | 'steam' | 'epic'
+  | 'riot' | 'battlenet' | 'starcitizen';
 
-const PATHS = {} as Record<IconName, string>;
+// No prototype: an icon the catalog names `constructor` is just one we lack.
+const PATHS: Record<string, string> = Object.create(null);
 for (const line of DATA.trim().split('\n')) PATHS[line.slice(0, line.indexOf(' ')) as IconName] = line.slice(line.indexOf(' ') + 1);
 
-export function Icon({ name, size = 16, class: cls }: { name: IconName; size?: number; class?: string }) {
+/** `name` may be any key of the catalog's icon set: one this UI lacks draws the globe. */
+export function Icon({ name, size = 16, class: cls }: { name: IconName | (string & {}); size?: number; class?: string }) {
   return (
     <svg
       class={cls ? 'ic ' + cls : 'ic'}
@@ -28,7 +31,7 @@ export function Icon({ name, size = 16, class: cls }: { name: IconName; size?: n
       aria-hidden="true"
       focusable="false"
     >
-      <path d={PATHS[name]} />
+      <path d={PATHS[name] || PATHS.globe} />
     </svg>
   );
 }

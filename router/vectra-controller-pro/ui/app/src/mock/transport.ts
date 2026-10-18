@@ -36,6 +36,8 @@ export interface MockOptions {
   pfFail?: string;
   /** Whose router this is (status.brand): Vectra's, as the fixtures (the default), BloopCat's, or none (dev: `&brand=`). */
   brand?: BrandAs;
+  /** The stable exit's state, instead of the fixture's pinned one (dev: `&stable=`). */
+  stable?: 'pinned' | 'none' | 'checking' | 'off';
 }
 
 export interface Mock {
@@ -153,6 +155,11 @@ export function createMock(opts: MockOptions = {}): Mock {
   if (built) built.status.ui = { locked: !!opts.locked };
   if (built) brandAs(built, brand);
   if (built && opts.wifi) wifiAs(built, opts.wifi);
+  if (built?.services.stableExit && opts.stable) {
+    const exit = built.services.stableExit;
+    exit.state = opts.stable;
+    if (opts.stable !== 'pinned') exit.country = null;
+  }
   // Live mode moves the fixture router's clock to the moment the page opened;
   // from then on its data ages naturally.
   const world = built && live ? shiftTimes(built, born - FIXTURE_NOW) : built;
@@ -498,9 +505,41 @@ export function createMock(opts: MockOptions = {}): Mock {
         later(applyMs, () => {
           w.services = {
             ...w.services,
-            services: w.services.services.map((x) => (x.id === row.id ? { ...x, choice: cc || null, active: !!cc, stale: false } : x)),
+            services: w.services.services.map((x) =>
+              x.id === row.id ? { ...x, choice: cc || null, active: !!cc, stale: false, ...(x.modes.length ? { mode: cc ? 'country' : x.default, chosen: !!cc } : {}) } : x,
+            ),
           };
           log(`service ${row.id}: ${cc || 'the entry\'s own path'}`);
+          restartEngine();
+        });
+        return ok('pending');
+      }
+      // Like the router: "" is «Авто» (every choice of the owner's for it cleared), else a mode the row offers.
+      case 'set_service_mode': {
+        if (typeof p.id !== 'string' || typeof p.mode !== 'string') return fail('invalid_params', 'id and mode are both required; "" is «Авто»');
+        const row = w.services.services.find((x) => x.id === p.id);
+        if (!row) return fail('unknown_service', p.id);
+        if (w.services.available === false) return fail('unavailable', 'this router routes by the operator\'s policy');
+        const m = p.mode;
+        if (m && m !== 'main' && row.modes.indexOf(m) < 0) return fail('invalid_params', `${row.id} does not offer ${m}`);
+        later(applyMs, () => {
+          w.services = {
+            ...w.services,
+            services: w.services.services.map((x) => (x.id === row.id ? { ...x, choice: null, active: false, stale: false, mode: m || x.default, chosen: !!m } : x)),
+          };
+          log(`service ${row.id}: ${m || 'auto'}`);
+          restartEngine();
+        });
+        return ok('pending');
+      }
+      case 'set_stable_main': {
+        if (typeof p.on !== 'boolean' || Object.keys(p).some((k) => k !== 'on')) return fail('invalid_params', 'params must be {"on": true} or {"on": false}');
+        const exit = w.services.stableExit;
+        if (!exit || w.services.available === false) return fail('unavailable', 'this router has no stable exit to send the main path through');
+        const on = p.on;
+        later(applyMs, () => {
+          w.services = { ...w.services, stableExit: { ...exit, main: on } };
+          log(`stable exit for the whole VPN: ${on ? 'on' : 'off'}`);
           restartEngine();
         });
         return ok('pending');

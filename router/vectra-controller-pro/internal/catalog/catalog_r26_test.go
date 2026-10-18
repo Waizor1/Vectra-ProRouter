@@ -50,8 +50,8 @@ func TestR26FieldsAreValidated(t *testing.T) {
 		return `{"schema":1,"serial":5,"services":{"x":{` + svc + `}},"groups":{"games":{"title":{"ru":"Игры"}}},"sites":{}` + extra + `}`
 	}
 	good := []string{
-		base(`"title":{"ru":"Икс","en":"X","zh":"X"},"group":"games","order":5,"icon":"steam","marker":"domain:x.com","ipMarker":"geoip:x","ips":["1.2.3.0/24","2001:db8::/32","9.9.9.9","geoip:telegram"],"modes":["stable","direct"],"default":"direct"`, ""),
-		base(`"modes":["main","stable"],"default":"main"`, `,"tunables":{"stableExit":{"samples":3,"everyHours":48,"recheckMinutes":10,"url":"https://cloudflare.com/cdn-cgi/trace","main":true},"door":{"rate":30,"burst":120},"quic":{"refuse":false}}`),
+		base(`"title":{"ru":"Икс","en":"X","zh":"X"},"group":"games","order":5,"icon":"steam","marker":"domain:x.com","ipMarker":"geoip:x","onlyKnown":true,"names":["domain:x.com"],"ips":["1.2.0.0/16","2001:db8::/32","9.9.9.9"],"modes":["stable","direct"],"default":"stable"`, ""),
+		base(`"onlyKnown":true,"modes":["main","stable","direct"],"default":"main"`, `,"tunables":{"stableExit":{"samples":3,"everyHours":48,"recheckMinutes":10,"url":"https://cloudflare.com/cdn-cgi/trace","main":true},"door":{"rate":30,"burst":120},"quic":{"refuse":false}}`),
 	}
 	for _, raw := range good {
 		if _, err := Parse([]byte(raw), true); err != nil {
@@ -82,6 +82,15 @@ func TestR26FieldsAreValidated(t *testing.T) {
 		"door rate":       base(``, `,"tunables":{"door":{"rate":5,"burst":120}}`),
 		"door burst":      base(``, `,"tunables":{"door":{"rate":60,"burst":40}}`),
 		"group title":     `{"schema":1,"serial":5,"groups":{"g":{"title":{}}},"sites":{}}`,
+		"direct default":  base(`"onlyKnown":true,"modes":["stable","direct"],"default":"direct"`, ""),
+		"no onlyKnown":    base(`"marker":"domain:x.com","modes":["stable","direct"],"default":"stable"`, ""),
+		"whole internet":  base(`"ips":["0.0.0.0/0"]`, ""),
+		"wide v4":         base(`"ips":["10.0.0.0/8"]`, ""),
+		"wide v6":         base(`"ips":["2000::/3"]`, ""),
+		"geoip in ips":    base(`"ips":["geoip:telegram"]`, ""),
+		"negated marker":  base(`"ipMarker":"geoip:!ru"`, ""),
+		"bidi title":      base(`"title":{"ru":"Steam\u202e"}`, ""),
+		"zero width":      base(`"title":{"ru":"St\u200beam"}`, ""),
 	}
 	for name, raw := range bad {
 		if _, err := Parse([]byte(raw), true); err == nil {

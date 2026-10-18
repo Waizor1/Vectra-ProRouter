@@ -86,12 +86,26 @@ func planModes(providerRaw []byte, modes map[string]string, pin string, main boo
 	rules := providerRules(providerRaw)
 
 	pinOK, why := stablePinUsable(v, pin)
+	if pinOK && !v.HasObservatory {
+		// Without an observatory xray's balancer never notices a dead pin
+		// and never takes its fallback.
+		pinOK, why = false, "the document has no observatory to notice a dead pin"
+	}
 	backTarget, backBalancer, hasMain := catchAllRule(rules)
 	if !hasMain && v.Default != nil && v.Default.Tag != "" {
 		backTarget, backBalancer, hasMain = v.Default.Tag, false, true
 	}
 	if pinOK && !hasMain {
 		pinOK, why = false, "the document has no main path to fall back to"
+	}
+	if pinOK {
+		// The fallback must be a tunnel: a dead pin never sends a stable
+		// service straight out.
+		// Every way out of the main path — its members, its fallbacks,
+		// the provider's loopback stages — is a tunnel (neverDirect).
+		if !neverDirect(v, rules, backTarget, backBalancer, neverDirectDepth) {
+			pinOK, why = false, "the main path is not a tunnel"
+		}
 	}
 
 	directTag, addDirect, directWhy := directForModes(providerRaw)

@@ -1343,9 +1343,9 @@ export const S = {
   // ── services: a country of their own (simple view) ───────────────────
   'sv.t': ['Сервисы', 'Services', '服务'],
   'sv.d': [
-    'Для этих сервисов можно выбрать свою страну. Всё остальное идёт через основной VPN.',
-    'You can pick a country for these services. Everything else goes through the main VPN.',
-    '可以为这些服务单独选择国家，其余流量都走主 VPN。',
+    'Для этих сервисов путь выбирается отдельно. Всё остальное идёт через основной VPN.',
+    'These services get a route of their own. Everything else goes through the main VPN.',
+    '这些服务可单独选择线路，其余流量都走主 VPN。',
   ],
   'sv.name.youtube': ['YouTube', 'YouTube', 'YouTube'],
   'sv.name.tiktok': ['TikTok', 'TikTok', 'TikTok'],
@@ -1355,17 +1355,31 @@ export const S = {
   'sv.defaultIn': ['По умолчанию · {country}', 'Default · {country}', '默认 · {country}'],
   'sv.country': ['Страна для {service}', 'Country for {service}', '{service} 的国家'],
   // A choice the router does not run: where the service runs meanwhile.
-  'sv.stale.in': [
-    'Эта страна сейчас недоступна для сервиса — пока он работает по умолчанию, через {country}.',
-    'This country is not available for the service right now — meanwhile it runs on its default, through {country}.',
-    '该国家目前不可用于此服务——暂时按默认经由 {country} 运行。',
+  'sv.stale': [
+    'Эта страна сейчас недоступна для сервиса — пока он работает по умолчанию, через {via}.',
+    'This country is not available for the service right now — meanwhile it runs on its default, through {via}.',
+    '该国家目前不可用于此服务——暂时按默认经由 {via} 运行。',
   ],
-  'sv.stale.main': [
-    'Эта страна сейчас недоступна для сервиса — пока он работает по умолчанию, через основной VPN.',
-    'This country is not available for the service right now — meanwhile it runs on its default, through the main VPN.',
-    '该国家目前不可用于此服务——暂时按默认经由主 VPN 运行。',
-  ],
+  'sv.viaMain': ['основной VPN', 'the main VPN', '主 VPN'],
   'sv.unavailable': ['недоступна', 'unavailable', '不可用'],
+  // r26: a service by its catalog row — «Авто» says what it means, then the modes the row offers.
+  'sv.auto': ['Авто', 'Auto', '自动'],
+  'sv.autoOf': ['Авто ({what})', 'Auto ({what})', '自动（{what}）'],
+  'sv.m.main': ['Как основной VPN', 'Like the main VPN', '同主 VPN'],
+  'sv.m.stable': ['VPN · постоянный IP', 'VPN · stable IP', 'VPN · 固定 IP'],
+  'sv.m.direct': ['Напрямую', 'Direct', '直连'],
+  'sv.m.location': ['Выбрано в приложении', 'Set in the app', '已在应用中设置'],
+  'sv.modeQ': ['Сменить маршрут для {service}?', 'Change the route for {service}?', '更改 {service} 的线路？'],
+  // The stable exit: the one node that keeps one address. Never the address itself.
+  'sv.st.pinned': ['Постоянный IP · {country}', 'Stable IP · {country}', '固定 IP · {country}'],
+  'sv.st.checking': ['Ищем узел с постоянным IP', 'Looking for a node with a stable IP', '正在寻找固定 IP 的节点'],
+  'sv.st.none': [
+    'Нет узла с постоянным IP — идут общим путём VPN',
+    'No node keeps a stable IP — they take the main VPN path meanwhile',
+    '暂无可保持固定 IP 的节点——暂时走主 VPN 线路',
+  ],
+  'sv.main': ['Постоянный IP для всего VPN', 'Stable IP for the whole VPN', '整个 VPN 使用固定 IP'],
+  'sv.mainQ': ['Изменить «Постоянный IP для всего VPN»?', 'Change “Stable IP for the whole VPN”?', '更改“整个 VPN 使用固定 IP”？'],
 
   // ── the server card: where the main traffic goes (spec decision 6) ──────
   // Under «Авто»: that it picks by itself, and where it goes now — never read as a second choice.
@@ -1396,7 +1410,8 @@ export const S = {
   ],
   'sv.changeQ': ['Сменить страну для {service}?', 'Change the country for {service}?', '更改 {service} 的国家？'],
   'sv.change': ['Сменить', 'Change', '更改'],
-  'a.service_set': ['Страна сервиса сохранена', 'Service country saved', '服务国家已保存'],
+  'a.service_set': ['Выбор для сервиса сохранён', 'Service choice saved', '服务设置已保存'],
+  'a.stable_main_set': ['Настройка сохранена', 'Setting saved', '设置已保存'],
   'a.unknown_service': ['Роутер не знает этот сервис. Обновите страницу.', 'The router does not know this service. Reload the page.', '路由器不认识此服务，请刷新页面。'],
   'a.unknown_country': ['Этой страны нет в подписке. Обновите список.', 'This country is not in your subscription. Refresh the list.', '订阅中没有该国家，请刷新列表。'],
   'a.unavailable': ['Маршруты этого роутера задаёт оператор.', 'The operator sets the routes on this router.', '此路由器的路由由运营方设置。'],

@@ -2839,8 +2839,39 @@ a.btn {
   gap: 6px 14px;
 }
 .sv-svc-n {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 600;
   color: var(--tx);
+}
+.sv-svc-n .ic {
+  color: var(--tx-3);
+}
+/* A group (the catalog's heading) under the list above it: its icon, its line, its rows. */
+.sv-svc-g {
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+/* The launchers' names share one column, so their selects line up. */
+.sv-svc-g .sv-svc-r {
+  grid-template-columns: 9.5em minmax(0, 1fr);
+}
+.sv-svc-gh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+}
+.sv-svc-g .hint {
+  margin: 0;
+}
+/* «Постоянный IP для всего VPN»: a quiet switch under the games. */
+.sv-svc-g > .sw {
+  justify-self: start;
 }
 /* On a phone the name goes above: the select keeps the whole width for
    "По умолчанию · 🇷🇺 Россия". */

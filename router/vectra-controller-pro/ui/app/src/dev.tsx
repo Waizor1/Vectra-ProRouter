@@ -7,6 +7,7 @@
 //   ?wifi=manual|overlap|down|model (the Wi-Fi as an owner may have it: the wizard's verdicts; model: named after the model)
 //   ?scenario=cgnat (port forwarding behind the provider's CGNAT)   ?pfPending=1   ?pffail=port_conflict|dest_not_lan|…
 //   ?brand=vectra|bloopcat|none (whose router it is: the name, the bots, the networks' names)
+//   ?scenario=games (the catalog's «Игры» with every launcher)   ?stable=pinned|none|checking|off (the stable exit's state)
 import { createMock } from './mock/transport';
 import { SCENARIOS, type Scenario } from './mock/scenarios';
 import { mount } from './mount';
@@ -35,6 +36,7 @@ const holder = q.get('holder');
 const pw = q.get('pwfail');
 const wifi = q.get('wifi');
 const brand = q.get('brand');
+const stable = q.get('stable');
 const mock = createMock({
   scenario,
   latencyMs: Number(q.get('latency') ?? 300),
@@ -47,6 +49,7 @@ const mock = createMock({
   pfPending: q.get('pfPending') === '1',
   pfFail: q.get('pffail') || undefined,
   brand: brand === 'bloopcat' || brand === 'none' ? brand : undefined,
+  stable: stable === 'pinned' || stable === 'none' || stable === 'checking' || stable === 'off' ? stable : undefined,
 });
 const host = document.getElementById('vectra-host') as HTMLElement;
 const unmount = mount(host, { call: mock.call, setPassword: mock.setPassword, lang: document.documentElement.lang });

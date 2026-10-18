@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"vectra-controller-pro/internal/catalog"
 	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/api"
@@ -84,7 +85,7 @@ func (d *daemon) spliceOptionsOv(providerRaw []byte) (xray.SpliceOptions, localc
 // spliceOptionsFor is spliceOptions under the given overrides.
 func spliceOptionsFor(providerRaw []byte, ov localctl.Overrides, russiaDirect bool) (xray.SpliceOptions, localctl.Probe) {
 	opts := xray.SpliceOptions{APIListen: xray.DefaultAPIListen, MetricsListen: xray.DefaultMetricsListen, NoAccessLog: true,
-		Rules: xray.UserRules{Direct: ov.Direct, Proxy: ov.Proxy, Connect: ov.ConnectRules}, Services: ov.Services,
+		Rules: xray.UserRules{Direct: ov.Direct, Proxy: ov.Proxy, Connect: ov.ConnectRules}, Services: countryChoices(ov),
 		// The services' modes (r26): direct and stable render rules of vctl's.
 		ServiceModes: ov.RenderModes(xray.ActiveCatalog()), StableMain: ov.StableMainOn(xray.ActiveCatalog()),
 		// Only a document that has the provider's Russian bridge: the others
@@ -216,7 +217,7 @@ func withoutAIDefault(opts xray.SpliceOptions, ov localctl.Overrides) (xray.Spli
 	if opts.ServiceEntries["ai"] == nil {
 		return opts, false
 	}
-	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" {
+	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" || ov.ServiceModes["ai"] != "" {
 		return opts, false
 	}
 	entries := map[string]json.RawMessage{}
@@ -956,4 +957,22 @@ func (d *daemon) localReapplyPassWall(ctx context.Context, change *localctl.Chan
 		logging.L().Warn("persist state after a local apply", "err", err.Error())
 	}
 	return localctl.SocketResponse{OK: true}
+}
+
+// countryChoices are the owner's countries the catalog still offers: a
+// country for a service whose modes no longer include it is a stale choice,
+// its default runs (localctl.ServiceMode).
+func countryChoices(ov localctl.Overrides) map[string]string {
+	cat := xray.ActiveCatalog()
+	var out map[string]string
+	for id, cc := range ov.Services {
+		if m, _, _ := ov.ServiceMode(id, cat); m != catalog.ModeCountry {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[id] = cc
+	}
+	return out
 }

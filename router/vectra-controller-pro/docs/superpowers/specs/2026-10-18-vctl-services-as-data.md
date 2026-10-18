@@ -61,9 +61,9 @@ know.
 | `icon` | A key from a fixed icon set both UIs carry (`ai`, `youtube`, `tiktok`, `telegram`, `games`, `steam`, `epic`, `riot`, `battlenet`, `starcitizen`, `globe`). Unknown → `globe`. |
 | `marker` | The provider matcher that finds the service's own rule, e.g. `domain:steampowered.com`. Empty → the service has no provider rule of its own: «Как основной VPN» means the main path, and its names are the catalog's only. |
 | `ipMarker` | The same, by address (`geoip:telegram`). |
-| `ips` | CIDRs or `geoip:` names the service also covers by address (the same caps as sites). |
+| `ips` | Addresses or networks of the service's own, no wider than /16 (IPv6 /32); never `geoip:` (a whole country, or a name the router's file may lack). A catalog cannot move the internet. |
 | `modes` | What the owner may choose, a subset of `main`, `stable`, `direct`, `country`, `location`. |
-| `default` | The mode while the owner chose nothing: `main`, `stable`, `direct` or `location`. `location` = «Нейросети»' own `aiDefault` exits. |
+| `default` | The mode while the owner chose nothing: `main`, `stable` or `location`. `location` = «Нейросети»' own `aiDefault` exits. Never `direct`: a service leaves the tunnel only by the owner's own choice, never on every router at once. A service offering `direct` or `stable` with a `marker` must be `onlyKnown`, and its provider address matchers are not taken (only the catalog's `ips`). |
 
 **`groups.<id>`**: `title`, `order`, `icon`, and an optional `hint` (`title`
 form) shown under the group.
@@ -125,6 +125,11 @@ catch-all's target) that the exit probe reaches. That is BL-MAIN's members on
 today's provider. When the main path is a single outbound, it is the only
 candidate.
 
+**The fallback must be a tunnel.** Every way out of the main path — its
+members, fallbacks and the provider's loopback stages (`neverDirect`) — must
+be a tunnel, or no pin is rendered: a dead pin never sends a stable service
+straight out.
+
 **A round** asks each candidate, `samples` times (default 6), for the trace
 URL (default `https://www.cloudflare.com/cdn-cgi/trace`), each time on a new
 connection, and reads `ip=`.
@@ -183,7 +188,7 @@ later provider rule proxies it. That is how direct games keep real answers.
 
 - **A downloaded catalog whose render fails `xray -test`, where the built-in
   catalog's render of the same document passes, is quarantined.**
-  - Its serial goes to `/etc/vectra-controller-pro/catalog.refused`.
+  - Its serial goes to `/etc/vectra-controller-pro/catalog.json.refused`.
   - The router renders with the built-in catalog (or the previous stored one)
     until a higher serial arrives.
   - `vctl catalog show` and the status say so.

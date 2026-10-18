@@ -77,9 +77,14 @@ func proxiedNames(providerRaw []byte, ruTag string, owner, services []json.RawMe
 			// The first rule that names it decides (xray's order): a name
 			// sent straight out — the owner's direct sites, a service on
 			// «Напрямую» — keeps its real answer even when a later rule
-			// proxies it, so its Russian addresses stay in the kernel.
-			for _, d := range jsonStrings(ruleField(r, "domain")) {
-				seen[d] = true
+			// proxies it, so its Russian addresses stay in the kernel. Only
+			// a rule that sends ALL of the name's traffic out: one with
+			// another condition (UDP only, a port) leaves the rest to the
+			// rules after it.
+			if onlyNamesAndInbound(r) {
+				for _, d := range jsonStrings(ruleField(r, "domain")) {
+					seen[d] = true
+				}
 			}
 		} else {
 			for _, d := range jsonStrings(ruleField(r, "domain")) {
@@ -194,4 +199,20 @@ func renderHasFakeDNSServer(dns json.RawMessage) bool {
 		}
 	}
 	return false
+}
+
+// onlyNamesAndInbound: the rule has no condition but its names (and the
+// inbound it is for).
+func onlyNamesAndInbound(r map[string]json.RawMessage) bool {
+	for k, val := range r {
+		switch foldKey(k) {
+		case foldKey("type"), foldKey("outboundTag"), foldKey("balancerTag"), foldKey("ruleTag"),
+			foldKey("domainMatcher"), foldKey("domain"), foldKey("inboundTag"):
+		default:
+			if !emptyJSON(val) {
+				return false
+			}
+		}
+	}
+	return true
 }

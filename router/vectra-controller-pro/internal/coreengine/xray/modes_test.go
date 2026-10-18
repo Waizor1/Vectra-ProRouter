@@ -211,3 +211,38 @@ func TestDirectNamesAreNotFakeDNSNames(t *testing.T) {
 		}
 	}
 }
+
+// A direct rule with another condition (UDP only) does not take the name out
+// of FakeDNS: its TCP still goes to the proxy rule after it.
+func TestAConditionalDirectRuleKeepsTheNameFake(t *testing.T) {
+	doc := strings.Replace(fakeDoc, `{"domain":["domain:novayagazeta.ru","keyword:rutracker"],"balancerTag":"BL-MAIN"},`,
+		`{"domain":["domain:example.org"],"network":"udp","outboundTag":"DIRECT"},
+   {"domain":["domain:novayagazeta.ru","keyword:rutracker","domain:example.org"],"balancerTag":"BL-MAIN"},`, 1)
+	opts := xray.SpliceOptions{RussiaDirect: true, FakeDNS: true,
+		DNS: &xray.DNSOptions{Listen: xray.DefaultDNSListen, DirectResolvers: xray.DefaultDirectResolvers}}
+	out, _, err := xray.Splice([]byte(doc), testTproxy(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r fakeRender
+	if err := json.Unmarshal(out, &r); err != nil {
+		t.Fatal(err)
+	}
+	if fake := fakeServerDomains(t, r); !slices.Contains(fake, "domain:example.org") {
+		t.Fatalf("a UDP-only direct rule took the name out of FakeDNS: %v", fake)
+	}
+}
+
+// The stable exit's fallback must be a tunnel: a document whose main path
+// goes straight out gets no pin — the stable services stay on the provider's
+// routing rather than fall back to direct when the pin dies.
+func TestNoPinWhenTheMainPathIsNotATunnel(t *testing.T) {
+	doc := strings.Replace(string(providerFixture(t)), `{"network":"tcp,udp","balancerTag":"BL-MAIN"}`, `{"network":"tcp,udp","outboundTag":"DIRECT"}`, 1)
+	if doc == string(providerFixture(t)) {
+		t.Skip("the fixture's catch-all changed")
+	}
+	_, _, res := spliceServicesDoc(t, doc, xray.SpliceOptions{ServiceModes: map[string]string{"steam": "stable"}, StablePin: "bridge-fr5"})
+	if len(res.Modes.Stable) != 0 || !strings.Contains(strings.Join(res.Modes.Skipped, ";"), "not a tunnel") {
+		t.Fatalf("modes %+v", res.Modes)
+	}
+}

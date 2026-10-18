@@ -234,7 +234,14 @@ const SPECS: Record<ReadMethod, Spec> = {
     scannedAt: 's',
   },
   rules: { direct: 'S', proxy: 'S', max: 'n', catalog: 'S', missing: 'S' },
-  services: { available: 'b', services: [{ id: 'T', choice: 's', defaultCountry: 's', countries: 'S', active: 'b', stale: 'b', egress: 'M' }] },
+  services: {
+    available: 'b',
+    services: [
+      { id: 'T', choice: 's', defaultCountry: 's', countries: 'S', active: 'b', stale: 'b', egress: 'M', title: 'M', group: 's', order: 'n', icon: 's', modes: 'S', mode: 's', default: 's', chosen: 'b' },
+    ],
+    groups: [{ id: 'T', title: 'M', order: 'n', icon: 's', hint: 'M' }],
+    stableExit: ['?', { state: 's', country: 's', checkedAt: 's', main: 'b' }],
+  },
   // A rule without an id is kept, never dropped: the whole list goes back on
   // every save, and a dropped rule would be deleted from the router.
   port_forwards: {

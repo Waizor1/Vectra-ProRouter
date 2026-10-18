@@ -239,13 +239,3 @@ func TestCandidatesFollowTheStableFallback(t *testing.T) {
 		t.Fatalf("candidates %v and, through the fallback and without the unfit ae5, %v", a, b)
 	}
 }
-
-func without(xs []string, x string) []string {
-	var out []string
-	for _, v := range xs {
-		if v != x {
-			out = append(out, v)
-		}
-	}
-	return out
-}

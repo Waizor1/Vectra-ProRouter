@@ -162,7 +162,7 @@ type Door struct {
 }
 
 // QUIC: Refuse is the fleet's default for refusing QUIC into the tunnel;
-// the owner's refuse_quic wins.
+// the owner's refuse_quic '0' (QUIC kept) wins over a refusal.
 type QUIC struct {
 	Refuse *bool `json:"refuse,omitempty"`
 }
@@ -343,7 +343,7 @@ func (c *Catalog) Validate() error {
 
 var (
 	iconName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
-	geoipRef = regexp.MustCompile(`^geoip:!?[a-z0-9][a-z0-9!@._-]{0,63}$`)
+	geoipRef = regexp.MustCompile(`^geoip:[a-z0-9][a-z0-9@._-]{0,63}$`)
 	allModes = map[string]bool{ModeMain: true, ModeStable: true, ModeDirect: true, ModeCountry: true, ModeLocation: true}
 	// defaultModes: what a service may do while nobody chose (country needs
 	// someone's country).
@@ -370,15 +370,18 @@ func (s Service) validateR26(id string, groups map[string]Group) error {
 	if s.Marker != "" && !validName(s.Marker) {
 		return fmt.Errorf("catalog: service %s: marker %q is not domain:, full: or geosite:", id, s.Marker)
 	}
-	if s.IPMarker != "" && !validIP(s.IPMarker) {
+	if s.IPMarker != "" && !geoipRef.MatchString(s.IPMarker) && !validNetwork(s.IPMarker) {
 		return fmt.Errorf("catalog: service %s: ipMarker %q", id, s.IPMarker)
 	}
 	if len(s.IPs) > maxIPs {
 		return fmt.Errorf("catalog: service %s: %d ips, at most %d", id, len(s.IPs), maxIPs)
 	}
 	for _, ip := range s.IPs {
-		if !validIP(ip) {
-			return fmt.Errorf("catalog: service %s: ip %q is not an address, a network or geoip:", id, ip)
+		// Addresses and networks of the service's own — never geoip: (a
+		// whole country, or a name the router's file may lack) and never
+		// wider than /16 (IPv6 /32): a catalog cannot move the internet.
+		if !validNetwork(ip) {
+			return fmt.Errorf("catalog: service %s: ip %q is not an address or a network of /%d (IPv6 /%d) or narrower", id, ip, minPrefix4, minPrefix6)
 		}
 	}
 	seen := map[string]bool{}
@@ -396,6 +399,16 @@ func (s Service) validateR26(id string, groups map[string]Group) error {
 			return fmt.Errorf("catalog: service %s: default %q is not one of its modes", id, s.Default)
 		}
 	}
+	if s.Default == ModeDirect {
+		// Out of the VPN only by the owner's own choice: a catalog never
+		// takes a service out of the tunnel on every router at once.
+		return fmt.Errorf("catalog: service %s: «Напрямую» is the owner's choice, never a default", id)
+	}
+	if (seen[ModeDirect] || seen[ModeStable]) && s.Marker != "" && !s.OnlyKnown {
+		// A provider's rule names more than the service (its AI rule held
+		// the games): its whole list never goes out directly or elsewhere.
+		return fmt.Errorf("catalog: service %s: modes direct and stable need onlyKnown with a marker", id)
+	}
 	return nil
 }
 
@@ -410,8 +423,8 @@ func validTitle(t Title) error {
 			return fmt.Errorf("%s: 1 to %d characters", lang, maxTitleRunes)
 		}
 		for _, r := range v {
-			if unicode.IsControl(r) {
-				return fmt.Errorf("%s: a control character", lang)
+			if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+				return fmt.Errorf("%s: a control or format character", lang)
 			}
 		}
 	}
@@ -428,13 +441,20 @@ func validOrderIcon(order int, icon string) error {
 	return nil
 }
 
-// validIP: an address, a network or geoip:<name>.
-func validIP(v string) bool {
-	if geoipRef.MatchString(v) {
-		return true
-	}
+// The widest network a catalog may name.
+const (
+	minPrefix4 = 16
+	minPrefix6 = 32
+)
+
+// validNetwork: an address, or a network no wider than /16 (IPv6 /32).
+func validNetwork(v string) bool {
 	if p, err := netip.ParsePrefix(v); err == nil {
-		return p == p.Masked()
+		min := minPrefix4
+		if p.Addr().Is6() {
+			min = minPrefix6
+		}
+		return p == p.Masked() && p.Bits() >= min
 	}
 	_, err := netip.ParseAddr(v)
 	return err == nil
@@ -577,9 +597,12 @@ func (s Service) EffectiveModes(id string) (modes []string, def string) {
 	def = s.Default
 	if def == "" {
 		def = s.Modes[0]
-		if !defaultModes[def] {
+		if !defaultModes[def] || def == ModeDirect {
 			def = ModeMain
 		}
+	}
+	if def == ModeDirect {
+		def = ModeMain // never a default (validateR26); an older binary's catalog
 	}
 	return s.Modes, def
 }

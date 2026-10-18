@@ -116,9 +116,15 @@ func ServiceByID(id string) (Service, bool) {
 // overlayIPs is what the service's rule matches by address: the provider's
 // matchers, then the catalog's ips, without repeats.
 func (s Service) overlayIPs(provider []string) []string {
+	cs := ActiveCatalog().Service(s.ID)
+	if cs.OnlyKnown {
+		// A provider's address list is not the service's either; only the
+		// catalog's own addresses are known to be it.
+		provider = nil
+	}
 	seen := map[string]bool{}
 	var out []string
-	for _, list := range [][]string{provider, ActiveCatalog().Service(s.ID).IPs} {
+	for _, list := range [][]string{provider, cs.IPs} {
 		for _, m := range list {
 			if !seen[m] {
 				seen[m] = true
@@ -143,7 +149,14 @@ func (s Service) ownMatchers(rules []map[string]json.RawMessage, v *xrayview.Vie
 		}
 		return domains, ips
 	}
-	return s.overlay(s.Domains), s.overlayIPs(s.IPs)
+	// No rule of the service's own: its catalog names and addresses; an
+	// address marker renders only for the r25 services, whose markers are
+	// known to be in the router's geo file.
+	var markers []string
+	if _, legacy := legacyServices[s.ID]; legacy {
+		markers = s.IPs
+	}
+	return s.overlay(s.Domains), s.overlayIPs(markers)
 }
 
 func serviceBalancerTag(id string) string { return "VCTL-SVC-" + strings.ToUpper(id) }
