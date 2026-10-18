@@ -8,6 +8,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, lt, lte, sql } from "drizzle-o
 import { z } from "zod";
 import {
   CONNECT_ACTION_NAMES,
+  CONNECT_ACTION_PARAMS,
   CONNECT_CAPABILITY_FLAGS,
   CONNECT_SERVICE_AUTO,
   parseConnectActionParams,
@@ -113,6 +114,73 @@ function projectPortForwards(
   };
 }
 
+// The keys of value that are set, in keys' order.
+function pickSet<T extends object, K extends keyof T>(
+  value: T,
+  keys: readonly K[],
+) {
+  return Object.fromEntries(
+    keys.flatMap((key) =>
+      value[key] === undefined ? [] : [[key, value[key]]],
+    ),
+  ) as Pick<T, K>;
+}
+
+type ConnectTitle = { ru?: string; en?: string; zh?: string };
+const projectTitle = (title: ConnectTitle) =>
+  pickSet(title, ["ru", "en", "zh"]);
+
+// Services, their groups and the stable exit field by field too (vctl r26,
+// spec 2026-10-18 §7): what a service is comes from the router's catalog,
+// never from this file, so every service the router reports is passed on —
+// with the contract's fields only, each only where the router reported it.
+// An older router's services read exactly as they did. null: not known.
+function projectServices(reported: ConnectTelemetry["services"] | undefined) {
+  return (
+    reported?.map((service) => {
+      const { title, ...rest } = pickSet(service, [
+        "id",
+        "entryId",
+        "auto",
+        "entries",
+        "stale",
+        "title",
+        "group",
+        "order",
+        "icon",
+        "modes",
+        "mode",
+        "default",
+      ]);
+      return title ? { ...rest, title: projectTitle(title) } : rest;
+    }) ?? null
+  );
+}
+
+function projectServiceGroups(
+  reported: ConnectTelemetry["serviceGroups"] | undefined,
+) {
+  return (
+    reported?.map((group) => ({
+      ...pickSet(group, ["id", "order", "icon"]),
+      title: projectTitle(group.title),
+      ...(group.hint ? { hint: projectTitle(group.hint) } : {}),
+    })) ?? null
+  );
+}
+
+function projectStableExit(
+  reported: ConnectTelemetry["stableExit"] | undefined,
+) {
+  if (!reported) return null;
+  return {
+    state: reported.state,
+    country: reported.country ?? null,
+    checkedAt: reported.checkedAt ?? null,
+    main: reported.main,
+  };
+}
+
 export function projectPartnerRouter(
   router: Router,
   inventory: Inventory | null,
@@ -175,7 +243,9 @@ export function projectPartnerRouter(
     location: measured?.location ?? null,
     entries: measured?.entries ?? [],
     sites: measured?.sites ?? null,
-    services: measured?.services ?? null,
+    services: projectServices(measured?.services),
+    serviceGroups: projectServiceGroups(measured?.serviceGroups),
+    stableExit: projectStableExit(measured?.stableExit),
     wifi: measured ? (hydrateConnectWifi(router, inventory) ?? null) : null,
     routerPasswordSet: measured?.routerPasswordSet ?? null,
     supportAccess: measured?.supportAccess ?? null,
@@ -416,6 +486,16 @@ export async function queuePartnerActionWithDb(
       params.entryId === CONNECT_SERVICE_AUTO;
     if (serviceAuto && !snapshot.capabilities.includes("set_service_auto"))
       return { ok: false, status: 409, body: { error: "not_supported" } };
+    // A mode (r26): an older router would refuse the unknown field.
+    const serviceMode =
+      input.action === "set_service"
+        ? (params as z.output<typeof CONNECT_ACTION_PARAMS.set_service>).mode
+        : undefined;
+    if (
+      serviceMode !== undefined &&
+      !snapshot.capabilities.includes("set_service_mode")
+    )
+      return { ok: false, status: 409, body: { error: "not_supported" } };
     // One band's Wi-Fi: an older router would refuse the unknown field.
     if (
       input.action === "set_wifi" &&
@@ -432,12 +512,24 @@ export async function queuePartnerActionWithDb(
       !snapshot.entries.some((entry) => entry.id === params.entryId)
     )
       return { ok: false, status: 400, body: { error: "invalid_params" } };
-    if (
-      input.action === "set_service" &&
-      "service" in params &&
-      !snapshot.services?.some((service) => service.id === params.service)
-    )
-      return { ok: false, status: 400, body: { error: "invalid_params" } };
+    if (input.action === "set_service" && "service" in params) {
+      const service = snapshot.services?.find(
+        (reported) => reported.id === params.service,
+      );
+      if (!service)
+        return { ok: false, status: 400, body: { error: "invalid_params" } };
+      // A mode the service does not offer, by the router's own list (the
+      // router refuses it too); a service reported without one is the
+      // router's to judge. "main" is entryId null, which every service
+      // takes.
+      if (
+        serviceMode !== undefined &&
+        serviceMode !== "main" &&
+        service.modes &&
+        !service.modes.includes(serviceMode)
+      )
+        return { ok: false, status: 400, body: { error: "invalid_params" } };
+    }
     const pending = await tx
       .select()
       .from(jobs)

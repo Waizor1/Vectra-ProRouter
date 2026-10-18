@@ -11,16 +11,22 @@ export const CONNECT_ACTION_NAMES = [
   "set_auto_update",
   "refresh_subscription",
   "set_port_forwards",
+  "set_stable_main",
 ] as const;
 export type ConnectActionName = (typeof CONNECT_ACTION_NAMES)[number];
 /** Flags a router advertises next to its actions, refining one of them. */
 export const CONNECT_CAPABILITY_FLAGS = [
   "set_service_auto",
   "set_wifi_band",
+  "set_service_mode",
 ] as const;
 /** set_service's entryId taking a service back to its default; only a router
  * advertising set_service_auto understands it. */
 export const CONNECT_SERVICE_AUTO = ":auto";
+/** The modes set_service takes (vctl r26), for a router advertising
+ * set_service_mode: "main" is «Как основной VPN» (as entryId null),
+ * "stable" the exit that keeps one address, "direct" past the VPN. */
+export const CONNECT_SERVICE_MODES = ["main", "stable", "direct"] as const;
 const id = z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/);
 const entryId = id.nullable();
 // Match the established Connect validator: IDN, underscore, wildcard/suffix
@@ -73,7 +79,22 @@ export const CONNECT_ACTION_PARAMS = {
       (value) => value.direct.length + value.vpn.length <= 300,
       "at most 300 domains",
     ),
-  set_service: z.object({ service: id, entryId }).strict(),
+  // entryId as before; or a mode, with entryId absent or null — a mode names
+  // no location.
+  set_service: z
+    .object({
+      service: id,
+      entryId: entryId.optional(),
+      mode: z.enum(CONNECT_SERVICE_MODES).optional(),
+    })
+    .strict()
+    .refine(
+      (value) =>
+        value.mode === undefined
+          ? value.entryId !== undefined
+          : value.entryId === undefined || value.entryId === null,
+      "entryId, or a mode with entryId absent or null",
+    ),
   set_wifi: z
     .object({
       ssid: z
@@ -113,6 +134,8 @@ export const CONNECT_ACTION_PARAMS = {
         }, "rule ids must be unique"),
     })
     .strict(),
+  // The whole VPN through the stable exit, or back to the main path.
+  set_stable_main: z.object({ on: z.boolean() }).strict(),
 };
 
 /** Parameters are parsed independently of capability: invalid input is never

@@ -338,6 +338,40 @@ describe("materialInventoryFingerprint", () => {
       materialInventoryFingerprint(none),
     );
   });
+
+  // r26: the owner's app shows a service's mode, the groups and the stable
+  // exit from the newest snapshot.
+  it("reacts when a service's mode, the groups or the stable exit change", () => {
+    const connect = {
+      ownerRef: "acct-42",
+      verdict: "ok",
+      services: [{ id: "steam", entryId: null, mode: "stable", modes: ["stable", "direct"] }],
+      serviceGroups: [{ id: "games", title: { ru: "Игры" }, order: 10 }],
+      stableExit: { state: "checking", country: null, checkedAt: null, main: false },
+    };
+    const of = (patch: Record<string, unknown>) =>
+      materialInventoryFingerprint(
+        routerInventorySchema.parse({
+          ...baseInventory,
+          connect: { ...connect, ...patch },
+        }),
+      );
+    const base = of({});
+    expect(of({})).toBe(base);
+    for (const patch of [
+      { services: [{ ...connect.services[0], mode: "direct" }] },
+      { serviceGroups: [{ ...connect.serviceGroups[0], order: 20 }] },
+      { serviceGroups: undefined },
+      { stableExit: { ...connect.stableExit, state: "pinned", country: "FR" } },
+      { stableExit: { ...connect.stableExit, main: true } },
+      { stableExit: undefined },
+    ])
+      expect(of(patch)).not.toBe(base);
+    // A recheck that finds the same pin is not a change.
+    expect(
+      of({ stableExit: { ...connect.stableExit, checkedAt: "2026-10-18T12:10:00Z" } }),
+    ).toBe(base);
+  });
 });
 
 describe("shouldWriteInventorySnapshot", () => {

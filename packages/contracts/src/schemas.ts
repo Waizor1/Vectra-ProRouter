@@ -724,16 +724,19 @@ export const connectRouterActionNameSchema = z.enum([
   "set_auto_update",
   "refresh_subscription",
   "set_port_forwards",
+  "set_stable_main",
 ]);
 
 // What a router may advertise for its owner: the actions it executes, plus
 // flags that refine one ("set_service_auto": set_service takes the entryId
 // ":auto", back to the service's default; "set_wifi_band": set_wifi takes a
-// band, "2g" | "5g" | "6g", and names only that band's networks).
+// band, "2g" | "5g" | "6g", and names only that band's networks;
+// "set_service_mode": set_service takes a mode, "main" | "stable" | "direct").
 export const connectRouterCapabilitySchema = z.enum([
   ...connectRouterActionNameSchema.options,
   "set_service_auto",
   "set_wifi_band",
+  "set_service_mode",
 ]);
 export type ConnectRouterCapability = z.infer<
   typeof connectRouterCapabilitySchema
@@ -754,6 +757,126 @@ const connectRouterCapabilitiesSchema = z
   );
 
 const connectEntryRefSchema = z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/);
+
+// Services are data (vctl r26, contract:
+// router/vectra-controller-pro/docs/superpowers/specs/2026-10-18-vctl-services-as-data.md
+// §7): the router's catalog defines them, and the panel passes each
+// description on without knowing the set of ids. Shape and bounds are
+// checked; a value that breaks them costs only itself — that field, or that
+// service or group when its id or title is unusable — never the check-in.
+// An older router (r23–r25) sends none of the r26 fields.
+const connectCatalogIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/);
+// Up to 64 characters (code points, as the router counts them), no control
+// characters.
+const connectTitleTextSchema = z
+  .string()
+  .refine(
+    (value) =>
+      value.length > 0 && [...value].length <= 64 && !/\p{Cc}/u.test(value),
+  );
+// What the UIs show, per language; a bad language drops only itself, a
+// title with none left is no title.
+const connectTitleSchema = z
+  .object({
+    ru: connectTitleTextSchema.optional().catch(undefined),
+    en: connectTitleTextSchema.optional().catch(undefined),
+    zh: connectTitleTextSchema.optional().catch(undefined),
+  })
+  .transform(({ ru, en, zh }) => ({
+    ...(ru === undefined ? {} : { ru }),
+    ...(en === undefined ? {} : { en }),
+    ...(zh === undefined ? {} : { zh }),
+  }))
+  .refine((title) => Object.keys(title).length > 0);
+const connectOrderSchema = z.number().int().min(-1000).max(1000);
+// main: the provider's routing, stable: the exit that keeps one address,
+// direct: past the VPN, location: a Connect location (entries).
+const connectServiceModeSchema = z.enum(["main", "stable", "direct", "location"]);
+const knownConnectServiceModes = new Set<string>(
+  connectServiceModeSchema.options,
+);
+// The options to show, in order: a mode this panel does not know is left out
+// (like a capability), the rest kept once each.
+const connectServiceModesSchema = z
+  .array(z.string().max(32))
+  .max(8)
+  .transform((modes) => [
+    ...new Set(
+      modes.filter((mode): mode is z.infer<typeof connectServiceModeSchema> =>
+        knownConnectServiceModes.has(mode),
+      ),
+    ),
+  ]);
+// Unusable optional values become undefined; this leaves them out of the
+// object instead of keeping the key.
+function withoutUndefined<T extends Record<string, unknown>>(value: T) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, field]) => field !== undefined),
+  ) as T;
+}
+// entryId: where the service runs now (null: not a location). auto: the
+// owner made no choice, the service is on its default. entries: the cached
+// locations that carry it (absent: not known). stale: the owner's choice
+// does not run now, the service is on its default meanwhile. r26: title,
+// group (a serviceGroups id), order, icon (a UI without it shows its generic
+// one), modes (what the owner may choose), mode (what runs now) and default
+// (what «Авто» means).
+const connectServiceTelemetrySchema = z
+  .object({
+    id: connectCatalogIdSchema,
+    entryId: z.string().nullable(),
+    auto: z.boolean().optional().catch(undefined),
+    entries: z.array(connectEntryRefSchema).max(200).optional().catch(undefined),
+    stale: z.boolean().optional().catch(undefined),
+    title: connectTitleSchema.optional().catch(undefined),
+    group: connectCatalogIdSchema.optional().catch(undefined),
+    order: connectOrderSchema.optional().catch(undefined),
+    icon: connectCatalogIdSchema.optional().catch(undefined),
+    modes: connectServiceModesSchema.optional().catch(undefined),
+    mode: connectServiceModeSchema.optional().catch(undefined),
+    default: connectServiceModeSchema.optional().catch(undefined),
+  })
+  .transform(withoutUndefined);
+const connectServiceGroupTelemetrySchema = z
+  .object({
+    id: connectCatalogIdSchema,
+    title: connectTitleSchema,
+    order: connectOrderSchema.optional().catch(undefined),
+    icon: connectCatalogIdSchema.optional().catch(undefined),
+    hint: connectTitleSchema.optional().catch(undefined),
+  })
+  .transform(withoutUndefined);
+// Each item on its own: one the schema refuses is left out, the rest stay.
+function eachUsable<T extends z.ZodTypeAny>(item: T, max: number) {
+  return z
+    .array(z.unknown())
+    .max(max)
+    .transform((items) =>
+      items.flatMap((value) => {
+        const parsed = item.safeParse(value);
+        return parsed.success ? [parsed.data as z.output<T>] : [];
+      }),
+    );
+}
+// The stable exit (r26): pinned, none (no exit keeps one address), checking,
+// or off (no exit probe). Its country, never its address; main: the whole
+// VPN leaves through it (set_stable_main).
+const connectStableExitTelemetrySchema = z.object({
+  state: z.enum(["pinned", "none", "checking", "off"]),
+  country: z
+    .string()
+    .regex(/^[A-Z]{2}$/)
+    .nullable()
+    .optional()
+    .catch(null),
+  checkedAt: z
+    .string()
+    .datetime({ offset: true })
+    .nullable()
+    .optional()
+    .catch(null),
+  main: z.boolean(),
+});
 
 // The owner's port forwards as vctl reports them (contract:
 // router/vectra-controller-pro/docs/superpowers/specs/2026-10-06-port-forwards-contract.md).
@@ -831,22 +954,15 @@ export const routerConnectTelemetrySchema = z.object({
       vpn: z.array(z.string()).max(300),
     })
     .optional(),
-  // entryId: where the service runs now (null: the main VPN). auto: the
-  // owner made no choice, the service is on its default. entries: the cached
-  // locations that carry it (absent: not known). stale: the owner's choice
-  // does not run now, the service is on its default meanwhile.
-  services: z
-    .array(
-      z.object({
-        id: z.string(),
-        entryId: z.string().nullable(),
-        auto: z.boolean().optional(),
-        entries: z.array(connectEntryRefSchema).max(200).optional(),
-        stale: z.boolean().optional(),
-      }),
-    )
-    .max(100)
-    .optional(),
+  // In display order. More than 100 is not a services report: the field is
+  // dropped, the check-in kept.
+  services: eachUsable(connectServiceTelemetrySchema, 100)
+    .optional()
+    .catch(undefined),
+  serviceGroups: eachUsable(connectServiceGroupTelemetrySchema, 16)
+    .optional()
+    .catch(undefined),
+  stableExit: connectStableExitTelemetrySchema.optional().catch(undefined),
   // Confidential wire field: the panel strips and encrypts password before
   // inventory persistence. Only the current owner can hydrate the snapshot.
   wifi: z

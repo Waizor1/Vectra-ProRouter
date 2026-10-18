@@ -116,6 +116,59 @@ describe("vctl check-in payload against the panel contract", () => {
     expect(keyPaths(payload).filter((p) => !kept.has(p))).toEqual([]);
   });
 
+  // Services as data (vctl r26, spec 2026-10-18 §7): the shape the router
+  // puts in the check-in's connect block. Until the router regenerates the
+  // fixture with it, the sample is put in here; once it is there this still
+  // holds.
+  it("keeps every r26 services field vctl reports", () => {
+    const payload = structuredClone(checkInFixture) as {
+      inventory: { connect?: Record<string, unknown> };
+    };
+    payload.inventory.connect = {
+      ...payload.inventory.connect,
+      capabilities: ["set_service", "set_service_mode", "set_stable_main"],
+      services: [
+        {
+          id: "starcitizen",
+          entryId: null,
+          auto: true,
+          entries: ["entry-1"],
+          stale: true,
+          title: { ru: "Star Citizen", en: "Star Citizen", zh: "星际公民" },
+          group: "games",
+          order: 50,
+          icon: "starcitizen",
+          modes: ["stable", "direct", "main", "location"],
+          mode: "stable",
+          default: "stable",
+        },
+      ],
+      serviceGroups: [
+        {
+          id: "games",
+          title: { ru: "Игры", en: "Games", zh: "游戏" },
+          order: 10,
+          icon: "games",
+          hint: { ru: "Постоянный IP", en: "One address", zh: "固定IP" },
+        },
+      ],
+      stableExit: {
+        state: "pinned",
+        country: "FR",
+        checkedAt: "2026-10-18T12:00:00Z",
+        main: false,
+      },
+    };
+    const parsed = routerCheckInRequestSchema.parse(payload);
+    const kept = new Set(keyPaths(parsed));
+    expect(keyPaths(payload).filter((p) => !kept.has(p))).toEqual([]);
+    expect(parsed.inventory.connect?.capabilities).toEqual([
+      "set_service",
+      "set_service_mode",
+      "set_stable_main",
+    ]);
+  });
+
   // The teeth. If the schema accepted these too, the assertion above would be
   // vacuous — and these five are exactly the fields that produced the live 400.
   it.each([
