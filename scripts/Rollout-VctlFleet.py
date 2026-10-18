@@ -86,7 +86,8 @@ def panel(path: str, payload: dict | None = None, mutation: bool = False) -> obj
         cmd += ["--input", json.dumps(payload)]
     p = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, cwd=PANEL_CLI.parent.parent)
     if p.returncode != 0:
-        msg = (p.stderr.strip().splitlines() or [p.stdout.strip()[-300:]])[-1]
+        lines = p.stderr.strip().splitlines() or [p.stdout.strip()[-300:]]
+        msg = next((line for line in lines if "Error" in line), lines[-1])
         raise RuntimeError(f"panel {path}: {msg[:300]}")
     try:
         return json.loads(p.stdout)
@@ -168,6 +169,7 @@ def package_entry(channel: str, version: str) -> dict:
 
 
 INTAKE = r"""#!/bin/sh
+base=@BASE@
 echo "host=$(uci -q get system.@system[0].hostname)"
 echo "version=$(opkg list-installed vectra-controller-pro | cut -d' ' -f3)"
 echo "mem=$(awk '/^MemAvailable/{print int($2/1024)}' /proc/meminfo)"
@@ -175,22 +177,30 @@ echo "overlay=$(df -k /overlay | awk 'NR==2{print int($4/1024)}')"
 echo "tmp=$(df -k /tmp | awk 'NR==2{print int($4/1024)}')"
 d=no; nft list table inet drill >/dev/null 2>&1 && d=yes; nft list table inet vdrill >/dev/null 2>&1 && d=yes; echo "drill=$d"
 [ -e /tmp/vctl-rollout.run ] && echo "pending=yes" || echo "pending=no"
-command -v usign >/dev/null && [ -n "$(ls /etc/opkg/keys 2>/dev/null)" ] && echo "usign=yes" || echo "usign=no"
+d=/tmp/vctl-rollout.i; rm -rf "$d"; mkdir -p "$d"
+curl -fsS -m 15 -o "$d/Packages" "$base/Packages" && curl -fsS -m 15 -o "$d/Packages.sig" "$base/Packages.sig" \
+  && usign -V -q -m "$d/Packages" -x "$d/Packages.sig" -P /etc/opkg/keys && echo "index=signed" || echo "index=unverified"
+rm -rf "$d"
 """
 
 # @NAME@ placeholders, filled with shell-quoted values (install_script).
 INSTALL = r"""#!/bin/sh
-host=@HOST@; base=@BASE@; file=@FILE@; sha=@SHA@; issued=@ISSUED@
+host=@HOST@; base=@BASE@; file=@FILE@; sha=@SHA@; ver=@VERSION@; issued=@ISSUED@
 now=$(date +%s)
 [ "$now" -ge $((issued - 600)) ] && [ "$now" -le $((issued + @WINDOW@)) ] || { echo "err=expired_or_clock"; exit 1; }
 [ "$(uci -q get system.@system[0].hostname)" = "$host" ] || { echo "err=wrong_host"; exit 1; }
 [ -e /tmp/vctl-rollout.run ] && { echo "err=pending"; exit 1; }
 d=/tmp/vctl-rollout.d; rm -rf "$d"; mkdir -p "$d"
 fail() { rm -rf "$d"; echo "err=$1"; exit 1; }
-curl -fsS -m 30 -o "$d/Packages" "$base/Packages" && curl -fsS -m 30 -o "$d/Packages.sig" "$base/Packages.sig" || fail index
+curl -fsS -m 15 -o "$d/Packages" "$base/Packages" && curl -fsS -m 15 -o "$d/Packages.sig" "$base/Packages.sig" || fail index
 usign -V -q -m "$d/Packages" -x "$d/Packages.sig" -P /etc/opkg/keys || fail index_signature
-grep -qx "Filename: $file" "$d/Packages" && grep -qx "SHA256sum: $sha" "$d/Packages" || fail not_in_signed_index
-curl -fsS -m 90 -o "$d/pkg.ipk" "$base/$file" || fail download
+awk -v p=vectra-controller-pro -v v="$ver" -v f="$file" -v s="$sha" '
+  function chk() { if (P == p && V == v && F == f && S == s) ok = 1; P = ""; V = ""; F = ""; S = "" }
+  /^$/ { chk(); next }
+  /^Package: / { P = substr($0, 10) } /^Version: / { V = substr($0, 10) }
+  /^Filename: / { F = substr($0, 11) } /^SHA256sum: / { S = substr($0, 12) }
+  END { chk(); exit !ok }' "$d/Packages" || fail not_in_signed_index
+curl -fsS -m 75 -o "$d/pkg.ipk" "$base/$file" || fail download
 [ "$(sha256sum "$d/pkg.ipk" | cut -d' ' -f1)" = "$sha" ] || fail sha
 rm -f /tmp/vctl-rollout.log
 cat > /tmp/vctl-rollout.run <<'X'
@@ -226,7 +236,7 @@ echo "mem=$(awk '/^MemAvailable/{print int($2/1024)}' /proc/meminfo)"
 
 def install_script(host: str, entry: dict) -> str:
     values = {"HOST": host, "BASE": entry["Base"], "FILE": entry["Filename"], "SHA": entry["SHA256sum"],
-              "ISSUED": str(int(time.time())), "WINDOW": str(JOB_WINDOW)}
+              "VERSION": entry["Version"], "ISSUED": str(int(time.time())), "WINDOW": str(JOB_WINDOW)}
     script = INSTALL
     for k, v in values.items():
         script = script.replace(f"@{k}@", v if k in ("ISSUED", "WINDOW") else shlex.quote(v))
@@ -255,21 +265,23 @@ def roll(r: dict, a: argparse.Namespace, entry: dict, target: tuple[int, ...]) -
     """One router: its result line, or Skip / Stop."""
     host, rid = r["hostname"], r["id"]
     try:
-        it = kv(run_job(rid, INTAKE, timeout=40).get("stdout"))
+        it = kv(run_job(rid, INTAKE.replace("@BASE@", shlex.quote(entry["Base"])), timeout=60).get("stdout"))
     except (RuntimeError, TimeoutError) as e:  # offline, remote shell off: nothing was done
         raise Skip(f"no intake ({e})") from None
     print(f"   intake: {it}")
     if it.get("host") != host:
         raise Skip(f"the router calls itself {it.get('host')!r}, the panel {host!r}")
     have = release(it.get("version", ""))
-    if have and have >= target:
+    if it.get("pending") != "no":
+        raise Stop("an earlier rollout's install is still running here (or its marker is left): check this router by hand first")
+    if have is None:
+        raise Skip(f"installed version unreadable ({it.get('version')!r}; opkg busy?)")
+    if have >= target:
         raise Skip(f"already {it.get('version')}")
     if it.get("drill") != "no":
         raise Skip("a stand drill is active")
-    if it.get("pending") != "no":
-        raise Skip("an earlier rollout is still installing")
-    if it.get("usign") != "yes":
-        raise Skip("no usign or no feed key: the index cannot be checked on the router")
+    if it.get("index") != "signed":
+        raise Skip("the channel's index does not verify here (no usign, no Vectra key in /etc/opkg/keys, or no download)")
     low = [k for k, floor in FLOORS.items() if int(it.get(k, "0") or 0) < floor]
     if low:
         raise Skip(f"below the floors ({', '.join(low)})")
@@ -281,6 +293,8 @@ def roll(r: dict, a: argparse.Namespace, entry: dict, target: tuple[int, ...]) -
     except (RuntimeError, TimeoutError) as e:
         raise Stop(f"the install job cannot be followed ({e}); it expires {JOB_WINDOW // 60} min after it was queued — check {host} by hand") from None
     res = kv(st.get("stdout"))
+    if res.get("err") in ("expired_or_clock", "wrong_host", "pending"):
+        raise Skip(f"install refused before doing anything ({res['err']})")
     if res.get("started") != "yes":
         raise Stop(f"install refused: {res or st.get('stderr') or st.get('error')}")
     print(f"   installing; health check in {a.wait} s")
@@ -336,7 +350,9 @@ def main() -> int:
     left_out, plan = [], []
     for r in routers:
         host = r.get("hostname") or ""
-        why = ("excluded" if host.lower() in exclude
+        snap = ((r.get("latestSnapshot") or {}).get("payload") or {}) if isinstance(r.get("latestSnapshot"), dict) else {}
+        names = {str(n).lower() for n in (host, r.get("displayName"), snap.get("hostname")) if n}
+        why = ("excluded" if names & exclude
                else "a name the script will not put in a shell" if not HOST_RE.match(host)
                else f"partner {r.get('partnerId')} (--include-partners)" if r.get("partnerId") not in (None, OWN_PARTNER) and not a.include_partners
                else "exempt from the fleet policy (--include-exempt)" if r.get("routePolicyExempt") and not a.include_exempt
