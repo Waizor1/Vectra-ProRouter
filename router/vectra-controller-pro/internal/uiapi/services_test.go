@@ -17,7 +17,7 @@ func TestAServiceCountryThatLeavesElsewhereIsNamed(t *testing.T) {
 	 {"tag":"bridge-by-tcp","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.8","port":443,"users":[{"id":"u"}]}]}}],
 	 "routing":{"rules":[{"domain":["geosite:tiktok"],"balancerTag":"BL-TK"},{"network":"tcp,udp","balancerTag":"BL-MAIN"}],
 	 "balancers":[{"tag":"BL-TK","selector":["bridge-by-tcp"]},{"tag":"BL-MAIN","selector":["bridge-tr5","bridge-de"]}]}}`)
-	s := BuildServices(true, render, localctl.Overrides{}, map[string]string{"bridge-tr5": "PL", "bridge-de5": "DE", "bridge-de6": "NL"})
+	s := BuildServices(true, render, localctl.Overrides{}, map[string]string{"bridge-tr5": "PL", "bridge-de5": "DE", "bridge-de6": "NL"}, nil)
 	var tk *ServiceInfo
 	for i := range s.Services {
 		if s.Services[i].ID == "tiktok" {

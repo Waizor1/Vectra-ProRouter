@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/apply"
@@ -1206,6 +1207,15 @@ func (d *daemon) applyRescueTransition(ctx context.Context, dec rescue.Decision)
 // (UCI ipv6) to a firewall spec; a rate's burst is four seconds of it — the
 // DNS door's twenty: DNS comes in page loads.
 func withLoadGuards(spec firewall.Spec, ac agentcfg.Config) firewall.Spec {
+	// The fleet's settings from the catalog first (r26: changed without a
+	// release); the router's own UCI after them wins.
+	cat := xray.ActiveCatalog()
+	if door, ok := cat.DoorSettings(); ok {
+		spec.AdmitRate, spec.AdmitBurst = door.Rate, door.Burst
+	}
+	if refuse, ok := cat.RefuseQUIC(); ok {
+		spec.RefuseQUIC = refuse
+	}
 	spec.RefuseIPv6 = !ac.IPv6
 	if ac.NoP2PBypass {
 		spec.P2PBypass = false

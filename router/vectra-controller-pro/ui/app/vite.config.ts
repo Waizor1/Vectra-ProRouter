@@ -21,10 +21,12 @@ const VIEW = resolve(WWW, 'luci-static/resources/view/vectra/app.js');
 // server step, the tour, password/support controls and tune verdicts in plain
 // words (~195 KB, ~94 KB gzip); since r23 the router's brand in every
 // sentence, the neutral claim step and the offer of the brand's network name
-// (~202 KB, ~99 KB gzip). Still under 0.7 % of the xray binary it sits next to
-// on flash; the budget is here to catch creep — a dependency pulled in by
-// accident — not to cut copy.
-const BUDGET = 204 * 1024;
+// (~202 KB, ~99 KB gzip); since r26 the services from the catalog — groups,
+// modes, the stable exit, the launchers' icons (~206 KB). Still under 0.7 % of
+// the xray binary it sits next to on flash; the budget is here to catch creep
+// — a dependency pulled in by accident — not to cut copy. The es2019 target
+// stays: an owner's older phone still opens the router.
+const BUDGET = 208 * 1024;
 
 /**
  * After the bundle is written: report its size, fail over budget, and stamp the

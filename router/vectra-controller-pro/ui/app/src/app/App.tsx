@@ -54,6 +54,8 @@ const DONE_CODE: Record<ActionMethod, string> = {
   finish_setup: 'setup_finished',
   set_rules: 'rules_set',
   set_service: 'service_set',
+  set_service_mode: 'service_set',
+  set_stable_main: 'stable_main_set',
   set_power: 'power_on',
   set_remote_shell: 'remote_shell_set',
   set_port_forwards: 'port_forwards_set',

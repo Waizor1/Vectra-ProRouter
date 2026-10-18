@@ -1,8 +1,8 @@
 // The "Servers and services" tab: the subscription's entries. "Auto" — the
 // entry that picks its nodes by itself — comes first, then one card per
 // country (its variants, such as "· Hysteria2", inside it), then whatever
-// names no country; under them the services with a country of their own,
-// the same control as in the simple view.
+// names no country; under them the services (the catalog's, with their modes
+// and countries), the same control as in the simple view.
 
 import type { ComponentChildren } from 'preact';
 import type { Entry } from '../api/types';

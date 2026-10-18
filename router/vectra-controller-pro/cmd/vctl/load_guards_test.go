@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+	"vectra-controller-pro/internal/catalog"
+	"vectra-controller-pro/internal/coreengine/xray"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/firewall"
@@ -74,5 +76,27 @@ func TestQUICIsRefusedUnlessTheOwnerKeepsIt(t *testing.T) {
 	}
 	if s := withLoadGuards(base, agentcfg.Config{QUICThrough: true}); s.RefuseQUIC {
 		t.Fatal("refuse_quic '0' still refuses QUIC")
+	}
+}
+
+// r26: the catalog's door and QUIC refusal are the fleet's; the router's UCI
+// wins over them.
+func TestTheCatalogTunesTheDoorAndQUIC(t *testing.T) {
+	refuse := false
+	c := catalog.Builtin()
+	c.Tunables = &catalog.Tunables{Door: &catalog.Door{Rate: 50, Burst: 200}, QUIC: &catalog.QUIC{Refuse: &refuse}}
+	xray.UseCatalog(c)
+	t.Cleanup(func() { xray.UseCatalog(nil) })
+	base := firewall.DefaultSpec(12345, 1)
+	s := withLoadGuards(base, agentcfg.Config{})
+	if s.AdmitRate != 50 || s.AdmitBurst != 200 || s.RefuseQUIC {
+		t.Fatalf("catalog tunables: rate %d burst %d quic %v", s.AdmitRate, s.AdmitBurst, s.RefuseQUIC)
+	}
+	own := 20
+	if s := withLoadGuards(base, agentcfg.Config{AdmitRate: &own}); s.AdmitRate != 20 || s.AdmitBurst != 80 {
+		t.Fatalf("the owner's UCI must win: %d/%d", s.AdmitRate, s.AdmitBurst)
+	}
+	if !loadGuardsChanged(withLoadGuards(base, agentcfg.Config{}), base) {
+		t.Fatal("a changed door is not seen")
 	}
 }

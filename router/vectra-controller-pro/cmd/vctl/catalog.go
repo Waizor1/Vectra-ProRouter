@@ -13,6 +13,7 @@ import (
 	"path"
 	"strings"
 	"time"
+	"vectra-controller-pro/internal/apply"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/catalog"
@@ -113,6 +114,9 @@ func refreshCatalog(ctx context.Context, cfg agentcfg.Config, client *http.Clien
 	if err != nil {
 		return nil, false, err
 	}
+	if q := catalog.Quarantined(cfg.CatalogPath); q != 0 && next.Serial <= q {
+		return next, false, nil // set aside: it broke the render here
+	}
 	switch err := catalog.Newer(cur.Catalog, cur.Raw, next, raw); {
 	case err == nil:
 	case errors.Is(err, catalog.ErrSame), errors.Is(err, catalog.ErrOlder):
@@ -178,10 +182,60 @@ func (d *daemon) applyCatalog(ctx context.Context, l catalog.Loaded) {
 	if d.desired == nil || d.applier == nil || d.applier.Tproxy == nil || !fileExists(d.cfg.XrayRenderPath) {
 		return // nothing runs yet: the first render takes it
 	}
-	if r := d.rerenderRunning(ctx); !r.OK {
-		logging.L().Warn("the catalog's render was refused; what runs keeps running", "serial", l.Catalog.Serial, "detail", r.Detail)
-		d.rerenderRetryAt = time.Now().Add(rerenderRetryAfter)
+	if prev != l.Catalog.Serial {
+		d.catalogRefusals = 0
 	}
+	if err := catalogRerender(ctx, d); err != nil {
+		if d.maybeQuarantine(ctx, l, err) {
+			return
+		}
+		logging.L().Warn("the catalog's render was refused; what runs keeps running", "serial", l.Catalog.Serial, "detail", err.Error())
+		d.rerenderRetryAt = time.Now().Add(rerenderRetryAfter)
+	} else {
+		d.catalogRefusals = 0
+	}
+	// The catalog's door and QUIC refusal are the data plane's: a render
+	// that did not change (no restart, no new table) would leave them
+	// waiting for the next one. Compared with a spec made afresh, so a
+	// catalog that drops a tunable is seen too.
+	if d.fwSpec != nil {
+		if cfg, err := d.loadDesiredConfig(); err == nil {
+			if fresh, ok := firewallSpecFromConfig(cfg); ok && loadGuardsChanged(*d.fwSpec, withLoadGuards(fresh, d.cfg)) {
+				logging.L().Info("the catalog changed the data plane's door or QUIC refusal; reloading the table")
+				d.reapplyFirewall(ctx)
+			}
+		}
+	}
+}
+
+// catalogRerender renders the running document again; tests replace it.
+var catalogRerender = func(ctx context.Context, d *daemon) error { return d.rerenderRunningErr(ctx) }
+
+// catalogBroke: the gate refused the render itself — not «too little memory
+// now», not an interrupted check.
+func catalogBroke(err error) bool {
+	return errors.Is(err, apply.ErrRefused) && !errors.Is(err, xray.ErrLowMemory) &&
+		!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+}
+
+// maybeQuarantine counts a refused render of a downloaded catalog and, the
+// second time in a row, quarantines it when the built-in catalog's render
+// passes (quarantineCatalog). It says whether the catalog was set aside.
+func (d *daemon) maybeQuarantine(ctx context.Context, l catalog.Loaded, err error) bool {
+	if l.Source != catalog.SourceDownloaded || !catalogBroke(err) {
+		return false
+	}
+	d.catalogRefusals++
+	if d.catalogRefusals < 2 {
+		return false
+	}
+	return d.quarantineCatalog(ctx, l)
+}
+
+// loadGuardsChanged: the catalog's tunables give the table another door or
+// QUIC refusal.
+func loadGuardsChanged(a, b firewall.Spec) bool {
+	return a.AdmitRate != b.AdmitRate || a.AdmitBurst != b.AdmitBurst || a.RefuseQUIC != b.RefuseQUIC
 }
 
 // rerenderRetryAfter: a render a new catalog or geo set asked for and the
@@ -195,9 +249,13 @@ func (d *daemon) maybeRetryRerender(ctx context.Context, now time.Time) {
 	if d.rerenderRetryAt.IsZero() || now.Before(d.rerenderRetryAt) {
 		return
 	}
-	if r := d.rerenderRunning(ctx); !r.OK {
+	if err := catalogRerender(ctx, d); err != nil {
+		if d.maybeQuarantine(ctx, catalog.Load(d.cfg.CatalogPath), err) {
+			d.rerenderRetryAt = time.Time{}
+			return
+		}
 		d.rerenderRetryAt = now.Add(rerenderRetryAfter)
-		logging.L().Warn("the render the catalog or the geo set asked for is still refused", "detail", r.Detail)
+		logging.L().Warn("the render the catalog or the geo set asked for is still refused", "detail", err.Error())
 		return
 	}
 	d.rerenderRetryAt = time.Time{}
@@ -297,4 +355,24 @@ func printCatalog(w io.Writer, l catalog.Loaded, asJSON bool) error {
 	fmt.Fprintf(w, "  sites: %d direct, %d proxy\n", len(st.Sites.Direct), len(st.Sites.Proxy))
 	fmt.Fprintf(w, "  asks every %d h\n", st.Refresh)
 	return nil
+}
+
+// quarantineCatalog: the downloaded catalog's render was refused by the gate.
+// When the built-in catalog's render of the same document passes, the
+// catalog is what broke it: its serial is set aside and the built-in one
+// stays in use until a higher serial comes (r26 — a bad publish costs no
+// router its service). It says whether it did so.
+func (d *daemon) quarantineCatalog(ctx context.Context, bad catalog.Loaded) bool {
+	builtin := catalog.Builtin()
+	xray.UseCatalog(builtin)
+	if err := catalogRerender(ctx, d); err != nil {
+		xray.UseCatalog(bad.Catalog) // the document itself: not the catalog's fault
+		return false
+	}
+	if err := catalog.Quarantine(d.cfg.CatalogPath, bad.Catalog.Serial); err != nil {
+		logging.L().Warn("catalog: quarantine not written", "err", err.Error())
+	}
+	d.catalogSerial = builtin.Serial
+	logging.L().Warn("the downloaded catalog breaks the render; quarantined, the built-in one is in use until a newer one", "serial", bad.Catalog.Serial)
+	return true
 }

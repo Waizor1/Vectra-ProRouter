@@ -1,5 +1,56 @@
 # Changelog
 
+## vctl 0.7.0-r26 — services are data; «Игры» with a stable exit
+
+The owner, 2026-10-18: «нейросети с играми переключил на авто и у них
+постоянно менялся айпи … меня выкидывал» (the Star Citizen launcher); «стим у
+меня отлично работает и без впн»; «чтобы в будущем мы могли без релиза
+править наши сервисы»; «более отказоустойчивый пакет». Measured on 1111: the
+main path gave 4 exit addresses in 8 requests, and most nodes rotate theirs
+at their end (nl5 3 of 6, de5 3, fin5 2, pl5 2, fr5 1).
+
+### Added
+- **Services are the catalog's.** A service's title (ru/en/zh), group,
+  order, icon, the marker that finds the provider's rule, extra addresses,
+  the modes it offers and its default — and groups («Игры») — come from the
+  signed catalog. The router UI, the Vectra app and the panel show what the
+  router reports, so a service is added or changed by publishing a catalog,
+  without a release. Schema 1, additive: r24 and r25 ignore the new fields.
+- **«Игры»:** Steam, Epic Games, Riot Games, Battle.net and Star Citizen,
+  each «VPN · постоянный IP» (default), «Напрямую» or «Как основной VPN». Their
+  names are only theirs (onlyKnown), taken out of the provider's rule they
+  share with the AI services.
+- **The stable exit.** The router asks every node of the main path, through
+  the exit probe, for a Cloudflare trace six times on new connections, and
+  pins the fastest that answered from one address; the pin stays while it
+  keeps it, is rechecked every 30 min, a full round runs every 6 h, and it is
+  kept across restarts (/etc/vectra-controller-pro/stable-exit.json, never
+  shown). The stable services share one balancer (VCTL-STABLE) whose fallback
+  leads back into the main path: a dead pin falls back, never to nothing; no
+  steady node — they ride the main path. «Постоянный IP для всего VPN»
+  (set_stable_main) sends the provider's catch-all through it too.
+- **Tunables without a release** (bounded, the router's UCI wins): the stable
+  exit's samples, round and recheck intervals, its trace URL (Cloudflare
+  only) and the fleet default of the whole-VPN pin; the device door; the QUIC
+  refusal. A catalog that changes the door or QUIC reloads the table even
+  when the render itself is unchanged.
+- **A bad catalog costs no router its service:** a downloaded catalog whose
+  render xray refuses, while the built-in catalog's render of the same
+  document passes, is quarantined (catalog.json.refused); the built-in one is
+  used until a higher serial is published.
+- Connect: telemetry services carry title/group/order/icon/modes/mode/
+  default, plus serviceGroups and stableExit; set_service takes a mode
+  (capability set_service_mode); new action set_stable_main. Router UI rpc
+  set_service_mode and set_stable_main; services answer groups and
+  stableExit (ui/contract/README.md «Services»).
+
+### Changed
+- A name whose first matching rule sends it straight out (the owner's direct
+  sites, a service on «Напрямую») is no longer a FakeDNS name even when a
+  later provider rule proxies it: its real answer keeps Russian destinations
+  in the kernel's direct path (a Steam download no longer passes xray).
+- The built-in catalog is serial 2026101901.
+
 ## vctl 0.7.0-r25 — every refused QUIC attempt is answered
 
 r24 refuses QUIC to proxied names with ICMP port unreachable, so apps fall

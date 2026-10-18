@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/catalog"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/logging"
@@ -32,8 +33,10 @@ func connectRouteChange(action string, params json.RawMessage, cache *localctl.E
 	var p struct {
 		EntryID *string  `json:"entryId"`
 		Service string   `json:"service"`
+		Mode    string   `json:"mode"`
 		Direct  []string `json:"direct"`
 		VPN     []string `json:"vpn"`
+		On      *bool    `json:"on"`
 	}
 	if json.Unmarshal(params, &p) != nil {
 		return nil, "invalid_params"
@@ -102,9 +105,28 @@ func connectRouteChange(action string, params json.RawMessage, cache *localctl.E
 		if _, ok := xray.ServiceByID(p.Service); !ok {
 			return nil, "unknown_service"
 		}
+		cs := xray.ActiveCatalog().Service(p.Service)
+		if p.Mode != "" {
+			// r26: a mode the catalog offers the service; «Как основной VPN»
+			// always is (the provider's own routing).
+			if p.Mode != catalog.ModeMain && !cs.Offers(p.Service, p.Mode) {
+				return nil, "invalid_params"
+			}
+			c.SetServiceMode = &localctl.ServiceModeChoice{ID: p.Service, Mode: p.Mode}
+			if p.Mode == catalog.ModeDirect {
+				c.SetServiceMode.Consent = cs.MatchersHash()
+			}
+			break
+		}
 		if p.EntryID != nil && *p.EntryID == connectServiceAuto {
 			// Back to the default: the owner's choice is deleted.
-			c.SetService = &localctl.ServiceChoice{ID: p.Service}
+			c.SetServiceMode = &localctl.ServiceModeChoice{ID: p.Service}
+			break
+		}
+		if _, def := cs.EffectiveModes(p.Service); p.EntryID == nil && def != catalog.ModeMain && def != catalog.ModeLocation {
+			// «As the main VPN» (entryId null) for a service whose default is
+			// another mode (a game: the stable exit) is a choice: kept.
+			c.SetServiceMode = &localctl.ServiceModeChoice{ID: p.Service, Mode: catalog.ModeMain}
 			break
 		}
 		c.SetService = &localctl.ServiceChoice{ID: p.Service, MainPath: p.EntryID == nil}
@@ -118,6 +140,12 @@ func connectRouteChange(action string, params json.RawMessage, cache *localctl.E
 			}
 			c.SetService.EntryID = *p.EntryID
 		}
+	case "set_stable_main":
+		if p.On == nil {
+			return nil, "invalid_params"
+		}
+		on := *p.On
+		c.SetStableMain = &on
 	default:
 		return nil, "unsupported_action"
 	}
@@ -159,10 +187,15 @@ var errConnectStaleEntry = errors.New("unknown_service_entry")
 // there really are no locations: the choices are skipped.
 func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte) (entries map[string]json.RawMessage, effective localctl.Overrides, err error) {
 	chosen := map[string]string{}
+	cat := xray.ActiveCatalog()
 	for svc, id := range ov.ServiceEntries {
-		if id != localctl.ServiceMainPath { // «as the main VPN» needs no location
-			chosen[svc] = id
+		if id == localctl.ServiceMainPath { // «as the main VPN» needs no location
+			continue
 		}
+		if m, _, _ := ov.ServiceMode(svc, cat); m != catalog.ModeLocation {
+			continue // the catalog no longer offers the service a location: its default runs
+		}
+		chosen[svc] = id
 	}
 	effective = ov
 	cache, lerr := localctl.LoadEntries(d.cfg.EntriesPath)
@@ -211,7 +244,7 @@ func (d *daemon) connectServiceOptionsFor(ov localctl.Overrides, running []byte)
 // cache for this render.
 func aiDefaultConsidered(ov localctl.Overrides, routeSource string, running []byte) bool {
 	_, chosen := ov.ServiceEntries["ai"]
-	return routeSource == "" && running != nil && !chosen && ov.Services["ai"] == ""
+	return routeSource == "" && running != nil && !chosen && ov.Services["ai"] == "" && ov.ServiceModes["ai"] == ""
 }
 
 // noteSkippedServiceChoices logs a choice the render skips once, not on
@@ -255,7 +288,7 @@ func aiDefault(ov localctl.Overrides, routeSource string, cache *localctl.Entrie
 	if routeSource != "" || cache == nil || running == nil {
 		return "", nil, false
 	}
-	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" {
+	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" || ov.ServiceModes["ai"] != "" {
 		return "", nil, false
 	}
 	for _, id := range aiCandidates(localctl.Summarize(cache)) {
@@ -332,7 +365,7 @@ func aiDefaultApplied(cfg agentcfg.Config, ov localctl.Overrides, spliceKey stri
 	if cfg.RouteSource != "" {
 		return "", false
 	}
-	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" {
+	if _, chosen := ov.ServiceEntries["ai"]; chosen || ov.Services["ai"] != "" || ov.ServiceModes["ai"] != "" {
 		return "", false
 	}
 	if id := spliceKeyEntry(spliceKey, "ai"); id != "" {

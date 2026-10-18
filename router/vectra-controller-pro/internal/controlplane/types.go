@@ -315,21 +315,23 @@ type JobResultResponse struct {
 // RouterConnectTelemetry contains measured state or applied owner settings.
 // Pointers distinguish unavailable observations from measured zero/false.
 type RouterConnectTelemetry struct {
-	OwnerRef          string            `json:"ownerRef,omitempty"`
-	AvailableVersion  string            `json:"availableVersion,omitempty"`
-	Capabilities      *[]string         `json:"capabilities,omitempty"`
-	UptimeSec         *int64            `json:"uptimeSec,omitempty"`
-	Verdict           string            `json:"verdict,omitempty"`
-	ExitCountry       *string           `json:"exitCountry,omitempty"`
-	LanClients        *int              `json:"lanClients,omitempty"`
-	Location          *ConnectLocation  `json:"location,omitempty"`
-	Entries           *[]ConnectEntry   `json:"entries,omitempty"`
-	Sites             *ConnectSites     `json:"sites,omitempty"`
-	Services          *[]ConnectService `json:"services,omitempty"`
-	Wifi              *[]ConnectWifi    `json:"wifi,omitempty"`
-	RouterPasswordSet *bool             `json:"routerPasswordSet,omitempty"`
-	SupportAccess     *bool             `json:"supportAccess,omitempty"`
-	AutoUpdate        *bool             `json:"autoUpdate,omitempty"`
+	OwnerRef          string                 `json:"ownerRef,omitempty"`
+	AvailableVersion  string                 `json:"availableVersion,omitempty"`
+	Capabilities      *[]string              `json:"capabilities,omitempty"`
+	UptimeSec         *int64                 `json:"uptimeSec,omitempty"`
+	Verdict           string                 `json:"verdict,omitempty"`
+	ExitCountry       *string                `json:"exitCountry,omitempty"`
+	LanClients        *int                   `json:"lanClients,omitempty"`
+	Location          *ConnectLocation       `json:"location,omitempty"`
+	Entries           *[]ConnectEntry        `json:"entries,omitempty"`
+	Sites             *ConnectSites          `json:"sites,omitempty"`
+	Services          *[]ConnectService      `json:"services,omitempty"`
+	ServiceGroups     *[]ConnectServiceGroup `json:"serviceGroups,omitempty"`
+	StableExit        *ConnectStableExit     `json:"stableExit,omitempty"`
+	Wifi              *[]ConnectWifi         `json:"wifi,omitempty"`
+	RouterPasswordSet *bool                  `json:"routerPasswordSet,omitempty"`
+	SupportAccess     *bool                  `json:"supportAccess,omitempty"`
+	AutoUpdate        *bool                  `json:"autoUpdate,omitempty"`
 	// PortForwards are the owner's port forwards, the devices one can point
 	// at and whether the WAN is behind CGNAT; nil when the router has no fw4
 	// config. No MAC address, no secret.
@@ -387,6 +389,35 @@ type ConnectService struct {
 	Entries *[]string `json:"entries,omitempty"`
 	// Stale: the owner's location is gone or no longer carries the service.
 	Stale bool `json:"stale,omitempty"`
+	// r26 (docs/superpowers/specs/2026-10-18-vctl-services-as-data.md §7):
+	// what the catalog says the service is, so the app shows a service the
+	// catalog adds without a release. Title in ru/en/zh; Modes ⊂ main,
+	// stable, direct, location; Mode what runs now, Default what «Авто»
+	// means.
+	Title   map[string]string `json:"title,omitempty"`
+	Group   string            `json:"group,omitempty"`
+	Order   *int              `json:"order,omitempty"`
+	Icon    string            `json:"icon,omitempty"`
+	Modes   []string          `json:"modes,omitempty"`
+	Mode    string            `json:"mode,omitempty"`
+	Default string            `json:"default,omitempty"`
+}
+
+// ConnectServiceGroup is a heading the app puts services under («Игры»).
+type ConnectServiceGroup struct {
+	ID    string            `json:"id"`
+	Title map[string]string `json:"title"`
+	Order int               `json:"order"`
+	Icon  string            `json:"icon,omitempty"`
+	Hint  map[string]string `json:"hint,omitempty"`
+}
+
+// ConnectStableExit is the stable exit for the app: never its address.
+type ConnectStableExit struct {
+	State     string  `json:"state"`
+	Country   *string `json:"country"`
+	CheckedAt *string `json:"checkedAt"` // RFC 3339, UTC
+	Main      bool    `json:"main"`
 }
 type ConnectWifi struct {
 	Password string `json:"password,omitempty"`

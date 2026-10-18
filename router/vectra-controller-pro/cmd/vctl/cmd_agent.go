@@ -401,6 +401,11 @@ type daemon struct {
 	tunnel atomic.Pointer[tunnelLook]
 	// exits is what the exit check found (cmd/vctl/exitcheck.go).
 	exits exitcheck.State
+	// stable is the stable exit (stable_exit.go).
+	stable stableExitTracker
+	// catalogRefusals counts the gate's refusals of the downloaded catalog's
+	// render in a row (maybeQuarantine).
+	catalogRefusals int
 	// connectHeld is the last verdict judged for Connect
 	// (holdConnectVerdict; the daemon loop only). A release forgets it.
 	connectHeld connectJudged
@@ -723,6 +728,7 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 		go d.watchMemory(ctx)
 		go d.watchFailover(ctx)
 		go d.watchExits(ctx)
+		go d.watchStableExit(ctx)
 		// The router's tune (cmd_tune.go): in the background, never in the way.
 		go d.tuneAtStart(ctx)
 	}

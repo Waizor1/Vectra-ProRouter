@@ -63,7 +63,8 @@ describe('Servers and services', () => {
     const app = start({ tab: 'locations' });
     await settle();
     const rows = app.all('.sv-svc-r');
-    expect(rows.map((r) => r.querySelector('.sv-svc-n')?.textContent)).toEqual(['YouTube', 'TikTok', 'Telegram']);
+    // The catalog's rows: the three with a country, then the games group's Steam.
+    expect(rows.map((r) => r.querySelector('.sv-svc-n')?.textContent)).toEqual(['YouTube', 'TikTok', 'Telegram', 'Steam']);
     const yt = rows[0].querySelector('select')!;
     yt.value = 'DE';
     yt.dispatchEvent(new Event('change', { bubbles: true }));

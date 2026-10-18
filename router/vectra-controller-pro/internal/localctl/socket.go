@@ -59,6 +59,21 @@ type Change struct {
 	// SetService chooses a service's country; Country "" goes back to the
 	// entry's own path.
 	SetService *ServiceChoice `json:"setService,omitempty"`
+	// SetServiceMode chooses a service's mode (r26); Mode "" is «Авто»: the
+	// catalog's default, every choice of the owner for it cleared.
+	SetServiceMode *ServiceModeChoice `json:"setServiceMode,omitempty"`
+	// SetStableMain sends the whole main path through the stable exit, or
+	// not; it is the owner's from then on.
+	SetStableMain *bool `json:"setStableMain,omitempty"`
+}
+
+// ServiceModeChoice is one service's mode: "", "main", "stable" or "direct".
+type ServiceModeChoice struct {
+	ID   string `json:"id"`
+	Mode string `json:"mode"`
+	// Consent is what the service matched when «Напрямую» was chosen
+	// (catalog.Service.MatchersHash).
+	Consent string `json:"consent,omitempty"`
 }
 
 // ServiceChoice is one service's country (xray.Services).
@@ -111,7 +126,39 @@ func (c Change) ApplyTo(o *Overrides) {
 		o.Direct = append([]string(nil), c.SetRules.Direct...)
 		o.Proxy = append([]string(nil), c.SetRules.Proxy...)
 	}
+	if m := c.SetServiceMode; m != nil {
+		delete(o.ServiceEntries, m.ID)
+		delete(o.Services, m.ID)
+		delete(o.ServiceModes, m.ID)
+		delete(o.DirectConsent, m.ID)
+		if m.Mode == "direct" {
+			if o.DirectConsent == nil {
+				o.DirectConsent = map[string]string{}
+			}
+			o.DirectConsent[m.ID] = m.Consent
+		}
+		switch {
+		case m.Mode == "":
+		case m.Mode == "main" && ServicesWithDefault[m.ID]:
+			// «Нейросети» keep r25's form of «as the main VPN».
+			if o.ServiceEntries == nil {
+				o.ServiceEntries = map[string]string{}
+			}
+			o.ServiceEntries[m.ID] = ServiceMainPath
+		default:
+			if o.ServiceModes == nil {
+				o.ServiceModes = map[string]string{}
+			}
+			o.ServiceModes[m.ID] = m.Mode
+		}
+	}
+	if c.SetStableMain != nil {
+		on := *c.SetStableMain
+		o.StableMain = &on
+	}
 	if s := c.SetService; s != nil {
+		delete(o.ServiceModes, s.ID)
+		delete(o.DirectConsent, s.ID)
 		delete(o.ServiceEntries, s.ID)
 		if s.MainPath && s.EntryID == "" && s.Country == "" && ServicesWithDefault[s.ID] {
 			// «As the main VPN» for a service with a default location is a
@@ -182,6 +229,18 @@ type Runtime struct {
 	// Rescue is the rescue's state: proxy, or direct after the tunnel
 	// failed, and what it waits for.
 	Rescue *Rescue `json:"rescue,omitempty"`
+	// StableExit is the stable exit as the router found it (r26): never its
+	// address.
+	StableExit *StableExit `json:"stableExit,omitempty"`
+}
+
+// StableExit is the stable exit's state for the UIs: pinned (Country is
+// where it leaves), none (no exit keeps one address: the stable services
+// ride the main path), checking (not looked yet), off (no exit probe).
+type StableExit struct {
+	State     string     `json:"state"`
+	Country   string     `json:"country,omitempty"`
+	CheckedAt *time.Time `json:"checkedAt,omitempty"`
 }
 
 // Rescue is the rescue's state as the router UI and the operator read it.

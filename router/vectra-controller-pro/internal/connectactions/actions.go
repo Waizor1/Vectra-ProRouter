@@ -46,7 +46,19 @@ type Rules struct {
 type Service struct {
 	Service string  `json:"service"`
 	EntryID *string `json:"entryId"`
+	// Mode (r26, capability set_service_mode): main, stable or direct; with
+	// a mode the entry is absent or null.
+	Mode string `json:"mode,omitempty"`
 }
+
+// StableMain sends the whole main path through the stable exit (r26).
+type StableMain struct {
+	On bool `json:"on"`
+}
+
+// ServiceModes are the modes set_service may name.
+var ServiceModes = map[string]bool{"main": true, "stable": true, "direct": true}
+
 type WiFi struct {
 	SSID     string `json:"ssid"`
 	Password string `json:"password"`
@@ -76,7 +88,7 @@ type AutoUpdate struct {
 type Binding struct{ RouterID, OwnerRef string }
 
 func Capabilities() []string {
-	return []string{"select_entry", "set_rules", "set_service", "set_wifi", "reboot", "update_now", "set_auto_update", "set_port_forwards"}
+	return []string{"select_entry", "set_rules", "set_service", "set_wifi", "reboot", "update_now", "set_auto_update", "set_port_forwards", "set_stable_main"}
 }
 
 // Parse rejects unknown, duplicate, missing and incorrectly typed fields. All
@@ -123,7 +135,14 @@ func Parse(raw []byte) (Envelope, error) {
 		}
 		e.Params = Rules{Direct: direct, VPN: vpn}
 	case "set_service":
+		// {service, entryId} as before r26; {service, mode} or {service,
+		// entryId: null, mode} with a mode.
 		p, ok := object(params, "service", "entryId")
+		if !ok {
+			if p, ok = object(params, "service", "mode"); !ok {
+				p, ok = object(params, "service", "entryId", "mode")
+			}
+		}
 		if !ok {
 			return Envelope{}, ErrInvalidPayload
 		}
@@ -131,11 +150,26 @@ func Parse(raw []byte) (Envelope, error) {
 		if !stringValue(p["service"], &service) || !idPattern.MatchString(service) {
 			return Envelope{}, ErrInvalidPayload
 		}
-		entry, ok := entryValue(p["entryId"])
-		if !ok {
+		var entry *string
+		if raw, has := p["entryId"]; has {
+			if entry, ok = entryValue(raw); !ok {
+				return Envelope{}, ErrInvalidPayload
+			}
+		}
+		var mode string
+		if raw, has := p["mode"]; has {
+			if !stringValue(raw, &mode) || !ServiceModes[mode] || entry != nil {
+				return Envelope{}, ErrInvalidPayload
+			}
+		}
+		e.Params = Service{Service: service, EntryID: entry, Mode: mode}
+	case "set_stable_main":
+		p, ok := object(params, "on")
+		var on bool
+		if !ok || !boolValue(p["on"], &on) {
 			return Envelope{}, ErrInvalidPayload
 		}
-		e.Params = Service{Service: service, EntryID: entry}
+		e.Params = StableMain{On: on}
 	case "set_wifi":
 		p, ok := object(params, "ssid", "password", "band")
 		if !ok {

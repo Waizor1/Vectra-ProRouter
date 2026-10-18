@@ -1,45 +1,327 @@
 {
   "schema": 1,
-  "serial": 2026101802,
+  "serial": 2026101901,
   "services": {
+    "youtube": {
+      "title": {
+        "ru": "YouTube",
+        "en": "YouTube",
+        "zh": "YouTube"
+      },
+      "order": 10,
+      "icon": "youtube",
+      "marker": "geosite:youtube",
+      "modes": [
+        "main",
+        "country",
+        "location"
+      ],
+      "default": "main"
+    },
+    "tiktok": {
+      "title": {
+        "ru": "TikTok",
+        "en": "TikTok",
+        "zh": "TikTok"
+      },
+      "order": 20,
+      "icon": "tiktok",
+      "marker": "geosite:tiktok",
+      "modes": [
+        "main",
+        "country",
+        "location"
+      ],
+      "default": "main"
+    },
+    "telegram": {
+      "title": {
+        "ru": "Telegram",
+        "en": "Telegram",
+        "zh": "Telegram"
+      },
+      "order": 30,
+      "icon": "telegram",
+      "marker": "geosite:telegram",
+      "ipMarker": "geoip:telegram",
+      "modes": [
+        "main",
+        "country",
+        "location"
+      ],
+      "default": "main"
+    },
     "ai": {
+      "title": {
+        "ru": "Нейросети",
+        "en": "AI",
+        "zh": "人工智能"
+      },
+      "order": 40,
+      "icon": "ai",
+      "marker": "domain:chatgpt.com",
+      "modes": [
+        "location",
+        "main",
+        "country"
+      ],
+      "default": "location",
       "onlyKnown": true,
       "names": [
-        "domain:openai.com", "domain:chatgpt.com", "domain:chat.com", "domain:oaistatic.com",
-        "domain:oaiusercontent.com", "domain:sora.com", "domain:oaistatsig.com",
-        "full:chatgpt.livekit.cloud", "full:o33249.ingest.sentry.io",
-        "domain:anthropic.com", "domain:claude.ai", "domain:claude.com", "domain:claudeusercontent.com",
-        "domain:claude.site", "domain:claude.dev", "domain:clau.de", "domain:claudemcpclient.com",
-        "domain:claudemcpcontent.com", "full:servd-anthropic-website.b-cdn.net",
-        "full:gemini.google.com", "domain:gemini.google", "full:aistudio.google.com", "full:bard.google.com",
-        "full:notebooklm.google.com", "domain:notebooklm.google", "full:makersuite.google.com",
-        "full:generativelanguage.googleapis.com", "full:alkalimakersuite-pa.clients6.google.com",
-        "full:proactivebackend-pa.googleapis.com", "full:robinfrontend-pa.googleapis.com",
-        "full:geminiweb-pa.clients6.google.com", "full:gemini.gstatic.com",
-        "domain:labs.google", "full:labs.google.com", "full:ai.google.dev", "domain:deepmind.com", "domain:deepmind.google",
-        "full:copilot.microsoft.com", "domain:copilot.cloud.microsoft", "full:sydney.bing.com",
-        "domain:githubcopilot.com", "full:copilot-proxy.githubusercontent.com",
-        "domain:x.ai", "domain:grok.com",
-        "domain:perplexity.ai", "domain:pplx.ai", "domain:mistral.ai", "domain:meta.ai",
-        "domain:poe.com", "domain:poecdn.net", "domain:character.ai",
-        "domain:midjourney.com", "domain:runwayml.com", "domain:pika.art", "domain:ideogram.ai",
-        "domain:leonardo.ai", "domain:suno.com", "domain:suno.ai", "domain:udio.com", "domain:elevenlabs.io",
-        "domain:cursor.com", "domain:cursor.sh", "domain:cursorapi.com", "domain:codeium.com", "domain:windsurf.com",
-        "domain:deepl.com", "domain:openrouter.ai", "domain:groq.com", "domain:replicate.com",
+        "domain:openai.com",
+        "domain:chatgpt.com",
+        "domain:chat.com",
+        "domain:oaistatic.com",
+        "domain:oaiusercontent.com",
+        "domain:sora.com",
+        "domain:oaistatsig.com",
+        "full:chatgpt.livekit.cloud",
+        "full:o33249.ingest.sentry.io",
+        "domain:anthropic.com",
+        "domain:claude.ai",
+        "domain:claude.com",
+        "domain:claudeusercontent.com",
+        "domain:claude.site",
+        "domain:claude.dev",
+        "domain:clau.de",
+        "domain:claudemcpclient.com",
+        "domain:claudemcpcontent.com",
+        "full:servd-anthropic-website.b-cdn.net",
+        "full:gemini.google.com",
+        "domain:gemini.google",
+        "full:aistudio.google.com",
+        "full:bard.google.com",
+        "full:notebooklm.google.com",
+        "domain:notebooklm.google",
+        "full:makersuite.google.com",
+        "full:generativelanguage.googleapis.com",
+        "full:alkalimakersuite-pa.clients6.google.com",
+        "full:proactivebackend-pa.googleapis.com",
+        "full:robinfrontend-pa.googleapis.com",
+        "full:geminiweb-pa.clients6.google.com",
+        "full:gemini.gstatic.com",
+        "domain:labs.google",
+        "full:labs.google.com",
+        "full:ai.google.dev",
+        "domain:deepmind.com",
+        "domain:deepmind.google",
+        "full:copilot.microsoft.com",
+        "domain:copilot.cloud.microsoft",
+        "full:sydney.bing.com",
+        "domain:githubcopilot.com",
+        "full:copilot-proxy.githubusercontent.com",
+        "domain:x.ai",
+        "domain:grok.com",
+        "domain:perplexity.ai",
+        "domain:pplx.ai",
+        "domain:mistral.ai",
+        "domain:meta.ai",
+        "domain:poe.com",
+        "domain:poecdn.net",
+        "domain:character.ai",
+        "domain:midjourney.com",
+        "domain:runwayml.com",
+        "domain:pika.art",
+        "domain:ideogram.ai",
+        "domain:leonardo.ai",
+        "domain:suno.com",
+        "domain:suno.ai",
+        "domain:udio.com",
+        "domain:elevenlabs.io",
+        "domain:cursor.com",
+        "domain:cursor.sh",
+        "domain:cursorapi.com",
+        "domain:codeium.com",
+        "domain:windsurf.com",
+        "domain:deepl.com",
+        "domain:openrouter.ai",
+        "domain:groq.com",
+        "domain:replicate.com",
         "geosite:google-ai"
       ],
-      "geosites": ["google-ai", "openai", "anthropic", "perplexity", "xai", "category-ai-!cn", "category-ai-chat-!cn"]
+      "geosites": [
+        "google-ai",
+        "openai",
+        "anthropic",
+        "perplexity",
+        "xai",
+        "category-ai-!cn",
+        "category-ai-chat-!cn"
+      ]
     },
-    "youtube": {},
-    "tiktok": {},
-    "telegram": {}
+    "steam": {
+      "title": {
+        "ru": "Steam",
+        "en": "Steam",
+        "zh": "Steam"
+      },
+      "group": "games",
+      "order": 10,
+      "icon": "steam",
+      "marker": "domain:steampowered.com",
+      "modes": [
+        "stable",
+        "direct",
+        "main"
+      ],
+      "default": "stable",
+      "onlyKnown": true,
+      "names": [
+        "domain:steampowered.com",
+        "domain:steamcommunity.com",
+        "domain:steamstatic.com",
+        "domain:steamcontent.com",
+        "domain:steamusercontent.com",
+        "domain:steamserver.net",
+        "domain:steam-chat.com",
+        "domain:steamgames.com",
+        "domain:valvesoftware.com",
+        "full:steamcdn-a.akamaihd.net",
+        "full:steamstore-a.akamaihd.net",
+        "full:steamcommunity-a.akamaihd.net",
+        "full:steamuserimages-a.akamaihd.net"
+      ]
+    },
+    "epic": {
+      "title": {
+        "ru": "Epic Games",
+        "en": "Epic Games",
+        "zh": "Epic Games"
+      },
+      "group": "games",
+      "order": 20,
+      "icon": "epic",
+      "marker": "domain:epicgames.com",
+      "modes": [
+        "stable",
+        "direct",
+        "main"
+      ],
+      "default": "stable",
+      "onlyKnown": true,
+      "names": [
+        "domain:epicgames.com",
+        "domain:epicgames.dev",
+        "domain:epicgamescdn.com",
+        "domain:fortnite.com",
+        "domain:unrealengine.com",
+        "domain:easyanticheat.net",
+        "domain:easy.ac"
+      ]
+    },
+    "riot": {
+      "title": {
+        "ru": "Riot Games",
+        "en": "Riot Games",
+        "zh": "Riot Games"
+      },
+      "group": "games",
+      "order": 30,
+      "icon": "riot",
+      "marker": "domain:riotgames.com",
+      "modes": [
+        "stable",
+        "direct",
+        "main"
+      ],
+      "default": "stable",
+      "onlyKnown": true,
+      "names": [
+        "domain:riotgames.com",
+        "domain:riotcdn.net",
+        "domain:leagueoflegends.com",
+        "domain:playvalorant.com",
+        "domain:pvp.net",
+        "domain:lolstatic.com"
+      ]
+    },
+    "battlenet": {
+      "title": {
+        "ru": "Battle.net",
+        "en": "Battle.net",
+        "zh": "Battle.net"
+      },
+      "group": "games",
+      "order": 40,
+      "icon": "battlenet",
+      "marker": "domain:battle.net",
+      "modes": [
+        "stable",
+        "direct",
+        "main"
+      ],
+      "default": "stable",
+      "onlyKnown": true,
+      "names": [
+        "domain:battle.net",
+        "domain:blizzard.com",
+        "domain:blizzardcdn.com",
+        "domain:blizzard.net"
+      ]
+    },
+    "starcitizen": {
+      "title": {
+        "ru": "Star Citizen",
+        "en": "Star Citizen",
+        "zh": "Star Citizen"
+      },
+      "group": "games",
+      "order": 50,
+      "icon": "starcitizen",
+      "marker": "domain:robertsspaceindustries.com",
+      "modes": [
+        "stable",
+        "direct",
+        "main"
+      ],
+      "default": "stable",
+      "onlyKnown": true,
+      "names": [
+        "domain:robertsspaceindustries.com",
+        "domain:cloudimperiumgames.com",
+        "domain:rsilauncher.com",
+        "domain:spectrum.chat"
+      ]
+    }
+  },
+  "groups": {
+    "games": {
+      "title": {
+        "ru": "Игры",
+        "en": "Games",
+        "zh": "游戏"
+      },
+      "order": 10,
+      "icon": "games",
+      "hint": {
+        "ru": "Постоянный IP — лаунчеры не выкидывают",
+        "en": "One steady IP, so launchers keep you signed in",
+        "zh": "固定 IP，启动器不会掉线"
+      }
+    }
   },
   "aiDefault": {
-    "exits": [["RU", "KZ"], ["KZ"]]
+    "exits": [
+      [
+        "RU",
+        "KZ"
+      ],
+      [
+        "KZ"
+      ]
+    ]
   },
   "sites": {
     "direct": [],
     "proxy": []
   },
-  "refreshHours": 6
+  "refreshHours": 6,
+  "tunables": {
+    "stableExit": {
+      "samples": 6,
+      "everyHours": 6,
+      "recheckMinutes": 30,
+      "url": "https://www.cloudflare.com/cdn-cgi/trace"
+    }
+  }
 }

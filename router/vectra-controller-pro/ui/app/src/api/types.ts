@@ -28,6 +28,8 @@ export type Method =
   | 'set_rules'
   | 'services'
   | 'set_service'
+  | 'set_service_mode'
+  | 'set_stable_main'
   | 'set_power'
   | 'set_remote_shell'
   | 'port_forwards'
@@ -463,9 +465,9 @@ export interface Rules {
   missing: string[];
 }
 
-/** One service with a country of its own (contract: Services). */
+/** One service (contract: Services): the catalog's since r26, a country-only one of r25 before. */
 export interface ServiceInfo {
-  /** youtube | tiktok | telegram — a newer router may add one. */
+  /** youtube | tiktok | telegram | ai — a newer router's catalog may add any. */
   id: string;
   /** The owner's country (ISO); null = the subscription entry's own path. */
   choice: string | null;
@@ -479,12 +481,53 @@ export interface ServiceInfo {
   stale: boolean | null;
   /** Offered countries whose every exit the router saw leave in one other country: that country. */
   egress: Record<string, string>;
+  /** r26: the name by language (ru, en, zh); null or empty: an r25 service the UI knows by heart. */
+  title: Record<string, string> | null;
+  /** r26: a `groups` id; empty: top level. */
+  group: string | null;
+  /** r26: the sort key within its group. */
+  order: number | null;
+  /** r26: a key of the catalog's icon set; one this UI lacks gets the generic icon. */
+  icon: string | null;
+  /** r26: the choices to offer, in order (main, stable, direct, country; location is Vectra Connect's). */
+  modes: string[];
+  /** r26: what runs now. */
+  mode: Open<'main' | 'stable' | 'direct' | 'country' | 'location'> | null;
+  /** r26: what «Авто» means. */
+  default: Open<'main' | 'stable' | 'direct' | 'location'> | null;
+  /** r26: the owner made a choice. */
+  chosen: boolean | null;
+}
+
+/** A heading the catalog puts services under («Игры»). */
+export interface ServiceGroup {
+  id: string;
+  title: Record<string, string> | null;
+  order: number | null;
+  icon: string | null;
+  /** One line under the heading, by language. */
+  hint: Record<string, string> | null;
+}
+
+/** The one node the router found to keep one address (the address itself is never sent). */
+export interface StableExit {
+  /** pinned | none (no node keeps one address now) | checking | off (no exit probe here). */
+  state: Open<'pinned' | 'none' | 'checking' | 'off'> | null;
+  /** Where the pin leaves (ISO). */
+  country: string | null;
+  checkedAt: string | null;
+  /** The whole main path rides it (`set_stable_main`). */
+  main: boolean | null;
 }
 
 export interface Services {
   /** false where the operator's policy routes the router: nothing to choose. */
   available: boolean | null;
   services: ServiceInfo[];
+  /** r26: [] from a router that sends none. */
+  groups: ServiceGroup[];
+  /** r26: null from a router that sends none. */
+  stableExit: StableExit | null;
 }
 
 // ── port forwarding (contract: port_forwards.json) ──────────────────────────

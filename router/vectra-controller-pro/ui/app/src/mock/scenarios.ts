@@ -4,8 +4,8 @@
 import type { Brand, Check, Holder, ReadData } from '../api/types';
 import { FIXTURES, FIXTURE_NOW, radio } from './fixtures';
 
-export type Scenario = 'healthy' | 'reserve' | 'degraded' | 'down' | 'empty' | 'unboxed' | 'boxed' | 'off' | 'unfit' | 'cgnat';
-export const SCENARIOS: readonly Scenario[] = ['healthy', 'reserve', 'degraded', 'down', 'empty', 'unboxed', 'boxed', 'off', 'unfit', 'cgnat'];
+export type Scenario = 'healthy' | 'reserve' | 'degraded' | 'down' | 'empty' | 'unboxed' | 'boxed' | 'off' | 'unfit' | 'cgnat' | 'games';
+export const SCENARIOS: readonly Scenario[] = ['healthy', 'reserve', 'degraded', 'down', 'empty', 'unboxed', 'boxed', 'off', 'unfit', 'cgnat', 'games'];
 
 export const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
 const at = (secondsBeforeFixtureNow: number) => new Date(FIXTURE_NOW - secondsBeforeFixtureNow * 1000).toISOString().replace('.000Z', 'Z');
@@ -99,6 +99,40 @@ function unfit(w: ReadData): void {
   if (tk) tk.egress = { TR: 'PL', AE: 'PL' };
 }
 
+/**
+ * The catalog's «Игры» with all of its launchers (the contract shows Steam
+ * alone): each with the modes it offers — Steam also runs well without the
+ * VPN, Star Citizen does not run without it.
+ */
+function games(w: ReadData): void {
+  const game = (id: string, title: string, order: number, modes: string[], mode = 'stable') => ({
+    id,
+    choice: null,
+    defaultCountry: null,
+    countries: [],
+    active: false,
+    stale: false,
+    egress: {},
+    title: { ru: title, en: title, zh: title },
+    group: 'games',
+    order,
+    icon: id,
+    modes,
+    mode,
+    default: 'stable',
+    chosen: false,
+  });
+  const have = new Set(w.services.services.map((s) => s.id));
+  w.services.services.push(
+    ...[
+      game('epic', 'Epic Games', 20, ['stable', 'direct', 'main']),
+      game('riot', 'Riot Games', 30, ['stable', 'direct', 'main']),
+      game('battlenet', 'Battle.net', 40, ['stable', 'direct', 'main']),
+      game('starcitizen', 'Star Citizen', 50, ['stable', 'main']),
+    ].filter((g) => !have.has(g.id)),
+  );
+}
+
 function empty(w: ReadData): void {
   const s = w.status;
   s.controller.uptimeSec = 1180;
@@ -179,7 +213,7 @@ function unboxed(w: ReadData): void {
   // Never boosted: the router has not listened to the air yet.
   w.wifi_scan = { radios: [], scannedAt: null };
   w.rules = { direct: [], proxy: [], max: 100, catalog: w.rules.catalog, missing: [] };
-  w.services = { available: true, services: [] };
+  w.services = { available: true, services: [], groups: [], stableExit: null };
 }
 
 /**
@@ -344,5 +378,6 @@ export function buildWorld(scenario: Scenario, holder: Holder = 'passwall2'): Re
   if (scenario === 'off') off(w, holder);
   if (scenario === 'unfit') unfit(w);
   if (scenario === 'cgnat') cgnat(w);
+  if (scenario === 'games') games(w);
   return w;
 }

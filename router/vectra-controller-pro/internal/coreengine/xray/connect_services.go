@@ -135,7 +135,7 @@ func ConnectServicesCarried(raw []byte) map[string]bool {
 		return out
 	}
 	rules := providerRules(raw)
-	for _, s := range Services {
+	for _, s := range Services() {
 		if _, ok := connectServicePathIn(rules, v, s); ok {
 			out[s.ID] = true
 		}
@@ -156,7 +156,11 @@ func connectServicePathIn(rules []map[string]json.RawMessage, v *xrayview.View, 
 	if namesService(rules, s) {
 		return servicePathOf{}, false
 	}
-	p := servicePathOf{domains: s.overlay(s.Domains), ips: s.IPs}
+	var markers []string
+	if _, legacy := legacyServices[s.ID]; legacy {
+		markers = s.IPs
+	}
+	p := servicePathOf{domains: s.overlay(s.Domains), ips: s.overlayIPs(markers)}
 	if target, balancer, found := catchAllRule(rules); found {
 		p.target, p.isBalancer = target, balancer
 	} else if v.Default != nil && v.Default.Tag != "" {
@@ -215,25 +219,30 @@ func balancerTunnelsDepth(v *xrayview.View, tag string, depth int) bool {
 	}
 }
 
-// catchAllRule is the first rule that matches all traffic: no condition but
-// a network naming both tcp and udp. Rules after it are never reached.
-func catchAllRule(rules []map[string]json.RawMessage) (target string, balancer bool, found bool) {
-	for _, r := range rules {
-		network := ""
-		other := false
-		for k, val := range r {
-			switch foldKey(k) {
-			case foldKey("type"), foldKey("outboundTag"), foldKey("balancerTag"), foldKey("ruleTag"):
-			case foldKey("network"):
-				// "tcp,udp" or ["tcp","udp"]: xray takes both.
-				network = strings.ToLower(jsonString(val) + "," + strings.Join(jsonStrings(val), ","))
-			default:
-				if !emptyJSON(val) {
-					other = true
-				}
+// isCatchAllRule: the rule matches all traffic — no condition but a network
+// naming both tcp and udp.
+func isCatchAllRule(r map[string]json.RawMessage) bool {
+	network := ""
+	for k, val := range r {
+		switch foldKey(k) {
+		case foldKey("type"), foldKey("outboundTag"), foldKey("balancerTag"), foldKey("ruleTag"):
+		case foldKey("network"):
+			// "tcp,udp" or ["tcp","udp"]: xray takes both.
+			network = strings.ToLower(jsonString(val) + "," + strings.Join(jsonStrings(val), ","))
+		default:
+			if !emptyJSON(val) {
+				return false
 			}
 		}
-		if other || !strings.Contains(network, "tcp") || !strings.Contains(network, "udp") {
+	}
+	return strings.Contains(network, "tcp") && strings.Contains(network, "udp")
+}
+
+// catchAllRule is the first rule that matches all traffic (isCatchAllRule).
+// Rules after it are never reached.
+func catchAllRule(rules []map[string]json.RawMessage) (target string, balancer bool, found bool) {
+	for _, r := range rules {
+		if !isCatchAllRule(r) {
 			continue
 		}
 		if t := jsonString(ruleField(r, "balancerTag")); t != "" {

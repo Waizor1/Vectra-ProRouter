@@ -174,7 +174,7 @@ func TestBuiltAnswersHaveTheContractShape(t *testing.T) {
 		"entries.json":     uiapi.BuildEntries(in),
 		"diagnostics.json": uiapi.BuildDiagnostics(in),
 		"rules.json":       uiapi.BuildRules(in.Overrides, []string{"discord", "meta"}),
-		"services.json":    uiapi.BuildServices(true, []byte(svcRunning), localctl.Overrides{Services: map[string]string{"tiktok": "DE"}}, nil),
+		"services.json":    uiapi.BuildServices(true, []byte(svcRunning), localctl.Overrides{Services: map[string]string{"tiktok": "DE"}}, nil, nil),
 		"action.json":      action(true, "balancer_pinned", ""),
 	} {
 		t.Run(name, func(t *testing.T) {
