@@ -135,6 +135,10 @@ func planModes(providerRaw []byte, modes map[string]string, main, noStable bool,
 				p.res.Skipped = append(p.res.Skipped, s.ID+": a class of traffic is never sent straight out")
 			case !stableOK:
 				p.res.Skipped = append(p.res.Skipped, s.ID+": "+why)
+			case !hasMainCopies(rules, backTarget, backBalancer, inbound, traffic):
+				// No rule of the main path to put the class in front of (the
+				// main path is xray's default outbound): it would do nothing.
+				p.res.Skipped = append(p.res.Skipped, s.ID+": no rule of the main path to copy")
 			default:
 				p.traffic = append(p.traffic, traffic...)
 				p.res.Stable = append(p.res.Stable, s.ID)

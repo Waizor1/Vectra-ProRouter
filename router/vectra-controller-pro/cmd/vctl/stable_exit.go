@@ -16,6 +16,7 @@ import (
 	"vectra-controller-pro/internal/catalog"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/exitcheck"
+	"vectra-controller-pro/internal/failover"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/supervisor"
@@ -97,8 +98,10 @@ type stableExitTracker struct {
 	// moveMu serialises the moves off a dead pin (the watchdog's, from the
 	// connection table, and the tick's, from the observatory).
 	moveMu sync.Mutex
-	// refused is the last move xray refused: logged once.
-	refused string
+	// refused is the last move xray refused, refusedPin the last pin: each
+	// logged once.
+	refused    string
+	refusedPin string
 }
 
 // Seams: tests never ask a real exit, nor a real xray.
@@ -219,11 +222,17 @@ func (d *daemon) stableReconcile(ctx context.Context, view *xrayview.View, ov lo
 	err := stableOverride(octx, view.APIListen, xray.StableBalancerTag, target)
 	cancel()
 	if err != nil {
-		logging.L().Warn("stable exit: xray did not take the pin; asked again", "exit", target, "err", err.Error())
+		d.stable.mu.Lock()
+		first := d.stable.refusedPin != "set:"+target
+		d.stable.refusedPin = "set:" + target
+		d.stable.mu.Unlock()
+		if first {
+			logging.L().Warn("stable exit: xray did not take the pin; asked again", "exit", target, "err", err.Error())
+		}
 		return false
 	}
 	d.stable.mu.Lock()
-	d.stable.applied = target
+	d.stable.applied, d.stable.refusedPin = target, ""
 	d.stable.mu.Unlock()
 	if target != applied {
 		if target == "" {
@@ -397,25 +406,49 @@ func (d *daemon) stableMoveOff(ctx context.Context, view *xrayview.View, ov loca
 }
 
 // stableFailover is the failover watchdog's word on the pin, each look: a
-// pin xray's own connections to which go unanswered is moved off — when
-// another node answered since (stableMoveOff: not a WAN blip) — and xray is
-// brought in line with the record (stableReconcile).
-func (d *daemon) stableFailover(ctx context.Context, w *failoverWatch, infos map[string]api.BalancerInfo, ov localctl.Overrides, now time.Time) {
+// pin xray's own connections to which go unanswered is moved off, and xray
+// is brought in line with the record (stableReconcile).
+//
+// Not on the end of a WAN blip: the attempts xray opened while the way out
+// was down stay unanswered in the table after it is back, while the LAN's
+// other connections are answered again at once. So the pin is judged only on
+// attempts opened once another node was seen answering after the pin went
+// silent (stableUp): an alive pin answers those, a dead one does not.
+func (d *daemon) stableFailover(ctx context.Context, w *failoverWatch, infos map[string]api.BalancerInfo, health map[string]failover.Health, ov localctl.Overrides, now time.Time) {
 	info, ok := infos[xray.StableBalancerTag]
 	if !ok || info.Err != nil {
 		return
 	}
 	r := d.stableExitNow()
-	if r.State == stableStatePinned && info.Override == r.Tag && w.det.Failing(r.Tag, now) {
+	failing := r.State == stableStatePinned && info.Override == r.Tag && w.det.Failing(r.Tag, now)
+	if !failing {
+		delete(w.stableUp, r.Tag)
+	} else {
 		since := w.det.FirstUnanswered(r.Tag)
-		alive := false
+		up := false
 		for _, o := range w.view.Outbounds {
 			if o.Tag != r.Tag && o.Dials && w.det.AnsweredSince(o.Tag, since) {
-				alive = true
+				up = true
 				break
 			}
 		}
-		d.stableMoveOff(ctx, w.view, ov, r.Tag, func(t string) bool { return w.det.Failing(t, now) }, alive, "connections")
+		if up {
+			if w.stableUp == nil {
+				w.stableUp = map[string]time.Time{}
+			}
+			from, seen := w.stableUp[r.Tag]
+			if !seen {
+				w.stableUp[r.Tag], from = now, now
+			}
+			if w.det.UnansweredFrom(r.Tag, from, now) >= failover.UnansweredMin {
+				dead := func(t string) bool {
+					h, known := health[t]
+					return w.det.Failing(t, now) || (known && !h.Alive)
+				}
+				d.stableMoveOff(ctx, w.view, ov, r.Tag, dead, true, "connections")
+				delete(w.stableUp, r.Tag)
+			}
+		}
 	}
 	d.stableReconcile(ctx, w.view, ov, info.Override, true)
 }
@@ -441,26 +474,39 @@ func (d *daemon) stableHealth(ctx context.Context) {
 	if b == nil {
 		return
 	}
-	mctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	m, err := stableMetrics(mctx, view.MetricsListen)
-	cancel()
-	if err != nil || m == nil {
+	obs := d.stableObservatory(ctx, view)
+	if alive, seen := obs[r.Tag]; !seen || alive {
 		return
 	}
-	o, seen := m.Observatory[r.Tag]
-	if !seen || o.Alive {
-		return
-	}
-	dead := func(t string) bool { h, ok := m.Observatory[t]; return ok && !h.Alive }
+	dead := func(t string) bool { a, ok := obs[t]; return ok && !a }
 	alive := false
 	for _, t := range b.Members {
-		if h, ok := m.Observatory[t]; t != r.Tag && ok && h.Alive {
+		if a, ok := obs[t]; t != r.Tag && ok && a {
 			alive = true
 			break
 		}
 	}
 	ov, _ := localctl.LoadOverrides(d.cfg.OverridesPath)
 	d.stableMoveOff(ctx, view, ov, r.Tag, dead, alive, "observatory")
+}
+
+// stableObservatory is the observatory's word per node (alive or not); nil
+// when the render has no metrics or they do not answer.
+func (d *daemon) stableObservatory(ctx context.Context, view *xrayview.View) map[string]bool {
+	if view == nil || view.MetricsListen == "" {
+		return nil
+	}
+	mctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	m, err := stableMetrics(mctx, view.MetricsListen)
+	cancel()
+	if err != nil || m == nil {
+		return nil
+	}
+	out := make(map[string]bool, len(m.Observatory))
+	for t, o := range m.Observatory {
+		out[t] = o.Alive
+	}
+	return out
 }
 
 // stableExitView is what the UIs show: the state and the country, never the
@@ -541,8 +587,22 @@ func (d *daemon) stableExitStep(ctx context.Context, now time.Time) {
 		return
 	}
 	cands := stableCandidates(render, d.exits.Unfit())
+	if view, err := xrayview.Parse(render); err == nil {
+		// A node the observatory holds dead is not pinned: the next tick
+		// would move off it again (stableHealth), and the pin would flap
+		// until the observatory's next sample.
+		if obs := d.stableObservatory(ctx, view); obs != nil {
+			var alive []string
+			for _, t := range cands {
+				if a, seen := obs[t]; !seen || a {
+					alive = append(alive, t)
+				}
+			}
+			cands = alive
+		}
+	}
 	if len(cands) == 0 {
-		return // no probe in the running render yet
+		return // no probe in the running render yet, or no node alive
 	}
 	if r.State == stableStatePinned && !contains(cands, r.Tag) {
 		full = true

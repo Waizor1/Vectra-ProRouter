@@ -314,8 +314,8 @@ func TestNoCatchAllNoTrailingCopies(t *testing.T) {
 		t.Fatal("the fixture's catch-all moved; update the test")
 	}
 	r, res := r28Splice(t, doc, xray.SpliceOptions{ServiceModes: map[string]string{"gameplay": "stable"}})
-	if res.Modes.Copies != 0 {
-		t.Fatalf("%d rules copied", res.Modes.Copies)
+	if res.Modes.Copies != 0 || len(res.Modes.Stable) != 0 || len(res.Modes.Skipped) != 1 || !strings.Contains(res.Modes.Skipped[0], "no rule of the main path") {
+		t.Fatalf("modes %+v", res.Modes)
 	}
 	for _, rule := range r.Routing.Rules {
 		if rule.BalancerTag == xray.StableBalancerTag && rule.Network != "" {

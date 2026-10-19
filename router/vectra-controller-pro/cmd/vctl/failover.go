@@ -102,6 +102,9 @@ func confirmThroughTheTunnel(ctx context.Context, url string) bool {
 
 type failoverWatch struct {
 	det          *failover.Detector
+	// stableUp is when the stable pin was first seen failing while another
+	// node answered (stableFailover): only its attempts opened since count.
+	stableUp map[string]time.Time
 	pol          *failover.Policy
 	view         *xrayview.View
 	viewStamp    string
@@ -311,7 +314,7 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 	// unanswered moves along the last round's ranking, and xray is kept in
 	// line with the record — before the policy looks, which then leaves a
 	// pinned stable balancer alone (stableOwned).
-	d.stableFailover(ctx, w, infos, ov, now)
+	d.stableFailover(ctx, w, infos, health, ov, now)
 	if st, ok := infos[xray.StableBalancerTag]; ok && st.Err == nil {
 		if t, owned := d.stableTarget(w.view, ov); owned && t != "" {
 			st.Override = t // what the tracker just set, whatever the earlier read said
@@ -369,7 +372,9 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 	// still calls alive from an old round.
 	carriers := infos[main].Principle
 	if o := infos[main].Override; o != "" {
-		carriers = []string{o} // an override is what carries it, whatever the strategy prefers
+		if ob := w.view.Outbound(o); ob != nil && ob.Dials {
+			carriers = []string{o} // a node pinned is what carries it, whatever the strategy prefers
+		}
 	}
 	for _, m := range carriers {
 		if w.det.Failing(m, now) {

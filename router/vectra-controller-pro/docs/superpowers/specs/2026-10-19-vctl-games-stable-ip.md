@@ -85,7 +85,11 @@ While pinned, xray takes **no** fallback of its own: an override skips the strat
   - The connection table: xray's own connections to it go unanswered (seconds).
   - The observatory: dead although it takes connections (next tick).
   - Either way the pin moves along the ranking, skipping nodes either word holds dead, and the dead pin leaves the ranking.
-- **A WAN blip moves nothing.** Moving requires another node to have answered since the pin went silent, or, for the observatory, to be alive. Otherwise the router's own way out is down, and moving would change the game's address for good.
+- **A WAN blip moves nothing, not even at its end** (second review).
+  - The pin is judged only on attempts opened after another node was first seen answering once it went silent (`Detector.UnansweredFrom`).
+  - The attempts left over from a blip linger unanswered after the WAN is back, and they no longer count. An alive pin answers the fresh ones; a dead one does not.
+  - For the observatory, moving still requires another member to be alive.
+- **No flap.** A round never picks a node the observatory holds dead, because the next tick would move off it again. A fast move also skips nodes the observatory holds dead.
 - **No stable exit where nothing would pin it.** `NoStableExit` is set when the exit check is off. Nothing is rendered there, because a never-pinned balancer would only move traffic.
 - **BitTorrent.** A main rule naming BitTorrent gets no copy. Encrypted BitTorrent (MSE/PE) and DHT are not sniffable, so they do reach the pin. This is a known limit.
 - **Edge cases in copies.**

@@ -298,3 +298,13 @@ func isJSONNumber(raw json.RawMessage) bool {
 	var n json.Number
 	return raw != nil && json.Unmarshal(raw, &n) == nil
 }
+
+// hasMainCopies: some rule of the main path would get the classes' copies.
+func hasMainCopies(rules []map[string]json.RawMessage, target string, isBalancer bool, inbound string, classes []catalog.Traffic) bool {
+	for _, r := range rules {
+		if ruleTargets(r, target, isBalancer) && ruleAppliesTo(r, inbound) && len(mainCopies(r, inbound, classes, false)) > 0 {
+			return true
+		}
+	}
+	return false
+}

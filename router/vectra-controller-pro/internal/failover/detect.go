@@ -139,6 +139,25 @@ func (d *Detector) Failing(tag string, now time.Time) bool {
 	return n >= UnansweredMin
 }
 
+// UnansweredFrom counts the node's attempts first seen at or after from,
+// left unanswered for UnansweredAge or more (and none answered since they
+// began): attempts opened at a time the caller knows the router's way out
+// was up — a dead node, not the end of a WAN blip whose old attempts linger
+// in the table.
+func (d *Detector) UnansweredFrom(tag string, from, now time.Time) int {
+	last, answered := d.lastAnswered[tag]
+	n := 0
+	for _, a := range d.attempts {
+		if !slices.Contains(a.tags, tag) || a.first.Before(from) || (answered && a.first.Before(last)) {
+			continue
+		}
+		if now.Sub(a.first) >= UnansweredAge {
+			n++
+		}
+	}
+	return n
+}
+
 // LastAnswered is when an answered connection to the node last first
 // appeared; zero when none has been seen.
 func (d *Detector) LastAnswered(tag string) time.Time { return d.lastAnswered[tag] }

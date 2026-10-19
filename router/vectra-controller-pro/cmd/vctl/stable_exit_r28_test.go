@@ -87,10 +87,18 @@ func TestTheOwnersPinOnTheStableBalancerWins(t *testing.T) {
 	}
 }
 
-// stableWatch is a failover watch over the stand's render whose detector
-// holds the failing nodes' endpoints unanswered for 3 s, while the answering
-// ones had a connection answered meanwhile (the router's way out is up).
-func stableWatch(t *testing.T, s *stableStand, failing, answering []string) (*failoverWatch, time.Time) {
+// watchDriver is a failover watch over the stand's render whose connection
+// table the test writes: attempts (unanswered) and answers to each node's own
+// endpoint, one scan at a time.
+type watchDriver struct {
+	w       *failoverWatch
+	eps     failover.Endpoints
+	ep      map[string]netip.AddrPort
+	entries []conntrack.Entry
+	sport   uint16
+}
+
+func newWatchDriver(t *testing.T, s *stableStand) *watchDriver {
 	t.Helper()
 	raw, err := vault.ReadFile(s.d.cfg.XrayRenderPath)
 	if err != nil {
@@ -102,24 +110,59 @@ func stableWatch(t *testing.T, s *stableStand, failing, answering []string) (*fa
 	}
 	w := newFailoverWatch()
 	w.view = view
-	eps := failover.Endpoints{}
-	var entries []conntrack.Entry
-	for i, tag := range failing {
-		ep := netip.AddrPortFrom(netip.AddrFrom4([4]byte{203, 0, 113, byte(10 + i)}), 443)
-		eps[failover.Endpoint{Proto: "tcp", Addr: ep}] = []string{tag}
-		entries = append(entries, unanswered(uint16(100+2*i), ep.String()), unanswered(uint16(101+2*i), ep.String()))
+	return &watchDriver{w: w, eps: failover.Endpoints{}, ep: map[string]netip.AddrPort{}, sport: 100}
+}
+
+func (d *watchDriver) endpoint(tag string) netip.AddrPort {
+	if ep, ok := d.ep[tag]; ok {
+		return ep
 	}
+	ep := netip.AddrPortFrom(netip.AddrFrom4([4]byte{203, 0, 113, byte(10 + len(d.ep))}), 443)
+	d.ep[tag] = ep
+	d.eps[failover.Endpoint{Proto: "tcp", Addr: ep}] = []string{tag}
+	return ep
+}
+
+// attempt opens n new connections to tag that are not answered.
+func (d *watchDriver) attempt(tag string, n int) {
+	for i := 0; i < n; i++ {
+		d.sport++
+		d.entries = append(d.entries, unanswered(d.sport, d.endpoint(tag).String()))
+	}
+}
+
+// answer opens a new connection to tag that is answered.
+func (d *watchDriver) answer(tag string) {
+	d.sport++
+	e := unanswered(d.sport, d.endpoint(tag).String())
+	e.Replied, e.State = true, "ESTABLISHED"
+	d.entries = append(d.entries, e)
+}
+
+func (d *watchDriver) scan(at time.Time) { d.w.det.Observe(at, d.entries, d.eps) }
+
+func (d *watchDriver) look(s *stableStand, at time.Time, override string) {
+	d.scan(at)
+	s.d.stableFailover(context.Background(), d.w, map[string]api.BalancerInfo{xray.StableBalancerTag: {Override: override}}, nil, localctl.Overrides{}, at)
+}
+
+// killPin drives a pin that dies while the router's way out is up: its
+// connections go unanswered while other's are answered, and the attempts
+// opened after that are not answered either. It returns the look that moves.
+func killPin(s *stableStand, d *watchDriver, pin string, alsoDead []string, answering string) time.Time {
 	t0 := time.Date(2026, 10, 18, 12, 40, 0, 0, time.UTC)
-	w.det.Observe(t0, entries, eps)
-	for i, tag := range answering {
-		ep := netip.AddrPortFrom(netip.AddrFrom4([4]byte{203, 0, 113, byte(50 + i)}), 443)
-		eps[failover.Endpoint{Proto: "tcp", Addr: ep}] = []string{tag}
-		e := unanswered(uint16(200+i), ep.String())
-		e.Replied, e.State = true, "ESTABLISHED"
-		entries = append(entries, e)
+	for _, tag := range append([]string{pin}, alsoDead...) {
+		d.attempt(tag, 2)
 	}
-	w.det.Observe(t0.Add(3*time.Second), entries, eps)
-	return w, t0.Add(3 * time.Second)
+	d.answer(answering)
+	d.look(s, t0, pin)
+	d.answer(answering)
+	d.look(s, t0.Add(3*time.Second), pin) // failing, the way out up: judged from here
+	for _, tag := range append([]string{pin}, alsoDead...) {
+		d.attempt(tag, 2)
+	}
+	d.scan(t0.Add(3500 * time.Millisecond))
+	return t0.Add(6 * time.Second)
 }
 
 // A pin that stops answering moves along the last round's ranking in the
@@ -140,9 +183,12 @@ func TestADeadPinMovesAlongTheRanking(t *testing.T) {
 	}
 	before, _ := vault.ReadFile(s.d.cfg.XrayRenderPath)
 	// pl5 is failing too: the move skips it; nl5 answers: the way out is up.
-	w, now := stableWatch(t, s, []string{"bridge-fr5", "bridge-pl5"}, []string{"bridge-nl5"})
-	infos := map[string]api.BalancerInfo{xray.StableBalancerTag: {Override: "bridge-fr5"}}
-	s.d.stableFailover(context.Background(), w, infos, localctl.Overrides{}, now)
+	d := newWatchDriver(t, s)
+	now := killPin(s, d, "bridge-fr5", []string{"bridge-pl5"}, "bridge-nl5")
+	if s.current != "bridge-fr5" {
+		t.Fatalf("moved before fresh attempts went unanswered: %v", s.overrides)
+	}
+	d.look(s, now, "bridge-fr5")
 	if s.current != "bridge-de5" {
 		t.Fatalf("overrides %v", s.overrides)
 	}
@@ -169,9 +215,35 @@ func TestADeadPinMovesAlongTheRanking(t *testing.T) {
 	}
 	// A pin that answers is not moved.
 	n := len(s.overrides)
-	s.d.stableFailover(context.Background(), w, map[string]api.BalancerInfo{xray.StableBalancerTag: {Override: "bridge-de5"}}, localctl.Overrides{}, now)
+	d.look(s, now.Add(2*time.Second), "bridge-de5")
 	if len(s.overrides) != n {
 		t.Fatalf("moved without cause: %v", s.overrides[n:])
+	}
+}
+
+// The end of a WAN blip: xray's attempts to the pin made while the way out
+// was down still sit unanswered when the LAN's other connections are
+// answered again — the pin answers its next connection and is never moved.
+func TestTheEndOfAWANBlipDoesNotMoveThePin(t *testing.T) {
+	s := newStableStand(t, xray.SpliceOptions{})
+	s.answers["bridge-fr5"] = []string{"38.180.154.151"}
+	s.answers["bridge-de5"] = []string{"5.175.180.50"}
+	s.slow["bridge-de5"] = 300 * time.Millisecond
+	s.d.stableExitStep(context.Background(), time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC))
+	n := len(s.overrides)
+	d := newWatchDriver(t, s)
+	t0 := time.Date(2026, 10, 18, 12, 40, 0, 0, time.UTC)
+	d.attempt("bridge-fr5", 3) // the way out is down
+	d.look(s, t0, "bridge-fr5")
+	d.look(s, t0.Add(3*time.Second), "bridge-fr5")
+	d.answer("bridge-nl5") // back: the browsers reconnect through other nodes
+	d.look(s, t0.Add(5*time.Second), "bridge-fr5")
+	d.look(s, t0.Add(7*time.Second), "bridge-fr5")
+	d.answer("bridge-fr5") // and the pin answers its next connection
+	d.look(s, t0.Add(9*time.Second), "bridge-fr5")
+	d.look(s, t0.Add(11*time.Second), "bridge-fr5")
+	if len(s.overrides) != n || s.d.stableExitNow().Tag != "bridge-fr5" {
+		t.Fatalf("moved at the end of a blip: %v, record %+v", s.overrides[n:], s.d.stableExitNow())
 	}
 }
 
@@ -183,9 +255,13 @@ func TestAWANBlipDoesNotMoveThePin(t *testing.T) {
 	s.answers["bridge-de5"] = []string{"5.175.180.50"}
 	s.slow["bridge-de5"] = 300 * time.Millisecond
 	s.d.stableExitStep(context.Background(), time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC))
-	w, now := stableWatch(t, s, []string{"bridge-fr5"}, nil)
 	n := len(s.overrides)
-	s.d.stableFailover(context.Background(), w, map[string]api.BalancerInfo{xray.StableBalancerTag: {Override: "bridge-fr5"}}, localctl.Overrides{}, now)
+	d := newWatchDriver(t, s)
+	t0 := time.Date(2026, 10, 18, 12, 40, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		d.attempt("bridge-fr5", 2)
+		d.look(s, t0.Add(time.Duration(2*i)*time.Second), "bridge-fr5")
+	}
 	if len(s.overrides) != n || s.d.stableExitNow().Tag != "bridge-fr5" {
 		t.Fatalf("moved on a blip: %v, record %+v", s.overrides[n:], s.d.stableExitNow())
 	}
@@ -223,8 +299,9 @@ func TestXrayIsBroughtInLineWithTheRecord(t *testing.T) {
 	s := newStableStand(t, xray.SpliceOptions{})
 	s.answers["bridge-fr5"] = []string{"38.180.154.151"}
 	s.d.stableExitStep(context.Background(), time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC))
-	w, now := stableWatch(t, s, nil, nil)
-	s.d.stableFailover(context.Background(), w, map[string]api.BalancerInfo{xray.StableBalancerTag: {Override: "bridge-de5"}}, localctl.Overrides{}, now)
+	d := newWatchDriver(t, s)
+	w, now := d.w, time.Date(2026, 10, 18, 12, 40, 0, 0, time.UTC)
+	s.d.stableFailover(context.Background(), w, map[string]api.BalancerInfo{xray.StableBalancerTag: {Override: "bridge-de5"}}, nil, localctl.Overrides{}, now)
 	if s.current != "bridge-fr5" {
 		t.Fatalf("not set back: %v", s.overrides)
 	}
@@ -232,13 +309,13 @@ func TestXrayIsBroughtInLineWithTheRecord(t *testing.T) {
 	r := s.d.stableExitNow()
 	r.State, r.Tag = stableStateNone, ""
 	s.d.saveStableExit(r)
-	s.d.stableFailover(context.Background(), w, map[string]api.BalancerInfo{xray.StableBalancerTag: {Override: "bridge-fr5"}}, localctl.Overrides{}, now)
+	s.d.stableFailover(context.Background(), w, map[string]api.BalancerInfo{xray.StableBalancerTag: {Override: "bridge-fr5"}}, nil, localctl.Overrides{}, now)
 	if s.current != "" {
 		t.Fatalf("its own override kept: %v", s.overrides)
 	}
 	// …and the policy's move is left alone.
 	n := len(s.overrides)
-	s.d.stableFailover(context.Background(), w, map[string]api.BalancerInfo{xray.StableBalancerTag: {Override: "bridge-nl5"}}, localctl.Overrides{}, now)
+	s.d.stableFailover(context.Background(), w, map[string]api.BalancerInfo{xray.StableBalancerTag: {Override: "bridge-nl5"}}, nil, localctl.Overrides{}, now)
 	if len(s.overrides) != n {
 		t.Fatalf("cleared the policy's move: %v", s.overrides[n:])
 	}
@@ -283,8 +360,9 @@ func TestADeadPinWithNothingToMoveToReleasesAndLooksAgain(t *testing.T) {
 	s := newStableStand(t, xray.SpliceOptions{})
 	s.answers["bridge-fr5"] = []string{"38.180.154.151"}
 	s.d.stableExitStep(context.Background(), time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC))
-	w, now := stableWatch(t, s, []string{"bridge-fr5"}, []string{"bridge-nl5"})
-	s.d.stableFailover(context.Background(), w, map[string]api.BalancerInfo{xray.StableBalancerTag: {Override: "bridge-fr5"}}, localctl.Overrides{}, now)
+	d := newWatchDriver(t, s)
+	now := killPin(s, d, "bridge-fr5", nil, "bridge-nl5")
+	d.look(s, now, "bridge-fr5")
 	if got := s.overrides[len(s.overrides)-1]; got != "" {
 		t.Fatalf("overrides %v", s.overrides)
 	}
@@ -325,5 +403,20 @@ func TestARenderThatLostThePinLooksAgainAtOnce(t *testing.T) {
 	}
 	if r := s.d.stableExitNow(); r.Tag != "bridge-fr5" {
 		t.Fatalf("record %+v", r)
+	}
+}
+
+// A round never pins a node the observatory holds dead, however steady its
+// answers to the probe: the next tick would move off it again, and the pin
+// would flap until the observatory's next sample.
+func TestARoundNeverPinsANodeTheObservatoryHoldsDead(t *testing.T) {
+	s := newStableStand(t, xray.SpliceOptions{})
+	s.answers["bridge-fr5"] = []string{"38.180.154.151"}
+	s.answers["bridge-de5"] = []string{"5.175.180.50"}
+	s.slow["bridge-de5"] = 300 * time.Millisecond
+	s.health = map[string]bool{"bridge-fr5": false, "bridge-de5": true}
+	s.d.stableExitStep(context.Background(), time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC))
+	if r := s.d.stableExitNow(); r.Tag != "bridge-de5" || s.asked["bridge-fr5"] != 0 {
+		t.Fatalf("record %+v, fr5 asked %d times", r, s.asked["bridge-fr5"])
 	}
 }
