@@ -41,10 +41,11 @@ import {
   passwallSecretBlobs,
   routerCredentials,
   routerInventorySnapshots,
+  routerReauthProofs,
   routers,
 } from "@vectra/db";
 import { and, asc, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
-import { createPublicKey, verify as cryptoVerify } from "node:crypto";
+import { createHash, verify as cryptoVerify } from "node:crypto";
 import { ZodError } from "zod";
 
 import { env } from "~/env";
@@ -112,6 +113,23 @@ import {
   boundRouterCheckInPayload,
 } from "~/server/vectra/router-payload-bounds";
 import { MemoryWindowRateLimiter } from "~/server/vectra/public-install-rate-limit";
+import {
+  decodeCanonicalEd25519Signature,
+  decodeRawEd25519PublicKey,
+} from "~/server/vectra/router-auth-integrity";
+import {
+  checkInNonceField,
+  enforceEnrollmentTokenForNewRouter,
+  enrollmentTokenPresented,
+  routerAuthFlags,
+  routerErrorWithBody,
+} from "~/server/vectra/router-auth-policy";
+import {
+  bindCredentialAtRegistration,
+  CREDENTIAL_DEVICE_MISMATCH_CODE,
+  CREDENTIAL_DEVICE_MISMATCH_MESSAGE,
+  observeCheckInCredentialBinding,
+} from "~/server/vectra/router-credential-binding";
 import {
   CACHED_CONFIG_HEAP_FACTOR,
   PerRouterCache,
@@ -1356,26 +1374,35 @@ export function canIssueRegistrationToken(args: {
 }
 
 /**
- * Canonical prefix for the ed25519 re-auth recovery proof. The Go agent lane
- * signs the exact same bytes, so this MUST stay byte-for-byte identical:
- *   "vectra-router-reauth:v1\n" + deviceIdentifier + "\n" + signedAt
+ * Canonical prefix for the ed25519 re-auth recovery proof (v2). The Go agent
+ * lane signs the exact same bytes, so this MUST stay byte-for-byte identical.
+ *
+ * v2 BINDS the proof to the router record AND to the device key being claimed,
+ * closing the v1 replay-takeover (CWE-294/CWE-345): a v1 proof bound neither
+ * `routerId` nor the submitted `devicePublicKey`, so a captured proof could be
+ * replayed AND paired with an attacker's own key to take over the record. The
+ * version lives in the prefix, so any v1-format proof simply fails to verify
+ * against v2 bytes — there is no negotiation field and no path that still
+ * accepts the unbound v1.
+ *
+ *   "vectra-router-reauth:v2\n"
+ *     + routerId + "\n"
+ *     + deviceIdentifier + "\n"
+ *     + newDevicePublicKey + "\n"   (the std-base64 key being claimed)
+ *     + signedAt
  */
-export const ROUTER_REAUTH_MESSAGE_PREFIX = "vectra-router-reauth:v1\n";
+export const ROUTER_REAUTH_MESSAGE_PREFIX = "vectra-router-reauth:v2\n";
 
 /** Allowed clock skew (seconds) between the signed timestamp and server now. */
 export const ROUTER_REAUTH_SKEW_SECONDS = 300;
 
-/** DER prefix for an ed25519 SubjectPublicKeyInfo wrapping the raw 32-byte key. */
-const ED25519_SPKI_DER_PREFIX = Buffer.from(
-  "302a300506032b6570032100",
-  "hex",
-);
-
 export function buildRouterReauthMessage(
+  routerId: string,
   deviceIdentifier: string,
+  newDevicePublicKey: string,
   signedAt: string,
 ) {
-  return `${ROUTER_REAUTH_MESSAGE_PREFIX}${deviceIdentifier}\n${signedAt}`;
+  return `${ROUTER_REAUTH_MESSAGE_PREFIX}${routerId}\n${deviceIdentifier}\n${newDevicePublicKey}\n${signedAt}`;
 }
 
 export type RouterReauthVerifyReason =
@@ -1388,43 +1415,135 @@ export type RouterReauthVerifyResult =
   | { ok: true }
   | { ok: false; reason: RouterReauthVerifyReason };
 
-function decodeRawEd25519PublicKey(devicePublicKey: string) {
-  let raw: Buffer;
-  try {
-    raw = Buffer.from(devicePublicKey, "base64");
-  } catch {
-    return null;
-  }
-
-  // base64 of a 32-byte ed25519 public key; anything else is malformed.
-  if (raw.length !== 32) {
-    return null;
-  }
-
-  try {
-    return createPublicKey({
-      key: Buffer.concat([ED25519_SPKI_DER_PREFIX, raw]),
-      format: "der",
-      type: "spki",
-    });
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Verifies an ed25519 recovery proof against the device's stored public key.
+ * Verifies an ed25519 recovery proof (v2) against the device's STORED public
+ * key, over a message that binds the router id and the device key being
+ * claimed.
  *
  * Acceptance requires BOTH:
  *  (a) `signedAt` parses as a real timestamp and is within ±skew seconds of
  *      `now` (future-dated proofs beyond the skew are rejected too), and
- *  (b) the std-encoded base64 signature verifies over the canonical message
- *      `buildRouterReauthMessage(deviceIdentifier, signedAt)`.
+ *  (b) the std-encoded base64 signature verifies, AGAINST THE STORED KEY, over
+ *      the canonical v2 message
+ *      `buildRouterReauthMessage(routerId, deviceIdentifier,
+ *      submittedDevicePublicKey, signedAt)`.
+ *
+ * Because the signed bytes include `routerId` and `submittedDevicePublicKey`
+ * and the signature is checked against the key already on record, a captured
+ * proof cannot be (i) replayed against a different router id, nor (ii) paired
+ * with an attacker-chosen new key: reconstructing the message with the
+ * attacker's key no longer matches what the legitimate (stored) key signed.
  *
  * Uses Node's stdlib `crypto.verify(null, …)` for ed25519, reconstructing the
  * public key from the raw 32 bytes via an SPKI DER wrapper. No external lib.
  */
 export function verifyRouterReauthProof(args: {
+  recoveryProof: { signedAt: string; signature: string };
+  routerId: string;
+  deviceIdentifier: string;
+  /** The key the request is claiming (== parsed.inventory.devicePublicKey). */
+  submittedDevicePublicKey: string;
+  /** The key on record; the signature is verified against THIS key. */
+  storedDevicePublicKey: string;
+  now: Date;
+  skewSeconds?: number;
+}): RouterReauthVerifyResult {
+  const skewSeconds = args.skewSeconds ?? ROUTER_REAUTH_SKEW_SECONDS;
+
+  const signedAtMs = Date.parse(args.recoveryProof.signedAt);
+  if (Number.isNaN(signedAtMs)) {
+    return { ok: false, reason: "timestamp_invalid" };
+  }
+
+  if (Math.abs(args.now.getTime() - signedAtMs) > skewSeconds * 1000) {
+    return { ok: false, reason: "timestamp_outside_window" };
+  }
+
+  const publicKey = decodeRawEd25519PublicKey(args.storedDevicePublicKey);
+  if (!publicKey) {
+    return { ok: false, reason: "public_key_invalid" };
+  }
+
+  // Strictly decode the signature BEFORE verifying: it must be canonical
+  // std-base64 of exactly 64 bytes. A non-canonical re-encoding (alternate
+  // padding/alphabet) is rejected here, so it can never reach the single-use
+  // ledger as a distinct string and bypass replay protection (CWE-294).
+  const signature = decodeCanonicalEd25519Signature(
+    args.recoveryProof.signature,
+  );
+  if (!signature) {
+    return { ok: false, reason: "signature_invalid" };
+  }
+
+  const message = Buffer.from(
+    buildRouterReauthMessage(
+      args.routerId,
+      args.deviceIdentifier,
+      args.submittedDevicePublicKey,
+      args.recoveryProof.signedAt,
+    ),
+    "utf8",
+  );
+
+  let verified = false;
+  try {
+    verified = cryptoVerify(null, message, publicKey, signature);
+  } catch {
+    return { ok: false, reason: "signature_invalid" };
+  }
+
+  if (!verified) {
+    return { ok: false, reason: "signature_invalid" };
+  }
+
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// v1 re-auth proof (the shape origin/main verified, before the v2 binding).
+//
+// The ONLY client that signs re-auth proofs in production is the legacy
+// router/vectra-controller-agent, and it signs v1 (reauth.go:
+// "vectra-router-reauth:v1"); vctl signs no re-auth proof at all. So a
+// v2-only panel would reject every legacy router's lost-token recovery and
+// owner key-change the moment it deploys — even with every enforcement flag
+// off. To keep this PR inert for the existing fleet without re-opening the
+// takeover hole v2 closed, the default (VECTRA_REQUIRE_REAUTH_V2 off) accepts
+// v1 ONLY to re-authorize the SAME device key (lost-token recovery): a KEY
+// CHANGE (submitted key != stored key) is always authorized by a v2 proof
+// alone, flag or no flag, else device_key_change_unauthorized — a v1 proof
+// cannot bind a new key and so can never rotate one. An accepted same-key v1
+// proof is then consumed in the single-use ledger (its own row), so it cannot
+// be replayed within the skew window. Turning the flag on requires v2 and the
+// v1 path is never reached.
+//
+// v1 and v2 are SEPARATE paths: the message prefixes differ, so a v2 proof
+// never verifies as v1 and a v1 proof never verifies as v2; the ledger key is
+// the sha256 of the decoded signature, so a v1 row can never collide with or
+// pre-consume a v2 slot. There is therefore no cross-version replay or
+// downgrade between them.
+// ---------------------------------------------------------------------------
+
+/** Canonical v1 message: prefix + deviceIdentifier + "\n" + signedAt. */
+export const ROUTER_REAUTH_V1_MESSAGE_PREFIX = "vectra-router-reauth:v1\n";
+
+export function buildRouterReauthV1Message(
+  deviceIdentifier: string,
+  signedAt: string,
+) {
+  return `${ROUTER_REAUTH_V1_MESSAGE_PREFIX}${deviceIdentifier}\n${signedAt}`;
+}
+
+/**
+ * Verifies a v1 recovery proof against the device's stored public key, exactly
+ * as origin/main did before the v2 binding. The signed bytes are
+ * `buildRouterReauthV1Message(deviceIdentifier, signedAt)` and carry NO
+ * routerId and NO device-key binding. The base64 signature decode is lenient
+ * (reject only an empty buffer) to match main byte-for-byte — canonical
+ * strictness and single-use live on the v2 path alone. A valid verdict here is
+ * NOT recorded in the v2 single-use ledger.
+ */
+export function verifyRouterReauthV1Proof(args: {
   recoveryProof: { signedAt: string; signature: string };
   deviceIdentifier: string;
   devicePublicKey: string;
@@ -1459,7 +1578,10 @@ export function verifyRouterReauthProof(args: {
   }
 
   const message = Buffer.from(
-    buildRouterReauthMessage(args.deviceIdentifier, args.recoveryProof.signedAt),
+    buildRouterReauthV1Message(
+      args.deviceIdentifier,
+      args.recoveryProof.signedAt,
+    ),
     "utf8",
   );
 
@@ -1494,23 +1616,203 @@ async function getLatestDevicePublicKey(
   return credential?.devicePublicKey ?? null;
 }
 
-async function verifyRecoveryProofForRouter(args: {
+// Single-use ledger for reauth recovery proofs. Like the A2 check-in nonce
+// ledger (consumeCheckInNonce), it must never cost a router its self-heal: any
+// error (table not migrated yet, a database hiccup) is swallowed with a
+// throttled warning and the recovery proceeds as if the ledger did not exist
+// (fail-open). Reached only after the signature has cryptographically verified,
+// so with recovery off nothing here runs.
+let reauthReplayWarningThrottle = new MemoryWindowRateLimiter(1, 10 * 60 * 1000);
+
+export function resetReauthReplayStateForTest() {
+  reauthReplayWarningThrottle = new MemoryWindowRateLimiter(1, 10 * 60 * 1000);
+}
+
+type ReauthReplayDatabase = Pick<typeof db, "insert" | "delete">;
+
+/**
+ * Records a verified recovery proof as consumed (keyed by router id + the
+ * sha256 of the signature) and says whether it had ALREADY been consumed (a
+ * replay). The unique (router_id, proof_sha256) index makes single-use atomic,
+ * so two requests carrying the same proof cannot both be told `replay: false`.
+ * Row TTL is `signedAt + skew` — exactly as long as the verifier's freshness
+ * window would still accept the proof. Fails open (`replay: false`) on any
+ * error so a database outage can never reject a legitimate recovery.
+ */
+export async function consumeReauthProof(args: {
+  routerId: string;
+  signature: string;
+  signedAt: string;
+  now: Date;
+  skewSeconds?: number;
+  database?: ReauthReplayDatabase;
+}): Promise<{ replay: boolean }> {
+  const database = args.database ?? db;
+  const skewSeconds = args.skewSeconds ?? ROUTER_REAUTH_SKEW_SECONDS;
+  // Key the single-use ledger by the sha256 of the DECODED signature bytes, not
+  // the base64 string: a non-canonical re-encoding of the same signature
+  // decodes to the same 64 bytes and so maps to the same consumed key, closing
+  // the re-encoding replay bypass (CWE-294). On the verified paths the
+  // signature is already canonical (verifyRouterReauthProof rejects anything
+  // else before this runs).
+  const proofSha256 = createHash("sha256")
+    .update(Buffer.from(args.signature, "base64"))
+    .digest("hex");
+  const signedAtMs = Date.parse(args.signedAt);
+  // Keep the row at least as long as the verifier would still accept the proof
+  // (signedAt + skew); fall back to now + skew if signedAt did not parse (it
+  // already passed verification, so this is only belt-and-braces).
+  const expiresAt = new Date(
+    (Number.isNaN(signedAtMs) ? args.now.getTime() : signedAtMs) +
+      skewSeconds * 1000,
+  );
+  try {
+    await database
+      .delete(routerReauthProofs)
+      .where(
+        and(
+          eq(routerReauthProofs.routerId, args.routerId),
+          lt(routerReauthProofs.expiresAt, args.now),
+        ),
+      );
+    const inserted = await database
+      .insert(routerReauthProofs)
+      .values({
+        routerId: args.routerId,
+        proofSha256,
+        signedAt: new Date(
+          Number.isNaN(signedAtMs) ? args.now.getTime() : signedAtMs,
+        ),
+        expiresAt,
+      })
+      .onConflictDoNothing()
+      .returning({ proofSha256: routerReauthProofs.proofSha256 });
+    return { replay: inserted.length === 0 };
+  } catch (error) {
+    if (reauthReplayWarningThrottle.consume("consume").allowed) {
+      console.warn(
+        "[reauth-replay] proof single-use check skipped; the recovery proceeds",
+        { error: error instanceof Error ? error.name : typeof error },
+      );
+    }
+    return { replay: false };
+  }
+}
+
+export async function verifyRecoveryProofForRouter(args: {
   routerId: string;
   deviceIdentifier: string;
+  /** The key the request is claiming (== parsed.inventory.devicePublicKey). */
+  submittedDevicePublicKey: string;
   recoveryProof: { signedAt: string; signature: string };
   now: Date;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const devicePublicKey = await getLatestDevicePublicKey(args.routerId);
-  if (!devicePublicKey) {
+  const storedDevicePublicKey = await getLatestDevicePublicKey(args.routerId);
+  if (!storedDevicePublicKey) {
     return { ok: false, reason: "no_stored_public_key" };
   }
 
-  return verifyRouterReauthProof({
+  const requireV2 = routerAuthFlags().requireReauthV2;
+
+  // UNCONDITIONAL key-match precheck, FLAG-INDEPENDENT. The recovery path
+  // re-issues a bearer token to a router that kept its device keypair; it must
+  // prove possession of the key ON RECORD and never changes it. If the
+  // submitted key DIFFERS from the stored key this is a KEY CHANGE, not a
+  // self-heal, and it may be authorized ONLY by a v2 proof that binds routerId
+  // AND the new key and is single-use. A v1 proof binds neither the router id
+  // nor the key it is claiming, so accepting one here would let a captured /
+  // replayed v1 proof rotate the router to an attacker-chosen key (CWE-294 /
+  // CWE-345 account-takeover). A v1 proof therefore NEVER authorizes a key
+  // change — regardless of VECTRA_REQUIRE_REAUTH_V2.
+  const submittedMatchesStored = devicePublicKeysMatch(
+    storedDevicePublicKey,
+    args.submittedDevicePublicKey,
+  );
+  if (!submittedMatchesStored) {
+    const keyChange = verifyRouterReauthProof({
+      recoveryProof: args.recoveryProof,
+      routerId: args.routerId,
+      deviceIdentifier: args.deviceIdentifier,
+      submittedDevicePublicKey: args.submittedDevicePublicKey,
+      storedDevicePublicKey,
+      now: args.now,
+    });
+    if (!keyChange.ok) {
+      return { ok: false, reason: "device_key_change_unauthorized" };
+    }
+    // Single-use: consume the verified v2 key-change proof so a captured
+    // (routerId, proof) tuple cannot be replayed within the ±skew window.
+    const { replay } = await consumeReauthProof({
+      routerId: args.routerId,
+      signature: args.recoveryProof.signature,
+      signedAt: args.recoveryProof.signedAt,
+      now: args.now,
+    });
+    if (replay) {
+      return { ok: false, reason: "proof_replayed" };
+    }
+    return { ok: true };
+  }
+
+  // Same-key recovery (submitted == stored). Try v2 first: it binds routerId
+  // and the key, verifies against the key on record, and is single-use.
+  const verification = verifyRouterReauthProof({
     recoveryProof: args.recoveryProof,
+    routerId: args.routerId,
     deviceIdentifier: args.deviceIdentifier,
-    devicePublicKey,
+    submittedDevicePublicKey: args.submittedDevicePublicKey,
+    storedDevicePublicKey,
     now: args.now,
   });
+  if (verification.ok) {
+    // (b) Single-use: consume the proof so a captured (routerId, proof) tuple
+    // cannot be replayed within the ±skew window. Reuses the check-in replay
+    // ledger's posture — fail-open on any DB error so a database hiccup can
+    // never brick a legitimate self-heal, matching consumeCheckInNonce.
+    const { replay } = await consumeReauthProof({
+      routerId: args.routerId,
+      signature: args.recoveryProof.signature,
+      signedAt: args.recoveryProof.signedAt,
+      now: args.now,
+    });
+    if (replay) {
+      return { ok: false, reason: "proof_replayed" };
+    }
+    return { ok: true };
+  }
+  if (requireV2) {
+    return verification;
+  }
+
+  // v1 fallback, permitted ONLY for same-key recovery with
+  // VECTRA_REQUIRE_REAUTH_V2 off: verify over the v1 message against the key on
+  // record exactly as origin/main did (the legacy Go agent is the only client
+  // that signs re-auth proofs and it signs v1), THEN make it single-use. The
+  // canonical decoder gate rejects a non-canonical signature and keys the
+  // ledger by the decoded 64 signature bytes, so a replayed same-key v1 proof
+  // within the ±skew window is refused (CWE-294).
+  const v1 = verifyRouterReauthV1Proof({
+    recoveryProof: args.recoveryProof,
+    deviceIdentifier: args.deviceIdentifier,
+    devicePublicKey: storedDevicePublicKey,
+    now: args.now,
+  });
+  if (!v1.ok) {
+    return v1;
+  }
+  if (!decodeCanonicalEd25519Signature(args.recoveryProof.signature)) {
+    return { ok: false, reason: "signature_invalid" };
+  }
+  const { replay } = await consumeReauthProof({
+    routerId: args.routerId,
+    signature: args.recoveryProof.signature,
+    signedAt: args.recoveryProof.signedAt,
+    now: args.now,
+  });
+  if (replay) {
+    return { ok: false, reason: "proof_replayed" };
+  }
+  return { ok: true };
 }
 
 export async function registerRouter(
@@ -1525,6 +1827,18 @@ export async function registerRouter(
     .from(routers)
     .where(eq(routers.deviceIdentifier, parsed.inventory.deviceIdentifier))
     .limit(1);
+
+  // A1: only a registration that would create a NEW router record needs a
+  // provisioning token. A known router (current token, recovery proof) and a
+  // pre-claimed adoption (an existing record, ADR-0006) never do.
+  if (!existingRouter) {
+    await enforceEnrollmentTokenForNewRouter({
+      deviceIdentifier: parsed.inventory.deviceIdentifier,
+      enrollmentToken: parsed.enrollmentToken,
+      tokenPresented: enrollmentTokenPresented(input),
+      now,
+    });
+  }
 
   // ADR-0006: a record the partner API created before this router ever called
   // in (claim by device) is this router's — the one existing record a router
@@ -1555,6 +1869,7 @@ export async function registerRouter(
       ? await verifyRecoveryProofForRouter({
           routerId: existingRouter.id,
           deviceIdentifier: parsed.inventory.deviceIdentifier,
+          submittedDevicePublicKey: parsed.inventory.devicePublicKey,
           recoveryProof: parsed.recoveryProof,
           now,
         })
@@ -1618,15 +1933,73 @@ export async function registerRouter(
       storedKey &&
       !devicePublicKeysMatch(storedKey, parsed.inventory.devicePublicKey)
     ) {
-      const keyChangeProof = parsed.recoveryProof
-        ? verifyRouterReauthProof({
-            recoveryProof: parsed.recoveryProof,
-            deviceIdentifier: parsed.inventory.deviceIdentifier,
-            devicePublicKey: storedKey,
+      // A KEY CHANGE (the submitted key differs from the key on record) may be
+      // authorized ONLY by a v2 proof: signed by the key ON RECORD (storedKey)
+      // and binding the NEW key being claimed (parsed.inventory.devicePublicKey)
+      // plus this router id, so the current key-holder explicitly authorizes the
+      // exact new key — a captured proof cannot authorize an attacker-chosen
+      // key. This holds REGARDLESS of VECTRA_REQUIRE_REAUTH_V2: a legacy v1
+      // proof binds neither the router id nor the key it claims, so accepting
+      // one to rotate the key is the replay-takeover primitive v2 was created to
+      // close (CWE-294 / CWE-345). A v1 key-change is therefore never honoured;
+      // a legacy owner key rotation must move to a v2 proof / vctl / a manual
+      // change. (Same-key lost-token recovery still accepts v1 while the flag is
+      // off — that path is handled by verifyRecoveryProofForRouter above.)
+      const presentedProof = parsed.recoveryProof;
+      let keyChangeAuthorized = false;
+      let keyChangeRejectReason = "missing_proof";
+      if (presentedProof) {
+        const v2 = verifyRouterReauthProof({
+          recoveryProof: presentedProof,
+          routerId: existingRouter.id,
+          deviceIdentifier: parsed.inventory.deviceIdentifier,
+          submittedDevicePublicKey: parsed.inventory.devicePublicKey,
+          storedDevicePublicKey: storedKey,
+          now,
+        });
+        if (v2.ok) {
+          // Single-use: a verified v2 key-change proof must be consumable
+          // exactly once within the ±skew window, same table and posture as the
+          // lost-token recovery path. Without this a captured key-change proof
+          // is replayable while still fresh. consumeReauthProof fails open on
+          // any DB error (so a hiccup never bricks a legitimate owner key
+          // rotation); a replay is refused here with a clear 403.
+          const { replay } = await consumeReauthProof({
+            routerId: existingRouter.id,
+            signature: presentedProof.signature,
+            signedAt: presentedProof.signedAt,
             now,
-          })
-        : ({ ok: false, reason: "missing_proof" } as const);
-      if (!keyChangeProof.ok) {
+          });
+          if (replay) {
+            await db.insert(eventLog).values({
+              routerId: existingRouter.id,
+              type: "router.device_key_change_blocked",
+              severity: "warning",
+              message:
+                "Re-registration of an owned router with a different device key was rejected: the key-change proof was already used.",
+              metadata: {
+                deviceIdentifier: parsed.inventory.deviceIdentifier,
+                recoveryProofPresented: true,
+                recoveryProofRejectReason: "proof_replayed",
+              },
+            });
+            throw Object.assign(
+              new Error(
+                "An owned router's device-key-change proof cannot be reused.",
+              ),
+              { status: 403 },
+            );
+          }
+          keyChangeAuthorized = true;
+        } else {
+          // Not a valid v2 key-change proof: refused regardless of the flag. A
+          // v1 proof lands here too (its v1 bytes never verify as v2), so an
+          // unbound v1 proof can no longer rotate an owned router's key.
+          keyChangeRejectReason = v2.reason;
+        }
+      }
+
+      if (!keyChangeAuthorized) {
         await db.insert(eventLog).values({
           routerId: existingRouter.id,
           type: "router.device_key_change_blocked",
@@ -1636,7 +2009,7 @@ export async function registerRouter(
           metadata: {
             deviceIdentifier: parsed.inventory.deviceIdentifier,
             recoveryProofPresented: Boolean(parsed.recoveryProof),
-            recoveryProofRejectReason: keyChangeProof.reason,
+            recoveryProofRejectReason: keyChangeRejectReason,
           },
         });
         throw Object.assign(
@@ -1760,6 +2133,15 @@ export async function registerRouter(
     router.id,
     parsed.inventory.devicePublicKey,
   );
+  // A3: the new credential is bound to the device that registered it.
+  if (issued.credential) {
+    await bindCredentialAtRegistration({
+      routerId: router.id,
+      credentialId: issued.credential.id,
+      deviceBinding: parsed.inventory.deviceBinding,
+      now,
+    });
+  }
 
   return routerRegisterResponseSchema.parse({
     protocolVersion: parsed.protocolVersion,
@@ -1775,6 +2157,7 @@ export async function registerRouter(
     updatePolicy: createDefaultUpdatePolicy(),
     operatorMessage: buildRegisterMessage(router),
     ...buildRouterClaimResponseFields(router),
+    ...checkInNonceField(router.id, now),
   });
 }
 
@@ -1831,6 +2214,13 @@ export async function checkInRouter(
      * saves reading the same row again.
      */
     router?: typeof routers.$inferSelect;
+    /**
+     * The credential the bearer token matched and the client address, from
+     * the route: what duplicate-credential detection (A3) compares. Without
+     * them (a direct call) detection is skipped.
+     */
+    credentialId?: string;
+    clientIp?: string | null;
   },
 ) {
   const bounded = boundRouterCheckInPayload(input);
@@ -1865,6 +2255,29 @@ export async function checkInRouter(
     );
   }
   const now = new Date();
+
+  // A3: duplicate-credential detection. Records what does not fit and never
+  // fails; only a reported device binding other than the credential's is
+  // refused, and only while enforcement is on.
+  const credentialBinding = auth?.credentialId
+    ? await observeCheckInCredentialBinding({
+        routerId,
+        credentialId: auth.credentialId,
+        deviceBinding: parsed.inventory.deviceBinding,
+        clientIp: auth.clientIp,
+        now,
+      })
+    : null;
+  if (
+    credentialBinding?.deviceMismatch &&
+    routerAuthFlags().duplicateCredentialEnforce
+  ) {
+    throw routerErrorWithBody(403, {
+      error: CREDENTIAL_DEVICE_MISMATCH_MESSAGE,
+      code: CREDENTIAL_DEVICE_MISMATCH_CODE,
+    });
+  }
+
   const nextStatus = deriveRouterStatus(
     existingRouter.status,
     existingRouter.approvedAt,
@@ -1925,6 +2338,8 @@ export async function checkInRouter(
   if (!persistedRouter) {
     throw new Error("Router check-in update failed.");
   }
+  // Accepted: what the next check-in is compared against.
+  await credentialBinding?.recordAccepted();
 
   let knownLatestSnapshot: PartnerCheckInReadback["latestSnapshot"];
   try {
@@ -2140,6 +2555,7 @@ export async function checkInRouter(
       { nodeHealth: policyContext.nodeHealth },
     ),
     ...buildRouterClaimResponseFields(router),
+    ...checkInNonceField(router.id, now),
   });
   return { ...response, desiredRevision };
 }

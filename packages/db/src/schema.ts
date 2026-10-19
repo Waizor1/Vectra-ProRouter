@@ -26,6 +26,7 @@ import {
   jsonb,
   pgEnum,
   pgTableCreator,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -198,6 +199,98 @@ export const routerCredentials = createTable(
   (table) => [
     index("vectra_router_credential_router_idx").on(table.routerId),
     uniqueIndex("vectra_router_credential_token_idx").on(table.tokenHash),
+  ],
+);
+
+// A3: which device a router's current credential is bound to, and where its
+// last accepted check-in came from — the state duplicate-credential
+// detection compares each check-in against. One row per router.
+export const routerCredentialBindings = createTable(
+  "router_credential_binding",
+  {
+    routerId: text("router_id")
+      .primaryKey()
+      .references(() => routers.id, { onDelete: "cascade" }),
+    credentialId: text("credential_id").notNull(),
+    // The agent's deviceBinding ("v1:<sha256 hex>"); null until one is seen.
+    boundDeviceBinding: text("bound_device_binding"),
+    boundAt: timestamp("bound_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastDeviceBinding: text("last_device_binding"),
+    // IPv4 /24, IPv6 /48 or "unknown" — never a full address.
+    lastSourceCluster: text("last_source_cluster"),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    // At most 8, most recently seen last.
+    knownSourceClusters: jsonb("known_source_clusters")
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+);
+
+// A2: single-use ledger of accepted signed check-in nonces, one row per
+// (router, nonce). A captured (nonce, signature, body) tuple cannot replay:
+// the nonce is consumed the first time its signature verifies, and the
+// composite primary key makes that consumption atomic. The row's TTL equals
+// the nonce validity window (CHECKIN_NONCE_MAX_AGE_SECONDS), so a still-valid
+// nonce is always still recorded; an already-expired nonce is rejected upstream
+// and never reaches the ledger. Populated only while a signature switch is on.
+export const routerCheckInNonces = createTable(
+  "router_checkin_nonce",
+  {
+    routerId: text("router_id")
+      .notNull()
+      .references(() => routers.id, { onDelete: "cascade" }),
+    nonceHash: text("nonce_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.routerId, table.nonceHash] }),
+    index("vectra_router_checkin_nonce_expires_idx").on(
+      table.routerId,
+      table.expiresAt,
+    ),
+  ],
+);
+
+// F1: single-use ledger of consumed ed25519 reauth RECOVERY proofs, one row per
+// (router, sha256(signature)). A captured (routerId, proof) tuple cannot replay
+// within the ±skew freshness window: the proof is consumed the first time its
+// signature verifies, and the unique (router_id, proof_sha256) index makes that
+// consumption atomic. The row's TTL equals the proof's freshness window
+// (signedAt + ROUTER_REAUTH_SKEW_SECONDS); the expires_at index feeds the
+// global TTL sweep so stale rows are reaped independently of per-router
+// activity. Populated only when the recovery path is exercised.
+export const routerReauthProofs = createTable(
+  "router_reauth_proof",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    routerId: text("router_id")
+      .notNull()
+      .references(() => routers.id, { onDelete: "cascade" }),
+    proofSha256: text("proof_sha256").notNull(),
+    signedAt: timestamp("signed_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("vectra_router_reauth_proof_router_proof_idx").on(
+      table.routerId,
+      table.proofSha256,
+    ),
+    index("vectra_router_reauth_proof_expires_idx").on(table.expiresAt),
   ],
 );
 

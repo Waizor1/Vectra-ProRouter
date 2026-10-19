@@ -257,6 +257,59 @@ export async function runHistoryRetentionTick(
   return { enabled: true, dryRun, rescueCaseDryRun, counts, jobResults };
 }
 
+export type NonceLedgerRetentionResult = {
+  /** Expired A2 check-in nonce rows deleted. */
+  checkinNonces: number;
+  /** Expired F1 reauth-proof rows deleted. */
+  reauthProofs: number;
+};
+
+/**
+ * F2 (CWE-770): global TTL sweep for the single-use security ledgers
+ * (vectra_router_checkin_nonce and vectra_router_reauth_proof). Each table has
+ * a per-row `expires_at`, but their only other prune is opportunistic — it runs
+ * on that router's OWN next check-in / recovery. A router that goes quiet (or is
+ * deleted-then-recreated, etc.) would leave stale rows forever. This sweep runs
+ * on the history-retention schedule, independent of per-router activity, and
+ * deletes by the DB clock (`now()`), matching each row's TTL semantics.
+ *
+ * It is NOT gated by the dry-run switch: an expired single-use nonce/proof is
+ * spent garbage, not retained history, so there is nothing to preview. It
+ * returns the affected counts for the log line. There is no other
+ * expiry-bearing single-use ledger to add here.
+ *
+ * Fail-open, matching the per-path consumers (consumeCheckInNonce,
+ * consumeReauthProof): these ledger tables are created by migrations
+ * 0025-0027, so on a deploy that runs this sweep BEFORE the migrations land
+ * the DELETEs would throw "relation does not exist". Since this tick shares a
+ * withLoopLock run with the history-retention sweep, an uncaught throw here
+ * would abort that whole tick. We swallow any error, log it once per tick, and
+ * return zero counts so retention keeps working; a missing or spent ledger is
+ * never a reason to fail.
+ */
+export async function runNonceLedgerRetentionTick(
+  database: DatabaseClient = db,
+): Promise<NonceLedgerRetentionResult> {
+  try {
+    const checkin = await database.execute(
+      sql`delete from vectra_router_checkin_nonce where expires_at < now()`,
+    );
+    const reauth = await database.execute(
+      sql`delete from vectra_router_reauth_proof where expires_at < now()`,
+    );
+    return {
+      checkinNonces: affectedRows(checkin),
+      reauthProofs: affectedRows(reauth),
+    };
+  } catch (error) {
+    console.warn(
+      "[history-retention] single-use ledger sweep skipped (tables may not be migrated yet)",
+      { error: error instanceof Error ? error.name : typeof error },
+    );
+    return { checkinNonces: 0, reauthProofs: 0 };
+  }
+}
+
 function summarize(result: HistoryRetentionResult) {
   return `event_log=${result.counts.event_log} job=${result.counts.job} job_result=${result.jobResults} health_incident=${result.counts.health_incident} operator_push_alert=${result.counts.operator_push_alert} rescue_case=${result.counts.rescue_case}${!result.dryRun && result.rescueCaseDryRun ? " (rescue_case dry-run: counted, not deleted)" : ""}`;
 }
@@ -283,11 +336,23 @@ export function startHistoryRetention() {
     try {
       // Another process (the worker, or a second web during a deploy) may
       // be running this sweep right now; then this tick is skipped.
-      const locked = await withLoopLock("historyRetention", () => runHistoryRetentionTick(db));
+      const locked = await withLoopLock("historyRetention", async () => {
+        const result = await runHistoryRetentionTick(db);
+        // Reap expired single-use ledger rows on the same schedule (F2).
+        const nonces = await runNonceLedgerRetentionTick(db);
+        return { result, nonces };
+      });
       if (!locked.acquired) {
         return;
       }
-      const result = locked.value;
+      const { result, nonces } = locked.value;
+      if (nonces.checkinNonces > 0 || nonces.reauthProofs > 0) {
+        console.warn(
+          "[history-retention] swept expired single-use ledgers: checkin_nonce=%d reauth_proof=%d",
+          nonces.checkinNonces,
+          nonces.reauthProofs,
+        );
+      }
       if (result.dryRun) {
         console.warn(
           "[history-retention] dry-run: older than %d days, would delete %s; set VECTRA_RETENTION_DRY_RUN=false to apply",

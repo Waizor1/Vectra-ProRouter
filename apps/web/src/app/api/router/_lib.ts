@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { ZodError } from "zod";
 
 // The largest body a live router has sent is ~620 KB (a register carrying its
@@ -43,10 +45,7 @@ export function stackFrames(error: Error) {
     .join("\n");
 }
 
-export async function parseJsonBody(
-  request: Request,
-  maxBytes = ROUTER_REQUEST_BODY_MAX_BYTES,
-): Promise<unknown> {
+async function readBodyBytes(request: Request, maxBytes: number) {
   const declaredLength = Number(request.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     throw routeError(413, "Request body is too large");
@@ -72,11 +71,47 @@ export async function parseJsonBody(
     }
   }
 
+  return Buffer.concat(chunks);
+}
+
+function parseJsonBytes(bytes: Buffer): unknown {
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+    return JSON.parse(bytes.toString("utf8")) as unknown;
   } catch {
     throw routeError(400, "Request body must be valid JSON");
   }
+}
+
+export async function parseJsonBody(
+  request: Request,
+  maxBytes = ROUTER_REQUEST_BODY_MAX_BYTES,
+): Promise<unknown> {
+  return parseJsonBytes(await readBodyBytes(request, maxBytes));
+}
+
+/**
+ * parseJsonBody plus the sha256 (lower-case hex) of the exact bytes received,
+ * which is what a router's check-in signature covers.
+ */
+export async function parseJsonBodyWithDigest(
+  request: Request,
+  maxBytes = ROUTER_REQUEST_BODY_MAX_BYTES,
+): Promise<{ payload: unknown; bodySha256Hex: string }> {
+  const bytes = await readBodyBytes(request, maxBytes);
+  return {
+    payload: parseJsonBytes(bytes),
+    bodySha256Hex: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
+// A status error may carry the exact JSON answer it was written for (a
+// machine-readable `code` next to the message, see routerErrorWithBody in
+// router-auth-policy.ts); every other status error answers `{ error }`.
+function readResponseBody(error: Error) {
+  const body = (error as { responseBody?: unknown }).responseBody;
+  return body !== null && typeof body === "object" && !Array.isArray(body)
+    ? (body as Record<string, unknown>)
+    : null;
 }
 
 export function toRouteErrorResponse(error: unknown) {
@@ -95,7 +130,9 @@ export function toRouteErrorResponse(error: unknown) {
   // anonymously, and a Drizzle error quotes its SQL and parameters.
   const status = error instanceof Error ? readErrorStatus(error) : null;
   if (error instanceof Error && status !== null) {
-    return Response.json({ error: error.message }, { status });
+    return Response.json(readResponseBody(error) ?? { error: error.message }, {
+      status,
+    });
   }
 
   if (error instanceof Error) {

@@ -8,6 +8,7 @@ import {
   passwallDesiredRevisions,
   routerCredentials,
   routerInventorySnapshots,
+  routerReauthProofs,
   routers,
 } from "@vectra/db";
 import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
@@ -240,9 +241,31 @@ describe("registerRouter", () => {
   describe("device key pinning of an owned router", () => {
     const owned = () => routerRow({ownerRef: "acct-42", approvedAt: new Date("2026-09-28T09:30:00.000Z"), importState: "approved", status: "active"});
     const onRecord = deviceKeyPair();
-    const reauthProof = (privateKey: KeyObject, deviceIdentifier = "vectra-07bf0887f662") => {
+    // v2: the proof binds routerId AND the NEW device key being claimed, signed
+    // by the key the signer holds (verified by the panel against the key on
+    // record).
+    const reauthProof = (
+      privateKey: KeyObject,
+      newDevicePublicKey: string,
+      deviceIdentifier = "vectra-07bf0887f662",
+    ) => {
       const signedAt = new Date().toISOString();
-      return {signedAt, signature: sign(null, Buffer.from(buildRouterReauthMessage(deviceIdentifier, signedAt), "utf8"), privateKey).toString("base64")};
+      return {
+        signedAt,
+        signature: sign(
+          null,
+          Buffer.from(
+            buildRouterReauthMessage(
+              ROUTER_ID,
+              deviceIdentifier,
+              newDevicePublicKey,
+              signedAt,
+            ),
+            "utf8",
+          ),
+          privateKey,
+        ).toString("base64"),
+      };
     };
 
     it("refuses a token re-registration that swaps the key of an owned router", async () => {
@@ -262,7 +285,7 @@ describe("registerRouter", () => {
       const intruder = deviceKeyPair();
       fake.reset({selects: [[routers, [[record]]], [routerCredentials, [[{devicePublicKey: onRecord.publicKey}]]]], updateReturns: [[routers, [[record]]]]});
 
-      await expect(registerRouter({protocolVersion: "2026-04-v1", inventory: inventory({devicePublicKey: intruder.publicKey}), recoveryProof: reauthProof(intruder.privateKey)}, {authenticatedRouterId: ROUTER_ID})).rejects.toMatchObject({status: 403});
+      await expect(registerRouter({protocolVersion: "2026-04-v1", inventory: inventory({devicePublicKey: intruder.publicKey}), recoveryProof: reauthProof(intruder.privateKey, intruder.publicKey)}, {authenticatedRouterId: ROUTER_ID})).rejects.toMatchObject({status: 403});
       expect(fake.inserts(routerCredentials)).toEqual([]);
     });
 
@@ -271,10 +294,35 @@ describe("registerRouter", () => {
       const next = deviceKeyPair();
       fake.reset({selects: [[routers, [[record]]], [routerCredentials, [[{devicePublicKey: onRecord.publicKey}]]]], updateReturns: [[routers, [[record]]]]});
 
-      const response = await registerRouter({protocolVersion: "2026-04-v1", inventory: inventory({devicePublicKey: next.publicKey}), recoveryProof: reauthProof(onRecord.privateKey)}, {authenticatedRouterId: ROUTER_ID});
+      const response = await registerRouter({protocolVersion: "2026-04-v1", inventory: inventory({devicePublicKey: next.publicKey}), recoveryProof: reauthProof(onRecord.privateKey, next.publicKey)}, {authenticatedRouterId: ROUTER_ID});
 
       expect(response.routerId).toBe(ROUTER_ID);
       expect(fake.inserts(routerCredentials)).toEqual([expect.objectContaining({devicePublicKey: next.publicKey})]);
+    });
+
+    it("refuses a key-change proof that was already consumed (single-use, FIX D)", async () => {
+      const record = owned();
+      const next = deviceKeyPair();
+      // insertConflicts => the single-use ledger already holds this proof, so
+      // consumeReauthProof reports a replay on this key-change attempt.
+      fake.reset({
+        selects: [[routers, [[record]]], [routerCredentials, [[{devicePublicKey: onRecord.publicKey}]]]],
+        updateReturns: [[routers, [[record]]]],
+        insertConflicts: [routerReauthProofs],
+      });
+
+      await expect(
+        registerRouter(
+          {protocolVersion: "2026-04-v1", inventory: inventory({devicePublicKey: next.publicKey}), recoveryProof: reauthProof(onRecord.privateKey, next.publicKey)},
+          {authenticatedRouterId: ROUTER_ID},
+        ),
+      ).rejects.toMatchObject({status: 403});
+
+      // A replayed proof must NOT rotate the key.
+      expect(fake.inserts(routerCredentials)).toEqual([]);
+      expect(fake.updates(routers)).toEqual([]);
+      expect(fake.inserts(eventLog)).toHaveLength(1);
+      expect(fake.inserts(eventLog)[0]).toMatchObject({type: "router.device_key_change_blocked", metadata: {recoveryProofRejectReason: "proof_replayed"}});
     });
 
     it("re-registers an owned router that keeps its key without any proof", async () => {

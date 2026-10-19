@@ -69,6 +69,14 @@ x-vectra-app-environment: &vectra-app-environment
   VECTRA_CONNECT_BOT_USERNAME: ${VECTRA_CONNECT_BOT_USERNAME:-}
   VECTRA_CONNECT_WEBHOOK_URL: ${VECTRA_CONNECT_WEBHOOK_URL:-}
   VECTRA_CONNECT_WEBHOOK_SECRET: ${VECTRA_CONNECT_WEBHOOK_SECRET:-}
+  # Router auth integrity switches (see apps/web/src/env.js). All off by
+  # default; off, router answers are unchanged and duplicate-credential
+  # detection only records what it sees.
+  VECTRA_ENROLLMENT_TOKEN_REQUIRED: ${VECTRA_ENROLLMENT_TOKEN_REQUIRED:-false}
+  VECTRA_ISSUE_CHECKIN_NONCE: ${VECTRA_ISSUE_CHECKIN_NONCE:-false}
+  VECTRA_REQUIRE_CHECKIN_SIGNATURE: ${VECTRA_REQUIRE_CHECKIN_SIGNATURE:-false}
+  VECTRA_DUPLICATE_CREDENTIAL_ENFORCE: ${VECTRA_DUPLICATE_CREDENTIAL_ENFORCE:-false}
+  VECTRA_REQUIRE_REAUTH_V2: ${VECTRA_REQUIRE_REAUTH_V2:-false}
   # Where the background loops run (see apps/web/src/env.js). "in-web" keeps
   # them inside the web process; "worker-separate" moves them to the `worker`
   # service below. Set it ONCE in .env: both services read the same value, so

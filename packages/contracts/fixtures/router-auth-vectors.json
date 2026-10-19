@@ -1,0 +1,30 @@
+{
+  "_comment": "Test-only vectors shared by the Go agent and the panel. Every key and secret here is fake and public.",
+  "checkInNonce": {
+    "issuedAtUnix": 1791460800,
+    "nonce": "vcn1.1791460800.AAECAwQFBgcICQoLDA0ODw.qQdypn9DTzJ19kumha_itbJN5aX4KwAwrEQ5QpG65gU",
+    "randomBase64Url": "AAECAwQFBgcICQoLDA0ODw",
+    "routerId": "3f1c9a52-6a8e-4c1e-9d2b-7b5f0e4a1c33"
+  },
+  "checkInSignature": {
+    "body": "{\"protocolVersion\":\"2026-04-v1\",\"routerId\":\"3f1c9a52-6a8e-4c1e-9d2b-7b5f0e4a1c33\"}",
+    "bodySha256Hex": "92961184dab8bd93f8c6c362f912bf75cabc1a8d09cab9f80f788c409da7d13d",
+    "devicePrivateKeyBase64": "SddZOWOeuwoV7BMxOe1wO/rIRKqtHfg19X0Han5EyR33MqfZ0E6Pq+frFnVZi9K3HHd6vK66GThe/7cX0OspjQ==",
+    "devicePublicKeyBase64": "9zKn2dBOj6vn6xZ1WYvStxx3eryuuhk4Xv+3F9DrKY0=",
+    "message": "vectra-router-checkin:v1\nvcn1.1791460800.AAECAwQFBgcICQoLDA0ODw.qQdypn9DTzJ19kumha_itbJN5aX4KwAwrEQ5QpG65gU\n3f1c9a52-6a8e-4c1e-9d2b-7b5f0e4a1c33\n92961184dab8bd93f8c6c362f912bf75cabc1a8d09cab9f80f788c409da7d13d",
+    "nonce": "vcn1.1791460800.AAECAwQFBgcICQoLDA0ODw.qQdypn9DTzJ19kumha_itbJN5aX4KwAwrEQ5QpG65gU",
+    "routerId": "3f1c9a52-6a8e-4c1e-9d2b-7b5f0e4a1c33",
+    "signatureBase64": "a+TVsozg4avoJgRsjQVo0WX0r5lYArbyz/hyTOy5kMlQx2HLlN41ggzbgNFHEwQz+2R+HkZZI2d8+nOxrgVVDg=="
+  },
+  "deviceBinding": {
+    "binding": "v1:839d72590bc5688459a77f80a872bff4212aca5fc66daa94656e143bf2cb6d32",
+    "boardName": "xiaomi,mi-router-ax3000t",
+    "mac": "aa:bb:cc:dd:ee:01"
+  },
+  "enrollmentToken": {
+    "deviceIdentifier": "vectra-0a1b2c3d4e5f",
+    "expiresAtUnix": 1791460800,
+    "token": "vpt1.1791460800.Z5uq28H8Elap7ZGZNGyIRXwaHleYon69lat31cy3AXw"
+  },
+  "secretsKey": "vectra-router-auth-test-vector-key-not-a-secret"
+}

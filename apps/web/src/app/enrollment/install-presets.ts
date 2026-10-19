@@ -751,6 +751,32 @@ function withTrailingSlash(value: string | undefined, fallback: string) {
   return resolved.endsWith("/") ? resolved : `${resolved}/`;
 }
 
+/**
+ * POSIX single-quote escaping for a value interpolated into a single-quoted
+ * shell assignment (`VAR='<value>'`) or a single-quoted uci value. Wraps the
+ * value in single quotes and rewrites every embedded `'` as `'\''`
+ * (close-quote, escaped-quote, reopen-quote) — the same pattern the Go agent
+ * uses — so the value can never terminate its own quoting and inject shell.
+ * Defense-in-depth (CWE-78): the served installer interpolates env-derived URLs
+ * (controlDomain / routerApiBase / artifactBase) into such assignments; a
+ * value carrying a single quote would otherwise break out. For a well-formed
+ * URL (no apostrophe) the output is byte-for-byte `'<value>'`, unchanged.
+ */
+export function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Normalizes an operator/env-supplied router API base through the WHATWG URL
+ * parser (like the sibling feed/baseline URLs) so a malformed base is rejected
+ * rather than interpolated raw, and strips the trailing slash the serializer
+ * adds so the no-trailing-slash convention of CONTROL_URL / OPENWRT_MIRROR_URL
+ * is preserved byte-for-byte for well-formed values.
+ */
+function normalizeRouterApiBase(routerApiBase: string): string {
+  return new URL(routerApiBase).toString().replace(/\/+$/, "");
+}
+
 function buildMirroredPackageUrls(
   artifactBase: string | undefined,
 ): Record<Ax3000tMirroredPackageName, string> {
@@ -778,7 +804,7 @@ function buildManagedPackageShellFieldCases(
       `        version) printf '%s\\n' '${pkg.targetVersion}' ;;`,
       `        download_size_bytes) printf '%s\\n' '${pkg.downloadSizeBytes}' ;;`,
       `        installed_size_bytes) printf '%s\\n' '${pkg.installedSizeBytes}' ;;`,
-      `        url) printf '%s\\n' '${passwallPackageUrls[name]}' ;;`,
+      `        url) printf '%s\\n' ${shellSingleQuote(passwallPackageUrls[name])} ;;`,
       "        *) return 1 ;;",
       "      esac",
       "      ;;",
@@ -820,14 +846,14 @@ export function buildAx3000tShuntRebindScriptUrl(
 
 export function buildAx3000tBootstrapCommand(controlDomain: string | undefined) {
   const scriptUrl = buildAx3000tBootstrapScriptUrl(controlDomain);
-  return `wget -O /tmp/vectra-ax3000t-bootstrap.sh '${scriptUrl}' && sh /tmp/vectra-ax3000t-bootstrap.sh`;
+  return `wget -O /tmp/vectra-ax3000t-bootstrap.sh ${shellSingleQuote(scriptUrl)} && sh /tmp/vectra-ax3000t-bootstrap.sh`;
 }
 
 export function buildAx3000tShuntRebindCommand(
   controlDomain: string | undefined,
 ) {
   const scriptUrl = buildAx3000tShuntRebindScriptUrl(controlDomain);
-  return `wget -O /tmp/vectra-ax3000t-myshunt-rebind.sh '${scriptUrl}' && sh /tmp/vectra-ax3000t-myshunt-rebind.sh`;
+  return `wget -O /tmp/vectra-ax3000t-myshunt-rebind.sh ${shellSingleQuote(scriptUrl)} && sh /tmp/vectra-ax3000t-myshunt-rebind.sh`;
 }
 
 export const filogicEnrollmentPreset = ax3000tEnrollmentPreset;
@@ -856,14 +882,14 @@ export function buildFilogicShuntRebindScriptUrl(
 
 export function buildFilogicBootstrapCommand(controlDomain: string | undefined) {
   const scriptUrl = buildFilogicBootstrapScriptUrl(controlDomain);
-  return `wget -O /tmp/vectra-filogic-bootstrap.sh '${scriptUrl}' && sh /tmp/vectra-filogic-bootstrap.sh`;
+  return `wget -O /tmp/vectra-filogic-bootstrap.sh ${shellSingleQuote(scriptUrl)} && sh /tmp/vectra-filogic-bootstrap.sh`;
 }
 
 export function buildFilogicShuntRebindCommand(
   controlDomain: string | undefined,
 ) {
   const scriptUrl = buildFilogicShuntRebindScriptUrl(controlDomain);
-  return `wget -O /tmp/vectra-filogic-myshunt-rebind.sh '${scriptUrl}' && sh /tmp/vectra-filogic-myshunt-rebind.sh`;
+  return `wget -O /tmp/vectra-filogic-myshunt-rebind.sh ${shellSingleQuote(scriptUrl)} && sh /tmp/vectra-filogic-myshunt-rebind.sh`;
 }
 
 export function buildFilogicBootstrapScript(
@@ -894,7 +920,7 @@ export function buildAx3000tShuntRebindScript(args?: {
     "set -eu",
     "",
     "SHUNT_ID='myshunt'",
-    `PANEL_URL='${controlDomain}'`,
+    `PANEL_URL=${shellSingleQuote(controlDomain)}`,
     "",
     "log() {",
     "  printf '%s\\n' \"$*\"",
@@ -1002,19 +1028,93 @@ export function buildAx3000tShuntRebindScript(args?: {
   ].join("\n");
 }
 
+// A5: the pinned SHA-256 (64 lower-case hex chars) of the full base64 key line
+// of the production feed signing key — i.e. the output of
+// `sed -n 2p vectra.pub | sha256sum`. The served installer refuses to trust a
+// downloaded vectra.pub whose key-line hash differs, so a swapped key on the
+// download path fails closed. The hash binds the actual key material: pinning
+// the usign key id (keynum) instead would let an attacker who controls the
+// vectra.pub download mint a different key with a colliding keynum and pass the
+// gate, so the key id is never used here.
+//
+// BLOCKER: this must be set to the real published key-line hash before the gate
+// can protect production. Pin the HASH (`sed -n 2p vectra.pub | sha256sum`), not
+// the old 16-hex keynum — a keynum pasted here is now rejected by the length
+// check. It is empty here because the production key is not in this repository;
+// an empty value keeps the current (unpinned) install behaviour byte-for-byte
+// so no router is broken in the meantime. It is public, not a secret, and
+// callers may also pass `feedPubkeyFingerprint` explicitly.
+export const VECTRA_FEED_PUBKEY_FINGERPRINT = "";
+
 export function buildAx3000tBootstrapScript(args: {
   controlDomain?: string;
   routerApiBase?: string;
   artifactBase?: string;
+  feedPubkeyFingerprint?: string;
 }) {
   const controlDomain = args.controlDomain ?? DEFAULT_CONTROL_DOMAIN;
-  const routerApiBase = args.routerApiBase ?? DEFAULT_ROUTER_API_BASE_URL;
+  // Normalize (and validate) the operator/env-supplied base through new URL()
+  // like the sibling feed/baseline URLs before it is interpolated into the
+  // served installer.
+  const routerApiBase = normalizeRouterApiBase(
+    args.routerApiBase ?? DEFAULT_ROUTER_API_BASE_URL,
+  );
+  const feedPubkeyFingerprint = (
+    args.feedPubkeyFingerprint ?? VECTRA_FEED_PUBKEY_FINGERPRINT
+  )
+    .trim()
+    .toLowerCase();
+  // Defense-in-depth: the fingerprint is interpolated into a single-quoted
+  // shell assignment (EXPECTED_PUBKEY_SHA256='...') in the served installer. A
+  // value carrying a single quote or any shell metacharacter could break out
+  // of that quoting and inject into the generated script, so a non-empty value
+  // must be purely lower-case hex. Empty stays unpinned (the original
+  // best-effort add, byte-for-byte unchanged). The pin is the SHA-256 of the
+  // full base64 key line (`sed -n 2p vectra.pub | sha256sum`), 64 lower-case
+  // hex chars; enforce both the character set and that length so the old
+  // 16-hex keynum can no longer be pinned by mistake.
+  if (feedPubkeyFingerprint !== "") {
+    if (!/^[0-9a-f]+$/.test(feedPubkeyFingerprint)) {
+      throw new Error(
+        "feedPubkeyFingerprint must be lower-case hexadecimal ([0-9a-f]); refusing to build an installer with a malformed feed key hash",
+      );
+    }
+    if (feedPubkeyFingerprint.length !== 64) {
+      throw new Error(
+        "feedPubkeyFingerprint must be a 64-character lower-case sha256 of the vectra.pub key line; refusing to build an installer with an unexpected length",
+      );
+    }
+  }
+  // Pinned: download, verify the SHA-256 of the key line (which binds the real
+  // key material, unlike the self-asserted usign keynum), then add — and fail
+  // loudly on a bad add. Unpinned (empty): the original best-effort add,
+  // unchanged. Line 1 of vectra.pub is the `untrusted comment:` line, line 2
+  // the base64 key, so the hash is taken over `sed -n 2p vectra.pub`.
+  const pubkeyVerificationLines = feedPubkeyFingerprint
+    ? [
+        // Only the pinned path needs sha256sum; keep it out of the shared
+        // preamble so the empty-pin (unpinned) installer stays byte-identical
+        // to the pre-pin best-effort script.
+        "require_cmd sha256sum",
+        `EXPECTED_PUBKEY_SHA256='${feedPubkeyFingerprint}'`,
+        'wget -qO "$WORKDIR/vectra.pub" "$FEED_URL/vectra.pub"',
+        'GOT_PUBKEY_SHA256="$(sed -n 2p "$WORKDIR/vectra.pub" | sha256sum | cut -d\' \' -f1)"',
+        'if [ -z "$GOT_PUBKEY_SHA256" ] || [ "$GOT_PUBKEY_SHA256" != "$EXPECTED_PUBKEY_SHA256" ]; then',
+        "  log 'Хэш ключа обновлений не совпал с ожидаемым; установка прервана.'",
+        "  exit 1",
+        "fi",
+        'opkg-key add "$WORKDIR/vectra.pub"',
+      ]
+    : [
+        'wget -qO "$WORKDIR/vectra.pub" "$FEED_URL/vectra.pub"',
+        'opkg-key add "$WORKDIR/vectra.pub" >/dev/null 2>&1 || true',
+      ];
   const baselineUrl = buildAx3000tBaselineUrl(controlDomain);
   const feedUrl = buildAx3000tFeedUrl(args.artifactBase);
   const passwallMirrorUrl = buildAx3000tPasswallMirrorUrl(args.artifactBase);
   const passwallPackageUrls = buildMirroredPackageUrls(args.artifactBase);
   const requiredMirrorPreflight = AX3000T_REQUIRED_MIRRORED_PACKAGE_NAMES.map(
-    (pkg) => `  require_remote_ipk ${pkg} '${passwallPackageUrls[pkg]}'`,
+    (pkg) => `  require_remote_ipk ${pkg} ${shellSingleQuote(passwallPackageUrls[pkg])}`,
   );
   const managedPackageFieldCases =
     buildManagedPackageShellFieldCases(passwallPackageUrls);
@@ -1049,12 +1149,12 @@ export function buildAx3000tBootstrapScript(args: {
     "",
     `EXPECTED_ARCH='${ax3000tEnrollmentPreset.architecture}'`,
     "EXPECTED_TARGET='mediatek/filogic'",
-    `PANEL_URL='${controlDomain}'`,
-    `CONTROL_URL='${routerApiBase}'`,
-    `FEED_URL='${feedUrl}'`,
-    `BASELINE_URL='${baselineUrl}'`,
+    `PANEL_URL=${shellSingleQuote(controlDomain)}`,
+    `CONTROL_URL=${shellSingleQuote(routerApiBase)}`,
+    `FEED_URL=${shellSingleQuote(feedUrl)}`,
+    `BASELINE_URL=${shellSingleQuote(baselineUrl)}`,
     `PASSWALL_RELEASE_TAG='${ax3000tEnrollmentPreset.passwallReleaseTag}'`,
-    `PASSWALL_MIRROR_URL='${passwallMirrorUrl}'`,
+    `PASSWALL_MIRROR_URL=${shellSingleQuote(passwallMirrorUrl)}`,
     "STAGE_MARGIN_BYTES='1048576'",
     "OVERLAY_PATH='/overlay'",
     "WORKDIR='/tmp/vectra-bootstrap-work'",
@@ -1066,7 +1166,7 @@ export function buildAx3000tBootstrapScript(args: {
     `OPTIONAL_RUNTIME_PACKAGES='${optionalRuntimePackages}'`,
     `CONTROLLER_PACKAGES='${controllerPackages}'`,
     `OPENWRT_FEED_PREREQS='${openWrtFeedPrereqs}'`,
-    `OPENWRT_MIRROR_URL='${routerApiBase}/openwrt-cache'`,
+    `OPENWRT_MIRROR_URL=${shellSingleQuote(`${routerApiBase}/openwrt-cache`)}`,
     "OPENWRT_FEED_PROXY_ACTIVE='0'",
     "",
     "log() {",
@@ -1168,8 +1268,7 @@ export function buildAx3000tBootstrapScript(args: {
     "",
     "ensure_opkg_architecture \"$ARCH\"",
     "",
-    "wget -qO \"$WORKDIR/vectra.pub\" \"$FEED_URL/vectra.pub\"",
-    "opkg-key add \"$WORKDIR/vectra.pub\" >/dev/null 2>&1 || true",
+    ...pubkeyVerificationLines,
     "",
     "if [ -f /etc/opkg/customfeeds.conf ]; then",
     "  grep -v '/artifacts/openwrt/' /etc/opkg/customfeeds.conf > \"$WORKDIR/customfeeds.conf\" || true",
@@ -2485,8 +2584,8 @@ export function buildAx3000tBootstrapScript(args: {
     "",
     "uci batch <<'EOF'",
     "set vectra-controller.main.enabled='1'",
-    `set vectra-controller.main.control_url='${routerApiBase}'`,
-    `set vectra-controller.main.panel_url='${controlDomain}'`,
+    `set vectra-controller.main.control_url=${shellSingleQuote(routerApiBase)}`,
+    `set vectra-controller.main.panel_url=${shellSingleQuote(controlDomain)}`,
     "set vectra-controller.main.poll_interval='45s'",
     "set vectra-controller.main.request_timeout='10s'",
     "set vectra-controller.main.state_path='/etc/vectra-controller/state.json'",

@@ -2,7 +2,10 @@ import type { SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
-import { runHistoryRetentionTick } from "./history-retention";
+import {
+  runHistoryRetentionTick,
+  runNonceLedgerRetentionTick,
+} from "./history-retention";
 
 const dialect = new PgDialect();
 
@@ -115,5 +118,26 @@ describe("runHistoryRetentionTick", () => {
     expect(caseDelete?.params).toContain(50);
     expect(caseDelete?.text).toContain("j.payload ->> 'caseId' = c.id");
     expect(caseDelete?.text).toContain("'auto_rescue_repair:' || c.id");
+  });
+});
+
+describe("runNonceLedgerRetentionTick (F2 global TTL sweep)", () => {
+  it("deletes expired rows from both single-use ledgers by the DB clock, independent of per-router activity", async () => {
+    const { db, executed } = createMockDb(3);
+    const result = await runNonceLedgerRetentionTick(db as never);
+
+    const deletes = executed.filter((statement) =>
+      statement.text.trimStart().startsWith("delete"),
+    );
+    expect(deletes.map((s) => /delete from (\w+)/.exec(s.text)?.[1])).toEqual([
+      "vectra_router_checkin_nonce",
+      "vectra_router_reauth_proof",
+    ]);
+    // Both sweep by now(), not a per-router cutoff param.
+    for (const statement of deletes) {
+      expect(statement.text).toContain("expires_at < now()");
+      expect(statement.params).toHaveLength(0);
+    }
+    expect(result).toEqual({ checkinNonces: 3, reauthProofs: 3 });
   });
 });

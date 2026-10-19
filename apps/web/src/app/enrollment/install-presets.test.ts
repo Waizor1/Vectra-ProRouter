@@ -1,5 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -19,6 +22,7 @@ import {
   buildAx3000tBootstrapScript,
   buildAx3000tBootstrapScriptUrl,
   buildAx3000tFeedUrl,
+  VECTRA_FEED_PUBKEY_FINGERPRINT,
   buildAx3000tShuntRebindCommand,
   buildAx3000tShuntRebindScript,
   buildAx3000tShuntRebindScriptUrl,
@@ -38,6 +42,7 @@ import {
   buildFilogicShuntRebindScript,
   buildFilogicShuntRebindScriptUrl,
   planAx3000tManagedPackageOperations,
+  shellSingleQuote,
 } from "~/app/enrollment/install-presets";
 
 const baselinePath = fileURLToPath(
@@ -929,5 +934,249 @@ describe("enrollment install preset", () => {
     expect(baseline).toContain("option direct_fakedns '0'");
     expect(baseline).not.toContain("option default_fakedns '1'");
     expect(baseline).not.toContain("option direct_fakedns '1'");
+  });
+
+  it("keeps the unpinned opkg-key add unchanged when no fingerprint is configured", () => {
+    // A5: the default constant is empty (the production key hash is not pinned
+    // yet), so the installer must behave exactly as before — best-effort add.
+    expect(VECTRA_FEED_PUBKEY_FINGERPRINT).toBe("");
+    const script = buildAx3000tBootstrapScript({});
+    expect(script).toContain(
+      'opkg-key add "$WORKDIR/vectra.pub" >/dev/null 2>&1 || true',
+    );
+    expect(script).not.toContain("EXPECTED_PUBKEY_SHA256");
+    // The old self-asserted keynum path must be gone entirely.
+    expect(script).not.toContain("dd bs=1 skip=2 count=8");
+    expect(script).not.toContain("opkg-key fingerprint");
+  });
+
+  it("pins the feed key line hash and compares it before opkg-key add", () => {
+    // A5: with a hash configured, the installer downloads vectra.pub, verifies
+    // the SHA-256 of its key line, and only then adds it — failing closed on
+    // mismatch. The hash binds the key material, not the forgeable keynum.
+    const fingerprint = "a".repeat(64);
+    const script = buildAx3000tBootstrapScript({
+      feedPubkeyFingerprint: fingerprint,
+    });
+
+    expect(script).toContain(`EXPECTED_PUBKEY_SHA256='${fingerprint}'`);
+    // The hash is taken over line 2 of vectra.pub via sha256sum.
+    expect(script).toContain(
+      'GOT_PUBKEY_SHA256="$(sed -n 2p "$WORKDIR/vectra.pub" | sha256sum | cut -d\' \' -f1)"',
+    );
+    // The forgeable usign-keynum path is gone.
+    expect(script).not.toContain("dd bs=1 skip=2 count=8");
+    expect(script).not.toContain("opkg-key fingerprint");
+
+    const compareIndex = script.indexOf(
+      '[ "$GOT_PUBKEY_SHA256" != "$EXPECTED_PUBKEY_SHA256" ]',
+    );
+    const addIndex = script.indexOf('opkg-key add "$WORKDIR/vectra.pub"');
+    expect(compareIndex).toBeGreaterThan(-1);
+    expect(addIndex).toBeGreaterThan(-1);
+    // The comparison (and its exit 1) must come before the key is trusted.
+    expect(compareIndex).toBeLessThan(addIndex);
+    expect(script).toContain("  exit 1");
+
+    // Fail-closed: the pinned path drops the best-effort "|| true" on the add.
+    expect(script).not.toContain(
+      'opkg-key add "$WORKDIR/vectra.pub" >/dev/null 2>&1 || true',
+    );
+    // sha256sum is required up front so the gate cannot be a silent no-op.
+    expect(script).toContain("require_cmd sha256sum");
+  });
+
+  it("rejects a feed key hash with non-hex characters", () => {
+    // Defense-in-depth: the hash lands inside a single-quoted shell assignment,
+    // so a quote/space/semicolon or any non-hex byte could escape the quoting.
+    // Each of these must be refused before it reaches the script.
+    for (const bad of [
+      `${"a".repeat(63)}'`, // single quote — direct quote break-out
+      `${"a".repeat(31)} ${"b".repeat(32)}`, // interior space, non-hex
+      `${"a".repeat(62)};x`, // semicolon command separator
+      `${"a".repeat(63)}g`, // non-hex letter
+      `${"A".repeat(64)}'; rm -rf /`, // injection attempt
+    ]) {
+      expect(() =>
+        buildAx3000tBootstrapScript({ feedPubkeyFingerprint: bad }),
+      ).toThrow(/hex|sha256/);
+    }
+  });
+
+  it("accepts a valid 64-hex hash and still emits the pinned lines", () => {
+    const fingerprint =
+      "0f1e2d3c4b5a69780f1e2d3c4b5a69780f1e2d3c4b5a69780f1e2d3c4b5a6978";
+    const script = buildAx3000tBootstrapScript({
+      feedPubkeyFingerprint: fingerprint,
+    });
+    expect(script).toContain(`EXPECTED_PUBKEY_SHA256='${fingerprint}'`);
+    expect(script).toContain(
+      '[ "$GOT_PUBKEY_SHA256" != "$EXPECTED_PUBKEY_SHA256" ]',
+    );
+  });
+
+  it("rejects a 16-hex usign keynum now that the pin must be a sha256", () => {
+    // Regression guard for the fix: the old keynum is the wrong length and must
+    // be refused, so an operator cannot paste it in place of the key hash.
+    expect(() =>
+      buildAx3000tBootstrapScript({ feedPubkeyFingerprint: "0123456789abcdef" }),
+    ).toThrow(/sha256|length/);
+  });
+
+  it("treats an empty fingerprint as unpinned without throwing", () => {
+    // Empty is the shipped default and must keep the best-effort add path.
+    const script = buildAx3000tBootstrapScript({ feedPubkeyFingerprint: "" });
+    expect(script).toContain(
+      'opkg-key add "$WORKDIR/vectra.pub" >/dev/null 2>&1 || true',
+    );
+    expect(script).not.toContain("EXPECTED_PUBKEY_SHA256");
+  });
+
+  it("fails the A5 gate on a forged vectra.pub that collides the keynum but differs in key material", () => {
+    // The whole point of the fix: the gate binds the full key line, so a key
+    // crafted to share the 8-byte usign keynum (first base64 chars) but with
+    // different material no longer passes. We run the generated pinned snippet
+    // under /bin/sh against two key files — the correct one passes, the forged
+    // one exits 1 — proving a colliding-keynum forgery is now rejected.
+    const SHARED_KEYNUM_PREFIX = "RWQNq6T7AAAAAA"; // same leading (keynum) chars
+    const correctKeyLine = `${SHARED_KEYNUM_PREFIX}Zx8kR3mCorrectKeyMaterial0123456789abcdefgh=`;
+    const forgedKeyLine = `${SHARED_KEYNUM_PREFIX}Zx8kR3mFORGEDKeyMaterial9876543210zyxwvutsrq=`;
+    expect(forgedKeyLine.slice(0, 14)).toBe(correctKeyLine.slice(0, 14));
+
+    // `sed -n 2p` emits the key line followed by a newline, which sha256sum
+    // then hashes, so the pinned value is sha256(keyLine + "\n").
+    const expectedHash = createHash("sha256")
+      .update(`${correctKeyLine}\n`)
+      .digest("hex");
+
+    const script = buildAx3000tBootstrapScript({
+      feedPubkeyFingerprint: expectedHash,
+    });
+    const start = script.indexOf("EXPECTED_PUBKEY_SHA256=");
+    // Slice the decision block only (up to, but not including, the opkg-key
+    // add) — the compare + `exit 1` is the gate, and `opkg-key` is not a valid
+    // POSIX sh function name to stub.
+    const end = script.indexOf('opkg-key add "$WORKDIR/vectra.pub"', start);
+    const snippet = script.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+
+    const runGate = (keyLine: string) => {
+      const dir = mkdtempSync(join(tmpdir(), "vectra-pub-"));
+      writeFileSync(
+        join(dir, "vectra.pub"),
+        `untrusted comment: vectra feed key\n${keyLine}\n`,
+      );
+      const harness = [
+        "set -eu",
+        // macOS ships shasum, not coreutils sha256sum; alias when absent.
+        "command -v sha256sum >/dev/null 2>&1 || sha256sum() { shasum -a 256; }",
+        `WORKDIR='${dir}'`,
+        "FEED_URL='https://example.invalid'",
+        "wget() { :; }", // vectra.pub is pre-placed; download is a no-op
+        "log() { :; }",
+        snippet,
+        "echo GATE_PASSED",
+      ].join("\n");
+      try {
+        return execFileSync("sh", [], { input: harness })
+          .toString()
+          .includes("GATE_PASSED");
+      } catch {
+        return false; // the gate's `exit 1` on a hash mismatch
+      }
+    };
+
+    expect(runGate(correctKeyLine)).toBe(true);
+    expect(runGate(forgedKeyLine)).toBe(false);
+  });
+});
+
+describe("installer shell-quoting (F3, CWE-78 defense-in-depth)", () => {
+  it("shellSingleQuote escapes an embedded single quote and leaves clean values byte-identical", () => {
+    expect(shellSingleQuote("https://router.vectra-pro.net")).toBe(
+      "'https://router.vectra-pro.net'",
+    );
+    // close-quote, escaped-quote, reopen-quote
+    expect(shellSingleQuote("a'b")).toBe("'a'\\''b'");
+    expect(shellSingleQuote("x';rm -rf /;'")).toBe("'x'\\'';rm -rf /;'\\'''");
+  });
+
+  it("env-derived URLs with a single quote cannot break out of the bootstrap script", () => {
+    // A single quote in the path survives new URL() normalization (WHATWG does
+    // not percent-encode "'" in a path), so it reaches the single-quoted shell
+    // assignment and must be escaped. The ";rm -rf /" rides along to prove that
+    // even a shell-metacharacter payload stays inert inside the quoting.
+    // A single quote in the path survives new URL() normalization (WHATWG does
+    // not percent-encode "'" in a path), so it reaches the single-quoted shell
+    // assignment and must be escaped. ";rm-rf;" rides along (no spaces, so
+    // routerApiBase normalization is byte-identical) to prove a shell-meta
+    // payload stays inert inside the quoting.
+    const evilDomain = "https://router.vectra-pro.net/a';rm-rf;'b";
+    const evilApiBase = "https://api.vectra-pro.net/a';touch-pwned;'b";
+
+    const script = buildAx3000tBootstrapScript({
+      controlDomain: evilDomain,
+      routerApiBase: evilApiBase,
+      artifactBase: "https://api.vectra-pro.net/artifacts",
+    });
+
+    // The injected quotes are always emitted as the escaped '\'' sequence, never
+    // a bare terminator, so the assignment is never cut short and the payload
+    // never becomes a command.
+    expect(script).toContain(`PANEL_URL=${shellSingleQuote(evilDomain)}`);
+    expect(script).toContain(`CONTROL_URL=${shellSingleQuote(evilApiBase)}`);
+    // The naive (vulnerable) interpolation must NOT appear: that is the exact
+    // form that would let the quote terminate and the payload run.
+    expect(script).not.toContain(`PANEL_URL='${evilDomain}'`);
+    expect(script).not.toContain(`CONTROL_URL='${evilApiBase}'`);
+    // Belt-and-braces: no payload line ever starts a command of its own.
+    for (const line of script.split("\n")) {
+      if (line.startsWith("rm-rf") || line.startsWith("touch-pwned")) {
+        throw new Error(`injected command leaked onto its own line: ${line}`);
+      }
+    }
+  });
+
+  it("rejects a malformed routerApiBase instead of interpolating it raw", () => {
+    expect(() =>
+      buildAx3000tBootstrapScript({
+        controlDomain: "https://router.vectra-pro.net",
+        routerApiBase: "not a url",
+        artifactBase: "https://api.vectra-pro.net/artifacts",
+      }),
+    ).toThrow();
+  });
+
+  it("leaves well-formed values producing the exact same assignments as before", () => {
+    const script = buildAx3000tBootstrapScript({
+      controlDomain: "https://router.vectra-pro.net",
+      routerApiBase: "https://api.vectra-pro.net",
+      artifactBase: "https://api.vectra-pro.net/artifacts",
+    });
+    expect(script).toContain("PANEL_URL='https://router.vectra-pro.net'");
+    expect(script).toContain("CONTROL_URL='https://api.vectra-pro.net'");
+    expect(script).toContain(
+      "OPENWRT_MIRROR_URL='https://api.vectra-pro.net/openwrt-cache'",
+    );
+    expect(script).toContain(
+      "set vectra-controller.main.control_url='https://api.vectra-pro.net'",
+    );
+    expect(script).toContain(
+      "set vectra-controller.main.panel_url='https://router.vectra-pro.net'",
+    );
+  });
+
+  it("keeps the shunt-rebind PANEL_URL quoted and single-line under injection", () => {
+    // The rebind script interpolates controlDomain directly into PANEL_URL
+    // (no new URL() pass), so the shell-quote is the whole defense here.
+    const evilDomain = "https://evil'; rm -rf /; '";
+    const script = buildAx3000tShuntRebindScript({ controlDomain: evilDomain });
+    expect(script).toContain(`PANEL_URL=${shellSingleQuote(evilDomain)}`);
+    expect(script).not.toContain(`PANEL_URL='${evilDomain}'`);
+    for (const line of script.split("\n")) {
+      if (line.trimStart().startsWith("rm -rf")) {
+        throw new Error("shunt-rebind injection leaked a command line");
+      }
+    }
   });
 });

@@ -277,6 +277,25 @@ export const env = createEnv({
       )
       .optional(),
     VECTRA_CONNECT_WEBHOOK_SECRET: z.string().min(32).optional(),
+    // Router auth integrity (ai_docs/develop/features/
+    // router-auth-integrity-and-native-runtime.md). All four default to
+    // false, and with all four off every router-facing answer is exactly what
+    // it was before them. A brand-new router record needs a provisioning token:
+    VECTRA_ENROLLMENT_TOKEN_REQUIRED: booleanFlagSchema(false),
+    // Register/check-in answers carry a checkInNonce, and a check-in signature
+    // the router presents is verified and logged, never enforced:
+    VECTRA_ISSUE_CHECKIN_NONCE: booleanFlagSchema(false),
+    // Implies the nonce; a check-in without a valid signature is refused (401):
+    VECTRA_REQUIRE_CHECKIN_SIGNATURE: booleanFlagSchema(false),
+    // A check-in reporting a device binding other than the one its credential
+    // is bound to is refused (403). Off, the mismatch is only recorded:
+    VECTRA_DUPLICATE_CREDENTIAL_ENFORCE: booleanFlagSchema(false),
+    // The router re-auth recovery proof (lost-token recovery and owner
+    // device-key change) is accepted in v2 form ONLY (v1 rejected). Off (the
+    // default), BOTH the v2 proof and the legacy v1 proof the old
+    // router/vectra-controller-agent signs are accepted, so this stays inert
+    // for the existing fleet — the v2-only requirement is opt-in:
+    VECTRA_REQUIRE_REAUTH_V2: booleanFlagSchema(false),
     NODE_ENV: z
       .enum(["development", "test", "production"])
       .default("development"),
@@ -367,6 +386,14 @@ export const env = createEnv({
     VECTRA_CONNECT_BOT_USERNAME: process.env.VECTRA_CONNECT_BOT_USERNAME,
     VECTRA_CONNECT_WEBHOOK_URL: process.env.VECTRA_CONNECT_WEBHOOK_URL,
     VECTRA_CONNECT_WEBHOOK_SECRET: process.env.VECTRA_CONNECT_WEBHOOK_SECRET,
+    VECTRA_ENROLLMENT_TOKEN_REQUIRED:
+      process.env.VECTRA_ENROLLMENT_TOKEN_REQUIRED,
+    VECTRA_ISSUE_CHECKIN_NONCE: process.env.VECTRA_ISSUE_CHECKIN_NONCE,
+    VECTRA_REQUIRE_CHECKIN_SIGNATURE:
+      process.env.VECTRA_REQUIRE_CHECKIN_SIGNATURE,
+    VECTRA_DUPLICATE_CREDENTIAL_ENFORCE:
+      process.env.VECTRA_DUPLICATE_CREDENTIAL_ENFORCE,
+    VECTRA_REQUIRE_REAUTH_V2: process.env.VECTRA_REQUIRE_REAUTH_V2,
     NODE_ENV: process.env.NODE_ENV,
     // NEXT_PUBLIC_CLIENTVAR: process.env.NEXT_PUBLIC_CLIENTVAR,
   },

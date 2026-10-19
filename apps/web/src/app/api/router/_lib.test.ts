@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
+import { createHash } from "node:crypto";
+
 import {
   parseJsonBody,
+  parseJsonBodyWithDigest,
   redactQueryParams,
   stackFrames,
   toRouteErrorResponse,
@@ -18,6 +21,21 @@ describe("toRouteErrorResponse", () => {
       error: "Forbidden router action",
     });
     expect(response.status).toBe(403);
+  });
+
+  // A refusal the agent tells apart by code (router-auth-policy.ts) answers
+  // exactly the body it carries.
+  it("answers the exact body a status error carries", async () => {
+    const body = {
+      error: "Router credential is bound to a different device.",
+      code: "credential_device_mismatch",
+    };
+    const response = toRouteErrorResponse(
+      Object.assign(new Error(body.error), { status: 403, responseBody: body }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toBe(JSON.stringify(body));
   });
 
   it("answers a payload that fails validation with 400", () => {
@@ -128,5 +146,45 @@ describe("parseJsonBody", () => {
       status: 400,
       message: "Request body must be valid JSON",
     });
+  });
+});
+
+describe("parseJsonBodyWithDigest", () => {
+  // The check-in signature covers the bytes as sent: whitespace and key order
+  // included, which a re-serialized payload would lose.
+  it("returns the payload and the sha256 of the exact bytes received", async () => {
+    const raw = '{ "routerId":"r1",\n  "b": [1, 2] }';
+    const request = new Request("https://example.test/api/router/check-in", {
+      method: "POST",
+      body: raw,
+    });
+
+    const { payload, bodySha256Hex } = await parseJsonBodyWithDigest(request);
+
+    expect(payload).toEqual({ routerId: "r1", b: [1, 2] });
+    expect(bodySha256Hex).toBe(createHash("sha256").update(raw, "utf8").digest("hex"));
+    expect(bodySha256Hex).not.toBe(
+      createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
+    );
+  });
+
+  it("keeps parseJsonBody's caps and errors", async () => {
+    await expect(
+      parseJsonBodyWithDigest(
+        new Request("https://example.test/api/router/check-in", {
+          method: "POST",
+          body: "x".repeat(64),
+        }),
+        32,
+      ),
+    ).rejects.toMatchObject({ status: 413 });
+    await expect(
+      parseJsonBodyWithDigest(
+        new Request("https://example.test/api/router/check-in", {
+          method: "POST",
+          body: "{not json",
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 400 });
   });
 });
