@@ -96,6 +96,54 @@ type Service struct {
 	// nothing. None: the r25 behaviour of the service (LegacyModes).
 	Modes   []string `json:"modes,omitempty"`
 	Default string   `json:"default,omitempty"`
+	// Traffic (r28) are classes of traffic the service is, instead of names:
+	// «Игровые соединения» is every UDP and TCP port but the web's — what a
+	// game sends by address, with nothing to sniff (Star Citizen's hub on
+	// TCP 8000 and its servers on UDP 64xxx, 1111, 2026-10-19). Such a service
+	// names nothing and is never taken out of the tunnel (validateTraffic):
+	// it only chooses, for what the main path carries, one of its nodes.
+	Traffic []Traffic `json:"traffic,omitempty"`
+}
+
+// Traffic is one class: every port of Network but Except.
+type Traffic struct {
+	Network string `json:"network"`          // "tcp" or "udp"
+	Except  []int  `json:"except,omitempty"` // ports left to the main path (web, DNS, NTP)
+}
+
+// Ports is the class's ports as xray's port list ("1-52,54-122,…").
+func (t Traffic) Ports() string {
+	out := map[int]bool{}
+	for _, p := range t.Except {
+		out[p] = true
+	}
+	var b strings.Builder
+	start := 0
+	flush := func(end int) {
+		if start == 0 {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		if start == end {
+			fmt.Fprintf(&b, "%d", start)
+		} else {
+			fmt.Fprintf(&b, "%d-%d", start, end)
+		}
+		start = 0
+	}
+	for p := 1; p <= 65535; p++ {
+		if out[p] {
+			flush(p - 1)
+			continue
+		}
+		if start == 0 {
+			start = p
+		}
+	}
+	flush(65535)
+	return b.String()
 }
 
 // Title is a name in the UIs' languages.
@@ -414,6 +462,57 @@ func (s Service) validateR26(id string, groups map[string]Group) error {
 	if seen[ModeDirect] {
 		if err := s.validateDirectScope(); err != nil {
 			return fmt.Errorf("catalog: service %s: «Напрямую»: %w", id, err)
+		}
+	}
+	if len(s.Traffic) > 0 {
+		if err := s.validateTraffic(seen); err != nil {
+			return fmt.Errorf("catalog: service %s: traffic: %w", id, err)
+		}
+	}
+	return nil
+}
+
+const (
+	maxTraffic       = 4
+	maxTrafficExcept = 64
+)
+
+// validateTraffic: a traffic service is a class of the main path's traffic
+// and nothing else. It names no site (its rule is the class alone), and it
+// offers only the stable exit and the main path: «Напрямую» or a country
+// would take most of what is not the web out of the tunnel, or elsewhere,
+// on every router at once.
+func (s Service) validateTraffic(modes map[string]bool) error {
+	if len(s.Traffic) > maxTraffic {
+		return fmt.Errorf("%d classes, at most %d", len(s.Traffic), maxTraffic)
+	}
+	if len(s.Names) > 0 || len(s.IPs) > 0 || len(s.Geosites) > 0 || s.Marker != "" || s.IPMarker != "" || s.OnlyKnown {
+		return errors.New("a traffic service names no site (names, ips, geosites, markers, onlyKnown)")
+	}
+	if len(modes) == 0 {
+		return errors.New("modes must be given: stable and main")
+	}
+	for m := range modes {
+		if m != ModeStable && m != ModeMain {
+			return fmt.Errorf("mode %q: only stable and main", m)
+		}
+	}
+	nets := map[string]bool{}
+	for _, t := range s.Traffic {
+		if t.Network != "tcp" && t.Network != "udp" {
+			return fmt.Errorf("network %q: tcp or udp", t.Network)
+		}
+		if nets[t.Network] {
+			return fmt.Errorf("network %s twice", t.Network)
+		}
+		nets[t.Network] = true
+		if len(t.Except) > maxTrafficExcept {
+			return fmt.Errorf("%s: %d ports left out, at most %d", t.Network, len(t.Except), maxTrafficExcept)
+		}
+		for _, p := range t.Except {
+			if p < 1 || p > 65535 {
+				return fmt.Errorf("%s: port %d", t.Network, p)
+			}
 		}
 	}
 	return nil

@@ -335,6 +335,10 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 			mainGroups = [][]string{b.Members, chain, borrow}
 		}
 	}
+	// The stable exit's pin is the tracker's (its override): a pin that
+	// stopped answering moves along the last round's ranking, before the
+	// policy looks (it leaves an override it did not set alone).
+	d.stableFailover(ctx, w, infos, ov, now)
 	for _, a := range w.pol.Decide(now, bals, health, w.det) {
 		d.applyFailover(ctx, w, a, now, main)
 	}

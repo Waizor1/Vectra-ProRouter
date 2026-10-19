@@ -3,6 +3,27 @@
   "package": "vectra-controller-pro",
   "versions": [
     {
+      "version": "0.7.0-r28",
+      "date": "2026-10-20",
+      "notes": {
+        "ru": [
+          "Сами игры теперь тоже идут с постоянного IP, не только лаунчеры: игровые серверы, голосовой чат и звонки больше не выкидывают из-за смены адреса.",
+          "Если узел с постоянным IP перестаёт отвечать, роутер за секунды переводит игры на другой такой же узел и не обрывает остальной интернет в доме.",
+          "В разделе «Игры» появился пункт «Игровые соединения» — его можно вернуть на основной VPN."
+        ],
+        "en": [
+          "Games themselves now use the steady IP too, not just their launchers: game servers, voice chat and calls no longer drop when the address changes.",
+          "If the steady-IP node stops answering, the router moves games to another steady node within seconds without cutting the rest of the home's internet.",
+          "«Games» has a new «Game connections» item, which can be switched back to the main VPN."
+        ],
+        "zh": [
+          "游戏本身现在也使用固定 IP，而不仅是启动器：游戏服务器、语音聊天和通话不再因地址变化而掉线。",
+          "如果固定 IP 节点停止响应，路由器会在几秒内把游戏切换到另一个固定节点，且不会中断家里的其他网络。",
+          "“游戏”中新增“游戏连接”，可切回主 VPN。"
+        ]
+      }
+    },
+    {
       "version": "0.7.0-r26",
       "date": "2026-10-18",
       "notes": {
@@ -27,9 +48,15 @@
       "version": "0.7.0-r25",
       "date": "2026-10-18",
       "notes": {
-        "ru": ["YouTube и Instagram открываются быстрее, без долгих пауз."],
-        "en": ["YouTube and Instagram open faster, without long pauses."],
-        "zh": ["YouTube 和 Instagram 打开更快，不再长时间卡顿。"]
+        "ru": [
+          "YouTube и Instagram открываются быстрее, без долгих пауз."
+        ],
+        "en": [
+          "YouTube and Instagram open faster, without long pauses."
+        ],
+        "zh": [
+          "YouTube 和 Instagram 打开更快，不再长时间卡顿。"
+        ]
       }
     },
     {

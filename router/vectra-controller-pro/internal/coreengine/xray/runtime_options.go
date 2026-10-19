@@ -111,10 +111,10 @@ type SpliceOptions struct {
 	LeaveOut []string
 	// ServiceModes are the services' modes in force (modes.go): "direct" or
 	// "stable" render a rule; anything else is left to the other options.
-	// StablePin is the stable exit (an outbound tag; "" = none found yet),
-	// StableMain sends the main path through it too.
+	// StableMain sends the main path through the stable exit too. Which node
+	// the stable exit is pinned to is not an option (r28): xray's balancer
+	// override, set at run time, so a move costs no render.
 	ServiceModes map[string]string
-	StablePin    string
 	StableMain   bool
 }
 
@@ -142,7 +142,7 @@ func (o SpliceOptions) Key() string {
 	if o.ExitProbeListen != "" {
 		k += ";exitprobe=" + o.ExitProbeListen
 	}
-	if mk := modesKey(o.ServiceModes, o.StablePin, o.StableMain); mk != "" {
+	if mk := modesKey(o.ServiceModes, o.StableMain); mk != "" {
 		k += ";modes=" + mk
 	}
 	if len(o.LeaveOut) > 0 {

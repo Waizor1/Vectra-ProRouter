@@ -95,7 +95,6 @@ func rpcdGeoDir(cfg agentcfg.Config) string {
 func (d *daemon) withRuntime(opts xray.SpliceOptions, providerRaw []byte) xray.SpliceOptions {
 	opts = d.withDNS(opts)
 	opts = d.withExits(opts, providerRaw)
-	opts = d.withStableExit(opts, providerRaw)
 	return d.withKnownServices(opts)
 }
 

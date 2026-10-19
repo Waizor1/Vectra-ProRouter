@@ -214,7 +214,9 @@ func TestTheOwnersSitesAreKeptOnlyOnceTheyRun(t *testing.T) {
 	if resp := d.localReapply(ctx, &localctl.Change{SetRules: &localctl.Rules{}}); !resp.OK {
 		t.Fatalf("emptying = %+v", resp)
 	}
-	if strings.Contains(render(), "domain:bank.example") || strings.Contains(render(), `"inboundTag":["tproxy-in"]`) {
+	// (The games' stable exit keeps rules of its own for the LAN's inbound,
+	// r26/r28: only the owner's are gone.)
+	if strings.Contains(render(), "domain:bank.example") {
 		t.Error("the emptied sites are still rendered")
 	}
 	file, _ := os.ReadFile(d.cfg.OverridesPath)

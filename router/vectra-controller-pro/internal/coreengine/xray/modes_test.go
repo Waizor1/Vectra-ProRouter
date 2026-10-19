@@ -29,16 +29,15 @@ func rulesWithInbound(r svcRender, inbound string) []int {
 	return out
 }
 
-// «VPN · постоянный IP»: every stable service goes to one balancer whose
-// only member is the stable exit, and whose fallback leads back into the
-// main path — a launcher and its CDN leave from one address; a dead pin
-// falls back to the provider's path, never to nothing.
+// «VPN · постоянный IP»: every stable service goes to one balancer — the
+// main path's nodes, the pin set on it at run time — whose fallback leads
+// back into the main path: a launcher and its CDN leave from one address; a
+// dead pin falls back to the provider's path, never to nothing.
 func TestStableGamesShareOnePinnedExit(t *testing.T) {
 	r, res := modesRender(t, xray.SpliceOptions{
 		ServiceModes: map[string]string{"steam": "stable", "starcitizen": "stable", "youtube": "main"},
-		StablePin:    "bridge-fr5",
 	})
-	if !reflect.DeepEqual(res.Modes.Stable, []string{"steam", "starcitizen"}) || res.Modes.Pin != "bridge-fr5" || len(res.Modes.Skipped) != 0 {
+	if !reflect.DeepEqual(res.Modes.Stable, []string{"steam", "starcitizen"}) || !reflect.DeepEqual(res.Modes.Members, mainMembers) || len(res.Modes.Skipped) != 0 {
 		t.Fatalf("modes result %+v", res.Modes)
 	}
 	var bal *struct {
@@ -54,7 +53,7 @@ func TestStableGamesShareOnePinnedExit(t *testing.T) {
 			bal = &r.Routing.Balancers[i]
 		}
 	}
-	if bal == nil || !reflect.DeepEqual(bal.Selector, []string{"bridge-fr5"}) || bal.Strategy.Type != "leastPing" || bal.FallbackTag != "vctl-stable-back" {
+	if bal == nil || !reflect.DeepEqual(bal.Selector, mainMembers) || bal.Strategy.Type != "leastPing" || bal.FallbackTag != "vctl-stable-back" {
 		t.Fatalf("stable balancer %+v", bal)
 	}
 	steam := svcRulesTo(r, xray.StableBalancerTag)
@@ -86,7 +85,6 @@ func TestStableGamesShareOnePinnedExit(t *testing.T) {
 func TestDirectGamesLeaveStraightBeforeStableOnes(t *testing.T) {
 	r, res := modesRender(t, xray.SpliceOptions{
 		ServiceModes: map[string]string{"steam": "direct", "starcitizen": "stable"},
-		StablePin:    "bridge-fr5",
 	})
 	if !reflect.DeepEqual(res.Modes.Direct, []string{"steam"}) {
 		t.Fatalf("modes result %+v", res.Modes)
@@ -111,32 +109,22 @@ func TestDirectGamesLeaveStraightBeforeStableOnes(t *testing.T) {
 	}
 }
 
-// No stable exit yet: the stable services ride the provider's routing — the
-// render is the one without modes.
-func TestNoPinLeavesStableServicesToTheProvider(t *testing.T) {
-	plain, _, _ := spliceServicesDoc(t, string(providerFixture(t)), xray.SpliceOptions{})
-	out, _, res := spliceServicesDoc(t, string(providerFixture(t)), xray.SpliceOptions{
-		ServiceModes: map[string]string{"steam": "stable"}})
-	if string(out) != string(plain) {
-		t.Fatal("a stable service without a pin changed the render")
+// A balancer selector is a prefix: a main path that is one node whose tag
+// begins another tag ("bridge-fr5", "bridge-fr5-old") would bring that one
+// into the stable exit too — no member, no stable exit; alone, it is the
+// one member.
+func TestAMemberThatIsAPrefixIsLeftOut(t *testing.T) {
+	one := strings.Replace(string(providerFixture(t)), `{"network":"tcp,udp","balancerTag":"BL-MAIN"}`, `{"network":"tcp,udp","outboundTag":"bridge-fr5"}`, 1)
+	if one == string(providerFixture(t)) {
+		t.Fatal("the fixture's catch-all moved; update the test")
 	}
-	if len(res.Modes.Skipped) != 1 || !strings.Contains(res.Modes.Skipped[0], "no stable exit") {
-		t.Fatalf("skipped %v", res.Modes.Skipped)
+	_, _, res := spliceServicesDoc(t, one, xray.SpliceOptions{ServiceModes: map[string]string{"steam": "stable"}})
+	if !reflect.DeepEqual(res.Modes.Members, []string{"bridge-fr5"}) {
+		t.Fatalf("members %v", res.Modes.Members)
 	}
-}
-
-// A balancer selector is a prefix: a pin that is a prefix of another tag
-// would pick that one too — refused, the services stay on the provider's
-// routing.
-func TestAPinThatIsAPrefixIsRefused(t *testing.T) {
-	_, res := modesRender(t, xray.SpliceOptions{
-		ServiceModes: map[string]string{"steam": "stable"}, StablePin: "whitelist-lv3"})
-	if len(res.Modes.Stable) != 0 || len(res.Modes.Skipped) != 1 || !strings.Contains(res.Modes.Skipped[0], "prefix") {
-		t.Fatalf("modes %+v", res.Modes)
-	}
-	_, res = modesRender(t, xray.SpliceOptions{
-		ServiceModes: map[string]string{"steam": "stable"}, StablePin: "no-such-node"})
-	if len(res.Modes.Stable) != 0 || !strings.Contains(strings.Join(res.Modes.Skipped, ";"), "not in this document") {
+	both := strings.Replace(one, `"outbounds":[`, `"outbounds":[{"tag":"bridge-fr5-old","protocol":"vless","settings":{"vnext":[{"address":"192.0.2.9","port":443,"users":[{"id":"00000000-0000-0000-0000-000000000000","encryption":"none"}]}]}},`, 1)
+	_, _, res = spliceServicesDoc(t, both, xray.SpliceOptions{ServiceModes: map[string]string{"steam": "stable"}})
+	if len(res.Modes.Members) != 0 || !strings.Contains(strings.Join(res.Modes.Skipped, ";"), "no node to pin") {
 		t.Fatalf("modes %+v", res.Modes)
 	}
 }
@@ -144,7 +132,7 @@ func TestAPinThatIsAPrefixIsRefused(t *testing.T) {
 // «Постоянный IP для всего VPN»: the provider's catch-all goes to the stable
 // balancer; its old target is the stable fallback.
 func TestStableMainSendsTheCatchAllThroughThePin(t *testing.T) {
-	r, res := modesRender(t, xray.SpliceOptions{StablePin: "bridge-fr5", StableMain: true})
+	r, res := modesRender(t, xray.SpliceOptions{StableMain: true})
 	if !res.Modes.Main {
 		t.Fatalf("modes %+v", res.Modes)
 	}
@@ -161,25 +149,18 @@ func TestStableMainSendsTheCatchAllThroughThePin(t *testing.T) {
 	if len(back) != 1 || r.Routing.Rules[back[0]].BalancerTag != "BL-MAIN" {
 		t.Fatalf("the stable fallback leads to %v", back)
 	}
-	// Without a pin nothing changes.
-	plain, _, _ := spliceServicesDoc(t, string(providerFixture(t)), xray.SpliceOptions{})
-	out, _, _ := spliceServicesDoc(t, string(providerFixture(t)), xray.SpliceOptions{StableMain: true})
-	if string(out) != string(plain) {
-		t.Fatal("StableMain without a pin changed the render")
-	}
 }
 
-// The render key follows the modes and the pin, and nothing else changes it.
+// The render key follows the modes, and nothing else changes it.
 func TestModesAreInTheRenderKey(t *testing.T) {
 	base := xray.SpliceOptions{}
 	if base.Key() != (xray.SpliceOptions{ServiceModes: map[string]string{"steam": "main"}}).Key() {
 		t.Fatal("a main mode changed the key")
 	}
-	a := xray.SpliceOptions{ServiceModes: map[string]string{"steam": "stable"}, StablePin: "bridge-fr5"}
-	b := xray.SpliceOptions{ServiceModes: map[string]string{"steam": "stable"}, StablePin: "bridge-nl5"}
+	a := xray.SpliceOptions{ServiceModes: map[string]string{"steam": "stable"}}
 	c := xray.SpliceOptions{ServiceModes: map[string]string{"steam": "direct"}}
-	if a.Key() == b.Key() || a.Key() == c.Key() || a.Key() == base.Key() {
-		t.Fatalf("keys %q %q %q", a.Key(), b.Key(), c.Key())
+	if a.Key() == c.Key() || a.Key() == base.Key() {
+		t.Fatalf("keys %q %q", a.Key(), c.Key())
 	}
 }
 
@@ -192,7 +173,7 @@ func TestDirectNamesAreNotFakeDNSNames(t *testing.T) {
    {"domain":["domain:chatgpt.com","domain:steampowered.com","domain:robertsspaceindustries.com"],"balancerTag":"BL-MAIN"},`, 1)
 	opts := xray.SpliceOptions{RussiaDirect: true, FakeDNS: true,
 		DNS:          &xray.DNSOptions{Listen: xray.DefaultDNSListen, DirectResolvers: xray.DefaultDirectResolvers},
-		ServiceModes: map[string]string{"steam": "direct", "starcitizen": "stable"}, StablePin: "bridge-de5"}
+		ServiceModes: map[string]string{"steam": "direct", "starcitizen": "stable"}}
 	out, _, err := xray.Splice([]byte(doc), testTproxy(), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -234,14 +215,14 @@ func TestAConditionalDirectRuleKeepsTheNameFake(t *testing.T) {
 }
 
 // The stable exit's fallback must be a tunnel: a document whose main path
-// goes straight out gets no pin — the stable services stay on the provider's
+// goes straight out gets no stable exit — the stable services stay on the provider's
 // routing rather than fall back to direct when the pin dies.
 func TestNoPinWhenTheMainPathIsNotATunnel(t *testing.T) {
 	doc := strings.Replace(string(providerFixture(t)), `{"network":"tcp,udp","balancerTag":"BL-MAIN"}`, `{"network":"tcp,udp","outboundTag":"DIRECT"}`, 1)
 	if doc == string(providerFixture(t)) {
 		t.Skip("the fixture's catch-all changed")
 	}
-	_, _, res := spliceServicesDoc(t, doc, xray.SpliceOptions{ServiceModes: map[string]string{"steam": "stable"}, StablePin: "bridge-fr5"})
+	_, _, res := spliceServicesDoc(t, doc, xray.SpliceOptions{ServiceModes: map[string]string{"steam": "stable"}})
 	if len(res.Modes.Stable) != 0 || !strings.Contains(strings.Join(res.Modes.Skipped, ";"), "not a tunnel") {
 		t.Fatalf("modes %+v", res.Modes)
 	}

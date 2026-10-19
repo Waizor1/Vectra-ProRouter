@@ -28,15 +28,20 @@ const (
 
 // ModesResult says what the services' modes became.
 type ModesResult struct {
-	Direct  []string // services sent straight out
-	Stable  []string // services through the stable exit
-	Pin     string   // the stable exit rendered ("" = none)
+	Direct []string // services sent straight out
+	Stable []string // services through the stable exit
+	// Members are the stable exit's nodes: the main path's. Which one is
+	// pinned is xray's balancer override, set at run time (r28), never the
+	// render: a move is no restart.
+	Members []string
 	Main    bool     // the main path through the stable exit too
+	Copies  int      // rules of the main path given their classes' copies
 	Skipped []string // "<id>: why"
 }
 
-// modesKey fingerprints the modes, the pin and Main for SpliceOptions.Key.
-func modesKey(modes map[string]string, pin string, main bool) string {
+// modesKey fingerprints the modes and Main for SpliceOptions.Key. The pin
+// is not in it (r28): the render is the same whichever node is pinned.
+func modesKey(modes map[string]string, main bool) string {
 	var parts []string
 	for id, m := range modes {
 		if m == catalog.ModeDirect || m == catalog.ModeStable {
@@ -48,9 +53,6 @@ func modesKey(modes map[string]string, pin string, main bool) string {
 	}
 	sort.Strings(parts)
 	k := strings.Join(parts, ",")
-	if pin != "" {
-		k += ";pin=" + pin
-	}
 	if main {
 		k += ";main"
 	}
@@ -68,15 +70,21 @@ type modesPlan struct {
 	addDirect   bool
 	// catchAll: rewrite the provider's catch-all to the stable balancer.
 	catchAll bool
-	res      ModesResult
+	// traffic are the classes (catalog.Traffic) that ride the stable exit:
+	// every rule of the main path (mainTarget) gets their copies in front
+	// (insertMainCopies).
+	traffic      []catalog.Traffic
+	mainTarget   string
+	mainBalancer bool
+	res          ModesResult
 }
 
 // planModes renders the modes of opts against the document. It never
 // refuses a document: a service whose mode cannot be rendered here is left
 // to the provider's routing (res.Skipped).
-func planModes(providerRaw []byte, modes map[string]string, pin string, main bool, inbound string) (modesPlan, error) {
+func planModes(providerRaw []byte, modes map[string]string, main bool, inbound string) (modesPlan, error) {
 	var p modesPlan
-	if modesKey(modes, "", main) == "" {
+	if modesKey(modes, main) == "" {
 		return p, nil
 	}
 	v, err := xrayview.Parse(providerRaw)
@@ -85,33 +93,50 @@ func planModes(providerRaw []byte, modes map[string]string, pin string, main boo
 	}
 	rules := providerRules(providerRaw)
 
-	pinOK, why := stablePinUsable(v, pin)
-	if pinOK && !v.HasObservatory {
-		// Without an observatory xray's balancer never notices a dead pin
-		// and never takes its fallback.
-		pinOK, why = false, "the document has no observatory to notice a dead pin"
-	}
 	backTarget, backBalancer, hasMain := catchAllRule(rules)
 	if !hasMain && v.Default != nil && v.Default.Tag != "" {
 		backTarget, backBalancer, hasMain = v.Default.Tag, false, true
 	}
-	if pinOK && !hasMain {
-		pinOK, why = false, "the document has no main path to fall back to"
-	}
-	if pinOK {
+	var members []string
+	stableOK, why := true, ""
+	switch {
+	case !v.HasObservatory:
+		// Without an observatory xray's balancer never notices a dead node
+		// and never takes its fallback.
+		stableOK, why = false, "the document has no observatory to notice a dead pin"
+	case !hasMain:
+		stableOK, why = false, "the document has no main path to fall back to"
+	case !neverDirect(v, rules, backTarget, backBalancer, neverDirectDepth):
 		// The fallback must be a tunnel: a dead pin never sends a stable
-		// service straight out.
-		// Every way out of the main path — its members, its fallbacks,
-		// the provider's loopback stages — is a tunnel (neverDirect).
-		if !neverDirect(v, rules, backTarget, backBalancer, neverDirectDepth) {
-			pinOK, why = false, "the main path is not a tunnel"
+		// service straight out. Every way out of the main path — its
+		// members, its fallbacks, the provider's loopback stages — is a
+		// tunnel (neverDirect).
+		stableOK, why = false, "the main path is not a tunnel"
+	default:
+		if members = stableMembers(v, backTarget, backBalancer); len(members) == 0 {
+			stableOK, why = false, "the main path has no node to pin"
 		}
 	}
+	p.mainTarget, p.mainBalancer = backTarget, backBalancer
 
 	directTag, addDirect, directWhy := directForModes(providerRaw)
 	for _, s := range Services() {
 		mode := modes[s.ID]
 		if mode != catalog.ModeDirect && mode != catalog.ModeStable {
+			continue
+		}
+		if traffic := ActiveCatalog().Service(s.ID).Traffic; len(traffic) > 0 {
+			// A class of traffic, never a site: on the stable exit or the main
+			// path only (the catalog refuses «Напрямую» for it).
+			switch {
+			case mode != catalog.ModeStable:
+				p.res.Skipped = append(p.res.Skipped, s.ID+": a class of traffic is never sent straight out")
+			case !stableOK:
+				p.res.Skipped = append(p.res.Skipped, s.ID+": "+why)
+			default:
+				p.traffic = append(p.traffic, traffic...)
+				p.res.Stable = append(p.res.Stable, s.ID)
+			}
 			continue
 		}
 		domains, ips := s.ownMatchers(rules, v)
@@ -131,7 +156,7 @@ func planModes(providerRaw []byte, modes map[string]string, pin string, main boo
 			p.addDirect = p.addDirect || addDirect
 			p.res.Direct = append(p.res.Direct, s.ID)
 		case catalog.ModeStable:
-			if !pinOK {
+			if !stableOK {
 				// Without a stable exit the service rides the provider's
 				// routing, as on «Как основной VPN».
 				p.res.Skipped = append(p.res.Skipped, s.ID+": "+why)
@@ -160,7 +185,7 @@ func planModes(providerRaw []byte, modes map[string]string, pin string, main boo
 	}
 	if main {
 		switch {
-		case !pinOK:
+		case !stableOK:
 			p.res.Skipped = append(p.res.Skipped, "main: "+why)
 		case !hasCatchAll(rules):
 			p.res.Skipped = append(p.res.Skipped, "main: the document has no catch-all rule")
@@ -168,14 +193,13 @@ func planModes(providerRaw []byte, modes map[string]string, pin string, main boo
 			p.catchAll, p.res.Main = true, true
 		}
 	}
-	if len(p.stableRules) > 0 || p.catchAll {
-		strategy := "leastPing"
-		if !v.HasObservatory {
-			strategy = "random"
-		}
+	if len(p.stableRules) > 0 || p.catchAll || len(p.traffic) > 0 {
+		// Every node of the main path is a member; the pin is the override
+		// (cmd/vctl stable_exit.go). Unpinned, leastPing chooses among them
+		// and, all dead, the fallback leads back into the main path.
 		p.balancers = append(p.balancers, marshalNoEscape(map[string]any{
-			"tag": StableBalancerTag, "selector": []string{pin},
-			"strategy": map[string]string{"type": strategy}, "fallbackTag": stableBackTag}))
+			"tag": StableBalancerTag, "selector": members,
+			"strategy": map[string]string{"type": "leastPing"}, "fallbackTag": stableBackTag}))
 		p.loopbacks = append(p.loopbacks, marshalNoEscape(map[string]any{
 			"tag": stableBackTag, "protocol": "loopback", "settings": map[string]string{"inboundTag": stableBackTag}}))
 		back := map[string]any{"inboundTag": []string{stableBackTag}}
@@ -185,29 +209,47 @@ func planModes(providerRaw []byte, modes map[string]string, pin string, main boo
 			back["outboundTag"] = backTarget
 		}
 		p.backRules = append(p.backRules, marshalNoEscape(back))
-		p.observe = append(p.observe, pin)
-		p.res.Pin = pin
+		p.observe = append(p.observe, members...)
+		p.res.Members = members
 	}
 	return p, nil
 }
 
-// stablePinUsable: the pin is a dialling outbound of the document that no
-// other tag extends — a balancer selector is a prefix, and "bridge-fr5"
-// must not also pick "bridge-fr5-2".
-func stablePinUsable(v *xrayview.View, pin string) (bool, string) {
-	if pin == "" {
-		return false, "no stable exit yet"
+// stableMembers are the main path's dialling nodes the stable exit may pin,
+// in the main path's order. A balancer selector is a prefix: a node whose tag
+// begins another tag outside the main path ("bridge-fr5" and "bridge-fr5-2")
+// would bring that one in too, and is left out.
+func stableMembers(v *xrayview.View, target string, isBalancer bool) []string {
+	tags := []string{target}
+	if isBalancer {
+		b := v.Balancer(target)
+		if b == nil {
+			return nil
+		}
+		tags = b.Members
 	}
-	o := v.Outbound(pin)
-	if o == nil || !o.Dials {
-		return false, "the stable exit " + pin + " is not in this document"
-	}
-	for _, other := range v.Outbounds {
-		if other.Tag != pin && strings.HasPrefix(other.Tag, pin) {
-			return false, "the stable exit " + pin + " is a prefix of " + other.Tag
+	in := map[string]bool{}
+	var dial []string
+	for _, t := range tags {
+		if o := v.Outbound(t); o != nil && o.Dials && !in[t] {
+			in[t] = true
+			dial = append(dial, t)
 		}
 	}
-	return true, ""
+	var out []string
+	for _, t := range dial {
+		clean := true
+		for _, o := range v.Outbounds {
+			if !in[o.Tag] && strings.HasPrefix(o.Tag, t) {
+				clean = false
+				break
+			}
+		}
+		if clean {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // hasCatchAll: some rule for everything (catchAll) exists.

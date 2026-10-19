@@ -3,18 +3,22 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"vectra-controller-pro/internal/api"
 	"vectra-controller-pro/internal/catalog"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/exitcheck"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/logging"
+	"vectra-controller-pro/internal/supervisor"
 	"vectra-controller-pro/internal/vault"
 	"vectra-controller-pro/internal/xrayview"
 )
@@ -57,6 +61,17 @@ type stableExitRecord struct {
 	// Unsteady: the pin no longer keeps one address and no node does; it is
 	// kept (no restart for nothing) and the UIs say there is no steady IP.
 	Unsteady bool `json:"unsteady,omitempty"`
+	// Ranked are the last round's steady nodes, the pin first, then the
+	// fastest: where a pin that stops answering moves at once (r28,
+	// stableFailover), without a probe and without a restart.
+	Ranked []stableRank `json:"ranked,omitempty"`
+}
+
+// stableRank is a node a round found keeping one address.
+type stableRank struct {
+	Tag string `json:"tag"`
+	IP  string `json:"ip"`
+	Ms  int64  `json:"ms"`
 }
 
 type stableExitTracker struct {
@@ -65,22 +80,21 @@ type stableExitTracker struct {
 	loaded   bool
 	misses   int
 	nextFull time.Time
-	// renderDue: the record changed and the loop has not rendered it yet
-	// (busy, or a render refused for now): asked again from renderAskAt on.
-	renderDue   bool
-	renderAskAt time.Time
+	// liveDue: the record changed and xray has not taken it yet (its API did
+	// not answer): asked again at the next tick.
+	liveDue bool
+	// roundDue: a full round at the next tick — the pin died with no node to
+	// move to, or a new render has no room for it.
+	roundDue bool
 }
 
-// stableRenderRetry: a render the pin asked for and did not get is asked
-// again this long after — a refused render costs an xray -test each time.
-const stableRenderRetry = 10 * time.Minute
-
-// Seams: tests never ask a real exit.
+// Seams: tests never ask a real exit, nor a real xray.
 var (
 	stableSteady = func(ctx context.Context, p exitcheck.Prober, tag, url string, n int) ([]string, time.Duration, int) {
 		return p.Steady(ctx, tag, url, n)
 	}
-	stableJitter = func() float64 { return 0.9 + 0.2*rand.Float64() }
+	stableJitter   = func() float64 { return 0.9 + 0.2*rand.Float64() }
+	stableOverride = api.OverrideBalancerTarget
 )
 
 func (d *daemon) stableExitPath() string {
@@ -116,23 +130,178 @@ func (d *daemon) saveStableExit(r stableExitRecord) {
 	}
 }
 
-// withStableExit renders the pin when the document still has it.
-func (d *daemon) withStableExit(opts xray.SpliceOptions, providerRaw []byte) xray.SpliceOptions {
-	if !d.exitCheckOn() {
-		return opts
+// The pin is xray's override of the stable balancer (r28): the render holds
+// every node of the main path, the pin is set on it at run time — at every
+// xray start (reapplyStablePin) and when a round or a dead pin moves it
+// (stableApplyLive, stableFailover). A move is no render and no restart:
+// r26 rendered the pin, and its move at 23:19:19 on 1111 (2026-10-19)
+// restarted xray and dropped every connection in the house.
+
+// stableTarget is what the stable balancer of view should be pinned to now
+// ("" = nothing: its own choice among the main path's nodes). ok is false
+// when the render has no stable balancer, or the owner pinned it: then it is
+// not the tracker's to touch.
+func (d *daemon) stableTarget(view *xrayview.View, ov localctl.Overrides) (target string, ok bool) {
+	b := view.Balancer(xray.StableBalancerTag)
+	if b == nil || ov.Pins[xray.StableBalancerTag] != "" {
+		return "", false
 	}
 	r := d.stableExitNow()
-	if r.State != stableStatePinned || r.Tag == "" || contains(d.exits.Unfit(), r.Tag) {
-		// An exit the exit check found filtered carries nothing stable: the
-		// services ride the main path until a round moves the pin.
-		return opts
+	if r.State == stableStatePinned && r.Tag != "" && contains(b.Members, r.Tag) && !contains(d.exits.Unfit(), r.Tag) {
+		// A kept unsteady pin too: one node still beats the balancer's
+		// rotation. An exit the exit check found filtered carries nothing
+		// stable: the balancer chooses until a round moves the pin.
+		return r.Tag, true
 	}
-	if v, err := xrayview.Parse(providerRaw); err == nil {
-		if o := v.Outbound(r.Tag); o != nil && o.Dials {
-			opts.StablePin = r.Tag
+	return "", true
+}
+
+// stableApplyLive points the running xray's stable balancer at the record.
+// It reports false when xray did not take it (the API did not answer); the
+// next tick asks again.
+func (d *daemon) stableApplyLive(ctx context.Context) bool {
+	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
+	if err != nil {
+		return false
+	}
+	view, err := xrayview.Parse(raw)
+	if err != nil || !xrayview.Loopback(view.APIListen) {
+		return true // no API to ask: nothing to retry
+	}
+	ov, _ := localctl.LoadOverrides(d.cfg.OverridesPath)
+	target, ok := d.stableTarget(view, ov)
+	if !ok {
+		return true
+	}
+	octx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	err = stableOverride(octx, view.APIListen, xray.StableBalancerTag, target)
+	cancel()
+	if err != nil {
+		logging.L().Warn("stable exit: xray did not take the pin; asked again at the next tick", "exit", target, "err", err.Error())
+		return false
+	}
+	if target == "" {
+		logging.L().Info("stable exit: no pin; the balancer chooses among the main path's nodes")
+	} else {
+		logging.L().Info("stable exit: pinned without a restart", "exit", target)
+	}
+	return true
+}
+
+// stableMoved has xray take a record that changed.
+func (d *daemon) stableMoved(ctx context.Context) {
+	ok := d.stableApplyLive(ctx)
+	d.stable.mu.Lock()
+	d.stable.liveDue = !ok
+	d.stable.mu.Unlock()
+}
+
+// reapplyStablePin sets the pin on a new xray (the supervisor's start hook):
+// xray keeps an override in memory only. It waits for the API within the
+// start budget, and gives up once that xray is gone.
+func (d *daemon) reapplyStablePin(pid int) {
+	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
+	if err != nil {
+		return
+	}
+	view, err := xrayview.Parse(raw)
+	if err != nil || !xrayview.Loopback(view.APIListen) {
+		return
+	}
+	ov, _ := localctl.LoadOverrides(d.cfg.OverridesPath)
+	target, ok := d.stableTarget(view, ov)
+	if !ok {
+		return
+	}
+	if target == "" {
+		if r := d.stableExitNow(); r.State == stableStatePinned {
+			// The new render lost the pin (the provider dropped its node, or
+			// the exit check left it out): a round at the next tick, not at
+			// the next recheck — meanwhile the games would rotate.
+			d.stable.mu.Lock()
+			d.stable.roundDue = true
+			d.stable.mu.Unlock()
+			logging.L().Info("stable exit: the new render has no room for the pin; looking again", "exit", r.Tag)
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), d.startBudget())
+	defer cancel()
+	for {
+		if d.sup != nil {
+			if st := d.sup.Status(); st.State != supervisor.StateRunning || st.PID != pid {
+				return // gone, or replaced: that start sets its own
+			}
+		}
+		cctx, ccancel := context.WithTimeout(ctx, 3*time.Second)
+		err := stableOverride(cctx, view.APIListen, xray.StableBalancerTag, target)
+		ccancel()
+		if err == nil {
+			logging.L().Info("stable exit pin restored", "exit", target, "xrayPid", pid)
+			return
+		}
+		if errors.Is(err, api.ErrUnknownBalancer) || ctx.Err() != nil {
+			logging.L().Warn("could not restore the stable exit pin", "exit", target, "err", err.Error())
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
-	return opts
+}
+
+// stableFailover moves a pin that stopped answering (the failover
+// watchdog's connection table: xray's own connections to it unanswered) to
+// the next node of the last round's ranking at once — no probe, no restart —
+// and has its address rechecked at the next tick. With none left, the
+// override is cleared (the balancer chooses, and falls back into the main
+// path) and a full round is due now. The game on the dead node is lost
+// either way; this lands its next session on a steady address in seconds,
+// not at the next recheck.
+func (d *daemon) stableFailover(ctx context.Context, w *failoverWatch, infos map[string]api.BalancerInfo, ov localctl.Overrides, now time.Time) {
+	info, ok := infos[xray.StableBalancerTag]
+	if !ok || info.Err != nil || info.Override == "" || ov.Pins[xray.StableBalancerTag] != "" {
+		return
+	}
+	b := w.view.Balancer(xray.StableBalancerTag)
+	r := d.stableExitNow()
+	if b == nil || r.State != stableStatePinned || info.Override != r.Tag || !w.det.Failing(r.Tag, now) {
+		return
+	}
+	unfit := d.exits.Unfit()
+	var next stableRank
+	for _, c := range r.Ranked {
+		if c.Tag == r.Tag || contains(unfit, c.Tag) || !contains(b.Members, c.Tag) || w.det.Failing(c.Tag, now) {
+			continue
+		}
+		next = c
+		break
+	}
+	octx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	err := stableOverride(octx, w.view.APIListen, xray.StableBalancerTag, next.Tag)
+	cancel()
+	if err != nil {
+		logging.L().Warn("stable exit: the pin stopped answering and xray did not take the move; asked again at the next look", "exit", r.Tag, "err", err.Error())
+		return
+	}
+	rec := r
+	if next.Tag == "" {
+		rec.State, rec.Tag, rec.IP, rec.Country, rec.Unsteady, rec.CheckedAt = stableStateNone, "", "", "", false, now
+		d.saveStableExit(rec)
+		d.stable.mu.Lock()
+		d.stable.roundDue, d.stable.misses = true, 0
+		d.stable.mu.Unlock()
+		logging.L().Warn("stable exit: the pin stopped answering and no other node keeps one address; a round now", "exit", r.Tag)
+		return
+	}
+	rec.Tag, rec.IP, rec.Country, rec.Unsteady = next.Tag, next.IP, d.exitCountry(next.Tag), false
+	rec.CheckedAt = time.Time{} // its address rechecked at the next tick
+	d.saveStableExit(rec)
+	d.stable.mu.Lock()
+	d.stable.misses = 0
+	d.stable.mu.Unlock()
+	logging.L().Warn("stable exit: the pin stopped answering; moved without a restart", "from", r.Tag, "to", next.Tag)
 }
 
 // stableExitView is what the UIs show: the state and the country, never the
@@ -189,10 +358,10 @@ func (d *daemon) stableExitStep(ctx context.Context, now time.Time) {
 		return
 	}
 	d.stable.mu.Lock()
-	renderDue := d.stable.renderDue && !now.Before(d.stable.renderAskAt)
+	liveDue := d.stable.liveDue
 	d.stable.mu.Unlock()
-	if renderDue {
-		d.stableAskRender(ctx, now)
+	if liveDue {
+		d.stableMoved(ctx)
 	}
 	set := c.StableExitSettings()
 	r := d.stableExitNow()
@@ -203,7 +372,7 @@ func (d *daemon) stableExitStep(ctx context.Context, now time.Time) {
 	if d.stable.nextFull.IsZero() && !r.FullAt.IsZero() {
 		d.stable.nextFull = r.FullAt.Add(time.Duration(float64(time.Duration(set.EveryHours)*time.Hour) * stableJitter()))
 	}
-	if !d.stable.nextFull.IsZero() && !now.Before(d.stable.nextFull) {
+	if (!d.stable.nextFull.IsZero() && !now.Before(d.stable.nextFull)) || d.stable.roundDue {
 		full = true
 	}
 	d.stable.mu.Unlock()
@@ -246,15 +415,6 @@ func (d *daemon) stableExitStep(ctx context.Context, now time.Time) {
 		logging.L().Info("stable exit: the pin changed its address or stopped answering; looking again", "exit", r.Tag, "addresses", len(ips))
 	}
 	d.stableExitRound(ctx, now, cands, set, r)
-}
-
-// stableAskRender has the loop render the record; remembered while the loop
-// does not.
-func (d *daemon) stableAskRender(ctx context.Context, now time.Time) {
-	ok := d.askReapply(ctx, "stable exit")
-	d.stable.mu.Lock()
-	d.stable.renderDue, d.stable.renderAskAt = !ok, now.Add(stableRenderRetry)
-	d.stable.mu.Unlock()
 }
 
 // stableExitRound asks every candidate and keeps or moves the pin.
@@ -301,26 +461,40 @@ func (d *daemon) stableExitRound(ctx context.Context, now time.Time, cands []str
 			}
 		}
 	}
+	// The ranking a dead pin moves along (stableFailover): the pin first,
+	// then the fastest. Sorted as a copy: pick points into stable.
+	byMedian := append([]steady(nil), stable...)
+	sort.SliceStable(byMedian, func(i, j int) bool { return byMedian[i].median < byMedian[j].median })
+	var ranked []stableRank
+	if pick != nil {
+		ranked = append(ranked, stableRank{Tag: pick.tag, IP: pick.ip, Ms: pick.median.Milliseconds()})
+	}
+	for _, st := range byMedian {
+		if pick == nil || st.tag != pick.tag {
+			ranked = append(ranked, stableRank{Tag: st.tag, IP: st.ip, Ms: st.median.Milliseconds()})
+		}
+	}
 	switch {
 	case pick != nil:
 		next.State, next.Tag, next.IP = stableStatePinned, pick.tag, pick.ip
 		next.Country = d.exitCountry(pick.tag)
+		next.Ranked = ranked
 	case prev.State == stableStatePinned && pinAnswered && contains(cands, prev.Tag):
-		// Nothing steadier, and the pin still answers: kept, so the render
-		// and xray stay as they are (one node still beats the balancer's
-		// rotation) — a move only when a steady node appears.
+		// Nothing steadier, and the pin still answers: kept (one node still
+		// beats the balancer's rotation) — a move only when a steady node
+		// appears.
 		next = prev
-		next.CheckedAt, next.FullAt, next.Unsteady = now, now, true
+		next.CheckedAt, next.FullAt, next.Unsteady, next.Ranked = now, now, true, nil
 		logging.L().Info("stable exit: no node keeps one address now; the pin is kept", "exit", prev.Tag)
 	}
 	d.stable.mu.Lock()
-	d.stable.misses = 0
+	d.stable.misses, d.stable.roundDue = 0, false
 	d.stable.nextFull = now.Add(time.Duration(float64(time.Duration(set.EveryHours)*time.Hour) * stableJitter()))
 	d.stable.mu.Unlock()
 	d.saveStableExit(next)
 	logging.L().Info("stable exit: round", "candidates", len(cands), "steady", len(stable), "pin", next.Tag, "country", next.Country)
 	if next.Tag != prev.Tag || next.State != prev.State {
-		d.stableAskRender(ctx, now)
+		d.stableMoved(ctx)
 	}
 }
 
