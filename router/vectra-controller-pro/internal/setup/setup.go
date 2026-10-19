@@ -155,6 +155,25 @@ func RemoteShell(env Env) bool {
 	return main != nil && uciTrue(main.Get("remote_shell"))
 }
 
+// EnrollmentToken reports vectra-controller-pro.main.enrollment_token: the
+// operator-minted provisioning token (A1) the controller forwards on register
+// so the panel can bind this box to the record it was pre-provisioned for. The
+// controller only forwards it, never mints or verifies it. "" when the main
+// section or the option is absent, or the file uci could not read — in which
+// case the register carries no enrollmentToken field at all. Read at register
+// time, like RemoteShell.
+func EnrollmentToken(env Env) string {
+	f, err := uci.Load(env.VectraConfig)
+	if err != nil {
+		return ""
+	}
+	main := f.Named("main")
+	if main == nil {
+		return ""
+	}
+	return strings.TrimSpace(main.Get("enrollment_token"))
+}
+
 // SupportBot is vectra-controller-pro.main.support_bot: the Telegram bot (no
 // "@") a box is prepared with, so that one that has never been online — the
 // panel names its bot only at the first register or check-in — can still

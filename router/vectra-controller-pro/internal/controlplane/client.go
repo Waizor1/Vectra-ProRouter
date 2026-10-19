@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,32 @@ import (
 	"strings"
 	"time"
 )
+
+// StatusError is returned when the control plane answers a non-2xx status. It
+// preserves the status code and the (trimmed, length-capped) response body so
+// callers can react to a specific outcome — the A2 one-shot re-sign reads the
+// 401 body to find the fresh nonce — while Error() keeps the original
+// human-readable wording.
+//
+// Confidential marks a path whose response body must never be surfaced in the
+// error string: the check-in answer can reflect confidential request fields
+// (e.g. Wi-Fi passwords carried in the Connect telemetry), so its body is kept
+// in the struct for the retry logic but omitted from Error(). This preserves
+// vctl's long-standing behaviour of not echoing the check-in response body
+// (TestConnectClientNeverEchoesConfidentialCheckinErrors).
+type StatusError struct {
+	StatusCode   int
+	Path         string
+	Body         string
+	Confidential bool
+}
+
+func (e *StatusError) Error() string {
+	if e.Body != "" && !e.Confidential {
+		return fmt.Sprintf("unexpected status %d for %s: %s", e.StatusCode, e.Path, e.Body)
+	}
+	return fmt.Sprintf("unexpected status %d for %s", e.StatusCode, e.Path)
+}
 
 // Options configure a control-plane Client.
 type Options struct {
@@ -109,22 +136,81 @@ func (c *Client) Register(ctx context.Context, req RegisterRequest) (RegisterRes
 		req.ProtocolVersion = ProtocolVersion
 	}
 	var out RegisterResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/api/router/register", req, &out); err != nil {
+	// Register is never signed (signer=nil): the router has no identity yet.
+	if err := c.doJSON(ctx, http.MethodPost, "/api/router/register", req, &out, nil); err != nil {
 		return RegisterResponse{}, err
 	}
 	return out, nil
 }
 
-// CheckIn reports inventory/health and returns jobs + desired config.
+// CheckIn reports inventory/health and returns jobs + desired config. When the
+// request carries a nonce and device key (SigningNonce/SigningPrivateKey) the
+// check-in is signed (A2); otherwise it is byte-identical to a pre-A2 check-in.
 func (c *Client) CheckIn(ctx context.Context, req CheckInRequest) (CheckInResponse, error) {
 	if req.ProtocolVersion == "" {
 		req.ProtocolVersion = ProtocolVersion
 	}
+
 	var out CheckInResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/api/router/check-in", req, &out); err != nil {
-		return CheckInResponse{}, err
+	err := c.doJSON(ctx, http.MethodPost, "/api/router/check-in", req, &out, c.checkInSigner(req, req.SigningNonce))
+	if err == nil {
+		return out, nil
 	}
-	return out, nil
+
+	// A2 one-shot re-sign: a 401 carrying code=checkin_signature_required hands
+	// back a fresh nonce; re-sign with it and retry exactly once. Any other
+	// error (including a 401 for a bad bearer token) is returned unchanged.
+	if retryNonce, ok := checkInSignatureRetryNonce(err); ok && req.SigningPrivateKey != "" && retryNonce != "" {
+		var retryOut CheckInResponse
+		if retryErr := c.doJSON(ctx, http.MethodPost, "/api/router/check-in", req, &retryOut, c.checkInSigner(req, retryNonce)); retryErr != nil {
+			return CheckInResponse{}, retryErr
+		}
+		return retryOut, nil
+	}
+	return CheckInResponse{}, err
+}
+
+// checkInSigner returns a body signer for the A2 headers, or nil when the
+// controller holds no nonce or device key (the inert default: no headers are
+// added and the request is byte-identical to a pre-A2 controller).
+func (c *Client) checkInSigner(req CheckInRequest, nonce string) func(body []byte) (map[string]string, error) {
+	if nonce == "" || req.SigningPrivateKey == "" {
+		return nil
+	}
+	routerID := req.SigningRouterID
+	if routerID == "" {
+		routerID = req.RouterID
+	}
+	return func(body []byte) (map[string]string, error) {
+		signature, nonceHeader, err := SignCheckIn(req.SigningPrivateKey, nonce, routerID, body)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{
+			CheckInSignatureHeader: signature,
+			CheckInNonceHeader:     nonceHeader,
+		}, nil
+	}
+}
+
+// checkInSignatureRetryNonce reports the fresh nonce a 401
+// checkin_signature_required response carries, if any.
+func checkInSignatureRetryNonce(err error) (string, bool) {
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusUnauthorized {
+		return "", false
+	}
+	var payload struct {
+		Code         string `json:"code"`
+		CheckInNonce string `json:"checkInNonce"`
+	}
+	if json.Unmarshal([]byte(statusErr.Body), &payload) != nil {
+		return "", false
+	}
+	if payload.Code != "checkin_signature_required" {
+		return "", false
+	}
+	return payload.CheckInNonce, true
 }
 
 // SubmitJobResult reports the outcome of a delivered job.
@@ -133,13 +219,18 @@ func (c *Client) SubmitJobResult(ctx context.Context, req JobResultRequest) (Job
 		req.ProtocolVersion = ProtocolVersion
 	}
 	var out JobResultResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/api/router/job-result", req, &out); err != nil {
+	// Job results are never signed (signer=nil).
+	if err := c.doJSON(ctx, http.MethodPost, "/api/router/job-result", req, &out, nil); err != nil {
 		return JobResultResponse{}, err
 	}
 	return out, nil
 }
 
-func (c *Client) doJSON(ctx context.Context, method string, path string, payload any, out any) error {
+// doJSON marshals payload ONCE and reuses that one byte slice for both the
+// request body and, when signer is non-nil, the signature digest — the panel
+// hashes the exact bytes it receives, so the hashed and sent bytes must be the
+// same. signer is nil for every call but a signed check-in.
+func (c *Client) doJSON(ctx context.Context, method string, path string, payload any, out any, signer func(body []byte) (map[string]string, error)) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
@@ -156,6 +247,15 @@ func (c *Client) doJSON(ctx context.Context, method string, path string, payload
 	if c.agentToken != "" {
 		request.Header.Set("x-vectra-router-token", c.agentToken)
 	}
+	if signer != nil {
+		headers, signErr := signer(body)
+		if signErr != nil {
+			return fmt.Errorf("sign request: %w", signErr)
+		}
+		for name, value := range headers {
+			request.Header.Set(name, value)
+		}
+	}
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
@@ -164,19 +264,18 @@ func (c *Client) doJSON(ctx context.Context, method string, path string, payload
 	defer response.Body.Close()
 
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		if path == "/api/router/check-in" {
-			return fmt.Errorf("unexpected status %d for check-in", response.StatusCode)
+		// Preserve the status and (capped) body in a StatusError so the A2
+		// one-shot re-sign can read the 401's fresh nonce. StatusError.Error()
+		// reproduces the previous human-readable wording for every other path.
+		bodyPreview, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
+		return &StatusError{
+			StatusCode: response.StatusCode,
+			Path:       path,
+			Body:       strings.TrimSpace(string(bodyPreview)),
+			// The check-in answer may reflect confidential request fields, so its
+			// body is kept for the A2 retry but never rendered into the error.
+			Confidential: path == "/api/router/check-in",
 		}
-		bodyPreview, readErr := io.ReadAll(io.LimitReader(response.Body, 2048))
-		if readErr != nil {
-			return fmt.Errorf("unexpected status %d for %s (failed to read response body: %w)",
-				response.StatusCode, path, readErr)
-		}
-		trimmed := strings.TrimSpace(string(bodyPreview))
-		if trimmed != "" {
-			return fmt.Errorf("unexpected status %d for %s: %s", response.StatusCode, path, trimmed)
-		}
-		return fmt.Errorf("unexpected status %d for %s", response.StatusCode, path)
 	}
 	if out == nil {
 		return nil

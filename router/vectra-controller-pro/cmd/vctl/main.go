@@ -9,7 +9,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
+	legal "vectra-controller-pro"
 	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/redact"
 )
@@ -85,8 +87,16 @@ func usage() {
 	}
 }
 
-func cmdVersion(_ []string) error {
+func cmdVersion(args []string) error {
+	fs := newFlagSet("version")
+	license := fs.Bool("license", false, "also print the license and third-party notices")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	fmt.Printf("vctl %s (commit=%s built=%s)\n", Version, Commit, BuildDate)
+	if *license {
+		fmt.Printf("\n%s\n\n%s\n", strings.TrimRight(legal.License, "\n"), strings.TrimRight(legal.Notice, "\n"))
+	}
 	return nil
 }
 

@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -1265,8 +1267,89 @@ func tail(s string, max int) string {
 const maxArtifactBytes = 64 << 20
 
 // updateHTTPClient is the self-update's HTTP client; tests trust their own
-// server with it.
-var updateHTTPClient = func() *http.Client { return &http.Client{Timeout: 120 * time.Second} }
+// server with it. The default enforces an egress allowlist at the dialer
+// Control hook (artifactEgressControl), so a tampered feed URL — or a redirect
+// off one — that resolves to a private/loopback/link-local/CGNAT/unspecified
+// address is refused before any bytes leave the box. It is paired with the
+// https-only guard (requireHTTPS + HTTPSOnlyRedirects), the io.LimitReader
+// size cap, sha256 verification and the signed-feed package-name guard already
+// on this path. Scoped to this artifact/asset client only: the control-plane,
+// catalog, geo-feed and subscription fetchers carry their own clients and are
+// untouched.
+var updateHTTPClient = func() *http.Client {
+	d := &net.Dialer{Timeout: 120 * time.Second, KeepAlive: 30 * time.Second, Control: artifactEgressControl}
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = d.DialContext
+	return &http.Client{Timeout: 120 * time.Second, Transport: t}
+}
+
+// artifactEgressControl is the net.Dialer Control hook for the artifact client.
+// It runs for each already-resolved address, so the check is on the IP the
+// socket will actually connect to, not the hostname — a DNS answer pointing at
+// a private range cannot slip through. Only a global unicast public address is
+// allowed.
+func artifactEgressControl(_ /*network*/ string, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("artifact egress: parse address %q: %w", address, err)
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return fmt.Errorf("artifact egress: parse ip %q: %w", host, err)
+	}
+	ip = ip.Unmap()
+	if !artifactEgressAddrAllowed(ip) {
+		return fmt.Errorf("artifact egress refused: %s is not a public address", ip)
+	}
+	return nil
+}
+
+// cgnatPrefix is the 100.64.0.0/10 carrier-grade NAT range, which
+// netip.Addr.IsPrivate does not cover.
+var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
+
+// reservedEgressPrefixes are IANA special-use / documentation / reserved ranges
+// that netip.Addr.IsPrivate does not report but that must never front a public
+// artifact mirror. Blocking them keeps the allowlist a strict public-unicast
+// gate (defence in depth: the SSRF-critical metadata/RFC1918/CGNAT/loopback
+// ranges are already rejected above).
+var reservedEgressPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
+	netip.MustParsePrefix("192.0.2.0/24"),    // TEST-NET-1 (documentation)
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking
+	netip.MustParsePrefix("198.51.100.0/24"), // TEST-NET-2 (documentation)
+	netip.MustParsePrefix("203.0.113.0/24"),  // TEST-NET-3 (documentation)
+	netip.MustParsePrefix("240.0.0.0/4"),     // reserved / Class E (incl. 255.255.255.255)
+	netip.MustParsePrefix("2001:db8::/32"),   // IPv6 documentation
+}
+
+// artifactEgressAddrAllowed reports whether ip is a public unicast address an
+// artifact may be fetched from. It rejects RFC1918 / ULA private, loopback,
+// link-local (unicast and multicast), CGNAT, unspecified (0.0.0.0, ::),
+// multicast and interface-local ranges, plus the IANA reserved / documentation
+// prefixes in reservedEgressPrefixes.
+func artifactEgressAddrAllowed(ip netip.Addr) bool {
+	if !ip.IsValid() {
+		return false
+	}
+	switch {
+	case ip.IsPrivate(),
+		ip.IsLoopback(),
+		ip.IsLinkLocalUnicast(),
+		ip.IsLinkLocalMulticast(),
+		ip.IsMulticast(),
+		ip.IsInterfaceLocalMulticast(),
+		ip.IsUnspecified(),
+		cgnatPrefix.Contains(ip):
+		return false
+	}
+	for _, p := range reservedEgressPrefixes {
+		if p.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
 
 // getHTTPS is the self-update's GET: an https URL only, https all the way (a
 // redirect to plain http is refused, not followed), and anything but a 200

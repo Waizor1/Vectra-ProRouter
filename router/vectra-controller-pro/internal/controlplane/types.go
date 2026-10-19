@@ -120,6 +120,13 @@ type RouterInventory struct {
 	// (run_terminal_command; UCI vectra-controller-pro.main.remote_shell). Off,
 	// the router refuses it.
 	RemoteShell bool `json:"remoteShell"`
+	// DeviceBinding (A4) is "v1:" + hex(sha256(label + boardName + "\n" + mac)),
+	// a stable hardware fingerprint the panel stores and compares; the raw MAC
+	// never leaves the device. Omitted (omitempty) whenever it cannot be
+	// computed, so a box that cannot derive it reports no field — byte-identical
+	// to a pre-A4 controller. See inventory.ComputeDeviceBinding and the panel's
+	// computeDeviceBinding; pattern ROUTER_DEVICE_BINDING_PATTERN /^v1:[0-9a-f]{64}$/.
+	DeviceBinding string `json:"deviceBinding,omitempty"`
 }
 
 // MissingRequiredFields returns the JSON names of the inventory fields the
@@ -216,6 +223,14 @@ type CheckInRequest struct {
 	// Claim is the code the router shows for linking it to a Vectra account
 	// (ADR-0006), as its hash; null once the router is linked.
 	Claim *ClaimAnnouncement `json:"claim"`
+	// SigningNonce, SigningPrivateKey and SigningRouterID carry the A2 check-in
+	// signing material to the client. They are json:"-" ephemeral fields: never
+	// serialized, so they never appear in the request body and never change the
+	// signed digest. The client signs only when both a nonce and a private key
+	// are present (the inert default signs nothing).
+	SigningNonce      string `json:"-"`
+	SigningPrivateKey string `json:"-"`
+	SigningRouterID   string `json:"-"`
 }
 
 // ClaimAnnouncement tells the panel which code the router shows: never the
@@ -249,6 +264,11 @@ type CheckInResponse struct {
 	Jobs                   []Job                  `json:"jobs"`
 	OperatorMessage        string                 `json:"operatorMessage"`
 	DesiredRevision        json.RawMessage        `json:"desiredRevision"`
+	// CheckInNonce (A2) is the fresh server nonce the controller signs its next
+	// check-in with. Absent (omitempty) whenever the panel is not issuing
+	// nonces; an absent field decodes to "" and clears the held nonce, so
+	// signing stops when the panel stops asking.
+	CheckInNonce string `json:"checkInNonce,omitempty"`
 	ClaimInfo
 }
 
@@ -272,6 +292,13 @@ type RegisterRequest struct {
 	// to adopt a record it created in advance (a pre-claimed router). Absent
 	// only when the router cannot read its own key.
 	Proof *RegisterProof `json:"proof,omitempty"`
+	// EnrollmentToken (A1) is the operator-minted provisioning token rendered
+	// from the vectra-controller-pro.main.enrollment_token UCI option. The
+	// controller only forwards it; it never mints or verifies it — the panel
+	// alone checks the MAC (verifyEnrollmentToken). Omitted (omitempty) when
+	// the option is unset, so a register against today's panel is byte-identical
+	// to before.
+	EnrollmentToken string `json:"enrollmentToken,omitempty"`
 }
 
 // RegisterProof is an ed25519 signature by the device key (inventory's
@@ -292,6 +319,11 @@ type RegisterResponse struct {
 	PendingApproval        bool            `json:"pendingApproval"`
 	ConfigSyncState        ConfigSyncState `json:"configSyncState"`
 	OperatorMessage        string          `json:"operatorMessage"`
+	// CheckInNonce (A2) seeds the first signed check-in of this cycle: the panel
+	// spreads the fresh nonce into the register answer so a just-registered
+	// router can sign immediately rather than waiting a full cycle. Absent
+	// (omitempty) when the panel is not issuing nonces.
+	CheckInNonce string `json:"checkInNonce,omitempty"`
 	ClaimInfo
 }
 

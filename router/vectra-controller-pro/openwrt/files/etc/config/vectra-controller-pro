@@ -27,6 +27,13 @@ config controller 'main'
 	option job_safety_storage_tmp_floor_mb '0'
 	option job_safety_diagnostic_tmp_floor_mb '0'
 	option job_safety_pre_drop_caches '0'
+	# Operator enrollment token (A1): an operator-minted provisioning token the
+	# controller forwards on its first register so the panel can bind this box
+	# to a record it was pre-provisioned for. Not set here on purpose — a box
+	# without it registers exactly as before. The controller only forwards the
+	# value; the panel alone verifies it. Set (uci set, uci commit) only when
+	# preparing a box against a panel that requires it, e.g.:
+	#   option enrollment_token 'vpt1.<exp>.<mac>'
 	# Operator lock on the router UI, for customer routers in a public release.
 	# 1 = the UI offers only the simple view, and the router itself refuses the
 	# Pro methods (balancers, nodes, logs, pins, probe interval). Read at every

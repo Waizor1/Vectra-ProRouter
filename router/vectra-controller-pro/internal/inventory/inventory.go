@@ -148,6 +148,11 @@ func (c *Collector) Collect(ctx context.Context, xrayStatus supervisor.Status, n
 	c.connectMu.Lock()
 	inv.Connect = connecttelemetry.Build(c.readFile, time.Now(), c.connectSnapshot)
 	c.connectMu.Unlock()
+	// A4 device binding: a stable hardware fingerprint from /tmp/sysinfo/
+	// board_name and a physical MAC (ComputeDeviceBinding). omitempty on the
+	// field drops it whenever it cannot be computed, so a box that cannot derive
+	// it reports no field at all — byte-identical to a pre-A4 controller.
+	inv.DeviceBinding = ComputeDeviceBinding()
 	return inv
 }
 
