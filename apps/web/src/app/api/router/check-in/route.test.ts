@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const checkInRouter = vi.fn(async () => ({ ok: true }));
 
+// The route reads the check-in signature switches (router-auth-policy);
+// none is set here, so it runs exactly as without them.
+vi.mock("~/env", () => ({ env: {} }));
+vi.mock("~/server/db", () => ({ db: {} }));
+
 vi.mock("~/server/vectra/router-control", () => ({ checkInRouter }));
 vi.mock("~/server/vectra/router-auto-onboarding", () => ({
   safelyMaybeAdvanceRouterOnboarding: vi.fn(async () => undefined),
@@ -82,6 +87,7 @@ describe("POST /api/router/check-in observability and reads", () => {
     expect(response.headers.get("server-timing")).toMatch(/^app;dur=\d+\.\d$/);
     expect(checkInRouter).toHaveBeenCalledWith("router-timing", {}, {
       devicePublicKey: "key",
+      clientIp: "unknown",
       router: { id: "router-timing" },
     });
 
@@ -99,12 +105,16 @@ describe("POST /api/router/check-in observability and reads", () => {
       slowBody.ms = AUTH_ROUTER_ROW_MAX_AGE_MS + 500;
       expect((await checkIn("router-slow-uplink")).status).toBe(200);
       // No row handed over: checkInRouter reads it itself.
-      expect(checkInRouter).toHaveBeenCalledWith("router-slow-uplink", {}, { devicePublicKey: "key" });
+      expect(checkInRouter).toHaveBeenCalledWith("router-slow-uplink", {}, {
+        devicePublicKey: "key",
+        clientIp: "unknown",
+      });
 
       slowBody.ms = 100;
       await checkIn("router-fast-uplink");
       expect(checkInRouter).toHaveBeenLastCalledWith("router-fast-uplink", {}, {
         devicePublicKey: "key",
+        clientIp: "unknown",
         router: { id: "router-fast-uplink" },
       });
     } finally {

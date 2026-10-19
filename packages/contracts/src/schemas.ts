@@ -987,6 +987,14 @@ export const routerConnectTelemetrySchema = z.object({
   portForwards: connectPortForwardsTelemetrySchema.nullable().optional().catch(null),
 });
 
+// A4: the device a credential runs on, as the agent reports it:
+//   "v1:" + hex_lower(sha256("vectra-device-binding/v1\n" + boardName + "\n" + mac))
+// The hash keeps the raw MAC off the panel.
+export const ROUTER_DEVICE_BINDING_PATTERN = /^v1:[0-9a-f]{64}$/;
+
+// Longest provisioning token the panel reads ("vpt1.<exp>.<mac>" is ~60).
+export const ROUTER_ENROLLMENT_TOKEN_MAX_CHARS = 256;
+
 export const routerInventorySchema = z.object({
   protocolVersion: z.literal(VECTRA_PROTOCOL_VERSION),
   deviceIdentifier: z.string().min(1),
@@ -1049,6 +1057,13 @@ export const routerInventorySchema = z.object({
     z.record(z.string(), z.unknown()),
   ).optional(),
   connect: routerConnectTelemetrySchema.optional(),
+  // Optional, and a malformed one counts as none: a device binding must never
+  // cost a router its check-in or registration.
+  deviceBinding: z
+    .string()
+    .regex(ROUTER_DEVICE_BINDING_PATTERN)
+    .optional()
+    .catch(undefined),
 });
 
 export const rescuePolicySchema = z.object({
@@ -1105,6 +1120,15 @@ export const routerRegisterRequestSchema = z.object({
   // Optional, and a malformed one counts as none: an ordinary registration
   // (older vctl, the PassWall agent) must never fail over it.
   proof: routerRegisterProofSchema.nullable().optional().catch(null),
+  // A1: the operator-minted provisioning token a brand-new router presents.
+  // Optional, and one that is not a bounded string counts as none: the panel
+  // judges it (verdict) instead of failing the registration over it.
+  enrollmentToken: z
+    .string()
+    .min(1)
+    .max(ROUTER_ENROLLMENT_TOKEN_MAX_CHARS)
+    .optional()
+    .catch(undefined),
 });
 
 export const routerJobSchema = z.object({
@@ -1681,6 +1705,9 @@ export const routerRegisterResponseSchema = z.object({
   // claimed it since: the explicit "drop the previous owner's config" signal.
   // Absent otherwise — `owner: null` alone is what every fleet router gets.
   released: z.literal(true).optional(),
+  // A2: the nonce the router signs its next check-in with. Present only while
+  // the panel issues nonces; absent (no key at all) otherwise.
+  checkInNonce: z.string().min(1).optional(),
 });
 
 export const routerCheckInRequestSchema = z.object({
@@ -1746,6 +1773,8 @@ export const routerCheckInResponseSchema = z.object({
   // claimed it since: the explicit "drop the previous owner's config" signal.
   // Absent otherwise — `owner: null` alone is what every fleet router gets.
   released: z.literal(true).optional(),
+  // A2: a fresh nonce for the next check-in, only while the panel issues them.
+  checkInNonce: z.string().min(1).optional(),
 });
 
 // ---------------------------------------------------------------------------

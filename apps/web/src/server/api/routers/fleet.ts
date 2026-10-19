@@ -50,6 +50,11 @@ import {
   queueDesiredRevisionApplyJobWithDb,
   sanitizeRevisionForClient,
 } from "~/server/vectra/router-control";
+import {
+  ENROLLMENT_TOKEN_DEFAULT_TTL_HOURS,
+  ENROLLMENT_TOKEN_MAX_TTL_HOURS,
+  mintEnrollmentTokenForDevice,
+} from "~/server/vectra/router-auth-policy";
 import { canRunDestructiveAction, describeRouterSupport } from "~/server/vectra/support";
 import { notifyVendorAccessWithDb } from "~/server/vectra/vendor-access";
 import { isUiLocked } from "~/server/vectra/xray-operator-config";
@@ -1064,5 +1069,42 @@ export const fleetRouter = createTRPCRouter({
         });
       }
       return locked.value;
+    }),
+
+  // A1: a provisioning token for one router's first registration, bound to
+  // its device identifier (`device_identifier` in the router's
+  // /etc/vectra-controller/state.json, or the panel's rejection event). Set
+  // on the router as vectra-controller.@controller[0].enrollment_token. The
+  // event records the device and expiry, never the token.
+  mintEnrollmentToken: protectedProcedure
+    .input(
+      z.object({
+        deviceIdentifier: z.string().trim().min(1).max(256),
+        ttlHours: z
+          .number()
+          .int()
+          .min(1)
+          .max(ENROLLMENT_TOKEN_MAX_TTL_HOURS)
+          .default(ENROLLMENT_TOKEN_DEFAULT_TTL_HOURS),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const minted = mintEnrollmentTokenForDevice({
+        deviceIdentifier: input.deviceIdentifier,
+        ttlHours: input.ttlHours,
+      });
+      const expiresAt = minted.expiresAt.toISOString();
+
+      await ctx.db.insert(eventLog).values({
+        type: "router.enrollment.token_minted",
+        severity: "info",
+        message: `Operator minted a provisioning token for ${input.deviceIdentifier}.`,
+        metadata: {
+          deviceIdentifier: input.deviceIdentifier,
+          expiresAt,
+        },
+      });
+
+      return { token: minted.token, expiresAt };
     }),
 });

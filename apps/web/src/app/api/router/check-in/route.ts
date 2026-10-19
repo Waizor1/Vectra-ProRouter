@@ -2,13 +2,19 @@ import { checkInRouter } from "~/server/vectra/router-control";
 import { authenticateRouter } from "~/server/vectra/auth";
 import { safelyMaybeAdvanceRouterOnboarding } from "~/server/vectra/router-auto-onboarding";
 import {
+  readRequestIp,
   routerCheckInRateLimiter,
   routerRateLimitedResponse,
 } from "~/server/vectra/public-install-rate-limit";
+import {
+  checkInSignatureMode,
+  gateCheckInSignature,
+} from "~/server/vectra/router-auth-policy";
 
 import {
   AUTHENTICATED_ROUTER_BODY_MAX_BYTES,
   parseJsonBody,
+  parseJsonBodyWithDigest,
   toRouteErrorResponse,
 } from "../_lib";
 
@@ -48,14 +54,35 @@ async function handleCheckIn(request: Request): Promise<Response> {
     if (!rateLimit.allowed) {
       return routerRateLimitedResponse(rateLimit.resetAt);
     }
-    const payload: unknown = await parseJsonBody(
-      request,
-      AUTHENTICATED_ROUTER_BODY_MAX_BYTES,
-    );
+    // A2: with both signature switches off neither the digest nor the
+    // signature headers are even read.
+    const signatureMode = checkInSignatureMode();
+    let payload: unknown;
+    if (signatureMode === "off") {
+      payload = await parseJsonBody(request, AUTHENTICATED_ROUTER_BODY_MAX_BYTES);
+    } else {
+      const body = await parseJsonBodyWithDigest(
+        request,
+        AUTHENTICATED_ROUTER_BODY_MAX_BYTES,
+      );
+      payload = body.payload;
+      const refusal = await gateCheckInSignature({
+        mode: signatureMode,
+        routerId: auth.router.id,
+        headers: request.headers,
+        bodySha256Hex: body.bodySha256Hex,
+        devicePublicKey: auth.credential.devicePublicKey,
+      });
+      if (refusal) {
+        return refusal;
+      }
+    }
     const rowStillFresh =
       performance.now() - authenticatedAt <= AUTH_ROUTER_ROW_MAX_AGE_MS;
     const response = await checkInRouter(auth.router.id, payload, {
       devicePublicKey: auth.credential.devicePublicKey,
+      credentialId: auth.credential.id,
+      clientIp: readRequestIp(request),
       ...(rowStillFresh ? { router: auth.router } : {}),
     });
     await safelyMaybeAdvanceRouterOnboarding(auth.router.id);
