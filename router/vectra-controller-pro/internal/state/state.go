@@ -57,6 +57,11 @@ type PersistedState struct {
 	DevicePrivateKey  string `json:"device_private_key,omitempty"`
 	AppliedRevisionID string `json:"applied_revision_id,omitempty"`
 	ConfigDigest      string `json:"config_digest,omitempty"`
+	// CheckinNonce is the last check-in nonce the panel issued (A2). The
+	// controller signs its next check-in with it and adopts the fresh one the
+	// answer carries. Empty (and omitempty) whenever the panel is not issuing
+	// nonces, so signing is off by default and stops when the panel stops.
+	CheckinNonce string `json:"checkin_nonce,omitempty"`
 	// SpliceKey fingerprints the router-side options (xray.SpliceOptions.Key)
 	// the installed render was made with. The same provider bytes under
 	// different options (a new probe interval, the API added by an upgrade)

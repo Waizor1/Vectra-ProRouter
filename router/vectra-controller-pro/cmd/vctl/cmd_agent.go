@@ -35,6 +35,7 @@ import (
 	"vectra-controller-pro/internal/memguard"
 	"vectra-controller-pro/internal/power"
 	"vectra-controller-pro/internal/rescue"
+	"vectra-controller-pro/internal/setup"
 	"vectra-controller-pro/internal/state"
 	"vectra-controller-pro/internal/subscription"
 	"vectra-controller-pro/internal/supervisor"
@@ -892,6 +893,12 @@ func (d *daemon) runOnce(ctx context.Context) error {
 		Inventory:       inv,
 		Health:          health,
 		Claim:           d.claim.announcement(time.Now()),
+		// A2: sign the check-in only when the panel has issued a nonce and this
+		// box holds its device key. Both empty by default, so the request is
+		// byte-identical to a pre-A2 check-in until the panel starts asking.
+		SigningNonce:      d.st.CheckinNonce,
+		SigningPrivateKey: d.st.DevicePrivateKey,
+		SigningRouterID:   d.st.RouterID,
 	})
 	d.noteControlPlane(err == nil)
 	if err != nil {
@@ -901,6 +908,10 @@ func (d *daemon) runOnce(ctx context.Context) error {
 		return fmt.Errorf("check-in target mismatch")
 	}
 	d.lastCheckIn = time.Now().UTC()
+	// Adopt the fresh A2 nonce the answer carries before any persist path below.
+	// An absent field decodes to "" and clears the held nonce, so signing stops
+	// the moment the panel stops issuing nonces.
+	d.st.CheckinNonce = resp.CheckInNonce
 	if d.adoptClaimInfo(ctx, resp.ClaimInfo) {
 		// The rest of the answer that released the router was meant for the
 		// owner who just left: its desired revision is not kept and its jobs
@@ -950,6 +961,10 @@ func (d *daemon) register(ctx context.Context, inv controlplane.RouterInventory)
 		ProtocolVersion: controlplane.ProtocolVersion,
 		Inventory:       inv,
 		Proof:           d.registerProof(time.Now()),
+		// A1: forward the operator's enrollment token when the UCI option is
+		// set. omitempty drops the field entirely when it is "", so a register
+		// on a box without the option is byte-identical to before.
+		EnrollmentToken: setup.EnrollmentToken(setup.RouterEnv()),
 	})
 	d.noteControlPlane(err == nil)
 	if err != nil {
@@ -961,6 +976,9 @@ func (d *daemon) register(ctx context.Context, inv controlplane.RouterInventory)
 	if resp.IssuedToken != "" {
 		d.st.AgentToken = resp.IssuedToken
 	}
+	// A2: adopt the nonce the register answer carries so the first post-register
+	// check-in can sign immediately. "" when the panel is not issuing nonces.
+	d.st.CheckinNonce = resp.CheckInNonce
 	d.client.SetCredentials(d.st.RouterID, d.st.AgentToken)
 	d.adoptClaimInfo(ctx, resp.ClaimInfo)
 	if resp.PendingApproval {

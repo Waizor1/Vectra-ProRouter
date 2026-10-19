@@ -1,0 +1,71 @@
+vectra-controller-pro
+Copyright (c) 2026 Vectra. All rights reserved.
+Licensed under LicenseRef-Vectra-Proprietary; see LICENSE.
+
+GPL status
+----------
+The compiled vectra-controller-pro binary includes no GPL-licensed source code,
+and this package ships no GPL-derived files at all.
+
+Unlike the legacy vectra-controller-agent, which shipped one GPL-derived Lua
+helper (passwall-component-update.lua) as data, vectra-controller-pro ships no
+.lua files and embeds none. It is the xray-direct controller: it does not drive
+PassWall2's built-in component updater, and it reimplements PassWall2's
+subscription and route-generation behaviour natively in Go
+(internal/routepolicy, internal/subscription). Where the source references
+PassWall2's own files — util_xray.lua, subscribe.lua, rule_update.lua, api.lua
+— those are the router firmware's own, separately installed GPL-3.0 packages
+(upstream Openwrt-Passwall/openwrt-passwall2) that this controller invokes as
+external commands or reimplements; none of their code is included here. The
+parity comments in internal/routepolicy and internal/subscription describe that
+native reimplementation; they are not included GPL code.
+
+Other software on the router
+----------------------------
+The package's runtime dependencies (procd, uci, jshn, jsonfilter and others;
+the LuCI surface adds luci-base and rpcd), and PassWall2 where it is installed,
+are separate packages. None of their code is included in this package. Vectra's
+code starts them as commands, reads and writes their configuration through the
+uci tool, and exchanges data with them over ubus and rpcd.
+
+Like every OpenWrt service, the package's shell scripts also run on the
+standard OpenWrt platform shell interfaces provided by the device firmware:
+the init scripts run under /etc/rc.common, and the render helpers source
+/lib/functions.sh and /usr/share/libubox/jshn.sh. Those files are part of the
+firmware and are not included in this package. The data plane itself is Xray,
+a separate package installed on the router; the controller runs it as a command
+and never includes its code.
+
+Third-party code in the controller binary
+------------------------------------------
+The vectra-controller-pro binary is built only from Vectra's own Go code
+and the Go standard library and runtime, which are distributed under the
+following license:
+
+Copyright 2009 The Go Authors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google LLC nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

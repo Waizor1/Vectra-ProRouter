@@ -1,0 +1,54 @@
+Vectra Proprietary License
+SPDX-License-Identifier: LicenseRef-Vectra-Proprietary
+
+Copyright (c) 2026 Vectra. All rights reserved.
+
+This software, including its source code, object code, binaries, scripts,
+configuration templates, user-interface assets and documentation (together,
+the "Software"), is proprietary to Vectra and is confidential.
+
+1. Not open source. The Software is not licensed under any open-source or
+   free-software license. No license or other right in the Software is
+   granted, whether by implication, estoppel or otherwise, except under a
+   separate written agreement signed by Vectra, and then only to the extent
+   that agreement states.
+
+2. Restrictions. Except as a separate written agreement with Vectra
+   expressly permits, you may not, in whole or in part:
+   (a) copy or reproduce the Software;
+   (b) distribute, publish, sell, rent, lease, lend or otherwise make the
+       Software available to any third party;
+   (c) sublicense the Software or grant any right in it;
+   (d) modify, translate or adapt the Software, or create derivative works
+       based on it; or
+   (e) reverse engineer, decompile or disassemble the Software, or otherwise
+       attempt to derive its source code, algorithms or internal structure.
+
+3. Mandatory law. The prohibition in section 2(e) applies only to the
+   extent that applicable law permits it. Nothing in this license excludes
+   or limits a right that cannot be excluded or limited by contract under
+   applicable mandatory law, including the rights under Articles 5 and 6 of
+   Directive 2009/24/EC of the European Parliament and of the Council on the
+   legal protection of computer programs (among them the right to decompile
+   where that is indispensable to obtain the information needed for the
+   interoperability of an independently created program) and comparable
+   rights under other applicable law, such as the interoperability and fair
+   use provisions of United States law. Such a right may be exercised only to
+   the minimum extent, and only for the purpose, that the applicable law
+   allows, and information obtained in exercising it may not be used for any
+   other purpose.
+
+4. Third-party components. Any component of the Software that a third party
+   licenses under its own terms remains subject to those terms, which prevail
+   over this license for that component only.
+
+5. No warranty. To the maximum extent permitted by applicable law, the
+   Software is provided "as is", without warranty of any kind, express or
+   implied, including the implied warranties of merchantability, fitness for
+   a particular purpose and non-infringement, and Vectra is not liable for
+   any claim, damages or other liability arising from or in connection with
+   the Software or its use.
+
+6. Termination. Any use of the Software that breaches this license is
+   unauthorized and immediately ends any permission you may have had to use
+   the Software.
