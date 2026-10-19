@@ -1308,10 +1308,26 @@ func artifactEgressControl(_ /*network*/ string, address string, _ syscall.RawCo
 // netip.Addr.IsPrivate does not cover.
 var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
 
+// reservedEgressPrefixes are IANA special-use / documentation / reserved ranges
+// that netip.Addr.IsPrivate does not report but that must never front a public
+// artifact mirror. Blocking them keeps the allowlist a strict public-unicast
+// gate (defence in depth: the SSRF-critical metadata/RFC1918/CGNAT/loopback
+// ranges are already rejected above).
+var reservedEgressPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
+	netip.MustParsePrefix("192.0.2.0/24"),    // TEST-NET-1 (documentation)
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking
+	netip.MustParsePrefix("198.51.100.0/24"), // TEST-NET-2 (documentation)
+	netip.MustParsePrefix("203.0.113.0/24"),  // TEST-NET-3 (documentation)
+	netip.MustParsePrefix("240.0.0.0/4"),     // reserved / Class E (incl. 255.255.255.255)
+	netip.MustParsePrefix("2001:db8::/32"),   // IPv6 documentation
+}
+
 // artifactEgressAddrAllowed reports whether ip is a public unicast address an
 // artifact may be fetched from. It rejects RFC1918 / ULA private, loopback,
 // link-local (unicast and multicast), CGNAT, unspecified (0.0.0.0, ::),
-// multicast and interface-local ranges.
+// multicast and interface-local ranges, plus the IANA reserved / documentation
+// prefixes in reservedEgressPrefixes.
 func artifactEgressAddrAllowed(ip netip.Addr) bool {
 	if !ip.IsValid() {
 		return false
@@ -1326,6 +1342,11 @@ func artifactEgressAddrAllowed(ip netip.Addr) bool {
 		ip.IsUnspecified(),
 		cgnatPrefix.Contains(ip):
 		return false
+	}
+	for _, p := range reservedEgressPrefixes {
+		if p.Contains(ip) {
+			return false
+		}
 	}
 	return true
 }

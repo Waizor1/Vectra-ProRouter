@@ -38,6 +38,17 @@ func TestArtifactEgressAllowlist(t *testing.T) {
 		// Multicast.
 		{"224.0.0.1", false},
 		{"ff02::1", false},
+		// IANA reserved / documentation / special-use ranges that IsPrivate
+		// does not cover — rejected via reservedEgressPrefixes.
+		{"192.0.0.1", false},       // 192.0.0.0/24 protocol assignments
+		{"192.0.2.10", false},      // TEST-NET-1
+		{"198.18.0.1", false},      // benchmarking
+		{"198.19.255.1", false},    // benchmarking (upper half of /15)
+		{"198.51.100.5", false},    // TEST-NET-2
+		{"203.0.113.9", false},     // TEST-NET-3
+		{"240.0.0.1", false},       // Class E reserved
+		{"255.255.255.255", false}, // limited broadcast (within 240/4)
+		{"2001:db8::1", false},     // IPv6 documentation
 		// An IPv4-mapped public address must be treated as its v4 (allowed);
 		// a mapped private one rejected. (The Control hook unmaps first.)
 		{"8.8.8.8", true},

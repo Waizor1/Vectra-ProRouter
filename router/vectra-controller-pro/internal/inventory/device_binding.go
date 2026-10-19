@@ -6,12 +6,19 @@ package inventory
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 )
+
+// deviceBindingReadLimit bounds every binding input read. The inputs are tiny
+// (a board name, an addr_assign_type flag, a MAC string); the cap turns a
+// hostile or corrupt root-owned file into a truncated read rather than an
+// unbounded allocation.
+const deviceBindingReadLimit = 64 << 10 // 64 KiB
 
 // deviceBindingRoot is the filesystem root the binding inputs are read from.
 // "/" in production; tests point it at a fake tree.
@@ -124,8 +131,17 @@ func readValidMAC(netDir, name string) string {
 	return strings.ToLower(hardware.String())
 }
 
+// readDeviceBindingFile reads a bounded amount of a binding input file. The
+// path is always deviceBindingRoot joined with fixed sysfs components or
+// os.ReadDir base names (single path elements), so it cannot be made to
+// traverse; the read is capped by deviceBindingReadLimit.
 func readDeviceBindingFile(path string) string {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path) // #nosec G304 -- fixed root + ReadDir base names only; see doc comment
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, deviceBindingReadLimit))
 	if err != nil {
 		return ""
 	}
