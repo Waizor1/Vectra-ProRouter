@@ -420,6 +420,11 @@ func (d *daemon) stableFailover(ctx context.Context, w *failoverWatch, infos map
 		return
 	}
 	r := d.stableExitNow()
+	for tag := range w.stableUp {
+		if tag != r.Tag {
+			delete(w.stableUp, tag) // a pin moved by a round or the observatory: judged afresh if pinned again
+		}
+	}
 	failing := r.State == stableStatePinned && info.Override == r.Tag && w.det.Failing(r.Tag, now)
 	if !failing {
 		delete(w.stableUp, r.Tag)
