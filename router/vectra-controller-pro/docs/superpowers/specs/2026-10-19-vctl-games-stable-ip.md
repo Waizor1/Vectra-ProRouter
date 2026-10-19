@@ -70,6 +70,28 @@ Star Citizen kept dropping the owner, and two defects of r26 were behind it.
   Copies never carry `ruleTag`, because xray ≥ 26.9.8 refuses a duplicate. Rules to other targets are untouched. The owner's rules and the services' rules stay above.
 - **Stable main** («Постоянный IP для всего VPN») still rewrites the catch-all. The copies of the explicit main rules stay, so they are on the pin too.
 
+### After the code review (same day)
+
+While pinned, xray takes **no** fallback of its own: an override skips the strategy and the observatory (`app/router/balancing.go`). The tracker therefore owns the pin fully.
+
+- **One owner.**
+  - The failover policy is handed the tracker's pin as an owner pin, so it never moves or releases it.
+  - With no pin, the tracker clears only an override it set itself, never one the policy set.
+- **Kept in line.**
+  - Every look of the watchdog compares xray's override with the record and corrects it (every 2 s).
+  - Every stable tick (1 min) does the same from xray's `GetBalancerInfo`, also on routers whose watchdog is off.
+- **No lost update.** The record has a generation. A recheck or a round that read an older record never writes over a newer one. A round whose pin was moved off while it ran is discarded, and another round runs at the next tick.
+- **Two words on a dead pin.**
+  - The connection table: xray's own connections to it go unanswered (seconds).
+  - The observatory: dead although it takes connections (next tick).
+  - Either way the pin moves along the ranking, skipping nodes either word holds dead, and the dead pin leaves the ranking.
+- **A WAN blip moves nothing.** Moving requires another node to have answered since the pin went silent, or, for the observatory, to be alive. Otherwise the router's own way out is down, and moving would change the game's address for good.
+- **No stable exit where nothing would pin it.** `NoStableExit` is set when the exit check is off. Nothing is rendered there, because a never-pinned balancer would only move traffic.
+- **BitTorrent.** A main rule naming BitTorrent gets no copy. Encrypted BitTorrent (MSE/PE) and DHT are not sniffable, so they do reach the pin. This is a known limit.
+- **Edge cases in copies.**
+  - `inboundTag: []`, `port: ""` and `network: ""` read as unset, as xray reads them.
+  - Without a catch-all rule, no copies go at the end. They would run before IP rules that xray matches on its second pass.
+
 ### Rollout
 
 - r28 carries the catalog built in (serial 2026102001).

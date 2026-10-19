@@ -14,6 +14,7 @@ import (
 	"vectra-controller-pro/internal/api"
 	"vectra-controller-pro/internal/conntrack"
 	"vectra-controller-pro/internal/controlplane"
+	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/failover"
 	"vectra-controller-pro/internal/firewall"
 	"vectra-controller-pro/internal/localctl"
@@ -306,6 +307,17 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 	}
 	w.reprobe(ctx, health, now)
 	ov, _ := localctl.LoadOverrides(d.cfg.OverridesPath)
+	// The stable exit's pin is the tracker's: a pin whose connections go
+	// unanswered moves along the last round's ranking, and xray is kept in
+	// line with the record — before the policy looks, which then leaves a
+	// pinned stable balancer alone (stableOwned).
+	d.stableFailover(ctx, w, infos, ov, now)
+	if st, ok := infos[xray.StableBalancerTag]; ok && st.Err == nil {
+		if t, owned := d.stableTarget(w.view, ov); owned && t != "" {
+			st.Override = t // what the tracker just set, whatever the earlier read said
+			infos[xray.StableBalancerTag] = st
+		}
+	}
 	unfit := d.exits.Unfit()
 	main := ""
 	var mainGroups [][]string
@@ -329,16 +341,20 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 				}
 			}
 		}
+		ownerPin := ov.Pins[b.Tag]
+		if b.Tag == xray.StableBalancerTag && ownerPin == "" {
+			// Pinned by the tracker: as the owner's pin, never the policy's
+			// to move or let go.
+			if t, owned := d.stableTarget(w.view, ov); owned {
+				ownerPin = t
+			}
+		}
 		bals = append(bals, failover.Balancer{Tag: b.Tag, Members: b.Members, Principle: info.Principle,
-			Override: info.Override, OwnerPin: ov.Pins[b.Tag], Fallback: nodeFallback(w.view, b), Chain: chain, Borrow: borrow})
+			Override: info.Override, OwnerPin: ownerPin, Fallback: nodeFallback(w.view, b), Chain: chain, Borrow: borrow})
 		if b.Role == "main" {
 			mainGroups = [][]string{b.Members, chain, borrow}
 		}
 	}
-	// The stable exit's pin is the tracker's (its override): a pin that
-	// stopped answering moves along the last round's ranking, before the
-	// policy looks (it leaves an override it did not set alone).
-	d.stableFailover(ctx, w, infos, ov, now)
 	for _, a := range w.pol.Decide(now, bals, health, w.det) {
 		d.applyFailover(ctx, w, a, now, main)
 	}
@@ -351,7 +367,11 @@ func (d *daemon) failoverTick(ctx context.Context, w *failoverWatch, now time.Ti
 	// connections: the earliest word there is, seconds after the fact —
 	// the policy's "down" can wait while it borrows nodes the observatory
 	// still calls alive from an old round.
-	for _, m := range infos[main].Principle {
+	carriers := infos[main].Principle
+	if o := infos[main].Override; o != "" {
+		carriers = []string{o} // an override is what carries it, whatever the strategy prefers
+	}
+	for _, m := range carriers {
 		if w.det.Failing(m, now) {
 			base.PrincipleFailing = true
 			break

@@ -23,9 +23,7 @@ import (
 
 // insertMainCopies puts the classes' copies in front of every rule of the
 // routing whose target is the main path (target) and that applies to the
-// LAN's inbound. A routing with no catch-all rule (the main path is xray's
-// default outbound) gets the plain copies at its end. It returns how many
-// rules were given copies.
+// LAN's inbound. It returns how many rules were given copies.
 func insertMainCopies(routing json.RawMessage, target string, isBalancer bool, inbound string, classes []catalog.Traffic) (json.RawMessage, int, error) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(routing, &obj); err != nil {
@@ -44,13 +42,10 @@ func insertMainCopies(routing json.RawMessage, target string, isBalancer bool, i
 		}
 	}
 	out := make([]json.RawMessage, 0, len(rules)+8)
-	copied, sawCatchAll := 0, false
+	copied := 0
 	for _, raw := range rules {
 		var r map[string]json.RawMessage
 		if json.Unmarshal(raw, &r) == nil {
-			if isCatchAllRule(r) {
-				sawCatchAll = true
-			}
 			if ruleTargets(r, target, isBalancer) && ruleAppliesTo(r, inbound) {
 				if cs := mainCopies(r, inbound, classes, true); len(cs) > 0 {
 					out = append(out, cs...)
@@ -60,15 +55,11 @@ func insertMainCopies(routing json.RawMessage, target string, isBalancer bool, i
 		}
 		out = append(out, raw)
 	}
-	if !sawCatchAll {
-		// The main path is the default outbound: what no rule takes.
-		// No rule to pass BitTorrent back to: past the copies, the default
-		// takes it.
-		if cs := mainCopies(map[string]json.RawMessage{}, inbound, classes, false); len(cs) > 0 {
-			out = append(out, cs...)
-			copied++
-		}
-	}
+	// A main path that is xray's default outbound (no catch-all rule) gets no
+	// copies at the end: what reaches the default has passed every rule,
+	// xray's second pass (IPIfNonMatch) too, and copies at the end would take
+	// traffic first-pass IP rules leave for that second pass (a Russian
+	// address restored from FakeDNS).
 	if copied == 0 {
 		return routing, 0, nil
 	}
@@ -98,10 +89,11 @@ func ruleTargets(r map[string]json.RawMessage, target string, isBalancer bool) b
 // falls back with) is not the LAN's.
 func ruleAppliesTo(r map[string]json.RawMessage, inbound string) bool {
 	raw := ruleField(r, "inboundTag")
-	if raw == nil || isJSONNull(raw) {
-		return true
+	tags := append(jsonStrings(raw), jsonString(raw))
+	if raw == nil || isJSONNull(raw) || strings.Join(tags, "") == "" {
+		return true // unset, [] or "": xray takes every inbound
 	}
-	for _, t := range append(jsonStrings(raw), jsonString(raw)) {
+	for _, t := range tags {
 		if t == inbound {
 			return true
 		}
@@ -121,9 +113,14 @@ func mainCopies(r map[string]json.RawMessage, inbound string, classes []catalog.
 		return nil
 	}
 	ports := allPorts
-	if raw := ruleField(r, "port"); raw != nil && !isJSONNull(raw) {
+	if raw := ruleField(r, "port"); isJSONNumber(raw) || strings.TrimSpace(jsonString(raw)) != "" {
 		if ports, ok = parsePortField(raw); !ok {
 			return nil
+		}
+	}
+	for _, p := range append(jsonStrings(ruleField(r, "protocol")), jsonString(ruleField(r, "protocol"))) {
+		if strings.EqualFold(p, "bittorrent") {
+			return nil // BitTorrent never onto the one stable node
 		}
 	}
 	base := map[string]json.RawMessage{}
@@ -184,8 +181,8 @@ func cloneRule(m map[string]json.RawMessage) map[string]json.RawMessage {
 // ruleNetworks: the networks a rule takes ("tcp,udp", ["tcp","udp"], none
 // = both). Anything else does not read.
 func ruleNetworks(raw json.RawMessage) (map[string]bool, bool) {
-	if raw == nil || isJSONNull(raw) {
-		return map[string]bool{"tcp": true, "udp": true}, true
+	if raw == nil || isJSONNull(raw) || (jsonString(raw) == "" && len(jsonStrings(raw)) == 0) {
+		return map[string]bool{"tcp": true, "udp": true}, true // unset, "" or []: both
 	}
 	var parts []string
 	if s := jsonString(raw); s != "" {
@@ -294,4 +291,10 @@ func formatPorts(rs []portRange) string {
 		}
 	}
 	return strings.Join(parts, ",")
+}
+
+// isJSONNumber: raw is a JSON number (a port given as 443).
+func isJSONNumber(raw json.RawMessage) bool {
+	var n json.Number
+	return raw != nil && json.Unmarshal(raw, &n) == nil
 }

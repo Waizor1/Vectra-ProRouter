@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/api"
 	"vectra-controller-pro/internal/catalog"
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/coreengine/xray"
@@ -27,8 +29,11 @@ type stableStand struct {
 	asked   map[string]int
 	slow    map[string]time.Duration
 	// overrides are what the stable balancer was pointed at, in order
-	// ("" = released to its own choice).
+	// ("" = released to its own choice); current is what xray holds now.
 	overrides []string
+	current   string
+	// health is the observatory's word (stableMetrics); nil: no metrics.
+	health map[string]bool
 }
 
 func newStableStand(t *testing.T, opts xray.SpliceOptions) *stableStand {
@@ -41,6 +46,9 @@ func newStableStand(t *testing.T, opts xray.SpliceOptions) *stableStand {
 	opts.ExitProbeListen = xray.DefaultExitProbeListen
 	if opts.APIListen == "" {
 		opts.APIListen = "127.0.0.1:10085"
+	}
+	if opts.MetricsListen == "" {
+		opts.MetricsListen = "127.0.0.1:10086"
 	}
 	if opts.ServiceModes == nil {
 		opts.ServiceModes = map[string]string{"steam": catalog.ModeStable}
@@ -60,16 +68,34 @@ func newStableStand(t *testing.T, opts xray.SpliceOptions) *stableStand {
 		t.Fatal(err)
 	}
 	s := &stableStand{d: d, answers: map[string][]string{}, asked: map[string]int{}, slow: map[string]time.Duration{}}
-	oldSteady, oldJitter, oldWait, oldOverride := stableSteady, stableJitter, exitAskWait, stableOverride
+	oldSteady, oldJitter, oldWait, oldOverride, oldInfo, oldMetrics := stableSteady, stableJitter, exitAskWait, stableOverride, stableInfo, stableMetrics
 	t.Cleanup(func() {
-		stableSteady, stableJitter, exitAskWait, stableOverride = oldSteady, oldJitter, oldWait, oldOverride
+		stableSteady, stableJitter, exitAskWait, stableOverride, stableInfo, stableMetrics = oldSteady, oldJitter, oldWait, oldOverride, oldInfo, oldMetrics
 	})
 	stableOverride = func(_ context.Context, server, balancer, target string) error {
 		if server != "127.0.0.1:10085" || balancer != xray.StableBalancerTag {
 			t.Errorf("override %s %s→%s", server, balancer, target)
 		}
 		s.overrides = append(s.overrides, target)
+		s.current = target
 		return nil
+	}
+	stableInfo = func(_ context.Context, _ string, tags []string) (map[string]api.BalancerInfo, error) {
+		out := map[string]api.BalancerInfo{}
+		for _, tag := range tags {
+			out[tag] = api.BalancerInfo{Override: s.current}
+		}
+		return out, nil
+	}
+	stableMetrics = func(context.Context, string) (*api.Metrics, error) {
+		if s.health == nil {
+			return nil, errors.New("no metrics")
+		}
+		m := &api.Metrics{Observatory: map[string]api.Observation{}}
+		for tag, alive := range s.health {
+			m.Observatory[tag] = api.Observation{Alive: alive}
+		}
+		return m, nil
 	}
 	exitAskWait = 10 * time.Millisecond
 	stableJitter = func() float64 { return 1 }

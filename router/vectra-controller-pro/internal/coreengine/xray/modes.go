@@ -82,7 +82,7 @@ type modesPlan struct {
 // planModes renders the modes of opts against the document. It never
 // refuses a document: a service whose mode cannot be rendered here is left
 // to the provider's routing (res.Skipped).
-func planModes(providerRaw []byte, modes map[string]string, main bool, inbound string) (modesPlan, error) {
+func planModes(providerRaw []byte, modes map[string]string, main, noStable bool, inbound string) (modesPlan, error) {
 	var p modesPlan
 	if modesKey(modes, main) == "" {
 		return p, nil
@@ -100,6 +100,8 @@ func planModes(providerRaw []byte, modes map[string]string, main bool, inbound s
 	var members []string
 	stableOK, why := true, ""
 	switch {
+	case noStable:
+		stableOK, why = false, "the router does not look for a stable exit (its exit check is off)"
 	case !v.HasObservatory:
 		// Without an observatory xray's balancer never notices a dead node
 		// and never takes its fallback.

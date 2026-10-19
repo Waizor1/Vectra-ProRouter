@@ -255,3 +255,71 @@ func TestGameplayNeedsTheObservatory(t *testing.T) {
 		t.Fatalf("modes %+v", res.Modes)
 	}
 }
+
+// A router whose exit check is off never pins: no stable exit is rendered
+// (a balancer nobody pins would only move traffic for nothing), the class
+// included.
+func TestNoStableExitWhenTheRouterNeverLooks(t *testing.T) {
+	r, res := r28Splice(t, string(providerFixture(t)), xray.SpliceOptions{NoStableExit: true,
+		ServiceModes: map[string]string{"gameplay": "stable", "steam": "stable"}})
+	if len(res.Modes.Stable) != 0 || len(res.Modes.Skipped) != 2 || !strings.Contains(res.Modes.Skipped[0], "exit check is off") {
+		t.Fatalf("modes %+v", res.Modes)
+	}
+	for _, b := range r.Routing.Balancers {
+		if b.Tag == xray.StableBalancerTag {
+			t.Fatal("a stable balancer was rendered")
+		}
+	}
+	a := xray.SpliceOptions{ServiceModes: map[string]string{"steam": "stable"}}
+	b := a
+	b.NoStableExit = true
+	if a.Key() == b.Key() {
+		t.Fatal("NoStableExit is not in the render key")
+	}
+}
+
+// A main rule for BitTorrent gets no copy (BitTorrent never onto the one
+// stable node); a rule whose inboundTag, port or network is empty ([] or
+// "") is read as xray reads it — unset — and gets its copies.
+func TestCopiesLeaveBitTorrentAndReadEmptyFields(t *testing.T) {
+	doc := strings.Replace(string(providerFixture(t)),
+		`{"network":"tcp,udp","balancerTag":"BL-MAIN"}`,
+		`{"protocol":["bittorrent"],"balancerTag":"BL-MAIN"},`+
+			`{"domain":["domain:empty.example"],"inboundTag":[],"port":"","network":"","balancerTag":"BL-MAIN"},`+
+			`{"network":"tcp,udp","balancerTag":"BL-MAIN"}`, 1)
+	r, _ := r28Splice(t, doc, xray.SpliceOptions{ServiceModes: map[string]string{"gameplay": "stable"}})
+	empty := 0
+	for _, rule := range r.Routing.Rules {
+		if rule.BalancerTag != xray.StableBalancerTag {
+			continue
+		}
+		if slices.Contains(rule.Protocol, "bittorrent") {
+			t.Fatalf("BitTorrent sent to the stable exit: %+v", rule)
+		}
+		if slices.Contains(rule.Domain, "domain:empty.example") {
+			empty++
+		}
+	}
+	if empty != 2 {
+		t.Fatalf("%d copies of the rule with empty fields, want 2", empty)
+	}
+}
+
+// No catch-all: the main path is xray's default outbound, and nothing is
+// copied at the end (it would run before IP rules xray matches on its
+// second pass).
+func TestNoCatchAllNoTrailingCopies(t *testing.T) {
+	doc := strings.Replace(string(providerFixture(t)), `,{"network":"tcp,udp","balancerTag":"BL-MAIN"}`, ``, 1)
+	if doc == string(providerFixture(t)) {
+		t.Fatal("the fixture's catch-all moved; update the test")
+	}
+	r, res := r28Splice(t, doc, xray.SpliceOptions{ServiceModes: map[string]string{"gameplay": "stable"}})
+	if res.Modes.Copies != 0 {
+		t.Fatalf("%d rules copied", res.Modes.Copies)
+	}
+	for _, rule := range r.Routing.Rules {
+		if rule.BalancerTag == xray.StableBalancerTag && rule.Network != "" {
+			t.Fatalf("a class copy without a main rule: %+v", rule)
+		}
+	}
+}

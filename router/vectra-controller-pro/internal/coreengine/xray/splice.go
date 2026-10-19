@@ -120,7 +120,7 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 		return nil, res, err
 	}
 	res.Services = sp.res
-	mp, err := planModes(providerRaw, opts.ServiceModes, opts.StableMain, inboundTagOf(t))
+	mp, err := planModes(providerRaw, opts.ServiceModes, opts.StableMain, opts.NoStableExit, inboundTagOf(t))
 	if err != nil {
 		return nil, res, err
 	}
