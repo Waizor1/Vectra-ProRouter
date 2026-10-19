@@ -1507,16 +1507,21 @@ export function verifyRouterReauthProof(args: {
 // "vectra-router-reauth:v1"); vctl signs no re-auth proof at all. So a
 // v2-only panel would reject every legacy router's lost-token recovery and
 // owner key-change the moment it deploys — even with every enforcement flag
-// off. To keep this PR inert for the existing fleet, the default
-// (VECTRA_REQUIRE_REAUTH_V2 off) accepts BOTH versions: a proof is tried as
-// v2 first, and only if that does not verify is it tried as v1 here, exactly
-// as main did. Turning the flag on requires v2 and this path is never reached.
+// off. To keep this PR inert for the existing fleet without re-opening the
+// takeover hole v2 closed, the default (VECTRA_REQUIRE_REAUTH_V2 off) accepts
+// v1 ONLY to re-authorize the SAME device key (lost-token recovery): a KEY
+// CHANGE (submitted key != stored key) is always authorized by a v2 proof
+// alone, flag or no flag, else device_key_change_unauthorized — a v1 proof
+// cannot bind a new key and so can never rotate one. An accepted same-key v1
+// proof is then consumed in the single-use ledger (its own row), so it cannot
+// be replayed within the skew window. Turning the flag on requires v2 and the
+// v1 path is never reached.
 //
-// v1 is a SEPARATE path from v2: its message prefix differs, so a v2 proof
-// never verifies here and a v1 proof never verifies as v2; and v1 never
-// touches the v2 single-use ledger (consumeReauthProof). There is therefore no
-// cross-version replay or downgrade: an attacker cannot turn a v2 proof into a
-// v1 acceptance, nor replay a v1 proof through the v2 ledger.
+// v1 and v2 are SEPARATE paths: the message prefixes differ, so a v2 proof
+// never verifies as v1 and a v1 proof never verifies as v2; the ledger key is
+// the sha256 of the decoded signature, so a v1 row can never collide with or
+// pre-consume a v2 slot. There is therefore no cross-version replay or
+// downgrade between them.
 // ---------------------------------------------------------------------------
 
 /** Canonical v1 message: prefix + deviceIdentifier + "\n" + signedAt. */
