@@ -76,6 +76,7 @@ x-vectra-app-environment: &vectra-app-environment
   VECTRA_ISSUE_CHECKIN_NONCE: ${VECTRA_ISSUE_CHECKIN_NONCE:-false}
   VECTRA_REQUIRE_CHECKIN_SIGNATURE: ${VECTRA_REQUIRE_CHECKIN_SIGNATURE:-false}
   VECTRA_DUPLICATE_CREDENTIAL_ENFORCE: ${VECTRA_DUPLICATE_CREDENTIAL_ENFORCE:-false}
+  VECTRA_REQUIRE_REAUTH_V2: ${VECTRA_REQUIRE_REAUTH_V2:-false}
   # Where the background loops run (see apps/web/src/env.js). "in-web" keeps
   # them inside the web process; "worker-separate" moves them to the `worker`
   # service below. Set it ONCE in .env: both services read the same value, so

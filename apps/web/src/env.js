@@ -290,6 +290,12 @@ export const env = createEnv({
     // A check-in reporting a device binding other than the one its credential
     // is bound to is refused (403). Off, the mismatch is only recorded:
     VECTRA_DUPLICATE_CREDENTIAL_ENFORCE: booleanFlagSchema(false),
+    // The router re-auth recovery proof (lost-token recovery and owner
+    // device-key change) is accepted in v2 form ONLY (v1 rejected). Off (the
+    // default), BOTH the v2 proof and the legacy v1 proof the old
+    // router/vectra-controller-agent signs are accepted, so this stays inert
+    // for the existing fleet — the v2-only requirement is opt-in:
+    VECTRA_REQUIRE_REAUTH_V2: booleanFlagSchema(false),
     NODE_ENV: z
       .enum(["development", "test", "production"])
       .default("development"),
@@ -387,6 +393,7 @@ export const env = createEnv({
       process.env.VECTRA_REQUIRE_CHECKIN_SIGNATURE,
     VECTRA_DUPLICATE_CREDENTIAL_ENFORCE:
       process.env.VECTRA_DUPLICATE_CREDENTIAL_ENFORCE,
+    VECTRA_REQUIRE_REAUTH_V2: process.env.VECTRA_REQUIRE_REAUTH_V2,
     NODE_ENV: process.env.NODE_ENV,
     // NEXT_PUBLIC_CLIENTVAR: process.env.NEXT_PUBLIC_CLIENTVAR,
   },

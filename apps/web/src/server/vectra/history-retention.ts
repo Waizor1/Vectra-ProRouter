@@ -277,20 +277,37 @@ export type NonceLedgerRetentionResult = {
  * spent garbage, not retained history, so there is nothing to preview. It
  * returns the affected counts for the log line. There is no other
  * expiry-bearing single-use ledger to add here.
+ *
+ * Fail-open, matching the per-path consumers (consumeCheckInNonce,
+ * consumeReauthProof): these ledger tables are created by migrations
+ * 0025-0027, so on a deploy that runs this sweep BEFORE the migrations land
+ * the DELETEs would throw "relation does not exist". Since this tick shares a
+ * withLoopLock run with the history-retention sweep, an uncaught throw here
+ * would abort that whole tick. We swallow any error, log it once per tick, and
+ * return zero counts so retention keeps working; a missing or spent ledger is
+ * never a reason to fail.
  */
 export async function runNonceLedgerRetentionTick(
   database: DatabaseClient = db,
 ): Promise<NonceLedgerRetentionResult> {
-  const checkin = await database.execute(
-    sql`delete from vectra_router_checkin_nonce where expires_at < now()`,
-  );
-  const reauth = await database.execute(
-    sql`delete from vectra_router_reauth_proof where expires_at < now()`,
-  );
-  return {
-    checkinNonces: affectedRows(checkin),
-    reauthProofs: affectedRows(reauth),
-  };
+  try {
+    const checkin = await database.execute(
+      sql`delete from vectra_router_checkin_nonce where expires_at < now()`,
+    );
+    const reauth = await database.execute(
+      sql`delete from vectra_router_reauth_proof where expires_at < now()`,
+    );
+    return {
+      checkinNonces: affectedRows(checkin),
+      reauthProofs: affectedRows(reauth),
+    };
+  } catch (error) {
+    console.warn(
+      "[history-retention] single-use ledger sweep skipped (tables may not be migrated yet)",
+      { error: error instanceof Error ? error.name : typeof error },
+    );
+    return { checkinNonces: 0, reauthProofs: 0 };
+  }
 }
 
 function summarize(result: HistoryRetentionResult) {

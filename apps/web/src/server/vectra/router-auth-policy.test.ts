@@ -97,12 +97,14 @@ describe("switches", () => {
       issueCheckInNonce: false,
       requireCheckInSignature: false,
       duplicateCredentialEnforce: false,
+      requireReauthV2: false,
     });
     setFlags({
       VECTRA_ENROLLMENT_TOKEN_REQUIRED: "false",
       VECTRA_ISSUE_CHECKIN_NONCE: "false",
       VECTRA_REQUIRE_CHECKIN_SIGNATURE: "false",
       VECTRA_DUPLICATE_CREDENTIAL_ENFORCE: "false",
+      VECTRA_REQUIRE_REAUTH_V2: "false",
     });
     expect(Object.values(routerAuthFlags()).some(Boolean)).toBe(false);
     expect(checkInSignatureMode()).toBe("off");

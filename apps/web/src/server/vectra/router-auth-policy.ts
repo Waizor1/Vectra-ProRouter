@@ -43,6 +43,9 @@ export function routerAuthFlags() {
       requireCheckInSignature || flagOn(env.VECTRA_ISSUE_CHECKIN_NONCE),
     requireCheckInSignature,
     duplicateCredentialEnforce: flagOn(env.VECTRA_DUPLICATE_CREDENTIAL_ENFORCE),
+    // F: require the v2 re-auth recovery proof (reject the legacy v1 form).
+    // Off (default) accepts both, so a legacy router's v1 proof still works.
+    requireReauthV2: flagOn(env.VECTRA_REQUIRE_REAUTH_V2),
   };
 }
 
