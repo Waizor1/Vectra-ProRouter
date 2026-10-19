@@ -1694,7 +1694,7 @@ export async function consumeReauthProof(args: {
   }
 }
 
-async function verifyRecoveryProofForRouter(args: {
+export async function verifyRecoveryProofForRouter(args: {
   routerId: string;
   deviceIdentifier: string;
   /** The key the request is claiming (== parsed.inventory.devicePublicKey). */
@@ -1709,22 +1709,22 @@ async function verifyRecoveryProofForRouter(args: {
 
   const requireV2 = routerAuthFlags().requireReauthV2;
 
-  // v2 (the only form accepted when VECTRA_REQUIRE_REAUTH_V2 is on): the proof
-  // binds routerId AND the submitted key, verifies against the key on record,
-  // and is single-use.
-  //
-  // (c) The recovery path re-issues to the SAME device keypair the router kept:
-  // it proves possession of the key on record, it never changes it. Changing an
-  // owned router's key is a separate, guarded operation (see the device-key
-  // change guard below). So the v2 recovery attempt requires the submitted key
-  // to equal the stored one; a mismatch is the key-change vector, not a
-  // self-heal, and under the v2 requirement it is refused here.
+  // UNCONDITIONAL key-match precheck, FLAG-INDEPENDENT. The recovery path
+  // re-issues a bearer token to a router that kept its device keypair; it must
+  // prove possession of the key ON RECORD and never changes it. If the
+  // submitted key DIFFERS from the stored key this is a KEY CHANGE, not a
+  // self-heal, and it may be authorized ONLY by a v2 proof that binds routerId
+  // AND the new key and is single-use. A v1 proof binds neither the router id
+  // nor the key it is claiming, so accepting one here would let a captured /
+  // replayed v1 proof rotate the router to an attacker-chosen key (CWE-294 /
+  // CWE-345 account-takeover). A v1 proof therefore NEVER authorizes a key
+  // change — regardless of VECTRA_REQUIRE_REAUTH_V2.
   const submittedMatchesStored = devicePublicKeysMatch(
     storedDevicePublicKey,
     args.submittedDevicePublicKey,
   );
-  if (submittedMatchesStored) {
-    const verification = verifyRouterReauthProof({
+  if (!submittedMatchesStored) {
+    const keyChange = verifyRouterReauthProof({
       recoveryProof: args.recoveryProof,
       routerId: args.routerId,
       deviceIdentifier: args.deviceIdentifier,
@@ -1732,41 +1732,82 @@ async function verifyRecoveryProofForRouter(args: {
       storedDevicePublicKey,
       now: args.now,
     });
-    if (verification.ok) {
-      // (b) Single-use: consume the proof so a captured (routerId, proof) tuple
-      // cannot be replayed within the ±skew window. Reuses the check-in replay
-      // ledger's posture — fail-open on any DB error so a database hiccup can
-      // never brick a legitimate self-heal, matching consumeCheckInNonce.
-      const { replay } = await consumeReauthProof({
-        routerId: args.routerId,
-        signature: args.recoveryProof.signature,
-        signedAt: args.recoveryProof.signedAt,
-        now: args.now,
-      });
-      if (replay) {
-        return { ok: false, reason: "proof_replayed" };
-      }
-      return { ok: true };
+    if (!keyChange.ok) {
+      return { ok: false, reason: "device_key_change_unauthorized" };
     }
-    if (requireV2) {
-      return verification;
+    // Single-use: consume the verified v2 key-change proof so a captured
+    // (routerId, proof) tuple cannot be replayed within the ±skew window.
+    const { replay } = await consumeReauthProof({
+      routerId: args.routerId,
+      signature: args.recoveryProof.signature,
+      signedAt: args.recoveryProof.signedAt,
+      now: args.now,
+    });
+    if (replay) {
+      return { ok: false, reason: "proof_replayed" };
     }
-  } else if (requireV2) {
-    return { ok: false, reason: "device_key_change_unauthorized" };
+    return { ok: true };
   }
 
-  // v1 fallback, reached ONLY with VECTRA_REQUIRE_REAUTH_V2 off: verify EXACTLY
-  // as origin/main — against the key on record over the v1 message, with no
-  // key-match precheck and no single-use ledger. The legacy Go agent is the
-  // only client that signs re-auth proofs and it signs v1, so this keeps the
-  // recovery path inert for the existing fleet. A v1 proof never reaches the
-  // v2 ledger consumed above.
-  return verifyRouterReauthV1Proof({
+  // Same-key recovery (submitted == stored). Try v2 first: it binds routerId
+  // and the key, verifies against the key on record, and is single-use.
+  const verification = verifyRouterReauthProof({
+    recoveryProof: args.recoveryProof,
+    routerId: args.routerId,
+    deviceIdentifier: args.deviceIdentifier,
+    submittedDevicePublicKey: args.submittedDevicePublicKey,
+    storedDevicePublicKey,
+    now: args.now,
+  });
+  if (verification.ok) {
+    // (b) Single-use: consume the proof so a captured (routerId, proof) tuple
+    // cannot be replayed within the ±skew window. Reuses the check-in replay
+    // ledger's posture — fail-open on any DB error so a database hiccup can
+    // never brick a legitimate self-heal, matching consumeCheckInNonce.
+    const { replay } = await consumeReauthProof({
+      routerId: args.routerId,
+      signature: args.recoveryProof.signature,
+      signedAt: args.recoveryProof.signedAt,
+      now: args.now,
+    });
+    if (replay) {
+      return { ok: false, reason: "proof_replayed" };
+    }
+    return { ok: true };
+  }
+  if (requireV2) {
+    return verification;
+  }
+
+  // v1 fallback, permitted ONLY for same-key recovery with
+  // VECTRA_REQUIRE_REAUTH_V2 off: verify over the v1 message against the key on
+  // record exactly as origin/main did (the legacy Go agent is the only client
+  // that signs re-auth proofs and it signs v1), THEN make it single-use. The
+  // canonical decoder gate rejects a non-canonical signature and keys the
+  // ledger by the decoded 64 signature bytes, so a replayed same-key v1 proof
+  // within the ±skew window is refused (CWE-294).
+  const v1 = verifyRouterReauthV1Proof({
     recoveryProof: args.recoveryProof,
     deviceIdentifier: args.deviceIdentifier,
     devicePublicKey: storedDevicePublicKey,
     now: args.now,
   });
+  if (!v1.ok) {
+    return v1;
+  }
+  if (!decodeCanonicalEd25519Signature(args.recoveryProof.signature)) {
+    return { ok: false, reason: "signature_invalid" };
+  }
+  const { replay } = await consumeReauthProof({
+    routerId: args.routerId,
+    signature: args.recoveryProof.signature,
+    signedAt: args.recoveryProof.signedAt,
+    now: args.now,
+  });
+  if (replay) {
+    return { ok: false, reason: "proof_replayed" };
+  }
+  return { ok: true };
 }
 
 export async function registerRouter(
@@ -1887,16 +1928,18 @@ export async function registerRouter(
       storedKey &&
       !devicePublicKeysMatch(storedKey, parsed.inventory.devicePublicKey)
     ) {
-      // v2: the proof must be signed by the key ON RECORD (storedKey) and bind
-      // the NEW key being claimed (parsed.inventory.devicePublicKey) plus this
-      // router id, so the current key-holder explicitly authorizes the exact
-      // new key — a captured proof cannot authorize an attacker-chosen key.
-      // With VECTRA_REQUIRE_REAUTH_V2 off (the default) a v2 proof is tried
-      // first and, only if it does not verify, the legacy v1 proof the old
-      // agent signs is accepted as a fallback (verbatim origin/main: no routerId
-      // or key binding, no single-use ledger) so this stays inert for the
-      // existing fleet. With the flag on, only v2 is accepted.
-      const requireV2 = routerAuthFlags().requireReauthV2;
+      // A KEY CHANGE (the submitted key differs from the key on record) may be
+      // authorized ONLY by a v2 proof: signed by the key ON RECORD (storedKey)
+      // and binding the NEW key being claimed (parsed.inventory.devicePublicKey)
+      // plus this router id, so the current key-holder explicitly authorizes the
+      // exact new key — a captured proof cannot authorize an attacker-chosen
+      // key. This holds REGARDLESS of VECTRA_REQUIRE_REAUTH_V2: a legacy v1
+      // proof binds neither the router id nor the key it claims, so accepting
+      // one to rotate the key is the replay-takeover primitive v2 was created to
+      // close (CWE-294 / CWE-345). A v1 key-change is therefore never honoured;
+      // a legacy owner key rotation must move to a v2 proof / vctl / a manual
+      // change. (Same-key lost-token recovery still accepts v1 while the flag is
+      // off — that path is handled by verifyRecoveryProofForRouter above.)
       const presentedProof = parsed.recoveryProof;
       let keyChangeAuthorized = false;
       let keyChangeRejectReason = "missing_proof";
@@ -1943,23 +1986,11 @@ export async function registerRouter(
             );
           }
           keyChangeAuthorized = true;
-        } else if (requireV2) {
-          keyChangeRejectReason = v2.reason;
         } else {
-          // v1 fallback (flag off), verbatim origin/main: verify over the v1
-          // message against the key on record, with NO single-use ledger. A v1
-          // proof never touches the v2 ledger consumed above.
-          const v1 = verifyRouterReauthV1Proof({
-            recoveryProof: presentedProof,
-            deviceIdentifier: parsed.inventory.deviceIdentifier,
-            devicePublicKey: storedKey,
-            now,
-          });
-          if (v1.ok) {
-            keyChangeAuthorized = true;
-          } else {
-            keyChangeRejectReason = v1.reason;
-          }
+          // Not a valid v2 key-change proof: refused regardless of the flag. A
+          // v1 proof lands here too (its v1 bytes never verify as v2), so an
+          // unbound v1 proof can no longer rotate an owned router's key.
+          keyChangeRejectReason = v2.reason;
         }
       }
 
