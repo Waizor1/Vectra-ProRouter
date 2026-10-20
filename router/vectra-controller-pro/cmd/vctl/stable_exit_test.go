@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,12 +10,14 @@ import (
 	"time"
 
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/api"
 	"vectra-controller-pro/internal/catalog"
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/coreengine/xray"
 	"vectra-controller-pro/internal/exitcheck"
 	"vectra-controller-pro/internal/localctl"
 	"vectra-controller-pro/internal/vault"
+	"vectra-controller-pro/internal/xrayview"
 )
 
 // stableStand is a daemon with a real render of the provider fixture (its
@@ -25,6 +28,12 @@ type stableStand struct {
 	answers map[string][]string
 	asked   map[string]int
 	slow    map[string]time.Duration
+	// overrides are what the stable balancer was pointed at, in order
+	// ("" = released to its own choice); current is what xray holds now.
+	overrides []string
+	current   string
+	// health is the observatory's word (stableMetrics); nil: no metrics.
+	health map[string]bool
 }
 
 func newStableStand(t *testing.T, opts xray.SpliceOptions) *stableStand {
@@ -35,6 +44,15 @@ func newStableStand(t *testing.T, opts xray.SpliceOptions) *stableStand {
 		t.Fatal(err)
 	}
 	opts.ExitProbeListen = xray.DefaultExitProbeListen
+	if opts.APIListen == "" {
+		opts.APIListen = "127.0.0.1:10085"
+	}
+	if opts.MetricsListen == "" {
+		opts.MetricsListen = "127.0.0.1:10086"
+	}
+	if opts.ServiceModes == nil {
+		opts.ServiceModes = map[string]string{"steam": catalog.ModeStable}
+	}
 	tp := &config.TproxyInbound{ListenIP: "0.0.0.0", Port: 12345, FwMark: 1, UDPEnabled: true, Tag: "tproxy-in",
 		Sniffing: config.Sniffing{Enabled: true, DestOverride: []string{"http", "tls", "quic"}}}
 	render, _, err := xray.Splice(provider, tp, opts)
@@ -50,8 +68,35 @@ func newStableStand(t *testing.T, opts xray.SpliceOptions) *stableStand {
 		t.Fatal(err)
 	}
 	s := &stableStand{d: d, answers: map[string][]string{}, asked: map[string]int{}, slow: map[string]time.Duration{}}
-	oldSteady, oldJitter, oldWait := stableSteady, stableJitter, exitAskWait
-	t.Cleanup(func() { stableSteady, stableJitter, exitAskWait = oldSteady, oldJitter, oldWait })
+	oldSteady, oldJitter, oldWait, oldOverride, oldInfo, oldMetrics := stableSteady, stableJitter, exitAskWait, stableOverride, stableInfo, stableMetrics
+	t.Cleanup(func() {
+		stableSteady, stableJitter, exitAskWait, stableOverride, stableInfo, stableMetrics = oldSteady, oldJitter, oldWait, oldOverride, oldInfo, oldMetrics
+	})
+	stableOverride = func(_ context.Context, server, balancer, target string) error {
+		if server != "127.0.0.1:10085" || balancer != xray.StableBalancerTag {
+			t.Errorf("override %s %s→%s", server, balancer, target)
+		}
+		s.overrides = append(s.overrides, target)
+		s.current = target
+		return nil
+	}
+	stableInfo = func(_ context.Context, _ string, tags []string) (map[string]api.BalancerInfo, error) {
+		out := map[string]api.BalancerInfo{}
+		for _, tag := range tags {
+			out[tag] = api.BalancerInfo{Override: s.current}
+		}
+		return out, nil
+	}
+	stableMetrics = func(context.Context, string) (*api.Metrics, error) {
+		if s.health == nil {
+			return nil, errors.New("no metrics")
+		}
+		m := &api.Metrics{Observatory: map[string]api.Observation{}}
+		for tag, alive := range s.health {
+			m.Observatory[tag] = api.Observation{Alive: alive}
+		}
+		return m, nil
+	}
 	exitAskWait = 10 * time.Millisecond
 	stableJitter = func() float64 { return 1 }
 	stableSteady = func(_ context.Context, _ exitcheck.Prober, tag, _ string, n int) ([]string, time.Duration, int) {
@@ -81,6 +126,22 @@ func newStableStand(t *testing.T, opts xray.SpliceOptions) *stableStand {
 		return ips, median, failed
 	}
 	return s
+}
+
+// target is what the stable balancer of the stand's render is to be pinned
+// to now (stableTarget).
+func (s *stableStand) target(t *testing.T) (string, bool) {
+	t.Helper()
+	raw, err := vault.ReadFile(s.d.cfg.XrayRenderPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := xrayview.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ov, _ := localctl.LoadOverrides(s.d.cfg.OverridesPath)
+	return s.d.stableTarget(view, ov)
 }
 
 func (s *stableStand) totalAsked() int {
@@ -119,10 +180,15 @@ func TestTheStableExitPinsTheFastestSteadyNode(t *testing.T) {
 	if err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("record file %v %v", fi, err)
 	}
+	// Set on the running xray, not rendered: no restart.
+	if !reflect.DeepEqual(s.overrides, []string{"bridge-fr5"}) {
+		t.Fatalf("overrides %v", s.overrides)
+	}
+	// A restart of the daemon reads it back, and a new xray gets it.
 	again := &daemon{cfg: s.d.cfg}
-	provider, _ := os.ReadFile(filepath.Join("..", "..", "internal", "coreengine", "xray", "testdata", "provider", "entry-00.json"))
-	if opts := again.withStableExit(xray.SpliceOptions{}, provider); opts.StablePin != "bridge-fr5" {
-		t.Fatalf("after a restart the pin is %q", opts.StablePin)
+	again.reapplyStablePin(0)
+	if !reflect.DeepEqual(s.overrides, []string{"bridge-fr5", "bridge-fr5"}) {
+		t.Fatalf("after a restart the overrides are %v", s.overrides)
 	}
 	state, country, checked := again.stableExitView(localctl.Overrides{})
 	if state != stableStatePinned || country != "FR" || checked == nil {
@@ -196,9 +262,13 @@ func TestNoSteadyNodeLeavesTheServicesOnTheMainPath(t *testing.T) {
 	if r.State != stableStateNone || r.Tag != "" {
 		t.Fatalf("record %+v", r)
 	}
-	provider, _ := os.ReadFile(filepath.Join("..", "..", "internal", "coreengine", "xray", "testdata", "provider", "entry-00.json"))
-	if opts := s.d.withStableExit(xray.SpliceOptions{}, provider); opts.StablePin != "" {
-		t.Fatalf("pinned %q", opts.StablePin)
+	if target, ok := s.target(t); !ok || target != "" {
+		t.Fatalf("pinned %q (%v)", target, ok)
+	}
+	for _, o := range s.overrides {
+		if o != "" {
+			t.Fatalf("pinned %q on xray (overrides %q)", o, s.overrides)
+		}
 	}
 	before := s.totalAsked()
 	s.d.stableExitStep(context.Background(), now.Add(31*time.Minute))
@@ -212,14 +282,18 @@ func TestNoSteadyNodeLeavesTheServicesOnTheMainPath(t *testing.T) {
 func TestNoStableServiceAsksNothing(t *testing.T) {
 	s := newStableStand(t, xray.SpliceOptions{})
 	modes := map[string]string{}
+	consent := map[string]string{}
 	for _, id := range xray.ActiveCatalog().ServiceIDs() {
 		if m, _, _ := (localctl.Overrides{}).ServiceMode(id, xray.ActiveCatalog()); m == catalog.ModeStable {
-			modes[id] = catalog.ModeDirect
+			// The games straight out; their traffic class (never direct) on
+			// the main path.
+			if svc := xray.ActiveCatalog().Service(id); svc.Offers(id, catalog.ModeDirect) {
+				modes[id] = catalog.ModeDirect
+				consent[id] = svc.MatchersHash()
+			} else {
+				modes[id] = catalog.ModeMain
+			}
 		}
-	}
-	consent := map[string]string{}
-	for id := range modes {
-		consent[id] = xray.ActiveCatalog().Service(id).MatchersHash()
 	}
 	if _, err := localctl.UpdateOverrides(s.d.cfg.OverridesPath, func(o *localctl.Overrides) error {
 		o.ServiceModes, o.DirectConsent = modes, consent
@@ -237,8 +311,8 @@ func TestNoStableServiceAsksNothing(t *testing.T) {
 // With the main path itself on the stable exit, the candidates are the
 // stable fallback's: the main path as the provider made it.
 func TestCandidatesFollowTheStableFallback(t *testing.T) {
-	plain := newStableStand(t, xray.SpliceOptions{})
-	main := newStableStand(t, xray.SpliceOptions{StablePin: "bridge-fr5", StableMain: true})
+	plain := newStableStand(t, xray.SpliceOptions{ServiceModes: map[string]string{}})
+	main := newStableStand(t, xray.SpliceOptions{StableMain: true})
 	raw1, _ := vault.ReadFile(plain.d.cfg.XrayRenderPath)
 	raw2, _ := vault.ReadFile(main.d.cfg.XrayRenderPath)
 	a, b := stableCandidates(raw1, nil), stableCandidates(raw2, []string{"bridge-ae5"})
@@ -254,14 +328,13 @@ func TestAFilteredOrUnsteadyPinIsNotShownAsStable(t *testing.T) {
 	s.answers["bridge-fr5"] = []string{"38.180.154.151"}
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	s.d.stableExitStep(context.Background(), now)
-	provider, _ := os.ReadFile(filepath.Join("..", "..", "internal", "coreengine", "xray", "testdata", "provider", "entry-00.json"))
 	s.d.exits.Round([]exitcheck.Result{{Tag: "bridge-fr5", Control: true, Blocked: []bool{false}}}, now)
 	s.d.exits.Round([]exitcheck.Result{{Tag: "bridge-fr5", Control: true, Blocked: []bool{false}}}, now.Add(time.Minute))
 	if !contains(s.d.exits.Unfit(), "bridge-fr5") {
 		t.Skip("the exit check needs other evidence to call an exit unfit")
 	}
-	if opts := s.d.withStableExit(xray.SpliceOptions{}, provider); opts.StablePin != "" {
-		t.Fatalf("a filtered pin rendered: %q", opts.StablePin)
+	if target, _ := s.target(t); target != "" {
+		t.Fatalf("a filtered pin applied: %q", target)
 	}
 	if state, _, _ := s.d.stableExitView(localctl.Overrides{}); state == stableStatePinned {
 		t.Fatal("a filtered pin shown as pinned")
@@ -282,8 +355,7 @@ func TestAKeptUnsteadyPinReadsAsNone(t *testing.T) {
 	if state, country, _ := s.d.stableExitView(localctl.Overrides{}); state != stableStateNone || country != "" {
 		t.Fatalf("view %s %s", state, country)
 	}
-	provider, _ := os.ReadFile(filepath.Join("..", "..", "internal", "coreengine", "xray", "testdata", "provider", "entry-00.json"))
-	if opts := s.d.withStableExit(xray.SpliceOptions{}, provider); opts.StablePin != "bridge-fr5" {
-		t.Fatalf("the kept pin is not rendered (a restart for nothing): %q", opts.StablePin)
+	if target, _ := s.target(t); target != "bridge-fr5" {
+		t.Fatalf("the kept pin is not applied: %q", target)
 	}
 }

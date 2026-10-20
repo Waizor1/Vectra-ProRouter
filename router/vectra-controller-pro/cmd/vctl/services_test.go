@@ -126,9 +126,10 @@ func TestTheServicesAnswerIsWhatTheRouterRuns(t *testing.T) {
 		t.Fatalf("services = %+v", got)
 	}
 	// The catalog's games follow (r26): on their stable default, no
-	// country of their own.
+	// country of their own — their traffic class first (r28).
 	games := got.Services[4:]
-	if len(games) != 5 || games[0].ID != "steam" || games[0].Mode != "stable" || games[0].Group != "games" || len(got.Groups) != 1 {
+	if len(games) != 6 || games[0].ID != "gameplay" || games[0].Mode != "stable" || !reflect.DeepEqual(games[0].Modes, []string{"stable", "main"}) ||
+		games[1].ID != "steam" || games[1].Mode != "stable" || games[1].Group != "games" || len(got.Groups) != 1 {
 		t.Fatalf("games = %+v groups = %+v", games, got.Groups)
 	}
 	got.Services = got.Services[:4]

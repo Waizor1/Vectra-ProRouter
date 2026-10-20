@@ -10,11 +10,11 @@ import (
 // the games under «Игры», each a game on the stable exit by default.
 func TestTheBuiltinCatalogHasTheGames(t *testing.T) {
 	c := Builtin()
-	want := []string{"youtube", "tiktok", "telegram", "ai", "steam", "epic", "riot", "battlenet", "starcitizen"}
+	want := []string{"youtube", "tiktok", "telegram", "ai", "gameplay", "steam", "epic", "riot", "battlenet", "starcitizen"}
 	if got := c.ServiceIDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("order %v", got)
 	}
-	for _, id := range want[4:] {
+	for _, id := range want[5:] {
 		s := c.Services[id]
 		modes, def := s.EffectiveModes(id)
 		if s.Group != "games" || def != ModeStable || !reflect.DeepEqual(modes, []string{ModeStable, ModeDirect, ModeMain}) || !s.OnlyKnown || s.Title["ru"] == "" || !s.Knows(s.Marker) {

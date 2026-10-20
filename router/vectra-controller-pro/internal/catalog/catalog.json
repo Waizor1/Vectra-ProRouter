@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "serial": 2026101901,
+  "serial": 2026102001,
   "services": {
     "youtube": {
       "title": {
@@ -149,6 +149,38 @@
         "category-ai-chat-!cn"
       ]
     },
+    "gameplay": {
+      "title": {
+        "ru": "Игровые соединения",
+        "en": "Game connections",
+        "zh": "游戏连接"
+      },
+      "group": "games",
+      "order": 5,
+      "icon": "games",
+      "modes": [
+        "stable",
+        "main"
+      ],
+      "default": "stable",
+      "traffic": [
+        {
+          "network": "udp",
+          "except": [
+            53,
+            123,
+            443
+          ]
+        },
+        {
+          "network": "tcp",
+          "except": [
+            80,
+            443
+          ]
+        }
+      ]
+    },
     "steam": {
       "title": {
         "ru": "Steam",
@@ -294,9 +326,9 @@
       "order": 10,
       "icon": "games",
       "hint": {
-        "ru": "Постоянный IP — лаунчеры не выкидывают",
-        "en": "One steady IP, so launchers keep you signed in",
-        "zh": "固定 IP，启动器不会掉线"
+        "ru": "Постоянный IP — игры и лаунчеры не выкидывают",
+        "en": "One steady IP, so games and launchers keep you in",
+        "zh": "固定 IP，游戏和启动器不会掉线"
       }
     }
   },

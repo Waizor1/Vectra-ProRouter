@@ -120,7 +120,7 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 		return nil, res, err
 	}
 	res.Services = sp.res
-	mp, err := planModes(providerRaw, opts.ServiceModes, opts.StablePin, opts.StableMain, inboundTagOf(t))
+	mp, err := planModes(providerRaw, opts.ServiceModes, opts.StableMain, opts.NoStableExit, inboundTagOf(t))
 	if err != nil {
 		return nil, res, err
 	}
@@ -323,6 +323,15 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 					return nil, res, err
 				}
 				routing, res.RussiaDirectRules = rw, n
+			}
+			if len(mp.traffic) > 0 {
+				// Before the catch-all is rewritten: its copies are made from
+				// the main path's rule as the provider wrote it.
+				rw, n, err := insertMainCopies(routing, mp.mainTarget, mp.mainBalancer, inboundTagOf(t), mp.traffic)
+				if err != nil {
+					return nil, res, err
+				}
+				routing, res.Modes.Copies = rw, n
 			}
 			if mp.catchAll {
 				rw, err := rewriteCatchAll(routing)

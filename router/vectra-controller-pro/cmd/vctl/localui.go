@@ -581,6 +581,7 @@ func (d *daemon) onXrayStart(pid int) {
 	baseline := make(chan struct{})
 	go func() { defer close(baseline); d.takeLeakBaseline(pid) }()
 	d.reapplyPins(pid)
+	d.reapplyStablePin(pid)
 	<-baseline
 }
 
