@@ -58,6 +58,65 @@ func TestConnectVerdictRequiresActualFreshMeasurements(t *testing.T) {
 		t.Fatal("future route verdict")
 	}
 }
+
+// A routed balancer (a service's own nodes, BL-TK on 1111) on its fallback
+// makes the diagnostic warn — or fail, when its fallback is a blackhole —
+// while the main path is fine. That is still the VPN working: "ok", not no
+// verdict (2026-10-21, the Vectra app showed 1111 and kirill-msk offline for
+// it). The main path's own fallback and block keep their verdicts.
+func TestConnectVerdictIgnoresARoutedBalancersFallback(t *testing.T) {
+	now := time.Now()
+	outbounds := []xrayview.Outbound{
+		{Tag: "bridge-pl5", Protocol: "vless", Dials: true},
+		{Tag: "bridge-reserve", Protocol: "vless", Dials: true},
+		{Tag: "block", Protocol: "blackhole"},
+	}
+	diagnostic := func(in uiapi.Inputs) string {
+		for _, c := range uiapi.BuildDiagnostics(in).Checks {
+			if c.ID == "balancer_fallback" {
+				return c.Status
+			}
+		}
+		return ""
+	}
+
+	// "stage-main" leads back into the main balancer, as BL-TK's does on 1111
+	// (warn); a blackhole fallback blocks the service (fail).
+	for _, tc := range []struct{ fallback, status string }{{"stage-main", "warn"}, {"block", "fail"}} {
+		in := measuredConnectInputs(now)
+		in.View.Outbounds = outbounds
+		b := xrayview.Balancer{Tag: "BL-TK", Role: "routed", Strategy: "leastLoad", Members: []string{"tk-node"}, FallbackTag: tc.fallback}
+		if tc.fallback == "stage-main" {
+			b.FallbackBalancer = "main"
+		}
+		in.View.Balancers = append(in.View.Balancers, b)
+		in.Balancer["BL-TK"] = api.BalancerInfo{}
+		in.Metrics.Observatory["tk-node"] = api.Observation{Alive: false, LastTry: now.Unix()}
+		if got := diagnostic(in); got != tc.status {
+			t.Fatalf("BL-TK -> %s: diagnostic %q, want %q (fixture drift)", tc.fallback, got, tc.status)
+		}
+		if v, _ := connectVerdict(in, nil); v != "ok" {
+			t.Fatalf("BL-TK -> %s (diagnostic %s): verdict %q, want ok", tc.fallback, tc.status, v)
+		}
+	}
+
+	// The main balancer itself passes its traffic on (its member is dead; the
+	// route's node is not, so the check gets that far): to a live outbound it
+	// is "reserve", to a blackhole "down".
+	for _, tc := range []struct{ fallback, want string }{{"bridge-reserve", "reserve"}, {"block", "down"}} {
+		in := measuredConnectInputs(now)
+		in.View.Outbounds = outbounds
+		in.View.Balancers[0].Members = []string{"bridge-dead"}
+		in.View.Balancers[0].FallbackTag = tc.fallback
+		in.Balancer["main"] = api.BalancerInfo{}
+		in.Metrics.Observatory["bridge-dead"] = api.Observation{Alive: false, LastTry: now.Unix()}
+		in.Metrics.Observatory["bridge-reserve"] = api.Observation{Alive: true, LastTry: now.Unix()}
+		if v, _ := connectVerdict(in, nil); v != tc.want {
+			t.Fatalf("main -> %s (diagnostic %s): verdict %q, want %q", tc.fallback, diagnostic(in), v, tc.want)
+		}
+	}
+}
+
 func TestConnectSettingsUseCanonicalDigestsAndNoPasswords(t *testing.T) {
 	id := strings.Repeat("a", 64)
 	off := false

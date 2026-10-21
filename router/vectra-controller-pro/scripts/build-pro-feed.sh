@@ -35,7 +35,11 @@ PKG_MODULE="$(cd "$(dirname "$0")/.." && pwd)"
 
 OUT="$PKG_MODULE/dist/pro-feed"
 CACHE="$PKG_MODULE/dist/cache"
-XRAY_VERSION="v26.3.27"
+# The xray the feed ships, and the oldest vctl takes (Depends). They differ on
+# purpose: installing vctl must not force a new xray, and a router keeps the
+# xray it has until xray-core is installed by itself. 26.10.17 refuses outbound
+# proxySettings and duplicate ruleTags; vctl >= 0.7.0-r29 emits neither.
+XRAY_VERSION="v26.10.17"
 XRAY_MIN="26.3.27"
 # The geo data: the files the data-plane stand runs with (test/dataplane/run.sh,
 # GEO_BASE), pinned. Moving the pin is deliberate: new hashes, a new version.
@@ -369,7 +373,7 @@ CTL
 	chmod 0755 "$xdata/usr/bin/xray"
 	cat > "$xctrl/control" <<CTL
 Package: xray-core
-Version: $XRAY_MIN-r1
+Version: ${XRAY_VERSION#v}-r1
 Source: https://github.com/XTLS/Xray-core/releases/tag/$XRAY_VERSION
 License: MPL-2.0
 Section: net
@@ -378,16 +382,16 @@ Maintainer: Vectra
 Description: Xray-core $XRAY_VERSION, the XTLS release build ($asset, $member,
  sha256 $(cat "$zip.ok")).
 CTL
-	ipk "$xdata" "$xctrl" "$dir/xray-core_${XRAY_MIN}-r1_${arch}.ipk"
+	ipk "$xdata" "$xctrl" "$dir/xray-core_${XRAY_VERSION#v}-r1_${arch}.ipk"
 
 	cp "$GEO_IPK" "$dir/"
 	"$FEEDTOOL" index -arch "$arch" "$dir" > /dev/null
-	printf '  %-26s vctl %s  xray %s\n' "$arch" "$(du -h "$dir/vectra-controller-pro_${VERSION}_${arch}.ipk" | cut -f1)" "$(du -h "$dir/xray-core_${XRAY_MIN}-r1_${arch}.ipk" | cut -f1)"
+	printf '  %-26s vctl %s  xray %s\n' "$arch" "$(du -h "$dir/vectra-controller-pro_${VERSION}_${arch}.ipk" | cut -f1)" "$(du -h "$dir/xray-core_${XRAY_VERSION#v}-r1_${arch}.ipk" | cut -f1)"
 done
 
 install -m 0644 "$PKG_MODULE/install/install.sh" "$OUT/install.sh.in"
 {
-	printf '{\n  "version": "%s",\n  "commit": "%s",\n  "xray": "%s",\n  "geodata": "%s",\n  "reporter": "%s",\n  "archs": [' "$VERSION" "$COMMIT" "$XRAY_MIN" "$GEODATA_VERSION" "$REPORTER_VERSION"
+	printf '{\n  "version": "%s",\n  "commit": "%s",\n  "xray": "%s",\n  "geodata": "%s",\n  "reporter": "%s",\n  "archs": [' "$VERSION" "$COMMIT" "${XRAY_VERSION#v}" "$GEODATA_VERSION" "$REPORTER_VERSION"
 	sep=""
 	for a in "${ARCHS[@]}"; do printf '%s"%s"' "$sep" "$a"; sep=", "; done
 	printf ']\n}\n'
