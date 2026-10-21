@@ -38,7 +38,10 @@ type Options struct {
 	ControllerRuntimeVersion string
 	PanelDomain              string
 	XrayBinary               string
-	AssetDir                 string
+	// XrayExec is the binary XrayBinary runs when that is a wrapper
+	// (vctl-xray-wrapper execs /usr/bin/xray); default /usr/bin/xray.
+	XrayExec string
+	AssetDir string
 }
 
 // Collector gathers inventory. Command execution and file reads are injectable
@@ -89,6 +92,9 @@ func NewCollector(opts Options) *Collector {
 	}
 	if opts.XrayBinary == "" {
 		opts.XrayBinary = "/usr/bin/xray"
+	}
+	if opts.XrayExec == "" {
+		opts.XrayExec = "/usr/bin/xray"
 	}
 	return &Collector{
 		opts:     opts,
@@ -261,12 +267,13 @@ func (c *Collector) fillRelease(inv *controlplane.RouterInventory) {
 // xrayVersion runs `xray version` only when the binary changed since the last
 // answer. It used to run on every check-in — a 32 MB binary exec'd every 45 s
 // on a 234 MB router, to learn the same string. The key is what an upgrade
-// changes: the file's size and mtime (through the wrapper, the wrapper's —
-// replacing the real binary under it is caught by the next controller start).
+// changes: the size and mtime of XrayBinary and of the binary it execs. The
+// wrapper's alone kept the old version until the controller restarted: on
+// 2026-10-21 1111 ran xray 26.10.17 and reported 26.7.28 to the panel.
 func (c *Collector) xrayVersion(ctx context.Context) string {
-	key := ""
-	if st, err := os.Stat(c.opts.XrayBinary); err == nil {
-		key = fmt.Sprintf("%d/%d", st.Size(), st.ModTime().UnixNano())
+	key := statKey(c.opts.XrayBinary)
+	if c.opts.XrayExec != c.opts.XrayBinary {
+		key += "|" + statKey(c.opts.XrayExec)
 	}
 	c.verMu.Lock()
 	if key != "" && key == c.verKey && c.verValue != "" {
@@ -289,6 +296,15 @@ func (c *Collector) xrayVersion(ctx context.Context) string {
 	c.verKey, c.verValue = key, v
 	c.verMu.Unlock()
 	return v
+}
+
+// statKey is a file's size and mtime, "" when it cannot be read.
+func statKey(path string) string {
+	st, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d/%d", st.Size(), st.ModTime().UnixNano())
 }
 
 // XrayVersion is the last version `xray version` reported, "" before the

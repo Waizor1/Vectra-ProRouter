@@ -176,3 +176,39 @@ func TestXrayVersionIsCachedUntilTheBinaryChanges(t *testing.T) {
 		t.Fatalf("XrayVersion() = %q", c.XrayVersion())
 	}
 }
+
+// Through the wrapper (vctl-xray-wrapper execs /usr/bin/xray), replacing the
+// real binary changes nothing about the wrapper: the version must follow the
+// binary it execs, not wait for the controller to restart (1111, 2026-10-21).
+func TestXrayVersionFollowsTheBinaryUnderTheWrapper(t *testing.T) {
+	dir := t.TempDir()
+	wrapper, real := filepath.Join(dir, "vctl-xray-wrapper"), filepath.Join(dir, "xray")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexec xray"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(real, []byte("v1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := NewCollector(Options{XrayBinary: wrapper, XrayExec: real})
+	execs, version := 0, "26.7.28"
+	c.run = func(_ context.Context, name string, _ ...string) (string, error) {
+		if name == wrapper {
+			execs++
+			return "Xray " + version + " (Xray, Penetrates Everything.)", nil
+		}
+		return "", nil
+	}
+	if v := c.xrayVersion(context.Background()); v != "26.7.28" {
+		t.Fatalf("version = %q", v)
+	}
+	if v := c.xrayVersion(context.Background()); v != "26.7.28" || execs != 1 {
+		t.Fatalf("unchanged: version %q, %d execs", v, execs)
+	}
+	version = "26.10.17"
+	if err := os.WriteFile(real, []byte("v2-longer"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if v := c.xrayVersion(context.Background()); v != "26.10.17" || execs != 2 {
+		t.Fatalf("after replacing the binary under the wrapper: version %q, %d execs", v, execs)
+	}
+}

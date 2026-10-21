@@ -500,7 +500,12 @@ func connectVerdict(in uiapi.Inputs, egress map[string]exitcheck.Located) (strin
 				return "", nil
 			case mainReserve:
 				verdict = "reserve"
-			case c.Status == "ok":
+			default:
+				// "ok", or a "warn"/"fail" that is only a routed balancer's (a
+				// service's nodes on their fallback, or blocked): the main path
+				// carries everything else. Left unjudged, that sent Connect no
+				// verdict at all from 2026-10-21 07:32 UTC on (1111, kirill-msk),
+				// and the app showed the routers offline.
 				verdict = "ok"
 			}
 		}

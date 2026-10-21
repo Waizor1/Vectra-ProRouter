@@ -26,6 +26,20 @@ provider route source was never affected.
   `xray-core (>= 26.3.27)`, so installing vctl never pulls a new xray in. The
   data-plane stand runs 26.10.17 by default.
 
+### Fixed
+- **Vectra Connect was told nothing about the VPN while a service's own
+  balancer ran on its fallback.** From 2026-10-21 07:32 UTC (a subscription
+  refresh) BL-TK went to its fallback on 1111 and kirill-msk; the main path was
+  fine, but the diagnostic said warn and `connectVerdict` had no branch for a
+  routed balancer's warn or fail: no verdict, and the app showed the routers
+  offline. Now only the main path's fallback ("reserve"), block ("down") and
+  direct ("direct") change the verdict; a routed balancer's does not.
+- **The reported xray version follows the binary under the wrapper.** The
+  inventory cached `xray version` by the wrapper's size and mtime, so an xray
+  replaced under `vctl-xray-wrapper` was reported as the old one until the
+  controller restarted (1111 ran 26.10.17 and reported 26.7.28). The key now
+  includes `/usr/bin/xray` (Options.XrayExec).
+
 ### Added
 - **`vctl xray-check -binary <path>`**: the write gate's `xray run -test` on
   the config this router runs now (decrypted in memory, as xray gets it), with
