@@ -218,3 +218,79 @@ func TestAGeneratedPolicyWithBooleansSplicesWithDNS(t *testing.T) {
 		}
 	}
 }
+
+// PassWall2 up to 26.8.x writes proxySettings (dns-out, chains); xray 26.9.8
+// refuses it. The adapter moves it to sockopt.dialerProxy, keeping the rest
+// of streamSettings, and refuses a pair that names two different dialers.
+func TestAdaptPassWallMovesProxySettingsToDialerProxy(t *testing.T) {
+	var doc map[string]any
+	if err := json.Unmarshal(passwallFixture(t), &doc); err != nil {
+		t.Fatal(err)
+	}
+	obs := doc["outbounds"].([]any)
+	obs = append(obs,
+		map[string]any{"tag": "dns-out", "protocol": "dns", "proxySettings": map[string]any{"tag": "direct"}},
+		map[string]any{"tag": "chain", "protocol": "freedom", "proxySettings": map[string]any{"tag": "direct", "transportLayer": true},
+			"streamSettings": map[string]any{"sockopt": map[string]any{"tcpFastOpen": true}}})
+	doc["outbounds"] = obs
+	raw, _ := json.Marshal(doc)
+	out, res, err := xray.AdaptPassWall(raw, "tproxy-in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// PassWall 26.8.10's own dns-out in the fixture, and the two added here.
+	if res.RewrittenProxySettings != 3 {
+		t.Fatalf("RewrittenProxySettings = %d, want 3", res.RewrittenProxySettings)
+	}
+	s := string(out)
+	if strings.Contains(s, "proxySettings") {
+		t.Fatalf("proxySettings survived:\n%s", s)
+	}
+	for _, must := range []string{`{"protocol":"dns","streamSettings":{"sockopt":{"dialerProxy":"direct"}},"tag":"dns-out"}`, `"sockopt":{"dialerProxy":"direct","tcpFastOpen":true}`} {
+		if !strings.Contains(s, must) {
+			t.Errorf("missing %s in\n%s", must, s)
+		}
+	}
+
+	obs = append(obs, map[string]any{"tag": "both", "protocol": "freedom", "proxySettings": map[string]any{"tag": "direct"},
+		"streamSettings": map[string]any{"sockopt": map[string]any{"dialerProxy": "other"}}})
+	doc["outbounds"] = obs
+	raw, _ = json.Marshal(doc)
+	if _, _, err := xray.AdaptPassWall(raw, "tproxy-in"); err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("err = %v, want a conflict", err)
+	}
+}
+
+// PassWall writes a shunt rule's remarks as its ruleTag; two of the same name
+// would stop xray 26.9.8 from starting. And an outbound with both PassWall's
+// mark and proxySettings keeps only the dialer.
+func TestAdaptPassWallNumbersDuplicateRuleTagsAndKeepsTheDialer(t *testing.T) {
+	var doc map[string]any
+	if err := json.Unmarshal(passwallFixture(t), &doc); err != nil {
+		t.Fatal(err)
+	}
+	routing := doc["routing"].(map[string]any)
+	rules := routing["rules"].([]any)
+	rules = append(rules,
+		map[string]any{"ruleTag": "Same", "outboundTag": "direct", "domain": []any{"domain:a.example"}},
+		map[string]any{"ruleTag": "Same", "outboundTag": "direct", "domain": []any{"domain:b.example"}})
+	routing["rules"] = rules
+	doc["outbounds"] = append(doc["outbounds"].([]any), map[string]any{"tag": "marked", "protocol": "freedom",
+		"proxySettings":  map[string]any{"tag": "direct"},
+		"streamSettings": map[string]any{"sockopt": map[string]any{"mark": 255}}})
+	raw, _ := json.Marshal(doc)
+	out, res, err := xray.AdaptPassWall(raw, "tproxy-in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RenamedRuleTags != 1 {
+		t.Fatalf("RenamedRuleTags = %d, want 1", res.RenamedRuleTags)
+	}
+	s := string(out)
+	if !strings.Contains(s, `"ruleTag":"Same"`) || !strings.Contains(s, `"ruleTag":"Same (2)"`) {
+		t.Fatalf("ruleTags not numbered:\n%s", s)
+	}
+	if !strings.Contains(s, `{"protocol":"freedom","streamSettings":{"sockopt":{"dialerProxy":"direct"}},"tag":"marked"}`) {
+		t.Fatalf("mark and proxySettings not resolved to the dialer alone:\n%s", s)
+	}
+}

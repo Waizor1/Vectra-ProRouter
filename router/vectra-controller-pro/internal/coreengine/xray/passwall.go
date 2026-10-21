@@ -48,6 +48,13 @@ type PassWallResult struct {
 	Rules            int
 	RemovedLocalhost int
 	RewrittenMarks   int
+	// RewrittenProxySettings is how many outbounds' proxySettings became
+	// streamSettings.sockopt.dialerProxy (see AdaptPassWall).
+	RewrittenProxySettings int
+	// RenamedRuleTags is how many rules got a numbered ruleTag: PassWall
+	// writes a shunt rule's remarks there, UCI keeps them unique nowhere, and
+	// xray 26.9.8 refuses a duplicate.
+	RenamedRuleTags int
 	// DroppedAssetDir: the config named its own geo directory
 	// (env.XRAY_LOCATION_ASSET), and it was taken out.
 	DroppedAssetDir bool
@@ -63,6 +70,11 @@ type PassWallResult struct {
 //     TPROXY);
 //   - its env goes, XRAY_LOCATION_ASSET with it: vctl says where the geo
 //     files are, and what else xray's environment holds;
+//   - an outbound's proxySettings {tag} becomes streamSettings.sockopt.
+//     dialerProxy: xray 26.9.8 removed proxySettings and refuses a config that
+//     has it, and PassWall2 up to 26.8.x writes it (dns-out, pre-proxy and
+//     landing chains; 26.9.9-2 writes dialerProxy itself). dialerProxy is
+//     what xray migrated it to, and every supported xray takes it;
 //   - "localhost" DNS servers go: PassWall resolves its nodes' names with the
 //     system resolver, which is dnsmasq, which vctl redirects into this very
 //     DNS — a loop. The splice answers those names directly instead
@@ -149,6 +161,13 @@ func AdaptPassWall(raw []byte, tproxyTag string) ([]byte, PassWallResult, error)
 		return nil, res, fmt.Errorf("passwall: the generated config has no outbounds")
 	}
 	for _, ob := range outbounds {
+		moved, err := proxySettingsToDialer(ob)
+		if err != nil {
+			return nil, res, err
+		}
+		if moved {
+			res.RewrittenProxySettings++
+		}
 		ss := map[string]json.RawMessage{}
 		if raw, ok := ob["streamSettings"]; ok && json.Unmarshal(raw, &ss) == nil {
 			so := map[string]json.RawMessage{}
@@ -201,6 +220,7 @@ func AdaptPassWall(raw []byte, tproxyTag string) ([]byte, PassWallResult, error)
 				r["inboundTag"] = mustMarshal(out)
 			}
 		}
+		res.RenamedRuleTags = numberDuplicateRuleTags(rules)
 		res.Rules = len(rules)
 		routing["rules"] = mustMarshal(rules)
 		doc["routing"] = mustMarshal(routing)
@@ -262,6 +282,97 @@ func AdaptPassWall(raw []byte, tproxyTag string) ([]byte, PassWallResult, error)
 
 // fakeDNSPools reads the ipPool of each FakeDNS pool ("fakedns": an object or
 // a list of them), IPv4 ones only.
+// proxySettingsToDialer moves an outbound's proxySettings {"tag": T} to
+// streamSettings.sockopt.dialerProxy T. An outbound that already names a
+// different dialerProxy is refused: xray refused that pair too, before it
+// removed proxySettings. moved: dialerProxy was set from it.
+func proxySettingsToDialer(ob map[string]json.RawMessage) (moved bool, err error) {
+	var key string
+	for k := range ob {
+		if foldKey(k) == foldKey("proxySettings") {
+			key = k
+		}
+	}
+	if key == "" {
+		return false, nil
+	}
+	raw := ob[key]
+	delete(ob, key)
+	if isJSONNull(raw) {
+		return false, nil
+	}
+	var ps struct {
+		Tag string `json:"tag"`
+	}
+	if err := json.Unmarshal(raw, &ps); err != nil {
+		return false, fmt.Errorf("passwall: outbound %s: proxySettings: %w", jsonString(ob["tag"]), err)
+	}
+	if ps.Tag == "" {
+		return false, nil
+	}
+	ss := map[string]json.RawMessage{}
+	if raw, ok := ob["streamSettings"]; ok && !isJSONNull(raw) {
+		if err := json.Unmarshal(raw, &ss); err != nil {
+			return false, fmt.Errorf("passwall: outbound %s: streamSettings: %w", jsonString(ob["tag"]), err)
+		}
+	}
+	so := map[string]json.RawMessage{}
+	if raw, ok := ss["sockopt"]; ok && !isJSONNull(raw) {
+		if err := json.Unmarshal(raw, &so); err != nil {
+			return false, fmt.Errorf("passwall: outbound %s: sockopt: %w", jsonString(ob["tag"]), err)
+		}
+	}
+	if have := jsonString(so["dialerProxy"]); have != "" && have != ps.Tag {
+		return false, fmt.Errorf("passwall: outbound %s: proxySettings.tag %q conflicts with sockopt.dialerProxy %q",
+			jsonString(ob["tag"]), ps.Tag, have)
+	}
+	so["dialerProxy"] = mustMarshal(ps.Tag)
+	ss["sockopt"] = mustMarshal(so)
+	ob["streamSettings"] = mustMarshal(ss)
+	return true, nil
+}
+
+// numberDuplicateRuleTags renames the second and later rules that share a
+// non-empty ruleTag "<tag> (2)", "<tag> (3)", ..., the route policy's own
+// numbering (routepolicy.uniqueRuleTags); the first keeps its name.
+func numberDuplicateRuleTags(rules []map[string]json.RawMessage) int {
+	tag := func(r map[string]json.RawMessage) (string, string) {
+		for k, v := range r {
+			if foldKey(k) == foldKey("ruleTag") {
+				return k, jsonString(v)
+			}
+		}
+		return "", ""
+	}
+	used := map[string]bool{}
+	for _, r := range rules {
+		if _, t := tag(r); t != "" {
+			used[t] = true
+		}
+	}
+	seen, renamed := map[string]bool{}, 0
+	for _, r := range rules {
+		k, t := tag(r)
+		if t == "" {
+			continue
+		}
+		if !seen[t] {
+			seen[t] = true
+			continue
+		}
+		for n := 2; ; n++ {
+			c := fmt.Sprintf("%s (%d)", t, n)
+			if !used[c] {
+				used[c], seen[c] = true, true
+				r[k] = mustMarshal(c)
+				renamed++
+				break
+			}
+		}
+	}
+	return renamed
+}
+
 func fakeDNSPools(raw json.RawMessage) []string {
 	if len(bytes.TrimSpace(raw)) == 0 || isJSONNull(raw) {
 		return nil

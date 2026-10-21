@@ -90,6 +90,39 @@ func unsupported(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", ErrUnsupported, fmt.Sprintf(format, a...))
 }
 
+// uniqueRuleTags renames the second and later rules that share a ruleTag:
+// "<tag> (2)", "<tag> (3)", ... The tags are the shunt rules' remarks, which
+// UCI does not keep unique, and since 26.9.8 xray refuses to start on a
+// duplicate non-empty ruleTag. The first keeps its name.
+func uniqueRuleTags(rules []obj) []obj {
+	used := map[string]bool{}
+	for _, r := range rules {
+		if t, _ := r["ruleTag"].(string); t != "" {
+			used[t] = true
+		}
+	}
+	seen := map[string]bool{}
+	for _, r := range rules {
+		t, _ := r["ruleTag"].(string)
+		if t == "" {
+			continue
+		}
+		if !seen[t] {
+			seen[t] = true
+			continue
+		}
+		for n := 2; ; n++ {
+			c := fmt.Sprintf("%s (%d)", t, n)
+			if !used[c] {
+				used[c], seen[c] = true, true
+				r["ruleTag"] = c
+				break
+			}
+		}
+	}
+	return rules
+}
+
 // versionLess compares dotted versions numerically: a < b.
 func versionLess(a, b string) bool {
 	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
@@ -311,6 +344,7 @@ func (g *gen) config() (obj, error) {
 		g.outbounds = append(g.outbounds, blackhole)
 	}
 
+	g.rules = uniqueRuleTags(g.rules)
 	cfg := obj{
 		"env":       obj{"XRAY_LOCATION_ASSET": asset},
 		"log":       obj{"loglevel": loglevel},
@@ -717,7 +751,12 @@ func (g *gen) dns(node *Section, defTag, innerFake string, remoteFake bool, doma
 			obj{"action": "direct"},
 		}
 	}
-	dnsOut := obj{"tag": "dns-out", "protocol": "dns", "proxySettings": obj{"tag": "direct"}, "settings": dnsOutSettings}
+	// dns-out dials through "direct" (mark 255, out past TPROXY). As
+	// sockopt.dialerProxy, not proxySettings: xray 26.9.8 removed outbound
+	// proxySettings and refuses a config that has it; dialerProxy is what it
+	// was migrated to, and every xray this generator supports (>= 26.3.27)
+	// takes it.
+	dnsOut := obj{"tag": "dns-out", "protocol": "dns", "streamSettings": obj{"sockopt": obj{"dialerProxy": "direct"}}, "settings": dnsOutSettings}
 	_ = remoteProto // the remote type's settings are PassWall's dead branch
 	g.outbounds = append(g.outbounds, dnsOut)
 	g.rules = append([]obj{{"inboundTag": []any{"dns-in"}, "outboundTag": "dns-out"}}, g.rules...)

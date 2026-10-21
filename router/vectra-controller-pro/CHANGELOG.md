@@ -1,5 +1,51 @@
 # Changelog
 
+## vctl 0.7.0-r29 — configs xray 26.10 takes; `vctl xray-check`
+
+xray 26.9.8 removed outbound `proxySettings` and refuses a config that has
+one; it also refuses two routing rules with the same `ruleTag`. Checked on the
+XTLS builds (`xray run -test`): the route policy r28 generates fails to load on
+26.10.17, and so does every config PassWall2 up to 26.8.x generates — the
+version the fleet runs. The provider's documents carry neither, so the
+provider route source was never affected.
+
+### Changed
+- **The route policy's DNS outbound dials through `direct` with
+  `streamSettings.sockopt.dialerProxy`**, not `proxySettings` — what xray
+  migrated it to, what PassWall2 26.9.9+ writes itself, and what every xray
+  vctl supports (>= 26.3.27) takes. The goldens stay PassWall2 26.8.10's own
+  output; the test applies this one known difference before comparing.
+- **Shunt rules of the same name get numbered tags** ("Games Domains (2)"):
+  the tags are UCI remarks, which nothing keeps unique.
+- **`route_source passwall` moves PassWall's `proxySettings` to
+  `sockopt.dialerProxy`** (dns-out, pre-proxy and landing chains), and numbers
+  its rules' duplicate ruleTags the same way; an outbound that names two
+  different dialers is refused, as xray refused it before. The provider's
+  documents are left as they are (they carry neither).
+- `build-pro-feed.sh` ships xray **26.10.17**; vctl still depends on
+  `xray-core (>= 26.3.27)`, so installing vctl never pulls a new xray in. The
+  data-plane stand runs 26.10.17 by default.
+
+### Added
+- **`vctl xray-check -binary <path>`**: the write gate's `xray run -test` on
+  the config this router runs now (decrypted in memory, as xray gets it), with
+  another xray. Whether a new xray takes this router's own config, before it
+  replaces the one carrying the LAN. Changes nothing; prints OK or the error,
+  never xray's output (it can quote credentials). It takes the memory floor
+  and the OOM priority of the gate's own check, but not its one-at-a-time
+  slot (that is per process) nor the wrapper's GOMEMLIMIT: run it by hand,
+  not from a loop, on a router with the floor's free memory.
+- `TestGeneratedConfigsLoadInRealXray`: the generated configs through real
+  xray builds listed in `VCTL_XRAY_BINARIES`. On r28's generator it fails for
+  26.10.17 and passes for 26.7.28; on r29's it passes for 26.3.27, 26.7.28 and
+  26.10.17.
+
+### Not changed — and why
+- The installer never upgrades an xray a router already has (it pins the
+  same version), so it cannot put 26.10.17 under a PassWall2 26.8.x. Doing that
+  by hand breaks PassWall itself and vctl's hand-back to it: put xray-core
+  26.10.x only on routers without PassWall2, or with PassWall2 >= 26.9.9-2.
+
 ## vctl 0.7.0-r26 — services are data; «Игры» with a stable exit
 
 The owner, 2026-10-18: «нейросети с играми переключил на авто и у них

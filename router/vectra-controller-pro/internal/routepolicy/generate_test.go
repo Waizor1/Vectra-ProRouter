@@ -1,12 +1,15 @@
 package routepolicy
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -118,6 +121,35 @@ var variantArgs = map[string]string{
 	"remote_dns_fake": "1", "remote_dns_fake_strategy": "UseIP",
 }
 
+// dialerProxyForProxySettings is the one place the generator departs from
+// PassWall2 26.8.10's output, on purpose: an outbound's proxySettings {tag}
+// written as streamSettings.sockopt.dialerProxy, as xray >= 26.9.8 requires
+// (it refuses proxySettings) and PassWall2 >= 26.9.9 writes it itself.
+func dialerProxyForProxySettings(doc any) any {
+	m, _ := doc.(map[string]any)
+	obs, _ := m["outbounds"].([]any)
+	for _, o := range obs {
+		ob, _ := o.(map[string]any)
+		ps, ok := ob["proxySettings"].(map[string]any)
+		if !ok {
+			continue
+		}
+		delete(ob, "proxySettings")
+		ss, _ := ob["streamSettings"].(map[string]any)
+		if ss == nil {
+			ss = map[string]any{}
+			ob["streamSettings"] = ss
+		}
+		so, _ := ss["sockopt"].(map[string]any)
+		if so == nil {
+			so = map[string]any{}
+			ss["sockopt"] = so
+		}
+		so["dialerProxy"] = ps["tag"]
+	}
+	return doc
+}
+
 // The same UCI and arguments in, what PassWall2's own generator made out.
 func TestGenerateMatchesPassWall2(t *testing.T) {
 	for _, tc := range []struct {
@@ -139,7 +171,7 @@ func TestGenerateMatchesPassWall2(t *testing.T) {
 				t.Fatal(err)
 			}
 			var d []string
-			diff("$", jsonValue(t, out), jsonValue(t, golden), &d)
+			diff("$", jsonValue(t, out), dialerProxyForProxySettings(jsonValue(t, golden)), &d)
 			if len(d) > 0 {
 				t.Fatalf("differs from PassWall2's own output in %d places:\n  %s", len(d), strings.Join(d, "\n  "))
 			}
@@ -186,6 +218,128 @@ func TestGenerateRefusesWhatTheFleetDoesNotUse(t *testing.T) {
 		}
 		if _, err := Generate(secs, args, "26.7.28"); !errors.Is(err, ErrUnsupported) {
 			t.Errorf("%s: err %v, want ErrUnsupported", name, err)
+		}
+	}
+}
+
+// No outbound carries proxySettings: xray 26.9.8 refuses a config with one.
+func TestGenerateWritesNoProxySettings(t *testing.T) {
+	for _, tc := range []struct {
+		uci  string
+		args map[string]string
+	}{{"fleet.uci", fleetArgs}, {"fleet-variant.uci", variantArgs}} {
+		for _, xr := range []string{"26.3.27", "26.7.28", "26.10.17"} {
+			out, err := Generate(readUCI(t, tc.uci), tc.args, xr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(out), "proxySettings") {
+				t.Errorf("%s for xray %s: proxySettings in the output", tc.uci, xr)
+			}
+			if !strings.Contains(string(out), `"dialerProxy":"direct"`) {
+				t.Errorf("%s for xray %s: dns-out does not dial through direct", tc.uci, xr)
+			}
+		}
+	}
+}
+
+// Two shunt rules with the same remarks: since 26.9.8 xray refuses a
+// duplicate ruleTag, so the second and later are numbered.
+func TestUniqueRuleTags(t *testing.T) {
+	rules := []obj{
+		{"ruleTag": "Games Domains"}, {"ruleTag": "Games Domains"}, {"ruleTag": ""}, {"ruleTag": ""},
+		{"ruleTag": "Games Domains (2)"}, {"ruleTag": "Games Domains"}, {"outboundTag": "x"}, {"ruleTag": "default"},
+	}
+	var got []any
+	for _, r := range uniqueRuleTags(rules) {
+		got = append(got, r["ruleTag"])
+	}
+	want := []any{"Games Domains", "Games Domains (3)", "", "", "Games Domains (2)", "Games Domains (4)", nil, "default"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ruleTags = %v, want %v", got, want)
+	}
+}
+
+func TestGenerateNumbersRulesOfTheSameName(t *testing.T) {
+	secs := readUCI(t, "fleet.uci")
+	var named []string
+	for i := range secs {
+		if secs[i].Type == "shunt_rules" {
+			secs[i].Options["remarks"] = "Same"
+			named = append(named, secs[i].Name)
+		}
+	}
+	if len(named) < 2 {
+		t.Skip("fixture has fewer than two shunt rules")
+	}
+	out, err := Generate(secs, fleetArgs, "26.10.17")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Routing struct {
+			Rules []map[string]any `json:"rules"`
+		} `json:"routing"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, r := range doc.Routing.Rules {
+		tag, _ := r["ruleTag"].(string)
+		if tag == "" {
+			continue
+		}
+		if seen[tag] {
+			t.Fatalf("duplicate ruleTag %q", tag)
+		}
+		seen[tag] = true
+	}
+}
+
+// The generated configs through real xray builds: VCTL_XRAY_BINARIES lists
+// them (colon-separated, each runnable here), e.g. the XTLS releases the fleet
+// may run. The geo references are swapped for literal ones and env is
+// dropped, so the check needs no geo set: it is about what xray accepts
+// (26.9.8 refuses proxySettings and duplicate ruleTags), not about which
+// categories a .dat holds.
+func TestGeneratedConfigsLoadInRealXray(t *testing.T) {
+	bins := os.Getenv("VCTL_XRAY_BINARIES")
+	if bins == "" {
+		t.Skip("VCTL_XRAY_BINARIES not set")
+	}
+	geo := regexp.MustCompile(`"(geosite|geoip|ext):[^"]*"`)
+	for _, bin := range strings.Split(bins, ":") {
+		ver, err := exec.Command(bin, "version").Output()
+		if err != nil {
+			t.Fatalf("%s: %v", bin, err)
+		}
+		v := strings.Fields(string(ver))[1]
+		for _, tc := range []struct {
+			uci  string
+			args map[string]string
+		}{{"fleet.uci", fleetArgs}, {"fleet-variant.uci", variantArgs}} {
+			out, err := Generate(readUCI(t, tc.uci), tc.args, v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var doc map[string]any
+			if err := json.Unmarshal([]byte(geo.ReplaceAllStringFunc(string(out), func(m string) string {
+				if strings.HasPrefix(m, `"geoip`) {
+					return `"192.0.2.0/24"`
+				}
+				return `"domain:example.com"`
+			})), &doc); err != nil {
+				t.Fatal(err)
+			}
+			delete(doc, "env")
+			b, _ := json.Marshal(doc)
+			cmd := exec.Command(bin, "run", "-test", "-c", "stdin:")
+			cmd.Stdin = bytes.NewReader(b)
+			if msg, err := cmd.CombinedOutput(); err != nil {
+				lines := strings.Split(strings.TrimSpace(string(msg)), "\n")
+				t.Errorf("xray %s refuses %s: %s", v, tc.uci, lines[len(lines)-1])
+			}
 		}
 	}
 }

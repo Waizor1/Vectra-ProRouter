@@ -20,7 +20,7 @@ LOGS="$HERE/logs"
 # worktree in between would run THAT tree's code.
 IMAGE="${STAND_IMAGE:-vctl-dataplane-stand:latest}"
 
-XRAY_VERSION="${XRAY_VERSION:-v26.3.27}"
+XRAY_VERSION="${XRAY_VERSION:-v26.10.17}"
 XRAY_ASSET="Xray-linux-arm64-v8a.zip"
 XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${XRAY_ASSET}"
 GEO_BASE="${GEO_BASE:-https://api.vectra-pro.net/artifacts/canary/vctl}"

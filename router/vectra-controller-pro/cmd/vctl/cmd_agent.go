@@ -501,13 +501,7 @@ func newDaemon(cfg agentcfg.Config) (*daemon, error) {
 	if auto {
 		cfg.RouteSource = routeSourcePassWall
 	}
-	assetDir := config.ResolveGeoAssetDir(cfg.GeoAssetDir)
-	switch cfg.RouteSource {
-	case routeSourcePassWall:
-		assetDir = passwallAssetDir()
-	case routeSourceNative:
-		assetDir = nativeAssetDir()
-	}
+	assetDir := routeAssetDir(cfg)
 	sup := supervisor.NewProcessWithAssetDir(config.Process{
 		XrayBinary: cfg.XrayBinary,
 		ConfigFile: cfg.XrayRenderPath,
