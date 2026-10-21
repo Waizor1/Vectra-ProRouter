@@ -391,7 +391,10 @@ done
 
 install -m 0644 "$PKG_MODULE/install/install.sh" "$OUT/install.sh.in"
 {
-	printf '{\n  "version": "%s",\n  "commit": "%s",\n  "xray": "%s",\n  "geodata": "%s",\n  "reporter": "%s",\n  "archs": [' "$VERSION" "$COMMIT" "${XRAY_VERSION#v}" "$GEODATA_VERSION" "$REPORTER_VERSION"
+	# "xray" is the MINIMUM: sign-pro-feed.sh bakes it into the installer as
+	# BAKED_XRAY_MIN, which refuses a router with an older xray — not the xray
+	# this feed ships (that one is in the index).
+	printf '{\n  "version": "%s",\n  "commit": "%s",\n  "xray": "%s",\n  "geodata": "%s",\n  "reporter": "%s",\n  "archs": [' "$VERSION" "$COMMIT" "$XRAY_MIN" "$GEODATA_VERSION" "$REPORTER_VERSION"
 	sep=""
 	for a in "${ARCHS[@]}"; do printf '%s"%s"' "$sep" "$a"; sep=", "; done
 	printf ']\n}\n'

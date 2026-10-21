@@ -3,6 +3,24 @@
   "package": "vectra-controller-pro",
   "versions": [
     {
+      "version": "0.7.0-r29",
+      "date": "2026-10-21",
+      "notes": {
+        "ru": [
+          "Когда у провайдера ненадолго пропадают серверы отдельного сервиса (например, TikTok или Telegram), приложение Vectra больше не показывает роутер «не в сети» — основной VPN в это время работает как обычно.",
+          "Роутер готов к новому ядру xray 26.10: оно быстрее запускается и меньше нагружает процессор, когда устройства открывают новые соединения."
+        ],
+        "en": [
+          "When the provider briefly loses the servers of a single service (such as TikTok or Telegram), the Vectra app no longer shows the router as offline — the main VPN keeps working as usual.",
+          "The router is ready for the new xray 26.10 core: it starts faster and uses less CPU when devices open new connections."
+        ],
+        "zh": [
+          "当服务商暂时失去某个服务（例如 TikTok 或 Telegram）的服务器时，Vectra 应用不再把路由器显示为离线——主 VPN 照常工作。",
+          "路由器已支持新的 xray 26.10 内核：启动更快，设备建立新连接时 CPU 占用更低。"
+        ]
+      }
+    },
+    {
       "version": "0.7.0-r28",
       "date": "2026-10-20",
       "notes": {
