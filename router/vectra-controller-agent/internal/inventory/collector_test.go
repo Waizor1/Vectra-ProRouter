@@ -281,6 +281,27 @@ func TestLeanModeProbesOneTargetPerService(t *testing.T) {
 	}
 }
 
+// www.cdninstagram.com does not exist in DNS, so probing it failed on every
+// router and painted Instagram "partial" on the whole full profile while
+// Instagram itself worked. The CDN check must hit the real media edge.
+func TestInstagramCDNProbeTargetsTheRealMediaEdge(t *testing.T) {
+	var cdn *instagramProbeTarget
+	for i := range instagramProbeTargets {
+		if instagramProbeTargets[i].ID == "instagram-cdn" {
+			cdn = &instagramProbeTargets[i]
+		}
+	}
+	if cdn == nil {
+		t.Fatalf("full instagram profile lost its CDN target: %+v", instagramProbeTargets)
+	}
+	if cdn.URL != "https://scontent.cdninstagram.com/" {
+		t.Fatalf("instagram CDN probe URL = %q, want the scontent media edge", cdn.URL)
+	}
+	if lean := instagramTargetsFor(serviceReachabilityLean); len(lean) != 1 || lean[0].ID != "instagram-main" {
+		t.Fatalf("lean instagram profile must keep probing instagram.com first, got %+v", lean)
+	}
+}
+
 // YouTube is the one service whose failure mode splits in two: the page can load
 // while playback stalls, because the bytes come from googlevideo rather than from
 // youtube.com. Probing a single limb cannot tell "playback is broken" (the actual
