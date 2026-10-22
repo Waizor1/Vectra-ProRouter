@@ -145,9 +145,18 @@ type instagramProbeTarget struct {
 	URL   string
 }
 
+// instagramCDNProbeURL names a host that exists. The earlier target,
+// www.cdninstagram.com, has no DNS record (NXDOMAIN), so every router on the
+// full profile reported Instagram "partial" no matter how Instagram worked:
+// 2026-10-22, five routers with RAM above the full-profile floor were flagged
+// while instagram.com answered on all of them. scontent.cdninstagram.com is
+// the media edge the app loads photos and video from, and it answers 204
+// through the tunnel.
+const instagramCDNProbeURL = "https://scontent.cdninstagram.com/"
+
 var instagramProbeTargets = []instagramProbeTarget{
 	{ID: "instagram-main", Label: "instagram.com", URL: "https://www.instagram.com/"},
-	{ID: "instagram-cdn", Label: "cdninstagram.com", URL: "https://www.cdninstagram.com/"},
+	{ID: "instagram-cdn", Label: "cdninstagram.com", URL: instagramCDNProbeURL},
 }
 
 var telegramProbeCache = struct {

@@ -49,7 +49,7 @@ func ReconcileShuntBindings(ctx context.Context, backend UCIBackend, desired Des
 		return ShuntReconcileResult{}, err
 	}
 	currentConfig := importDesiredConfig(currentSections)
-	return reconcileShuntBindingsFromCurrent(ctx, backend, currentConfig, desired)
+	return reconcileShuntBindingsFromCurrent(ctx, backend, currentConfig, desired, nil)
 }
 
 // ReconcileShuntBindingsYieldingTo is ReconcileShuntBindings for a router that
@@ -80,7 +80,7 @@ func ReconcileShuntBindingsYieldingTo(ctx context.Context, backend UCIBackend, d
 		return ShuntReconcileResult{}, err
 	}
 	currentConfig := importDesiredConfig(currentSections)
-	return reconcileShuntBindingsFromCurrent(ctx, backend, currentConfig, withoutDirectivePinnedSlots(desired, directive, currentConfig.Nodes))
+	return reconcileShuntBindingsFromCurrent(ctx, backend, currentConfig, withoutDirectivePinnedSlots(desired, directive, currentConfig.Nodes), nil)
 }
 
 func withoutDirectivePinnedSlots(desired DesiredConfig, directive *FleetRoutePolicyDirective, currentNodes []NodeConfig) DesiredConfig {
@@ -115,7 +115,17 @@ func withoutDirectivePinnedSlots(desired DesiredConfig, directive *FleetRoutePol
 	return trimmed
 }
 
-func reconcileShuntBindingsFromCurrent(ctx context.Context, backend UCIBackend, currentConfig DesiredConfig, desired DesiredConfig) (ShuntReconcileResult, error) {
+// exactSlots lists the slots whose exact desired node wins over a node that
+// merely matches its route intent (see pickShuntBindingTarget). Only the panel
+// directive's caller passes any, and only the slots the directive pins: the
+// panel picks that node from the router's own live config and its node-health
+// picture, and the desired-revision self-heal yields every such slot. Slots
+// the directive is silent about go to the built-in scorer, whose pick among
+// equally named hosts is just the first in UCI order, and the desired-revision
+// paths keep matching by intent first as well. Giving those exact-wins too made
+// the two self-heals trade a slot between equally named hosts on every
+// check-in whenever the directive did not own it, each trade a PassWall restart.
+func reconcileShuntBindingsFromCurrent(ctx context.Context, backend UCIBackend, currentConfig DesiredConfig, desired DesiredConfig, exactSlots []string) (ShuntReconcileResult, error) {
 	desiredNodes := nodesByID(desired.Nodes)
 	currentNodes := nodesByID(currentConfig.Nodes)
 	currentRules := shuntRulesByIdentity(currentConfig.BasicSettings.ShuntRules)
@@ -149,44 +159,24 @@ func reconcileShuntBindingsFromCurrent(ctx context.Context, backend UCIBackend, 
 				currentTargetID = currentShuntBindingID(currentShunt, desiredRule)
 			}
 			currentTarget := currentNodes[currentTargetID]
-			targetMatches := currentTarget != nil && nodesMatchRouteIntent(*currentTarget, *desiredTarget)
-			candidate := currentTarget
-			if !targetMatches {
-				candidate = findNodeByRouteIntent(currentConfig.Nodes, *desiredTarget)
-			}
-			if candidate == nil || candidate.ID == "" || candidate.ID == currentTargetID {
-				nodeCommands := []string{}
-				ruleCommands := []string{}
-				if targetMatches {
-					nodeCommands = renderRouteTuningCommands("passwall2."+safeID(candidate.ID), *candidate, *desiredTarget)
-					if currentRule != nil {
-						ruleCommands = renderRouteRuleExtraCommands("passwall2."+safeID(currentRule.ID), *currentRule, desiredRule)
-					}
-				}
-				if len(nodeCommands) == 0 && len(ruleCommands) == 0 {
-					continue
-				}
-				commands = append(commands, ruleCommands...)
-				commands = append(commands, nodeCommands...)
-				changes = append(changes, ShuntReconcileChange{
-					ShuntNodeID:       currentShunt.ID,
-					RuleID:            desiredRule.ID,
-					RuleLabel:         desiredRule.Label,
-					PreviousNodeID:    currentTargetID,
-					PreviousNodeLabel: nodeLabel(currentTarget),
-					RestoredNodeID:    candidate.ID,
-					RestoredNodeLabel: candidate.Label,
-				})
+			candidate, rebind := pickShuntBindingTarget(currentConfig.Nodes, currentNodes, currentTargetID, desiredRule.OutboundNodeID, *desiredTarget, ruleInSlots(&desiredRule, exactSlots))
+			if candidate == nil {
 				continue
 			}
 
-			if !targetMatches {
-				commands = append(commands, setValue("passwall2."+safeID(currentShunt.ID)+"."+safeID(desiredRule.ID), candidate.ID))
+			ruleCommands := []string{}
+			if rebind {
+				ruleCommands = append(ruleCommands, setValue("passwall2."+safeID(currentShunt.ID)+"."+safeID(desiredRule.ID), candidate.ID))
 			}
 			if currentRule != nil {
-				commands = append(commands, renderRouteRuleExtraCommands("passwall2."+safeID(currentRule.ID), *currentRule, desiredRule)...)
+				ruleCommands = append(ruleCommands, renderRouteRuleExtraCommands("passwall2."+safeID(currentRule.ID), *currentRule, desiredRule)...)
 			}
-			commands = append(commands, renderRouteTuningCommands("passwall2."+safeID(candidate.ID), *candidate, *desiredTarget)...)
+			nodeCommands := renderRouteTuningCommands("passwall2."+safeID(candidate.ID), *candidate, *desiredTarget)
+			if len(ruleCommands) == 0 && len(nodeCommands) == 0 {
+				continue
+			}
+			commands = append(commands, ruleCommands...)
+			commands = append(commands, nodeCommands...)
 			changes = append(changes, ShuntReconcileChange{
 				ShuntNodeID:       currentShunt.ID,
 				RuleID:            desiredRule.ID,
@@ -295,6 +285,47 @@ func currentShuntBindingID(shunt *NodeConfig, desiredRule ShuntRule) string {
 		}
 	}
 	return ""
+}
+
+// pickShuntBindingTarget decides which node a slot should end up on and whether
+// that is a move away from the node it points at now.
+//
+// With preferExactNode the exact node the desired rule names wins whenever the
+// router has it and it is enabled (the caller has already ruled out shunts). Without it, or when that node is gone, matching
+// by route intent decides (label first, then transport, port and address): the
+// subscription re-mints every node ID on refresh, so a desired revision
+// recorded before a refresh names IDs that are gone and the label is all that
+// is left to go by.
+//
+// Asking the label first let any equally named node stand in for the one the
+// panel pinned. The provider gives several hosts the same name, e.g.
+// "🇷🇺⚡Россия YouTube 🚫Ad🚫" on ru4, ru13 and ru18 :50051. When ru4 left the
+// subscription, AndreyVK_Sochi kept YouTube on it for three days while the
+// panel's directive named the live ru13 node on every check-in, and nothing was
+// logged because the writer saw nothing to do (2026-10-19..22).
+func pickShuntBindingTarget(nodes []NodeConfig, nodesByID map[string]*NodeConfig, currentTargetID string, desiredTargetID string, desiredTarget NodeConfig, preferExactNode bool) (*NodeConfig, bool) {
+	if preferExactNode {
+		if exact := nodesByID[desiredTargetID]; exact != nil && exact.Enabled {
+			return exact, exact.ID != currentTargetID
+		}
+	}
+	if current := nodesByID[currentTargetID]; current != nil && nodesMatchRouteIntent(*current, desiredTarget) {
+		return current, false
+	}
+	candidate := findNodeByRouteIntent(nodes, desiredTarget)
+	if candidate == nil || candidate.ID == "" {
+		return nil, false
+	}
+	return candidate, candidate.ID != currentTargetID
+}
+
+func ruleInSlots(rule *ShuntRule, slotIDs []string) bool {
+	for _, id := range slotIDs {
+		if samePolicySlot(rule, id) {
+			return true
+		}
+	}
+	return false
 }
 
 func findNodeByRouteIntent(nodes []NodeConfig, desired NodeConfig) *NodeConfig {

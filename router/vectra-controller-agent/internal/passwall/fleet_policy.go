@@ -243,7 +243,22 @@ func ReconcileFleetRoutePolicyWithDirective(ctx context.Context, backend UCIBack
 	if !changed {
 		return ShuntReconcileResult{}, nil
 	}
-	return reconcileShuntBindingsFromCurrent(ctx, backend, currentConfig, desired)
+	// A node the directive pins is the panel's choice for this router and wins
+	// over an equally named neighbour. The built-in scorer's pick for the other
+	// slots is only a tie-break in UCI order and does not.
+	return reconcileShuntBindingsFromCurrent(ctx, backend, currentConfig, desired, directivePinnedSlotIDs(directive))
+}
+
+func directivePinnedSlotIDs(directive *FleetRoutePolicyDirective) []string {
+	if directive == nil || directive.Exempt {
+		return nil
+	}
+	slots := directiveSlots(directive)
+	ids := make([]string, 0, len(slots))
+	for _, slot := range slots {
+		ids = append(ids, slot.ID)
+	}
+	return ids
 }
 
 // mergeDirectiveSlots layers the panel's pins on top of the built-in slot set
