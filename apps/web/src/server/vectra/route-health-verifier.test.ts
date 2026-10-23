@@ -288,6 +288,48 @@ describe("routeVerificationToHealthSample", () => {
 
     expect(sample).toBeNull();
   });
+
+  // The same evidence window the destination probes live under. Without it an
+  // offline router's last "ok" kept vouching for a host indefinitely.
+  describe("evidence window", () => {
+    const verification = {
+      slots: [{ slotId: "WorldProxy", boundNodeId: "node-pl", smokeOk: true }],
+    };
+    const now = new Date("2026-10-23T12:00:00Z");
+
+    it("keeps a fresh verdict taken after the current binding", () => {
+      expect(
+        routeVerificationToHealthSample("r1", nodes, verification, {
+          verifiedAt: new Date("2026-10-23T09:00:00Z"),
+          bindingSince: new Date("2026-10-23T00:01:00Z"),
+          now,
+        }),
+      ).not.toBeNull();
+    });
+
+    it("drops a verdict older than six hours", () => {
+      expect(
+        routeVerificationToHealthSample("r1", nodes, verification, {
+          verifiedAt: new Date("2026-10-23T05:59:00Z"),
+          now,
+        }),
+      ).toBeNull();
+    });
+
+    it("drops a verdict taken before the router's current binding", () => {
+      expect(
+        routeVerificationToHealthSample("r1", nodes, verification, {
+          verifiedAt: new Date("2026-10-23T09:00:00Z"),
+          bindingSince: new Date("2026-10-23T10:00:00Z"),
+          now,
+        }),
+      ).toBeNull();
+    });
+
+    it("applies no window when the caller gives none", () => {
+      expect(routeVerificationToHealthSample("r1", nodes, verification)).not.toBeNull();
+    });
+  });
 });
 
 describe("selectRoutersForSubscriptionRescue", () => {

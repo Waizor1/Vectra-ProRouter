@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildFleetNodeHealth,
+  isProvenNodeHost,
   isUnhealthyNodeHost,
   type FleetNodeHealthSample,
 } from "./fleet-node-health";
@@ -110,5 +111,33 @@ describe("endpoint keying", () => {
 
     expect(isUnhealthyNodeHost(health, "ru7.nfnpx.online", 50055)).toBe(true);
     expect(isUnhealthyNodeHost(health, "ru7.nfnpx.online", 50054)).toBe(false);
+  });
+});
+
+describe("reached hosts (the positive half)", () => {
+  // The strictPreferred hold only lets a router move onto a host some router
+  // has carried traffic through; anything else is unknown, not dead.
+  it("lists every host any router reached, port by port", () => {
+    const health = buildFleetNodeHealth([
+      sample("a", [
+        { host: "ru16.nfnpx.online:50052", outcome: "ok" },
+        { host: "ru5.nfnpx.online:50051", outcome: "ok" },
+      ]),
+      sample("b", [{ host: "ru5.nfnpx.online:50052", outcome: "fail" }]),
+    ]);
+
+    expect(health.reachedHosts).toEqual([
+      "ru16.nfnpx.online:50052",
+      "ru5.nfnpx.online:50051",
+    ]);
+    expect(isProvenNodeHost(health, "ru16.nfnpx.online", 50052)).toBe(true);
+    expect(isProvenNodeHost(health, "RU5.nfnpx.online", 50051)).toBe(true);
+    expect(isProvenNodeHost(health, "ru5.nfnpx.online", 50052)).toBe(false);
+  });
+
+  it("proves nothing without samples or without a ledger", () => {
+    expect(buildFleetNodeHealth([]).reachedHosts).toHaveLength(0);
+    expect(isProvenNodeHost(buildFleetNodeHealth([]), "ru16.nfnpx.online", 50052)).toBe(false);
+    expect(isProvenNodeHost(null, "ru16.nfnpx.online", 50052)).toBe(false);
   });
 });

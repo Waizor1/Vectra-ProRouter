@@ -30,13 +30,19 @@ type DatabaseClient = typeof appDb;
  *
  * Five minutes is deliberately coarse. A provider losing a host is an outage
  * measured in hours, and the cost of reacting a few minutes late is far below
- * the cost of thrashing routers between exits on a transient probe. The ledger
- * only ever gets consulted to *reject* a candidate, so a stale ledger degrades
- * to the behaviour the policy had before it existed.
+ * the cost of thrashing routers between exits on a transient probe. A stale
+ * ledger errs on the side of not moving: its condemnations only reject
+ * candidates, and its positive half (reachedHosts) only ever releases the
+ * strictPreferred hold — missing evidence keeps a router where it is.
  */
 const TTL_MS = 5 * 60 * 1000;
 
-const EMPTY_HEALTH: FleetNodeHealth = { unhealthyHosts: [], index: new Set() };
+const EMPTY_HEALTH: FleetNodeHealth = {
+  unhealthyHosts: [],
+  index: new Set(),
+  reachedHosts: [],
+  reachedIndex: new Set(),
+};
 
 /**
  * Also carries each router's last known config.
@@ -153,6 +159,11 @@ async function rebuild(
       routerId,
       config.nodes,
       verification,
+      {
+        verifiedAt: routeVerifications.get(routerId)?.verifiedAt ?? null,
+        bindingSince: policyConfigRows.get(routerId)?.createdAt ?? null,
+        now: new Date(now),
+      },
     );
     return sample ? [sample] : [];
   });

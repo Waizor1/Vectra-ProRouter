@@ -43,6 +43,16 @@ export type FleetNodeHealth = {
   unhealthyHosts: string[];
   /** Lookup set, kept alongside the array so callers can serialise the ledger. */
   index: ReadonlySet<string>;
+  /**
+   * Hosts some router carried traffic through inside the evidence window
+   * (6 h, and not older than that router's current binding — for destination
+   * probes and route verifications alike): the positive half of the ledger. Evidence only ever comes from the node a slot
+   * is bound to, so a host nobody is bound to is never here, however healthy it
+   * may be. That is what makes it the right test for "may we send a router
+   * there": absence means unknown, not dead.
+   */
+  reachedHosts: string[];
+  reachedIndex: ReadonlySet<string>;
 };
 
 export function normalizeNodeHost(value: string | null | undefined) {
@@ -71,6 +81,19 @@ export function isUnhealthyNodeHost(
   }
   const key = nodeEndpointKey(host, port);
   return key.length > 0 && health.index.has(key);
+}
+
+/** True when some router reached this host:port inside the evidence window. */
+export function isProvenNodeHost(
+  health: FleetNodeHealth | null | undefined,
+  host: string | null | undefined,
+  port?: number | null,
+) {
+  if (!health) {
+    return false;
+  }
+  const key = nodeEndpointKey(host, port);
+  return key.length > 0 && health.reachedIndex.has(key);
 }
 
 /**
@@ -129,5 +152,12 @@ export function buildFleetNodeHealth(
     .filter((host) => !reached.has(host))
     .sort();
 
-  return { unhealthyHosts, index: new Set(unhealthyHosts) };
+  const reachedHosts = [...reached].sort();
+
+  return {
+    unhealthyHosts,
+    index: new Set(unhealthyHosts),
+    reachedHosts,
+    reachedIndex: new Set(reachedHosts),
+  };
 }
