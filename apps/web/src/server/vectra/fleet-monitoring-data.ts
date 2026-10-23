@@ -662,7 +662,12 @@ export async function loadFleetMonitoringSnapshot(
         const config = policyConfigRows.get(routerId)?.config;
         const verified =
           verification && config
-            ? routeVerificationToHealthSample(routerId, config.nodes, verification)
+            ? routeVerificationToHealthSample(routerId, config.nodes, verification, {
+                // Same window as the check-in ledger (fleet-node-health-cache).
+                verifiedAt: routeVerifications.get(routerId)?.verifiedAt ?? null,
+                bindingSince: policyConfigRows.get(routerId)?.createdAt ?? null,
+                now: new Date(now),
+              })
             : null;
         return verified ? [verified] : [];
       }).concat(

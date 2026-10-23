@@ -5,6 +5,7 @@ import type { db as appDb } from "~/server/db";
 
 import type { FleetNodeHealthSample } from "./fleet-node-health";
 import { nodeEndpointKey } from "./fleet-node-health";
+import { STALE_PROBE_MAX_AGE_MS } from "./fleet-route-policy";
 
 type DatabaseClient = typeof appDb;
 
@@ -224,9 +225,34 @@ export function routeVerificationToHealthSample(
   routerId: string,
   nodes: NodeLike[],
   verification: RouteVerification | null | undefined,
+  /**
+   * The same evidence window the destination probes live under
+   * (collectFleetNodeHealthSample). Without it a verdict never expired: an
+   * offline router's last url_test_node "ok" kept a host reached — sparing it
+   * from condemnation and, since the strictPreferred hold, vouching for it as
+   * a move target — for as long as its stored config kept that node id, and a
+   * router that moved kept testifying about the host it had left. Omitted
+   * fields skip their check, as before.
+   */
+  window?: {
+    verifiedAt?: Date | null;
+    bindingSince?: Date | null;
+    now?: Date | null;
+  },
 ): FleetNodeHealthSample | null {
   if (!verification || verification.exempt) {
     return null;
+  }
+  const verifiedAt = window?.verifiedAt?.getTime();
+  if (verifiedAt !== undefined && Number.isFinite(verifiedAt)) {
+    const now = window?.now?.getTime();
+    if (now !== undefined && now - verifiedAt > STALE_PROBE_MAX_AGE_MS) {
+      return null;
+    }
+    const bindingSince = window?.bindingSince?.getTime();
+    if (bindingSince !== undefined && verifiedAt < bindingSince) {
+      return null;
+    }
   }
 
   const addressById = new Map<string, string>();
