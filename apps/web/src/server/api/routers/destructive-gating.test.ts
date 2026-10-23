@@ -632,7 +632,7 @@ describe("destructive route gating", () => {
       "/tmp/vectra-skip-postinst-restart",
     );
     expect(inserted.payload?.command).toContain(
-      'actual_sha="$(sha256sum "$1" | awk \'{print $1}\')"',
+      'actual_sha="$(sha256sum "$fetch_file" | awk \'{print $1}\')"',
     );
     expect(inserted.payload?.command).toContain(
       "pkg_ok luci-app-vectra-controller",
