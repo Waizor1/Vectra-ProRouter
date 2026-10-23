@@ -12,6 +12,19 @@ export const controllerSelfUpdateCompatTerminalPurpose =
 export const controllerTerminalSupportMinVersion = "0.1.12-r1";
 
 const controllerSelfUpdateTimeoutSeconds = 120;
+// Retried downloads (see fetch() in the command). The deadline is checked
+// after each failed attempt, so with every attempt hanging for its full -T the
+// worst case for the pair is 66 s: the agent .ipk succeeding on its 4th try at
+// 54 s, then one try at the LuCI .ipk. -T is uclient-fetch's idle timeout — it
+// catches a stalled connection, not a slow live one — so the hard bound is the
+// install gate: past controllerSelfUpdateInstallGateSeconds since the job
+// started, the command refuses to begin the guard copy and opkg and leaves the
+// router as it was, rather than risk the 120 s job limit killing an install.
+export const controllerSelfUpdateFetchAttempts = 4;
+export const controllerSelfUpdateFetchAttemptTimeoutSeconds = 12;
+export const controllerSelfUpdateFetchBudgetSeconds = 45;
+export const controllerSelfUpdateInstallGateSeconds = 75;
+const controllerSelfUpdateFetchRetryDelaySeconds = 2;
 
 // Exit codes of the generated command besides 0/1: 72 = resource guard (RAM,
 // /overlay, /tmp), 73 = no room for a rollback copy (nothing was changed),
@@ -191,6 +204,10 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
 
   const command = [
     "set -eu",
+    // Seconds since boot: monotonic, unaffected by NTP steps, and needs no
+    // `date`. The download budget and the install gate both measure from it.
+    "mono() { cut -d. -f1 /proc/uptime 2>/dev/null || date +%s; }",
+    'job_started="$(mono)"',
     "skip=/tmp/vectra-skip-postinst-restart",
     "mem_available_mb=\"$(awk '/^MemAvailable:/ { print int($2 / 1024); found=1; exit } END { if (!found) print 0 }' /proc/meminfo 2>/dev/null || printf 0)\"",
     "df_free_mb() { df -kP \"$1\" 2>/dev/null | awk 'NR == 2 { print int($4 / 1024); found=1; exit } END { if (!found) print 0 }'; }",
@@ -211,8 +228,29 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     'guard="$guard_dir/guard.sh"',
     'installing=0',
     'fail() { if [ "$installing" = 1 ]; then installing=0; sh "$guard" restore-files "$*" >&2 || true; echo "controller self-update failed: $* (previous version restored)" >&2; exit 1; fi; echo "controller self-update failed: $*" >&2; exit 1; }',
-    'fetch() { if command -v wget >/dev/null 2>&1; then wget -q -O "$1" "$2" || fail "download $2"; elif command -v uclient-fetch >/dev/null 2>&1; then uclient-fetch -q -O "$1" "$2" || fail "download $2"; else fail "missing downloader"; fi; }',
-    'check_sha() { actual_sha="$(sha256sum "$1" | awk \'{print $1}\')"; [ "$actual_sha" = "$2" ] || fail "sha256 mismatch for $1"; }',
+    // Downloads retry with a per-attempt timeout under one shared budget.
+    //
+    // ekotri-avito and yarik, 2026-10-23: the routers' ISPs drop part of the
+    // connections to api.vectra-pro.net (control traffic goes direct, past the
+    // VPN) — one attempt pulls 2.5 MB in 0.6 s, the next hangs until it times
+    // out. A single `wget` per file failed the whole update four times in a
+    // row on ekotri-avito while the other 26 routers updated cleanly.
+    //
+    // The budget matters more than the attempt count: the whole job runs under
+    // controllerSelfUpdateTimeoutSeconds, and a job killed mid-install never
+    // reaches fail()'s rollback. So downloads stop retrying once
+    // fetch_budget_seconds have passed since the first one started, which
+    // leaves the rest of the window to the guard and opkg. A wrong sha256 is
+    // retried too: a cut-off transfer is the likeliest way to get one.
+    `fetch_attempts=${controllerSelfUpdateFetchAttempts}`,
+    `fetch_timeout=${controllerSelfUpdateFetchAttemptTimeoutSeconds}`,
+    `fetch_budget_seconds=${controllerSelfUpdateFetchBudgetSeconds}`,
+    `fetch_retry_delay=${controllerSelfUpdateFetchRetryDelaySeconds}`,
+    "fetch_deadline=0",
+    // uclient-fetch first: when wget-ssl is installed, `wget` is GNU wget, whose
+    // own 20 retries with back-off would spend the whole job on one attempt.
+    'fetch_once() { if command -v uclient-fetch >/dev/null 2>&1; then uclient-fetch -q -T "$fetch_timeout" -O "$1" "$2"; elif command -v wget >/dev/null 2>&1; then wget -q -T "$fetch_timeout" -O "$1" "$2"; else return 127; fi; }',
+    'fetch() { fetch_file="$1"; fetch_url="$2"; fetch_sha="$3"; fetch_attempt=0; [ "$fetch_deadline" -gt 0 ] || fetch_deadline=$(( $(mono) + fetch_budget_seconds )); while :; do fetch_attempt=$((fetch_attempt + 1)); rm -f "$fetch_file"; if fetch_once "$fetch_file" "$fetch_url"; then actual_sha="$(sha256sum "$fetch_file" | awk \'{print $1}\')"; [ "$actual_sha" = "$fetch_sha" ] && return 0; fetch_why="sha256 mismatch"; else fetch_rc=$?; [ "$fetch_rc" -ne 127 ] || fail "missing downloader"; fetch_why="exit $fetch_rc"; fi; if [ "$fetch_attempt" -ge "$fetch_attempts" ] || [ "$(mono)" -ge "$fetch_deadline" ]; then fail "download $fetch_url: $fetch_why after $fetch_attempt attempt(s)"; fi; echo "controller self-update: download $fetch_url: $fetch_why, retrying ($fetch_attempt/$fetch_attempts)" >&2; sleep "$fetch_retry_delay"; done; }',
     'pkg_status() { awk -F\': \' -v pkg="$1" \'/^Package:/ { current = ($2 == pkg); next } current { print }\' /usr/lib/opkg/status 2>/dev/null; }',
     'pkg_ok() { pkg="$1"; status="$(pkg_status "$pkg" || true)"; printf "%s\\n" "$status" | grep -Eq "^Status: install (ok|user) installed$" || fail "$pkg is not installed"; if [ -n "$target_version" ]; then printf "%s\\n" "$status" | grep -Fqx "Version: $target_version" || fail "$pkg is not at $target_version"; fi; }',
     'need_file() { [ -s "$1" ] || fail "missing LuCI file $1"; }',
@@ -239,11 +277,12 @@ export function buildTerminalControllerSelfUpdatePayload(args: {
     'verify_agent_on_disk() { [ -x /usr/sbin/vectra-controller-agent ] || fail "/usr/sbin/vectra-controller-agent missing or non-executable after opkg install (refusing to schedule restart)"; bin_size="$(wc -c < /usr/sbin/vectra-controller-agent 2>/dev/null | tr -dc 0-9)"; [ "${bin_size:-0}" -ge 1048576 ] || fail "/usr/sbin/vectra-controller-agent is suspiciously small (${bin_size:-0} bytes < 1 MB)"; }',
     'agent_ipk="$workdir/vectra-controller-agent.ipk"',
     'luci_ipk="$workdir/luci-app-vectra-controller.ipk"',
-    `fetch "$agent_ipk" ${shellSingleQuote(agentArtifact.artifactUrl)}`,
-    `check_sha "$agent_ipk" ${shellSingleQuote(agentArtifact.sha256)}`,
-    `fetch "$luci_ipk" ${shellSingleQuote(luciArtifact.artifactUrl)}`,
-    `check_sha "$luci_ipk" ${shellSingleQuote(luciArtifact.sha256)}`,
+    `fetch "$agent_ipk" ${shellSingleQuote(agentArtifact.artifactUrl)} ${shellSingleQuote(agentArtifact.sha256)}`,
+    `fetch "$luci_ipk" ${shellSingleQuote(luciArtifact.artifactUrl)} ${shellSingleQuote(luciArtifact.sha256)}`,
     'verify_ipk_has_agent "$agent_ipk"',
+    // Nothing has been touched yet, so stopping here is free; past this line
+    // the install must have room to finish inside the job's time limit.
+    `elapsed=$(( $(mono) - job_started )); [ "$elapsed" -le ${controllerSelfUpdateInstallGateSeconds} ] || fail "downloads took \${elapsed}s; not installing with less than ${controllerSelfUpdateTimeoutSeconds - controllerSelfUpdateInstallGateSeconds}s of the ${controllerSelfUpdateTimeoutSeconds}s job left"`,
     // The rollback guard (router/vectra-controller-agent/openwrt/update-guard)
     // is written here, outside both packages, so it protects an update from
     // any installed version. `prepare` copies the installed pair aside first:
