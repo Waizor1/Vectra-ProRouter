@@ -4,6 +4,7 @@ import {
 } from "@vectra/contracts";
 
 import {
+  isProvenNodeHost,
   isUnhealthyNodeHost,
   nodeEndpointKey,
   type FleetNodeHealth,
@@ -797,6 +798,109 @@ function findBestTarget(
   )[0]!;
 }
 
+// Slots that must sit on the same node as another slot take that slot's
+// decision instead of making their own. DiscordVoiceUdp shares WorldProxy's
+// node by design (see its scorer case), so whatever keeps or moves WorldProxy
+// keeps or moves it too; deciding them separately could split the pair.
+const pairedSlotLeader: Partial<
+  Record<FleetRoutePolicySlotId, FleetRoutePolicySlotId>
+> = {
+  DiscordVoiceUdp: "WorldProxy",
+};
+
+/**
+ * Keeps a strictPreferred slot on the exit it is on when the move would trade
+ * an exit the fleet has not condemned for one nobody has shown to work.
+ *
+ * strictPreferred pins every router to the host the spread hashes it to. The
+ * spread picks among ALL equally-scoring hosts in the router's subscription,
+ * and the liveness ledger only knows hosts some router is bound to — so a host
+ * nobody uses is never condemned and can be picked while dead. Until 0.1.13-r49
+ * the controller ignored such a pick whenever its current node carried the
+ * same name, which every "🇷🇺🇩🇪⚡Германия YouTube 🚫Ad🚫" node does; r49 binds
+ * the exact node the panel names. On 2026-10-23 that moved zhenya13911 off a
+ * working ru16:50052 onto ru5:50052, which carried neither Telegram nor
+ * Instagram, and the router stayed there ~40 minutes until its own failing
+ * probes got ru5 condemned.
+ *
+ * The router keeps its current node only when all of these hold:
+ *  - the ledger is present (without one there is nothing to weigh);
+ *  - the current node is not condemned — a dead slot still moves at once.
+ *    "Not condemned" is weaker than "works": a host with no evidence yet, or
+ *    one that carries Telegram but not Instagram (any "ok" counts as reached),
+ *    is held too. The old code would have moved such a router to a pick of
+ *    unknown health instead, so this trades one guess for a more stable one;
+ *    a slot that is really down still reaches the move through condemnation;
+ *  - it scores exactly as well as the pick, so the move is the spread
+ *    rebalancing equal exits, not a canon change (a new canonical tier still
+ *    moves the fleet; that is an operator decision, not a guess);
+ *  - no router reached the pick inside the evidence window.
+ * The moment any router carries traffic through the pick, the spread applies
+ * again as before.
+ *
+ * Trade-off, stated so nobody rediscovers it the hard way: evidence only comes
+ * from bound slots, so a host no router uses is never proven, and the spread
+ * stops rebalancing routers that sit on a live exit of the same tier. New
+ * hosts still fill through new routers, dead exits and canon changes.
+ */
+function keepLiveStrictBinding(
+  config: FleetPolicyConfigView,
+  slot: PolicySlot,
+  preferred: PasswallNode | null,
+  currentNodeId: string | null | undefined,
+  options?: FleetRoutePolicyOptions | null,
+): PasswallNode | null {
+  const health = options?.nodeHealth;
+  if (!health || !preferred || !slot.strictPreferred) {
+    return null;
+  }
+  const current = findNodeById(config, currentNodeId);
+  if (!current || current.id === preferred.id) {
+    return null;
+  }
+  if (isUnhealthyNodeHost(health, current.address, current.port)) {
+    return null;
+  }
+  if (semanticScore(slot.id, current) !== semanticScore(slot.id, preferred)) {
+    return null;
+  }
+  if (isProvenNodeHost(health, preferred.address, preferred.port)) {
+    return null;
+  }
+  return current;
+}
+
+/**
+ * The node a slot should be on: the spread's pick, unless the current exit is
+ * held (keepLiveStrictBinding) or the slot follows a leader that was held.
+ * `held` carries those decisions between slots of one evaluation, so callers
+ * must walk the slots in canonical order (the leader comes first).
+ */
+function resolvePolicyTarget(
+  config: FleetPolicyConfigView,
+  slot: PolicySlot,
+  identity: FleetRoutePolicyRouterIdentity | null | undefined,
+  currentNodeId: string | null | undefined,
+  options: FleetRoutePolicyOptions | null | undefined,
+  held: Map<FleetRoutePolicySlotId, PasswallNode>,
+) {
+  const leader = pairedSlotLeader[slot.id];
+  const leaderHeld = leader ? held.get(leader) : undefined;
+  if (leaderHeld) {
+    return leaderHeld;
+  }
+  const best = findBestTarget(config, slot, identity, currentNodeId, options);
+  if (leader) {
+    return best;
+  }
+  const keep = keepLiveStrictBinding(config, slot, best, currentNodeId, options);
+  if (keep) {
+    held.set(slot.id, keep);
+    return keep;
+  }
+  return best;
+}
+
 function fingerprint(node: PasswallNode | null | undefined) {
   if (!node) {
     return null;
@@ -896,8 +1000,12 @@ function summarizeCompliance(
  * WorldProxy carries geosite:TELEGRAM and geosite:META, YouTube carries
  * geosite:YOUTUBE.
  */
-/** See the `now` parameter of collectFleetNodeHealthSample. */
-const STALE_PROBE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+/**
+ * See the `now` parameter of collectFleetNodeHealthSample. Also applied to
+ * route-verification evidence (routeVerificationToHealthSample), so the whole
+ * ledger shares one evidence window.
+ */
+export const STALE_PROBE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 export function collectFleetNodeHealthSample(
   routerId: string,
@@ -970,7 +1078,8 @@ export function collectFleetNodeHealthSample(
     if (!checkedAt) {
       // Cannot place the probe in time, so it cannot be shown to postdate the
       // binding. Dropping it costs an opinion; keeping it risks another false
-      // condemnation, and the ledger is only ever consulted to reject.
+      // condemnation. A dropped "ok" can only keep a strictPreferred slot where
+      // it is (see keepLiveStrictBinding), never move it.
       return false;
     }
     const at = new Date(checkedAt);
@@ -1068,15 +1177,17 @@ export function evaluateFleetRoutePolicy(
 
   const mismatches: FleetRoutePolicyMismatch[] = [];
   const matchedSlots: FleetRoutePolicySlotMatch[] = [];
+  const held = new Map<FleetRoutePolicySlotId, PasswallNode>();
 
   for (const slot of canonicalFleetRoutePolicy.slots) {
     const rule = findRule(config, slot);
-    const preferredTarget = findBestTarget(
+    const preferredTarget = resolvePolicyTarget(
       config,
       slot,
       identity,
       rule ? readRuleBindingId(config, rule, slot) : null,
       options,
+      held,
     );
     if (!rule) {
       mismatches.push({
@@ -1257,6 +1368,7 @@ export function normalizeFleetRoutePolicy(
     };
   }
 
+  const held = new Map<FleetRoutePolicySlotId, PasswallNode>();
   for (const slot of canonicalFleetRoutePolicy.slots) {
     const basicIndex = findRuleIndex(next.basicSettings.shuntRules, slot);
     if (basicIndex < 0) {
@@ -1265,12 +1377,13 @@ export function normalizeFleetRoutePolicy(
 
     const rule = next.basicSettings.shuntRules[basicIndex]!;
     const previousBindingId = readRuleBindingId(next, rule, slot);
-    const target = findBestTarget(
+    const target = resolvePolicyTarget(
       next,
       slot,
       identity,
       previousBindingId,
       options,
+      held,
     );
     if (!target) {
       continue;

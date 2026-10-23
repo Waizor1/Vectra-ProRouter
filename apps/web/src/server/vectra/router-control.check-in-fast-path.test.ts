@@ -299,7 +299,12 @@ describe("legacy PassWall agent keeps today's behaviour", () => {
   it("gets no route-policy directive while the fleet ledger is not built yet", async () => {
     // The router's stored config, which the ledger carries for it.
     const built = {
-      nodeHealth: { unhealthyHosts: [], index: new Set<string>() },
+      nodeHealth: {
+        unhealthyHosts: [],
+        index: new Set<string>(),
+        reachedHosts: [],
+        reachedIndex: new Set<string>(),
+      },
       configByRouter: new Map([[ROUTER_ID, passwallConfig]]),
     };
     try {
