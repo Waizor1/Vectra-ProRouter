@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const setCookie = vi.fn();
+const sessions = vi.hoisted(() => ({ available: true }));
 
 vi.mock("~/env", () => ({
   env: {
@@ -16,6 +17,7 @@ vi.mock("~/server/operator-session", () => ({
   createOperatorSession: vi.fn(async () => "session"),
   getOperatorCookieName: () => "vectra_operator",
   getOperatorSessionMaxAgeSeconds: () => 3600,
+  operatorSessionsAvailable: () => sessions.available,
 }));
 
 const RIGHT = "correct horse battery staple";
@@ -46,6 +48,18 @@ function login(
 describe("POST /api/operator/login", () => {
   beforeEach(() => {
     setCookie.mockClear();
+    sessions.available = true;
+  });
+
+  // No session key (or a cutoff that is unreadable or still ahead): the right
+  // password is told so, and no cookie is set; the wrong one learns nothing.
+  it("says operator sessions are off instead of setting a cookie", async () => {
+    const { POST } = await loadRoute();
+    sessions.available = false;
+
+    expect((await login(POST, RIGHT)).headers.get("location")).toBe("/login?error=sessions");
+    expect((await login(POST, "wrong")).headers.get("location")).toBe("/login?error=1");
+    expect(setCookie).not.toHaveBeenCalled();
   });
 
   it("signs in with the right password and refuses the wrong one", async () => {
