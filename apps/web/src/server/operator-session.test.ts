@@ -73,6 +73,19 @@ describe("operator session: its own key, a not-before cutoff, fail closed", () =
     expect(await verifyOperatorSession(legacy)).toBeNull();
   });
 
+  // Independent of the iat rule: a shared-key cookie that does carry an issue
+  // time (no such cookie was ever issued, but a fallback would accept one).
+  it("never falls back to the shared key: a shared-key cookie with iat is refused with own key A, without it and with it empty", async () => {
+    const sharedWithIat = await oldFormatCookie(SHARED_KEY, { user: "operator", iat: Date.now(), exp: Date.now() + 3_600_000 });
+    for (const key of [KEY_A, undefined, ""]) {
+      set("VECTRA_OPERATOR_SESSION_SECRET", key);
+      expect(await verifyOperatorSession(sharedWithIat)).toBeNull();
+    }
+    vi.stubEnv("NODE_ENV", "development");
+    set("VECTRA_OPERATOR_SESSION_SECRET", undefined);
+    expect(await verifyOperatorSession(sharedWithIat)).toBeNull();
+  });
+
   it("without its own key production issues no cookie and accepts none", async () => {
     set("VECTRA_OPERATOR_SESSION_SECRET", KEY_A);
     const underA = await createOperatorSession("operator");
@@ -84,9 +97,11 @@ describe("operator session: its own key, a not-before cutoff, fail closed", () =
     }
   });
 
-  it("a short key, or one equal to the shared key, is no key", async () => {
+  it("a short, padded, development, placeholder or shared-equal key is no key", async () => {
     const legacy = await legacyCookie();
-    for (const bad of ["too-short", SHARED_KEY]) {
+    const padded = ` ${KEY_A} `;
+    const spaces = " ".repeat(40);
+    for (const bad of ["too-short", SHARED_KEY, padded, spaces, "vectra-dev-session-secret", "replace-with-a-long-random-32-byte-plus-session-secret"]) {
       set("VECTRA_OPERATOR_SESSION_SECRET", bad);
       expect(operatorSessionsAvailable()).toBe(false);
       await expect(createOperatorSession("operator")).rejects.toThrow(/sessions are off/);
@@ -149,6 +164,25 @@ describe("operator session: its own key, a not-before cutoff, fail closed", () =
     expect(await verifyOperatorSession(withIat)).not.toBeNull();
   });
 
+  it("a user name outside Latin-1 signs in and round-trips (was a 500)", async () => {
+    set("VECTRA_OPERATOR_SESSION_SECRET", KEY_A);
+    const cookie = await createOperatorSession("оператор-生");
+    expect(await verifyOperatorSession(cookie)).toMatchObject({ user: "оператор-生" });
+  });
+
+  it("an exp that is not a number, or a lifetime past 7 days, is refused even when signed", async () => {
+    set("VECTRA_OPERATOR_SESSION_SECRET", KEY_A);
+    const now = Date.now();
+    for (const payload of [
+      { user: "operator", iat: now, exp: String(now + 3_600_000) },
+      { user: "operator", iat: now, exp: now + 8 * 24 * 3600 * 1000 },
+    ]) {
+      expect(await verifyOperatorSession(await oldFormatCookie(KEY_A, payload))).toBeNull();
+    }
+    // Positive control: a 7-day lifetime exactly is fine.
+    expect(await verifyOperatorSession(await oldFormatCookie(KEY_A, { user: "operator", iat: now, exp: now + 7 * 24 * 3600 * 1000 }))).not.toBeNull();
+  });
+
   it("an edited payload is refused", async () => {
     set("VECTRA_OPERATOR_SESSION_SECRET", KEY_A);
     const [, signature] = (await createOperatorSession("operator")).split(".");
@@ -156,7 +190,10 @@ describe("operator session: its own key, a not-before cutoff, fail closed", () =
     expect(await verifyOperatorSession(forged)).toBeNull();
   });
 
-  it("a ciphertext sealed before every key and cutoff change still decrypts (the shared key is untouched)", async () => {
+  // A guard, not a proof: the session code never reads or writes the shared
+  // key's ciphertexts, so this pins that stored secrets keep opening across
+  // every session-key and cutoff change.
+  it("stored secrets keep decrypting across every session-key and cutoff change", async () => {
     const payload = { subscriptionUrl: "https://sub.example.invalid/x", password: "not-a-real-secret" };
     const envelope = encryptJson(payload, { aad: "router:r-1|revision:v-1" });
     for (const [key, cutoff] of [[KEY_A, undefined], [KEY_B, seconds(T0)], [undefined, undefined], ["", ""]] as const) {

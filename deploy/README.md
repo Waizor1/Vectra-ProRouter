@@ -86,15 +86,22 @@ Set at minimum:
 - `DATABASE_URL=postgresql://vectra:<same-password>@postgres:5432/vectra`
 - `VECTRA_OPERATOR_PASSWORD=<strong-random-password>`
 - `VECTRA_SECRETS_KEY=<64 hex chars>`
+- `VECTRA_OPERATOR_SESSION_SECRET=<64 hex chars from a second openssl rand -hex 32, never the same as VECTRA_SECRETS_KEY>` (without it operator login is off; the router API is not affected)
 - `VECTRA_DEFAULT_CONTROL_DOMAIN=https://router.vectra-pro.net`
 - `VECTRA_ROUTER_API_BASE_URL=https://api.vectra-pro.net`
 - `VECTRA_ARTIFACT_BASE_URL=https://api.vectra-pro.net/artifacts`
 
-Generate a secrets key:
+Generate a secrets key, and separately the operator session key:
 
 ```bash
 openssl rand -hex 32
 ```
+
+To end every operator session later, rotate `VECTRA_OPERATOR_SESSION_SECRET` or set
+`VECTRA_OPERATOR_SESSIONS_NOT_BEFORE` to the current `date +%s`, then recreate the
+containers (`docker compose up -d web worker`; `restart` does not re-read `.env`).
+Never empty the session key to roll back, and never rotate `VECTRA_SECRETS_KEY` for
+this: it encrypts the stored secrets.
 
 ## 3. Prepare runtime directories
 

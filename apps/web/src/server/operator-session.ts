@@ -27,7 +27,8 @@ const DEV_SESSION_SECRET = "vectra-dev-session-secret";
 // never VECTRA_SECRETS_KEY, which encrypts the stored secrets and is never
 // rotated to log operators out. Rotating this key ends every operator session
 // at once and touches nothing else. In production a key that is missing,
-// empty, shorter than 32 characters or equal to VECTRA_SECRETS_KEY is no key:
+// empty, shorter than 32 characters, padded with whitespace, the development
+// key, a "replace-with…" placeholder or equal to VECTRA_SECRETS_KEY is no key:
 // no cookie is issued and none is accepted. There is no fallback, so removing
 // the key never brings back a cookie an earlier key ended. Outside production
 // a fixed development key stands in for a missing one.
@@ -35,6 +36,9 @@ function getSessionSecret(): string | null {
   const dedicated = process.env.VECTRA_OPERATOR_SESSION_SECRET ?? "";
   if (
     dedicated.length >= MIN_SESSION_SECRET_LENGTH &&
+    dedicated.trim() === dedicated &&
+    dedicated !== DEV_SESSION_SECRET &&
+    !dedicated.startsWith("replace-with") &&
     dedicated !== process.env.VECTRA_SECRETS_KEY
   ) {
     return dedicated;
@@ -82,6 +86,19 @@ function decodeBase64Url(value: string) {
   return atob(padded);
 }
 
+// The payload as UTF-8 bytes in base64url: btoa takes Latin-1 only, and a
+// user name outside it made the login throw. ASCII encodes as before.
+function encodePayload(payload: SessionPayload) {
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  return encodeBase64Url(String.fromCharCode(...bytes));
+}
+
+function decodePayload(value: string) {
+  const binary = decodeBase64Url(value);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as SessionPayload;
+}
+
 async function importSigningKey(secret: string) {
   return crypto.subtle.importKey(
     "raw",
@@ -119,7 +136,7 @@ export async function createOperatorSession(user: string) {
     iat: now,
     exp: now + SESSION_TTL_MS,
   };
-  const encodedPayload = encodeBase64Url(JSON.stringify(payload));
+  const encodedPayload = encodePayload(payload);
   const signature = await signValue(encodedPayload, secret);
   return `${encodedPayload}.${signature}`;
 }
@@ -146,12 +163,14 @@ export async function verifyOperatorSession(token: string | undefined | null) {
   }
 
   try {
-    const payload = JSON.parse(decodeBase64Url(payloadPart)) as SessionPayload;
+    const payload = decodePayload(payloadPart);
     if (
       !payload.user ||
       typeof payload.iat !== "number" ||
       !Number.isFinite(payload.iat) ||
+      typeof payload.exp !== "number" ||
       payload.iat < notBefore ||
+      payload.exp - payload.iat > SESSION_TTL_MS ||
       payload.exp <= Date.now()
     ) {
       return null;
