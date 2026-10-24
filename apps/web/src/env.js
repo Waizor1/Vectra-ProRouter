@@ -74,6 +74,11 @@ export const env = createEnv({
       ["dev-only-vectra-secrets-key-000000"],
       "VECTRA_SECRETS_KEY",
     ),
+    // The operator cookie's own key and its cutoff (server/operator-session.ts
+    // reads them at every request). Optional here on purpose: a missing or bad
+    // value turns operator login off and never stops the router API.
+    VECTRA_OPERATOR_SESSION_SECRET: z.string().optional(),
+    VECTRA_OPERATOR_SESSIONS_NOT_BEFORE: z.string().optional(),
     VECTRA_DEFAULT_CONTROL_DOMAIN: z
       .string()
       .url()
@@ -319,6 +324,9 @@ export const env = createEnv({
     VECTRA_OPERATOR_USER: process.env.VECTRA_OPERATOR_USER,
     VECTRA_OPERATOR_PASSWORD: process.env.VECTRA_OPERATOR_PASSWORD,
     VECTRA_SECRETS_KEY: process.env.VECTRA_SECRETS_KEY,
+    VECTRA_OPERATOR_SESSION_SECRET: process.env.VECTRA_OPERATOR_SESSION_SECRET,
+    VECTRA_OPERATOR_SESSIONS_NOT_BEFORE:
+      process.env.VECTRA_OPERATOR_SESSIONS_NOT_BEFORE,
     VECTRA_DEFAULT_CONTROL_DOMAIN: process.env.VECTRA_DEFAULT_CONTROL_DOMAIN,
     VECTRA_ROUTER_API_BASE_URL: process.env.VECTRA_ROUTER_API_BASE_URL,
     VECTRA_ARTIFACT_BASE_URL: process.env.VECTRA_ARTIFACT_BASE_URL,

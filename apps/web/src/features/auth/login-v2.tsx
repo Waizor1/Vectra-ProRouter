@@ -18,9 +18,10 @@ import { Separator } from "~/components/ui/separator";
 export interface LoginV2Props {
   hasError: boolean;
   rateLimited?: boolean;
+  sessionsOff?: boolean;
 }
 
-export function LoginV2({ hasError, rateLimited = false }: LoginV2Props) {
+export function LoginV2({ hasError, rateLimited = false, sessionsOff = false }: LoginV2Props) {
   return (
     <section className="mx-auto flex min-h-[70vh] w-full max-w-md items-center px-4">
       <Card className="w-full bg-card/95 backdrop-blur-sm">
@@ -75,6 +76,15 @@ export function LoginV2({ hasError, rateLimited = false }: LoginV2Props) {
                 <AlertTitle>Слишком много попыток</AlertTitle>
                 <AlertDescription>
                   Подождите минуту и попробуйте снова.
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            {sessionsOff ? (
+              <Alert variant="destructive">
+                <AlertTitle>Вход операторов выключен</AlertTitle>
+                <AlertDescription>
+                  На сервере не задан ключ сессий или время отсечки ещё не
+                  наступило. Обратитесь к администратору панели.
                 </AlertDescription>
               </Alert>
             ) : null}

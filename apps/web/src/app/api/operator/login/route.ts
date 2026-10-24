@@ -7,6 +7,7 @@ import {
   createOperatorSession,
   getOperatorCookieName,
   getOperatorSessionMaxAgeSeconds,
+  operatorSessionsAvailable,
 } from "~/server/operator-session";
 import { relativeRedirect } from "~/server/redirect";
 import {
@@ -98,6 +99,15 @@ export async function POST(request: Request) {
     loginFailuresPerAddress.consume(clientKey);
     loginFailuresOverall.consume("all");
     return relativeRedirect("/login?error=1");
+  }
+  // Right credentials, but no cookie can be issued (no session key, or a
+  // cutoff that is unreadable or still ahead): said, not a 500. Only after the
+  // password, so the configuration is not told to anyone.
+  if (!operatorSessionsAvailable()) {
+    console.error(
+      "[operator-login] operator sessions are off: set VECTRA_OPERATOR_SESSION_SECRET (32+ characters) and check VECTRA_OPERATOR_SESSIONS_NOT_BEFORE",
+    );
+    return relativeRedirect("/login?error=sessions");
   }
 
   const cookieStore = await cookies();

@@ -14,19 +14,57 @@ const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 
 type SessionPayload = {
   user: string;
+  // When the cookie was issued (ms); VECTRA_OPERATOR_SESSIONS_NOT_BEFORE is
+  // checked against it. A cookie without it is refused.
+  iat: number;
   exp: number;
 };
 
-function getSessionSecret() {
-  if (process.env.VECTRA_SECRETS_KEY) {
-    return process.env.VECTRA_SECRETS_KEY;
-  }
+const MIN_SESSION_SECRET_LENGTH = 32;
+const DEV_SESSION_SECRET = "vectra-dev-session-secret";
 
-  if (process.env.NODE_ENV !== "production") {
-    return "vectra-dev-session-secret";
+// The cookie's own key, VECTRA_OPERATOR_SESSION_SECRET, and nothing else:
+// never VECTRA_SECRETS_KEY, which encrypts the stored secrets and is never
+// rotated to log operators out. Rotating this key ends every operator session
+// at once and touches nothing else. In production a key that is missing,
+// empty, shorter than 32 characters or equal to VECTRA_SECRETS_KEY is no key:
+// no cookie is issued and none is accepted. There is no fallback, so removing
+// the key never brings back a cookie an earlier key ended. Outside production
+// a fixed development key stands in for a missing one.
+function getSessionSecret(): string | null {
+  const dedicated = process.env.VECTRA_OPERATOR_SESSION_SECRET ?? "";
+  if (
+    dedicated.length >= MIN_SESSION_SECRET_LENGTH &&
+    dedicated !== process.env.VECTRA_SECRETS_KEY
+  ) {
+    return dedicated;
   }
+  if (dedicated === "" && process.env.NODE_ENV !== "production") {
+    return DEV_SESSION_SECRET;
+  }
+  return null;
+}
 
-  throw new Error("VECTRA_SECRETS_KEY is required in production.");
+// VECTRA_OPERATOR_SESSIONS_NOT_BEFORE, unix seconds: a cookie issued before it
+// is refused whatever key signed it, so it ends every session without a new
+// key and keeps a key that is put back from reviving its old cookies. Unset or
+// empty: no cutoff. Any other value than an integer number of seconds turns
+// sessions off, so that a typo never drops the cutoff unnoticed.
+function getNotBeforeMs(): number | null {
+  const raw = (process.env.VECTRA_OPERATOR_SESSIONS_NOT_BEFORE ?? "").trim();
+  if (raw === "") {
+    return 0;
+  }
+  if (!/^\d{1,12}$/.test(raw)) {
+    return null;
+  }
+  return Number(raw) * 1000;
+}
+
+/** Whether a cookie can be issued now: a key, a readable cutoff that has passed. */
+export function operatorSessionsAvailable() {
+  const notBefore = getNotBeforeMs();
+  return getSessionSecret() !== null && notBefore !== null && notBefore <= Date.now();
 }
 
 function encodeBase64Url(value: string) {
@@ -54,8 +92,8 @@ async function importSigningKey(secret: string) {
   );
 }
 
-async function signValue(value: string) {
-  const key = await importSigningKey(getSessionSecret());
+async function signValue(value: string, secret: string) {
+  const key = await importSigningKey(secret);
   const signature = await crypto.subtle.sign(
     "HMAC",
     key,
@@ -69,12 +107,20 @@ async function signValue(value: string) {
 }
 
 export async function createOperatorSession(user: string) {
+  const secret = getSessionSecret();
+  if (!secret || !operatorSessionsAvailable()) {
+    throw new Error(
+      "Operator sessions are off: VECTRA_OPERATOR_SESSION_SECRET must be set (32+ characters, not VECTRA_SECRETS_KEY) and VECTRA_OPERATOR_SESSIONS_NOT_BEFORE, if set, a past unix time in seconds.",
+    );
+  }
+  const now = Date.now();
   const payload: SessionPayload = {
     user,
-    exp: Date.now() + SESSION_TTL_MS,
+    iat: now,
+    exp: now + SESSION_TTL_MS,
   };
   const encodedPayload = encodeBase64Url(JSON.stringify(payload));
-  const signature = await signValue(encodedPayload);
+  const signature = await signValue(encodedPayload, secret);
   return `${encodedPayload}.${signature}`;
 }
 
@@ -88,14 +134,26 @@ export async function verifyOperatorSession(token: string | undefined | null) {
     return null;
   }
 
-  const expectedSignature = await signValue(payloadPart);
+  const secret = getSessionSecret();
+  const notBefore = getNotBeforeMs();
+  if (!secret || notBefore === null) {
+    return null;
+  }
+
+  const expectedSignature = await signValue(payloadPart, secret);
   if (!timingSafeStringEqual(expectedSignature, signaturePart)) {
     return null;
   }
 
   try {
     const payload = JSON.parse(decodeBase64Url(payloadPart)) as SessionPayload;
-    if (!payload.user || payload.exp <= Date.now()) {
+    if (
+      !payload.user ||
+      typeof payload.iat !== "number" ||
+      !Number.isFinite(payload.iat) ||
+      payload.iat < notBefore ||
+      payload.exp <= Date.now()
+    ) {
       return null;
     }
 
