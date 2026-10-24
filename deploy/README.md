@@ -97,11 +97,30 @@ Generate a secrets key, and separately the operator session key:
 openssl rand -hex 32
 ```
 
-To end every operator session later, rotate `VECTRA_OPERATOR_SESSION_SECRET` or set
-`VECTRA_OPERATOR_SESSIONS_NOT_BEFORE` to the current `date +%s`, then recreate the
-containers (`docker compose up -d web worker`; `restart` does not re-read `.env`).
+To end every operator session later, either rotate `VECTRA_OPERATOR_SESSION_SECRET`,
+or use the cutoff. The cutoff is whole seconds and the running web container keeps
+issuing cookies until it stops, so set it only once nothing issues them, to the
+next second:
+
+```bash
+docker compose stop web
+NB=$(( $(date +%s) + 1 ))
+grep -q '^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=' .env || echo 'VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=' >> .env
+sed -i "s/^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=.*/VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=$NB/" .env
+docker compose up -d web worker   # `restart` does not re-read .env
+test "$(docker compose exec -T web printenv VECTRA_OPERATOR_SESSIONS_NOT_BEFORE)" = "$NB" && echo "cutoff $NB in force"
+```
+
+(`date +%s` alone would still pass a cookie issued earlier in that same second.)
 Never empty the session key to roll back, and never rotate `VECTRA_SECRETS_KEY` for
 this: it encrypts the stored secrets.
+
+Rolling the panel back past the change that introduced the session key brings back
+the old code, which signs with and accepts the shared key: every cookie the old code
+issued that is not yet expired works again. Cookies live 7 days from issue, so that
+window closes 7 days after the old code last issued one (the moment it stopped
+serving logins), not 7 days after a merge. Within it, fix forward only; any rollback
+target must already contain the session-key change.
 
 ## 3. Prepare runtime directories
 

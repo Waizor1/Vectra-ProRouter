@@ -127,6 +127,25 @@ describe("operator session: its own key, a not-before cutoff, fail closed", () =
     expect(await verifyOperatorSession(after)).toMatchObject({ user: "operator" });
   });
 
+  // The cutoff is whole seconds. Set to the current second (`date +%s`), it
+  // still lets through a cookie issued earlier in that same second; the next
+  // second does not, and no cookie is issued until that second has come. Hence
+  // the runbook's `$(( $(date +%s) + 1 ))`, written once nothing issues cookies.
+  it("a cutoff at the current second keeps a cookie issued earlier in that second; the next second ends it", async () => {
+    set("VECTRA_OPERATOR_SESSION_SECRET", KEY_A);
+    vi.setSystemTime(new Date(T0.getTime() + 700));
+    const sameSecond = await createOperatorSession("operator");
+    vi.setSystemTime(new Date(T0.getTime() + 900));
+    set("VECTRA_OPERATOR_SESSIONS_NOT_BEFORE", seconds(new Date(T0.getTime() + 900)));
+    expect(await verifyOperatorSession(sameSecond)).not.toBeNull();
+    set("VECTRA_OPERATOR_SESSIONS_NOT_BEFORE", String(Number(seconds(new Date(T0.getTime() + 900))) + 1));
+    expect(await verifyOperatorSession(sameSecond)).toBeNull();
+    expect(operatorSessionsAvailable()).toBe(false);
+    await expect(createOperatorSession("operator")).rejects.toThrow(/sessions are off/);
+    vi.setSystemTime(new Date(T0.getTime() + 1_000));
+    expect(await verifyOperatorSession(await createOperatorSession("operator"))).not.toBeNull();
+  });
+
   it("the cutoff keeps a key that is put back from reviving its old cookies", async () => {
     set("VECTRA_OPERATOR_SESSION_SECRET", KEY_A);
     const oldUnderA = await createOperatorSession("operator");
