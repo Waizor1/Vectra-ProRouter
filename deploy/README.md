@@ -100,16 +100,44 @@ openssl rand -hex 32
 To end every operator session later, either rotate `VECTRA_OPERATOR_SESSION_SECRET`,
 or use the cutoff. The cutoff is whole seconds and the running web container keeps
 issuing cookies until it stops, so set it only once nothing issues them, to the
-next second:
+next second. `web` (`vectra-web`) is the only process that issues and checks the
+cookie; `worker` gets the same env. While `web` is stopped the panel and the router
+API answer nothing, so routers' check-ins wait for about a minute and retry. Key
+rotation needs no separate stop: `docker compose up -d web worker` alone recreates
+the containers with the new key.
+
+Run it as one block from the deploy root. Any failed step stops it before the
+next one: a `stop` that did not stop never moves the cutoff, and traffic comes back
+only after every `web` and `worker` container shows the same cutoff:
 
 ```bash
-docker compose stop web
-NB=$(( $(date +%s) + 1 ))
-grep -q '^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=' .env || echo 'VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=' >> .env
-sed -i "s/^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=.*/VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=$NB/" .env
-docker compose up -d web worker   # `restart` does not re-read .env
-test "$(docker compose exec -T web printenv VECTRA_OPERATOR_SESSIONS_NOT_BEFORE)" = "$NB" && echo "cutoff $NB in force"
+(
+  set -eu
+  docker compose stop web
+  test -z "$(docker compose ps -q --status running web)"   # nothing issues cookies now
+  NB=$(( $(date +%s) + 1 ))                                 # the next whole second
+  grep -q '^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=' .env || echo 'VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=' >> .env
+  sed -i "s/^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=.*/VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=$NB/" .env
+  grep -qx "VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=$NB" .env
+  docker compose up --no-start web worker                    # recreated with the new env, not started
+  ids="$(docker compose ps -aq web worker)"
+  test "$(printf '%s\n' "$ids" | grep -c .)" -eq 2           # one web, one worker (container_name)
+  for id in $ids; do                                        # before traffic: each container's env
+    test "$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$id" \
+      | sed -n 's/^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=//p')" = "$NB"
+  done
+  docker compose start web worker
+  for id in $ids; do                                        # and once running
+    test "$(docker exec "$id" printenv VECTRA_OPERATOR_SESSIONS_NOT_BEFORE)" = "$NB"
+  done
+  echo "cutoff $NB in force on every web and worker container"
+)
 ```
+
+If the block stops early, nothing after the failed step ran. Stopped before
+`up --no-start`, `docker compose start web` brings the old container back as it
+was (no new cutoff); stopped after it, the new containers are created but not
+started. Fix the cause and run the block again: it picks a new next second.
 
 (`date +%s` alone would still pass a cookie issued earlier in that same second.)
 Never empty the session key to roll back, and never rotate `VECTRA_SECRETS_KEY` for
