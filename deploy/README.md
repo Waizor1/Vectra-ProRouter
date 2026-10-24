@@ -112,32 +112,46 @@ only after every `web` and `worker` container shows the same cutoff:
 
 ```bash
 (
-  set -eu
-  docker compose stop web
-  test -z "$(docker compose ps -q --status running web)"   # nothing issues cookies now
-  NB=$(( $(date +%s) + 1 ))                                 # the next whole second
-  grep -q '^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=' .env || echo 'VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=' >> .env
+  set -euo pipefail
+  docker compose stop web || exit 1
+  running="$(docker compose ps -q --status running web)" || exit 1
+  test -z "$running"                                         # nothing issues cookies now
+  now="$(date +%s)" || exit 1
+  NB=$(( now + 1 ))                                          # the next whole second
+  if grep -q '^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=' .env; then
+    :
+  else
+    rc=$?
+    test "$rc" -eq 1                                         # absent is expected; a read error is not
+    echo 'VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=' >> .env
+  fi
   sed -i "s/^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=.*/VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=$NB/" .env
   grep -qx "VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=$NB" .env
-  docker compose up --no-start web worker                    # recreated with the new env, not started
-  ids="$(docker compose ps -aq web worker)"
-  test "$(printf '%s\n' "$ids" | grep -c .)" -eq 2           # one web, one worker (container_name)
-  for id in $ids; do                                        # before traffic: each container's env
-    test "$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$id" \
-      | sed -n 's/^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=//p')" = "$NB"
+  docker compose up --no-start web worker || exit 1            # recreated, not started
+  ids="$(docker compose ps -aq web worker)" || exit 1
+  count="$(printf '%s\n' "$ids" | grep -c .)" || exit 1
+  test "$count" -eq 2                                        # one web, one worker (container_name)
+  for id in $ids; do                                         # each container's env before start
+    env_dump="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$id")" || exit 1
+    value="$(printf '%s\n' "$env_dump" | sed -n 's/^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=//p')" || exit 1
+    test "$value" = "$NB"
   done
-  docker compose start web worker
-  for id in $ids; do                                        # and once running
-    test "$(docker exec "$id" printenv VECTRA_OPERATOR_SESSIONS_NOT_BEFORE)" = "$NB"
+  docker compose start web worker || exit 1
+  for id in $ids; do                                         # and once running
+    value="$(docker exec "$id" printenv VECTRA_OPERATOR_SESSIONS_NOT_BEFORE)" || exit 1
+    test "$value" = "$NB"
   done
   echo "cutoff $NB in force on every web and worker container"
 )
 ```
 
-If the block stops early, nothing after the failed step ran. Stopped before
-`up --no-start`, `docker compose start web` brings the old container back as it
-was (no new cutoff); stopped after it, the new containers are created but not
-started. Fix the cause and run the block again: it picks a new next second.
+If the block exits before `up --no-start`, no recreation was attempted; the old
+web may be stopped, and `docker compose start web` restores its old env (no new
+cutoff). A failed recreate or start can leave partial effects. A failure at or
+after `start`, including the final readback, can leave containers running; a
+nonzero exit does not confirm successful revocation. Inspect their state and
+stop web before correcting the cause and repeating the block with a new next
+second. Keep the encryption key unchanged.
 
 (`date +%s` alone would still pass a cookie issued earlier in that same second.)
 Never empty the session key to roll back, and never rotate `VECTRA_SECRETS_KEY` for
