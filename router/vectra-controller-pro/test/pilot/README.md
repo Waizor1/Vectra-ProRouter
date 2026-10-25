@@ -69,6 +69,9 @@ Run of 2026-10-25 (installer `4f9527b9…`, vctl package `5119e940…`):
 `pilot` 69/69, `upgrade` 79/82, `upgrade06` 79/82 — 227/233. The six
 failures are one defect, the second point below.
 
+Fixed in 0.7.0-r30 (#96, e2219c8c), published to pro-canary on 2026-10-25:
+the stand's mirror of the live feed now carries r30, so a plain run tests r30.
+
 - **The pilot's steps hold.** The owner's `/etc/config/vectra-reporter`
   (`enabled '0'`) survives the install and both upgrades (opkg keeps a
   modified conffile; the package's copy goes to `vectra-reporter-opkg`); the
