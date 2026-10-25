@@ -97,8 +97,10 @@ func TestBuiltinScorerAvoidsWorldProxyNodeBeforeMuxIsStamped(t *testing.T) {
 	}
 }
 
-func TestBuiltinScorerKeepsYouTubeOnMuxNodeWithoutAnAlternative(t *testing.T) {
+func TestBuiltinScorerBindsYouTubeToMuxNodeWithoutAnAlternative(t *testing.T) {
 	// QUIC-less YouTube still plays over TCP; an unbound slot does not play.
+	// The slot starts on a node the subscription no longer carries, so only
+	// the fallback pass can bind it.
 	config := youTubeMuxTestConfig(true)
 	kept := config.Nodes[:0]
 	for _, node := range config.Nodes {
@@ -108,6 +110,11 @@ func TestBuiltinScorerKeepsYouTubeOnMuxNodeWithoutAnAlternative(t *testing.T) {
 		kept = append(kept, node)
 	}
 	config.Nodes = kept
+	for i := range config.BasicSettings.ShuntRules {
+		if config.BasicSettings.ShuntRules[i].ID == "YouTube" {
+			config.BasicSettings.ShuntRules[i].OutboundNodeID = "gone"
+		}
+	}
 
 	normalized, _ := NormalizeFleetRoutePolicyConfig(config, FleetRoutePolicyIdentity{Hostname: "yt-only-mux"})
 	if got := ruleBindings(normalized)["YouTube"]; got != "WM3tsJ7I" {

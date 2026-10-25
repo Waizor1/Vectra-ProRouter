@@ -156,6 +156,13 @@ func NormalizeFleetRoutePolicyConfigWithDirective(current DesiredConfig, identit
 	changed := false
 	// WorldProxy comes before YouTube in fleetRoutePolicySlots, so its target is
 	// known by the time the scorer picks YouTube.
+	//
+	// This is the offline safety net only. The panel's directive pins the
+	// exact node, and the panel holds the rule (fleet-route-policy.ts). Here,
+	// on live UCI, a scorer pick is not an exact-node slot: the reconcile keeps
+	// the current node when the pick carries the same label
+	// (pickShuntBindingTarget), so a router whose only alternative is another
+	// "Германия YouTube" host stays on the mux node until the panel speaks.
 	worldProxyTargetID := ""
 	for _, slot := range slots {
 		var target *NodeConfig

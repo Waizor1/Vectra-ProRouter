@@ -1650,26 +1650,79 @@ describe("YouTube stays off the mux node (2026-10-26: Xray mux drops QUIC)", () 
     expect(youtubeMismatch(compliance)?.expectedNodeId).toBe("node-youtube-1");
   });
 
-  it("keeps YouTube on the mux node when no other YouTube node exists", () => {
+  it("binds YouTube to the mux node when no other YouTube node exists", () => {
     // QUIC-less YouTube still plays over TCP; an unbound slot does not play.
-    const base = youtubeOnMux();
+    // The slot starts on a node the subscription no longer carries, so only
+    // the fallback pass can bind it.
+    const base = buildConfig({ bindings: { YouTube: "node-gone" } });
     const config = passwallDesiredConfigSchema.parse({
       ...base,
       nodes: base.nodes.filter(
         (node) => node.id !== "node-youtube-1" && node.id !== "node-discord-1",
       ),
     });
+    const identity = { deviceIdentifier: "vectra-yt-only-mux" };
 
-    const compliance = evaluateFleetRoutePolicy(config, {
-      deviceIdentifier: "vectra-yt-only-mux",
-    });
+    expect(
+      youtubeMismatch(evaluateFleetRoutePolicy(config, identity))
+        ?.expectedNodeId,
+    ).toBe("node-world-1");
+    expect(
+      buildFleetRoutePolicyDirective(config, identity)?.slots.find(
+        (slot) => slot.id === "YouTube",
+      )?.nodeId,
+    ).toBe("node-world-1");
+    expect(
+      youtubeMatch(normalizeFleetRoutePolicy(config, identity).after)
+        ?.targetNodeId,
+    ).toBe("node-world-1");
+  });
+
+  it("keeps a live mux node until the node without mux is proven", () => {
+    // Nobody has carried traffic through ru5:50051, so moving YouTube there
+    // would trade a working slot for a guess (keepLiveMuxBinding).
+    const unproven = {
+      nodeHealth: buildFleetNodeHealth([
+        {
+          routerId: "peer",
+          observations: [
+            { host: "ru4.nfnpx.online:50052", outcome: "ok" as const },
+          ],
+        },
+      ]),
+    };
+    const identity = { deviceIdentifier: "vectra-yt-unproven" };
+
+    const compliance = evaluateFleetRoutePolicy(youtubeOnMux(), identity, unproven);
     expect(youtubeMismatch(compliance)).toBeUndefined();
     expect(youtubeMatch(compliance)?.targetNodeId).toBe("node-world-1");
     expect(
-      normalizeFleetRoutePolicy(config, {
-        deviceIdentifier: "vectra-yt-only-mux",
-      }).changes.find((change) => change.slot === "YouTube"),
-    ).toBeUndefined();
+      normalizeFleetRoutePolicy(youtubeOnMux(), identity, unproven).changes,
+    ).toEqual([]);
+  });
+
+  it("moves off the mux node once some router reached the node without mux", () => {
+    const proven = {
+      nodeHealth: buildFleetNodeHealth([
+        {
+          routerId: "peer",
+          observations: [
+            { host: "ru4.nfnpx.online:50052", outcome: "ok" as const },
+            { host: "ru5.nfnpx.online:50051", outcome: "ok" as const },
+          ],
+        },
+      ]),
+    };
+
+    expect(
+      youtubeMismatch(
+        evaluateFleetRoutePolicy(
+          youtubeOnMux(),
+          { deviceIdentifier: "vectra-yt-proven" },
+          proven,
+        ),
+      )?.expectedNodeId,
+    ).toBe("node-youtube-1");
   });
 
   it("prefers a live mux node to a dead node without mux", () => {

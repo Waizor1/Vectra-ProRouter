@@ -768,13 +768,14 @@ function findBestTarget(
 
   // From the strictest pass to the loosest. Avoiding nodes (YouTube off the
   // mux node) ranks below liveness: a live avoided node beats a dead free one,
-  // and an avoided node beats leaving the slot unbound.
+  // and an avoided node beats leaving the slot unbound. With every candidate
+  // dead, avoiding buys nothing: moving from one dead node to another only
+  // costs a PassWall restart.
   const passes: [skipUnhealthy: boolean, skipAvoided: boolean][] =
     avoid && avoid.size > 0
       ? [
           [true, true],
           [true, false],
-          [false, true],
           [false, false],
         ]
       : [
@@ -934,8 +935,50 @@ function keepLiveStrictBinding(
 }
 
 /**
+ * Keeps a slot on the mux node it is on (quicDroppingNodeIds) when the node
+ * without mux it would move to has not been shown to work.
+ *
+ * The scorer's first pass takes any host the ledger has not condemned,
+ * including one no router has carried traffic through. Moving YouTube there
+ * off a live node trades a working slot without QUIC for one of unknown
+ * health; if it fails, the probes condemn it, YouTube moves back, a later
+ * import drops that evidence and it moves again — two PassWall restarts a
+ * round, the shape keepLiveStrictBinding exists to stop. So the move waits
+ * until some router reached the target. The "Россия YouTube" :50051 hosts
+ * most routers carry YouTube on are proven every day; a node nobody uses is
+ * not, and stays a fallback.
+ *
+ * Without a ledger there is nothing to weigh, and a dead current node still
+ * moves at once.
+ */
+function keepLiveMuxBinding(
+  config: FleetPolicyConfigView,
+  best: PasswallNode | null,
+  currentNodeId: string | null | undefined,
+  options: FleetRoutePolicyOptions | null | undefined,
+  avoid: ReadonlySet<string> | null | undefined,
+): PasswallNode | null {
+  const health = options?.nodeHealth;
+  if (!health || !avoid || !best || avoid.has(best.id)) {
+    return null;
+  }
+  const current = findNodeById(config, currentNodeId);
+  if (!current || current.id === best.id || !avoid.has(current.id)) {
+    return null;
+  }
+  if (isUnhealthyNodeHost(health, current.address, current.port)) {
+    return null;
+  }
+  if (isProvenNodeHost(health, best.address, best.port)) {
+    return null;
+  }
+  return current;
+}
+
+/**
  * The node a slot should be on: the spread's pick, unless the current exit is
- * held (keepLiveStrictBinding) or the slot follows a leader that was held.
+ * held (keepLiveStrictBinding, keepLiveMuxBinding) or the slot follows a
+ * leader that was held.
  * `held` carries those decisions between slots of one evaluation, so callers
  * must walk the slots in canonical order (the leader comes first).
  */
@@ -956,6 +999,10 @@ function resolvePolicyTarget(
   const best = findBestTarget(config, slot, identity, currentNodeId, options, avoid);
   if (leader) {
     return best;
+  }
+  const keepMux = keepLiveMuxBinding(config, best, currentNodeId, options, avoid);
+  if (keepMux) {
+    return keepMux;
   }
   const keep = keepLiveStrictBinding(config, slot, best, currentNodeId, options);
   if (keep) {
