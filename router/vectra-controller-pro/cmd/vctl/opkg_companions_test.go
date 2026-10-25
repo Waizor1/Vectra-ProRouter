@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -71,9 +74,11 @@ func companionStand(t *testing.T, status string) string {
 	if err := os.WriteFile(p, []byte(status), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	prevStatus, prevProc := opkgStatusFile, opkgProcDir
-	opkgStatusFile, opkgProcDir = p, filepath.Join(dir, "proc")
-	t.Cleanup(func() { opkgStatusFile, opkgProcDir = prevStatus, prevProc })
+	prevStatus, prevLock, prevProc, prevWait := opkgStatusFile, opkgLockFile, opkgProcDir, companionsWait
+	opkgStatusFile, opkgLockFile, opkgProcDir, companionsWait = p, filepath.Join(dir, "opkg.lock"), filepath.Join(dir, "proc"), 0
+	t.Cleanup(func() {
+		opkgStatusFile, opkgLockFile, opkgProcDir, companionsWait = prevStatus, prevLock, prevProc, prevWait
+	})
 	return p
 }
 
@@ -134,6 +139,56 @@ func TestKeepCompanionsLeavesTheFileToAnotherOpkg(t *testing.T) {
 	}
 }
 
+// An opkg holds its lock (lockf) from start to end: then too the file is not
+// touched — and while keepCompanions holds it, no opkg starts. fcntl locks
+// belong to a process, so another process holds this one: the test binary,
+// run again as TestHelperHoldsTheOpkgLock.
+func TestKeepCompanionsWaitsForOpkgsLock(t *testing.T) {
+	p := companionStand(t, companionStatus)
+	holder := exec.Command(os.Args[0], "-test.run=^TestHelperHoldsTheOpkgLock$")
+	holder.Env = append(os.Environ(), "VCTL_TEST_HOLD_OPKG_LOCK="+opkgLockFile)
+	stdin, _ := holder.StdinPipe()
+	stdout, _ := holder.StdoutPipe()
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stdin.Close(); holder.Wait() })
+	if line, _ := bufio.NewReader(stdout).ReadString('\n'); strings.TrimSpace(line) != "locked" {
+		t.Fatalf("the holder said %q", line)
+	}
+	if _, err := keepCompanions(); !errors.Is(err, errOpkgRunning) {
+		t.Fatalf("err %v, want errOpkgRunning", err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != companionStatus {
+		t.Fatalf("status changed:\n%s", got)
+	}
+	stdin.Close()
+	holder.Wait()
+	if kept, err := keepCompanions(); err != nil || len(kept) != 2 {
+		t.Fatalf("once the lock is free: kept %v, err %v", kept, err)
+	}
+}
+
+// TestHelperHoldsTheOpkgLock is TestKeepCompanionsWaitsForOpkgsLock's other
+// process: it takes the lock as opkg does and keeps it until stdin closes.
+func TestHelperHoldsTheOpkgLock(t *testing.T) {
+	path := os.Getenv("VCTL_TEST_HOLD_OPKG_LOCK")
+	if path == "" {
+		t.Skip("a helper process")
+	}
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lk := syscall.Flock_t{Type: syscall.F_WRLCK}
+	if err := syscall.FcntlFlock(f.Fd(), syscall.F_SETLK, &lk); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout.WriteString("locked\n")
+	bufio.NewReader(os.Stdin).ReadString('\n')
+	f.Close()
+}
+
 func TestKeepCompanionsWithoutAStatusFile(t *testing.T) {
 	p := companionStand(t, "")
 	os.Remove(p)
@@ -147,18 +202,25 @@ func TestKeepCompanionsWithoutAStatusFile(t *testing.T) {
 
 // The self-update's opkg — update_controller's and Connect's automatic update
 // alike — finds the marks gone already: opkg would remove a companion before
-// anything after it runs.
-func TestTheSelfUpdateDropsTheMarksBeforeOpkgRuns(t *testing.T) {
+// anything after it runs. And what that opkg marks again — a companion it
+// installed as the new vctl's dependency — loses the mark once it is done.
+func TestTheSelfUpdateDropsTheMarksBeforeAndAfterOpkg(t *testing.T) {
 	p := companionStand(t, companionStatus)
 	dir := t.TempDir()
 	seen := filepath.Join(dir, "status-at-opkg")
-	opkg := "#!/bin/sh\ncp \"$VCTL_TEST_STATUS\" \"$VCTL_TEST_SEEN\"\necho \"$@\" > \"$VCTL_TEST_SEEN.args\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "marked"), []byte(companionStatus), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// It notes the status it found, then leaves the companions marked, as an
+	// opkg that installed them as dependencies does.
+	opkg := "#!/bin/sh\ncp \"$VCTL_TEST_STATUS\" \"$VCTL_TEST_SEEN\"\necho \"$@\" > \"$VCTL_TEST_SEEN.args\"\ncp \"$VCTL_TEST_MARKED\" \"$VCTL_TEST_STATUS\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "opkg"), []byte(opkg), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("VCTL_TEST_STATUS", p)
 	t.Setenv("VCTL_TEST_SEEN", seen)
+	t.Setenv("VCTL_TEST_MARKED", filepath.Join(dir, "marked"))
 	if out, err := theDefaultControllerInstall(context.Background(), "/tmp/vectra-controller-pro-update.ipk"); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
@@ -172,5 +234,12 @@ func TestTheSelfUpdateDropsTheMarksBeforeOpkgRuns(t *testing.T) {
 	}
 	if kept, _ := dropCompanionMarks(got); kept != nil {
 		t.Fatalf("opkg ran with the marks of %v still there", kept)
+	}
+	after, _ := os.ReadFile(p)
+	if kept, _ := dropCompanionMarks(after); kept != nil {
+		t.Fatalf("after the install the marks of %v are back", kept)
+	}
+	if strings.Count(string(after), autoInstalledMark) != 3 {
+		t.Fatalf("the other packages' marks are gone:\n%s", after)
 	}
 }

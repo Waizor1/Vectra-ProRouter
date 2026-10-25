@@ -207,17 +207,28 @@ cat > /tmp/vctl-rollout.run <<'X'
 #!/bin/sh
 trap 'rm -rf /tmp/vctl-rollout.d /tmp/vctl-rollout.run' EXIT
 sleep 15
-# vectra-geodata and vectra-reporter stay whatever this package's Depends says:
-# opkg removes one that came in Auto-Installed as soon as a vctl that does not
-# name it replaces the one that did, and no opkg command takes the mark away
-# (install.sh, keep_companions). Not while another opkg runs.
-s=/usr/lib/opkg/status
-m='/^Package: /{p=substr($0,10)} /^$/{p=""} {c=(p=="vectra-geodata"||p=="vectra-reporter")&&$0=="Auto-Installed: yes"}'
-n=$(awk "$m"' c{n++} END{print n+0}' $s 2>/dev/null)
-if [ "${n:-0}" -gt 0 ] 2>/dev/null && ! pidof opkg >/dev/null; then
-  awk "$m"' !c' $s > $s.vctl && [ "$(grep -c '' $s.vctl)" = "$(($(grep -c '' $s) - n))" ] && sync && mv $s.vctl $s || rm -f $s.vctl
-fi
-opkg install /tmp/vctl-rollout.d/pkg.ipk > /tmp/vctl-rollout.log 2>&1; echo "rc=$?" >> /tmp/vctl-rollout.log
+# vectra-geodata and vectra-reporter stay whatever a vctl's Depends says:
+# opkg removes one that is Auto-Installed as soon as a vctl that does not name
+# it replaces one that did, and no opkg command takes the mark away
+# (install.sh, keep_companions). So the line goes from the status, before the
+# install and after it (it marks what it brings in as a dependency): from a
+# copy, replacing the status only when it is the copy less exactly those lines
+# and still unchanged, never while another opkg runs.
+keep() {
+  s=/usr/lib/opkg/status c=/tmp/vctl-rollout.st w=0
+  while pidof opkg >/dev/null; do [ $w -ge 10 ] && return; sleep 1; w=$((w + 1)); done
+  cp $s $c || return
+  m='/^Package: /{p=substr($0,10)} /^$/{p=""} {k=(p=="vectra-geodata"||p=="vectra-reporter")&&$0=="Auto-Installed: yes"}'
+  n=$(awk "$m"' k{n++} END{print n+0}' $c)
+  [ "${n:-0}" -gt 0 ] 2>/dev/null && awk "$m"' !k' $c > $s.vctl &&
+    [ "$(grep -c '' $s.vctl)" = "$(($(grep -c '' $c) - n))" ] && [ "$(($(wc -c < $s.vctl)))" = "$(($(wc -c < $c) - 20 * n))" ] &&
+    sync && ! pidof opkg >/dev/null && cmp -s $c $s && mv $s.vctl $s
+  rm -f $s.vctl $c
+}
+keep
+opkg install /tmp/vctl-rollout.d/pkg.ipk > /tmp/vctl-rollout.log 2>&1; rc=$?
+keep
+echo "rc=$rc" >> /tmp/vctl-rollout.log
 X
 (setsid sh /tmp/vctl-rollout.run </dev/null >/dev/null 2>&1 &)
 echo "started=yes"

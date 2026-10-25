@@ -150,9 +150,11 @@ Then:
    opkg's `Auto-Installed` mark (`keep_companions`): opkg removes an
    auto-installed package as an orphan as soon as a vctl that does not depend
    on it replaces one that did (0.7.0-r29 as published), and no opkg command
-   takes the mark away — `opkg flag user` does not. vctl's own self-update
-   (update_controller, Connect's automatic update) and
-   `scripts/Rollout-VctlFleet.py` do the same before their `opkg install`.
+   takes the mark away — `opkg flag user` does not. Not while another opkg
+   runs (waited for up to 10 s), and only when the new status is the old one
+   less exactly those lines; otherwise COMPANIONS_MARK, a warning. vctl's own
+   self-update (update_controller, Connect's automatic update) and
+   `scripts/Rollout-VctlFleet.py` do the same around their `opkg install`.
 12. **Geo data**: Vectra reads its own set, vectra-geodata's, in
     `/usr/share/vectra-controller-pro/geo`, and never replaces a file in
     `/usr/share/v2ray` (PassWall2's packages'; only links to its own set for

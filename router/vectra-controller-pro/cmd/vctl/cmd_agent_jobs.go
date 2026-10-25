@@ -1460,11 +1460,15 @@ func controllerInstallCommand(ctx context.Context, dest string) *exec.Cmd {
 
 // runControllerInstall runs the self-update's opkg (controllerInstallCommand)
 // and returns what it said; tests stand it in. The companions' Auto-Installed
-// marks go first (opkg_companions.go): whatever the package's Depends says,
-// opkg removes neither with it.
+// marks go before it — whatever the package's Depends says, opkg removes
+// neither with it — and after it, whatever it installed as a dependency
+// (opkg_companions.go). The postinst's restart is held back, so this vctl is
+// still the one running then.
 var runControllerInstall = func(ctx context.Context, dest string) ([]byte, error) {
-	keepCompanionsForTheInstall()
-	return controllerInstallCommand(ctx, dest).CombinedOutput()
+	keepCompanionsAroundTheInstall("before the install")
+	out, err := controllerInstallCommand(ctx, dest).CombinedOutput()
+	keepCompanionsAroundTheInstall("after the install")
+	return out, err
 }
 
 // scheduleControllerRestart restarts the controller service shortly after we

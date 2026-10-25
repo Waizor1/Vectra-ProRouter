@@ -190,7 +190,7 @@ func (r *router) run(script string) (string, int) {
 	}
 	prelude := ". '" + src + "'\nLOG='" + filepath.Join(r.dir, "install.log") + "'\nWORK='" + filepath.Join(r.dir, "work") +
 		"'\nSAVED_RAM='" + filepath.Join(r.dir, "saved-ram") + "'\nSAVED_FLASH='" + filepath.Join(r.dir, "saved-flash") +
-		"'\nARCH=aarch64_cortex-a53\nSTORE=/overlay\n"
+		"'\nOPKG_STATUS='" + filepath.Join(r.dir, "status") + "'\nARCH=aarch64_cortex-a53\nSTORE=/overlay\n"
 	cmd := exec.Command(shell, "-c", prelude+script)
 	cmd.Env = r.env
 	var out bytes.Buffer
@@ -392,7 +392,7 @@ func companionRouter(t *testing.T) *router {
 // PassWall's business, not Vectra's.
 func TestAnUpgradeKeepsTheCompanionsWhateverTheNewDependsSays(t *testing.T) {
 	r := companionRouter(t)
-	out, code := r.run("OPKG_STATUS='" + filepath.Join(r.dir, "status") + "'\ninstall_packages")
+	out, code := r.run("install_packages")
 	if code != 0 || !strings.Contains(r.read("log"), "opkg upgrade vectra-controller-pro vectra-geodata vectra-reporter") {
 		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
 	}
@@ -402,36 +402,76 @@ func TestAnUpgradeKeepsTheCompanionsWhateverTheNewDependsSays(t *testing.T) {
 	if got := r.read("status"); got != companionsKept {
 		t.Fatalf("the status after the run:\n%s", got)
 	}
-	if _, err := os.Stat(filepath.Join(r.dir, "status.vectra")); !os.IsNotExist(err) {
-		t.Fatalf("the temporary file stayed: %v", err)
+	for _, f := range []string{"status.vectra", "work/opkg-status.was"} {
+		if _, err := os.Stat(filepath.Join(r.dir, f)); !os.IsNotExist(err) {
+			t.Fatalf("%s stayed: %v", f, err)
+		}
 	}
 	// A run with nothing to drop writes nothing.
 	r.write("status", companionsKept)
-	if _, code := r.run("OPKG_STATUS='" + filepath.Join(r.dir, "status") + "'\nkeep_companions"); code != 0 || r.read("status") != companionsKept {
+	if _, code := r.run("keep_companions"); code != 0 || r.read("status") != companionsKept {
 		t.Fatalf("exit %d, status:\n%s", code, r.read("status"))
 	}
 }
 
-// While another opkg runs — it writes the file from what it read — or when the
-// new file cannot be put in place, the status stays as it was, and the run
-// says so, with a warning, and goes on.
-func TestTheCompanionsMarksStayWhenTheyCannotGoSafely(t *testing.T) {
+// The install's own opkg marks a companion it brought in as vctl's dependency
+// (an upgrade from a vctl that had no reporter yet): that mark goes too.
+func TestWhatTheInstallBroughtInLosesTheMark(t *testing.T) {
 	r := companionRouter(t)
-	r.write("pidof-opkg", "")
-	if _, code := r.run("OPKG_STATUS='" + filepath.Join(r.dir, "status") + "'\nkeep_companions"); code != 0 || r.read("status") != companionStatus {
-		t.Fatalf("exit %d, status:\n%s", code, r.read("status"))
-	}
-	os.Remove(filepath.Join(r.dir, "pidof-opkg"))
-	r.write("bin/sync", "#!/bin/sh\nexit 1\n")
-	if err := os.Chmod(filepath.Join(r.dir, "bin", "sync"), 0o755); err != nil {
+	r.write("status", companionsKept)
+	// opkg install leaves the companions marked, as it does with dependencies.
+	marked := filepath.Join(r.dir, "marked")
+	r.write("marked", companionStatus)
+	r.env = append(r.env, "FAKE_MARKED="+marked)
+	r.write("bin/opkg", strings.Replace(fakeOpkg, "*)\n", "install)\n\techo \"opkg $*\" >> \"$d/log\"\n\tcp \"$FAKE_MARKED\" \"$FAKE_STATUS\"\n\t;;\n*)\n", 1))
+	if err := os.Chmod(filepath.Join(r.dir, "bin", "opkg"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out, code := r.run("OPKG_STATUS='" + filepath.Join(r.dir, "status") + "'\nkeep_companions\necho \"warnings:$WARNINGS\"")
-	if code != 0 || r.read("status") != companionStatus || !strings.Contains(out, "warnings: COMPANIONS_MARK") {
-		t.Fatalf("exit %d, status:\n%s\n%s", code, r.read("status"), out)
+	out, code := r.run("install_packages")
+	if code != 0 || !strings.Contains(r.read("log"), "opkg install vectra-controller-pro") {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
 	}
-	if _, err := os.Stat(filepath.Join(r.dir, "status.vectra")); !os.IsNotExist(err) {
-		t.Fatalf("the temporary file stayed: %v", err)
+	if got := r.read("status"); got != companionsKept {
+		t.Fatalf("the status after the run:\n%s", got)
+	}
+}
+
+// The status stays as it was, and the run says so with a warning and goes on,
+// whenever the new file cannot replace it safely: another opkg runs (and is
+// waited for first); a cut-short file (awk exits 0 on a full overlay);
+// another opkg wrote the status meanwhile; the sync fails.
+func TestTheCompanionsMarksStayWhenTheyCannotGoSafely(t *testing.T) {
+	for name, tc := range map[string]struct{ setup, script string }{
+		"another opkg runs":            {setup: "pidof-opkg"},
+		"a cut-short file":             {script: `companion_marks() { if [ "$1" = drop ]; then head -c 120 "$2"; else echo 2; fi; }` + "\n"},
+		"the status changed meanwhile": {setup: "bin/sync=#!/bin/sh\necho 'Package: written-meanwhile' >> \"$FAKE_STATUS\"\n"},
+		"the sync fails":               {setup: "bin/sync=#!/bin/sh\nexit 1\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := companionRouter(t)
+			r.env = append(r.env, "VECTRA_COMPANIONS_WAIT=0")
+			if f, body, ok := strings.Cut(tc.setup, "="); ok {
+				r.write(f, body)
+				if err := os.Chmod(filepath.Join(r.dir, f), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.setup != "" {
+				r.write(tc.setup, "")
+			}
+			want := companionStatus
+			if name == "the status changed meanwhile" {
+				want += "Package: written-meanwhile\n"
+			}
+			out, code := r.run(tc.script + "keep_companions\necho \"warnings:$WARNINGS\"")
+			if code != 0 || r.read("status") != want || !strings.Contains(out, "warnings: COMPANIONS_MARK") {
+				t.Fatalf("exit %d, status:\n%s\n%s", code, r.read("status"), out)
+			}
+			for _, f := range []string{"status.vectra", "work/opkg-status.was"} {
+				if _, err := os.Stat(filepath.Join(r.dir, f)); !os.IsNotExist(err) {
+					t.Fatalf("%s stayed: %v", f, err)
+				}
+			}
+		})
 	}
 }
 

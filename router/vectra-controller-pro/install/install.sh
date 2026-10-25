@@ -1032,36 +1032,56 @@ dns_diag() {
 # a vctl from the pro feed took the reporter's spool and state and the geo
 # data (test/pilot). No opkg command takes the mark away — `opkg flag user`
 # sets the package's state, and the orphan check reads only the mark (opkg
-# 2024.10.16, OpenWrt 24.10) — so the line goes from the status file itself,
-# and opkg keeps it so from then on. Not while another opkg runs: it writes
-# the file from what it read. The new file replaces the old one only when it
-# is the old one less exactly those lines (a full overlay cuts a file short).
+# 2024.10.16, OpenWrt 24.10) — so the line goes from the status file itself:
+# before opkg upgrades vctl, and after the install, since an opkg that brings
+# a companion in as vctl's dependency marks it again. Not while another opkg
+# runs: it writes the file from what it read. The new file is made from a copy
+# of the status, and replaces it only when it is that copy less exactly those
+# lines — in lines and in bytes (a full overlay cuts a file short, and awk
+# still exits 0) — and when the status is still that copy.
 COMPANIONS="vectra-geodata vectra-reporter"
-companion_marks() { # <mode>: count — how many marks; drop — the status without them
+COMPANIONS_WAIT="${VECTRA_COMPANIONS_WAIT:-10}"
+companion_marks() { # <mode> <file>: count — how many marks; drop — the file without them
 	awk -v names=" $COMPANIONS " -v mode="$1" '
 		/^Package: / { p = substr($0, 10) }
 		/^$/ { p = "" }
 		p != "" && index(names, " " p " ") && $0 == "Auto-Installed: yes" { n++; next }
 		mode == "drop" { print }
-		END { if (mode == "count") print n + 0 }' "$OPKG_STATUS"
+		END { if (mode == "count") print n + 0 }' "$2"
+}
+opkg_busy() { # another opkg runs: waited for up to COMPANIONS_WAIT seconds
+	waited=0
+	while pidof opkg > /dev/null 2>&1; do
+		[ "$waited" -lt "$COMPANIONS_WAIT" ] || return 0
+		sleep 1
+		waited=$((waited + 1))
+	done
+	return 1
 }
 keep_companions() {
 	[ -f "$OPKG_STATUS" ] || return 0
-	pidof opkg > /dev/null 2>&1 && { note "opkg уже работает: отметку Auto-Installed у $COMPANIONS не трогаю"; return 0; }
-	marks="$(companion_marks count)"
-	[ "$marks" = 0 ] && return 0
+	[ "$(companion_marks count "$OPKG_STATUS")" = 0 ] && return 0
 	status_new="$OPKG_STATUS.vectra"
-	case "$marks" in
-	'' | *[!0-9]*) ;;
-	*)
-		if companion_marks drop > "$status_new" && [ "$(grep -c '' "$status_new")" = "$(($(grep -c '' "$OPKG_STATUS") - marks))" ] &&
-			sync && mv "$status_new" "$OPKG_STATUS"; then
-			ok "$COMPANIONS остаются на роутере при любой версии Vectra (отметка Auto-Installed снята)"
-			return 0
-		fi
-		;;
-	esac
-	rm -f "$status_new"
+	status_was="$WORK/opkg-status.was"
+	mkdir -p "$WORK"
+	if ! opkg_busy && cp "$OPKG_STATUS" "$status_was"; then
+		marks="$(companion_marks count "$status_was")"
+		case "$marks" in
+		'' | *[!0-9]*) ;;
+		*)
+			if companion_marks drop "$status_was" > "$status_new" &&
+				[ "$(grep -c '' "$status_new")" = "$(($(grep -c '' "$status_was") - marks))" ] &&
+				[ "$(($(wc -c < "$status_new")))" = "$(($(wc -c < "$status_was") - 20 * marks))" ] &&
+				sync && ! pidof opkg > /dev/null 2>&1 && cmp -s "$status_was" "$OPKG_STATUS" &&
+				mv "$status_new" "$OPKG_STATUS"; then
+				rm -f "$status_was"
+				ok "$COMPANIONS остаются на роутере при любой версии Vectra (отметка Auto-Installed снята)"
+				return 0
+			fi
+			;;
+		esac
+	fi
+	rm -f "$status_new" "$status_was"
 	warn COMPANIONS_MARK "не удалось снять отметку Auto-Installed у $COMPANIONS в $OPKG_STATUS: opkg может удалить их при установке версии Vectra, которая от них не зависит"
 }
 

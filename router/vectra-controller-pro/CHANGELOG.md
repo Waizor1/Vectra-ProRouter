@@ -27,14 +27,21 @@ back by name; vctl's self-update installs one package and would not.
   `opkg flag user|hold|noprune|ok`, `opkg install <name>` and
   `--force-reinstall` all leave it, and the orphan check reads only it. So the
   line is dropped from `/usr/lib/opkg/status` for `vectra-geodata` and
-  `vectra-reporter` (never another package's; not while another opkg runs; the
-  new file replaces the old only when it is the old less exactly those lines,
-  synced first) — by the installer before `opkg upgrade` and after its
-  install (`keep_companions`), by vctl before the self-update's opkg
+  `vectra-reporter` only — before vctl's opkg runs and again after it, since
+  an opkg that installs a companion as vctl's dependency (one a router lacked,
+  one whose minimum went up) marks it again: by the installer around its
+  upgrade (`keep_companions`), by vctl around the self-update's opkg
   (`update_controller` and Connect's automatic update, `opkg_companions.go`),
-  and by `scripts/Rollout-VctlFleet.py` before its `opkg install`. Tried on
-  OpenWrt 24.10.8's opkg: a vctl without them, installed over one with them,
-  then removes neither.
+  and by `scripts/Rollout-VctlFleet.py` around its `opkg install`. Never
+  while another opkg runs (vctl takes opkg's own lock, `/var/lock/opkg.lock`;
+  the scripts wait up to 10 s for it to end). The new file is built from a
+  copy and replaces the status only when it is the copy less exactly those
+  lines — in lines and in bytes, as a full overlay cuts a file short while awk
+  still exits 0 — and the status is still that copy, synced first; otherwise
+  the installer warns (`COMPANIONS_MARK`) and goes on. Tried on OpenWrt
+  24.10.8's opkg: a vctl without them, installed over one with them, removes
+  neither — also on a router r29 stripped, after r30 brought them back as
+  dependencies and `opkg install --force-downgrade` put the r29 package back.
 
 ### Changed
 - `build-pro-feed.sh` ships **xray 26.10.21**. XTLS withdrew 26.10.10 and
