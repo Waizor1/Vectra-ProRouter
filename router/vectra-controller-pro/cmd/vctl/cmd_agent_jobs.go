@@ -1483,8 +1483,11 @@ func controllerInstallCommand(ctx context.Context, args ...string) *exec.Cmd {
 // marks go before it — whatever the package's Depends says, opkg removes
 // neither with it — and after it, whatever it installed as a dependency
 // (opkg_companions.go). The postinst's restart is held back, so this vctl is
-// still the one running then.
+// still the one running then. No other goroutine of this vctl holds opkg's
+// lock meanwhile (opkgMu): the opkg would stop at "Could not lock".
 var runControllerInstall = func(ctx context.Context, args ...string) ([]byte, error) {
+	opkgMu.Lock()
+	defer opkgMu.Unlock()
 	keepCompanionsAroundTheInstall("before the install")
 	out, err := controllerInstallCommand(ctx, args...).CombinedOutput()
 	keepCompanionsAroundTheInstall("after the install")

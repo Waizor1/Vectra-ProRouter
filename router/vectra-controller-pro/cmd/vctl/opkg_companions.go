@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,17 +28,20 @@ import (
 //
 // No opkg command takes the mark away: `opkg flag user` sets the package's
 // state, and the orphan check reads only Auto-Installed (opkg 2024.10.16 on
-// OpenWrt 24.10.8, tried). So the line goes from the status file itself, as
-// the installer does it (install.sh, keep_companions): before the
-// self-update's opkg, and after it — that opkg marks a companion again when
-// it installs one as vctl's dependency (one a router lacked, or one whose
-// minimum the new vctl raised), and a later vctl without them, the published
-// r29 put back by hand included, would take it.
+// OpenWrt 24.10.8, tried). So the line goes from the status file itself:
+// before the self-update's opkg, and after it — that opkg marks a companion
+// again when it installs one as vctl's dependency (one a router lacked, or
+// one whose minimum the new vctl raised), and a later vctl without them, the
+// published r29 put back by hand included, would take it. And when vctl
+// starts (keepCompanionsAtStart): an older vctl's self-update brought this
+// one in and kept nothing. The installer and Rollout-VctlFleet.py have it
+// done here too (`vctl keep-companions`): one lock, opkg's, for all three.
 var companionPackages = []string{"vectra-geodata", "vectra-reporter"}
 
 // opkgStatusFile is opkg's record of what is installed, opkgLockFile the lock
-// every opkg takes (lockf) before it reads it, and opkgProcDir is where
-// another opkg is looked for. Tests point them elsewhere.
+// every opkg takes (lockf) before it reads it and keeps until it has written
+// it, and opkgProcDir is where another opkg is looked for. Tests point them
+// elsewhere.
 var (
 	opkgStatusFile = opkgstatus.File
 	opkgLockFile   = "/var/lock/opkg.lock"
@@ -44,18 +50,46 @@ var (
 
 const autoInstalledMark = "Auto-Installed: yes"
 
-// errOpkgRunning: another opkg runs, and it writes the status file from what
-// it read — an edit now would be lost, or lose what it writes.
+// errOpkgRunning: another opkg runs, or has just ended and not yet let go of
+// its lock file — it writes the status file from what it read: an edit now
+// would be lost, or lose what it writes. Tried again later.
 var errOpkgRunning = errors.New("another opkg is running")
 
+// opkgMu: one goroutine of this vctl at a time holds opkg's lock or runs
+// opkg — the start's pass, the self-update's install, the CLI. An fcntl lock
+// is the process's, not the descriptor's: a second one taken in this process
+// is granted at once, and closing either descriptor lets go of both.
+var opkgMu sync.Mutex
+
+// afterTheLock runs once opkg's lock is granted, before it is checked to hold;
+// beforeTheRename between the last look at the status file and the rename
+// over it. Tests stand an opkg that ends, or a writer that interferes, in.
+var (
+	afterTheLock    = func() {}
+	beforeTheRename = func() {}
+)
+
 // keepCompanions drops the companions' Auto-Installed marks from opkg's status
-// file and says whose it dropped. Nothing is written when there is no mark or
-// no file. It holds opkg's own lock from the read to the rename, so no opkg
-// starts in between; the new file is written beside the old one, synced and
-// renamed over it: a power cut leaves the one or the other.
+// file and says whose it dropped. Nothing is written — and opkg's lock not
+// taken — when there is no mark or no file. Otherwise it holds opkg's own lock
+// from the read to the rename, so no opkg starts in between; the new file is
+// written beside the old one, synced and renamed over it: a power cut leaves
+// the one or the other. And it is renamed only over the file it was made
+// from: a writer that takes no lock (an older installer's) leaves it as that
+// writer made it.
 func keepCompanions() ([]string, error) {
-	if opkgRunning() {
-		return nil, errOpkgRunning
+	opkgMu.Lock()
+	defer opkgMu.Unlock()
+	return keepCompanionsHeld()
+}
+
+func keepCompanionsHeld() ([]string, error) {
+	if b, err := os.ReadFile(opkgStatusFile); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	} else if kept, _ := dropCompanionMarks(b); len(kept) == 0 {
+		return nil, nil
 	}
 	unlock, err := lockOpkg()
 	if err != nil {
@@ -81,6 +115,11 @@ func keepCompanions() ([]string, error) {
 	if err := writeSynced(tmp, out, fi.Mode().Perm()); err != nil {
 		os.Remove(tmp)
 		return nil, err
+	}
+	beforeTheRename()
+	if now, err := os.ReadFile(opkgStatusFile); err != nil || !bytes.Equal(now, old) {
+		os.Remove(tmp)
+		return nil, errors.New("the status file changed while its marks were taken out; left as it is now")
 	}
 	if err := os.Rename(tmp, opkgStatusFile); err != nil {
 		os.Remove(tmp)
@@ -124,17 +163,23 @@ func isCompanion(name string) bool {
 	return false
 }
 
-// lockOpkg takes the lock opkg takes (an fcntl write lock on the whole file,
-// as lockf(F_TLOCK) is): an opkg that holds it is errOpkgRunning, and one that
-// starts while we hold it stops at "Could not lock". Without the directory
-// (no opkg could run either) the process check above is all there is.
+// lockOpkg takes the lock opkg takes, and gives its release. opkg (2024.10.16,
+// libopkg/opkg_conf.c) creat()s the lock file, takes lockf(F_TLOCK) on it —
+// an fcntl write lock on the whole file, as here — holds it from before its
+// read of the status to after its write, and at its end lets go of it,
+// closes it and only then unlinks it. So a lock granted here can be on a file
+// a finishing opkg is about to unlink, and the next opkg creat()s a new one
+// and locks that: both would hold "the" lock. Granted, it holds only once no
+// opkg is alive — one that is has not unlinked yet, or will fail to lock —
+// and the path is still the file locked here. Otherwise errOpkgRunning, and
+// later again. An opkg that starts while it is held stops at "Could not
+// lock" and unlinks nothing. Without the lock's directory, or without a look
+// at the processes, nothing is held, and nothing written. The file stays:
+// opkg creat()s it as it finds it.
 func lockOpkg() (func(), error) {
-	f, err := os.OpenFile(opkgLockFile, os.O_RDWR|os.O_CREATE, 0o644)
-	if errors.Is(err, os.ErrNotExist) {
-		return func() {}, nil
-	}
+	f, err := os.OpenFile(opkgLockFile, os.O_RDWR|os.O_CREATE, 0o640)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("opkg's lock: %w", err)
 	}
 	lk := syscall.Flock_t{Type: syscall.F_WRLCK, Whence: 0}
 	if err := syscall.FcntlFlock(f.Fd(), syscall.F_SETLK, &lk); err != nil {
@@ -142,20 +187,41 @@ func lockOpkg() (func(), error) {
 		if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EACCES) {
 			return nil, errOpkgRunning
 		}
-		return nil, err
+		return nil, fmt.Errorf("opkg's lock: %w", err)
+	}
+	afterTheLock()
+	// In this order: a finishing opkg alive now has its unlink still ahead;
+	// one gone has done it, and the path says so below.
+	running, err := opkgRunning()
+	if err != nil || running {
+		f.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, errOpkgRunning
+	}
+	held, err1 := f.Stat()
+	now, err2 := os.Stat(opkgLockFile)
+	if err1 != nil || err2 != nil || !os.SameFile(held, now) {
+		f.Close()
+		return nil, errOpkgRunning
 	}
 	return func() { f.Close() }, nil
 }
 
-// opkgRunning: a process named opkg is alive.
-func opkgRunning() bool {
-	comms, _ := filepath.Glob(filepath.Join(opkgProcDir, "[0-9]*", "comm"))
+// opkgRunning: a process named opkg is alive. A process list without a
+// process in it (this vctl at least) is no answer.
+func opkgRunning() (bool, error) {
+	comms, err := filepath.Glob(filepath.Join(opkgProcDir, "[0-9]*", "comm"))
+	if err != nil || len(comms) == 0 {
+		return false, fmt.Errorf("cannot tell whether an opkg runs: no processes in %s", opkgProcDir)
+	}
 	for _, c := range comms {
 		if b, err := os.ReadFile(c); err == nil && strings.TrimSpace(string(b)) == "opkg" {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func writeSynced(path string, b []byte, mode os.FileMode) error {
@@ -178,16 +244,28 @@ func writeSynced(path string, b []byte, mode os.FileMode) error {
 // opkg to finish, a second at a time; tests shorten it.
 var companionsWait = 10 * time.Second
 
-// keepCompanionsAroundTheInstall runs keepCompanions before the self-update's
-// opkg and after it (<when>), waiting out another opkg for a few seconds.
-// Failing is no reason to keep the update back: a vctl that depends on the
-// companions, as every one from 0.7.0-r30 does, removes nothing.
-func keepCompanionsAroundTheInstall(when string) {
-	kept, err := keepCompanions()
-	for waited := time.Duration(0); errors.Is(err, errOpkgRunning) && waited < companionsWait; waited += time.Second {
-		time.Sleep(time.Second)
-		kept, err = keepCompanions()
+// keepCompanionsWaiting is keepCompanions, another opkg waited out for up to
+// wait, a second at a time. held: the caller holds opkgMu.
+func keepCompanionsWaiting(wait time.Duration, held bool) ([]string, error) {
+	keep := keepCompanions
+	if held {
+		keep = keepCompanionsHeld
 	}
+	kept, err := keep()
+	for waited := time.Duration(0); errors.Is(err, errOpkgRunning) && waited < wait; waited += time.Second {
+		time.Sleep(time.Second)
+		kept, err = keep()
+	}
+	return kept, err
+}
+
+// keepCompanionsAroundTheInstall runs keepCompanions before the self-update's
+// opkg and after it (<when>), waiting out another opkg for a few seconds; the
+// caller holds opkgMu. Failing is no reason to keep the update back: a vctl
+// that depends on the companions, as every one from 0.7.0-r30 does, removes
+// nothing.
+func keepCompanionsAroundTheInstall(when string) {
+	kept, err := keepCompanionsWaiting(companionsWait, true)
 	if err != nil {
 		logging.L().Warn("the companions' Auto-Installed marks stay: a vctl that does not depend on them would remove them",
 			"packages", strings.Join(companionPackages, " "), "when", when, "err", err.Error())
@@ -195,5 +273,42 @@ func keepCompanionsAroundTheInstall(when string) {
 	}
 	if len(kept) > 0 {
 		logging.L().Info("the companions stay whatever a vctl's Depends says: Auto-Installed mark dropped", "packages", strings.Join(kept, " "), "when", when)
+	}
+}
+
+// The start's pass waits out an opkg this long, a try every
+// companionsStartRetry: the opkg of an older vctl's self-update that brought
+// this one in has its xray and the postinst still to go (controllerInstallTime
+// bounds it). Tests shorten both.
+var (
+	companionsStartWait  = 15 * time.Minute
+	companionsStartRetry = 15 * time.Second
+)
+
+// keepCompanionsAtStart drops the marks an older vctl left: 0.7.0-r29's and
+// earlier self-updates kept nothing, so the companions the new vctl's opkg
+// brought in as its dependencies stay marked — and go with any later vctl
+// that does not name them, r29 put back by hand included. In the background,
+// once; nothing is locked or written where nothing is marked.
+func (d *daemon) keepCompanionsAtStart(ctx context.Context) {
+	deadline := time.Now().Add(companionsStartWait)
+	for {
+		kept, err := keepCompanions()
+		switch {
+		case err == nil:
+			if len(kept) > 0 {
+				logging.L().Info("the companions stay whatever a vctl's Depends says: Auto-Installed mark dropped", "packages", strings.Join(kept, " "), "when", "at the start")
+			}
+			return
+		case !errors.Is(err, errOpkgRunning) || !time.Now().Before(deadline):
+			logging.L().Warn("the companions' Auto-Installed marks stay: a vctl that does not depend on them would remove them",
+				"packages", strings.Join(companionPackages, " "), "when", "at the start", "err", err.Error())
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(companionsStartRetry):
+		}
 	}
 }

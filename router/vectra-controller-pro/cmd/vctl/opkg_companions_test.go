@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // theDefaultControllerInstall is runControllerInstall as vctl has it, before
@@ -76,10 +77,48 @@ func companionStand(t *testing.T, status string) string {
 	}
 	prevStatus, prevLock, prevProc, prevWait := opkgStatusFile, opkgLockFile, opkgProcDir, companionsWait
 	opkgStatusFile, opkgLockFile, opkgProcDir, companionsWait = p, filepath.Join(dir, "opkg.lock"), filepath.Join(dir, "proc"), 0
+	prevAfter, prevBefore := afterTheLock, beforeTheRename
 	t.Cleanup(func() {
 		opkgStatusFile, opkgLockFile, opkgProcDir, companionsWait = prevStatus, prevLock, prevProc, prevWait
+		afterTheLock, beforeTheRename = prevAfter, prevBefore
 	})
+	// The router's processes: init, and no opkg.
+	fakeProcess(t, "1", "init")
 	return p
+}
+
+// fakeProcess puts a process named comm in the stand's process list; its
+// removal ends it.
+func fakeProcess(t *testing.T, pid, comm string) func() {
+	t.Helper()
+	dir := filepath.Join(opkgProcDir, pid)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "comm"), []byte(comm+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return func() { os.RemoveAll(dir) }
+}
+
+// holdOpkgLock locks path from another process, as an opkg does — an fcntl
+// lock is the process's, so this one's own would be granted again — until
+// the returned func is called.
+func holdOpkgLock(t *testing.T, path string) func() {
+	t.Helper()
+	holder := exec.Command(os.Args[0], "-test.run=^TestHelperHoldsTheOpkgLock$")
+	holder.Env = append(os.Environ(), "VCTL_TEST_HOLD_OPKG_LOCK="+path)
+	stdin, _ := holder.StdinPipe()
+	stdout, _ := holder.StdoutPipe()
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	release := func() { stdin.Close(); holder.Wait() }
+	t.Cleanup(release)
+	if line, _ := bufio.NewReader(stdout).ReadString('\n'); strings.TrimSpace(line) != "locked" {
+		t.Fatalf("the holder said %q", line)
+	}
+	return release
 }
 
 // Only the companions lose the mark: xray-core, the kmod and a package whose
@@ -120,17 +159,12 @@ func TestKeepCompanionsDropsOnlyTheirMarks(t *testing.T) {
 	}
 }
 
-// Another opkg writes the file from what it read: the marks stay, and the
-// file is not touched.
+// An opkg that is alive though its lock is free — one that has let go of the
+// lock and has its unlink still ahead, or one that will fail to lock: the
+// marks stay, and the file is not touched.
 func TestKeepCompanionsLeavesTheFileToAnotherOpkg(t *testing.T) {
 	p := companionStand(t, companionStatus)
-	comm := filepath.Join(opkgProcDir, "4242", "comm")
-	if err := os.MkdirAll(filepath.Dir(comm), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(comm, []byte("opkg\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	fakeProcess(t, "4242", "opkg")
 	if _, err := keepCompanions(); !errors.Is(err, errOpkgRunning) {
 		t.Fatalf("err %v, want errOpkgRunning", err)
 	}
@@ -145,32 +179,167 @@ func TestKeepCompanionsLeavesTheFileToAnotherOpkg(t *testing.T) {
 // run again as TestHelperHoldsTheOpkgLock.
 func TestKeepCompanionsWaitsForOpkgsLock(t *testing.T) {
 	p := companionStand(t, companionStatus)
-	holder := exec.Command(os.Args[0], "-test.run=^TestHelperHoldsTheOpkgLock$")
-	holder.Env = append(os.Environ(), "VCTL_TEST_HOLD_OPKG_LOCK="+opkgLockFile)
-	stdin, _ := holder.StdinPipe()
-	stdout, _ := holder.StdoutPipe()
-	if err := holder.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { stdin.Close(); holder.Wait() })
-	if line, _ := bufio.NewReader(stdout).ReadString('\n'); strings.TrimSpace(line) != "locked" {
-		t.Fatalf("the holder said %q", line)
-	}
+	release := holdOpkgLock(t, opkgLockFile)
 	if _, err := keepCompanions(); !errors.Is(err, errOpkgRunning) {
 		t.Fatalf("err %v, want errOpkgRunning", err)
 	}
 	if got, _ := os.ReadFile(p); string(got) != companionStatus {
 		t.Fatalf("status changed:\n%s", got)
 	}
-	stdin.Close()
-	holder.Wait()
+	release()
 	if kept, err := keepCompanions(); err != nil || len(kept) != 2 {
 		t.Fatalf("once the lock is free: kept %v, err %v", kept, err)
 	}
 }
 
-// TestHelperHoldsTheOpkgLock is TestKeepCompanionsWaitsForOpkgsLock's other
-// process: it takes the lock as opkg does and keeps it until stdin closes.
+// An opkg ends as libopkg/opkg_conf.c has it: it lets go of its lock, closes
+// the file and then unlinks it — and the next opkg creat()s a new file and
+// locks that. A lock granted in between is on the file that goes: it holds
+// nothing, and the status is not touched, until the lock is the path's.
+func TestALockOnAnUnlinkedLockFileHoldsNothing(t *testing.T) {
+	p := companionStand(t, companionStatus)
+	var release func()
+	afterTheLock = func() {
+		afterTheLock = func() {}
+		// The finishing opkg's unlink, and the next opkg's creat() and lock.
+		if err := os.Remove(opkgLockFile); err != nil {
+			t.Fatal(err)
+		}
+		release = holdOpkgLock(t, opkgLockFile)
+	}
+	if _, err := keepCompanions(); !errors.Is(err, errOpkgRunning) {
+		t.Fatalf("err %v, want errOpkgRunning", err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != companionStatus {
+		t.Fatalf("status changed under the next opkg's lock:\n%s", got)
+	}
+	// The next opkg holds the new file: still nothing.
+	if _, err := keepCompanions(); !errors.Is(err, errOpkgRunning) {
+		t.Fatalf("while the next opkg runs: err %v, want errOpkgRunning", err)
+	}
+	release()
+	if kept, err := keepCompanions(); err != nil || len(kept) != 2 {
+		t.Fatalf("once it is done: kept %v, err %v", kept, err)
+	}
+}
+
+// A writer that takes no lock (an installer before r31) writes the status
+// after the last look and before the rename: the rename does not put the
+// copy made before it back; the status stays as that writer made it.
+func TestAWriteBeforeTheRenameIsNotUndone(t *testing.T) {
+	p := companionStand(t, companionStatus)
+	theirs := companionStatus + "Package: luci-app-new\nVersion: 1\nStatus: install user installed\nArchitecture: all\n\n"
+	beforeTheRename = func() {
+		if err := os.WriteFile(p, []byte(theirs), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := keepCompanions(); err == nil {
+		t.Fatal("no error: the marks were dropped over another write")
+	}
+	if got, _ := os.ReadFile(p); string(got) != theirs {
+		t.Fatalf("status now:\n%s\nwant the other writer's:\n%s", got, theirs)
+	}
+	if _, err := os.Stat(p + ".vctl"); !os.IsNotExist(err) {
+		t.Fatalf("the temporary file stayed: %v", err)
+	}
+}
+
+// Fail closed: without the lock's directory, or without a look at the
+// processes, nothing is held, and nothing is written.
+func TestNoLockAndNoProcessListWriteNothing(t *testing.T) {
+	p := companionStand(t, companionStatus)
+	opkgLockFile = filepath.Join(filepath.Dir(p), "no-such-dir", "opkg.lock")
+	if _, err := keepCompanions(); err == nil || errors.Is(err, errOpkgRunning) {
+		t.Fatalf("without /var/lock: err %v", err)
+	}
+	opkgLockFile = filepath.Join(filepath.Dir(p), "opkg.lock")
+	opkgProcDir = filepath.Join(filepath.Dir(p), "empty-proc")
+	if err := os.MkdirAll(opkgProcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keepCompanions(); err == nil || errors.Is(err, errOpkgRunning) {
+		t.Fatalf("without processes: err %v", err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != companionStatus {
+		t.Fatalf("status changed:\n%s", got)
+	}
+}
+
+// Where nothing is marked — every start of a vctl after the first — opkg's
+// lock is not even taken: an opkg started then is not refused.
+func TestNothingMarkedTakesNoLock(t *testing.T) {
+	_, status := dropCompanionMarks([]byte(companionStatus))
+	companionStand(t, string(status))
+	holdOpkgLock(t, opkgLockFile)
+	if kept, err := keepCompanions(); err != nil || kept != nil {
+		t.Fatalf("kept %v, err %v", kept, err)
+	}
+}
+
+// An older vctl's self-update — r29's installs the one package and keeps
+// nothing — brought this vctl in, and the companions the opkg installed as
+// its dependencies are marked: the new vctl drops the marks once it starts,
+// that opkg waited out.
+func TestTheStartDropsTheMarksAnOldUpdaterLeft(t *testing.T) {
+	p := companionStand(t, companionStatus)
+	prevWait, prevRetry := companionsStartWait, companionsStartRetry
+	companionsStartWait, companionsStartRetry = 5*time.Second, 10*time.Millisecond
+	t.Cleanup(func() { companionsStartWait, companionsStartRetry = prevWait, prevRetry })
+	// The old updater's opkg is still at the postinst that started this vctl.
+	end := fakeProcess(t, "4242", "opkg")
+	done := make(chan struct{})
+	go func() { (&daemon{}).keepCompanionsAtStart(context.Background()); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	if got, _ := os.ReadFile(p); string(got) != companionStatus {
+		t.Fatalf("status changed under the running opkg:\n%s", got)
+	}
+	end()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start's pass did not end")
+	}
+	got, _ := os.ReadFile(p)
+	if kept, _ := dropCompanionMarks(got); kept != nil {
+		t.Fatalf("the marks of %v stay after the start", kept)
+	}
+	if strings.Count(string(got), autoInstalledMark) != 3 {
+		t.Fatalf("the other packages' marks are gone:\n%s", got)
+	}
+}
+
+// What the installer and Rollout-VctlFleet.py run after their opkg.
+func TestTheKeepCompanionsCommand(t *testing.T) {
+	p := companionStand(t, companionStatus)
+	var out strings.Builder
+	prev := keepCompanionsOut
+	keepCompanionsOut = &out
+	t.Cleanup(func() { keepCompanionsOut = prev })
+	end := fakeProcess(t, "4242", "opkg")
+	if err := cmdKeepCompanions([]string{"--wait", "0"}); err == nil || !strings.Contains(err.Error(), "another opkg is running") {
+		t.Fatalf("while an opkg runs: %v", err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != companionStatus {
+		t.Fatalf("status changed:\n%s", got)
+	}
+	end()
+	if err := cmdKeepCompanions(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdKeepCompanions(nil); err != nil {
+		t.Fatal(err)
+	}
+	if want := "companions: kept vectra-geodata vectra-reporter (Auto-Installed mark dropped)\ncompanions: none marked\n"; out.String() != want {
+		t.Fatalf("said %q, want %q", out.String(), want)
+	}
+	if err := cmdKeepCompanions([]string{"now"}); err == nil {
+		t.Fatal("an argument went through")
+	}
+}
+
+// TestHelperHoldsTheOpkgLock is holdOpkgLock's other process: it takes the
+// lock as opkg does and keeps it until stdin closes.
 func TestHelperHoldsTheOpkgLock(t *testing.T) {
 	path := os.Getenv("VCTL_TEST_HOLD_OPKG_LOCK")
 	if path == "" {

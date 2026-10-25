@@ -745,6 +745,9 @@ func (d *daemon) run(ctx context.Context, once bool) error {
 		go d.watchStableExit(ctx)
 		// The router's tune (cmd_tune.go): in the background, never in the way.
 		go d.tuneAtStart(ctx)
+		// The companions an older vctl's self-update left marked
+		// (opkg_companions.go).
+		go d.keepCompanionsAtStart(ctx)
 	}
 	// PassWall-compatible routing renders from PassWall2's configuration, as
 	// it is now; the document on /etc (resumeRender) only when that fails.
