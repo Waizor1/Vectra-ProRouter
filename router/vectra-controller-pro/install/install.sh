@@ -689,6 +689,11 @@ XRAY_REFUSES_PROXYSETTINGS=26.9.8
 XRAY_PIN=""
 XRAY_PIN_HOW=""
 XRAY_REPLACED=""
+# A router with no xray at all before Vectra: the xray-core it puts in is
+# Vectra's to take away again (--uninstall), and this file says so. (Installed
+# from a file, it is no dependency opkg's --autoremove takes.)
+XRAY_FRESH=""
+XRAY_RECORD="${VECTRA_XRAY_RECORD:-/etc/vectra-controller-pro/.xray-core-by-vectra}"
 # check_passwall_xray <the xray this Vectra brings>: in check_conflicts, before
 # a takeover is asked for.
 check_passwall_xray() {
@@ -729,6 +734,7 @@ plan_xray() {
 	[ -n "${4:-}" ] || refuse XRAY_PIN_CHECKSUM "в списке фида Vectra нет SHA256 для xray-core $2: установщик не ставит то, что нечем проверить; xray не тронут."
 	if [ -z "$pv" ]; then
 		XRAY_PIN_HOW=install
+		[ -n "$xb" ] || XRAY_FRESH=1
 		ok "${xb:+xray $xv без пакета: }встанет xray-core $fv из фида Vectra"
 	elif [ "$pv" = "$fv" ]; then
 		XRAY_PIN_HOW=reinstall
@@ -828,6 +834,7 @@ install_xray_pin() {
 	[ "$(installed_version xray-core)" = "$2" ] && [ "$xv" = "$(echo "$2" | sed 's/-r\{0,1\}[0-9]*$//')" ] ||
 		fail XRAY_PIN_INSTALL "после opkg install на роутере xray-core $(installed_version xray-core), xray ${xv:-не запускается}, а не $2 из фида Vectra (см. лог). Vectra не установлена."
 	XRAY_REPLACED=1
+	[ -z "$XRAY_FRESH" ] || { mkdir -p "${XRAY_RECORD%/*}" && true > "$XRAY_RECORD"; } 2> /dev/null
 	ok "xray $xv — пакет xray-core $2 из фида Vectra"
 }
 
@@ -1427,7 +1434,16 @@ uninstall() {
 	fi
 	installed vectra-geodata && run opkg remove vectra-geodata
 	installed vectra-reporter && run opkg remove vectra-reporter
-	installed xray-core && note "xray-core остаётся: он мог быть на роутере до Vectra, и он нужен PassWall2 (удалить: opkg remove xray-core)"
+	if installed xray-core; then
+		# Only the one Vectra put on a router that had no xray; opkg refuses
+		# it while another package depends on it.
+		if [ -f "$XRAY_RECORD" ] && run opkg remove xray-core; then
+			rm -f "$XRAY_RECORD"
+			ok "xray-core удалён: его поставила Vectra"
+		else
+			note "xray-core остаётся: он был на роутере до Vectra или нужен другому пакету (удалить: opkg remove xray-core)"
+		fi
+	fi
 	# The hand-back kept PassWall2 off (the init script's passwall_breaks_on_xray):
 	# nothing gives it back once vctl is gone.
 	if [ -s /etc/vectra-controller-pro/.passwall-handback-blocked ]; then

@@ -141,6 +141,7 @@ func newRouter(t *testing.T) *router {
 		"VECTRA_XRAY_MIN=26.10.21",
 		// The xray on PATH (the fake), not a /usr/bin/xray of this host.
 		"VECTRA_XRAY_BIN="+filepath.Join(dir, "no-such-xray"),
+		"VECTRA_XRAY_RECORD="+filepath.Join(dir, "etc", "xray-core-by-vectra"),
 		// Three attempts, as on a router, without the router's pauses.
 		"VECTRA_RETRY_DELAYS=0 0",
 	)
@@ -1154,5 +1155,37 @@ esac
 	r.write("on-install", "#!/bin/sh\ngrep -v '^xray-core - ' \"$FAKE/installed\" > \"$FAKE/installed.new\"; mv \"$FAKE/installed.new\" \"$FAKE/installed\"; exit 255\n")
 	if out, code := r.run("plan_xray; fetch_xray_pin; install_xray_pin"); code != 1 || !strings.Contains(out, "xray-core на роутере нет") {
 		t.Fatalf("exit %d:\n%s", code, out)
+	}
+}
+
+// The xray-core Vectra puts on a router that had no xray is Vectra's to take
+// away; one it replaced (a package there, or PassWall2's binary) is not.
+func TestOnlyAnXrayVectraBroughtIsNoted(t *testing.T) {
+	for _, tc := range []struct {
+		name, installed, binary string
+		noted                   bool
+	}{
+		{"no xray before", "", "", true},
+		{"a binary without a package", "", "26.7.28", false},
+		{"an older package", "26.7.28-r1", "26.7.28", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := xrayRouter(t)
+			if tc.installed != "" {
+				r.write("installed", "xray-core - "+tc.installed+"\n")
+			}
+			plan := "plan_xray"
+			if tc.binary != "" {
+				r.write("xray-version", tc.binary)
+			} else {
+				// The fake xray is on PATH: for the plan, no xray at all.
+				plan = "command() { return 1; }; plan_xray; unset -f command"
+			}
+			out, code := r.run(plan + "; fetch_xray_pin; install_xray_pin")
+			_, err := os.Stat(filepath.Join(r.dir, "etc", "xray-core-by-vectra"))
+			if code != 0 || (err == nil) != tc.noted {
+				t.Fatalf("exit %d, noted %v (want %v):\n%s", code, err == nil, tc.noted, out)
+			}
+		})
 	}
 }
