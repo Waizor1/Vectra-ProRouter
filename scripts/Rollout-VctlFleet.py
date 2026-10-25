@@ -328,7 +328,8 @@ keep
 echo "rc=$rc" >> /tmp/vctl-rollout.log
 X
 (setsid sh /tmp/vctl-rollout.run </dev/null >/dev/null 2>&1 &)
-echo "started=yes xray=$how"
+echo "started=yes"
+echo "xray=$how"
 """
 
 HEALTH = r"""#!/bin/sh
