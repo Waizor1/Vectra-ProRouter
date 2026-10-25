@@ -59,7 +59,7 @@ info) ;;
 		exit 255
 	fi
 	# on-<command>: what that command does to the router, when a test says.
-	[ -x "$d/on-$1" ] && "$d/on-$1" "$@"
+	[ -x "$d/on-$1" ] && { "$d/on-$1" "$@" || exit $?; }
 	;;
 esac
 exit 0
@@ -139,6 +139,8 @@ func newRouter(t *testing.T) *router {
 		"VECTRA_OPKG_CONFS="+filepath.Join(dir, "opkg", "*.conf"),
 		"VECTRA_LEGACY_AGENT_MARKER="+filepath.Join(dir, "vault-read-v1"),
 		"VECTRA_XRAY_MIN=26.10.21",
+		// The xray on PATH (the fake), not a /usr/bin/xray of this host.
+		"VECTRA_XRAY_BIN="+filepath.Join(dir, "no-such-xray"),
 		// Three attempts, as on a router, without the router's pauses.
 		"VECTRA_RETRY_DELAYS=0 0",
 	)
@@ -275,7 +277,7 @@ func xrayRouter(t *testing.T) *router {
 // swapped in by hand (the four vctl routers: 26.10.17 over xray-core
 // 26.7.28-r1), as a downgrade under a newer package.
 func TestTheRoutersXrayBecomesTheFeeds(t *testing.T) {
-	file := "work/pkgs/" + vectraXrayFile
+	file := "work/xray/" + vectraXrayFile
 	for _, tc := range []struct {
 		name, installed, binary, how, flag string
 	}{
@@ -293,7 +295,7 @@ func TestTheRoutersXrayBecomesTheFeeds(t *testing.T) {
 			if tc.binary != "" {
 				r.write("xray-version", tc.binary)
 			}
-			out, code := r.run("plan_xray; echo \"PIN=$XRAY_PIN HOW=$XRAY_PIN_HOW\"; install_xray_pin")
+			out, code := r.run("plan_xray; echo \"PIN=$XRAY_PIN HOW=$XRAY_PIN_HOW\"; fetch_xray_pin; install_xray_pin")
 			if code != 0 || !strings.Contains(out, "PIN=vectra_pro 26.10.21-r1 "+vectraXrayFile) || !strings.Contains(out, "HOW="+tc.how) {
 				t.Fatalf("exit %d:\n%s", code, out)
 			}
@@ -314,7 +316,7 @@ func TestVectrasOwnXrayIsLeftAsItIs(t *testing.T) {
 	r := xrayRouter(t)
 	r.write("installed", "xray-core - 26.10.21-r1\n")
 	r.write("xray-version", "26.10.21")
-	out, code := r.run("plan_xray; echo \"PIN=[$XRAY_PIN]\"; install_xray_pin")
+	out, code := r.run("plan_xray; echo \"PIN=[$XRAY_PIN]\"; fetch_xray_pin; install_xray_pin")
 	if code != 0 || !strings.Contains(out, "PIN=[]") || strings.Contains(r.read("log"), "install") {
 		t.Fatalf("exit %d, log %q:\n%s", code, r.read("log"), out)
 	}
@@ -328,14 +330,14 @@ func TestAnXrayThatIsNotVectrasIsRefused(t *testing.T) {
 	r := xrayRouter(t)
 	r.write("xray-version", "26.7.28")
 	r.write("download", "something else")
-	if out, code := r.run("plan_xray; install_xray_pin"); code != 1 || !strings.Contains(out, "sha256") || strings.Contains(r.read("log"), "opkg install") {
+	if out, code := r.run("plan_xray; fetch_xray_pin; install_xray_pin"); code != 1 || !strings.Contains(out, "sha256") || strings.Contains(r.read("log"), "opkg install") {
 		t.Fatalf("a download that is not the list's: exit %d:\n%s", code, out)
 	}
 
 	r = xrayRouter(t)
 	r.feed("vectra_pro", "https://router.vectra-pro.net/pro/aarch64_cortex-a53",
 		"Package: xray-core\nVersion: 26.10.21-r1\nFilename: "+vectraXrayFile)
-	if out, code := r.run("plan_xray; install_xray_pin"); code != 1 || !strings.Contains(out, "нет SHA256") || strings.Contains(r.read("log"), "wget") {
+	if out, code := r.run("plan_xray; fetch_xray_pin; install_xray_pin"); code != 1 || !strings.Contains(out, "нет SHA256") || strings.Contains(r.read("log"), "wget") {
 		t.Fatalf("no checksum: exit %d:\n%s", code, out)
 	}
 
@@ -357,7 +359,7 @@ func TestAnXrayThatIsNotVectrasIsRefused(t *testing.T) {
 	r.write("xray-version", "26.10.17")
 	r.write("installed", "xray-core - 26.10.21-r1\n")
 	r.write("on-install", "#!/bin/sh\nexit 0\n")
-	if out, code := r.run("plan_xray; install_xray_pin"); code != 1 || !strings.Contains(out, "XRAY_PIN_INSTALL") && !strings.Contains(out, "xray 26.10.17") {
+	if out, code := r.run("plan_xray; fetch_xray_pin; install_xray_pin"); code != 1 || !strings.Contains(out, "XRAY_PIN_INSTALL") || !strings.Contains(out, "xray 26.10.17") {
 		t.Fatalf("still not the package's binary: exit %d:\n%s", code, out)
 	}
 }
@@ -370,7 +372,7 @@ func TestAnOldPassWallAndTheFeedsXray(t *testing.T) {
 	r := xrayRouter(t)
 	r.write("installed", "luci-app-passwall2 - 26.8.10-r1\nxray-core - 26.7.28-r1\n")
 	r.write("xray-version", "26.7.28")
-	out, code := r.run("JSON=1; STANDBY=1; plan_xray")
+	out, code := r.run("JSON=1; STANDBY=1; check_passwall_xray \"$XRAY_MIN\"")
 	lines := jsonLines(t, out)
 	if last := lines[len(lines)-1]; code != 1 || last["code"] != "PASSWALL_TOO_OLD_FOR_XRAY" {
 		t.Fatalf("--standby: exit %d: %v", code, lines)
@@ -378,16 +380,28 @@ func TestAnOldPassWallAndTheFeedsXray(t *testing.T) {
 	if strings.Contains(r.read("log"), "install") || strings.Contains(r.read("log"), "wget") {
 		t.Fatalf("changed something: %s", r.read("log"))
 	}
-	if out, _ := r.run("STANDBY=1; plan_xray"); !strings.Contains(out, "proxySettings") || !strings.Contains(out, "26.9.9-2") {
+	if out, _ := r.run("STANDBY=1; check_passwall_xray \"$XRAY_MIN\""); !strings.Contains(out, "proxySettings") || !strings.Contains(out, "без --standby") {
 		t.Fatalf("not said why:\n%s", out)
 	}
-	out, code = r.run("plan_xray; echo \"WARNINGS=[$WARNINGS] HOW=$XRAY_PIN_HOW\"")
-	if code != 0 || !strings.Contains(out, "WARNINGS=[ PASSWALL_HANDBACK_WITHOUT_VPN]") || !strings.Contains(out, "HOW=install") || !strings.Contains(out, "без VPN") {
+	// Next to the old agent there is no install without --standby: only the
+	// update is advised.
+	r.write("installed", "luci-app-passwall2 - 26.8.10-r1\nvectra-controller-agent - 0.1.13-r49\n")
+	if out, _ := r.run("STANDBY=1; check_passwall_xray \"$XRAY_MIN\""); strings.Contains(out, "без --standby") || !strings.Contains(out, "Сначала обновите PassWall2") {
+		t.Fatalf("next to the old agent:\n%s", out)
+	}
+	r.write("installed", "luci-app-passwall2 - 26.8.10-r1\nxray-core - 26.7.28-r1\n")
+	out, code = r.run("check_passwall_xray \"$XRAY_MIN\"; echo \"WARNINGS=[$WARNINGS]\"")
+	if code != 0 || !strings.Contains(out, "WARNINGS=[ PASSWALL_HANDBACK_WITHOUT_VPN]") || !strings.Contains(out, "без VPN") {
 		t.Fatalf("a takeover: exit %d:\n%s", code, out)
+	}
+	// Before a takeover is asked for: check_conflicts runs it.
+	out, _ = r.run("YES=1; check_conflicts; echo \"WARNINGS=[$WARNINGS]\"")
+	if !strings.Contains(out, "PASSWALL_HANDBACK_WITHOUT_VPN") || strings.Index(out, "без VPN (PassWall2") > strings.Index(out, "Vectra заберёт у него трафик") {
+		t.Fatalf("check_conflicts did not say it:\n%s", out)
 	}
 	// A PassWall2 that writes dialerProxy: nothing to say.
 	r.write("installed", "luci-app-passwall2 - 26.9.9-2\nxray-core - 26.7.28-r1\n")
-	if out, code := r.run("STANDBY=1; plan_xray; echo \"WARNINGS=[$WARNINGS]\""); code != 0 || !strings.Contains(out, "WARNINGS=[]") {
+	if out, code := r.run("STANDBY=1; check_passwall_xray \"$XRAY_MIN\"; echo \"WARNINGS=[$WARNINGS]\""); code != 0 || !strings.Contains(out, "WARNINGS=[]") {
 		t.Fatalf("PassWall2 26.9.9-2: exit %d:\n%s", code, out)
 	}
 }
@@ -719,7 +733,7 @@ func TestTheInstallAndThePinRideOutAnOutage(t *testing.T) {
 	r = xrayRouter(t)
 	r.write("xray-version", "26.7.28")
 	r.write("wget-offline", "1")
-	out, code = r.run("plan_xray; install_xray_pin")
+	out, code = r.run("plan_xray; fetch_xray_pin; install_xray_pin")
 	if code != 0 || strings.Count(r.read("log"), "wget https://router.vectra-pro.net/pro/aarch64_cortex-a53/"+vectraXrayFile) != 2 ||
 		!strings.Contains(r.read("log"), "opkg install ") {
 		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
@@ -1110,5 +1124,35 @@ func TestTheFeedsXrayIsCountedWholeWhenItGoesIn(t *testing.T) {
 	}
 	if out, code := r.run("XRAY_PIN=''; check_storage"); code != 0 {
 		t.Fatalf("nothing to put in: exit %d:\n%s", code, out)
+	}
+}
+
+// opkg's --force-reinstall removes xray-core before it unpacks the new one:
+// one that fails after that leaves no xray, and a plain install puts it back.
+func TestAFailedXrayReinstallIsInstalledAgain(t *testing.T) {
+	r := xrayRouter(t)
+	r.write("installed", "xray-core - 26.10.21-r1\n")
+	r.write("xray-version", "26.10.17")
+	r.write("on-install", `#!/bin/sh
+case " $* " in
+*" --force-reinstall "*)
+	grep -v '^xray-core - ' "$FAKE/installed" > "$FAKE/installed.new"; mv "$FAKE/installed.new" "$FAKE/installed"
+	echo " * opkg_install_pkg: Failed to unpack"
+	exit 255 ;;
+esac
+`+strings.TrimPrefix(onInstallXray, "#!/bin/sh\n"))
+	out, code := r.run("plan_xray; fetch_xray_pin; install_xray_pin")
+	log := r.read("log")
+	if code != 0 || !strings.Contains(log, "opkg install --force-reinstall ") || !strings.Contains(log, "opkg install "+filepath.Join(r.dir, "work", "xray", vectraXrayFile)) ||
+		!strings.Contains(out, "xray 26.10.21 — пакет xray-core 26.10.21-r1 из фида Vectra") {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, log, out)
+	}
+	// And one that fails again: said, with no xray left, how to put it back.
+	r.write("installed", "xray-core - 26.10.21-r1\n")
+	r.write("xray-version", "26.10.17")
+	r.write("log", "")
+	r.write("on-install", "#!/bin/sh\ngrep -v '^xray-core - ' \"$FAKE/installed\" > \"$FAKE/installed.new\"; mv \"$FAKE/installed.new\" \"$FAKE/installed\"; exit 255\n")
+	if out, code := r.run("plan_xray; fetch_xray_pin; install_xray_pin"); code != 1 || !strings.Contains(out, "xray-core на роутере нет") {
+		t.Fatalf("exit %d:\n%s", code, out)
 	}
 }

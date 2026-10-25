@@ -654,6 +654,9 @@ passwall-old)
 		sh -c "! /etc/init.d/$PKG running && nslookup localhost 127.0.0.1 | grep -q '^Name:'"
 	check passwallold_off_stays "a minute later Vectra is still off and PassWall2 still off" \
 		sh -c "sleep 65; ! /etc/init.d/$PKG running && ! running passwall2"
+	sh /etc/vectra-controller-pro/vectra-install.sh --uninstall < /dev/null > /tmp/installer.out 2>&1
+	check passwallold_uninstall_says "the uninstall says PassWall2 stays off and how to switch it on once updated" \
+		sh -c "grep -q 'proxySettings' /tmp/installer.out && grep -q 'passwall2.@global\[0\].enabled=1' /tmp/installer.out"
 	;;
 
 passwall-retire)

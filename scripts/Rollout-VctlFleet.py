@@ -214,7 +214,7 @@ echo "tmp=$(df -k /tmp | awk 'NR==2{print int($4/1024)}')"
 d=no; nft list table inet drill >/dev/null 2>&1 && d=yes; nft list table inet vdrill >/dev/null 2>&1 && d=yes; echo "drill=$d"
 [ -e /tmp/vctl-rollout.run ] && echo "pending=yes" || echo "pending=no"
 echo "xraypkg=$(awk '/^Package: /{p=($2=="xray-core")} p&&/^Version: /{print $2; exit}' /usr/lib/opkg/status)"
-echo "xrayv=$(xray version 2>/dev/null | awk 'NR==1{print $2}')"
+echo "xrayv=$(/usr/bin/xray version 2>/dev/null | awk 'NR==1{print $2}')"
 d=/tmp/vctl-rollout.i; rm -rf "$d"; mkdir -p "$d"
 curl -fsS -m 15 -o "$d/Packages" "$base/Packages" && curl -fsS -m 15 -o "$d/Packages.sig" "$base/Packages.sig" \
   && usign -V -q -m "$d/Packages" -x "$d/Packages.sig" -P /etc/opkg/keys && echo "index=signed" || echo "index=unverified"
@@ -244,11 +244,9 @@ curl -fsS -m 75 -o "$d/pkg.ipk" "$base/$file" || fail download
 [ "$(sha256sum "$d/pkg.ipk" | cut -d' ' -f1)" = "$sha" ] || fail sha
 if [ "$how" != keep ]; then
   signed xray-core "$xver" "$xfile" "$xsha" || fail xray_not_in_signed_index
-  curl -fsS -m 100 -o "$d/xray.ipk" "$base/$xfile" || fail xray_download
-  [ "$(sha256sum "$d/xray.ipk" | cut -d' ' -f1)" = "$xsha" ] || fail xray_sha
 fi
 rm -f /tmp/vctl-rollout.log
-{ echo '#!/bin/sh'; echo "how=$how"; cat; } > /tmp/vctl-rollout.run <<'X'
+{ echo '#!/bin/sh'; echo "how=$how; base='$base'; xfile='$xfile'; xsha='$xsha'"; cat; } > /tmp/vctl-rollout.run <<'X'
 trap 'rm -rf /tmp/vctl-rollout.d /tmp/vctl-rollout.run' EXIT
 sleep 15
 # vectra-geodata and vectra-reporter stay whatever a vctl's Depends says:
@@ -270,20 +268,31 @@ keep() {
   rm -f $s.vctl $c
 }
 keep
-# The channel's xray-core with vctl (one xray per vctl): in the same opkg when
-# it is missing or older, by itself after vctl's otherwise — never a --force-*
-# in vctl's opkg (a reinstall removes the package first; vctl's removal hands
-# the router back) — and vctl restarted then, onto the new binary.
-case "$how" in
-with) opkg install /tmp/vctl-rollout.d/xray.ipk /tmp/vctl-rollout.d/pkg.ipk > /tmp/vctl-rollout.log 2>&1; rc=$? ;;
-reinstall | downgrade)
-  opkg install /tmp/vctl-rollout.d/pkg.ipk > /tmp/vctl-rollout.log 2>&1; rc=$?
-  if [ "$rc" = 0 ]; then
-    opkg install --force-$how /tmp/vctl-rollout.d/xray.ipk >> /tmp/vctl-rollout.log 2>&1; rc=$?
-    [ "$rc" = 0 ] && /etc/init.d/vectra-controller-pro restart >> /tmp/vctl-rollout.log 2>&1
-  fi ;;
-*) opkg install /tmp/vctl-rollout.d/pkg.ipk > /tmp/vctl-rollout.log 2>&1; rc=$? ;;
-esac
+# The channel's xray-core with vctl (one xray per vctl), fetched here — past
+# the panel's job cap — and checked against the signed index's sha256: in the
+# same opkg when it is missing or older, by itself after vctl's otherwise —
+# never a --force-* in vctl's opkg (a reinstall removes the package first;
+# vctl's removal hands the router back), and installed plainly again when one
+# failed after taking it away — then vctl, if it runs, restarted onto it.
+x=/tmp/vctl-rollout.d/xray.ipk rc=0
+if [ "$how" != keep ]; then
+  curl -fsS -m 300 -o "$x" "$base/$xfile" > /tmp/vctl-rollout.log 2>&1 && [ "$(sha256sum "$x" | cut -d' ' -f1)" = "$xsha" ] || rc=xray_download
+fi
+if [ "$rc" = 0 ]; then
+  case "$how" in
+  with) opkg install "$x" /tmp/vctl-rollout.d/pkg.ipk >> /tmp/vctl-rollout.log 2>&1; rc=$? ;;
+  reinstall | downgrade)
+    opkg install /tmp/vctl-rollout.d/pkg.ipk >> /tmp/vctl-rollout.log 2>&1; rc=$?
+    if [ "$rc" = 0 ]; then
+      opkg install --force-$how "$x" >> /tmp/vctl-rollout.log 2>&1; rc=$?
+      if [ "$rc" != 0 ] && ! grep -q '^Package: xray-core$' /usr/lib/opkg/status; then
+        opkg install "$x" >> /tmp/vctl-rollout.log 2>&1 && rc=0
+      fi
+      [ "$rc" = 0 ] && /etc/init.d/vectra-controller-pro running && /etc/init.d/vectra-controller-pro restart >> /tmp/vctl-rollout.log 2>&1
+    fi ;;
+  *) opkg install /tmp/vctl-rollout.d/pkg.ipk >> /tmp/vctl-rollout.log 2>&1; rc=$? ;;
+  esac
+fi
 keep
 echo "rc=$rc" >> /tmp/vctl-rollout.log
 X
@@ -295,7 +304,7 @@ HEALTH = r"""#!/bin/sh
 echo "version=$(opkg list-installed vectra-controller-pro | cut -d' ' -f3)"
 echo "opkg=$(tail -1 /tmp/vctl-rollout.log 2>/dev/null)"
 echo "xraypkg=$(awk '/^Package: /{p=($2=="xray-core")} p&&/^Version: /{print $2; exit}' /usr/lib/opkg/status)"
-echo "xrayv=$(xray version 2>/dev/null | awk 'NR==1{print $2}')"
+echo "xrayv=$(/usr/bin/xray version 2>/dev/null | awk 'NR==1{print $2}')"
 [ -e /tmp/vctl-rollout.run ] && echo "pending=yes" || echo "pending=no"
 a=down
 for p in $(ubus call service list '{"name":"vectra-controller-pro"}' 2>/dev/null | jsonfilter -e '@[*].instances[*].pid' 2>/dev/null); do

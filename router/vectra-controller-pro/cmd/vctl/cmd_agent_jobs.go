@@ -890,10 +890,16 @@ func (d *daemon) updateController(ctx context.Context, job controlplane.Job) err
 	if err != nil {
 		return d.submitFailure(ctx, job, "update_controller: "+err.Error()+" (nothing installed)")
 	}
-	installCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
-	out, err := installControllerWithXray(installCtx, feedXrayPkg, how, dest)
-	cancel()
+	xrayFile, xrayDone, err := fetchFeedXray(ctx, feedXrayPkg, how)
 	if err != nil {
+		return d.submitFailure(ctx, job, "update_controller: "+err.Error()+" (nothing installed)")
+	}
+	defer xrayDone()
+	installCtx, cancel := context.WithTimeout(ctx, controllerInstallTime)
+	out, err := installControllerWithXray(installCtx, how, xrayFile, dest)
+	cancel()
+	var xrayAfter *xrayAfterError
+	if err != nil && !errors.As(err, &xrayAfter) {
 		return d.submitFailure(ctx, job, "opkg install: "+err.Error()+": "+tail(string(out), 1000))
 	}
 
@@ -914,6 +920,10 @@ func (d *daemon) updateController(ctx context.Context, job controlplane.Job) err
 	if how != xrayKeep {
 		d.st.PendingJobResult.Result["xray"] = feedXrayPkg.Package.Version
 		d.st.PendingJobResult.Result["xrayInstall"] = how
+	}
+	if xrayAfter != nil {
+		logging.L().Warn("vctl updated; the feed's xray-core after it was not installed", "err", xrayAfter.Error())
+		d.st.PendingJobResult.Result["xrayError"] = xrayAfter.Error() + ": " + tail(string(out), 500)
 	}
 	if err := d.persist(); err != nil {
 		return errors.New("update journal unavailable")

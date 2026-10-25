@@ -376,7 +376,12 @@ fetch() { # <url> <file>: uclient-fetch (wget) with TLS, as opkg itself fetches
 	wget -T 20 -O "$2" "$1" >> "$LOG" 2>&1
 }
 
-xray_version() { xray version 2>/dev/null | awk 'NR == 1 { print $2; exit }'; }
+# The xray vctl runs: /usr/bin/xray (vctl-xray-wrapper execs it), the one
+# xray-core installs; any other on PATH only where there is none.
+XRAY_BIN="${VECTRA_XRAY_BIN:-/usr/bin/xray}"
+xray_version() {
+	if [ -x "$XRAY_BIN" ]; then "$XRAY_BIN" version; else xray version; fi 2> /dev/null | awk 'NR == 1 { print $2; exit }'
+}
 
 lan_address() {
 	a="$(uci -q get network.lan.ipaddr)"
@@ -520,6 +525,7 @@ check_conflicts() {
 	for p in $DPI_TOOLS; do
 		installed "$p" && warn DPI_TOOL "$p установлен: он меняет тот же трафик; если сайты перестанут открываться, выключите его"
 	done
+	check_passwall_xray "$XRAY_MIN"
 	if [ "$STANDBY" = 1 ]; then
 		ok "режим --standby: Vectra встанет выключенной, трафик никто не забирает"
 	elif installed luci-app-passwall2 || [ -x /etc/init.d/passwall2 ]; then
@@ -682,14 +688,20 @@ PASSWALL_XRAY_OK=26.9.9-2
 XRAY_REFUSES_PROXYSETTINGS=26.9.8
 XRAY_PIN=""
 XRAY_PIN_HOW=""
-XRAY_REPLACED=0
-check_passwall_xray() { # <the feed's xray version>
+XRAY_REPLACED=""
+# check_passwall_xray <the xray this Vectra brings>: in check_conflicts, before
+# a takeover is asked for.
+check_passwall_xray() {
+	[ -n "$1" ] || return 0
 	pw="$(installed_version luci-app-passwall2)"
 	[ -n "$pw" ] || return 0
 	version_ge "$1" "$XRAY_REFUSES_PROXYSETTINGS" || return 0
 	version_ge "$pw" "$PASSWALL_XRAY_OK" && return 0
 	why="PassWall2 $pw пишет в конфиг xray поле proxySettings, а xray $1, под который собрана эта Vectra, с 26.9.8 такой конфиг не запускает. xray на роутере один для обоих (/usr/bin/xray)"
 	if [ "$STANDBY" = 1 ]; then
+		if installed vectra-controller-agent; then
+			refuse PASSWALL_TOO_OLD_FOR_XRAY "$why: с --standby PassWall2 остался бы вести трафик на xray, на котором он не работает. Сначала обновите PassWall2 до $PASSWALL_XRAY_OK или новее (на роутере с прежним агентом Vectra ставится только с --standby), потом запустите установщик снова."
+		fi
 		refuse PASSWALL_TOO_OLD_FOR_XRAY "$why: с --standby PassWall2 остался бы вести трафик на xray, на котором он не работает. Обновите PassWall2 до $PASSWALL_XRAY_OK или новее и запустите установщик снова — или ставьте без --standby, тогда Vectra заберёт трафик себе."
 	fi
 	warn PASSWALL_HANDBACK_WITHOUT_VPN "$why. Vectra заберёт трафик; vectra off вернёт роутеру интернет без VPN (PassWall2 останется выключенным), пока PassWall2 не обновлён до $PASSWALL_XRAY_OK или новее."
@@ -700,7 +712,6 @@ plan_xray() {
 	[ -n "$fv" ] || refuse XRAY_NOT_IN_FEED "в фиде Vectra нет xray-core: этой версии Vectra нужен xray $XRAY_MIN из её фида."
 	fbase="$(echo "$fv" | sed 's/-r\{0,1\}[0-9]*$//')"
 	[ -z "$XRAY_MIN" ] || [ "$fbase" = "$XRAY_MIN" ] || refuse XRAY_FEED_MISMATCH "в фиде Vectra xray-core $fv, а эта версия Vectra собрана под xray $XRAY_MIN: фид и установщик из разных выпусков."
-	check_passwall_xray "$fbase"
 	xb="$(command -v xray 2> /dev/null)"
 	pv="$(installed_version xray-core)"
 	xv="$(xray_version)"
@@ -769,25 +780,38 @@ check_storage() {
 
 # --------------------------------------------------------------- install ----
 
-# install_xray_pin installs Vectra's xray-core as plan_xray chose. Downloaded
-# and checked against its feed's list before anything changes: a download
-# that fails changes nothing. By itself, before vctl: its --force-reinstall
-# (or --force-downgrade) is never vctl's — opkg's reinstall removes the
-# installed package first, and vctl's removal hands the router back.
-install_xray_pin() {
+# fetch_xray_pin downloads Vectra's xray-core as plan_xray chose, checked
+# against its feed's list, before anything changes: a download that fails
+# changes nothing. install_xray_pin puts it in later, just before vctl —
+# after the dnsmasq swap, so a takeover that stops on the way leaves the xray
+# a PassWall2 runs as it was.
+XRAY_FILE=""
+fetch_xray_pin() {
 	[ -n "$XRAY_PIN" ] || return 0
 	# shellcheck disable=SC2086 # the plan's fields
 	set -- $XRAY_PIN
-	step "xray-core $2 из фида Vectra"
 	base="$(feed_url "$1")"
 	[ -n "$base" ] || refuse XRAY_PIN_DOWNLOAD "не найден адрес фида $1, где лежит xray-core $2."
-	rm -rf "$WORK/pkgs"
-	mkdir -p "$WORK/pkgs"
-	f="$WORK/pkgs/${3##*/}"
+	rm -rf "$WORK/xray"
+	mkdir -p "$WORK/xray"
+	f="$WORK/xray/${3##*/}"
 	retry fetch "$base/$3" "$f" || refuse XRAY_PIN_DOWNLOAD "не удалось скачать xray-core $2 ($base/$3)."
 	if [ "$(sha256sum "$f" 2> /dev/null | awk '{ print $1 }')" != "$4" ]; then
 		refuse XRAY_PIN_CHECKSUM "xray-core $2 скачался не тот: sha256 не совпадает со списком фида $1."
 	fi
+	XRAY_FILE="$f"
+}
+
+# install_xray_pin installs it, by itself, before vctl: its --force-reinstall
+# (or --force-downgrade) is never vctl's — opkg's reinstall removes the
+# installed package first, and vctl's removal hands the router back. And it
+# removes xray-core before it unpacks the new one: one that fails after that
+# leaves no xray, so a plain install puts it back.
+install_xray_pin() {
+	[ -n "$XRAY_FILE" ] || return 0
+	# shellcheck disable=SC2086 # the plan's fields
+	set -- $XRAY_PIN
+	step "xray-core $2 из фида Vectra"
 	INSTALLED_SOMETHING=1
 	how=""
 	case "$XRAY_PIN_HOW" in
@@ -795,7 +819,11 @@ install_xray_pin() {
 	downgrade) how=--force-downgrade ;;
 	esac
 	# shellcheck disable=SC2086 # no flag, or one
-	retry opkg install $how "$f" || fail XRAY_PIN_INSTALL "opkg install xray-core $2 не прошёл (см. лог). Vectra не установлена."
+	if ! retry opkg install $how "$XRAY_FILE"; then
+		[ -n "$how" ] && ! installed xray-core && run opkg install "$XRAY_FILE"
+		installed xray-core || fail XRAY_PIN_INSTALL "opkg install xray-core $2 не прошёл, и xray-core на роутере нет (см. лог). Vectra не установлена; запустите установщик снова — он поставит xray-core из своего фида."
+		[ "$(installed_version xray-core)" = "$2" ] || fail XRAY_PIN_INSTALL "opkg install xray-core $2 не прошёл (см. лог); на роутере остался xray-core $(installed_version xray-core). Vectra не установлена."
+	fi
 	xv="$(xray_version)"
 	[ "$(installed_version xray-core)" = "$2" ] && [ "$xv" = "$(echo "$2" | sed 's/-r\{0,1\}[0-9]*$//')" ] ||
 		fail XRAY_PIN_INSTALL "после opkg install на роутере xray-core $(installed_version xray-core), xray ${xv:-не запускается}, а не $2 из фида Vectra (см. лог). Vectra не установлена."
@@ -1137,6 +1165,7 @@ install_packages() {
 		INSTALLED_SOMETHING=1
 		ok "LuCI $(installed_version luci-base)"
 	fi
+	install_xray_pin
 	step "Vectra"
 	was="$(installed_version "$PKG")"
 	INSTALLED_SOMETHING=1
@@ -1167,15 +1196,18 @@ install_packages() {
 		for p in vectra-geodata vectra-reporter; do available "$p" && pkgs="$pkgs $p"; done
 	fi
 	# shellcheck disable=SC2086 # a list of packages
-	retry opkg install $pkgs || fail PKG_INSTALL "opkg install $pkgs не прошёл (см. лог). Интернет роутера работает как прежде."
+	retry opkg install $pkgs || fail PKG_INSTALL "opkg install $pkgs не прошёл (см. лог). Интернет роутера работает как прежде${XRAY_REPLACED:+, но xray уже заменён на xray-core из фида Vectra}."
 	# And what this run's opkg pulled in as vctl's dependency (an upgrade
 	# from a vctl that had no reporter yet).
 	keep_companions
 	# A new xray under a vctl that was not upgraded (its postinst restarts
 	# it otherwise): the xray that runs is still the old binary until vctl
 	# starts it again.
-	if [ "$XRAY_REPLACED" = 1 ] && [ -n "$was" ] && [ "$was" = "$(installed_version "$PKG")" ] && "/etc/init.d/$PKG" running > /dev/null 2>&1; then
-		run "/etc/init.d/$PKG" restart
+	# Not with --standby: Vectra is to stay off, and its postinst's hold
+	# (VECTRA_SKIP_POSTINST_RESTART) would make the restart a stop.
+	if [ -n "$XRAY_REPLACED" ] && [ "$STANDBY" != 1 ] && [ -n "$was" ] && [ "$was" = "$(installed_version "$PKG")" ] &&
+		"/etc/init.d/$PKG" running > /dev/null 2>&1; then
+		(unset VECTRA_SKIP_POSTINST_RESTART; run "/etc/init.d/$PKG" restart)
 		note "Vectra перезапущена: теперь работает новый xray"
 	fi
 	if [ "$STANDBY" = 1 ]; then
@@ -1395,7 +1427,12 @@ uninstall() {
 	fi
 	installed vectra-geodata && run opkg remove vectra-geodata
 	installed vectra-reporter && run opkg remove vectra-reporter
-	installed xray-core && note "xray-core остаётся: он был на роутере до Vectra или нужен другому пакету"
+	installed xray-core && note "xray-core остаётся: он мог быть на роутере до Vectra, и он нужен PassWall2 (удалить: opkg remove xray-core)"
+	# The hand-back kept PassWall2 off (the init script's passwall_breaks_on_xray):
+	# nothing gives it back once vctl is gone.
+	if [ -s /etc/vectra-controller-pro/.passwall-handback-blocked ]; then
+		warn PASSWALL_LEFT_OFF "$(cat /etc/vectra-controller-pro/.passwall-handback-blocked). Когда PassWall2 будет обновлён до $PASSWALL_XRAY_OK или новее, включите его: uci set passwall2.@global[0].enabled=1; uci commit passwall2; /etc/init.d/passwall2 enable; /etc/init.d/passwall2 start"
+	fi
 	mkdir -p "$WORK"
 	remove_feed
 	[ -n "$FEED_KEY_ID" ] && rm -f "$KEYS/$FEED_KEY_ID"
@@ -1483,7 +1520,7 @@ main() {
 		conclude "проверки пройдены"
 	fi
 
-	install_xray_pin
+	fetch_xray_pin
 	swap_dnsmasq
 	install_packages
 	set_brand

@@ -166,9 +166,11 @@ passwall_init() {
 # as vctl's to turn on), what is owed it stays owed — a later hand-back, once
 # PassWall2 is updated, gives it back — and the router's internet goes out
 # directly, without a VPN. The legacy agent is given back as ever: it keeps
-# the router in the panel, and sees PassWall2 off. PASSWALL_BLOCKED says why,
-# for `vectra status` and `vectra off`. The same rule: internal/power
-# (passWallBlocked), install/install.sh (check_passwall_xray).
+# the router in the panel (its package's watchdog would bring it back within
+# minutes anyway). PASSWALL_BLOCKED says why, on the router — the installer's
+# --uninstall reads it; `vectra status` and `vectra off` say the same from
+# internal/power (passWallBlocked). install/install.sh applies the rule too
+# (check_passwall_xray).
 PASSWALL_XRAY_OK=26.9.9-2
 XRAY_REFUSES_PROXYSETTINGS=26.9.8
 PASSWALL_BLOCKED="$LEGACY_MARKER_DIR/.passwall-handback-blocked"
@@ -554,6 +556,7 @@ restore_passwall_stack() {
 		# Gone. Retired by vctl (its record): nothing is owed it, and what
 		# said it was goes. Gone otherwise — an opkg upgrade of it in flight,
 		# a half-unpacked overlay — what is owed it stays owed (see below).
+		rm -f "$PASSWALL_BLOCKED"
 		if [ -f "$PASSWALL_RETIRED" ]; then
 			rm -f "$PASSWALL_MARKER" "$PASSWALL_SWITCH_MARKER" \
 				"$TRIAL_MARKER_DIR/${PASSWALL_MARKER##*/}" "$TRIAL_MARKER_DIR/${PASSWALL_SWITCH_MARKER##*/}" \
@@ -570,9 +573,22 @@ restore_passwall_stack() {
 		[ -f "$PASSWALL_SWITCH_MARKER" ] || [ -f "$TRIAL_MARKER_DIR/${PASSWALL_SWITCH_MARKER##*/}" ]; } &&
 		why="$(passwall_breaks_on_xray)"; then
 		logger -t vectra-controller-pro "not giving the router back to PassWall: $why"
-		if [ ! -f "$PASSWALL_SWITCH_MARKER" ] && [ ! -f "$TRIAL_MARKER_DIR/${PASSWALL_SWITCH_MARKER##*/}" ] &&
-			[ "$(uci -q get "$cfg.@global[0].enabled")" = 1 ]; then
-			uci -q set "$cfg.@global[0].enabled=0" && uci -q commit "$cfg" && : > "$PASSWALL_SWITCH_MARKER"
+		# What a trial owes it goes where a reboot keeps it — the trial's
+		# tmpfs goes at the next boot, and the record with it — and its
+		# snippet, which would turn the switch on at that boot, goes.
+		for m in "$PASSWALL_MARKER" "$PASSWALL_SWITCH_MARKER"; do
+			[ -f "$TRIAL_MARKER_DIR/${m##*/}" ] && true > "$m" 2>/dev/null && rm -f "$TRIAL_MARKER_DIR/${m##*/}"
+		done
+		rm -f "$PASSWALL_SWITCH_SNIPPET"
+		# Its switch off, noted first as vctl's to turn on again; its boot
+		# link off too (a trial leaves it on), noted as owed. Each breadcrumb
+		# before the change it records (stop_passwall_stack's rule).
+		if [ ! -f "$PASSWALL_SWITCH_MARKER" ] && [ "$(uci -q get "$cfg.@global[0].enabled")" = 1 ] &&
+			true > "$PASSWALL_SWITCH_MARKER" 2>/dev/null; then
+			uci -q set "$cfg.@global[0].enabled=0" && uci -q commit "$cfg"
+		fi
+		if "$pw" enabled >/dev/null 2>&1 && true > "$PASSWALL_MARKER" 2>/dev/null; then
+			"$pw" disable >/dev/null 2>&1 || true
 		fi
 		passwall_running "$pw"
 		[ "$?" = 1 ] || "$pw" stop >/dev/null 2>&1 || true

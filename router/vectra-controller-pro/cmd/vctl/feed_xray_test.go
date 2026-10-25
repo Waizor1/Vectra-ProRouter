@@ -245,3 +245,59 @@ func TestNoRoomForTheFeedsXrayInstallsNothing(t *testing.T) {
 		})
 	}
 }
+
+// opkg's --force-reinstall removes xray-core before it unpacks the new one:
+// one that fails after that leaves no xray, and a plain install puts it back.
+// One that fails with xray-core still there leaves vctl updated all the
+// same: the update is journaled and restarted into, and the result says what
+// went wrong with xray.
+func TestAFailedXrayReinstallIsPutRight(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		removes   bool // the failed --force-reinstall took xray-core away first
+		wantCalls int
+		wantError bool
+	}{
+		{"failed after removing it: installed again", true, 3, false},
+		{"failed with it still there", false, 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newXrayStand(t, standXrayVersion, "26.10.17")
+			var calls [][]string
+			runControllerInstall = func(_ context.Context, args ...string) ([]byte, error) {
+				calls = append(calls, args)
+				if args[0] == "--force-reinstall" {
+					if tc.removes {
+						if err := os.WriteFile(opkgStatusFile, []byte(xrayStatus("")), 0o644); err != nil {
+							t.Fatal(err)
+						}
+					}
+					return []byte(" * opkg_install_pkg: Failed to unpack\n"), errors.New("exit status 255")
+				}
+				if len(args) == 1 && strings.HasSuffix(args[0], xrayUpdateFile) {
+					if err := os.WriteFile(opkgStatusFile, []byte(xrayStatus(standXrayVersion)), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return nil, nil
+			}
+			results := map[string][]controlplane.JobResultRequest{}
+			mu := &sync.Mutex{}
+			d := buildGuardTestDaemon(t, results, mu)
+			if err := d.executeJob(context.Background(), s.job("x5", nil), controlplane.CheckInResponse{}); !errors.Is(err, errControllerRestartRequested) {
+				r, _ := lastResult(results, mu, "x5")
+				t.Fatalf("not journaled as installed: %v %v", err, r.Result)
+			}
+			if len(calls) != tc.wantCalls || (tc.removes && strings.HasPrefix(calls[2][0], "--")) {
+				t.Fatalf("opkg install was given %q", calls)
+			}
+			r := d.st.PendingJobResult
+			if _, has := r.Result["xrayError"]; has != tc.wantError || r.Status != "success" || s.restarts != 1 {
+				t.Fatalf("journaled %+v, restarts %d", r, s.restarts)
+			}
+			if tc.wantError && !strings.Contains(r.Result["xrayError"].(string), "Failed to unpack") {
+				t.Fatalf("the xray error does not say what opkg said: %v", r.Result["xrayError"])
+			}
+		})
+	}
+}

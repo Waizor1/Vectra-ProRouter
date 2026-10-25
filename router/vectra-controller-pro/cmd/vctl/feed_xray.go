@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"vectra-controller-pro/internal/feedverify"
+	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/opkgstatus"
 )
 
@@ -102,36 +103,83 @@ func xrayPlan(ctx context.Context, x *feedXray) (string, error) {
 	return xrayWith, nil
 }
 
-// installControllerWithXray installs the downloaded vctl package (vctlFile)
-// with the feed's xray-core as the plan says, and returns what opkg said.
-// --force-reinstall and --force-downgrade are only ever xray-core's, in an
-// opkg of their own after vctl's: opkg's --force-reinstall removes the
-// installed package first, and vctl's removal hands the router back.
-func installControllerWithXray(ctx context.Context, x *feedXray, how, vctlFile string) ([]byte, error) {
+// fetchFeedXray downloads the feed's xray-core the plan puts in, checked
+// against its signed sha256 and the room it needs, and gives the file and
+// its removal; no file for a plan that installs none. Before the install's
+// deadline: a slow link must not leave opkg too little of it — one killed
+// halfway leaves a binary cut short, or none.
+func fetchFeedXray(ctx context.Context, x *feedXray, how string) (string, func(), error) {
 	if how == xrayKeep {
-		return runControllerInstall(ctx, vctlFile)
+		return "", func() {}, nil
 	}
 	if err := roomForXray(x.Package); err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	xf := filepath.Join(os.TempDir(), xrayUpdateFile)
-	defer os.Remove(xf)
+	done := func() { os.Remove(xf) }
 	got, err := downloadFile(ctx, x.URL, xf)
 	if err != nil {
-		return nil, fmt.Errorf("download xray-core %s: %w", x.Package.Version, err)
+		done()
+		return "", nil, fmt.Errorf("download xray-core %s: %w", x.Package.Version, err)
 	}
 	if !strings.EqualFold(got, x.Package.SHA256) {
-		return nil, fmt.Errorf("xray-core %s: checksum mismatch: got %s want %s", x.Package.Version, got, x.Package.SHA256)
+		done()
+		return "", nil, fmt.Errorf("xray-core %s: checksum mismatch: got %s want %s", x.Package.Version, got, x.Package.SHA256)
 	}
-	if how == xrayWith {
-		return runControllerInstall(ctx, xf, vctlFile)
+	return xf, done, nil
+}
+
+// controllerInstallTime bounds the self-update's opkg runs: long, as a
+// deadline kills opkg where it is — a 32 MB xray unpacked on NAND takes its
+// time, and a kill halfway leaves none.
+const controllerInstallTime = 10 * time.Minute
+
+// xrayAfterError: vctl's package went in, the feed's xray-core after it did
+// not. vctl is the new one on disk all the same: the update is journaled and
+// restarted into, and says so.
+type xrayAfterError struct{ err error }
+
+func (e *xrayAfterError) Error() string { return "xray-core after vctl: " + e.err.Error() }
+func (e *xrayAfterError) Unwrap() error { return e.err }
+
+// installControllerWithXray installs vctl's package (vctlFile) with the
+// feed's xray-core (xrayFile) as the plan says, and returns what opkg said.
+// --force-reinstall and --force-downgrade are only ever xray-core's, in an
+// opkg of their own after vctl's: opkg's --force-reinstall removes the
+// installed package first, and vctl's removal hands the router back. And it
+// removes xray-core before it unpacks the new one: one that fails after that
+// leaves no xray, so a plain install puts it back.
+func installControllerWithXray(ctx context.Context, how, xrayFile, vctlFile string) ([]byte, error) {
+	switch how {
+	case xrayKeep:
+		return runControllerInstall(ctx, vctlFile)
+	case xrayWith:
+		return runControllerInstall(ctx, xrayFile, vctlFile)
 	}
 	out, err := runControllerInstall(ctx, vctlFile)
 	if err != nil {
 		return out, err
 	}
-	more, err := runControllerInstall(ctx, "--force-"+how, xf)
-	return append(out, more...), err
+	more, err := runControllerInstall(ctx, "--force-"+how, xrayFile)
+	out = append(out, more...)
+	if err == nil {
+		return out, nil
+	}
+	if !xrayCoreInstalled() {
+		again, err2 := runControllerInstall(ctx, xrayFile)
+		out = append(out, again...)
+		if err2 == nil && xrayCoreInstalled() {
+			logging.L().Warn("xray-core went in again by a plain install after its --force-"+how+" failed", "err", err.Error())
+			return out, nil
+		}
+	}
+	return out, &xrayAfterError{err}
+}
+
+// xrayCoreInstalled: opkg's status has xray-core installed.
+func xrayCoreInstalled() bool {
+	status, err := os.ReadFile(opkgStatusFile)
+	return err == nil && opkgstatus.Version(status, xrayPackageName) != ""
 }
 
 // The room a new xray-core needs, by its signed index entry: its download

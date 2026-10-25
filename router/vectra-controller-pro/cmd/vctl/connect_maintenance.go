@@ -18,6 +18,7 @@ import (
 
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/feedverify"
+	"vectra-controller-pro/internal/logging"
 )
 
 // These seams are fixed-argv operations. Tests never invoke router commands.
@@ -460,10 +461,20 @@ var maintenanceAutoInstall = func(ctx context.Context, c maintenanceCandidate) e
 	if e != nil {
 		return errors.New("automatic xray-core plan unavailable")
 	}
-	installCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
+	xrayFile, xrayDone, e := fetchFeedXray(ctx, c.Xray, how)
+	if e != nil {
+		return errors.New("automatic xray-core download failed")
+	}
+	defer xrayDone()
+	installCtx, cancel := context.WithTimeout(ctx, controllerInstallTime)
 	defer cancel()
-	if _, e = installControllerWithXray(installCtx, c.Xray, how, dest); e != nil {
+	var xrayAfter *xrayAfterError
+	if _, e = installControllerWithXray(installCtx, how, xrayFile, dest); e != nil && !errors.As(e, &xrayAfter) {
 		return errors.New("automatic package install failed")
+	}
+	if xrayAfter != nil {
+		// vctl is the new one on disk: restarted into all the same.
+		logging.L().Warn("automatic update: vctl updated; the feed's xray-core after it was not installed", "err", xrayAfter.Error())
 	}
 	scheduleControllerRestart()
 	return errControllerRestartRequested

@@ -1222,6 +1222,22 @@ func TestTheHandBackDoesNotGiveThePassWallTheXrayBreaks(t *testing.T) {
 		t.Fatalf("the legacy agent was not given back:\n%s", all)
 	}
 
+	// A trial's hand-back the same: what it owed moves to /etc, its snippet
+	// (the switch on at the next boot) goes, and PassWall2's boot link,
+	// which a trial leaves on, goes off and owed.
+	for _, f := range []string{".passwall-disabled-by-vctl", ".passwall-switch-off-by-vctl", ".passwall-handback-blocked"} {
+		os.Remove(s.path(f))
+	}
+	s.setSwitch("1")
+	s.write("trial.d/.passwall-switch-off-by-vctl", "")
+	s.write("uci-defaults/99-vectra-trial-passwall-switch", "")
+	s.write("pw.enabled", "")
+	events, _ = s.run("1", "restore_passwall_stack\n", env...)
+	if containsLine(events, "passwall start") || s.exists("uci-defaults/99-vectra-trial-passwall-switch") || s.exists("pw.enabled") ||
+		!s.exists(".passwall-switch-off-by-vctl") || !s.exists(".passwall-disabled-by-vctl") || s.exists("trial.d/.passwall-switch-off-by-vctl") {
+		t.Fatalf("a trial's hand-back left PassWall2 a way back at the next boot:\n%s", strings.Join(events, "\n"))
+	}
+
 	// PassWall2 26.9.9-2 writes dialerProxy: given back, its switch on again.
 	s.write("opkg-status", "Package: luci-app-passwall2\nVersion: 26.9.9-2\nStatus: install user installed\n\n")
 	events, _ = s.run("1", "restore_passwall_stack\n", env...)
