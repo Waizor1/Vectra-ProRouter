@@ -599,8 +599,11 @@ function semanticScore(slot: FleetRoutePolicySlotId, node: PasswallNode) {
       //
       // Delegating keeps the two in lockstep through any future canon move,
       // including onto the RU-entry fallback. `mux_concurrency: -1` disables
-      // TCP mux, so this costs the WorldProxy TCP path nothing; XTLS Vision
-      // rejects UDP/443 on its own, so QUIC behaviour is unchanged too.
+      // TCP mux, so this costs the WorldProxy TCP path nothing. It does cost
+      // QUIC: Xray's mux rejects UDP/443 by default, and the RU-entry gRPC
+      // nodes have no Vision of their own to blame it on. That is why YouTube
+      // is kept off this node (quicDroppingNodeIds); WorldProxy's own QUIC
+      // falls back to TCP as before.
       return semanticScore("WorldProxy", node);
     }
   }
@@ -684,12 +687,50 @@ function spreadKey(identity?: FleetRoutePolicyRouterIdentity | null) {
   return normalizeIdentity(raw);
 }
 
+// A node whose PassWall config turns on Xray mux. PassWall2 renders `mux=1` as
+// an Xray mux object without `xudpProxyUDP443`, and Xray's default for that
+// field is "reject": every UDP/443 (QUIC) packet routed to that outbound is
+// dropped without an answer. PassWall2 has no option for the field, upstream
+// 26.10.20 included.
+function carriesMux(node: PasswallNode) {
+  return extraValueToString(node.extras.mux) === "1";
+}
+
+// The nodes YouTube must stay off: every node that already carries mux, plus
+// the node WorldProxy resolves to, because DiscordVoiceUdp follows WorldProxy
+// and stamps mux onto that node (see the DiscordVoiceUdp scorer case).
+//
+// Why YouTube: since 2026-10-22 TLS over TCP 443 from the cloud.ru bridges to
+// the Moscow Google caches hangs, and the bridges race it (yt-race). Measured
+// on four PassWall routers on 2026-10-26, 6–7 % of TCP handshakes to those
+// caches took 0.6–5.2 s and about 1 % failed, while QUIC to the same caches
+// answered in ~0.08 s. QUIC is the clean path, and a mux node kills it: at one
+// moment on 27 routers, the four whose YouTube outbound had mux answered QUIC
+// 0/3, the eighteen without mux 2–3/3, and three routers that lost mux in that
+// night's rebind went from 0/4 to 3/3.
+function quicDroppingNodeIds(
+  config: FleetPolicyConfigView,
+  worldProxyTarget: PasswallNode | null,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const node of config.nodes) {
+    if (carriesMux(node)) {
+      ids.add(node.id);
+    }
+  }
+  if (worldProxyTarget) {
+    ids.add(worldProxyTarget.id);
+  }
+  return ids;
+}
+
 function findBestTarget(
   config: FleetPolicyConfigView,
   slot: PolicySlot,
   identity?: FleetRoutePolicyRouterIdentity | null,
   currentNodeId?: string | null,
   options?: FleetRoutePolicyOptions | null,
+  avoid?: ReadonlySet<string> | null,
 ) {
   // Drop hosts the fleet has proven dead before scoring, not after.
   //
@@ -703,11 +744,14 @@ function findBestTarget(
   // candidate at all. An unbound slot sends that traffic somewhere else
   // wholesale; a bound-but-dead slot at least recovers by itself the moment
   // the provider brings the host back. Never trade the second for the first.
-  const scoreAll = (skipUnhealthy: boolean) => {
+  const scoreAll = (skipUnhealthy: boolean, skipAvoided: boolean) => {
     let best = 0;
     const candidates: { node: PasswallNode; score: number }[] = [];
     for (const node of config.nodes) {
       if (skipUnhealthy && isUnhealthyNodeHost(options?.nodeHealth, node.address, node.port)) {
+        continue;
+      }
+      if (skipAvoided && avoid?.has(node.id)) {
         continue;
       }
       const score = semanticScore(slot.id, node);
@@ -722,9 +766,28 @@ function findBestTarget(
     return { best, candidates };
   };
 
-  let { best: bestScore, candidates: scored } = scoreAll(true);
-  if (bestScore < 100) {
-    ({ best: bestScore, candidates: scored } = scoreAll(false));
+  // From the strictest pass to the loosest. Avoiding nodes (YouTube off the
+  // mux node) ranks below liveness: a live avoided node beats a dead free one,
+  // and an avoided node beats leaving the slot unbound.
+  const passes: [skipUnhealthy: boolean, skipAvoided: boolean][] =
+    avoid && avoid.size > 0
+      ? [
+          [true, true],
+          [true, false],
+          [false, true],
+          [false, false],
+        ]
+      : [
+          [true, false],
+          [false, false],
+        ];
+  let bestScore = 0;
+  let scored: { node: PasswallNode; score: number }[] = [];
+  for (const [skipUnhealthy, skipAvoided] of passes) {
+    ({ best: bestScore, candidates: scored } = scoreAll(skipUnhealthy, skipAvoided));
+    if (bestScore >= 100) {
+      break;
+    }
   }
   if (bestScore < 100) {
     return null;
@@ -883,13 +946,14 @@ function resolvePolicyTarget(
   currentNodeId: string | null | undefined,
   options: FleetRoutePolicyOptions | null | undefined,
   held: Map<FleetRoutePolicySlotId, PasswallNode>,
+  avoid?: ReadonlySet<string> | null,
 ) {
   const leader = pairedSlotLeader[slot.id];
   const leaderHeld = leader ? held.get(leader) : undefined;
   if (leaderHeld) {
     return leaderHeld;
   }
-  const best = findBestTarget(config, slot, identity, currentNodeId, options);
+  const best = findBestTarget(config, slot, identity, currentNodeId, options, avoid);
   if (leader) {
     return best;
   }
@@ -1178,9 +1242,16 @@ export function evaluateFleetRoutePolicy(
   const mismatches: FleetRoutePolicyMismatch[] = [];
   const matchedSlots: FleetRoutePolicySlotMatch[] = [];
   const held = new Map<FleetRoutePolicySlotId, PasswallNode>();
+  // WorldProxy comes before YouTube in the canonical slot order, so its target
+  // is known by the time YouTube is weighed.
+  let worldProxyTarget: PasswallNode | null = null;
 
   for (const slot of canonicalFleetRoutePolicy.slots) {
     const rule = findRule(config, slot);
+    const avoid =
+      slot.id === "YouTube"
+        ? quicDroppingNodeIds(config, worldProxyTarget)
+        : null;
     const preferredTarget = resolvePolicyTarget(
       config,
       slot,
@@ -1188,7 +1259,11 @@ export function evaluateFleetRoutePolicy(
       rule ? readRuleBindingId(config, rule, slot) : null,
       options,
       held,
+      avoid,
     );
+    if (slot.id === "WorldProxy") {
+      worldProxyTarget = preferredTarget;
+    }
     if (!rule) {
       mismatches.push({
         slot: slot.id,
@@ -1238,8 +1313,16 @@ export function evaluateFleetRoutePolicy(
       isUnhealthyNodeHost(options?.nodeHealth, actualNode.address, actualNode.port) &&
       Boolean(preferredTarget) &&
       preferredTarget!.id !== actualNode.id;
+    // Only a mismatch when there is a node without mux to move to; otherwise
+    // the slot stays where it is, QUIC-less but working over TCP.
+    const sharesMuxNode =
+      avoid !== null &&
+      avoid.has(actualNode.id) &&
+      preferredTarget !== null &&
+      !avoid.has(preferredTarget.id);
     const actualMatches =
       !boundNodeIsDead &&
+      !sharesMuxNode &&
       (strictPreferred && preferredTarget
         ? actualNode.id === preferredTarget.id
         : semanticScore(slot.id, actualNode) >= 100);
@@ -1253,6 +1336,12 @@ export function evaluateFleetRoutePolicy(
         actualFingerprint: fingerprint(actualNode),
         expectedNodeId: preferredTarget?.id ?? null,
         expectedFingerprint: fingerprint(preferredTarget),
+        ...(sharesMuxNode
+          ? {
+              detail:
+                "node carries mux (WorldProxy/DiscordVoiceUdp); Xray drops QUIC through it",
+            }
+          : {}),
       });
       continue;
     }
@@ -1369,6 +1458,7 @@ export function normalizeFleetRoutePolicy(
   }
 
   const held = new Map<FleetRoutePolicySlotId, PasswallNode>();
+  let worldProxyTarget: PasswallNode | null = null;
   for (const slot of canonicalFleetRoutePolicy.slots) {
     const basicIndex = findRuleIndex(next.basicSettings.shuntRules, slot);
     if (basicIndex < 0) {
@@ -1384,7 +1474,11 @@ export function normalizeFleetRoutePolicy(
       previousBindingId,
       options,
       held,
+      slot.id === "YouTube" ? quicDroppingNodeIds(next, worldProxyTarget) : null,
     );
+    if (slot.id === "WorldProxy") {
+      worldProxyTarget = target;
+    }
     if (!target) {
       continue;
     }
