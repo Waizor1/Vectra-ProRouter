@@ -5,6 +5,7 @@
 # leaves behind. Every check prints `RESULT <name> PASS|FAIL <detail>`.
 #
 # The installer, the feed and the fixtures come from run.sh:
+#   FEED_XRAY              the xray-core version the feed ships (26.10.21-r1)
 #   /fixtures/install.sh   the installer, baked for the stand's feed and key
 #   /fixtures/*.ipk        fake packages that stand in for other stacks
 #   /fixtures/rogue.pub    a key the feed is NOT signed with
@@ -229,7 +230,7 @@ assert_installed_and_on() { # <prefix>
 	p="$1"
 	check "${p}_package" "$PKG $(version_of $PKG)" installed "$PKG"
 	xv="$(xray version 2>/dev/null | awk 'NR == 1 { print $2 }')"
-	check "${p}_xray" "xray-core $(version_of xray-core), runs as $xv" test "$xv" = "26.3.27"
+	check "${p}_xray" "xray-core $(version_of xray-core), runs as $xv (the feed's ${FEED_XRAY%-r*})" test "$xv" = "${FEED_XRAY%-r*}"
 	geo="$(geo_read)"
 	check "${p}_geo_accepted" "xray accepts every category the provider routes by, from $geo" \
 		env XRAY_LOCATION_ASSET="$geo" xray run -test -c /usr/share/vectra-controller-pro/geo/check.json
@@ -605,7 +606,7 @@ passwall)
 	check passwall_own_dnsmasq "PassWall2's own dnsmasq (pid $pw_dns, :11400) still runs after the swap" \
 		sh -c "case \"\$(cut -d ' ' -f 3 /proc/$pw_dns/stat 2> /dev/null)\" in S | R) ;; *) exit 1 ;; esac && netstat -lnu | grep -q '127.0.0.1:11400 '"
 	assert_installed_and_on passwall
-	check passwall_xray_upgraded "the older xray-core was upgraded to Vectra's" test "$(version_of xray-core)" = "26.3.27-r1"
+	check passwall_xray_upgraded "the older xray-core was upgraded to Vectra's $FEED_XRAY" test "$(version_of xray-core)" = "$FEED_XRAY"
 	check passwall_geo_own "PassWall's geo data lacks the provider's categories: Vectra reads its own" \
 		test "$(geo_read)" = /usr/share/vectra-controller-pro/geo
 	check passwall_geo_untouched "PassWall's geo files left byte for byte" \

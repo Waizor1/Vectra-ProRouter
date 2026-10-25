@@ -118,6 +118,11 @@ for a in "${ARCHS[@]}"; do arch_args+=(--arch "$a"); done
 "$MODULE/scripts/sign-pro-feed.sh" --feed "$BUILD/feed" --key-dir "$BUILD/keys" --new-key --feed-url "$FEED_BASE/pro"
 FEEDTOOL="$MODULE/dist/cache/feedtool"
 cp "$BUILD/feed/install.sh" "$BUILD/fixtures/install.sh"
+# The xray-core the feed ships (build-pro-feed.sh's XRAY_VERSION): every xray
+# binary on the stand's routers is this one, whatever package carries it.
+FEED_XRAY="$(awk '/^Package: xray-core$/ { p = 1 } p && /^Version: / { print $2; exit }' "$BUILD/feed/${ARCHS[0]}/Packages")"
+[[ -n "$FEED_XRAY" ]] || fail "the feed has no xray-core"
+echo "  xray-core $FEED_XRAY"
 
 step "fixtures"
 fake() { # <package> <version> [depends]: a package that only has to exist
@@ -183,7 +188,8 @@ old="$(mktemp -d)"
 mkdir -p "$old/data" "$old/ctrl"
 tar -xzOf "$BUILD/feed/${ARCHS[0]}/vectra-controller-pro_"*"_${ARCHS[0]}.ipk" ./data.tar.gz | tar -xzf - -C "$old/data"
 tar -xzOf "$BUILD/feed/${ARCHS[0]}/vectra-controller-pro_"*"_${ARCHS[0]}.ipk" ./control.tar.gz | tar -xzf - -C "$old/ctrl"
-sed -e 's/^Version: .*/Version: 0.2.3-r1/' -e 's/, vectra-geodata//' -e 's/, vectra-reporter//' -e 's/xray-core (>= [^)]*)/xray-core/' "$old/ctrl/control" > "$old/control.new"
+sed -E -e 's/^Version: .*/Version: 0.2.3-r1/' -e 's/, vectra-geodata( \([^)]*\))?//' -e 's/, vectra-reporter( \([^)]*\))?//' -e 's/xray-core \(>= [^)]*\)/xray-core/' "$old/ctrl/control" > "$old/control.new"
+grep -q -e vectra-geodata -e vectra-reporter -e '(>=' "$old/control.new" && fail "the old vctl still depends on more than the plain Makefile's: $(grep '^Depends:' "$old/control.new")"
 mv "$old/control.new" "$old/ctrl/control"
 "$FEEDTOOL" ipk -data "$old/data" -control "$old/ctrl" -out "$BUILD/fixtures/vectra-controller-pro-old.ipk"
 rm -rf "$old"
@@ -274,7 +280,7 @@ run_one() { # <arch> <scenario> <n>
 	log="$(log_of "$1" "$2" "$3")"
 	read -r -a emu <<< "$(emulation_env "$1")"
 	docker run --rm --privileged --network "$NET" --platform "$(platform_of "$1")" \
-		-e "SCENARIO=$2" -e "FEED_BASE=$FEED_BASE" -e "OPENWRT_MIRROR=$OPENWRT_MIRROR" -e "STRESS=$STRESS" "${emu[@]}" \
+		-e "SCENARIO=$2" -e "FEED_BASE=$FEED_BASE" -e "FEED_XRAY=$FEED_XRAY" -e "OPENWRT_MIRROR=$OPENWRT_MIRROR" -e "STRESS=$STRESS" "${emu[@]}" \
 		-v "$BUILD/fixtures:/fixtures:ro" \
 		-v "$HERE/router.sh:/test/router.sh:ro" \
 		-v "$MODULE/test/dataplane/stand/legacy-stub:/stub:ro" \

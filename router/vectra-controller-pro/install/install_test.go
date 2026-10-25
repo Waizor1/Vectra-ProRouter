@@ -48,6 +48,8 @@ print-architecture) echo "arch all 1"; echo "arch aarch64_cortex-a53 10" ;;
 info) ;;
 *)
 	echo "opkg $*" >> "$d/log"
+	# What opkg's status file was when it ran: status-at-<command>.
+	[ -n "$FAKE_STATUS" ] && cp "$FAKE_STATUS" "$d/status-at-$1"
 	if take offline; then
 		echo " * opkg_download: Failed to download https://downloads.openwrt.org/releases/24.10.8/packages/aarch64_cortex-a53/base/x.ipk, wget returned 4."
 		exit 255
@@ -115,6 +117,8 @@ func newRouter(t *testing.T) *router {
 		"zcat": "#!/bin/sh\nexit 1\n",
 		"ubus": "#!/bin/sh\nexit 0\n",
 		"uci":  "#!/bin/sh\nexit 1\n",
+		// pidof-<name>: that process runs.
+		"pidof": "#!/bin/sh\n[ -f \"$FAKE/pidof-$1\" ]\n",
 	}
 	if _, err := exec.LookPath("sha256sum"); err != nil {
 		fakes["sha256sum"] = "#!/bin/sh\nexec shasum -a 256 \"$@\"\n"
@@ -356,6 +360,78 @@ func TestAFirstInstallBringsTheGeoDataAndTheReporter(t *testing.T) {
 	r.write("available", "vectra-controller-pro - 0.7.0-r14\nvectra-geodata - 2026.9.28-r2\n")
 	if _, code := r.run("install_packages"); code != 0 || !strings.Contains(r.read("log"), "opkg install vectra-controller-pro vectra-geodata\n") {
 		t.Fatalf("exit %d, log:\n%s", code, r.read("log"))
+	}
+}
+
+// A router whose vctl came from the pro feed: vectra-geodata and
+// vectra-reporter came in as its dependencies (Auto-Installed), as did
+// xray-core.
+const companionStatus = "Package: vectra-controller-pro\nVersion: 0.7.0-r28\nStatus: install user installed\n\n" +
+	"Package: vectra-geodata\nVersion: 2026.9.28-r2\nStatus: install ok installed\nAuto-Installed: yes\n\n" +
+	"Package: xray-core\nVersion: 26.7.28-r1\nStatus: install ok installed\nAuto-Installed: yes\n\n" +
+	"Package: vectra-reporter\nVersion: 1.0.0-r4\nStatus: install ok installed\nConffiles:\n /etc/config/vectra-reporter 9a8b\nAuto-Installed: yes\n"
+
+const companionsKept = "Package: vectra-controller-pro\nVersion: 0.7.0-r28\nStatus: install user installed\n\n" +
+	"Package: vectra-geodata\nVersion: 2026.9.28-r2\nStatus: install ok installed\n\n" +
+	"Package: xray-core\nVersion: 26.7.28-r1\nStatus: install ok installed\nAuto-Installed: yes\n\n" +
+	"Package: vectra-reporter\nVersion: 1.0.0-r4\nStatus: install ok installed\nConffiles:\n /etc/config/vectra-reporter 9a8b\n"
+
+func companionRouter(t *testing.T) *router {
+	r := newRouter(t)
+	r.write("installed", "vectra-controller-pro - 0.7.0-r28\nvectra-geodata - 2026.9.28-r2\nvectra-reporter - 1.0.0-r4\nxray-core - 26.7.28-r1\n")
+	r.write("available", "vectra-controller-pro - 0.7.0-r30\nvectra-geodata - 2026.9.28-r2\nvectra-reporter - 1.0.0-r4\n")
+	r.write("status", companionStatus)
+	r.env = append(r.env, "FAKE_STATUS="+filepath.Join(r.dir, "status"))
+	return r
+}
+
+// An upgrade over a vctl the companions came in with: opkg would remove them
+// as orphans with a vctl that does not depend on them (0.7.0-r29 as
+// published), and no opkg command takes the Auto-Installed mark away. The
+// marks are gone before opkg upgrades anything; xray-core keeps its own —
+// PassWall's business, not Vectra's.
+func TestAnUpgradeKeepsTheCompanionsWhateverTheNewDependsSays(t *testing.T) {
+	r := companionRouter(t)
+	out, code := r.run("OPKG_STATUS='" + filepath.Join(r.dir, "status") + "'\ninstall_packages")
+	if code != 0 || !strings.Contains(r.read("log"), "opkg upgrade vectra-controller-pro vectra-geodata vectra-reporter") {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
+	}
+	if got := r.read("status-at-upgrade"); got != companionsKept {
+		t.Fatalf("opkg upgrade ran with the status:\n%s", got)
+	}
+	if got := r.read("status"); got != companionsKept {
+		t.Fatalf("the status after the run:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(r.dir, "status.vectra")); !os.IsNotExist(err) {
+		t.Fatalf("the temporary file stayed: %v", err)
+	}
+	// A run with nothing to drop writes nothing.
+	r.write("status", companionsKept)
+	if _, code := r.run("OPKG_STATUS='" + filepath.Join(r.dir, "status") + "'\nkeep_companions"); code != 0 || r.read("status") != companionsKept {
+		t.Fatalf("exit %d, status:\n%s", code, r.read("status"))
+	}
+}
+
+// While another opkg runs — it writes the file from what it read — or when the
+// new file cannot be put in place, the status stays as it was, and the run
+// says so, with a warning, and goes on.
+func TestTheCompanionsMarksStayWhenTheyCannotGoSafely(t *testing.T) {
+	r := companionRouter(t)
+	r.write("pidof-opkg", "")
+	if _, code := r.run("OPKG_STATUS='" + filepath.Join(r.dir, "status") + "'\nkeep_companions"); code != 0 || r.read("status") != companionStatus {
+		t.Fatalf("exit %d, status:\n%s", code, r.read("status"))
+	}
+	os.Remove(filepath.Join(r.dir, "pidof-opkg"))
+	r.write("bin/sync", "#!/bin/sh\nexit 1\n")
+	if err := os.Chmod(filepath.Join(r.dir, "bin", "sync"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := r.run("OPKG_STATUS='" + filepath.Join(r.dir, "status") + "'\nkeep_companions\necho \"warnings:$WARNINGS\"")
+	if code != 0 || r.read("status") != companionStatus || !strings.Contains(out, "warnings: COMPANIONS_MARK") {
+		t.Fatalf("exit %d, status:\n%s\n%s", code, r.read("status"), out)
+	}
+	if _, err := os.Stat(filepath.Join(r.dir, "status.vectra")); !os.IsNotExist(err) {
+		t.Fatalf("the temporary file stayed: %v", err)
 	}
 }
 

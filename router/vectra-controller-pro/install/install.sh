@@ -1025,6 +1025,46 @@ dns_diag() {
 	} >> "$LOG" 2>&1
 }
 
+# Vectra's packages besides vctl stay on the router whatever a vctl's Depends
+# says. One that came in as a dependency of vctl is "Auto-Installed: yes" in
+# opkg's status, and opkg removes it as an orphan the moment a vctl that does
+# not name it replaces one that did: 0.7.0-r29, published without them, over
+# a vctl from the pro feed took the reporter's spool and state and the geo
+# data (test/pilot). No opkg command takes the mark away — `opkg flag user`
+# sets the package's state, and the orphan check reads only the mark (opkg
+# 2024.10.16, OpenWrt 24.10) — so the line goes from the status file itself,
+# and opkg keeps it so from then on. Not while another opkg runs: it writes
+# the file from what it read. The new file replaces the old one only when it
+# is the old one less exactly those lines (a full overlay cuts a file short).
+COMPANIONS="vectra-geodata vectra-reporter"
+companion_marks() { # <mode>: count — how many marks; drop — the status without them
+	awk -v names=" $COMPANIONS " -v mode="$1" '
+		/^Package: / { p = substr($0, 10) }
+		/^$/ { p = "" }
+		p != "" && index(names, " " p " ") && $0 == "Auto-Installed: yes" { n++; next }
+		mode == "drop" { print }
+		END { if (mode == "count") print n + 0 }' "$OPKG_STATUS"
+}
+keep_companions() {
+	[ -f "$OPKG_STATUS" ] || return 0
+	pidof opkg > /dev/null 2>&1 && { note "opkg уже работает: отметку Auto-Installed у $COMPANIONS не трогаю"; return 0; }
+	marks="$(companion_marks count)"
+	[ "$marks" = 0 ] && return 0
+	status_new="$OPKG_STATUS.vectra"
+	case "$marks" in
+	'' | *[!0-9]*) ;;
+	*)
+		if companion_marks drop > "$status_new" && [ "$(grep -c '' "$status_new")" = "$(($(grep -c '' "$OPKG_STATUS") - marks))" ] &&
+			sync && mv "$status_new" "$OPKG_STATUS"; then
+			ok "$COMPANIONS остаются на роутере при любой версии Vectra (отметка Auto-Installed снята)"
+			return 0
+		fi
+		;;
+	esac
+	rm -f "$status_new"
+	warn COMPANIONS_MARK "не удалось снять отметку Auto-Installed у $COMPANIONS в $OPKG_STATUS: opkg может удалить их при установке версии Vectra, которая от них не зависит"
+}
+
 LUCI=0
 install_packages() {
 	if [ "$LUCI" = 1 ]; then
@@ -1047,6 +1087,7 @@ install_packages() {
 		# with a binary swapped in by hand), and `opkg upgrade` would take the
 		# newest from ANY feed. The package's own Depends, xray-core (>= the
 		# minimum), upgrades it only when it is too old.
+		keep_companions
 		retry opkg upgrade "$PKG" vectra-geodata vectra-reporter
 		installed vectra-geodata || retry opkg install vectra-geodata
 		installed vectra-reporter || retry opkg install vectra-reporter
@@ -1054,15 +1095,19 @@ install_packages() {
 	pkgs="$PKG"
 	if [ -z "$was" ]; then
 		# vectra-geodata and vectra-reporter by name on a first install too,
-		# not only through the package's Depends: that Depends is the pro
-		# feed's (build-pro-feed.sh), not the SDK Makefile's — a feed whose
-		# index predates it, or a package built otherwise, leaves the geo data
-		# out, and xray refuses every route by country and service (the router
-		# of 2026-10-03). Named where the feed has them.
+		# not only through the package's Depends: a vctl before 0.7.0-r30
+		# built otherwise than by build-pro-feed.sh names neither — a feed
+		# that serves one leaves the geo data out, and xray refuses every route
+		# by country and service (the router of 2026-10-03). Named where the
+		# feed has them; and installed so, they are no dependency opkg
+		# removes with a vctl that does not name them.
 		for p in vectra-geodata vectra-reporter; do available "$p" && pkgs="$pkgs $p"; done
 	fi
 	# shellcheck disable=SC2086 # a list of packages
 	retry opkg install $pkgs || fail PKG_INSTALL "opkg install $pkgs не прошёл (см. лог). Интернет роутера работает как прежде."
+	# And what this run's opkg pulled in as vctl's dependency (an upgrade
+	# from a vctl that had no reporter yet).
+	keep_companions
 	if [ "$STANDBY" = 1 ]; then
 		unset VECTRA_SKIP_POSTINST_RESTART
 		run uci set "$PKG.main.enabled=0"

@@ -2461,6 +2461,81 @@ func TestTheSwapComesWithThePackage(t *testing.T) {
 	}
 }
 
+// One Depends, whichever way the package is built: the SDK writes
+// EXTRA_DEPENDS and then DEPENDS (include/package-pack.mk), and the builds
+// without it take scripts/lib/pkg.sh's pkg_depends — the same packages, the
+// same versions. 0.7.0-r29 was published from build-local-ipk.sh without the
+// pro feed's vectra-geodata and vectra-reporter, and an upgrade to it made
+// opkg remove both where a feed-built vctl had brought them in.
+func TestEveryBuildWritesOneDepends(t *testing.T) {
+	t.Parallel()
+	mk, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := func(name string) string {
+		m := regexp.MustCompile(`(?m)^\s*` + name + `:=(.*)$`).FindSubmatch(mk)
+		if m == nil {
+			t.Fatalf("no %s in the Makefile", name)
+		}
+		return strings.TrimSpace(string(m[1]))
+	}
+	// name -> version constraint ("" for none).
+	sdk := map[string]string{}
+	for _, e := range strings.Split(value("EXTRA_DEPENDS"), ",") {
+		name, constraint, _ := strings.Cut(strings.TrimSpace(e), " ")
+		sdk[name] = constraint
+	}
+	for _, d := range strings.Fields(value("DEPENDS")) {
+		if name, ok := strings.CutPrefix(d, "+"); ok {
+			if _, named := sdk[name]; !named {
+				sdk[name] = ""
+			}
+		}
+	}
+
+	out, err := exec.Command("bash", "-c", `PKG_MODULE="$1"; . "$1/scripts/lib/pkg.sh"; pkg_depends; pkg_depends_min xray-core; pkg_depends_min vectra-reporter`, "bash", "..").CombinedOutput()
+	if err != nil {
+		t.Fatalf("pkg.sh: %v\n%s", err, out)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("pkg.sh said:\n%s", out)
+	}
+	got := map[string]string{}
+	for _, e := range strings.Split(lines[0], ", ") {
+		name, constraint, _ := strings.Cut(e, " ")
+		if _, twice := got[name]; twice {
+			t.Fatalf("%s twice in %q", name, lines[0])
+		}
+		got[name] = constraint
+	}
+	if !reflect.DeepEqual(got, sdk) {
+		t.Fatalf("pkg.sh's Depends\n  %v\nthe SDK's (without libc)\n  %v", got, sdk)
+	}
+	for name, want := range map[string]string{"xray-core": "(>= " + lines[1] + ")", "vectra-geodata": "", "vectra-reporter": "(>= " + lines[2] + ")"} {
+		if c, ok := got[name]; !ok || c != want || strings.Contains(want, "(>= )") {
+			t.Errorf("Depends has %s %q, want %q", name, c, want)
+		}
+	}
+
+	// Each build writes it as pkg.sh gives it, and nothing else.
+	for _, script := range []string{"../scripts/build-local-ipk.sh", "../scripts/build-pro-feed.sh"} {
+		b, err := os.ReadFile(script)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !regexp.MustCompile(`(?m)^deps="\$\(pkg_depends\)"$`).Match(b) {
+			t.Errorf("%s does not take its Depends from pkg_depends", script)
+		}
+		for _, l := range regexp.MustCompile(`(?m)^Depends: .*$`).FindAll(b, -1) {
+			if string(l) != "Depends: $deps" {
+				t.Errorf("%s writes %q", script, l)
+			}
+		}
+	}
+}
+
 // postinstStand runs the package's postinst with its init script, vctl and
 // the tools it calls stood in: `running` answers runningAfter once the
 // postinst has started or restarted vctl, and every call is noted.

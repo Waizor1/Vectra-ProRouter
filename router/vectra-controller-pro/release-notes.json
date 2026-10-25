@@ -3,6 +3,21 @@
   "package": "vectra-controller-pro",
   "versions": [
     {
+      "version": "0.7.0-r30",
+      "date": "2026-10-25",
+      "notes": {
+        "ru": [
+          "Обновление роутера больше не может удалить гео-данные маршрутов и очередь отчётов об ошибках: они остаются при любой версии Vectra."
+        ],
+        "en": [
+          "A router update can no longer remove the route geo data or the queue of error reports: they stay with any Vectra version."
+        ],
+        "zh": [
+          "路由器更新不再会删除路由地理数据和错误报告队列：无论 Vectra 是哪个版本，它们都会保留。"
+        ]
+      }
+    },
+    {
       "version": "0.7.0-r29",
       "date": "2026-10-21",
       "notes": {

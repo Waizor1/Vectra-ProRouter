@@ -207,6 +207,16 @@ cat > /tmp/vctl-rollout.run <<'X'
 #!/bin/sh
 trap 'rm -rf /tmp/vctl-rollout.d /tmp/vctl-rollout.run' EXIT
 sleep 15
+# vectra-geodata and vectra-reporter stay whatever this package's Depends says:
+# opkg removes one that came in Auto-Installed as soon as a vctl that does not
+# name it replaces the one that did, and no opkg command takes the mark away
+# (install.sh, keep_companions). Not while another opkg runs.
+s=/usr/lib/opkg/status
+m='/^Package: /{p=substr($0,10)} /^$/{p=""} {c=(p=="vectra-geodata"||p=="vectra-reporter")&&$0=="Auto-Installed: yes"}'
+n=$(awk "$m"' c{n++} END{print n+0}' $s 2>/dev/null)
+if [ "${n:-0}" -gt 0 ] 2>/dev/null && ! pidof opkg >/dev/null; then
+  awk "$m"' !c' $s > $s.vctl && [ "$(grep -c '' $s.vctl)" = "$(($(grep -c '' $s) - n))" ] && sync && mv $s.vctl $s || rm -f $s.vctl
+fi
 opkg install /tmp/vctl-rollout.d/pkg.ipk > /tmp/vctl-rollout.log 2>&1; echo "rc=$?" >> /tmp/vctl-rollout.log
 X
 (setsid sh /tmp/vctl-rollout.run </dev/null >/dev/null 2>&1 &)

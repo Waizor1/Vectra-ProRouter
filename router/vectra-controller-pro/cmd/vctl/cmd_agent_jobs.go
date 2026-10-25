@@ -1459,8 +1459,11 @@ func controllerInstallCommand(ctx context.Context, dest string) *exec.Cmd {
 }
 
 // runControllerInstall runs the self-update's opkg (controllerInstallCommand)
-// and returns what it said; tests stand it in.
+// and returns what it said; tests stand it in. The companions' Auto-Installed
+// marks go first (opkg_companions.go): whatever the package's Depends says,
+// opkg removes neither with it.
 var runControllerInstall = func(ctx context.Context, dest string) ([]byte, error) {
+	keepCompanionsForTheInstall()
 	return controllerInstallCommand(ctx, dest).CombinedOutput()
 }
 

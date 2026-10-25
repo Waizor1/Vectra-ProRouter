@@ -142,10 +142,17 @@ Then:
 11. **The packages**: the planned xray-core first, then
    `vectra-controller-pro`, which pulls `xray-core (>= minimum)`, the kmods
    and the rest; `vectra-geodata` and `vectra-reporter` are named too on a
-   first install, not left to the package's Depends (that Depends is the pro
-   feed's, and a feed or package without it left a router without its geo
-   data). An update upgrades Vectra's own packages only: xray-core may be
-   PassWall's, and its version is the Depends' business.
+   first install, not left to the package's Depends (a vctl before 0.7.0-r30
+   built otherwise than by build-pro-feed.sh names neither, and a feed that
+   served one left a router without its geo data). An update upgrades
+   Vectra's own packages only: xray-core may be PassWall's, and its version
+   is the Depends' business. Before it and after the install the two lose
+   opkg's `Auto-Installed` mark (`keep_companions`): opkg removes an
+   auto-installed package as an orphan as soon as a vctl that does not depend
+   on it replaces one that did (0.7.0-r29 as published), and no opkg command
+   takes the mark away — `opkg flag user` does not. vctl's own self-update
+   (update_controller, Connect's automatic update) and
+   `scripts/Rollout-VctlFleet.py` do the same before their `opkg install`.
 12. **Geo data**: Vectra reads its own set, vectra-geodata's, in
     `/usr/share/vectra-controller-pro/geo`, and never replaces a file in
     `/usr/share/v2ray` (PassWall2's packages'; only links to its own set for

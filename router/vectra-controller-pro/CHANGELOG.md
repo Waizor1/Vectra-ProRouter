@@ -1,5 +1,70 @@
 # Changelog
 
+## vctl 0.7.0-r30 — one Depends for every build; the companions stay; xray 26.10.21
+
+The published `vectra-controller-pro_0.7.0-r29` was built by
+`build-local-ipk.sh`, whose Depends was the Makefile's alone: no
+`vectra-geodata`, no `vectra-reporter`, no xray minimum. A feed built by
+`build-pro-feed.sh` adds them. On a router whose vctl came from such a feed
+both came in as its dependencies ("Auto-Installed: yes"), and upgrading vctl
+to the published package made opkg remove them as orphans: the reporter's
+postrm deleted `/etc/vectra-reporter` (its spool, its state, the clean-shutdown
+mark) and the geo data went (test/pilot, 2026-10-25). The installer puts both
+back by name; vctl's self-update installs one package and would not.
+
+### Fixed
+- **Every build writes one Depends.** `openwrt/Makefile` names what the SDK
+  does not build in `EXTRA_DEPENDS` — `xray-core (>= 26.3.27), vectra-geodata,
+  vectra-reporter (>= 1.0.0-r4)` — which the SDK writes into the control file
+  as it is; `scripts/lib/pkg.sh` (`pkg_depends`) merges it with `DEPENDS` for
+  `build-local-ipk.sh` and `build-pro-feed.sh`, and `build-pro-feed.sh` no
+  longer adds anything of its own: its xray minimum and the reporter's are the
+  Makefile's (`pkg_depends_min`), and it refuses to build a feed whose xray or
+  reporter is older than they say. `TestEveryBuildWritesOneDepends` holds the
+  SDK's set, pkg.sh's and both scripts' together.
+- **The companions stay on the router whatever a vctl's Depends says.** No
+  opkg command clears `Auto-Installed`: on opkg 2024.10.16 (OpenWrt 24.10.8)
+  `opkg flag user|hold|noprune|ok`, `opkg install <name>` and
+  `--force-reinstall` all leave it, and the orphan check reads only it. So the
+  line is dropped from `/usr/lib/opkg/status` for `vectra-geodata` and
+  `vectra-reporter` (never another package's; not while another opkg runs; the
+  new file replaces the old only when it is the old less exactly those lines,
+  synced first) — by the installer before `opkg upgrade` and after its
+  install (`keep_companions`), by vctl before the self-update's opkg
+  (`update_controller` and Connect's automatic update, `opkg_companions.go`),
+  and by `scripts/Rollout-VctlFleet.py` before its `opkg install`. Tried on
+  OpenWrt 24.10.8's opkg: a vctl without them, installed over one with them,
+  then removes neither.
+
+### Changed
+- `build-pro-feed.sh` ships **xray 26.10.21**. XTLS withdrew 26.10.10 and
+  26.10.17 (their release is gone, so main's feed and stands no longer built):
+  their built-in root CAs held three that 26.10.21 drops, and it is built with
+  Go 1.27.3, which filters the broken certificates whatever the router's own CA
+  store says. It refuses outbound `proxySettings` and duplicate `ruleTag`s as
+  26.10.17 did, and takes what vctl writes instead (`dialerProxy`, numbered
+  tags): `TestGeneratedConfigsLoadInRealXray` passes on 26.3.27, 26.10.17 and
+  26.10.21, and the provider fixtures rendered by `vctl render` load in all
+  three with the pinned geo set. The minimum stays 26.3.27. The data-plane
+  stand runs 26.10.21 by default.
+- `build-pro-feed.sh --xray vX.Y.Z` changes only the xray the feed ships; the
+  minimum is the Makefile's.
+- The install stand checks xray against the version the feed ships
+  (`FEED_XRAY`), not 26.3.27; its old-canary fixture drops the companions'
+  version constraints too (it left `zram-swap (>= 1.0.0-r4)`).
+
+### Not changed — and why
+- A router that lacks `vectra-geodata` or `vectra-reporter` cannot self-update
+  to r30 while opkg has no list of the pro feed (`/var/opkg-lists` is RAM, a
+  reboot empties it): opkg says "cannot find dependency", installs nothing and
+  still exits 0 (OpenWrt 24.10.8). `update_controller` then ends as
+  `update_version_unverified` after its restart, and
+  `Rollout-VctlFleet.py` stops at that router's health check (the version).
+  With the list there (`opkg update`, as the installer runs it first) opkg
+  brings both.
+- xray-core is left as it is: on a PassWall2 router it is PassWall's too, and
+  PassWall2 before 26.9.9-2 writes `proxySettings`, which 26.9.8+ refuses.
+
 ## vctl 0.7.0-r29 — configs xray 26.10 takes; `vctl xray-check`
 
 xray 26.9.8 removed outbound `proxySettings` and refuses a config that has

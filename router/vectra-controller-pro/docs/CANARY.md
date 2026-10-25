@@ -38,6 +38,13 @@ from the repository root — see that script's header.
 VECTRA_SKIP_POSTINST_RESTART=1 opkg install /tmp/vectra-controller-pro_*.ipk
 ```
 
+From 0.7.0-r30 every build depends on `vectra-geodata` and `vectra-reporter`
+(openwrt/Makefile, EXTRA_DEPENDS), as the pro feed's always did: opkg takes
+them from a feed it has the list of (the pro feed, after `opkg update`) or
+from the same command line (`opkg install /tmp/vectra-geodata_*.ipk
+/tmp/vectra-reporter_*.ipk /tmp/vectra-controller-pro_*.ipk`); a router that
+has them keeps them.
+
 PassWall and the old agent keep running; nothing about traffic changes. LuCI now
 has **VPN** in its menu (it says the controller is not running — correct).
 
