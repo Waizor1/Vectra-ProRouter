@@ -215,7 +215,8 @@ func TestParseIndex(t *testing.T) {
 	}
 	want := []Package{
 		{Name: "vectra-controller-pro", Version: "0.6.0-r37", Architecture: "aarch64_cortex-a53",
-			Filename: "vectra-controller-pro_0.6.0-r37_aarch64_cortex-a53.ipk", SHA256: strings.Repeat("1", 64)},
+			Filename: "vectra-controller-pro_0.6.0-r37_aarch64_cortex-a53.ipk", SHA256: strings.Repeat("1", 64),
+			Size: 10485760, InstalledSize: 31457280},
 		{Name: "vectra-geodata", Version: "2026.9.28-r2", Architecture: "all",
 			Filename: "vectra-geodata_2026.9.28-r2_all.ipk", SHA256: strings.Repeat("2", 64)},
 	}

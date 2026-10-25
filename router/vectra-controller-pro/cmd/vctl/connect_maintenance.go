@@ -227,6 +227,9 @@ type maintenanceCandidate struct {
 	Package          feedverify.Package
 	URL              string
 	InstalledVersion string
+	// Xray is the same signed index's xray-core, installed with it
+	// (feed_xray.go); nil when the feed has none.
+	Xray *feedXray
 }
 
 var safeMaintenanceFilename = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+~-]*\.ipk$`)
@@ -290,6 +293,11 @@ func latestMaintenancePackage(ctx context.Context) (*maintenanceCandidate, error
 			continue
 		}
 		best = &maintenanceCandidate{Package: p, InstalledVersion: installed, URL: strings.TrimRight(feed.URL, "/") + "/" + url.PathEscape(p.Filename)}
+	}
+	if best != nil {
+		if best.Xray, e = signedFeedXray(feed, pkgs, arch); e != nil {
+			return nil, e
+		}
 	}
 	return best, nil
 }
@@ -448,9 +456,13 @@ var maintenanceAutoInstall = func(ctx context.Context, c maintenanceCandidate) e
 	if !strings.EqualFold(sha, c.Package.SHA256) {
 		return errors.New("automatic package checksum mismatch")
 	}
+	how, e := xrayPlan(ctx, c.Xray)
+	if e != nil {
+		return errors.New("automatic xray-core plan unavailable")
+	}
 	installCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
-	if _, e = runControllerInstall(installCtx, dest); e != nil {
+	if _, e = installControllerWithXray(installCtx, c.Xray, how, dest); e != nil {
 		return errors.New("automatic package install failed")
 	}
 	scheduleControllerRestart()

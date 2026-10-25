@@ -18,7 +18,13 @@ version, in the panel's order (or --hosts' order):
    the package must be in that index with this sha256, the ipk is downloaded
    and its sha256 checked, and `opkg install` starts detached (setsid, after
    15 s) so the job that asked returns before the package restarts the
-   controller that runs it. The job refuses to run outside a five-minute
+   controller that runs it. The channel's own xray-core goes with it — one
+   xray per vctl, the one it depends on: in the same opkg when the router's
+   is older or missing, by itself after vctl (--force-reinstall over a binary
+   swapped in by hand, --force-downgrade under a newer one) otherwise; its
+   entry checked against the signed index too, and the floors raised by what
+   it needs (its download in /tmp, the whole binary on flash: the running xray
+   holds the old one until it restarts). The job refuses to run outside a five-minute
    window from when it was queued (a router offline now cannot pick it up
    unwatched later; a router whose clock is unset refuses too);
 4. health, after the wait: opkg finished with rc=0, the version, the running
@@ -153,6 +159,36 @@ def fetch(url: str) -> bytes:
         return r.read()
 
 
+def version_key(v: str) -> tuple[int, ...]:
+    """A package version's runs of digits, as install.sh's version_ge compares them."""
+    return tuple(int(x) for x in re.findall(r"\d+", v or ""))
+
+
+def xray_entry(channel: str) -> dict | None:
+    """The channel's own xray-core for ARCH: the one the vctl in it depends on."""
+    base = f"{FEED}/{channel}/{ARCH}"
+    for block in fetch(f"{base}/Packages").decode().split("\n\n"):
+        fields = dict(line.split(": ", 1) for line in block.splitlines() if ": " in line)
+        if fields.get("Package") == "xray-core" and fields.get("Architecture") == ARCH:
+            if not FILE_RE.match(fields.get("Filename", "")) or not SHA_RE.match(fields.get("SHA256sum", "")):
+                raise RuntimeError(f"{channel}'s index has an unexpected xray-core entry")
+            return fields
+    return None
+
+
+def xray_how(it: dict, xray: dict | None) -> str:
+    """How the channel's xray-core goes in, from what the intake read: keep,
+    with (in vctl's opkg), reinstall, downgrade — as cmd/vctl/feed_xray.go."""
+    if not xray:
+        return "keep"
+    want, pkg, binary = xray["Version"], it.get("xraypkg", ""), it.get("xrayv", "")
+    if pkg == want:
+        return "keep" if binary == re.sub(r"-r?\d+$", "", want) else "reinstall"
+    if pkg and version_key(pkg) > version_key(want):
+        return "downgrade"
+    return "with"
+
+
 def package_entry(channel: str, version: str) -> dict:
     base = f"{FEED}/{channel}/{ARCH}"
     entry: dict = {}
@@ -177,6 +213,8 @@ echo "overlay=$(df -k /overlay | awk 'NR==2{print int($4/1024)}')"
 echo "tmp=$(df -k /tmp | awk 'NR==2{print int($4/1024)}')"
 d=no; nft list table inet drill >/dev/null 2>&1 && d=yes; nft list table inet vdrill >/dev/null 2>&1 && d=yes; echo "drill=$d"
 [ -e /tmp/vctl-rollout.run ] && echo "pending=yes" || echo "pending=no"
+echo "xraypkg=$(awk '/^Package: /{p=($2=="xray-core")} p&&/^Version: /{print $2; exit}' /usr/lib/opkg/status)"
+echo "xrayv=$(xray version 2>/dev/null | awk 'NR==1{print $2}')"
 d=/tmp/vctl-rollout.i; rm -rf "$d"; mkdir -p "$d"
 curl -fsS -m 15 -o "$d/Packages" "$base/Packages" && curl -fsS -m 15 -o "$d/Packages.sig" "$base/Packages.sig" \
   && usign -V -q -m "$d/Packages" -x "$d/Packages.sig" -P /etc/opkg/keys && echo "index=signed" || echo "index=unverified"
@@ -186,6 +224,7 @@ rm -rf "$d"
 # @NAME@ placeholders, filled with shell-quoted values (install_script).
 INSTALL = r"""#!/bin/sh
 host=@HOST@; base=@BASE@; file=@FILE@; sha=@SHA@; ver=@VERSION@; issued=@ISSUED@
+how=@XHOW@; xfile=@XFILE@; xsha=@XSHA@; xver=@XVERSION@
 now=$(date +%s)
 [ "$now" -ge $((issued - 600)) ] && [ "$now" -le $((issued + @WINDOW@)) ] || { echo "err=expired_or_clock"; exit 1; }
 [ "$(uci -q get system.@system[0].hostname)" = "$host" ] || { echo "err=wrong_host"; exit 1; }
@@ -194,17 +233,22 @@ d=/tmp/vctl-rollout.d; rm -rf "$d"; mkdir -p "$d"
 fail() { rm -rf "$d"; echo "err=$1"; exit 1; }
 curl -fsS -m 15 -o "$d/Packages" "$base/Packages" && curl -fsS -m 15 -o "$d/Packages.sig" "$base/Packages.sig" || fail index
 usign -V -q -m "$d/Packages" -x "$d/Packages.sig" -P /etc/opkg/keys || fail index_signature
-awk -v p=vectra-controller-pro -v v="$ver" -v f="$file" -v s="$sha" '
+signed() { awk -v p="$1" -v v="$2" -v f="$3" -v s="$4" '
   function chk() { if (P == p && V == v && F == f && S == s) ok = 1; P = ""; V = ""; F = ""; S = "" }
   /^$/ { chk(); next }
   /^Package: / { P = substr($0, 10) } /^Version: / { V = substr($0, 10) }
   /^Filename: / { F = substr($0, 11) } /^SHA256sum: / { S = substr($0, 12) }
-  END { chk(); exit !ok }' "$d/Packages" || fail not_in_signed_index
+  END { chk(); exit !ok }' "$d/Packages"; }
+signed vectra-controller-pro "$ver" "$file" "$sha" || fail not_in_signed_index
 curl -fsS -m 75 -o "$d/pkg.ipk" "$base/$file" || fail download
 [ "$(sha256sum "$d/pkg.ipk" | cut -d' ' -f1)" = "$sha" ] || fail sha
+if [ "$how" != keep ]; then
+  signed xray-core "$xver" "$xfile" "$xsha" || fail xray_not_in_signed_index
+  curl -fsS -m 100 -o "$d/xray.ipk" "$base/$xfile" || fail xray_download
+  [ "$(sha256sum "$d/xray.ipk" | cut -d' ' -f1)" = "$xsha" ] || fail xray_sha
+fi
 rm -f /tmp/vctl-rollout.log
-cat > /tmp/vctl-rollout.run <<'X'
-#!/bin/sh
+{ echo '#!/bin/sh'; echo "how=$how"; cat; } > /tmp/vctl-rollout.run <<'X'
 trap 'rm -rf /tmp/vctl-rollout.d /tmp/vctl-rollout.run' EXIT
 sleep 15
 # vectra-geodata and vectra-reporter stay whatever a vctl's Depends says:
@@ -226,17 +270,32 @@ keep() {
   rm -f $s.vctl $c
 }
 keep
-opkg install /tmp/vctl-rollout.d/pkg.ipk > /tmp/vctl-rollout.log 2>&1; rc=$?
+# The channel's xray-core with vctl (one xray per vctl): in the same opkg when
+# it is missing or older, by itself after vctl's otherwise — never a --force-*
+# in vctl's opkg (a reinstall removes the package first; vctl's removal hands
+# the router back) — and vctl restarted then, onto the new binary.
+case "$how" in
+with) opkg install /tmp/vctl-rollout.d/xray.ipk /tmp/vctl-rollout.d/pkg.ipk > /tmp/vctl-rollout.log 2>&1; rc=$? ;;
+reinstall | downgrade)
+  opkg install /tmp/vctl-rollout.d/pkg.ipk > /tmp/vctl-rollout.log 2>&1; rc=$?
+  if [ "$rc" = 0 ]; then
+    opkg install --force-$how /tmp/vctl-rollout.d/xray.ipk >> /tmp/vctl-rollout.log 2>&1; rc=$?
+    [ "$rc" = 0 ] && /etc/init.d/vectra-controller-pro restart >> /tmp/vctl-rollout.log 2>&1
+  fi ;;
+*) opkg install /tmp/vctl-rollout.d/pkg.ipk > /tmp/vctl-rollout.log 2>&1; rc=$? ;;
+esac
 keep
 echo "rc=$rc" >> /tmp/vctl-rollout.log
 X
 (setsid sh /tmp/vctl-rollout.run </dev/null >/dev/null 2>&1 &)
-echo "started=yes"
+echo "started=yes xray=$how"
 """
 
 HEALTH = r"""#!/bin/sh
 echo "version=$(opkg list-installed vectra-controller-pro | cut -d' ' -f3)"
 echo "opkg=$(tail -1 /tmp/vctl-rollout.log 2>/dev/null)"
+echo "xraypkg=$(awk '/^Package: /{p=($2=="xray-core")} p&&/^Version: /{print $2; exit}' /usr/lib/opkg/status)"
+echo "xrayv=$(xray version 2>/dev/null | awk 'NR==1{print $2}')"
 [ -e /tmp/vctl-rollout.run ] && echo "pending=yes" || echo "pending=no"
 a=down
 for p in $(ubus call service list '{"name":"vectra-controller-pro"}' 2>/dev/null | jsonfilter -e '@[*].instances[*].pid' 2>/dev/null); do
@@ -255,17 +314,24 @@ echo "mem=$(awk '/^MemAvailable/{print int($2/1024)}' /proc/meminfo)"
 """
 
 
-def install_script(host: str, entry: dict) -> str:
+def install_script(host: str, entry: dict, xray: dict | None = None, how: str = "keep") -> str:
+    x = xray or {}
     values = {"HOST": host, "BASE": entry["Base"], "FILE": entry["Filename"], "SHA": entry["SHA256sum"],
-              "VERSION": entry["Version"], "ISSUED": str(int(time.time())), "WINDOW": str(JOB_WINDOW)}
+              "VERSION": entry["Version"], "ISSUED": str(int(time.time())), "WINDOW": str(JOB_WINDOW),
+              "XHOW": how if xray else "keep", "XFILE": x.get("Filename", ""), "XSHA": x.get("SHA256sum", ""),
+              "XVERSION": x.get("Version", "")}
     script = INSTALL
     for k, v in values.items():
         script = script.replace(f"@{k}@", v if k in ("ISSUED", "WINDOW") else shlex.quote(v))
     return script
 
 
-def healthy(h: dict, version: str) -> list[str]:
+def healthy(h: dict, version: str, xray: dict | None = None) -> list[str]:
     bad = []
+    if xray:
+        want = xray["Version"]
+        if h.get("xraypkg") != want or h.get("xrayv") != re.sub(r"-r?\d+$", "", want):
+            bad.append(f"xray {h.get('xrayv') or 'unknown'} (xray-core {h.get('xraypkg') or 'none'}), not the channel's {want}")
     if h.get("pending") != "no" or h.get("opkg") != "rc=0":
         bad.append(f"opkg {h.get('opkg') or 'not finished'}")
     if h.get("version") != version:
@@ -282,7 +348,7 @@ def healthy(h: dict, version: str) -> list[str]:
     return bad
 
 
-def roll(r: dict, a: argparse.Namespace, entry: dict, target: tuple[int, ...]) -> str:
+def roll(r: dict, a: argparse.Namespace, entry: dict, target: tuple[int, ...], xray: dict | None = None) -> str:
     """One router: its result line, or Skip / Stop."""
     host, rid = r["hostname"], r["id"]
     try:
@@ -303,12 +369,17 @@ def roll(r: dict, a: argparse.Namespace, entry: dict, target: tuple[int, ...]) -
         raise Skip("a stand drill is active")
     if it.get("index") != "signed":
         raise Skip("the channel's index does not verify here (no usign, no Vectra key in /etc/opkg/keys, or no download)")
-    low = [k for k, floor in FLOORS.items() if int(it.get(k, "0") or 0) < floor]
+    how = xray_how(it, xray)
+    floors = dict(FLOORS)
+    if how != "keep":
+        floors["tmp"] += -(-int(xray.get("Size", "0") or 0) // (1 << 20))
+        floors["overlay"] += -(-int(xray.get("Installed-Size", "0") or 0) // (1 << 20))
+    low = [k for k, floor in floors.items() if int(it.get(k, "0") or 0) < floor]
     if low:
-        raise Skip(f"below the floors ({', '.join(low)})")
+        raise Skip(f"below the floors ({', '.join(f'{k} < {floors[k]} MiB' for k in low)}; xray-core {how})")
 
     try:
-        st = run_job(rid, install_script(host, entry), timeout=120)
+        st = run_job(rid, install_script(host, entry, xray, how), timeout=120)
     except Skip:
         raise
     except (RuntimeError, TimeoutError) as e:
@@ -324,7 +395,7 @@ def roll(r: dict, a: argparse.Namespace, entry: dict, target: tuple[int, ...]) -
     for attempt in (1, 2):
         try:
             h = kv(run_job(rid, HEALTH, timeout=60).get("stdout"))
-            bad = healthy(h, a.version)
+            bad = healthy(h, a.version, xray)
         except (RuntimeError, TimeoutError, Skip) as e:
             bad = [f"no health answer ({e})"]
         if not bad or attempt == 2:
@@ -357,6 +428,8 @@ def main() -> int:
         return 2
     entry = package_entry(a.channel, a.version)
     print(f"package: {entry['Filename']} sha256 {entry['SHA256sum']}")
+    xray = xray_entry(a.channel)
+    print(f"xray-core: {xray['Filename']} sha256 {xray['SHA256sum']}" if xray else "xray-core: none in the channel (vctl alone)")
 
     routers = [r for r in panel("fleet.list") if r.get("engineMode") == "xray-direct" and r.get("architecture") == ARCH]
     if a.hosts:
@@ -390,7 +463,7 @@ def main() -> int:
     for r in plan:
         print(f"\n== {r['hostname']} ({r['id'][:8]})")
         try:
-            done.append(f"{r['hostname']}: {roll(r, a, entry, target)}")
+            done.append(f"{r['hostname']}: {roll(r, a, entry, target, xray)}")
         except Skip as e:
             print(f"   skipped: {e}")
             skipped.append(f"{r['hostname']}: {e}")

@@ -13,7 +13,9 @@ Nothing here publishes to the feed or touches the panel.
   (`internal/uaguard`) and refuses a config that carries one. Use
   `"userAgent": "v2rayNG/1.9.5"` (JSON variant, not a Happ agent).
 - Free RAM ≥ 64 MB (`free -m`), overlay ≥ 12 MB (`df -h /overlay`).
-- `xray version` ≥ 26.3.27 (the fleet's; older lacks `api.listen`).
+- xray: vctl 0.7.0-r30 depends on `xray-core (>= 26.10.21)`, the one its
+  feed ships and it is proven with (one xray per vctl); install that package
+  with it. PassWall2 before 26.9.9-2 does not run on it (proxySettings).
 - A second way into the router that does not depend on the proxy: LAN cable +
   SSH to `192.168.1.1`.
 
@@ -38,12 +40,16 @@ from the repository root — see that script's header.
 VECTRA_SKIP_POSTINST_RESTART=1 opkg install /tmp/vectra-controller-pro_*.ipk
 ```
 
-From 0.7.0-r30 every build depends on `vectra-geodata` and `vectra-reporter`
-(openwrt/Makefile, EXTRA_DEPENDS), as the pro feed's always did: opkg takes
-them from a feed it has the list of (the pro feed, after `opkg update`) or
-from the same command line (`opkg install /tmp/vectra-geodata_*.ipk
+From 0.7.0-r30 every build depends on `xray-core (>= 26.10.21)`,
+`vectra-geodata` and `vectra-reporter` (openwrt/Makefile, EXTRA_DEPENDS), as
+the pro feed's always did: opkg takes them from a feed it has the list of (the
+pro feed, after `opkg update`) or from the same command line (`opkg install
+/tmp/xray-core_26.10.21-r1_*.ipk /tmp/vectra-geodata_*.ipk
 /tmp/vectra-reporter_*.ipk /tmp/vectra-controller-pro_*.ipk`); a router that
-has them keeps them.
+has them keeps them. Over an xray-core of that version with another binary
+swapped in, `opkg install --force-reinstall /tmp/xray-core_*.ipk` by itself
+(never with vctl's: a reinstall removes the package first, and vctl's removal
+hands the router back).
 
 PassWall and the old agent keep running; nothing about traffic changes. LuCI now
 has **VPN** in its menu (it says the controller is not running — correct).

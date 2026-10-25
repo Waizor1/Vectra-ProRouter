@@ -656,62 +656,96 @@ feeds_ready() {
 
 # ------------------------------------------------------------------ plan ----
 
-# xray on the router that is not its package's — PassWall2's, swapped in by
-# hand (the fleet's onboarding puts a newer xray there than any feed of its
-# time): no xray-core package at all, or one whose version is not the
-# binary's. Vectra's package depends on xray-core (>= minimum), and opkg
-# satisfies that with an xray-core of any feed written over the binary
-# PassWall2 runs — an older one on the router of 2026-10-03 (26.3.27 over
-# 26.7.28). So, where opkg would write one — no package, or one older than
-# the minimum — the xray-core of the binary's own version, from whichever feed
-# has it, goes in first (install_xray_pin): the same xray, now its package.
-# With none, nothing is installed, and the binary is left as it is. A package
-# at the minimum or newer satisfies the dependency: opkg leaves it, and the
-# binary over it, alone.
+# One xray per vctl: the xray-core of Vectra's own feed, the one this vctl
+# depends on and is proven with (build-pro-feed.sh ships the version
+# openwrt/Makefile names; the feed's xray-core is that version, and
+# XRAY_MIN, baked from the feed, too). After the install the router's xray is
+# that package and that package's binary — never another feed's xray-core,
+# which opkg would take for the Depends when it is newer, nor a binary swapped
+# in by hand over opkg's record (the four vctl routers ran 26.10.17 over
+# xray-core 26.7.28-r1 from 2026-10-21). So the file from Vectra's list goes
+# in by itself first (install_xray_pin): over an older package as an
+# upgrade, over the same version with another binary as a reinstall, over a
+# newer one as a downgrade; then vctl's Depends is met and opkg pulls no
+# other xray.
+#
+# PassWall2 shares /usr/bin/xray. Before 26.9.9-2 it writes outbound
+# proxySettings (and repeats ruleTags), which xray refuses since 26.9.8: on
+# such an xray PassWall2 carries nothing. So, with such a PassWall2:
+# - --standby (PassWall2 keeps the router) is refused, and nothing changes:
+#   update PassWall2 to 26.9.9-2 or newer first, or let Vectra take over;
+# - a takeover goes on, and says that a way back to PassWall2 (vectra off)
+#   leaves the router's internet without VPN — the init script then keeps
+#   PassWall2 switched off rather than start it on an xray it breaks on —
+#   until PassWall2 is updated.
+PASSWALL_XRAY_OK=26.9.9-2
+XRAY_REFUSES_PROXYSETTINGS=26.9.8
 XRAY_PIN=""
-XRAY_FREED_KB=0
+XRAY_PIN_HOW=""
+XRAY_REPLACED=0
+check_passwall_xray() { # <the feed's xray version>
+	pw="$(installed_version luci-app-passwall2)"
+	[ -n "$pw" ] || return 0
+	version_ge "$1" "$XRAY_REFUSES_PROXYSETTINGS" || return 0
+	version_ge "$pw" "$PASSWALL_XRAY_OK" && return 0
+	why="PassWall2 $pw пишет в конфиг xray поле proxySettings, а xray $1, под который собрана эта Vectra, с 26.9.8 такой конфиг не запускает. xray на роутере один для обоих (/usr/bin/xray)"
+	if [ "$STANDBY" = 1 ]; then
+		refuse PASSWALL_TOO_OLD_FOR_XRAY "$why: с --standby PassWall2 остался бы вести трафик на xray, на котором он не работает. Обновите PassWall2 до $PASSWALL_XRAY_OK или новее и запустите установщик снова — или ставьте без --standby, тогда Vectra заберёт трафик себе."
+	fi
+	warn PASSWALL_HANDBACK_WITHOUT_VPN "$why. Vectra заберёт трафик; vectra off вернёт роутеру интернет без VPN (PassWall2 останется выключенным), пока PassWall2 не обновлён до $PASSWALL_XRAY_OK или новее."
+}
 plan_xray() {
+	step "xray"
+	fv="$(feed_field xray-core Version)"
+	[ -n "$fv" ] || refuse XRAY_NOT_IN_FEED "в фиде Vectra нет xray-core: этой версии Vectra нужен xray $XRAY_MIN из её фида."
+	fbase="$(echo "$fv" | sed 's/-r\{0,1\}[0-9]*$//')"
+	[ -z "$XRAY_MIN" ] || [ "$fbase" = "$XRAY_MIN" ] || refuse XRAY_FEED_MISMATCH "в фиде Vectra xray-core $fv, а эта версия Vectra собрана под xray $XRAY_MIN: фид и установщик из разных выпусков."
+	check_passwall_xray "$fbase"
 	xb="$(command -v xray 2> /dev/null)"
-	[ -n "$xb" ] || return 0
 	pv="$(installed_version xray-core)"
 	xv="$(xray_version)"
-	if [ -n "$pv" ]; then
-		# The package's own binary (or one that does not answer: verify says
-		# so): opkg's business, as before.
-		[ -z "$xv" ] || [ "$(echo "$pv" | sed 's/-r\{0,1\}[0-9]*$//')" = "$xv" ] && return 0
-		step "xray $xv поверх пакета xray-core $pv"
-		if version_ge "$pv" "$XRAY_MIN"; then
-			note "xray заменён вручную; пакет xray-core $pv не старше нужного Vectra $XRAY_MIN, и opkg его не тронет: xray остаётся как есть"
-			jcheck ok XRAY_HAND_SWAPPED_KEPT "$xv"
-			return 0
-		fi
-	else
-		step "xray без пакета"
+	if [ "$pv" = "$fv" ] && [ "$xv" = "$fbase" ]; then
+		ok "xray $xv — пакет xray-core $pv из фида Vectra"
+		jcheck ok XRAY_VECTRA "$fv"
+		return 0
 	fi
-	[ -n "$xv" ] || refuse XRAY_BINARY_BROKEN "на роутере есть $xb без пакета xray-core, и он не запускается (xray version). Установщик не заменяет xray, поставленный вручную: почините или удалите его и запустите установщик снова."
-	version_ge "$xv" "$XRAY_MIN" || refuse XRAY_BINARY_TOO_OLD "на роутере $xb $xv${pv:+ (поверх пакета xray-core $pv)}, а Vectra нужен xray $XRAY_MIN или новее. Установщик не заменяет xray, поставленный вручную: обновите его пакетом xray-core и запустите установщик снова."
-	XRAY_PIN="$(pkg_candidates xray-core | awk -v v="$xv" '{ u = $2; sub(/-r?[0-9]+$/, "", u); if (u == v) { print; exit } }')"
-	[ -n "$XRAY_PIN" ] || refuse XRAY_NO_SAME_VERSION "на роутере $xb $xv, поставленный вручную (обычно для PassWall2)${pv:+ поверх пакета xray-core $pv, который старше нужного Vectra $XRAY_MIN}, а ни в одном фиде нет пакета xray-core $xv. Пакет Vectra зависит от xray-core, и opkg поставил бы поверх другую версию — установщик этого не делает, xray не тронут. Поставьте пакет xray-core $xv (opkg install ./xray-core_$xv-r1_$ARCH.ipk) и запустите установщик снова."
-	# The package's binary takes the place of this one (with no package:
-	# its space is the binary's).
-	[ -n "$pv" ] || XRAY_FREED_KB="$(du -k "$xb" 2> /dev/null | awk '{ print $1; exit }')"
+	XRAY_PIN="$(pkg_candidates xray-core | awk -v f="$FEED_NAME" -v v="$fv" '$1 == f && $2 == v { print; exit }')"
+	[ -n "$XRAY_PIN" ] || refuse XRAY_NOT_IN_FEED "в списке фида Vectra нет файла xray-core $fv."
 	# shellcheck disable=SC2086 # the plan's fields
 	set -- $XRAY_PIN
 	# Only what its feed's signed list vouches for: a list with no SHA256sum
 	# for it leaves nothing to check the download against.
-	[ -n "${4:-}" ] || refuse XRAY_PIN_CHECKSUM "в списке фида $1 нет SHA256 для xray-core $2: установщик не ставит то, что нечем проверить; xray не тронут."
-	ok "xray $xv: сначала встанет xray-core $2 из фида $1 — та же версия"
-	jcheck ok XRAY_PIN "$2"
+	[ -n "${4:-}" ] || refuse XRAY_PIN_CHECKSUM "в списке фида Vectra нет SHA256 для xray-core $2: установщик не ставит то, что нечем проверить; xray не тронут."
+	if [ -z "$pv" ]; then
+		XRAY_PIN_HOW=install
+		ok "${xb:+xray $xv без пакета: }встанет xray-core $fv из фида Vectra"
+	elif [ "$pv" = "$fv" ]; then
+		XRAY_PIN_HOW=reinstall
+		ok "xray ${xv:-не запускается} поверх пакета xray-core $pv (заменён вручную): пакет встанет заново, xray станет его"
+	elif version_ge "$pv" "$fv"; then
+		XRAY_PIN_HOW=downgrade
+		ok "xray-core $pv новее того, под который собрана Vectra: встанет $fv из её фида"
+	else
+		XRAY_PIN_HOW=install
+		ok "xray-core $pv${xv:+ (xray $xv)} -> $fv из фида Vectra"
+	fi
+	jcheck ok XRAY_PIN "$fv $XRAY_PIN_HOW"
 }
 
 check_storage() {
 	step "Место"
 	need=0
 	# Vectra's own packages state their Installed-Size; the rest is estimated.
+	# xray-core whenever plan_xray puts it in, whole: the xray that runs
+	# holds the old binary until it restarts, so the old one frees nothing.
 	for p in $PKG xray-core vectra-geodata vectra-reporter; do
 		v="$(feed_field "$p" Version)"
 		iv="$(installed_version "$p")"
-		[ -n "$iv" ] && version_ge "$iv" "$v" && continue
+		if [ "$p" = xray-core ]; then
+			[ -n "$XRAY_PIN" ] || continue
+		elif [ -n "$iv" ] && version_ge "$iv" "$v"; then
+			continue
+		fi
 		s="$(feed_field "$p" Installed-Size)"
 		need=$((need + ${s:-0} / 1024))
 	done
@@ -721,8 +755,6 @@ check_storage() {
 		need=$((need + ${s:-0} * UNPACK_FACTOR / 1024))
 	done
 	[ "$LUCI" = 1 ] && need=$((need + 2048))
-	need=$((need - ${XRAY_FREED_KB:-0}))
-	[ "$need" -ge 0 ] || need=0
 	have="$(free_kb "$STORE")"
 	if [ "${have:-0}" -lt $((need + MARGIN_KB)) ]; then
 		refuse STORAGE_TOO_SMALL "на $STORE свободно $((${have:-0} / 1024)) МБ, нужно около $(((need + MARGIN_KB) / 1024)) МБ (xray — самый большой пакет, около 30 МБ)."
@@ -737,14 +769,16 @@ check_storage() {
 
 # --------------------------------------------------------------- install ----
 
-# install_xray_pin installs the xray-core plan_xray chose. Downloaded and
-# checked against its feed's list before anything changes: a download that
-# fails changes nothing.
+# install_xray_pin installs Vectra's xray-core as plan_xray chose. Downloaded
+# and checked against its feed's list before anything changes: a download
+# that fails changes nothing. By itself, before vctl: its --force-reinstall
+# (or --force-downgrade) is never vctl's — opkg's reinstall removes the
+# installed package first, and vctl's removal hands the router back.
 install_xray_pin() {
 	[ -n "$XRAY_PIN" ] || return 0
 	# shellcheck disable=SC2086 # the plan's fields
 	set -- $XRAY_PIN
-	step "xray-core $2: пакет той же версии, что уже стоит"
+	step "xray-core $2 из фида Vectra"
 	base="$(feed_url "$1")"
 	[ -n "$base" ] || refuse XRAY_PIN_DOWNLOAD "не найден адрес фида $1, где лежит xray-core $2."
 	rm -rf "$WORK/pkgs"
@@ -755,8 +789,18 @@ install_xray_pin() {
 		refuse XRAY_PIN_CHECKSUM "xray-core $2 скачался не тот: sha256 не совпадает со списком фида $1."
 	fi
 	INSTALLED_SOMETHING=1
-	retry opkg install "$f" || fail XRAY_PIN_INSTALL "opkg install xray-core $2 не прошёл (см. лог). Vectra не установлена."
-	ok "xray-core $(installed_version xray-core): теперь xray — пакет, и его версия остаётся прежней"
+	how=""
+	case "$XRAY_PIN_HOW" in
+	reinstall) how=--force-reinstall ;;
+	downgrade) how=--force-downgrade ;;
+	esac
+	# shellcheck disable=SC2086 # no flag, or one
+	retry opkg install $how "$f" || fail XRAY_PIN_INSTALL "opkg install xray-core $2 не прошёл (см. лог). Vectra не установлена."
+	xv="$(xray_version)"
+	[ "$(installed_version xray-core)" = "$2" ] && [ "$xv" = "$(echo "$2" | sed 's/-r\{0,1\}[0-9]*$//')" ] ||
+		fail XRAY_PIN_INSTALL "после opkg install на роутере xray-core $(installed_version xray-core), xray ${xv:-не запускается}, а не $2 из фида Vectra (см. лог). Vectra не установлена."
+	XRAY_REPLACED=1
+	ok "xray $xv — пакет xray-core $2 из фида Vectra"
 }
 
 # The swap of dnsmasq for dnsmasq-full, and its way back, which needs no
@@ -1103,10 +1147,9 @@ install_packages() {
 	[ "$STANDBY" = 1 ] && export VECTRA_SKIP_POSTINST_RESTART=1
 	if [ -n "$was" ]; then
 		note "обновляю $was -> $(feed_field "$PKG" Version)"
-		# Not xray-core: on a router with PassWall2 it is PassWall's too (often
-		# with a binary swapped in by hand), and `opkg upgrade` would take the
-		# newest from ANY feed. The package's own Depends, xray-core (>= the
-		# minimum), upgrades it only when it is too old.
+		# Not xray-core: install_xray_pin put Vectra's own in already, and
+		# `opkg upgrade` would take the newest from ANY feed. With it there,
+		# the package's own Depends, xray-core (>= it), pulls no other.
 		keep_companions
 		retry opkg upgrade "$PKG" vectra-geodata vectra-reporter
 		installed vectra-geodata || retry opkg install vectra-geodata
@@ -1128,6 +1171,13 @@ install_packages() {
 	# And what this run's opkg pulled in as vctl's dependency (an upgrade
 	# from a vctl that had no reporter yet).
 	keep_companions
+	# A new xray under a vctl that was not upgraded (its postinst restarts
+	# it otherwise): the xray that runs is still the old binary until vctl
+	# starts it again.
+	if [ "$XRAY_REPLACED" = 1 ] && [ -n "$was" ] && [ "$was" = "$(installed_version "$PKG")" ] && "/etc/init.d/$PKG" running > /dev/null 2>&1; then
+		run "/etc/init.d/$PKG" restart
+		note "Vectra перезапущена: теперь работает новый xray"
+	fi
 	if [ "$STANDBY" = 1 ]; then
 		unset VECTRA_SKIP_POSTINST_RESTART
 		run uci set "$PKG.main.enabled=0"
@@ -1239,10 +1289,12 @@ verify() {
 		note "этот установщик собран при выпуске $VERSION; фид с тех пор отдаёт $fv — поставлено то, что в фиде"
 	fi
 	xv="$(xray_version)"
-	if [ -n "$xv" ] && version_ge "$xv" "$XRAY_MIN"; then
-		ok "xray $xv"
+	xp="$(installed_version xray-core)"
+	xf="$(feed_field xray-core Version)"
+	if [ -n "$xv" ] && [ "$xp" = "$xf" ] && [ "$xv" = "$(echo "$xf" | sed 's/-r\{0,1\}[0-9]*$//')" ]; then
+		ok "xray $xv — пакет xray-core $xp из фида Vectra"
 	else
-		warn XRAY_TOO_OLD "xray ${xv:-не запускается}, нужен $XRAY_MIN или новее"
+		warn XRAY_NOT_VECTRAS "xray ${xv:-не запускается} (пакет xray-core ${xp:-не установлен}), а эта Vectra собрана под xray-core ${xf:-$XRAY_MIN} из своего фида"
 	fi
 	if geo_ok "$(geo_dir)"; then
 		ok "гео-данные ($(geo_dir)): все категории маршрутов на месте"

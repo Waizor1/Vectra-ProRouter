@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"vectra-controller-pro/internal/power"
 	"vectra-controller-pro/internal/uci"
 )
 
@@ -898,6 +899,7 @@ func (s *stack) prologue(enabled string) string {
 		"PASSWALL_SWITCH_SNIPPET=" + q("uci-defaults/99-vectra-trial-passwall-switch") + "\n" +
 		"PASSWALL_RETIRED=" + q(".passwall-retired-by-vctl") + "\n" +
 		"PASSWALL_RETIRE_CLOCK=" + q(".passwall-retire-clock") + "\n" +
+		"PASSWALL_BLOCKED=" + q(".passwall-handback-blocked") + "\n" +
 		"PASSWALL_INIT_CANDIDATES=" + q("passwall2") + "\n" +
 		"PASSWALL_LOCK_DIR=" + q("lock") + "\n" +
 		"TRIAL_FILE=" + q("vectra-trial.json") + "\n" +
@@ -1187,6 +1189,49 @@ func TestWithoutATrialTheSwitchStillDecides(t *testing.T) {
 	events, out := s.run("0", "start_service; echo \"rc=$?\"\n")
 	if !strings.Contains(out, "rc=0") || strings.Contains(strings.Join(events, "\n"), "instance") {
 		t.Fatalf("enabled=0 started vctl:\n%s", strings.Join(events, "\n"))
+	}
+}
+
+// PassWall2 before 26.9.9-2 writes proxySettings, which the xray vctl brings
+// (26.10.21; refused since 26.9.8) does not run — and /usr/bin/xray is one for
+// both. The hand-back does not give it the router to carry nothing: its switch
+// goes off (noted as vctl's), it is neither enabled nor started, it stays
+// owed, and why is written down; the legacy agent comes back as ever. Once
+// PassWall2 is updated, the next hand-back gives it back.
+func TestTheHandBackDoesNotGiveThePassWallTheXrayBreaks(t *testing.T) {
+	s := newStack(t)
+	s.write("opkg-status", "Package: xray-core\nVersion: 26.10.21-r1\nStatus: install ok installed\n\n"+
+		"Package: luci-app-passwall2\nVersion: 26.8.10-r1\nStatus: install user installed\n\n")
+	writeExec(t, s.path("xray"), "#!/bin/sh\necho 'Xray 26.10.21 (Xray, Penetrates Everything.) 1b1647c (go1.27.3 linux/arm64)'\n")
+	writeExec(t, s.path(".passwall-disabled-by-vctl"), "")
+	writeExec(t, s.path(".legacy-agent-disabled-by-vctl"), "")
+	env := []string{"OPKG_STATUS=" + s.path("opkg-status"), "XRAY_BIN=" + s.path("xray"), "PGREP=1"}
+	events, _ := s.run("1", "restore_passwall_stack\nrestore_legacy_controller\n", env...)
+	all := strings.Join(events, "\n")
+	if containsLine(events, "passwall enable") || containsLine(events, "passwall start") || containsLine(events, "passwall restart") {
+		t.Fatalf("PassWall2 given the router on an xray it breaks on:\n%s", all)
+	}
+	if s.pwSwitch() != "0" || !s.exists(".passwall-switch-off-by-vctl") || !s.exists(".passwall-disabled-by-vctl") {
+		t.Fatalf("switch %q, its breadcrumb %v, still owed %v:\n%s", s.pwSwitch(), s.exists(".passwall-switch-off-by-vctl"), s.exists(".passwall-disabled-by-vctl"), all)
+	}
+	why, _ := os.ReadFile(s.path(".passwall-handback-blocked"))
+	if !strings.Contains(string(why), "PassWall2 26.8.10-r1 writes proxySettings, which xray 26.10.21 refuses") || !strings.Contains(all, "not giving the router back to PassWall") {
+		t.Fatalf("not said why: %q\n%s", why, all)
+	}
+	if !containsLine(events, "agent enable") || !containsLine(events, "agent start") {
+		t.Fatalf("the legacy agent was not given back:\n%s", all)
+	}
+
+	// PassWall2 26.9.9-2 writes dialerProxy: given back, its switch on again.
+	s.write("opkg-status", "Package: luci-app-passwall2\nVersion: 26.9.9-2\nStatus: install user installed\n\n")
+	events, _ = s.run("1", "restore_passwall_stack\n", env...)
+	if !containsLine(events, "passwall enable") || !containsLine(events, "passwall start") || s.pwSwitch() != "1" {
+		t.Fatalf("PassWall2 26.9.9-2 not given back (switch %q):\n%s", s.pwSwitch(), strings.Join(events, "\n"))
+	}
+	for _, f := range []string{".passwall-disabled-by-vctl", ".passwall-switch-off-by-vctl", ".passwall-handback-blocked"} {
+		if s.exists(f) {
+			t.Errorf("%s stayed", f)
+		}
 	}
 }
 
@@ -2735,5 +2780,23 @@ func TestTeardownForgetsTheDNSFlowsAfterTheTable(t *testing.T) {
 	writeExec(t, filepath.Join(r.binDir, "vctl"), "#!/bin/sh\necho \"vctl $*\" >>\"$STUB_LOG\"\nexit 1\n")
 	if lines := r.run(); containsLine(lines, "vctl forget-dns-flows") {
 		t.Errorf("no table of ours, yet flows forgotten:\n  %s", strings.Join(lines, "\n  "))
+	}
+}
+
+// One rule for PassWall2 on vctl's xray, in the three places that apply it:
+// the hand-back (the init script), `vectra status` (internal/power) and the
+// installer's --standby.
+func TestThePassWallXrayRuleIsTheSameEverywhere(t *testing.T) {
+	t.Parallel()
+	for _, f := range []string{initScript, "../install/install.sh"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, want := range map[string]string{"PASSWALL_XRAY_OK": power.PassWallXrayOK, "XRAY_REFUSES_PROXYSETTINGS": power.XrayRefusesProxySettings} {
+			if !regexp.MustCompile(`(?m)^` + name + `=` + regexp.QuoteMeta(want) + `$`).Match(b) {
+				t.Errorf("%s: %s is not %s", f, name, want)
+			}
+		}
 	}
 }

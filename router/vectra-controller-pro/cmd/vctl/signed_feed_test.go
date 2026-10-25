@@ -155,7 +155,8 @@ func newSignedFeedStand(t *testing.T) *signedFeedStand {
 	prevClient, prevInstall, prevRestart := updateHTTPClient, runControllerInstall, scheduleControllerRestart
 	vectraFeedConf, opkgKeysDir, openwrtReleasePath = s.conf, s.keys, s.release
 	updateHTTPClient = func() *http.Client { return s.srv.Client() }
-	runControllerInstall = func(_ context.Context, dest string) ([]byte, error) {
+	runControllerInstall = func(_ context.Context, args ...string) ([]byte, error) {
+		dest := args[len(args)-1]
 		b, err := os.ReadFile(dest)
 		if err != nil {
 			return nil, err
@@ -292,7 +293,7 @@ func TestUpdateControllerRemovesThePackageWhenTheInstallFails(t *testing.T) {
 	mu := &sync.Mutex{}
 	d := buildGuardTestDaemon(t, results, mu)
 	s := newSignedFeedStand(t)
-	runControllerInstall = func(context.Context, string) ([]byte, error) {
+	runControllerInstall = func(context.Context, ...string) ([]byte, error) {
 		return []byte("Collected errors"), errors.New("exit status 255")
 	}
 	_ = d.executeJob(context.Background(), s.job("u2", nil), controlplane.CheckInResponse{})

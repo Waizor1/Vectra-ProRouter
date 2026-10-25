@@ -2,7 +2,7 @@
 # Build the Vectra "pro" opkg feed: vectra-controller-pro, xray-core and the geo
 # data for every OpenWrt architecture a Go binary runs on — without the SDK.
 #
-#   scripts/build-pro-feed.sh [--arch ARCH]... [--out DIR] [--xray vX.Y.Z]
+#   scripts/build-pro-feed.sh [--arch ARCH]... [--out DIR]
 #
 # Then sign it and bake the installer (scripts/sign-pro-feed.sh). Nothing is
 # published: the feed lands in dist/pro-feed (gitignored).
@@ -20,8 +20,9 @@
 #     (scripts/lib/pkg.sh), its Depends too — `xray-core (>= minimum)`,
 #     vectra-geodata and vectra-reporter included, as in every other build.
 #   - xray-core is the XTLS release binary, checked against the release's own
-#     .dgst. OpenWrt's feeds carry older xray on many branches; opkg takes the
-#     highest version from any feed, so a newer official one still wins.
+#     .dgst, of the version vctl depends on: one xray per vctl, the one it is
+#     built and proven with. OpenWrt's feeds carry older xray on many branches;
+#     the installer and vctl's self-update install this feed's own file.
 #   - the geo data is the set the stand proves the data plane with, pinned by
 #     hash, and checked at build time to hold every geosite:/geoip: category the
 #     provider's config routes by — a missing one stops xray from starting.
@@ -34,17 +35,16 @@ PKG_MODULE="$(cd "$(dirname "$0")/.." && pwd)"
 
 OUT="$PKG_MODULE/dist/pro-feed"
 CACHE="$PKG_MODULE/dist/cache"
-# The xray the feed ships, and the oldest vctl takes (its Depends, in
-# openwrt/Makefile's EXTRA_DEPENDS). They differ on purpose: installing vctl
-# must not force a new xray, and a router keeps the xray it has until
-# xray-core is installed by itself. Since 26.9.8 xray refuses outbound
+# The xray the feed ships is the one vctl depends on (openwrt/Makefile,
+# EXTRA_DEPENDS: xray-core (>= it)): one xray per vctl, the one it is built and
+# proven with, never another beside it. Since 26.9.8 xray refuses outbound
 # proxySettings and duplicate ruleTags; vctl >= 0.7.0-r29 emits neither.
 # 26.10.21, not 26.10.17: XTLS withdrew 26.10.10 and 26.10.17 (their release
 # is gone) — their built-in root CAs held three that 26.10.21 drops, and it is
 # built with Go 1.27.3, which filters the broken certificates whatever the
 # router's own CA store says.
-XRAY_VERSION="v26.10.21"
 XRAY_MIN="$(pkg_depends_min xray-core)"
+XRAY_VERSION="v$XRAY_MIN"
 # The geo data: the files the data-plane stand runs with (test/dataplane/run.sh,
 # GEO_BASE), pinned. Moving the pin is deliberate: new hashes, a new version.
 GEO_BASE="${GEO_BASE:-https://api.vectra-pro.net/artifacts/canary/vctl}"
@@ -108,7 +108,6 @@ while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--arch) ARCHS+=("$2"); shift 2 ;;
 	--out) OUT="$2"; shift 2 ;;
-	--xray) XRAY_VERSION="$2"; shift 2 ;;
 	-h | --help) usage 0 ;;
 	*) echo "unknown argument: $1" >&2; usage 2 ;;
 	esac
@@ -127,12 +126,11 @@ die() { echo "FATAL: $*" >&2; exit 1; }
 sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
 version_ge() { [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" == "$2" ]]; }
 
-# What the Makefile's Depends asks for, this feed must carry: an xray at the
-# minimum or newer, a reporter at its minimum or newer — or vctl would not
-# install from its own feed.
+# What the Makefile's Depends asks for, this feed must carry: the xray it
+# names, a reporter at its minimum or newer — or vctl would not install from
+# its own feed.
 [[ -n "$XRAY_MIN" ]] || die "the Makefile's Depends names no minimum for xray-core: $(pkg_depends)"
 [[ -n "$REPORTER_MIN" ]] || die "the Makefile's Depends names no minimum for vectra-reporter: $(pkg_depends)"
-version_ge "${XRAY_VERSION#v}" "$XRAY_MIN" || die "xray $XRAY_VERSION is older than the $XRAY_MIN vctl depends on"
 version_ge "$REPORTER_VERSION" "$REPORTER_MIN" || die "vectra-reporter $REPORTER_VERSION is older than the $REPORTER_MIN vctl depends on"
 
 VERSION="$(pkg_version)"

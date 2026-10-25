@@ -291,7 +291,7 @@ func TestPowerStatus(t *testing.T) {
 		t.Fatal(err, r.out.String())
 	}
 	want := map[string]interface{}{"enabled": false, "running": false, "carrying": false, "holder": "passwall2", "handBack": nil,
-		"uci": false, "boot": false, "trial": nil, "busy": false, "claim": nil, "autoRouteSource": nil}
+		"handBackBlocked": nil, "uci": false, "boot": false, "trial": nil, "busy": false, "claim": nil, "autoRouteSource": nil}
 	if !reflect.DeepEqual(st, want) {
 		t.Fatalf("status --json = %v\nwant %v", st, want)
 	}

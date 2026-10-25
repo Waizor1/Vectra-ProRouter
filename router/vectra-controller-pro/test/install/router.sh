@@ -498,8 +498,10 @@ standby-upgrade)
 	agent_pid="$(pgrep -f legacy-agent-loop.sh | head -n 1)"
 	xray_before="$(version_of xray-core)"
 	info "old vctl $(version_of $PKG) off; PassWall2 pid $pw_pid, agent pid $agent_pid, xray-core $xray_before"
-	# The feed also offers an xray-core newer than PassWall's.
-	export VECTRA_FEED="${FEED_BASE}/newer"
+	# Another feed offers an xray-core newer than anything (signed with the
+	# stand's key, which the installer files).
+	arch="$(sed -n "s/^DISTRIB_ARCH='\(.*\)'$/\1/p" /etc/openwrt_release)"
+	echo "src/gz other_xray ${FEED_BASE}/newer/$arch" >> /etc/opkg/customfeeds.conf
 	installer --standby
 	check upgrade_exit "--standby over the old vctl: exit 0, got $INSTALL_RC" test "$INSTALL_RC" = 0
 	check upgrade_version "vctl upgraded 0.2.3-r1 -> $(version_of $PKG)" sh -c "[ \"\$(opkg list-installed $PKG | sed -n 's/^$PKG - //p')\" != 0.2.3-r1 ]"
@@ -514,8 +516,9 @@ standby-upgrade)
 	check upgrade_shell_kept "the old agent ran here: the support shell stays on (remote_shell '$(uci -q get $PKG.main.remote_shell)')" \
 		test "$(uci -q get $PKG.main.remote_shell)" = 1
 	check upgrade_ubus "the UI answers with Vectra off" sh -c 'ubus call vectra status | grep -q "\"version\""'
-	check upgrade_xray_untouched "xray-core left to its owner: $xray_before before, $(version_of xray-core) after" \
-		test "$(version_of xray-core)" = "$xray_before"
+	xv="$(xray version 2> /dev/null | awk 'NR == 1 { print $2 }')"
+	check upgrade_xray_vectras "xray-core is Vectra's (one xray per vctl), not the other feed's 99.0: $xray_before before, $(version_of xray-core) after, runs as $xv" \
+		sh -c "[ \"$(version_of xray-core)\" = '$FEED_XRAY' ] && [ '$xv' = '${FEED_XRAY%-r*}' ]"
 	check upgrade_passwall_routes "PassWall's fwmark 0x1 / table 100 route survived the old copy's stop" \
 		sh -c "ip rule show | grep -q 'fwmark 0x1 lookup 100' && ip route show table 100 | grep -q '^local default'"
 	sh /etc/vectra-controller-pro/vectra-install.sh --uninstall < /dev/null > /tmp/installer.out 2>&1
@@ -620,6 +623,37 @@ passwall)
 	check passwall_given_back "vectra off starts PassWall2 again (exit $?)" wait_for 30 running passwall2
 	check passwall_off_stays "a minute later Vectra is still off and PassWall2 still runs" \
 		sh -c "sleep 65; ! /etc/init.d/$PKG running && ! /etc/init.d/$PKG enabled && /etc/init.d/passwall2 running"
+	;;
+
+passwall-old)
+	# PassWall2 26.8.10, the fleet's: it writes proxySettings, which the xray
+	# this Vectra brings (the feed's) refuses — and /usr/bin/xray is one for
+	# both.
+	stubs
+	install_fixture luci-app-passwall2-old
+	/etc/init.d/passwall2 enable
+	/etc/init.d/passwall2 start
+	feed_retry opkg update
+	feed_retry opkg install xray-core || die "the official xray-core did not install"
+	snapshot /tmp/before
+	installer --standby
+	refused passwallold_standby "26.9.9-2"
+	check passwallold_standby_code "the refusal is PASSWALL_TOO_OLD_FOR_XRAY" said PASSWALL_TOO_OLD_FOR_XRAY
+	installer --yes
+	check passwallold_exit "with --yes: done with a warning (exit 2), got $INSTALL_RC" test "$INSTALL_RC" = 2
+	check passwallold_warned "it says the way back leaves the internet without VPN" said PASSWALL_HANDBACK_WITHOUT_VPN
+	assert_installed_and_on passwallold
+	check passwallold_status "vectra status: turning Vectra off sends the traffic directly, and says why" \
+		sh -c "vectra status > /tmp/vectra-status.out 2>&1; grep -q 'directly, without a VPN' /tmp/vectra-status.out && grep -q proxySettings /tmp/vectra-status.out"
+	vectra off --foreground > /tmp/vectra-off.out 2>&1
+	sed 's/^/     | /' /tmp/vectra-off.out
+	check passwallold_off_says_why "vectra off says why PassWall2 stays off" grep -q proxySettings /tmp/vectra-off.out
+	check passwallold_not_given_back "vectra off leaves PassWall2 off: not running, its own switch off, still owed" \
+		sh -c "! running passwall2 && [ \"\$(uci -q get passwall2.@global[0].enabled)\" = 0 ] && [ -f $VCTL_ETC/.passwall-disabled-by-vctl ] && [ -s $VCTL_ETC/.passwall-handback-blocked ]"
+	check passwallold_direct "the router's own DNS answers with Vectra off and PassWall2 off: plain internet" \
+		sh -c "! /etc/init.d/$PKG running && nslookup localhost 127.0.0.1 | grep -q '^Name:'"
+	check passwallold_off_stays "a minute later Vectra is still off and PassWall2 still off" \
+		sh -c "sleep 65; ! /etc/init.d/$PKG running && ! running passwall2"
 	;;
 
 passwall-retire)

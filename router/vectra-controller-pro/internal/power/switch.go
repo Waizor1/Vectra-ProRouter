@@ -111,6 +111,11 @@ func Off(ctx context.Context, env Env, say Say) error {
 	}
 	after := Read(ctx, env, false)
 	switch {
+	case after.Owed == PassWall && after.PassWallBlocked != "":
+		// Kept off on purpose (the init script's passwall_breaks_on_xray), and
+		// owed still: the boot links stay, so a boot after PassWall2's update
+		// gives it back.
+		say("%s", after.PassWallBlocked)
 	case after.Owed != "" && after.Boot:
 		say("%s did not come back enabled and its breadcrumb stays: so do the boot links, and every boot tries again", stackName(after.Owed))
 	case after.Owed != "":

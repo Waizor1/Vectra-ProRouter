@@ -15,6 +15,7 @@
   "engine": {
     "state": "running",
     "xrayVersion": "26.3.27",
+    "xrayPackage": "26.3.27-r1",
     "pid": 4127,
     "uptimeSec": 38461,
     "rssMiB": 61.4,

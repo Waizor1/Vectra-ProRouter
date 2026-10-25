@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"vectra-controller-pro/internal/logging"
+	"vectra-controller-pro/internal/opkgstatus"
 )
 
 // companionPackages are Vectra's packages that come with vctl from the pro
@@ -36,7 +37,7 @@ var companionPackages = []string{"vectra-geodata", "vectra-reporter"}
 // every opkg takes (lockf) before it reads it, and opkgProcDir is where
 // another opkg is looked for. Tests point them elsewhere.
 var (
-	opkgStatusFile = "/usr/lib/opkg/status"
+	opkgStatusFile = opkgstatus.File
 	opkgLockFile   = "/var/lock/opkg.lock"
 	opkgProcDir    = "/proc"
 )

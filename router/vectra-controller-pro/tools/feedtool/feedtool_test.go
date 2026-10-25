@@ -327,7 +327,15 @@ func TestTheRouterVerifiesWhatFeedtoolSigns(t *testing.T) {
 	sum := sha256.Sum256(read(t, pkg))
 	want := feedverify.Package{Name: "vectra-controller-pro", Version: "0.5.0-r1", Architecture: "aarch64_cortex-a53",
 		Filename: filepath.Base(pkg), SHA256: hex.EncodeToString(sum[:])}
-	if len(pkgs) != 1 || pkgs[0] != want {
+	// The sizes too, as the index has them: the self-update reads them for
+	// the room an xray-core needs.
+	if fi, err := os.Stat(pkg); err == nil {
+		want.Size = fi.Size()
+	}
+	if len(pkgs) == 1 {
+		want.InstalledSize = pkgs[0].InstalledSize
+	}
+	if len(pkgs) != 1 || pkgs[0] != want || want.InstalledSize <= 0 {
 		t.Fatalf("the router reads the index as\n%+v\nwant\n%+v", pkgs, want)
 	}
 }

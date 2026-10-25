@@ -92,25 +92,29 @@ Nothing changes until every check has passed:
    all answered and a package is still missing (a kmod for a firmware built by
    hand), that is said as it is: OPENWRT_PACKAGE_MISSING, not
    OPENWRT_FEEDS_UNREACHABLE.
-8. **xray without its package** (PassWall2's, swapped in by hand): opkg
-   would satisfy Vectra's `xray-core` dependency with another feed's version
-   written over it — an older one on the router migrated on 2026-10-03. The
-   `xray-core` of the binary's own version, from whichever feed has it, is
-   planned instead (installed first, checked against its feed's SHA256);
-   with none — or no SHA256 in its feed's list, a binary older than the
-   minimum, or one that does not run — the install is refused and the binary
-   left as it is. The same over an xray-core package older than the minimum
-   (opkg would upgrade it over the binary); over one at the minimum or newer,
-   opkg leaves package and binary alone, and so does the installer.
-   **Caveat**: that holds for the minimum of the feed the router installs
-   from now. A later pro feed that raises the minimum above the installed
-   xray-core package lets opkg upgrade xray-core on Vectra's next update —
-   over a binary swapped in by hand. Before raising the minimum in the feed,
-   put an xray-core package of the fleet's binaries' version in it (the
-   installer then pins it), or swap those binaries back to their package.
+8. **xray: one per vctl.** The xray this vctl depends on (`xray-core (>=
+   26.10.21)` for 0.7.0-r30) and is proven with is Vectra's feed's own; after
+   the install the router's xray is that package and that package's binary.
+   Its file from Vectra's list is planned (installed first, by itself,
+   checked against the list's SHA256): as an upgrade over an older package or
+   none, a reinstall over the same version with a binary swapped in by hand
+   (the four vctl routers ran 26.10.17 over xray-core 26.7.28-r1 from
+   2026-10-21), a downgrade under a newer package. Another feed's xray-core,
+   however new, is never taken; a feed without xray-core, without its
+   SHA256, or with another xray than the installer's release, is refused.
+   PassWall2 before 26.9.9-2 writes outbound proxySettings, which xray refuses
+   since 26.9.8, and /usr/bin/xray is one for both: next to it `--standby` is
+   refused (PASSWALL_TOO_OLD_FOR_XRAY, nothing changed — update PassWall2 to
+   26.9.9-2 or newer, or let Vectra take over); a takeover warns
+   (PASSWALL_HANDBACK_WITHOUT_VPN) that `vectra off` then leaves PassWall2
+   off and the internet without VPN — the init script keeps it off rather
+   than give it the router on an xray it breaks on, says why (`vectra
+   status`, `vectra off`), and gives it back at a later hand-back once
+   PassWall2 is updated.
 9. **Storage**: Vectra's packages by the `Installed-Size` of the feed's own
    index, OpenWrt's by download size × 3 (their index has none), plus 4 MB;
-   an xray binary its package replaces counts as freed. What would be left is
+   Vectra's xray-core whole whenever it goes in, a reinstall too (the xray
+   that runs holds the old binary until it restarts). What would be left is
    held against what Vectra's own update needs free (16 MB): less is a
    warning — Connect's «Обновить» would be refused until room is made.
 
@@ -139,14 +143,14 @@ Then:
    and the run ends DNSMASQ_FULL_BROKEN, saying what to run; the saved copy
    stays. What dnsmasq looked like at each failed try (processes, port 53,
    procd's view, logread) is in the install log.
-11. **The packages**: the planned xray-core first, then
-   `vectra-controller-pro`, which pulls `xray-core (>= minimum)`, the kmods
-   and the rest; `vectra-geodata` and `vectra-reporter` are named too on a
+11. **The packages**: Vectra's xray-core first (point 8), then
+   `vectra-controller-pro`, whose Depends it meets, the kmods and the rest; `vectra-geodata` and `vectra-reporter` are named too on a
    first install, not left to the package's Depends (a vctl before 0.7.0-r30
    built otherwise than by build-pro-feed.sh names neither, and a feed that
    served one left a router without its geo data). An update upgrades
-   Vectra's own packages only: xray-core may be PassWall's, and its version
-   is the Depends' business. Before it and after the install the two lose
+   Vectra's own packages only: xray-core is in already; a vctl not upgraded
+   (the same version) is restarted onto a new xray. Before it and after the
+   install the two lose
    opkg's `Auto-Installed` mark (`keep_companions`): opkg removes an
    auto-installed package as an orphan as soon as a vctl that does not depend
    on it replaces one that did (0.7.0-r29 as published), and no opkg command
@@ -163,8 +167,9 @@ Then:
     directory named there that lacks a category the provider routes by gets
     Vectra's own instead; its files stay untouched.
 13. **The end is checked**: the installed version against the feed's own
-    list (not the version the installer was signed with), `xray version` ≥
-    minimum, xray accepting every geo category, the service running (off in
+    list (not the version the installer was signed with), xray Vectra's own
+    (the package of its feed, that package's binary: XRAY_NOT_VECTRAS
+    otherwise), xray accepting every geo category, the service running (off in
     `--standby`), `ubus call vectra status`, LuCI serving the page, and free
     storage against the update's 16 MB. What fails is a warning: the run
     exits 2. The claim code and its link are printed when the router already
@@ -308,8 +313,9 @@ leave the router byte for byte as it was (packages, feeds, keys, `/etc/config`,
 | `lifecycle` | install, run again (the daemon untouched), `--uninstall`, `--purge` |
 | `check` | `--check` changes nothing |
 | `standby` | next to PassWall2 and the old agent: installed, off, both still running |
-| `standby-upgrade` | the owner's router as it is: an old copy off, PassWall2's newer xray-core and a feed offering an even newer one — upgraded, still off, PassWall2 and the agent never interrupted, xray-core untouched, PassWall's old-style `fwmark 0x1 / table 100` route surviving the upgrade and a removal |
-| `passwall` | refused without `--yes`; with it: taken over, official xray-core upgraded to the minimum, Vectra's own geo data, PassWall2 back on `vectra off` |
+| `standby-upgrade` | the owner's router as it is: an old copy off, PassWall2's xray-core and another feed offering a newer one — upgraded, still off, PassWall2 and the agent never interrupted, xray-core Vectra's own (not the newer one), PassWall's old-style `fwmark 0x1 / table 100` route surviving the upgrade and a removal |
+| `passwall` | PassWall2 26.9.9-2: refused without `--yes`; with it: taken over, official xray-core replaced by Vectra's, Vectra's own geo data, PassWall2 back on `vectra off` |
+| `passwall-old` | PassWall2 26.8.10 (the fleet's; proxySettings): `--standby` refused, nothing changed; `--yes` takes over with PASSWALL_HANDBACK_WITHOUT_VPN; `vectra status` and `vectra off` say why PassWall2 stays off; `vectra off` leaves plain internet, PassWall2 off and still owed |
 | `passwall-upgrade` | taken over from PassWall2, then upgraded: vctl restarted in place, and PassWall2 never ran for the file swap (an upgrade is no hand-back) |
 | `passwall-retire` | taken over from PassWall2 as opkg has it; refused while vctl carries nothing and with `retire_passwall '0'`; then carrying (the data-plane stand's operator config, a freedom outbound) and `vctl retire-passwall --now`: PassWall2's packages gone, xray-core and dnsmasq-full kept, its configuration in a 0600 backup, nothing owed, status `retired`; a bare stop restarted by the dead-man; `vectra off` leaves plain internet, a minute later too |
 | `dnsmasq-rollback` | a dnsmasq-full that never runs: the old dnsmasq back and answering, the same version, enabled, within 120 s, kept on flash meanwhile; a second run leaves an earlier run's copy — with every download failing from the moment the swap begins |

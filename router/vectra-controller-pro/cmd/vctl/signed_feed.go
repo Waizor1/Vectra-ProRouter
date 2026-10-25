@@ -48,12 +48,13 @@ const (
 // customfeeds.conf, its index (Packages.gz for a src/gz feed, as opkg
 // downloads it) and Packages.sig over https, the signature by a key in
 // /etc/opkg/keys, the package built for this router and, when the job names
-// a version, of that version.
-func signedFeedPackage(ctx context.Context, sha, version string) (feedverify.Package, error) {
+// a version, of that version. With it, the same index's xray-core for this
+// router (feed_xray.go), nil when it has none.
+func signedFeedPackage(ctx context.Context, sha, version string) (feedverify.Package, *feedXray, error) {
 	var none feedverify.Package
-	arch, _, pkgs, err := trustedFeedIndex(ctx)
+	arch, feed, pkgs, err := trustedFeedIndex(ctx)
 	if err != nil {
-		return none, err
+		return none, nil, err
 	}
 	var has []string
 	for _, p := range pkgs {
@@ -65,17 +66,21 @@ func signedFeedPackage(ctx context.Context, sha, version string) (feedverify.Pac
 			continue
 		}
 		if p.Architecture != arch {
-			return none, fmt.Errorf("the feed's %s %s with that sha256 is built for %s, this router is %s", proPackageName, p.Version, p.Architecture, arch)
+			return none, nil, fmt.Errorf("the feed's %s %s with that sha256 is built for %s, this router is %s", proPackageName, p.Version, p.Architecture, arch)
 		}
 		if version != "" && p.Version != version {
-			return none, fmt.Errorf("the feed's %s with that sha256 is %s, the job names %s", proPackageName, p.Version, version)
+			return none, nil, fmt.Errorf("the feed's %s with that sha256 is %s, the job names %s", proPackageName, p.Version, version)
 		}
-		return p, nil
+		x, err := signedFeedXray(feed, pkgs, arch)
+		if err != nil {
+			return none, nil, err
+		}
+		return p, x, nil
 	}
 	if len(has) == 0 {
-		return none, fmt.Errorf("the feed lists no %s with sha256 %s, and no %s at all", proPackageName, sha, proPackageName)
+		return none, nil, fmt.Errorf("the feed lists no %s with sha256 %s, and no %s at all", proPackageName, sha, proPackageName)
 	}
-	return none, fmt.Errorf("the feed lists no %s with sha256 %s; it has %s", proPackageName, sha, strings.Join(has, ", "))
+	return none, nil, fmt.Errorf("the feed lists no %s with sha256 %s; it has %s", proPackageName, sha, strings.Join(has, ", "))
 }
 
 // routerArch is the architecture the router's packages are built for:
