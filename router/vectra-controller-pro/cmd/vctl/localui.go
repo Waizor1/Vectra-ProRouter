@@ -482,6 +482,7 @@ func (d *daemon) publishRuntime() {
 	}
 	if d.collector != nil {
 		rt.XrayVersion = d.collector.XrayVersion()
+		rt.XrayPackage = d.collector.XrayPackageVersion()
 	}
 	if !d.lastCheckIn.IsZero() {
 		t := d.lastCheckIn

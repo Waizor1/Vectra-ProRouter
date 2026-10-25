@@ -212,3 +212,39 @@ func TestXrayVersionFollowsTheBinaryUnderTheWrapper(t *testing.T) {
 		t.Fatalf("after replacing the binary under the wrapper: version %q, %d execs", v, execs)
 	}
 }
+
+// The check-in carries the xray-core package's version beside the binary's:
+// a binary swapped in by hand over opkg's record (the four vctl routers,
+// 2026-10-21: 26.10.17 over xray-core 26.7.28-r1) shows as two versions.
+func TestTheCheckInCarriesTheXrayPackageBesideTheBinary(t *testing.T) {
+	status := filepath.Join(t.TempDir(), "status")
+	if err := os.WriteFile(status, []byte("Package: xray-core\nVersion: 26.7.28-r1\nStatus: install ok installed\n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := NewCollector(Options{XrayBinary: "/usr/bin/xray", OpkgStatus: status})
+	c.run = func(_ context.Context, name string, _ ...string) (string, error) {
+		if name == "/usr/bin/xray" {
+			return "Xray 26.10.17 (Xray, Penetrates Everything.)", nil
+		}
+		return "", nil
+	}
+	c.readFile = func(p string) ([]byte, error) {
+		if p == status {
+			return os.ReadFile(p)
+		}
+		return nil, errNotExist{}
+	}
+	c.statfsMB = func(string) int { return 42 }
+	c.hostname = func() (string, error) { return "ax-test", nil }
+	inv := c.Collect(context.Background(), supervisor.Status{State: supervisor.StateRunning}, 0, 0)
+	if inv.PackageVersions["xray-core"] != "26.7.28-r1" || inv.BinaryVersions["xray"] != "26.10.17" || inv.XrayVersion != "26.10.17" {
+		t.Fatalf("packageVersions %v, binaryVersions %v, xrayVersion %q", inv.PackageVersions, inv.BinaryVersions, inv.XrayVersion)
+	}
+	// No package: nothing said for it.
+	if err := os.WriteFile(status, []byte("Package: other\nVersion: 1\nStatus: install ok installed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if inv := c.Collect(context.Background(), supervisor.Status{}, 0, 0); inv.PackageVersions["xray-core"] != "" {
+		t.Fatalf("packageVersions %v", inv.PackageVersions)
+	}
+}

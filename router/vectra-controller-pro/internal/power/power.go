@@ -21,11 +21,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"vectra-controller-pro/internal/agentcfg"
 	"vectra-controller-pro/internal/localctl"
+	"vectra-controller-pro/internal/opkgstatus"
 	"vectra-controller-pro/internal/uci"
 )
 
@@ -83,6 +85,9 @@ type Env struct {
 	// its xray config generator: what vctl routes by, with no operator
 	// config yet, on a router it takes over from PassWall2 (AutoPassWall).
 	PassWallUCI, PassWallGenerator string
+	// OpkgStatus and Xray are opkg's status file and the xray binary: what
+	// tells whether PassWall2 can be given the router back (passWallBlocked).
+	OpkgStatus, Xray string
 
 	// Run runs a command (uci, an init script, nft); Output runs one and
 	// returns its stdout (ubus).
@@ -121,6 +126,8 @@ func RouterEnv() Env {
 		// cmd/vctl's passwallUCIFile and passwallGenerator.
 		PassWallUCI:       "/etc/config/passwall2",
 		PassWallGenerator: "/usr/lib/lua/luci/passwall2/util_xray.lua",
+		OpkgStatus:        opkgstatus.File,
+		Xray:              "/usr/bin/xray",
 		Run:               runCommand,
 		Output:            outputCommand,
 		Daemon: func(ctx context.Context) bool {
@@ -192,8 +199,12 @@ type Facts struct {
 	PassWall, Agent bool
 	// Owed is what the init script's stop gives back, from its breadcrumbs:
 	// PassWall, Agent or "".
-	Owed  string
-	Trial *Trial // nil when no trial runs
+	Owed string
+	// PassWallBlocked says why PassWall2, owed, is not given the router back
+	// (passWallBlocked): it would break on the xray here. The stop then
+	// leaves it off, and the internet goes out directly.
+	PassWallBlocked string
+	Trial           *Trial // nil when no trial runs
 	// WouldIdle: vctl does not run, and switched on now it would carry
 	// nothing (Env.WouldIdle) — what a switch-on is to be confirmed for.
 	WouldIdle bool
@@ -224,6 +235,8 @@ func (f Facts) HandBack() string {
 	switch {
 	case !f.On() && !f.Running:
 		return ""
+	case f.Owed == PassWall && f.PassWallBlocked != "":
+		return Direct
 	case f.Owed != "":
 		return f.Owed
 	}
@@ -239,6 +252,9 @@ func Read(ctx context.Context, env Env, up bool) Facts {
 		Owed:    owed(env),
 		Trial:   LoadTrial(env),
 		Running: up,
+	}
+	if f.Owed == PassWall {
+		f.PassWallBlocked = passWallBlocked(ctx, env)
 	}
 	if !f.Running {
 		f.Running, _, _ = procd(ctx, env, pkg)
@@ -457,6 +473,71 @@ func owed(env Env) string {
 	}
 	return ""
 }
+
+// PassWall2 before 26.9.9-2 writes outbound proxySettings, which xray
+// refuses since 26.9.8, and /usr/bin/xray is one for both: the init script
+// does not give such a PassWall2 the router back (passwall_breaks_on_xray,
+// the same rule), nor does install.sh put one under --standby.
+const (
+	PassWallXrayOK           = "26.9.9-2"
+	XrayRefusesProxySettings = "26.9.8"
+)
+
+// passWallBlocked says why PassWall2 cannot be given the router back on the
+// xray here, "" when it can (or this router cannot tell).
+func passWallBlocked(ctx context.Context, env Env) string {
+	if env.OpkgStatus == "" || env.Xray == "" || env.Output == nil {
+		return ""
+	}
+	status, err := os.ReadFile(env.OpkgStatus)
+	if err != nil {
+		return ""
+	}
+	pv := opkgstatus.Version(status, "luci-app-passwall2")
+	if pv == "" {
+		return ""
+	}
+	xv := xrayVersion(ctx, env)
+	if xv == "" || !opkgstatus.AtLeast(xv, XrayRefusesProxySettings) || opkgstatus.AtLeast(pv, PassWallXrayOK) {
+		return ""
+	}
+	return "PassWall2 " + pv + " writes proxySettings, which xray " + xv + " refuses: it stays off, and the internet goes without a VPN until PassWall2 is " + PassWallXrayOK + " or newer"
+}
+
+// xrayVersion is what env.Xray says it is, asked again only when the binary
+// changed: the router UI reads the power facts every few seconds, and the
+// binary is 32 MB.
+func xrayVersion(ctx context.Context, env Env) string {
+	key := ""
+	if st, err := os.Stat(env.Xray); err == nil {
+		key = env.Xray + "|" + strconv.FormatInt(st.Size(), 10) + "|" + strconv.FormatInt(st.ModTime().UnixNano(), 10)
+	}
+	xrayVerMu.Lock()
+	if key != "" && key == xrayVerKey {
+		v := xrayVerValue
+		xrayVerMu.Unlock()
+		return v
+	}
+	xrayVerMu.Unlock()
+	out, err := env.Output(ctx, env.Xray, "version")
+	if err != nil {
+		return ""
+	}
+	first, _, _ := strings.Cut(string(out), "\n")
+	f := strings.Fields(first)
+	if len(f) < 2 || f[0] != "Xray" {
+		return ""
+	}
+	xrayVerMu.Lock()
+	xrayVerKey, xrayVerValue = key, f[1]
+	xrayVerMu.Unlock()
+	return f[1]
+}
+
+var (
+	xrayVerMu                sync.Mutex
+	xrayVerKey, xrayVerValue string
+)
 
 // noted: the init script's breadcrumb name, on /etc or on tmpfs.
 func noted(env Env, name string) bool {

@@ -4,7 +4,7 @@ PKG_NAME:=vectra-controller-pro
 # Versioned independently from vectra-controller-agent: this is a separate,
 # additive controller package (xray-direct engine), not a replacement.
 VECTRA_VERSION?=0.7.0
-VECTRA_RELEASE?=29
+VECTRA_RELEASE?=30
 PKG_VERSION:=$(VECTRA_VERSION)
 PKG_RELEASE:=$(VECTRA_RELEASE)
 
@@ -35,6 +35,17 @@ define Package/$(PKG_NAME)
   TITLE:=Vectra Controller Pro (xray-direct)
   URL:=https://router.vectra-pro.net
   DEPENDS:=+ca-bundle +jsonfilter +jshn +procd +procd-ujail +uci +xray-core +kmod-nft-tproxy +kmod-nft-socket +kmod-nft-nat +dnsmasq-full +rpcd-mod-iwinfo +zram-swap
+  # What the package needs that the SDK does not build, written into its
+  # Depends as it is: the xray this vctl is built and proven with — the one
+  # its feed ships (scripts/build-pro-feed.sh reads it here), its minimum too,
+  # so every way vctl is installed brings it (+xray-core above names no
+  # version) — and Vectra's own packages from the pro feed, the geo data xray
+  # routes by and the reporter. Every build writes this one Depends: the SDK, and the builds
+  # without it through scripts/lib/pkg.sh. A vctl built without them, upgraded
+  # over one with them, made opkg remove both as orphans where they came in as
+  # its dependencies: the reporter's spool and state, the geo data
+  # (0.7.0-r29, published from build-local-ipk.sh; test/pilot).
+  EXTRA_DEPENDS:=xray-core (>= 26.10.21), vectra-geodata, vectra-reporter (>= 1.0.0-r4)
 endef
 
 define Package/$(PKG_NAME)/description

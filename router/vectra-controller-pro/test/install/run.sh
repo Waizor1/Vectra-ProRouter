@@ -27,6 +27,10 @@
 #   passwall          PassWall2 + official xray-core: refused without --yes,
 #                     taken over with it (xray upgraded), given back on
 #                     `vectra off`
+#   passwall-old      PassWall2 26.8.10 (it writes proxySettings, which the
+#                     xray Vectra brings refuses): --standby refused, nothing
+#                     changed; taken over with --yes, warned; `vectra off`
+#                     leaves it off and the internet without VPN, says why
 #   passwall-upgrade  taken over from PassWall2, then upgraded: vctl
 #                     restarted in place, PassWall2 never ran meanwhile
 #   passwall-retire   taken over from PassWall2 as opkg has it, then retired
@@ -77,7 +81,7 @@ PARALLEL="${INSTALL_PARALLEL:-4}"
 # busy loops inside each router while it runs: a rare race shows itself.
 REPEAT="${INSTALL_REPEAT:-1}"
 STRESS="${INSTALL_STRESS:-0}"
-ALL=(lifecycle geodata-links check standby standby-upgrade passwall passwall-upgrade passwall-retire dnsmasq-rollback dnsmasq-rollback-files dnsmasq-stale nojail dnsmasq-dhcpv6 dnsmasq-disabled feed-outage mirror
+ALL=(lifecycle geodata-links check standby standby-upgrade passwall passwall-old passwall-upgrade passwall-retire dnsmasq-rollback dnsmasq-rollback-files dnsmasq-stale nojail dnsmasq-dhcpv6 dnsmasq-disabled feed-outage mirror
 	refuse-arch refuse-apk refuse-release refuse-memory refuse-storage
 	refuse-conflict refuse-fleet refuse-agent-old refuse-signature refuse-feed-down check-json)
 
@@ -118,6 +122,11 @@ for a in "${ARCHS[@]}"; do arch_args+=(--arch "$a"); done
 "$MODULE/scripts/sign-pro-feed.sh" --feed "$BUILD/feed" --key-dir "$BUILD/keys" --new-key --feed-url "$FEED_BASE/pro"
 FEEDTOOL="$MODULE/dist/cache/feedtool"
 cp "$BUILD/feed/install.sh" "$BUILD/fixtures/install.sh"
+# The xray-core the feed ships (build-pro-feed.sh's XRAY_VERSION): every xray
+# binary on the stand's routers is this one, whatever package carries it.
+FEED_XRAY="$(awk '/^Package: xray-core$/ { p = 1 } p && /^Version: / { print $2; exit }' "$BUILD/feed/${ARCHS[0]}/Packages")"
+[[ -n "$FEED_XRAY" ]] || fail "the feed has no xray-core"
+echo "  xray-core $FEED_XRAY"
 
 step "fixtures"
 fake() { # <package> <version> [depends]: a package that only has to exist
@@ -139,7 +148,12 @@ fake podkop 0.2.5-r1
 fake vectra-controller-agent 0.1.13-r43
 mv "$BUILD/fixtures/vectra-controller-agent.ipk" "$BUILD/fixtures/vectra-controller-agent-r43.ipk"
 fake vectra-controller-agent 0.1.13-r45
+# PassWall2 26.8.10, the fleet's (it writes proxySettings, which the xray
+# Vectra brings refuses: passwall-old), and 26.9.9-2, the first that writes
+# dialerProxy, for the rest.
 fake luci-app-passwall2 26.8.10-r1
+mv "$BUILD/fixtures/luci-app-passwall2.ipk" "$BUILD/fixtures/luci-app-passwall2-old.ipk"
+fake luci-app-passwall2 26.9.9-2
 # PassWall2 as opkg has it on a fleet router, for passwall-retire: its package
 # owns its init script (the stand's stub) and its configuration (a conffile),
 # with a translation that needs it and helpers it needs — so the retirement's
@@ -151,7 +165,7 @@ cp "$MODULE/test/dataplane/stand/legacy-stub/passwall2" "$pw2/data/etc/init.d/pa
 chmod 0755 "$pw2/data/etc/init.d/passwall2"
 cp "$MODULE/test/dataplane/stand/legacy-stub/passwall2.config" "$pw2/data/etc/config/passwall2"
 chmod 0644 "$pw2/data/etc/config/passwall2"
-printf 'Package: luci-app-passwall2\nVersion: 26.8.10-r1\nDepends: xray-core, geoview, tcping, chinadns-ng\nArchitecture: all\nMaintainer: test\nDescription: test/install fixture\n' > "$pw2/ctrl/control"
+printf 'Package: luci-app-passwall2\nVersion: 26.9.9-2\nDepends: xray-core, geoview, tcping, chinadns-ng\nArchitecture: all\nMaintainer: test\nDescription: test/install fixture\n' > "$pw2/ctrl/control"
 echo /etc/config/passwall2 > "$pw2/ctrl/conffiles"
 "$FEEDTOOL" ipk -data "$pw2/data" -control "$pw2/ctrl" -out "$BUILD/fixtures/luci-app-passwall2-full.ipk"
 rm -rf "$pw2"
@@ -183,13 +197,14 @@ old="$(mktemp -d)"
 mkdir -p "$old/data" "$old/ctrl"
 tar -xzOf "$BUILD/feed/${ARCHS[0]}/vectra-controller-pro_"*"_${ARCHS[0]}.ipk" ./data.tar.gz | tar -xzf - -C "$old/data"
 tar -xzOf "$BUILD/feed/${ARCHS[0]}/vectra-controller-pro_"*"_${ARCHS[0]}.ipk" ./control.tar.gz | tar -xzf - -C "$old/ctrl"
-sed -e 's/^Version: .*/Version: 0.2.3-r1/' -e 's/, vectra-geodata//' -e 's/, vectra-reporter//' -e 's/xray-core (>= [^)]*)/xray-core/' "$old/ctrl/control" > "$old/control.new"
+sed -E -e 's/^Version: .*/Version: 0.2.3-r1/' -e 's/, vectra-geodata( \([^)]*\))?//' -e 's/, vectra-reporter( \([^)]*\))?//' -e 's/xray-core \(>= [^)]*\)/xray-core/' "$old/ctrl/control" > "$old/control.new"
+grep -q -e vectra-geodata -e vectra-reporter -e '(>=' "$old/control.new" && fail "the old vctl still depends on more than the plain Makefile's: $(grep '^Depends:' "$old/control.new")"
 mv "$old/control.new" "$old/ctrl/control"
 "$FEEDTOOL" ipk -data "$old/data" -control "$old/ctrl" -out "$BUILD/fixtures/vectra-controller-pro-old.ipk"
 rm -rf "$old"
-# PassWall2's xray-core, newer than the feed's (the owner's router has 26.4.25),
-# and a feed that also offers an even newer one: an upgrade must leave
-# PassWall's alone rather than take the newest from any feed.
+# PassWall2's xray-core as the owner's router has it (26.4.25, its binary the
+# feed's), and another feed that offers a newer one: the install must put in
+# Vectra's own — one xray per vctl — never the newest of any feed.
 pw="$(mktemp -d)"
 mkdir -p "$pw/data" "$pw/ctrl"
 tar -xzOf "$BUILD/feed/${ARCHS[0]}/xray-core_"*"_${ARCHS[0]}.ipk" ./data.tar.gz | tar -xzf - -C "$pw/data"
@@ -202,8 +217,6 @@ fake xray-core 99.0-r1
 mv "$BUILD/fixtures/xray-core.ipk" "$BUILD/xray-core-newest.ipk"
 for a in "${ARCHS[@]}"; do
 	mkdir -p "$BUILD/newer/$a"
-	cp "$BUILD/feed/$a/"*.ipk "$BUILD/newer/$a/"
-	rm -f "$BUILD/newer/$a/xray-core_"*.ipk
 	cp "$BUILD/xray-core-newest.ipk" "$BUILD/newer/$a/xray-core_99.0-r1_all.ipk"
 	"$FEEDTOOL" index -arch "$a" "$BUILD/newer/$a" > /dev/null
 	"$FEEDTOOL" sign -sec "$BUILD/keys/vectra-pro.sec" -in "$BUILD/newer/$a/Packages"
@@ -274,7 +287,7 @@ run_one() { # <arch> <scenario> <n>
 	log="$(log_of "$1" "$2" "$3")"
 	read -r -a emu <<< "$(emulation_env "$1")"
 	docker run --rm --privileged --network "$NET" --platform "$(platform_of "$1")" \
-		-e "SCENARIO=$2" -e "FEED_BASE=$FEED_BASE" -e "OPENWRT_MIRROR=$OPENWRT_MIRROR" -e "STRESS=$STRESS" "${emu[@]}" \
+		-e "SCENARIO=$2" -e "FEED_BASE=$FEED_BASE" -e "FEED_XRAY=$FEED_XRAY" -e "OPENWRT_MIRROR=$OPENWRT_MIRROR" -e "STRESS=$STRESS" "${emu[@]}" \
 		-v "$BUILD/fixtures:/fixtures:ro" \
 		-v "$HERE/router.sh:/test/router.sh:ro" \
 		-v "$MODULE/test/dataplane/stand/legacy-stub:/stub:ro" \

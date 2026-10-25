@@ -1505,3 +1505,46 @@ func TestTheInitScriptNamesTheSameFiles(t *testing.T) {
 		t.Errorf("init %s, config %s: the service and its config are %s", env.Init, env.Config, pkg)
 	}
 }
+
+// PassWall2 before 26.9.9-2 on an xray from 26.9.8: the stop leaves it off
+// (the init script's passwall_breaks_on_xray), so `vectra status` says the
+// traffic goes directly when Vectra is turned off, and why.
+func TestAPassWallTheXrayBreaksIsNoHandBack(t *testing.T) {
+	dir := t.TempDir()
+	status := filepath.Join(dir, "status")
+	for _, tc := range []struct{ passwall, xray, blocked string }{
+		{"26.8.10-r1", "26.10.21", "PassWall2 26.8.10-r1 writes proxySettings, which xray 26.10.21 refuses: it stays off, and the internet goes without a VPN until PassWall2 is 26.9.9-2 or newer"},
+		{"26.9.9-2", "26.10.21", ""},
+		{"26.8.10-r1", "26.7.28", ""},
+		{"", "26.10.21", ""},
+	} {
+		body := "Package: xray-core\nVersion: 26.10.21-r1\nStatus: install ok installed\n\n"
+		if tc.passwall != "" {
+			body += "Package: luci-app-passwall2\nVersion: " + tc.passwall + "\nStatus: install user installed\n\n"
+		}
+		if err := os.WriteFile(status, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		xray := tc.xray
+		env := Env{OpkgStatus: status, Xray: "/usr/bin/xray", Output: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "/usr/bin/xray" || len(args) != 1 || args[0] != "version" {
+				return nil, errors.New("unexpected " + name)
+			}
+			return []byte("Xray " + xray + " (Xray, Penetrates Everything.) 1b1647c (go1.27.3 linux/arm64)\nA unified platform for anti-censorship.\n"), nil
+		}}
+		if got := passWallBlocked(context.Background(), env); got != tc.blocked {
+			t.Errorf("PassWall2 %q on xray %s: %q, want %q", tc.passwall, tc.xray, got, tc.blocked)
+		}
+	}
+	on := Facts{UCI: true, Boot: true, Running: true, Carrying: true, Owed: PassWall}
+	if on.HandBack() != PassWall {
+		t.Fatalf("hand back %s", on.HandBack())
+	}
+	on.PassWallBlocked = "it would break"
+	if on.HandBack() != Direct {
+		t.Fatalf("a PassWall2 the xray breaks: hand back %s", on.HandBack())
+	}
+	if on.Owed = Agent; on.HandBack() != Agent {
+		t.Fatalf("the legacy agent alone: hand back %s", on.HandBack())
+	}
+}

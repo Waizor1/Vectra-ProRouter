@@ -6,7 +6,7 @@
 #   - the payload: every `$(INSTALL_BIN|DATA|CONF) ./files/<src> $(1)/<dst>` line
 #     replayed with the same mode (0755 / 0644 / 0600);
 #   - postinst, prerm and postrm: extracted from the Makefile's defines;
-#   - Depends: the Makefile's DEPENDS;
+#   - Depends: the Makefile's DEPENDS and EXTRA_DEPENDS, as the SDK writes them;
 #   - the version: VECTRA_VERSION-rVECTRA_RELEASE.
 # Source it; it needs PKG_MODULE (the router/vectra-controller-pro directory).
 
@@ -20,8 +20,31 @@ pkg_version() { # -> 0.5.0-r1
 	echo "$ver-r$rel"
 }
 
-pkg_depends() { # -> "ca-bundle, jsonfilter, ..."
-	sed -n 's/^[[:space:]]*DEPENDS:=//p' "$PKG_MAKEFILE" | tr ' ' '\n' | sed -n 's/^+//p' | paste -sd, - | sed 's/,/, /g'
+# The SDK writes EXTRA_DEPENDS as it is, then DEPENDS (with libc, which the
+# static vctl here does not need). The same set here, without the bare name
+# of a package EXTRA_DEPENDS names with its version: DEPENDS in its order,
+# each with the version EXTRA_DEPENDS gives it, then what only EXTRA_DEPENDS
+# names.
+pkg_depends() { # -> "ca-bundle, ..., xray-core (>= 26.3.27), ..., vectra-geodata, vectra-reporter (>= 1.0.0-r4)"
+	awk '
+		/^[[:space:]]*DEPENDS:=/ {
+			sub(/^[[:space:]]*DEPENDS:=/, "")
+			for (i = 1; i <= NF; i++) if ($i ~ /^\+/) dep[++n] = substr($i, 2)
+		}
+		/^[[:space:]]*EXTRA_DEPENDS:=/ {
+			sub(/^[[:space:]]*EXTRA_DEPENDS:=[[:space:]]*/, ""); sub(/[[:space:]]+$/, "")
+			m = split($0, extra, /[[:space:]]*,[[:space:]]*/)
+		}
+		END {
+			for (j = 1; j <= m; j++) { name = extra[j]; sub(/[[:space:]].*/, "", name); named[name] = extra[j]; order[j] = name }
+			for (i = 1; i <= n; i++) { out = out sep (dep[i] in named ? named[dep[i]] : dep[i]); sep = ", "; seen[dep[i]] = 1 }
+			for (j = 1; j <= m; j++) if (!(order[j] in seen)) { out = out sep named[order[j]]; sep = ", " }
+			print out
+		}' "$PKG_MAKEFILE"
+}
+
+pkg_depends_min() { # <package> -> the oldest version of it the Depends takes, e.g. 26.3.27 for xray-core
+	pkg_depends | tr ',' '\n' | sed -n "s/^ *$1 (>= \([^)]*\))\$/\1/p"
 }
 
 pkg_stage_payload() { # <data-dir>: every file the package installs, at its path and mode (vctl itself excluded)

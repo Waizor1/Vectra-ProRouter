@@ -204,7 +204,7 @@ func BuildStatus(in Inputs) Status {
 			st.Controller.UptimeSec = ptr(secs(in.Now.Sub(rt.StartedAt)))
 		}
 		e := rt.Engine
-		st.Engine = Engine{State: e.State, XrayVersion: strPtr(rt.XrayVersion), Restarts: e.Restarts,
+		st.Engine = Engine{State: e.State, XrayVersion: strPtr(rt.XrayVersion), XrayPackage: strPtr(rt.XrayPackage), Restarts: e.Restarts,
 			RSSMiB: in.XrayRSSMiB, MemoryLimitMiB: in.MemoryLimitMiB}
 		if e.State == "running" && e.PID > 0 {
 			st.Engine.PID = ptr(e.PID)

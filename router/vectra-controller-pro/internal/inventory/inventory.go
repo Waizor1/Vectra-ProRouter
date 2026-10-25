@@ -22,6 +22,8 @@ import (
 	"vectra-controller-pro/internal/config"
 	"vectra-controller-pro/internal/connecttelemetry"
 	"vectra-controller-pro/internal/controlplane"
+	"vectra-controller-pro/internal/logging"
+	"vectra-controller-pro/internal/opkgstatus"
 	"vectra-controller-pro/internal/supervisor"
 )
 
@@ -42,6 +44,9 @@ type Options struct {
 	// (vctl-xray-wrapper execs /usr/bin/xray); default /usr/bin/xray.
 	XrayExec string
 	AssetDir string
+	// OpkgStatus is opkg's status file, where the xray-core package's
+	// version is read; default /usr/lib/opkg/status.
+	OpkgStatus string
 }
 
 // Collector gathers inventory. Command execution and file reads are injectable
@@ -58,6 +63,11 @@ type Collector struct {
 	verMu    sync.Mutex
 	verKey   string // size/mtime of the xray binary the cached version came from
 	verValue string
+
+	pkgMu       sync.Mutex
+	pkgKey      string // size/mtime of the status file the cached version came from
+	pkgValue    string
+	pkgMismatch string // the binary/package pair last logged as not matching
 
 	assetMu  sync.Mutex
 	assetDir string // set by SetAssetDir; opts.AssetDir until then
@@ -95,6 +105,9 @@ func NewCollector(opts Options) *Collector {
 	}
 	if opts.XrayExec == "" {
 		opts.XrayExec = "/usr/bin/xray"
+	}
+	if opts.OpkgStatus == "" {
+		opts.OpkgStatus = opkgstatus.File
 	}
 	return &Collector{
 		opts:     opts,
@@ -140,6 +153,12 @@ func (c *Collector) Collect(ctx context.Context, xrayStatus supervisor.Status, n
 	if v := c.xrayVersion(ctx); v != "" {
 		inv.XrayVersion = v
 		inv.BinaryVersions["xray"] = v
+	}
+	// The xray-core package beside it: the panel sees a binary that is not
+	// its package's (one swapped in by hand) as two versions that differ.
+	if pv := c.XrayPackageVersion(); pv != "" {
+		inv.PackageVersions["xray-core"] = pv
+		c.noteXrayMismatch(inv.XrayVersion, pv)
 	}
 	// Service states must be valid panel enum values (running|stopped|
 	// degraded|unknown). PassWall2 is intentionally not running here.
@@ -305,6 +324,41 @@ func statKey(path string) string {
 		return ""
 	}
 	return fmt.Sprintf("%d/%d", st.Size(), st.ModTime().UnixNano())
+}
+
+// XrayPackageVersion is the xray-core package's version in opkg's status
+// file, "" with no such package; read again only when the file changed.
+func (c *Collector) XrayPackageVersion() string {
+	key := statKey(c.opts.OpkgStatus)
+	c.pkgMu.Lock()
+	defer c.pkgMu.Unlock()
+	if key != "" && key == c.pkgKey {
+		return c.pkgValue
+	}
+	raw, err := c.readFile(c.opts.OpkgStatus)
+	if err != nil {
+		return ""
+	}
+	c.pkgKey, c.pkgValue = key, opkgstatus.Version(raw, "xray-core")
+	return c.pkgValue
+}
+
+// noteXrayMismatch logs, once per pair, an xray binary that is not the
+// xray-core package's: swapped in by hand, over a record opkg still keeps.
+// The installer and the self-update put the package's own back.
+func (c *Collector) noteXrayMismatch(binary, pkg string) {
+	if binary == "" || opkgstatus.Upstream(pkg) == binary {
+		return
+	}
+	c.pkgMu.Lock()
+	pair := binary + "|" + pkg
+	seen := c.pkgMismatch == pair
+	c.pkgMismatch = pair
+	c.pkgMu.Unlock()
+	if !seen {
+		logging.L().Warn("xray is not its package's: the binary says one version, opkg's xray-core another",
+			"xray", binary, "xray-core", pkg)
+	}
 }
 
 // XrayVersion is the last version `xray version` reported, "" before the

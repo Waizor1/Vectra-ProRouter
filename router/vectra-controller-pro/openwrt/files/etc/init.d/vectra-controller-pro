@@ -157,6 +157,56 @@ passwall_init() {
 	return 1
 }
 
+# PassWall2 before 26.9.9-2 writes outbound proxySettings (and repeats
+# ruleTags) into its xray config, which xray refuses since 26.9.8 — and
+# /usr/bin/xray is the one xray, vctl's: from 0.7.0-r30 the xray vctl depends
+# on is 26.10.21. Given back onto an xray it breaks on, PassWall2 would take
+# the LAN's traffic and carry none of it. So such a PassWall2 is not given the
+# router back: its switch stays off (turned off now, if it is not, and noted
+# as vctl's to turn on), what is owed it stays owed — a later hand-back, once
+# PassWall2 is updated, gives it back — and the router's internet goes out
+# directly, without a VPN. The legacy agent is given back as ever: it keeps
+# the router in the panel (its package's watchdog would bring it back within
+# minutes anyway). PASSWALL_BLOCKED says why, on the router — the installer's
+# --uninstall reads it; `vectra status` and `vectra off` say the same from
+# internal/power (passWallBlocked). install/install.sh applies the rule too
+# (check_passwall_xray).
+PASSWALL_XRAY_OK=26.9.9-2
+XRAY_REFUSES_PROXYSETTINGS=26.9.8
+PASSWALL_BLOCKED="$LEGACY_MARKER_DIR/.passwall-handback-blocked"
+OPKG_STATUS="${OPKG_STATUS:-/usr/lib/opkg/status}"
+XRAY_BIN="${XRAY_BIN:-/usr/bin/xray}"
+
+# version_ge <a> <b>: a.b.c[-rN] compared numerically, part by part; 0 if a >= b.
+version_ge() {
+	awk -v a="$1" -v b="$2" 'BEGIN {
+		n = split(a, x, /[^0-9]+/); m = split(b, y, /[^0-9]+/)
+		k = n > m ? n : m
+		for (i = 1; i <= k; i++) {
+			p = (i <= n && x[i] != "") ? x[i] + 0 : 0
+			q = (i <= m && y[i] != "") ? y[i] + 0 : 0
+			if (p > q) exit 0
+			if (p < q) exit 1
+		}
+		exit 0
+	}'
+}
+
+# passwall_breaks_on_xray: the PassWall2 installed writes what the xray here
+# refuses; says why on stdout. Read from opkg's status file, not asked of opkg:
+# the prerm's stop runs inside an opkg that holds its lock.
+passwall_breaks_on_xray() {
+	local pv xv
+	pv="$(awk '/^Package: / { p = ($2 == "luci-app-passwall2") } p && /^Version: / { print $2; exit }' "$OPKG_STATUS" 2>/dev/null)"
+	[ -n "$pv" ] || return 1
+	xv="$("$XRAY_BIN" version 2>/dev/null | awk 'NR == 1 { print $2; exit }')"
+	[ -n "$xv" ] || return 1
+	version_ge "$xv" "$XRAY_REFUSES_PROXYSETTINGS" || return 1
+	version_ge "$pv" "$PASSWALL_XRAY_OK" && return 1
+	echo "PassWall2 $pv writes proxySettings, which xray $xv refuses: it stays off, and the internet goes without a VPN until PassWall2 is $PASSWALL_XRAY_OK or newer"
+	return 0
+}
+
 # passwall_running <init script> tells whether the PassWall stack is up: 0 it
 # runs, 1 it does not, 2 this router cannot tell.
 #
@@ -506,6 +556,7 @@ restore_passwall_stack() {
 		# Gone. Retired by vctl (its record): nothing is owed it, and what
 		# said it was goes. Gone otherwise — an opkg upgrade of it in flight,
 		# a half-unpacked overlay — what is owed it stays owed (see below).
+		rm -f "$PASSWALL_BLOCKED"
 		if [ -f "$PASSWALL_RETIRED" ]; then
 			rm -f "$PASSWALL_MARKER" "$PASSWALL_SWITCH_MARKER" \
 				"$TRIAL_MARKER_DIR/${PASSWALL_MARKER##*/}" "$TRIAL_MARKER_DIR/${PASSWALL_SWITCH_MARKER##*/}" \
@@ -515,6 +566,35 @@ restore_passwall_stack() {
 	fi
 	cfg="${pw##*/}"
 	release_locks
+
+	# Owed, but not onto an xray it breaks on (passwall_breaks_on_xray).
+	rm -f "$PASSWALL_BLOCKED"
+	if { [ -f "$PASSWALL_MARKER" ] || [ -f "$TRIAL_MARKER_DIR/${PASSWALL_MARKER##*/}" ] ||
+		[ -f "$PASSWALL_SWITCH_MARKER" ] || [ -f "$TRIAL_MARKER_DIR/${PASSWALL_SWITCH_MARKER##*/}" ]; } &&
+		why="$(passwall_breaks_on_xray)"; then
+		logger -t vectra-controller-pro "not giving the router back to PassWall: $why"
+		# What a trial owes it goes where a reboot keeps it — the trial's
+		# tmpfs goes at the next boot, and the record with it — and its
+		# snippet, which would turn the switch on at that boot, goes.
+		for m in "$PASSWALL_MARKER" "$PASSWALL_SWITCH_MARKER"; do
+			[ -f "$TRIAL_MARKER_DIR/${m##*/}" ] && true > "$m" 2>/dev/null && rm -f "$TRIAL_MARKER_DIR/${m##*/}"
+		done
+		rm -f "$PASSWALL_SWITCH_SNIPPET"
+		# Its switch off, noted first as vctl's to turn on again; its boot
+		# link off too (a trial leaves it on), noted as owed. Each breadcrumb
+		# before the change it records (stop_passwall_stack's rule).
+		if [ ! -f "$PASSWALL_SWITCH_MARKER" ] && [ "$(uci -q get "$cfg.@global[0].enabled")" = 1 ] &&
+			true > "$PASSWALL_SWITCH_MARKER" 2>/dev/null; then
+			uci -q set "$cfg.@global[0].enabled=0" && uci -q commit "$cfg"
+		fi
+		if "$pw" enabled >/dev/null 2>&1 && true > "$PASSWALL_MARKER" 2>/dev/null; then
+			"$pw" disable >/dev/null 2>&1 || true
+		fi
+		passwall_running "$pw"
+		[ "$?" = 1 ] || "$pw" stop >/dev/null 2>&1 || true
+		echo "$why" > "$PASSWALL_BLOCKED"
+		return 0
+	fi
 
 	# Its own switch first — a start with it off starts nothing — and whether
 	# or not its rc.d link was ours to give back. Set and committed every time

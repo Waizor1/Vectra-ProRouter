@@ -195,10 +195,13 @@ type SocketResponse struct {
 
 // Runtime is the daemon's live state, as only the daemon knows it.
 type Runtime struct {
-	ControllerPID  int        `json:"controllerPid"`
-	StartedAt      time.Time  `json:"startedAt"`
-	Version        string     `json:"version"`
-	XrayVersion    string     `json:"xrayVersion,omitempty"`
+	ControllerPID int       `json:"controllerPid"`
+	StartedAt     time.Time `json:"startedAt"`
+	Version       string    `json:"version"`
+	XrayVersion   string    `json:"xrayVersion,omitempty"`
+	// XrayPackage is the xray-core package's version (opkg's record); not
+	// XrayVersion's when a binary was swapped in by hand.
+	XrayPackage    string     `json:"xrayPackage,omitempty"`
 	RouterID       string     `json:"routerId,omitempty"`
 	LastCheckIn    *time.Time `json:"lastCheckIn,omitempty"`
 	PanelReachable *bool      `json:"panelReachable,omitempty"`

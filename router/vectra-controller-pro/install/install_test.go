@@ -48,6 +48,8 @@ print-architecture) echo "arch all 1"; echo "arch aarch64_cortex-a53 10" ;;
 info) ;;
 *)
 	echo "opkg $*" >> "$d/log"
+	# What opkg's status file was when it ran: status-at-<command>.
+	[ -n "$FAKE_STATUS" ] && cp "$FAKE_STATUS" "$d/status-at-$1"
 	if take offline; then
 		echo " * opkg_download: Failed to download https://downloads.openwrt.org/releases/24.10.8/packages/aarch64_cortex-a53/base/x.ipk, wget returned 4."
 		exit 255
@@ -56,6 +58,8 @@ info) ;;
 		echo " * pkg_run_script: package \"x\" postinst script returned status 1."
 		exit 255
 	fi
+	# on-<command>: what that command does to the router, when a test says.
+	[ -x "$d/on-$1" ] && { "$d/on-$1" "$@" || exit $?; }
 	;;
 esac
 exit 0
@@ -115,6 +119,8 @@ func newRouter(t *testing.T) *router {
 		"zcat": "#!/bin/sh\nexit 1\n",
 		"ubus": "#!/bin/sh\nexit 0\n",
 		"uci":  "#!/bin/sh\nexit 1\n",
+		// pidof-<name>: that process runs.
+		"pidof": "#!/bin/sh\n[ -f \"$FAKE/pidof-$1\" ]\n",
 	}
 	if _, err := exec.LookPath("sha256sum"); err != nil {
 		fakes["sha256sum"] = "#!/bin/sh\nexec shasum -a 256 \"$@\"\n"
@@ -132,7 +138,10 @@ func newRouter(t *testing.T) *router {
 		"VECTRA_OPKG_LISTS="+filepath.Join(dir, "lists"),
 		"VECTRA_OPKG_CONFS="+filepath.Join(dir, "opkg", "*.conf"),
 		"VECTRA_LEGACY_AGENT_MARKER="+filepath.Join(dir, "vault-read-v1"),
-		"VECTRA_XRAY_MIN=26.3.27",
+		"VECTRA_XRAY_MIN=26.10.21",
+		// The xray on PATH (the fake), not a /usr/bin/xray of this host.
+		"VECTRA_XRAY_BIN="+filepath.Join(dir, "no-such-xray"),
+		"VECTRA_XRAY_RECORD="+filepath.Join(dir, "etc", "xray-core-by-vectra"),
 		// Three attempts, as on a router, without the router's pauses.
 		"VECTRA_RETRY_DELAYS=0 0",
 	)
@@ -186,7 +195,7 @@ func (r *router) run(script string) (string, int) {
 	}
 	prelude := ". '" + src + "'\nLOG='" + filepath.Join(r.dir, "install.log") + "'\nWORK='" + filepath.Join(r.dir, "work") +
 		"'\nSAVED_RAM='" + filepath.Join(r.dir, "saved-ram") + "'\nSAVED_FLASH='" + filepath.Join(r.dir, "saved-flash") +
-		"'\nARCH=aarch64_cortex-a53\nSTORE=/overlay\n"
+		"'\nOPKG_STATUS='" + filepath.Join(r.dir, "status") + "'\nARCH=aarch64_cortex-a53\nSTORE=/overlay\n"
 	cmd := exec.Command(shell, "-c", prelude+script)
 	cmd.Env = r.env
 	var out bytes.Buffer
@@ -226,118 +235,175 @@ func jsonLines(t *testing.T, out string) []map[string]any {
 	return lines
 }
 
-// On the router of 2026-10-03 xray 26.7.28 was on the router without its
-// package (PassWall2's, swapped in by hand), and Vectra's feed offered
-// xray-core 26.3.27: opkg would have put the older one over it. The
-// installer installs the xray-core of the binary's own version first, from
-// whichever feed has it, checked against that feed's list.
-func TestAnXrayWithoutItsPackageBecomesThePackageOfItsVersion(t *testing.T) {
+// onInstallXray is what opkg install of an xray-core file does to the fake
+// router: the package at the file's version, its binary saying so.
+const onInstallXray = `#!/bin/sh
+for a; do
+	case "${a##*/}" in
+	xray-core_*)
+		v="${a##*/xray-core_}"; v="${v%%_*}"
+		grep -v '^xray-core - ' "$FAKE/installed" > "$FAKE/installed.new" 2> /dev/null; mv "$FAKE/installed.new" "$FAKE/installed"
+		echo "xray-core - $v" >> "$FAKE/installed"
+		echo "${v%-r*}" > "$FAKE/xray-version"
+		;;
+	esac
+done
+`
+
+const vectraXrayFile = "xray-core_26.10.21-r1_aarch64_cortex-a53.ipk"
+
+// xrayRouter is a router whose Vectra feed ships xray-core 26.10.21-r1 (the
+// one this vctl depends on, XRAY_MIN) and whose opkg installs what it is
+// given; another feed offers a newer xray-core.
+func xrayRouter(t *testing.T) *router {
 	r := newRouter(t)
-	r.write("xray-version", "26.7.28")
-	ipk := "an xray-core package"
+	ipk := "Vectra's xray-core package"
 	sum := sha256.Sum256([]byte(ipk))
 	r.write("download", ipk)
 	r.feed("vectra_pro", "https://router.vectra-pro.net/pro/aarch64_cortex-a53",
-		pkg("xray-core", "26.3.27-r1", "xray-core_26.3.27-r1_aarch64_cortex-a53.ipk", "00"))
+		pkg("xray-core", "26.10.21-r1", vectraXrayFile, hex.EncodeToString(sum[:])))
 	r.feed("passwall_packages", "https://example.invalid/passwall",
-		pkg("chinadns-ng", "2025.08.09-r1", "chinadns-ng.ipk", "11"),
-		pkg("xray-core", "26.7.28-r1", "xray-core_26.7.28-r1_aarch64_cortex-a53.ipk", hex.EncodeToString(sum[:])))
-	out, code := r.run("plan_xray; echo \"PIN=$XRAY_PIN\"; install_xray_pin")
-	if code != 0 {
-		t.Fatalf("exit %d:\n%s", code, out)
+		pkg("xray-core", "26.11.1-r1", "xray-core_26.11.1-r1_aarch64_cortex-a53.ipk", "11"))
+	r.write("on-install", onInstallXray)
+	if err := os.Chmod(filepath.Join(r.dir, "on-install"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(out, "PIN=passwall_packages 26.7.28-r1 xray-core_26.7.28-r1_aarch64_cortex-a53.ipk") {
-		t.Fatalf("not the package of the binary's version:\n%s", out)
-	}
-	log := r.read("log")
-	if !strings.Contains(log, "wget https://example.invalid/passwall/xray-core_26.7.28-r1_aarch64_cortex-a53.ipk") ||
-		!strings.Contains(log, "opkg install "+filepath.Join(r.dir, "work", "pkgs", "xray-core_26.7.28-r1_aarch64_cortex-a53.ipk")) {
-		t.Fatalf("what was fetched and installed:\n%s", log)
-	}
+	return r
+}
 
-	// The download is not what the feed's list says: nothing is installed.
-	r.write("log", "")
+// One xray per vctl: whatever xray the router has, after the install it is
+// the xray-core of Vectra's own feed and that package's binary — fetched from
+// Vectra's feed (never the newer one of another feed), checked against its
+// list, and installed by itself: as an upgrade, as a reinstall over a binary
+// swapped in by hand (the four vctl routers: 26.10.17 over xray-core
+// 26.7.28-r1), as a downgrade under a newer package.
+func TestTheRoutersXrayBecomesTheFeeds(t *testing.T) {
+	file := "work/xray/" + vectraXrayFile
+	for _, tc := range []struct {
+		name, installed, binary, how, flag string
+	}{
+		{"no xray", "", "", "install", ""},
+		{"a binary without a package", "", "26.7.28", "install", ""},
+		{"an older package under a binary swapped in", "26.7.28-r1", "26.10.17", "install", ""},
+		{"the feed's version under a binary swapped in", "26.10.21-r1", "26.10.17", "reinstall", "--force-reinstall "},
+		{"a newer package", "26.11.1-r1", "26.11.1", "downgrade", "--force-downgrade "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := xrayRouter(t)
+			if tc.installed != "" {
+				r.write("installed", "xray-core - "+tc.installed+"\n")
+			}
+			if tc.binary != "" {
+				r.write("xray-version", tc.binary)
+			}
+			out, code := r.run("plan_xray; echo \"PIN=$XRAY_PIN HOW=$XRAY_PIN_HOW\"; fetch_xray_pin; install_xray_pin")
+			if code != 0 || !strings.Contains(out, "PIN=vectra_pro 26.10.21-r1 "+vectraXrayFile) || !strings.Contains(out, "HOW="+tc.how) {
+				t.Fatalf("exit %d:\n%s", code, out)
+			}
+			log := r.read("log")
+			if !strings.Contains(log, "wget https://router.vectra-pro.net/pro/aarch64_cortex-a53/"+vectraXrayFile) ||
+				!strings.Contains(log, "opkg install --force-space "+tc.flag+filepath.Join(r.dir, file)) || strings.Contains(log, "passwall/xray-core") {
+				t.Fatalf("what was fetched and installed:\n%s", log)
+			}
+			if !strings.Contains(out, "xray 26.10.21 — пакет xray-core 26.10.21-r1 из фида Vectra") {
+				t.Fatalf("not said it is Vectra's now:\n%s", out)
+			}
+		})
+	}
+}
+
+// Vectra's xray-core with its own binary: nothing to do.
+func TestVectrasOwnXrayIsLeftAsItIs(t *testing.T) {
+	r := xrayRouter(t)
+	r.write("installed", "xray-core - 26.10.21-r1\n")
+	r.write("xray-version", "26.10.21")
+	out, code := r.run("plan_xray; echo \"PIN=[$XRAY_PIN]\"; fetch_xray_pin; install_xray_pin")
+	if code != 0 || !strings.Contains(out, "PIN=[]") || strings.Contains(r.read("log"), "install") {
+		t.Fatalf("exit %d, log %q:\n%s", code, r.read("log"), out)
+	}
+}
+
+// What cannot be checked or is not what the feed says changes nothing: a
+// download whose sha256 is not the list's, a list without one, a feed
+// without xray-core or with another xray than this installer's release, and
+// an install after which the binary is still not the package's.
+func TestAnXrayThatIsNotVectrasIsRefused(t *testing.T) {
+	r := xrayRouter(t)
+	r.write("xray-version", "26.7.28")
 	r.write("download", "something else")
-	out, code = r.run("plan_xray; install_xray_pin")
-	if code != 1 || !strings.Contains(out, "sha256") || strings.Contains(r.read("log"), "opkg install") {
-		t.Fatalf("exit %d, log %q:\n%s", code, r.read("log"), out)
+	if out, code := r.run("plan_xray; fetch_xray_pin; install_xray_pin"); code != 1 || !strings.Contains(out, "sha256") || strings.Contains(r.read("log"), "opkg install") {
+		t.Fatalf("a download that is not the list's: exit %d:\n%s", code, out)
 	}
-}
 
-// No feed has the binary's version: refused before anything changes, and
-// said why — with --json, by code.
-func TestAnXrayWithoutAPackageOfItsVersionIsLeftAlone(t *testing.T) {
-	r := newRouter(t)
-	r.write("xray-version", "26.7.28")
+	r = xrayRouter(t)
 	r.feed("vectra_pro", "https://router.vectra-pro.net/pro/aarch64_cortex-a53",
-		pkg("xray-core", "26.3.27-r1", "xray-core_26.3.27-r1_aarch64_cortex-a53.ipk", "00"))
-	out, code := r.run("plan_xray")
-	if code != 1 || !strings.Contains(out, "нет пакета xray-core 26.7.28") || !strings.Contains(out, "xray не тронут") {
-		t.Fatalf("exit %d:\n%s", code, out)
+		"Package: xray-core\nVersion: 26.10.21-r1\nFilename: "+vectraXrayFile)
+	if out, code := r.run("plan_xray; fetch_xray_pin; install_xray_pin"); code != 1 || !strings.Contains(out, "нет SHA256") || strings.Contains(r.read("log"), "wget") {
+		t.Fatalf("no checksum: exit %d:\n%s", code, out)
 	}
-	out, code = r.run("JSON=1; plan_xray")
+
+	r = xrayRouter(t)
+	r.feed("vectra_pro", "https://router.vectra-pro.net/pro/aarch64_cortex-a53",
+		pkg("vectra-controller-pro", "0.7.0-r30", "v.ipk", "00"))
+	out, code := r.run("JSON=1; plan_xray")
 	lines := jsonLines(t, out)
-	last := lines[len(lines)-1]
-	if code != 1 || last["result"] != "refused" || last["code"] != "XRAY_NO_SAME_VERSION" || last["exit"] != float64(1) {
-		t.Fatalf("exit %d: %v", code, lines)
-	}
-	if strings.Contains(r.read("log"), "install") {
-		t.Fatalf("installed something: %s", r.read("log"))
+	if last := lines[len(lines)-1]; code != 1 || last["code"] != "XRAY_NOT_IN_FEED" {
+		t.Fatalf("no xray-core in Vectra's feed: exit %d: %v", code, lines)
 	}
 
-	// Older than Vectra needs: refused too, the binary left as it is.
-	r.write("xray-version", "25.1.1")
-	if out, code := r.run("plan_xray"); code != 1 || !strings.Contains(out, "26.3.27 или новее") {
-		t.Fatalf("exit %d:\n%s", code, out)
+	r = xrayRouter(t)
+	if out, code := r.run("XRAY_MIN=26.12.1; plan_xray"); code != 1 || !strings.Contains(out, "собрана под xray 26.12.1") {
+		t.Fatalf("a feed of another release: exit %d:\n%s", code, out)
 	}
-	// A package already owns xray: opkg's business, as before.
-	r.write("xray-version", "26.7.28")
-	r.write("installed", "xray-core - 26.7.28-r1\n")
-	if out, code := r.run("plan_xray; echo \"PIN=[$XRAY_PIN]\""); code != 0 || !strings.Contains(out, "PIN=[]") {
-		t.Fatalf("exit %d:\n%s", code, out)
+
+	r = xrayRouter(t)
+	r.write("xray-version", "26.10.17")
+	r.write("installed", "xray-core - 26.10.21-r1\n")
+	r.write("on-install", "#!/bin/sh\nexit 0\n")
+	if out, code := r.run("plan_xray; fetch_xray_pin; install_xray_pin"); code != 1 || !strings.Contains(out, "XRAY_PIN_INSTALL") || !strings.Contains(out, "xray 26.10.17") {
+		t.Fatalf("still not the package's binary: exit %d:\n%s", code, out)
 	}
 }
 
-// A binary swapped in by hand over an xray-core package. A package at the
-// minimum or newer satisfies Vectra's dependency: opkg leaves it, and the
-// binary over it — nothing to do. One older than the minimum is what opkg
-// would upgrade, over the binary: as with no package at all, the package of
-// the binary's version goes in first, or nothing does.
-func TestAnXraySwappedOverItsPackage(t *testing.T) {
-	r := newRouter(t)
+// PassWall2 before 26.9.9-2 writes proxySettings, which the xray this Vectra
+// is built for (26.10.21, since 26.9.8) refuses, and /usr/bin/xray is one for
+// both. Next to it --standby is refused before anything changes; a takeover
+// goes on, warning that a way back leaves the internet without VPN.
+func TestAnOldPassWallAndTheFeedsXray(t *testing.T) {
+	r := xrayRouter(t)
+	r.write("installed", "luci-app-passwall2 - 26.8.10-r1\nxray-core - 26.7.28-r1\n")
 	r.write("xray-version", "26.7.28")
-	ipk := "an xray-core package"
-	sum := sha256.Sum256([]byte(ipk))
-	r.write("download", ipk)
-	r.write("installed", "xray-core - 26.4.25-r1\n")
-	if out, code := r.run("plan_xray; echo \"PIN=[$XRAY_PIN]\""); code != 0 || !strings.Contains(out, "PIN=[]") || !strings.Contains(out, "opkg его не тронет") {
-		t.Fatalf("a package at the minimum: exit %d:\n%s", code, out)
+	out, code := r.run("JSON=1; STANDBY=1; check_passwall_xray \"$XRAY_MIN\"")
+	lines := jsonLines(t, out)
+	if last := lines[len(lines)-1]; code != 1 || last["code"] != "PASSWALL_TOO_OLD_FOR_XRAY" {
+		t.Fatalf("--standby: exit %d: %v", code, lines)
 	}
-	r.write("installed", "xray-core - 25.10.15-r1\n")
-	out, code := r.run("plan_xray")
-	if code != 1 || !strings.Contains(out, "поверх пакета xray-core 25.10.15-r1") || !strings.Contains(out, "xray не тронут") {
-		t.Fatalf("a package below the minimum, no package of the binary's version: exit %d:\n%s", code, out)
+	if strings.Contains(r.read("log"), "install") || strings.Contains(r.read("log"), "wget") {
+		t.Fatalf("changed something: %s", r.read("log"))
 	}
-	r.feed("passwall_packages", "https://example.invalid/passwall",
-		pkg("xray-core", "26.7.28-r1", "xray-core_26.7.28-r1_aarch64_cortex-a53.ipk", hex.EncodeToString(sum[:])))
-	out, code = r.run("plan_xray; echo \"PIN=$XRAY_PIN FREED=$XRAY_FREED_KB\"; install_xray_pin")
-	if code != 0 || !strings.Contains(out, "PIN=passwall_packages 26.7.28-r1") || !strings.Contains(out, "FREED=0") ||
-		!strings.Contains(r.read("log"), "opkg install "+filepath.Join(r.dir, "work", "pkgs", "xray-core_26.7.28-r1_aarch64_cortex-a53.ipk")) {
-		t.Fatalf("the package of the binary's version: exit %d, log %q:\n%s", code, r.read("log"), out)
+	if out, _ := r.run("STANDBY=1; check_passwall_xray \"$XRAY_MIN\""); !strings.Contains(out, "proxySettings") || !strings.Contains(out, "без --standby") {
+		t.Fatalf("not said why:\n%s", out)
 	}
-}
-
-// A feed list that names no SHA256 for the package leaves nothing to check
-// the download against: refused at the plan, before anything is fetched.
-func TestAPinWithoutAChecksumIsRefused(t *testing.T) {
-	r := newRouter(t)
-	r.write("xray-version", "26.7.28")
-	r.write("download", "anything")
-	r.feed("passwall_packages", "https://example.invalid/passwall",
-		"Package: xray-core\nVersion: 26.7.28-r1\nFilename: xray-core_26.7.28-r1_aarch64_cortex-a53.ipk")
-	out, code := r.run("plan_xray; install_xray_pin")
-	if code != 1 || !strings.Contains(out, "нет SHA256") || strings.Contains(r.read("log"), "wget") {
-		t.Fatalf("exit %d, log %q:\n%s", code, r.read("log"), out)
+	// Next to the old agent there is no install without --standby: only the
+	// update is advised.
+	r.write("installed", "luci-app-passwall2 - 26.8.10-r1\nvectra-controller-agent - 0.1.13-r49\n")
+	if out, _ := r.run("STANDBY=1; check_passwall_xray \"$XRAY_MIN\""); strings.Contains(out, "без --standby") || !strings.Contains(out, "Сначала обновите PassWall2") {
+		t.Fatalf("next to the old agent:\n%s", out)
+	}
+	r.write("installed", "luci-app-passwall2 - 26.8.10-r1\nxray-core - 26.7.28-r1\n")
+	out, code = r.run("check_passwall_xray \"$XRAY_MIN\"; echo \"WARNINGS=[$WARNINGS]\"")
+	if code != 0 || !strings.Contains(out, "WARNINGS=[ PASSWALL_HANDBACK_WITHOUT_VPN]") || !strings.Contains(out, "без VPN") {
+		t.Fatalf("a takeover: exit %d:\n%s", code, out)
+	}
+	// Before a takeover is asked for: check_conflicts runs it.
+	out, _ = r.run("YES=1; check_conflicts; echo \"WARNINGS=[$WARNINGS]\"")
+	if !strings.Contains(out, "PASSWALL_HANDBACK_WITHOUT_VPN") || strings.Index(out, "без VPN (PassWall2") > strings.Index(out, "Vectra заберёт у него трафик") {
+		t.Fatalf("check_conflicts did not say it:\n%s", out)
+	}
+	// A PassWall2 that writes dialerProxy: nothing to say.
+	r.write("installed", "luci-app-passwall2 - 26.9.9-2\nxray-core - 26.7.28-r1\n")
+	if out, code := r.run("STANDBY=1; check_passwall_xray \"$XRAY_MIN\"; echo \"WARNINGS=[$WARNINGS]\""); code != 0 || !strings.Contains(out, "WARNINGS=[]") {
+		t.Fatalf("PassWall2 26.9.9-2: exit %d:\n%s", code, out)
 	}
 }
 
@@ -356,6 +422,122 @@ func TestAFirstInstallBringsTheGeoDataAndTheReporter(t *testing.T) {
 	r.write("available", "vectra-controller-pro - 0.7.0-r14\nvectra-geodata - 2026.9.28-r2\n")
 	if _, code := r.run("install_packages"); code != 0 || !strings.Contains(r.read("log"), "opkg install vectra-controller-pro vectra-geodata\n") {
 		t.Fatalf("exit %d, log:\n%s", code, r.read("log"))
+	}
+}
+
+// A router whose vctl came from the pro feed: vectra-geodata and
+// vectra-reporter came in as its dependencies (Auto-Installed), as did
+// xray-core.
+const companionStatus = "Package: vectra-controller-pro\nVersion: 0.7.0-r28\nStatus: install user installed\n\n" +
+	"Package: vectra-geodata\nVersion: 2026.9.28-r2\nStatus: install ok installed\nAuto-Installed: yes\n\n" +
+	"Package: xray-core\nVersion: 26.7.28-r1\nStatus: install ok installed\nAuto-Installed: yes\n\n" +
+	"Package: vectra-reporter\nVersion: 1.0.0-r4\nStatus: install ok installed\nConffiles:\n /etc/config/vectra-reporter 9a8b\nAuto-Installed: yes\n"
+
+const companionsKept = "Package: vectra-controller-pro\nVersion: 0.7.0-r28\nStatus: install user installed\n\n" +
+	"Package: vectra-geodata\nVersion: 2026.9.28-r2\nStatus: install ok installed\n\n" +
+	"Package: xray-core\nVersion: 26.7.28-r1\nStatus: install ok installed\nAuto-Installed: yes\n\n" +
+	"Package: vectra-reporter\nVersion: 1.0.0-r4\nStatus: install ok installed\nConffiles:\n /etc/config/vectra-reporter 9a8b\n"
+
+func companionRouter(t *testing.T) *router {
+	r := newRouter(t)
+	r.write("installed", "vectra-controller-pro - 0.7.0-r28\nvectra-geodata - 2026.9.28-r2\nvectra-reporter - 1.0.0-r4\nxray-core - 26.7.28-r1\n")
+	r.write("available", "vectra-controller-pro - 0.7.0-r30\nvectra-geodata - 2026.9.28-r2\nvectra-reporter - 1.0.0-r4\n")
+	r.write("status", companionStatus)
+	r.env = append(r.env, "FAKE_STATUS="+filepath.Join(r.dir, "status"))
+	return r
+}
+
+// An upgrade over a vctl the companions came in with: opkg would remove them
+// as orphans with a vctl that does not depend on them (0.7.0-r29 as
+// published), and no opkg command takes the Auto-Installed mark away. The
+// marks are gone before opkg upgrades anything; xray-core keeps its own —
+// PassWall's business, not Vectra's.
+func TestAnUpgradeKeepsTheCompanionsWhateverTheNewDependsSays(t *testing.T) {
+	r := companionRouter(t)
+	out, code := r.run("install_packages")
+	if code != 0 || !strings.Contains(r.read("log"), "opkg upgrade vectra-controller-pro vectra-geodata vectra-reporter") {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
+	}
+	if got := r.read("status-at-upgrade"); got != companionsKept {
+		t.Fatalf("opkg upgrade ran with the status:\n%s", got)
+	}
+	if got := r.read("status"); got != companionsKept {
+		t.Fatalf("the status after the run:\n%s", got)
+	}
+	for _, f := range []string{"status.vectra", "work/opkg-status.was"} {
+		if _, err := os.Stat(filepath.Join(r.dir, f)); !os.IsNotExist(err) {
+			t.Fatalf("%s stayed: %v", f, err)
+		}
+	}
+	// A run with nothing to drop writes nothing.
+	r.write("status", companionsKept)
+	if _, code := r.run("keep_companions"); code != 0 || r.read("status") != companionsKept {
+		t.Fatalf("exit %d, status:\n%s", code, r.read("status"))
+	}
+}
+
+// The install's own opkg marks a companion it brought in as vctl's dependency
+// (an upgrade from a vctl that had no reporter yet): that mark goes too.
+func TestWhatTheInstallBroughtInLosesTheMark(t *testing.T) {
+	r := companionRouter(t)
+	r.write("status", companionsKept)
+	// opkg install leaves the companions marked, as it does with dependencies.
+	marked := filepath.Join(r.dir, "marked")
+	r.write("marked", companionStatus)
+	r.env = append(r.env, "FAKE_MARKED="+marked)
+	r.write("bin/opkg", strings.Replace(fakeOpkg, "*)\n", "install)\n\techo \"opkg $*\" >> \"$d/log\"\n\tcp \"$FAKE_MARKED\" \"$FAKE_STATUS\"\n\t;;\n*)\n", 1))
+	if err := os.Chmod(filepath.Join(r.dir, "bin", "opkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := r.run("install_packages")
+	if code != 0 || !strings.Contains(r.read("log"), "opkg install vectra-controller-pro") {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
+	}
+	if got := r.read("status"); got != companionsKept {
+		t.Fatalf("the status after the run:\n%s", got)
+	}
+}
+
+// The status stays as it was, and the run says so with a warning and goes on,
+// whenever the new file cannot replace it safely: another opkg runs (and is
+// waited for first); a cut-short file (awk exits 0 on a full overlay), short
+// of lines or only of its last line's bytes; another opkg wrote the status
+// meanwhile; the sync fails.
+func TestTheCompanionsMarksStayWhenTheyCannotGoSafely(t *testing.T) {
+	for name, tc := range map[string]struct{ setup, script string }{
+		"another opkg runs": {setup: "pidof-opkg"},
+		"a cut-short file":  {script: `companion_marks() { if [ "$1" = drop ]; then head -c 120 "$2"; else echo 2; fi; }` + "\n"},
+		// Every line there, the last one cut short: only its bytes tell.
+		"a file cut inside its last line": {setup: "cut=" + companionsKept[:len(companionsKept)-2],
+			script: `companion_marks() { if [ "$1" = drop ]; then cat "$FAKE/cut"; else echo 2; fi; }` + "\n"},
+		"the status changed meanwhile": {setup: "bin/sync=#!/bin/sh\necho 'Package: written-meanwhile' >> \"$FAKE_STATUS\"\n"},
+		"the sync fails":               {setup: "bin/sync=#!/bin/sh\nexit 1\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := companionRouter(t)
+			r.env = append(r.env, "VECTRA_COMPANIONS_WAIT=0")
+			if f, body, ok := strings.Cut(tc.setup, "="); ok {
+				r.write(f, body)
+				if err := os.Chmod(filepath.Join(r.dir, f), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.setup != "" {
+				r.write(tc.setup, "")
+			}
+			want := companionStatus
+			if name == "the status changed meanwhile" {
+				want += "Package: written-meanwhile\n"
+			}
+			out, code := r.run(tc.script + "keep_companions\necho \"warnings:$WARNINGS\"")
+			if code != 0 || r.read("status") != want || !strings.Contains(out, "warnings: COMPANIONS_MARK") {
+				t.Fatalf("exit %d, status:\n%s\n%s", code, r.read("status"), out)
+			}
+			for _, f := range []string{"status.vectra", "work/opkg-status.was"} {
+				if _, err := os.Stat(filepath.Join(r.dir, f)); !os.IsNotExist(err) {
+					t.Fatalf("%s stayed: %v", f, err)
+				}
+			}
+		})
 	}
 }
 
@@ -436,7 +618,7 @@ func TestTheExitCodeSaysWarningsFromErrors(t *testing.T) {
 		code         int
 	}{
 		{`conclude "Vectra установлена"`, "Итог: Vectra установлена, без предупреждений (код 0).", 0},
-		{`warn GEO_DATA_REJECTED "гео"; warn XRAY_TOO_OLD "xray"; conclude "Vectra установлена"`, "с предупреждениями: GEO_DATA_REJECTED XRAY_TOO_OLD (код 2)", 2},
+		{`warn GEO_DATA_REJECTED "гео"; warn XRAY_NOT_VECTRAS "xray"; conclude "Vectra установлена"`, "с предупреждениями: GEO_DATA_REJECTED XRAY_NOT_VECTRAS (код 2)", 2},
 		{`refuse FEED_UNREACHABLE "фид недоступен"`, "Итог: не установлено, FEED_UNREACHABLE (код 1).", 1},
 		{`fail PKG_INSTALL "не прошёл"`, "Итог: не установлено, PKG_INSTALL (код 1).", 1},
 		// Installed to carry the traffic, and not running: not done.
@@ -539,8 +721,7 @@ func TestADownloadThatFailsIsTriedAgain(t *testing.T) {
 }
 
 // The steps that download from the feeds are the ones retried: the package
-// install (PKG_INSTALL) and the xray-core of the binary's version (fetched
-// with wget).
+// install (PKG_INSTALL) and Vectra's xray-core (fetched with wget).
 func TestTheInstallAndThePinRideOutAnOutage(t *testing.T) {
 	r := newRouter(t)
 	r.write("available", "vectra-controller-pro - 0.7.0-r14\nvectra-geodata - 2026.9.28-r2\n")
@@ -550,16 +731,11 @@ func TestTheInstallAndThePinRideOutAnOutage(t *testing.T) {
 		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
 	}
 
-	r = newRouter(t)
+	r = xrayRouter(t)
 	r.write("xray-version", "26.7.28")
-	ipk := "an xray-core package"
-	sum := sha256.Sum256([]byte(ipk))
-	r.write("download", ipk)
 	r.write("wget-offline", "1")
-	r.feed("passwall_packages", "https://example.invalid/passwall",
-		pkg("xray-core", "26.7.28-r1", "xray-core_26.7.28-r1_aarch64_cortex-a53.ipk", hex.EncodeToString(sum[:])))
-	out, code = r.run("plan_xray; install_xray_pin")
-	if code != 0 || strings.Count(r.read("log"), "wget https://example.invalid/passwall/xray-core_26.7.28-r1_aarch64_cortex-a53.ipk") != 2 ||
+	out, code = r.run("plan_xray; fetch_xray_pin; install_xray_pin")
+	if code != 0 || strings.Count(r.read("log"), "wget https://router.vectra-pro.net/pro/aarch64_cortex-a53/"+vectraXrayFile) != 2 ||
 		!strings.Contains(r.read("log"), "opkg install ") {
 		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
 	}
@@ -933,5 +1109,115 @@ func TestTheTemplateRefusalNamesTheCommandForEveryBrand(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("the refusal does not say %q:\n%s", want, out)
 		}
+	}
+}
+
+// Vectra's xray-core counts whenever it goes in, a reinstall over the same
+// version too: the xray that runs keeps the old binary until it restarts. On
+// flash that compresses (an AX3000T's UBIFS) by its Size, × 1.4: a 30 MB
+// xray-core in a 13 MB package fits in 24 MB free there, and not on ext4.
+func TestTheFeedsXrayIsCountedWholeWhenItGoesIn(t *testing.T) {
+	ubi := xrayRouter(t)
+	ubi.feed("vectra_pro", "https://router.vectra-pro.net/pro/aarch64_cortex-a53",
+		pkg("xray-core", "26.10.21-r1", vectraXrayFile, "00")+"\nInstalled-Size: 32505980\nSize: 13900000")
+	ubi.write("installed", "xray-core - 26.7.28-r1\n")
+	ubi.write("df-free", "24852")
+	pin := "XRAY_PIN='vectra_pro 26.10.21-r1 " + vectraXrayFile + " 00'; check_storage"
+	for fs, ok := range map[string]bool{"ubifs": true, "jffs2": true, "ext4": false} {
+		ubi.write("mounts", "/dev/ubi0_1 /overlay "+fs+" rw,noatime 0 0\noverlayfs:/overlay / overlay rw 0 0\n")
+		out, code := ubi.run("VECTRA_PROC_MOUNTS='" + filepath.Join(ubi.dir, "mounts") + "'; " + pin)
+		if (code == 0) != ok {
+			t.Errorf("%s with 24 MB free: exit %d:\n%s", fs, code, out)
+		}
+	}
+	// And vctl's 11 MB after it: the larger of the two steps when the old
+	// xray is let go between them (nothing runs it here), their sum when an
+	// xray that is not let go holds it (--standby next to PassWall2's).
+	ubi.feed("vectra_pro", "https://router.vectra-pro.net/pro/aarch64_cortex-a53",
+		pkg("xray-core", "26.10.21-r1", vectraXrayFile, "00")+"\nInstalled-Size: 32505980\nSize: 13900000",
+		pkg("vectra-controller-pro", "0.7.0-r30", "v.ipk", "11")+"\nInstalled-Size: 11400000")
+	ubi.write("mounts", "/dev/ubi0_1 /overlay ubifs rw,noatime 0 0\n")
+	mounts := "VECTRA_PROC_MOUNTS='" + filepath.Join(ubi.dir, "mounts") + "'; "
+	if out, code := ubi.run(mounts + pin); code != 0 {
+		t.Errorf("xray let go before vctl: exit %d:\n%s", code, out)
+	}
+	ubi.write("pidof-xray", "")
+	if out, code := ubi.run(mounts + "STANDBY=1; " + pin); code != 1 || !strings.Contains(out, "нужно около") {
+		t.Errorf("xray held while vctl goes in: exit %d:\n%s", code, out)
+	}
+	os.Remove(filepath.Join(ubi.dir, "pidof-xray"))
+
+	r := xrayRouter(t)
+	r.feed("vectra_pro", "https://router.vectra-pro.net/pro/aarch64_cortex-a53",
+		pkg("xray-core", "26.10.21-r1", vectraXrayFile, "00")+"\nInstalled-Size: 31457280")
+	r.write("installed", "xray-core - 26.10.21-r1\n")
+	r.write("df-free", "30000")
+	if out, code := r.run("XRAY_PIN='vectra_pro 26.10.21-r1 " + vectraXrayFile + " 00'; check_storage"); code != 1 || !strings.Contains(out, "свободно 29 МБ, нужно около 34 МБ") {
+		t.Fatalf("a reinstall of 30 MB on 29 MB free: exit %d:\n%s", code, out)
+	}
+	if out, code := r.run("XRAY_PIN=''; check_storage"); code != 0 {
+		t.Fatalf("nothing to put in: exit %d:\n%s", code, out)
+	}
+}
+
+// opkg's --force-reinstall removes xray-core before it unpacks the new one:
+// one that fails after that leaves no xray, and a plain install puts it back.
+func TestAFailedXrayReinstallIsInstalledAgain(t *testing.T) {
+	r := xrayRouter(t)
+	r.write("installed", "xray-core - 26.10.21-r1\n")
+	r.write("xray-version", "26.10.17")
+	r.write("on-install", `#!/bin/sh
+case " $* " in
+*" --force-reinstall "*)
+	grep -v '^xray-core - ' "$FAKE/installed" > "$FAKE/installed.new"; mv "$FAKE/installed.new" "$FAKE/installed"
+	echo " * opkg_install_pkg: Failed to unpack"
+	exit 255 ;;
+esac
+`+strings.TrimPrefix(onInstallXray, "#!/bin/sh\n"))
+	out, code := r.run("plan_xray; fetch_xray_pin; install_xray_pin")
+	log := r.read("log")
+	if code != 0 || !strings.Contains(log, "opkg install --force-space --force-reinstall ") || !strings.Contains(log, "opkg install --force-space "+filepath.Join(r.dir, "work", "xray", vectraXrayFile)) ||
+		!strings.Contains(out, "xray 26.10.21 — пакет xray-core 26.10.21-r1 из фида Vectra") {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, log, out)
+	}
+	// And one that fails again: said, with no xray left, how to put it back.
+	r.write("installed", "xray-core - 26.10.21-r1\n")
+	r.write("xray-version", "26.10.17")
+	r.write("log", "")
+	r.write("on-install", "#!/bin/sh\ngrep -v '^xray-core - ' \"$FAKE/installed\" > \"$FAKE/installed.new\"; mv \"$FAKE/installed.new\" \"$FAKE/installed\"; exit 255\n")
+	if out, code := r.run("plan_xray; fetch_xray_pin; install_xray_pin"); code != 1 || !strings.Contains(out, "xray-core на роутере нет") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+}
+
+// The xray-core Vectra puts on a router that had no xray is Vectra's to take
+// away; one it replaced (a package there, or PassWall2's binary) is not.
+func TestOnlyAnXrayVectraBroughtIsNoted(t *testing.T) {
+	for _, tc := range []struct {
+		name, installed, binary string
+		noted                   bool
+	}{
+		{"no xray before", "", "", true},
+		{"a binary without a package", "", "26.7.28", false},
+		{"an older package", "26.7.28-r1", "26.7.28", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := xrayRouter(t)
+			if tc.installed != "" {
+				r.write("installed", "xray-core - "+tc.installed+"\n")
+			}
+			plan := "plan_xray"
+			if tc.binary != "" {
+				r.write("xray-version", tc.binary)
+			} else {
+				// The fake xray is on PATH: for the plan, no xray at all.
+				plan = "command() { return 1; }; plan_xray; unset -f command"
+			}
+			out, code := r.run(plan + "; fetch_xray_pin; install_xray_pin")
+			_, err := os.Stat(filepath.Join(r.dir, "etc", "xray-core-by-vectra"))
+			if code != 0 || (err == nil) != tc.noted {
+				t.Fatalf("exit %d, noted %v (want %v):\n%s", code, err == nil, tc.noted, out)
+			}
+		})
 	}
 }

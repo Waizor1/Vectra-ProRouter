@@ -1,5 +1,169 @@
 # Changelog
 
+## vctl 0.7.0-r30 — one Depends for every build; one xray per vctl; the companions stay
+
+The published `vectra-controller-pro_0.7.0-r29` was built by
+`build-local-ipk.sh`, whose Depends was the Makefile's alone: no
+`vectra-geodata`, no `vectra-reporter`, no xray minimum. A feed built by
+`build-pro-feed.sh` adds them. On a router whose vctl came from such a feed
+both came in as its dependencies ("Auto-Installed: yes"), and upgrading vctl
+to the published package made opkg remove them as orphans: the reporter's
+postrm deleted `/etc/vectra-reporter` (its spool, its state, the clean-shutdown
+mark) and the geo data went (test/pilot, 2026-10-25). And three xray numbers
+disagreed: the minimum vctl depended on (26.3.27), the one its feed shipped
+(26.7.28 published, 26.10.17 on main) and the binary on the routers (26.10.17,
+swapped in by script over opkg's record of 26.7.28, and withdrawn by XTLS
+since). From r30 a vctl comes with the xray it is built and proven with.
+
+### Fixed
+- **Every build writes one Depends.** `openwrt/Makefile` names what the SDK
+  does not build in `EXTRA_DEPENDS` — `xray-core (>= 26.10.21), vectra-geodata,
+  vectra-reporter (>= 1.0.0-r4)` — which the SDK writes into the control file
+  as it is; `scripts/lib/pkg.sh` (`pkg_depends`) merges it with `DEPENDS` for
+  `build-local-ipk.sh` and `build-pro-feed.sh`, which adds nothing of its own
+  any more (its minimums are the Makefile's, `pkg_depends_min`).
+  `TestEveryBuildWritesOneDepends` holds the SDK's set, pkg.sh's and both
+  scripts' together.
+- **One xray per vctl.** The xray vctl depends on is the one its feed ships:
+  `build-pro-feed.sh` builds xray-core of the Makefile's minimum (no
+  `--xray` any more), and every way vctl is installed puts in that package
+  and that package's binary — never another feed's xray-core, which opkg
+  would take for the Depends when it is newer, nor a binary swapped in by
+  hand:
+  - the feed's xray-core always goes in **first and by itself**, then vctl,
+    whose Depends it meets from no feed list: an upgrade over an older
+    package or none, a `--force-reinstall` over the same version with
+    another binary, a `--force-downgrade` under a newer one — never a
+    `--force-*` in vctl's opkg (a reinstall removes the package first, and
+    vctl's removal hands the router back); one that failed after removing
+    xray-core is installed plainly again; one that does not go in leaves
+    vctl as it was;
+  - **the room it needs, as the flash takes it.** opkg's own check counts
+    xray-core's whole Installed-Size (31 MB) against the free flash and
+    refused it on an AX3000T with 24.8 MB free (VagrandRouter, 25.10), where
+    UBIFS stores the binary in 14.1 MB (18.5 MB at the install's low point,
+    the running xray holding the old file). So the room is Vectra's own
+    measure — 1.4 × the package's Size on UBIFS/JFFS2, its Installed-Size
+    elsewhere — and xray-core's opkg gets `--force-space`; vctl's keeps
+    opkg's check. Between the two the xray that runs is restarted onto the
+    new binary, so the old one's room is back before vctl's opkg: by vctl
+    itself (the supervisor) in a self-update, by restarting a vctl from
+    0.7.0-r29 on in the installer and the rollout (an older vctl writes
+    configs 26.10.x refuses: then the room asked is the sum);
+  - the installer refuses a feed without xray-core or with another xray
+    than its release's, restarts a vctl not upgraded onto the new xray, and
+    its end check is XRAY_NOT_VECTRAS otherwise;
+  - vctl's self-update (`update_controller`, Connect's automatic update)
+    takes xray-core from the same signed index as vctl (`feed_xray.go`),
+    downloads it before the install's deadline (the opkg runs get 10
+    minutes: one killed halfway leaves a binary cut short) and checks its
+    sha256 and the room in /tmp and on flash first; the job's result names
+    the xray;
+  - `scripts/Rollout-VctlFleet.py` does the same from the channel's signed
+    index, its download in the detached run (past the panel's job cap), its
+    floors raised by that measure, and its health check wants the channel's
+    xray package and binary.
+  Tried on OpenWrt 24.10.8's opkg: its check refuses a package whose
+  Installed-Size passes the free space ("Only have 24576kb available …
+  needs 31745"), `--force-space` installs it; and r29 with 26.10.17 over xray-core 26.7.28
+  and no feed lists becomes r30 with xray-core 26.10.21-r1 and its binary.
+  And on UBIFS (nandsim, the kernel's own, as an AX3000T's overlay), the
+  rollout's own run — only vctl's restart stood in, by a process holding the
+  old binary until then — moves such an r29 to r30 with 24.9, 23.5, 20.4,
+  16.7, 15.7 and 14.8 MiB free, each refused by opkg alone; the old binary's
+  13.9 MiB come back at the restart, and the free space after is the free
+  space before. The floors (21 MiB there) stand 6 MiB above the lowest.
+- **The companions stay on the router whatever a vctl's Depends says.** No
+  opkg command clears `Auto-Installed`: on opkg 2024.10.16 (OpenWrt 24.10.8)
+  `opkg flag user|hold|noprune|ok`, `opkg install <name>` and
+  `--force-reinstall` all leave it, and the orphan check reads only it. So the
+  line is dropped from `/usr/lib/opkg/status` for `vectra-geodata` and
+  `vectra-reporter` only — before vctl's opkg runs and again after it, since
+  an opkg that installs a companion as vctl's dependency (one a router lacked,
+  one whose minimum went up) marks it again: by the installer around its
+  upgrade (`keep_companions`), by vctl around the self-update's opkg
+  (`opkg_companions.go`), and by `Rollout-VctlFleet.py` around its `opkg
+  install`. Never while another opkg runs (vctl takes opkg's own lock,
+  `/var/lock/opkg.lock`; the scripts wait up to 10 s for it to end). The new
+  file is built from a copy and replaces the status only when it is the copy
+  less exactly those lines — in lines and in bytes, as a full overlay cuts a
+  file short while awk still exits 0 — and the status is still that copy,
+  synced first; otherwise the installer warns (`COMPANIONS_MARK`) and goes
+  on. Tried on OpenWrt 24.10.8's opkg: a vctl without them, installed over
+  one with them, removes neither — also on a router r29 stripped, after r30
+  brought them back as dependencies and `opkg install --force-downgrade` put
+  the r29 package back.
+
+### Changed
+- **PassWall2 and vctl's xray, decided.** PassWall2 before 26.9.9-2 writes
+  outbound `proxySettings` (and repeats `ruleTag`s), which xray refuses since
+  26.9.8; `/usr/bin/xray` is one for both, and r30's is 26.10.21. So:
+  - `--standby` next to such a PassWall2 is refused,
+    PASSWALL_TOO_OLD_FOR_XRAY, nothing changed: it would keep the router on
+    an xray it carries nothing on. Update PassWall2 to 26.9.9-2 or newer
+    first, or let Vectra take over;
+  - a takeover goes on and warns, PASSWALL_HANDBACK_WITHOUT_VPN: the way
+    back leaves the internet without VPN;
+  - the hand-back (the init script's `restore_passwall_stack`, so `vectra
+    off`, the dead-man, a removal) does not give such a PassWall2 the router:
+    its switch stays off (turned off and noted as vctl's if it was on), it is
+    neither enabled nor started, it stays owed — a later hand-back, once
+    PassWall2 is updated, gives it back — and the router's internet goes out
+    directly; the legacy agent comes back as ever and keeps the router in the
+    panel. `vectra status` (and the router UI's hand-back) says the traffic
+    would go directly and why; `vectra off` says why; `--uninstall` says how
+    to switch PassWall2 on once it is updated. One rule in three places
+    (`TestThePassWallXrayRuleIsTheSameEverywhere`). Not covered: the legacy
+    agent, given back (or brought back by its package's watchdog), applies
+    the panel's config, which sets PassWall2's own switch on again
+    (`renderGlobalCommands`) — PassWall2 then runs on an xray it breaks on
+    until the agent's rescue parks it direct. On such routers update
+    PassWall2 to 26.9.9-2 or newer before relying on a hand-back.
+- `build-pro-feed.sh` ships **xray 26.10.21**. XTLS withdrew 26.10.10 and
+  26.10.17 (their release is gone, so main's feed and stands no longer built):
+  their built-in root CAs held three that 26.10.21 drops, and it is built with
+  Go 1.27.3, which filters the broken certificates whatever the router's own CA
+  store says. It refuses outbound `proxySettings` and duplicate `ruleTag`s as
+  26.10.17 did, and takes what vctl writes instead (`dialerProxy`, numbered
+  tags): `TestGeneratedConfigsLoadInRealXray` passes on 26.3.27, 26.10.17 and
+  26.10.21, and the provider fixtures rendered by `vctl render` load in all
+  three with the pinned geo set. The data-plane stand runs the Makefile's
+  xray by default.
+- The check-in reports `packageVersions["xray-core"]` beside
+  `binaryVersions.xray`, the router UI's status `engine.xrayPackage` beside
+  `engine.xrayVersion`, and vctl logs once when the binary is not its
+  package's.
+- The install stand checks xray against the version the feed ships
+  (`FEED_XRAY`), not 26.3.27; its PassWall2 is 26.9.9-2, and `passwall-old`
+  (26.8.10) proves the refusal, the warning and the hand-back without VPN;
+  `standby-upgrade`'s newer xray-core is another feed's, and the install
+  takes Vectra's; its old-canary fixture drops the companions' version
+  constraints too (it left `zram-swap (>= 1.0.0-r4)`).
+
+### Not changed — and why
+- **From r29, r30 does not come by vctl's own self-update.** The update runs
+  the installed vctl's code, and r29's (`update_controller`, Connect's
+  automatic update) installs the one vctl package: with xray-core older than
+  26.10.21 on the router (every one today) and no feed list in RAM, opkg
+  says "cannot find dependency xray-core (>= 26.10.21)", installs nothing and
+  exits 0. The panel's «Обновить» then ends as `update_version_unverified`
+  after a restart of vctl; Connect's automatic update restarts vctl and tries
+  again a day later, every day. r29 routers go to r30 by
+  `scripts/Rollout-VctlFleet.py` (r30's: it brings the channel's xray-core)
+  or the installer; from r30 on, the self-update brings its xray itself.
+  Decided by the owner (25.10): the minimum stays 26.10.21, and the r29
+  routers (1111, kirill-msk, artem-lutfulin) go to r30 after its
+  publication by `Rollout-VctlFleet.py --hosts <one>`, one at a time.
+- A router that lacks `vectra-geodata` or `vectra-reporter` cannot self-update
+  to r30 while opkg has no list of the pro feed (`/var/opkg-lists` is RAM, a
+  reboot empties it): opkg says "cannot find dependency", installs nothing and
+  still exits 0 (OpenWrt 24.10.8). `update_controller` then ends as
+  `update_version_unverified` after its restart, and
+  `Rollout-VctlFleet.py` stops at that router's health check (the version).
+  With the list there (`opkg update`, as the installer runs it first) opkg
+  brings both.
+- PassWall2 itself is not updated by Vectra: that is its own package's lane.
+
 ## vctl 0.7.0-r29 — configs xray 26.10 takes; `vctl xray-check`
 
 xray 26.9.8 removed outbound `proxySettings` and refuses a config that has

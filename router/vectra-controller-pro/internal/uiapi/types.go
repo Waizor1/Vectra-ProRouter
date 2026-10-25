@@ -139,8 +139,11 @@ type Controller struct {
 }
 
 type Engine struct {
-	State          string    `json:"state"`
-	XrayVersion    *string   `json:"xrayVersion"`
+	State       string  `json:"state"`
+	XrayVersion *string `json:"xrayVersion"`
+	// XrayPackage is the xray-core package's version: the binary's own
+	// (xrayVersion) unless one was swapped in by hand.
+	XrayPackage    *string   `json:"xrayPackage"`
 	PID            *int      `json:"pid"`
 	UptimeSec      *int      `json:"uptimeSec"`
 	RSSMiB         *float64  `json:"rssMiB"`

@@ -862,7 +862,7 @@ func (d *daemon) updateController(ctx context.Context, job controlplane.Job) err
 	// that before anything is downloaded. The feed's entry has the job's
 	// sha256, and the download must have it too: what opkg installs is the
 	// package the feed's key vouched for.
-	verifiedPackage, err := signedFeedPackage(ctx, sha, version)
+	verifiedPackage, feedXrayPkg, err := signedFeedPackage(ctx, sha, version)
 	if err != nil {
 		return d.submitFailure(ctx, job, notInSignedFeed+": "+err.Error())
 	}
@@ -885,8 +885,18 @@ func (d *daemon) updateController(ctx context.Context, job controlplane.Job) err
 		return d.submitFailure(ctx, job, fmt.Sprintf("checksum mismatch: got %s want %s", gotSha, sha))
 	}
 
-	installCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
-	out, err := runControllerInstall(installCtx, dest)
+	// The feed's xray-core with it (feed_xray.go): one xray per vctl.
+	how, err := xrayPlan(ctx, feedXrayPkg)
+	if err != nil {
+		return d.submitFailure(ctx, job, "update_controller: "+err.Error()+" (nothing installed)")
+	}
+	xrayFile, xrayDone, err := fetchFeedXray(ctx, feedXrayPkg, how)
+	if err != nil {
+		return d.submitFailure(ctx, job, "update_controller: "+err.Error()+" (nothing installed)")
+	}
+	defer xrayDone()
+	installCtx, cancel := context.WithTimeout(ctx, controllerInstallTime)
+	out, err := installControllerWithXray(installCtx, how, xrayFile, dest, d.releaseOldXray)
 	cancel()
 	if err != nil {
 		return d.submitFailure(ctx, job, "opkg install: "+err.Error()+": "+tail(string(out), 1000))
@@ -906,6 +916,11 @@ func (d *daemon) updateController(ctx context.Context, job controlplane.Job) err
 			"sha256":            gotSha,
 		},
 	}
+	if how != xrayKeep {
+		d.st.PendingJobResult.Result["xray"] = feedXrayPkg.Package.Version
+		d.st.PendingJobResult.Result["xrayInstall"] = how
+	}
+
 	if err := d.persist(); err != nil {
 		return errors.New("update journal unavailable")
 	}
@@ -1450,18 +1465,27 @@ func requireHTTPS(rawURL string) error {
 // the running vctl from inside it — this opkg is vctl's own child: the
 // restart's stop ends vctl, whose context then kills the opkg before it writes
 // its status, and the job's result is never journaled. The postinst's restart
-// is held back; the job restarts vctl itself once opkg is done.
-func controllerInstallCommand(ctx context.Context, dest string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "sh", "-c",
-		fmt.Sprintf(`{ echo %d > /proc/self/oom_score_adj; } 2>/dev/null; exec opkg install "$0"`, memguard.JobAdj), dest)
+// is held back; the job restarts vctl itself once opkg is done. args are
+// opkg install's: the package files, the feed's xray-core's before vctl's
+// (feed_xray.go).
+func controllerInstallCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "sh", append([]string{"-c",
+		fmt.Sprintf(`{ echo %d > /proc/self/oom_score_adj; } 2>/dev/null; exec opkg install "$@"`, memguard.JobAdj), "opkg-install"}, args...)...)
 	cmd.Env = append(os.Environ(), "VECTRA_SKIP_POSTINST_RESTART=1")
 	return cmd
 }
 
 // runControllerInstall runs the self-update's opkg (controllerInstallCommand)
-// and returns what it said; tests stand it in.
-var runControllerInstall = func(ctx context.Context, dest string) ([]byte, error) {
-	return controllerInstallCommand(ctx, dest).CombinedOutput()
+// and returns what it said; tests stand it in. The companions' Auto-Installed
+// marks go before it — whatever the package's Depends says, opkg removes
+// neither with it — and after it, whatever it installed as a dependency
+// (opkg_companions.go). The postinst's restart is held back, so this vctl is
+// still the one running then.
+var runControllerInstall = func(ctx context.Context, args ...string) ([]byte, error) {
+	keepCompanionsAroundTheInstall("before the install")
+	out, err := controllerInstallCommand(ctx, args...).CombinedOutput()
+	keepCompanionsAroundTheInstall("after the install")
+	return out, err
 }
 
 // scheduleControllerRestart restarts the controller service shortly after we

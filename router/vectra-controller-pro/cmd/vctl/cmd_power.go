@@ -303,13 +303,16 @@ type powerStatusJSON struct {
 	Running bool `json:"running"`
 	// Carrying: its data plane is loaded. Running without it, vctl carries
 	// nothing and the holder is who else runs, or direct.
-	Carrying bool             `json:"carrying"`
-	Holder   string           `json:"holder"`
-	HandBack *string          `json:"handBack"`
-	UCI      bool             `json:"uci"`
-	Boot     bool             `json:"boot"`
-	Trial    *powerTrialState `json:"trial"`
-	Busy     bool             `json:"busy"`
+	Carrying bool    `json:"carrying"`
+	Holder   string  `json:"holder"`
+	HandBack *string `json:"handBack"`
+	// HandBackBlocked says why PassWall2, owed the router, is not given it
+	// back: it would break on the xray here (internal/power).
+	HandBackBlocked *string          `json:"handBackBlocked"`
+	UCI             bool             `json:"uci"`
+	Boot            bool             `json:"boot"`
+	Trial           *powerTrialState `json:"trial"`
+	Busy            bool             `json:"busy"`
 	// Claim: the code that links the router to a Vectra account, while vctl
 	// runs and the router is not linked — what an operator passes on.
 	Claim *powerClaimState `json:"claim"`
@@ -336,6 +339,9 @@ func powerStatus(env power.Env, asJSON bool, out io.Writer) error {
 	st := powerStatusJSON{Enabled: f.On(), Running: f.Running, Carrying: f.Carrying, Holder: f.Holder(), UCI: f.UCI, Boot: f.Boot, Busy: power.Busy(env)}
 	if hb := f.HandBack(); hb != "" {
 		st.HandBack = &hb
+	}
+	if f.PassWallBlocked != "" {
+		st.HandBackBlocked = &f.PassWallBlocked
 	}
 	if t := f.Trial; t != nil {
 		st.Trial = &powerTrialState{Deadman: power.DeadmanAlive(env, t)}
@@ -401,6 +407,9 @@ func powerLines(st powerStatusJSON, log string) []string {
 	}
 	if st.HandBack != nil {
 		out = append(out, "  Turning it off gives the traffic back: it will go "+power.Describe(*st.HandBack)+".")
+	}
+	if st.HandBackBlocked != nil {
+		out = append(out, "  "+*st.HandBackBlocked+".")
 	}
 	if idle != "" {
 		out = append(out, "  Its data plane is not loaded: before its first setup, or its render failed (logread -e vctl).")

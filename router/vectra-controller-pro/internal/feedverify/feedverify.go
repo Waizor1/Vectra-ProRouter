@@ -26,6 +26,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -128,9 +129,12 @@ func VerifyWithKeys(keysDir string, message, sigFile []byte) (KeyNumber, error) 
 	return sig.Number, nil
 }
 
-// Package is a package of a feed's index: the fields a check needs.
+// Package is a package of a feed's index: the fields a check needs. Size
+// (the .ipk's bytes) and InstalledSize (what it unpacks to) are 0 when the
+// index does not say.
 type Package struct {
 	Name, Version, Architecture, Filename, SHA256 string
+	Size, InstalledSize                           int64
 }
 
 // ParseIndex reads a Packages index: each package a run of "Field: value"
@@ -148,9 +152,11 @@ func ParseIndex(index []byte) ([]Package, error) {
 		if fields["Package"] == "" {
 			return errors.New("a package without a Package field")
 		}
+		size, _ := strconv.ParseInt(fields["Size"], 10, 64)
+		installed, _ := strconv.ParseInt(fields["Installed-Size"], 10, 64)
 		out = append(out, Package{
 			Name: fields["Package"], Version: fields["Version"], Architecture: fields["Architecture"],
-			Filename: fields["Filename"], SHA256: fields["SHA256sum"],
+			Filename: fields["Filename"], SHA256: fields["SHA256sum"], Size: size, InstalledSize: installed,
 		})
 		fields, last = map[string]string{}, ""
 		return nil

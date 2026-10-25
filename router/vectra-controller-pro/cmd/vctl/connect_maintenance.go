@@ -227,6 +227,11 @@ type maintenanceCandidate struct {
 	Package          feedverify.Package
 	URL              string
 	InstalledVersion string
+	// Xray is the same signed index's xray-core, installed with it
+	// (feed_xray.go); nil when the feed has none. ReleaseXray restarts the
+	// xray that runs onto it before vctl goes in.
+	Xray        *feedXray
+	ReleaseXray func(context.Context)
 }
 
 var safeMaintenanceFilename = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+~-]*\.ipk$`)
@@ -290,6 +295,11 @@ func latestMaintenancePackage(ctx context.Context) (*maintenanceCandidate, error
 			continue
 		}
 		best = &maintenanceCandidate{Package: p, InstalledVersion: installed, URL: strings.TrimRight(feed.URL, "/") + "/" + url.PathEscape(p.Filename)}
+	}
+	if best != nil {
+		if best.Xray, e = signedFeedXray(feed, pkgs, arch); e != nil {
+			return nil, e
+		}
 	}
 	return best, nil
 }
@@ -411,6 +421,7 @@ func (d *daemon) connectMaintenanceAfterCheckin(ctx context.Context, owner strin
 	if e = d.saveMaintenance(s); e != nil {
 		return e
 	}
+	candidate.ReleaseXray = d.releaseOldXray
 	return maintenanceAutoInstall(ctx, *candidate)
 
 }
@@ -448,9 +459,18 @@ var maintenanceAutoInstall = func(ctx context.Context, c maintenanceCandidate) e
 	if !strings.EqualFold(sha, c.Package.SHA256) {
 		return errors.New("automatic package checksum mismatch")
 	}
-	installCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
+	how, e := xrayPlan(ctx, c.Xray)
+	if e != nil {
+		return errors.New("automatic xray-core plan unavailable")
+	}
+	xrayFile, xrayDone, e := fetchFeedXray(ctx, c.Xray, how)
+	if e != nil {
+		return errors.New("automatic xray-core download failed")
+	}
+	defer xrayDone()
+	installCtx, cancel := context.WithTimeout(ctx, controllerInstallTime)
 	defer cancel()
-	if _, e = runControllerInstall(installCtx, dest); e != nil {
+	if _, e = installControllerWithXray(installCtx, how, xrayFile, dest, c.ReleaseXray); e != nil {
 		return errors.New("automatic package install failed")
 	}
 	scheduleControllerRestart()
