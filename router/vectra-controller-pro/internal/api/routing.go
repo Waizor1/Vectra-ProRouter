@@ -17,7 +17,61 @@ import (
 const (
 	pathGetBalancerInfo        = "/xray.app.router.command.RoutingService/GetBalancerInfo"
 	pathOverrideBalancerTarget = "/xray.app.router.command.RoutingService/OverrideBalancerTarget"
+	pathTestRoute              = "/xray.app.router.command.RoutingService/TestRoute"
 )
+
+// RouteQuery is the connection TestRoute asks xray to route:
+//
+//	message RoutingContext { string InboundTag = 1; Network Network = 2;
+//	  uint32 TargetPort = 6; string TargetDomain = 7; …
+//	  repeated string OutboundGroupTags = 11; string OutboundTag = 12; }
+//	message TestRouteRequest { RoutingContext RoutingContext = 1; … }
+//	enum Network { Unknown = 0; TCP = 2; UDP = 3; }
+type RouteQuery struct {
+	InboundTag string
+	UDP        bool
+	Domain     string
+	Port       uint32
+}
+
+// TestRoute asks xray where it would send each query, right now — rules in
+// their order, and the outbound the balancer picks — all on one connection.
+// A query xray could not route gets "" (its rules end without a match).
+func TestRoute(ctx context.Context, server string, queries []RouteQuery) ([]string, error) {
+	calls := make([]grpcCall, len(queries))
+	for i, q := range queries {
+		rc := pbString(nil, 1, q.InboundTag)
+		network := uint64(2) // TCP
+		if q.UDP {
+			network = 3
+		}
+		rc = pbVarintField(rc, 2, network)
+		rc = pbVarintField(rc, 6, uint64(q.Port))
+		rc = pbString(rc, 7, q.Domain)
+		req := pbVarint(nil, 1<<3|2)
+		req = pbVarint(req, uint64(len(rc)))
+		calls[i] = grpcCall{path: pathTestRoute, request: append(req, rc...)}
+	}
+	res, err := grpcUnary(ctx, server, calls)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(queries))
+	for i := range queries {
+		if res[i].err != nil {
+			if errors.Is(res[i].err, errNoMessage) {
+				continue
+			}
+			return nil, res[i].err
+		}
+		tag, err := pbField(res[i].message, 12)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = string(tag)
+	}
+	return out, nil
+}
 
 // DefaultAPIServer is where the router splices xray's API
 // (internal/coreengine/xray: SpliceOptions.APIListen).
@@ -126,6 +180,14 @@ func pbString(b []byte, field int, s string) []byte {
 	b = pbVarint(b, uint64(field)<<3|2)
 	b = pbVarint(b, uint64(len(s)))
 	return append(b, s...)
+}
+
+func pbVarintField(b []byte, field int, v uint64) []byte {
+	if v == 0 {
+		return b // proto3 omits default values
+	}
+	b = pbVarint(b, uint64(field)<<3)
+	return pbVarint(b, v)
 }
 
 func pbVarint(b []byte, v uint64) []byte {

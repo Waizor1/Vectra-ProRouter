@@ -37,6 +37,9 @@ type SpliceResult struct {
 	// RussiaDirectRules counts the provider's Russian BL-RU rules sent to its
 	// freedom outbound (SpliceOptions.RussiaDirect).
 	RussiaDirectRules int
+	// QUICBridgeOutbounds counts the Russian bridge's outbounds given the
+	// Vision flow that carries UDP/443 (SpliceOptions.QUICOverBridge).
+	QUICBridgeOutbounds int
 
 	// APIListen / MetricsListen are where the spliced document serves xray's
 	// API and metrics ("" = not installed).
@@ -298,6 +301,11 @@ func Splice(providerRaw []byte, t *config.TproxyInbound, opts SpliceOptions) ([]
 			}
 			for _, lb := range sp.loopbacks {
 				if raw, err = appendToArray(raw, lb); err != nil {
+					return nil, res, err
+				}
+			}
+			if opts.QUICOverBridge {
+				if raw, res.QUICBridgeOutbounds, err = allowQUICOverBalancer(raw, balancerSelector(providerRaw, RussianBalancer)); err != nil {
 					return nil, res, err
 				}
 			}

@@ -20,6 +20,7 @@ import (
 	"vectra-controller-pro/internal/vault"
 
 	"vectra-controller-pro/internal/agentcfg"
+	"vectra-controller-pro/internal/api"
 	"vectra-controller-pro/internal/apply"
 	"vectra-controller-pro/internal/claim"
 	"vectra-controller-pro/internal/config"
@@ -219,6 +220,12 @@ type daemon struct {
 	// flushedStart is the xray start the resolver's cache was last emptied
 	// for (flushAfterXrayRestart).
 	flushedStart time.Time
+	// bridgeQUICSynced is the xray start (and the table's QUICPass) dnsmasq's
+	// QUIC fragment was last brought to (syncBridgeQUIC); testRoute and
+	// restartResolver stand in for xray's API and dnsmasq in tests.
+	bridgeQUICSynced string
+	testRoute        func(ctx context.Context, server string, q []api.RouteQuery) ([]string, error)
+	restartResolver  func(ctx context.Context) error
 	// rescueCheckedAt is when the rescue last probed (rescueStep).
 	rescueCheckedAt time.Time
 	// reconfiguredAt is when an apply last put a new config in (rescueAfresh):

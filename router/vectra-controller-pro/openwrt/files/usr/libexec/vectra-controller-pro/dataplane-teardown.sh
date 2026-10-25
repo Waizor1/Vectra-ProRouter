@@ -89,6 +89,19 @@ if [ -f "$ICMP_MARKER" ]; then
 		rm -f "$ICMP_MARKER"
 fi
 
+# dnsmasq's fragment for QUIC through the Russian bridge (cmd/vctl/bridge_quic.go)
+# names a set of the table about to go: it leaves with it — also when the table
+# is gone already — and dnsmasq, which reads it only at start, starts again in
+# the background (never waited for here).
+QUIC_FRAGMENT=vctl-bridge-quic.conf
+quic_dropped=0
+for f in /tmp/dnsmasq.*.d/"$QUIC_FRAGMENT"; do
+	[ -f "$f" ] && rm -f "$f" && quic_dropped=1
+done
+if [ "$quic_dropped" = 1 ] && [ -x /etc/init.d/dnsmasq ]; then
+	(/etc/init.d/dnsmasq restart > /dev/null 2>&1 &)
+fi
+
 MARK="$(tproxy_fwmark)"
 HEXMARK="$(printf '0x%x' "$MARK")"
 

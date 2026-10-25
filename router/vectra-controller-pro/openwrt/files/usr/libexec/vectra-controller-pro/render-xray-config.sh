@@ -114,6 +114,9 @@ ipv6="$(uci_get_or_default ipv6 0)"
 # Russian sites go direct rather than through the provider's Russian bridge
 # (BL-RU; YouTube keeps it), unless russia_direct is '0'.
 russia_direct="$(uci_get_or_default russia_direct 1)"
+# QUIC to the names the Russian bridge carries (YouTube's video) goes through
+# it, unless quic_bridge is '0' (then it is refused like the rest).
+quic_bridge="$(uci_get_or_default quic_bridge 1)"
 # A node that stops answering loses new connections within seconds (the
 # failover watchdog), unless failover_watchdog is '0'.
 failover_watchdog="$(uci_get_or_default failover_watchdog 1)"
@@ -189,6 +192,9 @@ if [ "$ipv6" = "1" ] || [ "$ipv6" = "true" ]; then
 fi
 if [ "$russia_direct" = "0" ] || [ "$russia_direct" = "false" ]; then
 	json_add_boolean noRussiaDirect 1
+fi
+if [ "$quic_bridge" = "0" ] || [ "$quic_bridge" = "false" ]; then
+	json_add_boolean noQuicBridge 1
 fi
 if [ "$failover_watchdog" = "0" ] || [ "$failover_watchdog" = "false" ]; then
 	json_add_boolean noFailoverWatchdog 1

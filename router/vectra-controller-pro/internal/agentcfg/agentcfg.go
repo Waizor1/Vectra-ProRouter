@@ -109,6 +109,10 @@ type Config struct {
 	// NoRussiaDirect keeps the provider's Russian bridge for Russian sites
 	// (UCI russia_direct '0'); by default they go direct (xray.RussiaDirect).
 	NoRussiaDirect bool `json:"noRussiaDirect,omitempty"`
+	// NoQUICBridge keeps the Russian bridge's outbounds on plain Vision and
+	// QUIC to every proxied name refused, as before r31 (UCI quic_bridge '0';
+	// xray.SpliceOptions.QUICOverBridge, cmd/vctl/bridge_quic.go).
+	NoQUICBridge bool `json:"noQuicBridge,omitempty"`
 	// NoFailoverWatchdog turns the failover watchdog off (UCI
 	// failover_watchdog '0'; cmd/vctl/failover.go): a node that stops
 	// answering is then left to the provider's observatory.

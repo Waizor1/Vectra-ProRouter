@@ -8,11 +8,15 @@ FROM openwrt/rootfs:aarch64_generic-24.10.8
 # and ubus are needed because the procd mode really does run a service manager.
 # rpcd, uhttpd and luci-base are the router UI's path (MODE=ui): the package's
 # rpcd plugin and ACL, served to a real LuCI over a real /ubus endpoint.
+# dnsmasq-full, as vctl's Depends has it on a router: its nftset fills the
+# set QUIC through the Russian bridge passes by (dns-tunnel.sh, r31).
 RUN mkdir -p /var/lock /var/run /usr/share/v2ray \
  && opkg update \
  && opkg install ip-full nftables curl socat openssl-util ca-bundle \
       jshn jsonfilter procd ubus \
       rpcd uhttpd uhttpd-mod-ubus luci-base luci-theme-bootstrap \
+ && { opkg remove dnsmasq 2>/dev/null || true; } \
+ && opkg install dnsmasq-full \
  && rm -rf /var/opkg-lists
 
 # Real package payload: the same files the .ipk installs, at the same paths.
@@ -30,7 +34,7 @@ COPY build/xray        /usr/bin/xray
 # The reporter (ADR-0007) and the reports mode's stand-ins: a stub Connect
 # that verifies what it gets, and Vectra's test key for the router's state.
 COPY build/vectra-reporter /usr/sbin/vectra-reporter
-COPY build/reportsink build/standkey /stand/bin/
+COPY build/reportsink build/standkey build/quicprobe /stand/bin/
 COPY build/reporter-etc/ /etc/
 # vctl's own geo directory (vectra-geodata's on a router), which it reads —
 # a config's /usr/share/v2ray included. The same files stay in

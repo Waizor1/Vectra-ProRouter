@@ -279,6 +279,13 @@ type Spec struct {
 	// real address direct (the owner's direct sites, a direct shunt, a
 	// device's own WireGuard on 443). No FakeDNS pool, no rule.
 	RefuseQUIC bool
+	// QUICPass (with RefuseQUIC): the FakeDNS addresses in SetQUICPass4 are
+	// let through to xray instead — names whose route carries UDP/443, the
+	// Russian bridge's since r31. The set is the resolver's to fill: dnsmasq
+	// adds the answers for those names (cmd/vctl/bridge_quic.go), and an
+	// address is forgotten after QUICPassTimeout unless asked for again. An
+	// empty set refuses exactly what r30 did.
+	QUICPass bool
 	// AdmitTotalRate/AdmitTotalBurst: new connections per second into xray
 	// from every device together, and the burst — the router's whole door,
 	// sized to what its CPU carries (each is a Reality handshake to a node).
@@ -467,6 +474,18 @@ const (
 	CounterAdmitHeld = "vctl_admit_held"
 	// CounterQUICRefused counts the LAN's QUIC refused (Spec.RefuseQUIC).
 	CounterQUICRefused = "vctl_quic_refused"
+	// CounterQUICPassed counts the LAN's QUIC let through to xray because its
+	// address is in SetQUICPass4 (Spec.QUICPass).
+	CounterQUICPassed = "vctl_quic_passed"
+	// SetQUICPass4 is the set of FakeDNS addresses whose QUIC is let through
+	// (Spec.QUICPass), filled by dnsmasq.
+	SetQUICPass4 = "vctl_quic_pass4"
+	// QUICPassTimeout is how long an address stays in SetQUICPass4 without
+	// being asked for again. FakeDNS answers with a TTL of 1 s, so a name in
+	// use is asked for all the time; dnsmasq does not renew an element it
+	// finds there, so an address in use for longer than this is refused once
+	// and let through again at the next answer.
+	QUICPassTimeout = "1h"
 	// CounterICMPOutHeld counts the router's ICMP «destination unreachable»
 	// held to the kernel's rates while the mask lets them out (RelaxesICMP):
 	// per address beyond the LAN (SetICMPOut4), and all together.
@@ -608,6 +627,10 @@ table inet {{ .TableName }} {
 {{- end }}
 {{- if and .RefuseQUIC .CarriedPools }}
   counter {{ .CounterQUICRefused }} { }
+{{- if .QUICPass }}
+  counter {{ .CounterQUICPassed }} { }
+  set {{ .SetQUICPass4 }} { type ipv4_addr; flags timeout; timeout {{ .QUICPassTimeout }}; size 8192; }
+{{- end }}
 {{- end }}
 {{- if .RelaxesICMP }}
   counter {{ .CounterICMPOutHeld }} { }
@@ -743,7 +766,14 @@ table inet {{ .TableName }} {
 {{- if and .RefuseQUIC .CarriedPools }}
     # QUIC to a proxied name is refused at once (Spec.RefuseQUIC): the
     # bridges refuse UDP/443, an answer lets the app fall back to TCP now.
+{{- if .QUICPass }}
+    # Except a name whose route carries UDP/443 (Spec.QUICPass): its
+    # address is in the set the resolver fills, and xray takes it.
+    iif != "lo" ip daddr @{{ .SetQUICPass4 }} meta l4proto udp udp dport 443 counter name "{{ .CounterQUICPassed }}"
+    iif != "lo" ip daddr { {{ join .CarriedPools ", " }} } ip daddr != @{{ .SetQUICPass4 }} meta l4proto udp udp dport 443 counter name "{{ .CounterQUICRefused }}" reject with icmpx port-unreachable
+{{- else }}
     iif != "lo" ip daddr { {{ join .CarriedPools ", " }} } meta l4proto udp udp dport 443 counter name "{{ .CounterQUICRefused }}" reject with icmpx port-unreachable
+{{- end }}
 {{- end }}
 {{- if .AdmitRate }}
     # A device's storm waits at the door (Spec.AdmitRate).
@@ -1081,6 +1111,9 @@ type tmplData struct {
 	CounterP2PDirect      string
 	CounterAdmitHeld      string
 	CounterQUICRefused    string
+	CounterQUICPassed     string
+	SetQUICPass4          string
+	QUICPassTimeout       string
 	CounterICMPOutHeld    string
 	SetICMPOut4           string
 	CounterAdmitTotalHeld string
@@ -1162,6 +1195,9 @@ func Render(s Spec) (string, error) {
 		CounterP2PDirect:         CounterP2PDirect,
 		CounterAdmitHeld:         CounterAdmitHeld,
 		CounterQUICRefused:       CounterQUICRefused,
+		CounterQUICPassed:        CounterQUICPassed,
+		SetQUICPass4:             SetQUICPass4,
+		QUICPassTimeout:          QUICPassTimeout,
 		CounterICMPOutHeld:       CounterICMPOutHeld,
 		SetICMPOut4:              SetICMPOut4,
 		CounterAdmitTotalHeld:    CounterAdmitTotalHeld,
