@@ -95,6 +95,28 @@ boot() {
 	# register with it (a fresh vctl does at its first start). The feed comes
 	# from the stand's own server, the geo data inside the package.
 	echo "127.0.0.1 api.vectra-pro.net router.vectra-pro.net" >> /etc/hosts
+	# /etc/hosts alone does not keep vctl away: it resolves the panel itself,
+	# over TCP to 8.8.8.8 and 77.88.8.8, and dials the panel's built-in address
+	# when that fails (internal/controlplane/resolve.go). Those lookups go to
+	# the router's own dnsmasq, which reads /etc/hosts; whatever is addressed
+	# to production is dropped and counted (no_production, at the end).
+	# Refused at once (a TCP reset), so vctl's fallback dial takes no longer
+	# than it would against a dead address. qemu-user cannot load nftables:
+	# there the run is NOT isolated, and no_production says so.
+	nft -f - <<-EOF || { [ "${JAIL:-1}" = 0 ] && info "qemu-user: no nftables, this run is NOT kept off production"; } || die "the production guard's nftables did not load"
+		table inet stand_guard {
+			counter prod { }
+			chain out { type filter hook output priority -400; policy accept;
+				ip daddr { 72.56.14.52, 38.244.208.144 } meta l4proto tcp counter name prod reject with tcp reset
+				ip daddr { 72.56.14.52, 38.244.208.144 } counter name prod drop
+			}
+		}
+		table ip stand_dns {
+			chain out { type nat hook output priority -110; policy accept;
+				ip daddr { 8.8.8.8, 77.88.8.8 } meta l4proto { tcp, udp } th dport 53 dnat to 127.0.0.1:53
+			}
+		}
+	EOF
 	# What netifd writes from the WAN lease: the upstream dnsmasq forwards to.
 	grep '^nameserver' /etc/resolv.conf > /tmp/resolv.conf.d/resolv.conf.auto
 	ubusd &
@@ -1056,6 +1078,11 @@ mirror)
 	;;
 esac
 
+# vctl here has no panel to reach (its names point at the router itself), so
+# it falls back to the panel's built-in address: those packets must have been
+# dropped, which needs the guard to have stood all along.
+prod="$(nft list counter inet stand_guard prod 2> /dev/null | sed -n 's/.*packets \([0-9]*\).*/\1/p')"
+check no_production "Vectra's production addresses unreachable all along: the guard stands (${prod:-?} packets to them dropped)" test -n "$prod"
 [ "$FAILS" = 0 ] || diagnose "the end: $FAILS check(s) failed"
 echo "INSTALL-EXIT $FAILS"
 exit "$FAILS"
