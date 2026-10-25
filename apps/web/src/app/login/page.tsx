@@ -25,6 +25,7 @@ export default async function LoginPage({
     <LoginV2
       hasError={params.error === "1"}
       rateLimited={params.error === "rate"}
+      sessionsOff={params.error === "sessions"}
     />
   );
 }
