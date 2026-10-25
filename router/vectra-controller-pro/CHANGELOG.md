@@ -67,6 +67,12 @@ since). From r30 a vctl comes with the xray it is built and proven with.
   Installed-Size passes the free space ("Only have 24576kb available …
   needs 31745"), `--force-space` installs it; and r29 with 26.10.17 over xray-core 26.7.28
   and no feed lists becomes r30 with xray-core 26.10.21-r1 and its binary.
+  And on UBIFS (nandsim, the kernel's own, as an AX3000T's overlay), the
+  rollout's own run — only vctl's restart stood in, by a process holding the
+  old binary until then — moves such an r29 to r30 with 24.9, 23.5, 20.4,
+  16.7, 15.7 and 14.8 MiB free, each refused by opkg alone; the old binary's
+  13.9 MiB come back at the restart, and the free space after is the free
+  space before. The floors (21 MiB there) stand 6 MiB above the lowest.
 - **The companions stay on the router whatever a vctl's Depends says.** No
   opkg command clears `Auto-Installed`: on opkg 2024.10.16 (OpenWrt 24.10.8)
   `opkg flag user|hold|noprune|ok`, `opkg install <name>` and
@@ -145,8 +151,9 @@ since). From r30 a vctl comes with the xray it is built and proven with.
   again a day later, every day. r29 routers go to r30 by
   `scripts/Rollout-VctlFleet.py` (r30's: it brings the channel's xray-core)
   or the installer; from r30 on, the self-update brings its xray itself.
-  The alternative is a minimum r29's routers meet (26.3.27) for r30, raised
-  in r31 — the owner's decision.
+  Decided by the owner (25.10): the minimum stays 26.10.21, and the r29
+  routers (1111, kirill-msk, artem-lutfulin) go to r30 after its
+  publication by `Rollout-VctlFleet.py --hosts <one>`, one at a time.
 - A router that lacks `vectra-geodata` or `vectra-reporter` cannot self-update
   to r30 while opkg has no list of the pro feed (`/var/opkg-lists` is RAM, a
   reboot empties it): opkg says "cannot find dependency", installs nothing and

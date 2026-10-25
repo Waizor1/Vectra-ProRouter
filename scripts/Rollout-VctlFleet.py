@@ -193,6 +193,29 @@ def xray_how(it: dict, xray: dict | None) -> str:
     return "install"
 
 
+def floors_for(it: dict, entry: dict, xray: dict | None, how: str) -> dict:
+    """The intake's floors (MiB) for this router, raised by what the channel's
+    xray-core needs when it goes in: its download in /tmp, and on flash the
+    new binary beside the old one the running xray holds — on UBIFS/JFFS2
+    about its package's Size (an AX3000T: 14.1 MB for 13.3, 18.5 MB at the
+    install's low point), 1.4 × it, its Installed-Size elsewhere. When the
+    vctl that runs lets go of the old xray before vctl's own opkg (0.7.0-r29
+    and later, restarted onto the new one), the larger of the two steps,
+    else their sum; and 4 MiB to spare."""
+    floors = dict(FLOORS)
+    if how == "keep" or not xray:
+        return floors
+    def mib(b) -> int:
+        return -(-int(b or 0) // (1 << 20))
+    floors["tmp"] += mib(xray.get("Size"))
+    compresses = it.get("ovfs") in ("ubifs", "jffs2")
+    x_need = mib(int(xray.get("Size", "0") or 0) * 14 // 10) if compresses else mib(xray.get("Installed-Size"))
+    v_need = mib(entry.get("Installed-Size"))
+    released = (release(it.get("version", "")) or (0,)) >= (0, 7, 0, 29)
+    floors["overlay"] = max(floors["overlay"], (max(x_need, v_need) if released else x_need + v_need) + 4)
+    return floors
+
+
 def package_entry(channel: str, version: str) -> dict:
     base = f"{FEED}/{channel}/{ARCH}"
     entry: dict = {}
@@ -387,20 +410,7 @@ def roll(r: dict, a: argparse.Namespace, entry: dict, target: tuple[int, ...], x
     if it.get("index") != "signed":
         raise Skip("the channel's index does not verify here (no usign, no Vectra key in /etc/opkg/keys, or no download)")
     how = xray_how(it, xray)
-    floors = dict(FLOORS)
-    if how != "keep":
-        mib = lambda b: -(-int(b or 0) // (1 << 20))  # noqa: E731
-        floors["tmp"] += mib(xray.get("Size"))
-        # The new xray beside the old one on flash: on UBIFS/JFFS2 about its
-        # package's Size (an AX3000T: 14.1 MB for 13.3, 18.5 MB at the low
-        # point), 1.4 × it; its Installed-Size elsewhere. When the vctl that
-        # runs is let go of the old xray before vctl's own opkg (0.7.0-r29+),
-        # the larger of the two steps, else their sum.
-        compresses = it.get("ovfs") in ("ubifs", "jffs2")
-        x_need = mib(int(xray.get("Size", "0") or 0) * 14 // 10) if compresses else mib(xray.get("Installed-Size"))
-        v_need = mib(entry.get("Installed-Size"))
-        released = (release(it.get("version", "")) or (0,)) >= (0, 7, 0, 29)
-        floors["overlay"] = max(floors["overlay"], (max(x_need, v_need) if released else x_need + v_need) + 4)
+    floors = floors_for(it, entry, xray, how)
     low = [k for k, floor in floors.items() if int(it.get(k, "0") or 0) < floor]
     if low:
         raise Skip(f"below the floors ({', '.join(f'{k} < {floors[k]} MiB' for k in low)}; xray-core {how})")
