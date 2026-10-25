@@ -58,6 +58,15 @@ running() { [ -x "/etc/init.d/$1" ] && "/etc/init.d/$1" running; }
 vctl_pid() { pgrep -f '^/usr/sbin/vctl agent' | head -n 1; }
 vctl_up() { [ -n "$(vctl_pid)" ]; }
 file_sha() { sha256sum "$1" 2> /dev/null | cut -d' ' -f1; }
+# vctl's companions are on the router and carry no Auto-Installed mark: opkg
+# removes an auto-installed package as an orphan as soon as a vctl that does
+# not depend on it replaces one that did (0.7.0-r29 as published).
+companions_user() {
+	for c in vectra-geodata vectra-reporter; do
+		installed "$c" || return 1
+		awk -v c="$c" '/^Package: / { p = substr($0, 10) } /^$/ { p = "" } p == c && $0 == "Auto-Installed: yes" { m = 1 } END { exit m }' /usr/lib/opkg/status || return 1
+	done
+}
 
 # ------------------------------------------------------ the WAN's records ----
 
@@ -308,8 +317,9 @@ phase_install() {
 	check install_version "$PKG $(version_of $PKG), the version the published feed names" test "$(version_of $PKG)" = "$(cat /out/expected.version)"
 	check install_vctl_bytes "/usr/sbin/vctl is the published package's ($(file_sha /usr/sbin/vctl | cut -c1-16))" test "$(file_sha /usr/sbin/vctl)" = "$(cat /out/expected.vctl.sha256)"
 	check install_reporter_bytes "vectra-reporter $(version_of vectra-reporter) is the published package's" test "$(file_sha /usr/sbin/vectra-reporter)" = "$(cat /out/expected.reporter.sha256)"
-	check install_feed_key "the feed line and the published key 29a198d75ba58e0e" \
-		sh -c "grep -q '^src/gz vectra_pro https://api.vectra-pro.net/artifacts/openwrt/pro-canary' /etc/opkg/customfeeds.conf && [ -f /etc/opkg/keys/29a198d75ba58e0e ]"
+	check install_feed_key "the feed line and the installer's key $(cat /out/expected.keyid)" \
+		sh -c "grep -q '^src/gz vectra_pro https://api.vectra-pro.net/artifacts/openwrt/pro-canary' /etc/opkg/customfeeds.conf && [ -s /out/expected.keyid ] && [ -f /etc/opkg/keys/\$(cat /out/expected.keyid) ]"
+	check install_companions_user "vectra-geodata and vectra-reporter installed, neither Auto-Installed" companions_user
 	check install_reporter_kept_off "the owner's /etc/config/vectra-reporter kept as written (enabled '0')" test "$(file_sha /etc/config/vectra-reporter)" = "$(cat /out/reporter-config.sha256)"
 	check install_reporter_package_copy "the package's own copy beside it, as opkg does with a conffile (vectra-reporter-opkg)" test -f /etc/config/vectra-reporter-opkg
 	check install_cron "cron runs the reporter every minute: the line in root's crontab, crond running" cron_runs
@@ -497,6 +507,7 @@ phase_upgrade() {
 	installer
 	reporter_files > /out/reporter-files-after-upgrade
 	cp /tmp/vectra-install.log /out/vectra-install-upgrade.log 2> /dev/null
+	check upgrade_companions_user "vectra-geodata and vectra-reporter installed, neither Auto-Installed any more: opkg removes neither with a vctl that does not depend on them" companions_user
 	check upgrade_reporter_state_kept "vectra-reporter's own state and spool (/etc/vectra-reporter) kept through the upgrade: before $(grep -c . /out/reporter-files-before-upgrade) files, after: $(tr '\n' ' ' < /out/reporter-files-after-upgrade)" \
 		sh -c "[ -s /out/reporter-files-before-upgrade ] && cmp -s /out/reporter-files-before-upgrade /out/reporter-files-after-upgrade"
 	grep -E 'orphaned|Removing package vectra' /out/vectra-install-upgrade.log 2> /dev/null | sed 's/^/  .. opkg: /' 

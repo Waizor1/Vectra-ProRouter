@@ -97,6 +97,27 @@ failures are one defect, the second point below.
 - `fw4 flush` (`/etc/init.d/firewall stop`) deletes every nftables table,
   vctl's `inet vctl` included.
 
+## A release not published yet (`PILOT_NEW_COMMIT`)
+
+```sh
+DOCKER_CONTEXT=colima PILOT_NEW_COMMIT=<commit> ./test/pilot/run.sh
+```
+
+runs the release at that commit in the published one's place: built with its
+own `build-pro-feed.sh` and `sign-pro-feed.sh` like the old ones, signed with
+a throwaway key, served at the same pro-canary path. Everything else is the
+same, the installer's key is read from its `BAKED_FEED_KEY_ID`, and
+`*_companions_user` checks that vectra-geodata and vectra-reporter end up
+installed without opkg's `Auto-Installed` mark.
+
+Run of 2026-10-25 on 0.7.0-r30 (`a75bb5c8`, branch fix/vctl-r30-packaging):
+`pilot`, `upgrade`, `upgrade06` 236/236. The three checks the published r29
+failed pass: the reporter's state and its queued report survive both
+upgrades, and the report is delivered later. No "orphaned" line appears in
+either upgrade's install log. In `upgrade06`, opkg upgraded vectra-reporter
+from 1.0.0-r2 to 1.0.0-r4 as vctl's dependency and marked it again; the
+installer's second pass dropped the mark.
+
 ## What only a real router shows
 
 A pass here is no client check. Before the pilot ships, one spare AX3000T on

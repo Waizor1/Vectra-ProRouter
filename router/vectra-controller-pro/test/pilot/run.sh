@@ -19,6 +19,10 @@
 #   upgrade06 the same from 0.6.0-r36 (vectra-reporter 1.0.0-r2, state.json
 #             still plaintext, no support-shell switch yet)
 #
+# PILOT_NEW_COMMIT=<commit>: a release not published yet in the published
+# one's place — built from that commit as the old ones are, signed with a
+# throwaway key, served at the same pro-canary path.
+#
 # What is real here: OpenWrt 24.10.8's userland (openwrt/rootfs), its procd,
 # rc.d boot and shutdown order, busybox crond, fw4, opkg; the installer, the
 # feed index, its signature and the packages exactly as Vectra published them
@@ -98,40 +102,35 @@ step "the stand's WAN side (test/pilot/wan)"
 ( cd "$MODULE" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o "$BUILD/wan/wan" ./test/pilot/wan )
 echo "  $BUILD/wan/wan"
 
-step "the published release, mirrored once ($PUBLISHED_FEED)"
-PUB="$BUILD/mirror/published"
-rm -rf "$PUB"
-mkdir -p "$PUB/artifacts/openwrt/pro-canary/$ARCH"
-curl -fsS --max-time 60 -o "$PUB/install.sh" "$PUBLISHED_HOST/install"
-curl -fsS --max-time 60 -o "$PUB/artifacts/openwrt/pro-canary/feed.json" "$PUBLISHED_FEED/feed.json"
-for f in Packages Packages.gz Packages.sig; do
-	curl -fsS --max-time 60 -o "$PUB/artifacts/openwrt/pro-canary/$ARCH/$f" "$PUBLISHED_FEED/$ARCH/$f"
-done
-(
-	cd "$PUB/artifacts/openwrt/pro-canary/$ARCH"
-	awk '/^Filename:/ { f = $2 } /^SHA256sum:/ { print $2 "  " f }' Packages > "$BUILD/published.sha256"
-	while read -r _ f; do curl -fsS --max-time 300 -o "$f" "$PUBLISHED_FEED/$ARCH/$f"; done < "$BUILD/published.sha256"
-	shasum -a 256 -c "$BUILD/published.sha256" | sed 's/^/  /'
-)
-{
-	echo "mirrored $(date -u +%FT%TZ) from $PUBLISHED_HOST"
-	echo "install.sh $(shasum -a 256 "$PUB/install.sh" | cut -d' ' -f1)"
-	echo "Packages $(shasum -a 256 "$PUB/artifacts/openwrt/pro-canary/$ARCH/Packages" | cut -d' ' -f1)"
-	echo "Packages.sig $(shasum -a 256 "$PUB/artifacts/openwrt/pro-canary/$ARCH/Packages.sig" | cut -d' ' -f1)"
-	sed 's/^/package /' "$BUILD/published.sha256"
-	cat "$PUB/artifacts/openwrt/pro-canary/feed.json"
-} > "$BUILD/published.manifest"
-grep -E "^BAKED_(VERSION|FEED_URL|FEED_KEY_ID)=" "$PUB/install.sh" | sed 's/^/  /'
-# What the router must end up with: the version the feed names, and the two
-# binaries exactly as the published packages carry them.
-pubfeed="$PUB/artifacts/openwrt/pro-canary/$ARCH"
-awk '/^Package: vectra-controller-pro$/ { p = 1 } p && /^Version:/ { print $2; exit }' "$pubfeed/Packages" > "$BUILD/expected.version"
-inner_sha() { # <ipk> <path inside data.tar.gz>
-	tar -xzOf "$1" ./data.tar.gz | tar -xzOf - "$2" | shasum -a 256 | cut -d' ' -f1
-}
-inner_sha "$pubfeed/vectra-controller-pro_$(cat "$BUILD/expected.version")_$ARCH.ipk" ./usr/sbin/vctl > "$BUILD/expected.vctl.sha256"
-inner_sha "$(ls "$pubfeed"/vectra-reporter_*_"$ARCH".ipk)" ./usr/sbin/vectra-reporter > "$BUILD/expected.reporter.sha256"
-echo "  expected: vectra-controller-pro $(cat "$BUILD/expected.version"), vctl $(cut -c1-16 "$BUILD/expected.vctl.sha256"), reporter $(cut -c1-16 "$BUILD/expected.reporter.sha256")"
+# PILOT_NEW_COMMIT: a release not published yet, built from its commit as the
+# old ones are (signed with a throwaway key, served at the pro-canary path) and
+# run in the published one's place — what a router would get once it is.
+if [[ -z "${PILOT_NEW_COMMIT:-}" ]]; then
+	step "the published release, mirrored once ($PUBLISHED_FEED)"
+	PUB="$BUILD/mirror/published"
+	rm -rf "$PUB"
+	mkdir -p "$PUB/artifacts/openwrt/pro-canary/$ARCH"
+	curl -fsS --max-time 60 -o "$PUB/install.sh" "$PUBLISHED_HOST/install"
+	curl -fsS --max-time 60 -o "$PUB/artifacts/openwrt/pro-canary/feed.json" "$PUBLISHED_FEED/feed.json"
+	for f in Packages Packages.gz Packages.sig; do
+		curl -fsS --max-time 60 -o "$PUB/artifacts/openwrt/pro-canary/$ARCH/$f" "$PUBLISHED_FEED/$ARCH/$f"
+	done
+	(
+		cd "$PUB/artifacts/openwrt/pro-canary/$ARCH"
+		awk '/^Filename:/ { f = $2 } /^SHA256sum:/ { print $2 "  " f }' Packages > "$BUILD/published.sha256"
+		while read -r _ f; do curl -fsS --max-time 300 -o "$f" "$PUBLISHED_FEED/$ARCH/$f"; done < "$BUILD/published.sha256"
+		shasum -a 256 -c "$BUILD/published.sha256" | sed 's/^/  /'
+	)
+	{
+		echo "mirrored $(date -u +%FT%TZ) from $PUBLISHED_HOST"
+		echo "install.sh $(shasum -a 256 "$PUB/install.sh" | cut -d' ' -f1)"
+		echo "Packages $(shasum -a 256 "$PUB/artifacts/openwrt/pro-canary/$ARCH/Packages" | cut -d' ' -f1)"
+		echo "Packages.sig $(shasum -a 256 "$PUB/artifacts/openwrt/pro-canary/$ARCH/Packages.sig" | cut -d' ' -f1)"
+		sed 's/^/package /' "$BUILD/published.sha256"
+		cat "$PUB/artifacts/openwrt/pro-canary/feed.json"
+	} > "$BUILD/published.manifest"
+	grep -E "^BAKED_(VERSION|FEED_URL|FEED_KEY_ID)=" "$PUB/install.sh" | sed 's/^/  /'
+fi
 
 # build_old <name> <commit>: an older release from its own commit, signed with
 # a throwaway key, at the pro-canary path the published installer has — a
@@ -168,6 +167,31 @@ for s in "${SELECTED[@]}"; do
 	upgrade06) build_old old06 "$OLD06_COMMIT" ;;
 	esac
 done
+if [[ -n "${PILOT_NEW_COMMIT:-}" ]]; then
+	build_old published "$PILOT_NEW_COMMIT"
+	PUB="$BUILD/mirror/published"
+	{
+		echo "built $(date -u +%FT%TZ) from $(cat "$BUILD/published.commit") (PILOT_NEW_COMMIT), not published"
+		echo "install.sh $(shasum -a 256 "$PUB/install.sh" | cut -d' ' -f1)"
+		echo "Packages $(shasum -a 256 "$PUB/artifacts/openwrt/pro-canary/$ARCH/Packages" | cut -d' ' -f1)"
+		(cd "$PUB/artifacts/openwrt/pro-canary/$ARCH" && shasum -a 256 ./*.ipk | sed 's/^/package /')
+		cat "$PUB/artifacts/openwrt/pro-canary/feed.json"
+	} > "$BUILD/published.manifest"
+	grep -E "^BAKED_(VERSION|FEED_URL|FEED_KEY_ID)=" "$PUB/install.sh" | sed 's/^/  /'
+fi
+
+# What the router must end up with: the version the feed names, the two
+# binaries exactly as the published packages carry them, and the installer's
+# feed key.
+pubfeed="$PUB/artifacts/openwrt/pro-canary/$ARCH"
+awk '/^Package: vectra-controller-pro$/ { p = 1 } p && /^Version:/ { print $2; exit }' "$pubfeed/Packages" > "$BUILD/expected.version"
+inner_sha() { # <ipk> <path inside data.tar.gz>
+	tar -xzOf "$1" ./data.tar.gz | tar -xzOf - "$2" | shasum -a 256 | cut -d' ' -f1
+}
+inner_sha "$pubfeed/vectra-controller-pro_$(cat "$BUILD/expected.version")_$ARCH.ipk" ./usr/sbin/vctl > "$BUILD/expected.vctl.sha256"
+inner_sha "$(ls "$pubfeed"/vectra-reporter_*_"$ARCH".ipk)" ./usr/sbin/vectra-reporter > "$BUILD/expected.reporter.sha256"
+sed -n "s/^BAKED_FEED_KEY_ID=//p" "$PUB/install.sh" | tr -d "'" > "$BUILD/expected.keyid"
+echo "  expected: vectra-controller-pro $(cat "$BUILD/expected.version"), vctl $(cut -c1-16 "$BUILD/expected.vctl.sha256"), reporter $(cut -c1-16 "$BUILD/expected.reporter.sha256"), key $(cat "$BUILD/expected.keyid")"
 
 # ----------------------------------------------------------------- serve ----
 
