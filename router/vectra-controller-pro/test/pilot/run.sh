@@ -84,7 +84,9 @@ cleanup() {
 	docker rm -f "vctl-pilot-wan-$$" > /dev/null 2>&1 || true
 	docker network rm "$NET" > /dev/null 2>&1 || true
 	for d in "$BUILD"/old-src-*; do
-		[[ -d "$d" ]] && git -C "$MODULE" worktree remove --force "$d" > /dev/null 2>&1 || true
+		[[ -d "$d" ]] || continue
+		git -C "$MODULE" worktree remove --force "$d" > /dev/null 2>&1 || true
+		rm -rf "$d"
 	done
 }
 trap cleanup EXIT
@@ -137,9 +139,17 @@ echo "  expected: vectra-controller-pro $(cat "$BUILD/expected.version"), vctl $
 build_old() {
 	local name="$1" commit="$2" src="$BUILD/old-src-$1" mirror="$BUILD/mirror/$1" mod
 	step "$name: the release at $commit, from its commit, signed with a throwaway key"
+	# Built already from this very commit: the same bytes again.
+	if [[ -f "$mirror/install.sh" && -s "$BUILD/$name.version" && "$(cat "$BUILD/$name.commit" 2> /dev/null)" == "$(git -C "$MODULE" rev-parse "$commit")" ]]; then
+		echo "  $(cat "$BUILD/$name.version"), built before from $(cut -c1-8 "$BUILD/$name.commit")"
+		return
+	fi
 	rm -rf "$mirror" "$BUILD/$name-feed"
+	rm -f "$BUILD/$name.commit" "$BUILD/$name.version"
+	# What an interrupted run left: the worktree, or only its directory.
 	git -C "$MODULE" worktree remove --force "$src" > /dev/null 2>&1 || true
-	git -C "$MODULE" worktree add --detach "$src" "$commit" > /dev/null
+	rm -rf "$src"
+	git -C "$MODULE" worktree add --force --detach "$src" "$commit" > /dev/null
 	mod="$src/router/vectra-controller-pro"
 	"$mod/scripts/build-pro-feed.sh" --arch "$ARCH" --out "$BUILD/$name-feed" | tail -n 1
 	"$mod/scripts/sign-pro-feed.sh" --feed "$BUILD/$name-feed" --key-dir "$BUILD/$name-keys" --new-key --feed-url "$PUBLISHED_FEED" | tail -n 1
@@ -149,6 +159,7 @@ build_old() {
 	cp "$BUILD/$name-feed/feed.json" "$mirror/artifacts/openwrt/pro-canary/feed.json"
 	awk '/^Package: vectra-controller-pro$/ { p = 1 } p && /^Version:/ { print $2; exit }' "$mirror/artifacts/openwrt/pro-canary/$ARCH/Packages" > "$BUILD/$name.version"
 	echo "  $(cat "$BUILD/$name.version"), $(grep -E '^BAKED_FEED_URL=' "$mirror/install.sh")"
+	git -C "$MODULE" rev-parse "$commit" > "$BUILD/$name.commit"
 	git -C "$MODULE" worktree remove --force "$src"
 }
 for s in "${SELECTED[@]}"; do

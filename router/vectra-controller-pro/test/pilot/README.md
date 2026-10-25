@@ -63,6 +63,40 @@ refusal above it could therefore have failed.
   starts vctl with nothing to carry. The data plane is the data-plane stand's
   (`test/dataplane`).
 
+## What the stand found (2026-10-25, published 0.7.0-r29)
+
+Run of 2026-10-25 (installer `4f9527b9…`, vctl package `5119e940…`):
+`pilot` 69/69, `upgrade` 79/82, `upgrade06` 79/82 — 227/233. The six
+failures are one defect, the second point below.
+
+- **The pilot's steps hold.** The owner's `/etc/config/vectra-reporter`
+  (`enabled '0'`) survives the install and both upgrades (opkg keeps a
+  modified conffile; the package's copy goes to `vectra-reporter-opkg`); the
+  support shell refuses the panel's job after the install, a reboot, a power
+  cut and an upgrade; nothing reaches Connect under cron while the reporter is
+  off, with something to say (the dead-man's VCTL_DOWN); identity and the
+  sealed `state.json` stay, the upgrade from 0.6.0-r36 seals the plaintext
+  one. With the switches back on, the job runs and cron delivers reports the
+  sink verifies against the device key the OLD release registered.
+- **An upgrade wipes the reporter's own state.** The published
+  `vectra-controller-pro_0.7.0-r29` has the Makefile's `Depends` (no
+  `vectra-geodata`, no `vectra-reporter`, no xray minimum); a feed built by
+  `scripts/build-pro-feed.sh` adds them. A router whose vctl came from such a
+  feed has both as auto-installed dependencies; upgrading vctl to the
+  published package, opkg removes them as orphans ("vectra-reporter was
+  autoinstalled and is now orphaned, removing"): the reporter's postrm deletes
+  `/etc/vectra-reporter` (its spool, its state, the clean-shutdown mark) and
+  vectra-geodata's files go. The published installer installs both again by
+  name, so the router ends up whole but its queued reports are lost
+  (`upgrade_reporter_state_kept`, `upgrade_report_kept`,
+  `controls_old_report` fail on purpose). vctl's own self-update
+  (`update_controller`: `opkg install` of the one package) installs nothing
+  back — read from the source, not run here.
+- vctl 0.7 writes no crash output (`cmd/vctl/crash_go123.go`), so a crash is
+  no report any more; only 0.6 reported VCTL_PANIC.
+- `fw4 flush` (`/etc/init.d/firewall stop`) deletes every nftables table,
+  vctl's `inet vctl` included.
+
 ## What only a real router shows
 
 A pass here is no client check. Before the pilot ships, one spare AX3000T on

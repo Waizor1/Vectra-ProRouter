@@ -99,10 +99,14 @@ boot() {
 	# when that fails (internal/controlplane/resolve.go). Those lookups go to
 	# the router's own dnsmasq, which reads /etc/hosts; whatever is addressed
 	# to production is dropped and counted (no_production, at the end).
-	nft -f - <<-EOF || die "the production guard's nftables did not load"
+	# Refused at once (a TCP reset), so vctl's fallback dial takes no longer
+	# than it would against a dead address. qemu-user cannot load nftables:
+	# there the run is NOT isolated, and no_production says so.
+	nft -f - <<-EOF || { [ "${JAIL:-1}" = 0 ] && info "qemu-user: no nftables, this run is NOT kept off production"; } || die "the production guard's nftables did not load"
 		table inet stand_guard {
 			counter prod { }
 			chain out { type filter hook output priority -400; policy accept;
+				ip daddr { 72.56.14.52, 38.244.208.144 } meta l4proto tcp counter name prod reject with tcp reset
 				ip daddr { 72.56.14.52, 38.244.208.144 } counter name prod drop
 			}
 		}

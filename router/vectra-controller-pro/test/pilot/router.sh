@@ -77,7 +77,8 @@ last() { reqs "$1" "${2:-0}" | tail -n 1; }
 verdicts() { reqs /errors/router "${1:-0}" | while read -r l; do field "$l" sink; done; }
 verdict_seen() { verdicts "${2:-0}" | grep -q "^$1"; }
 job_result() { reqs /api/router/job-result | grep -F "\"jobId\":\"$1\"" | tail -n 1; }
-has_job_result() { [ -n "$(job_result "$1")" ]; }
+# A job's final word (the router answers "accepted" first).
+has_job_result() { case "$(field "$(job_result "$1")" jobStatus)" in failure | success) return 0 ;; esac; return 1; }
 queue_job() { # <id> <command>
 	mkdir -p "$WANCTL/jobs/$ROUTER_IP"
 	printf '{"id":"%s","type":"run_terminal_command","payload":{"command":"%s","timeoutSeconds":20}}\n' "$1" "$2" > "$WANCTL/jobs/$ROUTER_IP/$1.json.tmp"
@@ -120,6 +121,12 @@ guard() {
 }
 prod_packets() { nft list counter inet pilot_guard prod 2> /dev/null | sed -n 's/.*packets \([0-9]*\).*/\1/p'; }
 steered_packets() { nft list counter ip pilot_dns steered 2> /dev/null | sed -n 's/.*packets \([0-9]*\).*/\1/p'; }
+# Reports from this router since the end of the last phase: none while the
+# owner's switch is off, the boot and the shutdown between included.
+quiet_since_last_phase() { [ "$(reports)" = "$(cat /out/reports.count 2> /dev/null || echo 0)" ]; }
+check_quiet() { # <prefix>
+	check "$1_quiet_across_boot" "no report since the last phase ended, its shutdown and this boot included ($(cat /out/reports.count 2> /dev/null || echo 0) before, $(reports) now)" quiet_since_last_phase
+}
 check_guard() { # <prefix>
 	check "$1_no_production" "not one packet to Vectra's production addresses (dropped: $(prod_packets); lookups steered to the stand: $(steered_packets))" \
 		test "$(prod_packets)" = 0
@@ -181,6 +188,7 @@ shutdown_router() {
 	done
 	sync
 	info "shutdown: $(cd /etc/rc.d && echo K*)"
+	check_guard shutdown
 }
 
 # ---------------------------------------------------- the pilot's switches ----
@@ -198,9 +206,12 @@ incident_waits() { grep -rqs "$1" /var/run/vectra-reporter/inbox; }
 # What the reporter keeps on flash: its files, by name and content.
 reporter_files() { (cd /etc/vectra-reporter 2> /dev/null && find . -type f | sort | while read -r f; do echo "$f $(file_sha "$f" | cut -c1-12)"; done); }
 
-# off_window <prefix> <what>: two of cron's minutes and more go by; the
-# reporter sends nothing in them, while cron runs (the owner's line ticks).
+# off_window <prefix> <what>: the router makes something to say (VCTL_DOWN,
+# from the dead-man), then two of cron's minutes and more go by; the reporter
+# sends nothing in them, while cron runs (the owner's line ticks).
 off_window() {
+	check "$1_deadman" "vctl stopped while switched on: the dead-man (cron) started it again" vctl_down_once
+	check "$1_incident_waits" "the dead-man's VCTL_DOWN waits in the reporter's inbox" incident_waits VCTL_DOWN
 	r0="$(reports)"
 	t0="$(ticks)"
 	sleep 135
@@ -247,11 +258,15 @@ save_identity() {
 	info "identity: $(cat /out/identity), router id $(field "$LINE" routerId)"
 }
 
+# probe_count <file> <open|closed>: how many ports the probe found so.
+probe_count() { jsonfilter -i "$1" -e '@.*' 2> /dev/null | grep -c "^$2\$" || true; }
 # The router's WAN address, tried from the WAN side.
 wan_closed() { # <prefix>
 	if wget -q -O /out/wan-probe-"$PHASE".json "https://api.vectra-pro.net/stand/probe?ports=$WAN_PORTS"; then
-		open="$(jsonfilter -i /out/wan-probe-"$PHASE".json -e '@.*' 2> /dev/null | grep -c '^open$' || true)"
-		check "$1_wan_closed" "nothing answers on the WAN address ($(tr -d '\n' < /out/wan-probe-"$PHASE".json))" test "$open" = 0
+		open="$(probe_count /out/wan-probe-"$PHASE".json open)"
+		closed="$(probe_count /out/wan-probe-"$PHASE".json closed)"
+		check "$1_wan_closed" "nothing answers on the WAN address ($(tr -d '\n' < /out/wan-probe-"$PHASE".json))" \
+			test "$open:$closed" = "0:$(echo "$WAN_PORTS" | tr ',' '\n' | grep -c .)"
 	else
 		record "$1_wan_closed" FAIL "the WAN side's probe did not answer"
 	fi
@@ -329,8 +344,6 @@ phase_install() {
 	shell_refused install pilot-shell-install
 	wan_closed install_on
 	# The reporter off with something to say.
-	check install_deadman "vctl stopped while switched on: the dead-man (cron) started it again" vctl_down_once
-	check install_incident_waits "the dead-man's VCTL_DOWN waits in the reporter's inbox" incident_waits VCTL_DOWN
 	off_window install "the reporter off, VCTL_DOWN on the router"
 	check_guard install
 }
@@ -343,6 +356,7 @@ phase_after_reboot() { # pilot and upgrade: after a clean reboot
 	if since_07; then shell_refused reboot "$SCENARIO-shell-reboot"; else info "$(version_of $PKG) has no support-shell switch"; fi
 	wan_closed reboot
 	off_window reboot "the reporter off after a clean reboot"
+	check_quiet reboot
 	check_guard reboot
 }
 
@@ -353,6 +367,7 @@ phase_after_powercut() { # pilot and upgrade: after the power went
 	identity_kept powercut
 	shell_refused powercut "$SCENARIO-shell-powercut"
 	off_window powercut "the reporter off after a boot nobody shut down"
+	check_quiet powercut
 	check_guard powercut
 }
 
@@ -394,7 +409,7 @@ phase_controls() {
 	nft insert rule inet fw4 input_wan tcp dport '{ 22, 80 }' accept comment pilot-control
 	if wget -q -O /out/wan-probe-open.json "https://api.vectra-pro.net/stand/probe?ports=tcp:22,tcp:80"; then
 		check controls_probe_sees_open "with ssh and http let in on the WAN, the WAN side reaches them ($(tr -d '\n' < /out/wan-probe-open.json))" \
-			grep -q '"open"' /out/wan-probe-open.json
+			test "$(probe_count /out/wan-probe-open.json open)" = 2
 	else
 		record controls_probe_sees_open FAIL "the WAN side's probe did not answer"
 	fi
@@ -402,6 +417,12 @@ phase_controls() {
 	[ -n "$h" ] && nft delete rule inet fw4 input_wan handle "$h"
 	wan_closed controls_after
 	check_guard controls
+	# The guard could have counted one: a packet sent to the production panel's
+	# address on purpose (port 9, discard) is dropped and counted.
+	p0="$(prod_packets)"
+	wget -q -T 3 -O /dev/null http://72.56.14.52:9/ > /dev/null 2>&1
+	check controls_guard_counts "the guard drops and counts a packet sent to production on purpose ($p0 -> $(prod_packets))" \
+		test "$(prod_packets)" -gt "$p0"
 }
 
 # upgrade, upgrade06: a router on an older release, set up the default way.
@@ -467,15 +488,18 @@ old_report_delivered() {
 
 phase_upgrade() {
 	date +%s > /out/upgrade-at
+	wait_for 60 vctl_up
 	pid0="$(vctl_pid)"
+	check upgrade_running_before "vctl runs before the upgrade (pid ${pid0:-none})" test -n "$pid0"
 	serve_feed published
 	check upgrade_fetched "wget of the published installer" fetch_installer
 	reporter_files > /out/reporter-files-before-upgrade
 	installer
 	reporter_files > /out/reporter-files-after-upgrade
 	cp /tmp/vectra-install.log /out/vectra-install-upgrade.log 2> /dev/null
-	check upgrade_reporter_state_kept "vectra-reporter's own state and spool (/etc/vectra-reporter) kept through the upgrade: $(tr '\n' ' ' < /out/reporter-files-after-upgrade)" \
-		cmp -s /out/reporter-files-before-upgrade /out/reporter-files-after-upgrade
+	check upgrade_reporter_state_kept "vectra-reporter's own state and spool (/etc/vectra-reporter) kept through the upgrade: before $(grep -c . /out/reporter-files-before-upgrade) files, after: $(tr '\n' ' ' < /out/reporter-files-after-upgrade)" \
+		sh -c "[ -s /out/reporter-files-before-upgrade ] && cmp -s /out/reporter-files-before-upgrade /out/reporter-files-after-upgrade"
+	grep -E 'orphaned|Removing package vectra' /out/vectra-install-upgrade.log 2> /dev/null | sed 's/^/  .. opkg: /' 
 	check upgrade_exit "the published installer over $OLD_VERSION: exit 0, got $INSTALL_RC" test "$INSTALL_RC" = 0
 	check upgrade_version "$PKG $OLD_VERSION -> $(version_of $PKG)" test "$(version_of $PKG)" = "$(cat /out/expected.version)"
 	check upgrade_vctl_bytes "/usr/sbin/vctl is the published package's" test "$(file_sha /usr/sbin/vctl)" = "$(cat /out/expected.vctl.sha256)"
@@ -497,6 +521,7 @@ phase_upgrade() {
 	shell_refused upgrade upgrade-shell-upgrade
 	wan_closed upgrade
 	off_window upgrade "upgraded, the old identity's report waiting, the reporter off"
+	check_quiet upgrade
 	check_guard upgrade
 }
 
@@ -512,6 +537,7 @@ fn="phase_$(echo "$PHASE" | tr - _)"
 {
 	echo "## $SCENARIO / $PHASE ($(date -u +%FT%TZ))"
 	"$fn"
+	reports > /out/reports.count
 	echo "## $PHASE: $FAILS failed"
 } >> "/out/$PHASE.log" 2>&1
 touch "/out/$PHASE.done"

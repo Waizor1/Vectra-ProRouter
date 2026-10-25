@@ -13,7 +13,7 @@
 //     address>>, "published" by default: the bytes Vectra published, their
 //     own signature included);
 //     /api/router/...            a stub panel: register, check-in (jobs from
-//     -out/jobs/<router's address>/*.json, then moved to jobs-sent/),
+//     -out/jobs/<router's address>/*.json, then moved to jobs-sent/<address>/),
 //     job-result;
 //     /errors/router             Connect's bug-report sink, checking every
 //     report as the contract says (test/dataplane/reportsink): the body's
@@ -101,7 +101,7 @@ func main() {
 	if s.claim, err = ecdh.X25519().GenerateKey(rand.Reader); err != nil {
 		log.Fatal(err)
 	}
-	for _, d := range []string{"jobs", "jobs-sent"} { // one subdirectory per router
+	for _, d := range []string{"jobs", "jobs-sent"} { // one subdirectory per router in each
 		if err := os.MkdirAll(filepath.Join(s.out, d), 0o755); err != nil {
 			log.Fatal(err)
 		}
@@ -113,18 +113,29 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	go s.serveDNSUDP()
-	go s.serveDNSTCP()
+	// Every listener bound before the stand is told the WAN side is up.
+	udp, err := net.ListenPacket("udp", ":53")
+	if err != nil {
+		log.Fatal(err)
+	}
+	tcp, err := net.Listen("tcp", ":53")
+	if err != nil {
+		log.Fatal(err)
+	}
+	web, err := net.Listen("tcp", ":443")
+	if err != nil {
+		log.Fatal(err)
+	}
+	go s.serveDNSUDP(udp)
+	go s.serveDNSTCP(tcp)
 	srv := &http.Server{
-		Addr:              ":443",
 		Handler:           http.HandlerFunc(s.serveHTTP),
-		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	if err := os.WriteFile(filepath.Join(s.out, "ready"), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644); err != nil {
 		log.Fatal(err)
 	}
-	log.Fatal(srv.ListenAndServeTLS("", ""))
+	log.Fatal(srv.Serve(tls.NewListener(web, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})))
 }
 
 // record appends one line to requests.jsonl.
@@ -169,7 +180,7 @@ func (s *stand) makeCert() (tls.Certificate, error) {
 	leaf := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
 		Subject:      pkix.Name{CommonName: vectraNames[0]},
-		DNSNames:     vectraNames,
+		DNSNames:     append([]string{"*.vectra-pro.net"}, vectraNames...),
 		IPAddresses:  []net.IP{s.ip},
 		NotBefore:    now.Add(-24 * time.Hour),
 		NotAfter:     now.Add(7 * 24 * time.Hour),
@@ -189,14 +200,12 @@ func (s *stand) makeCert() (tls.Certificate, error) {
 
 // ------------------------------------------------------------------ DNS ----
 
+// vectraName: any name under vectra-pro.net answers with the stand, so a
+// Vectra host the stand does not know of fails here instead of reaching the
+// real one.
 func vectraName(q string) bool {
 	q = strings.TrimSuffix(strings.ToLower(q), ".")
-	for _, n := range vectraNames {
-		if q == n {
-			return true
-		}
-	}
-	return false
+	return q == "vectra-pro.net" || strings.HasSuffix(q, ".vectra-pro.net")
 }
 
 // question reads the first question of a DNS message: its name, its type and
@@ -306,11 +315,7 @@ func writeTCPDNS(c net.Conn, msg []byte) error {
 	return err
 }
 
-func (s *stand) serveDNSUDP() {
-	pc, err := net.ListenPacket("udp", ":53")
-	if err != nil {
-		log.Fatal(err)
-	}
+func (s *stand) serveDNSUDP(pc net.PacketConn) {
 	buf := make([]byte, 65535)
 	for {
 		n, from, err := pc.ReadFrom(buf)
@@ -326,11 +331,7 @@ func (s *stand) serveDNSUDP() {
 	}
 }
 
-func (s *stand) serveDNSTCP() {
-	l, err := net.Listen("tcp", ":53")
-	if err != nil {
-		log.Fatal(err)
-	}
+func (s *stand) serveDNSTCP(l net.Listener) {
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -596,7 +597,9 @@ func (s *stand) takeJobs(ip string, fields map[string]any) []any {
 		}
 		jobs = append(jobs, j)
 		ids = append(ids, str(j["id"]))
-		_ = os.Rename(n, filepath.Join(s.out, "jobs-sent", filepath.Base(n)))
+		sent := filepath.Join(s.out, "jobs-sent", ip)
+		_ = os.MkdirAll(sent, 0o755)
+		_ = os.Rename(n, filepath.Join(sent, filepath.Base(n)))
 	}
 	if len(ids) > 0 {
 		fields["jobsSent"] = ids
