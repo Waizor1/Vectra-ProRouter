@@ -15,6 +15,7 @@ import (
 	"vectra-controller-pro/internal/feedverify"
 	"vectra-controller-pro/internal/logging"
 	"vectra-controller-pro/internal/opkgstatus"
+	"vectra-controller-pro/internal/supervisor"
 )
 
 // One xray per vctl: the signed Vectra feed ships the xray-core the vctl in it
@@ -66,10 +67,10 @@ func signedFeedXray(feed feedverify.Feed, pkgs []feedverify.Package, arch string
 	return nil, nil
 }
 
-// How the feed's xray-core goes in.
+// How the feed's xray-core goes in — always by itself, before vctl.
 const (
 	xrayKeep      = ""          // the package is the feed's, and the binary its own
-	xrayWith      = "with"      // none, or older: in one opkg with vctl, whose Depends needs it
+	xrayInstall   = "install"   // none, or older: installed (an upgrade)
 	xrayReinstall = "reinstall" // the feed's version, another binary over it: --force-reinstall
 	xrayDowngrade = "downgrade" // a newer one: --force-downgrade
 )
@@ -86,7 +87,7 @@ func xrayPlan(ctx context.Context, x *feedXray) (string, error) {
 	}
 	switch {
 	case installed == "":
-		return xrayWith, nil
+		return xrayInstall, nil
 	case installed == x.Package.Version:
 		if xrayBinaryVersion(ctx) == opkgstatus.Upstream(installed) {
 			return xrayKeep, nil
@@ -100,7 +101,7 @@ func xrayPlan(ctx context.Context, x *feedXray) (string, error) {
 	if newer {
 		return xrayDowngrade, nil
 	}
-	return xrayWith, nil
+	return xrayInstall, nil
 }
 
 // fetchFeedXray downloads the feed's xray-core the plan puts in, checked
@@ -134,46 +135,50 @@ func fetchFeedXray(ctx context.Context, x *feedXray, how string) (string, func()
 // time, and a kill halfway leaves none.
 const controllerInstallTime = 10 * time.Minute
 
-// xrayAfterError: vctl's package went in, the feed's xray-core after it did
-// not. vctl is the new one on disk all the same: the update is journaled and
-// restarted into, and says so.
-type xrayAfterError struct{ err error }
-
-func (e *xrayAfterError) Error() string { return "xray-core after vctl: " + e.err.Error() }
-func (e *xrayAfterError) Unwrap() error { return e.err }
-
-// installControllerWithXray installs vctl's package (vctlFile) with the
-// feed's xray-core (xrayFile) as the plan says, and returns what opkg said.
-// --force-reinstall and --force-downgrade are only ever xray-core's, in an
-// opkg of their own after vctl's: opkg's --force-reinstall removes the
-// installed package first, and vctl's removal hands the router back. And it
-// removes xray-core before it unpacks the new one: one that fails after that
-// leaves no xray, so a plain install puts it back.
-func installControllerWithXray(ctx context.Context, how, xrayFile, vctlFile string) ([]byte, error) {
-	switch how {
-	case xrayKeep:
-		return runControllerInstall(ctx, vctlFile)
-	case xrayWith:
-		return runControllerInstall(ctx, xrayFile, vctlFile)
-	}
-	out, err := runControllerInstall(ctx, vctlFile)
-	if err != nil {
-		return out, err
-	}
-	more, err := runControllerInstall(ctx, "--force-"+how, xrayFile)
-	out = append(out, more...)
-	if err == nil {
-		return out, nil
-	}
-	if !xrayCoreInstalled() {
-		again, err2 := runControllerInstall(ctx, xrayFile)
-		out = append(out, again...)
-		if err2 == nil && xrayCoreInstalled() {
-			logging.L().Warn("xray-core went in again by a plain install after its --force-"+how+" failed", "err", err.Error())
-			return out, nil
+// installControllerWithXray installs the feed's xray-core (xrayFile) as the
+// plan says, by itself and first, then vctl's package (vctlFile), and returns
+// what opkg said. First: vctl's Depends is met then by the package on the
+// router, from no feed list (they are in RAM, gone after a reboot), and an
+// xray that does not go in leaves vctl as it was. By itself: its
+// --force-reinstall (or --force-downgrade) is never vctl's — opkg's
+// reinstall removes the installed package first, and vctl's removal hands
+// the router back — and it removes xray-core before it unpacks the new one,
+// so one that fails after that is put back by a plain install. And with
+// --force-space, roomForXray having measured first: opkg's own check counts
+// xray-core's whole Installed-Size against the free flash, whatever the
+// flash compresses (an AX3000T's UBIFS: 31 MB counted, 14 MB taken), and
+// refuses on routers that have the room.
+//
+// Between the two, release (when there is one) restarts the xray that runs
+// onto the new binary: the old one held the old binary's file, and its room
+// on the flash comes back only when it exits — vctl's own opkg, which counts
+// its Installed-Size as opkg does, then finds it.
+func installControllerWithXray(ctx context.Context, how, xrayFile, vctlFile string, release func(context.Context)) ([]byte, error) {
+	var out []byte
+	if how != xrayKeep {
+		args := []string{"--force-space"}
+		if how == xrayReinstall || how == xrayDowngrade {
+			args = append(args, "--force-"+how)
+		}
+		o, err := runControllerInstall(ctx, append(args, xrayFile)...)
+		out = append(out, o...)
+		if err != nil && how != xrayInstall && !xrayCoreInstalled() {
+			again, err2 := runControllerInstall(ctx, "--force-space", xrayFile)
+			out = append(out, again...)
+			if err2 == nil && xrayCoreInstalled() {
+				logging.L().Warn("xray-core went in again by a plain install after its --force-"+how+" failed", "err", err.Error())
+				err = nil
+			}
+		}
+		if err != nil {
+			return out, fmt.Errorf("xray-core (vctl not installed): %w", err)
+		}
+		if release != nil {
+			release(ctx)
 		}
 	}
-	return out, &xrayAfterError{err}
+	o, err := runControllerInstall(ctx, vctlFile)
+	return append(out, o...), err
 }
 
 // xrayCoreInstalled: opkg's status has xray-core installed.
@@ -183,15 +188,42 @@ func xrayCoreInstalled() bool {
 }
 
 // The room a new xray-core needs, by its signed index entry: its download
-// in /tmp beside vctl's, and the whole binary unpacked on flash — the xray
-// that runs holds the old file until vctl restarts it, so the old one frees
-// nothing meanwhile. Short of either, nothing is installed: opkg running out
-// of room halfway leaves a binary cut short. overlayPath and freeBytes are
-// stood in by tests.
+// in /tmp beside vctl's, and the new binary on flash beside the old one —
+// the xray that runs holds the old file until vctl restarts it, so the old
+// one frees nothing meanwhile. On flash that compresses (UBIFS, JFFS2: the
+// /overlay of a squashfs router) that is about the package's own Size:
+// measured on an AX3000T's UBIFS, the 13.3 MB package took 14.1 MB, and the
+// install's low point was 18.5 MB below the free space it started from — so
+// 1.4 × Size there; on other flash its Installed-Size. Short of either,
+// nothing is installed: opkg running out of room halfway leaves a binary cut
+// short. overlayPath, mountsFile and xrayFreeBytes are stood in by tests.
 var (
 	overlayPath   = "/overlay"
+	mountsFile    = "/proc/mounts"
 	xrayFreeBytes = freeBytes
 )
+
+// flashCompresses: the filesystem mounted at path compresses what it stores.
+func flashCompresses(path string) bool {
+	b, err := os.ReadFile(mountsFile)
+	if err != nil {
+		return false
+	}
+	compresses := false
+	for _, line := range strings.Split(string(b), "\n") {
+		if f := strings.Fields(line); len(f) >= 3 && f[1] == path {
+			compresses = f[2] == "ubifs" || f[2] == "jffs2"
+		}
+	}
+	return compresses
+}
+
+func xrayFlashNeed(p feedverify.Package, flash string) int64 {
+	if p.Size > 0 && flashCompresses(flash) {
+		return p.Size * 14 / 10
+	}
+	return p.InstalledSize
+}
 
 const xrayRoomMargin = 4 << 20
 
@@ -203,7 +235,7 @@ func roomForXray(p feedverify.Package) error {
 	for _, need := range []struct {
 		path  string
 		bytes int64
-	}{{os.TempDir(), p.Size}, {flash, p.InstalledSize}} {
+	}{{os.TempDir(), p.Size}, {flash, xrayFlashNeed(p, flash)}} {
 		free, ok := xrayFreeBytes(need.path)
 		if !ok {
 			return fmt.Errorf("room for xray-core %s on %s: cannot tell", p.Version, need.path)
@@ -230,4 +262,30 @@ var xrayBinaryVersion = func(ctx context.Context) string {
 		return f[1]
 	}
 	return ""
+}
+
+// releaseOldXray restarts the xray vctl runs onto the binary just installed,
+// and waits, up to 30 s, for the new process (installControllerWithXray).
+// The old one's binary was the feed's predecessor, and every vctl from
+// 0.7.0-r29 writes configs both take.
+func (d *daemon) releaseOldXray(ctx context.Context) {
+	if d.sup == nil || !d.supStarted {
+		return
+	}
+	before := d.sup.Status().StartedAt
+	if err := d.sup.Reload(d.supCtx); err != nil {
+		logging.L().Warn("could not restart xray onto the new binary before vctl's install", "err", err.Error())
+		return
+	}
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
+		if st := d.sup.Status(); st.State == supervisor.StateRunning && st.StartedAt.After(before) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	logging.L().Warn("xray did not come back on the new binary within 30 s; vctl's install goes on")
 }

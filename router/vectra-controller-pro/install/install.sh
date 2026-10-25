@@ -353,6 +353,38 @@ pkg_candidates() {
 feed_url() { cat $OPKG_CONFS 2> /dev/null | awk -v n="$1" '($1 == "src/gz" || $1 == "src") && $2 == n { print $3; exit }'; }
 
 free_kb() { df -k "$1" 2>/dev/null | awk 'NR == 2 { print $4; exit }'; }
+# xray_released: the old xray binary is let go between Vectra's xray-core
+# and the rest of the install — nothing runs it, or the vctl that does is one
+# whose configs the new xray takes (0.7.0-r29 and later) and is restarted
+# onto it (release_old_xray); not with --standby, where Vectra stays off.
+XRAY_RELEASE_MIN=0.7.0-r29
+xray_released() {
+	pidof xray > /dev/null 2>&1 || return 0
+	[ "$STANDBY" != 1 ] && "/etc/init.d/$PKG" running > /dev/null 2>&1 && rv="$(installed_version "$PKG")" && [ -n "$rv" ] &&
+		version_ge "$rv" "$XRAY_RELEASE_MIN"
+}
+
+# release_old_xray restarts the vctl that runs onto the new xray, so the old
+# binary's room on the flash comes back before vctl's own opkg, which counts
+# its Installed-Size against what is free.
+XRAY_RESTARTED=""
+release_old_xray() {
+	[ -n "$XRAY_REPLACED" ] && pidof xray > /dev/null 2>&1 && xray_released || return 0
+	(unset VECTRA_SKIP_POSTINST_RESTART; run "/etc/init.d/$PKG" restart)
+	wait_for 30 "/etc/init.d/$PKG" running
+	XRAY_RESTARTED=1
+	note "Vectra перезапущена на новом xray: место прежнего освобождено"
+}
+
+# store_compresses: the flash packages land on compresses what it stores
+# (UBIFS, JFFS2: the /overlay of a squashfs router).
+store_compresses() {
+	case "$(awk -v m="$STORE" '$2 == m { t = $3 } END { print t }' "${VECTRA_PROC_MOUNTS:-/proc/mounts}" 2> /dev/null)" in
+	ubifs | jffs2) return 0 ;;
+	esac
+	return 1
+}
+
 # Where packages land: /overlay on a squashfs router, / otherwise.
 storage_path() {
 	if grep -q ' /overlay ' /proc/mounts 2>/dev/null; then echo /overlay; else echo /; fi
@@ -753,13 +785,28 @@ check_storage() {
 	step "Место"
 	need=0
 	# Vectra's own packages state their Installed-Size; the rest is estimated.
-	# xray-core whenever plan_xray puts it in, whole: the xray that runs
-	# holds the old binary until it restarts, so the old one frees nothing.
+	# xray-core whenever plan_xray puts it in, beside the old binary: the
+	# xray that runs holds that one until it restarts, so it frees nothing.
+	# On flash that compresses (UBIFS, JFFS2) the new one takes about the
+	# package's own Size — on an AX3000T's UBIFS the 13.3 MB package took
+	# 14.1 MB, and the install's low point was 18.5 MB down — so 1.4 × Size;
+	# its Installed-Size elsewhere. (opkg's own check counts the whole
+	# Installed-Size: install_xray_pin gives it --force-space.) It goes in
+	# first; when the old one is let go before the rest (xray_released), the
+	# room is the larger of the two steps, else their sum.
+	xray_kb=0
 	for p in $PKG xray-core vectra-geodata vectra-reporter; do
 		v="$(feed_field "$p" Version)"
 		iv="$(installed_version "$p")"
 		if [ "$p" = xray-core ]; then
 			[ -n "$XRAY_PIN" ] || continue
+			if store_compresses && s="$(feed_field xray-core Size)" && [ -n "$s" ]; then
+				xray_kb=$((s * 14 / 10 / 1024))
+			else
+				s="$(feed_field xray-core Installed-Size)"
+				xray_kb=$((${s:-0} / 1024))
+			fi
+			continue
 		elif [ -n "$iv" ] && version_ge "$iv" "$v"; then
 			continue
 		fi
@@ -772,6 +819,11 @@ check_storage() {
 		need=$((need + ${s:-0} * UNPACK_FACTOR / 1024))
 	done
 	[ "$LUCI" = 1 ] && need=$((need + 2048))
+	if xray_released; then
+		[ "$xray_kb" -gt "$need" ] && need="$xray_kb"
+	else
+		need=$((need + xray_kb))
+	fi
 	have="$(free_kb "$STORE")"
 	if [ "${have:-0}" -lt $((need + MARGIN_KB)) ]; then
 		refuse STORAGE_TOO_SMALL "на $STORE свободно $((${have:-0} / 1024)) МБ, нужно около $(((need + MARGIN_KB) / 1024)) МБ (xray — самый большой пакет, около 30 МБ)."
@@ -824,9 +876,11 @@ install_xray_pin() {
 	reinstall) how=--force-reinstall ;;
 	downgrade) how=--force-downgrade ;;
 	esac
+	# --force-space: opkg counts xray-core's whole Installed-Size, whatever
+	# the flash compresses; check_storage measured the room it needs.
 	# shellcheck disable=SC2086 # no flag, or one
-	if ! retry opkg install $how "$XRAY_FILE"; then
-		[ -n "$how" ] && ! installed xray-core && run opkg install "$XRAY_FILE"
+	if ! retry opkg install --force-space $how "$XRAY_FILE"; then
+		[ -n "$how" ] && ! installed xray-core && run opkg install --force-space "$XRAY_FILE"
 		installed xray-core || fail XRAY_PIN_INSTALL "opkg install xray-core $2 не прошёл, и xray-core на роутере нет (см. лог). Vectra не установлена; запустите установщик снова — он поставит xray-core из своего фида."
 		[ "$(installed_version xray-core)" = "$2" ] || fail XRAY_PIN_INSTALL "opkg install xray-core $2 не прошёл (см. лог); на роутере остался xray-core $(installed_version xray-core). Vectra не установлена."
 	fi
@@ -1173,6 +1227,7 @@ install_packages() {
 		ok "LuCI $(installed_version luci-base)"
 	fi
 	install_xray_pin
+	release_old_xray
 	step "Vectra"
 	was="$(installed_version "$PKG")"
 	INSTALLED_SOMETHING=1
@@ -1212,7 +1267,7 @@ install_packages() {
 	# starts it again.
 	# Not with --standby: Vectra is to stay off, and its postinst's hold
 	# (VECTRA_SKIP_POSTINST_RESTART) would make the restart a stop.
-	if [ -n "$XRAY_REPLACED" ] && [ "$STANDBY" != 1 ] && [ -n "$was" ] && [ "$was" = "$(installed_version "$PKG")" ] &&
+	if [ -n "$XRAY_REPLACED" ] && [ -z "$XRAY_RESTARTED" ] && [ "$STANDBY" != 1 ] && [ -n "$was" ] && [ "$was" = "$(installed_version "$PKG")" ] &&
 		"/etc/init.d/$PKG" running > /dev/null 2>&1; then
 		(unset VECTRA_SKIP_POSTINST_RESTART; run "/etc/init.d/$PKG" restart)
 		note "Vectra перезапущена: теперь работает новый xray"

@@ -30,27 +30,42 @@ since). From r30 a vctl comes with the xray it is built and proven with.
   and that package's binary — never another feed's xray-core, which opkg
   would take for the Depends when it is newer, nor a binary swapped in by
   hand:
-  - the installer installs Vectra's xray-core file first, by itself, checked
-    against its list: an upgrade over an older package or none, a
-    `--force-reinstall` over the same version with another binary, a
-    `--force-downgrade` under a newer one; it refuses a feed without
-    xray-core or with another xray than its release's; it counts the whole
-    package on flash (the running xray holds the old file); a vctl not
-    upgraded is restarted onto the new xray; its end check is
-    XRAY_NOT_VECTRAS otherwise;
+  - the feed's xray-core always goes in **first and by itself**, then vctl,
+    whose Depends it meets from no feed list: an upgrade over an older
+    package or none, a `--force-reinstall` over the same version with
+    another binary, a `--force-downgrade` under a newer one — never a
+    `--force-*` in vctl's opkg (a reinstall removes the package first, and
+    vctl's removal hands the router back); one that failed after removing
+    xray-core is installed plainly again; one that does not go in leaves
+    vctl as it was;
+  - **the room it needs, as the flash takes it.** opkg's own check counts
+    xray-core's whole Installed-Size (31 MB) against the free flash and
+    refused it on an AX3000T with 24.8 MB free (VagrandRouter, 25.10), where
+    UBIFS stores the binary in 14.1 MB (18.5 MB at the install's low point,
+    the running xray holding the old file). So the room is Vectra's own
+    measure — 1.4 × the package's Size on UBIFS/JFFS2, its Installed-Size
+    elsewhere — and xray-core's opkg gets `--force-space`; vctl's keeps
+    opkg's check. Between the two the xray that runs is restarted onto the
+    new binary, so the old one's room is back before vctl's opkg: by vctl
+    itself (the supervisor) in a self-update, by restarting a vctl from
+    0.7.0-r29 on in the installer and the rollout (an older vctl writes
+    configs 26.10.x refuses: then the room asked is the sum);
+  - the installer refuses a feed without xray-core or with another xray
+    than its release's, restarts a vctl not upgraded onto the new xray, and
+    its end check is XRAY_NOT_VECTRAS otherwise;
   - vctl's self-update (`update_controller`, Connect's automatic update)
-    takes xray-core from the same signed index as vctl (`feed_xray.go`): in
-    the same opkg as vctl when it is missing or older — the file given
-    meets the Depends, no feed list needed — or by itself after vctl with
-    its force flag (never a `--force-*` in vctl's opkg: a reinstall removes
-    the package first, and vctl's removal hands the router back); it checks
-    the download's sha256 and the room in /tmp and on flash first, and
-    installs nothing otherwise; the job's result names the xray;
+    takes xray-core from the same signed index as vctl (`feed_xray.go`),
+    downloads it before the install's deadline (the opkg runs get 10
+    minutes: one killed halfway leaves a binary cut short) and checks its
+    sha256 and the room in /tmp and on flash first; the job's result names
+    the xray;
   - `scripts/Rollout-VctlFleet.py` does the same from the channel's signed
-    index, raises its floors by what the xray needs, restarts vctl after a
-    reinstall, and its health check wants the channel's xray package and
-    binary.
-  Tried on OpenWrt 24.10.8's opkg: r29 with 26.10.17 over xray-core 26.7.28
+    index, its download in the detached run (past the panel's job cap), its
+    floors raised by that measure, and its health check wants the channel's
+    xray package and binary.
+  Tried on OpenWrt 24.10.8's opkg: its check refuses a package whose
+  Installed-Size passes the free space ("Only have 24576kb available …
+  needs 31745"), `--force-space` installs it; and r29 with 26.10.17 over xray-core 26.7.28
   and no feed lists becomes r30 with xray-core 26.10.21-r1 and its binary.
 - **The companions stay on the router whatever a vctl's Depends says.** No
   opkg command clears `Auto-Installed`: on opkg 2024.10.16 (OpenWrt 24.10.8)

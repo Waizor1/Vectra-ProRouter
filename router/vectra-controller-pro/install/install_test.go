@@ -302,7 +302,7 @@ func TestTheRoutersXrayBecomesTheFeeds(t *testing.T) {
 			}
 			log := r.read("log")
 			if !strings.Contains(log, "wget https://router.vectra-pro.net/pro/aarch64_cortex-a53/"+vectraXrayFile) ||
-				!strings.Contains(log, "opkg install "+tc.flag+filepath.Join(r.dir, file)) || strings.Contains(log, "passwall/xray-core") {
+				!strings.Contains(log, "opkg install --force-space "+tc.flag+filepath.Join(r.dir, file)) || strings.Contains(log, "passwall/xray-core") {
 				t.Fatalf("what was fetched and installed:\n%s", log)
 			}
 			if !strings.Contains(out, "xray 26.10.21 — пакет xray-core 26.10.21-r1 из фида Vectra") {
@@ -1112,9 +1112,41 @@ func TestTheTemplateRefusalNamesTheCommandForEveryBrand(t *testing.T) {
 	}
 }
 
-// Vectra's xray-core counts whole whenever it goes in, a reinstall over the
-// same version too: the xray that runs keeps the old binary until it restarts.
+// Vectra's xray-core counts whenever it goes in, a reinstall over the same
+// version too: the xray that runs keeps the old binary until it restarts. On
+// flash that compresses (an AX3000T's UBIFS) by its Size, × 1.4: a 30 MB
+// xray-core in a 13 MB package fits in 24 MB free there, and not on ext4.
 func TestTheFeedsXrayIsCountedWholeWhenItGoesIn(t *testing.T) {
+	ubi := xrayRouter(t)
+	ubi.feed("vectra_pro", "https://router.vectra-pro.net/pro/aarch64_cortex-a53",
+		pkg("xray-core", "26.10.21-r1", vectraXrayFile, "00")+"\nInstalled-Size: 32505980\nSize: 13900000")
+	ubi.write("installed", "xray-core - 26.7.28-r1\n")
+	ubi.write("df-free", "24852")
+	pin := "XRAY_PIN='vectra_pro 26.10.21-r1 " + vectraXrayFile + " 00'; check_storage"
+	for fs, ok := range map[string]bool{"ubifs": true, "jffs2": true, "ext4": false} {
+		ubi.write("mounts", "/dev/ubi0_1 /overlay "+fs+" rw,noatime 0 0\noverlayfs:/overlay / overlay rw 0 0\n")
+		out, code := ubi.run("VECTRA_PROC_MOUNTS='" + filepath.Join(ubi.dir, "mounts") + "'; " + pin)
+		if (code == 0) != ok {
+			t.Errorf("%s with 24 MB free: exit %d:\n%s", fs, code, out)
+		}
+	}
+	// And vctl's 11 MB after it: the larger of the two steps when the old
+	// xray is let go between them (nothing runs it here), their sum when an
+	// xray that is not let go holds it (--standby next to PassWall2's).
+	ubi.feed("vectra_pro", "https://router.vectra-pro.net/pro/aarch64_cortex-a53",
+		pkg("xray-core", "26.10.21-r1", vectraXrayFile, "00")+"\nInstalled-Size: 32505980\nSize: 13900000",
+		pkg("vectra-controller-pro", "0.7.0-r30", "v.ipk", "11")+"\nInstalled-Size: 11400000")
+	ubi.write("mounts", "/dev/ubi0_1 /overlay ubifs rw,noatime 0 0\n")
+	mounts := "VECTRA_PROC_MOUNTS='" + filepath.Join(ubi.dir, "mounts") + "'; "
+	if out, code := ubi.run(mounts + pin); code != 0 {
+		t.Errorf("xray let go before vctl: exit %d:\n%s", code, out)
+	}
+	ubi.write("pidof-xray", "")
+	if out, code := ubi.run(mounts + "STANDBY=1; " + pin); code != 1 || !strings.Contains(out, "нужно около") {
+		t.Errorf("xray held while vctl goes in: exit %d:\n%s", code, out)
+	}
+	os.Remove(filepath.Join(ubi.dir, "pidof-xray"))
+
 	r := xrayRouter(t)
 	r.feed("vectra_pro", "https://router.vectra-pro.net/pro/aarch64_cortex-a53",
 		pkg("xray-core", "26.10.21-r1", vectraXrayFile, "00")+"\nInstalled-Size: 31457280")
@@ -1144,7 +1176,7 @@ esac
 `+strings.TrimPrefix(onInstallXray, "#!/bin/sh\n"))
 	out, code := r.run("plan_xray; fetch_xray_pin; install_xray_pin")
 	log := r.read("log")
-	if code != 0 || !strings.Contains(log, "opkg install --force-reinstall ") || !strings.Contains(log, "opkg install "+filepath.Join(r.dir, "work", "xray", vectraXrayFile)) ||
+	if code != 0 || !strings.Contains(log, "opkg install --force-space --force-reinstall ") || !strings.Contains(log, "opkg install --force-space "+filepath.Join(r.dir, "work", "xray", vectraXrayFile)) ||
 		!strings.Contains(out, "xray 26.10.21 — пакет xray-core 26.10.21-r1 из фида Vectra") {
 		t.Fatalf("exit %d, log:\n%s\n%s", code, log, out)
 	}

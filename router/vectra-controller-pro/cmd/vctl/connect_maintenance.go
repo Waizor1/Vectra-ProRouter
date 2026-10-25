@@ -18,7 +18,6 @@ import (
 
 	"vectra-controller-pro/internal/controlplane"
 	"vectra-controller-pro/internal/feedverify"
-	"vectra-controller-pro/internal/logging"
 )
 
 // These seams are fixed-argv operations. Tests never invoke router commands.
@@ -229,8 +228,10 @@ type maintenanceCandidate struct {
 	URL              string
 	InstalledVersion string
 	// Xray is the same signed index's xray-core, installed with it
-	// (feed_xray.go); nil when the feed has none.
-	Xray *feedXray
+	// (feed_xray.go); nil when the feed has none. ReleaseXray restarts the
+	// xray that runs onto it before vctl goes in.
+	Xray        *feedXray
+	ReleaseXray func(context.Context)
 }
 
 var safeMaintenanceFilename = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+~-]*\.ipk$`)
@@ -420,6 +421,7 @@ func (d *daemon) connectMaintenanceAfterCheckin(ctx context.Context, owner strin
 	if e = d.saveMaintenance(s); e != nil {
 		return e
 	}
+	candidate.ReleaseXray = d.releaseOldXray
 	return maintenanceAutoInstall(ctx, *candidate)
 
 }
@@ -468,13 +470,8 @@ var maintenanceAutoInstall = func(ctx context.Context, c maintenanceCandidate) e
 	defer xrayDone()
 	installCtx, cancel := context.WithTimeout(ctx, controllerInstallTime)
 	defer cancel()
-	var xrayAfter *xrayAfterError
-	if _, e = installControllerWithXray(installCtx, how, xrayFile, dest); e != nil && !errors.As(e, &xrayAfter) {
+	if _, e = installControllerWithXray(installCtx, how, xrayFile, dest, c.ReleaseXray); e != nil {
 		return errors.New("automatic package install failed")
-	}
-	if xrayAfter != nil {
-		// vctl is the new one on disk: restarted into all the same.
-		logging.L().Warn("automatic update: vctl updated; the feed's xray-core after it was not installed", "err", xrayAfter.Error())
 	}
 	scheduleControllerRestart()
 	return errControllerRestartRequested

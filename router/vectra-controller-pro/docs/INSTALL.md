@@ -95,9 +95,13 @@ Nothing changes until every check has passed:
 8. **xray: one per vctl.** The xray this vctl depends on (`xray-core (>=
    26.10.21)` for 0.7.0-r30) and is proven with is Vectra's feed's own; after
    the install the router's xray is that package and that package's binary.
-   Its file from Vectra's list is planned (installed first, by itself,
-   checked against the list's SHA256): as an upgrade over an older package or
-   none, a reinstall over the same version with a binary swapped in by hand
+   Its file from Vectra's list is planned (fetched first, checked against the
+   list's SHA256; installed by itself just before vctl, with `--force-space`
+   — opkg counts its whole Installed-Size, which UBIFS stores in less than
+   half — and, where a vctl from 0.7.0-r29 runs, that vctl restarted onto it
+   so the old binary's room is back before vctl's own opkg): as an upgrade
+   over an older package or none, a reinstall over the same version with a
+   binary swapped in by hand
    (the four vctl routers ran 26.10.17 over xray-core 26.7.28-r1 from
    2026-10-21), a downgrade under a newer package. Another feed's xray-core,
    however new, is never taken; a feed without xray-core, without its
@@ -113,8 +117,12 @@ Nothing changes until every check has passed:
    PassWall2 is updated.
 9. **Storage**: Vectra's packages by the `Installed-Size` of the feed's own
    index, OpenWrt's by download size × 3 (their index has none), plus 4 MB;
-   Vectra's xray-core whole whenever it goes in, a reinstall too (the xray
-   that runs holds the old binary until it restarts). What would be left is
+   Vectra's xray-core whenever it goes in, a reinstall too (the xray that
+   runs holds the old binary until it restarts): 1.4 × its package's Size on
+   UBIFS/JFFS2 (an AX3000T: 14.1 MB on flash for the 13.3 MB package, 18.5 MB
+   at the low point), its Installed-Size elsewhere; the larger of it and the
+   rest when the old xray is let go between them, their sum otherwise. What
+   would be left is
    held against what Vectra's own update needs free (16 MB): less is a
    warning — Connect's «Обновить» would be refused until room is made.
 

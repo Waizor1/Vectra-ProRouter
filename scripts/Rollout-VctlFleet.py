@@ -18,13 +18,16 @@ version, in the panel's order (or --hosts' order):
    the package must be in that index with this sha256, the ipk is downloaded
    and its sha256 checked, and `opkg install` starts detached (setsid, after
    15 s) so the job that asked returns before the package restarts the
-   controller that runs it. The channel's own xray-core goes with it — one
-   xray per vctl, the one it depends on: in the same opkg when the router's
-   is older or missing, by itself after vctl (--force-reinstall over a binary
-   swapped in by hand, --force-downgrade under a newer one) otherwise; its
-   entry checked against the signed index too, and the floors raised by what
-   it needs (its download in /tmp, the whole binary on flash: the running xray
-   holds the old one until it restarts). The job refuses to run outside a five-minute
+   controller that runs it. The channel's own xray-core goes in first — one
+   xray per vctl, the one it depends on — by itself, with --force-space
+   (opkg counts its whole Installed-Size, which UBIFS stores in less than
+   half) and, over a binary swapped in by hand or under a newer package,
+   --force-reinstall / --force-downgrade; then a vctl from 0.7.0-r29 on is
+   restarted onto it, so the old binary's room is back, and vctl goes in.
+   Its entry is checked against the signed index too, and the floors are
+   raised by what it needs (its download in /tmp; on UBIFS 1.4 × its Size on
+   flash, beside the old binary the running xray holds until it restarts).
+   The job refuses to run outside a five-minute
    window from when it was queued (a router offline now cannot pick it up
    unwatched later; a router whose clock is unset refuses too);
 4. health, after the wait: opkg finished with rc=0, the version, the running
@@ -177,8 +180,9 @@ def xray_entry(channel: str) -> dict | None:
 
 
 def xray_how(it: dict, xray: dict | None) -> str:
-    """How the channel's xray-core goes in, from what the intake read: keep,
-    with (in vctl's opkg), reinstall, downgrade — as cmd/vctl/feed_xray.go."""
+    """How the channel's xray-core goes in, from what the intake read — keep,
+    install, reinstall, downgrade — always by itself before vctl, as
+    cmd/vctl/feed_xray.go."""
     if not xray:
         return "keep"
     want, pkg, binary = xray["Version"], it.get("xraypkg", ""), it.get("xrayv", "")
@@ -186,7 +190,7 @@ def xray_how(it: dict, xray: dict | None) -> str:
         return "keep" if binary == re.sub(r"-r?\d+$", "", want) else "reinstall"
     if pkg and version_key(pkg) > version_key(want):
         return "downgrade"
-    return "with"
+    return "install"
 
 
 def package_entry(channel: str, version: str) -> dict:
@@ -215,6 +219,7 @@ d=no; nft list table inet drill >/dev/null 2>&1 && d=yes; nft list table inet vd
 [ -e /tmp/vctl-rollout.run ] && echo "pending=yes" || echo "pending=no"
 echo "xraypkg=$(awk '/^Package: /{p=($2=="xray-core")} p&&/^Version: /{print $2; exit}' /usr/lib/opkg/status)"
 echo "xrayv=$(/usr/bin/xray version 2>/dev/null | awk 'NR==1{print $2}')"
+echo "ovfs=$(awk '$2=="/overlay"{print $3}' /proc/mounts)"
 d=/tmp/vctl-rollout.i; rm -rf "$d"; mkdir -p "$d"
 curl -fsS -m 15 -o "$d/Packages" "$base/Packages" && curl -fsS -m 15 -o "$d/Packages.sig" "$base/Packages.sig" \
   && usign -V -q -m "$d/Packages" -x "$d/Packages.sig" -P /etc/opkg/keys && echo "index=signed" || echo "index=unverified"
@@ -268,31 +273,34 @@ keep() {
   rm -f $s.vctl $c
 }
 keep
-# The channel's xray-core with vctl (one xray per vctl), fetched here — past
-# the panel's job cap — and checked against the signed index's sha256: in the
-# same opkg when it is missing or older, by itself after vctl's otherwise —
-# never a --force-* in vctl's opkg (a reinstall removes the package first;
-# vctl's removal hands the router back), and installed plainly again when one
-# failed after taking it away — then vctl, if it runs, restarted onto it.
+# The channel's xray-core first (one xray per vctl), fetched here — past the
+# panel's job cap — and checked against the signed index's sha256; by itself,
+# with --force-space (opkg counts its whole Installed-Size; the floors held
+# its real need) and, the same version or newer, its force flag — never a
+# --force-* in vctl's opkg (a reinstall removes the package first; vctl's
+# removal hands the router back) — and installed plainly again when one
+# failed after taking it away. Then the vctl that runs, if its configs the
+# new xray takes (0.7.0-r29+), is restarted onto it: the old binary's room on
+# the flash comes back before vctl's own opkg, which counts its
+# Installed-Size. Then vctl, whose postinst restarts it as ever.
 x=/tmp/vctl-rollout.d/xray.ipk rc=0
 if [ "$how" != keep ]; then
   curl -fsS -m 300 -o "$x" "$base/$xfile" > /tmp/vctl-rollout.log 2>&1 && [ "$(sha256sum "$x" | cut -d' ' -f1)" = "$xsha" ] || rc=xray_download
+  if [ "$rc" = 0 ]; then
+    f=""; [ "$how" = reinstall ] && f=--force-reinstall; [ "$how" = downgrade ] && f=--force-downgrade
+    opkg install --force-space $f "$x" >> /tmp/vctl-rollout.log 2>&1; rc=$?
+    if [ "$rc" != 0 ] && [ -n "$f" ] && ! grep -q '^Package: xray-core$' /usr/lib/opkg/status; then
+      opkg install --force-space "$x" >> /tmp/vctl-rollout.log 2>&1 && rc=0
+    fi
+  fi
+  if [ "$rc" = 0 ] && /etc/init.d/vectra-controller-pro running && awk -v a="$(opkg list-installed vectra-controller-pro | cut -d' ' -f3)" 'BEGIN {
+      n = split(a, x, /[^0-9]+/); split("0.7.0-r29", y, /[^0-9]+/)
+      for (i = 1; i <= 4; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 } exit 0 }'; then
+    /etc/init.d/vectra-controller-pro restart >> /tmp/vctl-rollout.log 2>&1
+    w=0; until /etc/init.d/vectra-controller-pro running && pidof xray >/dev/null || [ $w -ge 30 ]; do sleep 1; w=$((w + 1)); done
+  fi
 fi
-if [ "$rc" = 0 ]; then
-  case "$how" in
-  with) opkg install "$x" /tmp/vctl-rollout.d/pkg.ipk >> /tmp/vctl-rollout.log 2>&1; rc=$? ;;
-  reinstall | downgrade)
-    opkg install /tmp/vctl-rollout.d/pkg.ipk >> /tmp/vctl-rollout.log 2>&1; rc=$?
-    if [ "$rc" = 0 ]; then
-      opkg install --force-$how "$x" >> /tmp/vctl-rollout.log 2>&1; rc=$?
-      if [ "$rc" != 0 ] && ! grep -q '^Package: xray-core$' /usr/lib/opkg/status; then
-        opkg install "$x" >> /tmp/vctl-rollout.log 2>&1 && rc=0
-      fi
-      [ "$rc" = 0 ] && /etc/init.d/vectra-controller-pro running && /etc/init.d/vectra-controller-pro restart >> /tmp/vctl-rollout.log 2>&1
-    fi ;;
-  *) opkg install /tmp/vctl-rollout.d/pkg.ipk >> /tmp/vctl-rollout.log 2>&1; rc=$? ;;
-  esac
-fi
+[ "$rc" = 0 ] && { opkg install /tmp/vctl-rollout.d/pkg.ipk >> /tmp/vctl-rollout.log 2>&1; rc=$?; }
 keep
 echo "rc=$rc" >> /tmp/vctl-rollout.log
 X
@@ -381,8 +389,18 @@ def roll(r: dict, a: argparse.Namespace, entry: dict, target: tuple[int, ...], x
     how = xray_how(it, xray)
     floors = dict(FLOORS)
     if how != "keep":
-        floors["tmp"] += -(-int(xray.get("Size", "0") or 0) // (1 << 20))
-        floors["overlay"] += -(-int(xray.get("Installed-Size", "0") or 0) // (1 << 20))
+        mib = lambda b: -(-int(b or 0) // (1 << 20))  # noqa: E731
+        floors["tmp"] += mib(xray.get("Size"))
+        # The new xray beside the old one on flash: on UBIFS/JFFS2 about its
+        # package's Size (an AX3000T: 14.1 MB for 13.3, 18.5 MB at the low
+        # point), 1.4 × it; its Installed-Size elsewhere. When the vctl that
+        # runs is let go of the old xray before vctl's own opkg (0.7.0-r29+),
+        # the larger of the two steps, else their sum.
+        compresses = it.get("ovfs") in ("ubifs", "jffs2")
+        x_need = mib(int(xray.get("Size", "0") or 0) * 14 // 10) if compresses else mib(xray.get("Installed-Size"))
+        v_need = mib(entry.get("Installed-Size"))
+        released = (release(it.get("version", "")) or (0,)) >= (0, 7, 0, 29)
+        floors["overlay"] = max(floors["overlay"], (max(x_need, v_need) if released else x_need + v_need) + 4)
     low = [k for k, floor in floors.items() if int(it.get(k, "0") or 0) < floor]
     if low:
         raise Skip(f"below the floors ({', '.join(f'{k} < {floors[k]} MiB' for k in low)}; xray-core {how})")
