@@ -438,12 +438,16 @@ func TestWhatTheInstallBroughtInLosesTheMark(t *testing.T) {
 
 // The status stays as it was, and the run says so with a warning and goes on,
 // whenever the new file cannot replace it safely: another opkg runs (and is
-// waited for first); a cut-short file (awk exits 0 on a full overlay);
-// another opkg wrote the status meanwhile; the sync fails.
+// waited for first); a cut-short file (awk exits 0 on a full overlay), short
+// of lines or only of its last line's bytes; another opkg wrote the status
+// meanwhile; the sync fails.
 func TestTheCompanionsMarksStayWhenTheyCannotGoSafely(t *testing.T) {
 	for name, tc := range map[string]struct{ setup, script string }{
-		"another opkg runs":            {setup: "pidof-opkg"},
-		"a cut-short file":             {script: `companion_marks() { if [ "$1" = drop ]; then head -c 120 "$2"; else echo 2; fi; }` + "\n"},
+		"another opkg runs": {setup: "pidof-opkg"},
+		"a cut-short file":  {script: `companion_marks() { if [ "$1" = drop ]; then head -c 120 "$2"; else echo 2; fi; }` + "\n"},
+		// Every line there, the last one cut short: only its bytes tell.
+		"a file cut inside its last line": {setup: "cut=" + companionsKept[:len(companionsKept)-2],
+			script: `companion_marks() { if [ "$1" = drop ]; then cat "$FAKE/cut"; else echo 2; fi; }` + "\n"},
 		"the status changed meanwhile": {setup: "bin/sync=#!/bin/sh\necho 'Package: written-meanwhile' >> \"$FAKE_STATUS\"\n"},
 		"the sync fails":               {setup: "bin/sync=#!/bin/sh\nexit 1\n"},
 	} {
