@@ -202,6 +202,19 @@ describe("operator session: its own key, a not-before cutoff, fail closed", () =
     expect(await verifyOperatorSession(await oldFormatCookie(KEY_A, { user: "operator", iat: now, exp: now + 7 * 24 * 3600 * 1000 }))).not.toBeNull();
   });
 
+  it("an issue time more than 5 minutes ahead is refused even when signed, and it would outlive any cutoff", async () => {
+    set("VECTRA_OPERATOR_SESSION_SECRET", KEY_A);
+    const now = Date.now();
+    const ahead = await oldFormatCookie(KEY_A, { user: "operator", iat: now + 10 * 60_000, exp: now + 10 * 60_000 + 3_600_000 });
+    expect(await verifyOperatorSession(ahead)).toBeNull();
+    // A cutoff set now would not end it if it were accepted: its iat is past it.
+    set("VECTRA_OPERATOR_SESSIONS_NOT_BEFORE", seconds(T0));
+    expect(await verifyOperatorSession(ahead)).toBeNull();
+    // Positive control: a clock step's worth ahead is still a cookie the panel wrote.
+    set("VECTRA_OPERATOR_SESSIONS_NOT_BEFORE", undefined);
+    expect(await verifyOperatorSession(await oldFormatCookie(KEY_A, { user: "operator", iat: now + 60_000, exp: now + 3_600_000 }))).not.toBeNull();
+  });
+
   it("an edited payload is refused", async () => {
     set("VECTRA_OPERATOR_SESSION_SECRET", KEY_A);
     const [, signature] = (await createOperatorSession("operator")).split(".");
@@ -228,5 +241,15 @@ describe("operator session: its own key, a not-before cutoff, fail closed", () =
     const legacy = await legacyCookie();
     expect(await verifyOperatorSession(await createOperatorSession("operator"))).not.toBeNull();
     expect(await verifyOperatorSession(legacy)).toBeNull();
+  });
+
+  it("outside production a key that is set but no key stays no key: never the development key", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const devCookie = await createOperatorSession("operator");
+    for (const bad of ["short", " " + KEY_A, "replace-with-a-long-random-session-key-0123456789", SHARED_KEY]) {
+      set("VECTRA_OPERATOR_SESSION_SECRET", bad);
+      expect(operatorSessionsAvailable()).toBe(false);
+      expect(await verifyOperatorSession(devCookie)).toBeNull();
+    }
   });
 });

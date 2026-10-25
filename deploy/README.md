@@ -107,43 +107,58 @@ rotation needs no separate stop: `docker compose up -d web worker` alone recreat
 the containers with the new key.
 
 Run it as one block from the deploy root. Any failed step stops it before the
-next one: a `stop` that did not stop never moves the cutoff, and traffic comes back
-only after every `web` and `worker` container shows the same cutoff:
+next one: a build whose code does not know the cutoff never moves it, a `stop`
+that did not stop never moves it, a recreate from another build never starts,
+and traffic comes back only after every `web` and `worker` container shows the
+same cutoff:
 
 ```bash
 (
   set -euo pipefail
+  web_id="$(docker compose ps -aq web)" || exit 1
+  image="$(docker inspect --format '{{.Image}}' "$web_id")" || exit 1
+  docker run --rm --entrypoint grep "$image" -rqs VECTRA_OPERATOR_SESSIONS_NOT_BEFORE \
+    /app/apps/web/.next/server || exit 1                     # this build's code knows the cutoff
   docker compose stop web || exit 1
   running="$(docker compose ps -q --status running web)" || exit 1
-  test -z "$running"                                         # nothing issues cookies now
+  test -z "$running" || exit 1                               # nothing issues cookies now
   now="$(date +%s)" || exit 1
   NB=$(( now + 1 ))                                          # the next whole second
   if grep -q '^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=' .env; then
     :
   else
     rc=$?
-    test "$rc" -eq 1                                         # absent is expected; a read error is not
-    echo 'VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=' >> .env
+    test "$rc" -eq 1 || exit 1                               # absent is expected; a read error is not
+    echo 'VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=' >> .env || exit 1
   fi
-  sed -i "s/^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=.*/VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=$NB/" .env
-  grep -qx "VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=$NB" .env
+  sed -i "s/^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=.*/VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=$NB/" .env || exit 1
+  grep -qx "VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=$NB" .env || exit 1
   docker compose up --no-start web worker || exit 1            # recreated, not started
   ids="$(docker compose ps -aq web worker)" || exit 1
   count="$(printf '%s\n' "$ids" | grep -c .)" || exit 1
-  test "$count" -eq 2                                        # one web, one worker (container_name)
-  for id in $ids; do                                         # each container's env before start
+  test "$count" -eq 2 || exit 1                              # one web, one worker (container_name)
+  for id in $ids; do                                         # each container before start:
+    test "$(docker inspect --format '{{.Image}}' "$id")" = "$image" || exit 1   # the build checked above
     env_dump="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$id")" || exit 1
     value="$(printf '%s\n' "$env_dump" | sed -n 's/^VECTRA_OPERATOR_SESSIONS_NOT_BEFORE=//p')" || exit 1
-    test "$value" = "$NB"
+    test "$value" = "$NB" || exit 1                          # and the cutoff in its env
   done
   docker compose start web worker || exit 1
   for id in $ids; do                                         # and once running
     value="$(docker exec "$id" printenv VECTRA_OPERATOR_SESSIONS_NOT_BEFORE)" || exit 1
-    test "$value" = "$NB"
+    test "$value" = "$NB" || exit 1
   done
   echo "cutoff $NB in force on every web and worker container"
 )
 ```
+
+The first check reads the code of the build the web container runs: a build from
+before the session key (an image the panel was rolled back to, or one not rolled
+out yet) does not know the cutoff, so the block stops there with nothing changed.
+Each recreated container must come from that same build: if the image was rebuilt
+since, the block stops before `start` instead of rolling the new build out with
+the cutoff. Every check ends the block with `|| exit 1` of its own, so it still
+stops when pasted inside an `if` or before `&&`, where bash ignores `set -e`.
 
 If the block exits before `up --no-start`, no recreation was attempted; the old
 web may be stopped, and `docker compose start web` restores its old env (no new

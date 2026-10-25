@@ -20,6 +20,11 @@ type SessionPayload = {
   exp: number;
 };
 
+// The panel issues and checks every cookie on its own clock, so an issue time
+// further ahead than a clock step is not one it wrote: refused, or a cookie
+// signed with a leaked key could carry an iat past any cutoff set before it.
+const MAX_ISSUED_AHEAD_MS = 1000 * 60 * 5;
+
 const MIN_SESSION_SECRET_LENGTH = 32;
 const DEV_SESSION_SECRET = "vectra-dev-session-secret";
 
@@ -170,6 +175,7 @@ export async function verifyOperatorSession(token: string | undefined | null) {
       !Number.isFinite(payload.iat) ||
       typeof payload.exp !== "number" ||
       payload.iat < notBefore ||
+      payload.iat > Date.now() + MAX_ISSUED_AHEAD_MS ||
       payload.exp - payload.iat > SESSION_TTL_MS ||
       payload.exp <= Date.now()
     ) {
