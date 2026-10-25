@@ -90,8 +90,14 @@ since). From r30 a vctl comes with the xray it is built and proven with.
     PassWall2 is updated, gives it back — and the router's internet goes out
     directly; the legacy agent comes back as ever and keeps the router in the
     panel. `vectra status` (and the router UI's hand-back) says the traffic
-    would go directly and why; `vectra off` says why. One rule in three
-    places (`TestThePassWallXrayRuleIsTheSameEverywhere`).
+    would go directly and why; `vectra off` says why; `--uninstall` says how
+    to switch PassWall2 on once it is updated. One rule in three places
+    (`TestThePassWallXrayRuleIsTheSameEverywhere`). Not covered: the legacy
+    agent, given back (or brought back by its package's watchdog), applies
+    the panel's config, which sets PassWall2's own switch on again
+    (`renderGlobalCommands`) — PassWall2 then runs on an xray it breaks on
+    until the agent's rescue parks it direct. On such routers update
+    PassWall2 to 26.9.9-2 or newer before relying on a hand-back.
 - `build-pro-feed.sh` ships **xray 26.10.21**. XTLS withdrew 26.10.10 and
   26.10.17 (their release is gone, so main's feed and stands no longer built):
   their built-in root CAs held three that 26.10.21 drops, and it is built with
@@ -114,6 +120,18 @@ since). From r30 a vctl comes with the xray it is built and proven with.
   constraints too (it left `zram-swap (>= 1.0.0-r4)`).
 
 ### Not changed — and why
+- **From r29, r30 does not come by vctl's own self-update.** The update runs
+  the installed vctl's code, and r29's (`update_controller`, Connect's
+  automatic update) installs the one vctl package: with xray-core older than
+  26.10.21 on the router (every one today) and no feed list in RAM, opkg
+  says "cannot find dependency xray-core (>= 26.10.21)", installs nothing and
+  exits 0. The panel's «Обновить» then ends as `update_version_unverified`
+  after a restart of vctl; Connect's automatic update restarts vctl and tries
+  again a day later, every day. r29 routers go to r30 by
+  `scripts/Rollout-VctlFleet.py` (r30's: it brings the channel's xray-core)
+  or the installer; from r30 on, the self-update brings its xray itself.
+  The alternative is a minimum r29's routers meet (26.3.27) for r30, raised
+  in r31 — the owner's decision.
 - A router that lacks `vectra-geodata` or `vectra-reporter` cannot self-update
   to r30 while opkg has no list of the pro feed (`/var/opkg-lists` is RAM, a
   reboot empties it): opkg says "cannot find dependency", installs nothing and

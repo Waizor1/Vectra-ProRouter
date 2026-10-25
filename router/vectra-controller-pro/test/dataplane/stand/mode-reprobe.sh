@@ -21,7 +21,10 @@
 
 . "$STAND/mode-failover.sh"
 
-RP_NAME=nodes.stand
+# A name under .test (RFC 6761): xray from 26.10.17 refuses a VLESS outbound
+# without TLS to a server that is neither a private address nor a private
+# name, and these nodes speak plain VLESS.
+RP_NAME=nodes.test
 RP_BUDGET=40
 
 # The failover entry, its nodes by name, a probe window long enough that only
