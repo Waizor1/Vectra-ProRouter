@@ -1358,6 +1358,35 @@ describe("a late result of a re-claimed router's old job", () => {
     expect(order.slice(0, 4)).toEqual(["select:job", "select:router", "select:router", "update:job"]);
   });
 
+  // A second post of the same result that raced the first: under the lock the
+  // job is already recorded, so the conditional job update takes nothing and
+  // the post is only acknowledged — no record, revision, incident or event.
+  it("a result whose job another post recorded first, under the lock, records nothing more", async () => {
+    // The job is read as still running; the job update under the lock then
+    // finds it no longer waiting (the other post committed first).
+    fake.reset({
+      selects: [
+        [jobs, [[{ id: JOB_ID, routerId: ROUTER_ID, type: "apply_xray_config", state: "running", payload: { desiredRevisionId: REVISION_ID, origin: "partner_claim" }, desiredRevisionId: REVISION_ID, dedupeKey: null, deliveredAt: new Date(), partnerClaim: CLAIM_A_ON_JOB, createdAt: new Date() }]]],
+        [routers, [[routerRow({ ownerRef: "acct-42", claimId: CLAIM_A })], [routerRow({ ownerRef: "acct-42", claimId: CLAIM_A })]]],
+        [passwallDesiredRevisions, [[{ id: REVISION_ID, routerId: ROUTER_ID, engineMode: "xray-direct", configDigest: "d", config: {} }]]],
+      ],
+      updateReturns: [[jobs, [[]]]],
+    });
+
+    const answer = await recordJobResult(
+      ROUTER_ID,
+      result("success", { appliedRevisionId: REVISION_ID, result: { enteredDirectMode: true } }),
+    );
+
+    expect(answer.acknowledged).toBe(true);
+    expect(fake.inserts(jobResults)).toEqual([]);
+    expect(fake.inserts(passwallAppliedRevisions)).toEqual([]);
+    expect(fake.inserts(healthIncidents)).toEqual([]);
+    expect(fake.inserts(partnerWebhooks)).toEqual([]);
+    expect(fake.updates(routers)).toEqual([]);
+    expect(fake.inserts(eventLog)).toEqual([]);
+  });
+
   it("the undeliverable fallback reports a claim A apply under A, while the router is on B", async () => {
     const onB = routerRow({ ownerRef: "acct-42", claimId: CLAIM_B, approvedAt: new Date(), importState: "approved", status: "active" });
     // Unserializable (createdAt NaN), so the check-in fails it; recordJobResult

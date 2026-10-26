@@ -17,11 +17,12 @@ vi.mock("~/env", () => envMock);
  * probe. Armed, the probe holds the result right after one query of its own
  * returns — every transaction it opens is probed as well — so the test can
  * act in between:
- * - "before the gate": after the result's own record (vectra_job_result) is
- *   stored, before anything is judged;
+ * - "before the gate": after the result's first read of the router, before
+ *   anything is judged or written;
  * - "after the gate": after the result's second read of the router — the one
- *   its claim gate is judged on (in the fixed code, the SELECT … FOR UPDATE
- *   inside the transaction that also does every write).
+ *   its claim gate is judged on (in the fixed code, the SELECT … FOR NO KEY
+ *   UPDATE inside the transaction that also does every write);
+ * - after an insert into a given table (a failure can be injected there).
  */
 type Hold =
   | { at: "insert"; table: unknown; pause: () => Promise<void> }
@@ -144,6 +145,7 @@ import * as schema from "@vectra/db";
 
 import { recordJobResult } from "./router-control";
 import { claimRouterWithDb, unbindRouterClaimWithDb } from "./router-claims";
+import { runStuckJobJanitorTick } from "./stuck-job-janitor";
 
 /**
  * R120-1 and R129-1 against a REAL PostgreSQL. A result of claim A's job is
@@ -339,6 +341,57 @@ describe.skipIf(!url)("real PostgreSQL: a late result of a re-claimed router's o
     return { deviceIdentifier, routerId, claimId, job: action! };
   }
 
+  function post(a: Awaited<ReturnType<typeof claimA>>, report: Record<string, unknown>) {
+    return recordJobResult(a.routerId, {
+      protocolVersion: VECTRA_PROTOCOL_VERSION,
+      routerId: a.routerId,
+      jobId: a.job.id,
+      ...report,
+    });
+  }
+
+  /**
+   * Post A's result and hold it: "before-gate" right after its first read of
+   * the router (before its transaction), "after-gate" right after its second
+   * — the read under the row lock its claim gate is judged on. Resolves once
+   * it is held.
+   */
+  async function holdResult(
+    a: Awaited<ReturnType<typeof claimA>>,
+    report: Record<string, unknown>,
+    where: "before-gate" | "after-gate",
+  ) {
+    let release!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      probe.hold = {
+        at: "router-read",
+        remaining: where === "before-gate" ? 1 : 2,
+        pause: () => {
+          resolve();
+          return new Promise<void>((resume) => {
+            release = resume;
+          });
+        },
+      };
+    });
+    const pending = post(a, report);
+    await Promise.race([
+      reached,
+      pending.then(() => {
+        throw new Error(`A's result finished without reaching the ${where} barrier`);
+      }),
+    ]);
+    return { pending, release: () => release() };
+  }
+
+  /** Settles to `label` if `work` has not settled within `ms`. */
+  function within<T>(work: Promise<T>, ms: number, label: string) {
+    return Promise.race([
+      work,
+      new Promise<string>((resolve) => setTimeout(() => resolve(label), ms)),
+    ]);
+  }
+
   /**
    * Hold A's result at `where`, let the owner unbind A and claim B from the
    * other session, give that RECLAIM_GRACE_MS, then let A go on. Records the
@@ -351,33 +404,11 @@ describe.skipIf(!url)("real PostgreSQL: a late result of a re-claimed router's o
     where: "before-gate" | "after-gate",
   ) {
     const order: string[] = [];
-    let release!: () => void;
-    const reached = new Promise<void>((resolve) => {
-      const pause = () => {
-        resolve();
-        return new Promise<void>((resume) => {
-          release = resume;
-        });
-      };
-      probe.hold =
-        where === "before-gate"
-          ? { at: "insert", table: schema.jobResults, pause }
-          : { at: "router-read", remaining: 2, pause };
-    });
-    const pending = recordJobResult(a.routerId, {
-      protocolVersion: VECTRA_PROTOCOL_VERSION,
-      routerId: a.routerId,
-      jobId: a.job.id,
-      ...report,
-    }).then(() => {
+    const held = await holdResult(a, report, where);
+    const pending = held.pending.then(() => {
       order.push("A's result done");
     });
-    await Promise.race([
-      reached,
-      pending.then(() => {
-        throw new Error(`A's result finished without reaching the ${where} barrier`);
-      }),
-    ]);
+    const release = held.release;
     order.push(`A held ${where}`);
 
     const reclaim = (async () => {
@@ -589,6 +620,161 @@ describe.skipIf(!url)("real PostgreSQL: a late result of a re-claimed router's o
         .from(schema.jobs)
         .where(eq(schema.jobs.id, a.job.id));
       expect(job?.state).toBe("failed");
+    }, 20_000);
+  });
+
+  // Production-safety review of 8480d4d3: the result's row lock must not
+  // stop what merely REFERENCES the router (every insert into a table with a
+  // foreign key to it takes FOR KEY SHARE on the router row), and must not
+  // deadlock with the stuck-job janitor (job row, then an event-log insert).
+  describe("the result's router lock and the rest of the panel", () => {
+    let quickSql: ReturnType<typeof postgres>;
+    let quick: Db;
+
+    beforeAll(() => {
+      // Gives up on a row lock after 2 s: a wait shows as an error, not a hang.
+      quickSql = postgres(url!, {
+        max: 1,
+        onnotice: () => undefined,
+        connection: { lock_timeout: 2000 },
+      });
+      quick = drizzle(quickSql, { schema });
+    });
+
+    afterAll(async () => {
+      await quickSql?.end();
+    });
+
+    it("an event-log insert for the router does not wait while a result holds the router row", async () => {
+      const a = await claimA("apply");
+      const held = await holdResult(a, failure, "after-gate");
+
+      const startedAt = Date.now();
+      const inserted = await quick
+        .insert(schema.eventLog)
+        .values({
+          routerId: a.routerId,
+          type: "test.fk_insert_during_result",
+          severity: "info",
+          message: "An insert that references the router.",
+        })
+        .returning({ id: schema.eventLog.id })
+        .then(
+          (rows) => ({ ok: true as const, rows }),
+          (error: unknown) => ({ ok: false as const, error: String(error) }),
+        );
+      const waitedMs = Date.now() - startedAt;
+      held.release();
+      await held.pending;
+
+      expect(inserted).toMatchObject({ ok: true });
+      expect(waitedMs).toBeLessThan(1_000);
+    }, 20_000);
+
+    it("the stuck-job janitor cancels the job while a result holds the router row: no deadlock, and the late result wins", async () => {
+      const a = await claimA("apply");
+      // Delivered two hours ago and still running: stuck by a 1-hour threshold.
+      await db
+        .update(schema.jobs)
+        .set({ state: "running", deliveredAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
+        .where(eq(schema.jobs.id, a.job.id));
+      const held = await holdResult(a, failure, "after-gate");
+
+      // The janitor's own order, on another session: the job row, then an
+      // event-log insert that references the router.
+      const janitor = runStuckJobJanitorTick(new Date(), other as never, {
+        enabled: true,
+        staleSeconds: 3600,
+      });
+      const janitorWhileHeld = await within(janitor, 1_000, "janitor waiting for the result");
+      held.release();
+      const [result, janitorDone] = await Promise.allSettled([held.pending, janitor]);
+
+      // Neither side is a deadlock victim…
+      expect(result).toMatchObject({ status: "fulfilled" });
+      expect(janitorDone).toMatchObject({
+        status: "fulfilled",
+        value: expect.objectContaining({ failedJobIds: [] }),
+      });
+      // …and the result, which came later, is what the job ends with.
+      const [job] = await db
+        .select({ state: schema.jobs.state })
+        .from(schema.jobs)
+        .where(eq(schema.jobs.id, a.job.id));
+      expect(job?.state).toBe("failed");
+      expect(
+        await db
+          .select({ id: schema.jobResults.id })
+          .from(schema.jobResults)
+          .where(eq(schema.jobResults.jobId, a.job.id)),
+      ).toHaveLength(1);
+      // The janitor never waited for the result's transaction.
+      expect(janitorWhileHeld).toMatchObject({
+        cancelledJobIds: expect.arrayContaining([a.job.id]),
+        failedJobIds: [],
+      });
+    }, 20_000);
+
+    it("two posts of the same result, the second while the first holds the router row, record it once", async () => {
+      const a = await claimA("apply");
+      const report = { status: "success", appliedRevisionId: a.job.desiredRevisionId };
+      const first = await holdResult(a, report, "after-gate");
+
+      // The retry reads the job as still waiting, then queues on the row lock.
+      const second = post(a, report);
+      const secondWhileHeld = await within(second, RECLAIM_GRACE_MS, "second waiting for the first");
+      first.release();
+      await first.pending;
+      await second;
+
+      expect(secondWhileHeld).toBe("second waiting for the first");
+      expect(
+        await db
+          .select({ id: schema.jobResults.id })
+          .from(schema.jobResults)
+          .where(eq(schema.jobResults.jobId, a.job.id)),
+      ).toHaveLength(1);
+      expect(
+        await db
+          .select({ id: schema.passwallAppliedRevisions.id })
+          .from(schema.passwallAppliedRevisions)
+          .where(eq(schema.passwallAppliedRevisions.jobId, a.job.id)),
+      ).toHaveLength(1);
+      expect(await eventsOf(a.routerId, "router.ready")).toHaveLength(1);
+    }, 20_000);
+
+    it("a result whose transaction rolls back leaves no record behind: its retry records it once", async () => {
+      const a = await claimA("apply");
+      const report = { status: "success", appliedRevisionId: a.job.desiredRevisionId };
+      // Fail the transaction after the result's record is written in it (at
+      // the applied-revision insert), as a deadlock victim would.
+      probe.hold = {
+        at: "insert",
+        table: schema.passwallAppliedRevisions,
+        pause: () => Promise.reject(new Error("injected failure inside the result")),
+      };
+
+      await expect(post(a, report)).rejects.toThrow("injected failure inside the result");
+      const recordsAfterFailure = await db
+        .select({ id: schema.jobResults.id })
+        .from(schema.jobResults)
+        .where(eq(schema.jobResults.jobId, a.job.id));
+      const [jobAfterFailure] = await db
+        .select({ state: schema.jobs.state })
+        .from(schema.jobs)
+        .where(eq(schema.jobs.id, a.job.id));
+
+      // The router retries (its pending result flush).
+      await post(a, report);
+
+      expect(recordsAfterFailure).toEqual([]);
+      expect(jobAfterFailure?.state).toBe("queued");
+      expect(
+        await db
+          .select({ id: schema.jobResults.id })
+          .from(schema.jobResults)
+          .where(eq(schema.jobResults.jobId, a.job.id)),
+      ).toHaveLength(1);
     }, 20_000);
   });
 });

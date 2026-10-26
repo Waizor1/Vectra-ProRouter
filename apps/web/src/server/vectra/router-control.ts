@@ -44,7 +44,7 @@ import {
   routerReauthProofs,
   routers,
 } from "@vectra/db";
-import { and, asc, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import { createHash, verify as cryptoVerify } from "node:crypto";
 import { ZodError } from "zod";
 
@@ -2768,12 +2768,12 @@ export async function recordJobResult(routerId: string, input: unknown) {
         // enqueue leaves it unclaimed for the next retry.
         const reported = await db.transaction(async (tx) => {
           // The router row first, then the job: the lock order of a claim's
-          // unbind and of the result path below.
+          // unbind and of the result path below. NO KEY UPDATE, as there.
           await tx
             .select({ id: routers.id })
             .from(routers)
             .where(eq(routers.id, routerId))
-            .for("update");
+            .for("no key update");
           const [claimed] = await tx
             .update(jobs)
             .set({ payload: { ...job.payload, cancelledRunReported: true } })
@@ -2828,31 +2828,36 @@ export async function recordJobResult(routerId: string, input: unknown) {
   }
   const payload = normalizeJobResultPayload(parsed);
 
-  await db.insert(jobResults).values({
-    jobId: job.id,
-    routerId,
-    status: parsed.status,
-    payload,
-  });
-
-  // The job's record and everything the result changes on the router happen
-  // in ONE transaction that first locks the router row (SELECT … FOR UPDATE)
-  // and judges the claim against the row as locked. A claim's unbind and a
-  // claim lock that same row first too (their UPDATE of it), so they wait for
-  // this transaction to end, or it finds them done — never a gate passed under
-  // one claim and writes landing under the next. Lock order, here as there:
-  // the router row, then what hangs off it (jobs, incidents, revisions,
-  // rescue cases).
+  // The result's record, the job's state and everything the result changes on
+  // the router happen in ONE transaction that first locks the router row and
+  // judges the claim against the row as locked. A claim's unbind and a claim
+  // lock that same row first too (their UPDATE of it), so they wait for this
+  // transaction to end, or it finds them done — never a gate passed under one
+  // claim and writes landing under the next. Lock order, here as there: the
+  // router row, then what hangs off it (jobs, incidents, revisions, rescue
+  // cases).
+  //
+  // FOR NO KEY UPDATE, not FOR UPDATE: it conflicts with those UPDATEs of the
+  // router (they change no key column, so they take the same mode) and with
+  // another result's lock, but not with the FOR KEY SHARE every insert that
+  // references the router takes (event log, incidents, jobs, snapshots, …).
+  // Those never wait for a result — so neither can a writer that holds a job
+  // row and then inserts such a row (the stuck-job janitor) deadlock with it.
   const recorded = await db.transaction(async (tx) => {
     const [locked] = await tx
       .select()
       .from(routers)
       .where(eq(routers.id, routerId))
-      .for("update")
+      .for("no key update")
       .limit(1);
 
-    // The job's own record, whatever the gate says.
-    await tx
+    // The job's state — only if the job is still waiting for this result, as
+    // judged under the lock every result for this router takes: a second post
+    // of the same result (a retry racing the first) finds it already recorded
+    // and leaves, with no second record, revision or rescue attempt. A job
+    // cancelled meanwhile (the janitor, an unbind) has no result yet: a late
+    // result still takes its place, as before.
+    const [taken] = await tx
       .update(jobs)
       .set({
         state:
@@ -2871,7 +2876,27 @@ export async function recordJobResult(routerId: string, input: unknown) {
           resultStatus: parsed.status,
         }),
       })
-      .where(eq(jobs.id, job.id));
+      .where(
+        and(
+          eq(jobs.id, job.id),
+          parsed.status === "accepted"
+            ? inArray(jobs.state, ["queued", "delivered"])
+            : notInArray(jobs.state, ["succeeded", "failed"]),
+        ),
+      )
+      .returning({ id: jobs.id });
+    if (!taken) {
+      return null;
+    }
+
+    // The result's own record, in the same transaction: a rolled-back result
+    // leaves no row behind for its retry to duplicate.
+    await tx.insert(jobResults).values({
+      jobId: job.id,
+      routerId,
+      status: parsed.status,
+      payload,
+    });
 
     const gate = judgeJobResultClaim(job, router, locked);
     // The router changed claim while this result ran (read at its start,
@@ -3079,6 +3104,12 @@ export async function recordJobResult(routerId: string, input: unknown) {
     await tellPartner(currentRouter);
     return { gate, currentRouter };
   });
+  if (!recorded) {
+    return jobResultResponseSchema.parse({
+      protocolVersion: parsed.protocolVersion,
+      acknowledged: true,
+    });
+  }
   // Delivery starts once what was queued is committed.
   schedulePartnerWebhookDelivery();
   const refused = recorded.gate.mayChangeRouter
