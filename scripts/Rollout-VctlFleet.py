@@ -433,7 +433,8 @@ def roll(r: dict, a: argparse.Namespace, entry: dict, target: tuple[int, ...], x
     if bad:
         raise Stop(f"not healthy after the upgrade ({', '.join(bad)}). {rollback_hint(it.get('version', ''))}")
     if h.get("marks") != "0":
-        print(f"   note: the companions' Auto-Installed marks stay ({h.get('marks')}); a vctl from 0.7.0-r31 drops them at its next start")
+        later = "; this vctl drops them at its next start" if target >= DROPS_MARKS_AT_START else ""
+        print(f"   note: the companions' Auto-Installed marks stay ({h.get('marks')}){later}")
     return f"{it.get('version')} -> {a.version}"
 
 
@@ -442,6 +443,8 @@ def roll(r: dict, a: argparse.Namespace, entry: dict, target: tuple[int, ...], x
 # in as its dependencies (marked Auto-Installed) — the reporter's spool and
 # state, the geo data.
 KEEPS_COMPANIONS = (0, 7, 0, 30)
+# The oldest vctl with `vctl keep-companions` and the pass at its start.
+DROPS_MARKS_AT_START = (0, 7, 0, 32)
 
 
 def rollback_hint(previous: str) -> str:

@@ -112,7 +112,7 @@ a throwaway key, served at the same pro-canary path. Everything else is the
 same, the installer's key is read from its `BAKED_FEED_KEY_ID`, and
 `*_companions_user` checks that vectra-geodata and vectra-reporter end up
 installed without opkg's `Auto-Installed` mark. `upgrade_start_drops_marks`
-(from r31) marks them again, as an older vctl's self-update leaves them, and
+(from r32) marks them again, as an older vctl's self-update leaves them, and
 checks that the vctl drops the marks once it starts.
 
 Run of 2026-10-25 on 0.7.0-r30 (`a75bb5c8`, branch fix/vctl-r30-packaging):

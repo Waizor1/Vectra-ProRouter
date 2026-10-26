@@ -56,16 +56,20 @@ const autoInstalledMark = "Auto-Installed: yes"
 var errOpkgRunning = errors.New("another opkg is running")
 
 // opkgMu: one goroutine of this vctl at a time holds opkg's lock or runs
-// opkg — the start's pass, the self-update's install, the CLI. An fcntl lock
+// opkg — the start's pass, the self-update's install, the CLI, the
+// maintenance's queries (opkgQuery) and PassWall's retirement. An fcntl lock
 // is the process's, not the descriptor's: a second one taken in this process
-// is granted at once, and closing either descriptor lets go of both.
+// is granted at once, and closing either descriptor lets go of both; and an
+// opkg this vctl starts while it holds the lock stops at "Could not lock".
 var opkgMu sync.Mutex
 
 // afterTheLock runs once opkg's lock is granted, before it is checked to hold;
+// afterTheScan between the look at the processes and the one at the path;
 // beforeTheRename between the last look at the status file and the rename
 // over it. Tests stand an opkg that ends, or a writer that interferes, in.
 var (
 	afterTheLock    = func() {}
+	afterTheScan    = func() {}
 	beforeTheRename = func() {}
 )
 
@@ -200,6 +204,7 @@ func lockOpkg() (func(), error) {
 		}
 		return nil, errOpkgRunning
 	}
+	afterTheScan()
 	held, err1 := f.Stat()
 	now, err2 := os.Stat(opkgLockFile)
 	if err1 != nil || err2 != nil || !os.SameFile(held, now) {
@@ -286,14 +291,20 @@ var (
 )
 
 // keepCompanionsAtStart drops the marks an older vctl left: 0.7.0-r29's and
-// earlier self-updates kept nothing, so the companions the new vctl's opkg
-// brought in as its dependencies stay marked — and go with any later vctl
-// that does not name them, r29 put back by hand included. In the background,
-// once; nothing is locked or written where nothing is marked.
+// earlier self-updates kept nothing after their opkg, so the companions the
+// new vctl's opkg brought in as its dependencies stay marked — and go with any
+// later vctl that does not name them, r29 put back by hand included. In the
+// background, once; nothing is locked or written where nothing is marked.
+// Not while an opkg runs: a postinst that starts this vctl runs inside it,
+// and opkg writes the status — the marks with it — only at its end.
 func (d *daemon) keepCompanionsAtStart(ctx context.Context) {
 	deadline := time.Now().Add(companionsStartWait)
 	for {
-		kept, err := keepCompanions()
+		var kept []string
+		err := errOpkgRunning
+		if running, scanErr := opkgRunning(); scanErr != nil || !running {
+			kept, err = keepCompanions()
+		}
 		switch {
 		case err == nil:
 			if len(kept) > 0 {

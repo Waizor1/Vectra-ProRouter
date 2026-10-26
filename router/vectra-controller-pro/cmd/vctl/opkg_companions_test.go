@@ -77,10 +77,10 @@ func companionStand(t *testing.T, status string) string {
 	}
 	prevStatus, prevLock, prevProc, prevWait := opkgStatusFile, opkgLockFile, opkgProcDir, companionsWait
 	opkgStatusFile, opkgLockFile, opkgProcDir, companionsWait = p, filepath.Join(dir, "opkg.lock"), filepath.Join(dir, "proc"), 0
-	prevAfter, prevBefore := afterTheLock, beforeTheRename
+	prevAfter, prevScan, prevBefore := afterTheLock, afterTheScan, beforeTheRename
 	t.Cleanup(func() {
 		opkgStatusFile, opkgLockFile, opkgProcDir, companionsWait = prevStatus, prevLock, prevProc, prevWait
-		afterTheLock, beforeTheRename = prevAfter, prevBefore
+		afterTheLock, afterTheScan, beforeTheRename = prevAfter, prevScan, prevBefore
 	})
 	// The router's processes: init, and no opkg.
 	fakeProcess(t, "1", "init")
@@ -223,7 +223,73 @@ func TestALockOnAnUnlinkedLockFileHoldsNothing(t *testing.T) {
 	}
 }
 
-// A writer that takes no lock (an installer before r31) writes the status
+// The order holds the lock: the processes are looked at after it is granted,
+// and the path after them. An opkg that ends once the processes are looked
+// at — its unlink, and the next opkg's creat() and lock — is caught by the
+// look at the path; with the path looked at first, it would not be, and the
+// next opkg would write under a lock this one believes it holds.
+func TestThePathIsLookedAtAfterTheProcesses(t *testing.T) {
+	p := companionStand(t, companionStatus)
+	var release func()
+	afterTheScan = func() {
+		afterTheScan = func() {}
+		if err := os.Remove(opkgLockFile); err != nil {
+			t.Fatal(err)
+		}
+		release = holdOpkgLock(t, opkgLockFile)
+	}
+	if _, err := keepCompanions(); !errors.Is(err, errOpkgRunning) {
+		t.Fatalf("err %v, want errOpkgRunning", err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != companionStatus {
+		t.Fatalf("status changed under the next opkg's lock:\n%s", got)
+	}
+	release()
+}
+
+// One goroutine of vctl at a time: an fcntl lock is the process's, so a
+// second keepCompanions would be granted it at once and write beside the
+// first. It waits for the first to be done — and then finds nothing marked.
+func TestOneGoroutineAtATimeHoldsOpkgsLock(t *testing.T) {
+	p := companionStand(t, companionStatus)
+	paused, resume := make(chan struct{}), make(chan struct{})
+	first := true
+	beforeTheRename = func() {
+		if first {
+			first = false
+			close(paused)
+			<-resume
+		}
+	}
+	firstDone := make(chan error, 1)
+	go func() { _, err := keepCompanions(); firstDone <- err }()
+	<-paused
+	second := make(chan []string, 1)
+	go func() { kept, _ := keepCompanions(); second <- kept }()
+	select {
+	case kept := <-second:
+		t.Fatalf("a second keepCompanions ran while the first held opkg's lock (kept %v)", kept)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(resume)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case kept := <-second:
+		if kept != nil {
+			t.Fatalf("the second found marks the first had dropped: %v", kept)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second never ran")
+	}
+	got, _ := os.ReadFile(p)
+	if kept, _ := dropCompanionMarks(got); kept != nil {
+		t.Fatalf("the marks of %v stay", kept)
+	}
+}
+
+// A writer that takes no lock (an installer before r32) writes the status
 // after the last look and before the rename: the rename does not put the
 // copy made before it back; the status stays as that writer made it.
 func TestAWriteBeforeTheRenameIsNotUndone(t *testing.T) {
@@ -306,6 +372,40 @@ func TestTheStartDropsTheMarksAnOldUpdaterLeft(t *testing.T) {
 	}
 	if strings.Count(string(got), autoInstalledMark) != 3 {
 		t.Fatalf("the other packages' marks are gone:\n%s", got)
+	}
+}
+
+// A vctl a postinst starts runs inside that opkg, which writes the status —
+// the marks of the companions it installed as dependencies with it — only at
+// its end: the start's pass waits for the opkg to end, and drops them then.
+func TestTheStartWaitsForTheOpkgThatStartedIt(t *testing.T) {
+	_, clean := dropCompanionMarks([]byte(companionStatus))
+	p := companionStand(t, string(clean))
+	prevWait, prevRetry := companionsStartWait, companionsStartRetry
+	companionsStartWait, companionsStartRetry = 5*time.Second, 10*time.Millisecond
+	t.Cleanup(func() { companionsStartWait, companionsStartRetry = prevWait, prevRetry })
+	end := fakeProcess(t, "4242", "opkg")
+	done := make(chan struct{})
+	go func() { (&daemon{}).keepCompanionsAtStart(context.Background()); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("the start's pass ended while the opkg that started it runs")
+	default:
+	}
+	// The opkg's end: its status, the companions marked, and it is gone.
+	if err := os.WriteFile(p, []byte(companionStatus), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	end()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start's pass did not end")
+	}
+	got, _ := os.ReadFile(p)
+	if kept, _ := dropCompanionMarks(got); kept != nil {
+		t.Fatalf("the marks of %v stay after the start", kept)
 	}
 }
 

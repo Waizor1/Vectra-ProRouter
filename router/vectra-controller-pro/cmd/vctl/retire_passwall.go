@@ -186,7 +186,7 @@ func (d *daemon) retirePassWall(ctx context.Context, env retire.Env, now time.Ti
 	}
 
 	res, err := env.Retire(ctx, now, env.GeoOwners(d.retireGeoDirs()), retire.Hooks{
-		Opkg:     retireOpkg,
+		Opkg:     d.retireOpkgAlone,
 		Carrying: d.retireCarrying,
 		Restore:  d.retireRestore,
 	})
@@ -428,4 +428,12 @@ func hasLocalDefault(routes string) bool {
 		}
 	}
 	return false
+}
+
+// retireOpkgAlone runs retirement's opkg while no other goroutine of this vctl
+// holds opkg's lock (opkgMu): one started under it stops at "Could not lock".
+func (d *daemon) retireOpkgAlone(ctx context.Context, args ...string) ([]byte, error) {
+	opkgMu.Lock()
+	defer opkgMu.Unlock()
+	return retireOpkg(ctx, args...)
 }

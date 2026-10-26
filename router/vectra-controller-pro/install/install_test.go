@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -499,10 +500,11 @@ func TestAnUpgradeKeepsTheCompanionsWhateverTheNewDependsSays(t *testing.T) {
 	if !strings.Contains(out, "отметка Auto-Installed снята") {
 		t.Fatalf("the run does not say so:\n%s", out)
 	}
-	// A run with nothing to drop says nothing of it.
+	// Nothing marked: vctl is not even asked, and the run says nothing of it.
 	r.write("status", companionsKept)
-	if out, code := r.run("keep_companions"); code != 0 || r.read("status") != companionsKept || strings.Contains(out, "снята") {
-		t.Fatalf("exit %d, status:\n%s\n%s", code, r.read("status"), out)
+	r.write("log", "")
+	if out, code := r.run("keep_companions"); code != 0 || r.read("status") != companionsKept || strings.Contains(out, "снята") || r.read("log") != "" {
+		t.Fatalf("exit %d, status:\n%s\n%s\nlog: %s", code, r.read("status"), out, r.read("log"))
 	}
 }
 
@@ -530,8 +532,9 @@ func TestWhatTheInstallBroughtInLosesTheMark(t *testing.T) {
 
 // The status stays as opkg left it, and the run says so with a warning and
 // goes on, whenever vctl does not drop the marks: another opkg runs past the
-// wait (vctl drops them itself at its next start), a vctl before 0.7.0-r31
-// has no such command, no vctl at all.
+// wait (vctl drops them itself at its next start), a vctl before 0.7.0-r32
+// has no such command — one line says so, not vctl's usage — no vctl at all.
+// With nothing marked none of it matters: no warning.
 func TestTheCompanionsMarksStayWhenVctlCannotDropThem(t *testing.T) {
 	for name, tc := range map[string]struct{ setup, later string }{
 		"another opkg runs": {setup: "vctl-busy", later: "при следующем запуске"},
@@ -552,7 +555,55 @@ func TestTheCompanionsMarksStayWhenVctlCannotDropThem(t *testing.T) {
 			if (tc.later != "") != strings.Contains(out, "при следующем запуске") {
 				t.Fatalf("the warning on a later start:\n%s", out)
 			}
+			if tc.setup != "vctl-busy" && (!strings.Contains(out, "нет команды keep-companions") || strings.Contains(out, "unknown command")) {
+				t.Fatalf("not one line for a vctl without the command:\n%s", out)
+			}
 		})
+	}
+	t.Run("nothing marked, an older vctl", func(t *testing.T) {
+		r := companionRouter(t)
+		r.write("status", companionsKept)
+		r.write("vctl-old", "")
+		out, code := r.run("keep_companions\necho \"warnings:$WARNINGS\"")
+		if code != 0 || strings.Contains(out, "COMPANIONS_MARK") || strings.Contains(r.read("log"), "vctl ") {
+			t.Fatalf("exit %d, log %q:\n%s", code, r.read("log"), out)
+		}
+	})
+}
+
+// The feed's vctl must name both companions where they are marked: one that
+// does not (0.7.0-r29 as published), upgraded over a vctl they came in with,
+// has opkg remove them as orphans before the marks go. Refused before
+// anything is changed; a vctl naming them, or no marks, goes on.
+func TestAFeedVctlWithoutTheCompanionsIsRefusedWhereTheyAreMarked(t *testing.T) {
+	feedVctl := func(depends string) string {
+		return "Package: vectra-controller-pro\nVersion: 0.7.0-r29\nDepends: " + depends + "\nFilename: vectra-controller-pro.ipk\nSHA256sum: 00"
+	}
+	for name, tc := range map[string]struct {
+		depends, status string
+		refused         bool
+	}{
+		"without them, marked":   {"libc, ca-bundle, xray-core (>= 26.3.27)", companionStatus, true},
+		"one of them, marked":    {"libc, xray-core (>= 26.10.21), vectra-geodata", companionStatus, true},
+		"naming them, marked":    {"xray-core (>= 26.10.21), vectra-geodata, vectra-reporter (>= 1.0.0-r4), libc", companionStatus, false},
+		"without them, unmarked": {"libc, ca-bundle", companionsKept, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := companionRouter(t)
+			r.write("status", tc.status)
+			r.feed("vectra_pro", "https://router.vectra-pro.net/pro/aarch64_cortex-a53", feedVctl(tc.depends))
+			out, code := r.run("check_companions_named\necho went-on")
+			if refused := code == 1 && strings.Contains(out, "COMPANIONS_NOT_NAMED"); refused != tc.refused || strings.Contains(out, "went-on") == tc.refused {
+				t.Fatalf("exit %d, refused %v, want %v:\n%s", code, refused, tc.refused, out)
+			}
+			if r.read("status") != tc.status {
+				t.Fatalf("the status changed:\n%s", r.read("status"))
+			}
+		})
+	}
+	b, _ := os.ReadFile("install.sh")
+	if !regexp.MustCompile(`\n\tadd_feed\n\tcheck_companions_named\n\tplan_xray\n`).Match(b) {
+		t.Fatal("check_companions_named does not run before any change is planned (after add_feed, before plan_xray)")
 	}
 }
 
@@ -576,6 +627,17 @@ func TestTheInstallerLeavesTheStatusToVctl(t *testing.T) {
 	for _, w := range []string{"mv ", "cp ", "> ", "pidof", "awk"} {
 		if strings.Contains(body, w) {
 			t.Fatalf("keep_companions has %q of its own:\n%s", w, body)
+		}
+	}
+	// Its look at the marks only reads.
+	j := strings.Index(src, "\ncompanions_marked() {")
+	if j < 0 {
+		t.Fatal("no companions_marked in install.sh")
+	}
+	look := src[j : j+strings.Index(src[j+1:], "\n}\n")+2]
+	for _, w := range []string{"mv ", "cp ", "> ", ">>", "rm "} {
+		if strings.Contains(look, w) {
+			t.Fatalf("companions_marked has %q:\n%s", w, look)
 		}
 	}
 }

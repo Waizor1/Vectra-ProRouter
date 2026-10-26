@@ -1175,19 +1175,41 @@ dns_diag() {
 COMPANIONS="vectra-geodata vectra-reporter"
 COMPANIONS_WAIT="${VECTRA_COMPANIONS_WAIT:-10}"
 VCTL_BIN="${VECTRA_VCTL_BIN:-/usr/sbin/vctl}"
+companions_marked() { # a companion carries opkg's Auto-Installed mark (reads only)
+	[ -f "$OPKG_STATUS" ] && awk '/^Package: / { p = substr($0, 10) } /^$/ { p = "" }
+		(p == "vectra-geodata" || p == "vectra-reporter") && $0 == "Auto-Installed: yes" { m = 1 }
+		END { exit !m }' "$OPKG_STATUS"
+}
 keep_companions() {
-	[ -f "$OPKG_STATUS" ] || return 0
+	companions_marked || return 0
 	said="$("$VCTL_BIN" keep-companions --wait "$COMPANIONS_WAIT" 2>&1)"
 	case $? in
 	0)
 		case "$said" in *"kept "*) ok "$COMPANIONS остаются на роутере при любой версии Vectra (отметка Auto-Installed снята)" ;; esac
 		return 0
 		;;
-	1) later=" Vectra снимет её сама при следующем запуске." ;;
-	*) later="" ;; # a vctl before 0.7.0-r31: no such command
+	1)
+		note "$said"
+		later=""
+		case "$said" in *"another opkg is running"*) later=" Vectra снимет её сама при следующем запуске." ;; esac
+		;;
+	*) # no vctl, or one before 0.7.0-r32: no such command
+		note "в $VCTL_BIN нет команды keep-companions (Vectra до 0.7.0-r32)"
+		later=""
+		;;
 	esac
-	[ -n "$said" ] && note "$said"
 	warn COMPANIONS_MARK "не удалось снять отметку Auto-Installed у $COMPANIONS в $OPKG_STATUS: opkg может удалить их при установке версии Vectra, которая от них не зависит.$later"
+}
+# The feed's vctl names both companions (0.7.0-r30 on): its opkg removes
+# neither, and keep_companions drops the marks once it is done. One that does
+# not name them, upgraded over a vctl they came in with, has opkg remove them
+# as orphans where they are marked — the reporter's spool and state, the geo
+# data: refused, before anything is changed.
+check_companions_named() {
+	installed "$PKG" && companions_marked || return 0
+	deps=" $(depends_of "$(feed_field "$PKG" Depends)" | tr '\n' ' ')"
+	case "$deps" in *" vectra-geodata "*) case "$deps" in *" vectra-reporter "*) return 0 ;; esac ;; esac
+	refuse COMPANIONS_NOT_NAMED "Vectra $(feed_field "$PKG" Version) из фида не зависит от $COMPANIONS, а у них стоит отметка Auto-Installed: opkg удалил бы их при обновлении вместе с очередью отчётов и геоданными."
 }
 
 LUCI=0
@@ -1546,6 +1568,7 @@ main() {
 	check_dnsmasq
 	installed luci-base || LUCI=1
 	add_feed
+	check_companions_named
 	plan_xray
 	check_storage
 
