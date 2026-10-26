@@ -1558,3 +1558,204 @@ describe("RU-entry Germany canon (2026-09-27: the auto tier did not carry Instag
     expect(worldTarget([auto])).toBe("node-auto");
   });
 });
+
+describe("YouTube stays off the mux node (2026-10-26: Xray mux drops QUIC)", () => {
+  // The default fixture binds WorldProxy and DiscordVoiceUdp to the RU-entry
+  // Germany node, which carries mux/xudp for Discord voice. "Германия YouTube"
+  // still scores for YouTube, and that is how live routers ended up with
+  // YouTube on the very node whose mux rejects UDP/443.
+  const youtubeOnMux = () =>
+    buildConfig({ bindings: { YouTube: "node-world-1" } });
+
+  const youtubeMismatch = (
+    compliance: ReturnType<typeof evaluateFleetRoutePolicy>,
+  ) => compliance.mismatches.find((mismatch) => mismatch.slot === "YouTube");
+
+  const youtubeMatch = (
+    compliance: ReturnType<typeof evaluateFleetRoutePolicy>,
+  ) => compliance.matchedSlots.find((slot) => slot.slot === "YouTube");
+
+  it("flags YouTube bound to the WorldProxy/Discord mux node", () => {
+    const compliance = evaluateFleetRoutePolicy(youtubeOnMux(), {
+      deviceIdentifier: "vectra-yt-mux",
+    });
+
+    const mismatch = youtubeMismatch(compliance);
+    expect(compliance.status).toBe("violation");
+    expect(mismatch?.reason).toBe("wrong_target");
+    expect(mismatch?.actualNodeId).toBe("node-world-1");
+    expect(mismatch?.expectedNodeId).toBe("node-youtube-1");
+    expect(mismatch?.detail).toContain("mux");
+    expect(compliance.canNormalize).toBe(true);
+  });
+
+  it("points the check-in directive at the node without mux", () => {
+    const directive = buildFleetRoutePolicyDirective(youtubeOnMux(), {
+      deviceIdentifier: "vectra-yt-mux",
+    });
+
+    const slots = new Map(directive?.slots.map((slot) => [slot.id, slot]));
+    expect(slots.get("YouTube")?.nodeId).toBe("node-youtube-1");
+    expect(slots.get("WorldProxy")?.nodeId).toBe("node-world-1");
+    expect(slots.get("DiscordVoiceUdp")?.nodeId).toBe("node-world-1");
+  });
+
+  it("moves YouTube and leaves Discord voice on its XUDP node", () => {
+    const result = normalizeFleetRoutePolicy(youtubeOnMux(), {
+      deviceIdentifier: "vectra-yt-mux",
+    });
+
+    expect(result.after.status).toBe("compliant");
+    const bound = new Map(
+      result.after.matchedSlots.map((slot) => [slot.slot, slot.targetNodeId]),
+    );
+    expect(bound.get("YouTube")).toBe("node-youtube-1");
+    expect(bound.get("WorldProxy")).toBe("node-world-1");
+    expect(bound.get("DiscordVoiceUdp")).toBe("node-world-1");
+
+    const nodes = new Map(result.config.nodes.map((node) => [node.id, node]));
+    expect(nodes.get("node-world-1")?.extras).toMatchObject({
+      mux: "1",
+      mux_concurrency: "-1",
+      xudp_concurrency: "16",
+    });
+    expect(nodes.get("node-youtube-1")?.extras.mux).toBeUndefined();
+    expect(
+      result.changes.map((change) => [change.slot, change.nextNodeId]),
+    ).toEqual([["YouTube", "node-youtube-1"]]);
+  });
+
+  it("avoids a node left with mux from an earlier canon", () => {
+    // node-discord-1 is the old RU-entry Poland canon and still has mux on, but
+    // nothing routes WorldProxy there any more.
+    const compliance = evaluateFleetRoutePolicy(
+      buildConfig({ bindings: { YouTube: "node-discord-1" } }),
+      { deviceIdentifier: "vectra-yt-stale-mux" },
+    );
+
+    expect(youtubeMismatch(compliance)?.expectedNodeId).toBe("node-youtube-1");
+  });
+
+  it("avoids WorldProxy's node even before mux is stamped on it", () => {
+    // A subscription refresh re-mints node ids; the fresh WorldProxy node gets
+    // its mux from the next directive. YouTube must not settle there first.
+    const compliance = evaluateFleetRoutePolicy(
+      buildConfig({
+        bindings: { YouTube: "node-world-1" },
+        discordNodeExtras: { mux: "0" },
+      }),
+      { deviceIdentifier: "vectra-yt-fresh-ids" },
+    );
+
+    expect(youtubeMismatch(compliance)?.expectedNodeId).toBe("node-youtube-1");
+  });
+
+  it("binds YouTube to the mux node when no other YouTube node exists", () => {
+    // QUIC-less YouTube still plays over TCP; an unbound slot does not play.
+    // The slot starts on a node the subscription no longer carries, so only
+    // the fallback pass can bind it.
+    const base = buildConfig({ bindings: { YouTube: "node-gone" } });
+    const config = passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: base.nodes.filter(
+        (node) => node.id !== "node-youtube-1" && node.id !== "node-discord-1",
+      ),
+    });
+    const identity = { deviceIdentifier: "vectra-yt-only-mux" };
+
+    expect(
+      youtubeMismatch(evaluateFleetRoutePolicy(config, identity))
+        ?.expectedNodeId,
+    ).toBe("node-world-1");
+    expect(
+      buildFleetRoutePolicyDirective(config, identity)?.slots.find(
+        (slot) => slot.id === "YouTube",
+      )?.nodeId,
+    ).toBe("node-world-1");
+    expect(
+      youtubeMatch(normalizeFleetRoutePolicy(config, identity).after)
+        ?.targetNodeId,
+    ).toBe("node-world-1");
+  });
+
+  it("keeps a live mux node until the node without mux is proven", () => {
+    // Nobody has carried traffic through ru5:50051, so moving YouTube there
+    // would trade a working slot for a guess (keepLiveMuxBinding).
+    const unproven = {
+      nodeHealth: buildFleetNodeHealth([
+        {
+          routerId: "peer",
+          observations: [
+            { host: "ru4.nfnpx.online:50052", outcome: "ok" as const },
+          ],
+        },
+      ]),
+    };
+    const identity = { deviceIdentifier: "vectra-yt-unproven" };
+
+    const compliance = evaluateFleetRoutePolicy(youtubeOnMux(), identity, unproven);
+    expect(youtubeMismatch(compliance)).toBeUndefined();
+    expect(youtubeMatch(compliance)?.targetNodeId).toBe("node-world-1");
+    expect(
+      normalizeFleetRoutePolicy(youtubeOnMux(), identity, unproven).changes,
+    ).toEqual([]);
+  });
+
+  it("moves off the mux node once some router reached the node without mux", () => {
+    const proven = {
+      nodeHealth: buildFleetNodeHealth([
+        {
+          routerId: "peer",
+          observations: [
+            { host: "ru4.nfnpx.online:50052", outcome: "ok" as const },
+            { host: "ru5.nfnpx.online:50051", outcome: "ok" as const },
+          ],
+        },
+      ]),
+    };
+
+    expect(
+      youtubeMismatch(
+        evaluateFleetRoutePolicy(
+          youtubeOnMux(),
+          { deviceIdentifier: "vectra-yt-proven" },
+          proven,
+        ),
+      )?.expectedNodeId,
+    ).toBe("node-youtube-1");
+  });
+
+  it("prefers a live mux node to a dead node without mux", () => {
+    const deadYoutubeHost = {
+      nodeHealth: buildFleetNodeHealth([
+        {
+          routerId: "peer",
+          observations: [
+            { host: "ru5.nfnpx.online:50051", outcome: "fail" as const },
+            { host: "ru4.nfnpx.online:50052", outcome: "ok" as const },
+          ],
+        },
+      ]),
+    };
+    const base = youtubeOnMux();
+    const config = passwallDesiredConfigSchema.parse({
+      ...base,
+      nodes: base.nodes.filter((node) => node.id !== "node-discord-1"),
+    });
+
+    const compliance = evaluateFleetRoutePolicy(
+      config,
+      { deviceIdentifier: "vectra-yt-dead-free" },
+      deadYoutubeHost,
+    );
+    expect(youtubeMismatch(compliance)).toBeUndefined();
+    expect(youtubeMatch(compliance)?.targetNodeId).toBe("node-world-1");
+  });
+
+  it("leaves the default fleet fixture compliant", () => {
+    // YouTube on "Россия YouTube" (no mux) was already the canon.
+    expect(
+      evaluateFleetRoutePolicy(buildConfig(), { name: "normal-router" }).status,
+    ).toBe("compliant");
+  });
+});

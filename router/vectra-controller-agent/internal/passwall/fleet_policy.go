@@ -154,8 +154,27 @@ func NormalizeFleetRoutePolicyConfigWithDirective(current DesiredConfig, identit
 
 	desired := cloneDesiredConfig(current)
 	changed := false
+	// WorldProxy comes before YouTube in fleetRoutePolicySlots, so its target is
+	// known by the time the scorer picks YouTube.
+	//
+	// This is the offline safety net only. The panel's directive pins the
+	// exact node, and the panel holds the rule (fleet-route-policy.ts). Here,
+	// on live UCI, a scorer pick is not an exact-node slot: the reconcile keeps
+	// the current node when the pick carries the same label
+	// (pickShuntBindingTarget), so a router whose only alternative is another
+	// "Германия YouTube" host stays on the mux node until the panel speaks.
+	worldProxyTargetID := ""
 	for _, slot := range slots {
-		target := resolveFleetRoutePolicyTarget(desired.Nodes, slot)
+		var target *NodeConfig
+		if slot.ID == "YouTube" && slot.TargetNodeID == "" {
+			target = findFleetRoutePolicyTargetAvoiding(desired.Nodes, slot.ID,
+				quicDroppingNodeIDs(desired.Nodes, worldProxyTargetID))
+		} else {
+			target = resolveFleetRoutePolicyTarget(desired.Nodes, slot)
+		}
+		if slot.ID == "WorldProxy" && target != nil {
+			worldProxyTargetID = target.ID
+		}
 		if target == nil || target.ID == "" {
 			continue
 		}
@@ -364,9 +383,28 @@ func resolveFleetRoutePolicyTarget(nodes []NodeConfig, slot fleetRoutePolicySlot
 }
 
 func findFleetRoutePolicyTarget(nodes []NodeConfig, slotID string) *NodeConfig {
+	return findFleetRoutePolicyTargetAvoiding(nodes, slotID, nil)
+}
+
+// findFleetRoutePolicyTargetAvoiding is the scorer's pick among the nodes not in
+// avoid, or among all nodes when none of those clears the bar: an avoided node
+// beats leaving the slot unbound.
+func findFleetRoutePolicyTargetAvoiding(nodes []NodeConfig, slotID string, avoid map[string]struct{}) *NodeConfig {
+	if len(avoid) > 0 {
+		if target := bestScoredFleetNode(nodes, slotID, avoid); target != nil {
+			return target
+		}
+	}
+	return bestScoredFleetNode(nodes, slotID, nil)
+}
+
+func bestScoredFleetNode(nodes []NodeConfig, slotID string, skip map[string]struct{}) *NodeConfig {
 	bestIndex := -1
 	bestScore := 0
 	for i := range nodes {
+		if _, skipped := skip[nodes[i].ID]; skipped {
+			continue
+		}
 		score := fleetRoutePolicyScore(slotID, nodes[i])
 		if score > bestScore {
 			bestScore = score
@@ -377,6 +415,28 @@ func findFleetRoutePolicyTarget(nodes []NodeConfig, slotID string) *NodeConfig {
 		return nil
 	}
 	return &nodes[bestIndex]
+}
+
+// quicDroppingNodeIDs lists the nodes YouTube must stay off: every node with
+// mux on, plus the node WorldProxy resolves to, because DiscordVoiceUdp follows
+// WorldProxy and stamps mux onto it. PassWall2 renders mux=1 as an Xray mux
+// object without xudpProxyUDP443, whose default is "reject", so QUIC sent to
+// that outbound is dropped without an answer. Measured 2026-10-26: routers with
+// mux on the YouTube outbound answered QUIC 0/3, routers without 2-3/3, while
+// TCP to the Moscow Google caches through the bridges has a 0.6-5 s tail.
+// Keep aligned with quicDroppingNodeIds in
+// apps/web/src/server/vectra/fleet-route-policy.ts.
+func quicDroppingNodeIDs(nodes []NodeConfig, worldProxyTargetID string) map[string]struct{} {
+	ids := map[string]struct{}{}
+	for _, node := range nodes {
+		if stringify(node.Extras["mux"]) == "1" {
+			ids[node.ID] = struct{}{}
+		}
+	}
+	if worldProxyTargetID != "" {
+		ids[worldProxyTargetID] = struct{}{}
+	}
+	return ids
 }
 
 func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
@@ -576,8 +636,11 @@ func fleetRoutePolicyScore(slotID string, node NodeConfig) int {
 		//
 		// Delegating keeps the two in lockstep through any future canon move,
 		// including onto the RU-entry fallback. mux_concurrency=-1 disables
-		// TCP mux, so this costs the WorldProxy TCP path nothing; XTLS Vision
-		// rejects UDP/443 on its own, so QUIC behaviour is unchanged too.
+		// TCP mux, so this costs the WorldProxy TCP path nothing. It does cost
+		// QUIC: Xray's mux rejects UDP/443 by default, and the RU-entry gRPC
+		// nodes have no Vision of their own to blame it on. That is why YouTube
+		// is kept off this node (quicDroppingNodeIDs); WorldProxy's own QUIC
+		// falls back to TCP as before.
 		return fleetRoutePolicyScore("WorldProxy", node)
 	}
 	return 0
