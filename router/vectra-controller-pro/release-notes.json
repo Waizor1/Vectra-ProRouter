@@ -3,6 +3,21 @@
   "package": "vectra-controller-pro",
   "versions": [
     {
+      "version": "0.7.0-r31",
+      "date": "2026-10-26",
+      "notes": {
+        "ru": [
+          "Видео YouTube теперь может идти по QUIC через российский мост: ролики меньше подвисают на старте и при перемотке."
+        ],
+        "en": [
+          "YouTube video can now travel over QUIC through the Russian bridge: fewer stalls at the start and when seeking."
+        ],
+        "zh": [
+          "YouTube 视频现在可以通过俄罗斯桥接节点以 QUIC 传输：开头和拖动进度时卡顿更少。"
+        ]
+      }
+    },
+    {
       "version": "0.7.0-r30",
       "date": "2026-10-25",
       "notes": {

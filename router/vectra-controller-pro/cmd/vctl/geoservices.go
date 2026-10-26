@@ -96,6 +96,9 @@ func (d *daemon) withRuntime(opts xray.SpliceOptions, providerRaw []byte) xray.S
 	opts = d.withDNS(opts)
 	opts = d.withExits(opts, providerRaw)
 	opts.NoStableExit = !d.exitCheckOn() // nothing would ever pin it (stable_exit.go)
+	// QUIC through the Russian bridge (r31, bridge_quic.go): only a document
+	// that has one, so the others keep their splice key.
+	opts.QUICOverBridge = !d.cfg.NoQUICBridge && xray.HasRussianBalancer(providerRaw)
 	return d.withKnownServices(opts)
 }
 

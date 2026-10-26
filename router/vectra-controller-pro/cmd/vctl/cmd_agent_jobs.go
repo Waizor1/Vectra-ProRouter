@@ -993,6 +993,7 @@ func (d *daemon) programFirewallWithin(ctx context.Context, cfg *config.Config, 
 	}
 	d.addDNSRedirect(ctx, &spec, dnsWait)
 	d.carryFakeDNS(&spec)
+	d.carryBridgeQUIC(&spec)
 	script, err := firewall.Render(spec)
 	if err != nil {
 		logging.L().Error("firewall render failed", "err", err.Error())
@@ -1110,6 +1111,8 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 		}
 		_ = d.runFirewallCmd(ctx, fields[0], fields[1:]...)
 	}
+	// dnsmasq's QUIC fragment named a set of the table that went.
+	d.dropBridgeQUIC(ctx)
 	if redirected {
 		d.forgetRedirectedFlows(oldPort)
 	}

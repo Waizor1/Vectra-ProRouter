@@ -335,3 +335,75 @@ func TestFetchMetricsDecodesTheObservatoryAndTraffic(t *testing.T) {
 		t.Errorf("traffic = %+v", tr)
 	}
 }
+
+// varintFields reads a message's varint fields (wire type 0), which pbWalk
+// skips.
+func varintFields(t *testing.T, b []byte) map[int]uint64 {
+	t.Helper()
+	out := map[int]uint64{}
+	for len(b) > 0 {
+		key, n, err := pbReadVarint(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b = b[n:]
+		switch key & 7 {
+		case 0:
+			v, n, err := pbReadVarint(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out[int(key>>3)] = v
+			b = b[n:]
+		case 2:
+			l, n, err := pbReadVarint(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b = b[n+int(l):]
+		default:
+			t.Fatalf("unexpected wire type %d", key&7)
+		}
+	}
+	return out
+}
+
+func TestTestRouteAsksForUDPToPort443AndReadsTheOutbound(t *testing.T) {
+	p := newFakePeer(t)
+	p.reply = func(w *bufio.Writer, sid uint32, path string, req []byte) {
+		if path != pathTestRoute {
+			t.Errorf("path = %q", path)
+		}
+		rc, err := pbField(req, 1)
+		if err != nil || rc == nil {
+			t.Errorf("no RoutingContext in %x", req)
+			return
+		}
+		in, _ := pbField(rc, 1)
+		domain, _ := pbField(rc, 7)
+		v := varintFields(t, rc)
+		if string(in) != "tproxy-in" || v[2] != 3 || v[6] != 443 {
+			t.Errorf("context inbound=%q network=%d port=%d; want tproxy-in/UDP(3)/443", in, v[2], v[6])
+		}
+		switch string(domain) {
+		case "googlevideo.com":
+			msg := pbString(pbString(nil, 11, "BL-RU"), 12, "bridge-ru-tcp")
+			_ = writeFrame(w, frameData, flagEndStream, sid, grpcMessage(msg))
+		default:
+			// trailers-only: no rule matched (xray: "no route").
+			_ = writeFrame(w, frameHeaders, flagEndHeaders|flagEndStream, sid, []byte{0x88})
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	got, err := TestRoute(ctx, p.addr(), []RouteQuery{
+		{InboundTag: "tproxy-in", UDP: true, Domain: "googlevideo.com", Port: 443},
+		{InboundTag: "tproxy-in", UDP: true, Domain: "unrouted.example", Port: 443},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "bridge-ru-tcp," {
+		t.Fatalf("outbounds = %q, want [bridge-ru-tcp \"\"]", got)
+	}
+}

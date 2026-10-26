@@ -1,5 +1,83 @@
 # Changelog
 
+## vctl 0.7.0-r31 — QUIC to the Russian bridge's names goes through it
+
+The owner: «ютуб грузит первые секунды и затем зависает». Since 2026-10-22
+TLS over TCP 443 from the cloud.ru bridges to the Moscow Google caches hangs —
+Google takes the ClientHello and its answer never arrives — and the bridges
+race it (yt-race): 4–5 % of the races are still lost after 8 s. Measured from
+1111's LAN on 2026-10-26: 5 of 40 TLS handshakes to those caches took
+0.6–5.1 s and one failed. QUIC to the same caches is not cut: through the
+bridges' gRPC entries the PassWall routers get an answer in ~0.08 s. A vctl
+router could not send it: every bridge outbound is VLESS with
+`xtls-rprx-vision`, whose client side rejects UDP/443, so r24/r25 refused QUIC
+at once and every YouTube video connection went over TCP.
+
+### Changed
+- **The Russian bridge carries QUIC.** The splice gives the outbounds BL-RU
+  selects `xtls-rprx-vision-udp443` — Vision without the client's UDP/443
+  check; the bridge sees the same flow (`xray.SpliceOptions.QUICOverBridge`,
+  `internal/coreengine/xray/bridge_quic.go`). Every other outbound keeps plain
+  Vision. Part of the render key: an upgrade renders again once.
+- **QUIC to the bridge's names is let through; the rest is refused as
+  before.** The table lets QUIC to the FakeDNS addresses in
+  `vctl_quic_pass4` reach xray (counter `vctl_quic_passed`) and refuses the
+  others (`vctl_quic_refused`, ICMP as in r25) — only flows that have had
+  no answer (`ct state new`): a QUIC connection xray carries is not cut when
+  its address leaves the set. dnsmasq fills the set: an `nftset` line per
+  name in `/tmp/dnsmasq.*.d/vctl-bridge-quic.conf` (dnsmasq reads a config
+  line in at most 1024 bytes and does not start with the rest of a longer
+  one; the provider's names on one line came to 0.9–1.6 KB) for the names
+  BL-RU's rules route by name (`domain:`/`full:`; letters, digits, hyphens
+  and dots only, no whole TLDs) — YouTube's video (googlevideo.com,
+  ytimg.com, ggpht.com) and the foreign sites the provider bridges. Only with
+  FakeDNS carried (no pool: no refusal and no set) and a member that carries
+  UDP/443 (plain Vision does not, nor mux unless its `xudpProxyUDP443` lets
+  it). Which of them pass, xray says itself after every start
+  (RoutingService.TestRoute, UDP to 443 on the tproxy inbound): a name the
+  owner sent elsewhere (a service's country, a site of theirs) does not land
+  on the bridge and stays refused. xray is asked again every 5 min, and every
+  30 s while its answer lets nothing through. BL-RU's fallback is no answer:
+  a fresh xray sends the names there until the observatory's first round
+  (leastLoad knows no member alive before it), so an xray restart leaves the
+  fragment, and dnsmasq, alone; only a bridge on its fallback for 30 min gives
+  its names up, and they come back with it; the hold runs on across xray's
+  starts. dnsmasq is changed only under an xray that has run 2 min: a fresh
+  one resolves its nodes' names through dnsmasq and probes them, and on the
+  stand a restart 3 s after xray's held the nodes dead and sent the rescue
+  direct. A changed fragment restarts dnsmasq once (a moment without DNS for
+  the LAN: after the install, and when the names change) and empties the
+  set; each new xray empties it too (its FakeDNS addresses are handed out
+  anew). A fragment dnsmasq's own syntax check (`dnsmasq --test`) refuses —
+  a build without nftset — is never written; a check that did not run (a
+  full /tmp) is tried again at the next look. The restart runs in a session
+  of its own and is never cut short; a dnsmasq that is not running is not
+  started; one that does not come back with names in the fragment (running
+  steadily as it ran before — its own user, or root — within 5 s) loses the
+  fragment and starts without it — QUIC refused as in r30 until vctl starts
+  again — rather than leave the LAN without DNS and DHCP. For 30 s after vctl's own restart of dnsmasq the
+  poll does not take it for a resolver that changed user (no reload of the
+  table). The fragment leaves with the data plane, after the table, and the
+  daemon waits for dnsmasq's restart before anything else (the rescue's
+  flush of the resolver's cache); `dataplane-teardown.sh` restarts it without
+  procd's lock of vctl and only when it runs. The resolver's processes are
+  told by their binary too: `/etc/init.d/dnsmasq` has the comm `dnsmasq`,
+  and on the stand the cache flush's SIGHUP killed that script between its
+  stop and its start — the LAN without DNS after a rescue to direct. An address stays in the set 1 h unless asked for
+  again (FakeDNS answers with a TTL of 1 s).
+- **Off switch:** UCI `quic_bridge '0'` — plain Vision and every proxied
+  name's QUIC refused, exactly r30. `refuse_quic '0'` still keeps all QUIC.
+
+### Known limits
+- While BL-RU is on its fallback (up to 30 min, and up to 5 min after a
+  bridge fails), QUIC to its names goes to the fallback and is dropped there
+  without an answer; browsers race TCP and go on over it, as before r25.
+- The deadman (commit-confirm) takes the table and leaves the fragment: dnsmasq
+  only logs that the set is missing until the table is back.
+- TestRoute asks without a source address: a rule that routes by device is
+  not seen. QUIC from such a device to a bridge name passes the set and goes
+  where its rule says; on plain Vision it is dropped without an answer.
+
 ## vctl 0.7.0-r30 — one Depends for every build; one xray per vctl; the companions stay
 
 The published `vectra-controller-pro_0.7.0-r29` was built by

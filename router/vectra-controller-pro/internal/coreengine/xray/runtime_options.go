@@ -97,6 +97,10 @@ type SpliceOptions struct {
 	// RussiaDirect sends the provider's Russian BL-RU rules to its plain
 	// freedom outbound (russia_direct.go). YouTube's BL-RU rule stays.
 	RussiaDirect bool
+	// QUICOverBridge gives the Russian bridge's outbounds (BL-RU) the Vision
+	// flow that carries UDP/443, so QUIC to the names it routes can reach the
+	// bridge (bridge_quic.go).
+	QUICOverBridge bool
 	// FakeDNS answers every name a rule proxies with a FakeDNS address (the
 	// DNS inbound must be on): such a connection reaches xray whatever the
 	// name's real address, so the kernel may send the rest of the Russian
@@ -133,6 +137,9 @@ func (o SpliceOptions) Key() string {
 	}
 	if o.RussiaDirect {
 		k += ";ru=direct"
+	}
+	if o.QUICOverBridge {
+		k += ";ru=quic"
 	}
 	if o.FakeDNS {
 		k += ";fakedns"

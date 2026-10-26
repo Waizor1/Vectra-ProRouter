@@ -34,6 +34,22 @@ SYN_MAC="02:00:00:de:ad:be"
 SYN_MODEL="Vectra Dataplane Stand (synthetic)"
 HWID=$(printf '%s-%s' "$SYN_MAC" "$SYN_MODEL" | sha256sum | awk '{print $1}')
 
+# plain_render: the running render, unsealed (internal/vault) into $D for
+# jsonfilter. The container is the test account's and throwaway; a render
+# that is not sealed is copied as it is.
+plain_render() {
+	rm -f "$D/render.plain"
+	vctl vault-restore -in /var/run/vectra-controller-pro/xray.json -out "$D/render.plain" >/dev/null 2>&1 ||
+		cp /var/run/vectra-controller-pro/xray.json "$D/render.plain" 2>/dev/null
+}
+
+# resolver_state: which dnsmasq runs, how often vctl restarted it, and whether
+# the ISP itself answers — for a FAIL that has the LAN resolve nothing.
+resolver_state() {
+	printf "dnsmasq pids '%s', restarted %sx, the ISP: example.com -> '%s'" \
+		"$(pidof dnsmasq | tr '\n' ' ')" "$(wc -l < "$D/dnsmasq-restarts" 2>/dev/null || echo 0)" "$(resolved "$ISP_IP" example.com)"
+}
+
 # resolved <server> <name>: the first IPv4 address, or nothing.
 resolved() {
 	nslookup "$2" "$1" 2>/dev/null | awk '/^Name:/{n=1} n && /^Address/ {print $NF; exit}' | grep -E '^[0-9]+(\.[0-9]+){3}$'
@@ -51,6 +67,10 @@ dnsmasq --user=root --pid-file="$D/isp.pid" --listen-address="$ISP_IP" --bind-in
 	--log-queries --log-facility="$D/isp.log" || die "the fake ISP resolver did not start"
 
 # ------------------------------------------------------- the router's dnsmasq --
+# Its config directory is where vctl puts its fragment for QUIC through the
+# Russian bridge (r31; cmd/vctl/bridge_quic.go globs /tmp/dnsmasq.*.d), and
+# /etc/init.d/dnsmasq restarts THIS dnsmasq: OpenWrt's own script needs procd.
+mkdir -p /tmp/dnsmasq.stand.d
 cat > "$D/lan.conf" <<EOF
 user=dnsmasq
 pid-file=$D/lan.pid
@@ -60,9 +80,19 @@ no-resolv
 server=$ISP_IP
 cache-size=0
 address=/vectra.lan/192.168.1.1
+conf-dir=/tmp/dnsmasq.stand.d
 log-queries
 log-facility=$D/lan.log
 EOF
+cat > /etc/init.d/dnsmasq <<EOF
+#!/bin/sh
+[ "\$1" = restart ] || exit 0
+[ -f "$D/lan.pid" ] && kill "\$(cat "$D/lan.pid")" 2>/dev/null
+sleep 1
+echo restart >> "$D/dnsmasq-restarts"
+exec dnsmasq -C "$D/lan.conf"
+EOF
+chmod +x /etc/init.d/dnsmasq
 dnsmasq -C "$D/lan.conf" || die "the router's dnsmasq did not start"
 printf 'nameserver 127.0.0.1\n' > /etc/resolv.conf
 sleep 1
@@ -101,7 +131,10 @@ cat > "$D/agent.json" <<EOF
 }
 EOF
 vctl agent -config "$D/agent.json" -once > "$D/first-start.log" 2>&1
-[ -n "$(jsonfilter -i "$D/state.json" -e '@.device_private_key' 2>/dev/null)" ] || die "no device key after the first start"
+# state.json is sealed (internal/vault, the secret storage hardening of
+# 2026-10-02): its key cannot be read here, only proven — by the signed fetch
+# below, which needs it.
+[ -s "$D/state.json" ] || die "no state after the first start"
 _rel=$(sed -n "s/^DISTRIB_RELEASE='\(.*\)'/\1/p" /etc/openwrt_release 2>/dev/null)
 vctl subscribe fetch -url "$STAND_SUB_URL/json" -signed -state "$D/state.json" \
 	-hwid "$HWID" -mac "$SYN_MAC" -model "$SYN_MODEL" -os-release "$_rel" \
@@ -139,7 +172,8 @@ while [ "$n" -lt 6 ] && [ -z "$carrying" ]; do
 		info "entry $n: apply-local failed: $(tail -n 2 "$D/apply-$n.log" | sed 's#https://[^ "]*#<url>#g' | tr '\n' ' ' | cut -c1-200)"
 		n=$((n + 1)); continue
 	fi
-	if ! xrayport=$(jsonfilter -i /var/run/vectra-controller-pro/xray.json -e '@.inbounds[@.tag="vctl-dns-in"].port' 2>/dev/null) || [ "$xrayport" != 10053 ]; then
+	plain_render
+	if ! xrayport=$(jsonfilter -i "$D/render.plain" -e '@.inbounds[@.tag="vctl-dns-in"].port' 2>/dev/null) || [ "$xrayport" != 10053 ]; then
 		record render_has_dns_inbound FAIL "entry $n: the render has no DNS inbound on 10053 ('$xrayport')"
 		break
 	fi
@@ -160,6 +194,14 @@ while [ "$n" -lt 6 ] && [ -z "$carrying" ]; do
 done
 [ -n "$carrying" ] || die "no entry carried traffic"
 info "entry $carrying carries: $(jsonfilter -i "$D/provider-config.json" -e '@.remarks' 2>/dev/null)"
+# The daemon's first look at the bridge's names writes dnsmasq's QUIC fragment
+# and restarts it, once after the start, under an xray that has run 2 min
+# (bridge_quic.go, bridgeQUICSettle); the checks below are of the steady
+# state after it.
+i=0
+while [ "$i" -lt 180 ] && [ ! -s /tmp/dnsmasq.stand.d/vctl-bridge-quic.conf ]; do i=$((i + 1)); sleep 1; done
+sleep 2
+info "QUIC fragment after ${i}s; dnsmasq restarted $(wc -l < "$D/dnsmasq-restarts" 2>/dev/null || echo 0)x"
 record render_has_dns_inbound PASS "the render has vctl-dns-in on 127.0.0.1:10053 and the rule to vctl-dns-out"
 
 # ------------------------------------------------------------------ steered --
@@ -222,6 +264,65 @@ if ! grep -q 'Maximum number of concurrent' "$D/lan.log" && [ "$fw" -le 12 ] && 
 else
 	record no_resolver_loop FAIL "www.instagram.com forwarded $fw times, node names $nodes; $(grep -i 'Maximum number of concurrent' "$D/lan.log" | head -1)"
 fi
+
+# --------------------------------------- QUIC through the Russian bridge (r31) --
+# The render gives BL-RU's members the Vision flow that carries UDP/443; the
+# daemon asks xray which bridge names land there and hands them to dnsmasq,
+# whose nftset fills vctl_quic_pass4. A QUIC packet to a YouTube video cache
+# then goes through the REAL bridge entry and must be answered (Version
+# Negotiation from Google's own QUIC server) — the answer to «does :40051 pass
+# UDP/443». The control: a name the main path carries (plain Vision) gets no
+# answer, as every proxied name did before r31. The router's own packets are
+# probed (the LAN's refusal is for other interfaces, `iif != "lo"`).
+QUIC_FRAG=/tmp/dnsmasq.stand.d/vctl-bridge-quic.conf
+GV=rr1---sn-n8v7knez.googlevideo.com
+plain_render
+members=$(jsonfilter -i "$D/render.plain" -e '@.outbounds[*].settings.vnext[*].users[*].flow' 2>/dev/null | grep -c 'xtls-rprx-vision-udp443')
+if [ "${members:-0}" -gt 0 ]; then
+	record quic_bridge_flow PASS "$members outbound user(s) on xtls-rprx-vision-udp443 (BL-RU's members)"
+else
+	record quic_bridge_flow FAIL "no outbound carries xtls-rprx-vision-udp443"
+fi
+if nft list set inet vctl vctl_quic_pass4 >/dev/null 2>&1; then
+	record quic_set_in_table PASS "the table has vctl_quic_pass4 and refuses the rest"
+else
+	record quic_set_in_table FAIL "no vctl_quic_pass4 in table inet vctl"
+fi
+i=0
+while [ "$i" -lt 60 ] && ! grep -q 'googlevideo.com' "$QUIC_FRAG" 2>/dev/null; do i=$((i + 1)); sleep 1; done
+if grep -q 'nftset=/.*googlevideo\.com.*/4#inet#vctl#vctl_quic_pass4' "$QUIC_FRAG" 2>/dev/null; then
+	record quic_fragment_written PASS "after ${i}s: $(grep -c '^nftset=' "$QUIC_FRAG") nftset lines, the longest $(awk '{ if (length($0) > m) m = length($0) } END { print m }' "$QUIC_FRAG") bytes; $(grep 'googlevideo' "$QUIC_FRAG" | head -n 1)"
+else
+	record quic_fragment_written FAIL "fragment: '$(cat "$QUIC_FRAG" 2>/dev/null | tr '\n' ' ' | cut -c1-160)'; agent: $(grep -i 'quic' "$D/agent-$carrying.log" | tail -n 2 | tr '\n' ' ' | cut -c1-200)"
+fi
+sleep 2 # dnsmasq back after its restart
+gvip=$(resolved 127.0.0.1 "$GV")
+case "$gvip" in
+198.18.*|198.19.*)
+	if nft get element inet vctl vctl_quic_pass4 "{ $gvip }" >/dev/null 2>&1; then
+		record quic_set_filled PASS "$GV -> $gvip, and dnsmasq put it in vctl_quic_pass4 (dnsmasq restarted $(wc -l < "$D/dnsmasq-restarts" 2>/dev/null || echo 0)x)"
+	else
+		record quic_set_filled FAIL "$GV -> $gvip is not in vctl_quic_pass4: $(nft list set inet vctl vctl_quic_pass4 2>&1 | tr '\n' ' ' | cut -c1-200)"
+	fi
+	pr=$(/stand/bin/quicprobe -addr "$gvip:443" -wait 4s)
+	case "$pr" in
+	REPLY*) record quic_through_bridge PASS "QUIC to $GV through the real bridge entry: $pr" ;;
+	*) record quic_through_bridge FAIL "QUIC to $GV through the bridge: $pr" ;;
+	esac
+	;;
+*) record quic_set_filled FAIL "$GV -> '$gvip': not a FakeDNS address"
+	record quic_through_bridge FAIL "no FakeDNS address to probe" ;;
+esac
+ctl=$(resolved 127.0.0.1 www.canva.com)
+case "$ctl" in
+198.18.*|198.19.*)
+	pr=$(/stand/bin/quicprobe -addr "$ctl:443" -wait 3s)
+	case "$pr" in
+	SILENT*|REFUSED*) record quic_main_path_control PASS "www.canva.com (the main path, plain Vision): $pr — QUIC there still gets no answer" ;;
+	*) record quic_main_path_control FAIL "www.canva.com answered QUIC on the main path ($pr): the control does not control" ;;
+	esac ;;
+*) info "control skipped: www.canva.com -> '$ctl' (not a proxied name in this entry)" ;;
+esac
 
 # ------------------------------------------------- the DNS inbound stops answering --
 # xray's DNS inbound unreachable (dropped on loopback): within two loops the
@@ -288,7 +389,7 @@ code=$(curl -s -m 15 -o /dev/null -w '%{http_code}' https://www.google.com/gener
 if ! nft list table inet vctl >/dev/null 2>&1 && [ -n "$ex" ] && [ "$j" -le 15 ] && [ "$code" = 204 ]; then
 	record dead_tunnel_goes_direct PASS "tunnel dead, line up: direct after ${i}s — no table, no redirect; example.com -> $ex (${j}s after), google 204 straight out"
 else
-	record dead_tunnel_goes_direct FAIL "after ${i}s: table $(nft list table inet vctl >/dev/null 2>&1 && echo present || echo absent), example.com='$ex', google '$code'; $(grep -i rescue "$D/agent-$carrying.log" | tail -2 | tr '\n' ' ' | cut -c1-200)"
+	record dead_tunnel_goes_direct FAIL "after ${i}s: table $(nft list table inet vctl >/dev/null 2>&1 && echo present || echo absent), example.com='$ex', google '$code'; $(resolver_state); $(grep -i rescue "$D/agent-$carrying.log" | tail -2 | tr '\n' ' ' | cut -c1-200)"
 fi
 nft delete table inet stand_block 2>/dev/null
 kill "$CONFIRMER" 2>/dev/null
@@ -303,6 +404,11 @@ if nft list table inet vctl >/dev/null 2>&1; then
 else
 	record stop_takes_redirect PASS "the daemon's stop took the table, and the redirect with it"
 fi
+if [ -f "$QUIC_FRAG" ]; then
+	record quic_fragment_gone FAIL "dnsmasq's QUIC fragment outlived the data plane: $(cut -c1-120 "$QUIC_FRAG")"
+else
+	record quic_fragment_gone PASS "dnsmasq's QUIC fragment left with the data plane (dnsmasq restarted $(wc -l < "$D/dnsmasq-restarts" 2>/dev/null || echo 0)x in the whole run)"
+fi
 # dnsmasq may still be waiting on a query the stop cut short; give it a few
 # tries, and read each answer once.
 i=0 ig="" ex=""
@@ -315,11 +421,15 @@ done
 if [ -z "$ig" ] && [ -n "$ex" ]; then
 	record isp_back_after_stop PASS "after the stop dnsmasq asks the ISP again: www.instagram.com forged NXDOMAIN, example.com -> $ex"
 else
-	record isp_back_after_stop FAIL "after the stop: instagram='$ig' example.com='$ex'"
+	record isp_back_after_stop FAIL "after the stop: instagram='$ig' example.com='$ex'; $(resolver_state)"
 fi
-# A table programmed twice is the same table: each rule once.
-vctl firewall apply -config "$D/operator.json" -yes >/dev/null 2>&1
-vctl firewall apply -config "$D/operator.json" -yes >/dev/null 2>&1
+# A table programmed twice is the same table: each rule once. The daemon sealed
+# operator.json; the CLI reads plaintext, so it gets a restored copy.
+rm -f "$D/operator.plain.json"
+vctl vault-restore -in "$D/operator.json" -out "$D/operator.plain.json" >/dev/null 2>&1 ||
+	cp "$D/operator.json" "$D/operator.plain.json"
+vctl firewall apply -config "$D/operator.plain.json" -yes >/dev/null 2>&1
+vctl firewall apply -config "$D/operator.plain.json" -yes >/dev/null 2>&1
 n=$(nft list chain inet vctl prerouting 2>/dev/null | grep -c 'tproxy to :12345')
 if [ "$n" = 1 ]; then
 	record apply_twice_same_table PASS "two applies in a row: the tproxy rule is there once"
