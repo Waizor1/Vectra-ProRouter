@@ -23,7 +23,7 @@ const renderWithBridgeQUIC = `{"inbounds":[{"tag":"tproxy-in","listen":"0.0.0.0"
 	`{"tag":"bridge-de5","protocol":"vless","settings":{"vnext":[{"address":"de.example","port":443,"users":[{"id":"x","flow":"xtls-rprx-vision"}]}]}}],` +
 	`"routing":{"rules":[{"domain":["geosite:youtube","domain:googlevideo.com"],"balancerTag":"BL-RU"},` +
 	`{"domain":["domain:nnmclub.to","domain:ru"],"balancerTag":"BL-RU"},{"network":"tcp,udp","balancerTag":"BL-MAIN"}],` +
-	`"balancers":[{"tag":"BL-RU","selector":["bridge-ru-tcp"]},{"tag":"BL-MAIN","selector":["bridge-de5"]}]}}`
+	`"balancers":[{"tag":"BL-RU","selector":["bridge-ru-tcp"],"fallbackTag":"stage-main"},{"tag":"BL-MAIN","selector":["bridge-de5"]}]}}`
 
 type bridgeQUICStand struct {
 	*steer
@@ -213,10 +213,10 @@ func TestAPlainVisionBridgePassesNoQUIC(t *testing.T) {
 	}
 }
 
-// BL-RU with no live member falls back to the main path (plain Vision): xray
-// is asked again every bridgeQUICRecheck, the names leave while the fallback
-// carries them and come back with the bridge.
-func TestABridgeOnItsFallbackLosesItsNamesAtTheNextLook(t *testing.T) {
+// BL-RU with no member alive sends its names to its fallback (the main path,
+// plain Vision). That is no reason to restart dnsmasq: the names keep their
+// pass for bridgeQUICHold, lose it after, and come back with the bridge.
+func TestABridgeOnItsFallbackKeepsItsNamesForAWhile(t *testing.T) {
 	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
 	d := s.d
 	ctx := context.Background()
@@ -227,30 +227,69 @@ func TestABridgeOnItsFallbackLosesItsNamesAtTheNextLook(t *testing.T) {
 	if f := s.fragments(t)[0]; !strings.Contains(f, "googlevideo.com") {
 		t.Fatalf("fragment %q", f)
 	}
+	restarts := s.restarts
 
 	s.routes = map[string]string{"googlevideo.com": "stage-main", "nnmclub.to": "stage-main"}
+	asked := len(s.asked)
 	now = now.Add(time.Minute)
 	d.syncBridgeQUIC(ctx)
-	if f := s.fragments(t)[0]; !strings.Contains(f, "googlevideo.com") {
+	if len(s.asked) != asked {
 		t.Fatal("asked again before bridgeQUICRecheck")
 	}
 	now = now.Add(bridgeQUICRecheck)
 	d.syncBridgeQUIC(ctx)
-	if f := s.fragments(t)[0]; f != "" {
-		t.Fatalf("the fallback carries the names and they keep their pass: %q", f)
+	now = now.Add(bridgeQUICHold - time.Minute)
+	d.syncBridgeQUIC(ctx)
+	if f := s.fragments(t)[0]; !strings.Contains(f, "googlevideo.com") || s.restarts != restarts {
+		t.Fatalf("fragment %q, restarts %d -> %d: the fallback within bridgeQUICHold changes nothing", f, restarts, s.restarts)
+	}
+	if d.bridgeQUICWaiting != bridgeQUICOnFallback {
+		t.Fatalf("waiting = %q, want %q (asked again every bridgeQUICRetry)", d.bridgeQUICWaiting, bridgeQUICOnFallback)
+	}
+	now = now.Add(time.Minute)
+	d.syncBridgeQUIC(ctx)
+	if f := s.fragments(t)[0]; f != "" || s.restarts != restarts+1 {
+		t.Fatalf("fragment %q, restarts %d: a bridge down for bridgeQUICHold gives its names up", f, s.restarts-restarts)
 	}
 
 	s.routes = map[string]string{"googlevideo.com": "bridge-ru-tcp", "nnmclub.to": "bridge-ru-tcp"}
-	now = now.Add(bridgeQUICRecheck)
+	now = now.Add(bridgeQUICRetry)
 	d.syncBridgeQUIC(ctx)
 	if f := s.fragments(t)[0]; !strings.Contains(f, "googlevideo.com") {
-		t.Fatalf("the bridge is back and its names are not: %q", f)
+		t.Fatalf("the bridge is back and its names are not, %s later: %q", bridgeQUICRetry, f)
 	}
 }
 
-// Right after xray starts BL-RU may still send its names to the fallback,
-// until the observatory has seen the bridge alive: xray is asked again within
-// bridgeQUICRetry, not at the next bridgeQUICRecheck.
+// A fresh xray sends BL-RU's names to the fallback until the observatory's
+// first round (leastLoad knows no member alive before it): a restart of xray
+// leaves dnsmasq alone.
+func TestAnXrayRestartLeavesDnsmasqAlone(t *testing.T) {
+	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
+	d := s.d
+	ctx := context.Background()
+	now := time.Date(2026, 10, 26, 4, 0, 0, 0, time.UTC)
+	d.clock = func() time.Time { return now }
+	d.programFirewall(ctx, d.desired)
+	d.syncBridgeQUIC(ctx)
+	restarts := s.restarts
+
+	s.started = s.started.Add(time.Hour)
+	s.routes = map[string]string{"googlevideo.com": "stage-main", "nnmclub.to": "stage-main"}
+	now = now.Add(time.Second)
+	d.syncBridgeQUIC(ctx)
+	s.routes = map[string]string{"googlevideo.com": "bridge-ru-tcp", "nnmclub.to": "bridge-ru-tcp"}
+	now = now.Add(bridgeQUICRetry)
+	d.syncBridgeQUIC(ctx)
+	if f := s.fragments(t)[0]; !strings.Contains(f, "googlevideo.com") || s.restarts != restarts {
+		t.Fatalf("fragment %q, restarts %d -> %d: an xray restart must not take the names out and back", f, restarts, s.restarts)
+	}
+	if d.bridgeQUICWaiting != "" {
+		t.Fatalf("waiting = %q with the names through", d.bridgeQUICWaiting)
+	}
+}
+
+// The first start: the names reach dnsmasq within bridgeQUICRetry of the
+// observatory seeing the bridge, not at the next bridgeQUICRecheck.
 func TestNamesAFreshBalancerHoldsBackArriveWithinTheRetry(t *testing.T) {
 	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
 	d := s.d
@@ -260,11 +299,11 @@ func TestNamesAFreshBalancerHoldsBackArriveWithinTheRetry(t *testing.T) {
 	s.routes = map[string]string{"googlevideo.com": "stage-main", "nnmclub.to": "stage-main"}
 	d.programFirewall(ctx, d.desired)
 	d.syncBridgeQUIC(ctx)
-	if f := s.fragments(t)[0]; f != "" {
-		t.Fatalf("fragment %q while the balancer sends the names elsewhere", f)
+	if f := s.fragments(t)[0]; f != "" || s.restarts != 0 {
+		t.Fatalf("fragment %q, restarts %d while the balancer has no member alive", f, s.restarts)
 	}
-	if d.bridgeQUICWaiting != "stage-main" {
-		t.Fatalf("waiting = %q, want where xray sent the names", d.bridgeQUICWaiting)
+	if d.bridgeQUICWaiting != bridgeQUICOnFallback {
+		t.Fatalf("waiting = %q, want %q", d.bridgeQUICWaiting, bridgeQUICOnFallback)
 	}
 	asked := len(s.asked)
 	now = now.Add(time.Second)
@@ -276,8 +315,8 @@ func TestNamesAFreshBalancerHoldsBackArriveWithinTheRetry(t *testing.T) {
 	s.routes = map[string]string{"googlevideo.com": "bridge-ru-tcp", "nnmclub.to": "bridge-ru-tcp"}
 	now = now.Add(bridgeQUICRetry)
 	d.syncBridgeQUIC(ctx)
-	if f := s.fragments(t)[0]; !strings.Contains(f, "googlevideo.com") {
-		t.Fatalf("the bridge is alive %s after the start and its names are not through: %q", bridgeQUICRetry+time.Second, f)
+	if f := s.fragments(t)[0]; !strings.Contains(f, "googlevideo.com") || s.restarts != 1 {
+		t.Fatalf("fragment %q, restarts %d: the bridge is alive %s after the start and its names are not through", f, s.restarts, bridgeQUICRetry+time.Second)
 	}
 	if d.bridgeQUICWaiting != "" {
 		t.Fatalf("waiting = %q with the names through", d.bridgeQUICWaiting)

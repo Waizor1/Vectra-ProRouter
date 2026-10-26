@@ -42,6 +42,11 @@ const (
 // balancerSelector is the selector of the document's balancer tag, nil when
 // it has none. xray picks a balancer's members by tag prefix.
 func balancerSelector(doc []byte, tag string) []string {
+	return jsonStrings(ruleField(balancerOf(doc, tag), "selector"))
+}
+
+// balancerOf is the document's balancer tag, nil when it has none.
+func balancerOf(doc []byte, tag string) map[string]json.RawMessage {
 	var d map[string]json.RawMessage
 	if json.Unmarshal(doc, &d) != nil {
 		return nil
@@ -56,7 +61,7 @@ func balancerSelector(doc []byte, tag string) []string {
 	}
 	for _, b := range balancers {
 		if jsonString(ruleField(b, "tag")) == tag {
-			return jsonStrings(ruleField(b, "selector"))
+			return b
 		}
 	}
 	return nil
@@ -206,12 +211,17 @@ type BridgeQUIC struct {
 	// Members are the bridge's outbounds that carry UDP/443: selected by
 	// BL-RU and not plain Vision.
 	Members []string
+	// Fallback is BL-RU's fallbackTag: where xray sends the names while it
+	// knows no member alive (a fresh start before the observatory's first
+	// round, a bridge down).
+	Fallback string
 }
 
 // RenderBridgeQUIC reads a render for BridgeQUIC; zero when the document has
 // no Russian bridge or no member of it carries UDP/443.
 func RenderBridgeQUIC(render []byte) BridgeQUIC {
-	selector := balancerSelector(render, RussianBalancer)
+	bl := balancerOf(render, RussianBalancer)
+	selector := jsonStrings(ruleField(bl, "selector"))
 	if len(selector) == 0 {
 		return BridgeQUIC{}
 	}
@@ -219,7 +229,7 @@ func RenderBridgeQUIC(render []byte) BridgeQUIC {
 	if json.Unmarshal(render, &doc) != nil {
 		return BridgeQUIC{}
 	}
-	var out BridgeQUIC
+	out := BridgeQUIC{Fallback: jsonString(ruleField(bl, "fallbackTag"))}
 	var outbounds []map[string]json.RawMessage
 	_ = json.Unmarshal(ruleField(doc, OutboundsKey), &outbounds)
 	for _, ob := range outbounds {

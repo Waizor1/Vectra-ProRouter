@@ -29,20 +29,23 @@ at once and every YouTube video connection went over TCP.
   provider bridges. Which of them pass, xray says itself after every start
   (RoutingService.TestRoute, UDP to 443 on the tproxy inbound): a name the
   owner sent elsewhere (a service's country, a site of theirs) does not land
-  on the bridge and stays refused. xray is asked again every 5 min: with no
-  live member BL-RU falls back to the main path (plain Vision, UDP/443
-  dropped without an answer), TestRoute names the fallback and the names
-  leave until the bridge is back. A changed fragment restarts dnsmasq once and
-  empties the set; the fragment leaves with the data plane (daemon and
-  `dataplane-teardown.sh`). An address stays in the set 1 h unless asked for
-  again (FakeDNS answers with a TTL of 1 s).
+  on the bridge and stays refused. xray is asked again every 5 min, and every
+  30 s while its answer lets nothing through. BL-RU's fallback is no answer:
+  a fresh xray sends the names there until the observatory's first round
+  (leastLoad knows no member alive before it), so an xray restart leaves the
+  fragment, and dnsmasq, alone; only a bridge on its fallback for 30 min gives
+  its names up, and they come back with it. A changed fragment restarts
+  dnsmasq once (a moment without DNS for the LAN: after the install, and when
+  the names change) and empties the set; the fragment leaves with the data
+  plane (daemon and `dataplane-teardown.sh`). An address stays in the set 1 h
+  unless asked for again (FakeDNS answers with a TTL of 1 s).
 - **Off switch:** UCI `quic_bridge '0'` — plain Vision and every proxied
   name's QUIC refused, exactly r30. `refuse_quic '0'` still keeps all QUIC.
 
 ### Known limits
-- Between a bridge failing and the next look (up to 5 min), QUIC to its names
-  goes to the fallback and is dropped there without an answer; apps wait out
-  their QUIC timeout and fall back to TCP, as before r24.
+- While BL-RU is on its fallback (up to 30 min, and up to 5 min after a
+  bridge fails), QUIC to its names goes to the fallback and is dropped there
+  without an answer; browsers race TCP and go on over it, as before r25.
 - The deadman (commit-confirm) takes the table and leaves the fragment: dnsmasq
   only logs that the set is missing until the table is back.
 

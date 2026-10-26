@@ -41,17 +41,23 @@ var dnsmasqConfDirGlob = "/tmp/dnsmasq.*.d"
 // bridgeQUICWithin bounds the question to xray and the resolver's restart.
 const bridgeQUICWithin = 10 * time.Second
 
-// bridgeQUICRecheck is how often xray is asked again between its starts. With
-// no live member, BL-RU falls back to the main path, which is plain Vision and
-// drops UDP/443 without an answer: TestRoute then names the fallback, the
-// names leave and their QUIC is refused again — and comes back with the
-// bridge.
+// bridgeQUICRecheck is how often xray is asked again between its starts, while
+// the names pass.
 const bridgeQUICRecheck = 5 * time.Minute
 
-// bridgeQUICRetry is how soon xray is asked again while none of the names
-// lands on the bridge: right after xray starts its balancer may still send
-// them to its fallback, until the observatory has seen the bridge alive.
+// bridgeQUICRetry is how soon xray is asked again while its answer lets no
+// name through or is not final yet (BL-RU on its fallback).
 const bridgeQUICRetry = 30 * time.Second
+
+// bridgeQUICHold is how long BL-RU may stay on its fallback before its names
+// lose their pass. xray sends them to the fallback while it knows no member
+// alive: a fresh start before the observatory's first round, a bridge the
+// observatory missed once. Meanwhile the fragment, and dnsmasq, stay as they
+// are — every change restarts dnsmasq, a moment without DNS for the LAN —
+// and QUIC to the names reaches the fallback (the main path, plain Vision),
+// which drops it without an answer: a browser goes on over TCP, as before
+// r25. A bridge down for longer gives its names up, and they come back with it.
+const bridgeQUICHold = 30 * time.Minute
 
 // carryBridgeQUIC lets the table pass QUIC to the set (Spec.QUICPass) when
 // the running render has a Russian bridge that carries UDP/443 and names
@@ -80,7 +86,8 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 		return
 	}
 	pass := d.fwSpec != nil && d.fwSpec.QUICPass && d.rescueState().Mode != rescue.ModeDirect
-	key := st.StartedAt.String()
+	started := st.StartedAt.String()
+	key := started
 	if pass {
 		every := bridgeQUICRecheck
 		if d.bridgeQUICWaiting != "" {
@@ -95,7 +102,7 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 	waiting := ""
 	if pass {
 		c, cancel := context.WithTimeout(ctx, bridgeQUICWithin)
-		got, elsewhere, err := d.bridgeQUICNames(c)
+		ans, err := d.bridgeQUICNames(c)
 		cancel()
 		if err != nil {
 			// xray's API not answering yet: the next look asks again; the
@@ -103,9 +110,23 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 			logging.L().Debug("QUIC through the Russian bridge: xray did not answer where the names go", "err", err.Error())
 			return
 		}
-		names = got
+		if !ans.fallback {
+			d.bridgeQUICHeldSince = time.Time{}
+		} else {
+			if d.bridgeQUICHeldSince.IsZero() || d.bridgeQUICHeldStart != started {
+				d.bridgeQUICHeldSince, d.bridgeQUICHeldStart = d.now(), started
+			}
+			if d.now().Sub(d.bridgeQUICHeldSince) < bridgeQUICHold {
+				if d.bridgeQUICWaiting != bridgeQUICOnFallback {
+					logging.L().Info("QUIC through the Russian bridge waits: BL-RU is on its fallback, the names keep their pass", "route", ans.elsewhere)
+				}
+				d.bridgeQUICSynced, d.bridgeQUICWaiting = key, bridgeQUICOnFallback
+				return
+			}
+		}
+		names = ans.names
 		if len(names) == 0 {
-			waiting = elsewhere
+			waiting = ans.elsewhere
 			if waiting == "" {
 				waiting = "none"
 			}
@@ -136,17 +157,29 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 	d.restartResolverForBridgeQUIC(ctx, table)
 }
 
-// bridgeQUICNames are the running render's bridge names xray routes, for
-// QUIC from the LAN, to a bridge outbound that carries UDP/443; elsewhere is
-// where it routed the first name that did not land there.
-func (d *daemon) bridgeQUICNames(ctx context.Context) (names []string, elsewhere string, err error) {
+// bridgeQUICOnFallback is bridgeQUICWaiting while BL-RU is on its fallback.
+const bridgeQUICOnFallback = "BL-RU fallback"
+
+// bridgeQUICAnswer is xray's word on the bridge's names: those it routes to a
+// member that carries UDP/443; whether it sent any to BL-RU's fallback (or
+// could not pick for it); and where the first name that missed the bridge went.
+type bridgeQUICAnswer struct {
+	names     []string
+	fallback  bool
+	elsewhere string
+}
+
+// bridgeQUICNames asks xray where QUIC from the LAN to each of the running
+// render's bridge names goes.
+func (d *daemon) bridgeQUICNames(ctx context.Context) (bridgeQUICAnswer, error) {
+	var ans bridgeQUICAnswer
 	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
 	if err != nil {
-		return nil, "", err
+		return ans, err
 	}
 	bq := xray.RenderBridgeQUIC(raw)
 	if len(bq.Names) == 0 {
-		return nil, "", nil
+		return ans, nil
 	}
 	tag := "tproxy-in"
 	if d.desired != nil && d.desired.Inbounds.Tproxy != nil && d.desired.Inbounds.Tproxy.Tag != "" {
@@ -162,21 +195,31 @@ func (d *daemon) bridgeQUICNames(ctx context.Context) (names []string, elsewhere
 	}
 	tags, err := testRoute(ctx, api.DefaultAPIServer, queries)
 	if err != nil {
-		return nil, "", err
+		return ans, err
 	}
 	members := map[string]bool{}
 	for _, m := range bq.Members {
 		members[m] = true
 	}
 	for i, n := range bq.Names {
-		switch {
-		case i < len(tags) && members[tags[i]]:
-			names = append(names, n)
-		case elsewhere == "" && i < len(tags):
-			elsewhere = tags[i]
+		got := ""
+		if i < len(tags) {
+			got = tags[i]
+		}
+		if members[got] {
+			ans.names = append(ans.names, n)
+			continue
+		}
+		// No pick (a balancer with no fallback and no member alive errs), or
+		// the fallback's.
+		if got == "" || got == bq.Fallback {
+			ans.fallback = true
+		}
+		if ans.elsewhere == "" {
+			ans.elsewhere = got
 		}
 	}
-	return names, elsewhere, nil
+	return ans, nil
 }
 
 // bridgeQUICLine is the fragment for names ("" for none): dnsmasq adds every
@@ -249,8 +292,8 @@ func restartDnsmasq(ctx context.Context) error {
 // dropBridgeQUIC takes the fragment out with the data plane.
 func (d *daemon) dropBridgeQUIC(ctx context.Context) {
 	changed, err := writeBridgeQUICFragment(nil, "")
-	d.bridgeQUICSynced = ""
-	d.bridgeQUICWaiting = ""
+	d.bridgeQUICSynced, d.bridgeQUICWaiting = "", ""
+	d.bridgeQUICHeldSince, d.bridgeQUICHeldStart = time.Time{}, ""
 	if err != nil {
 		logging.L().Warn("dnsmasq's QUIC fragment not removed", "err", err.Error())
 		return

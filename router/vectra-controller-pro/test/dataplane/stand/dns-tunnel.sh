@@ -187,6 +187,13 @@ while [ "$n" -lt 6 ] && [ -z "$carrying" ]; do
 done
 [ -n "$carrying" ] || die "no entry carried traffic"
 info "entry $carrying carries: $(jsonfilter -i "$D/provider-config.json" -e '@.remarks' 2>/dev/null)"
+# The daemon's first look at the bridge's names writes dnsmasq's QUIC fragment
+# and restarts it, once after the start (bridge_quic.go); the checks below are
+# of the steady state after it.
+i=0
+while [ "$i" -lt 60 ] && [ ! -s /tmp/dnsmasq.stand.d/vctl-bridge-quic.conf ]; do i=$((i + 1)); sleep 1; done
+sleep 2
+info "QUIC fragment after ${i}s; dnsmasq restarted $(wc -l < "$D/dnsmasq-restarts" 2>/dev/null || echo 0)x"
 record render_has_dns_inbound PASS "the render has vctl-dns-in on 127.0.0.1:10053 and the rule to vctl-dns-out"
 
 # ------------------------------------------------------------------ steered --
@@ -392,7 +399,7 @@ fi
 if [ -f "$QUIC_FRAG" ]; then
 	record quic_fragment_gone FAIL "dnsmasq's QUIC fragment outlived the data plane: $(cut -c1-120 "$QUIC_FRAG")"
 else
-	record quic_fragment_gone PASS "dnsmasq's QUIC fragment left with the data plane"
+	record quic_fragment_gone PASS "dnsmasq's QUIC fragment left with the data plane (dnsmasq restarted $(wc -l < "$D/dnsmasq-restarts" 2>/dev/null || echo 0)x in the whole run)"
 fi
 # dnsmasq may still be waiting on a query the stop cut short; give it a few
 # tries, and read each answer once.

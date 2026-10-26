@@ -118,6 +118,9 @@ func TestRenderBridgeQUICNamesTheBridgesNamesAndMembers(t *testing.T) {
 	if !reflect.DeepEqual(bq.Members, []string{"bridge-ru-tcp"}) {
 		t.Fatalf("members = %v, want [bridge-ru-tcp]", bq.Members)
 	}
+	if bq.Fallback != "stage-main" {
+		t.Fatalf("fallback = %q, want BL-RU's fallbackTag stage-main", bq.Fallback)
+	}
 	have := map[string]bool{}
 	for _, n := range bq.Names {
 		have[n] = true
