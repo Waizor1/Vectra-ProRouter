@@ -137,7 +137,7 @@ func TestTheBridgesNamesReachDnsmasqWhenXraySendsThemToTheBridge(t *testing.T) {
 	// The owner sent nnmclub.to through a country: xray says so at its next
 	// start, and the name leaves.
 	s.routes["nnmclub.to"] = "bridge-de5"
-	s.started = time.Now()
+	s.started = time.Now().Add(-bridgeQUICSettle)
 	d.syncBridgeQUIC(ctx)
 	if f := s.fragments(t)[0]; !strings.Contains(f, gv) || strings.Contains(f, nnm) {
 		t.Fatalf("fragment = %q, want only googlevideo.com", f)
@@ -279,7 +279,7 @@ func TestAnXrayRestartLeavesDnsmasqAlone(t *testing.T) {
 	d.syncBridgeQUIC(ctx)
 	restarts := s.restarts
 
-	s.started = s.started.Add(time.Hour)
+	s.started = s.started.Add(time.Hour - bridgeQUICSettle)
 	s.routes = map[string]string{"googlevideo.com": "stage-main", "nnmclub.to": "stage-main"}
 	now = now.Add(time.Second)
 	d.syncBridgeQUIC(ctx)
@@ -442,6 +442,25 @@ func TestAFragmentDnsmasqRefusesIsNeverWritten(t *testing.T) {
 	}
 	if f := s.fragments(t)[0]; f != "" || s.restarts != 0 || !d.bridgeQUICBroken {
 		t.Fatalf("fragment %q, restarts %d, broken %v", f, s.restarts, d.bridgeQUICBroken)
+	}
+}
+
+// dnsmasq is not changed under a fresh xray, which resolves its nodes' names
+// through it (the stand's tunnel went down to a restart 3 s after xray's).
+func TestDnsmasqWaitsForXrayToSettle(t *testing.T) {
+	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
+	d := s.d
+	ctx := context.Background()
+	s.started = time.Now().Add(-bridgeQUICSettle + 300*time.Millisecond)
+	d.programFirewall(ctx, d.desired)
+	d.syncBridgeQUIC(ctx)
+	if f := s.fragments(t)[0]; f != "" || s.restarts != 0 || len(s.asked) != 0 {
+		t.Fatalf("fragment %q, restarts %d, asked %d under an xray younger than %s", f, s.restarts, len(s.asked), bridgeQUICSettle)
+	}
+	time.Sleep(400 * time.Millisecond)
+	d.syncBridgeQUIC(ctx)
+	if f := s.fragments(t)[0]; !strings.Contains(f, "googlevideo.com") || s.restarts != 1 {
+		t.Fatalf("fragment %q, restarts %d once xray has settled", f, s.restarts)
 	}
 }
 

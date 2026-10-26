@@ -42,7 +42,10 @@ at once and every YouTube video connection went over TCP.
   (leastLoad knows no member alive before it), so an xray restart leaves the
   fragment, and dnsmasq, alone; only a bridge on its fallback for 30 min gives
   its names up, and they come back with it; the hold runs on across xray's
-  starts. A changed fragment restarts dnsmasq once (a moment without DNS for
+  starts. dnsmasq is changed only under an xray that has run 2 min: a fresh
+  one resolves its nodes' names through dnsmasq and probes them, and on the
+  stand a restart 3 s after xray's held the nodes dead and sent the rescue
+  direct. A changed fragment restarts dnsmasq once (a moment without DNS for
   the LAN: after the install, and when the names change) and empties the
   set; each new xray empties it too (its FakeDNS addresses are handed out
   anew). A fragment dnsmasq's own syntax check (`dnsmasq --test`) refuses —

@@ -58,6 +58,13 @@ var resolverBackWithin, resolverSteadyAfter = 5 * time.Second, time.Second
 // restart — not a resolver that changed user (dnsRedirectStale).
 const resolverRestartGrace = 30 * time.Second
 
+// bridgeQUICSettle is how long xray runs before dnsmasq is changed under it.
+// A fresh xray resolves its nodes' names through dnsmasq and probes them (the
+// observatory's first round, the failover watchdog's re-probe): a dnsmasq
+// restarted then fails those lookups, and the nodes stay dead until the
+// watchdog's next restart, 10 min on — on the stand the rescue went direct.
+const bridgeQUICSettle = 2 * time.Minute
+
 // bridgeQUICRecheck is how often xray is asked again between its starts, while
 // the names pass.
 const bridgeQUICRecheck = 5 * time.Minute
@@ -128,6 +135,9 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 		key += ";pass@" + d.now().Truncate(every).String()
 	}
 	if key == d.bridgeQUICSynced {
+		return
+	}
+	if time.Since(st.StartedAt) < bridgeQUICSettle {
 		return
 	}
 	var names []string

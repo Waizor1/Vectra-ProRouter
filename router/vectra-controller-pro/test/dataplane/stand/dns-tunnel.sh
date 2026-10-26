@@ -188,10 +188,11 @@ done
 [ -n "$carrying" ] || die "no entry carried traffic"
 info "entry $carrying carries: $(jsonfilter -i "$D/provider-config.json" -e '@.remarks' 2>/dev/null)"
 # The daemon's first look at the bridge's names writes dnsmasq's QUIC fragment
-# and restarts it, once after the start (bridge_quic.go); the checks below are
-# of the steady state after it.
+# and restarts it, once after the start, under an xray that has run 2 min
+# (bridge_quic.go, bridgeQUICSettle); the checks below are of the steady
+# state after it.
 i=0
-while [ "$i" -lt 60 ] && [ ! -s /tmp/dnsmasq.stand.d/vctl-bridge-quic.conf ]; do i=$((i + 1)); sleep 1; done
+while [ "$i" -lt 180 ] && [ ! -s /tmp/dnsmasq.stand.d/vctl-bridge-quic.conf ]; do i=$((i + 1)); sleep 1; done
 sleep 2
 info "QUIC fragment after ${i}s; dnsmasq restarted $(wc -l < "$D/dnsmasq-restarts" 2>/dev/null || echo 0)x"
 record render_has_dns_inbound PASS "the render has vctl-dns-in on 127.0.0.1:10053 and the rule to vctl-dns-out"
