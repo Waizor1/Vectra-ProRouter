@@ -168,9 +168,12 @@ Then:
    is still what it read; another opkg is waited for up to 10 s, and
    otherwise COMPANIONS_MARK, a warning — vctl from 0.7.0-r32 drops the marks
    itself when it next starts. With nothing marked vctl is not asked. A
-   feed's vctl that does not name both, over companions that are marked, is
+   feed's vctl that does not name both, where the companions are marked, is
    refused before anything changes (COMPANIONS_NOT_NAMED): its opkg would
-   remove them. vctl's own self-update (update_controller,
+   remove them. That check reads opkg's status file and the feed's list and
+   asks no opkg (a query run while another opkg holds the lock prints
+   nothing, as for a package not installed); a status that cannot be read is
+   refused (STATUS_UNREADABLE). vctl's own self-update (update_controller,
    Connect's automatic update) does it around its `opkg install`, and
    `scripts/Rollout-VctlFleet.py` after it, by the same command.
 12. **Geo data**: Vectra reads its own set, vectra-geodata's, in

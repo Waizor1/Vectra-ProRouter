@@ -65,12 +65,15 @@ var opkgMu sync.Mutex
 
 // afterTheLock runs once opkg's lock is granted, before it is checked to hold;
 // afterTheScan between the look at the processes and the one at the path;
-// beforeTheRename between the last look at the status file and the rename
-// over it. Tests stand an opkg that ends, or a writer that interferes, in.
+// beforeTheLastLook before the status file is read again and compared with
+// what the edit was made from; beforeTheRename after that, just before the
+// rename. Tests stand an opkg that ends, a writer that interferes, or an opkg
+// that tries the lock, in.
 var (
-	afterTheLock    = func() {}
-	afterTheScan    = func() {}
-	beforeTheRename = func() {}
+	afterTheLock      = func() {}
+	afterTheScan      = func() {}
+	beforeTheLastLook = func() {}
+	beforeTheRename   = func() {}
 )
 
 // keepCompanions drops the companions' Auto-Installed marks from opkg's status
@@ -78,9 +81,11 @@ var (
 // taken — when there is no mark or no file. Otherwise it holds opkg's own lock
 // from the read to the rename, so no opkg starts in between; the new file is
 // written beside the old one, synced and renamed over it: a power cut leaves
-// the one or the other. And it is renamed only over the file it was made
-// from: a writer that takes no lock (an older installer's) leaves it as that
-// writer made it.
+// the one or the other. Every opkg is kept out from the read to the rename by
+// its own lock. A writer that takes no lock (an older installer's) is not:
+// the status is read once more just before the rename and must still be what
+// the edit was made from, so a write of its up to that look is kept — one
+// between that look and the rename is not.
 func keepCompanions() ([]string, error) {
 	opkgMu.Lock()
 	defer opkgMu.Unlock()
@@ -120,11 +125,12 @@ func keepCompanionsHeld() ([]string, error) {
 		os.Remove(tmp)
 		return nil, err
 	}
-	beforeTheRename()
+	beforeTheLastLook()
 	if now, err := os.ReadFile(opkgStatusFile); err != nil || !bytes.Equal(now, old) {
 		os.Remove(tmp)
 		return nil, errors.New("the status file changed while its marks were taken out; left as it is now")
 	}
+	beforeTheRename()
 	if err := os.Rename(tmp, opkgStatusFile); err != nil {
 		os.Remove(tmp)
 		return nil, err

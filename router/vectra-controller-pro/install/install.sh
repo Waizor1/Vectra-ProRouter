@@ -1175,13 +1175,26 @@ dns_diag() {
 COMPANIONS="vectra-geodata vectra-reporter"
 COMPANIONS_WAIT="${VECTRA_COMPANIONS_WAIT:-10}"
 VCTL_BIN="${VECTRA_VCTL_BIN:-/usr/sbin/vctl}"
-companions_marked() { # a companion carries opkg's Auto-Installed mark (reads only)
-	[ -f "$OPKG_STATUS" ] && awk '/^Package: / { p = substr($0, 10) } /^$/ { p = "" }
+# companions_marked: 0 — a companion carries opkg's Auto-Installed mark; 1 —
+# none does, or opkg has no status file (nothing installed); 2 — the status
+# cannot be read, which is no answer. It reads only, and asks no opkg: an
+# opkg query fails while another opkg holds the lock, and its empty output
+# reads as "not installed".
+companions_marked() {
+	[ -e "$OPKG_STATUS" ] || return 1
+	[ -f "$OPKG_STATUS" ] && [ -r "$OPKG_STATUS" ] || return 2
+	marked="$(awk '/^Package: / { p = substr($0, 10) } /^$/ { p = "" }
 		(p == "vectra-geodata" || p == "vectra-reporter") && $0 == "Auto-Installed: yes" { m = 1 }
-		END { exit !m }' "$OPKG_STATUS"
+		END { print m ? "marked" : "none" }' "$OPKG_STATUS" 2> /dev/null)" || return 2
+	case "$marked" in
+	marked) return 0 ;;
+	none) return 1 ;;
+	*) return 2 ;;
+	esac
 }
 keep_companions() {
-	companions_marked || return 0
+	companions_marked
+	[ $? = 1 ] && return 0
 	said="$("$VCTL_BIN" keep-companions --wait "$COMPANIONS_WAIT" 2>&1)"
 	case $? in
 	0)
@@ -1204,9 +1217,16 @@ keep_companions() {
 # neither, and keep_companions drops the marks once it is done. One that does
 # not name them, upgraded over a vctl they came in with, has opkg remove them
 # as orphans where they are marked — the reporter's spool and state, the geo
-# data: refused, before anything is changed.
+# data: refused, before anything is changed. Whether vctl is installed is not
+# asked of opkg (companions_marked says why): marked companions and such a
+# vctl are refused whatever is installed, and a status that cannot be read is
+# refused too.
 check_companions_named() {
-	installed "$PKG" && companions_marked || return 0
+	companions_marked
+	case $? in
+	1) return 0 ;;
+	2) refuse STATUS_UNREADABLE "не удалось прочитать $OPKG_STATUS: неизвестно, стоят ли у $COMPANIONS отметки Auto-Installed, а от этого зависит, удалит ли их opkg при обновлении." ;;
+	esac
 	deps=" $(depends_of "$(feed_field "$PKG" Depends)" | tr '\n' ' ')"
 	case "$deps" in *" vectra-geodata "*) case "$deps" in *" vectra-reporter "*) return 0 ;; esac ;; esac
 	refuse COMPANIONS_NOT_NAMED "Vectra $(feed_field "$PKG" Version) из фида не зависит от $COMPANIONS, а у них стоит отметка Auto-Installed: opkg удалил бы их при обновлении вместе с очередью отчётов и геоданными."

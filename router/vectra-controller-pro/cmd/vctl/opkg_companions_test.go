@@ -77,10 +77,10 @@ func companionStand(t *testing.T, status string) string {
 	}
 	prevStatus, prevLock, prevProc, prevWait := opkgStatusFile, opkgLockFile, opkgProcDir, companionsWait
 	opkgStatusFile, opkgLockFile, opkgProcDir, companionsWait = p, filepath.Join(dir, "opkg.lock"), filepath.Join(dir, "proc"), 0
-	prevAfter, prevScan, prevBefore := afterTheLock, afterTheScan, beforeTheRename
+	prevAfter, prevScan, prevLook, prevBefore := afterTheLock, afterTheScan, beforeTheLastLook, beforeTheRename
 	t.Cleanup(func() {
 		opkgStatusFile, opkgLockFile, opkgProcDir, companionsWait = prevStatus, prevLock, prevProc, prevWait
-		afterTheLock, afterTheScan, beforeTheRename = prevAfter, prevScan, prevBefore
+		afterTheLock, afterTheScan, beforeTheLastLook, beforeTheRename = prevAfter, prevScan, prevLook, prevBefore
 	})
 	// The router's processes: init, and no opkg.
 	fakeProcess(t, "1", "init")
@@ -290,12 +290,14 @@ func TestOneGoroutineAtATimeHoldsOpkgsLock(t *testing.T) {
 }
 
 // A writer that takes no lock (an installer before r32) writes the status
-// after the last look and before the rename: the rename does not put the
-// copy made before it back; the status stays as that writer made it.
-func TestAWriteBeforeTheRenameIsNotUndone(t *testing.T) {
+// while vctl edits it — up to the last look, the read just before the rename:
+// the rename does not put the copy made before it back; the status stays as
+// that writer made it. Its boundary: a write by such a writer after that look
+// is not caught (TestNoOpkgGetsInBetweenTheLastLookAndTheRename says what is).
+func TestAWriteBeforeTheLastLookIsNotUndone(t *testing.T) {
 	p := companionStand(t, companionStatus)
 	theirs := companionStatus + "Package: luci-app-new\nVersion: 1\nStatus: install user installed\nArchitecture: all\n\n"
-	beforeTheRename = func() {
+	beforeTheLastLook = func() {
 		if err := os.WriteFile(p, []byte(theirs), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -436,6 +438,68 @@ func TestTheKeepCompanionsCommand(t *testing.T) {
 	if err := cmdKeepCompanions([]string{"now"}); err == nil {
 		t.Fatal("an argument went through")
 	}
+}
+
+// Between the last look and the rename no opkg gets in: an opkg there tries
+// opkg's lock, which vctl holds, and stops at "Could not lock" before it reads
+// the status — so nothing of its is lost to the rename. Writers that take no
+// lock are not kept out of that moment (TestAWriteBeforeTheLastLookIsNotUndone).
+func TestNoOpkgGetsInBetweenTheLastLookAndTheRename(t *testing.T) {
+	p := companionStand(t, companionStatus)
+	tried := ""
+	beforeTheRename = func() { tried = tryOpkgLock(t, opkgLockFile) }
+	if kept, err := keepCompanions(); err != nil || len(kept) != 2 {
+		t.Fatalf("kept %v, err %v", kept, err)
+	}
+	if tried != "refused" {
+		t.Fatalf("an opkg between the last look and the rename: its lock %q, want refused", tried)
+	}
+	got, _ := os.ReadFile(p)
+	if kept, _ := dropCompanionMarks(got); kept != nil {
+		t.Fatalf("the marks of %v stay", kept)
+	}
+	// Once vctl is done the lock is the next opkg's.
+	if again := tryOpkgLock(t, opkgLockFile); again != "granted" {
+		t.Fatalf("after keepCompanions an opkg's lock is %q, want granted", again)
+	}
+}
+
+// tryOpkgLock tries opkg's lock from another process, as an opkg starting
+// does (F_TLOCK): "granted" or "refused".
+func tryOpkgLock(t *testing.T, path string) string {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperTriesTheOpkgLock$")
+	cmd.Env = append(os.Environ(), "VCTL_TEST_TRY_OPKG_LOCK="+path)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("the helper: %v: %s", err, out)
+	}
+	for _, l := range strings.Split(string(out), "\n") {
+		if l == "granted" || l == "refused" {
+			return l
+		}
+	}
+	t.Fatalf("the helper said %q", out)
+	return ""
+}
+
+// TestHelperTriesTheOpkgLock is tryOpkgLock's other process.
+func TestHelperTriesTheOpkgLock(t *testing.T) {
+	path := os.Getenv("VCTL_TEST_TRY_OPKG_LOCK")
+	if path == "" {
+		t.Skip("a helper process")
+	}
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o640)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	lk := syscall.Flock_t{Type: syscall.F_WRLCK}
+	if err := syscall.FcntlFlock(f.Fd(), syscall.F_SETLK, &lk); err != nil {
+		os.Stdout.WriteString("refused\n")
+		return
+	}
+	os.Stdout.WriteString("granted\n")
 }
 
 // TestHelperHoldsTheOpkgLock is holdOpkgLock's other process: it takes the

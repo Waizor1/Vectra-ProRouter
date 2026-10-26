@@ -25,19 +25,26 @@ wrote xray-core into vctl's Depends twice.
   only then unlinks it. vctl's lock, once granted, holds only when no opkg is
   alive — one that is has its unlink still ahead — and then the path is still
   the file locked (dev and inode), in that order; otherwise it is tried again.
-  Without `/var/lock` or a process list nothing is written. The status is
-  renamed over only if it is still what was read. One goroutine of vctl at a
-  time holds the lock or runs opkg (an fcntl lock is the process's): the
-  self-update's install, the start, the command, the maintenance's opkg
-  queries, PassWall's retirement.
+  Without `/var/lock` or a process list nothing is written. Every opkg is
+  kept out from the read to the rename by that lock; a writer that takes no
+  lock (an older installer's) is not, and the status read once more just
+  before the rename must still be what the edit was made from — a write of
+  such a writer up to that look is kept, one after it is not. One goroutine
+  of vctl at a time holds the lock or runs opkg (an fcntl lock is the
+  process's): the self-update's install, the start, the command, the
+  maintenance's opkg queries, PassWall's retirement.
 - **The marks an older vctl left go when vctl starts.** A self-update by
   0.7.0-r29 or older installs the one package and keeps nothing; the new vctl
   waits for that opkg to end (its postinst runs inside it) and drops the
   marks then.
 - **Never below 0.7.0-r30.** The installer refuses a feed's vctl that does
-  not name both companions over marked ones (COMPANIONS_NOT_NAMED), before
-  anything changes; Rollout-VctlFleet.py rolls out no vctl before 0.7.0-r30,
-  and the way back its STOP names is the build the router ran or 0.7.0-r30.
+  not name both companions where they are marked (COMPANIONS_NOT_NAMED),
+  before anything changes — from opkg's status file and the feed's list
+  alone: an opkg query run while another opkg holds the lock prints nothing,
+  which read as "vctl not installed" (Codex, R102-1); a status that cannot
+  be read is refused too (STATUS_UNREADABLE). Rollout-VctlFleet.py rolls
+  out no vctl before 0.7.0-r30, and the way back its STOP names is the build
+  the router ran or 0.7.0-r30.
 - **xray-core once in the SDK's Depends.** DEPENDS names it no more;
   PKG_BUILD_DEPENDS keeps the SDK building it with vctl. `pkg_depends` writes
   the SDK's list (EXTRA_DEPENDS, then DEPENDS) with nothing merged, and
