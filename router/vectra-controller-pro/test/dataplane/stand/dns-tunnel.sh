@@ -34,6 +34,15 @@ SYN_MAC="02:00:00:de:ad:be"
 SYN_MODEL="Vectra Dataplane Stand (synthetic)"
 HWID=$(printf '%s-%s' "$SYN_MAC" "$SYN_MODEL" | sha256sum | awk '{print $1}')
 
+# plain_render: the running render, unsealed (internal/vault) into $D for
+# jsonfilter. The container is the test account's and throwaway; a render
+# that is not sealed is copied as it is.
+plain_render() {
+	rm -f "$D/render.plain"
+	vctl vault-restore -in /var/run/vectra-controller-pro/xray.json -out "$D/render.plain" >/dev/null 2>&1 ||
+		cp /var/run/vectra-controller-pro/xray.json "$D/render.plain" 2>/dev/null
+}
+
 # resolved <server> <name>: the first IPv4 address, or nothing.
 resolved() {
 	nslookup "$2" "$1" 2>/dev/null | awk '/^Name:/{n=1} n && /^Address/ {print $NF; exit}' | grep -E '^[0-9]+(\.[0-9]+){3}$'
@@ -115,7 +124,10 @@ cat > "$D/agent.json" <<EOF
 }
 EOF
 vctl agent -config "$D/agent.json" -once > "$D/first-start.log" 2>&1
-[ -n "$(jsonfilter -i "$D/state.json" -e '@.device_private_key' 2>/dev/null)" ] || die "no device key after the first start"
+# state.json is sealed (internal/vault, the secret storage hardening of
+# 2026-10-02): its key cannot be read here, only proven — by the signed fetch
+# below, which needs it.
+[ -s "$D/state.json" ] || die "no state after the first start"
 _rel=$(sed -n "s/^DISTRIB_RELEASE='\(.*\)'/\1/p" /etc/openwrt_release 2>/dev/null)
 vctl subscribe fetch -url "$STAND_SUB_URL/json" -signed -state "$D/state.json" \
 	-hwid "$HWID" -mac "$SYN_MAC" -model "$SYN_MODEL" -os-release "$_rel" \
@@ -153,7 +165,8 @@ while [ "$n" -lt 6 ] && [ -z "$carrying" ]; do
 		info "entry $n: apply-local failed: $(tail -n 2 "$D/apply-$n.log" | sed 's#https://[^ "]*#<url>#g' | tr '\n' ' ' | cut -c1-200)"
 		n=$((n + 1)); continue
 	fi
-	if ! xrayport=$(jsonfilter -i /var/run/vectra-controller-pro/xray.json -e '@.inbounds[@.tag="vctl-dns-in"].port' 2>/dev/null) || [ "$xrayport" != 10053 ]; then
+	plain_render
+	if ! xrayport=$(jsonfilter -i "$D/render.plain" -e '@.inbounds[@.tag="vctl-dns-in"].port' 2>/dev/null) || [ "$xrayport" != 10053 ]; then
 		record render_has_dns_inbound FAIL "entry $n: the render has no DNS inbound on 10053 ('$xrayport')"
 		break
 	fi
@@ -248,7 +261,8 @@ fi
 # probed (the LAN's refusal is for other interfaces, `iif != "lo"`).
 QUIC_FRAG=/tmp/dnsmasq.stand.d/vctl-bridge-quic.conf
 GV=rr1---sn-n8v7knez.googlevideo.com
-members=$(jsonfilter -i /var/run/vectra-controller-pro/xray.json -e '@.outbounds[*].settings.vnext[*].users[*].flow' 2>/dev/null | grep -c 'xtls-rprx-vision-udp443')
+plain_render
+members=$(jsonfilter -i "$D/render.plain" -e '@.outbounds[*].settings.vnext[*].users[*].flow' 2>/dev/null | grep -c 'xtls-rprx-vision-udp443')
 if [ "${members:-0}" -gt 0 ]; then
 	record quic_bridge_flow PASS "$members outbound user(s) on xtls-rprx-vision-udp443 (BL-RU's members)"
 else
@@ -262,7 +276,7 @@ fi
 i=0
 while [ "$i" -lt 60 ] && ! grep -q 'googlevideo.com' "$QUIC_FRAG" 2>/dev/null; do i=$((i + 1)); sleep 1; done
 if grep -q 'nftset=/.*googlevideo\.com.*/4#inet#vctl#vctl_quic_pass4' "$QUIC_FRAG" 2>/dev/null; then
-	record quic_fragment_written PASS "after ${i}s: $(grep '^nftset' "$QUIC_FRAG" | cut -c1-160) (dnsmasq restarted $(wc -l < "$D/dnsmasq-restarts" 2>/dev/null || echo 0)x)"
+	record quic_fragment_written PASS "after ${i}s: $(grep '^nftset' "$QUIC_FRAG" | cut -c1-160)"
 else
 	record quic_fragment_written FAIL "fragment: '$(cat "$QUIC_FRAG" 2>/dev/null | tr '\n' ' ' | cut -c1-160)'; agent: $(grep -i 'quic' "$D/agent-$carrying.log" | tail -n 2 | tr '\n' ' ' | cut -c1-200)"
 fi
@@ -271,7 +285,7 @@ gvip=$(resolved 127.0.0.1 "$GV")
 case "$gvip" in
 198.18.*|198.19.*)
 	if nft get element inet vctl vctl_quic_pass4 "{ $gvip }" >/dev/null 2>&1; then
-		record quic_set_filled PASS "$GV -> $gvip, and dnsmasq put it in vctl_quic_pass4"
+		record quic_set_filled PASS "$GV -> $gvip, and dnsmasq put it in vctl_quic_pass4 (dnsmasq restarted $(wc -l < "$D/dnsmasq-restarts" 2>/dev/null || echo 0)x)"
 	else
 		record quic_set_filled FAIL "$GV -> $gvip is not in vctl_quic_pass4: $(nft list set inet vctl vctl_quic_pass4 2>&1 | tr '\n' ' ' | cut -c1-200)"
 	fi
@@ -394,9 +408,13 @@ if [ -z "$ig" ] && [ -n "$ex" ]; then
 else
 	record isp_back_after_stop FAIL "after the stop: instagram='$ig' example.com='$ex'"
 fi
-# A table programmed twice is the same table: each rule once.
-vctl firewall apply -config "$D/operator.json" -yes >/dev/null 2>&1
-vctl firewall apply -config "$D/operator.json" -yes >/dev/null 2>&1
+# A table programmed twice is the same table: each rule once. The daemon sealed
+# operator.json; the CLI reads plaintext, so it gets a restored copy.
+rm -f "$D/operator.plain.json"
+vctl vault-restore -in "$D/operator.json" -out "$D/operator.plain.json" >/dev/null 2>&1 ||
+	cp "$D/operator.json" "$D/operator.plain.json"
+vctl firewall apply -config "$D/operator.plain.json" -yes >/dev/null 2>&1
+vctl firewall apply -config "$D/operator.plain.json" -yes >/dev/null 2>&1
 n=$(nft list chain inet vctl prerouting 2>/dev/null | grep -c 'tproxy to :12345')
 if [ "$n" = 1 ]; then
 	record apply_twice_same_table PASS "two applies in a row: the tproxy rule is there once"
