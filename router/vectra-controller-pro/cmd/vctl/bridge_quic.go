@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -182,10 +183,15 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 		if d.resolverAccepts != nil {
 			accepts = d.resolverAccepts
 		}
-		if err := accepts(ctx, bridgeQUICLines(names, table)); err != nil {
+		if err := accepts(ctx, bridgeQUICLines(names, table)); errors.Is(err, errFragmentRefused) {
 			logging.L().Error("dnsmasq does not take the QUIC fragment: QUIC to every proxied name stays refused until vctl starts again", "err", err.Error())
 			d.bridgeQUICBroken = true
 			names = nil
+		} else if err != nil {
+			// The check did not run (a full /tmp, no memory to fork): the
+			// next look tries again; nothing changes meanwhile.
+			logging.L().Debug("QUIC through the Russian bridge: dnsmasq's check of the fragment did not run", "err", err.Error())
+			return
 		}
 	}
 	changed, err := writeBridgeQUICFragment(names, table)
@@ -337,9 +343,11 @@ func (d *daemon) restartResolverForBridgeQUIC(ctx context.Context, table string,
 		d.flushBridgeQUICSet(ctx, table)
 		return
 	}
+	// Back means as before: as its own user, or as root where it ran so.
+	ownUser := len(resolverUIDs(d.procRoot())) > 0
 	d.restartResolverNow(ctx)
 	d.flushBridgeQUICSet(ctx, table)
-	if !withNames || d.resolverBack(ctx) {
+	if !withNames || d.resolverBack(ctx, ownUser) {
 		return
 	}
 	logging.L().Error("dnsmasq did not come back with the QUIC fragment: it goes, and QUIC to every proxied name is refused again until vctl starts again")
@@ -370,13 +378,17 @@ func (d *daemon) resolverRunning() bool {
 	return len(resolverPIDs(d.procRoot())) > 0
 }
 
-// resolverBack waits up to resolverBackWithin for dnsmasq to be running as
-// its own user, steadily.
-func (d *daemon) resolverBack(ctx context.Context) bool {
+// resolverBack waits up to resolverBackWithin for dnsmasq to be running
+// steadily — as its own user when it ran so before.
+func (d *daemon) resolverBack(ctx context.Context, ownUser bool) bool {
 	deadline := time.Now().Add(resolverBackWithin)
 	var since time.Time
+	up := d.resolverRunning
+	if ownUser {
+		up = func() bool { return len(resolverUIDs(d.procRoot())) > 0 }
+	}
 	for {
-		if len(resolverUIDs(d.procRoot())) == 0 {
+		if !up() {
 			since = time.Time{}
 		} else if since.IsZero() {
 			since = time.Now()
@@ -394,9 +406,14 @@ func (d *daemon) resolverBack(ctx context.Context) bool {
 	}
 }
 
+// errFragmentRefused: dnsmasq's check ran and refused the fragment.
+var errFragmentRefused = errors.New("dnsmasq refuses the fragment")
+
 // dnsmasqAccepts: dnsmasq takes the fragment — its syntax check on the
 // fragment alone (a dnsmasq built without nftset, a line it would split).
-// The resolver's restart is never risked on one it does not.
+// The resolver's restart is never risked on one it does not; errFragmentRefused
+// when the check ran and said no (or there is no dnsmasq to ask), any other
+// error when it did not run.
 func dnsmasqAccepts(ctx context.Context, fragment string) error {
 	f, err := os.CreateTemp("", "vctl-bridge-quic-*.conf")
 	if err != nil {
@@ -413,10 +430,15 @@ func dnsmasqAccepts(ctx context.Context, fragment string) error {
 	c, cancel := context.WithTimeout(ctx, bridgeQUICWithin)
 	defer cancel()
 	out, err := exec.CommandContext(c, "dnsmasq", "--test", "-C", f.Name()).CombinedOutput()
-	if err != nil {
-		return errors.New(strings.TrimSpace(err.Error() + ": " + string(out)))
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, exec.ErrNotFound), errors.As(err, &exit) && c.Err() == nil:
+		return fmt.Errorf("%w: %s: %s", errFragmentRefused, err, strings.TrimSpace(string(out)))
+	default:
+		return err
 	}
-	return nil
 }
 
 // resolverRestarting: vctl restarted dnsmasq less than resolverRestartGrace

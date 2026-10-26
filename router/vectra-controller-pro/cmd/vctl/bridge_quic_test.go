@@ -433,7 +433,7 @@ func TestAFragmentDnsmasqRefusesIsNeverWritten(t *testing.T) {
 	var checked string
 	d.resolverAccepts = func(_ context.Context, frag string) error {
 		checked = frag
-		return errors.New("dnsmasq: recompile with HAVE_NFTSET defined to enable nftset directives")
+		return fmt.Errorf("%w: dnsmasq: recompile with HAVE_NFTSET defined to enable nftset directives", errFragmentRefused)
 	}
 	d.programFirewall(context.Background(), d.desired)
 	d.syncBridgeQUIC(context.Background())
@@ -461,6 +461,42 @@ func TestDnsmasqWaitsForXrayToSettle(t *testing.T) {
 	d.syncBridgeQUIC(ctx)
 	if f := s.fragments(t)[0]; !strings.Contains(f, "googlevideo.com") || s.restarts != 1 {
 		t.Fatalf("fragment %q, restarts %d once xray has settled", f, s.restarts)
+	}
+}
+
+// A check that did not run (a full /tmp, no memory to fork) is no refusal:
+// nothing changes, and the next look asks again.
+func TestACheckThatDidNotRunIsTriedAgain(t *testing.T) {
+	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
+	d := s.d
+	ctx := context.Background()
+	d.resolverAccepts = func(context.Context, string) error {
+		return errors.New("write /tmp/vctl-bridge-quic-1.conf: no space left on device")
+	}
+	d.programFirewall(ctx, d.desired)
+	d.syncBridgeQUIC(ctx)
+	if f := s.fragments(t)[0]; f != "" || s.restarts != 0 || d.bridgeQUICBroken {
+		t.Fatalf("fragment %q, restarts %d, broken %v after a check that did not run", f, s.restarts, d.bridgeQUICBroken)
+	}
+	d.resolverAccepts = func(context.Context, string) error { return nil }
+	d.syncBridgeQUIC(ctx)
+	if f := s.fragments(t)[0]; !strings.Contains(f, "googlevideo.com") {
+		t.Fatalf("the next look did not try again: %q", f)
+	}
+}
+
+// A dnsmasq that runs as root (no user of its own) is back when it runs again
+// as root: not a failed restart on every vctl start.
+func TestARootDnsmasqIsBackAsRoot(t *testing.T) {
+	defer func(w time.Duration) { resolverBackWithin = w }(resolverBackWithin)
+	resolverBackWithin = 200 * time.Millisecond
+	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
+	d := s.d
+	d.programFirewall(context.Background(), d.desired)
+	d.procDir = fakeProc(t, map[string][2]string{"7": {"dnsmasq", "0\t0\t0\t0"}})
+	d.syncBridgeQUIC(context.Background())
+	if f := s.fragments(t)[0]; !strings.Contains(f, "googlevideo.com") || s.restarts != 1 || d.bridgeQUICBroken {
+		t.Fatalf("fragment %q, restarts %d, broken %v with dnsmasq as root", f, s.restarts, d.bridgeQUICBroken)
 	}
 }
 
