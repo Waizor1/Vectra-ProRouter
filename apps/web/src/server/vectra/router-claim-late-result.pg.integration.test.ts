@@ -12,73 +12,129 @@ const envMock = vi.hoisted(() => ({
 }));
 vi.mock("~/env", () => envMock);
 
-// recordJobResult works on the module's db: here, the real database, with a
-// barrier the test can arm. Armed, it holds the result right after its job
-// row turns terminal (succeeded / failed) — where R120-1 puts the race.
-const barrier = vi.hoisted(() => ({
-  real: undefined as unknown as Record<string, unknown>,
-  jobsTable: undefined as unknown,
-  afterTerminalJobUpdate: null as null | (() => Promise<void>),
+/**
+ * recordJobResult works on the module's db: here, the real database behind a
+ * probe. Armed, the probe holds the result right after one query of its own
+ * returns — every transaction it opens is probed as well — so the test can
+ * act in between:
+ * - "before the gate": after the result's own record (vectra_job_result) is
+ *   stored, before anything is judged;
+ * - "after the gate": after the result's second read of the router — the one
+ *   its claim gate is judged on (in the fixed code, the SELECT … FOR UPDATE
+ *   inside the transaction that also does every write).
+ */
+type Hold =
+  | { at: "insert"; table: unknown; pause: () => Promise<void> }
+  | { at: "router-read"; remaining: number; pause: () => Promise<void> };
+const probe = vi.hoisted(() => ({
+  real: undefined as unknown,
+  routersTable: undefined as unknown,
+  hold: null as Hold | null,
 }));
+
+type Chain = Record<string | symbol, unknown> & PromiseLike<unknown>;
+
+// Every chained call keeps the hold; awaiting the query runs it, then holds.
+function holdAfter(query: Chain, pause: () => Promise<void>): Chain {
+  return new Proxy(query, {
+    get(target, property) {
+      if (property === "then") {
+        return (
+          onfulfilled?: (value: unknown) => unknown,
+          onrejected?: (reason: unknown) => unknown,
+        ) =>
+          target
+            .then(async (rows) => {
+              await pause();
+              return rows;
+            })
+            .then(onfulfilled, onrejected);
+      }
+      const value = Reflect.get(target, property) as unknown;
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        const next = (value as (...a: unknown[]) => unknown).apply(target, args);
+        return next === target ? holdAfter(target, pause) : next;
+      };
+    },
+  }) as Chain;
+}
+
+function probed<T extends object>(client: T): T {
+  return new Proxy(client, {
+    get(target, property) {
+      const value = Reflect.get(target, property) as unknown;
+      if (property === "transaction") {
+        return (run: (tx: unknown) => unknown, ...rest: unknown[]) =>
+          (value as (...a: unknown[]) => unknown).call(
+            target,
+            (tx: object) => run(probed(tx)),
+            ...rest,
+          );
+      }
+      if (property === "select") {
+        return (...args: unknown[]) => {
+          const selection = (value as (...a: unknown[]) => Chain).apply(target, args);
+          return new Proxy(selection, {
+            get(selectTarget, selectProperty) {
+              const member = Reflect.get(selectTarget, selectProperty) as unknown;
+              if (selectProperty !== "from" || typeof member !== "function") {
+                return typeof member === "function" ? member.bind(selectTarget) : member;
+              }
+              return (table: unknown, ...rest: unknown[]) => {
+                const query = (member as (...a: unknown[]) => Chain).call(selectTarget, table, ...rest);
+                const hold = probe.hold;
+                if (hold?.at !== "router-read" || table !== probe.routersTable) return query;
+                hold.remaining -= 1;
+                if (hold.remaining > 0) return query;
+                probe.hold = null;
+                return holdAfter(query, hold.pause);
+              };
+            },
+          });
+        };
+      }
+      if (property === "insert") {
+        return (table: unknown) => {
+          const builder = (value as (t: unknown) => Chain).call(target, table);
+          const hold = probe.hold;
+          if (hold?.at !== "insert" || hold.table !== table) return builder;
+          return new Proxy(builder, {
+            get(insertTarget, insertProperty) {
+              const member = Reflect.get(insertTarget, insertProperty) as unknown;
+              if (insertProperty !== "values" || typeof member !== "function") {
+                return typeof member === "function" ? member.bind(insertTarget) : member;
+              }
+              return (...args: unknown[]) => {
+                probe.hold = null;
+                return holdAfter(
+                  (member as (...a: unknown[]) => Chain).apply(insertTarget, args),
+                  hold.pause,
+                );
+              };
+            },
+          });
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 vi.mock("~/server/db", () => ({
   db: new Proxy(
     {},
     {
       get(_target, property) {
-        const real = barrier.real as Record<string | symbol, unknown> & {
-          update: (table: unknown) => {
-            set: (values: Record<string, unknown>) => {
-              where: (condition: unknown) => PromiseLike<unknown> & {
-                returning: (...args: unknown[]) => unknown;
-              };
-            };
-          };
-        };
-        if (property !== "update") {
-          const value = real[property];
-          return typeof value === "function" ? value.bind(real) : value;
-        }
-        return (table: unknown) => {
-          const builder = real.update(table);
-          if (table !== barrier.jobsTable) return builder;
-          return {
-            set(values: Record<string, unknown>) {
-              const set = builder.set(values);
-              return {
-                where(condition: unknown) {
-                  const query = set.where(condition);
-                  const pause =
-                    values.state === "failed" || values.state === "succeeded"
-                      ? barrier.afterTerminalJobUpdate
-                      : null;
-                  if (!pause) return query;
-                  barrier.afterTerminalJobUpdate = null;
-                  return {
-                    returning: (...args: unknown[]) => query.returning(...args),
-                    then<T1, T2>(
-                      onfulfilled?: ((value: unknown) => T1 | PromiseLike<T1>) | null,
-                      onrejected?: ((reason: unknown) => T2 | PromiseLike<T2>) | null,
-                    ) {
-                      return Promise.resolve(query)
-                        .then(async (rows) => {
-                          await pause();
-                          return rows;
-                        })
-                        .then(onfulfilled, onrejected);
-                    },
-                  };
-                },
-              };
-            },
-          };
-        };
+        const client = probed(probe.real as object) as Record<string | symbol, unknown>;
+        return client[property];
       },
     },
   ),
 }));
 
 import postgres from "postgres";
-import { and, eq, inArray, like } from "drizzle-orm";
+import { and, eq, inArray, like, sql as sqlTag } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import {
   partnerRouterClaimRequestSchema,
@@ -90,12 +146,12 @@ import { recordJobResult } from "./router-control";
 import { claimRouterWithDb, unbindRouterClaimWithDb } from "./router-claims";
 
 /**
- * R120-1 against a REAL PostgreSQL, with a real barrier: a result of claim A's
- * job is held right after its job row turns terminal; meanwhile the owner
- * unbinds the router (which no longer cancels that job) and claims it again
- * (B: same router, same ownerRef, new claim id); then A's result carries on.
- * What it reports must say A — never B — and B's router must be left as B's
- * claim left it.
+ * R120-1 and R129-1 against a REAL PostgreSQL. A result of claim A's job is
+ * held at a barrier; meanwhile the owner unbinds the router and claims it
+ * again (B: same router, same ownerRef, new claim id) from ANOTHER session;
+ * then A's result carries on. Whatever A reports says A — never B — and
+ * nothing of A lands in the router once it is on B: either the re-claim waits
+ * for A (serialized on the router row) or A changes nothing.
  *
  * Gate: PANEL_PARTNER_PG_URL, loopback hosts only (a disposable database with
  * the migrations applied). It is read from nowhere else.
@@ -106,10 +162,19 @@ const MARK = "pg-claim-late-";
 const OWNER = "acct-claim-late";
 const DEVICE_KEY = Buffer.alloc(32, 6).toString("base64");
 const NONCE = Buffer.alloc(16, 2).toString("base64");
+// How long the re-claim is given to get through while A is held: plenty for
+// a free row, and well under the other session's lock_timeout (5 s).
+const RECLAIM_GRACE_MS = 750;
+
+type Db = ReturnType<typeof drizzle<typeof schema>>;
 
 describe.skipIf(!url)("real PostgreSQL: a late result of a re-claimed router's old job", () => {
   let sql: ReturnType<typeof postgres>;
-  let db: ReturnType<typeof drizzle<typeof schema>>;
+  let otherSql: ReturnType<typeof postgres>;
+  let db: Db;
+  // The owner's unbind and re-claim run here: another session, which gives
+  // up on a row lock after 5 s instead of waiting for ever.
+  let other: Db;
 
   async function markedRouterIds() {
     return (
@@ -136,21 +201,30 @@ describe.skipIf(!url)("real PostgreSQL: a late result of a re-claimed router's o
         "PANEL_PARTNER_PG_URL must point at a loopback host (127.0.0.1 or localhost)",
       );
     sql = postgres(url!, { max: 5, onnotice: () => undefined });
+    otherSql = postgres(url!, {
+      max: 2,
+      onnotice: () => undefined,
+      connection: { lock_timeout: 5000 },
+    });
     db = drizzle(sql, { schema });
-    barrier.real = db as unknown as Record<string, unknown>;
-    barrier.jobsTable = schema.jobs;
+    other = drizzle(otherSql, { schema });
+    probe.real = db;
+    probe.routersTable = schema.routers;
+    const [setting] = await otherSql`show lock_timeout`;
+    expect(setting?.lock_timeout).toBe("5s");
     await removeRouters(await markedRouterIds());
   });
 
   afterAll(async () => {
-    barrier.afterTerminalJobUpdate = null;
+    probe.hold = null;
     if (db) await removeRouters(await markedRouterIds());
     await sql?.end();
+    await otherSql?.end();
   });
 
-  function claimByDevice(deviceIdentifier: string) {
+  function claimByDevice(client: Db, deviceIdentifier: string) {
     return claimRouterWithDb(
-      db as never,
+      client as never,
       partnerRouterClaimRequestSchema.parse({
         device: { deviceIdentifier, devicePublicKey: DEVICE_KEY, nonce: NONCE },
         owner: { ref: OWNER, label: "ow***" },
@@ -167,10 +241,52 @@ describe.skipIf(!url)("real PostgreSQL: a late result of a re-claimed router's o
     return row!;
   }
 
+  // Everything a job result could change on the router, as it is now.
+  async function routerState(routerId: string) {
+    const { updatedAt: _updatedAt, ...router } = await routerRow(routerId);
+    const incidents = await db
+      .select({
+        id: schema.healthIncidents.id,
+        type: schema.healthIncidents.type,
+        state: schema.healthIncidents.state,
+      })
+      .from(schema.healthIncidents)
+      .where(eq(schema.healthIncidents.routerId, routerId))
+      .orderBy(schema.healthIncidents.id);
+    const applied = await db
+      .select({
+        id: schema.passwallAppliedRevisions.id,
+        result: schema.passwallAppliedRevisions.result,
+      })
+      .from(schema.passwallAppliedRevisions)
+      .where(eq(schema.passwallAppliedRevisions.routerId, routerId))
+      .orderBy(schema.passwallAppliedRevisions.id);
+    const desired = await db
+      .select({
+        id: schema.passwallDesiredRevisions.id,
+        status: schema.passwallDesiredRevisions.status,
+      })
+      .from(schema.passwallDesiredRevisions)
+      .where(eq(schema.passwallDesiredRevisions.routerId, routerId))
+      .orderBy(schema.passwallDesiredRevisions.id);
+    const rescue = await db
+      .select({
+        id: schema.rescueCases.id,
+        state: schema.rescueCases.state,
+        attempts: sqlTag<number>`jsonb_array_length(${schema.rescueCases.repairAttempts})`,
+      })
+      .from(schema.rescueCases)
+      .where(eq(schema.rescueCases.routerId, routerId))
+      .orderBy(schema.rescueCases.id);
+    return { router, incidents, applied, desired, rescue };
+  }
+
+  type Kind = "apply" | "action" | "legacy-apply";
+
   // A's claim, then the job whose result will come late.
-  async function claimA(kind: "apply" | "action") {
+  async function claimA(kind: Kind) {
     const deviceIdentifier = `${MARK}${randomUUID().slice(0, 8)}`;
-    const claimed = await claimByDevice(deviceIdentifier);
+    const claimed = await claimByDevice(db, deviceIdentifier);
     const { routerId, claimId } = (
       claimed as { body: { routerId: string; claimId: string } }
     ).body;
@@ -189,6 +305,15 @@ describe.skipIf(!url)("real PostgreSQL: a late result of a re-claimed router's o
       ownerRef: OWNER,
       partnerId: "vectra",
     });
+    if (kind === "legacy-apply") {
+      // As if queued before jobs recorded their claim.
+      const [legacy] = await db
+        .update(schema.jobs)
+        .set({ partnerClaim: null })
+        .where(eq(schema.jobs.id, apply!.id))
+        .returning();
+      return { deviceIdentifier, routerId, claimId, job: legacy! };
+    }
     if (kind === "apply") {
       return { deviceIdentifier, routerId, claimId, job: apply! };
     }
@@ -215,66 +340,78 @@ describe.skipIf(!url)("real PostgreSQL: a late result of a re-claimed router's o
   }
 
   /**
-   * Run A's result up to the barrier, unbind A and claim B there, then let it
-   * finish. Returns B's id and B's router as the re-claim left it.
+   * Hold A's result at `where`, let the owner unbind A and claim B from the
+   * other session, give that RECLAIM_GRACE_MS, then let A go on. Records the
+   * order things finished in, and the router's state the moment B's claim was
+   * done.
    */
   async function raceReclaim(
     a: Awaited<ReturnType<typeof claimA>>,
     report: Record<string, unknown>,
+    where: "before-gate" | "after-gate",
   ) {
+    const order: string[] = [];
     let release!: () => void;
     const reached = new Promise<void>((resolve) => {
-      barrier.afterTerminalJobUpdate = () => {
+      const pause = () => {
         resolve();
         return new Promise<void>((resume) => {
           release = resume;
         });
       };
+      probe.hold =
+        where === "before-gate"
+          ? { at: "insert", table: schema.jobResults, pause }
+          : { at: "router-read", remaining: 2, pause };
     });
     const pending = recordJobResult(a.routerId, {
       protocolVersion: VECTRA_PROTOCOL_VERSION,
       routerId: a.routerId,
       jobId: a.job.id,
       ...report,
+    }).then(() => {
+      order.push("A's result done");
     });
     await Promise.race([
       reached,
       pending.then(() => {
-        throw new Error("the result finished without reaching the barrier");
+        throw new Error(`A's result finished without reaching the ${where} barrier`);
       }),
     ]);
+    order.push(`A held ${where}`);
 
-    // Held after the job update: the job is already terminal…
-    const [held] = await db
-      .select({ state: schema.jobs.state })
-      .from(schema.jobs)
-      .where(eq(schema.jobs.id, a.job.id));
-    expect(["failed", "succeeded"]).toContain(held?.state);
-    // …so the unbind leaves it as it is,
-    expect(
-      await unbindRouterClaimWithDb(db as never, {
+    const reclaim = (async () => {
+      const unbound = await unbindRouterClaimWithDb(other as never, {
         routerId: a.routerId,
         ownerRef: OWNER,
-      }),
-    ).toMatchObject({ ok: true });
-    // and the same owner claims the same router again: claim B.
-    const reclaimed = await claimByDevice(a.deviceIdentifier);
+      });
+      order.push("unbind A done");
+      const reclaimed = await claimByDevice(other, a.deviceIdentifier);
+      order.push("claim B done");
+      return { unbound, reclaimed, stateOnB: await routerState(a.routerId) };
+    })();
+    const meanwhile = await Promise.race([
+      reclaim.then(() => "re-claimed while A was held"),
+      new Promise((resolve) =>
+        setTimeout(() => resolve("re-claim waiting for A"), RECLAIM_GRACE_MS),
+      ),
+    ]);
+    order.push(String(meanwhile));
+    release();
+    await pending;
+    const { unbound, reclaimed, stateOnB } = await reclaim;
+    expect(unbound).toMatchObject({ ok: true });
     const claimB = (reclaimed as { body: { claimId: string; routerId: string } })
       .body;
     expect(claimB.routerId).toBe(a.routerId);
     expect(claimB.claimId).not.toBe(a.claimId);
-    const routerOnB = await routerRow(a.routerId);
-    const incidentsOnB = await db
-      .select()
-      .from(schema.healthIncidents)
-      .where(eq(schema.healthIncidents.routerId, a.routerId));
-
-    release();
-    await pending;
-    return { claimB: claimB.claimId, routerOnB, incidentsOnB };
+    return { order, claimB: claimB.claimId, stateOnB };
   }
 
-  async function eventsOf(routerId: string, event: "router.ready" | "router.failed" | "router.action") {
+  async function eventsOf(
+    routerId: string,
+    event: "router.ready" | "router.failed" | "router.action",
+  ) {
     return (
       await db
         .select()
@@ -288,79 +425,170 @@ describe.skipIf(!url)("real PostgreSQL: a late result of a re-claimed router's o
     ).map((row) => row.payload as Record<string, unknown>);
   }
 
-  // B's router as the re-claim left it; a partner action's report may only
-  // stamp updated_at (its row lock), nothing of the claim's state.
-  function expectUntouched(
-    before: typeof schema.routers.$inferSelect,
-    after: typeof schema.routers.$inferSelect,
-  ) {
-    const { updatedAt: _beforeUpdatedAt, ...beforeState } = before;
-    const { updatedAt: _afterUpdatedAt, ...afterState } = after;
-    expect(afterState).toEqual(beforeState);
-  }
+  const failure = {
+    status: "failure",
+    result: { error: "provider config: http 403", enteredDirectMode: true },
+  };
 
-  it("a failed apply of claim A, held after its job update: router.failed says A, B's router is untouched", async () => {
-    const a = await claimA("apply");
+  describe("held BEFORE the claim gate (R120-1)", () => {
+    it("a failed apply of claim A: router.failed says A, and B's router is what B's claim made it", async () => {
+      const a = await claimA("apply");
 
-    const { claimB, routerOnB, incidentsOnB } = await raceReclaim(a, {
-      status: "failure",
-      result: { error: "provider config: http 403", enteredDirectMode: true },
-    });
+      const { claimB, stateOnB } = await raceReclaim(a, failure, "before-gate");
 
-    expect(await eventsOf(a.routerId, "router.failed")).toEqual([
-      expect.objectContaining({ ownerRef: OWNER, claimId: a.claimId }),
-    ]);
-    expect(JSON.stringify(await eventsOf(a.routerId, "router.failed"))).not.toContain(claimB);
-    const after = await routerRow(a.routerId);
-    expect(after.claimId).toBe(claimB);
-    expect(after.updatedAt).toEqual(routerOnB.updatedAt);
-    expectUntouched(routerOnB, after);
-    // No direct mode, no incident on B's router.
-    expect(
-      await db
-        .select()
-        .from(schema.healthIncidents)
-        .where(eq(schema.healthIncidents.routerId, a.routerId)),
-    ).toEqual(incidentsOnB);
+      expect(await eventsOf(a.routerId, "router.failed")).toEqual([
+        expect.objectContaining({ ownerRef: OWNER, claimId: a.claimId }),
+      ]);
+      expect(JSON.stringify(await eventsOf(a.routerId, "router.failed"))).not.toContain(claimB);
+      expect(await routerState(a.routerId)).toEqual(stateOnB);
+      expect(stateOnB.router.claimId).toBe(claimB);
+      expect(stateOnB.incidents).toEqual([]);
+    }, 20_000);
+
+    it("a succeeded apply of claim A: router.ready says A, and A's revision never becomes B's", async () => {
+      const a = await claimA("apply");
+
+      const { claimB, stateOnB } = await raceReclaim(
+        a,
+        { status: "success", appliedRevisionId: a.job.desiredRevisionId },
+        "before-gate",
+      );
+
+      expect(await eventsOf(a.routerId, "router.ready")).toEqual([
+        expect.objectContaining({ ownerRef: OWNER, claimId: a.claimId }),
+      ]);
+      expect(JSON.stringify(await eventsOf(a.routerId, "router.ready"))).not.toContain(claimB);
+      const final = await routerState(a.routerId);
+      expect(final).toEqual(stateOnB);
+      expect(final.router.activeRevisionId).not.toBe(a.job.desiredRevisionId);
+      expect(final.applied).toEqual([]);
+    }, 20_000);
+
+    it("an owner's action of claim A: router.action says A, and B's router is what B's claim made it", async () => {
+      const a = await claimA("action");
+
+      const { claimB, stateOnB } = await raceReclaim(
+        a,
+        { status: "success", appliedRevisionId: a.job.desiredRevisionId ?? undefined },
+        "before-gate",
+      );
+
+      expect(await eventsOf(a.routerId, "router.action")).toEqual([
+        expect.objectContaining({
+          ownerRef: OWNER,
+          claimId: a.claimId,
+          detail: expect.objectContaining({ actionId: a.job.id, state: "applied" }),
+        }),
+      ]);
+      expect(JSON.stringify(await eventsOf(a.routerId, "router.action"))).not.toContain(claimB);
+      expect(await routerState(a.routerId)).toEqual(stateOnB);
+    }, 20_000);
   });
 
-  it("a succeeded apply of claim A, held after its job update: router.ready says A, A's revision never becomes B's", async () => {
-    const a = await claimA("apply");
+  // R129-1: the gate has passed (the job saw its router still on A); THEN the
+  // owner tries to unbind A and claim B. Nothing A writes may land under B:
+  // the re-claim must wait for A's transaction (it holds the router row), and
+  // whatever A wrote then is from before B existed.
+  describe("held AFTER the claim gate passed (R129-1)", () => {
+    function expectSerialized(order: string[]) {
+      expect(order).toEqual([
+        "A held after-gate",
+        "re-claim waiting for A",
+        // A's transaction ends on release; only then can the unbind take the
+        // router row. (A's result may still be queueing its event.)
+        ...order.slice(2),
+      ]);
+      expect(order.indexOf("unbind A done")).toBeGreaterThan(
+        order.indexOf("re-claim waiting for A"),
+      );
+      expect(order.indexOf("claim B done")).toBeGreaterThan(
+        order.indexOf("unbind A done"),
+      );
+    }
 
-    const { claimB, routerOnB } = await raceReclaim(a, {
-      status: "success",
-      appliedRevisionId: a.job.desiredRevisionId,
-    });
+    it("a failed apply of claim A: nothing of A lands once B's claim is done, and the re-claim waited for A", async () => {
+      const a = await claimA("apply");
+      const atStart = await routerState(a.routerId);
 
-    expect(await eventsOf(a.routerId, "router.ready")).toEqual([
-      expect.objectContaining({ ownerRef: OWNER, claimId: a.claimId }),
-    ]);
-    expect(JSON.stringify(await eventsOf(a.routerId, "router.ready"))).not.toContain(claimB);
-    const after = await routerRow(a.routerId);
-    expect(after.updatedAt).toEqual(routerOnB.updatedAt);
-    expectUntouched(routerOnB, after);
-    expect(after.activeRevisionId).not.toBe(a.job.desiredRevisionId);
-    // A's revision stays as the unbind left it (discarded), not "applied".
-    const [revisionA] = await db
-      .select({ status: schema.passwallDesiredRevisions.status })
-      .from(schema.passwallDesiredRevisions)
-      .where(eq(schema.passwallDesiredRevisions.id, a.job.desiredRevisionId!));
-    expect(revisionA?.status).toBe("discarded");
-  });
+      const { order, claimB, stateOnB } = await raceReclaim(a, failure, "after-gate");
 
-  it("an owner's action of claim A, held after its job update: router.action says A, B's router state is untouched", async () => {
-    const a = await claimA("action");
+      // No incident, no direct mode, no revision change after B's claim.
+      expect(await routerState(a.routerId)).toEqual(stateOnB);
+      expect(stateOnB.router.claimId).toBe(claimB);
+      expectSerialized(order);
+      // A's result was A's: its incident was opened while A was the claim,
+      // before the unbind, and its event says A.
+      expect(stateOnB.incidents.length).toBe(atStart.incidents.length + 1);
+      expect(await eventsOf(a.routerId, "router.failed")).toEqual([
+        expect.objectContaining({ ownerRef: OWNER, claimId: a.claimId }),
+      ]);
+    }, 20_000);
 
-    const { claimB, routerOnB } = await raceReclaim(a, { status: "success" });
+    it("a succeeded apply of claim A: no revision history changes under B, and the re-claim waited for A", async () => {
+      const a = await claimA("apply");
 
-    expect(await eventsOf(a.routerId, "router.action")).toEqual([
-      expect.objectContaining({
-        ownerRef: OWNER,
-        claimId: a.claimId,
-        detail: expect.objectContaining({ actionId: a.job.id, state: "applied" }),
-      }),
-    ]);
-    expect(JSON.stringify(await eventsOf(a.routerId, "router.action"))).not.toContain(claimB);
-    expectUntouched(routerOnB, await routerRow(a.routerId));
+      const { order, claimB, stateOnB } = await raceReclaim(
+        a,
+        { status: "success", appliedRevisionId: a.job.desiredRevisionId },
+        "after-gate",
+      );
+
+      const final = await routerState(a.routerId);
+      expect(final).toEqual(stateOnB);
+      expect(final.router.claimId).toBe(claimB);
+      // B's claim starts from nothing applied: A's revision is not B's.
+      expect(final.router.activeRevisionId).toBeNull();
+      expectSerialized(order);
+      expect(await eventsOf(a.routerId, "router.ready")).toEqual([
+        expect.objectContaining({ claimId: a.claimId }),
+      ]);
+    }, 20_000);
+
+    it("an owner's action of claim A: nothing of A lands once B's claim is done, and the re-claim waited for A", async () => {
+      const a = await claimA("action");
+      const [revisionA] = await db
+        .select({ id: schema.passwallDesiredRevisions.id })
+        .from(schema.passwallDesiredRevisions)
+        .where(eq(schema.passwallDesiredRevisions.routerId, a.routerId));
+
+      // The router reports the revision it runs with the action's result.
+      const { order, claimB, stateOnB } = await raceReclaim(
+        a,
+        { status: "success", appliedRevisionId: revisionA!.id },
+        "after-gate",
+      );
+
+      const final = await routerState(a.routerId);
+      expect(final).toEqual(stateOnB);
+      expect(final.router.claimId).toBe(claimB);
+      expect(final.router.activeRevisionId).toBeNull();
+      expectSerialized(order);
+      expect(await eventsOf(a.routerId, "router.action")).toEqual([
+        expect.objectContaining({ claimId: a.claimId }),
+      ]);
+    }, 20_000);
+
+    it("an apply queued before jobs recorded their claim changes nothing at all (fail closed), and says its claim is unknown", async () => {
+      const a = await claimA("legacy-apply");
+      const atStart = await routerState(a.routerId);
+
+      const { order, stateOnB } = await raceReclaim(a, failure, "after-gate");
+
+      const final = await routerState(a.routerId);
+      expect(final).toEqual(stateOnB);
+      // Not even under A: no incident was opened, no revision touched by it.
+      expect(final.incidents).toEqual(atStart.incidents);
+      expect(final.applied).toEqual([]);
+      expectSerialized(order);
+      const [event] = await eventsOf(a.routerId, "router.failed");
+      expect(event).toMatchObject({ claimGeneration: "unknown" });
+      expect(event).not.toHaveProperty("claimId");
+      // The job's own record is still kept.
+      const [job] = await db
+        .select({ state: schema.jobs.state })
+        .from(schema.jobs)
+        .where(eq(schema.jobs.id, a.job.id));
+      expect(job?.state).toBe("failed");
+    }, 20_000);
   });
 });

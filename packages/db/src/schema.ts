@@ -476,7 +476,8 @@ export const jobs = createTable(
     // claim id, owner and partner — never the router's current ones, which a
     // re-claim may have replaced meanwhile — and acts on the router only while
     // the router is still on this claim. Never sent to the router. NULL: not a
-    // partner job, or one queued before this column (its claim is unknown).
+    // partner job, or one queued before this column — its claim is unknown,
+    // so its result changes nothing on the router (fail closed).
     partnerClaim: jsonb("partner_claim").$type<{
       claimId: string | null;
       ownerRef: string;

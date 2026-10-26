@@ -1105,6 +1105,65 @@ describe("recordJobResult reports a claim's first apply to the backend", () => {
     expect(payload).not.toHaveProperty("claimId");
   });
 
+  // R129-1: a claim's job with no recorded claim gets no right to change the
+  // router from the router's own claim id — unknown fails closed, even while
+  // the router is plainly still on the claim it was read on.
+  it("an apply queued before jobs recorded their claim changes nothing on the router, even on an unchanged claim", async () => {
+    scriptResult({ claimId: CLAIM_A });
+
+    await recordJobResult(
+      ROUTER_ID,
+      result("success", { appliedRevisionId: REVISION_ID, result: { enteredDirectMode: true } }),
+    );
+
+    // Its own record only.
+    expect(fake.updates(jobs)).toEqual([expect.objectContaining({ state: "succeeded" })]);
+    expect(fake.updates(routers)).toEqual([]);
+    expect(fake.inserts(healthIncidents)).toEqual([]);
+    expect(fake.inserts(passwallAppliedRevisions)).toEqual([]);
+    expect(fake.updates(passwallDesiredRevisions)).toEqual([]);
+    expect(fake.inserts(eventLog)).toEqual([
+      expect.objectContaining({ type: "job.success", metadata: expect.objectContaining({ claimUnknown: true }) }),
+    ]);
+    const [payload] = fake.inserts(partnerWebhooks).map((row) => row.payload);
+    expect(payload).toMatchObject({ event: "router.ready", claimGeneration: "unknown" });
+  });
+
+  it("an owner's action queued before jobs recorded their claim changes nothing on the router either", async () => {
+    scriptResult({
+      type: "reload_xray_outbound",
+      payload: { origin: "partner_action", actionId: JOB_ID, ownerRef: "acct-42", action: "restart_vpn" },
+      claimId: CLAIM_A,
+    });
+
+    await recordJobResult(ROUTER_ID, result("success", { appliedRevisionId: REVISION_ID }));
+
+    // Only the action report's own row lock (updatedAt) touches the router.
+    expect(fake.updates(routers).filter((set) => Object.keys(set).some((key) => key !== "updatedAt"))).toEqual([]);
+    expect(fake.inserts(passwallAppliedRevisions)).toEqual([]);
+    const [payload] = fake.inserts(partnerWebhooks).map((row) => row.payload);
+    expect(payload).toMatchObject({ event: "router.action", claimGeneration: "unknown" });
+    expect(payload).not.toHaveProperty("claimId");
+  });
+
+  // An operator's (or the fleet's) job belongs to no claim: it records on the
+  // router as before — unless the router changed claim while its result ran.
+  it("an operator's job records its revision on the router's unchanged claim, and not once the claim changed", async () => {
+    const operatorApply = { desiredRevisionId: REVISION_ID };
+    scriptResult({ payload: operatorApply, claimId: CLAIM_A });
+    await recordJobResult(ROUTER_ID, result("success", { appliedRevisionId: REVISION_ID }));
+    expect(fake.updates(routers)).toEqual([
+      expect.objectContaining({ activeRevisionId: REVISION_ID }),
+    ]);
+    expect(fake.inserts(passwallAppliedRevisions)).toHaveLength(1);
+
+    scriptResult({ payload: operatorApply, claimId: CLAIM_A, claimIdAfterJobUpdate: CLAIM_B });
+    await recordJobResult(ROUTER_ID, result("success", { appliedRevisionId: REVISION_ID }));
+    expect(fake.updates(routers)).toEqual([]);
+    expect(fake.inserts(passwallAppliedRevisions)).toEqual([]);
+    expect(fake.updates(jobs)).toEqual([expect.objectContaining({ state: "succeeded" })]);
+  });
+
   it("queues router.failed with the router's reason when it failed", async () => {
     scriptResult();
 
@@ -1285,6 +1344,20 @@ describe("a late result of a re-claimed router's old job", () => {
     warn.mockRestore();
   });
 
+  // R129-1: the gate is judged on the router row as the result's transaction
+  // LOCKS it, before anything is written — the job's own record included.
+  it("locks the router row before it records the job or judges the claim", async () => {
+    scriptLateResult({});
+
+    await recordJobResult(ROUTER_ID, result("failure", { result: { error: "boom" } }));
+
+    const order = fake.calls
+      .filter((call) => call.table === routers || call.table === jobs)
+      .map((call) => `${call.kind}:${call.table === routers ? "router" : "job"}`);
+    // The result's own read of the job and the router, then the lock, then the job.
+    expect(order.slice(0, 4)).toEqual(["select:job", "select:router", "select:router", "update:job"]);
+  });
+
   it("the undeliverable fallback reports a claim A apply under A, while the router is on B", async () => {
     const onB = routerRow({ ownerRef: "acct-42", claimId: CLAIM_B, approvedAt: new Date(), importState: "approved", status: "active" });
     // Unserializable (createdAt NaN), so the check-in fails it; recordJobResult
@@ -1415,7 +1488,8 @@ describe("recordJobResult and revision ownership", () => {
             ],
           ],
         ],
-        [routers, [[router]]],
+        // As the result reads it, then as its transaction locks it.
+        [routers, [[router], [router]]],
         [
           passwallDesiredRevisions,
           [

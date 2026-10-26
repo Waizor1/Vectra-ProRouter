@@ -663,6 +663,10 @@ export async function unbindRouterClaimWithDb(
   const previousOwnerRef = router.ownerRef;
 
   const unbound = await client.transaction(async (tx) => {
+    // The router row first, then what hangs off it — the order a job result
+    // takes them in (router-control recordJobResult). This UPDATE waits for a
+    // result that holds the row, so a result's claim gate and its writes are
+    // never split by an unbind; a claim's UPDATE below waits the same way.
     const [updated] = await tx
       .update(routers)
       .set({
