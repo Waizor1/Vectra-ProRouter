@@ -49,12 +49,13 @@ at once and every YouTube video connection went over TCP.
   the LAN: after the install, and when the names change) and empties the
   set; each new xray empties it too (its FakeDNS addresses are handed out
   anew). A fragment dnsmasq's own syntax check (`dnsmasq --test`) refuses —
-  a build without nftset — is never written. The restart runs in a session
+  a build without nftset — is never written; a check that did not run (a
+  full /tmp) is tried again at the next look. The restart runs in a session
   of its own and is never cut short; a dnsmasq that is not running is not
   started; one that does not come back with names in the fragment (running
-  as its own user, steadily, within 5 s) loses the fragment and starts
-  without it — QUIC refused as in r30 until vctl starts again — rather than
-  leave the LAN without DNS and DHCP. For 30 s after vctl's own restart of dnsmasq the
+  steadily as it ran before — its own user, or root — within 5 s) loses the
+  fragment and starts without it — QUIC refused as in r30 until vctl starts
+  again — rather than leave the LAN without DNS and DHCP. For 30 s after vctl's own restart of dnsmasq the
   poll does not take it for a resolver that changed user (no reload of the
   table). The fragment leaves with the data plane, after the table, and the
   daemon waits for dnsmasq's restart before anything else (the rescue's
