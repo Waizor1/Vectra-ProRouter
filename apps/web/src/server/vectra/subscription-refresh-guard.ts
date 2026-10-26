@@ -25,7 +25,8 @@ import { and, desc, eq } from "drizzle-orm";
 
 import type { db as appDb } from "~/server/db";
 
-type DatabaseClient = typeof appDb;
+// A transaction works too: a job result runs the guard inside its own.
+type DatabaseClient = Pick<typeof appDb, "select" | "insert" | "update">;
 
 export const SUBSCRIPTION_REFRESH_JOB_TYPE = "refresh_subscriptions" as const;
 

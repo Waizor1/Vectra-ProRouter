@@ -44,7 +44,7 @@ import {
   routerReauthProofs,
   routers,
 } from "@vectra/db";
-import { and, asc, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import { createHash, verify as cryptoVerify } from "node:crypto";
 import { ZodError } from "zod";
 
@@ -79,8 +79,11 @@ import {
   shouldRequestImportOnCheckIn,
 } from "~/server/vectra/config-sync";
 import { isEditableDraftRevision } from "~/server/vectra/draft-selection";
+import { routerPartnerId } from "~/server/vectra/partner-scope";
 import {
   enqueuePartnerWebhookWithDb,
+  type JobPartnerClaim,
+  jobClaimLabel,
   schedulePartnerWebhookDelivery,
 } from "~/server/vectra/partner-webhooks";
 import {
@@ -1224,6 +1227,8 @@ export async function applyIncidentTransitions(
   transitions: ReturnType<
     typeof jobResultRequestSchema.parse
   >["incidentTransitions"],
+  // A job result passes the transaction that holds the router row.
+  client: DatabaseClient = db,
 ) {
   if (transitions.length === 0) {
     return router;
@@ -1237,7 +1242,7 @@ export async function applyIncidentTransitions(
       : new Date();
     const controlPlaneRecoveryTransition =
       isControlPlaneRecoveryTransition(transition);
-    const openIncidents = await db
+    const openIncidents = await client
       .select()
       .from(healthIncidents)
       .where(
@@ -1262,7 +1267,7 @@ export async function applyIncidentTransitions(
         : openIncidents[0];
 
       if (existingOpen?.type === transition.type) {
-        await db
+        await client
           .update(healthIncidents)
           .set({
             reason: transition.reason,
@@ -1278,7 +1283,7 @@ export async function applyIncidentTransitions(
               .map((incident) => incident.id)
           : openIncidents.map((incident) => incident.id);
         if (incidentIdsToResolve.length > 0) {
-          await db
+          await client
             .update(healthIncidents)
             .set({
               state: "resolved",
@@ -1293,7 +1298,7 @@ export async function applyIncidentTransitions(
             );
         }
 
-        await db.insert(healthIncidents).values({
+        await client.insert(healthIncidents).values({
           routerId: router.id,
           type: transition.type,
           state: "open",
@@ -1304,7 +1309,7 @@ export async function applyIncidentTransitions(
       }
 
       if (transition.type === "entered_direct_mode") {
-        const [updatedRouter] = await db
+        const [updatedRouter] = await client
           .update(routers)
           .set({
             status: "direct",
@@ -1326,7 +1331,7 @@ export async function applyIncidentTransitions(
         continue;
       }
 
-      await db
+      await client
         .update(healthIncidents)
         .set({
           state: "resolved",
@@ -1344,7 +1349,7 @@ export async function applyIncidentTransitions(
         continue;
       }
 
-      const [updatedRouter] = await db
+      const [updatedRouter] = await client
         .update(routers)
         .set({
           status: currentRouter.approvedAt ? "active" : "pending",
@@ -2676,6 +2681,20 @@ async function notifyUndeliverableFailure(
   code: string = UNDELIVERABLE_JOB_CODE,
 ) {
   try {
+    // A claim's apply that recorded its claim reports under it (see
+    // claimApplyEventTarget), whoever owns the router now.
+    if (isPartnerClaimApplyJob(job) && job.partnerClaim) {
+      await enqueuePartnerWebhookWithDb(db, {
+        event: "router.failed",
+        routerId: job.routerId,
+        ownerRef: job.partnerClaim.ownerRef,
+        partnerId: job.partnerClaim.partnerId,
+        ...jobClaimLabel(job),
+        detail: code,
+      });
+      schedulePartnerWebhookDelivery();
+      return;
+    }
     const owner =
       ownerRef ??
       (await db.select().from(routers).where(eq(routers.id, job.routerId)).limit(1))[0]?.ownerRef ??
@@ -2686,6 +2705,8 @@ async function notifyUndeliverableFailure(
         event: "router.failed",
         routerId: job.routerId,
         ownerRef: owner,
+        // From before jobs recorded their claim: which one is not known.
+        ...jobClaimLabel(job),
         detail: code,
       });
     } else {
@@ -2746,6 +2767,13 @@ export async function recordJobResult(routerId: string, input: unknown) {
         // retrying its finish must not announce it again, and a failed
         // enqueue leaves it unclaimed for the next retry.
         const reported = await db.transaction(async (tx) => {
+          // The router row first, then the job: the lock order of a claim's
+          // unbind and of the result path below. NO KEY UPDATE, as there.
+          await tx
+            .select({ id: routers.id })
+            .from(routers)
+            .where(eq(routers.id, routerId))
+            .for("no key update");
           const [claimed] = await tx
             .update(jobs)
             .set({ payload: { ...job.payload, cancelledRunReported: true } })
@@ -2800,224 +2828,317 @@ export async function recordJobResult(routerId: string, input: unknown) {
   }
   const payload = normalizeJobResultPayload(parsed);
 
-  await db.insert(jobResults).values({
-    jobId: job.id,
-    routerId,
-    status: parsed.status,
-    payload,
-  });
-
-  await db
-    .update(jobs)
-    .set({
-      state:
-        parsed.status === "accepted"
-          ? "running"
-          : parsed.status === "success"
-            ? "succeeded"
-            : "failed",
-      deliveredAt:
-        parsed.status === "accepted"
-          ? (job.deliveredAt ?? new Date())
-          : (job.deliveredAt ?? new Date()),
-      completedAt: parsed.status === "accepted" ? null : new Date(),
-      dedupeKey: resolveJobDedupeKeyAfterResult({
-        currentDedupeKey: job.dedupeKey,
-        resultStatus: parsed.status,
-      }),
-    })
-    .where(eq(jobs.id, job.id));
-
-  // A refresh that destroyed the node list is undone here, before anything
-  // else reacts to it. Without this the rescue lane cannot run unattended:
-  // see subscription-refresh-guard for the failure it exists to reverse.
-  if (
-    job.type === SUBSCRIPTION_REFRESH_JOB_TYPE &&
-    parsed.status !== "accepted"
-  ) {
-    try {
-      const guard = await handleSubscriptionRefreshResult(
-        db,
-        {
-          routerId,
-          jobPayload: job.payload,
-          resultPayload: payload,
-        },
-        (args) => queueDesiredRevisionApplyJobWithDb(db, args),
-      );
-      if (guard.restored) {
-        console.warn(
-          "[subscription-guard] restored node list on %s from revision %s: %s",
-          routerId,
-          guard.revisionId,
-          guard.reason,
-        );
-      }
-    } catch (error) {
-      // Never let the guard fail the result recording itself: a job result
-      // that cannot be written is a worse outage than a missed restore.
-      console.error("[subscription-guard]", error);
-    }
-  }
-
-  if (job.type === "run_rescue_repair" && parsed.status !== "accepted") {
-    const rescueRepairPayload = payload as Record<string, unknown>;
-    await appendRescueRepairAttemptFromJobResult({
-      routerId,
-      caseId:
-        typeof rescueRepairPayload.caseId === "string"
-          ? rescueRepairPayload.caseId
-          : null,
-      resultPayload: rescueRepairPayload,
-      status: parsed.status,
-    });
-  }
-
-  const compatibilityTransitions = [...parsed.incidentTransitions];
-  if (parsed.result.enteredDirectMode === true) {
-    compatibilityTransitions.push({
-      type: "entered_direct_mode",
-      state: "open",
-      reason:
-        typeof parsed.result.reason === "string"
-          ? parsed.result.reason
-          : "Роутер перешёл в прямой режим после локального аварийного срабатывания.",
-      happenedAt: new Date().toISOString(),
-      metadata: parsed.result,
-    });
-  }
-  if (parsed.result.recoveredProxy === true) {
-    compatibilityTransitions.push({
-      type: "recovered",
-      state: "resolved",
-      reason:
-        typeof parsed.result.reason === "string"
-          ? parsed.result.reason
-          : "Прокси-путь восстановлен.",
-      happenedAt: new Date().toISOString(),
-      metadata: parsed.result,
-    });
-  }
-
-  let currentRouter = await applyIncidentTransitions(
-    router,
-    compatibilityTransitions,
-  );
-
-  const appliedRevisionId =
-    parsed.appliedRevisionId ?? job.desiredRevisionId ?? null;
-
-  if (appliedRevisionId && parsed.status !== "accepted") {
-    const [candidate] = await db
+  // The result's record, the job's state and everything the result changes on
+  // the router happen in ONE transaction that first locks the router row and
+  // judges the claim against the row as locked. A claim's unbind and a claim
+  // lock that same row first too (their UPDATE of it), so they wait for this
+  // transaction to end, or it finds them done — never a gate passed under one
+  // claim and writes landing under the next. Lock order, here as there: the
+  // router row, then what hangs off it (jobs, incidents, revisions, rescue
+  // cases).
+  //
+  // FOR NO KEY UPDATE, not FOR UPDATE: it conflicts with those UPDATEs of the
+  // router (they change no key column, so they take the same mode) and with
+  // another result's lock, but not with the FOR KEY SHARE every insert that
+  // references the router takes (event log, incidents, jobs, snapshots, …).
+  // Those never wait for a result — so neither can a writer that holds a job
+  // row and then inserts such a row (the stuck-job janitor) deadlock with it.
+  const recorded = await db.transaction(async (tx) => {
+    const [locked] = await tx
       .select()
-      .from(passwallDesiredRevisions)
-      .where(eq(passwallDesiredRevisions.id, appliedRevisionId))
+      .from(routers)
+      .where(eq(routers.id, routerId))
+      .for("no key update")
       .limit(1);
-    // The id may come from the router. Another router's revision is treated
-    // as unknown: recording it here would make that router's config (and its
-    // secrets) this router's active revision.
-    const revision = candidate?.routerId === routerId ? candidate : undefined;
 
-    if (revision) {
-      const resultState = parsed.status === "success" ? "applied" : "failed";
+    // The job's state — only if the job is still waiting for this result, as
+    // judged under the lock every result for this router takes: a second post
+    // of the same result (a retry racing the first) finds it already recorded
+    // and leaves, with no second record, revision or rescue attempt. A job
+    // cancelled meanwhile (the janitor, an unbind) has no result yet: a late
+    // result still takes its place, as before.
+    const [taken] = await tx
+      .update(jobs)
+      .set({
+        state:
+          parsed.status === "accepted"
+            ? "running"
+            : parsed.status === "success"
+              ? "succeeded"
+              : "failed",
+        deliveredAt:
+          parsed.status === "accepted"
+            ? (job.deliveredAt ?? new Date())
+            : (job.deliveredAt ?? new Date()),
+        completedAt: parsed.status === "accepted" ? null : new Date(),
+        dedupeKey: resolveJobDedupeKeyAfterResult({
+          currentDedupeKey: job.dedupeKey,
+          resultStatus: parsed.status,
+        }),
+      })
+      .where(
+        and(
+          eq(jobs.id, job.id),
+          parsed.status === "accepted"
+            ? inArray(jobs.state, ["queued", "delivered"])
+            : notInArray(jobs.state, ["succeeded", "failed"]),
+        ),
+      )
+      .returning({ id: jobs.id });
+    if (!taken) {
+      return null;
+    }
 
-      await db.insert(passwallAppliedRevisions).values({
-        routerId,
-        desiredRevisionId: revision.id,
-        jobId: job.id,
-        engineMode: revision.engineMode,
-        result: resultState,
-        uciDigest: parsed.configDigest ?? revision.configDigest ?? null,
-        stdout: parsed.stdout ?? null,
-        stderr: parsed.stderr ?? null,
-        config: revision.config,
-        rawSnapshot:
-          parsed.result.rawSnapshot &&
-          typeof parsed.result.rawSnapshot === "object" &&
-          !Array.isArray(parsed.result.rawSnapshot)
-            ? sanitizePasswallRawSnapshot(
-                parsed.result.rawSnapshot as Record<string, unknown>,
-              )
-            : null,
+    // The result's own record, in the same transaction: a rolled-back result
+    // leaves no row behind for its retry to duplicate.
+    await tx.insert(jobResults).values({
+      jobId: job.id,
+      routerId,
+      status: parsed.status,
+      payload,
+    });
+
+    const gate = judgeJobResultClaim(job, router, locked);
+    // The router changed claim while this result ran (read at its start,
+    // then under the lock): a job from before jobs recorded their claim tells
+    // nobody then.
+    const claimChanged =
+      (locked?.claimId ?? null) !== (router.claimId ?? null);
+    // The partner hears of it in this transaction too, judged on the router as
+    // it is locked here — not on whatever an unbind or a claim waiting for the
+    // row makes of it the moment this commits. Each event under its own
+    // savepoint: one that cannot be queued is logged and loses nothing else.
+    const tellPartner = async (current: RouterRow) => {
+      try {
+        await notifyPartnerActionResultWithDb(tx, {
+          job, ownerRef: current.ownerRef, status: parsed.status, code: partnerResultCode,
+        });
+      } catch (error) {
+        console.error("[partner-webhooks] action result event failed", error);
+      }
+      await notifyPartnerOfClaimApplyResult(tx, {
+        job,
+        ownerRef: current.ownerRef,
+        claimChanged,
+        parsed,
       });
+    };
+    if (!gate.mayChangeRouter || !locked) {
+      await tellPartner(locked ?? router);
+      return { gate, currentRouter: locked ?? router };
+    }
 
-      await db
-        .update(passwallDesiredRevisions)
-        .set({
-          status: resultState,
-        })
-        .where(eq(passwallDesiredRevisions.id, revision.id));
-
-      if (parsed.status === "success") {
-        const [updatedRouter] = await db
-          .update(routers)
-          .set({
-            activeRevisionId: revision.id,
-            lastAppliedRevisionId: revision.id,
-            lastConfigDigest:
-              parsed.configDigest ??
-              revision.configDigest ??
-              currentRouter.lastConfigDigest,
-            importState: "approved",
-            pendingImportRevisionId: null,
-            status:
-              currentRouter.status === "direct"
-                ? "direct"
-                : currentRouter.approvedAt
-                  ? "active"
-                  : "pending",
-          })
-          .where(eq(routers.id, routerId))
-          .returning();
-
-        currentRouter = updatedRouter ?? currentRouter;
+    // A refresh that destroyed the node list is undone here, before anything
+    // else reacts to it. Without this the rescue lane cannot run unattended:
+    // see subscription-refresh-guard for the failure it exists to reverse.
+    if (
+      job.type === SUBSCRIPTION_REFRESH_JOB_TYPE &&
+      parsed.status !== "accepted"
+    ) {
+      try {
+        // A savepoint: a guard that fails must not abort the transaction the
+        // rest of the result is recorded in.
+        const guard = await tx.transaction((savepoint) =>
+          handleSubscriptionRefreshResult(
+            savepoint,
+            {
+              routerId,
+              jobPayload: job.payload,
+              resultPayload: payload,
+            },
+            (args) => queueDesiredRevisionApplyJobWithDb(savepoint, args),
+          ),
+        );
+        if (guard.restored) {
+          console.warn(
+            "[subscription-guard] restored node list on %s from revision %s: %s",
+            routerId,
+            guard.revisionId,
+            guard.reason,
+          );
+        }
+      } catch (error) {
+        // Never let the guard fail the result recording itself: a job result
+        // that cannot be written is a worse outage than a missed restore.
+        console.error("[subscription-guard]", error);
       }
     }
-  }
 
-  const reportedHostname =
-    parsed.status === "success"
-      ? resolveReportedRouterHostname({
-          jobType: job.type,
-          jobPayload: job.payload,
-          resultPayload: payload,
+    if (job.type === "run_rescue_repair" && parsed.status !== "accepted") {
+      const rescueRepairPayload = payload as Record<string, unknown>;
+      await appendRescueRepairAttemptFromJobResult({
+        routerId,
+        caseId:
+          typeof rescueRepairPayload.caseId === "string"
+            ? rescueRepairPayload.caseId
+            : null,
+        resultPayload: rescueRepairPayload,
+        status: parsed.status,
+        database: tx,
+      });
+    }
+
+    const compatibilityTransitions = [...parsed.incidentTransitions];
+    if (parsed.result.enteredDirectMode === true) {
+      compatibilityTransitions.push({
+        type: "entered_direct_mode",
+        state: "open",
+        reason:
+          typeof parsed.result.reason === "string"
+            ? parsed.result.reason
+            : "Роутер перешёл в прямой режим после локального аварийного срабатывания.",
+        happenedAt: new Date().toISOString(),
+        metadata: parsed.result,
+      });
+    }
+    if (parsed.result.recoveredProxy === true) {
+      compatibilityTransitions.push({
+        type: "recovered",
+        state: "resolved",
+        reason:
+          typeof parsed.result.reason === "string"
+            ? parsed.result.reason
+            : "Прокси-путь восстановлен.",
+        happenedAt: new Date().toISOString(),
+        metadata: parsed.result,
+      });
+    }
+
+    let currentRouter = await applyIncidentTransitions(
+      locked,
+      compatibilityTransitions,
+      tx,
+    );
+
+    const appliedRevisionId =
+      parsed.appliedRevisionId ?? job.desiredRevisionId ?? null;
+
+    if (appliedRevisionId && parsed.status !== "accepted") {
+      const [candidate] = await tx
+        .select()
+        .from(passwallDesiredRevisions)
+        .where(eq(passwallDesiredRevisions.id, appliedRevisionId))
+        .limit(1);
+      // The id may come from the router. Another router's revision is treated
+      // as unknown: recording it here would make that router's config (and its
+      // secrets) this router's active revision.
+      const revision = candidate?.routerId === routerId ? candidate : undefined;
+
+      if (revision) {
+        const resultState = parsed.status === "success" ? "applied" : "failed";
+
+        await tx.insert(passwallAppliedRevisions).values({
+          routerId,
+          desiredRevisionId: revision.id,
+          jobId: job.id,
+          engineMode: revision.engineMode,
+          result: resultState,
+          uciDigest: parsed.configDigest ?? revision.configDigest ?? null,
+          stdout: parsed.stdout ?? null,
+          stderr: parsed.stderr ?? null,
+          config: revision.config,
+          rawSnapshot:
+            parsed.result.rawSnapshot &&
+            typeof parsed.result.rawSnapshot === "object" &&
+            !Array.isArray(parsed.result.rawSnapshot)
+              ? sanitizePasswallRawSnapshot(
+                  parsed.result.rawSnapshot as Record<string, unknown>,
+                )
+              : null,
+        });
+
+        await tx
+          .update(passwallDesiredRevisions)
+          .set({
+            status: resultState,
+          })
+          .where(eq(passwallDesiredRevisions.id, revision.id));
+
+        if (parsed.status === "success") {
+          const [updatedRouter] = await tx
+            .update(routers)
+            .set({
+              activeRevisionId: revision.id,
+              lastAppliedRevisionId: revision.id,
+              lastConfigDigest:
+                parsed.configDigest ??
+                revision.configDigest ??
+                currentRouter.lastConfigDigest,
+              importState: "approved",
+              pendingImportRevisionId: null,
+              status:
+                currentRouter.status === "direct"
+                  ? "direct"
+                  : currentRouter.approvedAt
+                    ? "active"
+                    : "pending",
+            })
+            .where(eq(routers.id, routerId))
+            .returning();
+
+          currentRouter = updatedRouter ?? currentRouter;
+        }
+      }
+    }
+
+    const reportedHostname =
+      parsed.status === "success"
+        ? resolveReportedRouterHostname({
+            jobType: job.type,
+            jobPayload: job.payload,
+            resultPayload: payload,
+          })
+        : null;
+    if (reportedHostname) {
+      const [updatedRouter] = await tx
+        .update(routers)
+        .set({
+          hostname: reportedHostname,
         })
-      : null;
-  if (reportedHostname) {
-    const [updatedRouter] = await db
-      .update(routers)
-      .set({
-        hostname: reportedHostname,
-      })
-      .where(eq(routers.id, routerId))
-      .returning();
+        .where(eq(routers.id, routerId))
+        .returning();
 
-    currentRouter = updatedRouter ?? currentRouter;
-  }
+      currentRouter = updatedRouter ?? currentRouter;
+    }
 
-  try {
-    await notifyPartnerActionResultWithDb(db, {
-      job, ownerRef: currentRouter.ownerRef, status: parsed.status, code: partnerResultCode,
-    });
-    schedulePartnerWebhookDelivery();
-  } catch (error) {
-    console.error("[partner-webhooks] action result event failed", error);
-  }
-
-  await notifyPartnerOfClaimApplyResult({
-    job,
-    ownerRef: currentRouter.ownerRef,
-    parsed,
+    await tellPartner(currentRouter);
+    return { gate, currentRouter };
   });
+  if (!recorded) {
+    return jobResultResponseSchema.parse({
+      protocolVersion: parsed.protocolVersion,
+      acknowledged: true,
+    });
+  }
+  // Delivery starts once what was queued is committed.
+  schedulePartnerWebhookDelivery();
+  const refused = recorded.gate.mayChangeRouter
+    ? null
+    : recorded.gate.reason;
 
   await db.insert(eventLog).values({
     routerId,
     type: `job.${parsed.status}`,
     severity: parsed.status === "failure" ? "warning" : "info",
-    message: `Router reported ${parsed.status} for job ${job.type}.`,
+    message:
+      refused === "claim_left"
+        ? `Router reported ${parsed.status} for job ${job.type} of a claim it has left; the router was not changed.`
+        : refused === "claim_unknown"
+          ? `Router reported ${parsed.status} for job ${job.type} queued before jobs recorded their claim; the router was not changed.`
+          : `Router reported ${parsed.status} for job ${job.type}.`,
     metadata: {
       jobId: job.id,
       result: payload,
+      ...(refused === "claim_left"
+        ? {
+            claimLeft: {
+              claimId: job.partnerClaim
+                ? job.partnerClaim.claimId
+                : (router.claimId ?? null),
+            },
+          }
+        : {}),
+      ...(refused === "claim_unknown" ? { claimUnknown: true } : {}),
     },
   });
 
@@ -3040,6 +3161,51 @@ export function isPartnerClaimApplyJob(
   );
 }
 
+/** A job of a claim: its apply, or an owner's action. */
+function isClaimJob(job: Pick<JobRow, "type" | "payload">) {
+  return isPartnerClaimApplyJob(job) || job.payload?.origin === "partner_action";
+}
+
+/**
+ * Whether a job's result may change the router (incidents and status,
+ * revisions, hostname, rescue, the subscription guard) — judged inside the
+ * transaction that holds the router row, against the row as locked.
+ * - A claim's job only on the claim it was queued under: the same claim id,
+ *   owner and partner, not released. A new claim always has a new id, so a
+ *   null id never matches one. One queued before jobs recorded their claim
+ *   never: its claim is unknown, and unknown fails closed.
+ * - Any other job (the operator's, the fleet's) belongs to no claim; it acts
+ *   on the router unless the router changed claim while this result ran.
+ */
+function judgeJobResultClaim(
+  job: JobRow,
+  routerAtStart: RouterRow,
+  locked: RouterRow | undefined,
+):
+  | { mayChangeRouter: true }
+  | { mayChangeRouter: false; reason: "claim_left" | "claim_unknown" } {
+  if (!locked) {
+    return { mayChangeRouter: false, reason: "claim_left" };
+  }
+  if (isClaimJob(job)) {
+    const claim = job.partnerClaim;
+    if (!claim) {
+      return { mayChangeRouter: false, reason: "claim_unknown" };
+    }
+    const onClaim =
+      (locked.claimId ?? null) === claim.claimId &&
+      locked.ownerRef === claim.ownerRef &&
+      routerPartnerId(locked) === claim.partnerId &&
+      !locked.releasedAt;
+    return onClaim
+      ? { mayChangeRouter: true }
+      : { mayChangeRouter: false, reason: "claim_left" };
+  }
+  return (locked.claimId ?? null) === (routerAtStart.claimId ?? null)
+    ? { mayChangeRouter: true }
+    : { mayChangeRouter: false, reason: "claim_left" };
+}
+
 export function describeFailedJobResult(
   parsed: ReturnType<typeof jobResultRequestSchema.parse>,
 ) {
@@ -3052,34 +3218,67 @@ export function describeFailedJobResult(
   return "The router could not apply its configuration.";
 }
 
+/**
+ * Who hears a claim apply's router.ready / router.failed, under which claim.
+ * A job that recorded its claim reports to that claim's owner and partner with
+ * its claim id — never the router's current one, which a re-claim (even by the
+ * same owner) may have replaced: to its own owner and partner even after the
+ * router changed hands, since everything it says is that claim's. A job from
+ * before jobs recorded their claim reports to the router's owner as before,
+ * with its claim unknown — and to nobody when the router changed claim during
+ * this result. Null: nobody.
+ */
+function claimApplyEventTarget(
+  job: JobRow,
+  routerOwnerRef: string | null,
+  claimChanged: boolean,
+) {
+  if (job.partnerClaim) {
+    return {
+      ownerRef: job.partnerClaim.ownerRef,
+      partnerId: job.partnerClaim.partnerId,
+      ...jobClaimLabel(job),
+    };
+  }
+  return routerOwnerRef && !claimChanged
+    ? { ownerRef: routerOwnerRef, ...jobClaimLabel(job) }
+    : null;
+}
+
 // Never fails the router's job-result request: the webhook is one outbox
-// insert, and its delivery happens later, off this request.
-async function notifyPartnerOfClaimApplyResult(args: {
-  job: JobRow;
-  ownerRef: string | null;
-  parsed: ReturnType<typeof jobResultRequestSchema.parse>;
-}) {
-  if (
-    args.parsed.status === "accepted" ||
-    !args.ownerRef ||
-    !isPartnerClaimApplyJob(args.job)
-  ) {
+// insert (under its own savepoint when `client` is a transaction), and its
+// delivery happens later, off this request. The caller starts delivery.
+async function notifyPartnerOfClaimApplyResult(
+  client: Parameters<typeof notifyPartnerActionResultWithDb>[0],
+  args: {
+    job: JobRow;
+    // The router's owner as this result found it.
+    ownerRef: string | null;
+    // The router changed claim while this result ran.
+    claimChanged: boolean;
+    parsed: ReturnType<typeof jobResultRequestSchema.parse>;
+  },
+) {
+  if (args.parsed.status === "accepted" || !isPartnerClaimApplyJob(args.job)) {
+    return;
+  }
+  const target = claimApplyEventTarget(args.job, args.ownerRef, args.claimChanged);
+  if (!target) {
     return;
   }
 
   try {
-    const webhookId = await enqueuePartnerWebhookWithDb(db, {
-      event: args.parsed.status === "success" ? "router.ready" : "router.failed",
-      routerId: args.job.routerId,
-      ownerRef: args.ownerRef,
-      detail:
-        args.parsed.status === "success"
-          ? null
-          : describeFailedJobResult(args.parsed),
-    });
-    if (webhookId) {
-      schedulePartnerWebhookDelivery();
-    }
+    await client.transaction((savepoint) =>
+      enqueuePartnerWebhookWithDb(savepoint, {
+        event: args.parsed.status === "success" ? "router.ready" : "router.failed",
+        routerId: args.job.routerId,
+        ...target,
+        detail:
+          args.parsed.status === "success"
+            ? null
+            : describeFailedJobResult(args.parsed),
+      }),
+    );
   } catch (error) {
     console.error("[partner-webhooks] could not queue a claim result", error);
   }
@@ -3448,6 +3647,8 @@ export async function queueXrayApplyJobWithDb(
     routerId: string;
     desiredRevision: Pick<RevisionRow, "id" | "origin" | "status" | "configDigest">;
     origin?: typeof PARTNER_CLAIM_APPLY_ORIGIN;
+    // A claim's apply: the claim it belongs to, kept on the job.
+    partnerClaim?: JobPartnerClaim;
     /**
      * Called once, only when this call inserted the job (not when an active
      * one was returned). Lets an operator procedure announce its own visit
@@ -3487,6 +3688,7 @@ export async function queueXrayApplyJobWithDb(
         desiredRevisionId: input.desiredRevision.id,
         ...(input.origin ? { origin: input.origin } : {}),
       },
+      ...(input.partnerClaim ? { partnerClaim: input.partnerClaim } : {}),
     })
     .returning();
 

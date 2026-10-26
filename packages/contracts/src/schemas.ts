@@ -1913,6 +1913,11 @@ export const partnerRouterClaimResponseSchema = z.object({
     .regex(/^[A-Za-z0-9+/]{43}=$/)
     .nullable(),
   model: z.string().nullable(),
+  // The id of this claim attempt; see partnerWebhookPayloadSchema.claimId.
+  // A new claim gets a new one; `alreadyClaimed: true` returns the same one.
+  // null only for a router claimed before claim ids existed. Optional so an
+  // answer stored under an Idempotency-Key before then still parses.
+  claimId: z.string().uuid().nullable().optional(),
 });
 
 // The body a DELETE must carry. The signature covers the body only, so the
@@ -1941,11 +1946,43 @@ export const partnerWebhookEventSchema = z.enum([
   "router.vendor_access",
 ]);
 
+/**
+ * The body of every partner webhook. Frozen into its outbox row when the event
+ * is queued and sent byte for byte on every retry.
+ *
+ * `claimId` is the claim attempt the event belongs to (the same id the claim
+ * response returned). Each successful claim of a router — including a re-claim
+ * by the same ownerRef after an unbind — gets a new random UUIDv4; an
+ * idempotent repeat (`alreadyClaimed: true`) keeps it; unbind clears it.
+ * - An event a job reports (router.ready / router.failed of a claim's apply,
+ *   router.action) carries the claim id the JOB WAS CREATED UNDER, so a late
+ *   result of an earlier attempt's job keeps that attempt's id even when it is
+ *   queued after the re-claim.
+ * - Any other event carries the router's claim id at the moment it was queued.
+ * - `null`: the router had no claim id (not claimed, or claimed before claim
+ *   ids existed).
+ * - `claimGeneration: "unknown"`, with NO `claimId`: a job created before the
+ *   panel recorded claims on jobs reported it, and which attempt it belongs to
+ *   is not known.
+ *
+ * Timestamps cannot separate adjacent attempts, and `router.ready` may arrive
+ * before the claim response, so the correlation is the partner's: act on an
+ * event as the current attempt's only when its `claimId` is a uuid equal to the
+ * one from the latest claim response for that router. A `null` or missing
+ * `claimId`, or `claimGeneration: "unknown"`, never matches — not even a claim
+ * response whose own claimId is null.
+ *
+ * Optional for compatibility: rows queued before these fields existed have
+ * neither and still parse. Every newly queued payload carries exactly one of
+ * them: `claimId` (a uuid or null) or `claimGeneration: "unknown"`.
+ */
 export const partnerWebhookPayloadSchema = z.object({
   event: partnerWebhookEventSchema,
   routerId: z.string().uuid(),
   ownerRef: z.string().min(1),
   at: z.string().datetime(),
+  claimId: z.string().uuid().nullable().optional(),
+  claimGeneration: z.literal("unknown").optional(),
   detail: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
 });
 

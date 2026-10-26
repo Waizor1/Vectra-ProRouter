@@ -36,6 +36,8 @@ import { withLoopLock } from "./background-lock";
 import { sendTelegramRescueMessage } from "./telegram-rescue";
 
 type DatabaseClient = typeof db;
+// What reading and updating a rescue case needs; a transaction works too.
+type QueryClient = Pick<typeof db, "select" | "update">;
 type RescueCaseRow = typeof rescueCases.$inferSelect;
 type RouterRow = typeof routers.$inferSelect;
 type SnapshotRow = typeof routerInventorySnapshots.$inferSelect;
@@ -764,7 +766,7 @@ async function buildCompactEvidence(
 }
 
 async function loadActiveCaseForRouter(
-  database: DatabaseClient,
+  database: QueryClient,
   routerId: string,
   now = new Date(),
 ) {
@@ -1418,7 +1420,7 @@ export async function silenceRescueCase(
   return updated;
 }
 
-async function getRescueCaseOrThrow(caseId: string, database: DatabaseClient) {
+async function getRescueCaseOrThrow(caseId: string, database: QueryClient) {
   const [rescueCase] = await database
     .select()
     .from(rescueCases)
@@ -2147,7 +2149,7 @@ export async function appendRescueRepairAttemptFromJobResult(args: {
   caseId: string | null;
   resultPayload: Record<string, unknown>;
   status: "accepted" | "success" | "failure";
-  database?: DatabaseClient;
+  database?: QueryClient;
 }) {
   const database = args.database ?? db;
   const rescueCase = args.caseId

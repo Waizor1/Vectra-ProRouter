@@ -107,6 +107,7 @@ function createJob(overrides: Partial<JobRow> = {}): JobRow {
     deliverAfter: null,
     deliveredAt: null,
     completedAt: new Date("2026-04-09T10:00:00Z"),
+    partnerClaim: null,
     createdAt: new Date("2026-04-09T09:55:00Z"),
     ...overrides,
   };

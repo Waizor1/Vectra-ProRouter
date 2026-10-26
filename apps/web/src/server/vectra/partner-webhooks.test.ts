@@ -38,6 +38,9 @@ vi.mock("~/server/db", () => ({ db: {} }));
 const WEBHOOK_SECRET = "partner-webhooks-test-secret-0123456789";
 const ROUTER_ID = "6f0c2d8e-4b1a-4c3e-9d57-2a8b1c0e9f31";
 const NOW = new Date("2026-09-28T10:00:00.000Z");
+// Two claim attempts of the same router by the same owner.
+const CLAIM_A = "0a6f3c2e-9b1d-4e7a-8c5b-3d2e1f0a9b8c";
+const CLAIM_B = "7e4d2c1b-0a9f-4b8e-9d7c-6b5a4f3e2d1c";
 
 function dueRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -108,6 +111,8 @@ describe("enqueuePartnerWebhookWithDb", () => {
       routerId: ROUTER_ID,
       ownerRef: "acct-42",
       at: NOW.toISOString(),
+      // Read from the router (the fake has none): no claim.
+      claimId: null,
       detail: "x".repeat(500),
     });
     fetchSpy.mockRestore();
@@ -257,15 +262,55 @@ describe("webhooks per partner", () => {
     });
   });
 
-  it("does not read the router when the caller names the partner", async () => {
+  it("does not read the router when the caller names the partner and the claim", async () => {
     const fake = createFakeDb({});
     await enqueuePartnerWebhookWithDb(fake.db as never, {
       event: "router.ready",
       routerId: ROUTER_ID,
       ownerRef: "bc_1",
       partnerId: "bloopcat",
+      claimId: null,
     });
     expect(fake.calls.filter((call) => call.kind === "select")).toEqual([]);
+  });
+
+  // R120-1: a job from before jobs recorded their claim. Its event says the
+  // claim is unknown and carries no claimId — not null, and not the router's
+  // current one — and nothing is read to find one.
+  it("queues an event of an unknown claim with claimGeneration and no claimId", async () => {
+    const fake = createFakeDb({
+      selects: [[routers, [[{ partnerId: "vectra", claimId: CLAIM_B }]]]],
+    });
+    await enqueuePartnerWebhookWithDb(fake.db as never, {
+      event: "router.failed",
+      routerId: ROUTER_ID,
+      ownerRef: "bc_1",
+      partnerId: "bloopcat",
+      claimId: CLAIM_A,
+      claimGeneration: "unknown",
+    });
+    const [row] = fake.inserts(partnerWebhooks);
+    expect(row!.payload).toMatchObject({ claimGeneration: "unknown" });
+    expect(row!.payload).not.toHaveProperty("claimId");
+    expect(fake.calls.filter((call) => call.kind === "select")).toEqual([]);
+  });
+
+  it("reads the router's claim id, once, when the caller names only the partner", async () => {
+    const fake = createFakeDb({
+      selects: [[routers, [[{ partnerId: "vectra", claimId: CLAIM_A }]]]],
+    });
+    await enqueuePartnerWebhookWithDb(fake.db as never, {
+      event: "router.ready",
+      routerId: ROUTER_ID,
+      ownerRef: "bc_1",
+      partnerId: "bloopcat",
+    });
+    expect(fake.calls.filter((call) => call.kind === "select")).toHaveLength(1);
+    // The caller's partner stands; only the claim id came from the row.
+    expect(fake.inserts(partnerWebhooks)[0]).toMatchObject({
+      partnerId: "bloopcat",
+      payload: { claimId: CLAIM_A },
+    });
   });
 
   it("is a no-op without reading anything when no partner has a webhook", async () => {
@@ -1594,6 +1639,107 @@ describe("deliverPartnerWebhook", () => {
         },
       }),
     ).toEqual({ ok: false, status: null, error: "connect ECONNREFUSED" });
+  });
+});
+
+// BloopCat's review: after the same router is re-claimed by the same ownerRef,
+// a late signed event of the OLD claim attempt could flip the new attempt's
+// status. Each event carries the claim id the router had when it was queued,
+// frozen in its outbox row; the partner keeps only events whose claimId equals
+// its latest claim response's.
+describe("claimId: the claim attempt an event belongs to, frozen when queued", () => {
+  const target = {
+    url: "https://backend.example.test/hooks/prorouter",
+    secret: WEBHOOK_SECRET,
+  };
+
+  // Queue `event` the way the result path does: the caller names neither the
+  // partner nor the claim, both are read from the router row as it is now.
+  async function queueUnder(
+    claimId: string | null,
+    event: "router.ready" | "router.failed" | "router.offline",
+  ) {
+    const fake = createFakeDb({
+      selects: [[routers, [[{ partnerId: null, claimId }]]]],
+    });
+    const id = await enqueuePartnerWebhookWithDb(fake.db as never, {
+      event,
+      routerId: ROUTER_ID,
+      ownerRef: "acct-42",
+      at: NOW,
+    });
+    const [row] = fake.inserts(partnerWebhooks);
+    return { id: id!, payload: row!.payload as Record<string, unknown> };
+  }
+
+  async function send(row: { id: string; payload: unknown }, nowMs: number) {
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, body: null }));
+    await deliverPartnerWebhook(row as never, target, { fetchImpl, nowMs });
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [
+      string,
+      RequestInit & { headers: Record<string, string> },
+    ];
+    return { body: init.body as string, headers: init.headers };
+  }
+
+  it("an event of the old attempt, delivered after the re-claim, still carries the old claim id", async () => {
+    // Attempt A's router.failed is queued while A is the router's claim…
+    const late = await queueUnder(CLAIM_A, "router.failed");
+    // …the router is unbound and re-claimed by the same owner (attempt B),
+    // and only then is A's event delivered.
+    const reclaimed = await queueUnder(CLAIM_B, "router.ready");
+
+    const sentLate = await send(late, NOW.getTime() + 3_600_000);
+    const sentNew = await send(reclaimed, NOW.getTime() + 3_600_000);
+
+    expect(JSON.parse(sentLate.body)).toMatchObject({
+      event: "router.failed",
+      claimId: CLAIM_A,
+    });
+    // The new attempt's early router.ready carries the new id.
+    expect(JSON.parse(sentNew.body)).toMatchObject({
+      event: "router.ready",
+      claimId: CLAIM_B,
+    });
+    expect(CLAIM_A).not.toBe(CLAIM_B);
+  });
+
+  it("a redelivery sends the same request id and the same bytes", async () => {
+    const queued = await queueUnder(CLAIM_A, "router.ready");
+
+    const first = await send(queued, NOW.getTime());
+    // A retry hours later, after the router's claim id changed.
+    await queueUnder(CLAIM_B, "router.ready");
+    const retry = await send(queued, NOW.getTime() + 8 * 3_600_000);
+
+    expect(retry.headers[PARTNER_WEBHOOK_ID_HEADER]).toBe(queued.id);
+    expect(retry.headers[PARTNER_WEBHOOK_ID_HEADER]).toBe(
+      first.headers[PARTNER_WEBHOOK_ID_HEADER],
+    );
+    expect(retry.headers[PARTNER_REQUEST_ID_HEADER]).toBe(queued.id);
+    expect(retry.headers["Idempotency-Key"]).toBe(queued.id);
+    expect(retry.body).toBe(first.body);
+    expect(JSON.parse(retry.body)).toMatchObject({ claimId: CLAIM_A });
+  });
+
+  it("an event queued with no active claim (after an unbind) carries claimId null", async () => {
+    const queued = await queueUnder(null, "router.offline");
+
+    expect(queued.payload).toHaveProperty("claimId", null);
+    expect(JSON.parse((await send(queued, NOW.getTime())).body)).toHaveProperty(
+      "claimId",
+      null,
+    );
+  });
+
+  it("a row queued before claim ids existed is sent as it was stored, with no claimId", async () => {
+    const old = dueRow();
+    expect(old.payload).not.toHaveProperty("claimId");
+
+    const sent = await send(old, NOW.getTime());
+
+    expect(sent.body).toBe(JSON.stringify(old.payload));
+    expect(JSON.parse(sent.body)).not.toHaveProperty("claimId");
   });
 });
 

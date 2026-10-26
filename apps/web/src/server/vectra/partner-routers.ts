@@ -555,6 +555,13 @@ export async function queuePartnerActionWithDb(
               ? "refresh_xray_subscriptions"
               : "connect_router_action",
         dedupeKey,
+        // The claim this action is queued under, as locked above: its
+        // router.action is reported under this claim id, however late.
+        partnerClaim: {
+          claimId: router.claimId ?? null,
+          ownerRef: input.ownerRef,
+          partnerId,
+        },
         payload: {
           origin: PARTNER_ACTION_ORIGIN,
           actionId,

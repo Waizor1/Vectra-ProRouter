@@ -30,6 +30,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  uuid,
 } from "drizzle-orm/pg-core";
 
 const routerStatusEnum = pgEnum(
@@ -152,6 +153,13 @@ export const routers = createTable(
       withTimezone: true,
     }),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    // The id of the current claim attempt (a random UUIDv4): a new one on every
+    // successful claim, kept by an idempotent repeat of that claim, cleared by
+    // unbind. Partner webhooks carry it — a job's events the value its job was
+    // created under (jobs.partner_claim), others the value when queued — so
+    // the partner can drop a late event of an earlier claim of the same
+    // router. NULL = not claimed, or claimed before claim ids existed.
+    claimId: uuid("claim_id"),
     // Set when the Vectra account unlinked the router (partner unbind) and
     // cleared by the next claim. While set with no owner, the router is told
     // `released: true` — an explicit "drop the previous owner's config" that
@@ -463,6 +471,18 @@ export const jobs = createTable(
     deliverAfter: timestamp("deliver_after", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    // The partner claim a partner job (a claim's apply, an owner's action) was
+    // queued under, fixed at creation: its result is reported under THIS
+    // claim id, owner and partner — never the router's current ones, which a
+    // re-claim may have replaced meanwhile — and acts on the router only while
+    // the router is still on this claim. Never sent to the router. NULL: not a
+    // partner job, or one queued before this column — its claim is unknown,
+    // so its result changes nothing on the router (fail closed).
+    partnerClaim: jsonb("partner_claim").$type<{
+      claimId: string | null;
+      ownerRef: string;
+      partnerId: string;
+    }>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
