@@ -455,9 +455,10 @@ func restartDnsmasq(ctx context.Context) error {
 }
 
 // dropBridgeQUIC takes the fragment out with the data plane, after the table:
-// going direct does not wait for dnsmasq, whose restart is started and left
-// to finish.
-func (d *daemon) dropBridgeQUIC() {
+// the LAN is direct before dnsmasq restarts. The restart is waited for (up to
+// bridgeQUICWithin, never cut short) so that nothing the caller does next —
+// the rescue's flush of the resolver's cache — lands in the middle of it.
+func (d *daemon) dropBridgeQUIC(ctx context.Context) {
 	changed, err := writeBridgeQUICFragment(nil, "")
 	d.bridgeQUICSynced, d.bridgeQUICWaiting, d.bridgeQUICStart = "", "", ""
 	d.bridgeQUICHeldSince = time.Time{}
@@ -468,14 +469,5 @@ func (d *daemon) dropBridgeQUIC() {
 	if !changed || !d.resolverRunning() {
 		return
 	}
-	d.resolverRestartedAt = d.now()
-	restart := restartDnsmasq
-	if d.restartResolver != nil {
-		restart = d.restartResolver
-	}
-	started, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := restart(started); err != nil && !errors.Is(err, errStillRestarting) {
-		logging.L().Warn("dnsmasq not restarted after its QUIC fragment left", "err", err.Error())
-	}
+	d.restartResolverNow(context.WithoutCancel(ctx))
 }

@@ -56,9 +56,13 @@ at once and every YouTube video connection went over TCP.
   without it — QUIC refused as in r30 until vctl starts again — rather than
   leave the LAN without DNS and DHCP. For 30 s after vctl's own restart of dnsmasq the
   poll does not take it for a resolver that changed user (no reload of the
-  table). The fragment leaves with the data plane, after the table, its
-  restart not waited for (daemon), and in `dataplane-teardown.sh` without
-  procd's lock of vctl and only for a dnsmasq that runs. An address stays in the set 1 h unless asked for
+  table). The fragment leaves with the data plane, after the table, and the
+  daemon waits for dnsmasq's restart before anything else (the rescue's
+  flush of the resolver's cache); `dataplane-teardown.sh` restarts it without
+  procd's lock of vctl and only when it runs. The resolver's processes are
+  told by their binary too: `/etc/init.d/dnsmasq` has the comm `dnsmasq`,
+  and on the stand the cache flush's SIGHUP killed that script between its
+  stop and its start — the LAN without DNS after a rescue to direct. An address stays in the set 1 h unless asked for
   again (FakeDNS answers with a TTL of 1 s).
 - **Off switch:** UCI `quic_bridge '0'` — plain Vision and every proxied
   name's QUIC refused, exactly r30. `refuse_quic '0'` still keeps all QUIC.

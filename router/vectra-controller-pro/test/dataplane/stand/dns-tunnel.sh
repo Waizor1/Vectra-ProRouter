@@ -43,6 +43,13 @@ plain_render() {
 		cp /var/run/vectra-controller-pro/xray.json "$D/render.plain" 2>/dev/null
 }
 
+# resolver_state: which dnsmasq runs, how often vctl restarted it, and whether
+# the ISP itself answers — for a FAIL that has the LAN resolve nothing.
+resolver_state() {
+	printf "dnsmasq pids '%s', restarted %sx, the ISP: example.com -> '%s'" \
+		"$(pidof dnsmasq | tr '\n' ' ')" "$(wc -l < "$D/dnsmasq-restarts" 2>/dev/null || echo 0)" "$(resolved "$ISP_IP" example.com)"
+}
+
 # resolved <server> <name>: the first IPv4 address, or nothing.
 resolved() {
 	nslookup "$2" "$1" 2>/dev/null | awk '/^Name:/{n=1} n && /^Address/ {print $NF; exit}' | grep -E '^[0-9]+(\.[0-9]+){3}$'
@@ -382,7 +389,7 @@ code=$(curl -s -m 15 -o /dev/null -w '%{http_code}' https://www.google.com/gener
 if ! nft list table inet vctl >/dev/null 2>&1 && [ -n "$ex" ] && [ "$j" -le 15 ] && [ "$code" = 204 ]; then
 	record dead_tunnel_goes_direct PASS "tunnel dead, line up: direct after ${i}s — no table, no redirect; example.com -> $ex (${j}s after), google 204 straight out"
 else
-	record dead_tunnel_goes_direct FAIL "after ${i}s: table $(nft list table inet vctl >/dev/null 2>&1 && echo present || echo absent), example.com='$ex', google '$code'; $(grep -i rescue "$D/agent-$carrying.log" | tail -2 | tr '\n' ' ' | cut -c1-200)"
+	record dead_tunnel_goes_direct FAIL "after ${i}s: table $(nft list table inet vctl >/dev/null 2>&1 && echo present || echo absent), example.com='$ex', google '$code'; $(resolver_state); $(grep -i rescue "$D/agent-$carrying.log" | tail -2 | tr '\n' ' ' | cut -c1-200)"
 fi
 nft delete table inet stand_block 2>/dev/null
 kill "$CONFIRMER" 2>/dev/null
@@ -414,7 +421,7 @@ done
 if [ -z "$ig" ] && [ -n "$ex" ]; then
 	record isp_back_after_stop PASS "after the stop dnsmasq asks the ISP again: www.instagram.com forged NXDOMAIN, example.com -> $ex"
 else
-	record isp_back_after_stop FAIL "after the stop: instagram='$ig' example.com='$ex'"
+	record isp_back_after_stop FAIL "after the stop: instagram='$ig' example.com='$ex'; $(resolver_state)"
 fi
 # A table programmed twice is the same table: each rule once. The daemon sealed
 # operator.json; the CLI reads plaintext, so it gets a restored copy.

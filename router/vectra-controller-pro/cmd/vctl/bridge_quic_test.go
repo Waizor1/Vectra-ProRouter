@@ -477,8 +477,10 @@ func TestADnsmasqThatIsNotRunningIsNotStarted(t *testing.T) {
 	}
 }
 
-// Going direct takes the table out first and does not wait for dnsmasq.
-func TestTheTeardownTakesTheTableFirstAndLeavesDnsmasqToRestart(t *testing.T) {
+// Going direct takes the table out first, then restarts dnsmasq and waits for
+// it: the rescue's flush of the resolver's cache, next, must not land in the
+// middle of the restart.
+func TestTheTeardownTakesTheTableFirstThenRestartsDnsmasq(t *testing.T) {
 	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
 	d := s.d
 	ctx := context.Background()
@@ -499,8 +501,28 @@ func TestTheTeardownTakesTheTableFirstAndLeavesDnsmasqToRestart(t *testing.T) {
 	if len(events) < 2 || events[len(events)-1] != "restart dnsmasq" {
 		t.Fatalf("events %q: the table goes before dnsmasq restarts", events)
 	}
-	if waited {
-		t.Fatal("the teardown waited for dnsmasq's restart")
+	if !waited {
+		t.Fatal("the teardown did not wait for dnsmasq's restart")
+	}
+}
+
+// /etc/init.d/dnsmasq's comm is "dnsmasq" too: only the resolver itself is
+// one — a SIGHUP for its cache once killed the init script mid-restart.
+func TestResolverPIDsAreTheResolversNotItsInitScript(t *testing.T) {
+	root := fakeProc(t, map[string][2]string{
+		"11": {"dnsmasq", "453\t453\t453\t453"},
+		"12": {"dnsmasq", "0\t0\t0\t0"},
+		"13": {"dnsmasq", "453\t453\t453\t453"},
+		"14": {"dnsmasq", "453\t453\t453\t453"},
+	})
+	for pid, exe := range map[string]string{"11": "/usr/sbin/dnsmasq", "12": "/bin/busybox", "13": "/usr/sbin/dnsmasq (deleted)"} {
+		if err := os.Symlink(exe, filepath.Join(root, pid, "exe")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := resolverPIDs(root)
+	if fmt.Sprint(got) != "[11 13 14]" {
+		t.Fatalf("resolverPIDs = %v, want [11 13 14] (14 has no exe to read: by comm)", got)
 	}
 }
 

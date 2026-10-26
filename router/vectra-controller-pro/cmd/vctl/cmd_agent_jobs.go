@@ -1112,7 +1112,7 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 		_ = d.runFirewallCmd(ctx, fields[0], fields[1:]...)
 	}
 	// dnsmasq's QUIC fragment named a set of the table that went.
-	d.dropBridgeQUIC()
+	d.dropBridgeQUIC(ctx)
 	if redirected {
 		d.forgetRedirectedFlows(oldPort)
 	}

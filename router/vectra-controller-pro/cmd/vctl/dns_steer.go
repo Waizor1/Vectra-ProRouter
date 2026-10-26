@@ -846,7 +846,11 @@ func resolverUIDs(procRoot string) []int {
 	return out
 }
 
-// resolverPIDs are the dnsmasq processes, by /proc/<pid>/comm.
+// resolverPIDs are the dnsmasq processes, by /proc/<pid>/comm — and by the
+// binary they run: /etc/init.d/dnsmasq is a script whose comm is "dnsmasq"
+// too, and a SIGHUP meant for the resolver's cache killed it between its stop
+// and its start, leaving the LAN without DNS (the r31 stand, a rescue to
+// direct while vctl restarted dnsmasq).
 func resolverPIDs(procRoot string) []int {
 	dirs, err := os.ReadDir(procRoot)
 	if err != nil {
@@ -859,9 +863,14 @@ func resolverPIDs(procRoot string) []int {
 			continue
 		}
 		comm, err := os.ReadFile(filepath.Join(procRoot, e.Name(), "comm"))
-		if err == nil && strings.TrimSpace(string(comm)) == "dnsmasq" {
-			out = append(out, pid)
+		if err != nil || strings.TrimSpace(string(comm)) != "dnsmasq" {
+			continue
 		}
+		// "/usr/sbin/dnsmasq", or "... (deleted)" after an upgrade.
+		if exe, err := os.Readlink(filepath.Join(procRoot, e.Name(), "exe")); err == nil && !strings.HasPrefix(filepath.Base(exe), "dnsmasq") {
+			continue
+		}
+		out = append(out, pid)
 	}
 	sort.Ints(out)
 	return out
