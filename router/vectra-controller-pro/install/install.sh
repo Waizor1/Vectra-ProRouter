@@ -1213,23 +1213,40 @@ keep_companions() {
 	esac
 	warn COMPANIONS_MARK "не удалось снять отметку Auto-Installed у $COMPANIONS в $OPKG_STATUS: opkg может удалить их при установке версии Vectra, которая от них не зависит.$later"
 }
-# The feed's vctl names both companions (0.7.0-r30 on): its opkg removes
-# neither, and keep_companions drops the marks once it is done. One that does
-# not name them, upgraded over a vctl they came in with, has opkg remove them
-# as orphans where they are marked — the reporter's spool and state, the geo
-# data: refused, before anything is changed. Whether vctl is installed is not
-# asked of opkg (companions_marked says why): marked companions and such a
-# vctl are refused whatever is installed, and a status that cannot be read is
-# refused too.
+# The feed's vctl must name both companions — vectra-geodata, and
+# vectra-reporter at COMPANIONS_REPORTER_MIN or newer — as every vctl from
+# 0.7.0-r30 does: its opkg removes neither, and keep_companions drops the
+# marks once it is done. One that does not name them, upgraded over a vctl
+# they came in with, has opkg remove them as orphans where they are marked —
+# the reporter's spool and state, the geo data. Refused before anything is
+# changed, whatever the router's status says: nothing that says it can be
+# trusted here — an opkg query fails while another opkg holds the lock, and
+# its empty output reads as "not installed"; and opkg writes the status file
+# in place (fopen "w", then the records), so a read while another opkg writes
+# it finds it empty or cut short. This installer installs no vctl before
+# 0.7.0-r30 at all.
+COMPANIONS_REPORTER_MIN=1.0.0-r4
+companions_named() { # <Depends>: both companions, the reporter at COMPANIONS_REPORTER_MIN or newer
+	echo "$1" | tr ',' '\n' | awk -v min="$COMPANIONS_REPORTER_MIN" '
+		function ge(a, b,   x, y, n, m, k, i, p, q) {
+			n = split(a, x, /[^0-9]+/); m = split(b, y, /[^0-9]+/); k = n > m ? n : m
+			for (i = 1; i <= k; i++) {
+				p = (i <= n && x[i] != "") ? x[i] + 0 : 0
+				q = (i <= m && y[i] != "") ? y[i] + 0 : 0
+				if (p != q) return p > q
+			}
+			return 1
+		}
+		$1 == "vectra-geodata" { g = 1 }
+		$1 == "vectra-reporter" && ($2 == "(>=" || $2 == "(=" || $2 == "(>>") {
+			v = $3; sub(/\)$/, "", v)
+			if (v != "" && ge(v, min)) r = 1
+		}
+		END { exit !(g && r) }'
+}
 check_companions_named() {
-	companions_marked
-	case $? in
-	1) return 0 ;;
-	2) refuse STATUS_UNREADABLE "не удалось прочитать $OPKG_STATUS: неизвестно, стоят ли у $COMPANIONS отметки Auto-Installed, а от этого зависит, удалит ли их opkg при обновлении." ;;
-	esac
-	deps=" $(depends_of "$(feed_field "$PKG" Depends)" | tr '\n' ' ')"
-	case "$deps" in *" vectra-geodata "*) case "$deps" in *" vectra-reporter "*) return 0 ;; esac ;; esac
-	refuse COMPANIONS_NOT_NAMED "Vectra $(feed_field "$PKG" Version) из фида не зависит от $COMPANIONS, а у них стоит отметка Auto-Installed: opkg удалил бы их при обновлении вместе с очередью отчётов и геоданными."
+	companions_named "$(feed_field "$PKG" Depends)" && return 0
+	refuse COMPANIONS_NOT_NAMED "Vectra $(feed_field "$PKG" Version) из фида не зависит от vectra-geodata и vectra-reporter (>= $COMPANIONS_REPORTER_MIN), как все версии с 0.7.0-r30: opkg удалил бы их при обновлении вместе с очередью отчётов и геоданными. Нужна Vectra 0.7.0-r30 или новее."
 }
 
 LUCI=0

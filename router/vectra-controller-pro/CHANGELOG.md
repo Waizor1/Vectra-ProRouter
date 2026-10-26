@@ -37,14 +37,16 @@ wrote xray-core into vctl's Depends twice.
   0.7.0-r29 or older installs the one package and keeps nothing; the new vctl
   waits for that opkg to end (its postinst runs inside it) and drops the
   marks then.
-- **Never below 0.7.0-r30.** The installer refuses a feed's vctl that does
-  not name both companions where they are marked (COMPANIONS_NOT_NAMED),
-  before anything changes — from opkg's status file and the feed's list
-  alone: an opkg query run while another opkg holds the lock prints nothing,
-  which read as "vctl not installed" (Codex, R102-1); a status that cannot
-  be read is refused too (STATUS_UNREADABLE). Rollout-VctlFleet.py rolls
-  out no vctl before 0.7.0-r30, and the way back its STOP names is the build
-  the router ran or 0.7.0-r30.
+- **Never below 0.7.0-r30.** The installer refuses a feed's vctl whose
+  Depends does not name vectra-geodata and vectra-reporter (>= 1.0.0-r4) —
+  every vctl from 0.7.0-r30 does — whatever the router's status says
+  (COMPANIONS_NOT_NAMED), before anything changes. Nothing the router says
+  can be trusted there: an opkg query run while another opkg holds the lock
+  prints nothing, as for a package not installed (Codex, R102-1), and opkg
+  writes its status in place, fopen("w") and then the records, so a read
+  while it writes finds it empty or cut short (R104-1). Rollout-VctlFleet.py
+  rolls out no vctl before 0.7.0-r30, and the way back its STOP names is the
+  build the router ran or 0.7.0-r30.
 - **xray-core once in the SDK's Depends.** DEPENDS names it no more;
   PKG_BUILD_DEPENDS keeps the SDK building it with vctl. `pkg_depends` writes
   the SDK's list (EXTRA_DEPENDS, then DEPENDS) with nothing merged, and
