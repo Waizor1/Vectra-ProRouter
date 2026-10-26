@@ -1,5 +1,59 @@
 # Changelog
 
+## vctl 0.7.0-r32 — one lock for opkg's status, and a lock that holds
+
+Codex's review of r30 (PR #96; relay bloobcat #94) found the companions'
+protection itself racy. r30 drops vectra-geodata's and vectra-reporter's
+"Auto-Installed: yes" from `/usr/lib/opkg/status` so that opkg never removes
+them as orphans; but the installer and Rollout-VctlFleet.py did it with a
+pidof/cmp/mv of their own, which no opkg heeds (busybox's flock and OpenWrt's
+lock are flock(2), opkg's lockf), and vctl's lock could be granted on a lock
+file a finishing opkg was about to unlink. On OpenWrt 24.10.8's opkg an opkg
+run between r30's last check and its mv had its install undone: the
+package's files on the router, no record of it in the status. And the SDK
+wrote xray-core into vctl's Depends twice.
+
+### Fixed
+- **One writer of the marks, under opkg's own lock.** `vctl keep-companions`
+  is the only way they go besides vctl's own self-update; the installer and
+  the rollout ask the vctl they installed, once their opkg is done, and
+  write, move or copy no status of their own. Not before the install: the
+  vctl going in names both companions (0.7.0-r30 on), so its opkg removes
+  neither. With nothing marked vctl is not asked, and no lock is taken.
+- **A lock that holds.** opkg (libopkg/opkg_conf.c, 2024.10.16) creat()s
+  `/var/lock/opkg.lock`, takes lockf on it and at its end unlocks, closes and
+  only then unlinks it. vctl's lock, once granted, holds only when no opkg is
+  alive — one that is has its unlink still ahead — and then the path is still
+  the file locked (dev and inode), in that order; otherwise it is tried again.
+  Without `/var/lock` or a process list nothing is written. Every opkg is
+  kept out from the read to the rename by that lock; a writer that takes no
+  lock (an older installer's) is not, and the status read once more just
+  before the rename must still be what the edit was made from — a write of
+  such a writer up to that look is kept, one after it is not. One goroutine
+  of vctl at a time holds the lock or runs opkg (an fcntl lock is the
+  process's): the self-update's install, the start, the command, the
+  maintenance's opkg queries, PassWall's retirement.
+- **The marks an older vctl left go when vctl starts.** A self-update by
+  0.7.0-r29 or older installs the one package and keeps nothing; the new vctl
+  waits for that opkg to end (its postinst runs inside it) and drops the
+  marks then.
+- **Never below 0.7.0-r30.** The installer refuses a feed's vctl whose
+  Depends does not name vectra-geodata and vectra-reporter (>= 1.0.0-r4) —
+  every vctl from 0.7.0-r30 does — whatever the router's status says
+  (COMPANIONS_NOT_NAMED), before anything changes. Nothing the router says
+  can be trusted there: an opkg query run while another opkg holds the lock
+  prints nothing, as for a package not installed (Codex, R102-1), and opkg
+  writes its status in place, fopen("w") and then the records, so a read
+  while it writes finds it empty or cut short (R104-1). Rollout-VctlFleet.py
+  rolls out no vctl before 0.7.0-r30, and the way back its STOP names is the
+  build the router ran or 0.7.0-r30.
+- **xray-core once in the SDK's Depends.** DEPENDS names it no more;
+  PKG_BUILD_DEPENDS keeps the SDK building it with vctl. `pkg_depends` writes
+  the SDK's list (EXTRA_DEPENDS, then DEPENDS) with nothing merged, and
+  `TestEveryBuildWritesOneDepends` holds it to an oracle of
+  include/package-pack.mk entry by entry, none twice — matched by the real
+  openwrt-sdk-24.10.8-mediatek-filogic for r30's Makefile and this one.
+
 ## vctl 0.7.0-r31 — QUIC to the Russian bridge's names goes through it
 
 The owner: «ютуб грузит первые секунды и затем зависает». Since 2026-10-22

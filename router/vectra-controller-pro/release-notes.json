@@ -3,6 +3,24 @@
   "package": "vectra-controller-pro",
   "versions": [
     {
+      "version": "0.7.0-r32",
+      "date": "2026-10-26",
+      "notes": {
+        "ru": [
+          "Гео-данные и очередь отчётов об ошибках теперь сохраняются при любом обновлении, в том числе если роутер обновила старая версия Vectra.",
+          "Vectra больше не может испортить список установленных пакетов, если в это же время на роутере идёт другая установка."
+        ],
+        "en": [
+          "The geo data and the queue of error reports now stay through any update, including one an older Vectra version carried out.",
+          "Vectra can no longer spoil the list of installed packages when another installation runs on the router at the same time."
+        ],
+        "zh": [
+          "地理数据和错误报告队列现在在任何更新中都会保留，包括由旧版 Vectra 执行的更新。",
+          "当路由器上同时进行其他安装时，Vectra 不再会损坏已安装软件包列表。"
+        ]
+      }
+    },
+    {
       "version": "0.7.0-r31",
       "date": "2026-10-26",
       "notes": {

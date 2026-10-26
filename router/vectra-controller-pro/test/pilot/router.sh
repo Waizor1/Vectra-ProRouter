@@ -67,6 +67,17 @@ companions_user() {
 		awk -v c="$c" '/^Package: / { p = substr($0, 10) } /^$/ { p = "" } p == c && $0 == "Auto-Installed: yes" { m = 1 } END { exit m }' /usr/lib/opkg/status || return 1
 	done
 }
+# The companions marked as an opkg leaves what it installed as a vctl's
+# dependency — as an older vctl's self-update (r29's keeps nothing) leaves
+# them. No opkg runs meanwhile.
+mark_companions() {
+	awk '/^Package: / { p = substr($0, 10) } /^$/ { p = "" }
+		c = (p == "vectra-geodata" || p == "vectra-reporter") {}
+		c && $0 == "Auto-Installed: yes" { next }
+		{ print }
+		c && /^Status: / { print "Auto-Installed: yes" }' /usr/lib/opkg/status > /tmp/status.marked &&
+		cat /tmp/status.marked > /usr/lib/opkg/status && rm -f /tmp/status.marked
+}
 
 # ------------------------------------------------------ the WAN's records ----
 
@@ -534,6 +545,11 @@ phase_upgrade() {
 	off_window upgrade "upgraded, the old identity's report waiting, the reporter off"
 	check_quiet upgrade
 	check_guard upgrade
+	# A vctl an older self-update brought in finds the companions marked: it
+	# drops the marks once it starts (keepCompanionsAtStart).
+	mark_companions
+	"/etc/init.d/$PKG" restart > /dev/null 2>&1
+	check upgrade_start_drops_marks "the companions marked as an older updater's opkg leaves them, vctl started again: the marks gone" wait_for 90 companions_user
 }
 
 # ------------------------------------------------------------------ main ----

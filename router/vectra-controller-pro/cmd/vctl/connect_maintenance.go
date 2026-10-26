@@ -244,7 +244,7 @@ func newerMaintenanceVersion(ctx context.Context, a, b string) (bool, error) {
 	if a == b {
 		return false, nil
 	}
-	_, e := maintenanceCommand(ctx, "opkg", "compare-versions", a, ">", b)
+	_, e := opkgQuery(ctx, "compare-versions", a, ">", b)
 	if e == nil {
 		return true, nil
 	}
@@ -511,8 +511,17 @@ func (d *daemon) maintenanceFinish(ctx context.Context, j controlplane.Job, stat
 	return nil
 }
 
+// opkgQuery runs an opkg that only reads (maintenanceCommand) while no other
+// goroutine of this vctl holds opkg's lock (opkgMu): every opkg takes it, and
+// one started under vctl's would stop at "Could not lock".
+func opkgQuery(ctx context.Context, args ...string) ([]byte, error) {
+	opkgMu.Lock()
+	defer opkgMu.Unlock()
+	return maintenanceCommand(ctx, "opkg", args...)
+}
+
 func installedMaintenanceVersion(ctx context.Context) (string, error) {
-	out, e := maintenanceCommand(ctx, "opkg", "status", proPackageName)
+	out, e := opkgQuery(ctx, "status", proPackageName)
 	if e != nil {
 		return "", e
 	}

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -41,7 +42,16 @@ take() {
 	echo $((n - 1)) > "$d/$1"
 }
 case "$1" in
-list-installed) grep "^$2 - " "$d/installed" 2> /dev/null ;;
+list-installed)
+	# list-busy: queries it counts down fail as under another opkg's lock —
+	# nothing on stdout, opkg's error on stderr, exit 255.
+	if take list-busy; then
+		echo "opkg list-installed $2: lock busy" >> "$d/log"
+		echo " * opkg_conf_load: Could not lock /var/lock/opkg.lock: Resource temporarily unavailable." >&2
+		exit 255
+	fi
+	grep "^$2 - " "$d/installed" 2> /dev/null
+	;;
 list) grep "^$2 - " "$d/available" 2> /dev/null ;;
 search) cat "$d/search" 2> /dev/null ;;
 print-architecture) echo "arch all 1"; echo "arch aarch64_cortex-a53 10" ;;
@@ -98,6 +108,33 @@ fi
 cp "$FAKE/download" "$out"
 `
 
+// fakeVctl is `vctl keep-companions` as the real one ends (cmd/vctl,
+// opkg_companions.go, which holds opkg's lock and makes the checks): the
+// companions' marks out of the status. vctl-old: a vctl before the command;
+// vctl-busy: another opkg runs past --wait.
+const fakeVctl = `#!/bin/sh
+echo "vctl $*" >> "$FAKE/log"
+if [ "$1" != keep-companions ] || [ -f "$FAKE/vctl-old" ]; then
+	echo "vctl: unknown command \"$1\"" >&2
+	exit 2
+fi
+if [ -f "$FAKE/vctl-busy" ]; then
+	echo "vctl keep-companions: the marks of vectra-geodata vectra-reporter stay: another opkg is running" >&2
+	exit 1
+fi
+[ -f "$FAKE/status" ] || exit 0
+awk '/^Package: / { p = substr($0, 10) } /^$/ { p = "" }
+	(p == "vectra-geodata" || p == "vectra-reporter") && $0 == "Auto-Installed: yes" { n++; next }
+	{ print }' "$FAKE/status" > "$FAKE/status.t"
+if cmp -s "$FAKE/status" "$FAKE/status.t"; then
+	rm -f "$FAKE/status.t"
+	echo "companions: none marked"
+else
+	mv "$FAKE/status.t" "$FAKE/status"
+	echo "companions: kept vectra-geodata vectra-reporter (Auto-Installed mark dropped)"
+fi
+`
+
 const fakeDf = `#!/bin/sh
 echo "Filesystem 1K-blocks Used Available Use% Mounted"
 echo "overlay 100000 0 $(cat "$FAKE/df-free") 0% /overlay"
@@ -113,7 +150,7 @@ func newRouter(t *testing.T) *router {
 		}
 	}
 	fakes := map[string]string{
-		"opkg": fakeOpkg, "xray": fakeXray, "wget": fakeWget, "df": fakeDf,
+		"opkg": fakeOpkg, "xray": fakeXray, "wget": fakeWget, "df": fakeDf, "vctl": fakeVctl,
 		// The lists are written plain here: opkg's gzipped ones are read by
 		// zcat, which the router has.
 		"zcat": "#!/bin/sh\nexit 1\n",
@@ -142,6 +179,7 @@ func newRouter(t *testing.T) *router {
 		// The xray on PATH (the fake), not a /usr/bin/xray of this host.
 		"VECTRA_XRAY_BIN="+filepath.Join(dir, "no-such-xray"),
 		"VECTRA_XRAY_RECORD="+filepath.Join(dir, "etc", "xray-core-by-vectra"),
+		"VECTRA_VCTL_BIN="+filepath.Join(bin, "vctl"),
 		// Three attempts, as on a router, without the router's pauses.
 		"VECTRA_RETRY_DELAYS=0 0",
 	)
@@ -450,29 +488,32 @@ func companionRouter(t *testing.T) *router {
 // An upgrade over a vctl the companions came in with: opkg would remove them
 // as orphans with a vctl that does not depend on them (0.7.0-r29 as
 // published), and no opkg command takes the Auto-Installed mark away. The
-// marks are gone before opkg upgrades anything; xray-core keeps its own —
-// PassWall's business, not Vectra's.
+// feed's vctl names both, so the upgrade removes neither; once opkg is done,
+// the vctl it installed drops the marks under opkg's lock (vctl
+// keep-companions) — the installer writes no status of its own. xray-core
+// keeps its mark: PassWall's business, not Vectra's.
 func TestAnUpgradeKeepsTheCompanionsWhateverTheNewDependsSays(t *testing.T) {
 	r := companionRouter(t)
 	out, code := r.run("install_packages")
-	if code != 0 || !strings.Contains(r.read("log"), "opkg upgrade vectra-controller-pro vectra-geodata vectra-reporter") {
-		t.Fatalf("exit %d, log:\n%s\n%s", code, r.read("log"), out)
+	log := r.read("log")
+	upgrade, keep := strings.Index(log, "opkg upgrade vectra-controller-pro vectra-geodata vectra-reporter"), strings.Index(log, "vctl keep-companions --wait 10")
+	if code != 0 || upgrade < 0 || keep < upgrade || strings.Count(log, "vctl keep-companions") != 1 {
+		t.Fatalf("exit %d, log:\n%s\n%s", code, log, out)
 	}
-	if got := r.read("status-at-upgrade"); got != companionsKept {
-		t.Fatalf("opkg upgrade ran with the status:\n%s", got)
+	if got := r.read("status-at-upgrade"); got != companionStatus {
+		t.Fatalf("the installer wrote the status before opkg:\n%s", got)
 	}
 	if got := r.read("status"); got != companionsKept {
 		t.Fatalf("the status after the run:\n%s", got)
 	}
-	for _, f := range []string{"status.vectra", "work/opkg-status.was"} {
-		if _, err := os.Stat(filepath.Join(r.dir, f)); !os.IsNotExist(err) {
-			t.Fatalf("%s stayed: %v", f, err)
-		}
+	if !strings.Contains(out, "отметка Auto-Installed снята") {
+		t.Fatalf("the run does not say so:\n%s", out)
 	}
-	// A run with nothing to drop writes nothing.
+	// Nothing marked: vctl is not even asked, and the run says nothing of it.
 	r.write("status", companionsKept)
-	if _, code := r.run("keep_companions"); code != 0 || r.read("status") != companionsKept {
-		t.Fatalf("exit %d, status:\n%s", code, r.read("status"))
+	r.write("log", "")
+	if out, code := r.run("keep_companions"); code != 0 || r.read("status") != companionsKept || strings.Contains(out, "снята") || r.read("log") != "" {
+		t.Fatalf("exit %d, status:\n%s\n%s\nlog: %s", code, r.read("status"), out, r.read("log"))
 	}
 }
 
@@ -498,46 +539,242 @@ func TestWhatTheInstallBroughtInLosesTheMark(t *testing.T) {
 	}
 }
 
-// The status stays as it was, and the run says so with a warning and goes on,
-// whenever the new file cannot replace it safely: another opkg runs (and is
-// waited for first); a cut-short file (awk exits 0 on a full overlay), short
-// of lines or only of its last line's bytes; another opkg wrote the status
-// meanwhile; the sync fails.
-func TestTheCompanionsMarksStayWhenTheyCannotGoSafely(t *testing.T) {
-	for name, tc := range map[string]struct{ setup, script string }{
-		"another opkg runs": {setup: "pidof-opkg"},
-		"a cut-short file":  {script: `companion_marks() { if [ "$1" = drop ]; then head -c 120 "$2"; else echo 2; fi; }` + "\n"},
-		// Every line there, the last one cut short: only its bytes tell.
-		"a file cut inside its last line": {setup: "cut=" + companionsKept[:len(companionsKept)-2],
-			script: `companion_marks() { if [ "$1" = drop ]; then cat "$FAKE/cut"; else echo 2; fi; }` + "\n"},
-		"the status changed meanwhile": {setup: "bin/sync=#!/bin/sh\necho 'Package: written-meanwhile' >> \"$FAKE_STATUS\"\n"},
-		"the sync fails":               {setup: "bin/sync=#!/bin/sh\nexit 1\n"},
+// The status stays as opkg left it, and the run says so with a warning and
+// goes on, whenever vctl does not drop the marks: another opkg runs past the
+// wait (vctl drops them itself at its next start), a vctl before 0.7.0-r32
+// has no such command — one line says so, not vctl's usage — no vctl at all.
+// With nothing marked none of it matters: no warning.
+func TestTheCompanionsMarksStayWhenVctlCannotDropThem(t *testing.T) {
+	for name, tc := range map[string]struct{ setup, later string }{
+		"another opkg runs": {setup: "vctl-busy", later: "при следующем запуске"},
+		"an older vctl":     {setup: "vctl-old"},
+		"no vctl":           {setup: "no-vctl"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := companionRouter(t)
-			r.env = append(r.env, "VECTRA_COMPANIONS_WAIT=0")
-			if f, body, ok := strings.Cut(tc.setup, "="); ok {
-				r.write(f, body)
-				if err := os.Chmod(filepath.Join(r.dir, f), 0o755); err != nil {
-					t.Fatal(err)
-				}
-			} else if tc.setup != "" {
+			if tc.setup == "no-vctl" {
+				r.env = append(r.env, "VECTRA_VCTL_BIN="+filepath.Join(r.dir, "no-such-vctl"))
+			} else {
 				r.write(tc.setup, "")
 			}
-			want := companionStatus
-			if name == "the status changed meanwhile" {
-				want += "Package: written-meanwhile\n"
-			}
-			out, code := r.run(tc.script + "keep_companions\necho \"warnings:$WARNINGS\"")
-			if code != 0 || r.read("status") != want || !strings.Contains(out, "warnings: COMPANIONS_MARK") {
+			out, code := r.run("keep_companions\necho \"warnings:$WARNINGS\"")
+			if code != 0 || r.read("status") != companionStatus || !strings.Contains(out, "warnings: COMPANIONS_MARK") {
 				t.Fatalf("exit %d, status:\n%s\n%s", code, r.read("status"), out)
 			}
-			for _, f := range []string{"status.vectra", "work/opkg-status.was"} {
-				if _, err := os.Stat(filepath.Join(r.dir, f)); !os.IsNotExist(err) {
-					t.Fatalf("%s stayed: %v", f, err)
-				}
+			if (tc.later != "") != strings.Contains(out, "при следующем запуске") {
+				t.Fatalf("the warning on a later start:\n%s", out)
+			}
+			if tc.setup != "vctl-busy" && (!strings.Contains(out, "нет команды keep-companions") || strings.Contains(out, "unknown command")) {
+				t.Fatalf("not one line for a vctl without the command:\n%s", out)
 			}
 		})
+	}
+	t.Run("nothing marked, an older vctl", func(t *testing.T) {
+		r := companionRouter(t)
+		r.write("status", companionsKept)
+		r.write("vctl-old", "")
+		out, code := r.run("keep_companions\necho \"warnings:$WARNINGS\"")
+		if code != 0 || strings.Contains(out, "COMPANIONS_MARK") || strings.Contains(r.read("log"), "vctl ") {
+			t.Fatalf("exit %d, log %q:\n%s", code, r.read("log"), out)
+		}
+	})
+}
+
+// feedVctl is the feed's vctl with the Depends given.
+func feedVctl(depends string) string {
+	return "Package: vectra-controller-pro\nVersion: 0.7.0-r29\nDepends: " + depends + "\nFilename: vectra-controller-pro.ipk\nSHA256sum: 00"
+}
+
+const (
+	// As r29 was published: neither companion.
+	deficientDepends = "libc, ca-bundle, xray-core (>= 26.3.27)"
+	// As every vctl from r30 has it.
+	companionDepends = "xray-core (>= 26.10.21), vectra-geodata, vectra-reporter (>= 1.0.0-r4), libc, ca-bundle"
+)
+
+// The feed's vctl must name both companions, the reporter at 1.0.0-r4 or
+// newer, as every vctl from 0.7.0-r30 does — whatever the router's status
+// says: one that does not, upgraded over a vctl they came in with, has opkg
+// remove them as orphans where they are marked. Refused before anything is
+// changed, marked or not, with a status or without one.
+func TestAFeedVctlWithoutTheCompanionsIsRefused(t *testing.T) {
+	for name, tc := range map[string]struct {
+		depends, status string
+		refused         bool
+	}{
+		"without them, marked":              {deficientDepends, companionStatus, true},
+		"without them, unmarked":            {deficientDepends, companionsKept, true},
+		"without them, no status":           {deficientDepends, "", true},
+		"one of them":                       {"libc, xray-core (>= 26.10.21), vectra-geodata", companionStatus, true},
+		"the reporter without its minimum":  {"vectra-geodata, vectra-reporter, libc", companionsKept, true},
+		"the reporter below 1.0.0-r4":       {"vectra-geodata, vectra-reporter (>= 1.0.0-r3), libc", companionsKept, true},
+		"naming them, marked":               {companionDepends, companionStatus, false},
+		"naming them, unmarked":             {companionDepends, companionsKept, false},
+		"naming them, no status":            {companionDepends, "", false},
+		"naming them, a newer reporter min": {"vectra-reporter (>= 1.0.0-r5), vectra-geodata, libc", companionStatus, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := companionRouter(t)
+			os.Remove(filepath.Join(r.dir, "status"))
+			if tc.status != "" {
+				r.write("status", tc.status)
+			}
+			r.feed("vectra_pro", "https://router.vectra-pro.net/pro/aarch64_cortex-a53", feedVctl(tc.depends))
+			out, code := r.run("check_companions_named\necho went-on")
+			if refused := code == 1 && strings.Contains(out, "COMPANIONS_NOT_NAMED"); refused != tc.refused || strings.Contains(out, "went-on") == tc.refused {
+				t.Fatalf("exit %d, refused %v, want %v:\n%s", code, refused, tc.refused, out)
+			}
+			if r.read("status") != tc.status {
+				t.Fatalf("the status changed:\n%s", r.read("status"))
+			}
+		})
+	}
+	b, _ := os.ReadFile("install.sh")
+	if !regexp.MustCompile(`\n\tadd_feed\n\tcheck_companions_named\n\tplan_xray\n`).Match(b) {
+		t.Fatal("check_companions_named does not run before any change is planned (after add_feed, before plan_xray)")
+	}
+	// It decides from the feed alone: no status read, no opkg asked.
+	src := string(b)
+	i := strings.Index(src, "\ncheck_companions_named() {")
+	if i < 0 {
+		t.Fatal("no check_companions_named in install.sh")
+	}
+	body := src[i : i+strings.Index(src[i+1:], "\n}\n")+2]
+	for _, w := range []string{"OPKG_STATUS", "companions_marked", "installed ", "installed_version", "opkg list", "opkg status", "opkg info", "$(opkg"} {
+		if strings.Contains(body, w) {
+			t.Fatalf("check_companions_named reads %q:\n%s", w, body)
+		}
+	}
+}
+
+// Codex's R102-1 and R104-1: nothing the router says about what is installed
+// can be trusted at this point. An opkg query run while another opkg holds the
+// lock fails with nothing on stdout, read as "not installed" (R102-1); and opkg
+// writes its status in place — fopen("w"), then the records — so a read while
+// another opkg writes it finds it empty or cut short, and once that opkg is
+// done the full status, vctl and the marked companions, is back (R104-1).
+// Either way a feed's vctl without the companions is refused before anything
+// changes: the guard reads the feed alone. Here the status at the guard is the
+// writer's (empty, or a valid prefix without the companions) or the query
+// fails; the full marked status comes back before the install could start.
+// The controls: a feed naming them goes on — vctl really absent (a successful
+// empty answer), no status, a status that cannot be read.
+func TestWhatTheRouterSaysIsNoAnswerForTheCompanions(t *testing.T) {
+	for name, tc := range map[string]struct {
+		installed, status, depends string
+		busy                       bool
+		refused                    bool
+	}{
+		"R102-1: the first query fails, the later ones see vctl": {
+			installed: "vectra-controller-pro - 0.7.0-r28\nvectra-geodata - 2026.9.28-r2\nvectra-reporter - 1.0.0-r4\n",
+			status:    companionStatus, depends: deficientDepends, busy: true, refused: true,
+		},
+		"R104-1: the status truncated, empty": {
+			installed: "vectra-controller-pro - 0.7.0-r28\nvectra-geodata - 2026.9.28-r2\nvectra-reporter - 1.0.0-r4\n",
+			status:    "<empty>", depends: deficientDepends, refused: true,
+		},
+		"R104-1: the status cut short, a valid prefix without the companions": {
+			installed: "vectra-controller-pro - 0.7.0-r28\nvectra-geodata - 2026.9.28-r2\nvectra-reporter - 1.0.0-r4\n",
+			status:    "<prefix>", depends: deficientDepends, refused: true,
+		},
+		"control: vctl really absent, a feed naming them": {
+			installed: "vectra-geodata - 2026.9.28-r2\nvectra-reporter - 1.0.0-r4\n",
+			status:    companionsKept, depends: companionDepends,
+		},
+		"control: no status, a feed naming them":                    {status: "<none>", depends: companionDepends},
+		"control: a status that cannot be read, a feed naming them": {installed: "vectra-controller-pro - 0.7.0-r28\n", status: "<dir>", depends: companionDepends},
+		"adjusted control: vctl really absent, a feed without them": {
+			installed: "vectra-geodata - 2026.9.28-r2\nvectra-reporter - 1.0.0-r4\n",
+			status:    companionsKept, depends: deficientDepends, refused: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := companionRouter(t)
+			r.write("installed", tc.installed)
+			statusPath := filepath.Join(r.dir, "status")
+			os.Remove(statusPath)
+			atGuard := ""
+			switch tc.status {
+			case "<none>":
+			case "<dir>":
+				if err := os.MkdirAll(statusPath, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			case "<empty>":
+				r.write("status", "")
+			case "<prefix>":
+				atGuard = companionStatus[:strings.Index(companionStatus, "Package: vectra-geodata")]
+				r.write("status", atGuard)
+			default:
+				atGuard = tc.status
+				r.write("status", tc.status)
+			}
+			// The full status, vctl and the marked companions, once the
+			// other opkg is done — before the install could start.
+			r.write("full-status", companionStatus)
+			if tc.busy {
+				r.write("list-busy", "1")
+			}
+			r.feed("vectra_pro", "https://router.vectra-pro.net/pro/aarch64_cortex-a53", feedVctl(tc.depends))
+			r.write("log", "")
+			script := "check_companions_named\necho went-on"
+			if tc.refused {
+				script = "check_companions_named\n" +
+					`[ -d "$FAKE/status" ] || cp "$FAKE/full-status" "$FAKE/status"` + "\ninstall_packages\necho went-on"
+			}
+			out, code := r.run(script)
+			log := r.read("log")
+			if tc.refused {
+				if code != 1 || !strings.Contains(out, "COMPANIONS_NOT_NAMED") || strings.Contains(out, "went-on") {
+					t.Fatalf("exit %d, want the refusal COMPANIONS_NOT_NAMED:\n%s\nlog:\n%s", code, out, log)
+				}
+				for _, w := range []string{"opkg install", "opkg upgrade", "opkg remove", "vctl "} {
+					if strings.Contains(log, w) {
+						t.Fatalf("%q before the refusal:\n%s", w, log)
+					}
+				}
+				if tc.status != "<none>" && tc.status != "<dir>" && r.read("status") != atGuard {
+					t.Fatalf("the status changed:\n%s", r.read("status"))
+				}
+			} else if code != 0 || !strings.Contains(out, "went-on") {
+				t.Fatalf("exit %d, want it to go on:\n%s", code, out)
+			}
+		})
+	}
+}
+
+// One lock for every writer of opkg's status but opkg: the installer's
+// keep_companions only asks vctl, and writes, moves or copies no status file
+// of its own.
+func TestTheInstallerLeavesTheStatusToVctl(t *testing.T) {
+	b, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	i := strings.Index(src, "\nkeep_companions() {\n")
+	if i < 0 {
+		t.Fatal("no keep_companions in install.sh")
+	}
+	body := src[i : i+strings.Index(src[i+1:], "\n}\n")+2]
+	if !strings.Contains(body, `"$VCTL_BIN" keep-companions`) {
+		t.Fatalf("keep_companions does not ask vctl:\n%s", body)
+	}
+	for _, w := range []string{"mv ", "cp ", "> ", "pidof", "awk"} {
+		if strings.Contains(body, w) {
+			t.Fatalf("keep_companions has %q of its own:\n%s", w, body)
+		}
+	}
+	// Its look at the marks only reads.
+	j := strings.Index(src, "\ncompanions_marked() {")
+	if j < 0 {
+		t.Fatal("no companions_marked in install.sh")
+	}
+	look := strings.ReplaceAll(src[j:j+strings.Index(src[j+1:], "\n}\n")+2], "2> /dev/null", "")
+	for _, w := range []string{"mv ", "cp ", "> ", ">>", "rm "} {
+		if strings.Contains(look, w) {
+			t.Fatalf("companions_marked has %q:\n%s", w, look)
+		}
 	}
 }
 
@@ -1042,7 +1279,7 @@ func TestABrandOptionWithoutAKnownBrandIsRefusedBeforeAnyStep(t *testing.T) {
 func TestTheBrandIsLabelledAfterThePackageAndNeverByACheck(t *testing.T) {
 	// Each step of main notes itself in log; set_brand is the real one.
 	stubs := ""
-	for _, step := range strings.Fields("check_router check_clock check_conflicts check_dnsmasq add_feed plan_xray check_storage install_xray_pin swap_dnsmasq install_packages setup_geo cleanup verify finish") {
+	for _, step := range strings.Fields("check_router check_clock check_conflicts check_dnsmasq add_feed check_companions_named plan_xray check_storage install_xray_pin swap_dnsmasq install_packages setup_geo cleanup verify finish") {
 		stubs += step + "() { echo " + step + " >> \"$FAKE/log\"; }\n"
 	}
 	stubs += "conclude() { echo conclude >> \"$FAKE/log\"; exit 0; }\n"

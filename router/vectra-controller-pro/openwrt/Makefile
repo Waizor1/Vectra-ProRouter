@@ -4,14 +4,18 @@ PKG_NAME:=vectra-controller-pro
 # Versioned independently from vectra-controller-agent: this is a separate,
 # additive controller package (xray-direct engine), not a replacement.
 VECTRA_VERSION?=0.7.0
-VECTRA_RELEASE?=31
+VECTRA_RELEASE?=32
 PKG_VERSION:=$(VECTRA_VERSION)
 PKG_RELEASE:=$(VECTRA_RELEASE)
 
 PKG_LICENSE:=LicenseRef-Vectra-Proprietary
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=Vectra
-PKG_BUILD_DEPENDS:=golang/host
+# xray-core: the SDK builds it along with vctl, as when DEPENDS named it. Not
+# in DEPENDS: the SDK writes that list after EXTRA_DEPENDS as it is
+# (include/package-pack.mk), and xray-core would stand in the Depends twice,
+# bare and with its minimum.
+PKG_BUILD_DEPENDS:=golang/host xray-core
 PKG_BUILD_PARALLEL:=1
 PKG_USE_MIPS16:=0
 VECTRA_PRO_SOURCE_DIR?=$(CURDIR)/..
@@ -34,14 +38,15 @@ define Package/$(PKG_NAME)
   SUBMENU:=Routing and Redirection
   TITLE:=Vectra Controller Pro (xray-direct)
   URL:=https://router.vectra-pro.net
-  DEPENDS:=+ca-bundle +jsonfilter +jshn +procd +procd-ujail +uci +xray-core +kmod-nft-tproxy +kmod-nft-socket +kmod-nft-nat +dnsmasq-full +rpcd-mod-iwinfo +zram-swap
-  # What the package needs that the SDK does not build, written into its
-  # Depends as it is: the xray this vctl is built and proven with — the one
-  # its feed ships (scripts/build-pro-feed.sh reads it here), its minimum too,
-  # so every way vctl is installed brings it (+xray-core above names no
-  # version) — and Vectra's own packages from the pro feed, the geo data xray
-  # routes by and the reporter. Every build writes this one Depends: the SDK, and the builds
-  # without it through scripts/lib/pkg.sh. A vctl built without them, upgraded
+  DEPENDS:=+ca-bundle +jsonfilter +jshn +procd +procd-ujail +uci +kmod-nft-tproxy +kmod-nft-socket +kmod-nft-nat +dnsmasq-full +rpcd-mod-iwinfo +zram-swap
+  # What the package needs with a version, or that the SDK does not build,
+  # written into its Depends as it is, before DEPENDS: the xray this vctl is
+  # built and proven with — the one its feed ships (scripts/build-pro-feed.sh
+  # reads it here), its minimum too, so every way vctl is installed brings it
+  # (DEPENDS names no version, and so does not name it: PKG_BUILD_DEPENDS
+  # above) — and Vectra's own packages from the pro feed, the geo data xray
+  # routes by and the reporter. Every build writes this one Depends: the SDK,
+  # and the builds without it through scripts/lib/pkg.sh. A vctl built without them, upgraded
   # over one with them, made opkg remove both as orphans where they came in as
   # its dependencies: the reporter's spool and state, the geo data
   # (0.7.0-r29, published from build-local-ipk.sh; test/pilot).
