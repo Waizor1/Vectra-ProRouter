@@ -248,6 +248,42 @@ func TestABridgeOnItsFallbackLosesItsNamesAtTheNextLook(t *testing.T) {
 	}
 }
 
+// Right after xray starts BL-RU may still send its names to the fallback,
+// until the observatory has seen the bridge alive: xray is asked again within
+// bridgeQUICRetry, not at the next bridgeQUICRecheck.
+func TestNamesAFreshBalancerHoldsBackArriveWithinTheRetry(t *testing.T) {
+	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
+	d := s.d
+	ctx := context.Background()
+	now := time.Date(2026, 10, 26, 4, 0, 0, 0, time.UTC)
+	d.clock = func() time.Time { return now }
+	s.routes = map[string]string{"googlevideo.com": "stage-main", "nnmclub.to": "stage-main"}
+	d.programFirewall(ctx, d.desired)
+	d.syncBridgeQUIC(ctx)
+	if f := s.fragments(t)[0]; f != "" {
+		t.Fatalf("fragment %q while the balancer sends the names elsewhere", f)
+	}
+	if d.bridgeQUICWaiting != "stage-main" {
+		t.Fatalf("waiting = %q, want where xray sent the names", d.bridgeQUICWaiting)
+	}
+	asked := len(s.asked)
+	now = now.Add(time.Second)
+	d.syncBridgeQUIC(ctx)
+	if len(s.asked) != asked {
+		t.Fatal("asked again within the same retry window")
+	}
+
+	s.routes = map[string]string{"googlevideo.com": "bridge-ru-tcp", "nnmclub.to": "bridge-ru-tcp"}
+	now = now.Add(bridgeQUICRetry)
+	d.syncBridgeQUIC(ctx)
+	if f := s.fragments(t)[0]; !strings.Contains(f, "googlevideo.com") {
+		t.Fatalf("the bridge is alive %s after the start and its names are not through: %q", bridgeQUICRetry+time.Second, f)
+	}
+	if d.bridgeQUICWaiting != "" {
+		t.Fatalf("waiting = %q with the names through", d.bridgeQUICWaiting)
+	}
+}
+
 func TestTheFragmentIsWrittenOnlyWhenItChanges(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "dnsmasq.a.d"), 0o755); err != nil {

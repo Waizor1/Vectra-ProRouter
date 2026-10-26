@@ -48,6 +48,11 @@ const bridgeQUICWithin = 10 * time.Second
 // bridge.
 const bridgeQUICRecheck = 5 * time.Minute
 
+// bridgeQUICRetry is how soon xray is asked again while none of the names
+// lands on the bridge: right after xray starts its balancer may still send
+// them to its fallback, until the observatory has seen the bridge alive.
+const bridgeQUICRetry = 30 * time.Second
+
 // carryBridgeQUIC lets the table pass QUIC to the set (Spec.QUICPass) when
 // the running render has a Russian bridge that carries UDP/443 and names
 // routed to it. Which of those names reach the set is syncBridgeQUIC's.
@@ -77,15 +82,20 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 	pass := d.fwSpec != nil && d.fwSpec.QUICPass && d.rescueState().Mode != rescue.ModeDirect
 	key := st.StartedAt.String()
 	if pass {
-		key += ";pass@" + d.now().Truncate(bridgeQUICRecheck).String()
+		every := bridgeQUICRecheck
+		if d.bridgeQUICWaiting != "" {
+			every = bridgeQUICRetry
+		}
+		key += ";pass@" + d.now().Truncate(every).String()
 	}
 	if key == d.bridgeQUICSynced {
 		return
 	}
 	var names []string
+	waiting := ""
 	if pass {
 		c, cancel := context.WithTimeout(ctx, bridgeQUICWithin)
-		got, err := d.bridgeQUICNames(c)
+		got, elsewhere, err := d.bridgeQUICNames(c)
 		cancel()
 		if err != nil {
 			// xray's API not answering yet: the next look asks again; the
@@ -94,6 +104,15 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 			return
 		}
 		names = got
+		if len(names) == 0 {
+			waiting = elsewhere
+			if waiting == "" {
+				waiting = "none"
+			}
+			if waiting != d.bridgeQUICWaiting {
+				logging.L().Info("QUIC through the Russian bridge waits: xray sends the bridge's names elsewhere", "route", waiting)
+			}
+		}
 	}
 	table := "vctl"
 	if d.fwSpec != nil && d.fwSpec.TableName != "" {
@@ -105,6 +124,7 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 		return
 	}
 	d.bridgeQUICSynced = key
+	d.bridgeQUICWaiting = waiting
 	if !changed {
 		return
 	}
@@ -117,15 +137,16 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 }
 
 // bridgeQUICNames are the running render's bridge names xray routes, for
-// QUIC from the LAN, to a bridge outbound that carries UDP/443.
-func (d *daemon) bridgeQUICNames(ctx context.Context) ([]string, error) {
+// QUIC from the LAN, to a bridge outbound that carries UDP/443; elsewhere is
+// where it routed the first name that did not land there.
+func (d *daemon) bridgeQUICNames(ctx context.Context) (names []string, elsewhere string, err error) {
 	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	bq := xray.RenderBridgeQUIC(raw)
 	if len(bq.Names) == 0 {
-		return nil, nil
+		return nil, "", nil
 	}
 	tag := "tproxy-in"
 	if d.desired != nil && d.desired.Inbounds.Tproxy != nil && d.desired.Inbounds.Tproxy.Tag != "" {
@@ -141,19 +162,21 @@ func (d *daemon) bridgeQUICNames(ctx context.Context) ([]string, error) {
 	}
 	tags, err := testRoute(ctx, api.DefaultAPIServer, queries)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	members := map[string]bool{}
 	for _, m := range bq.Members {
 		members[m] = true
 	}
-	var out []string
 	for i, n := range bq.Names {
-		if i < len(tags) && members[tags[i]] {
-			out = append(out, n)
+		switch {
+		case i < len(tags) && members[tags[i]]:
+			names = append(names, n)
+		case elsewhere == "" && i < len(tags):
+			elsewhere = tags[i]
 		}
 	}
-	return out, nil
+	return names, elsewhere, nil
 }
 
 // bridgeQUICLine is the fragment for names ("" for none): dnsmasq adds every
@@ -227,6 +250,7 @@ func restartDnsmasq(ctx context.Context) error {
 func (d *daemon) dropBridgeQUIC(ctx context.Context) {
 	changed, err := writeBridgeQUICFragment(nil, "")
 	d.bridgeQUICSynced = ""
+	d.bridgeQUICWaiting = ""
 	if err != nil {
 		logging.L().Warn("dnsmasq's QUIC fragment not removed", "err", err.Error())
 		return
