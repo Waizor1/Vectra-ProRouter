@@ -331,6 +331,14 @@ describe("partner claim request", () => {
       partnerWebhookPayloadSchema.safeParse({ ...old, claimId: "claim-1" })
         .success,
     ).toBe(false);
+    // A job's event whose claim is not known says so instead of a claimId.
+    expect(
+      partnerWebhookPayloadSchema.parse({ ...old, claimGeneration: "unknown" }),
+    ).toEqual({ ...old, claimGeneration: "unknown" });
+    expect(
+      partnerWebhookPayloadSchema.safeParse({ ...old, claimGeneration: "known" })
+        .success,
+    ).toBe(false);
   });
 
   it("answers a claim with its claimId; an answer stored before claim ids still parses", () => {

@@ -404,6 +404,12 @@ async function configureClaimedRouter(
     routerId: router.id,
     desiredRevision: revision,
     origin: PARTNER_CLAIM_APPLY_ORIGIN,
+    // Its router.ready / router.failed belong to THIS claim, however late.
+    partnerClaim: {
+      claimId: router.claimId,
+      ownerRef: work.request.owner.ref,
+      partnerId: work.partnerId,
+    },
   });
 
   await tx.insert(eventLog).values({

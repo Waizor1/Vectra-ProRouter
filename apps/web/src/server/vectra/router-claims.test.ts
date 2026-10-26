@@ -1344,6 +1344,21 @@ describe("claim ids", () => {
     });
   });
 
+  // R120-1: its router.ready / router.failed are reported under this claim
+  // however late they come, so the apply job carries the claim from creation.
+  it("the claim's apply job records the claim it belongs to", async () => {
+    const { fake, claimId } = await claimOnce(routerRow());
+
+    expect(fake.inserts(jobs)).toEqual([
+      expect.objectContaining({
+        type: "apply_xray_config",
+        partnerClaim: { claimId, ownerRef: "acct-42", partnerId: "vectra" },
+      }),
+    ]);
+    // Never in what the router receives.
+    expect(fake.inserts(jobs)[0]?.payload).not.toHaveProperty("claimId");
+  });
+
   it("two claims never share an id", async () => {
     const ids = new Set<string | null | undefined>();
     for (let n = 0; n < 5; n += 1) {

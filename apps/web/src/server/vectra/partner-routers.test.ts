@@ -530,6 +530,19 @@ describe("signed actions", () => {
     });
     expect(fake.inserts(jobs)[0]).not.toHaveProperty("command");
   });
+  // R120-1: the claim is fixed on the job when it is queued (from the row
+  // locked in the same transaction), and kept out of the router's payload.
+  it("records on the job the claim it is queued under, outside the router's payload", async () => {
+    const claimId = "0a6f3c2e-9b1d-4e7a-8c5b-3d2e1f0a9b8c";
+    const fake = queueDb(router({ claimId, partnerId: "bloopcat" }));
+    await queuePartnerActionWithDb(fake.db as never, action(), "key", NOW, "bloopcat");
+    const [job] = fake.inserts(jobs);
+    expect(job).toMatchObject({
+      partnerClaim: { claimId, ownerRef: "acct-42", partnerId: "bloopcat" },
+    });
+    expect(job!.payload).not.toHaveProperty("claimId");
+    expect(job!.payload).not.toHaveProperty("partnerClaim");
+  });
   it("refreshes the signed subscription through the existing native job", async () => {
     const fake = queueDb();
     expect(
@@ -1463,23 +1476,54 @@ describe("router events carry the claim id of the router they lock", () => {
     ]);
   });
 
-  it("an action result carries the claim id, read with no extra query", async () => {
+  // R120-1: an action reports under the claim it was QUEUED under. Queued
+  // under A; the owner unbound and re-claimed the router (B) before the result
+  // was reported: the event says A, never the router's current B.
+  it("an action result carries the claim the action was queued under, not the router's current one", async () => {
     const job = {
       id: JOB,
       routerId: ID,
       payload: { origin: "partner_action", ownerRef: "acct-42", actionId: JOB },
+      partnerClaim: { claimId: CLAIM_A, ownerRef: "acct-42", partnerId: "vectra" },
     } as unknown as typeof jobs.$inferSelect;
     const fake = createFakeDb({
-      updateReturns: [[routers, [[router({ claimId: CLAIM_A })]]]],
+      updateReturns: [[routers, [[router({ claimId: CLAIM_B })]]]],
     });
     await notifyPartnerActionResultWithDb(fake.db as never, {
       job,
       ownerRef: "acct-42",
       status: "success",
     });
-    expect(fake.inserts(partnerWebhooks).map((row) => row.payload)).toEqual([
+    const payloads = fake.inserts(partnerWebhooks).map((row) => row.payload);
+    expect(payloads).toEqual([
       expect.objectContaining({ event: "router.action", claimId: CLAIM_A }),
     ]);
+    expect(payloads[0]).not.toHaveProperty("claimGeneration");
+    expect(fake.calls.filter((call) => call.kind === "select")).toEqual([]);
+  });
+
+  it("an action queued before jobs recorded their claim reports its claim as unknown, with no claimId", async () => {
+    const job = {
+      id: JOB,
+      routerId: ID,
+      payload: { origin: "partner_action", ownerRef: "acct-42", actionId: JOB },
+      partnerClaim: null,
+    } as unknown as typeof jobs.$inferSelect;
+    const fake = createFakeDb({
+      updateReturns: [[routers, [[router({ claimId: CLAIM_B })]]]],
+    });
+    await notifyPartnerActionResultWithDb(fake.db as never, {
+      job,
+      ownerRef: "acct-42",
+      status: "success",
+    });
+    const [payload] = fake.inserts(partnerWebhooks).map((row) => row.payload);
+    expect(payload).toMatchObject({
+      event: "router.action",
+      claimGeneration: "unknown",
+    });
+    // Not null, not B: nothing a claim response could match.
+    expect(payload).not.toHaveProperty("claimId");
     expect(fake.calls.filter((call) => call.kind === "select")).toEqual([]);
   });
 

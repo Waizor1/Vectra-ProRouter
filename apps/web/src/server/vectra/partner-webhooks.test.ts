@@ -274,6 +274,27 @@ describe("webhooks per partner", () => {
     expect(fake.calls.filter((call) => call.kind === "select")).toEqual([]);
   });
 
+  // R120-1: a job from before jobs recorded their claim. Its event says the
+  // claim is unknown and carries no claimId — not null, and not the router's
+  // current one — and nothing is read to find one.
+  it("queues an event of an unknown claim with claimGeneration and no claimId", async () => {
+    const fake = createFakeDb({
+      selects: [[routers, [[{ partnerId: "vectra", claimId: CLAIM_B }]]]],
+    });
+    await enqueuePartnerWebhookWithDb(fake.db as never, {
+      event: "router.failed",
+      routerId: ROUTER_ID,
+      ownerRef: "bc_1",
+      partnerId: "bloopcat",
+      claimId: CLAIM_A,
+      claimGeneration: "unknown",
+    });
+    const [row] = fake.inserts(partnerWebhooks);
+    expect(row!.payload).toMatchObject({ claimGeneration: "unknown" });
+    expect(row!.payload).not.toHaveProperty("claimId");
+    expect(fake.calls.filter((call) => call.kind === "select")).toEqual([]);
+  });
+
   it("reads the router's claim id, once, when the caller names only the partner", async () => {
     const fake = createFakeDb({
       selects: [[routers, [[{ partnerId: "vectra", claimId: CLAIM_A }]]]],

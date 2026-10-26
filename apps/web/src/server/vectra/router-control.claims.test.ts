@@ -51,6 +51,10 @@ const REVISION_ID = "0c9a8b7d-6e5f-4a3b-8c2d-1e0f9a8b7c6d";
 const JOB_ID = "1d2c3b4a-5f6e-4d7c-9b8a-0f1e2d3c4b5a";
 const DEVICE_KEY = Buffer.alloc(32, 9).toString("base64");
 const CLAIM_PUBKEY = Buffer.alloc(32, 7).toString("base64");
+// Two claims of the same router by the same owner: A, unbound, then B.
+const CLAIM_A = "0a6f3c2e-9b1d-4e7a-8c5b-3d2e1f0a9b8c";
+const CLAIM_B = "7e4d2c1b-0a9f-4b8e-9d7c-6b5a4f3e2d1c";
+const CLAIM_A_ON_JOB = { claimId: CLAIM_A, ownerRef: "acct-42", partnerId: "vectra" };
 
 /** A real ed25519 device key pair; the public half as vctl sends it. */
 function deviceKeyPair() {
@@ -137,6 +141,7 @@ function routerRow(overrides: Record<string, unknown> = {}) {
     previousClaimCodeHash: null,
     previousClaimExpiresAt: null,
     claimedAt: null,
+    claimId: null as string | null,
     releasedAt: null,
     createdAt: new Date("2026-09-28T09:00:00.000Z"),
     updatedAt: new Date("2026-09-28T09:59:00.000Z"),
@@ -754,8 +759,9 @@ describe("checkInRouter claim", () => {
     const apply = {id: JOB_ID, routerId: ROUTER_ID, type: "apply_xray_config", state: "queued", desiredRevisionId: REVISION_ID, dedupeKey: `apply:${ROUTER_ID}:${REVISION_ID}`, deliveredAt: null, payload: {desiredRevisionId: REVISION_ID, origin: "partner_claim"}, createdAt: new Date(Number.NaN)};
     fake.reset({
       selects: [
-        // The router is read on check-in, again for the job, and once more to find its partner.
-        [routers, [[owner], [owner], [owner]]],
+        // The router is read on check-in, again for the job, once more to see
+        // it is still on the claim it was on, and once more to find its partner.
+        [routers, [[owner], [owner], [owner], [owner]]],
         [healthIncidents, [[]]],
         [jobs, [[apply], [{...apply, state: "running"}]]],
         [passwallDesiredRevisions, [[], [{id: REVISION_ID, engineMode: "xray-direct", configDigest: "d", config: {}}]]],
@@ -931,7 +937,19 @@ describe("checkInRouter claim", () => {
 });
 
 describe("recordJobResult reports a claim's first apply to the backend", () => {
-  function scriptResult(options: { type?: string; payload?: Record<string, unknown>; ownerRef?: string | null; claimId?: string | null } = {}) {
+  function scriptResult(
+    options: {
+      type?: string;
+      payload?: Record<string, unknown>;
+      ownerRef?: string | null;
+      // The claim the job was queued under (jobs.partner_claim).
+      partnerClaim?: { claimId: string | null; ownerRef: string; partnerId: string } | null;
+      // The router's claim id when the result comes in…
+      claimId?: string | null;
+      // …and once the job is recorded (a re-claim in between changes it).
+      claimIdAfterJobUpdate?: string | null;
+    } = {},
+  ) {
     const router = routerRow({
       ownerRef: options.ownerRef === undefined ? "acct-42" : options.ownerRef,
       claimId: options.claimId ?? null,
@@ -939,6 +957,13 @@ describe("recordJobResult reports a claim's first apply to the backend", () => {
       importState: "approved",
       status: "active",
     });
+    const routerAfterJobUpdate = {
+      ...router,
+      claimId:
+        options.claimIdAfterJobUpdate === undefined
+          ? router.claimId
+          : options.claimIdAfterJobUpdate,
+    };
     fake.reset({
       selects: [
         [
@@ -957,18 +982,19 @@ describe("recordJobResult reports a claim's first apply to the backend", () => {
                 desiredRevisionId: options.type ? null : REVISION_ID,
                 dedupeKey: `apply:${ROUTER_ID}:${REVISION_ID}`,
                 deliveredAt: new Date(),
+                partnerClaim: options.partnerClaim ?? null,
                 createdAt: new Date(),
               },
             ],
           ],
         ],
-        [routers, [[router]]],
+        [routers, [[router], [routerAfterJobUpdate]]],
         [
           passwallDesiredRevisions,
           [[{ id: REVISION_ID, routerId: ROUTER_ID, engineMode: "xray-direct", configDigest: "d", config: {} }]],
         ],
       ],
-      updateReturns: [[routers, [[router]]]],
+      updateReturns: [[routers, [[routerAfterJobUpdate]]]],
     });
   }
 
@@ -1052,27 +1078,31 @@ describe("recordJobResult reports a claim's first apply to the backend", () => {
   });
 
   // The new attempt's router.ready may reach the partner before the claim
-  // response does; it carries the router's current claim id, read with the
-  // owner, so the partner can match it once the response arrives.
-  it("queues router.ready under the claim id of the router it was reported for", async () => {
-    const claimId = "7e4d2c1b-0a9f-4b8e-9d7c-6b5a4f3e2d1c";
-    scriptResult({ claimId });
+  // response does; it carries the claim its apply job was queued under.
+  it("queues router.ready under the claim its apply job was queued under", async () => {
+    scriptResult({ partnerClaim: CLAIM_A_ON_JOB, claimId: CLAIM_A });
 
     await recordJobResult(ROUTER_ID, result("success", { appliedRevisionId: REVISION_ID }));
 
-    expect(fake.inserts(partnerWebhooks).map((row) => row.payload)).toEqual([
-      expect.objectContaining({ event: "router.ready", claimId }),
+    const payloads = fake.inserts(partnerWebhooks).map((row) => row.payload);
+    expect(payloads).toEqual([
+      expect.objectContaining({ event: "router.ready", ownerRef: "acct-42", claimId: CLAIM_A }),
+    ]);
+    expect(payloads[0]).not.toHaveProperty("claimGeneration");
+    // Still on its claim: the result is recorded on the router as before.
+    expect(fake.updates(routers)).toEqual([
+      expect.objectContaining({ activeRevisionId: REVISION_ID, lastAppliedRevisionId: REVISION_ID }),
     ]);
   });
 
-  it("queues router.failed with claimId null for a router claimed before claim ids", async () => {
+  it("labels the result of an apply queued before jobs recorded their claim as unknown, never null", async () => {
     scriptResult({ claimId: null });
 
     await recordJobResult(ROUTER_ID, result("failure", { result: { error: "boom" } }));
 
-    expect(fake.inserts(partnerWebhooks).map((row) => row.payload)).toEqual([
-      expect.objectContaining({ event: "router.failed", claimId: null }),
-    ]);
+    const [payload] = fake.inserts(partnerWebhooks).map((row) => row.payload);
+    expect(payload).toMatchObject({ event: "router.failed", claimGeneration: "unknown" });
+    expect(payload).not.toHaveProperty("claimId");
   });
 
   it("queues router.failed with the router's reason when it failed", async () => {
@@ -1103,6 +1133,185 @@ describe("recordJobResult reports a claim's first apply to the backend", () => {
     scriptResult({ ownerRef: null });
     await recordJobResult(ROUTER_ID, result("success"));
     expect(fake.inserts(partnerWebhooks)).toEqual([]);
+  });
+});
+
+// R120-1 (Codex review of #101): a LATE ENQUEUE of an old claim's job. Job A
+// is recorded (its job row turns terminal), and before the rest of its result
+// runs the owner unbinds the router and claims it again (B: same router, same
+// ownerRef, new claim id). The scripted router reads stand for that barrier:
+// the first is the result's own read (claim A), the next comes after the job
+// update (claim B). What A then reports carries A — never B — and B's router
+// state is left alone.
+describe("a late result of a re-claimed router's old job", () => {
+  const result = (status: "success" | "failure", extra = {}) => ({
+    protocolVersion: "2026-04-v1",
+    routerId: ROUTER_ID,
+    jobId: JOB_ID,
+    status,
+    ...extra,
+  });
+
+  function scriptLateResult(options: {
+    type?: string;
+    payload?: Record<string, unknown>;
+    state?: string;
+    partnerClaim?: typeof CLAIM_A_ON_JOB | null;
+  }) {
+    const onA = routerRow({
+      ownerRef: "acct-42",
+      claimId: CLAIM_A,
+      approvedAt: new Date(),
+      importState: "approved",
+      status: "active",
+      activeRevisionId: "rev-a",
+    });
+    // Re-claimed by the same owner: claim B, its own revision still queued.
+    const onB = { ...onA, claimId: CLAIM_B, activeRevisionId: null, status: "pending" };
+    fake.reset({
+      selects: [
+        [
+          jobs,
+          [
+            [
+              {
+                id: JOB_ID,
+                routerId: ROUTER_ID,
+                type: options.type ?? "apply_xray_config",
+                state: options.state ?? "running",
+                payload: options.payload ?? { desiredRevisionId: REVISION_ID, origin: "partner_claim" },
+                desiredRevisionId: options.type ? null : REVISION_ID,
+                dedupeKey: `apply:${ROUTER_ID}:${REVISION_ID}`,
+                deliveredAt: new Date(),
+                partnerClaim: options.partnerClaim === undefined ? CLAIM_A_ON_JOB : options.partnerClaim,
+                createdAt: new Date(),
+              },
+            ],
+          ],
+        ],
+        [routers, [[onA], [onB]]],
+        [
+          passwallDesiredRevisions,
+          [[{ id: REVISION_ID, routerId: ROUTER_ID, engineMode: "xray-direct", configDigest: "d", config: {} }]],
+        ],
+      ],
+      // A partner action's report locks the router: it finds B.
+      updateReturns: [[routers, [[onB]]]],
+    });
+  }
+
+  // Only the partner action's lock may touch the router (updatedAt), nothing of B's state.
+  const routerStateWrites = () =>
+    fake.updates(routers).filter((set) => Object.keys(set).some((key) => key !== "updatedAt"));
+
+  it("a failed apply of claim A reports router.failed under A and leaves B's router alone", async () => {
+    scriptLateResult({});
+
+    await recordJobResult(
+      ROUTER_ID,
+      result("failure", { result: { error: "provider config: http 403", enteredDirectMode: true } }),
+    );
+
+    const payloads = fake.inserts(partnerWebhooks).map((row) => row.payload);
+    expect(payloads).toEqual([
+      expect.objectContaining({ event: "router.failed", ownerRef: "acct-42", claimId: CLAIM_A }),
+    ]);
+    expect(JSON.stringify(payloads)).not.toContain(CLAIM_B);
+    // The job itself is recorded…
+    expect(fake.updates(jobs)).toEqual([expect.objectContaining({ state: "failed" })]);
+    // …but nothing reaches B's router: no direct mode, no incident, no revision.
+    expect(routerStateWrites()).toEqual([]);
+    expect(fake.inserts(healthIncidents)).toEqual([]);
+    expect(fake.inserts(passwallAppliedRevisions)).toEqual([]);
+    expect(fake.updates(passwallDesiredRevisions)).toEqual([]);
+    expect(fake.inserts(eventLog)).toEqual([
+      expect.objectContaining({ type: "job.failure", metadata: expect.objectContaining({ claimLeft: { claimId: CLAIM_A } }) }),
+    ]);
+  });
+
+  it("a succeeded apply of claim A reports router.ready under A and never makes A's revision B's", async () => {
+    scriptLateResult({});
+
+    await recordJobResult(ROUTER_ID, result("success", { appliedRevisionId: REVISION_ID }));
+
+    expect(fake.inserts(partnerWebhooks).map((row) => row.payload)).toEqual([
+      expect.objectContaining({ event: "router.ready", claimId: CLAIM_A }),
+    ]);
+    expect(routerStateWrites()).toEqual([]);
+    expect(fake.inserts(passwallAppliedRevisions)).toEqual([]);
+    expect(fake.updates(passwallDesiredRevisions)).toEqual([]);
+  });
+
+  it("an apply queued before jobs recorded their claim reports nothing once the router moved on", async () => {
+    scriptLateResult({ partnerClaim: null });
+
+    await recordJobResult(ROUTER_ID, result("failure", { result: { error: "boom" } }));
+
+    // Its claim is unknown and the router is on another one now: not B's to hear.
+    expect(fake.inserts(partnerWebhooks)).toEqual([]);
+    expect(routerStateWrites()).toEqual([]);
+  });
+
+  it("an owner's action of claim A reports router.action under A and leaves B's router alone", async () => {
+    scriptLateResult({
+      type: "reload_xray_outbound",
+      payload: { origin: "partner_action", actionId: JOB_ID, ownerRef: "acct-42", action: "restart_vpn" },
+    });
+
+    await recordJobResult(ROUTER_ID, result("success", { result: { enteredDirectMode: true } }));
+
+    const payloads = fake.inserts(partnerWebhooks).map((row) => row.payload);
+    expect(payloads).toEqual([
+      expect.objectContaining({ event: "router.action", claimId: CLAIM_A, detail: { actionId: JOB_ID, state: "applied" } }),
+    ]);
+    expect(JSON.stringify(payloads)).not.toContain(CLAIM_B);
+    expect(routerStateWrites()).toEqual([]);
+    expect(fake.inserts(healthIncidents)).toEqual([]);
+  });
+
+  it("a cancelled action of claim A that ran anyway is reported under A", async () => {
+    scriptLateResult({
+      type: "connect_router_action",
+      state: "cancelled",
+      payload: { origin: "partner_action", actionId: JOB_ID, ownerRef: "acct-42", action: "reboot", cancelledBy: "partner" },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await recordJobResult(ROUTER_ID, result("failure", { result: { code: "no_route" } }));
+
+    expect(fake.inserts(partnerWebhooks).map((row) => row.payload)).toEqual([
+      expect.objectContaining({ event: "router.action", claimId: CLAIM_A }),
+    ]);
+    warn.mockRestore();
+  });
+
+  it("the undeliverable fallback reports a claim A apply under A, while the router is on B", async () => {
+    const onB = routerRow({ ownerRef: "acct-42", claimId: CLAIM_B, approvedAt: new Date(), importState: "approved", status: "active" });
+    // Unserializable (createdAt NaN), so the check-in fails it; recordJobResult
+    // then finds no router (only the check-in's read is scripted) and throws,
+    // and the fallback reports it.
+    const apply = {id: JOB_ID, routerId: ROUTER_ID, type: "apply_xray_config", state: "queued", desiredRevisionId: REVISION_ID, dedupeKey: `apply:${ROUTER_ID}:${REVISION_ID}`, deliveredAt: null, payload: {desiredRevisionId: REVISION_ID, origin: "partner_claim"}, partnerClaim: CLAIM_A_ON_JOB, createdAt: new Date(Number.NaN)};
+    fake.reset({
+      selects: [
+        [routers, [[onB]]],
+        [healthIncidents, [[]]],
+        [jobs, [[apply], [apply]]],
+        [passwallDesiredRevisions, [[]]],
+      ],
+      updateReturns: [[routers, [[onB], [onB], [onB]]], [jobs, [[{...apply, state: "running"}], [{...apply, state: "failed"}]]]],
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await checkInRouter(ROUTER_ID, checkInPayload());
+    errors.mockRestore();
+
+    expect(fake.updates(jobs).map((update) => update.state)).toEqual(["running", "failed"]);
+    // (The check-in's own router.online is B's, as it should be.)
+    const failed = fake.inserts(partnerWebhooks).filter((row) => row.event === "router.failed").map((row) => row.payload);
+    expect(failed).toEqual([
+      expect.objectContaining({ event: "router.failed", ownerRef: "acct-42", claimId: CLAIM_A, detail: "payload_unavailable" }),
+    ]);
+    expect(JSON.stringify(failed)).not.toContain(CLAIM_B);
   });
 });
 

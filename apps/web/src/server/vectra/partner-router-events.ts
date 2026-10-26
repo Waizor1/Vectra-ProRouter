@@ -5,7 +5,7 @@ import type { db } from "~/server/db";
 import { PARTNER_ACTION_DEDUPE_PREFIX } from "./partner-action-key";
 import { DEFAULT_PARTNER_ID } from "./partner-registry";
 import { routerOwnedByPartner, routerPartnerId } from "./partner-scope";
-import { enqueuePartnerWebhookWithDb } from "./partner-webhooks";
+import { enqueuePartnerWebhookWithDb, jobClaimLabel } from "./partner-webhooks";
 
 type Client = Pick<typeof db, "select" | "insert" | "update" | "transaction">;
 type Router = typeof routers.$inferSelect;
@@ -248,7 +248,9 @@ export async function notifyPartnerActionResultWithDb(
       routerId: args.job.routerId,
       ownerRef: args.ownerRef!,
       partnerId,
-      claimId: current.claimId ?? null,
+      // The claim the action was queued under, not the router's current one:
+      // the owner may have unbound and re-claimed the router since.
+      ...jobClaimLabel(args.job),
       detail: {
         actionId: payload.actionId,
         ...(idempotencyKey ? { idempotencyKey } : {}),

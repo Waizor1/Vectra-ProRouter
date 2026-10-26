@@ -8,7 +8,7 @@ import {
   type PartnerWebhookEvent,
   partnerWebhookPayloadSchema,
 } from "@vectra/contracts";
-import { eventLog, partnerWebhooks, routers } from "@vectra/db";
+import { eventLog, type jobs, partnerWebhooks, routers } from "@vectra/db";
 import { and, asc, eq, isNull, lte, sql } from "drizzle-orm";
 import { type AnyPgColumn, alias } from "drizzle-orm/pg-core";
 
@@ -111,15 +111,35 @@ function anyPartnerWebhook() {
   return listPartners().some((partner) => partner.webhook !== null);
 }
 
+/** The claim a partner job was queued under (jobs.partner_claim). */
+export type JobPartnerClaim = NonNullable<
+  (typeof jobs.$inferSelect)["partnerClaim"]
+>;
+
+/**
+ * The claim label of an event a job reports: the claim id the job was created
+ * under, or — for a job queued before jobs recorded their claim — unknown,
+ * never the router's current claim id (a re-claim may have replaced it).
+ */
+export function jobClaimLabel(job: {
+  partnerClaim?: JobPartnerClaim | null;
+}): { claimId: string | null } | { claimGeneration: "unknown" } {
+  return job.partnerClaim
+    ? { claimId: job.partnerClaim.claimId }
+    : { claimGeneration: "unknown" };
+}
+
 /**
  * Queue a webhook for the partner that owns the router. One insert (plus one
  * read of the router's partner and claim id when the caller did not pass
  * both), no network.
  *
- * The payload's `claimId` is frozen here: the caller's (read with the ownerRef
- * it passes, in the same transaction) or else the router's claim id as read on
- * `client` now. A retry, however late, sends the same bytes, so an event of an
- * earlier claim attempt keeps that attempt's id after the router is re-claimed.
+ * The payload's `claimId` is frozen here: the caller's (the claim a job was
+ * created under, or one read with the ownerRef it passes, in the same
+ * transaction) or else the router's claim id as read on `client` now; or, with
+ * `claimGeneration: "unknown"`, no claimId at all. A retry, however late,
+ * sends the same bytes, so an event of an earlier claim attempt keeps that
+ * attempt's id after the router is re-claimed.
  * A no-op (null) when no partner has a webhook at all, or when the registry
  * knows this partner and it has none. A partner the registry does NOT know is
  * queued all the same: a typo in VECTRA_PARTNERS makes the registry serve
@@ -140,6 +160,10 @@ export async function enqueuePartnerWebhookWithDb(
     // The claim attempt the event belongs to (null: none); read from the
     // router when absent (undefined).
     claimId?: string | null;
+    // "unknown": the event's claim attempt is not known (a job queued before
+    // jobs recorded their claim). The payload then has no claimId at all, and
+    // `claimId` above is ignored.
+    claimGeneration?: "unknown";
   },
 ) {
   // Checked before anything touches the database: with no webhook configured
@@ -147,8 +171,10 @@ export async function enqueuePartnerWebhookWithDb(
   if (!anyPartnerWebhook()) {
     return null;
   }
+  const unknownClaim = input.claimGeneration === "unknown";
   const stored =
-    input.partnerId === undefined || input.claimId === undefined
+    input.partnerId === undefined ||
+    (!unknownClaim && input.claimId === undefined)
       ? ((
           await client
             .select({ partnerId: routers.partnerId, claimId: routers.claimId })
@@ -158,8 +184,14 @@ export async function enqueuePartnerWebhookWithDb(
         )[0] ?? null)
       : null;
   const partnerId = input.partnerId ?? routerPartnerId(stored ?? {});
-  const claimId =
-    input.claimId !== undefined ? input.claimId : (stored?.claimId ?? null);
+  const claimLabel = unknownClaim
+    ? { claimGeneration: "unknown" as const }
+    : {
+        claimId:
+          input.claimId !== undefined
+            ? input.claimId
+            : (stored?.claimId ?? null),
+      };
   const partner = findPartner(partnerId);
   if (partner && !partner.webhook) {
     return null;
@@ -174,7 +206,7 @@ export async function enqueuePartnerWebhookWithDb(
     routerId: input.routerId,
     ownerRef: input.ownerRef,
     at: at.toISOString(),
-    claimId,
+    ...claimLabel,
     ...(detail ? { detail } : {}),
   });
 

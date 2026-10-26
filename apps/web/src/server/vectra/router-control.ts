@@ -81,6 +81,8 @@ import {
 import { isEditableDraftRevision } from "~/server/vectra/draft-selection";
 import {
   enqueuePartnerWebhookWithDb,
+  type JobPartnerClaim,
+  jobClaimLabel,
   schedulePartnerWebhookDelivery,
 } from "~/server/vectra/partner-webhooks";
 import {
@@ -1224,12 +1226,18 @@ export async function applyIncidentTransitions(
   transitions: ReturnType<
     typeof jobResultRequestSchema.parse
   >["incidentTransitions"],
+  // A job result's: the claim the router must still be on. Its status is
+  // written only while it is; once a re-claim replaced it, nothing more.
+  onlyOnClaim?: { claimId: string | null },
 ) {
   if (transitions.length === 0) {
     return router;
   }
 
   let currentRouter = router;
+  const routerStillOnClaim = onlyOnClaim
+    ? and(eq(routers.id, router.id), routerOnClaim(onlyOnClaim.claimId))
+    : eq(routers.id, router.id);
 
   for (const transition of transitions) {
     const happenedAt = transition.happenedAt
@@ -1311,9 +1319,12 @@ export async function applyIncidentTransitions(
             lastDirectModeAt: happenedAt,
             lastRescueReason: transition.reason,
           })
-          .where(eq(routers.id, router.id))
+          .where(routerStillOnClaim)
           .returning();
 
+        if (!updatedRouter && onlyOnClaim) {
+          return currentRouter;
+        }
         currentRouter = updatedRouter ?? currentRouter;
       }
     } else {
@@ -1349,14 +1360,37 @@ export async function applyIncidentTransitions(
         .set({
           status: currentRouter.approvedAt ? "active" : "pending",
         })
-        .where(eq(routers.id, router.id))
+        .where(routerStillOnClaim)
         .returning();
 
+      if (!updatedRouter && onlyOnClaim) {
+        return currentRouter;
+      }
       currentRouter = updatedRouter ?? currentRouter;
     }
   }
 
   return currentRouter;
+}
+
+/** The router row is still on this claim (claim_id, NULL included). */
+function routerOnClaim(claimId: string | null) {
+  return claimId === null
+    ? isNull(routers.claimId)
+    : eq(routers.claimId, claimId);
+}
+
+/**
+ * Whether the router has left `claimId` (unbound, or re-claimed under a new
+ * id) — read now, after a job result recorded its job.
+ */
+async function routerLeftClaim(routerId: string, claimId: string | null) {
+  const [current] = await db
+    .select({ claimId: routers.claimId })
+    .from(routers)
+    .where(eq(routers.id, routerId))
+    .limit(1);
+  return (current?.claimId ?? null) !== claimId;
 }
 
 export type RegisterRouterOptions = {
@@ -2676,6 +2710,20 @@ async function notifyUndeliverableFailure(
   code: string = UNDELIVERABLE_JOB_CODE,
 ) {
   try {
+    // A claim's apply that recorded its claim reports under it (see
+    // claimApplyEventTarget), whoever owns the router now.
+    if (isPartnerClaimApplyJob(job) && job.partnerClaim) {
+      await enqueuePartnerWebhookWithDb(db, {
+        event: "router.failed",
+        routerId: job.routerId,
+        ownerRef: job.partnerClaim.ownerRef,
+        partnerId: job.partnerClaim.partnerId,
+        ...jobClaimLabel(job),
+        detail: code,
+      });
+      schedulePartnerWebhookDelivery();
+      return;
+    }
     const owner =
       ownerRef ??
       (await db.select().from(routers).where(eq(routers.id, job.routerId)).limit(1))[0]?.ownerRef ??
@@ -2686,6 +2734,8 @@ async function notifyUndeliverableFailure(
         event: "router.failed",
         routerId: job.routerId,
         ownerRef: owner,
+        // From before jobs recorded their claim: which one is not known.
+        ...jobClaimLabel(job),
         detail: code,
       });
     } else {
@@ -2828,10 +2878,25 @@ export async function recordJobResult(routerId: string, input: unknown) {
     })
     .where(eq(jobs.id, job.id));
 
+  // The claim this result may still act on: the one a partner job was queued
+  // under or, for any other job, the one the router was on when this result
+  // came in. A result whose router has left that claim since — unbound, or
+  // unbound and claimed again, even by the same owner, while the job ran or
+  // between the job update above and this point — belongs to a claim that is
+  // over: it writes nothing more to the router (incidents and status, the
+  // applied revision, the hostname) and reports only under its own claim.
+  // The writes below also require the claim, so one that moves on during
+  // them stops them.
+  const resultClaimId = job.partnerClaim
+    ? job.partnerClaim.claimId
+    : (router.claimId ?? null);
+  const claimLeft = await routerLeftClaim(routerId, resultClaimId);
+
   // A refresh that destroyed the node list is undone here, before anything
   // else reacts to it. Without this the rescue lane cannot run unattended:
   // see subscription-refresh-guard for the failure it exists to reverse.
   if (
+    !claimLeft &&
     job.type === SUBSCRIPTION_REFRESH_JOB_TYPE &&
     parsed.status !== "accepted"
   ) {
@@ -2860,7 +2925,11 @@ export async function recordJobResult(routerId: string, input: unknown) {
     }
   }
 
-  if (job.type === "run_rescue_repair" && parsed.status !== "accepted") {
+  if (
+    !claimLeft &&
+    job.type === "run_rescue_repair" &&
+    parsed.status !== "accepted"
+  ) {
     const rescueRepairPayload = payload as Record<string, unknown>;
     await appendRescueRepairAttemptFromJobResult({
       routerId,
@@ -2899,15 +2968,16 @@ export async function recordJobResult(routerId: string, input: unknown) {
     });
   }
 
-  let currentRouter = await applyIncidentTransitions(
-    router,
-    compatibilityTransitions,
-  );
+  let currentRouter = claimLeft
+    ? router
+    : await applyIncidentTransitions(router, compatibilityTransitions, {
+        claimId: resultClaimId,
+      });
 
   const appliedRevisionId =
     parsed.appliedRevisionId ?? job.desiredRevisionId ?? null;
 
-  if (appliedRevisionId && parsed.status !== "accepted") {
+  if (!claimLeft && appliedRevisionId && parsed.status !== "accepted") {
     const [candidate] = await db
       .select()
       .from(passwallDesiredRevisions)
@@ -2967,7 +3037,7 @@ export async function recordJobResult(routerId: string, input: unknown) {
                   ? "active"
                   : "pending",
           })
-          .where(eq(routers.id, routerId))
+          .where(and(eq(routers.id, routerId), routerOnClaim(resultClaimId)))
           .returning();
 
         currentRouter = updatedRouter ?? currentRouter;
@@ -2976,7 +3046,7 @@ export async function recordJobResult(routerId: string, input: unknown) {
   }
 
   const reportedHostname =
-    parsed.status === "success"
+    !claimLeft && parsed.status === "success"
       ? resolveReportedRouterHostname({
           jobType: job.type,
           jobPayload: job.payload,
@@ -2989,7 +3059,7 @@ export async function recordJobResult(routerId: string, input: unknown) {
       .set({
         hostname: reportedHostname,
       })
-      .where(eq(routers.id, routerId))
+      .where(and(eq(routers.id, routerId), routerOnClaim(resultClaimId)))
       .returning();
 
     currentRouter = updatedRouter ?? currentRouter;
@@ -3007,7 +3077,7 @@ export async function recordJobResult(routerId: string, input: unknown) {
   await notifyPartnerOfClaimApplyResult({
     job,
     ownerRef: currentRouter.ownerRef,
-    claimId: currentRouter.claimId ?? null,
+    claimLeft,
     parsed,
   });
 
@@ -3015,10 +3085,13 @@ export async function recordJobResult(routerId: string, input: unknown) {
     routerId,
     type: `job.${parsed.status}`,
     severity: parsed.status === "failure" ? "warning" : "info",
-    message: `Router reported ${parsed.status} for job ${job.type}.`,
+    message: claimLeft
+      ? `Router reported ${parsed.status} for job ${job.type} of a claim it has left; the router was not changed.`
+      : `Router reported ${parsed.status} for job ${job.type}.`,
     metadata: {
       jobId: job.id,
       result: payload,
+      ...(claimLeft ? { claimLeft: { claimId: resultClaimId } } : {}),
     },
   });
 
@@ -3053,20 +3126,46 @@ export function describeFailedJobResult(
   return "The router could not apply its configuration.";
 }
 
+/**
+ * Who hears a claim apply's router.ready / router.failed, under which claim.
+ * A job that recorded its claim reports to that claim's owner and partner with
+ * its claim id — never the router's current one, which a re-claim (even by the
+ * same owner) may have replaced. A job from before jobs recorded their claim
+ * reports to the router's owner as before, with its claim unknown — and to
+ * nobody when the router left its claim during this result. Null: nobody.
+ */
+function claimApplyEventTarget(
+  job: JobRow,
+  routerOwnerRef: string | null,
+  claimLeft: boolean,
+) {
+  if (job.partnerClaim) {
+    return {
+      ownerRef: job.partnerClaim.ownerRef,
+      partnerId: job.partnerClaim.partnerId,
+      ...jobClaimLabel(job),
+    };
+  }
+  return routerOwnerRef && !claimLeft
+    ? { ownerRef: routerOwnerRef, ...jobClaimLabel(job) }
+    : null;
+}
+
 // Never fails the router's job-result request: the webhook is one outbox
 // insert, and its delivery happens later, off this request.
 async function notifyPartnerOfClaimApplyResult(args: {
   job: JobRow;
+  // The router's owner as this result found it.
   ownerRef: string | null;
-  // Read with ownerRef: the claim attempt this result is reported under.
-  claimId: string | null;
+  // The router left the job's claim during this result.
+  claimLeft: boolean;
   parsed: ReturnType<typeof jobResultRequestSchema.parse>;
 }) {
-  if (
-    args.parsed.status === "accepted" ||
-    !args.ownerRef ||
-    !isPartnerClaimApplyJob(args.job)
-  ) {
+  if (args.parsed.status === "accepted" || !isPartnerClaimApplyJob(args.job)) {
+    return;
+  }
+  const target = claimApplyEventTarget(args.job, args.ownerRef, args.claimLeft);
+  if (!target) {
     return;
   }
 
@@ -3074,8 +3173,7 @@ async function notifyPartnerOfClaimApplyResult(args: {
     const webhookId = await enqueuePartnerWebhookWithDb(db, {
       event: args.parsed.status === "success" ? "router.ready" : "router.failed",
       routerId: args.job.routerId,
-      ownerRef: args.ownerRef,
-      claimId: args.claimId,
+      ...target,
       detail:
         args.parsed.status === "success"
           ? null
@@ -3452,6 +3550,8 @@ export async function queueXrayApplyJobWithDb(
     routerId: string;
     desiredRevision: Pick<RevisionRow, "id" | "origin" | "status" | "configDigest">;
     origin?: typeof PARTNER_CLAIM_APPLY_ORIGIN;
+    // A claim's apply: the claim it belongs to, kept on the job.
+    partnerClaim?: JobPartnerClaim;
     /**
      * Called once, only when this call inserted the job (not when an active
      * one was returned). Lets an operator procedure announce its own visit
@@ -3491,6 +3591,7 @@ export async function queueXrayApplyJobWithDb(
         desiredRevisionId: input.desiredRevision.id,
         ...(input.origin ? { origin: input.origin } : {}),
       },
+      ...(input.partnerClaim ? { partnerClaim: input.partnerClaim } : {}),
     })
     .returning();
 
