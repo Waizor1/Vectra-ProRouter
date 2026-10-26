@@ -227,8 +227,8 @@ type daemon struct {
 	// passed); bridgeQUICHeldSince is when BL-RU was first seen on its
 	// fallback; bridgeQUICBroken: dnsmasq did not start with the fragment, which
 	// stays out until vctl starts again. resolverRestartedAt is when vctl last
-	// restarted dnsmasq itself. testRoute and restartResolver stand in for
-	// xray's API and dnsmasq in tests.
+	// restarted dnsmasq itself. testRoute, restartResolver and
+	// resolverAccepts stand in for xray's API and dnsmasq in tests.
 	bridgeQUICSynced    string
 	bridgeQUICStart     string
 	bridgeQUICWaiting   string
@@ -237,6 +237,7 @@ type daemon struct {
 	resolverRestartedAt time.Time
 	testRoute           func(ctx context.Context, server string, q []api.RouteQuery) ([]string, error)
 	restartResolver     func(ctx context.Context) error
+	resolverAccepts     func(ctx context.Context, fragment string) error
 	// rescueCheckedAt is when the rescue last probed (rescueStep).
 	rescueCheckedAt time.Time
 	// reconfiguredAt is when an apply last put a new config in (rescueAfresh):

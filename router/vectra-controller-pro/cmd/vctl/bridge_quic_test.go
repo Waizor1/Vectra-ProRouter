@@ -70,6 +70,9 @@ func bridgeQUICDaemon(t *testing.T, render string) *bridgeQUICStand {
 		return out, nil
 	}
 	d.restartResolver = func(context.Context) error { s.restarts++; return nil }
+	d.resolverAccepts = func(context.Context, string) error { return nil }
+	defer func(w time.Duration) { t.Cleanup(func() { resolverSteadyAfter = w }) }(resolverSteadyAfter)
+	resolverSteadyAfter = 20 * time.Millisecond
 	d.runFirewallCmd = func(_ context.Context, name string, args ...string) error {
 		if name == "nft" && strings.Join(args, " ") == "flush set inet vctl "+firewall.SetQUICPass4 {
 			s.flushes++
@@ -419,6 +422,26 @@ func TestADnsmasqThatDoesNotComeBackLosesTheFragment(t *testing.T) {
 	d.programFirewall(ctx, d.desired)
 	if f := s.fragments(t)[0]; f != "" || d.fwSpec.QUICPass {
 		t.Fatalf("fragment %q, QUICPass %v: it stays out until vctl starts again", f, d.fwSpec.QUICPass)
+	}
+}
+
+// A dnsmasq that does not take the fragment (built without nftset) is never
+// restarted on it: no fragment, QUIC refused as in r30.
+func TestAFragmentDnsmasqRefusesIsNeverWritten(t *testing.T) {
+	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
+	d := s.d
+	var checked string
+	d.resolverAccepts = func(_ context.Context, frag string) error {
+		checked = frag
+		return errors.New("dnsmasq: recompile with HAVE_NFTSET defined to enable nftset directives")
+	}
+	d.programFirewall(context.Background(), d.desired)
+	d.syncBridgeQUIC(context.Background())
+	if !strings.Contains(checked, "nftset=/googlevideo.com/") {
+		t.Fatalf("checked %q, want the fragment it would write", checked)
+	}
+	if f := s.fragments(t)[0]; f != "" || s.restarts != 0 || !d.bridgeQUICBroken {
+		t.Fatalf("fragment %q, restarts %d, broken %v", f, s.restarts, d.bridgeQUICBroken)
 	}
 }
 

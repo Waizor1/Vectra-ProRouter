@@ -48,8 +48,10 @@ var dnsmasqInit = "/etc/init.d/dnsmasq"
 const bridgeQUICWithin = 10 * time.Second
 
 // resolverBackWithin is how long dnsmasq has to be running again after its
-// restart before the fragment is taken for the reason it is not.
-var resolverBackWithin = 5 * time.Second
+// restart before the fragment is taken for the reason it is not; it counts
+// as running once seen as its own user twice, resolverSteadyAfter apart (one
+// that dies on its config lives for milliseconds, and procd spawns it again).
+var resolverBackWithin, resolverSteadyAfter = 5 * time.Second, time.Second
 
 // resolverRestartGrace: for this long after vctl restarted dnsmasq, a
 // dnsmasq missing from /proc, or running as root while it starts, is that
@@ -163,6 +165,17 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 			if waiting != d.bridgeQUICWaiting {
 				logging.L().Info("QUIC through the Russian bridge waits: xray sends the bridge's names elsewhere", "route", waiting)
 			}
+		}
+	}
+	if len(names) > 0 {
+		accepts := dnsmasqAccepts
+		if d.resolverAccepts != nil {
+			accepts = d.resolverAccepts
+		}
+		if err := accepts(ctx, bridgeQUICLines(names, table)); err != nil {
+			logging.L().Error("dnsmasq does not take the QUIC fragment: QUIC to every proxied name stays refused until vctl starts again", "err", err.Error())
+			d.bridgeQUICBroken = true
+			names = nil
 		}
 	}
 	changed, err := writeBridgeQUICFragment(names, table)
@@ -347,11 +360,17 @@ func (d *daemon) resolverRunning() bool {
 	return len(resolverPIDs(d.procRoot())) > 0
 }
 
-// resolverBack waits up to resolverBackWithin for dnsmasq to be running.
+// resolverBack waits up to resolverBackWithin for dnsmasq to be running as
+// its own user, steadily.
 func (d *daemon) resolverBack(ctx context.Context) bool {
 	deadline := time.Now().Add(resolverBackWithin)
+	var since time.Time
 	for {
-		if d.resolverRunning() {
+		if len(resolverUIDs(d.procRoot())) == 0 {
+			since = time.Time{}
+		} else if since.IsZero() {
+			since = time.Now()
+		} else if time.Since(since) >= resolverSteadyAfter {
 			return true
 		}
 		if time.Now().After(deadline) {
@@ -359,10 +378,35 @@ func (d *daemon) resolverBack(ctx context.Context) bool {
 		}
 		select {
 		case <-ctx.Done():
-			return d.resolverRunning()
-		case <-time.After(250 * time.Millisecond):
+			return false
+		case <-time.After(resolverSteadyAfter / 4):
 		}
 	}
+}
+
+// dnsmasqAccepts: dnsmasq takes the fragment — its syntax check on the
+// fragment alone (a dnsmasq built without nftset, a line it would split).
+// The resolver's restart is never risked on one it does not.
+func dnsmasqAccepts(ctx context.Context, fragment string) error {
+	f, err := os.CreateTemp("", "vctl-bridge-quic-*.conf")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(fragment); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	c, cancel := context.WithTimeout(ctx, bridgeQUICWithin)
+	defer cancel()
+	out, err := exec.CommandContext(c, "dnsmasq", "--test", "-C", f.Name()).CombinedOutput()
+	if err != nil {
+		return errors.New(strings.TrimSpace(err.Error() + ": " + string(out)))
+	}
+	return nil
 }
 
 // resolverRestarting: vctl restarted dnsmasq less than resolverRestartGrace

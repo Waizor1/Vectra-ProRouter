@@ -45,15 +45,17 @@ at once and every YouTube video connection went over TCP.
   starts. A changed fragment restarts dnsmasq once (a moment without DNS for
   the LAN: after the install, and when the names change) and empties the
   set; each new xray empties it too (its FakeDNS addresses are handed out
-  anew). The restart runs in a session of its own and is never cut short; a
-  dnsmasq that is not running is not started; one that does not come back
-  with names in the fragment loses the fragment and starts without it — QUIC
-  refused as in r30 until vctl starts again — rather than leave the LAN
-  without DNS and DHCP. For 30 s after vctl's own restart of dnsmasq the
+  anew). A fragment dnsmasq's own syntax check (`dnsmasq --test`) refuses —
+  a build without nftset — is never written. The restart runs in a session
+  of its own and is never cut short; a dnsmasq that is not running is not
+  started; one that does not come back with names in the fragment (running
+  as its own user, steadily, within 5 s) loses the fragment and starts
+  without it — QUIC refused as in r30 until vctl starts again — rather than
+  leave the LAN without DNS and DHCP. For 30 s after vctl's own restart of dnsmasq the
   poll does not take it for a resolver that changed user (no reload of the
   table). The fragment leaves with the data plane, after the table, its
   restart not waited for (daemon), and in `dataplane-teardown.sh` without
-  procd's lock of vctl. An address stays in the set 1 h unless asked for
+  procd's lock of vctl and only for a dnsmasq that runs. An address stays in the set 1 h unless asked for
   again (FakeDNS answers with a TTL of 1 s).
 - **Off switch:** UCI `quic_bridge '0'` — plain Vision and every proxied
   name's QUIC refused, exactly r30. `refuse_quic '0'` still keeps all QUIC.

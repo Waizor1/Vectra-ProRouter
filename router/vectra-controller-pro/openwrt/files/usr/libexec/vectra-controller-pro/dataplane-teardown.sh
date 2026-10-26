@@ -94,13 +94,14 @@ fi
 # is gone already — and dnsmasq, which reads it only at start, starts again in
 # the background (never waited for here), without procd's lock of this
 # service (fd 1000, see release_locks in the init script): with it, dnsmasq's
-# init would not take its own, and two restarts could run at once.
+# init would not take its own, and two restarts could run at once. A dnsmasq
+# that is not running (the owner's own resolver) is not started.
 QUIC_FRAGMENT=vctl-bridge-quic.conf
 quic_dropped=0
 for f in /tmp/dnsmasq.*.d/"$QUIC_FRAGMENT"; do
 	[ -f "$f" ] && rm -f "$f" && quic_dropped=1
 done
-if [ "$quic_dropped" = 1 ] && [ -x /etc/init.d/dnsmasq ]; then
+if [ "$quic_dropped" = 1 ] && [ -x /etc/init.d/dnsmasq ] && pidof dnsmasq >/dev/null 2>&1; then
 	( ( eval 'exec 1000>&-' ) 2>/dev/null && eval 'exec 1000>&-'
 	/etc/init.d/dnsmasq restart > /dev/null 2>&1 ) &
 fi
