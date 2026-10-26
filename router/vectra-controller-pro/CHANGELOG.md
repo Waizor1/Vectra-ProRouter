@@ -22,11 +22,18 @@ at once and every YouTube video connection went over TCP.
 - **QUIC to the bridge's names is let through; the rest is refused as
   before.** The table lets QUIC to the FakeDNS addresses in
   `vctl_quic_pass4` reach xray (counter `vctl_quic_passed`) and refuses the
-  others (`vctl_quic_refused`, ICMP as in r25). dnsmasq fills the set: an
-  `nftset` line in `/tmp/dnsmasq.*.d/vctl-bridge-quic.conf` for the names
-  BL-RU's rules route by name (`domain:`/`full:`, not whole TLDs) — YouTube's
-  video (googlevideo.com, ytimg.com, ggpht.com) and the foreign sites the
-  provider bridges. Which of them pass, xray says itself after every start
+  others (`vctl_quic_refused`, ICMP as in r25) — only flows that have had
+  no answer (`ct state new`): a QUIC connection xray carries is not cut when
+  its address leaves the set. dnsmasq fills the set: an `nftset` line per
+  name in `/tmp/dnsmasq.*.d/vctl-bridge-quic.conf` (dnsmasq reads a config
+  line in at most 1024 bytes and does not start with the rest of a longer
+  one; the provider's names on one line came to 0.9–1.6 KB) for the names
+  BL-RU's rules route by name (`domain:`/`full:`; letters, digits, hyphens
+  and dots only, no whole TLDs) — YouTube's video (googlevideo.com,
+  ytimg.com, ggpht.com) and the foreign sites the provider bridges. Only with
+  FakeDNS carried (no pool: no refusal and no set) and a member that carries
+  UDP/443 (plain Vision does not, nor mux unless its `xudpProxyUDP443` lets
+  it). Which of them pass, xray says itself after every start
   (RoutingService.TestRoute, UDP to 443 on the tproxy inbound): a name the
   owner sent elsewhere (a service's country, a site of theirs) does not land
   on the bridge and stays refused. xray is asked again every 5 min, and every
@@ -34,11 +41,20 @@ at once and every YouTube video connection went over TCP.
   a fresh xray sends the names there until the observatory's first round
   (leastLoad knows no member alive before it), so an xray restart leaves the
   fragment, and dnsmasq, alone; only a bridge on its fallback for 30 min gives
-  its names up, and they come back with it. A changed fragment restarts
-  dnsmasq once (a moment without DNS for the LAN: after the install, and when
-  the names change) and empties the set; the fragment leaves with the data
-  plane (daemon and `dataplane-teardown.sh`). An address stays in the set 1 h
-  unless asked for again (FakeDNS answers with a TTL of 1 s).
+  its names up, and they come back with it; the hold runs on across xray's
+  starts. A changed fragment restarts dnsmasq once (a moment without DNS for
+  the LAN: after the install, and when the names change) and empties the
+  set; each new xray empties it too (its FakeDNS addresses are handed out
+  anew). The restart runs in a session of its own and is never cut short; a
+  dnsmasq that is not running is not started; one that does not come back
+  with names in the fragment loses the fragment and starts without it — QUIC
+  refused as in r30 until vctl starts again — rather than leave the LAN
+  without DNS and DHCP. For 30 s after vctl's own restart of dnsmasq the
+  poll does not take it for a resolver that changed user (no reload of the
+  table). The fragment leaves with the data plane, after the table, its
+  restart not waited for (daemon), and in `dataplane-teardown.sh` without
+  procd's lock of vctl. An address stays in the set 1 h unless asked for
+  again (FakeDNS answers with a TTL of 1 s).
 - **Off switch:** UCI `quic_bridge '0'` — plain Vision and every proxied
   name's QUIC refused, exactly r30. `refuse_quic '0'` still keeps all QUIC.
 
@@ -48,6 +64,9 @@ at once and every YouTube video connection went over TCP.
   without an answer; browsers race TCP and go on over it, as before r25.
 - The deadman (commit-confirm) takes the table and leaves the fragment: dnsmasq
   only logs that the set is missing until the table is back.
+- TestRoute asks without a source address: a rule that routes by device is
+  not seen. QUIC from such a device to a bridge name passes the set and goes
+  where its rule says; on plain Vision it is dropped without an answer.
 
 ## vctl 0.7.0-r30 — one Depends for every build; one xray per vctl; the companions stay
 

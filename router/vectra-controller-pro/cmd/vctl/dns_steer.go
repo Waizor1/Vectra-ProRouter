@@ -649,6 +649,11 @@ func (d *daemon) dnsRedirectStale(ctx context.Context) bool {
 	if d.desired == nil || !d.supStarted || d.fwProgrammed == nil {
 		return false
 	}
+	// vctl's own restart of dnsmasq (bridge_quic.go): gone from /proc, or
+	// root while it starts, it is no resolver that changed user.
+	if d.resolverRestarting() {
+		return false
+	}
 	want := ""
 	if port, uids, ok := d.dnsCandidate(); ok {
 		if d.answers(ctx, port) {

@@ -221,15 +221,20 @@ type daemon struct {
 	// for (flushAfterXrayRestart).
 	flushedStart time.Time
 	// bridgeQUICSynced is the xray start (and the table's QUICPass) dnsmasq's
-	// QUIC fragment was last brought to (syncBridgeQUIC); bridgeQUICWaiting is
-	// where xray sent the names when the last answer let none through ("" when
-	// some passed); bridgeQUICHeldSince is when BL-RU was first seen on its
-	// fallback, at the xray start bridgeQUICHeldStart. testRoute and
-	// restartResolver stand in for xray's API and dnsmasq in tests.
+	// QUIC fragment was last brought to (syncBridgeQUIC), bridgeQUICStart the
+	// xray start the pass set was last emptied for; bridgeQUICWaiting is where
+	// xray sent the names when the last answer let none through ("" when some
+	// passed); bridgeQUICHeldSince is when BL-RU was first seen on its
+	// fallback; bridgeQUICBroken: dnsmasq did not start with the fragment, which
+	// stays out until vctl starts again. resolverRestartedAt is when vctl last
+	// restarted dnsmasq itself. testRoute and restartResolver stand in for
+	// xray's API and dnsmasq in tests.
 	bridgeQUICSynced    string
+	bridgeQUICStart     string
 	bridgeQUICWaiting   string
 	bridgeQUICHeldSince time.Time
-	bridgeQUICHeldStart string
+	bridgeQUICBroken    bool
+	resolverRestartedAt time.Time
 	testRoute           func(ctx context.Context, server string, q []api.RouteQuery) ([]string, error)
 	restartResolver     func(ctx context.Context) error
 	// rescueCheckedAt is when the rescue last probed (rescueStep).

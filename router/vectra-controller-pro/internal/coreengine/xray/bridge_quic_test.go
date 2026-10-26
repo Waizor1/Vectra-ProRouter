@@ -151,6 +151,40 @@ func TestRenderBridgeQUICSkipsATCPOnlyRule(t *testing.T) {
 	}
 }
 
+// Only names a dnsmasq config line takes without surprise reach the set.
+func TestRenderBridgeQUICTakesOnlyPlainNames(t *testing.T) {
+	doc := `{"outbounds":[{"tag":"bridge-ru-tcp","protocol":"vless","settings":{"flow":"xtls-rprx-vision-udp443"}}],
+"routing":{"rules":[{"domain":["domain:good-name.example","domain:bad_name.example","full:a..b.example",
+"domain:x.example/4#inet#vctl#other","domain:.lead.example","domain:ru","full:Upper.Example"],"balancerTag":"BL-RU"}],
+"balancers":[{"tag":"BL-RU","selector":["bridge-ru-tcp"]}]}}`
+	bq := xray.RenderBridgeQUIC([]byte(doc))
+	if !reflect.DeepEqual(bq.Names, []string{"good-name.example", "upper.example"}) {
+		t.Fatalf("names = %v, want [good-name.example upper.example]", bq.Names)
+	}
+}
+
+// Mux drops UDP/443 unless its xudpProxyUDP443 lets it: such a member carries
+// no QUIC.
+func TestAMuxMemberCarriesNoQUICUnlessAllowed(t *testing.T) {
+	member := func(mux string) xray.BridgeQUIC {
+		doc := `{"outbounds":[{"tag":"bridge-ru-tcp","protocol":"vless","settings":{"flow":"xtls-rprx-vision-udp443"},"mux":` + mux + `}],
+"routing":{"rules":[{"domain":["domain:googlevideo.com"],"balancerTag":"BL-RU"}],
+"balancers":[{"tag":"BL-RU","selector":["bridge-ru-tcp"]}]}}`
+		return xray.RenderBridgeQUIC([]byte(doc))
+	}
+	for mux, want := range map[string]bool{
+		`{"enabled":true,"concurrency":8}`:                               false,
+		`{"enabled":true,"xudpProxyUDP443":"reject"}`:                    false,
+		`{"enabled":true,"xudpProxyUDP443":"allow"}`:                     true,
+		`{"enabled":true,"xudpConcurrency":16,"xudpProxyUDP443":"skip"}`: true,
+		`{"enabled":false}`:                                              true,
+	} {
+		if got := len(member(mux).Members) > 0; got != want {
+			t.Errorf("mux %s: member %v, want %v", mux, got, want)
+		}
+	}
+}
+
 func TestQUICOverBridgeIsPartOfTheRenderKey(t *testing.T) {
 	off := xray.SpliceOptions{RussiaDirect: true}.Key()
 	on := xray.SpliceOptions{RussiaDirect: true, QUICOverBridge: true}.Key()

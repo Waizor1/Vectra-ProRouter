@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,10 +106,11 @@ func TestTheBridgesNamesReachDnsmasqWhenXraySendsThemToTheBridge(t *testing.T) {
 	}
 
 	d.syncBridgeQUIC(ctx)
-	want := "nftset=/googlevideo.com/nnmclub.to/4#inet#vctl#vctl_quic_pass4\n"
+	gv := "\nnftset=/googlevideo.com/4#inet#vctl#vctl_quic_pass4\n"
+	nnm := "\nnftset=/nnmclub.to/4#inet#vctl#vctl_quic_pass4\n"
 	for i, f := range s.fragments(t) {
-		if !strings.HasSuffix(f, want) {
-			t.Fatalf("instance %d fragment = %q, want the line %q", i, f, want)
+		if !strings.Contains(f, gv) || !strings.Contains(f, nnm) {
+			t.Fatalf("instance %d fragment = %q, want a line for each name", i, f)
 		}
 	}
 	for _, q := range s.asked {
@@ -134,11 +136,12 @@ func TestTheBridgesNamesReachDnsmasqWhenXraySendsThemToTheBridge(t *testing.T) {
 	s.routes["nnmclub.to"] = "bridge-de5"
 	s.started = time.Now()
 	d.syncBridgeQUIC(ctx)
-	want = "nftset=/googlevideo.com/4#inet#vctl#vctl_quic_pass4\n"
-	if f := s.fragments(t)[0]; !strings.HasSuffix(f, want) {
+	if f := s.fragments(t)[0]; !strings.Contains(f, gv) || strings.Contains(f, nnm) {
 		t.Fatalf("fragment = %q, want only googlevideo.com", f)
 	}
-	if s.restarts != 2 || s.flushes != 2 {
+	// One flush for the new xray (its FakeDNS addresses are handed out
+	// anew), one for the name that left.
+	if s.restarts != 2 || s.flushes != 3 {
 		t.Fatalf("restarts %d, flushes %d; the set must be emptied when a name leaves", s.restarts, s.flushes)
 	}
 
@@ -343,5 +346,177 @@ func TestTheFragmentIsWrittenOnlyWhenItChanges(t *testing.T) {
 	dnsmasqConfDirGlob = filepath.Join(dir, "none.*.d")
 	if got, err := writeBridgeQUICFragment([]string{"a.example"}, "vctl"); got || err != nil {
 		t.Fatalf("changed=%v err=%v without a directory", got, err)
+	}
+}
+
+// dnsmasq reads a config line in at most 1024 bytes and does not start with
+// the rest of a longer one; the provider's names on one line came to 1.6 KB.
+func TestEveryNameHasALineOfItsOwn(t *testing.T) {
+	var names []string
+	for i := 0; i < 200; i++ {
+		names = append(names, fmt.Sprintf("a-rather-long-name-%03d.some-provider-site.example", i))
+	}
+	frag := bridgeQUICLines(names, "vctl")
+	lines := strings.Split(strings.TrimSuffix(frag, "\n"), "\n")
+	if len(lines) != len(names)+1 {
+		t.Fatalf("%d lines for %d names", len(lines), len(names))
+	}
+	for _, l := range lines {
+		if len(l) >= 1000 {
+			t.Fatalf("a line of %d bytes: %q", len(l), l)
+		}
+	}
+}
+
+// No FakeDNS (russia_direct, dns_tunnel or direct_bypass '0'): no pool, no
+// refusal, and no set in the table for dnsmasq to name — so no pass either.
+func TestNoFakeDNSNoQUICPass(t *testing.T) {
+	render := strings.Replace(renderWithBridgeQUIC, `"fakedns":[{"ipPool":"198.18.0.0/16","poolSize":65535}],`, "", 1)
+	if render == renderWithBridgeQUIC {
+		t.Fatal("fixture changed: no fakedns section to take out")
+	}
+	s := bridgeQUICDaemon(t, render)
+	d := s.d
+	d.programFirewall(context.Background(), d.desired)
+	if d.fwSpec == nil || d.fwSpec.QUICPass {
+		t.Fatalf("QUICPass without a FakeDNS pool: %+v", d.fwSpec)
+	}
+	d.syncBridgeQUIC(context.Background())
+	if f := s.fragments(t)[0]; f != "" {
+		t.Fatalf("a fragment naming a set the table does not have: %q", f)
+	}
+}
+
+// A dnsmasq that does not come back with the fragment loses it and starts
+// without it, rather than leave the LAN without DNS and DHCP; the fragment
+// stays out for the rest of the run.
+func TestADnsmasqThatDoesNotComeBackLosesTheFragment(t *testing.T) {
+	defer func(w time.Duration) { resolverBackWithin = w }(resolverBackWithin)
+	resolverBackWithin = 50 * time.Millisecond
+	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
+	d := s.d
+	ctx := context.Background()
+	alive, gone := d.procDir, t.TempDir()
+	d.restartResolver = func(context.Context) error {
+		s.restarts++
+		if s.restarts == 1 {
+			d.procDir = gone // dnsmasq refuses the fragment
+		} else {
+			d.procDir = alive // and starts without it
+		}
+		return nil
+	}
+	d.programFirewall(ctx, d.desired)
+	d.syncBridgeQUIC(ctx)
+	if f := s.fragments(t)[0]; f != "" {
+		t.Fatalf("the fragment dnsmasq did not start with is still there: %q", f)
+	}
+	if s.restarts != 2 || !d.bridgeQUICBroken {
+		t.Fatalf("restarts %d, broken %v: dnsmasq must be started again without the fragment", s.restarts, d.bridgeQUICBroken)
+	}
+	s.started = s.started.Add(time.Minute)
+	d.syncBridgeQUIC(ctx)
+	d.programFirewall(ctx, d.desired)
+	if f := s.fragments(t)[0]; f != "" || d.fwSpec.QUICPass {
+		t.Fatalf("fragment %q, QUICPass %v: it stays out until vctl starts again", f, d.fwSpec.QUICPass)
+	}
+}
+
+// A dnsmasq that is not running (the owner's own resolver) is not started:
+// it reads the fragment whenever it does.
+func TestADnsmasqThatIsNotRunningIsNotStarted(t *testing.T) {
+	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
+	d := s.d
+	d.procDir = t.TempDir()
+	d.programFirewall(context.Background(), d.desired)
+	d.syncBridgeQUIC(context.Background())
+	if s.restarts != 0 {
+		t.Fatalf("dnsmasq started (%d) though it was not running", s.restarts)
+	}
+}
+
+// Going direct takes the table out first and does not wait for dnsmasq.
+func TestTheTeardownTakesTheTableFirstAndLeavesDnsmasqToRestart(t *testing.T) {
+	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
+	d := s.d
+	ctx := context.Background()
+	d.programFirewall(ctx, d.desired)
+	d.syncBridgeQUIC(ctx)
+	var events []string
+	d.runFirewallCmd = func(_ context.Context, name string, args ...string) error {
+		events = append(events, name+" "+strings.Join(args, " "))
+		return nil
+	}
+	waited := false
+	d.restartResolver = func(c context.Context) error {
+		events = append(events, "restart dnsmasq")
+		waited = c.Err() == nil
+		return nil
+	}
+	d.tearDownFirewall(ctx)
+	if len(events) < 2 || events[len(events)-1] != "restart dnsmasq" {
+		t.Fatalf("events %q: the table goes before dnsmasq restarts", events)
+	}
+	if waited {
+		t.Fatal("the teardown waited for dnsmasq's restart")
+	}
+}
+
+// A new xray hands its FakeDNS addresses out anew: the set is emptied at its
+// start, while the fragment, and dnsmasq, stay.
+func TestANewXrayEmptiesThePassSet(t *testing.T) {
+	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
+	d := s.d
+	ctx := context.Background()
+	d.programFirewall(ctx, d.desired)
+	d.syncBridgeQUIC(ctx)
+	restarts, flushes := s.restarts, s.flushes
+	s.started = s.started.Add(time.Minute)
+	d.syncBridgeQUIC(ctx)
+	if s.flushes != flushes+1 || s.restarts != restarts {
+		t.Fatalf("flushes %d -> %d, restarts %d -> %d: one flush, no restart", flushes, s.flushes, restarts, s.restarts)
+	}
+}
+
+// The hold runs on across xray's starts: a bridge down for hours, under an
+// xray restarted every few minutes, still gives its names up.
+func TestTheHoldRunsOnAcrossXrayStarts(t *testing.T) {
+	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
+	d := s.d
+	ctx := context.Background()
+	now := time.Date(2026, 10, 26, 4, 0, 0, 0, time.UTC)
+	d.clock = func() time.Time { return now }
+	d.programFirewall(ctx, d.desired)
+	d.syncBridgeQUIC(ctx)
+	s.routes = map[string]string{"googlevideo.com": "stage-main", "nnmclub.to": "stage-main"}
+	for i := 0; i < 4; i++ {
+		now = now.Add(10 * time.Minute)
+		s.started = s.started.Add(10 * time.Minute)
+		d.syncBridgeQUIC(ctx)
+	}
+	if f := s.fragments(t)[0]; f != "" {
+		t.Fatalf("40 min on the fallback over four xray starts, and the names keep their pass: %q", f)
+	}
+}
+
+// vctl's own restart of dnsmasq is no resolver that changed user: the poll
+// must not reload the table for it.
+func TestVctlsOwnDnsmasqRestartIsNoStaleRedirect(t *testing.T) {
+	s := bridgeQUICDaemon(t, renderWithBridgeQUIC)
+	d := s.d
+	now := time.Date(2026, 10, 26, 4, 0, 0, 0, time.UTC)
+	d.clock = func() time.Time { return now }
+	d.programFirewall(context.Background(), d.desired)
+	d.procDir = t.TempDir() // dnsmasq between its stop and its start
+	if !d.dnsRedirectStale(context.Background()) {
+		t.Fatal("fixture: a dnsmasq gone should read as stale without the grace")
+	}
+	d.resolverRestartedAt = now.Add(-time.Second)
+	if d.dnsRedirectStale(context.Background()) {
+		t.Fatal("vctl's own restart of dnsmasq read as a stale redirect")
+	}
+	now = now.Add(resolverRestartGrace)
+	if !d.dnsRedirectStale(context.Background()) {
+		t.Fatal("past the grace, a dnsmasq still gone is stale")
 	}
 }

@@ -15,7 +15,9 @@ func TestQUICPassLetsTheSetThroughAndRefusesTheRest(t *testing.T) {
 	rules := rulesOf(chainNamed(t, out, "prerouting"))
 
 	pass := indexOf(rules, `iif != "lo" ip daddr @vctl_quic_pass4 meta l4proto udp udp dport 443 counter name "vctl_quic_passed"`)
-	refuse := indexOf(rules, `iif != "lo" ip daddr { 198.18.0.0/15 } ip daddr != @vctl_quic_pass4 meta l4proto udp udp dport 443 counter name "vctl_quic_refused" reject with icmpx port-unreachable`)
+	// ct state new: a flow xray answered is not cut when its address leaves
+	// the set (an hour on, a flush) — it goes on to tproxy.
+	refuse := indexOf(rules, `iif != "lo" ip daddr { 198.18.0.0/15 } ip daddr != @vctl_quic_pass4 meta l4proto udp udp dport 443 ct state new counter name "vctl_quic_refused" reject with icmpx port-unreachable`)
 	tproxy := indexOf(rules, "meta l4proto { tcp, udp } counter name \"vctl_tproxy_hits\" tproxy")
 	if pass < 0 || refuse < 0 || tproxy < 0 || pass > refuse || refuse > tproxy {
 		t.Fatalf("pass %d, refusal %d, tproxy %d: want pass, then refusal, then tproxy:\n%s", pass, refuse, tproxy, strings.Join(rules, "\n"))

@@ -1104,8 +1104,6 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 	} else if did != "" {
 		logging.L().Info("icmp ratemask put back", "change", did)
 	}
-	// dnsmasq's QUIC fragment names a set of the table about to go.
-	d.dropBridgeQUIC(ctx)
 	for _, c := range firewall.RevertCommands(spec) {
 		fields := strings.Fields(c)
 		if len(fields) == 0 {
@@ -1113,6 +1111,8 @@ func (d *daemon) unloadDataPlane(ctx context.Context, cfg *config.Config) bool {
 		}
 		_ = d.runFirewallCmd(ctx, fields[0], fields[1:]...)
 	}
+	// dnsmasq's QUIC fragment named a set of the table that went.
+	d.dropBridgeQUIC()
 	if redirected {
 		d.forgetRedirectedFlows(oldPort)
 	}

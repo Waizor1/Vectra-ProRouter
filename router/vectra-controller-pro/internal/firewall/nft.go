@@ -768,9 +768,11 @@ table inet {{ .TableName }} {
     # bridges refuse UDP/443, an answer lets the app fall back to TCP now.
 {{- if .QUICPass }}
     # Except a name whose route carries UDP/443 (Spec.QUICPass): its
-    # address is in the set the resolver fills, and xray takes it.
+    # address is in the set the resolver fills, and xray takes it. A flow
+    # xray answered stays with it after its address leaves the set (an hour
+    # on, a flush): only what has had no answer is refused.
     iif != "lo" ip daddr @{{ .SetQUICPass4 }} meta l4proto udp udp dport 443 counter name "{{ .CounterQUICPassed }}"
-    iif != "lo" ip daddr { {{ join .CarriedPools ", " }} } ip daddr != @{{ .SetQUICPass4 }} meta l4proto udp udp dport 443 counter name "{{ .CounterQUICRefused }}" reject with icmpx port-unreachable
+    iif != "lo" ip daddr { {{ join .CarriedPools ", " }} } ip daddr != @{{ .SetQUICPass4 }} meta l4proto udp udp dport 443 ct state new counter name "{{ .CounterQUICRefused }}" reject with icmpx port-unreachable
 {{- else }}
     iif != "lo" ip daddr { {{ join .CarriedPools ", " }} } meta l4proto udp udp dport 443 counter name "{{ .CounterQUICRefused }}" reject with icmpx port-unreachable
 {{- end }}

@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"vectra-controller-pro/internal/api"
@@ -25,7 +27,7 @@ import (
 // UDP/443, and the table lets through QUIC to the FakeDNS addresses in
 // firewall.SetQUICPass4 while it refuses the rest (Spec.QUICPass). This fills
 // the set. dnsmasq adds the answers for the names whose route ends on the
-// bridge — an nftset line in a fragment of its config directory — and which
+// bridge — nftset lines in a fragment of its config directory — and which
 // names those are, xray says itself (TestRoute), after every start of it: a
 // name the owner sent elsewhere (a service's country, a site of theirs) does
 // not land on the bridge and stays refused. A fragment that changed restarts
@@ -38,8 +40,21 @@ const bridgeQUICFragment = "vctl-bridge-quic.conf"
 // script reads /tmp/dnsmasq.<section>.d (conf-dir) at every start.
 var dnsmasqConfDirGlob = "/tmp/dnsmasq.*.d"
 
-// bridgeQUICWithin bounds the question to xray and the resolver's restart.
+// dnsmasqInit is the resolver's init script.
+var dnsmasqInit = "/etc/init.d/dnsmasq"
+
+// bridgeQUICWithin bounds the question to xray, and how long the loop waits
+// for dnsmasq's restart (the restart itself is never cut short).
 const bridgeQUICWithin = 10 * time.Second
+
+// resolverBackWithin is how long dnsmasq has to be running again after its
+// restart before the fragment is taken for the reason it is not.
+var resolverBackWithin = 5 * time.Second
+
+// resolverRestartGrace: for this long after vctl restarted dnsmasq, a
+// dnsmasq missing from /proc, or running as root while it starts, is that
+// restart — not a resolver that changed user (dnsRedirectStale).
+const resolverRestartGrace = 30 * time.Second
 
 // bridgeQUICRecheck is how often xray is asked again between its starts, while
 // the names pass.
@@ -56,14 +71,17 @@ const bridgeQUICRetry = 30 * time.Second
 // are — every change restarts dnsmasq, a moment without DNS for the LAN —
 // and QUIC to the names reaches the fallback (the main path, plain Vision),
 // which drops it without an answer: a browser goes on over TCP, as before
-// r25. A bridge down for longer gives its names up, and they come back with it.
+// r25. The hold runs on across xray's starts; a bridge down for longer gives
+// its names up, and they come back with it.
 const bridgeQUICHold = 30 * time.Minute
 
 // carryBridgeQUIC lets the table pass QUIC to the set (Spec.QUICPass) when
 // the running render has a Russian bridge that carries UDP/443 and names
-// routed to it. Which of those names reach the set is syncBridgeQUIC's.
+// routed to it, and the table carries FakeDNS (no pool, no refusal and no
+// set: carryFakeDNS runs first). Which of those names reach the set is
+// syncBridgeQUIC's.
 func (d *daemon) carryBridgeQUIC(spec *firewall.Spec) {
-	if !spec.RefuseQUIC || d.cfg.NoQUICBridge {
+	if !spec.RefuseQUIC || len(spec.CarriedV4) == 0 || d.cfg.NoQUICBridge || d.bridgeQUICBroken {
 		return
 	}
 	raw, err := vault.ReadFile(d.cfg.XrayRenderPath)
@@ -85,8 +103,20 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 	if st.State != supervisor.StateRunning || st.StartedAt.IsZero() {
 		return
 	}
-	pass := d.fwSpec != nil && d.fwSpec.QUICPass && d.rescueState().Mode != rescue.ModeDirect
+	pass := d.fwSpec != nil && d.fwSpec.QUICPass && !d.bridgeQUICBroken && d.rescueState().Mode != rescue.ModeDirect
 	started := st.StartedAt.String()
+	table := "vctl"
+	if d.fwSpec != nil && d.fwSpec.TableName != "" {
+		table = d.fwSpec.TableName
+	}
+	if started != d.bridgeQUICStart {
+		// A new xray hands its FakeDNS addresses out anew: one the set still
+		// holds may stand for another name now.
+		if d.bridgeQUICStart != "" && pass {
+			d.flushBridgeQUICSet(ctx, table)
+		}
+		d.bridgeQUICStart = started
+	}
 	key := started
 	if pass {
 		every := bridgeQUICRecheck
@@ -113,8 +143,8 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 		if !ans.fallback {
 			d.bridgeQUICHeldSince = time.Time{}
 		} else {
-			if d.bridgeQUICHeldSince.IsZero() || d.bridgeQUICHeldStart != started {
-				d.bridgeQUICHeldSince, d.bridgeQUICHeldStart = d.now(), started
+			if d.bridgeQUICHeldSince.IsZero() {
+				d.bridgeQUICHeldSince = d.now()
 			}
 			if d.now().Sub(d.bridgeQUICHeldSince) < bridgeQUICHold {
 				if d.bridgeQUICWaiting != bridgeQUICOnFallback {
@@ -135,10 +165,6 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 			}
 		}
 	}
-	table := "vctl"
-	if d.fwSpec != nil && d.fwSpec.TableName != "" {
-		table = d.fwSpec.TableName
-	}
 	changed, err := writeBridgeQUICFragment(names, table)
 	if err != nil {
 		logging.L().Warn("QUIC through the Russian bridge: dnsmasq's fragment not written", "err", err.Error())
@@ -154,7 +180,7 @@ func (d *daemon) syncBridgeQUIC(ctx context.Context) {
 	} else {
 		logging.L().Info("QUIC to every proxied name is refused again")
 	}
-	d.restartResolverForBridgeQUIC(ctx, table)
+	d.restartResolverForBridgeQUIC(ctx, table, len(names) > 0)
 }
 
 // bridgeQUICOnFallback is bridgeQUICWaiting while BL-RU is on its fallback.
@@ -222,23 +248,30 @@ func (d *daemon) bridgeQUICNames(ctx context.Context) (bridgeQUICAnswer, error) 
 	return ans, nil
 }
 
-// bridgeQUICLine is the fragment for names ("" for none): dnsmasq adds every
-// IPv4 answer for them and their subdomains to the table's set.
-func bridgeQUICLine(names []string, table string) string {
+// bridgeQUICLines is the fragment for names ("" for none): dnsmasq adds every
+// IPv4 answer for them and their subdomains to the table's set. One line per
+// name: dnsmasq reads a config line in at most 1024 bytes, splits a longer
+// one, and does not start with the rest of it — the provider's names on one
+// line come to 0.9–1.6 KB.
+func bridgeQUICLines(names []string, table string) string {
 	if len(names) == 0 {
 		return ""
 	}
 	sorted := append([]string(nil), names...)
 	sort.Strings(sorted)
-	return "# Written by vectra-controller-pro: QUIC to these names goes through the Russian bridge.\n" +
-		"nftset=/" + strings.Join(sorted, "/") + "/4#inet#" + table + "#" + firewall.SetQUICPass4 + "\n"
+	var b strings.Builder
+	b.WriteString("# Written by vectra-controller-pro: QUIC to these names goes through the Russian bridge.\n")
+	for _, n := range sorted {
+		b.WriteString("nftset=/" + n + "/4#inet#" + table + "#" + firewall.SetQUICPass4 + "\n")
+	}
+	return b.String()
 }
 
 // writeBridgeQUICFragment puts the fragment for names into every dnsmasq
 // config directory there is, or takes it out for none; changed says whether
 // any file changed.
 func writeBridgeQUICFragment(names []string, table string) (bool, error) {
-	want := bridgeQUICLine(names, table)
+	want := bridgeQUICLines(names, table)
 	dirs, err := filepath.Glob(dnsmasqConfDirGlob)
 	if err != nil {
 		return false, err
@@ -252,7 +285,7 @@ func writeBridgeQUICFragment(names []string, table string) (bool, error) {
 		have, err := os.ReadFile(path)
 		switch {
 		case want == "" && err == nil:
-			if err := os.Remove(path); err != nil {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return changed, err
 			}
 			changed = true
@@ -271,8 +304,33 @@ func writeBridgeQUICFragment(names []string, table string) (bool, error) {
 
 // restartResolverForBridgeQUIC starts dnsmasq again (it reads the fragment
 // only at start) and empties the set: an address of a name that left keeps
-// no pass.
-func (d *daemon) restartResolverForBridgeQUIC(ctx context.Context, table string) {
+// no pass. A dnsmasq that is not running is not started: it reads the
+// fragment whenever it does. One that does not come back with names in the
+// fragment loses the fragment and starts without it — QUIC to every proxied
+// name refused, as in r30, until vctl starts again — rather than leave the LAN
+// without DNS and DHCP.
+func (d *daemon) restartResolverForBridgeQUIC(ctx context.Context, table string, withNames bool) {
+	if !d.resolverRunning() {
+		d.flushBridgeQUICSet(ctx, table)
+		return
+	}
+	d.restartResolverNow(ctx)
+	d.flushBridgeQUICSet(ctx, table)
+	if !withNames || d.resolverBack(ctx) {
+		return
+	}
+	logging.L().Error("dnsmasq did not come back with the QUIC fragment: it goes, and QUIC to every proxied name is refused again until vctl starts again")
+	d.bridgeQUICBroken = true
+	if _, err := writeBridgeQUICFragment(nil, ""); err != nil {
+		logging.L().Warn("dnsmasq's QUIC fragment not removed", "err", err.Error())
+	}
+	d.restartResolverNow(ctx)
+}
+
+// restartResolverNow restarts dnsmasq and waits for it at most
+// bridgeQUICWithin; the clock for dnsRedirectStale's grace starts here.
+func (d *daemon) restartResolverNow(ctx context.Context) {
+	d.resolverRestartedAt = d.now()
 	c, cancel := context.WithTimeout(ctx, bridgeQUICWithin)
 	defer cancel()
 	restart := restartDnsmasq
@@ -280,34 +338,90 @@ func (d *daemon) restartResolverForBridgeQUIC(ctx context.Context, table string)
 		restart = d.restartResolver
 	}
 	if err := restart(c); err != nil {
-		logging.L().Warn("dnsmasq not restarted; its QUIC set follows at its next start", "err", err.Error())
+		logging.L().Warn("dnsmasq's restart for the QUIC fragment", "err", err.Error())
 	}
+}
+
+// resolverRunning: a dnsmasq process is there.
+func (d *daemon) resolverRunning() bool {
+	return len(resolverPIDs(d.procRoot())) > 0
+}
+
+// resolverBack waits up to resolverBackWithin for dnsmasq to be running.
+func (d *daemon) resolverBack(ctx context.Context) bool {
+	deadline := time.Now().Add(resolverBackWithin)
+	for {
+		if d.resolverRunning() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return d.resolverRunning()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// resolverRestarting: vctl restarted dnsmasq less than resolverRestartGrace
+// ago.
+func (d *daemon) resolverRestarting() bool {
+	return !d.resolverRestartedAt.IsZero() && d.now().Sub(d.resolverRestartedAt) < resolverRestartGrace
+}
+
+func (d *daemon) flushBridgeQUICSet(ctx context.Context, table string) {
+	c, cancel := context.WithTimeout(context.WithoutCancel(ctx), bridgeQUICWithin)
+	defer cancel()
 	_ = d.runFirewallCmd(c, "nft", "flush", "set", "inet", table, firewall.SetQUICPass4)
 }
 
+// errStillRestarting: restartDnsmasq stopped waiting, the restart goes on.
+var errStillRestarting = errors.New("still restarting; left to finish")
+
+// restartDnsmasq runs dnsmasq's restart in a session of its own and waits for
+// it while ctx lasts. It is never killed: a restart is a stop and a start,
+// and one cut between them — a timeout, vctl's own stop — would leave the LAN
+// without DNS and DHCP.
 func restartDnsmasq(ctx context.Context) error {
-	return exec.CommandContext(ctx, "/etc/init.d/dnsmasq", "restart").Run()
+	cmd := exec.Command(dnsmasqInit, "restart")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return errStillRestarting
+	}
 }
 
-// dropBridgeQUIC takes the fragment out with the data plane.
-func (d *daemon) dropBridgeQUIC(ctx context.Context) {
+// dropBridgeQUIC takes the fragment out with the data plane, after the table:
+// going direct does not wait for dnsmasq, whose restart is started and left
+// to finish.
+func (d *daemon) dropBridgeQUIC() {
 	changed, err := writeBridgeQUICFragment(nil, "")
-	d.bridgeQUICSynced, d.bridgeQUICWaiting = "", ""
-	d.bridgeQUICHeldSince, d.bridgeQUICHeldStart = time.Time{}, ""
+	d.bridgeQUICSynced, d.bridgeQUICWaiting, d.bridgeQUICStart = "", "", ""
+	d.bridgeQUICHeldSince = time.Time{}
 	if err != nil {
 		logging.L().Warn("dnsmasq's QUIC fragment not removed", "err", err.Error())
 		return
 	}
-	if !changed {
+	if !changed || !d.resolverRunning() {
 		return
 	}
-	c, cancel := context.WithTimeout(ctx, bridgeQUICWithin)
-	defer cancel()
+	d.resolverRestartedAt = d.now()
 	restart := restartDnsmasq
 	if d.restartResolver != nil {
 		restart = d.restartResolver
 	}
-	if err := restart(c); err != nil {
+	started, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := restart(started); err != nil && !errors.Is(err, errStillRestarting) {
 		logging.L().Warn("dnsmasq not restarted after its QUIC fragment left", "err", err.Error())
 	}
 }

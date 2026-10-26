@@ -283,7 +283,7 @@ fi
 i=0
 while [ "$i" -lt 60 ] && ! grep -q 'googlevideo.com' "$QUIC_FRAG" 2>/dev/null; do i=$((i + 1)); sleep 1; done
 if grep -q 'nftset=/.*googlevideo\.com.*/4#inet#vctl#vctl_quic_pass4' "$QUIC_FRAG" 2>/dev/null; then
-	record quic_fragment_written PASS "after ${i}s: $(grep '^nftset' "$QUIC_FRAG" | cut -c1-160)"
+	record quic_fragment_written PASS "after ${i}s: $(grep -c '^nftset=' "$QUIC_FRAG") nftset lines, the longest $(awk '{ if (length($0) > m) m = length($0) } END { print m }' "$QUIC_FRAG") bytes; $(grep 'googlevideo' "$QUIC_FRAG" | head -n 1)"
 else
 	record quic_fragment_written FAIL "fragment: '$(cat "$QUIC_FRAG" 2>/dev/null | tr '\n' ' ' | cut -c1-160)'; agent: $(grep -i 'quic' "$D/agent-$carrying.log" | tail -n 2 | tr '\n' ' ' | cut -c1-200)"
 fi

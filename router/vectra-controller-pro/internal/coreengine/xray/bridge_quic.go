@@ -260,9 +260,7 @@ func RenderBridgeQUIC(render []byte) BridgeQUIC {
 				name = strings.TrimPrefix(m, "full:")
 			}
 			name = strings.ToLower(strings.TrimSpace(name))
-			// A whole top-level domain ("domain:ru") is no name: dnsmasq
-			// would put every answer under it into the set.
-			if name == "" || seen[name] || !strings.Contains(name, ".") || strings.ContainsAny(name, "/# ") {
+			if seen[name] || !resolverName(name) {
 				continue
 			}
 			seen[name] = true
@@ -276,9 +274,33 @@ func RenderBridgeQUIC(render []byte) BridgeQUIC {
 	return out
 }
 
-// carriesUDP443: an outbound that does not reject UDP/443 itself. Only the
-// client side of plain Vision does among what the provider ships.
+// resolverName: a name to hand dnsmasq — letters, digits, hyphens and inner
+// dots only, and not a whole top-level domain ("domain:ru"), under which
+// dnsmasq would put every answer into the set.
+func resolverName(n string) bool {
+	if len(n) > 253 || !strings.Contains(n, ".") || strings.HasPrefix(n, ".") || strings.HasSuffix(n, ".") || strings.Contains(n, "..") {
+		return false
+	}
+	for _, c := range n {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '.' && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// carriesUDP443: an outbound that does not reject UDP/443 itself. The client
+// side of plain Vision does, and so does mux, unless its xudpProxyUDP443 says
+// otherwise ("reject" by default: the PassWall routers' YouTube, 2026-10-26).
 func carriesUDP443(ob map[string]json.RawMessage) bool {
+	var mux map[string]json.RawMessage
+	if json.Unmarshal(ruleField(ob, "mux"), &mux) == nil && string(mux[foldedKey(mux, "enabled")]) == "true" {
+		switch strings.ToLower(jsonString(mux[foldedKey(mux, "xudpProxyUDP443")])) {
+		case "allow", "skip":
+		default:
+			return false
+		}
+	}
 	var s map[string]json.RawMessage
 	if json.Unmarshal(ruleField(ob, "settings"), &s) != nil {
 		return true
