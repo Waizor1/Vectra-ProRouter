@@ -2533,6 +2533,9 @@ func TestTheSwapComesWithThePackage(t *testing.T) {
 //
 // Nothing merged, nothing dropped: a name in both lists stands twice. A
 // conditional or Kconfig-only entry (":", "@") it does not model, and says so.
+// The SDK itself (openwrt-sdk-24.10.8-mediatek-filogic, its
+// Package/vectra-controller-pro/DEPENDS printed, 2026-10-26) gave this list
+// entry for entry, for r30's Makefile (xray-core twice) and for this one.
 func sdkControlDepends(t *testing.T, mk []byte) []string {
 	t.Helper()
 	value := func(name string) string {
