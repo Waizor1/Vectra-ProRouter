@@ -2522,18 +2522,19 @@ func TestTheSwapComesWithThePackage(t *testing.T) {
 	}
 }
 
-// One Depends, whichever way the package is built: the SDK writes
-// EXTRA_DEPENDS and then DEPENDS (include/package-pack.mk), and the builds
-// without it take scripts/lib/pkg.sh's pkg_depends — the same packages, the
-// same versions. 0.7.0-r29 was published from build-local-ipk.sh without the
-// pro feed's vectra-geodata and vectra-reporter, and an upgrade to it made
-// opkg remove both where a feed-built vctl had brought them in.
-func TestEveryBuildWritesOneDepends(t *testing.T) {
-	t.Parallel()
-	mk, err := os.ReadFile("Makefile")
-	if err != nil {
-		t.Fatal(err)
-	}
+// sdkControlDepends is the Depends OpenWrt 24.10.8's SDK writes into the
+// package's control file, entry by entry, as include/package-pack.mk (at
+// v24.10.8) makes it:
+//
+//	DEPENDS:=$(call PKG_FIXUP_DEPENDS,$(1),$(DEPENDS))  # +libc first (PKG_DEFAULT_DEPENDS), not being a kmod-
+//	IDEPEND_$(1):=$$(call filter_deps,$$(DEPENDS))      # each name without its "+"
+//	Package/$(1)/DEPENDS := $$(call mergelist,...)      # ", " between them, in that order
+//	Package/$(1)/DEPENDS := $$(EXTRA_DEPENDS)$$(if ...,$$(comma) $$(Package/$(1)/DEPENDS))
+//
+// Nothing merged, nothing dropped: a name in both lists stands twice. A
+// conditional or Kconfig-only entry (":", "@") it does not model, and says so.
+func sdkControlDepends(t *testing.T, mk []byte) []string {
+	t.Helper()
 	value := func(name string) string {
 		m := regexp.MustCompile(`(?m)^\s*` + name + `:=(.*)$`).FindSubmatch(mk)
 		if m == nil {
@@ -2541,18 +2542,58 @@ func TestEveryBuildWritesOneDepends(t *testing.T) {
 		}
 		return strings.TrimSpace(string(m[1]))
 	}
-	// name -> version constraint ("" for none).
-	sdk := map[string]string{}
-	for _, e := range strings.Split(value("EXTRA_DEPENDS"), ",") {
-		name, constraint, _ := strings.Cut(strings.TrimSpace(e), " ")
-		sdk[name] = constraint
-	}
+	idepend := []string{"libc"}
 	for _, d := range strings.Fields(value("DEPENDS")) {
-		if name, ok := strings.CutPrefix(d, "+"); ok {
-			if _, named := sdk[name]; !named {
-				sdk[name] = ""
-			}
+		if strings.ContainsAny(d, ":@") {
+			t.Fatalf("DEPENDS has %q, which sdkControlDepends does not model", d)
 		}
+		if d = strings.TrimPrefix(d, "+"); d != "libc" {
+			idepend = append(idepend, d)
+		}
+	}
+	line := value("EXTRA_DEPENDS") + ", " + strings.Join(idepend, ", ")
+	return strings.Split(line, ", ")
+}
+
+// twice is the first package name that stands twice in a Depends, "" if none.
+func twice(depends []string) string {
+	seen := map[string]bool{}
+	for _, e := range depends {
+		name, _, _ := strings.Cut(e, " ")
+		if seen[name] {
+			return name
+		}
+		seen[name] = true
+	}
+	return ""
+}
+
+// One Depends, whichever way the package is built: the SDK's (sdkControlDepends)
+// and scripts/lib/pkg.sh's pkg_depends, which the builds without it write, are
+// one list — entry by entry and in order, the SDK's libc aside — and no name
+// stands in it twice. 0.7.0-r29 was published from build-local-ipk.sh without
+// the pro feed's vectra-geodata and vectra-reporter, and an upgrade to it
+// made opkg remove both where a feed-built vctl had brought them in; and
+// r30's Makefile named xray-core in DEPENDS and EXTRA_DEPENDS both, which the
+// SDK wrote twice, bare and with its minimum, and pkg_depends once.
+func TestEveryBuildWritesOneDepends(t *testing.T) {
+	t.Parallel()
+	mk, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sdk := sdkControlDepends(t, mk)
+	if name := twice(sdk); name != "" {
+		t.Fatalf("the SDK writes %s twice: Depends: %s", name, strings.Join(sdk, ", "))
+	}
+	// The oracle sees what r30's Makefile did.
+	r30 := regexp.MustCompile(`(?m)^(\s*DEPENDS:=.*\+uci) `).ReplaceAll(mk, []byte("$1 +xray-core "))
+	if name := twice(sdkControlDepends(t, r30)); name != "xray-core" {
+		t.Fatalf("with +xray-core in DEPENDS the oracle finds %q twice, not xray-core", name)
+	}
+	// The SDK still builds xray-core along with vctl.
+	if b := regexp.MustCompile(`(?m)^PKG_BUILD_DEPENDS:=(.*)$`).FindSubmatch(mk); b == nil || !strings.Contains(" "+string(b[1])+" ", " xray-core ") {
+		t.Fatalf("PKG_BUILD_DEPENDS does not name xray-core: %q", b)
 	}
 
 	out, err := exec.Command("bash", "-c", `PKG_MODULE="$1"; . "$1/scripts/lib/pkg.sh"; pkg_depends; pkg_depends_min xray-core; pkg_depends_min vectra-reporter`, "bash", "..").CombinedOutput()
@@ -2563,20 +2604,22 @@ func TestEveryBuildWritesOneDepends(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("pkg.sh said:\n%s", out)
 	}
-	got := map[string]string{}
-	for _, e := range strings.Split(lines[0], ", ") {
-		name, constraint, _ := strings.Cut(e, " ")
-		if _, twice := got[name]; twice {
-			t.Fatalf("%s twice in %q", name, lines[0])
+	var withoutLibc []string
+	for _, e := range sdk {
+		if e != "libc" {
+			withoutLibc = append(withoutLibc, e)
 		}
-		got[name] = constraint
 	}
-	if !reflect.DeepEqual(got, sdk) {
-		t.Fatalf("pkg.sh's Depends\n  %v\nthe SDK's (without libc)\n  %v", got, sdk)
+	if got := strings.Split(lines[0], ", "); !reflect.DeepEqual(got, withoutLibc) {
+		t.Fatalf("pkg.sh's Depends\n  %s\nthe SDK's (without libc)\n  %s", lines[0], strings.Join(withoutLibc, ", "))
 	}
-	for name, want := range map[string]string{"xray-core": "(>= " + lines[1] + ")", "vectra-geodata": "", "vectra-reporter": "(>= " + lines[2] + ")"} {
-		if c, ok := got[name]; !ok || c != want || strings.Contains(want, "(>= )") {
-			t.Errorf("Depends has %s %q, want %q", name, c, want)
+	for _, want := range []string{"xray-core (>= " + lines[1] + ")", "vectra-geodata", "vectra-reporter (>= " + lines[2] + ")"} {
+		found := false
+		for _, e := range sdk {
+			found = found || e == want
+		}
+		if !found || strings.Contains(want, "(>= )") {
+			t.Errorf("the Depends has no %q: %s", want, strings.Join(sdk, ", "))
 		}
 	}
 
@@ -2594,6 +2637,54 @@ func TestEveryBuildWritesOneDepends(t *testing.T) {
 				t.Errorf("%s writes %q", script, l)
 			}
 		}
+	}
+}
+
+// Rollout-VctlFleet.py leaves opkg's status to vctl too: its run asks the vctl
+// it installed (`vctl keep-companions`, under opkg's lock) once opkg is done,
+// and writes, moves or copies no status of its own; it rolls no vctl before
+// 0.7.0-r30, whose Depends does not name the companions; and the way back it
+// names is never below that.
+func TestTheRolloutLeavesTheStatusToVctl(t *testing.T) {
+	t.Parallel()
+	b, err := os.ReadFile("../../../scripts/Rollout-VctlFleet.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	i := strings.Index(src, "> /tmp/vctl-rollout.run <<'X'\n")
+	j := strings.Index(src[i+1:], "\nX\n")
+	if i < 0 || j < 0 {
+		t.Fatal("no detached run in Rollout-VctlFleet.py")
+	}
+	run := src[i : i+1+j]
+	install, keep := strings.Index(run, "opkg install /tmp/vctl-rollout.d/pkg.ipk"), strings.Index(run, "/usr/sbin/vctl keep-companions")
+	if install < 0 || keep < install {
+		t.Fatalf("the run does not ask vctl after its opkg:\n%s", run)
+	}
+	code := regexp.MustCompile(`(?m)^\s*#.*$`).ReplaceAllString(run, "")
+	for _, w := range []string{"pidof opkg", "status.vctl", "cmp -s", "mv "} {
+		if strings.Contains(code, w) {
+			t.Fatalf("the run has %q of its own:\n%s", w, run)
+		}
+	}
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("no python3 for the rest")
+	}
+	script, _ := filepath.Abs("../../../scripts/Rollout-VctlFleet.py")
+	cmd := exec.Command(py, "-I", "-c", `import importlib.util, sys
+spec = importlib.util.spec_from_file_location("r", sys.argv[1]); r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
+for v in ("0.7.0-r29", "", "0.7.0-r30", "0.7.0-r31"):
+    print(r.rollback_hint(v).split("<the ")[1].split(" ipk>")[0])
+sys.argv = ["Rollout-VctlFleet.py", "--version", "0.7.0-r29"]
+print("exit", r.main())`, script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("python3: %v\n%s", err, out)
+	}
+	if want := "0.7.0-r30\n0.7.0-r30\n0.7.0-r30\n0.7.0-r31\n"; !strings.HasPrefix(string(out), want) || !strings.HasSuffix(string(out), "exit 2\n") {
+		t.Fatalf("the rollout said:\n%s\nwant the way back to %q, and r29 refused", out, want)
 	}
 }
 

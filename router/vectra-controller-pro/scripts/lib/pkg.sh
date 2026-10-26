@@ -20,12 +20,12 @@ pkg_version() { # -> 0.5.0-r1
 	echo "$ver-r$rel"
 }
 
-# The SDK writes EXTRA_DEPENDS as it is, then DEPENDS (with libc, which the
-# static vctl here does not need). The same set here, without the bare name
-# of a package EXTRA_DEPENDS names with its version: DEPENDS in its order,
-# each with the version EXTRA_DEPENDS gives it, then what only EXTRA_DEPENDS
-# names.
-pkg_depends() { # -> "ca-bundle, ..., xray-core (>= 26.3.27), ..., vectra-geodata, vectra-reporter (>= 1.0.0-r4)"
+# The Depends the SDK writes (include/package-pack.mk): EXTRA_DEPENDS as it
+# is, then DEPENDS, each name without its "+" — with libc first among them,
+# which the static vctl built here does not need. Nothing merged or dropped:
+# a name in both would stand twice in the SDK's, and so it does here
+# (TestEveryBuildWritesOneDepends holds both to the same list, none twice).
+pkg_depends() { # -> "xray-core (>= 26.10.21), vectra-geodata, vectra-reporter (>= 1.0.0-r4), ca-bundle, ..."
 	awk '
 		/^[[:space:]]*DEPENDS:=/ {
 			sub(/^[[:space:]]*DEPENDS:=/, "")
@@ -36,9 +36,8 @@ pkg_depends() { # -> "ca-bundle, ..., xray-core (>= 26.3.27), ..., vectra-geodat
 			m = split($0, extra, /[[:space:]]*,[[:space:]]*/)
 		}
 		END {
-			for (j = 1; j <= m; j++) { name = extra[j]; sub(/[[:space:]].*/, "", name); named[name] = extra[j]; order[j] = name }
-			for (i = 1; i <= n; i++) { out = out sep (dep[i] in named ? named[dep[i]] : dep[i]); sep = ", "; seen[dep[i]] = 1 }
-			for (j = 1; j <= m; j++) if (!(order[j] in seen)) { out = out sep named[order[j]]; sep = ", " }
+			for (j = 1; j <= m; j++) { out = out sep extra[j]; sep = ", " }
+			for (i = 1; i <= n; i++) { out = out sep dep[i]; sep = ", " }
 			print out
 		}' "$PKG_MAKEFILE"
 }

@@ -157,16 +157,19 @@ Then:
    built otherwise than by build-pro-feed.sh names neither, and a feed that
    served one left a router without its geo data). An update upgrades
    Vectra's own packages only: xray-core is in already; a vctl not upgraded
-   (the same version) is restarted onto a new xray. Before it and after the
-   install the two lose
-   opkg's `Auto-Installed` mark (`keep_companions`): opkg removes an
+   (the same version) is restarted onto a new xray. After the install the
+   two lose opkg's `Auto-Installed` mark (`keep_companions`, which asks the
+   vctl just installed: `vctl keep-companions`): opkg removes an
    auto-installed package as an orphan as soon as a vctl that does not depend
    on it replaces one that did (0.7.0-r29 as published), and no opkg command
-   takes the mark away — `opkg flag user` does not. Not while another opkg
-   runs (waited for up to 10 s), and only when the new status is the old one
-   less exactly those lines; otherwise COMPANIONS_MARK, a warning. vctl's own
-   self-update (update_controller, Connect's automatic update) and
-   `scripts/Rollout-VctlFleet.py` do the same around their `opkg install`.
+   takes the mark away — `opkg flag user` does not. vctl takes opkg's own
+   lock (`/var/lock/opkg.lock`), holds it only once no opkg is alive and the
+   lock file is still the one it locked, and replaces the status only if it
+   is still what it read; another opkg is waited for up to 10 s, and
+   otherwise COMPANIONS_MARK, a warning — vctl from 0.7.0-r31 drops the marks
+   itself when it next starts. vctl's own self-update (update_controller,
+   Connect's automatic update) does it around its `opkg install`, and
+   `scripts/Rollout-VctlFleet.py` after it, by the same command.
 12. **Geo data**: Vectra reads its own set, vectra-geodata's, in
     `/usr/share/vectra-controller-pro/geo`, and never replaces a file in
     `/usr/share/v2ray` (PassWall2's packages'; only links to its own set for

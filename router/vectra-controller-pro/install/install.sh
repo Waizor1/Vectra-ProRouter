@@ -1165,57 +1165,29 @@ dns_diag() {
 # a vctl from the pro feed took the reporter's spool and state and the geo
 # data (test/pilot). No opkg command takes the mark away — `opkg flag user`
 # sets the package's state, and the orphan check reads only the mark (opkg
-# 2024.10.16, OpenWrt 24.10) — so the line goes from the status file itself:
-# before opkg upgrades vctl, and after the install, since an opkg that brings
-# a companion in as vctl's dependency marks it again. Not while another opkg
-# runs: it writes the file from what it read. The new file is made from a copy
-# of the status, and replaces it only when it is that copy less exactly those
-# lines — in lines and in bytes (a full overlay cuts a file short, and awk
-# still exits 0) — and when the status is still that copy.
+# 2024.10.16, OpenWrt 24.10) — so the line goes from the status file itself,
+# after the install: the vctl it installs, the feed's, names both (0.7.0-r30
+# on), so its opkg removes neither, and marks a companion it brings in as a
+# dependency. By that vctl (`vctl keep-companions`), under opkg's own lock: a
+# shell has no lock opkg heeds — busybox's flock and OpenWrt's lock take
+# flock(2), opkg lockf — and a look at pidof and cmp before a mv leaves a
+# moment in which an opkg's write is undone.
 COMPANIONS="vectra-geodata vectra-reporter"
 COMPANIONS_WAIT="${VECTRA_COMPANIONS_WAIT:-10}"
-companion_marks() { # <mode> <file>: count — how many marks; drop — the file without them
-	awk -v names=" $COMPANIONS " -v mode="$1" '
-		/^Package: / { p = substr($0, 10) }
-		/^$/ { p = "" }
-		p != "" && index(names, " " p " ") && $0 == "Auto-Installed: yes" { n++; next }
-		mode == "drop" { print }
-		END { if (mode == "count") print n + 0 }' "$2"
-}
-opkg_busy() { # another opkg runs: waited for up to COMPANIONS_WAIT seconds
-	waited=0
-	while pidof opkg > /dev/null 2>&1; do
-		[ "$waited" -lt "$COMPANIONS_WAIT" ] || return 0
-		sleep 1
-		waited=$((waited + 1))
-	done
-	return 1
-}
+VCTL_BIN="${VECTRA_VCTL_BIN:-/usr/sbin/vctl}"
 keep_companions() {
 	[ -f "$OPKG_STATUS" ] || return 0
-	[ "$(companion_marks count "$OPKG_STATUS")" = 0 ] && return 0
-	status_new="$OPKG_STATUS.vectra"
-	status_was="$WORK/opkg-status.was"
-	mkdir -p "$WORK"
-	if ! opkg_busy && cp "$OPKG_STATUS" "$status_was"; then
-		marks="$(companion_marks count "$status_was")"
-		case "$marks" in
-		'' | *[!0-9]*) ;;
-		*)
-			if companion_marks drop "$status_was" > "$status_new" &&
-				[ "$(grep -c '' "$status_new")" = "$(($(grep -c '' "$status_was") - marks))" ] &&
-				[ "$(($(wc -c < "$status_new")))" = "$(($(wc -c < "$status_was") - 20 * marks))" ] &&
-				sync && ! pidof opkg > /dev/null 2>&1 && cmp -s "$status_was" "$OPKG_STATUS" &&
-				mv "$status_new" "$OPKG_STATUS"; then
-				rm -f "$status_was"
-				ok "$COMPANIONS остаются на роутере при любой версии Vectra (отметка Auto-Installed снята)"
-				return 0
-			fi
-			;;
-		esac
-	fi
-	rm -f "$status_new" "$status_was"
-	warn COMPANIONS_MARK "не удалось снять отметку Auto-Installed у $COMPANIONS в $OPKG_STATUS: opkg может удалить их при установке версии Vectra, которая от них не зависит"
+	said="$("$VCTL_BIN" keep-companions --wait "$COMPANIONS_WAIT" 2>&1)"
+	case $? in
+	0)
+		case "$said" in *"kept "*) ok "$COMPANIONS остаются на роутере при любой версии Vectra (отметка Auto-Installed снята)" ;; esac
+		return 0
+		;;
+	1) later=" Vectra снимет её сама при следующем запуске." ;;
+	*) later="" ;; # a vctl before 0.7.0-r31: no such command
+	esac
+	[ -n "$said" ] && note "$said"
+	warn COMPANIONS_MARK "не удалось снять отметку Auto-Installed у $COMPANIONS в $OPKG_STATUS: opkg может удалить их при установке версии Vectra, которая от них не зависит.$later"
 }
 
 LUCI=0
@@ -1241,7 +1213,6 @@ install_packages() {
 		# Not xray-core: install_xray_pin put Vectra's own in already, and
 		# `opkg upgrade` would take the newest from ANY feed. With it there,
 		# the package's own Depends, xray-core (>= it), pulls no other.
-		keep_companions
 		retry opkg upgrade "$PKG" vectra-geodata vectra-reporter
 		installed vectra-geodata || retry opkg install vectra-geodata
 		installed vectra-reporter || retry opkg install vectra-reporter
@@ -1259,8 +1230,8 @@ install_packages() {
 	fi
 	# shellcheck disable=SC2086 # a list of packages
 	retry opkg install $pkgs || fail PKG_INSTALL "opkg install $pkgs не прошёл (см. лог). Интернет роутера работает как прежде${XRAY_REPLACED:+, но xray уже заменён на xray-core из фида Vectra}."
-	# And what this run's opkg pulled in as vctl's dependency (an upgrade
-	# from a vctl that had no reporter yet).
+	# The companions' marks, and what this run's opkg pulled in as vctl's
+	# dependency (an upgrade from a vctl that had no reporter yet).
 	keep_companions
 	# A new xray under a vctl that was not upgraded (its postinst restarts
 	# it otherwise): the xray that runs is still the old binary until vctl

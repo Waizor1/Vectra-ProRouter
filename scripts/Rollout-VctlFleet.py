@@ -277,25 +277,6 @@ rm -f /tmp/vctl-rollout.log
 { echo '#!/bin/sh'; echo "how=$how; base='$base'; xfile='$xfile'; xsha='$xsha'"; cat; } > /tmp/vctl-rollout.run <<'X'
 trap 'rm -rf /tmp/vctl-rollout.d /tmp/vctl-rollout.run' EXIT
 sleep 15
-# vectra-geodata and vectra-reporter stay whatever a vctl's Depends says:
-# opkg removes one that is Auto-Installed as soon as a vctl that does not name
-# it replaces one that did, and no opkg command takes the mark away
-# (install.sh, keep_companions). So the line goes from the status, before the
-# install and after it (it marks what it brings in as a dependency): from a
-# copy, replacing the status only when it is the copy less exactly those lines
-# and still unchanged, never while another opkg runs.
-keep() {
-  s=/usr/lib/opkg/status c=/tmp/vctl-rollout.st w=0
-  while pidof opkg >/dev/null; do [ $w -ge 10 ] && return; sleep 1; w=$((w + 1)); done
-  cp $s $c || return
-  m='/^Package: /{p=substr($0,10)} /^$/{p=""} {k=(p=="vectra-geodata"||p=="vectra-reporter")&&$0=="Auto-Installed: yes"}'
-  n=$(awk "$m"' k{n++} END{print n+0}' $c)
-  [ "${n:-0}" -gt 0 ] 2>/dev/null && awk "$m"' !k' $c > $s.vctl &&
-    [ "$(grep -c '' $s.vctl)" = "$(($(grep -c '' $c) - n))" ] && [ "$(($(wc -c < $s.vctl)))" = "$(($(wc -c < $c) - 20 * n))" ] &&
-    sync && ! pidof opkg >/dev/null && cmp -s $c $s && mv $s.vctl $s
-  rm -f $s.vctl $c
-}
-keep
 # The channel's xray-core first (one xray per vctl), fetched here — past the
 # panel's job cap — and checked against the signed index's sha256; by itself,
 # with --force-space (opkg counts its whole Installed-Size; the floors held
@@ -324,7 +305,14 @@ if [ "$how" != keep ]; then
   fi
 fi
 [ "$rc" = 0 ] && { opkg install /tmp/vctl-rollout.d/pkg.ipk >> /tmp/vctl-rollout.log 2>&1; rc=$?; }
-keep
+# vectra-geodata and vectra-reporter stay whatever a later vctl's Depends
+# says: opkg removes one marked Auto-Installed once a vctl that does not name
+# it replaces one that did, and no opkg command takes the mark away. The vctl
+# that went in names both (none before 0.7.0-r30 is rolled out), so this opkg
+# removed neither; the marks go now, by that vctl, under opkg's own lock
+# (`vctl keep-companions`): a shell has no lock opkg heeds, and a look before
+# a mv leaves a moment in which an opkg's write is undone.
+[ "$rc" = 0 ] && { /usr/sbin/vctl keep-companions --wait 30 >> /tmp/vctl-rollout.log 2>&1 || echo "companions: the marks stay" >> /tmp/vctl-rollout.log; }
 echo "rc=$rc" >> /tmp/vctl-rollout.log
 X
 (setsid sh /tmp/vctl-rollout.run </dev/null >/dev/null 2>&1 &)
@@ -337,6 +325,7 @@ echo "version=$(opkg list-installed vectra-controller-pro | cut -d' ' -f3)"
 echo "opkg=$(tail -1 /tmp/vctl-rollout.log 2>/dev/null)"
 echo "xraypkg=$(awk '/^Package: /{p=($2=="xray-core")} p&&/^Version: /{print $2; exit}' /usr/lib/opkg/status)"
 echo "xrayv=$(/usr/bin/xray version 2>/dev/null | awk 'NR==1{print $2}')"
+echo "marks=$(awk '/^Package: /{p=$2} /^$/{p=""} (p=="vectra-geodata"||p=="vectra-reporter")&&$0=="Auto-Installed: yes"{n++} END{print n+0}' /usr/lib/opkg/status)"
 [ -e /tmp/vctl-rollout.run ] && echo "pending=yes" || echo "pending=no"
 a=down
 for p in $(ubus call service list '{"name":"vectra-controller-pro"}' 2>/dev/null | jsonfilter -e '@[*].instances[*].pid' 2>/dev/null); do
@@ -442,9 +431,26 @@ def roll(r: dict, a: argparse.Namespace, entry: dict, target: tuple[int, ...], x
         time.sleep(60)
     print(f"   health: {h}")
     if bad:
-        raise Stop(f"not healthy after the upgrade ({', '.join(bad)}). Roll back by hand: a terminal job running "
-                   f"`opkg install --force-downgrade <previous ipk>` (the previous build is in /opt/vectra-prorouter-backups/pro-canary-* on the VPS)")
+        raise Stop(f"not healthy after the upgrade ({', '.join(bad)}). {rollback_hint(it.get('version', ''))}")
+    if h.get("marks") != "0":
+        print(f"   note: the companions' Auto-Installed marks stay ({h.get('marks')}); a vctl from 0.7.0-r31 drops them at its next start")
     return f"{it.get('version')} -> {a.version}"
+
+
+# The oldest vctl whose Depends names vectra-geodata and vectra-reporter: one
+# before it, installed over one that names them, removes both where they came
+# in as its dependencies (marked Auto-Installed) — the reporter's spool and
+# state, the geo data.
+KEEPS_COMPANIONS = (0, 7, 0, 30)
+
+
+def rollback_hint(previous: str) -> str:
+    """How to go back by hand: to the build the router ran, or to 0.7.0-r30
+    where that one is older — never below it."""
+    to = previous if (release(previous) or (0,)) >= KEEPS_COMPANIONS else "0.7.0-r30"
+    return (f"Roll back by hand: a terminal job running `opkg install --force-downgrade <the {to} ipk>` "
+            f"(the previous builds are in /opt/vectra-prorouter-backups/pro-canary-* on the VPS) — not below 0.7.0-r30, "
+            f"which would remove vectra-geodata and vectra-reporter where they are marked Auto-Installed")
 
 
 def main() -> int:
@@ -463,6 +469,10 @@ def main() -> int:
     target = release(a.version)
     if not target:
         print(f"--version: expected like 0.7.0-r26, got {a.version!r}", file=sys.stderr)
+        return 2
+    if target < KEEPS_COMPANIONS:
+        print(f"--version {a.version}: a vctl before 0.7.0-r30 does not depend on vectra-geodata and vectra-reporter, "
+              f"and opkg would remove them where they are marked Auto-Installed", file=sys.stderr)
         return 2
     entry = package_entry(a.channel, a.version)
     print(f"package: {entry['Filename']} sha256 {entry['SHA256sum']}")
