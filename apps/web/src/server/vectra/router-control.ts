@@ -3007,6 +3007,7 @@ export async function recordJobResult(routerId: string, input: unknown) {
   await notifyPartnerOfClaimApplyResult({
     job,
     ownerRef: currentRouter.ownerRef,
+    claimId: currentRouter.claimId ?? null,
     parsed,
   });
 
@@ -3057,6 +3058,8 @@ export function describeFailedJobResult(
 async function notifyPartnerOfClaimApplyResult(args: {
   job: JobRow;
   ownerRef: string | null;
+  // Read with ownerRef: the claim attempt this result is reported under.
+  claimId: string | null;
   parsed: ReturnType<typeof jobResultRequestSchema.parse>;
 }) {
   if (
@@ -3072,6 +3075,7 @@ async function notifyPartnerOfClaimApplyResult(args: {
       event: args.parsed.status === "success" ? "router.ready" : "router.failed",
       routerId: args.job.routerId,
       ownerRef: args.ownerRef,
+      claimId: args.claimId,
       detail:
         args.parsed.status === "success"
           ? null

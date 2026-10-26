@@ -30,6 +30,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  uuid,
 } from "drizzle-orm/pg-core";
 
 const routerStatusEnum = pgEnum(
@@ -152,6 +153,12 @@ export const routers = createTable(
       withTimezone: true,
     }),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    // The id of the current claim attempt (a random UUIDv4): a new one on every
+    // successful claim, kept by an idempotent repeat of that claim, cleared by
+    // unbind. Every partner webhook carries the value it had when the event
+    // was queued, so the partner can drop a late event of an earlier claim of
+    // the same router. NULL = not claimed, or claimed before claim ids existed.
+    claimId: uuid("claim_id"),
     // Set when the Vectra account unlinked the router (partner unbind) and
     // cleared by the next claim. While set with no owner, the router is told
     // `released: true` — an explicit "drop the previous owner's config" that

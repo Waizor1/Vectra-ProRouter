@@ -931,9 +931,10 @@ describe("checkInRouter claim", () => {
 });
 
 describe("recordJobResult reports a claim's first apply to the backend", () => {
-  function scriptResult(options: { type?: string; payload?: Record<string, unknown>; ownerRef?: string | null } = {}) {
+  function scriptResult(options: { type?: string; payload?: Record<string, unknown>; ownerRef?: string | null; claimId?: string | null } = {}) {
     const router = routerRow({
       ownerRef: options.ownerRef === undefined ? "acct-42" : options.ownerRef,
+      claimId: options.claimId ?? null,
       approvedAt: new Date(),
       importState: "approved",
       status: "active",
@@ -1047,6 +1048,30 @@ describe("recordJobResult reports a claim's first apply to the backend", () => {
         routerId: ROUTER_ID,
         ownerRef: "acct-42",
       }),
+    ]);
+  });
+
+  // The new attempt's router.ready may reach the partner before the claim
+  // response does; it carries the router's current claim id, read with the
+  // owner, so the partner can match it once the response arrives.
+  it("queues router.ready under the claim id of the router it was reported for", async () => {
+    const claimId = "7e4d2c1b-0a9f-4b8e-9d7c-6b5a4f3e2d1c";
+    scriptResult({ claimId });
+
+    await recordJobResult(ROUTER_ID, result("success", { appliedRevisionId: REVISION_ID }));
+
+    expect(fake.inserts(partnerWebhooks).map((row) => row.payload)).toEqual([
+      expect.objectContaining({ event: "router.ready", claimId }),
+    ]);
+  });
+
+  it("queues router.failed with claimId null for a router claimed before claim ids", async () => {
+    scriptResult({ claimId: null });
+
+    await recordJobResult(ROUTER_ID, result("failure", { result: { error: "boom" } }));
+
+    expect(fake.inserts(partnerWebhooks).map((row) => row.payload)).toEqual([
+      expect.objectContaining({ event: "router.failed", claimId: null }),
     ]);
   });
 

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   partnerRouterClaimRequestSchema,
+  partnerRouterClaimResponseSchema,
   partnerRouterUnbindRequestSchema,
   partnerWebhookPayloadSchema,
   routerCheckInRequestSchema,
@@ -305,6 +306,55 @@ describe("partner claim request", () => {
         at: "2026-09-28T10:00:00.000Z",
       }).success,
     ).toBe(false);
+  });
+
+  // claimId is additive: a payload queued before it existed has none and must
+  // still parse (and parse to nothing new); a new one carries a uuid or null.
+  it("takes an optional, nullable uuid claimId and keeps old payloads valid", () => {
+    const old = {
+      event: "router.ready",
+      routerId: "6f0c2d8e-4b1a-4c3e-9d57-2a8b1c0e9f31",
+      ownerRef: "acct-42",
+      at: "2026-09-28T10:00:00.000Z",
+    };
+    expect(partnerWebhookPayloadSchema.parse(old)).toEqual(old);
+    expect(
+      partnerWebhookPayloadSchema.parse({
+        ...old,
+        claimId: "0a6f3c2e-9b1d-4e7a-8c5b-3d2e1f0a9b8c",
+      }),
+    ).toMatchObject({ claimId: "0a6f3c2e-9b1d-4e7a-8c5b-3d2e1f0a9b8c" });
+    expect(
+      partnerWebhookPayloadSchema.parse({ ...old, claimId: null }),
+    ).toMatchObject({ claimId: null });
+    expect(
+      partnerWebhookPayloadSchema.safeParse({ ...old, claimId: "claim-1" })
+        .success,
+    ).toBe(false);
+  });
+
+  it("answers a claim with its claimId; an answer stored before claim ids still parses", () => {
+    const answer = {
+      routerId: "6f0c2d8e-4b1a-4c3e-9d57-2a8b1c0e9f31",
+      state: "claimed",
+      alreadyClaimed: false,
+      deviceIdentifier: "vectra-07bf0887f662",
+      devicePublicKey: null,
+      model: null,
+    };
+    expect(partnerRouterClaimResponseSchema.safeParse(answer).success).toBe(
+      true,
+    );
+    expect(
+      partnerRouterClaimResponseSchema.parse({
+        ...answer,
+        claimId: "0a6f3c2e-9b1d-4e7a-8c5b-3d2e1f0a9b8c",
+      }),
+    ).toMatchObject({ claimId: "0a6f3c2e-9b1d-4e7a-8c5b-3d2e1f0a9b8c" });
+    expect(
+      partnerRouterClaimResponseSchema.safeParse({ ...answer, claimId: null })
+        .success,
+    ).toBe(true);
   });
 });
 

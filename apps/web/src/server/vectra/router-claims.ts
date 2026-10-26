@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import type {
   PartnerRouterClaimRequest,
@@ -95,6 +95,8 @@ function fail(
   return { ok: false, status, body: detail ? { error, detail } : { error } };
 }
 
+// `router.claimId` is the claim attempt answered: the one just made, or for
+// `alreadyClaimed` the stored one, never rotated by the repeat.
 async function claimed(
   client: ClaimsDatabase,
   router: RouterRow,
@@ -115,6 +117,7 @@ async function claimed(
       deviceIdentifier: router.deviceIdentifier,
       devicePublicKey: key?.length === 32 ? key.toString("base64") : null,
       model: router.model ?? null,
+      claimId: router.claimId ?? null,
     },
   };
 }
@@ -381,7 +384,7 @@ function partnerName(partnerId: string) {
 }
 
 // Author the owner's config, queue its apply and record the claim — inside
-// the caller's transaction.
+// the caller's transaction. `router.claimId` is the new claim's id.
 async function configureClaimedRouter(
   tx: ClaimTransaction,
   router: RouterRow,
@@ -411,6 +414,7 @@ async function configureClaimedRouter(
     metadata: {
       ownerRef: work.request.owner.ref,
       partnerId: work.partnerId,
+      claimId: router.claimId,
       via: work.via,
       preRegistered,
       revisionId: revision.id,
@@ -423,6 +427,7 @@ async function configureClaimedRouter(
     ownerRef: work.request.owner.ref,
     at: work.now,
     partnerId: work.partnerId,
+    claimId: router.claimId,
   });
 }
 
@@ -432,13 +437,17 @@ async function claimExistingRouter(
   work: ClaimWork,
 ) {
   return client.transaction(async (tx) => {
-    const [claimedRouter] = await tx
+    // A new attempt, a new id — also when the same owner claims again after
+    // an unbind.
+    const claimId = randomUUID();
+    const [updated] = await tx
       .update(routers)
       .set({
         ownerRef: work.request.owner.ref,
         ownerLabel: work.request.owner.label,
         partnerId: work.partnerId,
         claimedAt: work.now,
+        claimId,
         // A new owner ends a previous release.
         releasedAt: null,
         engineMode: "xray-direct",
@@ -454,10 +463,11 @@ async function claimExistingRouter(
       // Only while nobody owns it: two concurrent claims cannot both win.
       .where(and(eq(routers.id, router.id), isNull(routers.ownerRef)))
       .returning();
-    if (!claimedRouter) {
+    if (!updated) {
       return null;
     }
 
+    const claimedRouter = { ...updated, claimId };
     await configureClaimedRouter(tx, claimedRouter, work, false);
     return claimedRouter;
   });
@@ -475,7 +485,8 @@ async function claimUnregisteredRouter(
   work: ClaimWork,
 ) {
   return client.transaction(async (tx) => {
-    const [created] = await tx
+    const claimId = randomUUID();
+    const [inserted] = await tx
       .insert(routers)
       .values({
         deviceIdentifier: device.deviceIdentifier,
@@ -487,13 +498,15 @@ async function claimUnregisteredRouter(
         ownerLabel: work.request.owner.label,
         partnerId: work.partnerId,
         claimedAt: work.now,
+        claimId,
       })
       // The router registered in between: claim it as an existing one.
       .onConflictDoNothing({ target: routers.deviceIdentifier })
       .returning();
-    if (!created) {
+    if (!inserted) {
       return null;
     }
+    const created = { ...inserted, claimId };
 
     await tx.insert(routerCredentials).values({
       routerId: created.id,
@@ -650,6 +663,8 @@ export async function unbindRouterClaimWithDb(
         ownerRef: null,
         ownerLabel: null,
         claimedAt: null,
+        // The claim attempt is over: events from now on carry claimId null.
+        claimId: null,
         claimCodeHash: null,
         claimExpiresAt: null,
         previousClaimCodeHash: null,
@@ -743,6 +758,7 @@ export async function unbindRouterClaimWithDb(
       metadata: {
         previousOwnerRef,
         partnerId,
+        previousClaimId: router.claimId ?? null,
         cancelledJobIds: cancelledJobs.map((job) => job.id),
         purgedRevisionIds: revisionIds,
         closedRescueCaseIds: closedCases.map((rescueCase) => rescueCase.id),

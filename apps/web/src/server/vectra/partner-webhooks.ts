@@ -113,7 +113,13 @@ function anyPartnerWebhook() {
 
 /**
  * Queue a webhook for the partner that owns the router. One insert (plus one
- * read of the router's partner when the caller did not pass it), no network.
+ * read of the router's partner and claim id when the caller did not pass
+ * both), no network.
+ *
+ * The payload's `claimId` is frozen here: the caller's (read with the ownerRef
+ * it passes, in the same transaction) or else the router's claim id as read on
+ * `client` now. A retry, however late, sends the same bytes, so an event of an
+ * earlier claim attempt keeps that attempt's id after the router is re-claimed.
  * A no-op (null) when no partner has a webhook at all, or when the registry
  * knows this partner and it has none. A partner the registry does NOT know is
  * queued all the same: a typo in VECTRA_PARTNERS makes the registry serve
@@ -131,6 +137,9 @@ export async function enqueuePartnerWebhookWithDb(
     at?: Date;
     // The partner the event belongs to; read from the router when absent.
     partnerId?: string;
+    // The claim attempt the event belongs to (null: none); read from the
+    // router when absent (undefined).
+    claimId?: string | null;
   },
 ) {
   // Checked before anything touches the database: with no webhook configured
@@ -138,17 +147,19 @@ export async function enqueuePartnerWebhookWithDb(
   if (!anyPartnerWebhook()) {
     return null;
   }
-  const partnerId =
-    input.partnerId ??
-    routerPartnerId(
-      (
-        await client
-          .select({ partnerId: routers.partnerId })
-          .from(routers)
-          .where(eq(routers.id, input.routerId))
-          .limit(1)
-      )[0] ?? {},
-    );
+  const stored =
+    input.partnerId === undefined || input.claimId === undefined
+      ? ((
+          await client
+            .select({ partnerId: routers.partnerId, claimId: routers.claimId })
+            .from(routers)
+            .where(eq(routers.id, input.routerId))
+            .limit(1)
+        )[0] ?? null)
+      : null;
+  const partnerId = input.partnerId ?? routerPartnerId(stored ?? {});
+  const claimId =
+    input.claimId !== undefined ? input.claimId : (stored?.claimId ?? null);
   const partner = findPartner(partnerId);
   if (partner && !partner.webhook) {
     return null;
@@ -163,6 +174,7 @@ export async function enqueuePartnerWebhookWithDb(
     routerId: input.routerId,
     ownerRef: input.ownerRef,
     at: at.toISOString(),
+    claimId,
     ...(detail ? { detail } : {}),
   });
 

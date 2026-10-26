@@ -1913,6 +1913,11 @@ export const partnerRouterClaimResponseSchema = z.object({
     .regex(/^[A-Za-z0-9+/]{43}=$/)
     .nullable(),
   model: z.string().nullable(),
+  // The id of this claim attempt; see partnerWebhookPayloadSchema.claimId.
+  // A new claim gets a new one; `alreadyClaimed: true` returns the same one.
+  // null only for a router claimed before claim ids existed. Optional so an
+  // answer stored under an Idempotency-Key before then still parses.
+  claimId: z.string().uuid().nullable().optional(),
 });
 
 // The body a DELETE must carry. The signature covers the body only, so the
@@ -1941,11 +1946,32 @@ export const partnerWebhookEventSchema = z.enum([
   "router.vendor_access",
 ]);
 
+/**
+ * The body of every partner webhook. Frozen into its outbox row when the event
+ * is queued and sent byte for byte on every retry.
+ *
+ * `claimId` is the claim attempt the event belongs to: the router's claim id
+ * AT THE MOMENT THE EVENT WAS QUEUED (the same id the claim response returned),
+ * or null when the router had no claim id then (not claimed, or claimed before
+ * claim ids existed). Each successful claim of a router — including a re-claim
+ * by the same ownerRef after an unbind — gets a new random UUIDv4; an
+ * idempotent repeat (`alreadyClaimed: true`) keeps it; unbind clears it. A late
+ * delivery of an earlier attempt's event therefore still carries that earlier
+ * attempt's id. Timestamps cannot separate adjacent attempts, and `router.ready`
+ * may arrive before the claim response, so the correlation is the partner's:
+ * act on an event only when its `claimId` equals the one from the latest claim
+ * response for that router.
+ *
+ * Optional and nullable for compatibility: rows queued before the field
+ * existed have no `claimId` and still parse; every newly queued payload sets it
+ * (a uuid or null).
+ */
 export const partnerWebhookPayloadSchema = z.object({
   event: partnerWebhookEventSchema,
   routerId: z.string().uuid(),
   ownerRef: z.string().min(1),
   at: z.string().datetime(),
+  claimId: z.string().uuid().nullable().optional(),
   detail: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
 });
 

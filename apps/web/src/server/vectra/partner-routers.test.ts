@@ -1432,6 +1432,68 @@ describe("a router's webhooks carry its partner", () => {
   });
 });
 
+// Every event carries the claim id of the router row it locked, in the same
+// transaction as the outbox insert: the current claim attempt at that moment.
+describe("router events carry the claim id of the router they lock", () => {
+  const LONG_AGO = new Date(NOW.getTime() - 600_000);
+  const CLAIM_A = "0a6f3c2e-9b1d-4e7a-8c5b-3d2e1f0a9b8c";
+  const CLAIM_B = "7e4d2c1b-0a9f-4b8e-9d7c-6b5a4f3e2d1c";
+
+  it("a check-in event takes the locked row's id, not the one read before it", async () => {
+    // Read under attempt A; re-claimed by the same owner (B) before the lock.
+    const previous = router({ lastSeenAt: LONG_AGO, claimId: CLAIM_A });
+    const fake = createFakeDb({
+      updateReturns: [[routers, [[{ ...previous, claimId: CLAIM_B }]]]],
+    });
+    await notifyPartnerCheckInWithDb(fake.db as never, previous, {} as never, NOW);
+    expect(fake.inserts(partnerWebhooks).map((row) => row.payload)).toEqual([
+      expect.objectContaining({ event: "router.online", claimId: CLAIM_B }),
+    ]);
+  });
+
+  it("the offline sweep's event carries the claim id", async () => {
+    const stale = router({ lastSeenAt: LONG_AGO, claimId: CLAIM_A });
+    const fake = createFakeDb({
+      selects: [[routers, [[stale]]]],
+      updateReturns: [[routers, [[stale]]]],
+    });
+    await sweepPartnerOfflineWithDb(fake.db as never, NOW);
+    expect(fake.inserts(partnerWebhooks).map((row) => row.payload)).toEqual([
+      expect.objectContaining({ event: "router.offline", claimId: CLAIM_A }),
+    ]);
+  });
+
+  it("an action result carries the claim id, read with no extra query", async () => {
+    const job = {
+      id: JOB,
+      routerId: ID,
+      payload: { origin: "partner_action", ownerRef: "acct-42", actionId: JOB },
+    } as unknown as typeof jobs.$inferSelect;
+    const fake = createFakeDb({
+      updateReturns: [[routers, [[router({ claimId: CLAIM_A })]]]],
+    });
+    await notifyPartnerActionResultWithDb(fake.db as never, {
+      job,
+      ownerRef: "acct-42",
+      status: "success",
+    });
+    expect(fake.inserts(partnerWebhooks).map((row) => row.payload)).toEqual([
+      expect.objectContaining({ event: "router.action", claimId: CLAIM_A }),
+    ]);
+    expect(fake.calls.filter((call) => call.kind === "select")).toEqual([]);
+  });
+
+  it("a router with no claim id gives claimId null", async () => {
+    const previous = router({ lastSeenAt: LONG_AGO, claimId: null });
+    const fake = createFakeDb({ updateReturns: [[routers, [[previous]]]] });
+    await notifyPartnerCheckInWithDb(fake.db as never, previous, {} as never, NOW);
+    expect(fake.inserts(partnerWebhooks)[0]?.payload).toHaveProperty(
+      "claimId",
+      null,
+    );
+  });
+});
+
 // The check-in and the offline sweep read the router, then lock it with a
 // conditional UPDATE before they tell its partner. That lock is for the
 // partner they read, as for an action result: a router that changed hands in

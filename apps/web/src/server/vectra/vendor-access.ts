@@ -51,7 +51,13 @@ function describeFailure(error: unknown) {
  */
 export async function notifyVendorAccessWithDb(
   client: Client,
-  router: { id: string; ownerRef: string | null; partnerId: string | null },
+  router: {
+    id: string;
+    ownerRef: string | null;
+    partnerId: string | null;
+    // Read with ownerRef; when absent the outbox reads it at queue time.
+    claimId?: string | null;
+  },
   access: VendorAccess,
 ) {
   const partnerId = routerPartnerId(router);
@@ -62,6 +68,7 @@ export async function notifyVendorAccessWithDb(
       routerId: router.id,
       ownerRef: router.ownerRef,
       partnerId,
+      claimId: router.claimId,
       detail: { kind: access.kind, by: access.by },
     });
     if (id) schedulePartnerWebhookDelivery();
@@ -91,6 +98,7 @@ export async function notifyVendorAccessForRoutersWithDb(
         id: routers.id,
         ownerRef: routers.ownerRef,
         partnerId: routers.partnerId,
+        claimId: routers.claimId,
       })
       .from(routers)
       .where(inArray(routers.id, [...routerIds]));

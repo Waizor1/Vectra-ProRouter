@@ -57,6 +57,9 @@ const NONCE_CODE = sealClaimCodeHash(
 );
 // The code claimRequest() sends by default, sealed as the panel stores it.
 const CODE_SEALED = sealClaimCodeHash(hashClaimCode("7KQ4M9XD"));
+// A claim id as the panel makes them (crypto.randomUUID).
+const UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 type RouterFixture = Record<string, unknown> & { id: string };
 
@@ -94,6 +97,7 @@ function routerRow(overrides: Record<string, unknown> = {}): RouterFixture {
     previousClaimCodeHash: null,
     previousClaimExpiresAt: null,
     claimedAt: null,
+    claimId: null,
     releasedAt: null,
     createdAt: A_MINUTE_AGO,
     updatedAt: A_MINUTE_AGO,
@@ -453,6 +457,9 @@ describe("claimRouterWithDb", () => {
       now: NOW,
     });
 
+    // The new claim's id: stored on the router and returned to the partner.
+    const claimId = fake.updates(routers)[0]?.claimId;
+    expect(claimId).toMatch(UUID_V4);
     expect(outcome).toEqual({
       ok: true,
       status: 200,
@@ -463,6 +470,7 @@ describe("claimRouterWithDb", () => {
         deviceIdentifier: "vectra-07bf0887f662",
         devicePublicKey: DEVICE_KEY,
         model: "Xiaomi Mi Router AX3000T",
+        claimId,
       },
     });
     expect(fake.updates(routers)[0]).toEqual({
@@ -470,6 +478,7 @@ describe("claimRouterWithDb", () => {
       ownerLabel: "iv***@m***",
       partnerId: "vectra",
       claimedAt: NOW,
+      claimId,
       releasedAt: null,
       engineMode: "xray-direct",
       approvedAt: NOW,
@@ -619,6 +628,7 @@ describe("claimRouterWithDb", () => {
         deviceIdentifier: "vectra-07bf0887f662",
         devicePublicKey: DEVICE_KEY,
         model: "Xiaomi Mi Router AX3000T",
+        claimId: expect.stringMatching(UUID_V4),
       },
     });
   });
@@ -724,10 +734,17 @@ describe("claimRouterWithDb", () => {
 
     await claimRouterWithDb(fake.db as never, claimRequest(), { now: NOW });
 
+    const claimId = fake.updates(routers)[0]?.claimId;
+    expect(claimId).toMatch(UUID_V4);
     expect(fake.inserts(eventLog)[0]).toMatchObject({
       routerId: ROUTER_ID,
       type: "router.claimed",
-      metadata: { ownerRef: "acct-42", via: "code", preRegistered: false },
+      metadata: {
+        ownerRef: "acct-42",
+        claimId,
+        via: "code",
+        preRegistered: false,
+      },
     });
     expect(fake.inserts(partnerWebhooks)).toEqual([
       expect.objectContaining({
@@ -738,6 +755,7 @@ describe("claimRouterWithDb", () => {
           routerId: ROUTER_ID,
           ownerRef: "acct-42",
           at: NOW.toISOString(),
+          claimId,
         },
       }),
     ]);
@@ -910,8 +928,13 @@ describe("claimRouterWithDb", () => {
         ownerLabel: "iv***@m***",
         partnerId: "vectra",
         claimedAt: NOW,
+        claimId: expect.stringMatching(UUID_V4),
       },
     ]);
+    // The pre-claimed record's claim id is the one the partner gets back.
+    expect(outcome).toMatchObject({
+      body: { claimId: fake.inserts(routers)[0]?.claimId },
+    });
     // The key the backend verified, held for the router's first registration
     // in a credential nobody can authenticate with.
     const [credential] = fake.inserts(routerCredentials);
@@ -1214,6 +1237,8 @@ describe("unbindRouterClaimWithDb", () => {
       ownerRef: null,
       ownerLabel: null,
       claimedAt: null,
+      // The claim attempt is over: later events carry claimId null.
+      claimId: null,
       claimCodeHash: null,
       claimExpiresAt: null,
       previousClaimCodeHash: null,
@@ -1251,6 +1276,113 @@ describe("unbindRouterClaimWithDb", () => {
         closedRescueCaseIds: ["case-open"],
       },
     });
+  });
+});
+
+// One claim id per claim attempt (BloopCat's review): a re-claim of the same
+// router by the same ownerRef must be told apart from the attempt before it.
+describe("claim ids", () => {
+  const OLD_CLAIM = "0a6f3c2e-9b1d-4e7a-8c5b-3d2e1f0a9b8c";
+
+  async function claimOnce(router: RouterFixture) {
+    const fake = createFakeDb(claimableScript(router));
+    const outcome = await claimRouterWithDb(fake.db as never, claimRequest(), {
+      now: NOW,
+    });
+    const body = (outcome as { body: { claimId?: string | null } }).body;
+    return { fake, outcome, claimId: body.claimId };
+  }
+
+  it("a re-claim by the same owner after an unbind gets a new claim id", async () => {
+    const first = await claimOnce(routerRow());
+    expect(first.claimId).toMatch(UUID_V4);
+
+    // Unbind attempt 1: the id is cleared and journaled as the previous one.
+    const owned = routerRow({
+      ownerRef: "acct-42",
+      claimId: first.claimId,
+      claimedAt: NOW,
+      approvedAt: NOW,
+      importState: "approved",
+      status: "active",
+    });
+    const unbind = createFakeDb({
+      selects: [[routers, [[owned]]]],
+      updateReturns: [
+        [routers, [[{ ...owned, ownerRef: null, claimId: null, releasedAt: NOW }]]],
+      ],
+    });
+    expect(
+      await unbindRouterClaimWithDb(
+        unbind.db as never,
+        { routerId: ROUTER_ID, ownerRef: "acct-42" },
+        { now: NOW },
+      ),
+    ).toMatchObject({ ok: true });
+    expect(unbind.updates(routers)[0]).toMatchObject({ claimId: null });
+    expect(unbind.inserts(eventLog)[0]).toMatchObject({
+      type: "router.claim.unbound",
+      metadata: { previousClaimId: first.claimId },
+    });
+
+    // Attempt 2: same router, same owner, a new id.
+    const second = await claimOnce(routerRow({ releasedAt: NOW }));
+    expect(second.claimId).toMatch(UUID_V4);
+    expect(second.claimId).not.toBe(first.claimId);
+    expect(second.fake.updates(routers)[0]).toMatchObject({
+      claimId: second.claimId,
+    });
+
+    // Each attempt's router.claimed carries its own id.
+    expect(first.fake.inserts(partnerWebhooks)[0]?.payload).toMatchObject({
+      event: "router.claimed",
+      claimId: first.claimId,
+    });
+    expect(second.fake.inserts(partnerWebhooks)[0]?.payload).toMatchObject({
+      event: "router.claimed",
+      claimId: second.claimId,
+    });
+  });
+
+  it("two claims never share an id", async () => {
+    const ids = new Set<string | null | undefined>();
+    for (let n = 0; n < 5; n += 1) {
+      ids.add((await claimOnce(routerRow())).claimId);
+    }
+    expect(ids.size).toBe(5);
+  });
+
+  it("a repeat of the claim (alreadyClaimed) returns the same claim id and rotates nothing", async () => {
+    const fake = createFakeDb({
+      selects: [
+        [routers, [[routerRow({ ownerRef: "acct-42", claimId: OLD_CLAIM })]]],
+        [
+          routerCredentials,
+          [[{ devicePublicKey: DEVICE_KEY, revokedAt: null }]],
+        ],
+      ],
+    });
+
+    const outcome = await claimRouterWithDb(fake.db as never, claimRequest(), {
+      now: NOW,
+    });
+
+    expect(outcome).toMatchObject({
+      ok: true,
+      body: { alreadyClaimed: true, claimId: OLD_CLAIM },
+    });
+    // No write at all: no new id, no second router.claimed.
+    expect(fake.calls.filter((c) => c.kind !== "select")).toEqual([]);
+  });
+
+  it("a repeat claim of a router claimed before claim ids existed answers claimId null", async () => {
+    const fake = createFakeDb({
+      selects: [[routers, [[routerRow({ ownerRef: "acct-42", claimId: null })]]]],
+    });
+
+    expect(
+      await claimRouterWithDb(fake.db as never, claimRequest(), { now: NOW }),
+    ).toMatchObject({ ok: true, body: { alreadyClaimed: true, claimId: null } });
   });
 });
 

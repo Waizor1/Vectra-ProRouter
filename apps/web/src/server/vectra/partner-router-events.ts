@@ -122,6 +122,8 @@ export async function notifyPartnerCheckInWithDb(
         ownerRef: previousRouter.ownerRef!,
         at: now,
         partnerId,
+        // As locked above, in this transaction.
+        claimId: current.claimId ?? null,
       });
   });
   return readback;
@@ -179,6 +181,7 @@ export async function sweepPartnerOfflineWithDb(
           ownerRef: router.ownerRef!,
           at: now,
           partnerId,
+          claimId: updated.claimId ?? null,
         });
     });
   }
@@ -245,6 +248,7 @@ export async function notifyPartnerActionResultWithDb(
       routerId: args.job.routerId,
       ownerRef: args.ownerRef!,
       partnerId,
+      claimId: current.claimId ?? null,
       detail: {
         actionId: payload.actionId,
         ...(idempotencyKey ? { idempotencyKey } : {}),
