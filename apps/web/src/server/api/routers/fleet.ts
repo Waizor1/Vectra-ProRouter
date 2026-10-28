@@ -227,7 +227,7 @@ export const fleetRouter = createTRPCRouter({
   normalizeRoutePolicy: protectedProcedure
     .input(
       z.object({
-        routerIds: z.array(z.string().uuid()).min(1).max(25),
+        routerIds: z.array(z.guid()).min(1).max(25),
         mode: routePolicyNormalizeModeSchema,
       }),
     )
@@ -482,7 +482,7 @@ export const fleetRouter = createTRPCRouter({
   }),
 
   byId: protectedProcedure
-    .input(z.object({ routerId: z.string().uuid() }))
+    .input(z.object({ routerId: z.guid() }))
     .query(async ({ ctx, input }) => {
       const [router] = await ctx.db
         .select()
@@ -620,8 +620,8 @@ export const fleetRouter = createTRPCRouter({
   approveImportedBaseline: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
-        revisionId: z.string().uuid().optional(),
+        routerId: z.guid(),
+        revisionId: z.guid().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -707,7 +707,7 @@ export const fleetRouter = createTRPCRouter({
   requestReimport: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -755,7 +755,7 @@ export const fleetRouter = createTRPCRouter({
   setEngineMode: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         engineMode: engineModeSchema,
       }),
     )
@@ -863,7 +863,7 @@ export const fleetRouter = createTRPCRouter({
   renameRouter: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         hostname: routerHostnameInputSchema,
       }),
     )
@@ -985,7 +985,7 @@ export const fleetRouter = createTRPCRouter({
   deleteRouter: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {

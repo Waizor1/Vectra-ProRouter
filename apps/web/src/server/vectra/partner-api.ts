@@ -4,6 +4,7 @@ import {
   type PartnerRouterClaimRequest,
   partnerRouterClaimRequestSchema,
   partnerRouterUnbindRequestSchema,
+  zodV3Issues,
 } from "@vectra/contracts";
 import { partnerIdempotencyKeys, partnerRequestNonces } from "@vectra/db";
 import { and, eq, isNull, lt, or } from "drizzle-orm";
@@ -353,7 +354,7 @@ function parseJsonBody(rawBody: Uint8Array): unknown {
 }
 
 function describeZodError(error: ZodError) {
-  return error.issues
+  return zodV3Issues(error.issues)
     .map((issue) => `${issue.path.join(".") || "body"}: ${issue.message}`)
     .join("; ")
     .slice(0, 500);

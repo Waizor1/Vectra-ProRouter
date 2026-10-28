@@ -8,6 +8,22 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import { z } from "zod";
 
+// zod 3's .url(): whatever the URL parser takes, kept as written. zod 4's
+// trims it and drops tabs and line breaks, rewriting the seeded artifact URLs
+// routers download (see urlStringSchema in @vectra/contracts).
+const urlString = () =>
+  z.string().refine(
+    (value) => {
+      try {
+        new URL(value);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { message: "Invalid url" },
+  );
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const workspaceRoot = path.resolve(__dirname, "..", "..", "..");
@@ -51,13 +67,13 @@ const artifactSeedSchema = z
     architecture: z.string().nullable().optional(),
     boardName: z.string().nullable().optional(),
     layoutFamily: z.string().nullable().optional(),
-    downloadUrl: z.string().url().optional(),
+    downloadUrl: urlString().optional(),
     downloadPath: z.string().min(1).optional(),
     checksumSha256: z.string().min(1).optional(),
-    signatureUrl: z.string().url().nullable().optional(),
+    signatureUrl: urlString().nullable().optional(),
     signaturePath: z.string().min(1).optional(),
     file: z.string().min(1).optional(),
-    metadata: z.record(z.string(), z.unknown()).default({}),
+    metadata: z.record(z.string(), z.unknown()).prefault({}),
     publishedAt: z.string().datetime().optional(),
   })
   .superRefine((artifact, ctx) => {
@@ -90,12 +106,12 @@ const firmwareManifestSeedSchema = z.object({
     .string()
     .min(1)
     .default("sysupgrade -T /tmp/firmware.bin"),
-  rolloutPolicy: z.record(z.string(), z.unknown()).default({}),
+  rolloutPolicy: z.record(z.string(), z.unknown()).prefault({}),
 });
 
 const seedFileSchema = z.object({
-  artifacts: z.array(artifactSeedSchema).default([]),
-  firmwareManifests: z.array(firmwareManifestSeedSchema).default([]),
+  artifacts: z.array(artifactSeedSchema).prefault([]),
+  firmwareManifests: z.array(firmwareManifestSeedSchema).prefault([]),
 });
 
 const passwallMirrorPackageEntrySchema = z.object({
@@ -109,22 +125,22 @@ const passwallMirrorPackageEntrySchema = z.object({
 const passwallMirrorRuntimeTargetSchema = z.object({
   componentName: z.string().min(1),
   remoteVersion: z.string().min(1),
-  releaseUrl: z.string().url().nullable().optional(),
+  releaseUrl: urlString().nullable().optional(),
   assetName: z.string().min(1).nullable().optional(),
-  assetUrl: z.string().url().nullable().optional(),
+  assetUrl: urlString().nullable().optional(),
   assetSizeBytes: z.number().int().nonnegative().nullable().optional(),
 });
 
 const passwallMirrorManifestSchema = z.object({
   tag: z.string().min(1),
   arch: z.string().min(1),
-  runtimeTargets: z.record(passwallMirrorRuntimeTargetSchema).default({}),
+  runtimeTargets: z.record(z.string(), passwallMirrorRuntimeTargetSchema).prefault({}),
   requiredPackages: z.array(passwallMirrorPackageEntrySchema).min(1),
-  optionalPackages: z.array(passwallMirrorPackageEntrySchema).default([]),
+  optionalPackages: z.array(passwallMirrorPackageEntrySchema).prefault([]),
   sourceUrls: z.object({
-    release: z.string().url().nullable().optional(),
-    luciAppPackage: z.string().url().nullable().optional(),
-    packageBundle: z.string().url().nullable().optional(),
+    release: urlString().nullable().optional(),
+    luciAppPackage: urlString().nullable().optional(),
+    packageBundle: urlString().nullable().optional(),
   }),
 });
 

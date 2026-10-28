@@ -1,8 +1,10 @@
+import { urlStringSchema } from "@vectra/contracts";
+
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
 import { mintHappCrypt5Link } from "~/server/vectra/happ-crypt";
 import { z } from "zod";
 
-const encryptInputSchema = z.object({ url: z.string().url() });
+const encryptInputSchema = z.object({ url: urlStringSchema() });
 
 export const happCryptRouter = createTRPCRouter({
   encrypt: protectedProcedure

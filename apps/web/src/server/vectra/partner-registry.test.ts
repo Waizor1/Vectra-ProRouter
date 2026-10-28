@@ -382,9 +382,14 @@ describe("listPartners / findPartner", () => {
 describe("partner id pattern parity with the contract", () => {
   it("is the very pattern partnerIdSchema uses", () => {
     const checks = (partnerIdSchema as unknown as {
-      _def: { checks: Array<{ kind: string; regex?: RegExp }> };
-    })._def.checks;
-    const regex = checks.find((check) => check.kind === "regex")?.regex;
+      _zod: {
+        def: {
+          checks: Array<{ _zod: { def: { format?: string; pattern?: RegExp } } }>;
+        };
+      };
+    })._zod.def.checks;
+    const regex = checks.find((check) => check._zod.def.format === "regex")
+      ?._zod.def.pattern;
     expect(regex?.source).toBe(PARTNER_ID_PATTERN.source);
     expect(regex?.flags).toBe(PARTNER_ID_PATTERN.flags);
   });

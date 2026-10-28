@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { zodV3Error } from "@vectra/contracts";
 import { ZodError } from "zod";
 
 // The largest body a live router has sent is ~620 KB (a register carrying its
@@ -119,7 +120,7 @@ export function toRouteErrorResponse(error: unknown) {
     return Response.json(
       {
         error: "Invalid request payload",
-        issues: error.flatten(),
+        issues: zodV3Error(error).flatten(),
       },
       { status: 400 },
     );

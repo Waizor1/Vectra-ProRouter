@@ -50,7 +50,7 @@ const ownerSchema = partnerOwnerRefSchema;
 export const partnerActionRequestSchema = z
   .object({
     // Like unbind, bind the signed bytes to the target path.
-    routerId: z.string().uuid(),
+    routerId: z.guid(),
     ownerRef: ownerSchema,
     action: connectRouterActionNameSchema,
     params: z.record(z.string(), z.unknown()),
@@ -602,7 +602,7 @@ export async function queuePartnerActionWithDb(
 export const partnerActionCancelRequestSchema = z
   .object({
     // The signature covers the body: bind the path router into it.
-    routerId: z.string().uuid(),
+    routerId: z.guid(),
     ownerRef: ownerSchema,
     // The Idempotency-Key the partner queued the action with.
     idempotencyKey: z.string().regex(/^[\x21-\x7e]{1,200}$/),
@@ -762,7 +762,7 @@ export async function handlePartnerRoutersRead(
   );
   if (
     !owner.success ||
-    (routerId && !z.string().uuid().safeParse(routerId).success)
+    (routerId && !z.guid().safeParse(routerId).success)
   )
     return partnerJson({ error: "invalid" }, 400);
   const snapshots = await deps.read(owner.data, routerId, auth.partner.id);

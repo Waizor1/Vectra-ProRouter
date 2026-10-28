@@ -71,7 +71,7 @@ export const draftRouter = createTRPCRouter({
   workspace: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid().optional(),
+        routerId: z.guid().optional(),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -157,7 +157,7 @@ export const draftRouter = createTRPCRouter({
   editorSurface: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
       }),
     )
     .query(async ({ input }) => {
@@ -202,7 +202,7 @@ export const draftRouter = createTRPCRouter({
   save: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         note: z.string().trim().max(500).optional(),
         config: passwallDesiredConfigSchema,
       }),
@@ -222,7 +222,7 @@ export const draftRouter = createTRPCRouter({
   saveXray: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         note: z.string().trim().max(500).optional(),
         config: xrayDesiredConfigSchema,
       }),
@@ -271,7 +271,7 @@ export const draftRouter = createTRPCRouter({
   configureXray: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         note: z.string().trim().max(500).optional(),
         // Omit to keep the stored URL. Required the first time.
         subscriptionUrl: z.string().trim().min(1).optional(),
@@ -328,7 +328,7 @@ export const draftRouter = createTRPCRouter({
   setXrayUiLock: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         lock: z.boolean(),
         note: z.string().trim().max(500).optional(),
       }),
@@ -381,8 +381,8 @@ export const draftRouter = createTRPCRouter({
   queueApply: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
-        desiredRevisionId: z.string().uuid(),
+        routerId: z.guid(),
+        desiredRevisionId: z.guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -545,8 +545,8 @@ export const draftRouter = createTRPCRouter({
   queueApplyXray: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
-        desiredRevisionId: z.string().uuid(),
+        routerId: z.guid(),
+        desiredRevisionId: z.guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -695,8 +695,8 @@ export const draftRouter = createTRPCRouter({
   discard: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
-        revisionId: z.string().uuid(),
+        routerId: z.guid(),
+        revisionId: z.guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {

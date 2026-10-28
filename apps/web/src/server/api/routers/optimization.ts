@@ -47,7 +47,7 @@ export const optimizationRouter = createTRPCRouter({
   baselineHistory: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -84,7 +84,7 @@ export const optimizationRouter = createTRPCRouter({
   queueBaseline: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         logSource: routerLogSourceSchema.default("all"),
         logLines: z.number().int().min(50).max(400).default(160),
         includeLogs: z.boolean().default(true),

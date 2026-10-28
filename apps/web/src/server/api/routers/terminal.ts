@@ -105,7 +105,7 @@ export const terminalRouter = createTRPCRouter({
   history: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -142,7 +142,7 @@ export const terminalRouter = createTRPCRouter({
   queueCommand: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         command: z.string().trim().min(1).max(8000),
         timeoutSeconds: z.number().int().min(5).max(120).default(30),
       }),
