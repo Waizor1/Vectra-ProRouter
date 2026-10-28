@@ -67,3 +67,13 @@ ProRouter/98 Local/
 .omc/
 !.omc/skills/
 !.omc/skills/**
+
+# Signing keys and locally built binaries never belong in the repository.
+.keys/
+*.sec
+*.pub
+!router/vectra-controller-pro/tools/feedtool/testdata/usign-test.sec
+!router/vectra-controller-pro/tools/feedtool/testdata/usign-test.pub
+router/vectra-controller-pro/vctl
+router/vectra-controller-pro/bin/
+*.test
