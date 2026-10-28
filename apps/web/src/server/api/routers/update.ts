@@ -921,7 +921,7 @@ export const updateRouter = createTRPCRouter({
   launchProgress: protectedProcedure
     .input(
       z.object({
-        jobIds: z.array(z.string().uuid()).min(1).max(64),
+        jobIds: z.array(z.guid()).min(1).max(64),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -1089,7 +1089,7 @@ export const updateRouter = createTRPCRouter({
   saveRolloutProfile: protectedProcedure
     .input(
       z.object({
-        profileId: z.string().uuid().optional(),
+        profileId: z.guid().optional(),
         name: z.string().trim().min(1).max(120),
         description: z.string().trim().max(400).optional(),
         note: z.string().trim().max(500).optional(),
@@ -1106,7 +1106,7 @@ export const updateRouter = createTRPCRouter({
   deleteRolloutProfile: protectedProcedure
     .input(
       z.object({
-        profileId: z.string().uuid(),
+        profileId: z.guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1116,10 +1116,10 @@ export const updateRouter = createTRPCRouter({
   saveRouterGroup: protectedProcedure
     .input(
       z.object({
-        groupId: z.string().uuid().optional(),
+        groupId: z.guid().optional(),
         name: z.string().trim().min(1).max(120),
         description: z.string().trim().max(400).optional(),
-        rolloutProfileId: z.string().uuid().nullable().optional(),
+        rolloutProfileId: z.guid().nullable().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1132,7 +1132,7 @@ export const updateRouter = createTRPCRouter({
   deleteRouterGroup: protectedProcedure
     .input(
       z.object({
-        groupId: z.string().uuid(),
+        groupId: z.guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1142,8 +1142,8 @@ export const updateRouter = createTRPCRouter({
   assignRoutersToGroup: protectedProcedure
     .input(
       z.object({
-        routerIds: z.array(z.string().uuid()).min(1),
-        groupId: z.string().uuid().nullable(),
+        routerIds: z.array(z.guid()).min(1),
+        groupId: z.guid().nullable(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1157,7 +1157,7 @@ export const updateRouter = createTRPCRouter({
   queueGlobalTemplateRollout: protectedProcedure
     .input(
       z.object({
-        routerIds: z.array(z.string().uuid()).min(1),
+        routerIds: z.array(z.guid()).min(1),
         mode: z.enum(["draft_only", "queue_apply"]).default("draft_only"),
         note: z.string().trim().max(500).optional(),
       }),
@@ -1171,7 +1171,7 @@ export const updateRouter = createTRPCRouter({
   queueGroupProfileRollout: protectedProcedure
     .input(
       z.object({
-        groupId: z.string().uuid(),
+        groupId: z.guid(),
         mode: z.enum(["draft_only", "queue_apply"]).default("draft_only"),
         note: z.string().trim().max(500).optional(),
       }),
@@ -1188,7 +1188,7 @@ export const updateRouter = createTRPCRouter({
   queueBulkPasswallPackageUpdate: protectedProcedure
     .input(
       z.object({
-        routerIds: z.array(z.string().uuid()).min(1),
+        routerIds: z.array(z.guid()).min(1),
         artifactChannel: z.enum(["stable", "beta"]).default("stable"),
         packages: z.array(passwallUpdatePackageSchema).min(1).optional(),
       }),
@@ -1238,7 +1238,7 @@ export const updateRouter = createTRPCRouter({
   queueBulkXrayUpdate: protectedProcedure
     .input(
       z.object({
-        routerIds: z.array(z.string().uuid()).min(1),
+        routerIds: z.array(z.guid()).min(1),
         artifactChannel: z.enum(["stable", "beta"]).default("stable"),
       }),
     )
@@ -1281,7 +1281,7 @@ export const updateRouter = createTRPCRouter({
   queueBulkControllerUpdate: protectedProcedure
     .input(
       z.object({
-        routerIds: z.array(z.string().uuid()).min(1),
+        routerIds: z.array(z.guid()).min(1),
         channel: z.enum(["stable", "beta"]).default("stable"),
         force: z.boolean().default(false),
       }),
@@ -1335,7 +1335,7 @@ export const updateRouter = createTRPCRouter({
   queueBulkRouterReboot: protectedProcedure
     .input(
       z.object({
-        routerIds: z.array(z.string().uuid()).min(1),
+        routerIds: z.array(z.guid()).min(1),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1381,7 +1381,7 @@ export const updateRouter = createTRPCRouter({
   queueRouterReboot: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1394,7 +1394,7 @@ export const updateRouter = createTRPCRouter({
   queuePasswallClearIpsets: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1431,7 +1431,7 @@ export const updateRouter = createTRPCRouter({
   queueControllerUpdate: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         channel: z.enum(["stable", "beta"]).default("stable"),
         force: z.boolean().default(false),
       }),
@@ -1448,7 +1448,7 @@ export const updateRouter = createTRPCRouter({
   queueSubscriptionsRefresh: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1493,7 +1493,7 @@ export const updateRouter = createTRPCRouter({
   queueSubscriptionsInspect: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1538,7 +1538,7 @@ export const updateRouter = createTRPCRouter({
   queueRulesRefresh: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1590,7 +1590,7 @@ export const updateRouter = createTRPCRouter({
   queueXrayRuntimeRepair: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         // Allow removing an xray that still runs when the overlay is too small
         // to hold both builds. Off by default: a working binary is kept — unless
         // the router itself reports its runtime unusable.
@@ -1662,7 +1662,7 @@ export const updateRouter = createTRPCRouter({
   queuePasswallPackageUpdate: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         artifactChannel: z.enum(["stable", "beta"]).default("stable"),
         packages: z.array(passwallUpdatePackageSchema).min(1).optional(),
       }),
@@ -1679,8 +1679,8 @@ export const updateRouter = createTRPCRouter({
   queueFirmwareValidation: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
-        manifestId: z.string().uuid(),
+        routerId: z.guid(),
+        manifestId: z.guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {

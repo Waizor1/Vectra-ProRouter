@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 
 import {
+  isParseableUrl,
   passwallDesiredConfigSchema,
   type PasswallDesiredConfig,
+  urlStringSchema,
 } from "@vectra/contracts";
 import {
   eventLog,
@@ -165,7 +167,7 @@ const ensureRuntimeOverlayFreeFloorMb = 16;
 const typedOnboardingJobMinControllerVersion = "0.1.13-r23";
 
 const subscriptionSecretPayloadSchema = z.object({
-  url: z.string().url(),
+  url: urlStringSchema(),
 });
 
 const onboardingAdvanceLocks = new Map<string, Promise<void>>();
@@ -194,11 +196,16 @@ async function withRouterOnboardingAdvanceLock<T>(
 }
 
 export const routerOnboardingProfileInputSchema = z.object({
-  routerId: z.string().uuid(),
+  routerId: z.guid(),
   enabled: z.boolean().optional(),
   targetHostname: z.string().trim().min(1).max(63).nullable().optional(),
   displayName: z.string().trim().min(1).max(120).nullable().optional(),
-  subscriptionUrl: z.string().trim().url().nullable().optional(),
+  subscriptionUrl: z
+    .string()
+    .trim()
+    .refine(isParseableUrl, { message: "Invalid url" })
+    .nullable()
+    .optional(),
   subscriptionRemark: z.string().trim().min(1).max(120).nullable().optional(),
   baseline: z
     .enum(["standard-non-hh", "hh-exempt", "subscription-only"])

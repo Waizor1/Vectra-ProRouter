@@ -87,13 +87,13 @@ export const rescueRouter = createTRPCRouter({
   cases: protectedProcedure.query(async ({ ctx }) => listRescueCases(ctx.db)),
 
   activeCaseForRouter: protectedProcedure
-    .input(z.object({ routerId: z.string().uuid() }))
+    .input(z.object({ routerId: z.guid() }))
     .query(async ({ ctx, input }) =>
       getActiveRescueCaseForRouter(input.routerId, ctx.db),
     ),
 
   caseById: protectedProcedure
-    .input(z.object({ caseId: z.string().uuid() }))
+    .input(z.object({ caseId: z.guid() }))
     .query(async ({ ctx, input }) => {
       try {
         return await loadRescueCaseDetails(input.caseId, ctx.db);
@@ -107,7 +107,7 @@ export const rescueRouter = createTRPCRouter({
     }),
 
   runCaseSafeRepair: protectedProcedure
-    .input(z.object({ caseId: z.string().uuid() }))
+    .input(z.object({ caseId: z.guid() }))
     .mutation(async ({ ctx, input }) => {
       try {
         return await queueRescueCaseSafeRepair(
@@ -128,7 +128,7 @@ export const rescueRouter = createTRPCRouter({
     }),
 
   reconnectCase: protectedProcedure
-    .input(z.object({ caseId: z.string().uuid() }))
+    .input(z.object({ caseId: z.guid() }))
     .mutation(async ({ ctx, input }) => {
       try {
         return await queueRescueCaseReconnectProxy(
@@ -149,7 +149,7 @@ export const rescueRouter = createTRPCRouter({
     }),
 
   collectCaseLogs: protectedProcedure
-    .input(z.object({ caseId: z.string().uuid() }))
+    .input(z.object({ caseId: z.guid() }))
     .mutation(async ({ ctx, input }) => {
       try {
         return await queueRescueCaseLogCollection(input.caseId, ctx.db);
@@ -171,7 +171,7 @@ export const rescueRouter = createTRPCRouter({
   silenceCase: protectedProcedure
     .input(
       z.object({
-        caseId: z.string().uuid(),
+        caseId: z.guid(),
         durationSeconds: z.number().int().min(300).max(86400).default(3600),
       }),
     )
@@ -210,7 +210,7 @@ export const rescueRouter = createTRPCRouter({
   triggerDirectMode: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         reason: z.string().min(1).default("Оператор запросил прямой режим"),
       }),
     )
@@ -240,7 +240,7 @@ export const rescueRouter = createTRPCRouter({
   triggerReconnect: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         clearRescue: z.boolean().default(true),
       }),
     )

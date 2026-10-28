@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { urlStringSchema } from "@vectra/contracts";
 import { z } from "zod";
 
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
@@ -10,7 +11,7 @@ import {
 } from "~/server/vectra/browser-push";
 
 const browserPushSubscriptionSchema = z.object({
-  endpoint: z.string().url(),
+  endpoint: urlStringSchema(),
   expirationTime: z.number().nullable().optional(),
   keys: z.object({
     p256dh: z.string().min(1),
@@ -58,7 +59,7 @@ export const notificationsRouter = createTRPCRouter({
   unsubscribe: protectedProcedure
     .input(
       z.object({
-        endpoint: z.string().url(),
+        endpoint: urlStringSchema(),
       }),
     )
     .mutation(async ({ ctx, input }) => {

@@ -47,7 +47,7 @@ export const logsRouter = createTRPCRouter({
   history: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -84,7 +84,7 @@ export const logsRouter = createTRPCRouter({
   queueSnapshot: protectedProcedure
     .input(
       z.object({
-        routerId: z.string().uuid(),
+        routerId: z.guid(),
         source: routerLogSourceSchema.default("all"),
         lines: z.number().int().min(50).max(400).default(200),
       }),

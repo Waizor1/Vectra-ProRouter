@@ -9,7 +9,7 @@ const booleanFlagSchema = (defaultValue) =>
     .transform((value) => value === "true");
 
 /**
- * @param {import("zod").ZodType<string, import("zod").ZodTypeDef, string | undefined>} schema
+ * @param {import("zod").ZodType<string, string | undefined>} schema
  * @param {string[]} unsafeValues
  * @param {string} label
  */

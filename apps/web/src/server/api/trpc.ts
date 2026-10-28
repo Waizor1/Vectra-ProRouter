@@ -7,6 +7,7 @@
  * need to use are documented accordingly near the end.
  */
 import { TRPCError, initTRPC } from "@trpc/server";
+import { zodV3Error } from "@vectra/contracts";
 import superjson from "superjson";
 import { ZodError } from "zod";
 
@@ -74,7 +75,9 @@ const t = initTRPC.context<typeof createTRPCContext>().create({
       data: {
         ...shape.data,
         zodError:
-          error.cause instanceof ZodError ? error.cause.flatten() : null,
+          error.cause instanceof ZodError
+            ? zodV3Error(error.cause).flatten()
+            : null,
       },
     };
   },

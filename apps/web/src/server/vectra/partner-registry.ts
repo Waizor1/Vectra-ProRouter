@@ -1,3 +1,4 @@
+import { urlStringSchema } from "@vectra/contracts";
 import { z } from "zod";
 import { env } from "~/env";
 
@@ -32,7 +33,7 @@ const entrySchema = z
     brand: z.string().regex(PARTNER_ID_PATTERN),
     label: z.string().trim().min(1).max(32),
     secrets: z.array(z.string().min(32)).min(1).max(2),
-    webhookUrl: z.string().url().startsWith("https://").optional(),
+    webhookUrl: urlStringSchema().startsWith("https://").optional(),
     webhookSecret: z.string().min(32).optional(),
     claimKid: z.number().int().min(0).max(255).optional(),
     claimPublicKey: z.string().regex(/^[A-Za-z0-9+/]{43}=$/).optional(),

@@ -5,6 +5,42 @@ export const SYNTHETIC_DEGRADED_MESSAGE =
   "Subscription expired or upstream proxy unavailable";
 export const MASKED_SECRET_PLACEHOLDER = "<stored-secret>" as const;
 
+// A URL exactly as zod 3's .url() took it: any string the WHATWG URL parser
+// accepts, kept as sent. zod 4's .url() trims it and deletes tabs and line
+// breaks inside, which would rewrite artifact and geodata URLs on their way
+// to a router.
+export function isParseableUrl(value: string) {
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const urlStringSchema = () =>
+  z.string().refine(isParseableUrl, { message: "Invalid url" });
+
+// An ISO timestamp exactly as zod 3's .datetime() took it: seconds optional,
+// and with `offset` a "+hh:mm" or "+hhmm" offset besides "Z". zod 4's requires
+// the seconds and the colon, refusing timestamps routers and partners were
+// accepted with. The date part is zod 3's, leap years included.
+const ISO_DATE_SOURCE =
+  "((\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-((0[13578]|1[02])-(0[1-9]|[12]\\d|3[01])|(0[469]|11)-(0[1-9]|[12]\\d|30)|(02)-(0[1-9]|1\\d|2[0-8])))";
+const ISO_TIME_SOURCE = "([01]\\d|2[0-3]):[0-5]\\d(:[0-5]\\d(\\.\\d+)?)?";
+const ISO_DATETIME = new RegExp(`^${ISO_DATE_SOURCE}T${ISO_TIME_SOURCE}(Z)$`);
+const ISO_DATETIME_WITH_OFFSET = new RegExp(
+  `^${ISO_DATE_SOURCE}T${ISO_TIME_SOURCE}(Z|([+-]\\d{2}:?\\d{2}))$`,
+);
+
+export const isoDatetimeSchema = (options: { offset?: boolean } = {}) =>
+  z
+    .string()
+    .regex(
+      options.offset ? ISO_DATETIME_WITH_OFFSET : ISO_DATETIME,
+      "Invalid datetime",
+    );
+
 const passthroughPrimitiveSchema = z.union([
   z.string(),
   z.number(),
@@ -221,17 +257,17 @@ export const passwallSocksConfigSchema = z.object({
   port: z.number().int().min(1).max(65535),
   httpPort: z.number().int().min(0).max(65535).optional(),
   bindLocal: z.boolean().default(true),
-  autoswitchBackupNodeIds: z.array(z.string()).default([]),
-  extras: passwallExtrasSchema.default({}),
+  autoswitchBackupNodeIds: z.array(z.string()).prefault([]),
+  extras: passwallExtrasSchema.prefault({}),
 });
 
 export const passwallShuntRuleSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   outboundNodeId: z.string().optional(),
-  domainRules: z.array(z.string()).default([]),
-  ipRules: z.array(z.string()).default([]),
-  extras: passwallExtrasSchema.default({}),
+  domainRules: z.array(z.string()).prefault([]),
+  ipRules: z.array(z.string()).prefault([]),
+  extras: passwallExtrasSchema.prefault({}),
 });
 
 export const passwallNodeSchema = z.object({
@@ -246,8 +282,8 @@ export const passwallNodeSchema = z.object({
   password: z.string().optional(),
   transport: passwallTransportSchema.optional(),
   tls: z.boolean().optional(),
-  tags: z.array(z.string()).default([]),
-  extras: passwallExtrasSchema.default({}),
+  tags: z.array(z.string()).prefault([]),
+  extras: passwallExtrasSchema.prefault({}),
 });
 
 export const passwallSubscriptionSchema = z.object({
@@ -261,8 +297,8 @@ export const passwallSubscriptionSchema = z.object({
       remainingTraffic: z.string().optional(),
       expiresAt: z.string().optional(),
     })
-    .default({}),
-  extras: passwallExtrasSchema.default({}),
+    .prefault({}),
+  extras: passwallExtrasSchema.prefault({}),
 });
 
 export const passwallBasicSettingsSchema = z.object({
@@ -274,7 +310,7 @@ export const passwallBasicSettingsSchema = z.object({
     nodeSocksPort: z.number().int().min(1).max(65535).default(1070),
     nodeSocksBindLocal: z.boolean().default(true),
     socksMainSwitch: z.boolean().default(false),
-    extras: passwallExtrasSchema.default({}),
+    extras: passwallExtrasSchema.prefault({}),
   }),
   dns: z.object({
     directQueryStrategy: dnsStrategySchema.default("UseIP"),
@@ -285,33 +321,33 @@ export const passwallBasicSettingsSchema = z.object({
     remoteDnsDetour: z.enum(["remote", "direct"]).default("remote"),
     remoteFakeDns: z.boolean().default(false),
     remoteDnsQueryStrategy: dnsStrategySchema.default("UseIPv4"),
-    dnsHosts: z.array(z.string()).default([]),
+    dnsHosts: z.array(z.string()).prefault([]),
     dnsRedirect: z.boolean().default(true),
-    extras: passwallExtrasSchema.default({}),
+    extras: passwallExtrasSchema.prefault({}),
   }),
   log: z.object({
     enableNodeLog: z.boolean().default(true),
     level: logLevelSchema.default("warning"),
-    extras: passwallExtrasSchema.default({}),
+    extras: passwallExtrasSchema.prefault({}),
   }),
   maintenance: z.object({
     backupPaths: z
       .array(z.string())
-      .default([
+      .prefault([
         "/etc/config/passwall2",
         "/etc/config/passwall2_server",
         "/usr/share/passwall2/domains_excluded",
       ]),
-    extras: passwallExtrasSchema.default({}),
+    extras: passwallExtrasSchema.prefault({}),
   }),
-  socks: z.array(passwallSocksConfigSchema).default([]),
-  shuntRules: z.array(passwallShuntRuleSchema).default([]),
+  socks: z.array(passwallSocksConfigSchema).prefault([]),
+  shuntRules: z.array(passwallShuntRuleSchema).prefault([]),
 });
 
 export const passwallSubscriptionSettingsSchema = z.object({
   filterKeywordMode: subscriptionFilterModeSchema.default("0"),
-  discardList: z.array(z.string()).default([]),
-  keepList: z.array(z.string()).default([]),
+  discardList: z.array(z.string()).prefault([]),
+  keepList: z.array(z.string()).prefault([]),
   typePreferences: z
     .object({
       shadowsocks: z.string().optional(),
@@ -320,17 +356,17 @@ export const passwallSubscriptionSettingsSchema = z.object({
       vless: z.string().optional(),
       hysteria2: z.string().optional(),
     })
-    .default({}),
+    .prefault({}),
   domainStrategy: z
     .enum(["auto", "prefer_ipv4", "prefer_ipv6", "ipv4_only", "ipv6_only"])
     .default("auto"),
-  items: z.array(passwallSubscriptionSchema).default([]),
+  items: z.array(passwallSubscriptionSchema).prefault([]),
   // Every sibling section carries its unmodelled UCI options through here;
   // this one did not, so zod stripped them out of the imported config and the
   // agent's apply — which deletes and rewrites the section — had nothing to
   // restore them from. Whatever PassWall keeps in global_subscribe beyond the
   // fields above was therefore discarded on every apply.
-  extras: passwallExtrasSchema.default({}),
+  extras: passwallExtrasSchema.prefault({}),
 });
 
 export const passwallAppUpdateSchema = z.object({
@@ -341,7 +377,7 @@ export const passwallAppUpdateSchema = z.object({
       hysteria: z.string().default("/usr/bin/hysteria"),
       geoview: z.string().default("/usr/bin/geoview"),
     })
-    .default({
+    .prefault({
       xray: "/usr/bin/xray",
       singBox: "/usr/bin/sing-box",
       hysteria: "/usr/bin/hysteria",
@@ -356,13 +392,13 @@ export const passwallAppUpdateSchema = z.object({
       hysteria: z.string().optional(),
       geoview: z.string().optional(),
     })
-    .default({}),
-  extras: passwallExtrasSchema.default({}),
+    .prefault({}),
+  extras: passwallExtrasSchema.prefault({}),
 });
 
 export const passwallRuleManageSchema = z.object({
-  geoipUrl: z.string().url(),
-  geositeUrl: z.string().url(),
+  geoipUrl: urlStringSchema(),
+  geositeUrl: urlStringSchema(),
   assetDirectory: z.string().default("/usr/share/v2ray/"),
   autoUpdate: z.boolean().default(false),
   scheduleMode: ruleScheduleModeSchema.default("daily"),
@@ -371,15 +407,15 @@ export const passwallRuleManageSchema = z.object({
   intervalHours: z.number().int().min(1).max(24).optional(),
   enabledAssets: z
     .array(z.enum(["geoip", "geosite"]))
-    .default(["geoip", "geosite"]),
-  shuntRules: z.array(passwallShuntRuleSchema).default([]),
-  extras: passwallExtrasSchema.default({}),
+    .prefault(["geoip", "geosite"]),
+  shuntRules: z.array(passwallShuntRuleSchema).prefault([]),
+  extras: passwallExtrasSchema.prefault({}),
 });
 
 export const passwallDesiredConfigSchema = z.object({
   schemaVersion: z.literal(1).default(1),
   basicSettings: passwallBasicSettingsSchema,
-  nodes: z.array(passwallNodeSchema).default([]),
+  nodes: z.array(passwallNodeSchema).prefault([]),
   subscriptions: passwallSubscriptionSettingsSchema,
   appUpdate: passwallAppUpdateSchema,
   ruleManage: passwallRuleManageSchema,
@@ -620,9 +656,9 @@ export const passwallImportedStateSchema = z.object({
   rawSnapshot: serializedWithin(
     ROUTER_PASSWALL_IMPORT_PART_MAX_CHARS,
     z.record(z.string(), z.unknown()),
-  ).default({}),
+  ).prefault({}),
   configDigest: z.string().min(1),
-  importedAt: z.string().datetime().optional(),
+  importedAt: isoDatetimeSchema().optional(),
   source: z
     .enum(["register", "check_in", "operator_reimport"])
     .default("check_in"),
@@ -658,29 +694,29 @@ export const routerServiceHealthSchema = z.object({
 export const routerLastRescueSchema = z.object({
   mode: rescueModeSchema,
   reason: z.string().min(1),
-  happenedAt: z.string().datetime(),
+  happenedAt: isoDatetimeSchema(),
 });
 
 export const routerReachabilityProbeSchema = z.object({
   id: z.string().min(1).optional(),
   label: z.string().min(1).optional(),
   reachable: z.boolean(),
-  checkedAt: z.string().datetime(),
-  targetUrl: z.string().url(),
+  checkedAt: isoDatetimeSchema(),
+  targetUrl: urlStringSchema(),
   statusCode: z.number().int().nonnegative().optional(),
   error: z.string().min(1).optional(),
 });
 
 export const routerTelegramReachabilitySchema = z.object({
   reachable: z.boolean().optional(),
-  checkedAt: z.string().datetime(),
+  checkedAt: isoDatetimeSchema(),
   status: z.enum(["reachable", "partial", "blocked"]).optional(),
   reachableCount: z.number().int().nonnegative().optional(),
   totalCount: z.number().int().nonnegative().optional(),
-  targetUrl: z.string().url().optional(),
+  targetUrl: urlStringSchema().optional(),
   statusCode: z.number().int().nonnegative().optional(),
   error: z.string().min(1).optional(),
-  checks: z.array(routerReachabilityProbeSchema).default([]),
+  checks: z.array(routerReachabilityProbeSchema).prefault([]),
 });
 
 export const routerYoutubeReachabilitySchema = routerTelegramReachabilitySchema;
@@ -689,14 +725,14 @@ export const routerInstagramReachabilitySchema =
 
 export const routerGroupedReachabilitySchema = z.object({
   reachable: z.boolean().optional(),
-  checkedAt: z.string().datetime(),
+  checkedAt: isoDatetimeSchema(),
   status: z.enum(["reachable", "healthy", "partial", "blocked"]).optional(),
   reachableCount: z.number().int().nonnegative().optional(),
   totalCount: z.number().int().nonnegative().optional(),
-  targetUrl: z.string().url().optional(),
+  targetUrl: urlStringSchema().optional(),
   statusCode: z.number().int().nonnegative().optional(),
   error: z.string().min(1).optional(),
-  checks: z.array(routerReachabilityProbeSchema).default([]),
+  checks: z.array(routerReachabilityProbeSchema).prefault([]),
 });
 
 export const routerSafetyEventSchema = z
@@ -706,7 +742,7 @@ export const routerSafetyEventSchema = z
     component: z.string().min(1).optional(),
     source: z.string().min(1).optional(),
     message: z.string().min(1),
-    observedAt: z.string().datetime(),
+    observedAt: isoDatetimeSchema(),
     evidence: z.string().min(1).optional(),
   })
   .passthrough();
@@ -869,9 +905,7 @@ const connectStableExitTelemetrySchema = z.object({
     .nullable()
     .optional()
     .catch(null),
-  checkedAt: z
-    .string()
-    .datetime({ offset: true })
+  checkedAt: isoDatetimeSchema({ offset: true })
     .nullable()
     .optional()
     .catch(null),
@@ -1024,24 +1058,24 @@ export const routerInventorySchema = z.object({
   nodeCount: z.number().int().nonnegative(),
   subscriptionCount: z.number().int().nonnegative(),
   configDigest: z.string().min(1).nullable().optional(),
-  appliedRevisionId: z.string().uuid().nullable().optional(),
+  appliedRevisionId: z.guid().nullable().optional(),
   packageVersions: serializedWithin(
     ROUTER_VERSION_MAP_MAX_CHARS,
     z.record(z.string(), z.string().nullable()),
-  ).default({}),
+  ).prefault({}),
   binaryVersions: serializedWithin(
     ROUTER_VERSION_MAP_MAX_CHARS,
     z.record(z.string(), z.string().nullable()),
-  ).default({}),
+  ).prefault({}),
   rulesAssets: z
     .object({
       assetDirectory: z.string().optional(),
       geoipVersion: z.string().nullable().optional(),
       geositeVersion: z.string().nullable().optional(),
-      geoipUpdatedAt: z.string().datetime().nullable().optional(),
-      geositeUpdatedAt: z.string().datetime().nullable().optional(),
+      geoipUpdatedAt: isoDatetimeSchema().nullable().optional(),
+      geositeUpdatedAt: isoDatetimeSchema().nullable().optional(),
     })
-    .default({}),
+    .prefault({}),
   resources: routerResourcesSchema,
   serviceHealth: routerServiceHealthSchema,
   lastRescue: routerLastRescueSchema.nullable().optional(),
@@ -1068,9 +1102,9 @@ export const routerInventorySchema = z.object({
 
 export const rescuePolicySchema = z.object({
   healthUrls: z
-    .array(z.string().url())
+    .array(urlStringSchema())
     .min(1)
-    .default([
+    .prefault([
       "https://www.gstatic.com/generate_204",
       "https://cp.cloudflare.com/",
     ]),
@@ -1097,7 +1131,7 @@ export const updatePolicySchema = z.object({
 });
 
 export const routerReauthProofSchema = z.object({
-  signedAt: z.string().datetime({ offset: true }),
+  signedAt: isoDatetimeSchema({ offset: true }),
   signature: z.string().min(1),
 });
 
@@ -1132,19 +1166,19 @@ export const routerRegisterRequestSchema = z.object({
 });
 
 export const routerJobSchema = z.object({
-  id: z.string().uuid(),
+  id: z.guid(),
   type: jobTypeSchema,
   state: jobStateSchema,
-  createdAt: z.string().datetime(),
-  desiredRevisionId: z.string().uuid().nullable().optional(),
-  payload: z.record(z.string(), z.unknown()).default({}),
+  createdAt: isoDatetimeSchema(),
+  desiredRevisionId: z.guid().nullable().optional(),
+  payload: z.record(z.string(), z.unknown()).prefault({}),
 });
 
 export const packageArtifactPayloadSchema = z.object({
   name: z.string().min(1),
-  artifactUrl: z.string().url(),
+  artifactUrl: urlStringSchema(),
   sha256: z.string().min(1),
-  signatureUrl: z.string().url().nullable().optional(),
+  signatureUrl: urlStringSchema().nullable().optional(),
   artifactVersion: z.string().min(1),
   source: passwallArtifactOriginSchema.default("vectra"),
   required: z.boolean().default(true),
@@ -1157,11 +1191,11 @@ export const updateControllerJobPayloadSchema = z.object({
   packageList: z
     .array(z.string().min(1))
     .min(1)
-    .default(["vectra-controller-agent", "luci-app-vectra-controller"]),
-  packageArtifacts: z.array(packageArtifactPayloadSchema).default([]),
-  artifactUrl: z.string().url().nullable().optional(),
+    .prefault(["vectra-controller-agent", "luci-app-vectra-controller"]),
+  packageArtifacts: z.array(packageArtifactPayloadSchema).prefault([]),
+  artifactUrl: urlStringSchema().nullable().optional(),
   sha256: z.string().min(1).nullable().optional(),
-  signatureUrl: z.string().url().nullable().optional(),
+  signatureUrl: urlStringSchema().nullable().optional(),
   artifactVersion: z.string().nullable().optional(),
 });
 
@@ -1195,8 +1229,8 @@ export const ensurePasswallRuntimeJobPayloadSchema = z
       .array(ensurePasswallRuntimeActionSchema)
       .min(1)
       .max(4)
-      .default(["compact_geodata", "dnsmasq_full"]),
-    onboardingRunId: z.string().uuid().nullable().optional(),
+      .prefault(["compact_geodata", "dnsmasq_full"]),
+    onboardingRunId: z.guid().nullable().optional(),
     onboardingAttempt: z.number().int().nonnegative().nullable().optional(),
     // Optional pin for "xray_binary"; the controller falls back to its
     // compiled-in fleet build and refuses a version without its checksum.
@@ -1212,15 +1246,11 @@ export const ensurePasswallRuntimeJobPayloadSchema = z
     // only removes an xray that still runs if this is set.
     xrayReplaceInPlace: z.boolean().optional(),
     assetDirectory: z.string().trim().min(1).default("/usr/share/v2ray/"),
-    geoipUrl: z
-      .string()
-      .url()
+    geoipUrl: urlStringSchema()
       .default(
         "https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat",
       ),
-    geositeUrl: z
-      .string()
-      .url()
+    geositeUrl: urlStringSchema()
       .default(
         "https://github.com/itdoginfo/allow-domains/releases/latest/download/geosite.dat",
       ),
@@ -1230,7 +1260,7 @@ export const ensurePasswallRuntimeJobPayloadSchema = z
         overlayFreeMb: z.number().int().nonnegative().default(16),
         tmpFreeMb: z.number().int().nonnegative().default(32),
       })
-      .default({
+      .prefault({
         memoryAvailableMb: 64,
         overlayFreeMb: 16,
         tmpFreeMb: 32,
@@ -1243,7 +1273,7 @@ export const verifyPasswallRoutesJobPayloadSchema = z
     expectedPolicy: z
       .enum(["standard-non-hh", "hh-exempt", "subscription-only"])
       .default("standard-non-hh"),
-    onboardingRunId: z.string().uuid().nullable().optional(),
+    onboardingRunId: z.guid().nullable().optional(),
     onboardingAttempt: z.number().int().nonnegative().nullable().optional(),
   })
   .passthrough();
@@ -1267,7 +1297,7 @@ export const runRescueRepairJobPayloadSchema = z
   .object({
     actions: z.array(rescueRepairActionSchema).min(1).max(8),
     timeoutSeconds: z.number().int().min(10).max(180).default(90),
-    caseId: z.string().uuid().nullable().optional(),
+    caseId: z.guid().nullable().optional(),
     reason: z.string().trim().max(500).nullable().optional(),
     requestedBy: rescueRepairRequestedBySchema.default("auto_rescue"),
   })
@@ -1290,7 +1320,7 @@ export const runTerminalCommandJobPayloadSchema = z.object({
     .optional(),
   artifactVersion: z.string().nullable().optional(),
   hostname: z.string().min(1).max(63).nullable().optional(),
-  onboardingRunId: z.string().uuid().nullable().optional(),
+  onboardingRunId: z.guid().nullable().optional(),
   onboardingAttempt: z.number().int().nonnegative().nullable().optional(),
 });
 
@@ -1308,9 +1338,9 @@ export const updatePasswallPackagesJobPayloadSchema = z.object({
     "adaptive-component-fallback",
   ),
   updateScope: passwallUpdateScopeSchema.default("managed-stack"),
-  artifactUrl: z.string().url().nullable().optional(),
+  artifactUrl: urlStringSchema().nullable().optional(),
   sha256: z.string().min(1).nullable().optional(),
-  signatureUrl: z.string().url().nullable().optional(),
+  signatureUrl: urlStringSchema().nullable().optional(),
   artifactVersion: z.string().nullable().optional(),
 });
 
@@ -1340,7 +1370,7 @@ export const passwallPackageUpdateResultPayloadSchema = z
     originSource: passwallArtifactOriginSchema,
     fallbackPolicy: passwallFallbackPolicySchema,
     updateScope: passwallUpdateScopeSchema,
-    packageResults: z.array(passwallPackageUpdateResultEntrySchema).default([]),
+    packageResults: z.array(passwallPackageUpdateResultEntrySchema).prefault([]),
     driftDetected: z.boolean().default(false),
     deliveryBlocked: z.boolean().default(false),
     deliveryBlockedReason: z.string().nullable().optional(),
@@ -1349,15 +1379,15 @@ export const passwallPackageUpdateResultPayloadSchema = z
   .passthrough();
 
 export const validateFirmwareJobPayloadSchema = z.object({
-  manifestId: z.string().uuid().nullable().optional(),
+  manifestId: z.guid().nullable().optional(),
   channel: controllerChannelSchema.default("stable"),
   boardName: z.string().min(1).nullable().optional(),
   target: z.string().min(1).nullable().optional(),
   architecture: z.string().min(1).nullable().optional(),
   layoutFamily: z.string().min(1).nullable().optional(),
-  artifactUrl: z.string().url(),
+  artifactUrl: urlStringSchema(),
   sha256: z.string().min(1),
-  signatureUrl: z.string().url().nullable().optional(),
+  signatureUrl: urlStringSchema().nullable().optional(),
   artifactVersion: z.string().min(1).nullable().optional(),
   validationCommand: z
     .string()
@@ -1377,8 +1407,8 @@ export const routerLogResultPayloadSchema = z
   .object({
     source: routerLogSourceSchema,
     requestedLines: z.number().int().min(50).max(400),
-    collectedAt: z.string().datetime(),
-    snapshots: z.array(routerLogSnapshotSchema).default([]),
+    collectedAt: isoDatetimeSchema(),
+    snapshots: z.array(routerLogSnapshotSchema).prefault([]),
     stdout: z.string().nullable().optional(),
     stderr: z.string().nullable().optional(),
     error: z.string().nullable().optional(),
@@ -1389,8 +1419,8 @@ export const routerTerminalResultPayloadSchema = z
   .object({
     command: z.string().min(1),
     timeoutSeconds: z.number().int().min(5).max(120),
-    startedAt: z.string().datetime(),
-    completedAt: z.string().datetime(),
+    startedAt: isoDatetimeSchema(),
+    completedAt: isoDatetimeSchema(),
     durationMs: z.number().int().min(0).nullable().optional(),
     exitCode: z.number().int().nullable().optional(),
     timedOut: z.boolean().default(false),
@@ -1423,12 +1453,12 @@ export const verifyPasswallRouteSlotResultSchema = z
 export const verifyPasswallRoutesResultPayloadSchema = z
   .object({
     verifierVersion: z.string().min(1),
-    verifiedAt: z.string().datetime(),
+    verifiedAt: isoDatetimeSchema(),
     ok: z.boolean(),
     exempt: z.boolean().default(false),
     selectedNodeId: z.string().nullable().optional(),
     selectedNodeLabel: z.string().nullable().optional(),
-    slots: z.array(verifyPasswallRouteSlotResultSchema).default([]),
+    slots: z.array(verifyPasswallRouteSlotResultSchema).prefault([]),
     services: z
       .object({
         controller: z.string().nullable().optional(),
@@ -1436,11 +1466,11 @@ export const verifyPasswallRoutesResultPayloadSchema = z
         passwallServer: z.string().nullable().optional(),
         dnsmasq: z.string().nullable().optional(),
       })
-      .default({}),
-    resources: z.record(z.string(), z.unknown()).default({}),
-    packageVersions: z.record(z.string(), z.string()).default({}),
-    binaryVersions: z.record(z.string(), z.string()).default({}),
-    errors: z.array(z.string()).default([]),
+      .prefault({}),
+    resources: z.record(z.string(), z.unknown()).prefault({}),
+    packageVersions: z.record(z.string(), z.string()).prefault({}),
+    binaryVersions: z.record(z.string(), z.string()).prefault({}),
+    errors: z.array(z.string()).prefault([]),
   })
   .passthrough();
 
@@ -1461,12 +1491,12 @@ export const optimizationBaselineConntrackSchema = z.object({
 export const optimizationBaselineResultPayloadSchema = z
   .object({
     baselineVersion: z.string().min(1),
-    collectedAt: z.string().datetime(),
+    collectedAt: isoDatetimeSchema(),
     ok: z.boolean(),
     selectedNodeId: z.string().nullable().optional(),
     selectedNodeLabel: z.string().nullable().optional(),
     passwallEnabled: z.boolean().default(false),
-    resources: z.record(z.string(), z.unknown()).default({}),
+    resources: z.record(z.string(), z.unknown()).prefault({}),
     serviceHealth: z
       .object({
         controller: z.string().nullable().optional(),
@@ -1474,18 +1504,18 @@ export const optimizationBaselineResultPayloadSchema = z
         passwallServer: z.string().nullable().optional(),
         dnsmasq: z.string().nullable().optional(),
       })
-      .default({}),
-    safetyEvents: z.array(z.record(z.string(), z.unknown())).default([]),
-    packageVersions: z.record(z.string(), z.string()).default({}),
-    binaryVersions: z.record(z.string(), z.string()).default({}),
-    processes: z.array(optimizationBaselineProcessSchema).default([]),
-    conntrack: optimizationBaselineConntrackSchema.default({}),
+      .prefault({}),
+    safetyEvents: z.array(z.record(z.string(), z.unknown())).prefault([]),
+    packageVersions: z.record(z.string(), z.string()).prefault({}),
+    binaryVersions: z.record(z.string(), z.string()).prefault({}),
+    processes: z.array(optimizationBaselineProcessSchema).prefault([]),
+    conntrack: optimizationBaselineConntrackSchema.prefault({}),
     logs: routerLogResultPayloadSchema.nullable().optional(),
     routeVerification: verifyPasswallRoutesResultPayloadSchema
       .nullable()
       .optional(),
-    warnings: z.array(z.string()).default([]),
-    errors: z.array(z.string()).default([]),
+    warnings: z.array(z.string()).prefault([]),
+    errors: z.array(z.string()).prefault([]),
   })
   .passthrough();
 
@@ -1502,9 +1532,9 @@ export const ensurePasswallRuntimeResultPayloadSchema = z
   .object({
     ok: z.boolean(),
     repaired: z.boolean().default(false),
-    checkedAt: z.string().datetime(),
-    actions: z.array(ensurePasswallRuntimeActionResultSchema).default([]),
-    commands: z.array(z.string()).default([]),
+    checkedAt: isoDatetimeSchema(),
+    actions: z.array(ensurePasswallRuntimeActionResultSchema).prefault([]),
+    commands: z.array(z.string()).prefault([]),
     services: z
       .object({
         controller: z.string().nullable().optional(),
@@ -1512,12 +1542,12 @@ export const ensurePasswallRuntimeResultPayloadSchema = z
         passwallServer: z.string().nullable().optional(),
         dnsmasq: z.string().nullable().optional(),
       })
-      .default({}),
-    resources: z.record(z.string(), z.unknown()).default({}),
-    rulesAssets: z.record(z.string(), z.unknown()).default({}),
-    packageVersions: z.record(z.string(), z.string()).default({}),
-    binaryVersions: z.record(z.string(), z.string()).default({}),
-    errors: z.array(z.string()).default([]),
+      .prefault({}),
+    resources: z.record(z.string(), z.unknown()).prefault({}),
+    rulesAssets: z.record(z.string(), z.unknown()).prefault({}),
+    packageVersions: z.record(z.string(), z.string()).prefault({}),
+    binaryVersions: z.record(z.string(), z.string()).prefault({}),
+    errors: z.array(z.string()).prefault([]),
   })
   .passthrough();
 
@@ -1530,12 +1560,12 @@ export const rescueRepairServiceHealthSchema = z.object({
 
 export const rescueRepairHealthSnapshotSchema = z
   .object({
-    capturedAt: z.string().datetime(),
+    capturedAt: isoDatetimeSchema(),
     passwallEnabled: z.boolean().nullable().optional(),
     rescueMode: rescueModeSchema.nullable().optional(),
     selectedNodeId: z.string().nullable().optional(),
     selectedNodeLabel: z.string().nullable().optional(),
-    serviceHealth: rescueRepairServiceHealthSchema.default({}),
+    serviceHealth: rescueRepairServiceHealthSchema.prefault({}),
     serverReachable: z.boolean().nullable().optional(),
     publicReachable: z.boolean().nullable().optional(),
   })
@@ -1554,8 +1584,8 @@ export const rescueRepairActionResultSchema = z
     action: rescueRepairActionSchema,
     status: rescueRepairActionResultStatusSchema,
     command: z.string().min(1).nullable().optional(),
-    startedAt: z.string().datetime(),
-    completedAt: z.string().datetime(),
+    startedAt: isoDatetimeSchema(),
+    completedAt: isoDatetimeSchema(),
     durationMs: z.number().int().min(0),
     stdout: z.string().max(4000).nullable().optional(),
     stderr: z.string().max(4000).nullable().optional(),
@@ -1565,13 +1595,13 @@ export const rescueRepairActionResultSchema = z
 
 export const rescueRepairResultPayloadSchema = z
   .object({
-    caseId: z.string().uuid().nullable().optional(),
+    caseId: z.guid().nullable().optional(),
     requestedBy: rescueRepairRequestedBySchema,
     reason: z.string().nullable().optional(),
     actions: z.array(rescueRepairActionSchema).min(1),
     timeoutSeconds: z.number().int().min(10).max(180),
-    startedAt: z.string().datetime(),
-    completedAt: z.string().datetime(),
+    startedAt: isoDatetimeSchema(),
+    completedAt: isoDatetimeSchema(),
     before: rescueRepairHealthSnapshotSchema,
     after: rescueRepairHealthSnapshotSchema,
     results: z.array(rescueRepairActionResultSchema),
@@ -1604,15 +1634,15 @@ export const subscriptionPreviewEntrySchema = z.object({
     .optional(),
   payloadFingerprints: z
     .array(subscriptionPreviewFingerprintSchema)
-    .default([]),
-  checkedAt: z.string().datetime(),
+    .prefault([]),
+  checkedAt: isoDatetimeSchema(),
 });
 
 export const subscriptionInspectResultPayloadSchema = z
   .object({
-    checkedAt: z.string().datetime(),
+    checkedAt: isoDatetimeSchema(),
     subscriptionDigest: z.string().min(1),
-    entries: z.array(subscriptionPreviewEntrySchema).default([]),
+    entries: z.array(subscriptionPreviewEntrySchema).prefault([]),
     error: z.string().nullable().optional(),
   })
   .passthrough();
@@ -1623,7 +1653,7 @@ export const subscriptionInspectResultPayloadSchema = z
 // exactly as before. passwall is listed first in the union so passwall configs
 // continue to parse through the passwall schema unchanged.
 export const desiredRevisionSummarySchema = z.object({
-  id: z.string().uuid(),
+  id: z.guid(),
   revisionNumber: z.number().int().nonnegative(),
   status: z.string().min(1),
   origin: z.string().min(1).default("operator_draft"),
@@ -1642,9 +1672,9 @@ export const desiredRevisionSummarySchema = z.object({
 
 export const routerConfigSyncStateSchema = z.object({
   importState: routerImportStateSchema,
-  pendingImportRevisionId: z.string().uuid().nullable().optional(),
-  activeRevisionId: z.string().uuid().nullable().optional(),
-  lastAppliedRevisionId: z.string().uuid().nullable().optional(),
+  pendingImportRevisionId: z.guid().nullable().optional(),
+  activeRevisionId: z.guid().nullable().optional(),
+  lastAppliedRevisionId: z.guid().nullable().optional(),
   lastConfigDigest: z.string().nullable().optional(),
   requestImport: z.boolean().default(false),
 });
@@ -1665,7 +1695,7 @@ export const routerClaimSchema = z.object({
     .string()
     .regex(/^[0-9a-fA-F]{64}$/, "codeHash must be a hex sha256 digest")
     .transform((value) => value.toLowerCase()),
-  expiresAt: z.string().datetime({ offset: true }),
+  expiresAt: isoDatetimeSchema({ offset: true }),
 });
 
 /** A partner of the partner API, which is also the router's brand id (vctl). */
@@ -1687,7 +1717,7 @@ export const routerOwnerSchema = z.object({
 
 export const routerRegisterResponseSchema = z.object({
   protocolVersion: z.literal(VECTRA_PROTOCOL_VERSION),
-  routerId: z.string().uuid(),
+  routerId: z.guid(),
   status: routerStatusSchema,
   issuedToken: z.string().min(1),
   pollingIntervalSeconds: z.number().int().min(15),
@@ -1712,7 +1742,7 @@ export const routerRegisterResponseSchema = z.object({
 
 export const routerCheckInRequestSchema = z.object({
   protocolVersion: z.literal(VECTRA_PROTOCOL_VERSION),
-  routerId: z.string().uuid(),
+  routerId: z.guid(),
   inventory: routerInventorySchema,
   passwallImport: passwallImportedStateSchema.optional(),
   claim: routerClaimSchema.nullable().optional(),
@@ -1754,7 +1784,7 @@ export const fleetRoutePolicyDirectiveSchema = z.object({
 
 export const routerCheckInResponseSchema = z.object({
   protocolVersion: z.literal(VECTRA_PROTOCOL_VERSION),
-  routerId: z.string().uuid(),
+  routerId: z.guid(),
   status: routerStatusSchema,
   pollingIntervalSeconds: z.number().int().min(15),
   configSyncState: routerConfigSyncStateSchema,
@@ -1904,7 +1934,7 @@ export const partnerRouterClaimRequestSchema = z
   });
 
 export const partnerRouterClaimResponseSchema = z.object({
-  routerId: z.string().uuid(),
+  routerId: z.guid(),
   state: z.literal("claimed"),
   alreadyClaimed: z.boolean(),
   deviceIdentifier: z.string().min(1).max(128),
@@ -1923,7 +1953,7 @@ export const partnerRouterClaimResponseSchema = z.object({
 // and no unbind goes through without naming whose router it is.
 export const partnerRouterUnbindRequestSchema = z
   .object({
-    routerId: z.string().uuid(),
+    routerId: z.guid(),
     ownerRef: partnerOwnerRefSchema,
   })
   .strict();
@@ -1943,9 +1973,9 @@ export const partnerWebhookEventSchema = z.enum([
 
 export const partnerWebhookPayloadSchema = z.object({
   event: partnerWebhookEventSchema,
-  routerId: z.string().uuid(),
+  routerId: z.guid(),
   ownerRef: z.string().min(1),
-  at: z.string().datetime(),
+  at: isoDatetimeSchema(),
   detail: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
 });
 
@@ -1953,27 +1983,27 @@ export const incidentTransitionSchema = z.object({
   type: incidentTypeSchema,
   state: incidentStateSchema,
   reason: z.string().min(1),
-  happenedAt: z.string().datetime().optional(),
-  metadata: z.record(z.string(), z.unknown()).default({}),
+  happenedAt: isoDatetimeSchema().optional(),
+  metadata: z.record(z.string(), z.unknown()).prefault({}),
 });
 
 export const jobResultRequestSchema = z.object({
   protocolVersion: z.literal(VECTRA_PROTOCOL_VERSION),
-  routerId: z.string().uuid(),
-  jobId: z.string().uuid(),
+  routerId: z.guid(),
+  jobId: z.guid(),
   status: jobResultStatusSchema,
-  appliedRevisionId: z.string().uuid().nullable().optional(),
+  appliedRevisionId: z.guid().nullable().optional(),
   configDigest: z.string().min(1).nullable().optional(),
   stdout: z.string().max(16000).optional(),
   stderr: z.string().max(16000).optional(),
   incidentTransitions: z
     .array(incidentTransitionSchema)
     .max(ROUTER_INCIDENT_TRANSITIONS_MAX)
-    .default([]),
+    .prefault([]),
   result: serializedWithin(
     ROUTER_JOB_RESULT_MAX_CHARS,
     z.record(z.string(), z.unknown()),
-  ).default({}),
+  ).prefault({}),
 });
 
 export const jobResultResponseSchema = z.object({
@@ -1982,7 +2012,7 @@ export const jobResultResponseSchema = z.object({
 });
 
 export const artifactMetadataSchema = z.object({
-  id: z.string().uuid(),
+  id: z.guid(),
   type: artifactTypeSchema,
   channel: controllerChannelSchema,
   name: z.string().min(1),
@@ -1990,14 +2020,14 @@ export const artifactMetadataSchema = z.object({
   architecture: z.string().nullable(),
   boardName: z.string().nullable(),
   layoutFamily: z.string().nullable(),
-  downloadUrl: z.string().url(),
+  downloadUrl: urlStringSchema(),
   checksumSha256: z.string().min(1),
-  signatureUrl: z.string().url().nullable(),
-  metadata: z.record(z.string(), z.unknown()).default({}),
+  signatureUrl: urlStringSchema().nullable(),
+  metadata: z.record(z.string(), z.unknown()).prefault({}),
 });
 
 export const firmwareManifestSchema = z.object({
-  id: z.string().uuid(),
+  id: z.guid(),
   boardName: z.string().min(1),
   target: z.string().min(1),
   architecture: z.string().min(1),
@@ -2006,7 +2036,7 @@ export const firmwareManifestSchema = z.object({
   version: z.string().min(1),
   validationCommand: z.string().min(1),
   artifact: artifactMetadataSchema,
-  rolloutPolicy: z.record(z.string(), z.unknown()).default({}),
+  rolloutPolicy: z.record(z.string(), z.unknown()).prefault({}),
 });
 
 export const rescueEvaluationInputSchema = z.object({

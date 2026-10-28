@@ -11,7 +11,7 @@ import {
 } from "~/server/vectra/router-auto-onboarding";
 import { z } from "zod";
 
-const routerIdInputSchema = z.object({ routerId: z.string().uuid() });
+const routerIdInputSchema = z.object({ routerId: z.guid() });
 
 export const onboardingRouter = createTRPCRouter({
   get: protectedProcedure

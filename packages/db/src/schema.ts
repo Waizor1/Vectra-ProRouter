@@ -32,45 +32,50 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
+// zod 4 types an enum's options as a plain array; pgEnum wants the non-empty
+// tuple every z.enum is built from.
+const enumValues = <T extends string>(schema: { options: readonly T[] }) =>
+  schema.options as [T, ...T[]];
+
 const routerStatusEnum = pgEnum(
   "vectra_router_status",
-  routerStatusSchema.options,
+  enumValues(routerStatusSchema),
 );
 const credentialTypeEnum = pgEnum(
   "vectra_credential_type",
-  credentialTypeSchema.options,
+  enumValues(credentialTypeSchema),
 );
-const jobTypeEnum = pgEnum("vectra_job_type", jobTypeSchema.options);
-const jobStateEnum = pgEnum("vectra_job_state", jobStateSchema.options);
+const jobTypeEnum = pgEnum("vectra_job_type", enumValues(jobTypeSchema));
+const jobStateEnum = pgEnum("vectra_job_state", enumValues(jobStateSchema));
 const jobResultStatusEnum = pgEnum(
   "vectra_job_result_status",
-  jobResultStatusSchema.options,
+  enumValues(jobResultStatusSchema),
 );
 const artifactTypeEnum = pgEnum(
   "vectra_artifact_type",
-  artifactTypeSchema.options,
+  enumValues(artifactTypeSchema),
 );
-const engineModeEnum = pgEnum("vectra_engine_mode", engineModeSchema.options);
+const engineModeEnum = pgEnum("vectra_engine_mode", enumValues(engineModeSchema));
 const channelEnum = pgEnum(
   "vectra_controller_channel",
-  controllerChannelSchema.options,
+  enumValues(controllerChannelSchema),
 );
 const importStateEnum = pgEnum(
   "vectra_router_import_state",
-  routerImportStateSchema.options,
+  enumValues(routerImportStateSchema),
 );
 const incidentTypeEnum = pgEnum(
   "vectra_incident_type",
-  incidentTypeSchema.options,
+  enumValues(incidentTypeSchema),
 );
 const incidentStateEnum = pgEnum(
   "vectra_incident_state",
-  incidentStateSchema.options,
+  enumValues(incidentStateSchema),
 );
-const severityEnum = pgEnum("vectra_severity", severitySchema.options);
+const severityEnum = pgEnum("vectra_severity", enumValues(severitySchema));
 const secretBlobScopeEnum = pgEnum(
   "vectra_secret_blob_scope",
-  secretBlobScopeSchema.options,
+  enumValues(secretBlobScopeSchema),
 );
 const pushAlertKindEnum = pgEnum("vectra_push_alert_kind", [
   "offline",
